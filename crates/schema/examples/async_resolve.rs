@@ -4,6 +4,11 @@
 //! Run:
 //! `cargo run -p nebula-schema --example async_resolve`
 
+#![expect(
+    clippy::print_stderr,
+    reason = "example: errors are reported to stderr"
+)]
+
 use nebula_schema::{
     EvalFuture, ExpressionAst, ExpressionContext, Field, FieldValues, Schema, field_key,
 };

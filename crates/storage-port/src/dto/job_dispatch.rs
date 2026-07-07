@@ -111,7 +111,7 @@ impl JobDispatchMsg {
     /// construction; a `debug_assert` catches violations in test.
     // guard-justified: constructor over all DTO fields; a builder adds no safety
     // for an internal #[non_exhaustive] record whose fields are all independent.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         id: [u8; 16],
         execution_id: impl Into<String>,

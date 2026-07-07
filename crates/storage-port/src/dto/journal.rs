@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 // guard-justified: `payload` is `serde_json::Value`, which is not `Eq`
 // (it can hold a float). `Eq` is therefore not derivable; the clippy
 // hint is a false positive for any DTO carrying an opaque JSON payload.
-#[allow(clippy::derive_partial_eq_without_eq)]
+#[expect(clippy::derive_partial_eq_without_eq)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct JournalEntry {
     /// Backend-assigned sequence number (`None` until persisted).

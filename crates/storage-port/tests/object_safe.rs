@@ -1,6 +1,6 @@
 use nebula_storage_port::store::*;
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn _assert_object_safe(
     _a: &dyn ExecutionStore,
     _b: &dyn ExecutionJournalReader,
@@ -19,7 +19,7 @@ fn _assert_object_safe(
 
 // Compile-time object-safety probe over the identity zoo: it is never
 // called, so the argument count is not an ergonomics concern.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn _assert_identity_object_safe(
     _a: &dyn UserStore,
     _b: &dyn OrgStore,

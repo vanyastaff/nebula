@@ -99,7 +99,7 @@ impl<T> Validated<T> {
     /// Misuse breaks the trust boundary that `Validated<T>` exists to enforce.
     /// Prefer re-validating when in doubt.
     #[inline]
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(not(test), expect(dead_code))]
     pub(crate) fn map<U>(self, f: impl FnOnce(T) -> U) -> Validated<U> {
         Validated {
             value: f(self.value),

@@ -139,7 +139,7 @@ struct SecretRuntime {
 
 #[derive(Clone)]
 struct SecretRes {
-    #[allow(
+    #[expect(
         dead_code,
         reason = "models the author-declared resolved SlotCell; the hook borrows the runtime, not this cell — its presence makes the secret reachable through the resolved slot the fan-out rotates"
     )]

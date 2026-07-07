@@ -353,7 +353,7 @@ impl ActionRuntime {
     /// fresh `ActionHandle` via [`ActionFactory::instantiate`], and dispatches it
     /// through [`Self::run_factory`]. Returns
     /// [`RuntimeError::ActionNotFound`] if no factory is registered for the key.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     async fn dispatch_action(
         &self,
         action_key_str: &str,
@@ -398,7 +398,7 @@ impl ActionRuntime {
     /// for instantiate failures so dashboards reflect the per-dispatch cost
     /// regardless of whether the failure happened in instantiation or
     /// during the action itself.
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "private dispatch entry — splitting into a struct hides the metric/observe contract from the call site"
     )]
@@ -413,7 +413,7 @@ impl ActionRuntime {
         checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
         let error_counter = &self.action_failures_total;
-        #[allow(
+        #[expect(
             clippy::unwrap_or_default,
             reason = "ExecutionId::new() != Default::default()"
         )]

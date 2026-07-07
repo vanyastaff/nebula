@@ -12,7 +12,16 @@
 ///
 /// # Feature flags
 /// - `sentry`: Enables Sentry integration
-pub(super) fn init_telemetry(#[allow(unused_variables)] inner: &mut super::Inner) {
+pub(super) fn init_telemetry(
+    #[cfg_attr(
+        not(feature = "sentry"),
+        expect(
+            unused_variables,
+            reason = "only the sentry integration reads the inner state"
+        )
+    )]
+    inner: &mut super::Inner,
+) {
     // Initialize Sentry if enabled
     #[cfg(feature = "sentry")]
     {

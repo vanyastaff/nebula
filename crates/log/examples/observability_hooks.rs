@@ -6,6 +6,11 @@
 //! 3. Use built-in hooks (logging)
 //! 4. Track operation lifecycle
 
+#![expect(
+    clippy::print_stdout,
+    reason = "example: printed output is the demonstration"
+)]
+
 use std::{
     sync::{
         Arc,

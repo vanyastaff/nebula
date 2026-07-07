@@ -40,6 +40,10 @@ pub(crate) fn init() -> Option<ClientInitGuard> {
 /// `LoggerBuilder::build` *before* `try_init` installs the tracing subscriber,
 /// so a `tracing::warn!` alone would land on the global no-op dispatcher and
 /// be dropped.
+#[expect(
+    clippy::print_stderr,
+    reason = "invalid-DSN edge runs before the tracing dispatcher can be trusted; mirrored to stderr for operators"
+)]
 fn init_from_dsn(
     dsn: &str,
     environment: String,

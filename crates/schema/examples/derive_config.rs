@@ -4,6 +4,11 @@
 //! Run:
 //! `cargo run -p nebula-schema --example derive_config`
 
+#![expect(
+    clippy::print_stderr,
+    reason = "example: errors are reported to stderr"
+)]
+
 use nebula_schema::{FieldValues, HasSchema, Schema};
 use serde::Deserialize;
 use serde_json::json;

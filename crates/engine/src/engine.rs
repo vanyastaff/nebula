@@ -2598,7 +2598,7 @@ impl NodeTask {
 /// be skipped.
 ///
 /// Returns `true` if the error was handled (at least one OnError edge activated).
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn process_outgoing_edges(
     source_id: NodeKey,
     result: Option<&ActionResult<serde_json::Value>>,

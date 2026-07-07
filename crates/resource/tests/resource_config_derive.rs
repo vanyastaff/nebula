@@ -109,7 +109,7 @@ struct SkipFieldCfg {
     /// Excluded from fingerprint — changing this alone must not trigger hot-reload.
     // guard-justified: the field is under test precisely for being skipped by
     // the fingerprint fold; it is set but never read, which is the point.
-    #[allow(
+    #[expect(
         dead_code,
         reason = "exercised via skip_fingerprint, intentionally never read"
     )]

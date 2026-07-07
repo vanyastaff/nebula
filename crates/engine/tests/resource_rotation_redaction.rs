@@ -213,7 +213,7 @@ struct SecretBearingResource {
     /// The dispatch borrows the runtime, not this cell, so it is not
     /// read directly — its presence makes the secret reachable through
     /// the resolved slot the engine rotates.
-    #[allow(
+    #[expect(
         dead_code,
         reason = "models the author-declared resolved SlotCell; rotation dispatch borrows the runtime, not this cell"
     )]

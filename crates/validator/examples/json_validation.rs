@@ -2,6 +2,11 @@
 //!
 //! Run: `cargo run -p nebula-validator --features serde --example json_validation`
 
+#![expect(
+    clippy::print_stdout,
+    reason = "example: printed output is the demonstration"
+)]
+
 use nebula_validator::{
     combinators::{json_field, json_field_optional, not, when, with_message},
     foundation::{Validate, ValidateExt},

@@ -3,6 +3,11 @@
 //! Run:
 //! `cargo run -p nebula-schema --example json_schema_export --features schemars`
 
+#![expect(
+    clippy::print_stderr,
+    reason = "example: errors are reported to stderr"
+)]
+
 use nebula_schema::{Field, FieldKey, Schema};
 use serde_json::Value;
 

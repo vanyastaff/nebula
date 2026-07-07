@@ -304,7 +304,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
     /// parses as a typed [`CredentialId`]. Non-parseable legacy ids fall
     /// back to the L1-only coalescing path. `CoalescedByOtherReplica` is
     /// success — caller re-reads state.
-    #[allow(deprecated)] // Calls deprecated `is_circuit_open` until П3 typed-id migration completes.
+    #[expect(deprecated)] // Calls deprecated `is_circuit_open` until П3 typed-id migration completes.
     pub async fn resolve_with_refresh<C>(
         &self,
         credential_id: &str,
@@ -401,7 +401,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
     }
 
     /// Two-tier coordinated refresh path (parseable [`CredentialId`]).
-    #[allow(deprecated)] // Calls deprecated `record_success` / `record_failure` for L1 circuit breaker until П3.
+    #[expect(deprecated)] // Calls deprecated `record_success` / `record_failure` for L1 circuit breaker until П3.
     async fn refresh_via_coordinator<C>(
         &self,
         credential_id: &str,
@@ -555,7 +555,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
     /// Mirrors the pre-Stage-2 single-process coalescer behavior: first
     /// caller wins, others wait on a `oneshot::Receiver`, completion
     /// drains all waiters. No L2 claim is acquired.
-    #[allow(deprecated)] // Whole function is the legacy-id fallback; uses deprecated L1 surface until П3.
+    #[expect(deprecated)] // Whole function is the legacy-id fallback; uses deprecated L1 surface until П3.
     async fn refresh_via_l1_only<C>(
         &self,
         credential_id: &str,
@@ -965,7 +965,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
             // `RefreshOutcome` is `#[non_exhaustive]`; this arm is required for
             // forward-compatibility with future variants. Clippy flags it
             // unreachable against current variants — that is the intent.
-            #[allow(unreachable_patterns)]
+            #[expect(unreachable_patterns)]
             _ => {
                 let scheme = C::project(&state);
                 Ok(self.materialize_handle::<C>(credential_id, scheme))

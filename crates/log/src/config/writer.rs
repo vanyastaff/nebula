@@ -129,7 +129,7 @@ impl Default for DisplayConfig {
     }
 }
 
-#[allow(dead_code)]
+#[cfg(feature = "file")]
 fn default_non_blocking() -> bool {
     true
 }
@@ -138,6 +138,7 @@ fn default_non_blocking() -> bool {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "file")]
     #[test]
     fn default_non_blocking_is_true() {
         assert!(default_non_blocking());

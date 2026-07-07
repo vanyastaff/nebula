@@ -1,5 +1,10 @@
 //! Basic usage example for nebula-validator
 
+#![expect(
+    clippy::print_stdout,
+    reason = "example: printed output is the demonstration"
+)]
+
 use nebula_validator::prelude::{
     AnyValidator, Validatable, Validate, ValidateExt, ValidationError, ValidationMode, all_of,
     alphanumeric, email, exact_length, hostname, in_range, ip_addr, json_field,

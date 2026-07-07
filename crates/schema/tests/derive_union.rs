@@ -222,7 +222,7 @@ enum WithSkip {
         n: i64,
     },
     #[serde(skip)]
-    #[allow(
+    #[expect(
         dead_code,
         reason = "exercises that #[serde(skip)] drops the union arm"
     )]

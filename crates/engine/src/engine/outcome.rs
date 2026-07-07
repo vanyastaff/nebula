@@ -282,7 +282,7 @@ pub(super) fn apply_failure_recovery(
 /// strategy with no OnError handler took the failure. Returns `None`
 /// when routing completed cleanly (OnError handled, ContinueOnError
 /// resolved, or IgnoreErrors routed-as-success).
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn route_failure_edges(
     outcome: FailureOutcome,
     node_key: NodeKey,

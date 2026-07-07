@@ -18,7 +18,7 @@ impl WorkflowEngine {
     /// Returns `true` when the node was short-circuited (caller should `continue`
     /// to the next ready queue entry). Returns `false` when the node should be
     /// dispatched normally.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(super) async fn check_and_apply_idempotency(
         &self,
         scope: &Scope,
@@ -216,7 +216,7 @@ impl WorkflowEngine {
     /// error to `run_frontier`'s caller. The real durability gap —
     /// `save_node_output` after panic — is already logged by
     /// `checkpoint_node` itself.
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         reason = "mirrors checkpoint_node's arity; the fencing token is required by the \
                   dual-dispatch storage seam"
@@ -269,7 +269,7 @@ impl WorkflowEngine {
     // borrow checker then prevents any caller from substituting an alternate
     // scope. Combined with the fencing token this pushes past the 7-arg
     // threshold that is designed for public APIs.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(super) async fn checkpoint_node(
         &self,
         scope: &Scope,
@@ -325,7 +325,7 @@ impl WorkflowEngine {
     /// `resume_tokens` is non-empty only on signal-park commits (W-S3c);
     /// the batch builder defaults to empty so non-park checkpoints are
     /// unaffected.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     async fn checkpoint_node_port(
         &self,
         scope: &Scope,

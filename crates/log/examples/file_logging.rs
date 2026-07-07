@@ -1,3 +1,11 @@
+#![cfg_attr(
+    not(feature = "file"),
+    expect(
+        clippy::print_stdout,
+        reason = "fallback branch prints the missing-feature hint"
+    )
+)]
+
 #[cfg(feature = "file")]
 use nebula_log::{Config, Format, Rolling, WriterConfig};
 

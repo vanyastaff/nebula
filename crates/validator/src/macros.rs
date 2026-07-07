@@ -515,7 +515,7 @@ macro_rules! validator {
     ) => {
         $($meta)*
         #[derive(Debug, Clone, $($ed,)*)]
-        #[allow(missing_docs)]
+        #[allow(missing_docs, clippy::allow_attributes, reason = "expands in downstream crates where the lint may not fire, so #[expect] cannot be used")]
         $vis struct $name $($gu)* {
             $($all_fields)+
         }
@@ -562,7 +562,7 @@ macro_rules! validator {
         $vis:vis $name:ident [$($gd:tt)*] [$($gu:tt)*]
         [$($args:tt)*] $body:block
     ) => {
-        #[allow(clippy::new_without_default)]
+        #[allow(clippy::new_without_default, clippy::allow_attributes, reason = "expands in downstream crates where the lint may not fire, so #[expect] cannot be used")]
         impl $($gd)* $name $($gu)* {
             /// Creates a new instance.
             #[must_use] #[inline]
@@ -597,7 +597,7 @@ macro_rules! validator {
     ) => {
         impl $($gd)* $crate::foundation::Validate<$input> for $name $($gu)* {
             #[inline]
-            #[allow(unused_variables)]
+            #[allow(unused_variables, clippy::allow_attributes, reason = "expands in downstream crates where the lint may not fire, so #[expect] cannot be used")]
             fn validate(&$self_ref, $inp: &$input)
                 -> ::std::result::Result<(), $crate::foundation::ValidationError>
             {

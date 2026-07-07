@@ -86,7 +86,7 @@ mod counting {
         /// model the engine having resolved the credential before
         /// `create`; the rotation hooks act on the runtime, not this cell,
         /// so it is not read directly in these tests.
-        #[allow(
+        #[expect(
             dead_code,
             reason = "models the author-declared SlotCell field; rotation dispatch borrows the runtime, not this cell"
         )]

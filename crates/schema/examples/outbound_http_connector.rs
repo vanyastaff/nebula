@@ -4,6 +4,11 @@
 //!
 //! Run: `cargo run -p nebula-schema --example outbound_http_connector`
 
+#![expect(
+    clippy::print_stderr,
+    reason = "example: errors are reported to stderr"
+)]
+
 include!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/examples_include/outbound_http_connector_shared.rs"

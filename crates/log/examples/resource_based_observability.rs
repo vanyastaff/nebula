@@ -8,6 +8,11 @@
 //! - Event filtering
 //! - Resource-aware hooks
 
+#![expect(
+    clippy::print_stdout,
+    reason = "example: printed output is the demonstration"
+)]
+
 use std::sync::Arc;
 
 use nebula_log::observability::{

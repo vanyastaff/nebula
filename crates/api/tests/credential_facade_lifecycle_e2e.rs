@@ -91,7 +91,7 @@ identity_state!(TestScheme, "test_lifecycle_state", 1);
 // at runtime through `FieldValues` in `resolve`, never via direct field access —
 // `dead_code` cannot see those paths on a private test struct.
 #[derive(Schema, Deserialize, Default)]
-#[allow(dead_code)]
+#[expect(dead_code)]
 struct TestProps {
     /// Initial secret token.
     #[field(secret, label = "Token")]
@@ -213,7 +213,7 @@ impl ExternalProvider for StubExternalProvider {
 
     // guard-justified: the `ExternalProvider` trait fixes the `-> &str` return,
     // so the lint's suggested `-> &'static str` cannot apply to this impl.
-    #[allow(clippy::unnecessary_literal_bound)]
+    #[expect(clippy::unnecessary_literal_bound)]
     fn provider_name(&self) -> &str {
         "stub-vault"
     }

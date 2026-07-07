@@ -7,7 +7,7 @@ use serde_json::json;
 #[derive(Schema, Deserialize)]
 #[schema(custom = "phase3_engine_stub")]
 struct Demo {
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     name: String,
 }
 

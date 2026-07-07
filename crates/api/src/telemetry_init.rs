@@ -160,6 +160,10 @@ impl TelemetryGuard {
     /// Called automatically on drop, but exposed so binaries that want a deterministic
     /// shutdown point (e.g. after the axum server returns) can drain telemetry before the
     /// process exits.
+    #[expect(
+        clippy::print_stderr,
+        reason = "shutdown-at-exit edge; the subscriber may already be torn down"
+    )]
     pub fn shutdown(&mut self) {
         // Drop metrics first so the discovery task observes the stop flag before the tracer
         // pipeline goes away (the two are independent, but ordering keeps shutdown logs
@@ -202,6 +206,10 @@ impl Drop for TelemetryGuard {
 /// leaking the background batch processor task.
 ///
 /// `RUST_LOG` is honoured by `EnvFilter`; falls back to `info` when unset or malformed.
+#[expect(
+    clippy::print_stderr,
+    reason = "double-init and unused-provider edges must reach operators even when no subscriber accepts events"
+)]
 pub fn init_api_telemetry() -> Result<TelemetryGuard, TelemetryInitError> {
     global::set_text_map_propagator(TraceContextPropagator::new());
 

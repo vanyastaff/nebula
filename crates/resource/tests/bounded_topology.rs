@@ -38,7 +38,7 @@ impl ResourceConfig for SeatCfg {
 /// A leased "seat" carrying a unique id.
 #[derive(Clone)]
 struct Seat(
-    #[allow(
+    #[expect(
         dead_code,
         reason = "id carried by the handle; counters are the observable"
     )]

@@ -41,7 +41,6 @@ pub struct LoggerBuilder {
 pub struct LoggerGuard {
     /// RAII guard - field must exist even if never accessed directly
     /// to keep file guards and other resources alive
-    #[allow(dead_code)]
     inner: Option<Box<Inner>>,
 }
 
@@ -295,6 +294,13 @@ impl LoggerGuard {
 }
 
 impl Drop for LoggerGuard {
+    #[cfg_attr(
+        feature = "telemetry",
+        expect(
+            clippy::print_stderr,
+            reason = "shutdown-at-exit edge; the subscriber may already be torn down"
+        )
+    )]
     fn drop(&mut self) {
         if let Some(inner) = self.inner.take() {
             // Drop root span first so pending spans are closed

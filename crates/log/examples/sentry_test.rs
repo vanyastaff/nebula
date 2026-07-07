@@ -1,5 +1,10 @@
 //! Sentry integration test example
 
+#![expect(
+    clippy::print_stdout,
+    reason = "example: printed output is the demonstration"
+)]
+
 use std::env;
 
 use anyhow::Result;
@@ -7,7 +12,7 @@ use nebula_log::prelude::*;
 use tokio::time::{Duration, sleep};
 
 #[tokio::main]
-#[allow(unsafe_code)]
+#[expect(unsafe_code)]
 async fn main() -> Result<()> {
     // Set Sentry DSN for testing
     unsafe {

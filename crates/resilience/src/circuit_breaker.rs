@@ -304,7 +304,7 @@ fn byte_sum(slice: &[u8]) -> u32 {
 /// SSE2 SIMD path: `psadbw` sums 16 bytes per iteration into two u64 lanes.
 /// SSE2 is guaranteed on all x86-64 CPUs — no runtime feature check needed.
 #[cfg(target_arch = "x86_64")]
-#[allow(
+#[expect(
     unsafe_code,
     clippy::cast_ptr_alignment,
     clippy::cast_possible_truncation,
@@ -1104,7 +1104,7 @@ impl std::fmt::Debug for CircuitBreaker {
 /// Uses fixed-point scaling (`count * SCALE >= threshold_scaled * total`) to avoid
 /// `cvtsi2sd` false-dependency stalls on Intel CPUs. Precision: 6 decimal places.
 // Reason: casts are safe — u32 * 1_000_000 fits in u64, threshold in [0.0, 1.0].
-#[allow(
+#[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::cast_precision_loss

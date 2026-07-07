@@ -43,7 +43,7 @@ impl EnvGuard {
         self.remember(key);
         // guard-justified: edition-2024 set_var is unsafe; the held lock
         // serializes all env mutation so no other thread races this write.
-        #[allow(unsafe_code)]
+        #[expect(unsafe_code)]
         // SAFETY: `self._lock` is held for the lifetime of this guard, so no
         // concurrent reader or writer of the environment can observe a torn
         // state during this single-threaded mutation.
@@ -57,7 +57,7 @@ impl EnvGuard {
         self.remember(key);
         // guard-justified: edition-2024 remove_var is unsafe; serialized by
         // the held process-global lock, same invariant as `set`.
-        #[allow(unsafe_code)]
+        #[expect(unsafe_code)]
         // SAFETY: the held lock serializes this mutation; see `set`.
         unsafe {
             std::env::remove_var(key);
@@ -76,7 +76,7 @@ impl Drop for EnvGuard {
         for (key, prior) in &self.saved {
             // guard-justified: restoring env on drop is unsafe under edition
             // 2024 but serialized by the still-held lock.
-            #[allow(unsafe_code)]
+            #[expect(unsafe_code)]
             // SAFETY: the lock is held until this Drop completes, so the
             // restore is serialized against all other env access.
             unsafe {

@@ -564,7 +564,7 @@ impl LeakyBucket {
     }
 
     // Reason: f64/usize conversions are acceptable for approximate leak accounting.
-    #[allow(
+    #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_precision_loss,
         clippy::cast_sign_loss
@@ -627,7 +627,7 @@ impl RateLimiter for LeakyBucket {
 
     // Reason: f64 leak amount cast to usize and usize capacity cast to f64 — acceptable for rate
     // reporting.
-    #[allow(
+    #[expect(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss
@@ -897,7 +897,7 @@ impl AdaptiveRateLimiter {
     /// (`refill_rate` 0.001..=10,000, derived capacity 1..=100,000), if
     /// `min_rate > max_rate`, or if `initial_rate` is outside `[min_rate, max_rate]`.
     // Reason: f64 rates cast to usize for token bucket capacity — acceptable for rate limiting.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     pub fn new(
         initial_rate: f64,
         min_rate: f64,
@@ -991,7 +991,7 @@ impl AdaptiveRateLimiter {
     /// Perform the rate adjustment. Caller must hold the write lock.
     // Reason: u64 counts cast to f64 for rate calculation, and f64 rate cast to usize for
     // token bucket capacity — acceptable for approximate rate limiting.
-    #[allow(
+    #[expect(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss
@@ -1091,7 +1091,7 @@ impl RateLimiter for AdaptiveRateLimiter {
     }
 
     // Reason: f64 rate cast to usize for token bucket capacity — acceptable for rate limiting.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     async fn reset(&self) {
         self.success_count.store(0, Ordering::Relaxed);
         self.error_count.store(0, Ordering::Relaxed);

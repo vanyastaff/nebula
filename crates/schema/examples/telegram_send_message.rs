@@ -6,6 +6,11 @@
 //!
 //! Run: `cargo run -p nebula-schema --example telegram_send_message`
 
+#![expect(
+    clippy::print_stderr,
+    reason = "example: errors are reported to stderr"
+)]
+
 include!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/examples_include/telegram_send_message_shared.rs"

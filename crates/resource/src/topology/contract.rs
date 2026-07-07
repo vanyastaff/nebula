@@ -449,7 +449,7 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
     // `entry` argument is consumed — `into_*` names the entry→instance
     // conversion, not a `self`-consuming builder, so wrong_self_convention is a
     // false match here.
-    #[allow(
+    #[expect(
         clippy::wrong_self_convention,
         reason = "topology is borrowed, the entry argument is consumed; the conversion is entry→instance"
     )]

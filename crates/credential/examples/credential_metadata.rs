@@ -6,6 +6,11 @@
 //! across action/credential/resource. Credential-specific details
 //! (`pattern`) stay on [`CredentialMetadata`] itself.
 
+#![expect(
+    clippy::print_stdout,
+    reason = "example: printed output is the demonstration"
+)]
+
 use nebula_credential::CredentialMetadata;
 use nebula_metadata::Metadata;
 use nebula_schema::{Field, Schema, field_key};

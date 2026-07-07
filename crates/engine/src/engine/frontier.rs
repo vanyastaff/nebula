@@ -26,7 +26,7 @@ impl WorkflowEngine {
     ///
     /// Returns `Some((node_key, error))` if a node failed without an error handler,
     /// `None` if all reachable nodes completed (or were skipped).
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(super) async fn run_frontier(
         &self,
         scope: &Scope,
@@ -810,7 +810,7 @@ impl WorkflowEngine {
             // unit-like timer markers. The size asymmetry is intrinsic
             // to a wake-reason discriminant and acceptable on a path
             // that allocates one value per loop iteration.
-            #[allow(clippy::large_enum_variant)]
+            #[expect(clippy::large_enum_variant)]
             enum WakeReason {
                 Joined(JoinedResult),
                 RetryTimer,
@@ -1975,7 +1975,7 @@ impl WorkflowEngine {
     ///
     /// Returns `true` if the node was spawned, `false` if it failed during setup
     /// (e.g., param resolution error).
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn spawn_node(
         &self,
         node_key: NodeKey,

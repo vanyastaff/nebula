@@ -3,6 +3,11 @@
 //! This example shows how to use Template for parse-once, render-many pattern
 //! with multiple {{ }} expressions in various formats (HTML, JSON, plain text)
 
+#![expect(
+    clippy::print_stdout,
+    reason = "example: printed output is the demonstration"
+)]
+
 use nebula_expression::{EvaluationContext, ExpressionEngine, Template};
 use serde_json::Value;
 

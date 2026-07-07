@@ -39,10 +39,6 @@ use serde_json::json;
 // `password` — is outside the typed `R::Config` surface and must be refused.
 
 #[derive(Clone, Debug, Deserialize)]
-#[allow(
-    dead_code,
-    reason = "fields exercised via the HasSchema closed-set guard + serde::Deserialize, not direct read"
-)]
 struct DbConfig {
     host: String,
     #[serde(default = "default_port")]

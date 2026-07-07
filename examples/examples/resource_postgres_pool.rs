@@ -29,6 +29,11 @@
 //!   branch
 //! - Final pool stats (idle, capacity, in-use)
 
+#![expect(
+    clippy::print_stdout,
+    reason = "example: printed output is the demonstration"
+)]
+
 use std::{
     sync::{
         Arc,
@@ -58,7 +63,7 @@ use tokio_util::sync::CancellationToken;
 /// store; here we only model the shape so `QueryUsers` can show the slot
 /// pattern without requiring full credential plumbing.
 #[derive(Clone)]
-#[allow(
+#[expect(
     dead_code,
     reason = "password field is held to model SecretString-shaped slot — never logged"
 )]
@@ -318,10 +323,6 @@ impl Drop for ScopedSchemaHandle {
 /// the macro emits this struct + `FromWorkflowNode` impl that resolves the
 /// slots at dispatch. Here we wire the slots by hand so the example focuses
 /// on the lifecycle.
-#[allow(
-    dead_code,
-    reason = "auth field models the credential slot — full resolution lives in the engine"
-)]
 struct QueryUsers {
     /// Resource slot — declared `#[resource(key = "db")]` in ADR-0043 form.
     db: Arc<MockPgConnection>,

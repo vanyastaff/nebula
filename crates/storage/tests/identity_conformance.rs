@@ -23,6 +23,11 @@
 //! `unimplemented!()` behind that skip guard, so the suite compiles and
 //! only the live backend's cases run.
 
+#![expect(
+    clippy::print_stderr,
+    reason = "conformance harness reports skip/diagnostic lines to stderr"
+)]
+
 use std::future::Future;
 use std::sync::Arc;
 

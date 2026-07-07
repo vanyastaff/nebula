@@ -195,7 +195,7 @@ fn parse_top_level_key(key: &str) -> Result<crate::key::FieldKey, ValidationErro
         .map_err(|e| ValidationError::invalid_key(FieldPath::root(), key, e.message))
 }
 
-#[allow(
+#[expect(
     clippy::result_large_err,
     reason = "ValidationError is intentionally large; callers are on the validation path"
 )]
@@ -207,7 +207,7 @@ pub(crate) fn resolve_select_loader_key(
     resolve_select_loader_path(fields, &path)
 }
 
-#[allow(
+#[expect(
     clippy::result_large_err,
     reason = "ValidationError is intentionally large; callers are on the validation path"
 )]
@@ -222,7 +222,7 @@ pub(crate) fn resolve_select_loader_path(
     loader_key_or_error(select.loader.as_deref(), path)
 }
 
-#[allow(
+#[expect(
     clippy::result_large_err,
     reason = "ValidationError is intentionally large; callers are on the validation path"
 )]
@@ -234,7 +234,7 @@ pub(crate) fn resolve_dynamic_loader_key(
     resolve_dynamic_loader_path(fields, &path)
 }
 
-#[allow(
+#[expect(
     clippy::result_large_err,
     reason = "ValidationError is intentionally large; callers are on the validation path"
 )]
@@ -249,7 +249,7 @@ pub(crate) fn resolve_dynamic_loader_path(
     loader_key_or_error(dynamic.loader.as_deref(), path)
 }
 
-#[allow(
+#[expect(
     clippy::result_large_err,
     reason = "ValidationError is intentionally large; callers are on the validation path"
 )]
@@ -265,7 +265,7 @@ fn loader_type_mismatch(path: &FieldPath, expected: &str, actual: &str) -> Valid
 }
 
 /// Look up a named child field under `parent_path`, returning the child and its full path.
-#[allow(
+#[expect(
     clippy::result_large_err,
     reason = "ValidationError is intentionally large; callers are on the validation path"
 )]
@@ -281,7 +281,7 @@ fn find_named_child<'a>(
     }
 }
 
-#[allow(
+#[expect(
     clippy::result_large_err,
     reason = "ValidationError is intentionally large; callers are on the validation path"
 )]

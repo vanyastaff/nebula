@@ -122,7 +122,7 @@ impl ResourceConfig for WitnessResourceConfig {
 }
 
 #[derive(Debug)]
-#[allow(dead_code, reason = "fields exist for diagnostics on lease inspection")]
+#[expect(dead_code, reason = "fields exist for diagnostics on lease inspection")]
 struct WitnessResourceInner {
     instance_id: u64,
     label: String,

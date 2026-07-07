@@ -84,7 +84,6 @@ struct FakeHttpClient {
 }
 
 #[derive(Clone)]
-#[allow(dead_code)]
 struct HttpClientConfig {
     base_url: String,
     pool_size: u32,
