@@ -611,7 +611,7 @@ impl AuthBackend for InMemoryAuthBackend {
         }
         self.users.alter(&parsed, |_, mut u| {
             if let Some(name) = patch.display_name.as_deref() {
-                u.display_name = name.trim().to_owned();
+                name.trim().clone_into(&mut u.display_name);
             }
             if let Some(avatar) = patch.avatar_url.as_deref() {
                 let trimmed = avatar.trim();

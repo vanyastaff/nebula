@@ -283,7 +283,9 @@ impl Serialize for Condition {
 /// error because field-level conditions require an object to index into.
 pub(crate) fn normalize_data(data: Option<Value>) -> Result<Value, ActionError> {
     match data {
-        Some(Value::Object(_)) | None => Ok(data.unwrap_or(Value::Object(Default::default()))),
+        Some(Value::Object(_)) | None => {
+            Ok(data.unwrap_or_else(|| Value::Object(Default::default())))
+        },
         Some(Value::Null) => Ok(Value::Object(Default::default())),
         Some(other) => Err(ActionError::fatal(format!(
             "`data` must be a JSON object or null, got {}",

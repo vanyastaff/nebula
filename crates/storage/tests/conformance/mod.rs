@@ -2793,7 +2793,7 @@ pub async fn assert_dedup_compose_rolls_back_on_id_collision(backend: &dyn Backe
     let row = TriggerDedupRow::new("trg_rb", "evt_rb", s.clone(), "2026-01-01T00:00:00Z");
     let mut job = make_job(0x80, "plugin.rb", &["plugin.rb"]);
     // Override the execution_id to the colliding id.
-    job.execution_id = "exe_collision".to_owned();
+    "exe_collision".clone_into(&mut job.execution_id);
 
     let (wf_id, initial) = make_new_execution();
     let exec = NewExecution::new(&wf_id, &initial);
@@ -2859,7 +2859,7 @@ pub async fn assert_dedup_compose_rejects_duplicate_job_id(backend: &dyn Backend
     // 2. Second compose reuses the SAME job id (0xB0), different execution id.
     let row2 = TriggerDedupRow::new("trg_j2", "evt_j2", s.clone(), "2026-01-01T00:00:00Z");
     let mut job2 = make_job(0xB0, "plugin.jid", &["plugin.jid"]);
-    job2.execution_id = "exe_jid_other".to_owned();
+    "exe_jid_other".clone_into(&mut job2.execution_id);
     let (wf2, init2) = make_new_execution();
     let exec2 = NewExecution::new(&wf2, &init2);
     let result = inbox

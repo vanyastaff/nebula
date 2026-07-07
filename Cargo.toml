@@ -298,14 +298,12 @@ unnecessary_wraps = "allow"                  # API-consistency `Result` on built
 # taste or a micro-optimisation that would mean an API break. Revisit when a
 # refactor naturally touches the site.
 wildcard_imports = "allow"                    # kept noisy but shelved: prelude / re-export patterns
-or_fun_call = "allow"                         # `unwrap_or(T::default())` is clearer than unwrap_or_else
 trivially_copy_pass_by_ref = "allow"
 needless_pass_by_ref_mut = "allow"
 needless_collect = "allow"
 map_unwrap_or = "allow"
 excessive_nesting = "allow"                   # threshold lives in clippy.toml
 useless_let_if_seq = "allow"
-assigning_clones = "allow"                    # micro-perf on `a = b.clone()`
 unused_peekable = "allow"
 type_repetition_in_bounds = "allow"
 trivial_regex = "allow"
@@ -332,6 +330,16 @@ doc_markdown = "allow"
 float_cmp = "allow"
 # Bindings like `_fixture` from rstest / proptest are internal to the macro.
 used_underscore_binding = "allow"
+
+# ── async-footgun lints — restate/turso/vector consensus (ENGINEERING_2026 C14) ──
+# `or_fun_call` / `assigning_clones`: allocation on the hot path hidden behind
+# ergonomic-looking calls. `large_futures`: a future that big usually wants a
+# `Box::pin`. `await_holding_lock`: guard held across `.await` deadlocks under
+# contention (parking_lot guards are not Send-safe across awaits).
+or_fun_call = "warn"
+assigning_clones = "warn"
+large_futures = "warn"
+await_holding_lock = "warn"
 
 # ── correctness / soundness escalated from default ─────────────────────────
 mem_forget = "deny"
