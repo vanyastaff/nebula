@@ -38,6 +38,7 @@
 // feature-gated `testing` module (env mutation under edition 2024).
 #![cfg_attr(not(any(test, feature = "testing")), forbid(unsafe_code))]
 #![warn(missing_docs)]
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 mod error;
 mod reader;

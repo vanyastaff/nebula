@@ -227,7 +227,7 @@ fn update_state_from_token_response(
     state.access_token = SecretString::new(token);
 
     if let Some(token_type) = body.get("token_type").and_then(Value::as_str) {
-        state.token_type = token_type.to_owned();
+        token_type.clone_into(&mut state.token_type);
     }
     if let Some(refresh_token) = body.get("refresh_token").and_then(Value::as_str) {
         state.refresh_token = Some(SecretString::new(refresh_token));

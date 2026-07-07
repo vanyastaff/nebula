@@ -9,6 +9,8 @@
 //! Every plaintext buffer returned here is wrapped in `Zeroizing<T>`. Ciphertext
 //! envelopes (`EncryptedData`) are public bytes by design and are not scrubbed.
 
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
+
 use aes_gcm::{
     Aes256Gcm,
     aead::{Aead, KeyInit, Payload},

@@ -1,5 +1,7 @@
 //! Compile-time macros for nebula-schema.
 
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
+
 use proc_macro::TokenStream;
 use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{Span, TokenStream as TokenStream2};

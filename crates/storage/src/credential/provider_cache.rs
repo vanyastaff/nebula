@@ -128,7 +128,7 @@ struct ProviderExpiry {
 impl ProviderExpiry {
     fn effective_ttl(&self, value_ttl: Option<Duration>) -> Duration {
         value_ttl
-            .or((!self.default_ttl.is_zero()).then_some(self.default_ttl))
+            .or_else(|| (!self.default_ttl.is_zero()).then_some(self.default_ttl))
             .filter(|d| !d.is_zero())
             .unwrap_or(Duration::ZERO)
     }

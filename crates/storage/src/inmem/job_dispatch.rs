@@ -109,7 +109,7 @@ impl JobDispatchQueue for InMemoryJobDispatchQueue {
         let mut claimed = Vec::new();
         for id in ids.into_iter().take(batch_size as usize) {
             if let Some(q) = st.jobs.get_mut(&id) {
-                q.status = "Processing".to_owned();
+                "Processing".clone_into(&mut q.status);
                 q.processed_by = Some(*processor);
                 q.processed_at = Some(now);
                 q.msg.reclaim_count = q.reclaim_count;
@@ -138,7 +138,7 @@ impl JobDispatchQueue for InMemoryJobDispatchQueue {
             && q.status == "Processing"
             && q.processed_by.as_ref() == Some(processor)
         {
-            q.status = "Dispatched".to_owned();
+            "Dispatched".clone_into(&mut q.status);
             return Ok(());
         }
         Err(StorageError::NotFound {
@@ -159,7 +159,7 @@ impl JobDispatchQueue for InMemoryJobDispatchQueue {
             && q.status == "Processing"
             && q.processed_by.as_ref() == Some(processor)
         {
-            q.status = "Failed".to_owned();
+            "Failed".clone_into(&mut q.status);
             q.error_message = Some(error.to_owned());
             return Ok(());
         }
@@ -189,14 +189,14 @@ impl JobDispatchQueue for InMemoryJobDispatchQueue {
                 continue;
             }
             if q.reclaim_count >= max_reclaim_count {
-                q.status = "Failed".to_owned();
+                "Failed".clone_into(&mut q.status);
                 q.error_message = Some(format!(
                     "reclaim exhausted: presumed dead after {} reclaims",
                     q.reclaim_count
                 ));
                 outcome.exhausted += 1;
             } else {
-                q.status = "Pending".to_owned();
+                "Pending".clone_into(&mut q.status);
                 q.reclaim_count = q.reclaim_count.saturating_add(1);
                 q.processed_by = None;
                 q.processed_at = None;

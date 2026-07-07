@@ -30,6 +30,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 #![warn(unreachable_pub)]
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 /// Base action trait defining identity and metadata.
 pub mod action;

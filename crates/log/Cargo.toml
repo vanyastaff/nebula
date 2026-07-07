@@ -17,7 +17,6 @@ tokio = { workspace = true, features = ["time", "sync", "rt", "fs", "io-util"], 
 # Core tracing
 tracing = { workspace = true }
 tracing-appender = { version = "0.2.4", optional = true }
-tracing-log = { version = "0.2", optional = true }
 tracing-subscriber = { workspace = true, features = [
   "env-filter",
   "fmt",
@@ -39,7 +38,6 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 
 # Telemetry (optional)
-flate2 = { version = "1.1.9", optional = true }
 opentelemetry = { workspace = true, optional = true }
 opentelemetry-otlp = { workspace = true, optional = true }
 opentelemetry_sdk = { workspace = true, optional = true }
@@ -72,8 +70,11 @@ smallvec = { workspace = true }
 default = ["ansi", "async"]
 ansi = []
 async = ["tokio"]
-file = ["tracing-appender", "flate2"]
-log-compat = ["tracing-log"]
+file = ["tracing-appender"]
+# The `log`-crate bridge is provided by tracing-subscriber's always-on
+# `tracing-log` feature (see [dependencies]); this feature is kept as a
+# no-op for config compatibility.
+log-compat = []
 telemetry = ["opentelemetry", "opentelemetry_sdk", "opentelemetry-otlp", "tracing-opentelemetry"]
 sentry = ["dep:sentry", "sentry-tracing"]
 full = ["ansi", "async", "file", "log-compat", "telemetry", "sentry"]

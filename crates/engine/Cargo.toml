@@ -31,7 +31,6 @@ nebula-expression = { path = "../expression" }
 nebula-plugin = { path = "../plugin" }
 nebula-workflow = { path = "../workflow" }
 nebula-execution = { path = "../execution" }
-nebula-schema = { path = "../schema" }
 nebula-credential = { path = "../credential" }
 nebula-eventbus = { path = "../eventbus" }
 nebula-resource = { path = "../resource" }
@@ -62,16 +61,14 @@ base64 = { workspace = true }
 secrecy = { workspace = true }
 uuid = { workspace = true, features = ["v4", "serde"] }
 ulid = { workspace = true }
-humantime-serde = "1.1"
-lru = { workspace = true }
 parking_lot = { workspace = true }
 scopeguard = { workspace = true }
-regex = { workspace = true }
-url = { workspace = true }
 futures = { workspace = true }
 zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
 
 [dev-dependencies]
+# Schema fixtures for unit tests (impl_empty_has_schema! in cfg(test) mods).
+nebula-schema = { path = "../schema" }
 # Dev-only: the credential moat tests build a real durable store backed by a
 # unique in-memory SQLite database (`SqliteCredentialStore::connect_memory`),
 # so the resolver exercises the same CAS path as production. `sqlite` is enough;

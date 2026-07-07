@@ -1,7 +1,7 @@
 # Nebula rustfmt configuration.
 #
 # Stable-only: runs cleanly on the toolchain pinned in `rust-toolchain.toml`
-# (currently 1.95). Apply locally with:
+# (currently 1.96). Apply locally with:
 #
 #     cargo fmt --all
 #

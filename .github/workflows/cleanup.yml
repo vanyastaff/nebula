@@ -13,10 +13,6 @@ on:
         description: "Always keep at least N most recent runs per workflow"
         default: "10"
 
-permissions:
-  actions: write
-  contents: read
-
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: false
@@ -24,6 +20,9 @@ concurrency:
 jobs:
   # ── 1. Branch deletion → orphan runs from that branch ─────────────────────
   cleanup-deleted-branch:
+    permissions:
+      actions: write
+      contents: read
     name: Cleanup runs from deleted branch
     if: github.event_name == 'delete' && github.event.ref_type == 'branch'
     runs-on: ubuntu-latest
@@ -48,6 +47,9 @@ jobs:
 
   # ── 2. Weekly retention sweep — delete runs older than retain_days ───────
   cleanup-old:
+    permissions:
+      actions: write
+      contents: read
     name: Cleanup old runs (retention sweep)
     if: github.event_name != 'delete'
     runs-on: ubuntu-latest

@@ -126,6 +126,13 @@
 #![allow(clippy::module_name_repetitions)]
 #![warn(missing_docs)]
 #![deny(unsafe_code)]
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
+
+// `loom` (optional dep behind the `loom` feature) is exercised only under
+// `--cfg loom` (RUSTFLAGS, loom chaos jobs); anchor the feature-on/cfg-off
+// combination so `unused_crate_dependencies` stays truthful.
+#[cfg(all(feature = "loom", not(loom)))]
+use loom as _;
 
 // ── Modules ────────────────────────────────────────────────────────────────
 

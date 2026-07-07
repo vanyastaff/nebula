@@ -69,7 +69,7 @@ jobs:
   check:
     name: Check + Clippy
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -86,8 +86,16 @@ jobs:
           cache-on-failure: true
       - name: Clippy (workspace, all features, all targets)
         run: cargo clippy --workspace --all-features --all-targets -- -D warnings
-      # Per-crate `--no-default-features` checks moved to the `feature-hygiene`
-      # job below, which covers every member and every feature systematically.
+      # Feature-matrix clippy (ENGINEERING_2026 C4): an all-features pass cannot
+      # see code or attributes behind `cfg(not(feature = ...))` — a
+      # `cfg_attr(not(feature = "x"), allow(...))` survived exactly this blind
+      # spot in #951. `feature-hygiene` below runs `cargo hack check` per
+      # feature (type errors), these two runs add the *lint* dimension for the
+      # workspace-level default / no-default configurations on the warm cache.
+      - name: Clippy (workspace, default features)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Clippy (workspace, no default features)
+        run: cargo clippy --workspace --all-targets --no-default-features -- -D warnings
 
   # ── Feature hygiene (the standalone-crate / modularity promise) ────────────
   # Modularity gate: each optional feature must build in isolation. cargo-hack
@@ -255,13 +263,75 @@ jobs:
       - name: Run cargo deny
         run: cargo deny check
 
+  # ── Test-dep leak gate (reth pattern, ENGINEERING_2026 §2.3) ──────────────
+  # Test-only crates must never reach the release binaries' normal dependency
+  # graph — they inflate the binary and widen the supply-chain surface.
+  # `-e normal` excludes dev-dependencies, so a hit means a test-only crate is
+  # wired as a real dependency somewhere in the tree.
+  test-dep-leak:
+    name: No test deps in release binaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: "1.96"
+      - name: Assert test-only crates absent from binary dep trees
+        run: |
+          set -euo pipefail
+          for bin in nebula-server nebula-worker-bin; do
+            if cargo tree -p "$bin" -e normal --all-features \
+               | grep -E '\b(proptest|arbitrary|rstest|mockall|wiremock|criterion|insta|loom|quickcheck|fake)\b'; then
+              echo "::error::test-only crate found in $bin normal dependency tree"
+              exit 1
+            fi
+          done
+
+  # ── Public API surface gate (ENGINEERING_2026 Tier 1 §4; iroh/wasmtime) ───
+  # `cargo-check-external-types` asserts the API-boundary crates (`sdk`, `api`)
+  # only expose third-party types from their explicit allowlists
+  # (`[package.metadata.cargo_check_external_types]` in each Cargo.toml).
+  # The nightly toolchain is pinned to the rustdoc JSON format the tool's
+  # version understands (0.5.x ↔ format 57 ↔ nightly-2026-03-20); bump the
+  # two together.
+  external-types:
+    name: Public API surface (sdk, api)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install pinned nightly (rustdoc JSON format 57)
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: nightly-2026-03-20
+      - name: Install cargo-check-external-types
+        uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
+        with:
+          tool: cargo-check-external-types@0.5.0
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
+        with:
+          shared-key: ci-external-types
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+      - name: Check sdk public surface
+        working-directory: crates/sdk
+        run: cargo +nightly-2026-03-20 check-external-types --all-features
+      - name: Check api public surface
+        working-directory: crates/api
+        run: cargo +nightly-2026-03-20 check-external-types --all-features
+
   # ── Required aggregator ───────────────────────────────────────────────────
   # Single required check for branch protection. Treats `skipped` (draft-gated
   # tier 2 jobs) as success, but `failure`/`cancelled` fails the whole suite.
   required:
     name: CI
     if: always()
-    needs: [fmt, check, feature-hygiene, doctests, msrv, doc, deny]
+    needs: [fmt, check, feature-hygiene, doctests, msrv, doc, deny, test-dep-leak, external-types]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -274,11 +344,14 @@ jobs:
           MSRV: ${{ needs.msrv.result }}
           DOC: ${{ needs.doc.result }}
           DENY: ${{ needs.deny.result }}
+          TEST_DEP_LEAK: ${{ needs.test-dep-leak.result }}
+          EXTERNAL_TYPES: ${{ needs.external-types.result }}
         run: |
           set -euo pipefail
           fail=0
           for pair in "fmt=$FMT" "check=$CHECK" "feature-hygiene=$FEATURE_HYGIENE" \
-                     "doctests=$DOCTESTS" "msrv=$MSRV" "doc=$DOC" "deny=$DENY"; do
+                     "doctests=$DOCTESTS" "msrv=$MSRV" "doc=$DOC" "deny=$DENY" \
+                     "test-dep-leak=$TEST_DEP_LEAK" "external-types=$EXTERNAL_TYPES"; do
             name="${pair%%=*}"
             result="${pair#*=}"
             if [[ "$result" != "success" && "$result" != "skipped" ]]; then

@@ -27,6 +27,7 @@
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 extern crate proc_macro;
 

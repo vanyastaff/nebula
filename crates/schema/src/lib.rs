@@ -162,6 +162,7 @@
 // supports `async fn` in traits directly; the schema crate ships a
 // `BoxFuture`-style `EvalFuture` alias for object-safe usage instead.
 #![deny(clippy::disallowed_macros)]
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 // Allow `nebula_schema::Foo` to resolve from inside the crate too (lib unit
 // tests, examples_include, internal docs). The proc-macro `field_key!` emits

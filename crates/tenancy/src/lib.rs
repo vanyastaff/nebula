@@ -18,6 +18,8 @@
 //!
 //! [`Scope`]: nebula_storage_port::Scope
 
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
+
 mod credential_scope;
 mod decorator;
 mod error;

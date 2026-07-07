@@ -58,7 +58,7 @@ impl ScopedResourceStore {
     /// predicates behave exactly as for any in-tenant row — never a
     /// cross-tenant write, never an existence-leaking error.
     fn rebind(&self, mut row: ResourceRow) -> ResourceRow {
-        row.workspace_id = self.bound.workspace_id.clone();
+        row.workspace_id.clone_from(&self.bound.workspace_id);
         row
     }
 }

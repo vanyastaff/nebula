@@ -34,6 +34,7 @@
 
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 mod category;
 mod code;

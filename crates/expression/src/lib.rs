@@ -3,6 +3,7 @@
 #![warn(unreachable_pub)]
 #![allow(clippy::excessive_nesting)]
 #![allow(clippy::needless_range_loop)]
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 //! # nebula-expression
 //!

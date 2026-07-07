@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 #![doc = include_str!("../README.md")]
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 /// Core [`BaseMetadata`] struct and [`Metadata`] trait.
 pub mod base;

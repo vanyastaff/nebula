@@ -202,3 +202,32 @@ all-features = true
 
 [lints]
 workspace = true
+
+# ── cargo-check-external-types (ENGINEERING_2026 Tier 1 §4; iroh/wasmtime) ──
+# nebula-api is server glue: exposing the web-framework vocabulary (axum,
+# tower, http, utoipa) and storage/telemetry config types is intentional.
+# The gate exists so NEW third-party types entering the public API are a
+# conscious decision, not an accident.
+[package.metadata.cargo_check_external_types]
+allowed_external_types = [
+  "nebula_*",
+  "axum::*",
+  "axum_core::*",
+  "http::*",
+  "tower_service::*",
+  "tower_layer::*",
+  "utoipa::*",
+  "utoipa_axum::*",
+  "serde_core::*",
+  "serde_json::*",
+  "chrono::*",
+  "tokio::*",
+  "tokio_util::*",
+  "url::*",
+  "uuid::*",
+  "reqwest::*",
+  "secrecy::*",
+  "sqlx_core::*",
+  "sqlx_postgres::*",
+  "opentelemetry_otlp::*",
+]
