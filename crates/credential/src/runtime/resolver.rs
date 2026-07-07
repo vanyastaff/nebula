@@ -745,7 +745,13 @@ impl<S: CredentialStore> CredentialResolver<S> {
             Ok(Some(RefreshOutcome::Refreshed))
         }
 
-        #[cfg_attr(not(feature = "rotation"), allow(unused_variables))]
+        #[cfg_attr(
+            not(feature = "rotation"),
+            expect(
+                unused_variables,
+                reason = "transport feeds only the rotation-gated oauth2 refresh path"
+            )
+        )]
         let transport = Arc::clone(&self.transport);
         let outcome = tokio::time::timeout(std::time::Duration::from_secs(30), async {
             #[cfg(feature = "rotation")]
