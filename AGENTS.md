@@ -159,7 +159,7 @@ nebula/
 ├── deny.toml           # cargo-deny: layer wrappers (CI gate)
 ├── lefthook.yml        # local pre-commit / pre-push (mirrors CI)
 ├── rustfmt.toml        # rustfmt config (stable-only)
-├── clippy.toml         # lint thresholds (msrv 1.95)
+├── clippy.toml         # lint thresholds (msrv 1.96)
 ├── crates/             # workspace members
 ├── scripts/            # worktree.sh + lefthook helpers
 ├── .claude/            # Claude Code: guard hooks, slash commands
@@ -184,15 +184,20 @@ Each layer depends only on layers below. Upward dependency = CI failure.
 | **Core / shared-infra** | `core`, `validator`, `expression`, `workflow`, `execution`, `schema`, `metadata`, `storage-port`, `credential` |
 | **Cross-cutting** | `crypto`, `log`, `eventbus`, `metrics`, `resilience`, `error`, `env` |
 
-**Key architectural facts:**
-- Cross-crate communication goes through `nebula-eventbus`, **not** direct imports between siblings.
-- `nebula-storage-port` (Core) is the object-safe storage seam — no backend code.
-- `nebula-storage` (Exec) is the sole adapter implementation (InMemory + SQLite + Postgres).
-- `nebula-credential` is shared infra importable from Exec, Business, and API tiers.
-- `nebula-worker` (Exec) is the composition root that wires the engine into the `nebula-orchestrator` pull-loop (ADR-0095); only per-flavor binaries (`apps/worker`) may depend on it.
-- `nebula-plugin-core` (Business) is the first-party `core` plugin (filter/sort/aggregate, branching, datetime, durable delay) built on `action`/`plugin`.
-- Plugins register in-process (ADR-0091). WASM/process isolation is a non-goal (canon §12.6).
-- Each `+macros` companion lives at the same layer as its parent and ships derives only.
+**Architecture Invariants** (rust-analyzer convention: each states what holds — or is
+*deliberately absent* — everywhere; violating one is an architecture change, not a refactor):
+
+- **Invariant:** cross-crate communication goes through `nebula-eventbus`, **not** direct imports between siblings.
+- **Invariant:** `nebula-storage-port` (Core) is the object-safe storage seam — it contains no backend code and never will.
+- **Invariant:** `nebula-storage` (Exec) is the sole adapter implementation (InMemory + SQLite + Postgres); no other crate implements the port.
+- **Invariant:** `nebula-credential` is shared infra importable from Exec, Business, and API tiers; secrets never appear in error messages (`SecretFreeMessage`) or `Debug` output.
+- **Invariant:** `nebula-worker` (Exec) is the composition root that wires the engine into the `nebula-orchestrator` pull-loop (ADR-0095); only per-flavor binaries (`apps/worker`) may depend on it.
+- **Invariant:** plugins register in-process (ADR-0091); WASM/process isolation is a non-goal (canon §12.6). `nebula-plugin-core` (Business) is the first-party `core` plugin built on `action`/`plugin`.
+- **Invariant:** each `+macros` companion lives at the same layer as its parent and ships derives only — no runtime code.
+- **API boundary crates:** `sdk`, `api` (semver-relevant public surface). Everything else is internal; internal crates may break their APIs freely within a release.
+
+Per-crate invariants live in each `crates/<crate>/AGENTS.md` (convention: prefer a
+dedicated `## Invariants` section; state what the crate deliberately does NOT do).
 
 ---
 
@@ -223,13 +228,16 @@ All persistent branches go through `scripts/worktree.sh` (or `task wt:*` wrapper
 - **Use Serena's symbolic tools** (find_symbol, rename_symbol, replace_symbol_body) instead of grep/read for code navigation.
 - **Run `cargo check -p nebula-<name>`** after editing a crate for fast feedback.
 - **Read `crates/<crate>/AGENTS.md`** before working on a crate — it has crate-specific rules.
+- **Suppress lints with `#[expect(lint, reason = "...")]`**, never bare `#[allow]` — the `allow_attributes` lint enforces this. If the lint fires only in some feature/cfg config, gate the expectation: `#[cfg_attr(not(feature = "x"), expect(...))]`.
+- **Verify the feature matrix for crates with features** (`log`, `credential`, `resource`, `storage`): run clippy on default AND `--no-default-features`, not just `--all-features` — `cfg_attr(not(feature = ...))` code is invisible to an all-features pass.
+- **Pin lockfile changes**: `cargo update -p <crate> --precise <ver>` — never a wholesale `cargo update`.
 
 ## Rules — DON'T
 
 - **Don't `unwrap()`/`expect()`/`panic!()` in library code.** Tests, `const`, and binaries are exempt.
 - **Don't add TODO/FIXME/HACK in committed code.** The `edit-guard.sh` hook blocks it.
 - **Don't weaken tests while changing implementation** in the same turn.
-- **Don't add `#[allow(clippy::...)]` without `// guard-justified: <reason>`** on the line above.
+- **Don't use bare `#[allow(...)]`** — use `#[expect(..., reason = "...")]`. The only sanctioned `#[allow]` is inside exported `macro_rules!` bodies (expansions land in downstream crates where an expectation can't be fulfilled): there, use the self-suppressing form `#[allow(<lint>, clippy::allow_attributes, reason = "...")]` plus `// guard-justified: <reason>` for the edit hook.
 - **Don't use `git commit --no-verify`** or `git push --force` without explicit user confirmation.
 - **Don't add dependencies that cross layer boundaries** without checking `deny.toml` wrappers first.
 - **Don't put runnable examples in per-crate dirs** — they go in the root `examples/` workspace member.
@@ -247,6 +255,8 @@ When you hit a build/test error:
 4. **Clippy warning** → run `task clippy` to see workspace-wide. Fix the warning, don't suppress it.
 5. **Test failure after refactor** → check if you weakened a test assertion. The `edit-guard.sh` hook blocks this.
 6. **`convco` commit rejection** → your commit message doesn't follow Conventional Commits. Format: `type(scope): summary`.
+7. **`unfulfilled_lint_expectations` warning** → the `#[expect]`ed lint no longer fires. Either the suppression is stale (delete it) or it's config-dependent (gate with `cfg_attr` to the configs where it fires; remember lib and lib-test compile the same source twice — `cfg_attr(not(test), ...)` for test-only-used items).
+8. **`clippy::allow_attributes` warning** → convert `#[allow]` to `#[expect(..., reason)]`; see Rules — DON'T for the macro_rules exception.
 
 ---
 
@@ -292,6 +302,7 @@ Slash commands: `.claude/commands/` (project-specific, load on demand).
 | Product canon | `docs/PRODUCT_CANON.md` | Binding invariants (durability, credentials) |
 | Integration model | `docs/INTEGRATION_MODEL.md` | How crates connect (Resource, Credential, Action, Schema, Plugin) |
 | Pitfalls | `docs/pitfalls.md` | Before touching hot paths |
+| Engineering playbook 2026 | `docs/ENGINEERING_2026.md` | Adopted practices from iroh/reth/omicron/rust-analyzer/uv + adoption roadmap |
 | Design records (ADRs, roadmap, specs, research) | maintainers' private Obsidian vault (`obsidian` MCP → `projects/nebula/`) | Not tracked here — reach via `/recall` |
 
 ---
