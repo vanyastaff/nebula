@@ -314,6 +314,23 @@ float_cmp = "allow"
 # Bindings like `_fixture` from rstest / proptest are internal to the macro.
 used_underscore_binding = "allow"
 
+# ── restriction lints with zero or near-zero cost (measured 2026-07-07) ────
+# Domain-relevant guards from the full clippy::restriction inventory sweep;
+# heavier candidates (map_err_ignore, clone_on_ref_ptr, iter_over_hash_type,
+# string_slice) are tracked as campaigns in ENGINEERING_2026.md.
+suspicious_xor_used_as_pow = "warn"  # `2 ^ 8` is xor, not exponentiation
+empty_drop = "warn"                  # empty Drop impl disables Copy for nothing
+pathbuf_init_then_push = "warn"      # PathBuf::from + push chains → from_iter
+verbose_file_reads = "warn"          # File::open+read_to_end → fs::read
+infinite_loop = "warn"               # a loop that never breaks should return `!`
+empty_structs_with_brackets = "warn" # `struct S {}` → `struct S;`
+self_named_module_files = "warn"     # enforce the mod.rs convention (84 existing mod.rs)
+get_unwrap = "warn"                  # .get(i).unwrap() → [i]: same panic, clearer intent
+unused_result_ok = "warn"            # `.ok();` silently discards a Result
+multiple_unsafe_ops_per_block = "warn"  # one unsafe op per block (wasmtime discipline)
+# NOT enabled: `unnecessary_safety_comment` — false-positives on the iroh-style
+# "Cancel-safety:" / "Drop-safety:" documentation convention we deliberately use.
+
 # ── async-footgun lints — restate/turso/vector consensus (ENGINEERING_2026 C14) ──
 # `or_fun_call` / `assigning_clones`: allocation on the hot path hidden behind
 # ergonomic-looking calls. `large_futures`: a future that big usually wants a

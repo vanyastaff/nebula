@@ -13,8 +13,16 @@ use tokio::time::{Duration, sleep};
 
 #[tokio::main]
 #[expect(unsafe_code)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "example wires Sentry via env before any reader thread exists"
+)]
 async fn main() -> Result<()> {
     // Set Sentry DSN for testing
+    #[expect(
+        clippy::multiple_unsafe_ops_per_block,
+        reason = "single-threaded startup; one SAFETY context covers the three writes"
+    )]
     unsafe {
         env::set_var("SENTRY_DSN", "https://examplekey@o0.ingest.sentry.io/0");
         env::set_var("SENTRY_ENV", "test");

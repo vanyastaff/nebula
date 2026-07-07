@@ -63,6 +63,10 @@ pub struct VerifyEmailRequest {
 
 /// `POST /auth/mfa/enroll` request body — empty; identity comes from the
 /// authenticated session.
+#[expect(
+    clippy::empty_structs_with_brackets,
+    reason = "a unit struct does not deserialize from a JSON `{}` body; the braces are the API contract"
+)]
 #[derive(Debug, Deserialize, Default, ToSchema)]
 pub struct MfaEnrollRequest {}
 

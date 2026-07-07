@@ -112,7 +112,9 @@ impl ResumeProducer for SqliteResumeProducer {
         // pair is atomic against the single writer (spec §5 SQLite contract;
         // mirrors `SqliteExecutionStore::commit`).
         let mut tx = self.pool.begin().await.map_err(conn_err)?;
-        sqlx::query("BEGIN IMMEDIATE").execute(&mut *tx).await.ok(); // sqlx already opened a tx; the hint is best-effort.
+        // sqlx already opened a tx, so the lock-upgrade hint may fail with
+        // "cannot start a transaction within a transaction" — best-effort only.
+        let _hint = sqlx::query("BEGIN IMMEDIATE").execute(&mut *tx).await;
 
         // `DELETE … RETURNING` (rows-affected == 1) IS the single-use replay
         // gate: a raced/replayed/absent hash deletes zero rows.

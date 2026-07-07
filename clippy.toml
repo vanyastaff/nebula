@@ -110,6 +110,22 @@ future-size-threshold = 16384
 accept-comment-above-statement = true
 accept-comment-above-attributes = true
 
+# ── Async-hazard type list (`clippy::await_holding_invalid_types`) ──────────
+# `await_holding_lock` already covers std + parking_lot guards natively.
+# These additions catch the tracing span-guard class: holding an entered
+# span across `.await` attaches the span to whatever task polls next.
+await-holding-invalid-types = [
+  { path = "tracing::span::Entered", reason = "span guard held across await migrates the span to the wrong task; use `.instrument(span)`" },
+  { path = "tracing::span::EnteredSpan", reason = "span guard held across await migrates the span to the wrong task; use `.instrument(span)`" },
+]
+
+# ── Workspace-wide method bans (`clippy::disallowed_methods`) ────────────────
+disallowed-methods = [
+  { path = "futures::executor::block_on", reason = "deadlocks inside a tokio runtime; use the runtime's block_on at the binary edge only" },
+  { path = "std::env::set_var", reason = "not thread-safe with concurrent env reads; set env at process spawn or in test-scoped guards" },
+  { path = "std::env::remove_var", reason = "not thread-safe with concurrent env reads" },
+]
+
 # ── Workspace lint policy cross-reference ────────────────────────────────────
 # Additional `[workspace.lints.clippy]` entries (e.g. `dbg_macro`, `rc_mutex`)
 # live in the root `Cargo.toml` with citations in `docs/QUALITY_GATES.md`.

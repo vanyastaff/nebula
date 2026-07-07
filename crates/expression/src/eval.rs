@@ -2043,8 +2043,8 @@ mod tests {
         let arr = result.as_array().unwrap();
         assert_eq!(arr.len(), 3);
         assert_eq!(arr.first().unwrap().as_i64(), Some(3));
-        assert_eq!(arr.get(1).unwrap().as_i64(), Some(4));
-        assert_eq!(arr.get(2).unwrap().as_i64(), Some(5));
+        assert_eq!(arr[1].as_i64(), Some(4));
+        assert_eq!(arr[2].as_i64(), Some(5));
     }
 
     #[test]
@@ -2076,8 +2076,8 @@ mod tests {
         let arr = result.as_array().unwrap();
         assert_eq!(arr.len(), 3);
         assert_eq!(arr.first().unwrap().as_i64(), Some(2));
-        assert_eq!(arr.get(1).unwrap().as_i64(), Some(4));
-        assert_eq!(arr.get(2).unwrap().as_i64(), Some(6));
+        assert_eq!(arr[1].as_i64(), Some(4));
+        assert_eq!(arr[2].as_i64(), Some(6));
     }
 
     #[test]

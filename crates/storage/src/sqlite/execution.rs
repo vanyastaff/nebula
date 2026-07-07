@@ -152,7 +152,9 @@ impl ExecutionStore for SqliteExecutionStore {
         // BEGIN IMMEDIATE takes the write lock up front so the whole triple
         // is atomic against the single writer (spec §5 SQLite contract).
         let mut tx = self.pool.begin().await.map_err(conn_err)?;
-        sqlx::query("BEGIN IMMEDIATE").execute(&mut *tx).await.ok(); // sqlx already opened a tx; the hint is best-effort.
+        // sqlx already opened a tx, so the lock-upgrade hint may fail with
+        // "cannot start a transaction within a transaction" — best-effort only.
+        let _hint = sqlx::query("BEGIN IMMEDIATE").execute(&mut *tx).await;
 
         let row = sqlx::query(
             "SELECT version, fencing_generation FROM port_executions \

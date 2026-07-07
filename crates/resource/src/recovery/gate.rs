@@ -404,7 +404,7 @@ impl RecoveryGate {
         // OnceLock::set returns Err on second call — we treat that as
         // a no-op rather than a programming error, since the manager
         // may re-register a resource that already had a gate wired.
-        self.inner.event_sink.set(EventSink { bus, key }).ok();
+        let _ = self.inner.event_sink.set(EventSink { bus, key });
     }
 
     /// Attempts to begin a recovery.
