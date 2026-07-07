@@ -1,10 +1,14 @@
 # Engineering Playbook 2026
 
-> Distilled from a July 2026 study of five reference-grade Rust codebases:
+> Distilled from a July 2026 study of ten reference-grade Rust codebases:
 > **iroh** (n0-computer, p2p networking, 4 years → 1.0), **reth** (Paradigm,
 > ~150-crate workspace), **omicron** (Oxide, rack control plane — the closest
 > architectural relative of Nebula), **rust-analyzer** (matklad-era engineering
-> culture), and **uv** (Astral, velocity-with-quality benchmark).
+> culture), **uv** (Astral, velocity-with-quality benchmark), **restate**
+> (durable execution — Nebula's direct domain), **vector** (Datadog, data
+> pipelines — sources/transforms/sinks ≈ nodes), **wasmtime** (Bytecode
+> Alliance, fuzzing/security discipline), **bevy** (plugin architecture at
+> community scale), and **turso** (deterministic simulation testing).
 > Each rule cites where it comes from. "Status" tracks Nebula's adoption.
 
 Companion docs: [`QUALITY_GATES.md`](QUALITY_GATES.md) (lint citations),
@@ -31,6 +35,10 @@ project studied. Divergence from these needs a written reason.
 | C10 | Conventional commits enforced mechanically (PR title check / convco) | iroh, reth, uv, Nebula | ✅ done |
 | C11 | nextest as the runner, with per-test overrides (serial groups, slow-timeouts, retries) | reth, uv, omicron | 🟡 partial (no `.config/nextest.toml` tuning) |
 | C12 | SHA-pinned GitHub Actions + workflow security audit (`zizmor`) | uv, reth | ❌ gap |
+| C13 | Path-/label-driven CI matrix: a plan job diffs changed files and toggles expensive suites; opt-in labels or commit magic (`prtest:full`) for the rest | uv (plan job), wasmtime (`determine` + `prtest:`), turso (diff→targeted Antithesis coverage) | ❌ gap |
+| C14 | Async-perf footgun lints **denied**: `await_holding_lock`, `redundant_clone`, `or_fun_call`, `assigning_clones`, `large_stack_frames` | restate + turso (deny), vector (`await_holding_lock` warn) | 🟡 partial — Nebula *allows* `or_fun_call`/`assigning_clones`; reconsider |
+| C15 | Every `unsafe` block carries a `SAFETY:` comment, lint-enforced (`undocumented_unsafe_blocks`) | wasmtime (~341 in one crate + policy doc), bevy (lint = warn) | ✅ clippy.toml configures it; `unsafe_code = "warn"` workspace-wide |
+| C16 | Backend conformance suite: one shared test suite run against every implementation of a port/trait | restate (`loglet_tests.rs` over memory/local/replicated), vector (component compliance) | ✅ `crates/storage/tests/conformance.rs` — same instinct, keep extending |
 
 ---
 
@@ -131,6 +139,100 @@ Most relevant to Nebula: their saga engine (steno) is our workflow domain.
 - CI runs clippy on all three feature configs; `cargo-check-external-types`
   guards the public API surface.
 
+### 2.6 restate — durable execution done right (Nebula's direct domain)
+
+- **Fencing tokens**: every effect an invocation attempt emits is stamped with
+  a `FencingToken` so the partition processor can reject stale effects from a
+  superseded attempt (`invoker-impl/src/invocation_state_machine.rs`). A
+  `JournalTracker` records which effects are stored+acked — retry is allowed
+  only past that watermark.
+- **Side effects are journaled** (`RunCommand` + completion): replay re-reads
+  the journaled result, never re-executes the side effect.
+- **Error codes as a system** (`codederror`): thiserror extended with
+  `#[code(RT0012)]`; every code has a markdown doc under `error_codes/`;
+  transient-vs-terminal is an explicit method (`is_transient()`), and
+  user-code errors (`InvocationError`) are a separate type from system errors.
+- **Durable-state versioning**: every stored record starts with a
+  `StorageCodecKind` byte; retired discriminants are *reserved, never reused*;
+  schema evolution via parallel table modules (`journal_table` /
+  `journal_table_v2`) — in-flight invocations stay on their pinned protocol
+  version while a `VersionBarrierCommand` gates cluster-wide transitions.
+- **Conformance suite** (`loglet_tests.rs`) runs against every log backend.
+- Lint stance: **denies** `or_fun_call`, `redundant_clone`,
+  `assigning_clones`, `large_stack_frames`, `mutex_atomic`; warns
+  `large_futures`.
+
+### 2.7 vector — component model + mandatory telemetry (nodes ≈ sources/transforms/sinks)
+
+- **Config trait ≠ runtime object**: components are serde-tagged config types
+  (`#[typetag::serde(tag = "type")]`) with `async fn build(ctx)`; the runtime
+  object is a thin future/sink. A proc-macro (`configurable_component`)
+  derives serde + JSON-schema feeding docs and config validation.
+- **`resources()` declares exclusive dependencies** (ports, files) so
+  topology hot-reload can shut down / free / reassign in the right order.
+- **Instrumentation spec is RFC-2119 law** (`docs/specs/instrumentation.md`):
+  every component MUST emit `component_received_events_total`,
+  `component_sent_events_total`, errors with bounded `error_type` +
+  `stage ∈ {receiving, processing, sending}`. **Compliance is tested**: a
+  harness (`test_util/components.rs`) runs a real component and asserts the
+  required events and tags fired.
+- **End-to-end acks**: `EventFinalizers` + `EventStatus` monotonic lattice
+  (Rejected > Errored > Delivered) decouple delivery status from buffers.
+- Buffers: `WhenFull { Block | DropNewest | Overflow }` per sink; disk buffer
+  deletion is driven by finalization.
+
+### 2.8 wasmtime — fuzzing and security discipline
+
+- **Fuzzer-agnostic oracle library**: generators/oracles live in a reusable
+  crate (`crates/fuzzing`); `fuzz/fuzz_targets/*` are 2-line glue. Differential
+  fuzzing compares engines/configs; fuzz findings become committed regression
+  tests annotated with the issue URL.
+- **The model `unsafe` policy** (`contributing-coding-guidelines.md`): public
+  API sound without `unsafe`; every `unsafe fn` documents its contract; every
+  block has a locally-verifiable comment; prefer safer designs at minor perf
+  cost. Miri runs a nextest matrix in CI.
+- **Vulnerability classification cheat-sheet**: a table of what is/isn't a
+  CVE, tied to platform support tiers; a numbered incident runbook.
+- CI: one `ci-status` join gate; a `determine` job builds dynamic matrices
+  from changed paths and `prtest:` commit tags.
+
+### 2.9 bevy — plugin architecture at community scale
+
+- `Plugin` trait with one required method + blanket impl so **a plain
+  `fn(&mut App)` is a plugin**; lifecycle (`build → ready → finish → cleanup`)
+  lets plugins await dependencies without hard ordering; uniqueness by
+  `type_name` with opt-out.
+- `PluginGroupBuilder`: `add_before/add_after/disable/enable/set` — ordering,
+  overrides, and per-plugin feature gates, auto-documented via macro.
+- **Migration-guide culture**: every breaking PR must add a
+  `_release-content/migration-guides/*.md` entry (frontmatter + terse
+  what/why/how); CI validates. `#[deprecated]` is explicitly *not* a
+  substitute.
+- Examples discipline: 426 examples with metadata, run headless in CI with
+  screenshot comparison; CI fails if an example lacks docs metadata.
+- Compile-fail tests live in separate non-workspace crates.
+
+### 2.10 turso — deterministic simulation testing (DST)
+
+The blueprint for making durable execution deterministically testable:
+
+- **One `u64` seed** forks `ChaCha8Rng` streams for generation, IO, clock;
+  `--seed N` reproduces any run bit-for-bit.
+- **Completion-based IO trait** (`trait IO { step(); … }`, `trait File`) —
+  the engine pumps `step()`; a deterministic in-memory backend replaces real
+  IO; RNG and clock are routed *through the IO layer*.
+- **Properties as data** (`Property` enum with documented invariants) executed
+  as generated interaction plans; failures are **shrunk** to minimal
+  reproducers and persisted in a **bug base** (seed + plan + commit + opts)
+  for one-command replay.
+- **Selective fault injection** (per-file: e.g. WAL only; error/latency/
+  partial-write) with integrity checks asserted after every fault.
+- **Tiered schedule**: seeded sim loops per-PR (35 min), long fault runs +
+  **Antithesis** nightly (24h on Saturdays), differential runs vs real SQLite,
+  Elle consistency checks, TLA+ spec for transactions, Miri on the simulator.
+- Same invariant macros (`turso_assert!`) compile to Antithesis assertions
+  under `cfg(antithesis)` and plain asserts otherwise.
+
 ---
 
 ## 3. Adoption plan
@@ -146,29 +248,60 @@ Most relevant to Nebula: their saga engine (steno) is our workflow domain.
 4. **`cargo-check-external-types`** on `sdk` and `api` (the public crates).
 5. **Aggregator check** (C9) + SHA-pin actions + `zizmor` (C12).
 6. `.config/nextest.toml`: serial groups for DB tests, slow-timeout kill.
+7. **Async-footgun lints** (C14): flip `or_fun_call` and `assigning_clones`
+   from allow to warn; add `large_futures` and `await_holding_lock` warns
+   (restate/turso/vector consensus).
 
-### Tier 2 — medium (a week of focused work)
+### Tier 2 — medium (a week of focused work each)
 
-7. **Architecture Invariants**: keep the root list in `AGENTS.md` curated;
+8. **Architecture Invariants**: keep the root list in `AGENTS.md` curated;
    add an `## Invariants` section to each crate's `AGENTS.md` stating what
    the crate deliberately does NOT do; tag API-boundary crates.
-8. **Snapshot testing**: adopt `insta` for engine outputs / API responses /
+9. **Snapshot testing**: adopt `insta` for engine outputs / API responses /
    error renderings with uv-style redaction filters and a frozen clock in
    the test context; adopt `cov_mark` for branch-tied tests in `engine`
    and `resilience`.
-9. **Formalize the test-context crate** (C8): one `nebula-test-context` with
-   hermetic env, DB bootstrap, and filter presets, replacing ad-hoc helpers.
+10. **Formalize the test-context crate** (C8): one `nebula-test-context` with
+    hermetic env, DB bootstrap, and filter presets, replacing ad-hoc helpers.
+11. **Node telemetry spec + compliance harness** (vector): write an RFC-2119
+    spec of events/metrics every action/node MUST emit
+    (`node_received_items_total`, errors with bounded `error_type` + stage);
+    build the harness that runs a real node and asserts the required
+    telemetry fired. Extends the existing QUALITY_GATES instinct to runtime
+    behavior.
+12. **Error codes** (restate `codederror`): stable public error codes
+    (`NEB0042`) on `nebula-error` variants + a markdown doc per code;
+    transient-vs-terminal as an explicit method, user-code errors as a
+    distinct type from system errors.
+13. **Fuzz the expression language** (wasmtime layout): a fuzzer-agnostic
+    generator/oracle crate + thin libFuzzer targets for
+    `nebula-expression` (lexer/parser/eval); minimized findings land as
+    committed regression tests with issue URLs.
+14. **Migration-guide gate** (bevy): every breaking PR adds a
+    `docs/migration-guides/` entry (frontmatter + what/why/how), validated
+    in CI — pairs with the ongoing public-surface curation.
 
 ### Tier 3 — strategic (design work, separate ADRs)
 
-10. **Saga-grade engine review** (omicron): audit workflow actions for
-    idempotent undo coverage; serialize auth context into durable workflow
-    params; narrow the execution-context trait surface.
-11. **API-first flip** (omicron): define `nebula-api` endpoints as a trait,
+15. **Saga-grade engine review** (omicron + restate): audit workflow actions
+    for idempotent undo coverage; serialize auth context into durable
+    workflow params; narrow the execution-context trait surface; add
+    **fencing tokens** to worker attempts so a superseded attempt's effects
+    are rejected; journal side-effect results and replay from the journal.
+16. **API-first flip** (omicron): define `nebula-api` endpoints as a trait,
     commit generated OpenAPI, generate the SDK client from it (progenitor or
     equivalent), with explicit endpoint version ranges.
-12. **Schema-version guard** (omicron): pin the DB schema version in Rust and
-    refuse startup on mismatch (extend existing sqlx migrations).
+17. **Schema-version guard** (omicron + restate): pin the DB schema version
+    in Rust and refuse startup on mismatch; tag every durable record with a
+    codec-kind byte; never reuse retired discriminants; evolve via parallel
+    `_v2` modules while in-flight workflows stay on their pinned version.
+18. **Deterministic simulation testing for the engine** (turso): route the
+    engine's IO/clock/RNG through a pump-able trait so a seeded in-memory
+    backend makes runs reproducible; express workflow correctness as a
+    `Property` enum (no lost steps, idempotent resume, undo completeness);
+    shrink + persist failures in a bug base; seeded sim loop per-PR, faults +
+    (eventually) Antithesis nightly. Builds on the existing
+    `storage-loom-probe` instinct.
 
 ---
 
