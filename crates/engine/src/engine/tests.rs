@@ -4469,7 +4469,7 @@ async fn persist_final_state_retries_once_on_nonterminal_conflict() {
             &scope,
             &stores.execution_stores(),
             execution_id,
-            &mut engine_final_state,
+            &engine_final_state,
             &mut repo_version,
             token,
         )
@@ -4589,7 +4589,7 @@ async fn persist_final_state_honors_external_terminal_transition() {
             &scope,
             &stores.execution_stores(),
             execution_id,
-            &mut engine_final_state,
+            &engine_final_state,
             &mut repo_version,
             token,
         )

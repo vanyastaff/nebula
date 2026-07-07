@@ -12,6 +12,13 @@
 ///
 /// # Feature flags
 /// - `sentry`: Enables Sentry integration
+#[cfg_attr(
+    not(feature = "sentry"),
+    expect(
+        clippy::needless_pass_by_ref_mut,
+        reason = "only the sentry integration mutates the inner state"
+    )
+)]
 pub(super) fn init_telemetry(
     #[cfg_attr(
         not(feature = "sentry"),

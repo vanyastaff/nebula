@@ -20,7 +20,7 @@ use crate::policy::EvaluationPolicy;
 /// the same owner are in-place.
 #[derive(Debug, Clone)]
 pub struct EvaluationContext {
-    /// Node data ($node['name'].data)
+    /// Node data (`$node['name'].data`)
     nodes: Arc<HashMap<Arc<str>, Arc<Value>>>,
     /// Execution variables ($execution.id, $execution.mode, etc.)
     execution_vars: Arc<HashMap<Arc<str>, Arc<Value>>>,

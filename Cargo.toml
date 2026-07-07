@@ -272,10 +272,8 @@ use_self = "allow"                      # fires inside macro expansions
 redundant_pub_crate = "allow"           # conflicts with the sdk re-export façade
 significant_drop_tightening = "allow"   # too many false positives
 significant_drop_in_scrutinee = "allow"
-branches_sharing_code = "allow"         # often makes branches less readable
 cognitive_complexity = "allow"          # threshold lives in clippy.toml
 future_not_send = "allow"               # `Send` bound on futures is runtime's call
-ignore_without_reason = "allow"         # gated by clippy-cargo, too strict for tests
 
 # ── pedantic stylistic noise that is not worth churning code over ─────────
 items_after_statements = "allow" # late-initialised helpers inside fn bodies
@@ -298,24 +296,9 @@ unnecessary_wraps = "allow"                  # API-consistency `Result` on built
 # taste or a micro-optimisation that would mean an API break. Revisit when a
 # refactor naturally touches the site.
 wildcard_imports = "allow"                    # kept noisy but shelved: prelude / re-export patterns
-trivially_copy_pass_by_ref = "allow"
-needless_pass_by_ref_mut = "allow"
-needless_collect = "allow"
 map_unwrap_or = "allow"
 excessive_nesting = "allow"                   # threshold lives in clippy.toml
-useless_let_if_seq = "allow"
-unused_peekable = "allow"
-type_repetition_in_bounds = "allow"
-trivial_regex = "allow"
-struct_field_names = "allow"                  # threshold lives in clippy.toml
-literal_string_with_formatting_args = "allow"
-into_iter_without_iter = "allow"
 inline_always = "allow"                       # `#[inline(always)]` on cold happy paths is intentional
-implicit_hasher = "allow"
-doc_link_with_quotes = "allow"
-iter_on_single_items = "allow"
-from_iter_instead_of_collect = "allow"
-enum_glob_use = "allow"
 
 # ── cargo: expected noise in a multi-crate workspace ───────────────────────
 multiple_crate_versions = "allow" # transitive dep version skew is unavoidable

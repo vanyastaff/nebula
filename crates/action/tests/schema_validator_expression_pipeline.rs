@@ -57,6 +57,10 @@ impl HasSchema for PipelineInput {
     }
 }
 
+#[expect(
+    clippy::struct_field_names,
+    reason = "field names mirror the pipeline wire format asserted by this test"
+)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct PipelineOutput {
     seen_name: String,

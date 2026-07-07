@@ -632,13 +632,12 @@ async fn reclaim_sweep_recovers_orphaned_processing_row_end_to_end() {
 
     // The dispatch observed exactly one successful Cancel (second call).
     let observed = dispatch_flaky.snapshot();
-    let cancels_for_exec: Vec<_> = observed
+    let cancels_for_exec = observed
         .iter()
         .filter(|(cmd, id)| *cmd == ControlCommand::Cancel && *id == exec)
-        .collect();
+        .count();
     assert_eq!(
-        cancels_for_exec.len(),
-        1,
+        cancels_for_exec, 1,
         "exactly one successful dispatch recorded (first stalled), got {observed:?}"
     );
 }

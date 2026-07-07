@@ -46,6 +46,11 @@ impl ValidationErrors {
         self.errors.len()
     }
 
+    /// Iterate over the collected errors by reference.
+    pub fn iter(&self) -> std::slice::Iter<'_, ValidationError> {
+        self.errors.iter()
+    }
+
     /// Returns true if empty.
     #[must_use]
     #[inline]

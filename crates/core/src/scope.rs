@@ -367,6 +367,10 @@ mod tests {
         let workflow_id = WorkflowId::new();
         let execution_id = ExecutionId::new();
 
+        #[expect(
+            clippy::struct_field_names,
+            reason = "fields mirror the ScopeResolver vocabulary one-to-one"
+        )]
         struct MockResolver {
             org_id: OrgId,
             ws_id: WorkspaceId,

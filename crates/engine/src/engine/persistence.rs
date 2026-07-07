@@ -472,7 +472,7 @@ impl WorkflowEngine {
         &self,
         scope: &Scope,
         execution_id: ExecutionId,
-        exec_state: &mut ExecutionState,
+        exec_state: &ExecutionState,
         repo_version: &mut u64,
         fencing: Option<nebula_storage_port::FencingToken>,
     ) -> Result<Option<ExecutionStatus>, EngineError> {
@@ -509,7 +509,7 @@ impl WorkflowEngine {
         scope: &Scope,
         stores: &crate::store_seam::ExecutionStores,
         execution_id: ExecutionId,
-        exec_state: &mut ExecutionState,
+        exec_state: &ExecutionState,
         repo_version: &mut u64,
         token: nebula_storage_port::FencingToken,
     ) -> Result<Option<ExecutionStatus>, EngineError> {
@@ -532,7 +532,7 @@ impl WorkflowEngine {
         };
 
         let state_json =
-            serde_json::to_value(&*exec_state).map_err(|e| EngineError::CheckpointFailed {
+            serde_json::to_value(exec_state).map_err(|e| EngineError::CheckpointFailed {
                 node_key: final_state_node_key(),
                 reason: format!("serialize final state: {e}"),
             })?;
@@ -623,7 +623,7 @@ impl WorkflowEngine {
                     return Ok(observed_status_enum);
                 }
 
-                let retry_json = match serde_json::to_value(&*exec_state) {
+                let retry_json = match serde_json::to_value(exec_state) {
                     Ok(v) => v,
                     Err(e) => {
                         return Err(EngineError::CheckpointFailed {

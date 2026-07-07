@@ -186,6 +186,10 @@ impl ValueRule {
                     .map(|v| format!("{v}"))
                     .collect::<Vec<_>>()
                     .join(", ");
+                #[expect(
+                    clippy::literal_string_with_formatting_args,
+                    reason = "{allowed} is a ValidationError message-template placeholder, not a format arg"
+                )]
                 Err(
                     ValidationError::new("one_of", "Value must be one of {allowed}")
                         .with_param("allowed", allowed)

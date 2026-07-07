@@ -399,11 +399,9 @@ pub(crate) fn render_template<'a>(
                 out.push('}');
             }
         } else if c == '}' {
+            out.push('}');
             if matches!(chars.peek(), Some((_, '}'))) {
-                out.push('}');
                 chars.next();
-            } else {
-                out.push('}');
             }
         } else {
             out.push(c);

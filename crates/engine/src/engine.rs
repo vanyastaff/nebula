@@ -2309,13 +2309,7 @@ impl WorkflowEngine {
             // non-terminal conflicts before surfacing a typed
             // `CasConflict` error.
             match self
-                .persist_final_state(
-                    scope,
-                    execution_id,
-                    &mut exec_state,
-                    &mut repo_version,
-                    fencing,
-                )
+                .persist_final_state(scope, execution_id, &exec_state, &mut repo_version, fencing)
                 .await
             {
                 Ok(None) => final_status,
@@ -2690,7 +2684,7 @@ fn evaluate_edge(
     result: Option<&ActionResult<serde_json::Value>>,
     node_failed: bool,
 ) -> bool {
-    use ActionResult::*;
+    use ActionResult::{Branch, Drop, MultiOutput, Route, Skip, Terminate, Wait};
 
     // Skip / Drop / Terminate never activate any edge.
     if matches!(result, Some(Skip { .. } | Drop { .. } | Terminate { .. })) {

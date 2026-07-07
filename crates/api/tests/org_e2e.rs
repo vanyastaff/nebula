@@ -216,13 +216,13 @@ async fn add_member_grants_role_and_is_listed() {
     // Now visible in the list.
     let app = app::build_app(state, &api_config);
     let listed = body_json(app.oneshot(get(&members_path(), &admin.jwt)).await.unwrap()).await;
-    let ids: Vec<&str> = listed["members"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|m| m["principal_id"].as_str().unwrap())
-        .collect();
-    assert!(ids.contains(&newcomer.as_str()));
+    assert!(
+        listed["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["principal_id"].as_str().unwrap() == newcomer.as_str())
+    );
 }
 
 #[tokio::test]

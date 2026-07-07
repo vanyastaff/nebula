@@ -102,6 +102,10 @@ fn test_concurrent_registration() {
     shutdown_hooks();
 
     // Spawn multiple threads registering hooks concurrently
+    #[expect(
+        clippy::needless_collect,
+        reason = "all threads must be spawned before the first join; collecting is the barrier"
+    )]
     let handles: Vec<_> = (0..5)
         .map(|_i| {
             thread::spawn(move || {
