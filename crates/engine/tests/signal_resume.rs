@@ -2303,7 +2303,7 @@ async fn armed_signal_wait_is_completed_by_reclaim_drive_not_lost() {
         ExecutionStatus::Paused,
         "execution stays Paused — the drive deferred before completing the armed wait"
     );
-    let wait_ns = armed.node_states.get(&wait_node).unwrap();
+    let wait_ns = &armed.node_states[&wait_node];
     assert!(
         wait_ns.state.is_waiting(),
         "the wait node must still be Waiting (armed, not yet completed)"

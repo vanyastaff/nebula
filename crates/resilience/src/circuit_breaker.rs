@@ -319,6 +319,10 @@ fn byte_sum_sse2(slice: &[u8]) -> u32 {
 
     // SAFETY: SSE2 is guaranteed on x86-64. All pointer arithmetic is bounds-checked
     // via the chunk/remainder split. `_mm_loadu_si128` handles unaligned loads.
+    #[expect(
+        clippy::multiple_unsafe_ops_per_block,
+        reason = "SIMD kernel: the intrinsics form one logical operation under a single SAFETY contract"
+    )]
     unsafe {
         let zero = _mm_setzero_si128();
         let mut acc = _mm_setzero_si128();
@@ -409,6 +413,10 @@ impl OutcomeWindow {
         // SAFETY: `head` is always `< capacity` because it is maintained via
         // `(head + 1) & mask` where `mask = capacity - 1` and `capacity` equals
         // both `failure_ring.len()` and `slow_ring.len()`.
+        #[expect(
+            clippy::multiple_unsafe_ops_per_block,
+            reason = "both ring writes share the single head-bound SAFETY invariant"
+        )]
         unsafe {
             *self.failure_ring.get_unchecked_mut(h) = u8::from(is_failure);
             *self.slow_ring.get_unchecked_mut(h) = u8::from(is_slow);

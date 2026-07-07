@@ -997,8 +997,8 @@ mod tests {
             } => {
                 assert_eq!(selected.as_str(), "a");
                 assert_eq!(output.into_value(), Some(100));
-                assert_eq!(alternatives.get("a").unwrap().as_value(), Some(&10));
-                assert_eq!(alternatives.get("b").unwrap().as_value(), Some(&20));
+                assert_eq!(alternatives["a"].as_value(), Some(&10));
+                assert_eq!(alternatives["b"].as_value(), Some(&20));
             },
             _ => panic!("expected Branch"),
         }
@@ -1034,7 +1034,7 @@ mod tests {
                 outputs,
                 main_output,
             } => {
-                assert_eq!(outputs.get("x").unwrap().as_value(), Some(&101));
+                assert_eq!(outputs["x"].as_value(), Some(&101));
                 assert_eq!(main_output.unwrap().into_value(), Some(100));
             },
             _ => panic!("expected MultiOutput"),

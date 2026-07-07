@@ -44,6 +44,10 @@ impl EnvGuard {
         // guard-justified: edition-2024 set_var is unsafe; the held lock
         // serializes all env mutation so no other thread races this write.
         #[expect(unsafe_code)]
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "EnvGuard is the sanctioned wrapper: mutation is serialized by the process-global lock"
+        )]
         // SAFETY: `self._lock` is held for the lifetime of this guard, so no
         // concurrent reader or writer of the environment can observe a torn
         // state during this single-threaded mutation.
@@ -58,6 +62,10 @@ impl EnvGuard {
         // guard-justified: edition-2024 remove_var is unsafe; serialized by
         // the held process-global lock, same invariant as `set`.
         #[expect(unsafe_code)]
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "EnvGuard is the sanctioned wrapper: mutation is serialized by the process-global lock"
+        )]
         // SAFETY: the held lock serializes this mutation; see `set`.
         unsafe {
             std::env::remove_var(key);
@@ -77,13 +85,16 @@ impl Drop for EnvGuard {
             // guard-justified: restoring env on drop is unsafe under edition
             // 2024 but serialized by the still-held lock.
             #[expect(unsafe_code)]
-            // SAFETY: the lock is held until this Drop completes, so the
-            // restore is serialized against all other env access.
-            unsafe {
-                match prior {
-                    Some(value) => std::env::set_var(key, value),
-                    None => std::env::remove_var(key),
-                }
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "EnvGuard restore path: serialized by the still-held process-global lock"
+            )]
+            match prior {
+                // SAFETY: the lock is held until this Drop completes, so the
+                // restore is serialized against all other env access.
+                Some(value) => unsafe { std::env::set_var(key, value) },
+                // SAFETY: same serialization invariant as the arm above.
+                None => unsafe { std::env::remove_var(key) },
             }
         }
     }

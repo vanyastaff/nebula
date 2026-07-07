@@ -129,6 +129,10 @@ async fn sweep_loop(
     // after one cadence -- mirrors the heartbeat task pattern in
     // `coordinator.rs`.
     ticker.tick().await;
+    #[expect(
+        clippy::infinite_loop,
+        reason = "reclaim daemon sweeps until its task is aborted at shutdown"
+    )]
     loop {
         ticker.tick().await;
         if let Err(e) = run_one_sweep(

@@ -302,7 +302,8 @@ async fn main() -> anyhow::Result<()> {
             },
         }
     }
-    publisher_handle.await.ok();
+    // Demo shutdown: the publisher task's outcome is irrelevant here.
+    let _ = publisher_handle.await;
 
     // 5. Drop all leases — Resident topology keeps the runtime alive in the manager regardless.
     //    Print final stats and shut down.

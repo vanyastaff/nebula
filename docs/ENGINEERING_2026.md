@@ -319,7 +319,36 @@ The blueprint for making durable execution deterministically testable:
 
 ---
 
-## 4. What Nebula already does at or above the 2026 bar
+## 4. Lint campaign backlog (measured 2026-07-07)
+
+Violation counts from sweeping the full `clippy::restriction` inventory (130
+lints, clippy 0.1.96) plus the remaining named allows. Counts include the
+lib/lib-test double-compilation; unique sites ≈ half. Enabled waves:
+2026-07-06 (print/expect), 2026-07-07 (#953 async-footguns, #955 allowlist
+62→45, restriction wave 2: 12 zero/near-zero lints + `await_holding_invalid_types`
+span-guard config + `disallowed-methods` for `block_on`/`set_var`).
+
+| Campaign | Count | Notes |
+|----------|-------|-------|
+| `unreachable_pub` | 55 | cheapest; pairs with dropping `redundant_pub_crate` (iroh precedent) |
+| `panic` in prod | 110 | → typed errors |
+| `missing_debug_implementations` | 239 | mostly one derive each |
+| `unwrap_used` + `expect_used` in prod | 282 + 299 | enable via per-crate lib.rs so integration tests stay exempt; `allow-unwrap-types` config can shrink it |
+| `map_err_ignore` | 320 | error-chain quality: `.map_err(\|_\| …)` drops the cause |
+| `let_underscore_must_use` | 347 | mechanizes the edit-hook's `let _ =` rule for everyone |
+| `clone_on_ref_ptr` | 391 | explicit `Arc::clone` convention |
+| `missing_docs` | 490 | crate-by-crate, per the existing plan |
+| `assertions_on_result_states` | 598 | `assert!(r.is_ok())` loses the error payload |
+| `indexing_slicing` in prod | 717 | panic-on-OOB; start with crypto/storage |
+| `str_to_string` | 1192 | mechanical `--fix` |
+| `cargo_common_metadata` | 12555 | fill description/license/repository in 36 crates |
+
+Deliberately not enabled: `unnecessary_safety_comment` (false-positives on the
+iroh-style "Cancel-safety:"/"Drop-safety:" doc convention), `string_to_string`
+(removed in clippy 1.96 — `implicit_clone` covers it), `tests_outside_test_module`
+(2213 hits — fights the integration-test layout).
+
+## 4b. What Nebula already does at or above the 2026 bar
 
 - Curated `[workspace.lints]` with per-decision comments (C1) — matches reth.
 - `print_*`/`dbg_macro` gates + `#[expect]` discipline (C2, C3) — stricter

@@ -4549,10 +4549,10 @@ async fn persist_final_state_honors_external_terminal_transition() {
     let mut external_state = local_state.clone();
     external_state
         .transition_status(ExecutionStatus::Cancelling)
-        .ok();
+        .unwrap();
     external_state
         .transition_status(ExecutionStatus::Cancelled)
-        .ok();
+        .unwrap();
     let external_json = serde_json::to_value(&external_state).unwrap();
     let external_outcome = execution
         .commit(
@@ -5390,7 +5390,7 @@ fn drain_pending_to_cancelled_cancels_signal_waits_not_on_heap() {
     );
 
     assert_eq!(
-        exec_state.node_states.get(&signal_node).unwrap().state,
+        exec_state.node_states[&signal_node].state,
         NodeState::Cancelled,
         "a signal Waiting{{None}} node (not on wait_heap) must be cancelled by the \
              teardown scan"
@@ -5419,7 +5419,7 @@ fn mark_node_failed_does_not_stamp_error_on_a_non_failed_node() {
         &EngineError::PlanningFailed("boom".into()),
     );
 
-    let ns = exec_state.node_states.get(&node).unwrap();
+    let ns = &exec_state.node_states[&node];
     assert_eq!(
         ns.state,
         NodeState::Completed,
