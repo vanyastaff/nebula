@@ -54,8 +54,10 @@ a486010c5ca2f7ba8 = "a486010c5ca2f7ba8"
 "00f067aa0ba902b7" = "00f067aa0ba902b7"
 # Real crate name (compression dep) — typos splits `flate2` into the word `flate`.
 flate2 = "flate2"
-# reth's CI aggregator job / the re-actors GitHub action name (docs/ENGINEERING_2026.md).
-alls-green = "alls-green"
+# `alls` from `alls-green` — reth's CI aggregator job / the re-actors GitHub
+# action name (docs/ENGINEERING_2026.md). typos tokenizes on the hyphen, so
+# the bare word must be allowed.
+alls = "alls"
 
 [default.extend-words]
 Hashi = "Hashi"
