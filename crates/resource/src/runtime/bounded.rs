@@ -411,7 +411,6 @@ mod tests {
 
     crate::no_credential_slots!(MockBounded);
 
-    #[async_trait]
     impl BoundedProvider for MockBounded {
         async fn reset(&self, _instance: &mut u32) -> Result<(), Error> {
             self.reset_calls.fetch_add(1, Ordering::Relaxed);

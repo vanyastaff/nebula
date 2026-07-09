@@ -53,6 +53,21 @@ The SDK does not introduce a second OAuth façade on top of `nebula-credential`.
 
 **Migration:** When credential/OAuth types move or rename, follow `nebula-credential` release notes and this README; the SDK version tracks workspace `nebula-credential` and does not add its own parallel OAuth type aliases.
 
+### Resource authoring and the SDK
+
+Resource authoring types and traits are in the prelude; derive macros still need
+their target crates on the dependency graph:
+
+| Surface | What you use |
+|--------|----------------|
+| **Full crate** | `nebula_sdk::nebula_resource` (same as depending on `nebula-resource` directly). Engine-integrator types live here: `Manager`, `Registry`, `ReleaseQueue`, `credential_fanout`, metrics, recovery gates. |
+| **Prelude** | `nebula_sdk::prelude::*` re-exports the author surface: derives `Resource` / `ResourceConfig` / `ClassifyError`; traits `Provider`, `ResourceConfig`, `HasCredentialSlots`, `PoolProvider`, `ResidentProvider`, `BoundedProvider`; topologies `Pooled`, `Resident`, `Bounded` with `PoolConfig` / `ResidentConfig` / `BoundedMode`; and `AcquireOptions`, `RegistrationSpec`, `ResourceContext`, `ResourceGuard`, `ResourceMetadata`, `ResourceKey`, `resource_key!`, `ScopeLevel`, `SlotIdentity`, `SlotCell`, `TopologyTag`, `ReloadOutcome`, `Error`, `ErrorKind`, `no_credential_slots!`. See `prelude.rs` for a runnable pooled-resource example. |
+| **Direct deps for derives** | `#[derive(Resource)]` expands to `::nebula_resource::…` / `::nebula_core::…` paths — add `nebula-resource`, `nebula-core`, and `async-trait` as direct `Cargo.toml` dependencies (match the versions `nebula-sdk` pins). `impl Provider` needs `#[async_trait::async_trait]`. |
+
+**Not in the prelude:** the engine-owned lifecycle (`Manager::register` / `acquire_*`, `Registry`, `ReloadOutcome` dispatch, rotation fan-out). Authors implement `Provider`; the engine drives it. If you outgrow the prelude list, import from `nebula_sdk::nebula_resource` without adding another workspace dependency.
+
+Note that prelude `Error` is `nebula_resource::Error` (the resource error type); `thiserror::Error` is a derive macro in a separate namespace, so both coexist under the glob. The SDK's own error is exported as `SdkError`.
+
 Modules provided by this crate:
 
 - `prelude` — one-stop `use nebula_sdk::prelude::*` import for common types and traits.

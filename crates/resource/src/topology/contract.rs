@@ -377,15 +377,23 @@ pub struct MaintenanceSchedule {
 /// borrow does not exceed the call, so the topology cannot retain the store or
 /// build a cross-scope cache that bypasses the per-tenant `SlotIdentity` fence.
 ///
+/// # Not a trait object
+///
+/// `Topology<R>` is reached monomorphically through
+/// [`ManagedResource<R>`](crate::ManagedResource) — do not attempt
+/// `Box<dyn Topology<R>>`. The trait is intentionally not object-safe.
+///
 /// # Async dispatch
 ///
 /// The async hooks are plain `async fn` in trait (RPITIT), **not**
 /// `#[async_trait]`: topologies are reached monomorphically inside
-/// `ManagedResource<R>` and are never trait objects (see "Not a trait object"
-/// above), so the boxed future `#[async_trait]` allocates per call bought
-/// nothing. It cost 3 heap allocations per cache-hit acquire (`accept`,
-/// `prepare`, `on_release`) — see `benches/acquire.rs`. An implementor writes
-/// plain `async fn` bodies; only the returned future must be `Send`.
+/// `ManagedResource<R>`, so the boxed future `#[async_trait]` allocates per
+/// call bought nothing. A cache-hit acquire+release round trip previously paid
+/// 3 heap allocations on the default hook path (`accept` and `prepare` on
+/// acquire, `on_release` on release) that `#[async_trait]` inserted at the
+/// trait level — see `benches/acquire.rs` for the wall-clock regression guard.
+/// An implementor writes plain `async fn` bodies; only the returned future must
+/// be `Send`.
 ///
 /// Sync hooks (`try_reserve`, `entry_instance`, `into_instance`, `phase`,
 /// `load`, `pools`, …) stay plain sync.
@@ -532,7 +540,9 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
     /// [`dispatch_credential_hook`](Topology::dispatch_credential_hook). A
     /// topology that holds credential-bound state on `pools() == false` MUST
     /// override both this (to `true`) and the hook, or a revoked credential
-    /// keeps serving. The framework asserts this at registration.
+    /// keeps serving. Registration warns in release and `debug_assert!`s in
+    /// debug when resolved slot bindings are non-empty and this stays `false`
+    /// on a non-pooling topology.
     ///
     /// Ignored when [`pools`](Topology::pools) is `true` (the store fence
     /// covers pooled entries). Default `false` — a non-pooling topology opts in

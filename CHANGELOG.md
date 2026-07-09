@@ -64,6 +64,18 @@ changes are expected between minor releases — call them out here.
 
 ### Changed
 
+- **(breaking) `Topology<R>` async hooks are RPITIT, not `#[async_trait]`** —
+  the five async hooks (`create_entry`, `accept`, `prepare`, `on_release`,
+  `dispatch_credential_hook`) now return `impl Future<Output = …> + Send`
+  instead of going through `async_trait`'s `Box<dyn Future>` shim. Custom
+  topology authors: drop `#[async_trait]` from your `impl Topology<R>` block;
+  keep plain `async fn` bodies. The same applies to the provider-hook traits
+  the built-in topologies drive — `PoolProvider::recycle` /
+  `PoolProvider::prepare` and `BoundedProvider::reset` are also RPITIT; drop
+  `#[async_trait]` from those overrides too if you had one.
+  `ResidentProvider` has no async hooks (nothing to migrate there).
+  `Provider` is unchanged and still uses `#[async_trait]`. Drops three heap
+  allocations per cache-hit acquire+release round trip on the default hook path.
 - **(breaking) Public error and open taxonomy enums are now `#[non_exhaustive]`**
   for additive semver evolution — 10 error enums (credential, core, schema,
   resource, plugin, metadata) and 22 open outcome/event/state enums (credential

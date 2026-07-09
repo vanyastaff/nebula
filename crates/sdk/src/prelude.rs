@@ -7,6 +7,57 @@
 //! ```rust,no_run
 //! use nebula_sdk::prelude::*;
 //! ```
+//!
+//! ## Authoring a pooled resource
+//!
+//! Types and traits for resource authoring live in the prelude. The derive
+//! macros (`#[derive(Resource)]`, `#[derive(ResourceConfig)]`,
+//! `#[derive(ClassifyError)]`) expand to `::nebula_resource::…` and
+//! `::nebula_core::…` paths, so list `nebula-resource`, `nebula-core`, and
+//! `async-trait` as direct dependencies alongside `nebula-sdk` (same versions
+//! the SDK pins). `#[derive(Resource)]` emits the credential-slot plumbing,
+//! [`Provider`] supplies the lifecycle, and `type Topology = Pooled<Self>` opts
+//! into pool checkout/recycle (every [`PoolProvider`] hook has a default, so an
+//! empty impl suffices).
+//!
+//! ```rust
+//! use nebula_sdk::prelude::*;
+//!
+//! #[derive(Clone, Debug)]
+//! struct HttpClient {
+//!     base_url: String,
+//! }
+//!
+//! #[derive(Resource, Clone)]
+//! struct HttpResource;
+//!
+//! #[async_trait::async_trait]
+//! impl Provider for HttpResource {
+//!     type Config = ();
+//!     type Instance = HttpClient;
+//!     type Topology = Pooled<Self>;
+//!
+//!     fn key() -> ResourceKey {
+//!         resource_key!("http.client.sdk_prelude")
+//!     }
+//!
+//!     async fn create(&self, _config: &(), _ctx: &ResourceContext) -> Result<HttpClient, Error> {
+//!         Ok(HttpClient {
+//!             base_url: "https://api.example.com".to_owned(),
+//!         })
+//!     }
+//! }
+//!
+//! impl PoolProvider for HttpResource {}
+//!
+//! // A resource with no `#[credential]` fields can skip the derive entirely.
+//! # struct Slotless;
+//! no_credential_slots!(Slotless);
+//! ```
+//!
+//! Engine-side registration ([`RegistrationSpec`]) and acquisition go through
+//! `nebula_sdk::nebula_resource::Manager`; action code receives a
+//! [`ResourceGuard`] that derefs to `Provider::Instance`.
 
 // Core traits and types
 // DX trait families: stateful, trigger
@@ -32,7 +83,8 @@ pub use nebula_action::{
 // without reaching into `nebula_action::`.
 pub use nebula_action::{impl_batch_action, impl_paginated_action};
 pub use nebula_core::{
-    ActionKey, ExecutionId, NodeKey, PluginKey, ScopeLevel, WorkflowId, action_key,
+    ActionKey, ExecutionId, NodeKey, PluginKey, ResourceKey, ScopeLevel, WorkflowId, action_key,
+    resource_key,
 };
 // Credential types (v2)
 pub use nebula_credential::{
@@ -65,7 +117,22 @@ pub use nebula_credential::{CredentialContext, CredentialId};
 pub use nebula_metadata::{BaseMetadata, DeprecationNotice, Icon, MaturityLevel, Metadata};
 // Plugin types
 pub use nebula_plugin::{Plugin, PluginManifest};
-pub use nebula_resource::{Resource, ResourceMetadata};
+// Resource authoring surface — mirrors `nebula_resource::prelude` plus the
+// `Resource` / `ResourceConfig` / `ClassifyError` derive macros, so an
+// integration author never needs a direct `nebula-resource` dependency.
+//
+// `Error` here is the resource error *type*; `thiserror::Error` below is a
+// derive *macro* — different namespaces, so both live in the glob.
+//
+// Engine-only types (`Manager`, `Registry`, `ReleaseQueue`,
+// `credential_fanout`) are deliberately absent — reach them through
+// `nebula_sdk::nebula_resource`.
+pub use nebula_resource::{
+    AcquireOptions, Bounded, BoundedMode, BoundedProvider, ClassifyError, Error, ErrorKind,
+    HasCredentialSlots, PoolConfig, PoolProvider, Pooled, Provider, RegistrationSpec, ReloadOutcome,
+    Resident, ResidentConfig, ResidentProvider, Resource, ResourceConfig, ResourceContext,
+    ResourceGuard, ResourceMetadata, SlotCell, SlotIdentity, TopologyTag, no_credential_slots,
+};
 // Derive macros (re-exported from their respective domain crates)
 // Action, Credential, and Plugin derive macros are already in scope from the
 // domain crate imports above (same names, macro namespace).

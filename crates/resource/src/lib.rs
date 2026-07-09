@@ -205,8 +205,8 @@
 //! | [`RecoveryGateConfig::base_backoff`] | `1 s` | Doubled per attempt (capped at 5 min), then equal-jittered (`[nominal/2, nominal]`) so a synchronized-failure cohort does not retry in lockstep. |
 //! | `ShutdownConfig::drain_timeout` | `30 s` | Bounds how long [`Manager::graceful_shutdown`] waits for in-flight handles before applying [`DrainTimeoutPolicy`]. |
 //!
-//! Full field references: [`pooling.md`](../docs/pooling.md) for the pool
-//! config, [`recovery.md`](../docs/recovery.md) for the gate, and the
+//! Full field references: `crates/resource/docs/pooling.md` for the pool
+//! config, `crates/resource/docs/recovery.md` for the gate, and the
 //! rustdoc on each type above for the rest.
 //!
 //! ## Canon note — §11.4
