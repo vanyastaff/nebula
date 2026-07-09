@@ -14,6 +14,7 @@ use nebula_metrics::MetricsRegistry;
 use nebula_plugin::PluginRegistry;
 use nebula_storage::credential::InMemoryPendingStore;
 use nebula_storage_port::Scope;
+use nebula_storage_port::dto::WorkflowVersionRecord;
 use nebula_storage_port::store::{
     ControlQueue, ExecutionJournalReader, ExecutionStore, NodeResultStore, TriggerDedupInbox,
     TriggerStore, WebhookActivationStore, WorkflowStore, WorkflowVersionStore,
@@ -658,9 +659,34 @@ impl AppState {
         id: nebula_core::id::WorkflowId,
     ) -> Result<Option<serde_json::Value>, ApiError> {
         Ok(self
-            .workflow_with_version_scoped(scope, id)
+            .workflow_published_version_scoped(scope, id)
             .await?
-            .map(|(_, definition)| definition))
+            .map(|version| version.definition))
+    }
+
+    /// Read the published workflow-version row for the caller's tenant.
+    pub(crate) async fn workflow_published_version_scoped(
+        &self,
+        scope: &Scope,
+        id: nebula_core::id::WorkflowId,
+    ) -> Result<Option<WorkflowVersionRecord>, ApiError> {
+        let rows = ScopedWorkflowStore::new(Arc::clone(&self.workflow_store), scope.clone());
+        let versions = ScopedWorkflowVersionStore::new(
+            Arc::clone(&self.workflow_version_store),
+            scope.clone(),
+        );
+        let id_str = id.to_string();
+        let Some(_row) = rows
+            .get(scope, &id_str)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {e}")))?
+        else {
+            return Ok(None);
+        };
+        versions
+            .get_published(scope, &id_str)
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {e}")))
     }
 
     /// Read a workflow's `(version, definition)`, or `None` if absent,
@@ -677,10 +703,6 @@ impl AppState {
         id: nebula_core::id::WorkflowId,
     ) -> Result<Option<(u64, serde_json::Value)>, ApiError> {
         let rows = ScopedWorkflowStore::new(Arc::clone(&self.workflow_store), scope.clone());
-        let versions = ScopedWorkflowVersionStore::new(
-            Arc::clone(&self.workflow_version_store),
-            scope.clone(),
-        );
         let id_str = id.to_string();
         let Some(row) = rows
             .get(scope, &id_str)
@@ -689,11 +711,10 @@ impl AppState {
         else {
             return Ok(None);
         };
-        let published = versions
-            .get_published(scope, &id_str)
-            .await
-            .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {e}")))?;
-        Ok(published.map(|v| (row.version, v.definition)))
+        Ok(self
+            .workflow_published_version_scoped(scope, id)
+            .await?
+            .map(|v| (row.version, v.definition)))
     }
 
     /// Persist a workflow definition with optimistic concurrency, as a
@@ -750,7 +771,7 @@ impl AppState {
                 slug: id_str.clone(),
                 deleted: false,
             },
-            nebula_storage_port::dto::WorkflowVersionRecord {
+            WorkflowVersionRecord {
                 workflow_id: id_str,
                 number: ver_number,
                 published: true,

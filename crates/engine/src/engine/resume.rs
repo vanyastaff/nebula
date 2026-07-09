@@ -35,15 +35,12 @@ impl WorkflowEngine {
     ) -> Result<ExecutionResult, EngineError> {
         let started = Instant::now();
 
-        // 1-5. Load persisted state + workflow definition + node
-        // outputs. Dual-dispatch: spec-16 port bundles when configured,
-        // else the legacy repos. Both yield `(repo_version, state_json,
-        // workflow_json, Vec<(NodeKey, output)>)` so the reconstruction
-        // below is shared. In the spec-16 split the workflow definition
-        // lives on the published *version* record, not the workflow row.
-        let (repo_version_loaded, state_json, workflow_json, persisted_outputs): (
+        // 1-5. Load persisted state + node outputs. The workflow
+        // definition is loaded after deserializing `ExecutionState` so
+        // resume can honor `workflow_version_number` when present instead
+        // of blindly following the latest published version.
+        let (repo_version_loaded, state_json, persisted_outputs): (
             u64,
-            serde_json::Value,
             serde_json::Value,
             Vec<(NodeKey, serde_json::Value)>,
         ) = {
@@ -53,12 +50,6 @@ impl WorkflowEngine {
             let stores = self.stores.as_ref().ok_or_else(|| {
                 EngineError::PlanningFailed("no execution_repo configured".into())
             })?;
-            // The workflow bundle is likewise required; its absence
-            // preserves the historical `workflow_repo` wording.
-            let workflow_stores = self
-                .workflow_stores
-                .as_ref()
-                .ok_or_else(|| EngineError::PlanningFailed("no workflow_repo configured".into()))?;
             let id = execution_id.to_string();
             let record = stores
                 .execution
@@ -68,16 +59,6 @@ impl WorkflowEngine {
                 .ok_or_else(|| {
                     EngineError::PlanningFailed(format!("execution not found: {execution_id}"))
                 })?;
-            let workflow_id = record.workflow_id.clone();
-            let workflow_json = workflow_stores
-                .versions
-                .get_published(scope, &workflow_id)
-                .await
-                .map_err(|e| EngineError::PlanningFailed(format!("load workflow: {e}")))?
-                .ok_or_else(|| {
-                    EngineError::PlanningFailed(format!("workflow not found: {workflow_id}"))
-                })?
-                .definition;
             // Reload the raw per-node *outputs* (not the typed-result
             // slot): the result slot stores the serialized `ActionResult`
             // envelope, whereas successors consume the bare output payload
@@ -91,7 +72,7 @@ impl WorkflowEngine {
                 .into_iter()
                 .filter_map(|(node_id, rec)| NodeKey::new(&node_id).ok().map(|k| (k, rec.json)))
                 .collect();
-            (record.version, record.state, workflow_json, outputs)
+            (record.version, record.state, outputs)
         };
 
         // Deserialize via JSON string to avoid `serde_json::from_value` issues
@@ -100,6 +81,42 @@ impl WorkflowEngine {
             .map_err(|e| EngineError::PlanningFailed(format!("serialize state: {e}")))?;
         let exec_state: ExecutionState = serde_json::from_str(&state_str)
             .map_err(|e| EngineError::PlanningFailed(format!("deserialize state: {e}")))?;
+
+        let workflow_json = {
+            let workflow_stores = self
+                .workflow_stores
+                .as_ref()
+                .ok_or_else(|| EngineError::PlanningFailed("no workflow_repo configured".into()))?;
+            let workflow_id = exec_state.workflow_id.to_string();
+            match exec_state.workflow_version_number {
+                Some(number) => {
+                    workflow_stores
+                        .versions
+                        .get(scope, &workflow_id, number)
+                        .await
+                        .map_err(|e| EngineError::PlanningFailed(format!("load workflow: {e}")))?
+                        .ok_or_else(|| {
+                            EngineError::PlanningFailed(format!(
+                                "workflow not found: {workflow_id} version {number}"
+                            ))
+                        })?
+                        .definition
+                },
+                None => {
+                    workflow_stores
+                        .versions
+                        .get_published(scope, &workflow_id)
+                        .await
+                        .map_err(|e| EngineError::PlanningFailed(format!("load workflow: {e}")))?
+                        .ok_or_else(|| {
+                            EngineError::PlanningFailed(format!(
+                                "workflow not found: {workflow_id}"
+                            ))
+                        })?
+                        .definition
+                },
+            }
+        };
 
         // 3. Guard against resuming a terminal execution.
         if exec_state.status.is_terminal() {
