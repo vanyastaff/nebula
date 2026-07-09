@@ -98,7 +98,10 @@ fn tenant_for_scope_a() -> TenantContext {
         workspace_id: Some(ws_id),
         principal: Principal::User(user_id),
         org_role: Some(nebula_core::OrgRole::OrgAdmin),
-        workspace_role: Some(nebula_core::WorkspaceRole::WorkspaceAdmin),
+        workspace_role: Some(nebula_core::WorkspaceGrant::new(
+            ws_id,
+            nebula_core::WorkspaceRole::WorkspaceAdmin,
+        )),
     }
 }
 
@@ -111,7 +114,10 @@ fn tenant_for_scope_b() -> TenantContext {
         workspace_id: Some(ws_id),
         principal: Principal::User(user_id),
         org_role: Some(nebula_core::OrgRole::OrgAdmin),
-        workspace_role: Some(nebula_core::WorkspaceRole::WorkspaceAdmin),
+        workspace_role: Some(nebula_core::WorkspaceGrant::new(
+            ws_id,
+            nebula_core::WorkspaceRole::WorkspaceAdmin,
+        )),
     }
 }
 
