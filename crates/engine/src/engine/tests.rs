@@ -1424,13 +1424,17 @@ async fn resume_requires_workflow_repo() {
     let registry = Arc::new(ActionRegistry::new());
     let (engine, _) = make_engine(registry);
     let stores = TestStores::new();
+    let execution_id = ExecutionId::new();
+    let workflow_id = WorkflowId::new();
+    let exec_state = ExecutionState::new(execution_id, workflow_id, &[]);
+    let state_json = serde_json::to_value(&exec_state).unwrap();
+    stores
+        .inject_state(execution_id, workflow_id, state_json)
+        .await;
     let engine = engine.with_execution_stores(stores.execution_stores());
     // No workflow store attached.
     let err = engine
-        .resume_execution(
-            &crate::store_seam::single_tenant_scope(),
-            ExecutionId::new(),
-        )
+        .resume_execution(&crate::store_seam::single_tenant_scope(), execution_id)
         .await
         .unwrap_err();
     assert!(
