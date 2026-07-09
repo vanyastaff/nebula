@@ -32,12 +32,12 @@ reliable delivery (cancel, dispatch signals) must use `execution_control_queue`,
 - `EventBus<E>` — generic typed broadcast bus; parameterized by domain event type `E: Clone`.
 - `BackPressurePolicy` — configurable behavior for slow subscribers (block, drop, lag).
 - `Subscriber<E>` — subscription handle with `recv()`, `try_recv()`, `lagged_count()`.
-- `FilteredSubscriber<E>` — subscription handle with an attached `Filter<E>`.
-- `Filter<E>` — composable filter predicate.
-- `Outcome` — `emit()` return type (`Sent`, `NoSubscribers`, `Lagged`, …).
-- `Registry` — manage multiple buses by scope.
-- `Scope` — hierarchical bus scoping.
-- `Stats` — bus-level statistics (sent, dropped, subscriber count).
+- `FilteredSubscriber<E>` — subscription handle with an attached `EventFilter<E>`.
+- `EventFilter<E>` — composable filter predicate.
+- `PublishOutcome` — `emit()` return type (`Sent`, `DroppedNoSubscribers`, `DroppedByPolicy`, `DroppedTimeout`).
+- `EventBusRegistry` — manage multiple buses by scope.
+- `SubscriptionScope` — hierarchical bus scoping.
+- `EventBusStats` — bus-level statistics (sent, dropped, subscriber count).
 - `prelude` — convenience re-exports.
 
 ## Contract
@@ -55,8 +55,8 @@ reliable delivery (cancel, dispatch signals) must use `execution_control_queue`,
 
 See `docs/MATURITY.md` row for `nebula-eventbus`.
 
-- API stability: `stable` — `EventBus<E>`, `Subscriber`, `BackPressurePolicy`, `Outcome` are in active use with 3 unit tests and 2 integration tests.
-- `Registry` and `Scope` are functional; multi-bus management patterns may be refined as engine usage grows.
+- API stability: `stable` — `EventBus<E>`, `Subscriber`, `BackPressurePolicy`, `PublishOutcome`, filters, registry, scoping, and stats are in active use.
+- `EventBusRegistry` and `SubscriptionScope` are functional; multi-bus management patterns may be refined as engine usage grows.
 
 ## Related
 
