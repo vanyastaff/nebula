@@ -22,14 +22,14 @@
 //!
 //! ## Public API
 //!
-//! - `EventBus<E>` — generic broadcast bus; bounded, `Lagged` semantics, zero-copy clone.
+//! - `EventBus<E>` — generic broadcast bus; bounded, `Lagged` recovery, zero-copy clone.
 //! - `BackPressurePolicy` — configurable behavior for slow subscribers.
 //! - `Subscriber<E>`, `FilteredSubscriber<E>` — subscription handles.
-//! - `Filter<E>` — composable filter predicate.
-//! - `Outcome` — `emit()` result (`Sent`, `NoSubscribers`, `Lagged`, …).
-//! - `Registry` — manage multiple buses by scope.
-//! - `Scope` — hierarchical bus scoping.
-//! - `Stats` — bus-level statistics.
+//! - `EventFilter<E>` — composable filter predicate.
+//! - `PublishOutcome` — `emit()` result (`Sent`, `DroppedNoSubscribers`, ...).
+//! - `EventBusRegistry` — manage multiple buses by scope.
+//! - `SubscriptionScope` — hierarchical bus scoping.
+//! - `EventBusStats` — bus-level statistics.
 //!
 //! Backed by `tokio::sync::broadcast`: bounded, Lagged semantics,
 //! zero-copy clone, minimal hot-path overhead (no extra allocations on send).
@@ -97,15 +97,16 @@
 //! subscriber count. No explicit close call is required. Use
 //! [`is_closed()`](crate::Subscriber::is_closed) to check if the underlying bus has been dropped.
 //!
-//! ## Architecture Note: Persistence
+//! ## Architecture Note: Durability
 //!
-//! EventBus is **in-memory only** in Phase 2. This means:
+//! EventBus is **in-process and ephemeral**. This means:
 //! - Events are not persisted to storage.
 //! - Subscribers will lose events if they run out of buffer space or disconnect.
-//! - Persistence and durability are planned for Phase 3.
+//! - Durable delivery is intentionally outside this crate's contract.
 //!
-//! For reliable event delivery in production, consider implementing persistence at the
-//! application layer or waiting for Phase 3 enhancements.
+//! For reliable production delivery, use the durable control plane owned by the
+//! consuming domain, such as `execution_control_queue` for execution dispatch
+//! and cancellation signals.
 //!
 //! ## Core Types
 //!

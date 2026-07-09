@@ -12,7 +12,8 @@ use axum::{
     response::Response,
 };
 use nebula_core::{
-    OrgRole, ResolvedIds, TenantContext, WorkspaceRole, role::effective_workspace_role,
+    OrgRole, ResolvedIds, TenantContext, WorkspaceGrant, WorkspaceRole,
+    role::effective_workspace_role,
 };
 
 use crate::{error::ApiError, middleware::auth::AuthContext, state::AppState};
@@ -83,7 +84,7 @@ pub async fn rbac_middleware(
         if effective.is_none() {
             return Err(ApiError::NotFound("not found".to_string()));
         }
-        effective
+        effective.map(|role| WorkspaceGrant::new(ws_id, role))
     } else {
         None
     };

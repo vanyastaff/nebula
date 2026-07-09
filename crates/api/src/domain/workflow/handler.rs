@@ -651,10 +651,11 @@ pub async fn execute_workflow(
     // state is created or any Start signal is enqueued. `enqueue_start_scoped`
     // requires the `ValidatedWorkflow` witness produced here, so the dispatch
     // path is type-prevented from skipping validation.
-    let definition = state
-        .workflow_definition_scoped(&scope, workflow_id)
+    let version = state
+        .workflow_published_version_scoped(&scope, workflow_id)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("Workflow {id} not found")))?;
+    let definition = version.definition.clone();
     let validated = validate_for_dispatch(&definition)?;
 
     // Generate new execution ID
@@ -667,6 +668,7 @@ pub async fn execute_workflow(
     // canonical `Created`, not the non-existent `"pending"` that the
     // storage `list_running` filter would also drop.
     let mut exec_state = ExecutionState::new(execution_id, workflow_id, &[]);
+    exec_state.set_workflow_version_number(version.number);
     if let Some(input) = payload.input.clone() {
         exec_state.set_workflow_input(input);
     }

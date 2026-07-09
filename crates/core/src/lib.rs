@@ -105,7 +105,7 @@ pub use role::{OrgRole, WorkspaceRole, effective_workspace_role};
 pub use scope::*;
 pub use slug::{Slug, SlugError, SlugKind, is_prefixed_ulid};
 pub use sync::Lazy;
-pub use tenancy::{PermissionDenial, PermissionDenied, ResolvedIds, TenantContext};
+pub use tenancy::{PermissionDenial, PermissionDenied, ResolvedIds, TenantContext, WorkspaceGrant};
 
 // ── Compile-time key macros ─────────────────────────────────────────────────
 

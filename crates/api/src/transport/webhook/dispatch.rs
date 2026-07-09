@@ -717,7 +717,8 @@ async fn do_emit_prod(
         Arc::new(validated),
         trigger_node_key,
         scope.clone(),
-    );
+    )
+    .with_workflow_version_number(version_record.number);
 
     emitter
         .emit(payload, event_id.cloned())

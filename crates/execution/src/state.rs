@@ -357,6 +357,14 @@ pub struct ExecutionState {
     pub execution_id: ExecutionId,
     /// The workflow being executed.
     pub workflow_id: WorkflowId,
+    /// Published workflow version number this execution started under.
+    ///
+    /// Persisted so resume/re-drive reloads the same definition even if a
+    /// newer version is published while the execution is parked or crashed.
+    /// Legacy rows that predate this field fall back to the currently
+    /// published version.
+    #[serde(default)]
+    pub workflow_version_number: Option<u32>,
     /// Current execution status.
     pub status: ExecutionStatus,
     /// Per-node execution states.
@@ -446,6 +454,7 @@ impl ExecutionState {
         Self {
             execution_id,
             workflow_id,
+            workflow_version_number: None,
             status: ExecutionStatus::Created,
             node_states,
             version: 0,
@@ -460,6 +469,11 @@ impl ExecutionState {
             terminated_by: None,
             total_retries: 0,
         }
+    }
+
+    /// Attach the published workflow version number this execution starts under.
+    pub fn set_workflow_version_number(&mut self, number: u32) {
+        self.workflow_version_number = Some(number);
     }
 
     /// Record a scheduled retry attempt at the execution level.

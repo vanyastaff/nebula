@@ -65,11 +65,14 @@ Patterns:
   The `transition` module in this crate validates state-machine legality; storage enforces
   persistence and CAS.
 
-- **[L2-§11.2]** Engine-level node re-execution is **out of scope for this crate**. The
-  engine does not retry nodes; the canonical retry surface is `nebula-resilience` inside
-  an action around outbound calls. `NodeAttempt` exists to seed the idempotency-key shape
-  `{execution_id}:{node_id}:{attempt}` so storage rows stay attempt-keyed even though the
-  attempt counter never advances past `1` from engine-driven flow.
+- **[L2-§11.2]** Retry scheduling is **out of scope for this crate**. This crate defines
+  the persisted shapes the engine uses for operator-declared retry: legal
+  `Failed → WaitingRetry → Ready` node transitions, `next_attempt_at`, `total_retries`,
+  `ExecutionBudget.max_total_retries`, `NodeAttempt`, and the idempotency-key shape
+  `{execution_id}:{node_id}:{attempt}`. The engine owns the retry decision and
+  re-dispatch for `NodeDefinition.retry_policy` / `WorkflowConfig.retry_policy`.
+  `nebula-resilience` remains the in-action outbound-call retry surface, and
+  result-driven `ActionResult::Retry` is not a current public capability.
 
 - **[L2-§11.3]** `IdempotencyKey` shape is `{execution_id}:{node_id}:{attempt}`. Seam:
   `crates/execution/src/idempotency.rs`. Enforcement (check before side effect, mark after)
@@ -92,8 +95,9 @@ Patterns:
   table, `execution_journal`, `execution_control_queue`). The `ExecutionControlQueue`
   (durable outbox for cancel/dispatch signals) and the `Transactional Outbox` pattern live
   in `nebula-storage`, not here.
-- Not a retry scheduler — engine-level node retry is not part of the engine contract
-  (§11.2); the canonical retry surface is `nebula-resilience` inside an action.
+- Not a retry scheduler — this crate records the state shapes; `nebula-engine` drives
+  operator-declared retry, while `nebula-resilience` covers in-action outbound calls
+  (§11.2).
 - Not a resource lifecycle manager — see `nebula-resource` for `ReleaseQueue` / `Bulkhead`.
 
 ## Maturity

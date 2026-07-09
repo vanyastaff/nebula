@@ -287,17 +287,18 @@ Seam: `crates/storage/src/execution_repo.rs` — `ExecutionRepo::transition`. Te
 
 ### 11.2 Retry
 
-**[L2]** Retry is a **runtime semantic** owned by the **engine** and **`nebula-resilience`** pipelines around **outbound** calls inside an action — not a decorative hint on a return type. The engine **does not** schedule re-execution of a failed node from an `ActionResult::Retry`-style return unless that path is wired with **persisted attempt accounting**. If such a variant exists but is not honored end-to-end, it is a **false capability** (remove it or implement it). Until durable per-attempt retry accounting exists, the canonical retry surface is the **resilience pipeline** an action uses internally.
+**[L2]** Retry is a **runtime semantic** owned by two disjoint surfaces: the **engine** for operator-declared node retry and **`nebula-resilience`** pipelines around **outbound** calls inside an action. It is not a decorative hint on an `ActionResult` return type. The engine schedules re-execution only from declared `NodeDefinition.retry_policy` / `WorkflowConfig.retry_policy` after a retryable failure, with persisted node state (`WaitingRetry`), `next_attempt_at`, per-attempt idempotency keys, and `ExecutionBudget.max_total_retries`. The engine **does not** schedule re-execution from an `ActionResult::Retry`-style return; no such public `ActionResult` variant or `unstable-retry-scheduler` feature exists in the current action/engine crates.
 
 **Status (per §11.6 vocabulary):**
 
 | Surface | Status | Notes |
 | --- | --- | --- |
 | `nebula-resilience` pipeline inside an action (in-memory retry around outbound calls) | `implemented` | The **canonical** retry surface today. Author composes retry/timeout/circuit-breaker at the call site. |
-| Engine-level node re-execution from `ActionResult::Retry` with persisted attempt accounting | `planned` | No persisted `attempts` row, no CAS-protected bump, no consumer wired through `ExecutionRepo`. The `ActionResult::Retry` variant is hidden behind the `unstable-retry-scheduler` feature flag in `nebula-action` / `nebula-engine` (default-off) to honor §4.5 — the public surface does not advertise a capability the engine cannot yet deliver. Remove the gate only when the scheduler ships end-to-end (#290). |
+| Operator-declared engine-level node retry (`retry_policy`) | `implemented` | After a retryable `Running → Failed` path, the engine computes the effective node/workflow retry policy, parks the node in `WaitingRetry` with `next_attempt_at`, increments execution-level retry accounting, and re-dispatches when the timer fires. `ExecutionBudget.max_total_retries` is the global cap; cancel, explicit terminate, and wall-clock teardown drain parked retries without re-dispatch. |
+| Engine-level node re-execution from `ActionResult::Retry` | `not-present` | `ActionResult` intentionally has no `Retry` variant in the current public surface, and there is no `unstable-retry-scheduler` feature in `nebula-action` or `nebula-engine`. Future result-driven retry would be a new capability and must not be documented as implemented unless it is wired through the same persisted state/idempotency guarantees as operator-declared retry. |
 | Cross-restart retry of a checkpointed step | `best-effort` | Relies on checkpoint boundaries (§11.5); work since the last checkpoint may be replayed or lost. Not a per-attempt contract. |
 
-**[L2]** Canon debt: until the `planned` row above moves to `implemented`, no public API, trait variant, or docs comment may describe engine-level retry as a current capability. The `ActionResult::Retry` variant is gated behind the `unstable-retry-scheduler` feature flag in `nebula-action` (and mirrored by `nebula-engine`) so that default builds do not expose the type. Track this row as an **open invariant debt** — revisit whenever `ActionResult`, `ExecutionRepo`, or attempt accounting is touched; the gate must be removed and the scheduler wired in the same PR that promotes this row to `implemented`.
+**[L2]** Invariant: docs and public APIs must name the retry trigger. **Operator-declared retry** is implemented engine behavior. **Result-driven retry** is not a current `ActionResult` capability. Any future `ActionResult::Retry`-style surface must ship with persisted attempt accounting, idempotency, restart recovery, and engine tests in the same change; otherwise it is a false capability under §4.5.
 
 ### 11.3 Idempotency
 
@@ -455,7 +456,7 @@ Tied seams: ADR-0028 cross-crate invariants (rotation/refresh boundaries between
 ## 14. Anti-patterns — do not ship
 
 - **[L1]** **Two truths:** execution state in DB says X, channel/queue says Y, with no formal reconciliation story. (See §12.2.)
-- **[L1]** **Phantom types:** enum variants or trait methods the engine **rejects at runtime** — e.g. `ActionResult::Retry` with no persisted accounting. **Implement end-to-end or delete.**
+- **[L1]** **Phantom types:** enum variants or trait methods the engine **rejects at runtime** — e.g. reintroducing an `ActionResult::Retry`-style variant without persisted accounting. **Implement end-to-end or delete.**
 - **[L1]** **Discard-and-log workers:** a dispatch loop that drains an outbox and “handles” commands with `tracing::info!` only — **not** a consumer; it is a leak.
 - **[L1]** **Validation-as-a-side-tool:** workflow validation only at `/validate` while **activation skips** it.
 - **[L1]** **Green tests, wrong product:** shortcuts that pass tests but violate §12 (e.g. `String` errors in new library crates, new `ExecutionControl` semantics that bypass storage).

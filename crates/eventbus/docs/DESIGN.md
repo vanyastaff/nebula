@@ -66,13 +66,9 @@
 
 ## 6. Известные напряжения / долг
 
-1. **Alias-имена в доках ≠ реальные экспорты.** `lib.rs:25-32` и `README.md:35-40` описывают API как `Outcome` / `Filter<E>` / `Registry` / `Scope` / `Stats`; реальные — `PublishOutcome` / `EventFilter` / `EventBusRegistry` / `SubscriptionScope` / `EventBusStats` (`lib.rs:146-155`). `AGENTS.md:13` объявляет lib.rs авторитетным, но `lib.rs:25-32` сам использует те же алиасы.
-2. **README выдумывает вариант `Lagged`.** `README.md:37` / `lib.rs:29` упоминают `Lagged` в `Outcome`; в `PublishOutcome` (`outcome.rs:6-15`) такого варианта нет, а `NoSubscribers` на деле `DroppedNoSubscribers`.
-3. **Plan-phase язык в коде.** `lib.rs:100-108` — «in-memory only in Phase 2… Persistence planned for Phase 3»; нарушает правило «no plan IDs in committed code» и противоречит README Non-goals (`README.md:50`).
-4. **Стейл-метрики в README.** `README.md:58` — «3 unit tests and 2 integration tests»; фактически в одном `bus.rs` ~25 тестов; last-reviewed `2026-04-17` (`README.md:5`).
-5. **Discipline-trap.** Фильтр, не матчащий ничего, крутит `recv()` бесконечно — задокументировано как anti-pattern (`filtered_subscriber.rs:16-19`), но структурно не закрыто.
-6. **`Block` в sync `emit()` молча ведёт себя как `DropOldest`** (`bus.rs:97`, `policy.rs:26-27`) — задокументировано, но вызывающий легко промахнётся мимо `emit_awaited`.
-7. **`dropped_count` = сумма per-subscriber лагов** (N подписчиков × 1 событие = N drops) — намеренно (`stats.rs:8-23`), но при чтении метрик легко неверно интерпретировать.
+1. **Discipline-trap.** Фильтр, не матчащий ничего, крутит `recv()` бесконечно — задокументировано как anti-pattern (`filtered_subscriber.rs:16-19`), но структурно не закрыто.
+2. **`Block` в sync `emit()` молча ведёт себя как `DropOldest`** (`bus.rs:97`, `policy.rs:26-27`) — задокументировано, но вызывающий легко промахнётся мимо `emit_awaited`.
+3. **`dropped_count` = сумма per-subscriber лагов** (N подписчиков × 1 событие = N drops) — намеренно (`stats.rs:8-23`), но при чтении метрик легко неверно интерпретировать.
 
 ## 7. Роль в пост-0092 credential/resource модели
 
@@ -80,4 +76,4 @@
 
 ## 8. Forward design / открытые вопросы
 
-Крейт стабилен; целевых изменений в нём не планируется. Долг — преимущественно документационный (пп. 1–4 §6: выровнять alias-имена и убрать plan-phase язык из `lib.rs`). Единственный реальный архитектурный долг **вне** этого крейта: `ExecutionEvent` в `nebula-engine` всё ещё на raw `mpsc` — миграция на eventbus нужна для multi-subscriber (`project_eventbus_status`); это работа в engine, не здесь.
+Крейт стабилен; целевых изменений в нём не планируется. Оставшийся долг — преимущественно поведенческая документация вокруг edge-case семантики (§6). `nebula-engine` уже использует `EventBus<ExecutionEvent>` для execution fan-out; оставшиеся `mpsc` каналы в engine относятся к внутренним resume/control loops, а не к этой шине.

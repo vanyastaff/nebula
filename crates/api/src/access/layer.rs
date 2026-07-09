@@ -78,7 +78,8 @@ mod tests {
         routing::get,
     };
     use nebula_core::{
-        OrgId, OrgRole, Permission, Principal, TenantContext, WorkspaceId, WorkspaceRole,
+        OrgId, OrgRole, Permission, Principal, TenantContext, WorkspaceGrant, WorkspaceId,
+        WorkspaceRole,
     };
     use tower::ServiceExt;
 
@@ -119,12 +120,13 @@ mod tests {
     }
 
     fn tenant_with_workspace_role(workspace_role: Option<WorkspaceRole>) -> TenantContext {
+        let workspace_id = WorkspaceId::new();
         TenantContext {
             org_id: OrgId::new(),
-            workspace_id: Some(WorkspaceId::new()),
+            workspace_id: Some(workspace_id),
             principal: Principal::System,
             org_role: Some(OrgRole::OrgMember),
-            workspace_role,
+            workspace_role: workspace_role.map(|role| WorkspaceGrant::new(workspace_id, role)),
         }
     }
 

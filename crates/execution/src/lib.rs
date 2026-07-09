@@ -10,9 +10,9 @@
 //! **Role:** Execution State Machine + Journal + Idempotency Types.
 //! See `crates/execution/README.md`.
 //!
-//! **Maturity:** `stable` — state machine, journal, and plan types in active use.
-//! The engine does not retry nodes; the canonical retry surface is
-//! `nebula-resilience` inside an action.
+//! **Maturity:** `stable` — state machine, journal, plan, and retry-state shapes in active use.
+//! The engine owns operator-declared node retry; `nebula-resilience` remains the in-action
+//! outbound-call retry surface.
 //!
 //! ## Core Types
 //!
@@ -24,8 +24,8 @@
 //! - [`ExecutionResult`] — post-execution summary.
 //! - [`JournalEntry`] — audit log entry; backs `execution_journal` append-only table.
 //! - [`NodeOutput`], [`ExecutionOutput`] — node output data with metadata.
-//! - [`NodeAttempt`] — attempt-keyed shape used by `save_node_output`; the engine does not retry
-//!   nodes, but the type still backs attempt-numbered output rows.
+//! - [`NodeAttempt`] — attempt-keyed shape used by `save_node_output`; operator-declared
+//!   engine retry advances the attempt number on re-dispatch.
 //! - [`IdempotencyKey`] — deterministic key `{execution_id}:{node_id}:{attempt}`; dedup enforcement
 //!   lives behind the storage port's idempotency guard.
 //! - [`ExecutionError`] — typed error for state machine violations.
@@ -33,7 +33,8 @@
 //! ## Non-goals
 //!
 //! Not the orchestrator (`nebula-engine`), not the storage implementation (`nebula-storage`),
-//! not a retry scheduler (`nebula-resilience` inside an action is the canonical retry surface).
+//! not a retry scheduler (the engine drives operator-declared retry; `nebula-resilience` covers
+//! in-action outbound calls).
 
 pub mod attempt;
 pub mod context;

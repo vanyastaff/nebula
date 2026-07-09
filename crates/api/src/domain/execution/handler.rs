@@ -301,10 +301,11 @@ pub async fn start_execution(
     // state is created or any Start signal is enqueued. `enqueue_start_scoped`
     // requires the `ValidatedWorkflow` witness produced here, so the dispatch
     // path is type-prevented from skipping validation.
-    let definition = state
-        .workflow_definition_scoped(&scope, workflow_id_parsed)
+    let version = state
+        .workflow_published_version_scoped(&scope, workflow_id_parsed)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("Workflow {workflow_id} not found")))?;
+    let definition = version.definition.clone();
     let validated = validate_for_dispatch(&definition)?;
 
     // Generate new execution ID
@@ -325,6 +326,7 @@ pub async fn start_execution(
     // payload) is attached so resume can feed entry nodes the same value
     // (#311).
     let mut exec_state = ExecutionState::new(execution_id, workflow_id_parsed, &[]);
+    exec_state.set_workflow_version_number(version.number);
     if let Some(input) = payload.input.clone() {
         exec_state.set_workflow_input(input);
     }

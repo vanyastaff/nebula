@@ -259,6 +259,11 @@ impl TestStores {
     /// Persist a workflow definition as the published version 0 so the
     /// resume path's `get_published` lookup resolves it.
     async fn save_workflow(&self, wf: &WorkflowDefinition) {
+        self.save_workflow_version(wf, 0, true).await;
+    }
+
+    /// Persist a workflow definition under an explicit version number.
+    async fn save_workflow_version(&self, wf: &WorkflowDefinition, number: u32, published: bool) {
         let scope = crate::store_seam::single_tenant_scope();
         let definition = serde_json::to_value(wf).unwrap();
         self.versions
@@ -266,8 +271,8 @@ impl TestStores {
                 &scope,
                 nebula_storage_port::dto::WorkflowVersionRecord {
                     workflow_id: wf.id.to_string(),
-                    number: 0,
-                    published: true,
+                    number,
+                    published,
                     pinned: false,
                     definition,
                 },
@@ -1419,13 +1424,17 @@ async fn resume_requires_workflow_repo() {
     let registry = Arc::new(ActionRegistry::new());
     let (engine, _) = make_engine(registry);
     let stores = TestStores::new();
+    let execution_id = ExecutionId::new();
+    let workflow_id = WorkflowId::new();
+    let exec_state = ExecutionState::new(execution_id, workflow_id, &[]);
+    let state_json = serde_json::to_value(&exec_state).unwrap();
+    stores
+        .inject_state(execution_id, workflow_id, state_json)
+        .await;
     let engine = engine.with_execution_stores(stores.execution_stores());
     // No workflow store attached.
     let err = engine
-        .resume_execution(
-            &crate::store_seam::single_tenant_scope(),
-            ExecutionId::new(),
-        )
+        .resume_execution(&crate::store_seam::single_tenant_scope(), execution_id)
         .await
         .unwrap_err();
     assert!(
@@ -1587,6 +1596,52 @@ async fn resume_executes_remaining_nodes_after_crash() {
         result.node_output(&n3).is_some(),
         "n3 should have been re-executed"
     );
+}
+
+#[tokio::test]
+async fn resume_uses_persisted_workflow_version_number_not_latest_published() {
+    let registry = Arc::new(ActionRegistry::new());
+    registry.register_stateless_instance(
+        ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+        EchoHandler,
+    );
+
+    let stores = TestStores::new();
+    let (engine, _) = make_engine(registry);
+
+    let n = node_key!("n");
+    let wf_v1 = make_workflow(
+        vec![NodeDefinition::new(n.clone(), "V1", "core", "echo").unwrap()],
+        vec![],
+    );
+    stores.save_workflow_version(&wf_v1, 1, true).await;
+
+    let mut wf_v2 = make_workflow(
+        vec![NodeDefinition::new(n.clone(), "V2", "core", "missing").unwrap()],
+        vec![],
+    );
+    wf_v2.id = wf_v1.id;
+    stores.save_workflow_version(&wf_v2, 2, true).await;
+
+    let execution_id = ExecutionId::new();
+    let mut exec_state = ExecutionState::new(execution_id, wf_v1.id, std::slice::from_ref(&n));
+    exec_state.set_workflow_version_number(1);
+    exec_state.set_workflow_input(serde_json::json!("from-v1"));
+    exec_state
+        .transition_status(ExecutionStatus::Running)
+        .unwrap();
+
+    let state_json = serde_json::to_value(&exec_state).unwrap();
+    stores
+        .inject_state(execution_id, wf_v1.id, state_json)
+        .await;
+
+    let engine = stores.attach(engine);
+    let scope = crate::store_seam::single_tenant_scope();
+    let result = engine.resume_execution(&scope, execution_id).await.unwrap();
+
+    assert!(result.is_success(), "resume should run against pinned v1");
+    assert_eq!(result.node_output(&n), Some(&serde_json::json!("from-v1")));
 }
 
 /// Production's ONLY entry point for validating a brand-new execution is

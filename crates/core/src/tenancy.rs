@@ -17,7 +17,25 @@ pub struct TenantContext {
     pub workspace_id: Option<WorkspaceId>,
     pub principal: Principal,
     pub org_role: Option<OrgRole>,
-    pub workspace_role: Option<WorkspaceRole>,
+    pub workspace_role: Option<WorkspaceGrant>,
+}
+
+/// A workspace role bound to the workspace it was resolved from.
+///
+/// Keeping the workspace identifier next to the role prevents a caller from
+/// accidentally reusing a role from workspace A while authorizing workspace B.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkspaceGrant {
+    pub workspace_id: WorkspaceId,
+    pub role: WorkspaceRole,
+}
+
+impl WorkspaceGrant {
+    /// Construct a workspace-scoped role grant.
+    #[must_use]
+    pub const fn new(workspace_id: WorkspaceId, role: WorkspaceRole) -> Self {
+        Self { workspace_id, role }
+    }
 }
 
 impl TenantContext {
@@ -25,17 +43,32 @@ impl TenantContext {
     /// Returns `Ok(())` if permitted, or an error description if not.
     pub fn require(&self, permission: Permission) -> Result<(), PermissionDenied> {
         if let Some(required_ws_role) = permission.required_workspace_role() {
-            // Workspace-level permission
-            match self.workspace_role {
-                Some(actual) if actual >= required_ws_role => Ok(()),
-                Some(actual) => Err(PermissionDenied {
+            match (self.workspace_id, self.workspace_role) {
+                (Some(context_workspace), Some(grant))
+                    if grant.workspace_id == context_workspace
+                        && grant.role >= required_ws_role =>
+                {
+                    Ok(())
+                },
+                (Some(context_workspace), Some(grant))
+                    if grant.workspace_id == context_workspace =>
+                {
+                    Err(PermissionDenied {
+                        permission,
+                        denial: PermissionDenial::Workspace {
+                            required: required_ws_role,
+                            current: Some(grant.role),
+                        },
+                    })
+                },
+                (context_workspace, Some(grant)) => Err(PermissionDenied {
                     permission,
-                    denial: PermissionDenial::Workspace {
-                        required: required_ws_role,
-                        current: Some(actual),
+                    denial: PermissionDenial::WorkspaceScopeMismatch {
+                        context: context_workspace,
+                        grant: grant.workspace_id,
                     },
                 }),
-                None => Err(PermissionDenied {
+                (_, None) => Err(PermissionDenied {
                     permission,
                     denial: PermissionDenial::Workspace {
                         required: required_ws_role,
@@ -112,6 +145,14 @@ pub enum PermissionDenial {
         /// The caller's workspace role, or `None` if no workspace role is present.
         current: Option<WorkspaceRole>,
     },
+    /// A workspace role was present but belonged to a different workspace than the
+    /// request context.
+    WorkspaceScopeMismatch {
+        /// The workspace being authorized, or `None` when no workspace context exists.
+        context: Option<WorkspaceId>,
+        /// The workspace from which the role grant was resolved.
+        grant: WorkspaceId,
+    },
     /// An org-scoped permission was required but the caller's org role was absent or
     /// below the minimum.
     Org {
@@ -132,6 +173,15 @@ impl fmt::Display for PermissionDenial {
                 write!(
                     f,
                     "workspace role {required} required, current {current_display}"
+                )
+            },
+            Self::WorkspaceScopeMismatch { context, grant } => {
+                let context_display = context
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| "none".to_owned());
+                write!(
+                    f,
+                    "workspace role grant belongs to workspace {grant}, current context {context_display}"
                 )
             },
             Self::Org { required, current } => {
@@ -190,6 +240,19 @@ mod tests {
             principal: Principal::User(UserId::new()),
             org_role,
             workspace_role: None,
+        }
+    }
+
+    fn context_with_workspace_grant(
+        workspace_id: WorkspaceId,
+        workspace_role: WorkspaceRole,
+    ) -> TenantContext {
+        TenantContext {
+            org_id: OrgId::new(),
+            workspace_id: Some(workspace_id),
+            principal: Principal::User(UserId::new()),
+            org_role: Some(OrgRole::OrgMember),
+            workspace_role: Some(WorkspaceGrant::new(workspace_id, workspace_role)),
         }
     }
 
@@ -271,5 +334,40 @@ mod tests {
             ws_str, org_str,
             "workspace and org denial Display strings must differ"
         );
+    }
+
+    #[test]
+    fn workspace_permission_requires_grant_for_same_workspace() {
+        let workspace_a = WorkspaceId::new();
+        let workspace_b = WorkspaceId::new();
+        let ctx = TenantContext {
+            org_id: OrgId::new(),
+            workspace_id: Some(workspace_b),
+            principal: Principal::User(UserId::new()),
+            org_role: Some(OrgRole::OrgMember),
+            workspace_role: Some(WorkspaceGrant::new(
+                workspace_a,
+                WorkspaceRole::WorkspaceAdmin,
+            )),
+        };
+
+        let err = ctx
+            .require(Permission::WorkflowDelete)
+            .expect_err("workspace A grant must not authorize workspace B");
+        assert_eq!(
+            err.denial,
+            PermissionDenial::WorkspaceScopeMismatch {
+                context: Some(workspace_b),
+                grant: workspace_a,
+            }
+        );
+    }
+
+    #[test]
+    fn workspace_permission_allows_matching_workspace_grant() {
+        let workspace_id = WorkspaceId::new();
+        let ctx = context_with_workspace_grant(workspace_id, WorkspaceRole::WorkspaceAdmin);
+
+        assert!(ctx.require(Permission::WorkflowDelete).is_ok());
     }
 }

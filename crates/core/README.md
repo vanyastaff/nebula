@@ -39,7 +39,7 @@ workspace — extend `nebula-core` deliberately (canon §3.10).
 - `CoreError` — typed error for this crate (thiserror, no anyhow).
 - `OrgRole`, `WorkspaceRole`, `effective_workspace_role` — organization and workspace role enums for RBAC (module `role`).
 - `Permission` — granular permission definitions (module `permission`). `PermissionDenied` — access-control error type (module `tenancy`).
-- `TenantContext`, `ResolvedIds` — multi-tenant context and resolved organization/workspace IDs (module `tenancy`).
+- `TenantContext`, `WorkspaceGrant`, `ResolvedIds` — multi-tenant context, workspace-bound role grants, and resolved organization/workspace IDs (module `tenancy`).
 - `Slug`, `SlugKind`, `SlugError`, `is_prefixed_ulid()` — validated slug strings for human-readable identifiers (module `slug`).
 
 Credential-specific vocabulary (`CredentialEvent`) lives in `nebula-credential`. `CredentialId` is defined in this crate (module `id`). The `AuthScheme` trait and `AuthPattern` enum are canonical in this crate (module `auth`); `nebula-credential` re-exports them for discoverability.

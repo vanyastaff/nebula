@@ -87,6 +87,7 @@ pub struct DurableExecutionEmitter {
     // Cached at construction from `TriggerRuntimeContext`.
     trigger_id: NodeKey,
     scope: Scope,
+    workflow_version_number: Option<u32>,
 }
 
 impl std::fmt::Debug for DurableExecutionEmitter {
@@ -120,7 +121,16 @@ impl DurableExecutionEmitter {
             resolver,
             trigger_id,
             scope,
+            workflow_version_number: None,
         }
+    }
+
+    /// Pin execution rows created by this emitter to the published
+    /// workflow-version record that was validated before dispatch.
+    #[must_use]
+    pub fn with_workflow_version_number(mut self, number: u32) -> Self {
+        self.workflow_version_number = Some(number);
+        self
     }
 
     /// Inner emit implementation with structured instrumentation.
@@ -159,6 +169,9 @@ impl DurableExecutionEmitter {
         let candidate_id = ExecutionId::new();
 
         let mut exec_state = ExecutionState::new(candidate_id, workflow_id, &[]);
+        if let Some(number) = self.workflow_version_number {
+            exec_state.set_workflow_version_number(number);
+        }
         exec_state.set_workflow_input(input.clone());
         let state_json = serde_json::to_value(&exec_state)
             .map_err(|e| ActionError::fatal(format!("serialize execution state: {e}")))?;
