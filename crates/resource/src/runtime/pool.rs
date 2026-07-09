@@ -23,7 +23,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use async_trait::async_trait;
 use tokio::sync::Semaphore;
 
 use crate::{
@@ -426,7 +425,6 @@ where
 // runs no checkout/destroy/fence loop, and never compares epochs — that is all
 // the framework's job.
 
-#[async_trait]
 impl<R> Topology<R> for Pooled<R>
 where
     R: Provider<Topology = Pooled<R>> + PoolProvider + Clone + Send + Sync + 'static,

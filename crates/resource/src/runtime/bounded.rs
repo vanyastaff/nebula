@@ -26,7 +26,6 @@ use std::{
     },
 };
 
-use async_trait::async_trait;
 use tokio::sync::{Semaphore, TryAcquireError};
 
 use crate::{
@@ -201,7 +200,6 @@ impl<R: Provider> Bounded<R> {
 // reused instance, reset on release); `Capped` / `Unbounded` destroy every
 // instance on release.
 
-#[async_trait]
 impl<R> Topology<R> for Bounded<R>
 where
     R: Provider<Topology = Bounded<R>>
@@ -348,6 +346,7 @@ where
 mod tests {
     use std::sync::atomic::AtomicBool;
 
+    use async_trait::async_trait;
     use nebula_core::{ExecutionId, ResourceKey, resource_key};
 
     use super::*;

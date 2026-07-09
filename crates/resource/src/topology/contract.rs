@@ -26,9 +26,8 @@
 //! [`SlotIdentity`]: crate::dedup::SlotIdentity
 //! [`InstanceStore`]: crate::topology::store::InstanceStore
 
-use std::time::Duration;
+use std::{future::Future, time::Duration};
 
-use async_trait::async_trait;
 use tokio::sync::OwnedSemaphorePermit;
 
 use crate::{
@@ -380,12 +379,16 @@ pub struct MaintenanceSchedule {
 ///
 /// # Async dispatch
 ///
-/// `#[async_trait]` is used because topologies are reached **monomorphically**
-/// inside `ManagedResource<R>` — the one `Box<dyn Future>` per call is
-/// negligible next to the I/O the hooks do. Sync hooks (`try_reserve`,
-/// `entry_instance`, `into_instance`, `phase`, `load`, `pools`, …) stay plain
-/// sync.
-#[async_trait]
+/// The async hooks are plain `async fn` in trait (RPITIT), **not**
+/// `#[async_trait]`: topologies are reached monomorphically inside
+/// `ManagedResource<R>` and are never trait objects (see "Not a trait object"
+/// above), so the boxed future `#[async_trait]` allocates per call bought
+/// nothing. It cost 3 heap allocations per cache-hit acquire (`accept`,
+/// `prepare`, `on_release`) — see `benches/acquire.rs`. An implementor writes
+/// plain `async fn` bodies; only the returned future must be `Send`.
+///
+/// Sync hooks (`try_reserve`, `entry_instance`, `into_instance`, `phase`,
+/// `load`, `pools`, …) stay plain sync.
 pub trait Topology<R: Provider>: Send + Sync + 'static {
     /// The leasable unit the framework stores and the guard holds.
     ///
@@ -431,12 +434,12 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
     ///
     /// Returns the create/clone error; the framework fails the acquire and
     /// drops the held permit, releasing capacity.
-    async fn create_entry(
+    fn create_entry(
         &self,
         resource: &R,
         config: &R::Config,
         ctx: &ResourceContext,
-    ) -> Result<Self::Entry, Error>;
+    ) -> impl Future<Output = Result<Self::Entry, Error>> + Send;
 
     /// Project a held entry to its leasable instance — the guard's `Deref`
     /// target. Pooled: `&entry.instance`; Resident: the entry itself.
@@ -463,13 +466,13 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
     /// ([`into_instance`](Topology::into_instance) → [`Provider::destroy`]) and
     /// loops to the next idle entry, then `create_entry`. Default `true` (no
     /// post-checkout policy).
-    async fn accept(
+    fn accept(
         &self,
         _entry: &mut Self::Entry,
         _resource: &R,
         _ctx: &ResourceContext,
-    ) -> bool {
-        true
+    ) -> impl Future<Output = bool> + Send {
+        async { true }
     }
 
     /// Per-acquire session-init on the entry about to be leased (Pooled
@@ -478,13 +481,13 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
     /// # Errors
     ///
     /// `Err` ⇒ the framework destroys the entry and fails the acquire.
-    async fn prepare(
+    fn prepare(
         &self,
         _entry: &mut Self::Entry,
         _resource: &R,
         _ctx: &ResourceContext,
-    ) -> Result<(), Error> {
-        Ok(())
+    ) -> impl Future<Output = Result<(), Error>> + Send {
+        async { Ok(()) }
     }
 
     /// Reset / recycle a released entry before the framework returns it (rollback
@@ -502,8 +505,12 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
     /// the hook handles.
     ///
     /// Default `Ok(true)` (no reset; recycle if the topology pools).
-    async fn on_release(&self, _entry: &mut Self::Entry, _resource: &R) -> Result<bool, Error> {
-        Ok(true)
+    fn on_release(
+        &self,
+        _entry: &mut Self::Entry,
+        _resource: &R,
+    ) -> impl Future<Output = Result<bool, Error>> + Send {
+        async { Ok(true) }
     }
 
     /// Whether a released, kept entry returns to the framework idle store.
@@ -610,14 +617,14 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
     ///
     /// Returns the first hook error; the framework surfaces it to the rotation
     /// dispatch caller.
-    async fn dispatch_credential_hook(
+    fn dispatch_credential_hook(
         &self,
         _resource: &R,
         _store: &InstanceStore<Self::Entry>,
         _slot: &str,
         _refresh: bool,
-    ) -> Result<(), Error> {
-        Ok(())
+    ) -> impl Future<Output = Result<(), Error>> + Send {
+        async { Ok(()) }
     }
 
     /// Update the config fingerprint so stale idle entries evict on the next
@@ -667,7 +674,6 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoTopology;
 
-#[async_trait]
 impl<R: Provider> Topology<R> for NoTopology {
     type Entry = R::Instance;
 
