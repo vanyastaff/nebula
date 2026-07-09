@@ -21,7 +21,8 @@
 //! ## Canon
 //!
 //! - action dispatch by trait.
-//! - retry surface: dispatch only; engine-level re-execution is `planned`.
+//! - retry surface: dispatch is here; operator-declared engine retry is driven by the
+//!   outer frontier loop (`retry_policy` -> `WaitingRetry` -> timer re-dispatch).
 //! - isolation honesty: actions run in-process; out-of-process isolation is retired (ADR-0091).
 
 pub mod blob;

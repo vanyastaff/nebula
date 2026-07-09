@@ -73,11 +73,12 @@ retry-механика. `journal.rs` (262) — WAL-события. `idempotency.
 
 ## 6. Известные напряжения / долг (честно)
 
-1. **Док vs код: engine-retry.** `lib.rs:13-14`, `README.md:68-72` (§11.2 «engine does not retry nodes;
-   attempt counter never advances past 1») и `AGENTS.md:23` прямо противоречат коду: retry-рёбра
-   `Failed→WaitingRetry→Ready` задокументированы (`transition.rs:54-62`), `schedule_node_retry` ставит
-   `next_attempt_at` (`state.rs:568`), есть `has_exhausted_retry_budget` (`state.rs:311`) и
-   `max_total_retries` (`context.rs:63-76`). Retry-модель реализована — доки крейта не обновлены.
+1. **Граница retry зафиксирована.** Engine-level retry реализован только как operator-declared
+   retry (`NodeDefinition.retry_policy` / `WorkflowConfig.retry_policy`): retry-рёбра
+   `Failed→WaitingRetry→Ready` задокументированы (`transition.rs`), `schedule_node_retry` ставит
+   `next_attempt_at`, есть `has_exhausted_retry_budget` и `max_total_retries`. Крейт хранит
+   state/idempotency-формы; решение и re-dispatch остаются в `nebula-engine`. `ActionResult::Retry`
+   не является текущей публичной поверхностью.
 2. **README stale: «5 panic! как invariant guards»** (`README.md:108-109`). В lib-коде panic! нет вообще;
    все 7 вхождений — `#[cfg(test)]` (`status.rs:320,338`; `state.rs:1370,1433`; `result.rs:228,247`;
    `output.rs:184`). Долг погашен, README не обновлён.
@@ -101,7 +102,8 @@ retry-механика. `journal.rs` (262) — WAL-события. `idempotency.
 
 ## 8. Forward design / открытые вопросы
 
-Крейт стабилен. Накопившийся долг — **документационный, не структурный**: §6.1–6.4 закрываются синхронизацией
-crate-доков и README с реальной retry-моделью (включая выбор canon-формулировки §11.2). Единственная кодовая
-зависимость от чужого роадмапа — swap `ExecutionTerminationCode` → структурный `ErrorCode` в action-v2 (§6.6);
-до тех пор opaque-код стабилен по контракту. Структурных открытых вопросов нет.
+Крейт стабилен. Накопившийся долг — **документационный, не структурный**: §6.2–6.4 закрываются синхронизацией
+crate-доков и README. Retry-модель синхронизирована с canon §11.2: execution хранит state/idempotency-формы,
+engine делает operator-declared retry, `ActionResult::Retry` не является текущей публичной поверхностью.
+Единственная кодовая зависимость от чужого роадмапа — swap `ExecutionTerminationCode` → структурный
+`ErrorCode` в action-v2 (§6.6); до тех пор opaque-код стабилен по контракту. Структурных открытых вопросов нет.

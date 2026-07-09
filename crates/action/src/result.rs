@@ -21,10 +21,10 @@ use crate::port_key::PortKey;
 /// - `Wait` → pause until external event, timer, or approval
 /// - `Terminate` → end the whole execution explicitly (Stop / Fail nodes)
 ///
-/// The engine does not retry actions: re-execution from a result variant is
-/// not part of the engine contract. The canonical retry surface is the
-/// `nebula-resilience` pipeline composed inside an action around outbound
-/// calls.
+/// `ActionResult` does not trigger action retry: re-execution from a result
+/// variant is not part of the engine contract. Operator-declared engine retry
+/// is driven by `retry_policy` plus retryable failures; in-action retry around
+/// outbound calls is composed with `nebula-resilience`.
 ///
 /// All output fields are wrapped in [`ActionOutput<T>`] to support binary,
 /// reference, and stream data alongside structured values.
