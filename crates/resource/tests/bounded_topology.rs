@@ -102,7 +102,6 @@ impl Provider for Seats {
 
 nebula_resource::no_credential_slots!(Seats);
 
-#[async_trait::async_trait]
 impl BoundedProvider for Seats {
     async fn reset(&self, _instance: &mut Seat) -> Result<(), Error> {
         self.reset_count.fetch_add(1, Ordering::SeqCst);

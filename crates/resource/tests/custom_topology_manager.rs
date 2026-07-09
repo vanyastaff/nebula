@@ -156,7 +156,6 @@ impl FfmpegPool {
     }
 }
 
-#[async_trait::async_trait]
 impl Topology<Ffmpeg> for FfmpegPool {
     // The entry IS the leasable transcoder. The framework stores it, fences it,
     // and hands it back on checkout — the author never touches the store.

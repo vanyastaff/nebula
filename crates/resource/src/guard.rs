@@ -841,7 +841,6 @@ mod tests {
     /// are never exercised — `create_entry` therefore just errors.
     struct FixtureTopology;
 
-    #[async_trait::async_trait]
     impl<R: Provider> Topology<R> for FixtureTopology {
         type Entry = R::Instance;
 

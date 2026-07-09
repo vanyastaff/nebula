@@ -23,9 +23,7 @@
 //! [`BoundedProvider`] hook trait so the framework
 //! [`Bounded`](crate::topology::Bounded) topology can drive its reset policy.
 
-use std::num::NonZeroUsize;
-
-use async_trait::async_trait;
+use std::{future::Future, num::NonZeroUsize};
 
 use crate::{error::Error, resource::Provider};
 
@@ -64,7 +62,6 @@ pub enum BoundedMode {
 /// calls [`reset`](BoundedProvider::reset); `Capped` / `Unbounded` destroy
 /// every instance on release and never reset, so the default no-op suffices for
 /// them.
-#[async_trait]
 pub trait BoundedProvider: Provider {
     /// Reset the single exclusive instance before it is reissued to the next
     /// acquirer (roll back a transaction, clear per-session state, re-arm a
@@ -81,7 +78,10 @@ pub trait BoundedProvider: Provider {
     /// surfaces the error to an awaited
     /// [`release()`](crate::guard::ResourceGuard::release); a fresh instance is
     /// built on the next acquire. The default implementation never fails.
-    async fn reset(&self, _instance: &mut Self::Instance) -> Result<(), Error> {
-        Ok(())
+    fn reset(
+        &self,
+        _instance: &mut Self::Instance,
+    ) -> impl Future<Output = Result<(), Error>> + Send {
+        async { Ok(()) }
     }
 }

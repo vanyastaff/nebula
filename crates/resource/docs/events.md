@@ -31,14 +31,14 @@ need to handle a lag error explicitly.
 
 ## Event Catalog
 
-Fourteen `#[non_exhaustive]` variants; new variants may be added in minor
+Sixteen `#[non_exhaustive]` variants; new variants may be added in minor
 releases without a major bump. Every variant carries a `ResourceKey` — this
 crate reports strictly per-resource (the per-slot rotation fan-out lives **in
 this crate**, co-located with `Manager` and relocated from `nebula-engine` per
 ADR-0092; it reports per-resource, so there is no aggregate `CredentialRefreshed` /
 `CredentialRevoked` event and no `CredentialId` in any payload).
 
-### Generic lifecycle variants (10)
+### Generic lifecycle variants (12)
 
 | Variant | Emitted when | Key fields |
 |---------|-------------|------------|
@@ -52,7 +52,8 @@ ADR-0092; it reports per-resource, so there is no aggregate `CredentialRefreshed
 | `RetryAttempt` | A retry is about to sleep after a transient acquire failure | `key`, `attempt: u32`, `backoff: Duration`, `error: String` |
 | `BackpressureDetected` | Pool backpressure was detected (semaphore full) | `key` |
 | `RecoveryGateChanged` | A recovery gate transitioned | `key`, `state: String` |
-| `HoldDeadlineExceeded` | A lease was still held past `Provider::max_hold_duration` (leak/hang detection, warn-only) | `key`, `held: Duration`, `deadline: Duration` |
+| `MaintenanceEvicted` | A background pool-maintenance sweep evicted idle-timed-out, max-lifetime-exceeded, stale-fingerprint, or revoked idle instances. Emitted only when at least one instance was evicted | `key`, `evicted: usize` |
+| `HoldDeadlineExceeded` | A lease was still held past `Provider::max_hold_duration` (leak/hang detection, warn-only) | `key`, `held: Duration`, `deadline: Duration`, `execution_id: Option<ExecutionId>`, `workflow_id: Option<WorkflowId>`, `span_id: Option<SpanId>` |
 
 ### Slot-rotation variants (4)
 

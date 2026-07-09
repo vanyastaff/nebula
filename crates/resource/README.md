@@ -2,7 +2,7 @@
 name: nebula-resource
 role: Bulkhead Pool (Release It! ch "Stability Patterns — Bulkhead"; resource lifecycle acquire / health / release)
 status: frontier
-last-reviewed: 2026-07-02
+last-reviewed: 2026-07-09
 canon-invariants: [L2-11.4, L2-13.3]
 related: [nebula-core, nebula-schema, nebula-error, nebula-resilience, nebula-credential, nebula-action]
 ---
@@ -23,11 +23,15 @@ The v4 surface — singular `type Credential` is dropped in favor of typed crede
 
 ### `Provider` trait — 3 associated types, slot fields on Self
 
+Only `Config` / `Instance` / `Topology`, `key()`, and `create()` are required;
+every other method has a default.
+
 ```rust
-pub trait Provider: Send + Sync + 'static {
+pub trait Provider: HasCredentialSlots + Send + Sync + Sized + 'static {
     type Config:   ResourceConfig;
     type Instance: Send + Sync + 'static;
-    type Topology: Topology<Self>;  // Pooled<Self> | Resident<Self> | custom Topology<R>
+    // Pooled<Self> | Resident<Self> | Bounded<Self> | custom Topology<R>
+    type Topology: Topology<Self>;
 
     fn key() -> ResourceKey;
 
@@ -49,9 +53,30 @@ pub trait Provider: Send + Sync + 'static {
     async fn on_credential_revoke(&self, slot_name: &str, instance: &Self::Instance)
         -> Result<(), Error> { Ok(()) }
 
-    async fn check    (&self, instance: &Self::Instance) -> Result<(), Error>;
-    async fn shutdown (&self, instance: &Self::Instance) -> Result<(), Error>;
-    async fn destroy  (&self, instance: Self::Instance)  -> Result<(), Error>;
+    /// Health probe. Default `Ok(())`; `check_cost` sets the maintenance
+    /// reaper's probe cadence (`Cheap` / `Moderate` / `Expensive`).
+    async fn check(&self, instance: &Self::Instance) -> Result<(), Error> { Ok(()) }
+    fn check_cost(&self) -> CheckCost { CheckCost::Cheap }
+
+    /// Quiesce before teardown. Default `Ok(())`.
+    async fn shutdown(&self, instance: &Self::Instance) -> Result<(), Error> { Ok(()) }
+
+    /// Consuming teardown, bounded by `cx.deadline` (ADR-0093). Default
+    /// `Ok(())` — the `Instance`'s sync `Drop` releases OS resources.
+    async fn destroy(&self, instance: Self::Instance, cx: TeardownCx)
+        -> Result<(), Error> { Ok(()) }
+
+    /// Wall-clock budget `TeardownCx` turns into `cx.deadline`.
+    fn teardown_budget(&self) -> Duration { Duration::from_secs(30) }
+
+    /// `None` disables the hold-deadline leak watchdog (diagnostic only —
+    /// it never force-releases a lease).
+    fn max_hold_duration() -> Option<Duration> { None }
+
+    /// Defaults derive from `Config`'s schema and `key()`; override to add
+    /// a description, version, or tags.
+    fn schema() -> ValidSchema { <Self::Config as HasSchema>::schema() }
+    fn metadata() -> ResourceMetadata { /* derived from Self::key() */ }
 }
 ```
 
@@ -105,7 +130,7 @@ impl Provider for Postgres {
 - A read accessor per slot field: `pub fn <field>_slot(&self) -> Option<Arc<CredentialGuard<C>>>` returning the resolved guard, or `None` until the framework binds it. Implementations read the credential through this accessor — never off the raw cell field. A pure derive cannot add or rewrite struct fields and `ManagedResource` hands out `Arc<R>` (no `&mut R`), so the author declares the `SlotCell` cell and the framework populates / rotates it through `&self` via `SlotCell::store`.
 - `impl HasCredentialSlots for Postgres` — order-sensitive epoch fold used by the engine's hot-reload path.
 
-Topology traits (`Pooled`, `Resident`, etc.) are always hand-written — the derive does not emit them.
+The per-topology hook trait (`PoolProvider` / `ResidentProvider` / `BoundedProvider`) is always hand-written — the derive does not emit it. Every hook has a default, so an empty `impl PoolProvider for Postgres {}` is enough to opt into pool topology.
 
 #### Field-type shape
 
@@ -135,14 +160,16 @@ The framework resolves declared `#[credential]` slots **before** invoking `Provi
 - `ResourceGuard` — RAII instance guard with `Owned`/`Guarded` modes; derefs to `R::Instance`, releases on drop; implements `Debug` (key + topology, no instance leak).
 - `ResourceRef<R>` — lazy reference type holding a `ResourceId` string + `PhantomData<R>`. Resolves to a `ResourceGuard<R>` via `.resolve(ctx).await`.
 - `RegistrationSpec` — the single registration param aggregate (see above).
-- `SlotIdentity` — collision-free structural resolved-credential identity (`Unbound` / `Structural`); the cross-tenant barrier.
+- `AcquireOptions` — per-call acquire knobs (`deadline`, `acquire_slow_threshold`); every `acquire_*` takes one.
+- `SlotIdentity`, `DedupKey` — collision-free structural resolved-credential identity (`Unbound` / `Structural`); the cross-tenant barrier, and the `(key, scope, slot_identity)` registry dedup key.
 - `ManagerConfig`, `RegisterOptions` — configuration surface.
 - `Registry`, `ManagedHandle` (sealed), `LookupOutcome` — type-erased storage + lookup result for registered resource instances.
 - `ResourceMetadata` — static descriptor: key, name, description, schema, version, tags.
 - `ResourceConfig` — operational config trait (no secrets); supertype `HasSchema`.
 - `SlotCell` — lock-free `ArcSwap`-based slot cell the framework populates/rotates (the public cell type; the internal `Cell` alias is no longer exported).
+- `TeardownCx`, `TeardownReason` — deadline + cause handed to `Provider::destroy` (ADR-0093 teardown contract).
 - `ReleaseQueue` — background worker pool for async cleanup. Drain on crash is best-effort; see §11.4 canon note.
-- `DrainTimeoutPolicy` — policy controlling drain operation timeout.
+- `DrainTimeoutPolicy`, `ShutdownConfig`, `ShutdownReport`, `ShutdownError` — `Manager::graceful_shutdown` drain policy, outcome, and typed failure.
 - `ReloadOutcome` — result of `Manager::reload_config` (`NoChange` / `SwappedImmediately`).
 - `Error`, `ErrorKind` — typed error with retry classification.
 - `ResourceContext` — execution context with cancellation and capability traits (`HasResources`, `HasCredentials`).
@@ -154,10 +181,18 @@ The framework resolves declared `#[credential]` slots **before** invoking `Provi
 - Open `Topology<R>` trait + framework topology structs `Pooled<R>` / `Resident<R>` / `Bounded<R>` (reached monomorphically through `Provider::Topology`; no dispatch enum — the framework owns the acquire loop).
 - Per-topology hook traits: `PoolProvider`, `ResidentProvider`, `BoundedProvider`.
 - Topology configs / constructors: `PoolConfig`, `ResidentConfig`, `BoundedMode` (`Bounded::capped`/`exclusive`/`unbounded`).
+- `PoolStats` — point-in-time pool snapshot (`idle`, `capacity`, `available_permits`, `in_use`) via `Manager::pool_stats`.
+- `TopologyTag` — the runtime topology discriminant (`Pool` / `Resident` / `Bounded` / custom) carried on a `ResourceGuard`; read via `guard.topology_tag()`.
+- Custom-topology surface: the framework-owned `InstanceStore` idle queue plus `Checkout`, `CheckedOut`, `ReturnOutcome`, `Ticket`, `Unavailable`, `Load`, `MaintenanceSchedule`, `AdmissionPhase`, `AdmissionStatus`, `PoolStrategy`, `NoTopology`.
+- `HasCredentialSlots` — per-resource credential epoch fold; emitted by `#[derive(Resource)]`, or by `no_credential_slots!(R)` for a slot-less resource.
+- `HasResourcesExt` — the `ctx.resource::<R>().await?` access surface for action code.
+- `ResourceFactory`, `KindActivator`, `ResourceActivatorRegistry`, `RegisterRequest`, `RegistrarError`, `ResourceRegistrationOutcome`, `SlotBinding`, `BoxFut` — the erased plugin-registration bridge.
 - `CheckCost` — relative `check` probe cost driving the maintenance reaper's health-probe cadence.
+- Re-exports so consumers need no direct sibling dep: `Subscriber` (`nebula-eventbus`), `Credential` / `CredentialContext` / `CredentialId` (`nebula-credential`), `HasSchema` / `Schema` / `ValidSchema` / `impl_empty_has_schema!` (`nebula-schema`).
+- Feature `rotation`: `ResourceFanoutDriver`, `ResourceFanoutIndex`, `Bind`, `RotationOutcome`.
 - `#[derive(Resource)]`, `#[derive(ResourceConfig)]`, `#[derive(ClassifyError)]` — proc-macro derivations.
 - `resource_key!` — re-exported from `nebula_core` for declaring resource keys at compile time.
-- `prelude` — `use nebula_resource::prelude::*` for the common author surface (`Provider`, `Manager`, topologies, errors).
+- `prelude` — `use nebula_resource::prelude::*` for the common author surface (`Provider`, `Manager`, topologies, errors). Note the per-topology hook traits (`PoolProvider` / `ResidentProvider` / `BoundedProvider`) are **not** in this prelude; import them from `nebula_resource::topology`. Integration authors normally consume the same surface through `nebula_sdk::prelude` — which does re-export `PoolProvider` / `ResidentProvider` / `BoundedProvider` (plus `BoundedMode`) and the three derives, and deliberately omits engine-only types (`Manager`, `Registry`, `ReleaseQueue`, `credential_fanout`); reach those via `nebula_sdk::nebula_resource`.
 
 ## Migration recipe (pre-v4 → v4)
 
@@ -167,7 +202,7 @@ The slot-binding break is hard. To migrate an existing `Resource` impl:
 2. **Drop the `scheme: &<R::Credential as Credential>::Scheme` parameter** from `create`. The framework populates the slot cells before `create` runs; read the resolved guard via `self.<field>_slot()` (`Option<Arc<CredentialGuard<C>>>`) and handle the `None` (unbound) case explicitly.
 3. **Replace `on_credential_refresh(scheme, ctx)` with `on_credential_refresh(&self, slot_name, instance)`** and add an `on_credential_revoke(&self, slot_name, instance)` override where the resource held revoke logic. The engine swaps the rotated guard into the slot cell before the call; `&self` is an immutable descriptor, so blue-green / re-auth acts on `instance`'s interior mutability. Multi-credential resources can branch on `slot_name` to refresh only the affected sub-system.
 4. **Drop `nebula_credential::NoCredential`.** Resources without credentials simply have no `#[credential]` fields. The `NoCredential` opt-out is no longer needed.
-5. **Use the two-derive pattern**: annotate the struct with `#[derive(Resource)]` (emits slot plumbing only); write a hand-written `impl Provider` with real `create` / `check` / `shutdown` / `destroy` bodies. No `#[resource(...)]` container attribute. Topology traits (`Pooled`, `Resident`, `Bounded`) are still hand-written.
+5. **Use the two-derive pattern**: annotate the struct with `#[derive(Resource)]` (emits slot plumbing only); write a hand-written `impl Provider` with real `create` / `check` / `shutdown` / `destroy` bodies. No `#[resource(...)]` container attribute. The per-topology hook trait (`PoolProvider` / `ResidentProvider` / `BoundedProvider`) is still hand-written.
 6. **Update test code** — registration now goes through one funnel: `Manager::register::<R>(RegistrationSpec { resource, config, scope, slot_identity, topology, recovery_gate })`. The per-topology `register_<topo>[_with]` shorthands and the previous `acquire_*_default` shorthand were removed; acquire is the single `acquire_<topo>` / `acquire_<topo>_for_identity` family (or the type-erased `acquire_any`).
 7. **For credential slot identity**, pass `SlotIdentity::Unbound` for the historical single-row dedup, or build a `SlotIdentity::Structural` from the resolved `(slot, credential)` pairs for per-binding row separation. The old `u64` `slot_identity` digest was removed.
 
@@ -178,6 +213,7 @@ for the full sequence.
 
 ## Runnable examples
 
+- `cargo run -p nebula-examples --example resource_pooled_http_prelude` — the smallest end-to-end `Pooled` registration, driven from `nebula_resource::prelude::*` (plus the `PoolProvider` hook trait, which the prelude does not re-export)
 - `cargo run -p nebula-examples --example resource_postgres_pool` — `Pooled` topology + `ResourceAction` for per-execution test schema (configure / cleanup ordering)
 - `cargo run -p nebula-examples --example resource_resident_http` — `Resident` topology + OAuth-style credential refresh hook
 - `cargo run -p nebula-examples --example resource_telegram_multi_workflow` — `Resident` topology + cross-workflow shared-resource dedupe (1 bot, 10 workflows, 1 `Provider::create`)
@@ -246,7 +282,7 @@ multi-tenant, credential-rotating workflow engine is:
 
 ## Maturity
 
-See `docs/MATURITY.md` row for `nebula-resource`.
+See the `nebula-resource` row in the workspace [`docs/MATURITY.md`](../../docs/MATURITY.md).
 
 - API stability: `frontier` — slot-binding pattern shipped; 3 topologies (`Pooled` / `Resident` / `Bounded`), `Manager`, `ReleaseQueue`, and `ResourceGuard` are the authoritative lifecycle surface; topology runtime variants are actively evolving.
 - `#![forbid(unsafe_code)]` enforced, `#![deny(missing_docs)]` +
@@ -294,7 +330,10 @@ supplies only thin R-aware hooks (`create_entry`, `entry_instance`,
 `into_instance`, `accept`, `prepare`, `on_release`, `pools`, `store_capacity`,
 `dispatch_credential_hook`, …). A custom topology therefore writes **zero**
 store / checkout / destroy / revoke-fence code — the credential-revoke fence is
-framework-owned for every topology, built-in and custom alike. A non-pooling
+framework-owned for every topology, built-in and custom alike. The async hooks
+are plain `async fn` in trait (RPITIT) — do **not** annotate your
+`impl Topology<R>` block with `#[async_trait]` (`Provider` still needs it;
+`Topology` does not). A non-pooling
 topology that carries credential slots (a shared/multiplexed singleton) must
 override `dispatch_credential_hook` for revoke teardown; the registrar emits a
 loud warning when it does not.

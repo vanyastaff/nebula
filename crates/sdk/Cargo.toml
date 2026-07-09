@@ -38,6 +38,8 @@ uuid = { workspace = true, optional = true }
 chrono = { workspace = true }
 
 [dev-dependencies]
+# doctests only: `impl Provider` in the prelude resource example.
+async-trait = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 insta = { workspace = true }
 pretty_assertions = { workspace = true }

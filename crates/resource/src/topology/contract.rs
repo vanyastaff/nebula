@@ -26,9 +26,8 @@
 //! [`SlotIdentity`]: crate::dedup::SlotIdentity
 //! [`InstanceStore`]: crate::topology::store::InstanceStore
 
-use std::time::Duration;
+use std::{future::Future, time::Duration};
 
-use async_trait::async_trait;
 use tokio::sync::OwnedSemaphorePermit;
 
 use crate::{
@@ -378,14 +377,26 @@ pub struct MaintenanceSchedule {
 /// borrow does not exceed the call, so the topology cannot retain the store or
 /// build a cross-scope cache that bypasses the per-tenant `SlotIdentity` fence.
 ///
+/// # Not a trait object
+///
+/// `Topology<R>` is reached monomorphically through
+/// [`ManagedResource<R>`](crate::ManagedResource) — do not attempt
+/// `Box<dyn Topology<R>>`. The trait is intentionally not object-safe.
+///
 /// # Async dispatch
 ///
-/// `#[async_trait]` is used because topologies are reached **monomorphically**
-/// inside `ManagedResource<R>` — the one `Box<dyn Future>` per call is
-/// negligible next to the I/O the hooks do. Sync hooks (`try_reserve`,
-/// `entry_instance`, `into_instance`, `phase`, `load`, `pools`, …) stay plain
-/// sync.
-#[async_trait]
+/// The async hooks are plain `async fn` in trait (RPITIT), **not**
+/// `#[async_trait]`: topologies are reached monomorphically inside
+/// `ManagedResource<R>`, so the boxed future `#[async_trait]` allocates per
+/// call bought nothing. A cache-hit acquire+release round trip previously paid
+/// 3 heap allocations on the default hook path (`accept` and `prepare` on
+/// acquire, `on_release` on release) that `#[async_trait]` inserted at the
+/// trait level — see `benches/acquire.rs` for the wall-clock regression guard.
+/// An implementor writes plain `async fn` bodies; only the returned future must
+/// be `Send`.
+///
+/// Sync hooks (`try_reserve`, `entry_instance`, `into_instance`, `phase`,
+/// `load`, `pools`, …) stay plain sync.
 pub trait Topology<R: Provider>: Send + Sync + 'static {
     /// The leasable unit the framework stores and the guard holds.
     ///
@@ -431,12 +442,12 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
     ///
     /// Returns the create/clone error; the framework fails the acquire and
     /// drops the held permit, releasing capacity.
-    async fn create_entry(
+    fn create_entry(
         &self,
         resource: &R,
         config: &R::Config,
         ctx: &ResourceContext,
-    ) -> Result<Self::Entry, Error>;
+    ) -> impl Future<Output = Result<Self::Entry, Error>> + Send;
 
     /// Project a held entry to its leasable instance — the guard's `Deref`
     /// target. Pooled: `&entry.instance`; Resident: the entry itself.
@@ -463,13 +474,13 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
     /// ([`into_instance`](Topology::into_instance) → [`Provider::destroy`]) and
     /// loops to the next idle entry, then `create_entry`. Default `true` (no
     /// post-checkout policy).
-    async fn accept(
+    fn accept(
         &self,
         _entry: &mut Self::Entry,
         _resource: &R,
         _ctx: &ResourceContext,
-    ) -> bool {
-        true
+    ) -> impl Future<Output = bool> + Send {
+        async { true }
     }
 
     /// Per-acquire session-init on the entry about to be leased (Pooled
@@ -478,13 +489,13 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
     /// # Errors
     ///
     /// `Err` ⇒ the framework destroys the entry and fails the acquire.
-    async fn prepare(
+    fn prepare(
         &self,
         _entry: &mut Self::Entry,
         _resource: &R,
         _ctx: &ResourceContext,
-    ) -> Result<(), Error> {
-        Ok(())
+    ) -> impl Future<Output = Result<(), Error>> + Send {
+        async { Ok(()) }
     }
 
     /// Reset / recycle a released entry before the framework returns it (rollback
@@ -502,8 +513,12 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
     /// the hook handles.
     ///
     /// Default `Ok(true)` (no reset; recycle if the topology pools).
-    async fn on_release(&self, _entry: &mut Self::Entry, _resource: &R) -> Result<bool, Error> {
-        Ok(true)
+    fn on_release(
+        &self,
+        _entry: &mut Self::Entry,
+        _resource: &R,
+    ) -> impl Future<Output = Result<bool, Error>> + Send {
+        async { Ok(true) }
     }
 
     /// Whether a released, kept entry returns to the framework idle store.
@@ -525,7 +540,9 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
     /// [`dispatch_credential_hook`](Topology::dispatch_credential_hook). A
     /// topology that holds credential-bound state on `pools() == false` MUST
     /// override both this (to `true`) and the hook, or a revoked credential
-    /// keeps serving. The framework asserts this at registration.
+    /// keeps serving. Registration warns in release and `debug_assert!`s in
+    /// debug when resolved slot bindings are non-empty and this stays `false`
+    /// on a non-pooling topology.
     ///
     /// Ignored when [`pools`](Topology::pools) is `true` (the store fence
     /// covers pooled entries). Default `false` — a non-pooling topology opts in
@@ -610,14 +627,14 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
     ///
     /// Returns the first hook error; the framework surfaces it to the rotation
     /// dispatch caller.
-    async fn dispatch_credential_hook(
+    fn dispatch_credential_hook(
         &self,
         _resource: &R,
         _store: &InstanceStore<Self::Entry>,
         _slot: &str,
         _refresh: bool,
-    ) -> Result<(), Error> {
-        Ok(())
+    ) -> impl Future<Output = Result<(), Error>> + Send {
+        async { Ok(()) }
     }
 
     /// Update the config fingerprint so stale idle entries evict on the next
@@ -667,7 +684,6 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoTopology;
 
-#[async_trait]
 impl<R: Provider> Topology<R> for NoTopology {
     type Entry = R::Instance;
 

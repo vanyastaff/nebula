@@ -83,7 +83,6 @@ impl EntryPool {
     }
 }
 
-#[async_trait]
 impl Topology<PermitRes> for EntryPool {
     type Entry = u32;
 

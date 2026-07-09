@@ -26,7 +26,6 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-use async_trait::async_trait;
 use tokio::sync::Mutex;
 use tracing::warn;
 
@@ -416,7 +415,6 @@ where
 // reach the master cell (it is not in the store), so revoke teardown runs
 // through `dispatch_credential_hook`.
 
-#[async_trait]
 impl<R> Topology<R> for Resident<R>
 where
     R: Provider<Topology = Resident<R>>
