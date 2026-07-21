@@ -1,0 +1,23 @@
+[package]
+name = "nebula-xtask"
+version.workspace = true
+edition.workspace = true
+publish = false
+rust-version.workspace = true
+authors.workspace = true
+description = "Repository automation for Nebula"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+cargo_metadata = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

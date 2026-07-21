@@ -118,5 +118,8 @@ ignored = []
 # Render feature-gated items on docs.rs (build with every feature).
 all-features = true
 
+[package.metadata.nebula.ci]
+test-features = ["credential-in-memory"]
+
 [lints]
 workspace = true

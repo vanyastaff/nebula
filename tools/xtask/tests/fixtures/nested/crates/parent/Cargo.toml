@@ -1,0 +1,7 @@
+[package]
+name = "fixture-parent"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+fixture-parent-macros = { path = "macros" }

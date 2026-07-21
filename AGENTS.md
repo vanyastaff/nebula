@@ -127,6 +127,8 @@ Run via `task <name>`. See `task --list` for the full catalog.
 | `task deny` | `cargo-deny`: layer wrappers + advisories + licenses |
 | `task test` | All workspace tests |
 | `task ci` | Full CI pipeline locally |
+| `cargo xtask ci-plan full` | Emit the versioned full CI package plan |
+| `cargo xtask ci-plan diff --base <sha> --head <sha> --comparison merge-base` | Emit a metadata-driven diff plan |
 
 ### Single Crate
 
@@ -161,6 +163,7 @@ nebula/
 ├── rustfmt.toml        # rustfmt config (stable-only)
 ├── clippy.toml         # lint thresholds (msrv 1.96)
 ├── crates/             # workspace members
+├── tools/xtask/        # repository automation; outside the product layer graph
 ├── scripts/            # worktree.sh + lefthook helpers
 ├── .claude/            # Claude Code: guard hooks, slash commands
 └── .github/            # CI workflows, CODEOWNERS, templates
@@ -184,6 +187,10 @@ normal; upward dependencies and undeclared lateral coupling are CI failures.
 | **Business** | `resource`, `action`, `plugin`, `plugin-core`, `tenancy` |
 | **Core / shared-infra** | `core`, `validator`, `expression`, `workflow`, `execution`, `schema`, `metadata`, `storage-port`, `credential` |
 | **Cross-cutting** | `crypto`, `log`, `eventbus`, `metrics`, `resilience`, `error`, `env` |
+
+`nebula-xtask` is repository tooling, not a product crate or architectural
+layer. It may depend on general-purpose tooling libraries but never on a
+`nebula-*` product package.
 
 **Architecture Invariants** (rust-analyzer convention: each states what holds — or is
 *deliberately absent* — everywhere; violating one is an architecture change, not a refactor):
@@ -215,6 +222,13 @@ normal; upward dependencies and undeclared lateral coupling are CI failures.
   isolation is a non-goal (canon §12.6). `nebula-plugin-core` (Business) is the first-party `core`
   plugin built on `action`/`plugin`.
 - **Invariant:** each `+macros` companion lives at the same layer as its parent and ships derives only — no runtime code.
+- **Invariant:** CI package selection comes only from Cargo metadata through
+  `cargo xtask ci-plan`; workflow and hook scripts consume its versioned JSON
+  and do not maintain package-selection name lists or path-to-crate inference.
+  The pre-push names `nebula-resilience`, `nebula-log`, `nebula-expression`,
+  `nebula-credential`, `nebula-resource`, and `nebula-storage` form an
+  independent no-default-feature gate-policy list applied only after selection;
+  they never decide matrix membership.
 - **API boundaries:** `sdk` is the sole supported and branded Rust surface, organized by persona:
   workflow/authoring, integration, schema, testing, client, and embedded façades. The curated
   client submits versioned transport requests; the curated embedded façade submits typed runtime
@@ -350,4 +364,5 @@ Slash commands: `.claude/commands/` (project-specific, load on demand).
 | `Taskfile.yml` | `task dev:check` = full pre-PR gate |
 | `.mcp.json` | MCP server config (Serena, rust-analyzer, cratesio, etc.) |
 | `scripts/worktree.sh` | Branch lifecycle helper |
+| `tools/xtask/` | Metadata-driven repository automation and its contract tests |
 | `.github/workflows/ci.yml` | CI required jobs |

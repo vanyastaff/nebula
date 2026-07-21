@@ -40,6 +40,7 @@ members = [
   "crates/plugin-core",
   "crates/validator/macros",
   "examples",
+  "tools/xtask",
 ]
 exclude = ["crates/*/fuzz"]
 resolver = "3"
@@ -116,6 +117,7 @@ argon2 = { version = "0.5.3", default-features = false, features = ["std"] }
 totp-rs = { version = "5", default-features = false, features = ["otpauth"] }
 
 # CLI
+cargo_metadata = "=0.23.1"
 clap = { version = "4", features = ["derive"] }
 
 # HTTP
@@ -295,10 +297,10 @@ unnecessary_wraps = "allow"                  # API-consistency `Result` on built
 # These fire a handful of times across the workspace, each one is a matter of
 # taste or a micro-optimisation that would mean an API break. Revisit when a
 # refactor naturally touches the site.
-wildcard_imports = "allow"                    # kept noisy but shelved: prelude / re-export patterns
+wildcard_imports = "allow"  # kept noisy but shelved: prelude / re-export patterns
 map_unwrap_or = "allow"
-excessive_nesting = "allow"                   # threshold lives in clippy.toml
-inline_always = "allow"                       # `#[inline(always)]` on cold happy paths is intentional
+excessive_nesting = "allow" # threshold lives in clippy.toml
+inline_always = "allow"     # `#[inline(always)]` on cold happy paths is intentional
 
 # ── cargo: expected noise in a multi-crate workspace ───────────────────────
 multiple_crate_versions = "allow" # transitive dep version skew is unavoidable
@@ -318,16 +320,16 @@ used_underscore_binding = "allow"
 # Domain-relevant guards from the full clippy::restriction inventory sweep;
 # heavier candidates (map_err_ignore, clone_on_ref_ptr, iter_over_hash_type,
 # string_slice) are tracked as campaigns in ENGINEERING_2026.md.
-suspicious_xor_used_as_pow = "warn"  # `2 ^ 8` is xor, not exponentiation
-empty_drop = "warn"                  # empty Drop impl disables Copy for nothing
-pathbuf_init_then_push = "warn"      # PathBuf::from + push chains → from_iter
-verbose_file_reads = "warn"          # File::open+read_to_end → fs::read
-infinite_loop = "warn"               # a loop that never breaks should return `!`
-empty_structs_with_brackets = "warn" # `struct S {}` → `struct S;`
-self_named_module_files = "warn"     # enforce the mod.rs convention (84 existing mod.rs)
-get_unwrap = "warn"                  # .get(i).unwrap() → [i]: same panic, clearer intent
-unused_result_ok = "warn"            # `.ok();` silently discards a Result
-multiple_unsafe_ops_per_block = "warn"  # one unsafe op per block (wasmtime discipline)
+suspicious_xor_used_as_pow = "warn"    # `2 ^ 8` is xor, not exponentiation
+empty_drop = "warn"                    # empty Drop impl disables Copy for nothing
+pathbuf_init_then_push = "warn"        # PathBuf::from + push chains → from_iter
+verbose_file_reads = "warn"            # File::open+read_to_end → fs::read
+infinite_loop = "warn"                 # a loop that never breaks should return `!`
+empty_structs_with_brackets = "warn"   # `struct S {}` → `struct S;`
+self_named_module_files = "warn"       # enforce the mod.rs convention (84 existing mod.rs)
+get_unwrap = "warn"                    # .get(i).unwrap() → [i]: same panic, clearer intent
+unused_result_ok = "warn"              # `.ok();` silently discards a Result
+multiple_unsafe_ops_per_block = "warn" # one unsafe op per block (wasmtime discipline)
 # NOT enabled: `unnecessary_safety_comment` — false-positives on the iroh-style
 # "Cancel-safety:" / "Drop-safety:" documentation convention we deliberately use.
 
@@ -388,9 +390,9 @@ codegen-units = 16 # Parallel compilation, more stable than 1
 opt-level = 3      # Maximum optimization level
 strip = "symbols"  # Remove symbols for smaller binary
 panic = 'abort'    # No unwind tables to generate/store: smaller binary. NOTE:
-                    # panics abort the process instead of unwinding — no Drop
-                    # runs, and any crate's catch_unwind-based panic isolation
-                    # (e.g. nebula-resource's guard_author_hook) is inert here.
+# panics abort the process instead of unwinding — no Drop
+# runs, and any crate's catch_unwind-based panic isolation
+# (e.g. nebula-resource's guard_author_hook) is inert here.
 
 [profile.profiling]
 inherits = "release"

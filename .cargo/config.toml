@@ -34,3 +34,4 @@ retry = 3
 # Workspace-local Cargo aliases — see `docs/QUALITY_GATES.md`.
 [alias]
 lint = "clippy --workspace --all-targets -- -D warnings"
+xtask = "run --locked --quiet -p nebula-xtask --"

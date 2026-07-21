@@ -1,0 +1,7 @@
+[package]
+name = "fixture-app"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+fixture-parent = { path = "../../crates/parent" }

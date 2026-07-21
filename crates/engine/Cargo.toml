@@ -98,5 +98,8 @@ doctest = false
 # Render feature-gated items on docs.rs (build with every feature).
 all-features = true
 
+[package.metadata.nebula.ci]
+test-features = ["rotation"]
+
 [lints]
 workspace = true
