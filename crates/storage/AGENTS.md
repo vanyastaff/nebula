@@ -34,7 +34,7 @@
 - Outbox atomicity (§12.2): control-queue writes share the SAME `TransitionBatch` as the state transition. Never transition without enqueueing, or enqueue without transitioning.
 - `try_claim` must be atomic under contention (exactly one winner of N replicas); `heartbeat` must validate `ClaimToken.generation` so a stale holder can't extend a reclaimed claim.
 - This crate is NOT the state machine (`nebula-execution`), orchestrator (`nebula-engine`), or tenant-scope enforcer (`nebula-tenancy` decorators wrap these adapters). Do NOT re-add the deleted legacy `ExecutionRepo`/`WorkflowRepo` surface (ADR-0072).
-- Cross-crate calls go through `nebula-eventbus`, not direct sibling imports.
+- Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
 - Library code uses typed `thiserror`/`StorageError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also

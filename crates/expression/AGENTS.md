@@ -24,7 +24,7 @@
 - Higher-order combinators (`filter`/`map`/`reduce`/…) live in `eval.rs` and call `eval_with_frame` with the caller's `EvalFrame` so the step budget accumulates across iterations — never re-route them through the builtin registry.
 - `EvaluationPolicy` must bound every evaluation (recursion depth default 256 + step budget); exceeding either returns `ExpressionError`, never panics or loops.
 - NOT a validation engine (`nebula-validator`), schema system (`nebula-schema`), or HTML template engine — keep scope to `{{ }}` field resolution.
-- Cross-crate calls go through `nebula-eventbus`, not direct sibling imports.
+- Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
 - Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also

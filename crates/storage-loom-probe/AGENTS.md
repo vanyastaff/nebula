@@ -21,7 +21,7 @@
 - Probes **mirror** production CAS shapes by hand — they must stay invariant-equivalent (e.g. `generation` == the store's `fencing_generation`); update the mirror when the real adapter's CAS changes, don't diverge silently.
 - This crate is probes only — no production storage logic here (that lives in `nebula-storage` / `nebula-storage-port`, ADR-0072). New probes land here under the same sibling-crate / `#![cfg(loom)]` / `loom-test` discipline.
 - Loom doesn't model time: TTL/expiry is an explicit `expired: bool` flag, not a deadline.
-- Cross-crate calls go through `nebula-eventbus`, not direct sibling imports.
+- Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
 - Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code (probe bodies are loom test scaffolding, exempt like tests).
 
 ## See also

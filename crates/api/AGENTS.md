@@ -38,7 +38,7 @@
 - All errors are RFC 9457 `application/problem+json` via a typed `ApiError` variant — never a new ad-hoc 500 for business failures.
 - §4.5 operational honesty: an unwired capability returns honest 501/503, never a faked success. Drift between router and OpenAPI spec is a compile error (`OpenApiRouter::routes(routes!(...))`).
 - Cancel/terminate signals share the durable `control_queue_repo` outbox (§12.2) — no second in-memory control channel.
-- Cross-crate calls go through `nebula-eventbus`, not direct sibling imports.
+- Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
 - Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also

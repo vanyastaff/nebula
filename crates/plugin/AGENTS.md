@@ -21,7 +21,7 @@
 - `PluginManifest` does NOT compose `BaseMetadata<K>` — a plugin is a container, not a schematized leaf.
 - This crate is NOT `plugin.toml` parsing/signing tooling and NOT a persistent catalog — registry is in-memory only. Process/WASM isolation is a non-goal (ADR-0091, canon §12.6).
 - Cross-plugin type references come via `Cargo.toml [dependencies]` — the Rust compiler enforces the dependency closure at link time (in-process model).
-- Cross-crate calls go through `nebula-eventbus`, not direct sibling imports.
+- Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
 - Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also

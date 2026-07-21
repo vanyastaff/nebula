@@ -20,7 +20,7 @@
 - **Fail-closed projection.** Absent workspace binding ⇒ `TenancyError::MissingWorkspace`; never silently widen to org-only. Credential layer: `None` owner = admin/global bypass.
 - This crate owns scoping **policy** only — it must NOT own the `Scope` type (that is Core-tier `nebula-storage-port` plain data) and must NOT add a backend/sqlx dependency.
 - Keep the re-homed credential layer order (`ScopeLayer → AuditLayer → EncryptionLayer → CacheLayer → Backend`) and its fail-closed audit + zeroize-on-drop invariants intact (ADR-0029); regression-tested in `crates/storage/tests/credential_*`.
-- Cross-crate calls go through `nebula-eventbus`, not direct sibling imports.
+- Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
 - Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also

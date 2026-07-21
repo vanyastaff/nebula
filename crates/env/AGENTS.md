@@ -19,7 +19,7 @@
 - Readers are total and unsafe-free: unset vars yield `Ok(None)` / default / empty list — never panic. Only failures are non-Unicode (`var`) and unparsable bool (`flag`).
 - `unsafe` lives ONLY behind the `testing` module (edition-2024 env mutation); core stays `forbid(unsafe_code)`. Don't introduce `unsafe` outside `testing`.
 - This crate does NOT define config structs or map into other crates' errors — consumers convert `EnvError` into their own typed error (`ApiConfigError`, `ProviderError`, …) at the boundary.
-- Cross-crate calls go through `nebula-eventbus`, not direct sibling imports.
+- Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
 - Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also

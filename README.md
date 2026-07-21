@@ -1,7 +1,7 @@
 # Nebula
 
 [![CI](https://github.com/vanyastaff/nebula/actions/workflows/ci.yml/badge.svg)](https://github.com/vanyastaff/nebula/actions/workflows/ci.yml)
-[![Rust](https://img.shields.io/badge/rust-1.95%2B-orange)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.96%2B-orange)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](LICENSE)
 
 **Modular, type-safe workflow automation engine written in Rust.**
@@ -18,46 +18,55 @@ Most automation platforms are runtime-interpreted, dynamically typed, and treat 
 
 **Credentials are a first-class concern, not a bolt-on.** Every secret is encrypted at rest with AES-256-GCM, bound to its record via AAD to prevent swapping attacks, and wiped from memory on drop. Key rotation is built into the storage layer &mdash; not a future feature.
 
-**The type system does the work.** Workflow structure, action I/O, parameter schemas, and auth patterns are all expressed as Rust types. If a workflow compiles, its shape is valid. There are no stringly-typed action references, no untyped credential bags, no `Any` escape hatches in the core pipeline.
+**Types and activation validation share the work.** Integration contracts, action I/O, parameter schemas, and auth patterns are expressed as Rust types. Persisted or dynamically assembled workflow graphs are validated when activated: references, graph structure, declared schemas, and runtime capabilities must agree before execution. Compiling an integration proves its Rust contracts; it does not make arbitrary workflow data valid.
 
 **Resilience is built in, not bolted on.** Retry with backoff, circuit breakers, rate limiting, hedged requests, and bulkhead isolation are composable building blocks in `nebula-resilience`. Every pattern returns a typed error with enough context to decide what to do next. Purpose-built for the engine's concurrency model.
 
-**Modularity is a hard constraint.** The workspace enforces strict one-way layer dependencies via `cargo deny` in CI. Cross-crate communication goes through `EventBus`, not direct imports. You can use `nebula-credential` without touching `nebula-engine`; you can embed `nebula-resilience` in a project that has nothing to do with workflows.
+**Modularity is a hard constraint.** The workspace enforces strict one-way layer dependencies via `cargo deny` in CI. Direct dependencies on lower-layer domain types and ports are normal; upward and undeclared lateral dependencies are not. Durable commands and business facts travel through persisted state or explicit outbox/inbox seams. `EventBus` is only ephemeral observation for telemetry, cache/UI invalidation, and wake-up hints, never authoritative delivery or state. You can use `nebula-credential` without touching `nebula-engine`; you can embed `nebula-resilience` in a project that has nothing to do with workflows.
 
 ## Design Principles
 
-- **Types over tests.** Make invalid states unrepresentable. Use newtypes for IDs, enums for states, builders for validated config. Tests verify behavior, not type safety &mdash; the compiler handles that.
+- **Types plus boundary validation.** Make invalid local states unrepresentable with newtypes, enums, and builders; validate dynamic graphs and external data at activation and API boundaries. Tests prove behavior and cross-component guarantees that types alone cannot establish.
 - **Explicit over magic.** No global state, no hidden service locators, no ambient configuration. Actions receive everything they need via `Context`. If a dependency isn't in the function signature, it doesn't exist.
-- **Delete over deprecate (internals).** For internal engine architecture, when an API is wrong, replace it. No adapters, bridges, shims, or backward-compatibility tax. However, for the public `nebula-sdk` and plugin contracts, we respect the integration author's time and provide a clear deprecation path.
+- **Delete over deprecate (internals).** For internal engine architecture, when an API is wrong, replace it. No adapters, bridges, shims, or backward-compatibility tax. `nebula-sdk` is the sole supported and branded Rust surface; its documented persona APIs receive a clear compatibility and deprecation policy.
 - **Security by default.** Secrets are encrypted, zeroized, and redacted in Debug output. AAD binding is mandatory. There is no `legacy_compat` flag. The safe path is the only path.
 - **Composition over inheritance.** Storage layers (encryption, cache, audit, scope) stack via trait delegation. Auth schemes are open traits, not closed enums. Resilience patterns compose into pipelines.
 
 ## Architecture
 
 ```
-API / Public    api (HTTP + webhook module) · sdk (integration author façade)
+API / Surfaces  api (HTTP + webhook module) · sdk (supported Rust persona façade)
 Exec            engine · orchestrator · worker · storage · storage-loom-probe
-Business        credential · resource · action · plugin · plugin-core · tenancy
-Core            core · validator · expression · workflow · execution · schema · metadata · storage-port
+Business        resource · action · plugin · plugin-core · tenancy
+Core/shared     core · validator · expression · workflow · execution · schema · metadata · storage-port · credential
 Cross-cutting   crypto · env · log · eventbus · metrics · resilience · error
 ```
 
-Plugins are **in-process** (ADR-0091): a human implements the `Plugin` trait in `nebula-plugin` and registers actions / credentials / resources into the registry; the engine dispatches them in-process. The out-of-process Plugin-Proto tier (`plugin-sdk` + `sandbox`) was retired — process/WASM isolation is a non-goal for now (canon §12.6).
+Plugins are **trusted, statically linked, in-process adapters** (ADR-0091): an integration author implements SDK-exposed contracts, the host binary links the integration crate, and startup registration adds its actions / credentials / resources to the registry. The engine dispatches them in-process. The retired out-of-process Plugin-Proto tier (`plugin-sdk` + `sandbox`) is not a compatibility or security boundary; process/WASM isolation is a non-goal (canon §12.6).
 
 Each layer depends only on layers below it. Cross-cutting crates are importable at any level. Layer boundaries are enforced mechanically by `cargo deny` (see `deny.toml` `wrappers`) — a missing entry fails CI before review.
+
+Every first-party deployment composition root in this workspace lives under `apps/`. `nebula-worker` is reusable runtime assembly that wires the engine to the orchestrator pull-loop; `apps/worker` chooses concrete storage, integrations, configuration, and process lifecycle. A downstream embedded host becomes a supported composition root only through the curated `nebula_sdk::embedded::RuntimeBuilder`; until that façade ships, embedding is not a supported deployment surface. The builder cannot replace or bypass runtime admission, aggregate write ownership, or tenant authority.
+
+The binding architecture direction is recorded in private ADR-0116, *Adopt platform planes and profiled execution*. Versioned contracts, a pure transition kernel, the durable runtime control plane, trusted integration adapters, and user-facing surfaces have distinct ownership. The graph workflow runtime is the current flagship. Interactive, agent, and stream execution are future capability-gated profiles, not features claimed by this README.
+
+Durable write authority is aggregate-scoped rather than concentrated in a god service. Runtime control owns the execution aggregate, its journal and queues, execution outbox/inbox, and operation ledger. Credential runtime owns credential/refresh/lease state; resource lifecycle owns resource/binding/fan-out state. Cross-aggregate work crosses durable persisted seams. `EventBus` can wake or inform an owner, but never commits a business fact.
+
+Private ADR-0117, *Support one Rust SDK surface with lockstep dependency packages*, defines one persona-scoped `nebula-sdk`: workflow/authoring, integration, schema, testing, client, and embedded façades. Client and embedded support are curated safe surfaces when their documented features ship; they do not expose raw storage, durable mutation, admission, claim, or tenant-proof capabilities. Transport-contract and implementation crates remain technical lockstep dependencies, not additional supported Rust products.
 
 ### Data Flow
 
 ```
 Trigger (webhook / cron / event)
-  -> Engine resolves workflow DAG
-    -> Engine schedules nodes in topological order
-      -> Each node: Action::execute(Context) -> serde_json::Value
-        -> Context provides: encrypted credentials, resources, parameters, logger
-          -> Cross-crate signals via EventBus (e.g., credential rotation events)
+  -> Activation validates and pins the workflow contract
+    -> Runtime control accepts durable work
+      -> Graph runtime schedules ready nodes
+        -> Each node: Action::execute(Context) -> serde_json::Value
+          -> Context provides guarded credentials, resources, parameters, and observability
+            -> Durable effects persist; optional EventBus observations may wake readers
 ```
 
-While strict Rust typing is enforced at the boundaries (inside Actions and Credentials), `serde_json::Value` is the universal interchange data type between nodes in the DAG. No custom value crate, no conversion layers. Dates are ISO-8601 strings, decimals use a base64 convention. The `nebula-schema` runtime validation bridges the gap between the dynamic graph and strictly typed nodes.
+While strict Rust typing is enforced at the boundaries (inside Actions and Credentials), `serde_json::Value` is the universal interchange data type between nodes in the DAG. Nebula does not add a second universal value crate or permit ad hoc conversion chains: canonical, revision-pinned converters are allowed only at validated contract boundaries. Dates are ISO-8601 strings, decimals use a base64 convention. The `nebula-schema` runtime validation bridges the gap between the dynamic graph and strictly typed nodes.
 
 ## Crate Map
 
@@ -73,25 +82,25 @@ Source of truth: workspace members in `Cargo.toml`.
 |                   | `workflow`      | `WorkflowDefinition`, DAG structure, activation-time validator                       |
 |                   | `execution`     | Execution state machine + transitions                                                |
 |                   | `storage-port`  | Object-safe storage seam: row-model traits every storage consumer depends on (ADR-0072) |
-| **Business**      | `credential`         | Credential subsystem (one crate, ADR-0092): contract + runtime (resolver/refresh/lease/rotation-state) + `CredentialService` facade + builtin types; 12 universal auth schemes |
-|                   | `resource`           | External service lifecycle, typed credential refs, per-slot rotation fan-out         |
+|                   | `credential`    | Shared-infra credential subsystem (ADR-0092): contract + runtime (resolver/refresh/lease/rotation-state) + `CredentialService` facade + builtin types; 12 universal auth schemes |
+| **Business**      | `resource`           | External service lifecycle, typed credential refs, per-slot rotation fan-out         |
 |                   | `action`             | Action trait family (Stateless / Stateful / Trigger / Resource / Control)            |
 |                   | `plugin`             | In-process plugin trait + registry                                                   |
 |                   | `plugin-core`        | First-party `core` plugin: filter/sort/aggregate, reshaping, branching, datetime, durable delay |
 |                   | `tenancy`            | Scope-enforcing decorator wrapping `storage-port` so a tenant scope is substituted on every call (ADR-0072) |
 | **Exec**          | `engine`             | Frontier loop, lease lifecycle, node scheduling, control consumer (ADR-0008)         |
 |                   | `orchestrator`       | Capability-routed job-dispatch pull loop (ADR-0095)                                  |
-|                   | `worker`             | Generic worker runtime wiring a `WorkflowEngine` into the orchestrator pull-loop (ADR-0095 D1) |
-|                   | `storage`            | Persistence trait family + in-memory + SQLite + Postgres adapters                    |
+|                   | `worker`             | Reusable runtime assembly wiring a `WorkflowEngine` into the orchestrator pull-loop (ADR-0095 D1); not a deployment composition root |
+|                   | `storage`            | Persistence adapters: SQLite/Postgres deployment backends plus internal InMemory test/reference conformance adapter |
 |                   | `storage-loom-probe` | `loom`-checked concurrency probe for storage paths                                   |
-| **API / Public**  | `api`                | REST server, webhook transport, middleware                                           |
-|                   | `sdk`                | **Integration author façade** — re-exports + `WorkflowBuilder` + `TestRuntime`       |
+| **API / Surfaces** | `api`               | REST server, webhook transport, middleware                                           |
+|                    | `sdk`               | **Sole supported Rust façade** — persona-scoped workflow, integration, schema, testing, client, and embedded APIs as they ship |
 | **Cross-cutting** | `error`              | `NebulaError<E>`, `Classify` trait, derive macro                                     |
 |                   | `crypto`             | AES-256-GCM + Argon2id + `Cipher`/`Kdf` ports + `EncryptedData`/`key_id` envelope (extracted from credential per ADR-0088/0092) |
 |                   | `env`                | Cross-cutting typed environment reader (ADR-0086)                                    |
 |                   | `resilience`         | Retry, circuit breaker, rate limiter, hedge, bulkhead                                |
 |                   | `log`                | Structured logging infrastructure                                                    |
-|                   | `eventbus`           | In-memory typed pub/sub for cross-crate signals                                      |
+|                   | `eventbus`           | Ephemeral typed observations for telemetry, cache/UI invalidation, and wake hints; never durable truth |
 |                   | `metrics`            | Lock-free primitives + label interning + `nebula_*` naming + Prometheus export (absorbs the former `nebula-telemetry` crate per ADR-0046) |
 
 ## Quick Start
@@ -103,7 +112,7 @@ cargo build
 cargo nextest run --workspace
 ```
 
-Requires **Rust 1.95+** (edition 2024). Uses [cargo-nextest](https://nexte.st/) for test runs.
+Requires **Rust 1.96+** (edition 2024). Uses [cargo-nextest](https://nexte.st/) for test runs.
 
 ### Local Infrastructure
 

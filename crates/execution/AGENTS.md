@@ -23,7 +23,7 @@
 - This crate defines retry state shapes only: legal `Failed → WaitingRetry → Ready` node transitions, `next_attempt_at`, `total_retries`, `ExecutionBudget.max_total_retries`, `NodeAttempt`, and idempotency-key shape. The engine owns operator-declared node retry (`retry_policy`) and re-dispatch; `nebula-resilience` remains the in-action outbound-call retry surface. Do not add an `ActionResult::Retry` scheduler here.
 - `IdempotencyKey` here is just the deterministic key shape (§11.3); check-before-side-effect / mark-after enforcement is in storage. The control-queue / outbox also live in storage, not here.
 - 5 `panic!` sites in `transition`/`status` are state-machine invariant guards (flagged debt); do not add new ones — use typed `ExecutionError`.
-- Cross-crate calls go through `nebula-eventbus`, not direct sibling imports.
+- Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
 - Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also

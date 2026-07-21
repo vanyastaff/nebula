@@ -89,31 +89,25 @@ flowchart TB
 
 ### How the four integration kinds relate (structural, not "whatever exists at runtime")
 
-These are **schema-level** links: metadata and parameter types say what an Action **requires** and what a Credential **composes** — the engine **resolves** them from registered types. Nothing is satisfied by implicit global lookup.
+These are **schema-level** links: metadata and parameter types declare a closed dependency graph that activation validates before the runtime resolves anything. Nothing is satisfied by implicit global lookup.
 
-**Resource** — `[ ResourceMetadata + Schema ]` — **base, independent.**
+**Credential** — `[ CredentialMetadata + Schema ]` — **leaf.**
 
-Long-lived managed object: connection pool, SDK client, file handle. Engine owns lifecycle: init, health-check, hot-reload via **ReloadOutcome**, scope-aware teardown. The author declares what the Resource **is**; the engine provides it **healthy** or fails loudly. **Concrete shape:** see §3.6 (`nebula-resource`).
+**Who** you are and **how** authentication is maintained. Credential code receives provider and transport capabilities through injected ports; a Credential must not depend on a Resource, Action, or ambient registry lookup. The `nebula-credential` crate owns rotation-state, refresh, lease, and the **stored state vs consumer-facing auth material** split (its runtime was consolidated there by ADR-0092; the engine keeps only accessor bridges). The author binds to a Credential output scheme, never hand-rolls refresh or pending OAuth steps, and never relies on secrets appearing in logs. A set of universal auth schemes (OAuth2, API key, mTLS, and others — full list in `crates/credential/README.md`) plus extensibility via the `AuthScheme` trait in `crates/credential/src/scheme/auth.rs`; the author picks a type and fills the schema. **Concrete shape:** see §3.7 (`nebula-credential`).
 
-**Credential** — `[ CredentialMetadata + Schema ]` — **optionally composes a Resource** in metadata/schema (e.g. HTTP client **Resource** for token refresh).
+**Resource** — `[ ResourceMetadata + Schema ]` — **may depend on Credential and/or other Resource types.**
 
-**Who** you are and **how** authentication is maintained. The `nebula-credential`
-crate owns rotation-state, refresh, lease, and the **stored state vs
-consumer-facing auth material** split (its runtime was consolidated there by
-ADR-0092; the engine keeps only the accessor bridges and the per-slot rotation
-fan-out lives in `nebula-resource`) — the author binds to a Credential output
-scheme, never hand-rolls refresh or pending OAuth steps, and never relies on
-secrets appearing in logs. A set of universal auth schemes (OAuth2, API key, mTLS, and others — full list in `crates/credential/README.md`) plus extensibility via the `AuthScheme` trait in `crates/credential/src/scheme/auth.rs`; the author picks a type and fills the schema. **Concrete shape:** see §3.7 (`nebula-credential`).
+Long-lived managed object: connection pool, SDK client, file handle. Resource lifecycle owns init, health-check, hot-reload via **ReloadOutcome**, bindings, per-slot credential-rotation fan-out, and scope-aware teardown. A Resource may declare typed Credential slots and may build on other Resource types, but the resource dependency subgraph must remain acyclic and activation-validated. The author declares what the Resource **is**; the runtime provides it **healthy** or fails loudly. **Concrete shape:** see §3.6 (`nebula-resource`).
 
 **Action** — `[ ActionMetadata + Schema ]` — **declares zero or more Resource and/or Credential kinds it needs** (by stable id / type reference in the **integration schema**, not ad hoc runtime lookup).
 
-**What** the step does — with explicit semantics. The engine dispatches by **which action trait** the type implements (`StatelessAction`, `StatefulAction`, `TriggerAction`, `ResourceAction`, …) — not by a single metadata "kind" field. **`ActionMetadata`** carries key, ports, parameters, isolation, **`ActionKind`** (node taxonomy: Stateless / Stateful / Stream / Agent / Interactive / Control / Trigger / Resource), and checkpoint behavior declaration (e.g. **`CheckpointPolicy`**) for UI/validation/runtime policy; this metadata supplements but does not replace trait-based routing. The trait family determines iteration (Continue / Break), trigger lifecycle, graph-scoped resource nodes, and flow-control **`ActionResult`** variants; the **runtime** applies checkpoint, retry, and cancel rules from those contracts — the author does not re-implement those invariants per action (aligned with `nebula-resilience`). **Concrete shape:** see §3.8 (`nebula-action`).
+**What** the step does — with explicit semantics. The engine dispatches by **which action trait** the type implements (`StatelessAction`, `StatefulAction`, `TriggerAction`, `ResourceAction`, …) — not by a single metadata "kind" field. **`ActionMetadata`** carries key, ports, parameters, isolation, node taxonomy, and checkpoint behavior declaration (e.g. **`CheckpointPolicy`**) for UI/validation/runtime policy; this metadata supplements but does not replace trait-based routing. Graph is the flagship execution direction, not a production-readiness claim. Existing Stream / Agent / Interactive names or variants are shape-only reservations for future capability-gated profiles; they do not establish current runtime semantics or a supported SDK capability. Each future profile requires its own persisted state, admission, recovery, and compatibility contract. The runtime applies checkpoint, retry, and cancel rules only for behavior implemented end-to-end — the author does not re-implement those invariants per action (aligned with `nebula-resilience`). **Concrete shape:** see §3.8 (`nebula-action`).
 
-**Wiring rule:** every Resource and Credential an Action references must be **provided by this plugin's own `impl Plugin` registry** **or** by a type from **another plugin crate** that is a **declared dependency** in **`Cargo.toml`** (engine loads providers before dependents; see §7.1). Referencing a type that is "in the process" but **not** reachable through that **closed dependency graph** — even if another plugin registered it — is a **misconfiguration**, caught at **activation** (or equivalent validation), not a silent runtime grab.
+**Wiring rule:** the canonical dependency direction is Credential leaf; Resource → Credential and/or Resource; Action → Credential and/or Resource. Every referenced type must be **provided by this plugin's own `impl Plugin` registry** **or** by a type from **another plugin crate** that is a **declared dependency** in **`Cargo.toml`**. The complete plugin/type closure must be acyclic and activation-validated before execution (engine loads providers before dependents; see §7.1). Referencing a type that is "in the process" but not reachable through that closure is a misconfiguration, even if some unrelated plugin registered it.
 
 **Plugin** — `[ registry: Actions + Resources + Credentials ]` → **+ localization + additional features**
 
-**Distribution and registration unit.** A Plugin is not only a bundle — it is the **registry** that wires Actions, Resources, and Credentials together under a **versioned** identity, with localization and metadata for the UI. Types **defined in other plugins** are available only when the dependent crate **depends on the provider plugin crate** in **`Cargo.toml`** and the engine respects that **acyclic** graph at load/activation — same closure idea as **Cargo**, not an open global namespace. **Plugin is the unit of registration, not the unit of size:** a "full" integration crate and a **micro-plugin** (one or two registry entries) are **the same kind of thing** — same `plugin.toml` contract, same registration story; see §7.1. Deployment is **native** in-process — plugins are trusted code linked into the host (ADR-0091); process isolation, IPC sandboxing, and WASM are non-goals (canon §12.6). A binary-stable cross-version ABI (**FFI** via stabby) is tracked separately as an additive concern, not an isolation tier. Third-party plugins are **first-class by design**; document any gap vs native until the model is complete.
+**Distribution and registration unit.** A Plugin is not only a bundle — it is the **registry** that wires Actions, Resources, and Credentials together under a **versioned** identity, with localization and metadata for the UI. Types **defined in other plugins** are available only when the dependent crate **depends on the provider plugin crate** in **`Cargo.toml`** and the engine respects that **acyclic** graph at load/activation — same closure idea as **Cargo**, not an open global namespace. **Plugin is the unit of registration, not the unit of size:** a "full" integration crate and a **micro-plugin** (one or two registry entries) are **the same kind of thing** — same `plugin.toml` contract, same registration story; see §7.1. Deployment is native, statically linked, trusted, and in-process (ADR-0091); a plugin change requires recompiling and redeploying every worker / host that includes it. Remote plugin execution, dynamically loaded plugin ABIs, process isolation, out-of-process / IPC execution, and WASM / WASI are abandoned non-goals (canon §12.6). Reconsideration requires an explicit canon revision followed by an accepted ADR and threat model; an ADR alone is insufficient. Third-party plugins are **first-class by design** within this native model; document any implementation gap until the model is complete.
 
 ### Why the uniform pattern matters
 
@@ -193,7 +187,7 @@ Besides the **integration** reference crates (§3.6–§3.9), the workspace ship
 - **`nebula-validator`** — programmatic validators + declarative **`Rule`**; **`nebula-schema`** embeds rules in **`Field`** definitions.
 - **`nebula-log`** — structured **`tracing`** pipeline (init, sinks, layers, reload). Cargo features `telemetry` (OpenTelemetry OTLP tracing exporter) and `sentry` ship the distributed-tracing/error-reporting integrations; both are off by default.
 - **`nebula-metrics`** — the single metrics path: lock-free in-memory primitives (`MetricsRegistry`, `Counter`, `Gauge`, `Histogram`, label interning) **plus** `nebula_*` naming, label-safety guards, and Prometheus-style export. Absorbs the former `nebula-telemetry` metric-primitives crate (ADR-0046).
-- **`nebula-eventbus`** — typed **broadcast** bus with back-pressure policy; **transport only** — domain **`E`** types live in owning crates.
+- **`nebula-eventbus`** — typed **broadcast** bus for ephemeral observations and wake hints. Domain event types live in owning crates, and consumers must tolerate loss, duplication, and reordering. Durable commands and business facts use persisted state or explicit outbox/inbox ports; this bus is never authoritative transport.
 - **`nebula-expression`** — workflow **expression** evaluation (variable access, operators, functions) for dynamic fields — headless, not a UI.
 - **`nebula-workflow`** + **`nebula-execution`** — the execution semantics core: workflow validation/shape and durable execution lifecycle/state transitions. Read these when the question is "what does the engine guarantee at runtime," not just "how integrations are authored."
 
@@ -233,7 +227,7 @@ Avoid **double declaration** — listing every action in TOML **and** in `fn act
 
 ```toml
 [nebula]
-sdk = "^0.8"   # semver constraint on nebula-api / plugin SDK — read by cargo-nebula / CLI without `cargo build`
+sdk = "^0.8"   # semver constraint on the supported nebula-sdk — read by cargo-nebula / CLI without `cargo build`
 ```
 
 **Optional `[plugin].id`** — set this **only** when the stable Nebula plugin id must **differ** from the Cargo package name (registry/UI **before** load):
@@ -327,9 +321,9 @@ nebula-resource-slack/        # micro-plugin
 3. Plugin loads and `impl Plugin` registers actions / resources / credentials / locales — runtime is the source of truth.
 4. `PluginManifest` returned from `impl Plugin` becomes authoritative for catalog display once the plugin is loaded.
 
-### Rust-native vs FFI ABI
+### Native plugin build and deployment
 
-Rust-native plugins follow Cargo-first dependency and build semantics. The compiled artefact is **not** implicitly ABI-stable across SDK or engine upgrades — recompile against the matching SDK version and rely on the `nebula.sdk` semver constraint in `plugin.toml` to fail-fast on incompatibility. A binary-stable cross-version ABI is an explicit FFI concern and tracked separately as an additive ABI concern (canon §12.6); options under consideration include `stabby`-style stable Rust ABI surfaces. There is no implicit promise of `.so` / `.dll` compatibility today.
+Rust-native plugins follow Cargo-first dependency and build semantics and are statically linked into each worker / host. Changing plugin code or the selected SDK / engine version requires recompiling and redeploying that worker / host. The `nebula.sdk` semver constraint in `plugin.toml` provides an early compatibility check; it does not create an independently deployable binary plugin surface.
 
 ### Tooling notes
 

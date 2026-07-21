@@ -22,7 +22,7 @@
 - **In-process and ephemeral, not authoritative** — best-effort, no durability/ordering guarantee; a receive-and-log subscriber does NOT satisfy canon §12.2. Durable delivery (cancel/dispatch) uses `execution_control_queue`, not this bus.
 - `emit()` never blocks on slow subscribers; lag is recovered transparently (subscriber re-positions to latest). Use `lagged_count()` to observe drops; `EventBusStats` for sent/dropped/subscriber counts.
 - Keep zero intra-workspace deps — adding a `nebula-*` dependency breaks the layer boundary (`deny.toml` wrappers).
-- Cross-crate calls go through `nebula-eventbus`, not direct sibling imports.
+- Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
 - Library code uses typed errors; no panicking unwrap/expect/panic in lib code.
 
 ## See also
