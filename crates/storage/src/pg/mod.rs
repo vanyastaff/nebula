@@ -19,6 +19,9 @@ use crate::error::StorageError;
 mod control_queue;
 mod external_identity;
 mod idempotency;
+mod identity_secret;
+mod mfa_enrollment;
+mod oauth_login;
 mod oauth_state;
 mod org;
 mod pat;
@@ -30,6 +33,12 @@ mod workspace;
 pub use control_queue::PgControlQueueRepo;
 pub use external_identity::PgExternalIdentityRepo;
 pub use idempotency::PgIdempotencyStore;
+pub use identity_secret::{
+    IdentitySecretMigrationError, IdentitySecretMigrationReport, IdentitySecretRejectionReason,
+    PgIdentitySecretMigrator,
+};
+pub use mfa_enrollment::PgMfaEnrollmentRepo;
+pub use oauth_login::PgOAuthLoginFinalizer;
 pub use oauth_state::PgOAuthStateRepo;
 pub use org::PgOrgRepo;
 pub use pat::PgPatRepo;

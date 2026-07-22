@@ -18,7 +18,6 @@
 //!     "replay_window_secs": 300,
 //!     "timestamp_header": "x-slack-request-timestamp",
 //!     "timestamp_format": "unix_seconds",
-//!     "provider_config": { "challenge_token": "abc" },
 //!     "rate_limit_per_minute": 600
 //!   }
 //! }
@@ -67,7 +66,7 @@ pub const WEBHOOK_ACTIVATION_KEY: &str = "webhook_activation";
 /// audit-only mode) can land without breaking external row decoders.
 /// Construct via [`WebhookActivationSpec::new`] and chain `with_*`
 /// builders.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct WebhookActivationSpec {
     /// Provider tag selecting which `WebhookActionFactory` instantiates
@@ -120,6 +119,24 @@ pub struct WebhookActivationSpec {
     /// at the API layer).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rate_limit_per_minute: Option<u64>,
+}
+
+impl std::fmt::Debug for WebhookActivationSpec {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WebhookActivationSpec")
+            .field("provider", &self.provider)
+            .field("secret_id", &"[redacted]")
+            .field("replay_window_secs", &self.replay_window_secs)
+            .field("timestamp_header", &self.timestamp_header)
+            .field("timestamp_format", &self.timestamp_format)
+            .field(
+                "provider_config",
+                &self.provider_config.as_ref().map(|_| "[redacted]"),
+            )
+            .field("rate_limit_per_minute", &self.rate_limit_per_minute)
+            .finish()
+    }
 }
 
 impl WebhookActivationSpec {
@@ -306,6 +323,19 @@ mod tests {
         assert_eq!(decoded.provider, "slack");
         assert_eq!(decoded.secret_id, "cred_01J0");
         assert_eq!(decoded.replay_window_secs, Some(300));
+    }
+
+    #[test]
+    fn debug_redacts_secret_reference_and_provider_config() {
+        const SECRET_ID_CANARY: &str = "cred_SECRET_REFERENCE_CANARY-c7f3";
+        const CONFIG_CANARY: &str = "PROVIDER_CONFIG_AUTHORITY_CANARY-94ba";
+        let spec = WebhookActivationSpec::new("generic", SECRET_ID_CANARY)
+            .with_provider_config(serde_json::json!({ "challenge_token": CONFIG_CANARY }));
+
+        let debug = format!("{spec:?}");
+        assert!(!debug.contains(SECRET_ID_CANARY));
+        assert!(!debug.contains(CONFIG_CANARY));
+        assert!(debug.contains("[redacted]"));
     }
 
     #[test]

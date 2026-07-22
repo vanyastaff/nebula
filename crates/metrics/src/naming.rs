@@ -220,14 +220,13 @@ pub const NEBULA_API_AUTH_MFA_ATTEMPTS_TOTAL: &str = "nebula_api_auth_mfa_attemp
 /// Counter: OAuth flow attempts (start + callback).
 ///
 /// Labeled by `outcome` (see [`auth_outcome`]) and `provider` (closed
-/// 3-value set — see [`auth_oauth_provider`] — bounded at compile time by
-/// `OAuthProvider::as_str()`). Operator-bounded cardinality ceiling:
-/// `outcome (<= 6) x provider (3) = 18` series.
-///
-/// `complete_oauth` currently returns `NotImplemented` on the PG backend
-/// (`pg.rs`); emission still fires (as `outcome=internal`) so the
-/// operator dashboard reflects the gap until a follow-up wires the real
-/// provider code-exchange.
+/// 2-value set — see [`auth_oauth_provider`] — bounded at compile time by
+/// `OAuthProvider::as_str()`). The registered-vocabulary ceiling is
+/// `12 auth outcomes x 2 providers = 24` series; each start, successful/error
+/// callback, and cancellation path emits only its relevant subset. Both Memory
+/// and PostgreSQL implement completion. A valid provider denial emits
+/// `oauth_failed`, invalid/replayed state emits `token_invalid`, and an email
+/// collision requiring explicit linking emits `conflict`.
 pub const NEBULA_API_AUTH_OAUTH_ATTEMPTS_TOTAL: &str = "nebula_api_auth_oauth_attempts_total";
 
 /// Histogram: auth backend method duration in seconds.
@@ -268,8 +267,10 @@ pub mod auth_outcome {
     pub const INVALID_INPUT: &str = "invalid_input";
     /// MFA TOTP code did not verify.
     pub const INVALID_MFA_CODE: &str = "invalid_mfa_code";
-    /// Authentication succeeded so far, but a TOTP code is required to
-    /// complete the login. Not a [`SUCCESS`] — the auth has not
+    /// Password or OAuth identity verification succeeded, but a TOTP code is
+    /// required to complete login. On OAuth, the finalizer atomically records
+    /// an opaque challenge and this outcome. The 202 response carries no
+    /// session/CSRF material. Not a [`SUCCESS`] — authentication has not
     /// completed.
     pub const MFA_REQUIRED: &str = "mfa_required";
     /// One-time token (verification / reset / mfa-challenge / oauth-state)
@@ -280,39 +281,41 @@ pub mod auth_outcome {
     /// (which is invisible to the auth backend without a storage API
     /// change).
     pub const LOCKOUT: &str = "lockout";
-    /// Email-verification flow has not completed for this account.
+    /// Email-verification flow has not completed for this account, or a valid
+    /// new OAuth identity supplied no policy-acceptable verified email. The
+    /// latter is a semantic 403, distinct from provider/transport failures.
     pub const EMAIL_UNVERIFIED: &str = "email_unverified";
-    /// Rate limit hit on a sensitive endpoint. Reserved for handler-layer
-    /// middleware rejections that surface through `AuthError::RateLimit`;
-    /// the PG/in-memory backends never produce this outcome today, but
-    /// the value stays in the closed set for forward-compat.
+    /// Rate limit hit on a sensitive endpoint. This includes handler-layer
+    /// admission and the bounded Plane-A OAuth-state stores: Memory emits it
+    /// at its process-local cap, while PostgreSQL emits it when the shared
+    /// admission gate is full or contended.
     pub const RATE_LIMIT: &str = "rate_limit";
-    /// OAuth provider returned an error or state-token verification
-    /// failed.
+    /// OAuth provider exchange failed or the provider returned a valid denial.
+    /// Invalid/replayed state is classified separately as [`TOKEN_INVALID`].
     pub const OAUTH_FAILED: &str = "oauth_failed";
-    /// Resource already exists (email already registered on signup).
+    /// Resource conflict: email already registered on signup, or a verified
+    /// OAuth email belongs to an existing account and explicit authenticated
+    /// linking is required. The latter never auto-links or creates a session.
     pub const CONFLICT: &str = "conflict";
     /// Internal backend error (storage failure, crypto failure, lock
-    /// poisoning, unexpected `From<EmailError>` collapse,
-    /// `NotImplemented` on a wired-but-incomplete provider path).
+    /// poisoning, unexpected `From<EmailError>` collapse, or an invariant
+    /// failure in a fully wired provider path).
     pub const INTERNAL: &str = "internal";
 }
 
 /// Provider labels for [`NEBULA_API_AUTH_OAUTH_ATTEMPTS_TOTAL`].
 ///
 /// Mirror of `OAuthProvider::as_str()` in
-/// `crates/api/src/domain/auth/backend/oauth.rs`. Closed 3-value set
+/// `crates/api/src/domain/auth/backend/oauth.rs`. Closed 2-value set
 /// bounded by the enum at compile time. A user-supplied unknown provider
 /// query param is rejected by `OAuthProvider::from_str` with
-/// `AuthError::OAuthFailed` *before* any metric arm runs, so this set
+/// `AuthError::InvalidInput` *before* any metric arm runs, so this set
 /// cannot leak.
 pub mod auth_oauth_provider {
     /// Sign-in via Google.
     pub const GOOGLE: &str = "google";
     /// Sign-in via GitHub.
     pub const GITHUB: &str = "github";
-    /// Sign-in via Microsoft.
-    pub const MICROSOFT: &str = "microsoft";
 }
 
 // ---------------------------------------------------------------------------
@@ -1266,7 +1269,7 @@ mod tests {
     /// per the oracle locked spec: `attempts_total{outcome}` /
     /// `mfa_attempts_total{outcome}` against the 12-value closed
     /// [`auth_outcome`] set; `oauth_attempts_total{outcome, provider}`
-    /// adds the 3-value closed [`auth_oauth_provider`] dimension; the
+    /// adds the 2-value closed [`auth_oauth_provider`] dimension; the
     /// histogram uses default seconds-shaped buckets keyed by `outcome`.
     const API_AUTH_METRIC_NAMES: [&str; 4] = [
         NEBULA_API_AUTH_ATTEMPTS_TOTAL,
@@ -1343,16 +1346,12 @@ mod tests {
     #[test]
     fn auth_oauth_provider_labels_are_closed_set() {
         // Bounded at compile time by the `OAuthProvider` enum
-        // (`Google | GitHub | Microsoft`). A user-supplied unknown
-        // provider is rejected by `from_str` with `OAuthFailed` before
+        // (`Google | GitHub`). A user-supplied unknown
+        // provider is rejected by `from_str` with `InvalidInput` before
         // any metric arm runs, so the set cannot leak.
-        let labels = [
-            auth_oauth_provider::GOOGLE,
-            auth_oauth_provider::GITHUB,
-            auth_oauth_provider::MICROSOFT,
-        ];
+        let labels = [auth_oauth_provider::GOOGLE, auth_oauth_provider::GITHUB];
         let unique: HashSet<&str> = labels.iter().copied().collect();
-        assert_eq!(unique.len(), 3, "auth oauth provider labels must be unique");
+        assert_eq!(unique.len(), 2, "auth oauth provider labels must be unique");
         for label in labels {
             assert!(!label.is_empty());
             assert!(label.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'));

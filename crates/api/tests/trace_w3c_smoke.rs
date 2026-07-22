@@ -13,6 +13,7 @@
 use axum::{
     Router,
     body::Body,
+    extract::MatchedPath,
     http::{Request, StatusCode},
     middleware,
     routing::get,
@@ -22,7 +23,20 @@ use nebula_api::middleware::{
 };
 use nebula_core::parse_traceparent;
 use tower::ServiceExt;
-use tower_http::trace::{DefaultMakeSpan, MakeSpan, TraceLayer};
+use tower_http::trace::TraceLayer;
+
+fn make_request_span(request: &Request<Body>) -> tracing::Span {
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(MatchedPath::as_str)
+        .unwrap_or("<unmatched>");
+    tracing::info_span!(
+        "http.request",
+        http.request.method = %request.method(),
+        http.route = route,
+    )
+}
 
 #[tokio::test]
 async fn init_api_telemetry_emits_traceparent_on_response() {
@@ -36,10 +50,7 @@ async fn init_api_telemetry_emits_traceparent_on_response() {
         .layer(middleware::from_fn(inject_w3c_trace_response_headers))
         // Match the production stack in `app.rs`: span level must be INFO so a default
         // `RUST_LOG=info` filter still records it for the OTel layer.
-        .layer(
-            TraceLayer::new_for_http()
-                .make_span_with(DefaultMakeSpan::new().level(tracing::Level::INFO)),
-        );
+        .layer(TraceLayer::new_for_http().make_span_with(make_request_span));
 
     let request = Request::builder()
         .uri("/ping")
@@ -85,8 +96,7 @@ async fn inbound_traceparent_round_trips_with_same_trace_id() {
         .layer(middleware::from_fn(inject_w3c_trace_response_headers))
         .layer(
             TraceLayer::new_for_http().make_span_with(|request: &Request<Body>| {
-                let mut make_span = DefaultMakeSpan::new().level(tracing::Level::INFO);
-                let span = make_span.make_span(request);
+                let span = make_request_span(request);
                 if let Some(w3c) = request.extensions().get::<InboundW3cTraceContext>() {
                     // Re-use the production helper through the public middleware fn — the
                     // helper is `pub(crate)`, but `trace_context_middleware` stamps the

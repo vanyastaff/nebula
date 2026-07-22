@@ -8,7 +8,7 @@
 //!   handler function name; collisions crash client generators.
 //! - **$ref resolution** — every `$ref` under `paths.../responses/.../schema`
 //!   resolves to a declared component.
-//! - **Required security schemes** — `bearer`, `api_key`, and `csrf` are
+//! - **Required security schemes** — `bearer`, `api_key`, `session_cookie`, and `csrf` are
 //!   published per 2.
 //! - **Drift parity** — the spec mentions every key path mounted under
 //!   `routes::create_routes`; if a handler is added but not annotated
@@ -109,6 +109,24 @@ async fn credential_oauth_ceremony_is_absent_while_identity_oauth_stays_public()
                     .is_some_and(serde_json::Map::is_empty)),
             "Plane-A OAuth route must remain unauthenticated: {retained}; security={security:?}"
         );
+
+        let responses = operation
+            .get("responses")
+            .and_then(Value::as_object)
+            .unwrap_or_else(|| panic!("OAuth operation needs typed responses: {retained}"));
+        let expected: &[&str] = if retained.ends_with("/callback") {
+            &[
+                "200", "202", "400", "401", "403", "409", "500", "502", "503",
+            ]
+        } else {
+            &["200", "400", "429", "500", "502", "503"]
+        };
+        for status in expected {
+            assert!(
+                responses.contains_key(*status),
+                "OAuth operation {retained} is missing honest {status} response"
+            );
+        }
     }
 
     for universal_acquisition in [
@@ -121,6 +139,69 @@ async fn credential_oauth_ceremony_is_absent_while_identity_oauth_stays_public()
         assert!(
             operation.is_some(),
             "universal Plane-B acquisition route must remain published: {universal_acquisition}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn identity_oauth_provider_and_mfa_continuation_are_typed_closed_contracts() {
+    let spec = fetch_spec_json().await;
+    let paths = spec
+        .get("paths")
+        .and_then(Value::as_object)
+        .expect("spec.paths must be present");
+    let schemas = spec
+        .get("components")
+        .and_then(|components| components.get("schemas"))
+        .and_then(Value::as_object)
+        .expect("component schemas must be present");
+
+    for path in [
+        concat!("/api/v1/auth/oauth/", "{", "provider", "}"),
+        concat!("/api/v1/auth/oauth/", "{", "provider", "}", "/callback"),
+    ] {
+        let operation = paths
+            .get(path)
+            .and_then(|item| item.get("get"))
+            .unwrap_or_else(|| panic!("OAuth GET operation must exist: {path}"));
+        let provider = operation
+            .get("parameters")
+            .and_then(Value::as_array)
+            .and_then(|parameters| {
+                parameters.iter().find(|parameter| {
+                    parameter.get("name").and_then(Value::as_str) == Some("provider")
+                })
+            })
+            .unwrap_or_else(|| panic!("OAuth operation must type its provider parameter: {path}"));
+        let schema = provider
+            .get("schema")
+            .unwrap_or_else(|| panic!("provider parameter must carry a schema: {provider:?}"));
+        let schema = schema
+            .get("$ref")
+            .and_then(Value::as_str)
+            .and_then(|reference| reference.rsplit('/').next())
+            .and_then(|name| schemas.get(name))
+            .unwrap_or(schema);
+        let values: HashSet<&str> = schema
+            .get("enum")
+            .and_then(Value::as_array)
+            .unwrap_or_else(|| panic!("provider schema must be a closed enum: {schema:?}"))
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert_eq!(values, HashSet::from(["google", "github"]));
+    }
+
+    let mfa_responses = paths
+        .get("/api/v1/auth/login/mfa")
+        .and_then(|item| item.get("post"))
+        .and_then(|operation| operation.get("responses"))
+        .and_then(Value::as_object)
+        .expect("MFA login completion must publish responses");
+    for status in ["200", "401", "500", "503"] {
+        assert!(
+            mfa_responses.contains_key(status),
+            "MFA login completion must document {status}: {mfa_responses:?}"
         );
     }
 }
@@ -534,12 +615,105 @@ async fn security_schemes_match_adr_0047() {
         .and_then(Value::as_object)
         .expect("components.securitySchemes must be present per OpenAPI contract");
 
-    for required in ["bearer", "api_key", "csrf"] {
+    for required in ["bearer", "api_key", "session_cookie", "csrf"] {
         assert!(
             schemes.contains_key(required),
             "OpenAPI contract mandates security scheme `{required}` in the spec; \
              got {:?}",
             schemes.keys().collect::<Vec<_>>()
+        );
+    }
+
+    assert_eq!(
+        schemes["session_cookie"].get("in").and_then(Value::as_str),
+        Some("cookie")
+    );
+    assert_eq!(
+        schemes["session_cookie"]
+            .get("name")
+            .and_then(Value::as_str),
+        Some("__Host-nebula-session")
+    );
+    assert_eq!(
+        schemes["csrf"].get("in").and_then(Value::as_str),
+        Some("header")
+    );
+    assert_eq!(
+        schemes["csrf"].get("name").and_then(Value::as_str),
+        Some("x-csrf-token")
+    );
+    assert!(
+        !schemes.contains_key("session"),
+        "there must be one canonical cookie-session scheme"
+    );
+}
+
+#[tokio::test]
+async fn protected_operations_publish_explicit_and_cookie_auth_alternatives() {
+    let spec = fetch_spec_json().await;
+
+    let requirement_keys = |method: &str| {
+        let mut requirements = spec["paths"]["/api/v1/me"][method]["security"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{method} /api/v1/me must publish security requirements"))
+            .iter()
+            .map(|requirement| {
+                let mut keys = requirement
+                    .as_object()
+                    .expect("security requirement must be an object")
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                keys.sort_unstable();
+                keys
+            })
+            .collect::<Vec<_>>();
+        requirements.sort_unstable();
+        requirements
+    };
+
+    assert_eq!(
+        requirement_keys("get"),
+        vec![
+            vec!["api_key".to_owned()],
+            vec!["bearer".to_owned()],
+            vec!["session_cookie".to_owned()],
+        ],
+        "safe session-auth operations do not require CSRF"
+    );
+    assert_eq!(
+        requirement_keys("patch"),
+        vec![
+            vec!["api_key".to_owned()],
+            vec!["bearer".to_owned()],
+            vec!["csrf".to_owned(), "session_cookie".to_owned()],
+        ],
+        "mutating session-auth operations require session_cookie AND csrf"
+    );
+}
+
+#[tokio::test]
+async fn mfa_enrollment_requires_session_cookie_and_csrf_together() {
+    let spec = fetch_spec_json().await;
+    for path in ["/api/v1/auth/mfa/enroll", "/api/v1/auth/mfa/verify"] {
+        let requirements = spec["paths"][path]["post"]["security"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{path} must publish security requirements"));
+        assert_eq!(
+            requirements.len(),
+            1,
+            "{path} must not publish bearer/API-key alternatives"
+        );
+        let requirement = requirements[0]
+            .as_object()
+            .unwrap_or_else(|| panic!("{path} security requirement must be an object"));
+        assert_eq!(
+            requirement
+                .keys()
+                .map(String::as_str)
+                .collect::<HashSet<_>>(),
+            HashSet::from(["session_cookie", "csrf"]),
+            "{path} requires both ambient session authority and CSRF proof"
         );
     }
 }

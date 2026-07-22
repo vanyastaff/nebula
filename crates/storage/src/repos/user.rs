@@ -4,7 +4,10 @@ use std::future::Future;
 
 use crate::{
     error::StorageError,
-    rows::{OAuthStateRow, PersonalAccessTokenRow, SessionRow, UserRow, VerificationTokenRow},
+    rows::{
+        OAuthStateRow, PersonalAccessTokenRow, SessionDraft, SessionRow, UserRow,
+        VerificationTokenRow,
+    },
 };
 
 /// User account storage.
@@ -46,21 +49,31 @@ pub trait UserRepo: Send + Sync {
 
 /// Session storage for browser logins.
 pub trait SessionRepo: Send + Sync {
-    /// Insert a new session.
-    fn create(&self, session: &SessionRow)
-    -> impl Future<Output = Result<(), StorageError>> + Send;
+    /// Hash the one-time presented bearer and insert only its digest plus
+    /// session metadata.
+    fn create(
+        &self,
+        presented_token: &[u8],
+        session: &SessionDraft,
+    ) -> impl Future<Output = Result<(), StorageError>> + Send;
 
     /// Fetch a session by ID. Returns `None` if not found, revoked, or expired.
     fn get(
         &self,
-        id: &[u8],
+        presented_token: &[u8],
     ) -> impl Future<Output = Result<Option<SessionRow>, StorageError>> + Send;
 
     /// Touch `last_active_at` to now.
-    fn touch(&self, id: &[u8]) -> impl Future<Output = Result<(), StorageError>> + Send;
+    fn touch(
+        &self,
+        presented_token: &[u8],
+    ) -> impl Future<Output = Result<(), StorageError>> + Send;
 
     /// Mark the session as revoked.
-    fn revoke(&self, id: &[u8]) -> impl Future<Output = Result<(), StorageError>> + Send;
+    fn revoke(
+        &self,
+        presented_token: &[u8],
+    ) -> impl Future<Output = Result<(), StorageError>> + Send;
 
     /// Delete all expired sessions. Returns the count deleted.
     fn cleanup_expired(&self) -> impl Future<Output = Result<u64, StorageError>> + Send;
@@ -156,6 +169,28 @@ pub trait VerificationTokenRepo: Send + Sync {
     ) -> impl Future<Output = Result<u64, StorageError>> + Send;
 }
 
+/// Hard ceiling for live, unconsumed Plane-A OAuth states in one deployment.
+///
+/// The repository, rather than its callers, owns the serialization point that
+/// makes the capacity check and insert one atomic decision.
+pub const OAUTH_STATE_CAPACITY: u32 = 10_000;
+
+/// Result of attempting to admit one live Plane-A OAuth state.
+///
+/// The variants deliberately carry no values: neither a state token nor a
+/// PKCE verifier can cross diagnostics through this outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use = "OAuth state admission must be handled before issuing a browser redirect"]
+#[non_exhaustive]
+pub enum OAuthStateAdmission {
+    /// The state row was created within the hard capacity bound.
+    Created,
+    /// The shared active-state capacity was already exhausted.
+    AtCapacity,
+    /// Another replica currently owns the non-blocking admission gate.
+    Contended,
+}
+
 /// Server-side storage for Plane-A OAuth PKCE state.
 ///
 /// Each `start_oauth` mints a row keyed by the random url-safe state
@@ -164,11 +199,15 @@ pub trait VerificationTokenRepo: Send + Sync {
 /// Distinct from the Plane-B credential OAuth surface, which has its
 /// own state-pending table — see `0008_credentials.sql` family.
 pub trait OAuthStateRepo: Send + Sync {
-    /// Insert a new PKCE state row.
-    fn create(
+    /// Atomically clean expired rows, enforce [`OAUTH_STATE_CAPACITY`],
+    /// and insert a new unconsumed PKCE state row.
+    ///
+    /// Implementations must fail closed under admission contention rather
+    /// than waiting while holding a database connection.
+    fn admit(
         &self,
         state: &OAuthStateRow,
-    ) -> impl Future<Output = Result<(), StorageError>> + Send;
+    ) -> impl Future<Output = Result<OAuthStateAdmission, StorageError>> + Send;
 
     /// Atomically mark a PKCE state as consumed and return its row.
     /// Returns `None` if the state does not exist, is already consumed,
@@ -247,4 +286,28 @@ pub trait ExternalIdentityRepo: Send + Sync {
         subject: &str,
         email: Option<&str>,
     ) -> impl Future<Output = Result<(), StorageError>> + Send;
+}
+
+#[cfg(test)]
+mod oauth_state_admission_contract_tests {
+    use super::{OAUTH_STATE_CAPACITY, OAuthStateAdmission};
+
+    #[test]
+    fn oauth_state_capacity_is_the_platform_hard_limit() {
+        assert_eq!(OAUTH_STATE_CAPACITY, 10_000);
+    }
+
+    #[test]
+    fn oauth_state_admission_outcomes_have_no_secret_bearing_payload() {
+        let outcomes = [
+            OAuthStateAdmission::Created,
+            OAuthStateAdmission::AtCapacity,
+            OAuthStateAdmission::Contended,
+        ];
+
+        assert_eq!(
+            outcomes.map(|outcome| format!("{outcome:?}")),
+            ["Created", "AtCapacity", "Contended"]
+        );
+    }
 }

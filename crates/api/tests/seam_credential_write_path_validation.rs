@@ -18,6 +18,7 @@ use common::{
 };
 use nebula_api::{
     ApiConfig, app,
+    domain::auth::backend::{AuthBackend, InMemoryAuthBackend, SignupRequest, dto::SecretString},
     ports::credential_schema::{
         CredentialFieldError, CredentialSchemaPort, CredentialTypeDescriptor,
     },
@@ -191,28 +192,52 @@ async fn create_credential_503_when_port_unconfigured_never_persists() {
 // ── CSRF wiring on credential write paths (M3.1 box 2) ────────────────────
 //
 // `csrf_middleware` is layered on `credential_routes` in `domain/mod.rs`.
-// JWT auth is a cookie-bearing auth method, so the double-submit
-// `X-CSRF-Token` header MUST match the `nebula_csrf` cookie for any
-// state-changing request to reach the handler.
+// Only ambient session-cookie authentication needs the double-submit proof;
+// explicit Bearer/JWT authority is deliberately exempt. These tests therefore
+// create a real session and prove that `X-CSRF-Token` MUST match the
+// `__Host-nebula-csrf` cookie before a state-changing request reaches the
+// handler.
+
+async fn session_authenticated_credential_state() -> (nebula_api::AppState, String, String) {
+    let (state, _q) = create_state_with_queue().await;
+    let state = state.with_credential_schema(Arc::new(RequireApiKeyPort));
+    let backend = Arc::new(InMemoryAuthBackend::new());
+    let profile = backend
+        .register_user(SignupRequest {
+            email: "credential-csrf@nebula.dev".to_owned(),
+            password: SecretString::new("hunter22".to_owned()),
+            display_name: "Credential CSRF".to_owned(),
+        })
+        .await
+        .expect("register session-authenticated user");
+    let mut session = backend
+        .create_session(&profile.user_id)
+        .await
+        .expect("create session authority");
+    let session_id = std::mem::take(&mut session.id);
+    let csrf_token = std::mem::take(&mut session.csrf_token);
+    let backend_dyn: Arc<dyn AuthBackend> = backend;
+    (state.with_auth_backend(backend_dyn), session_id, csrf_token)
+}
 
 fn json_with_csrf_headers(
     method: &str,
     uri: &str,
-    token: &str,
     body: &serde_json::Value,
     csrf_header: Option<&str>,
-    csrf_cookie: Option<&str>,
+    session_cookie: &str,
+    csrf_cookie: &str,
 ) -> Request<Body> {
     let mut b = Request::builder()
         .method(method)
         .uri(uri)
         .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {token}"));
+        .header(
+            "cookie",
+            format!("__Host-nebula-session={session_cookie}; __Host-nebula-csrf={csrf_cookie}"),
+        );
     if let Some(h) = csrf_header {
         b = b.header("x-csrf-token", h);
-    }
-    if let Some(c) = csrf_cookie {
-        b = b.header("cookie", c);
     }
     b.body(Body::from(serde_json::to_vec(body).unwrap()))
         .unwrap()
@@ -220,13 +245,11 @@ fn json_with_csrf_headers(
 
 #[tokio::test]
 async fn create_credential_returns_403_when_csrf_header_missing() {
-    // Cookie-bearing JWT auth + state-changing method + missing CSRF header
+    // Ambient session auth + state-changing method + missing CSRF header
     // ⇒ csrf_middleware rejects with 403 *before* the handler runs (and
     // therefore *before* any credential-schema validation).
-    let (state, _q) = create_state_with_queue().await;
-    let state = state.with_credential_schema(Arc::new(RequireApiKeyPort));
+    let (state, session_id, csrf_token) = session_authenticated_credential_state().await;
     let config = ApiConfig::for_test();
-    let token = create_test_jwt();
     let app = app::build_app(state, &config);
 
     let body = serde_json::json!({
@@ -239,10 +262,10 @@ async fn create_credential_returns_403_when_csrf_header_missing() {
         .oneshot(json_with_csrf_headers(
             "POST",
             &ws_path("/credentials"),
-            &token,
             &body,
             None,
-            Some(TEST_CSRF_COOKIE),
+            &session_id,
+            &csrf_token,
         ))
         .await
         .unwrap();
@@ -260,10 +283,8 @@ async fn create_credential_returns_403_when_csrf_header_missing() {
 
 #[tokio::test]
 async fn create_credential_returns_403_when_csrf_header_mismatches_cookie() {
-    let (state, _q) = create_state_with_queue().await;
-    let state = state.with_credential_schema(Arc::new(RequireApiKeyPort));
+    let (state, session_id, csrf_token) = session_authenticated_credential_state().await;
     let config = ApiConfig::for_test();
-    let token = create_test_jwt();
     let app = app::build_app(state, &config);
 
     let body = serde_json::json!({
@@ -276,10 +297,10 @@ async fn create_credential_returns_403_when_csrf_header_mismatches_cookie() {
         .oneshot(json_with_csrf_headers(
             "POST",
             &ws_path("/credentials"),
-            &token,
             &body,
             Some("different-from-cookie"),
-            Some(TEST_CSRF_COOKIE),
+            &session_id,
+            &csrf_token,
         ))
         .await
         .unwrap();

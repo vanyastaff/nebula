@@ -14,7 +14,10 @@
 //! from the public API surface; its existence is documented here for
 //! the maintainer audience).
 
+use std::time::Duration;
+
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use nebula_core::Principal;
 
 use super::{
@@ -50,10 +53,10 @@ pub(super) mod metrics_emit {
 
     use nebula_metrics::{
         MetricsRegistry,
-        naming::{NEBULA_API_AUTH_DURATION_SECONDS, auth_oauth_provider},
+        naming::{NEBULA_API_AUTH_DURATION_SECONDS, auth_oauth_provider, auth_outcome},
     };
 
-    use super::{AuthError, OAuthProvider};
+    use super::{AuthError, OAuthCompletion, OAuthProvider};
 
     /// Map an [`OAuthProvider`] enum value to its closed-set provider
     /// label string from
@@ -69,7 +72,26 @@ pub(super) mod metrics_emit {
         match provider {
             OAuthProvider::Google => auth_oauth_provider::GOOGLE,
             OAuthProvider::GitHub => auth_oauth_provider::GITHUB,
-            OAuthProvider::Microsoft => auth_oauth_provider::MICROSOFT,
+        }
+    }
+
+    /// Classify a completed OAuth backend call into the shared closed outcome
+    /// set. Keeping this branch in one place prevents the in-memory and
+    /// PostgreSQL backends from treating an MFA continuation as success.
+    #[must_use]
+    pub(crate) fn oauth_completion_outcome(
+        result: &Result<OAuthCompletion, AuthError>,
+    ) -> &'static str {
+        match result {
+            Ok(OAuthCompletion::SessionCreated { .. }) => auth_outcome::SUCCESS,
+            Ok(OAuthCompletion::MfaRequired { .. }) => auth_outcome::MFA_REQUIRED,
+            Err(AuthError::InvalidToken) => auth_outcome::TOKEN_INVALID,
+            Err(AuthError::EmailNotVerified) => auth_outcome::EMAIL_UNVERIFIED,
+            Err(AuthError::AccountLinkRequired) => auth_outcome::CONFLICT,
+            Err(AuthError::OAuthFailed | AuthError::ProviderNotConfigured) => {
+                auth_outcome::OAUTH_FAILED
+            },
+            Err(_) => auth_outcome::INTERNAL,
         }
     }
 
@@ -175,7 +197,6 @@ pub struct CreatePatParams {
 }
 
 /// Outcome of a password-step authentication.
-#[derive(Debug, Clone)]
 pub enum PasswordOutcome {
     /// Password verified and no MFA is required — caller may mint a session.
     Authenticated(UserProfile),
@@ -188,8 +209,22 @@ pub enum PasswordOutcome {
     },
 }
 
+impl std::fmt::Debug for PasswordOutcome {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Authenticated(_) => formatter
+                .debug_tuple("Authenticated")
+                .field(&"[redacted]")
+                .finish(),
+            Self::MfaRequired { .. } => formatter
+                .debug_struct("MfaRequired")
+                .field("challenge_token", &"[redacted]")
+                .finish(),
+        }
+    }
+}
+
 /// Outcome of a successful MFA enrollment.
-#[derive(Debug, Clone)]
 pub struct MfaEnrollment {
     /// `otpauth://totp/...` URI rendered as a QR code by the client.
     pub otpauth_uri: String,
@@ -197,8 +232,36 @@ pub struct MfaEnrollment {
     pub secret_base32: String,
 }
 
-/// Result of starting a Plane-A OAuth flow.
+/// Lifetime of a pending MFA enrollment candidate.
+pub(crate) const MFA_ENROLLMENT_TTL: Duration = Duration::from_mins(10);
+
+/// Maximum age of the primary authentication accepted for MFA enrollment.
+pub(crate) const MFA_ENROLLMENT_REAUTH_TTL: Duration = Duration::from_mins(10);
+
+/// Principal and primary-authentication time resolved from a live session.
+///
+/// `authenticated_at` is the session creation time. Carrying it through the
+/// auth boundary lets sensitive handlers enforce reauthentication freshness
+/// without treating a long-lived session as permanently fresh authority.
 #[derive(Debug, Clone)]
+pub struct AuthenticatedSession {
+    /// Principal that owns the live session.
+    pub principal: Principal,
+    /// Time at which primary authentication created the session.
+    pub authenticated_at: DateTime<Utc>,
+}
+
+impl std::fmt::Debug for MfaEnrollment {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MfaEnrollment")
+            .field("otpauth_uri", &"[redacted]")
+            .field("secret_base32", &"[redacted]")
+            .finish()
+    }
+}
+
+/// Result of starting a Plane-A OAuth flow.
 pub struct OAuthStart {
     /// Provider authorize URL (state + PKCE challenge already included).
     pub authorize_url: String,
@@ -206,13 +269,49 @@ pub struct OAuthStart {
     pub state: String,
 }
 
-/// Result of completing a Plane-A OAuth flow.
-#[derive(Debug, Clone)]
-pub struct OAuthCompletion {
-    /// User profile resolved from the provider response.
-    pub user: UserProfile,
-    /// Newly created session.
-    pub session: SessionRecord,
+impl std::fmt::Debug for OAuthStart {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OAuthStart")
+            .field("authorize_url", &"[redacted]")
+            .field("state", &"[redacted]")
+            .finish()
+    }
+}
+
+/// Result of completing the provider first factor for a Plane-A OAuth login.
+#[non_exhaustive]
+pub enum OAuthCompletion {
+    /// Authentication is complete and the session was created atomically with
+    /// any new local user and external-identity link.
+    SessionCreated {
+        /// User profile resolved from the authoritative identity link.
+        user: UserProfile,
+        /// Newly created session.
+        session: SessionRecord,
+    },
+    /// The linked local user has Nebula MFA enabled. No session exists yet;
+    /// the client must complete the one-time challenge at `/auth/login/mfa`.
+    MfaRequired {
+        /// Opaque single-use MFA challenge plaintext.
+        challenge_token: String,
+    },
+}
+
+impl std::fmt::Debug for OAuthCompletion {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SessionCreated { .. } => formatter
+                .debug_struct("SessionCreated")
+                .field("user", &"[redacted]")
+                .field("session", &"[redacted]")
+                .finish(),
+            Self::MfaRequired { .. } => formatter
+                .debug_struct("MfaRequired")
+                .field("challenge_token", &"[redacted]")
+                .finish(),
+        }
+    }
 }
 
 /// Plane-A authentication contract.
@@ -233,7 +332,7 @@ pub trait AuthBackend: Send + Sync {
     async fn get_principal_by_session(
         &self,
         session_id: &str,
-    ) -> Result<Option<Principal>, crate::ApiError>;
+    ) -> Result<Option<AuthenticatedSession>, crate::ApiError>;
 
     /// Register a new user from the signup form. Returns the freshly
     /// minted profile; the implementation is responsible for queueing
@@ -334,30 +433,44 @@ pub trait AuthBackend: Send + Sync {
     /// Begin a Plane-A OAuth sign-in.
     ///
     /// `redirect_uri` is **handler-derived** from `ApiConfig::public_url`
-    /// per ADR-0085 D-3 (recon-4) —
-    /// `format!("{}/api/v1/auth/oauth/{}/callback", api_config.public_url,
-    /// provider.as_str())`. The trait accepts it as an argument so the
+    /// per ADR-0085 D-3. The canonical API callback path is appended to
+    /// the validated external mount prefix. The trait accepts it so the
     /// derived value round-trips through the implementation's state row
     /// and is re-verified on `complete_oauth` against the row's stored
     /// value (closes the `public_url_changed_mid_flow` defense per
     /// REQ-oauth-003 Scenario 3.10). Implementations MUST NOT derive
     /// the redirect_uri themselves; the handler is the single source of
-    /// truth (T2.10 shared helper).
+    /// truth.
     async fn start_oauth(
         &self,
         provider: OAuthProvider,
         redirect_uri: &str,
     ) -> Result<OAuthStart, AuthError>;
 
+    /// Consume an OAuth state after the provider returns a standard error
+    /// callback (for example, the resource owner denied authorization).
+    ///
+    /// Implementations must atomically consume only a live matching
+    /// `(state, provider)` entry and re-check its persisted `redirect_uri`.
+    /// This path never needs provider runtime configuration and must not make
+    /// token or userinfo requests.
+    async fn cancel_oauth(
+        &self,
+        provider: OAuthProvider,
+        state: &str,
+        redirect_uri: &str,
+    ) -> Result<(), AuthError>;
+
     /// Complete a Plane-A OAuth sign-in. The implementation exchanges the
     /// provider's `code` for an access token, fetches the user profile,
-    /// upserts the user, and mints a session.
+    /// resolves or creates the user, and either mints a session or persists a
+    /// local Nebula-MFA challenge. Provider assurance never substitutes for
+    /// the local user's MFA policy.
     ///
     /// `redirect_uri` is **handler-derived** per the same formula as
     /// [`Self::start_oauth`]. The implementation MUST compare it against
-    /// the persisted state-row value and return
-    /// `AuthError::OAuthFailed { cause: "public_url_changed_mid_flow" }`
-    /// on mismatch (Scenario 3.10).
+    /// the persisted state-row value and return the fixed
+    /// [`AuthError::OAuthFailed`] variant on mismatch.
     async fn complete_oauth(
         &self,
         provider: OAuthProvider,
@@ -365,4 +478,78 @@ pub trait AuthBackend: Send + Sync {
         code: &str,
         redirect_uri: &str,
     ) -> Result<OAuthCompletion, AuthError>;
+}
+
+#[cfg(test)]
+mod oauth_debug_tests {
+    use nebula_metrics::naming::auth_outcome;
+
+    use super::{MfaEnrollment, OAuthCompletion, OAuthStart, PasswordOutcome, metrics_emit};
+    use crate::domain::auth::backend::UserProfile;
+
+    static_assertions::assert_not_impl_any!(PasswordOutcome: Clone);
+    static_assertions::assert_not_impl_any!(MfaEnrollment: Clone);
+    static_assertions::assert_not_impl_any!(OAuthStart: Clone);
+    static_assertions::assert_not_impl_any!(OAuthCompletion: Clone);
+
+    #[test]
+    fn oauth_start_debug_redacts_url_and_state() {
+        let start = OAuthStart {
+            authorize_url: "https://idp.example/authorize?state=URL_CANARY-3c2a".to_owned(),
+            state: "STATE_CANARY-7301".to_owned(),
+        };
+
+        let debug = format!("{start:?}");
+        assert!(!debug.contains("URL_CANARY-3c2a"));
+        assert!(!debug.contains("STATE_CANARY-7301"));
+    }
+
+    #[test]
+    fn oauth_completion_debug_redacts_mfa_challenge_plaintext() {
+        const CANARY: &str = "OAUTH_MFA_CHALLENGE_CANARY-c803";
+        let completion = OAuthCompletion::MfaRequired {
+            challenge_token: CANARY.to_owned(),
+        };
+
+        let debug = format!("{completion:?}");
+        assert!(!debug.contains(CANARY));
+        assert!(debug.contains("MfaRequired"));
+        assert_eq!(
+            metrics_emit::oauth_completion_outcome(&Ok(completion)),
+            auth_outcome::MFA_REQUIRED
+        );
+    }
+
+    #[test]
+    fn password_and_enrollment_outcome_debug_redacts_authority() {
+        const CANARY: &str = "MFA_AUTHORITY_CANARY-4a31";
+        let profile = UserProfile {
+            user_id: CANARY.to_owned(),
+            email: format!("{CANARY}@example.test"),
+            display_name: CANARY.to_owned(),
+            avatar_url: Some(CANARY.to_owned()),
+            email_verified: true,
+            mfa_enabled: true,
+        };
+        let values = [
+            format!("{:?}", PasswordOutcome::Authenticated(profile)),
+            format!(
+                "{:?}",
+                PasswordOutcome::MfaRequired {
+                    challenge_token: CANARY.to_owned(),
+                }
+            ),
+            format!(
+                "{:?}",
+                MfaEnrollment {
+                    otpauth_uri: format!("otpauth://totp/{CANARY}?secret={CANARY}"),
+                    secret_base32: CANARY.to_owned(),
+                }
+            ),
+        ];
+
+        for debug in values {
+            assert!(!debug.contains(CANARY), "Debug leaked authority: {debug}");
+        }
+    }
 }

@@ -1,7 +1,7 @@
--- 0021: External identities (OAuth provider-to-user linkage)
+-- 0029: External identities (OAuth provider-to-user linkage)
 -- Layer: Identity (Plane A)
 -- Spec: ADR-0085 D-8 + REQ-oauth-005 / REQ-oauth-006
--- Migration sequenced after 0020 (resume result persistence).
+-- Migration sequenced after 0028 (Plane-A OAuth state).
 
 -- Per ADR-0085 D-8: stable per-IdP identity link. `(provider, subject)`
 -- is the PK because the IdP's `sub` claim is the source of truth for

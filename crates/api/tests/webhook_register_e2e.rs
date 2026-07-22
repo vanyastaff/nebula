@@ -32,15 +32,25 @@
 //! only the stores each test needs; excess infra is left `None` to
 //! exercise the 503 gate.
 
-use std::{sync::Arc, time::Duration};
+mod common;
+
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use axum::{
     Extension, Json,
+    body::Body,
     extract::{Path, State},
+    http::{Request, StatusCode, header},
 };
 use nebula_action::{TriggerRuntimeContext, webhook::providers::default_factories};
 use nebula_api::{
-    AppState,
+    ApiConfig, AppState, app,
     domain::webhook::{dto::RegisterWebhookRequest, handler::register_webhook},
     middleware::auth::AuthenticatedUser,
     ports::credential_service_factory::with_memory_store,
@@ -52,7 +62,7 @@ use nebula_api::{
 use nebula_core::{
     OrgId, TenantContext, WorkflowId, WorkspaceId, id::UserId, node_key, scope::Principal,
 };
-use nebula_credential::TenantScope;
+use nebula_credential::{CredentialService, TenantScope};
 use nebula_engine::ActionRegistry;
 use nebula_storage::{
     credential::{EnvKeyProvider, KeyProvider},
@@ -63,13 +73,14 @@ use nebula_storage::{
     },
 };
 use nebula_storage_port::{
-    Scope,
-    dto::{WebhookActivationRecord, WorkflowRecord, WorkflowVersionRecord},
+    Scope, StorageError,
+    dto::{TriggerRow, WebhookActivationRecord, WorkflowRecord, WorkflowVersionRecord},
     store::{TriggerStore, WebhookActivationStore, WorkflowStore, WorkflowVersionStore},
 };
 use nebula_workflow::definition::CURRENT_SCHEMA_VERSION;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
+use tower::ServiceExt;
 use url::Url;
 
 // ── Fixed test AES key (32 × 0x42, base64) ───────────────────────────────────
@@ -82,6 +93,54 @@ const TEST_ORG_A: &str = "org_00000000000000000000000001";
 const TEST_WS_A: &str = "ws_00000000000000000000000001";
 const TEST_ORG_B: &str = "org_00000000000000000000000002";
 const TEST_WS_B: &str = "ws_00000000000000000000000002";
+
+#[derive(Debug)]
+struct ObservedTriggerStore {
+    inner: InMemoryTriggerStore,
+    create_calls: AtomicUsize,
+}
+
+impl ObservedTriggerStore {
+    fn new() -> Self {
+        Self {
+            inner: InMemoryTriggerStore::new(),
+            create_calls: AtomicUsize::new(0),
+        }
+    }
+
+    fn create_calls(&self) -> usize {
+        self.create_calls.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl TriggerStore for ObservedTriggerStore {
+    async fn create(&self, scope: &Scope, row: TriggerRow) -> Result<(), StorageError> {
+        self.create_calls.fetch_add(1, Ordering::SeqCst);
+        TriggerStore::create(&self.inner, scope, row).await
+    }
+
+    async fn get(&self, scope: &Scope, id: &str) -> Result<Option<TriggerRow>, StorageError> {
+        TriggerStore::get(&self.inner, scope, id).await
+    }
+
+    async fn list(&self, scope: &Scope) -> Result<Vec<TriggerRow>, StorageError> {
+        TriggerStore::list(&self.inner, scope).await
+    }
+
+    async fn update(
+        &self,
+        scope: &Scope,
+        row: TriggerRow,
+        expected_version: u64,
+    ) -> Result<(), StorageError> {
+        TriggerStore::update(&self.inner, scope, row, expected_version).await
+    }
+
+    async fn soft_delete(&self, scope: &Scope, id: &str) -> Result<(), StorageError> {
+        TriggerStore::soft_delete(&self.inner, scope, id).await
+    }
+}
 
 fn scope_a() -> Scope {
     Scope::new(TEST_WS_A, TEST_ORG_A)
@@ -186,10 +245,11 @@ impl WebhookActivationContextFactory for NoopCtxFactory {
 /// Also returns the raw trigger store and activation store for assertion.
 async fn build_full_state() -> (
     AppState,
-    Arc<InMemoryTriggerStore>,
+    Arc<ObservedTriggerStore>,
     Arc<InMemoryWebhookActivationStore>,
     Arc<InMemoryWorkflowVersionStore>,
     Arc<InMemoryWorkflowStore>,
+    Arc<CredentialService>,
 ) {
     let key: Arc<dyn KeyProvider> =
         Arc::new(EnvKeyProvider::from_base64(TEST_KEY_B64).expect("valid 32-byte AES key fixture"));
@@ -197,7 +257,7 @@ async fn build_full_state() -> (
         .await
         .expect("credential service builds");
 
-    let trigger_store = Arc::new(InMemoryTriggerStore::new());
+    let trigger_store = Arc::new(ObservedTriggerStore::new());
     let activation_store = Arc::new(InMemoryWebhookActivationStore::new());
 
     // Workflow stores — needed for the ownership check.
@@ -233,7 +293,7 @@ async fn build_full_state() -> (
     let spec_lookup =
         TriggerStoreSpecLookup::new(Arc::clone(&trigger_store) as Arc<dyn TriggerStore>);
 
-    let config = nebula_api::ApiConfig::for_test();
+    let config = ApiConfig::for_test();
 
     let state = AppState::new(
         Arc::clone(&workflow_store) as _,
@@ -244,7 +304,7 @@ async fn build_full_state() -> (
         Arc::new(control_queue),
         config.jwt_secret,
     )
-    .with_credential_service(credential_svc)
+    .with_credential_service(credential_svc.clone())
     .with_trigger_store(Arc::clone(&trigger_store) as _)
     .with_webhook_activation_store(Arc::clone(&activation_store) as _)
     .with_action_registry(Arc::clone(&action_registry))
@@ -260,6 +320,7 @@ async fn build_full_state() -> (
         activation_store,
         workflow_versions,
         workflow_store,
+        credential_svc,
     )
 }
 
@@ -303,6 +364,71 @@ async fn seed_workflow(
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
+#[tokio::test]
+async fn full_router_webhook_authority_response_is_no_store() {
+    let (
+        state,
+        _trigger_store,
+        _activation_store,
+        workflow_versions,
+        workflow_store,
+        _credential_service,
+    ) = build_full_state().await;
+    let workflow_id = WorkflowId::new();
+    let trigger_node_key = "wh-trigger-cache-control";
+    seed_workflow(
+        &workflow_store,
+        &workflow_versions,
+        &scope_a(),
+        workflow_id,
+        workflow_definition_with_binding(workflow_id, trigger_node_key),
+    )
+    .await;
+    let jwt = common::me_support::jwt_for(&UserId::new().to_string());
+    let path = format!("/api/v1/orgs/{TEST_ORG_A}/workspaces/{TEST_WS_A}/webhooks");
+    let request_body = json!({
+        "workflow_id": workflow_id.to_string(),
+        "trigger_id": trigger_node_key,
+        "provider": "generic"
+    });
+
+    let response = app::build_app(state, &ApiConfig::for_test())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(path)
+                .header(header::AUTHORIZATION, format!("Bearer {jwt}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&request_body).expect("webhook registration JSON"),
+                ))
+                .expect("webhook registration request"),
+        )
+        .await
+        .expect("webhook registration response");
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("no-store"),
+        "the one-time webhook URL and signing secret must never be cacheable"
+    );
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("webhook registration body");
+    let response_json: serde_json::Value =
+        serde_json::from_slice(&body).expect("webhook registration response JSON");
+    assert!(
+        response_json["signing_secret"]
+            .as_str()
+            .is_some_and(|secret| secret.starts_with("whsec_")),
+        "the exercised response must carry the one-time signing secret"
+    );
+}
+
 /// T1 — Cross-scope ownership gate (RED-on-revert).
 ///
 /// The workflow belongs to `scope_a`.  Registering under `scope_b`'s tenant
@@ -314,8 +440,14 @@ async fn seed_workflow(
 /// 201 and the assertion flips to green, proving the 404 is load-bearing.
 #[tokio::test]
 async fn register_cross_scope_returns_404() {
-    let (state, _trigger_store, _activation_store, workflow_versions, workflow_store) =
-        build_full_state().await;
+    let (
+        state,
+        _trigger_store,
+        _activation_store,
+        workflow_versions,
+        workflow_store,
+        _credential_service,
+    ) = build_full_state().await;
 
     let workflow_id = WorkflowId::new();
     let trigger_node_key = "wh-trigger-cross-scope";
@@ -357,8 +489,74 @@ async fn register_cross_scope_returns_404() {
     let (status, _) = err.to_problem_details();
     assert_eq!(
         status,
-        axum::http::StatusCode::NOT_FOUND,
+        StatusCode::NOT_FOUND,
         "cross-scope registration must return HTTP 404, not {status}"
+    );
+}
+
+/// Inline provider authority is rejected before credential mint or either
+/// webhook persistence write. This keeps `provider_config` from becoming an
+/// ungoverned second secret store.
+#[tokio::test]
+async fn register_rejects_inline_provider_authority_before_writes() {
+    let (
+        state,
+        trigger_store,
+        activation_store,
+        _workflow_versions,
+        _workflow_store,
+        credential_service,
+    ) = build_full_state().await;
+
+    let body = RegisterWebhookRequest {
+        workflow_id: WorkflowId::new().to_string(),
+        trigger_id: "wh-trigger-inline-authority".to_owned(),
+        provider: "generic".to_owned(),
+        replay_window_secs: None,
+        timestamp_header: None,
+        provider_config: Some(serde_json::json!({
+            "integration": { "credentials": "must-not-persist" }
+        })),
+        rate_limit_per_minute: None,
+    };
+
+    let error = register_webhook(
+        State(state),
+        Extension(dummy_user()),
+        Extension(tenant_for_scope_a()),
+        Path((TEST_ORG_A.to_owned(), TEST_WS_A.to_owned())),
+        Json(body),
+    )
+    .await
+    .expect_err("inline provider authority must fail before any write");
+    let (status, _) = error.to_problem_details();
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    let credentials = credential_service
+        .list(&TenantScope::from_scope(&scope_a()))
+        .await
+        .expect("credential list must succeed");
+    assert!(credentials.is_empty(), "no credential may be minted");
+    assert_eq!(
+        trigger_store.create_calls(),
+        0,
+        "provider preflight must run before TriggerStore::create; a soft-deleted tombstone is still a write"
+    );
+    assert!(
+        trigger_store
+            .list(&scope_a())
+            .await
+            .expect("trigger list must succeed")
+            .is_empty(),
+        "no trigger spec may be written"
+    );
+    assert!(
+        activation_store
+            .list_all_active()
+            .await
+            .expect("activation list must succeed")
+            .is_empty(),
+        "no activation may be written"
     );
 }
 
@@ -370,8 +568,14 @@ async fn register_cross_scope_returns_404() {
 /// appear anywhere in the persisted config JSON or in the activation record.
 #[tokio::test]
 async fn register_happy_path_secret_not_in_rows() {
-    let (state, trigger_store, activation_store, workflow_versions, workflow_store) =
-        build_full_state().await;
+    let (
+        state,
+        trigger_store,
+        activation_store,
+        workflow_versions,
+        workflow_store,
+        _credential_service,
+    ) = build_full_state().await;
 
     let workflow_id = WorkflowId::new();
     let trigger_node_key = "wh-trigger-secret-once";
@@ -407,13 +611,12 @@ async fn register_happy_path_secret_not_in_rows() {
     .await;
 
     let (status, Json(resp)) = result.expect("happy-path registration must succeed");
-    assert_eq!(status, axum::http::StatusCode::CREATED);
+    assert_eq!(status, StatusCode::CREATED);
 
     // The response must carry a whsec_ prefixed secret.
     assert!(
         resp.signing_secret.starts_with("whsec_"),
-        "signing_secret must be whsec_-prefixed; got {:?}",
-        resp.signing_secret
+        "signing_secret must use the whsec_ prefix"
     );
 
     // The port_triggers row must NOT contain the plaintext whsec_ value.
@@ -458,8 +661,14 @@ async fn register_happy_path_secret_not_in_rows() {
 /// rows after the call, and that `webhook_url` is a valid HTTPS URL.
 #[tokio::test]
 async fn register_happy_path_rows_written() {
-    let (state, trigger_store, activation_store, workflow_versions, workflow_store) =
-        build_full_state().await;
+    let (
+        state,
+        trigger_store,
+        activation_store,
+        workflow_versions,
+        workflow_store,
+        _credential_service,
+    ) = build_full_state().await;
 
     let workflow_id = WorkflowId::new();
     let trigger_node_key = "wh-trigger-happy-path";
@@ -495,7 +704,7 @@ async fn register_happy_path_rows_written() {
     .await
     .expect("happy-path registration must succeed");
 
-    assert_eq!(status, axum::http::StatusCode::CREATED, "must return 201");
+    assert_eq!(status, StatusCode::CREATED, "must return 201");
 
     // webhook_url must be a valid HTTPS URL.
     let url = Url::parse(&resp.webhook_url).expect("webhook_url must be a parseable URL");
@@ -560,7 +769,7 @@ async fn register_without_transport_returns_503() {
     let journal = nebula_storage::inmem::InMemoryJournalReader::new(&exec_store);
     let node_results = InMemoryNodeResultStore::new();
 
-    let config = nebula_api::ApiConfig::for_test();
+    let config = ApiConfig::for_test();
 
     // transport deliberately NOT wired.
     let state = AppState::new(
@@ -601,18 +810,17 @@ async fn register_without_transport_returns_503() {
     let (status, _) = err.to_problem_details();
     assert_eq!(
         status,
-        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        StatusCode::SERVICE_UNAVAILABLE,
         "missing transport must return HTTP 503, not {status}"
     );
 }
 
 /// T5 — 3-store compensation on activation failure.
 ///
-/// Failure injection: wire an `ActionRegistry` with NO webhook providers
-/// registered.  The upfront infra-presence check passes (registry exists),
-/// but `lookup_webhook_factory("generic")` returns `None` inside the
-/// activation block — AFTER the credential row (step 3) and trigger spec
-/// row (step 4) are written.  The compensation path must then delete both.
+/// Failure injection: wire a factory whose pre-write configuration validation
+/// succeeds but whose secret-dependent build fails. The failure occurs AFTER
+/// the credential row (step 3) and trigger spec row (step 4) are written, so
+/// the compensation path must delete both.
 ///
 /// After the call, `port_triggers` must have a soft-deleted row and the
 /// credential store must be empty (as if the call never happened).
@@ -625,11 +833,33 @@ async fn register_without_transport_returns_503() {
 /// the cleanup is load-bearing.
 #[tokio::test]
 async fn register_compensation_cleans_up_on_activation_failure() {
-    // An empty ActionRegistry passes the upfront presence check but causes
-    // lookup_webhook_factory("generic") → None inside the activation block,
-    // triggering the compensation path after credential + trigger rows are written.
-    let empty_registry = Arc::new(ActionRegistry::new());
-    // (No providers registered — lookup will return None.)
+    use nebula_action::webhook::factory::{
+        BuiltWebhookHandler, FactoryError, WebhookActionFactory, WebhookActivationSpec,
+    };
+
+    struct LateRejectingFactory;
+
+    impl WebhookActionFactory for LateRejectingFactory {
+        fn kind(&self) -> &'static str {
+            "generic"
+        }
+
+        fn build(
+            &self,
+            _spec: &WebhookActivationSpec,
+        ) -> Result<BuiltWebhookHandler, FactoryError> {
+            Err(FactoryError::InvalidSpec {
+                kind: "generic",
+                reason: "injected post-mint build failure",
+            })
+        }
+    }
+
+    let rejecting_registry = Arc::new({
+        let registry = ActionRegistry::new();
+        registry.register_webhook_provider(Arc::new(LateRejectingFactory));
+        registry
+    });
 
     let key: Arc<dyn KeyProvider> =
         Arc::new(EnvKeyProvider::from_base64(TEST_KEY_B64).expect("valid AES key fixture"));
@@ -647,7 +877,7 @@ async fn register_compensation_cleans_up_on_activation_failure() {
     let journal = nebula_storage::inmem::InMemoryJournalReader::new(&exec_store);
     let node_results = InMemoryNodeResultStore::new();
 
-    let config = nebula_api::ApiConfig::for_test();
+    let config = ApiConfig::for_test();
 
     let transport = WebhookTransport::new(WebhookTransportConfig {
         base_url: Url::parse("https://nebula.example.com").expect("valid base URL"),
@@ -683,8 +913,7 @@ async fn register_compensation_cleans_up_on_activation_failure() {
     .with_webhook_transport(transport)
     .with_webhook_secret_resolver(secret_resolver)
     .with_webhook_ctx_factory_b(ctx_factory)
-    // Empty registry: passes the presence check but lookup_webhook_factory returns None.
-    .with_action_registry(empty_registry)
+    .with_action_registry(rejecting_registry)
     .with_insecure_tenant_rbac_bypass_for_tests();
 
     // Seed a workflow the handler can pass ownership checks on.
@@ -718,16 +947,16 @@ async fn register_compensation_cleans_up_on_activation_failure() {
     )
     .await;
 
-    // The call must fail: lookup_webhook_factory("generic") returns None → 400.
+    // The call must fail after mint + trigger persistence.
     let err = result.expect_err(
-        "unknown provider must return Err; Ok(_) means the factory lookup or \
+        "late factory rejection must return Err; Ok(_) means the factory or \
          compensation path is broken",
     );
     let (status, _) = err.to_problem_details();
     assert_eq!(
         status,
-        axum::http::StatusCode::BAD_REQUEST,
-        "unknown provider must return 400 from the factory-lookup path \
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "late InvalidSpec must return 422 from the build path \
          (the failure point that triggers compensation); got {status}"
     );
 
@@ -779,8 +1008,14 @@ async fn register_compensation_cleans_up_on_activation_failure() {
 /// `trigger_id` assertion below panics, proving the fix is load-bearing.
 #[tokio::test]
 async fn register_activation_row_has_node_key_trigger_id_and_spec_link() {
-    let (state, trigger_store, activation_store, workflow_versions, workflow_store) =
-        build_full_state().await;
+    let (
+        state,
+        trigger_store,
+        activation_store,
+        workflow_versions,
+        workflow_store,
+        _credential_service,
+    ) = build_full_state().await;
 
     let workflow_id = WorkflowId::new();
     let trigger_node_key = "wh-trigger-p1-regression";
@@ -815,7 +1050,7 @@ async fn register_activation_row_has_node_key_trigger_id_and_spec_link() {
     )
     .await
     .expect("happy-path registration must succeed");
-    assert_eq!(status, axum::http::StatusCode::CREATED);
+    assert_eq!(status, StatusCode::CREATED);
 
     // The port_triggers row carries the trg_ PK (server-generated).
     let trigger_rows = trigger_store.list(&scope).await.expect("list must succeed");
@@ -1020,7 +1255,7 @@ async fn register_factory_invalid_spec_returns_422() {
         ) -> Result<BuiltWebhookHandler, FactoryError> {
             Err(FactoryError::InvalidSpec {
                 kind: "bad-provider",
-                reason: "injected InvalidSpec for P2 test".to_string(),
+                reason: "injected InvalidSpec for P2 test",
             })
         }
     }
@@ -1064,7 +1299,7 @@ async fn register_factory_invalid_spec_returns_422() {
     let spec_lookup =
         TriggerStoreSpecLookup::new(Arc::clone(&trigger_store) as Arc<dyn TriggerStore>);
 
-    let config = nebula_api::ApiConfig::for_test();
+    let config = ApiConfig::for_test();
     let state = AppState::new(
         Arc::clone(&workflow_store) as _,
         Arc::clone(&workflow_versions) as _,
@@ -1120,7 +1355,7 @@ async fn register_factory_invalid_spec_returns_422() {
     let (status, _) = err.to_problem_details();
     assert_eq!(
         status,
-        axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+        StatusCode::UNPROCESSABLE_ENTITY,
         "FactoryError::InvalidSpec must map to HTTP 422; got {status} — \
          if 500, the P2 catch-all branch is firing instead of the typed match"
     );

@@ -4,6 +4,8 @@
 //! Postgres land later. Every tenant-scoped query is keyed by `Scope` (or a
 //! parent id) so cross-tenant reads return `None`, never another tenant's
 //! row.
+use std::sync::Arc;
+
 use crate::dto::{
     AuditLogRow, BlobRow, MembershipRow, OrgRow, PrincipalKind, QuotaRow, ResourceRow, ScopeKind,
     TriggerRow, UserRow, WorkspaceRow,
@@ -18,9 +20,9 @@ pub trait UserStore: Send + Sync + std::fmt::Debug {
     /// Insert a new user (duplicate active email ⇒ `Duplicate`).
     async fn create(&self, row: UserRow) -> Result<(), StorageError>;
     /// Read a user by id.
-    async fn get(&self, id: &str) -> Result<Option<UserRow>, StorageError>;
+    async fn get(&self, id: &str) -> Result<Option<Arc<UserRow>>, StorageError>;
     /// Resolve an active user by (case-insensitive) email.
-    async fn get_by_email(&self, email: &str) -> Result<Option<UserRow>, StorageError>;
+    async fn get_by_email(&self, email: &str) -> Result<Option<Arc<UserRow>>, StorageError>;
     /// CAS-update a user row; `expected_version` must match.
     async fn update(&self, row: UserRow, expected_version: u64) -> Result<(), StorageError>;
     /// Soft-delete a user.

@@ -74,7 +74,7 @@ fn build_app(counter: Arc<AtomicUsize>, store: Arc<InMemoryIdempotencyStore>) ->
                 }
             }),
         )
-        .layer(IdempotencyLayer::new(store))
+        .layer(IdempotencyLayer::new(store).with_replay_safe_routes(["/echo", "/fail"]))
 }
 
 fn post_with_key(uri: &str, key: &str, body: &'static str) -> Request<Body> {
@@ -386,7 +386,11 @@ fn build_app_with_metrics(
                 }
             }),
         )
-        .layer(IdempotencyLayer::new(store).with_metrics(Some(registry)))
+        .layer(
+            IdempotencyLayer::new(store)
+                .with_replay_safe_routes(["/echo", "/fail"])
+                .with_metrics(Some(registry)),
+        )
 }
 
 #[tokio::test]
@@ -525,7 +529,11 @@ fn build_app_with_config(
                 }
             }),
         )
-        .layer(IdempotencyLayer::new(store).with_config(config))
+        .layer(
+            IdempotencyLayer::new(store)
+                .with_replay_safe_routes(["/echo", "/fail"])
+                .with_config(config),
+        )
 }
 
 /// Regression: when the response body exceeds

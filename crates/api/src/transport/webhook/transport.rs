@@ -110,7 +110,6 @@ impl Default for WebhookTransportConfig {
 /// Returned by [`WebhookTransport::activate`]. Hold onto this for
 /// the lifetime of the trigger registration; pass it back to
 /// [`WebhookTransport::deactivate`] on stop.
-#[derive(Debug)]
 pub struct ActivationHandle {
     pub(super) trigger_uuid: Uuid,
     pub(super) nonce: String,
@@ -121,6 +120,18 @@ pub struct ActivationHandle {
     /// Fully-resolved URL the action hands to the external provider
     /// in `on_activate`. Same value is exposed inside `ctx.webhook`.
     pub endpoint_url: Url,
+}
+
+impl std::fmt::Debug for ActivationHandle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ActivationHandle")
+            .field("trigger_uuid", &self.trigger_uuid)
+            .field("nonce", &"[redacted]")
+            .field("ctx", &"[redacted]")
+            .field("endpoint_url", &"[redacted]")
+            .finish()
+    }
 }
 
 impl ActivationHandle {
@@ -649,7 +660,9 @@ pub struct PersistParams {
 /// # Security
 ///
 /// The plaintext `nonce` (the bearer token embedded in the capability URL)
-/// never leaves this function; only its SHA-256 hash reaches the store.
+/// leaves this function only inside the returned, non-`Clone` handle; only
+/// its SHA-256 hash reaches storage and its [`Debug`](std::fmt::Debug)
+/// representation is redacted.
 pub async fn activate_and_persist(
     transport: &WebhookTransport,
     store: &dyn WebhookActivationStore,
@@ -727,6 +740,8 @@ mod tests {
     use super::*;
     use crate::transport::webhook::key::WebhookKey;
     use crate::transport::webhook::token::token_hash;
+
+    static_assertions::assert_not_impl_any!(ActivationHandle: Clone);
 
     // Minimal no-op TriggerHandler for tests.
     struct Noop {
@@ -859,6 +874,10 @@ mod tests {
         )
         .await
         .expect("activate_and_persist must succeed");
+
+        let debug = format!("{handle:?}");
+        assert!(!debug.contains(&handle.nonce));
+        assert!(!debug.contains(handle.endpoint_url.as_str()));
 
         let key = WebhookKey::programmatic(handle.trigger_uuid, handle.nonce);
         assert!(

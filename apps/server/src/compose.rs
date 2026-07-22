@@ -9,13 +9,18 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 use thiserror::Error;
 
 use nebula_api::{
-    ApiConfig, ApiConfigError, AppState, TelemetryGuard, TelemetryInitError, app,
-    config::{AuthBackendKind, ExecutionBackendKind, IdempotencyBackend, SmtpTlsMode},
+    ApiConfig, ApiConfigError, AppState, OAuthIdentityRuntime, OAuthRuntimeBuildError,
+    TelemetryGuard, TelemetryInitError, app,
+    config::{
+        AuthBackendKind, ExecutionBackendKind, IdempotencyBackend, OAuthProvidersConfig,
+        SmtpTlsMode,
+    },
     domain::auth::backend::{AuthBackend, InMemoryAuthBackend},
     middleware::{IdempotencyStore, InMemoryIdempotencyStore},
     ports::email::{EchoSink, EmailPort},
 };
 use nebula_metrics::{MetricsRegistry, OtlpInitError};
+use nebula_storage::credential::KeyProvider;
 
 use crate::{
     email::{SmtpEmailPort, SmtpEmailPortBuildError},
@@ -139,13 +144,13 @@ pub(crate) enum TransportInitError {
     /// An OAuth identity-provider config entry failed boot-time
     /// validation per ADR-0085 REQ-compose-001 Invariant 1.
     ///
-    /// Failure cases include: empty `client_id` / `client_secret`,
-    /// non-HTTPS server-side URL (token / userinfo /
-    /// verified_emails / jwks / discovery), HTTP-localhost authorize
-    /// URL in a release build, empty `Manual.scopes`, missing
-    /// `ApiConfig::public_url` when any OAuth provider is declared.
+    /// Failure cases are empty `client_id` / `client_secret` and a missing or
+    /// invalid `ApiConfig::public_url` when any OAuth provider is declared.
+    /// Provider endpoints, scopes, and token authentication are fixed runtime
+    /// policy rather than operator configuration; runtime-policy construction
+    /// failures surface through [`Self::OAuthRuntimeInit`].
     /// `provider` is the snake-case enum string (`"google"` /
-    /// `"microsoft"` / `"github"`); `reason` is a short stable
+    /// `"github"`); `reason` is a short stable
     /// keyword the operator can grep for in the docs.
     #[error(
         "OAuth provider `{provider}` config invalid: {reason}; fix the API_AUTH_OAUTH_<UPPERCASE_PROVIDER>_* env vars (e.g. API_AUTH_OAUTH_GOOGLE_CLIENT_ID) or remove the provider"
@@ -153,10 +158,16 @@ pub(crate) enum TransportInitError {
     OAuthProviderConfigInvalid {
         /// Provider name (snake_case OAuthProvider enum variant).
         provider: String,
-        /// Stable reason keyword (`client_secret_required`,
-        /// `endpoint_url_must_be_https`, `manual_scopes_required`,
-        /// `public_url_required`, etc.).
+        /// Stable reason keyword (`client_id_required`,
+        /// `client_secret_required`, or `public_url_required`).
         reason: &'static str,
+    },
+    /// The fixed Plane-A OAuth egress/runtime policy could not be built.
+    #[error("OAuth identity runtime initialization failed")]
+    OAuthRuntimeInit {
+        /// Secret-free fixed constructor failure.
+        #[source]
+        source: OAuthRuntimeBuildError,
     },
     /// `API_SMTP_HOST` is set but the `SmtpEmailPort` constructor
     /// rejected the resolved config (invalid `from_address` mailbox,
@@ -516,7 +527,7 @@ impl ServerRuntime {
         transport: T,
         mut telemetry_guard: TelemetryGuard,
     ) -> Result<(), ServerRunError> {
-        let api_config = ApiConfig::from_env()?;
+        let mut api_config = ApiConfig::from_env()?;
         let metrics_registry = Arc::new(MetricsRegistry::new());
         // Attach the OTLP metrics pipeline against the same registry the API will publish
         // through. The guard owns the pipeline so it shuts down with the trace exporter when
@@ -547,8 +558,11 @@ impl ServerRuntime {
         // stays credential-dependency-free; it mints its own process shutdown
         // `CancellationToken` internally (no `tokio-util` dep here). Fails
         // closed in production when `NEBULA_CRED_MASTER_KEY` is unset/malformed.
-        let credential_service =
-            nebula_api::ports::credential_service_factory::try_default_credential_service()
+        let key_provider =
+            nebula_api::ports::credential_service_factory::resolve_first_party_key_provider()
+                .map_err(|e| TransportInitError::CredentialServiceInit(e.to_string()))?;
+        let credential_service = nebula_api::ports::credential_service_factory::
+            try_default_credential_service_with_key_provider(Arc::clone(&key_provider))
                 .await
                 .map_err(|e| TransportInitError::CredentialServiceInit(e.to_string()))?;
         // Install the webhook secret resolver before consuming `credential_service`
@@ -571,10 +585,16 @@ impl ServerRuntime {
         // billing notices) read from `state.email_port` and work
         // uniformly regardless of which transport is wired.
         let email_port = build_email_port(&api_config)?;
+        // Transfer the only owned OAuth credential set into the runtime.
+        // `ApiConfig` remains available to router construction, but no
+        // duplicate `SecretString` allocation survives composition.
+        let oauth_config = std::mem::take(&mut api_config.auth.oauth);
         let auth_backend = build_auth_backend(
-            &api_config,
+            api_config.auth.backend.clone(),
+            oauth_config,
             Arc::clone(&email_port),
             Some(Arc::clone(&metrics_registry)),
+            key_provider,
         )
         .await?;
         state = state
@@ -662,11 +682,11 @@ pub(crate) fn default_state(
         nebula_api::ports::credential_schema_registry::try_default_registry_port()
             .map_err(|e| TransportInitError::CredentialSchemaInit(e.to_string()))?;
 
-    // PR-2 T2.8 GREEN: validate Plane-A OAuth providers config at boot
-    // per ADR-0085 REQ-compose-001 Invariant 1. Empty providers map is
-    // a no-op; any declared provider triggers strict + flag-aware URL
-    // gates and `public_url` validation. Fails closed by mapping the
-    // typed `OAuthConfigValidationError` to
+    // Validate Plane-A OAuth providers at boot per ADR-0085
+    // REQ-compose-001 Invariant 1. Empty providers map is
+    // a no-op; any declared provider triggers credential and `public_url`
+    // validation. Fixed provider endpoint policy is constructed later by the
+    // OAuth runtime. Fails closed by mapping the typed validation error to
     // `TransportInitError::OAuthProviderConfigInvalid`.
     api_config
         .auth
@@ -718,8 +738,8 @@ pub(crate) fn default_state(
     .with_credential_schema(credential_schema)
     .with_metrics_registry(metrics_registry)
     // Public URL is required for Plane-A OAuth `redirect_uri`
-    // derivation per ADR-0085 D-3 (recon-4). Boot-time validation
-    // above (T2.8) rejects empty/relative values when
+    // derivation per ADR-0085 D-3. Boot-time validation above rejects
+    // empty or relative values when
     // `auth.oauth.providers` is non-empty.
     .with_public_url(api_config.public_url.clone())
     .with_trigger_store(trigger_store)
@@ -785,7 +805,7 @@ pub(crate) fn build_email_port(
     }
 }
 
-/// Construct the Plane-A authentication backend from `api_config.auth`.
+/// Construct the Plane-A authentication backend from an owned OAuth config.
 ///
 /// `Memory` builds an in-process [`InMemoryAuthBackend`] wired to the
 /// shared `email_port` so verification / reset mails flow through the
@@ -805,23 +825,28 @@ pub(crate) fn build_email_port(
 /// alongside the idempotency pool; consolidating the two onto one
 /// shared pool is a follow-up.
 pub(crate) async fn build_auth_backend(
-    api_config: &ApiConfig,
+    backend_kind: AuthBackendKind,
+    oauth_config: OAuthProvidersConfig,
     email_port: Arc<dyn EmailPort>,
     metrics_registry: Option<Arc<MetricsRegistry>>,
+    key_provider: Arc<dyn KeyProvider>,
 ) -> Result<Arc<dyn AuthBackend>, TransportInitError> {
-    // PR-3 T3.8 / T3.9: thread the validated OAuth providers config
-    // into both backends so `start_oauth` can emit real authorize
-    // URLs. The Arc share is cheap and read-only at runtime.
-    let oauth_providers = Arc::new(api_config.auth.oauth.clone());
-    match api_config.auth.backend {
-        AuthBackendKind::Memory => Ok(Arc::new(
-            InMemoryAuthBackend::new()
+    let oauth_runtime = OAuthIdentityRuntime::from_config(oauth_config)
+        .map_err(|source| TransportInitError::OAuthRuntimeInit { source })?
+        .map(Arc::new);
+    match backend_kind {
+        AuthBackendKind::Memory => {
+            let backend = InMemoryAuthBackend::new()
                 .with_email_port(email_port)
-                .with_metrics(metrics_registry)
-                .with_oauth_providers(oauth_providers),
-        )),
+                .with_metrics(metrics_registry);
+            let backend = match oauth_runtime {
+                Some(runtime) => backend.with_oauth_runtime(runtime),
+                None => backend,
+            };
+            Ok(Arc::new(backend))
+        },
         AuthBackendKind::Postgres => {
-            build_pg_auth_backend(email_port, metrics_registry, oauth_providers).await
+            build_pg_auth_backend(email_port, metrics_registry, oauth_runtime, key_provider).await
         },
     }
 }
@@ -922,9 +947,11 @@ async fn build_pg_idempotency_store(
 async fn build_pg_auth_backend(
     email_port: Arc<dyn EmailPort>,
     metrics_registry: Option<Arc<MetricsRegistry>>,
-    oauth_providers: Arc<nebula_api::config::OAuthProvidersConfig>,
+    oauth_runtime: Option<Arc<OAuthIdentityRuntime>>,
+    key_provider: Arc<dyn KeyProvider>,
 ) -> Result<Arc<dyn AuthBackend>, TransportInitError> {
     use nebula_api::domain::auth::backend::PgAuthBackend;
+    use nebula_storage::{identity_secret::IdentitySecretCodec, pg::PgIdentitySecretMigrator};
     use sqlx::postgres::PgPoolOptions;
 
     let url =
@@ -945,10 +972,26 @@ async fn build_pg_auth_backend(
         backend = "postgres",
         "auth: PG-backed identity backend wired"
     );
-    let backend: Arc<dyn AuthBackend> = Arc::new(
-        PgAuthBackend::new(pool, email_port, metrics_registry)
-            .with_oauth_providers(oauth_providers),
-    );
+    let identity_secrets = Arc::new(IdentitySecretCodec::new(key_provider).map_err(|error| {
+        TransportInitError::ContextFactory(format!(
+            "auth: identity secret codec initialization failed: {error}"
+        ))
+    })?);
+    let _migration_report =
+        PgIdentitySecretMigrator::new(pool.clone(), Arc::clone(&identity_secrets))
+            .run()
+            .await
+            .map_err(|error| {
+                TransportInitError::ContextFactory(format!(
+                    "auth: identity secret migration failed: {error}"
+                ))
+            })?;
+    let backend = PgAuthBackend::new(pool, email_port, metrics_registry, identity_secrets);
+    let backend = match oauth_runtime {
+        Some(runtime) => backend.with_oauth_runtime(runtime),
+        None => backend,
+    };
+    let backend: Arc<dyn AuthBackend> = Arc::new(backend);
     Ok(backend)
 }
 
@@ -956,7 +999,8 @@ async fn build_pg_auth_backend(
 async fn build_pg_auth_backend(
     _email_port: Arc<dyn EmailPort>,
     _metrics_registry: Option<Arc<MetricsRegistry>>,
-    _oauth_providers: Arc<nebula_api::config::OAuthProvidersConfig>,
+    _oauth_runtime: Option<Arc<OAuthIdentityRuntime>>,
+    _key_provider: Arc<dyn KeyProvider>,
 ) -> Result<Arc<dyn AuthBackend>, TransportInitError> {
     Err(TransportInitError::AuthBackendUnavailable {
         requested: "postgres",

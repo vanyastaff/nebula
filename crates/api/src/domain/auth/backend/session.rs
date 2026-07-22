@@ -10,6 +10,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use nebula_core::Principal;
 use rand::Rng;
+use zeroize::Zeroize;
 
 use super::error::AuthError;
 
@@ -21,17 +22,23 @@ fn encode_url_safe(bytes: &[u8]) -> String {
 /// Default session lifetime — 14 days.
 pub const SESSION_TTL: Duration = Duration::from_hours(14 * 24);
 
-/// Default CSRF token lifetime — matches session lifetime.
-pub const CSRF_TTL: Duration = SESSION_TTL;
+/// Host-bound cookie name for the session ID.
+///
+/// The `__Host-` prefix is browser-enforced: the cookie must be `Secure`,
+/// must use `Path=/`, and cannot carry `Domain`. This prevents a sibling
+/// subdomain from shadowing Nebula's session authority.
+pub const SESSION_COOKIE: &str = "__Host-nebula-session";
 
-/// Cookie name for the session ID.
-pub const SESSION_COOKIE: &str = "nebula_session";
+/// Host-bound cookie name for the double-submit CSRF token.
+pub const CSRF_COOKIE: &str = "__Host-nebula-csrf";
 
-/// Cookie name for the CSRF token.
-pub const CSRF_COOKIE: &str = "nebula_csrf";
+/// Request header carrying the double-submit CSRF token.
+///
+/// HTTP field names are case-insensitive; the lower-case spelling is the
+/// canonical programmatic form used by middleware and CORS policy.
+pub const CSRF_HEADER: &str = "x-csrf-token";
 
 /// A live session record returned by the backend after a successful login.
-#[derive(Debug, Clone)]
 pub struct SessionRecord {
     /// Opaque, URL-safe base64 ID (32 bytes of entropy).
     pub id: String,
@@ -41,6 +48,25 @@ pub struct SessionRecord {
     pub csrf_token: String,
     /// Wall-clock expiry — clients are expected to honor `Expires`/`Max-Age`.
     pub expires_at: DateTime<Utc>,
+}
+
+impl std::fmt::Debug for SessionRecord {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SessionRecord")
+            .field("id", &"[redacted]")
+            .field("principal", &"[redacted]")
+            .field("csrf_token", &"[redacted]")
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
+impl Drop for SessionRecord {
+    fn drop(&mut self) {
+        self.id.zeroize();
+        self.csrf_token.zeroize();
+    }
 }
 
 /// Generate a fresh URL-safe base64 token of `bytes` bytes of entropy.
@@ -64,13 +90,22 @@ pub fn session_cookie(session_id: &str) -> String {
 /// requests via the `X-CSRF-Token` header.
 #[must_use]
 pub fn csrf_cookie(csrf_token: &str) -> String {
-    cookie(CSRF_COOKIE, csrf_token, false, CSRF_TTL)
+    cookie(CSRF_COOKIE, csrf_token, false, SESSION_TTL)
 }
 
-/// Build a `Set-Cookie` header that clears the named cookie.
+/// Build a `Set-Cookie` header that clears the session cookie.
+///
+/// The deletion preserves the session cookie's host-bound and `HttpOnly`
+/// policy so no response ever emits this cookie name with weaker attributes.
 #[must_use]
-pub fn cleared_cookie(name: &str) -> String {
-    format!("{name}=; Path=/; Max-Age=0; Secure; SameSite=Lax")
+pub fn cleared_session_cookie() -> String {
+    cookie(SESSION_COOKIE, "", true, Duration::ZERO)
+}
+
+/// Build a `Set-Cookie` header that clears the readable CSRF cookie.
+#[must_use]
+pub fn cleared_csrf_cookie() -> String {
+    cookie(CSRF_COOKIE, "", false, Duration::ZERO)
 }
 
 fn cookie(name: &str, value: &str, http_only: bool, ttl: Duration) -> String {
@@ -96,7 +131,11 @@ pub fn expires_at(ttl: Duration) -> DateTime<Utc> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
+
+    static_assertions::assert_not_impl_any!(SessionRecord: Clone);
 
     #[test]
     fn random_token_unique_and_decodes() {
@@ -108,31 +147,68 @@ mod tests {
     }
 
     #[test]
-    fn session_cookie_has_security_flags() {
-        let cookie = session_cookie("abc123");
-        assert!(cookie.starts_with("nebula_session=abc123;"));
-        assert!(cookie.contains("Secure"));
-        assert!(cookie.contains("HttpOnly"));
-        assert!(cookie.contains("SameSite=Lax"));
-        assert!(cookie.contains("Path=/"));
-        assert!(cookie.contains("Max-Age="));
+    fn session_record_debug_redacts_session_and_csrf_authority() {
+        const CANARY: &str = "SESSION_AUTHORITY_CANARY-6cb1";
+        let record = SessionRecord {
+            id: CANARY.to_owned(),
+            principal: Principal::System,
+            csrf_token: CANARY.to_owned(),
+            expires_at: Utc::now(),
+        };
+
+        let debug = format!("{record:?}");
+        assert!(!debug.contains(CANARY));
+        assert!(debug.contains("SessionRecord"));
+    }
+
+    fn attributes(cookie: &str) -> HashSet<&str> {
+        cookie.split("; ").skip(1).collect()
     }
 
     #[test]
-    fn csrf_cookie_omits_httponly() {
-        let cookie = csrf_cookie("xyz789");
-        assert!(cookie.contains("Secure"));
-        assert!(cookie.contains("SameSite=Lax"));
+    fn session_and_csrf_cookies_share_one_host_bound_policy_and_ttl() {
+        let session = session_cookie("abc123");
+        let csrf = csrf_cookie("xyz789");
+        let session_attributes = attributes(&session);
+        let csrf_attributes = attributes(&csrf);
+        let max_age = format!("Max-Age={}", SESSION_TTL.as_secs());
+
+        assert_eq!(
+            session.split("; ").next(),
+            Some("__Host-nebula-session=abc123")
+        );
+        assert_eq!(csrf.split("; ").next(), Some("__Host-nebula-csrf=xyz789"));
+        for attributes in [&session_attributes, &csrf_attributes] {
+            assert!(attributes.contains("Path=/"));
+            assert!(attributes.contains("Secure"));
+            assert!(attributes.contains("SameSite=Lax"));
+            assert!(attributes.contains(max_age.as_str()));
+            assert!(
+                !attributes
+                    .iter()
+                    .any(|attribute| attribute.to_ascii_lowercase().starts_with("domain=")),
+                "__Host- cookies must never carry Domain"
+            );
+        }
+        assert!(session_attributes.contains("HttpOnly"));
         assert!(
-            !cookie.contains("HttpOnly"),
+            !csrf_attributes.contains("HttpOnly"),
             "CSRF cookie must be readable by JS"
         );
     }
 
     #[test]
-    fn cleared_cookie_uses_max_age_zero() {
-        let cookie = cleared_cookie(SESSION_COOKIE);
-        assert!(cookie.contains("Max-Age=0"));
-        assert!(cookie.starts_with("nebula_session=;"));
+    fn cleared_cookies_preserve_their_security_attributes() {
+        let session = cleared_session_cookie();
+        let csrf = cleared_csrf_cookie();
+
+        assert_eq!(
+            session,
+            "__Host-nebula-session=; Path=/; Max-Age=0; Secure; SameSite=Lax; HttpOnly"
+        );
+        assert_eq!(
+            csrf,
+            "__Host-nebula-csrf=; Path=/; Max-Age=0; Secure; SameSite=Lax"
+        );
     }
 }

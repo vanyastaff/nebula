@@ -22,10 +22,9 @@
 //!    revoke sibling reset tokens, bump version).
 //! 10. `authenticate_password` with the new password succeeds.
 //! 11. `start_oauth` persists a `plane_a_oauth_states` row.
-//! 12. `complete_oauth` consumes the state atomically AND returns
-//!     `NotImplemented` (provider code-exchange is not yet wired); a
-//!     second `complete_oauth` against the same state surfaces
-//!     `InvalidToken` (replay defence).
+//! 12. `complete_oauth` consumes the state atomically; a redirect mismatch
+//!     fails before egress and a second callback surfaces `InvalidToken`
+//!     (replay defence).
 //!
 //! The whole flow runs against ONE shared `Arc<dyn EmailPort>` so we
 //! can assert that the verification, reset, and challenge mails reach
@@ -41,13 +40,19 @@
 use std::sync::Arc;
 
 use nebula_api::{
+    OAuthIdentityRuntime,
+    config::{OAuthProviderConfig, OAuthProvidersConfig},
     domain::auth::backend::{
-        AuthBackend, CreatePatParams, PasswordOutcome, PgAuthBackend, SignupRequest,
-        dto::SecretString, error::AuthError, mfa, oauth::OAuthProvider,
+        AuthBackend, CreatePatParams, OAuthProvider, PasswordOutcome, PgAuthBackend, SignupRequest,
+        dto::SecretString, error::AuthError, mfa,
     },
     ports::email::{EchoSink, EmailKind, EmailPort},
 };
 use nebula_core::UserId;
+use nebula_storage::{
+    credential::{EnvKeyProvider, KeyProvider},
+    identity_secret::IdentitySecretCodec,
+};
 use sqlx::{Pool, Postgres, postgres::PgPoolOptions};
 
 /// Mirrors `nebula_storage::pg::user::LOCKOUT_THRESHOLD` (the module is
@@ -58,6 +63,15 @@ use sqlx::{Pool, Postgres, postgres::PgPoolOptions};
 /// the storage-side CASE check) — which is the desired regression
 /// signal. Source: `crates/storage/src/pg/user.rs:34`.
 const LOCKOUT_THRESHOLD_LOCAL: u32 = 5;
+const TEST_IDENTITY_KEY_B64: &str = "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM=";
+
+fn identity_secret_codec() -> Arc<IdentitySecretCodec> {
+    let provider = EnvKeyProvider::from_base64(TEST_IDENTITY_KEY_B64).expect("valid test key");
+    Arc::new(
+        IdentitySecretCodec::new(Arc::new(provider) as Arc<dyn KeyProvider>)
+            .expect("valid identity secret codec"),
+    )
+}
 
 // `sqlx::migrate!` resolves paths relative to the calling crate's
 // `CARGO_MANIFEST_DIR` (`crates/api`); the production schema lives in
@@ -109,9 +123,28 @@ fn unique_email(label: &str) -> String {
 /// `auth_metrics.rs` test exercises the metrics path against the same
 /// constructor.
 fn build_backend(pool: Pool<Postgres>) -> (Arc<PgAuthBackend>, Arc<EchoSink>) {
+    use std::collections::HashMap;
+
     let sink = Arc::new(EchoSink::default());
     let port: Arc<dyn EmailPort> = Arc::clone(&sink) as _;
-    (Arc::new(PgAuthBackend::new(pool, port, None)), sink)
+    let oauth_runtime = OAuthIdentityRuntime::from_config(OAuthProvidersConfig {
+        providers: HashMap::from([(
+            OAuthProvider::GitHub,
+            OAuthProviderConfig {
+                client_id: secrecy::SecretString::new("pg-test-client".into()),
+                client_secret: secrecy::SecretString::new("pg-test-secret".into()),
+            },
+        )]),
+    })
+    .expect("PG test OAuth runtime must build")
+    .expect("PG test provider config must enable OAuth");
+    (
+        Arc::new(
+            PgAuthBackend::new(pool, port, None, identity_secret_codec())
+                .with_oauth_runtime(Arc::new(oauth_runtime)),
+        ),
+        sink,
+    )
 }
 
 fn signup_for(email: &str) -> SignupRequest {
@@ -120,6 +153,13 @@ fn signup_for(email: &str) -> SignupRequest {
         password: SecretString::new("hunter22".to_owned()),
         display_name: "Pg E2E".to_owned(),
     }
+}
+
+fn different_totp_code(code: &str) -> String {
+    format!(
+        "{:06}",
+        (code.parse::<u32>().expect("numeric TOTP") + 1) % 1_000_000
+    )
 }
 
 #[tokio::test]
@@ -383,21 +423,21 @@ async fn pg_auth_backend_full_lifecycle() {
     assert!(!oauth_start.state.is_empty());
 
     // ── 12. complete OAuth ────────────────────────────────────────────
-    // Provider configs (client_id / client_secret) are deferred to a
-    // follow-up — the PG path consumes the state row atomically
-    // (replay defence) and then returns NotImplemented.
-    let not_impl = backend
+    // A changed callback base consumes the one-time state and fails before
+    // any provider egress. This keeps the test hermetic while proving the
+    // durable redirect binding and replay defence.
+    let mismatch = backend
         .complete_oauth(
             OAuthProvider::Google,
             &oauth_start.state,
             "fake-code",
-            "https://nebula.test/api/v1/auth/oauth/google/callback",
+            "https://changed.nebula.test/api/v1/auth/oauth/google/callback",
         )
         .await
-        .expect_err("complete_oauth must return NotImplemented");
+        .expect_err("redirect mismatch must fail closed");
     assert!(
-        matches!(not_impl, AuthError::NotImplemented(_)),
-        "expected NotImplemented, got: {not_impl:?}"
+        matches!(mismatch, AuthError::OAuthFailed),
+        "expected fixed OAuthFailed, got: {mismatch:?}"
     );
     // Replay: the row was consumed by the first call, so a second one
     // returns InvalidToken (atomic single-shot).
@@ -425,6 +465,124 @@ async fn pg_auth_backend_full_lifecycle() {
 }
 
 #[tokio::test]
+async fn pg_mfa_reenrollment_preserves_active_factor_and_is_single_use() {
+    let Some(pool) = pool().await else { return };
+    let (backend, _) = build_backend(pool);
+    let email = unique_email("mfa-reenrollment");
+    let profile = backend
+        .register_user(signup_for(&email))
+        .await
+        .expect("register user");
+
+    let active = backend
+        .start_mfa_enrollment(&profile.user_id)
+        .await
+        .expect("start initial enrollment");
+    let active_code = mfa::current_code(&active.secret_base32).expect("active TOTP code");
+    backend
+        .confirm_mfa_enrollment(&profile.user_id, &active_code)
+        .await
+        .expect("confirm initial enrollment");
+
+    let replacement = backend
+        .start_mfa_enrollment(&profile.user_id)
+        .await
+        .expect("start replacement enrollment");
+    assert_ne!(replacement.secret_base32, active.secret_base32);
+
+    let challenge = match backend
+        .authenticate_password(&email, "hunter22", None)
+        .await
+        .expect("replacement start must preserve active MFA")
+    {
+        PasswordOutcome::MfaRequired { challenge_token } => challenge_token,
+        PasswordOutcome::Authenticated(_) => {
+            panic!("replacement start must not disable the active factor")
+        },
+    };
+    let active_code = mfa::current_code(&active.secret_base32).expect("active TOTP code");
+    backend
+        .verify_mfa(&challenge, &active_code)
+        .await
+        .expect("original factor remains authoritative");
+
+    let replacement_code =
+        mfa::current_code(&replacement.secret_base32).expect("replacement TOTP code");
+    let error = backend
+        .confirm_mfa_enrollment(&profile.user_id, &different_totp_code(&replacement_code))
+        .await
+        .expect_err("wrong replacement code must reject");
+    assert!(matches!(error, AuthError::InvalidMfaCode));
+
+    let challenge = match backend
+        .authenticate_password(&email, "hunter22", None)
+        .await
+        .expect("failed replacement must preserve active MFA")
+    {
+        PasswordOutcome::MfaRequired { challenge_token } => challenge_token,
+        PasswordOutcome::Authenticated(_) => {
+            panic!("failed replacement must not disable the active factor")
+        },
+    };
+    let active_code = mfa::current_code(&active.secret_base32).expect("active TOTP code");
+    backend
+        .verify_mfa(&challenge, &active_code)
+        .await
+        .expect("original factor survives failed replacement");
+
+    backend
+        .confirm_mfa_enrollment(&profile.user_id, &replacement_code)
+        .await
+        .expect("correct replacement code installs candidate");
+    let replay = backend
+        .confirm_mfa_enrollment(&profile.user_id, &replacement_code)
+        .await
+        .expect_err("installed candidate must not replay");
+    assert!(matches!(replay, AuthError::InvalidMfaCode));
+}
+
+#[tokio::test]
+async fn pg_concurrent_mfa_confirmation_has_exactly_one_winner() {
+    let Some(pool) = pool().await else { return };
+    let (backend, _) = build_backend(pool);
+    let email = unique_email("mfa-confirm-concurrent");
+    let profile = backend
+        .register_user(signup_for(&email))
+        .await
+        .expect("register user");
+    let candidate = backend
+        .start_mfa_enrollment(&profile.user_id)
+        .await
+        .expect("start enrollment");
+    let code = mfa::current_code(&candidate.secret_base32).expect("candidate TOTP code");
+
+    let left = {
+        let backend = Arc::clone(&backend);
+        let user_id = profile.user_id.clone();
+        let code = code.clone();
+        tokio::spawn(async move { backend.confirm_mfa_enrollment(&user_id, &code).await })
+    };
+    let right = {
+        let backend = Arc::clone(&backend);
+        let user_id = profile.user_id.clone();
+        tokio::spawn(async move { backend.confirm_mfa_enrollment(&user_id, &code).await })
+    };
+    let outcomes = [
+        left.await.expect("left join"),
+        right.await.expect("right join"),
+    ];
+
+    assert_eq!(outcomes.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|result| matches!(result, Err(AuthError::InvalidMfaCode)))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn pg_auth_backend_session_round_trip() {
     let Some(pool) = pool().await else { return };
     let (backend, _sink) = build_backend(pool);
@@ -444,12 +602,16 @@ async fn pg_auth_backend_session_round_trip() {
 
     // The middleware-facing resolver returns the principal for a live
     // session.
-    let principal = backend
+    let session_auth = backend
         .get_principal_by_session(&session.id)
         .await
         .expect("get_principal_by_session")
         .expect("session is live");
-    assert!(matches!(principal, nebula_core::Principal::User(_)));
+    assert!(matches!(
+        session_auth.principal,
+        nebula_core::Principal::User(_)
+    ));
+    assert!(session_auth.authenticated_at <= chrono::Utc::now());
 
     backend
         .revoke_session(&session.id)
@@ -570,8 +732,23 @@ async fn pg_auth_backend_complete_oauth_does_not_burn_cross_provider_state() {
         .expect_err("cross-provider state must reject");
     assert!(matches!(wrong_provider_err, AuthError::InvalidToken));
 
-    // Correct provider — the state row is still consumable.
+    // Correct provider — the state row is still consumable. Use a changed
+    // redirect to prove consumption without making an external request.
     let correct_err = backend
+        .complete_oauth(
+            OAuthProvider::Google,
+            &start.state,
+            "fake-code",
+            "https://changed.nebula.test/api/v1/auth/oauth/google/callback",
+        )
+        .await
+        .expect_err("redirect mismatch must fail after provider-aware consume");
+    assert!(
+        matches!(correct_err, AuthError::OAuthFailed),
+        "expected OAuthFailed after successful consume, got: {correct_err:?}"
+    );
+
+    let replay = backend
         .complete_oauth(
             OAuthProvider::Google,
             &start.state,
@@ -579,11 +756,8 @@ async fn pg_auth_backend_complete_oauth_does_not_burn_cross_provider_state() {
             "https://nebula.test/api/v1/auth/oauth/google/callback",
         )
         .await
-        .expect_err("complete_oauth still returns NotImplemented after consume");
-    assert!(
-        matches!(correct_err, AuthError::NotImplemented(_)),
-        "expected NotImplemented after successful consume, got: {correct_err:?}"
-    );
+        .expect_err("consumed state must reject replay");
+    assert!(matches!(replay, AuthError::InvalidToken));
 }
 
 // ─────────────────────────────────────────────────────────────────────

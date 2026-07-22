@@ -21,7 +21,7 @@
 //!
 //! On every read the layer inspects `EncryptedData::key_id`:
 //!
-//! - If `key_id` matches `self.key_provider.version()`, decrypt with the provider's current key.
+//! - If `key_id` matches the provider's atomic current snapshot, decrypt with that key.
 //! - If `key_id` differs, look it up in the optional `legacy_keys` map — decrypt with the legacy
 //!   key and re-encrypt with the current key before returning (lazy rotation). `legacy_keys` is
 //!   populated via [`EncryptionLayer::with_legacy_keys`] when the operator is migrating off an
@@ -32,7 +32,7 @@ use std::{collections::HashMap, sync::Arc};
 use nebula_credential::{CredentialStore, PutMode, StoreError, StoredCredential};
 use nebula_crypto::{EncryptedData, EncryptionKey, decrypt_with_aad, encrypt_with_key_id};
 
-use super::super::key_provider::KeyProvider;
+use super::super::key_provider::{KeyProvider, KeySnapshot};
 
 /// Wraps a store with AES-256-GCM encryption on the `data` field.
 ///
@@ -134,14 +134,10 @@ impl<S> EncryptionLayer<S> {
         }
     }
 
-    fn current_key(&self) -> Result<Arc<EncryptionKey>, StoreError> {
+    fn current_snapshot(&self) -> Result<KeySnapshot, StoreError> {
         self.key_provider
-            .current_key()
+            .current()
             .map_err(|e| StoreError::Backend(Box::new(e)))
-    }
-
-    fn current_key_id(&self) -> &str {
-        self.key_provider.version()
     }
 
     fn legacy_key(&self, key_id: &str) -> Result<Arc<EncryptionKey>, StoreError> {
@@ -223,10 +219,10 @@ impl<S: CredentialStore> CredentialStore for EncryptionLayer<S> {
 impl<S> EncryptionLayer<S> {
     /// Encrypt `plaintext` with the current key, serializing the envelope to bytes.
     fn encrypt_data(&self, plaintext: &[u8], id: &str) -> Result<Vec<u8>, StoreError> {
-        let key = self.current_key()?;
-        let current_version = self.current_key_id();
-        let encrypted = encrypt_with_key_id(&key, current_version, plaintext, id.as_bytes())
-            .map_err(|e| StoreError::Backend(Box::new(e)))?;
+        let current = self.current_snapshot()?;
+        let encrypted =
+            encrypt_with_key_id(current.key(), current.key_id(), plaintext, id.as_bytes())
+                .map_err(|e| StoreError::Backend(Box::new(e)))?;
         serde_json::to_vec(&encrypted).map_err(|e| StoreError::Backend(Box::new(e)))
     }
 
@@ -250,12 +246,11 @@ impl<S> EncryptionLayer<S> {
         let encrypted: EncryptedData =
             serde_json::from_slice(ciphertext).map_err(|e| StoreError::Backend(Box::new(e)))?;
 
-        let current_version = self.current_key_id();
+        let current = self.current_snapshot()?;
 
         // Data encrypted with the current key — normal path.
-        if encrypted.key_id == current_version {
-            let key = self.current_key()?;
-            let plaintext = decrypt_with_aad(&key, &encrypted, id.as_bytes())
+        if encrypted.key_id == current.key_id() {
+            let plaintext = decrypt_with_aad(current.key(), &encrypted, id.as_bytes())
                 .map_err(|e| StoreError::Backend(Box::new(e)))?;
             return Ok((plaintext, None));
         }
@@ -264,7 +259,11 @@ impl<S> EncryptionLayer<S> {
         let old_key = self.legacy_key(&encrypted.key_id)?;
         let plaintext = decrypt_with_aad(&old_key, &encrypted, id.as_bytes())
             .map_err(|e| StoreError::Backend(Box::new(e)))?;
-        let re_encrypted = self.encrypt_data(&plaintext, id)?;
+        let re_encrypted =
+            encrypt_with_key_id(current.key(), current.key_id(), &plaintext, id.as_bytes())
+                .map_err(|error| StoreError::Backend(Box::new(error)))?;
+        let re_encrypted = serde_json::to_vec(&re_encrypted)
+            .map_err(|error| StoreError::Backend(Box::new(error)))?;
         Ok((plaintext, Some(re_encrypted)))
     }
 }

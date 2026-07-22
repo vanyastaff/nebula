@@ -41,7 +41,6 @@ use crate::{trigger::TriggerHandler, webhook::WebhookConfig};
 ///
 /// Use [`HmacSecret::reveal`] at the one call site that needs the raw bytes
 /// for HMAC computation — the factory `build` implementations.
-#[derive(Clone)]
 pub struct HmacSecret(Vec<u8>);
 
 impl HmacSecret {
@@ -94,10 +93,10 @@ impl Drop for HmacSecret {
 /// `triggers.config` JSONB. The factory consumes a borrowed view so
 /// implementors can clone selectively.
 ///
-/// `provider_config` is an opaque JSON blob that the factory
-/// interprets — Slack and Stripe use it for nothing today; Generic
-/// uses it for `challenge_token`. Future providers can extend without
-/// adding fields here.
+/// `provider_config` is an opaque, non-secret JSON blob that the factory
+/// interprets. Authority belongs in the credential subsystem and must reach a
+/// factory through an explicit secret-bearing type, never as a JSON string.
+/// Future providers can extend configuration without adding fields here.
 ///
 /// # Security: `secret` is redacted
 ///
@@ -106,7 +105,6 @@ impl Drop for HmacSecret {
 /// access a reference, or [`WebhookActivationSpec::into_secret`] to take
 /// ownership (e.g. when passing into a factory builder). The secret bytes are
 /// zeroed on drop.
-#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct WebhookActivationSpec {
     /// `"slack" | "stripe" | "generic"` — keys the factory registry.
@@ -126,11 +124,29 @@ pub struct WebhookActivationSpec {
     /// this field (they hardcode Unix seconds); Generic respects it
     /// when its `RequiredPolicy` carries a timestamp header.
     pub timestamp_format: Option<crate::webhook::TimestampFormat>,
-    /// Provider-specific JSON blob. Generic looks for
-    /// `{"challenge_token": "..."}`; other providers ignore.
+    /// Provider-specific, non-secret JSON blob. Implementations must reject
+    /// inline credentials rather than interpreting them as authority.
     pub provider_config: Option<serde_json::Value>,
     /// Optional per-key rate-limit override (requests per minute).
     pub rate_limit_per_minute: Option<u64>,
+}
+
+impl fmt::Debug for WebhookActivationSpec {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WebhookActivationSpec")
+            .field("action_kind", &self.action_kind)
+            .field("secret", &self.secret)
+            .field("replay_window_secs", &self.replay_window_secs)
+            .field("timestamp_header", &self.timestamp_header)
+            .field("timestamp_format", &self.timestamp_format)
+            .field(
+                "provider_config",
+                &self.provider_config.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("rate_limit_per_minute", &self.rate_limit_per_minute)
+            .finish()
+    }
 }
 
 impl WebhookActivationSpec {
@@ -204,6 +220,23 @@ impl WebhookActivationSpec {
     }
 }
 
+/// Reject a provider configuration for a built-in provider that does not
+/// define one. Empty objects are treated as an omitted optional field so JSON
+/// clients can use one stable serializer without changing semantics.
+fn reject_unsupported_provider_config(
+    config: Option<&serde_json::Value>,
+    kind: &'static str,
+) -> Result<(), FactoryError> {
+    match config {
+        None => Ok(()),
+        Some(serde_json::Value::Object(map)) if map.is_empty() => Ok(()),
+        Some(_) => Err(FactoryError::InvalidSpec {
+            kind,
+            reason: "provider_config is not supported by this built-in provider",
+        }),
+    }
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -211,6 +244,9 @@ mod tests {
     use super::*;
 
     const SECRET_BYTES: &[u8] = b"super-secret-hmac-key";
+
+    static_assertions::assert_not_impl_any!(HmacSecret: Clone);
+    static_assertions::assert_not_impl_any!(WebhookActivationSpec: Clone);
 
     /// `HmacSecret`'s `Debug` output must never contain the raw secret bytes.
     /// This is a security invariant: if the type is formatted in a log or span
@@ -249,6 +285,17 @@ mod tests {
             !debug_output.contains("super-secret-hmac-key"),
             "raw secret must not appear in spec Debug output; got: {debug_output}",
         );
+    }
+
+    #[test]
+    fn webhook_activation_spec_debug_redacts_provider_config() {
+        const CANARY: &str = "WEBHOOK_ACTION_CONFIG_AUTHORITY_CANARY-24fa";
+        let spec = WebhookActivationSpec::new("generic", SECRET_BYTES)
+            .with_provider_config(serde_json::json!({ "challenge_token": CANARY }));
+        let debug_output = format!("{spec:?}");
+
+        assert!(!debug_output.contains(CANARY));
+        assert!(debug_output.contains("[REDACTED]"));
     }
 
     /// `HmacSecret` must grant access to the raw bytes only via `reveal()`,
@@ -292,21 +339,18 @@ mod tests {
 pub enum FactoryError {
     /// No factory registered for the given `action_kind`.
     #[error("unknown webhook provider kind: {0}")]
-    UnknownKind(String),
-    /// Spec was structurally valid but provider-specific fields were
-    /// missing or malformed (e.g. Generic without
-    /// `challenge_token`).
+    UnknownKind(&'static str),
+    /// Spec was structurally valid but provider-specific fields were missing,
+    /// malformed, or violated an authority boundary.
     #[error("invalid spec for {kind}: {reason}")]
     InvalidSpec {
         /// The factory's `kind()` so callers know which provider
         /// rejected the spec.
         kind: &'static str,
-        /// One-line cause; safe for surfacing in observability.
-        reason: String,
+        /// Static one-line cause. Requiring a static string makes it impossible
+        /// to echo caller configuration or secret material into diagnostics.
+        reason: &'static str,
     },
-    /// Secret resolution failed (credential store unavailable, etc).
-    #[error("secret resolution failed: {0}")]
-    SecretResolution(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
 
 /// Output of [`WebhookActionFactory::build`] — the dyn-erased
@@ -339,13 +383,31 @@ pub trait WebhookActionFactory: Send + Sync + 'static {
     /// `action_kind` field in [`WebhookActivationSpec`].
     fn kind(&self) -> &'static str;
 
+    /// Validate provider-specific configuration before any credential or
+    /// activation is persisted.
+    ///
+    /// The default is deliberately closed: built-in and downstream factories
+    /// that do not define a complete non-secret schema accept only an omitted
+    /// or empty object. A trusted custom factory may override this method, but
+    /// then owns exhaustive validation and MUST reject inline credentials or
+    /// bearer authority. Registration calls this seam before its first write;
+    /// [`Self::build`] should call it again as defense in depth for bootstrap
+    /// and non-HTTP composition paths.
+    fn validate_provider_config(
+        &self,
+        config: Option<&serde_json::Value>,
+    ) -> Result<(), FactoryError> {
+        reject_unsupported_provider_config(config, self.kind())
+    }
+
     /// Build a handler + config bundle from a stored activation
     /// spec.
     ///
     /// # Errors
     ///
-    /// Returns [`FactoryError::InvalidSpec`] if provider-specific
-    /// fields are missing or malformed; [`FactoryError::SecretResolution`]
-    /// if the secret material cannot be resolved.
+    /// Returns [`FactoryError::InvalidSpec`] if provider-specific fields are
+    /// missing or malformed. Secret resolution is deliberately outside the
+    /// factory contract: callers resolve authority before constructing the
+    /// activation spec.
     fn build(&self, spec: &WebhookActivationSpec) -> Result<BuiltWebhookHandler, FactoryError>;
 }

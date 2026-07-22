@@ -74,6 +74,108 @@ Build with the `postgres` feature:
 cargo build --release -p nebula-server --features postgres
 ```
 
+## Identity backend and Plane-A OAuth
+
+`API_AUTH_BACKEND` selects the Plane-A identity store independently from the
+execution and idempotency stores. The selection is fail-closed: requesting
+Postgres without the feature, `DATABASE_URL`, or a reachable database aborts
+startup instead of silently losing users, sessions, or PATs into memory.
+
+| `API_AUTH_BACKEND` | Identity backend | Durability |
+|--------------------|------------------|------------|
+| **unset** / `memory` | `InMemoryAuthBackend` | Process-local; lost on restart and not shared across replicas |
+| `postgres` | `PgAuthBackend` (build with `--features postgres`) | Users, sessions, PATs, verification/OAuth state, and external identity links survive restart and are shared through `DATABASE_URL` |
+
+### PostgreSQL identity-authority upgrade runbook
+
+The release containing Postgres migration `0038` is an intentional coordinated
+cutover; mixed old/new auth nodes are unsupported.
+
+1. Stop or drain every old auth writer. Take and inventory the required
+   pre-upgrade backup, then treat that backup and its WAL as plaintext-MFA
+   sensitive material.
+2. Configure one stable base64 AES-256 `NEBULA_CRED_MASTER_KEY` (or explicitly
+   opt into the insecure local-only `NEBULA_CRED_DEV_KEY=1` policy). Run
+   `task db:migrate`; all schema changes come from numbered migrations.
+3. Start the new server. Before `PgAuthBackend` is exposed, the startup
+   migrator serializes replicas with an advisory lock, converts canonical
+   historical TOTP seeds in bounded CAS batches, authenticates active and
+   pending envelopes with user/purpose-bound AAD, and fails closed on a safe
+   reason plus truncated owner correlation.
+4. Expect every pre-upgrade browser session to be invalidated. Migration
+   `0038` discards raw stored cookie bearers and the new runtime persists only
+   domain-separated SHA-256 lookup digests; users must authenticate again.
+5. After convergence, test backup restore into an isolated environment. Expire
+   or quarantine pre-migration backups, WAL archives, snapshots, and replicas
+   under the incident-retention policy. Live-row encryption does not erase
+   plaintext from those historical media.
+
+Do not retire an old encryption key while any retained backup contains an
+envelope produced by it. The library exposes explicit decrypt-only legacy keys
+for controlled rotation, but the first-party server currently resolves only
+the current `NEBULA_CRED_MASTER_KEY`; retain the old key and use a reviewed
+explicit composition, or re-enroll MFA in strict environments. Never rotate the
+environment key in place and assume old backups or rows remain recoverable.
+
+The composition root also owns the only supported Plane-A OAuth runtime
+lifecycle:
+
+1. It loads and validates the credentials-only Google/GitHub.com provider set
+   and canonical `API_PUBLIC_URL`. `ApiConfig` owns those `SecretString`s only
+   during this boot phase.
+2. `OAuthIdentityRuntime::from_config` returns `None` for an empty provider set;
+   no OAuth HTTP client or egress capability exists in that process.
+3. A non-empty set is moved out of `ApiConfig` into exactly one opaque runtime
+   before the Memory/Postgres branch. The router config retains an empty OAuth
+   map; the selected backend receives the same `Arc`, and neither backend
+   constructs a client or retains raw/duplicate provider secrets.
+
+The runtime fixes the production egress policy: rustls HTTPS only; redirects,
+retries, and proxies disabled; every literal/DNS address must be globally
+routable; reqwest receives only the exact validated answers. It also owns the
+Google discovery cache/singleflight, outbound semaphore, and 30-second
+per-operation network deadlines; every callback stage reuses its one original
+deadline. It also owns bounded zeroizing provider buffers and the opaque
+bearer-token capability. There is no public raw-client or custom-cfg escape
+hatch.
+
+Provider configuration is opt-in only through
+`API_AUTH_OAUTH_{GOOGLE,GITHUB}_{CLIENT_ID,CLIENT_SECRET}`. Either variable
+declares the profile; an incomplete pair aborts startup. Google discovery URL,
+issuer and scopes plus GitHub.com endpoints/scopes are fixed by the runtime.
+Microsoft, generic OIDC, GitHub Enterprise Server, endpoint/scope/auth overrides,
+and operator JWKS abort startup with a secret-free error. GitHub.com uses fixed
+`client_secret_post`; Google prefers discovered `client_secret_basic`, falls
+back to Post, and uses the OIDC Basic default when metadata omits the field.
+Basic credentials are form-encoded component-wise before the colon/Base64 step.
+An undeclared admitted provider remains an honest 503.
+OAuth start and callback traffic must use the authority configured by
+`API_PUBLIC_URL`; proxies must preserve that public `Host`. Start sets an
+opaque per-flow `__Host-` transaction cookie and callback requires the exact
+cookie before state consumption or provider egress. Browser clients therefore
+need a same-site, cookie-preserving start request; non-browser clients must
+retain and replay the matching `Set-Cookie`. A start request carrying eight
+Nebula transaction-cookie names is rejected with 429 before state creation;
+this is a request-local Cookie-header bound, not a globally atomic browser
+quota. The independent hard admission gate permits at most 10,000 live OAuth
+states per Memory process or shared PostgreSQL deployment; full or contended
+admission returns 429 without state, PKCE, or cookie creation.
+
+Callback persistence and network work are deliberately separated: matching
+state is consumed atomically first, provider egress runs without database locks,
+then the finalizer atomically decides local identity/session state. Email never
+authorizes an implicit account link; collision returns 409 and no session. A
+valid provider-error callback consumes state without egress and returns a fixed
+401. A valid new identity without a policy-acceptable verified email returns
+403 and writes no link/session; provider transport/non-success or malformed
+identity payloads remain 502. If the authoritative linked user has MFA enabled,
+the finalizer atomically stores an opaque challenge plus MFA-required outcome
+and the callback returns
+202 without session/CSRF material; `/auth/login/mfa` completes the login.
+See `crates/api/README.md` for the full provider matrix and redirect URI shape.
+This is identity OAuth (Plane A); integration credential acquisition (Plane B)
+continues through the universal `resolve` / `resolve/continue` contract.
+
 ## Email delivery (SMTP)
 
 The API needs an `EmailPort` to ship sign-up verification and

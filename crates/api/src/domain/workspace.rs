@@ -19,8 +19,12 @@
 //! table stays in sync with the published spec.
 #![allow(deprecated)]
 
+use axum::middleware;
 use nebula_core::Permission;
-use utoipa_axum::{router::OpenApiRouter, routes};
+use utoipa_axum::{
+    router::{OpenApiRouter, UtoipaMethodRouterExt},
+    routes,
+};
 
 use crate::{
     access,
@@ -28,6 +32,7 @@ use crate::{
         credential::handler as credential, execution::handler as execution,
         resource::handler as resource, webhook::handler as webhook, workflow::handler as workflow,
     },
+    middleware::no_store_authority_response,
     state::AppState,
 };
 
@@ -127,20 +132,29 @@ pub fn router() -> OpenApiRouter<AppState> {
             routes!(resource::delete_resource),
         ))
         // Webhooks — registration producer (`mode=Prod`; mints secret + URL once).
-        .routes(access::protected(
-            Permission::WorkflowWrite,
-            routes!(webhook::register_webhook),
-        ))
+        .routes(
+            access::protected(
+                Permission::WorkflowWrite,
+                routes!(webhook::register_webhook),
+            )
+            .layer(middleware::from_fn(no_store_authority_response)),
+        )
         // Credentials (Plane B). Universal acquisition literals first, then
         // collection, then parameterized `{cred}` and lifecycle sub-resources.
-        .routes(access::protected(
-            Permission::CredentialWrite,
-            routes!(credential::resolve_credential),
-        ))
-        .routes(access::protected(
-            Permission::CredentialWrite,
-            routes!(credential::continue_resolve_credential),
-        ))
+        .routes(
+            access::protected(
+                Permission::CredentialWrite,
+                routes!(credential::resolve_credential),
+            )
+            .layer(middleware::from_fn(no_store_authority_response)),
+        )
+        .routes(
+            access::protected(
+                Permission::CredentialWrite,
+                routes!(credential::continue_resolve_credential),
+            )
+            .layer(middleware::from_fn(no_store_authority_response)),
+        )
         .routes(access::protected(
             Permission::CredentialRead,
             routes!(credential::list_credentials),

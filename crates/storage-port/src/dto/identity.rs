@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 /// `users` row (migration 0001).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, PartialEq, Eq)]
 pub struct UserRow {
     /// `usr_` ULID (opaque string form).
     pub id: String,
@@ -33,11 +33,73 @@ pub struct UserRow {
     /// Whether MFA is enabled.
     pub mfa_enabled: bool,
     /// Encrypted MFA secret.
-    pub mfa_secret: Option<Vec<u8>>,
+    /// Versioned encrypted envelope for the active TOTP seed.
+    pub mfa_secret_envelope: Option<Vec<u8>>,
     /// Optimistic-CAS version.
     pub version: u64,
     /// Soft-delete timestamp.
     pub deleted_at: Option<String>,
+}
+
+impl std::fmt::Debug for UserRow {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("UserRow")
+            .field("id", &"[redacted]")
+            .field("email", &"[redacted]")
+            .field("email_verified_at", &self.email_verified_at)
+            .field("display_name", &"[redacted]")
+            .field(
+                "avatar_url",
+                &self.avatar_url.as_ref().map(|_| "[redacted]"),
+            )
+            .field(
+                "password_hash",
+                &self.password_hash.as_ref().map(|_| "[redacted]"),
+            )
+            .field("created_at", &self.created_at)
+            .field("last_login_at", &self.last_login_at)
+            .field("locked_until", &self.locked_until)
+            .field("failed_login_count", &self.failed_login_count)
+            .field("mfa_enabled", &self.mfa_enabled)
+            .field(
+                "mfa_secret_envelope",
+                &self.mfa_secret_envelope.as_ref().map(|_| "[redacted]"),
+            )
+            .field("version", &self.version)
+            .field("deleted_at", &self.deleted_at)
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod user_row_secret_tests {
+    use super::UserRow;
+
+    static_assertions::assert_not_impl_any!(UserRow: Clone);
+
+    #[test]
+    fn debug_redacts_password_mfa_and_personal_identity() {
+        const CANARY: &str = "PORT_USER_ROW_SECRET_CANARY-0bc4";
+        let row = UserRow {
+            id: CANARY.to_owned(),
+            email: format!("{CANARY}@example.test"),
+            email_verified_at: None,
+            display_name: CANARY.to_owned(),
+            avatar_url: Some(format!("https://example.test/{CANARY}")),
+            password_hash: Some(format!("$argon2id${CANARY}")),
+            created_at: "2026-07-22T00:00:00Z".to_owned(),
+            last_login_at: None,
+            locked_until: None,
+            failed_login_count: 0,
+            mfa_enabled: true,
+            mfa_secret_envelope: Some(CANARY.as_bytes().to_vec()),
+            version: 1,
+            deleted_at: None,
+        };
+
+        assert!(!format!("{row:?}").contains(CANARY));
+    }
 }
 
 /// `orgs` row (migration 0003).

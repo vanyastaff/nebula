@@ -140,7 +140,24 @@ pub enum CredentialServiceFactoryError {
 /// fails. See each variant for the specific composition step.
 pub async fn try_default_credential_service()
 -> Result<Arc<CredentialService>, CredentialServiceFactoryError> {
-    let key_provider = resolve_key_provider()?;
+    let key_provider = resolve_first_party_key_provider()?;
+    try_default_credential_service_with_key_provider(key_provider).await
+}
+
+/// Build the production credential service with a process-wide key provider
+/// already resolved by the first-party composition root.
+///
+/// This technical seam lets Plane-A identity encryption and credential
+/// encryption share the exact same provider instance and startup policy.
+///
+/// # Errors
+///
+/// Returns [`CredentialServiceFactoryError`] when the durable store or secure
+/// service stack cannot be initialized.
+#[doc(hidden)]
+pub async fn try_default_credential_service_with_key_provider(
+    key_provider: Arc<dyn KeyProvider>,
+) -> Result<Arc<CredentialService>, CredentialServiceFactoryError> {
     let db_url = std::env::var("NEBULA_CRED_DB").unwrap_or_else(|_| DEFAULT_CRED_DB.to_owned());
     let store = SqliteCredentialStore::connect(&db_url)
         .await
@@ -169,11 +186,14 @@ const DEV_KEY_B64: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=";
 /// Resolve the encryption key provider: fail-closed `NEBULA_CRED_MASTER_KEY`
 /// in production ([`EnvKeyProvider::from_env`]), or the fixed in-process dev
 /// key behind an explicit `NEBULA_CRED_DEV_KEY=1` opt-in (with a loud `warn!`).
-fn resolve_key_provider() -> Result<Arc<dyn KeyProvider>, CredentialServiceFactoryError> {
+#[doc(hidden)]
+pub fn resolve_first_party_key_provider()
+-> Result<Arc<dyn KeyProvider>, CredentialServiceFactoryError> {
     if std::env::var("NEBULA_CRED_DEV_KEY").as_deref() == Ok("1") {
         tracing::warn!(
-            "credential: NEBULA_CRED_DEV_KEY=1 — using a fixed in-process dev key; \
-             credentials are NOT securely encrypted. Never set this in production."
+            "security: NEBULA_CRED_DEV_KEY=1 — using a fixed in-process dev key; \
+             credentials and Plane-A identity secrets are NOT securely encrypted. \
+             Never set this in production."
         );
         Ok(Arc::new(EnvKeyProvider::from_base64(DEV_KEY_B64).map_err(
             |e| CredentialServiceFactoryError::KeyProvider(e.to_string()),

@@ -96,6 +96,7 @@ assert_fs = { workspace = true }
 insta = { workspace = true }
 pretty_assertions = { workspace = true }
 rstest = { workspace = true }
+static_assertions = { workspace = true }
 # Scoped variant of the conformance matrix: wraps the adapters in the
 # tenancy decorators to prove cross-tenant denial uniformly across
 # {InMemory, SQLite, Postgres} behind the decorator (spec §6.1).

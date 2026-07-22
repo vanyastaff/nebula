@@ -183,6 +183,11 @@ predicates = "3.1.3"
 pretty_assertions = "1.4.1"
 rstest = "0.24.0"
 wiremock = "0.6"
+rcgen = { version = "0.14.8", default-features = false, features = ["aws_lc_rs"] }
+tokio-rustls = { version = "0.26.4", default-features = false, features = [
+  "aws_lc_rs",
+  "tls12",
+] }
 
 # Semantic versioning
 semver = { version = "1", features = ["serde"] }
@@ -231,15 +236,9 @@ unreachable_pub = "warn"
 #
 # Custom cfgs known across the workspace:
 # - `cfg(loom)` is set by nebula-resilience's loom harness.
-# - `cfg(nebula_test_util)` is set by `nebula-api` integration tests per
-#   ADR-0085 D-14 (PR-2 T2.11). It gates the `nebula_api::test_support`
-#   module that exposes bypass helpers for localhost wiremock IdPs;
-#   opt-in only via `RUSTFLAGS="--cfg nebula_test_util"`, tokio-precedent.
-#   Production release builds reject the cfg via a `compile_error!`
-#   guard in `crates/api/src/lib.rs`.
 # Keeping every custom cfg here at workspace level so every crate can
 # switch `workspace = true` on without re-declaring it locally.
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)', 'cfg(nebula_test_util)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
 
 [workspace.lints.clippy]
 # Opt into the big batteries. `priority = -1` lets individual `allow = ...`

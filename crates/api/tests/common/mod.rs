@@ -29,7 +29,7 @@ pub(crate) const TEST_WS: &str = "ws_00000000000000000000000001";
 /// CSRF token value used by tests for state-changing requests.
 pub(crate) const TEST_CSRF_TOKEN: &str = "test-csrf-token";
 /// Pre-formatted cookie header value for CSRF.
-pub(crate) const TEST_CSRF_COOKIE: &str = "nebula_csrf=test-csrf-token";
+pub(crate) const TEST_CSRF_COOKIE: &str = "__Host-nebula-csrf=test-csrf-token";
 
 /// Helper to build a tenant-scoped workspace API path.
 /// Example: `ws_path("/workflows")` → `/api/v1/orgs/org_.../workspaces/ws_.../workflows`

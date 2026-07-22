@@ -9,6 +9,7 @@ use crate::{error::ApiError, ports::email::EmailError};
 
 /// Failure modes for the auth backend.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum AuthError {
     /// Capability is wired into the trait but not provided by this backend.
     #[error("auth capability not implemented: {0}")]
@@ -24,12 +25,8 @@ pub enum AuthError {
     /// HTTP 503 Service Unavailable (NOT 400) because the operator can
     /// fix it by setting the env vars without any code change — it's
     /// a deployment state, not a caller error.
-    #[error("OAuth provider `{provider}` is not configured on this Nebula instance")]
-    ProviderNotConfigured {
-        /// Snake_case provider key (matches the `OAuthProvider` enum
-        /// variant).
-        provider: String,
-    },
+    #[error("OAuth provider is not configured on this Nebula instance")]
+    ProviderNotConfigured,
 
     /// Email already registered.
     #[error("email already registered")]
@@ -58,6 +55,13 @@ pub enum AuthError {
     #[error("email not verified")]
     EmailNotVerified,
 
+    /// A provider identity presented a verified email already owned by a
+    /// local account. OAuth login never treats email possession as authority
+    /// to attach a new provider subject; an authenticated linking flow is
+    /// required.
+    #[error("explicit account linking is required")]
+    AccountLinkRequired,
+
     /// MFA is required but not yet completed for this login.
     #[error("mfa challenge required")]
     MfaRequired,
@@ -75,9 +79,15 @@ pub enum AuthError {
     #[error("rate limit exceeded")]
     RateLimit,
 
-    /// OAuth provider returned an error or the state token failed.
-    #[error("oauth failed: {0}")]
-    OAuthFailed(String),
+    /// OAuth runtime/provider exchange failed or a persisted flow invariant
+    /// (such as the callback URL) did not match.
+    #[error("OAuth identity flow failed")]
+    OAuthFailed,
+
+    /// The provider returned a valid error callback for a browser-bound
+    /// transaction (typically the resource owner denied authorization).
+    #[error("OAuth authorization was not granted")]
+    OAuthDenied,
 
     /// Cryptographic operation failed (hash compute, RNG, etc.).
     #[error("crypto failure: {0}")]
@@ -124,16 +134,43 @@ impl From<StorageError> for AuthError {
     }
 }
 
+impl AuthError {
+    pub(crate) fn from_oauth_failure(code: crate::transport::oauth::OAuthFailureCode) -> Self {
+        match code {
+            crate::transport::oauth::OAuthFailureCode::VerifiedEmailUnavailable => {
+                tracing::info!(
+                    oauth.failure_code = code.as_str(),
+                    "OAuth identity does not satisfy verified-email policy"
+                );
+                Self::EmailNotVerified
+            },
+            crate::transport::oauth::OAuthFailureCode::ProviderNotConfigured => {
+                tracing::warn!(
+                    oauth.failure_code = code.as_str(),
+                    "OAuth identity flow failed"
+                );
+                Self::ProviderNotConfigured
+            },
+            _ => {
+                tracing::warn!(
+                    oauth.failure_code = code.as_str(),
+                    "OAuth identity flow failed"
+                );
+                Self::OAuthFailed
+            },
+        }
+    }
+}
+
 impl From<AuthError> for ApiError {
     fn from(e: AuthError) -> Self {
         match e {
-            AuthError::NotImplemented(what) => {
-                ApiError::ServiceUnavailable(format!("not implemented: {what}"))
+            AuthError::NotImplemented(_) => {
+                ApiError::ServiceUnavailable("authentication capability is unavailable".to_owned())
             },
-            AuthError::ProviderNotConfigured { provider } => ApiError::ServiceUnavailable(format!(
-                "OAuth provider `{provider}` is not configured; set API_AUTH_OAUTH_{}_CLIENT_ID and related env vars",
-                provider.to_ascii_uppercase()
-            )),
+            AuthError::ProviderNotConfigured => {
+                ApiError::ServiceUnavailable("OAuth provider is not configured".to_owned())
+            },
             AuthError::EmailAlreadyRegistered => {
                 ApiError::Conflict("email already registered".to_owned())
             },
@@ -148,11 +185,19 @@ impl From<AuthError> for ApiError {
             AuthError::EmailNotVerified => {
                 ApiError::Forbidden("email verification required".to_owned())
             },
+            AuthError::AccountLinkRequired => {
+                ApiError::Conflict("explicit account linking is required".to_owned())
+            },
             AuthError::MfaRequired => ApiError::MfaRequired,
             AuthError::InvalidMfaCode => ApiError::Unauthorized("invalid mfa code".to_owned()),
             AuthError::InvalidToken => ApiError::Unauthorized("token invalid".to_owned()),
             AuthError::RateLimit => ApiError::RateLimitExceeded,
-            AuthError::OAuthFailed(msg) => ApiError::UpstreamError(msg),
+            AuthError::OAuthFailed => {
+                ApiError::UpstreamError("OAuth identity provider request failed".to_owned())
+            },
+            AuthError::OAuthDenied => {
+                ApiError::Unauthorized("OAuth authorization was not granted".to_owned())
+            },
             AuthError::Crypto(msg) => ApiError::Internal(format!("crypto: {msg}")),
             AuthError::Internal(msg) => ApiError::Internal(msg),
         }
@@ -193,18 +238,20 @@ mod tests {
     fn default_outcome_for(err: &AuthError) -> &'static str {
         match err {
             AuthError::NotImplemented(_) => auth_outcome::INTERNAL,
-            AuthError::ProviderNotConfigured { .. } => auth_outcome::OAUTH_FAILED,
+            AuthError::ProviderNotConfigured => auth_outcome::OAUTH_FAILED,
             AuthError::EmailAlreadyRegistered => auth_outcome::CONFLICT,
             AuthError::UserNotFound => auth_outcome::INVALID_CREDS,
             AuthError::InvalidCredentials => auth_outcome::INVALID_CREDS,
             AuthError::InvalidInput(_) => auth_outcome::INVALID_INPUT,
             AuthError::AccountLocked => auth_outcome::LOCKOUT,
             AuthError::EmailNotVerified => auth_outcome::EMAIL_UNVERIFIED,
+            AuthError::AccountLinkRequired => auth_outcome::CONFLICT,
             AuthError::MfaRequired => auth_outcome::MFA_REQUIRED,
             AuthError::InvalidMfaCode => auth_outcome::INVALID_MFA_CODE,
             AuthError::InvalidToken => auth_outcome::TOKEN_INVALID,
             AuthError::RateLimit => auth_outcome::RATE_LIMIT,
-            AuthError::OAuthFailed(_) => auth_outcome::OAUTH_FAILED,
+            AuthError::OAuthFailed => auth_outcome::OAUTH_FAILED,
+            AuthError::OAuthDenied => auth_outcome::OAUTH_FAILED,
             AuthError::Crypto(_) => auth_outcome::INTERNAL,
             AuthError::Internal(_) => auth_outcome::INTERNAL,
         }
@@ -212,30 +259,27 @@ mod tests {
 
     #[test]
     fn every_auth_error_variant_has_a_closed_outcome_label() {
-        // Enumerates all 14 `AuthError` variants and confirms each maps
+        // Enumerates every `AuthError` variant and confirms each maps
         // to a closed `auth_outcome::*` constant. The compile-time gate
         // is `default_outcome_for`'s exhaustive `match`; this test
         // additionally verifies the label values are non-empty closed
         // strings.
-        let cases: [(&str, AuthError); 15] = [
+        let cases: [(&str, AuthError); 17] = [
             ("NotImplemented", AuthError::NotImplemented("x")),
-            (
-                "ProviderNotConfigured",
-                AuthError::ProviderNotConfigured {
-                    provider: "google".to_owned(),
-                },
-            ),
+            ("ProviderNotConfigured", AuthError::ProviderNotConfigured),
             ("EmailAlreadyRegistered", AuthError::EmailAlreadyRegistered),
             ("UserNotFound", AuthError::UserNotFound),
             ("InvalidCredentials", AuthError::InvalidCredentials),
             ("InvalidInput", AuthError::InvalidInput("x")),
             ("AccountLocked", AuthError::AccountLocked),
             ("EmailNotVerified", AuthError::EmailNotVerified),
+            ("AccountLinkRequired", AuthError::AccountLinkRequired),
             ("MfaRequired", AuthError::MfaRequired),
             ("InvalidMfaCode", AuthError::InvalidMfaCode),
             ("InvalidToken", AuthError::InvalidToken),
             ("RateLimit", AuthError::RateLimit),
-            ("OAuthFailed", AuthError::OAuthFailed("x".into())),
+            ("OAuthFailed", AuthError::OAuthFailed),
+            ("OAuthDenied", AuthError::OAuthDenied),
             ("Crypto", AuthError::Crypto("x".into())),
             ("Internal", AuthError::Internal("x".into())),
         ];
@@ -296,5 +340,27 @@ mod tests {
     #[test]
     fn rate_limit_maps_to_429() {
         assert_eq!(status(AuthError::RateLimit), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[test]
+    fn ineligible_provider_email_is_a_policy_refusal_not_an_upstream_failure() {
+        let error = AuthError::from_oauth_failure(
+            crate::transport::oauth::OAuthFailureCode::VerifiedEmailUnavailable,
+        );
+
+        assert!(matches!(error, AuthError::EmailNotVerified));
+        assert_eq!(status(error), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn not_implemented_detail_is_fixed_before_reaching_problem_details() {
+        const CANARY: &str = "CUSTOM_BACKEND_CANARY_DO_NOT_ECHO";
+        let api_error: ApiError = AuthError::NotImplemented(CANARY).into();
+
+        assert!(!api_error.to_string().contains(CANARY));
+        assert!(!format!("{api_error:?}").contains(CANARY));
+        let (_, problem) = api_error.to_problem_details();
+        let wire = serde_json::to_string(&problem).expect("problem details must serialize");
+        assert!(!wire.contains(CANARY));
     }
 }

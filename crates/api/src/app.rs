@@ -4,13 +4,15 @@
 
 use std::{future::Future, sync::Arc, time::Duration};
 
-use axum::{Router, body::Body, extract::DefaultBodyLimit, middleware, response::Response};
-use tower::ServiceBuilder;
-use tower_http::{
-    compression::CompressionLayer,
-    cors::CorsLayer,
-    trace::{DefaultMakeSpan, MakeSpan, TraceLayer},
+use axum::{
+    Router,
+    body::Body,
+    extract::{DefaultBodyLimit, MatchedPath},
+    middleware,
+    response::Response,
 };
+use tower::ServiceBuilder;
+use tower_http::{compression::CompressionLayer, cors::CorsLayer, trace::TraceLayer};
 use utoipa_swagger_ui::SwaggerUi;
 
 #[cfg(any(test, feature = "test-util"))]
@@ -20,7 +22,9 @@ use crate::{
     config::{ApiConfig, IdempotencyApiConfig},
     domain,
     middleware::{
-        IdempotencyLayer, idempotency::IdempotencyConfig, rate_limit::RateLimitState,
+        IdempotencyLayer,
+        idempotency::{IdempotencyConfig, REPLAY_SAFE_POST_ROUTES},
+        rate_limit::RateLimitState,
         security_headers::security_headers_middleware,
     },
     state::AppState,
@@ -114,6 +118,7 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
         );
         api_routes.layer(
             IdempotencyLayer::new(Arc::clone(store))
+                .with_replay_safe_routes(REPLAY_SAFE_POST_ROUTES.iter().copied())
                 .with_config(layer_config_from(&config.idempotency))
                 .with_metrics(state.metrics_registry.clone()),
         )
@@ -170,14 +175,26 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
     // routes are not in OpenAPI but still emit trace headers for operators).
     let middleware_stack = ServiceBuilder::new()
         // 1. Request tracing — link to inbound W3C parent when `InboundW3cTraceContext` is present.
-        // Span level is **INFO** (not the `DefaultMakeSpan` `DEBUG` default): a default
+        // Span level is **INFO**: a default
         // `RUST_LOG=info` filter would otherwise drop the per-request span before
         // `tracing_opentelemetry::OpenTelemetryLayer` can observe it, leaving every response
         // without a `traceparent` even though `init_api_telemetry` wired the layer correctly.
         .layer(TraceLayer::new_for_http().make_span_with(
             |request: &axum::http::Request<Body>| {
-                let mut make_span = DefaultMakeSpan::new().level(tracing::Level::INFO);
-                let span = make_span.make_span(request);
+                // Never record the raw URI: OAuth callbacks carry one-time `code` and
+                // `state` secrets in their query string. `MatchedPath` is the stable,
+                // low-cardinality route template. Unmatched paths are attacker-controlled
+                // too, so the fallback is a fixed marker rather than the raw URI path.
+                let route = request
+                    .extensions()
+                    .get::<MatchedPath>()
+                    .map(MatchedPath::as_str)
+                    .unwrap_or("<unmatched>");
+                let span = tracing::info_span!(
+                    "http.request",
+                    http.request.method = %request.method(),
+                    http.route = route,
+                );
                 if let Some(w3c) = request.extensions().get::<crate::middleware::InboundW3cTraceContext>()
                 {
                     crate::middleware::trace_w3c::attach_inbound_trace_parent(&span, &w3c.0);
@@ -309,6 +326,7 @@ fn layer_config_from(cfg: &IdempotencyApiConfig) -> IdempotencyConfig {
 fn build_cors_layer(config: &ApiConfig) -> CorsLayer {
     use axum::http::{HeaderValue, Method, header};
 
+    use crate::domain::auth::backend::CSRF_HEADER;
     use crate::middleware::{
         idempotency::{IDEMPOTENCY_KEY_HEADER, IDEMPOTENT_REPLAY_HEADER},
         request_id::X_REQUEST_ID,
@@ -350,12 +368,15 @@ fn build_cors_layer(config: &ApiConfig) -> CorsLayer {
     // `Idempotency-Key` is here so cross-origin POSTs that opt into
     // replay protection clear the preflight; without it browsers
     // strip the header before the server sees it (idempotency backend).
+    // `X-CSRF-Token` is equally load-bearing for an allowed browser
+    // origin using the session-cookie contract.
     .allow_headers([
         header::CONTENT_TYPE,
         header::AUTHORIZATION,
         header::ACCEPT,
         header::HeaderName::from_static(X_REQUEST_ID),
         crate::middleware::auth::X_API_KEY.clone(),
+        header::HeaderName::from_static(CSRF_HEADER),
         header::HeaderName::from_static(IDEMPOTENCY_KEY_HEADER),
         // W3C Trace Context (M3.5) — browser preflight must allow clients to send `traceparent`.
         header::HeaderName::from_static("traceparent"),

@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
-use zeroize::ZeroizeOnDrop;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// `POST /auth/signup` request body.
 ///
@@ -24,7 +24,7 @@ pub struct SignupRequest {
 }
 
 /// `POST /auth/login` request body.
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Deserialize, ToSchema)]
 pub struct LoginRequest {
     /// Account email.
     pub email: String,
@@ -33,7 +33,19 @@ pub struct LoginRequest {
     pub password: SecretString,
     /// Optional 6-digit TOTP code when the account has MFA enabled.
     #[serde(default)]
+    #[schema(write_only = true)]
     pub totp: Option<String>,
+}
+
+impl std::fmt::Debug for LoginRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LoginRequest")
+            .field("email", &"[redacted]")
+            .field("password", &"[redacted]")
+            .field("totp", &self.totp.as_ref().map(|_| "[redacted]"))
+            .finish()
+    }
 }
 
 /// `POST /auth/forgot-password` request body.
@@ -45,20 +57,41 @@ pub struct ForgotPasswordRequest {
 }
 
 /// `POST /auth/reset-password` request body.
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Deserialize, ToSchema)]
 pub struct ResetPasswordRequest {
     /// One-time reset token previously emailed to the user.
+    #[schema(format = "password", write_only = true)]
     pub token: String,
     /// New plaintext password.
     #[schema(value_type = String, format = "password", write_only = true)]
     pub new_password: SecretString,
 }
 
+impl std::fmt::Debug for ResetPasswordRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ResetPasswordRequest")
+            .field("token", &"[redacted]")
+            .field("new_password", &"[redacted]")
+            .finish()
+    }
+}
+
 /// `POST /auth/verify-email` request body.
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Deserialize, ToSchema)]
 pub struct VerifyEmailRequest {
     /// One-time verification token previously emailed to the user.
+    #[schema(format = "password", write_only = true)]
     pub token: String,
+}
+
+impl std::fmt::Debug for VerifyEmailRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("VerifyEmailRequest")
+            .field("token", &"[redacted]")
+            .finish()
+    }
 }
 
 /// `POST /auth/mfa/enroll` request body — empty; identity comes from the
@@ -73,47 +106,103 @@ pub struct MfaEnrollRequest {}
 /// `POST /auth/mfa/verify` request body — enrollment-confirm path.
 ///
 /// This endpoint is session-bearing and CSRF-gated; identity comes from
-/// the `nebula_session` cookie. The cookie-less second-factor login
+/// the `__Host-nebula-session` cookie. The cookie-less second-factor login
 /// completion path lives at `POST /auth/login/mfa` with
 /// [`MfaLoginCompleteRequest`].
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Deserialize, ToSchema)]
 pub struct MfaConfirmEnrollRequest {
     /// 6-digit TOTP code from the user's authenticator app.
+    #[schema(write_only = true)]
     pub code: String,
+}
+
+impl std::fmt::Debug for MfaConfirmEnrollRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MfaConfirmEnrollRequest")
+            .field("code", &"[redacted]")
+            .finish()
+    }
 }
 
 /// `POST /auth/login/mfa` request body — second-factor login completion.
 ///
 /// This endpoint is cookie-less (the caller has no session yet) and
 /// therefore CSRF-exempt by construction; the `challenge_token` issued by
-/// the password-step `/auth/login` response is the only authority.
-#[derive(Debug, Deserialize, ToSchema)]
+/// `/auth/login` or an OAuth callback is the only authority.
+#[derive(Deserialize, ToSchema)]
 pub struct MfaLoginCompleteRequest {
     /// 6-digit TOTP code from the user's authenticator app.
+    #[schema(write_only = true)]
     pub code: String,
-    /// MFA-challenge token returned by `/auth/login` when MFA is required.
+    /// MFA-challenge token returned by a first-factor endpoint when MFA is required.
+    #[schema(format = "password", write_only = true)]
     pub challenge_token: String,
 }
 
+impl std::fmt::Debug for MfaLoginCompleteRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MfaLoginCompleteRequest")
+            .field("code", &"[redacted]")
+            .field("challenge_token", &"[redacted]")
+            .finish()
+    }
+}
+
 /// Response after a successful login (no MFA required).
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Serialize, ToSchema)]
 pub struct LoginResponse {
     /// Resolved user profile (no secrets).
     pub user: UserProfile,
-    /// Opaque session ID — also sent as the `nebula_session` cookie.
-    pub session_id: String,
-    /// CSRF token paired with the session — sent as the `nebula_csrf` cookie.
+    /// CSRF token paired with the session — sent as the readable
+    /// `__Host-nebula-csrf` cookie. The session bearer itself is deliberately absent
+    /// from JSON and exists only in the `HttpOnly` session cookie.
+    #[schema(read_only = true)]
     pub csrf_token: String,
 }
 
-/// Response when login succeeded the password step but MFA is required.
-#[derive(Debug, Serialize, ToSchema)]
+impl std::fmt::Debug for LoginResponse {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LoginResponse")
+            .field("user", &"[redacted]")
+            .field("csrf_token", &"[redacted]")
+            .finish()
+    }
+}
+
+impl Drop for LoginResponse {
+    fn drop(&mut self) {
+        self.csrf_token.zeroize();
+    }
+}
+
+/// Response when a password or OAuth first factor succeeded but MFA is required.
+#[derive(Serialize, ToSchema)]
 pub struct MfaChallengeResponse {
     /// MFA-required flag for the client.
     #[serde(rename = "mfa_required")]
     pub mfa_required: bool,
-    /// Opaque, single-use challenge token to be passed back to `mfa/verify`.
+    /// Opaque, single-use challenge token to pass to `/auth/login/mfa`.
+    #[schema(format = "password", read_only = true)]
     pub challenge_token: String,
+}
+
+impl std::fmt::Debug for MfaChallengeResponse {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MfaChallengeResponse")
+            .field("mfa_required", &self.mfa_required)
+            .field("challenge_token", &"[redacted]")
+            .finish()
+    }
+}
+
+impl Drop for MfaChallengeResponse {
+    fn drop(&mut self) {
+        self.challenge_token.zeroize();
+    }
 }
 
 /// Response after a successful signup.
@@ -127,21 +216,59 @@ pub struct SignupResponse {
 
 /// Response after MFA enrollment — exposes the otpauth URI **once**
 /// so the client can render a QR code.
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Serialize, ToSchema)]
 pub struct MfaEnrollResponse {
     /// `otpauth://totp/...` URI to be displayed as a QR code.
+    #[schema(format = "uri", read_only = true)]
     pub otpauth_uri: String,
     /// Base32 secret in case the authenticator app rejects the URI form.
+    #[schema(format = "password", read_only = true)]
     pub secret_base32: String,
 }
 
+impl std::fmt::Debug for MfaEnrollResponse {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MfaEnrollResponse")
+            .field("otpauth_uri", &"[redacted]")
+            .field("secret_base32", &"[redacted]")
+            .finish()
+    }
+}
+
+impl Drop for MfaEnrollResponse {
+    fn drop(&mut self) {
+        self.otpauth_uri.zeroize();
+        self.secret_base32.zeroize();
+    }
+}
+
 /// Response for the OAuth start endpoint.
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Serialize, ToSchema)]
 pub struct OAuthStartResponse {
     /// Provider authorization URL the client should redirect to.
+    #[schema(format = "uri", read_only = true)]
     pub authorize_url: String,
     /// Opaque state token (also stored server-side, single-use).
+    #[schema(format = "password", read_only = true)]
     pub state: String,
+}
+
+impl std::fmt::Debug for OAuthStartResponse {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OAuthStartResponse")
+            .field("authorize_url", &"[redacted]")
+            .field("state", &"[redacted]")
+            .finish()
+    }
+}
+
+impl Drop for OAuthStartResponse {
+    fn drop(&mut self) {
+        self.authorize_url.zeroize();
+        self.state.zeroize();
+    }
 }
 
 /// User profile shape returned to the client. **Never** contains password
@@ -166,7 +293,7 @@ pub struct UserProfile {
 /// Wrapper around a plaintext secret that zeroes its memory on drop.
 ///
 /// Implements [`Deserialize`] so request bodies can be parsed directly.
-#[derive(Clone, Default, ZeroizeOnDrop)]
+#[derive(Default, ZeroizeOnDrop)]
 pub struct SecretString(String);
 
 impl SecretString {
@@ -215,6 +342,8 @@ impl<'de> Deserialize<'de> for SecretString {
 mod tests {
     use super::*;
 
+    static_assertions::assert_not_impl_any!(SecretString: Clone);
+
     #[test]
     fn secret_string_debug_redacts() {
         let s = SecretString::new("hunter2".to_owned());
@@ -232,5 +361,112 @@ mod tests {
         assert_eq!(req.email, "a@b.c");
         assert_eq!(req.password.expose(), "secret");
         assert_eq!(req.totp.as_deref(), Some("123456"));
+    }
+
+    #[test]
+    fn oauth_start_response_debug_redacts_url_and_state() {
+        let response = OAuthStartResponse {
+            authorize_url: "https://idp.example/authorize?state=URL_CANARY-a62b".to_owned(),
+            state: "STATE_CANARY-c77e".to_owned(),
+        };
+
+        let debug = format!("{response:?}");
+        assert!(!debug.contains("URL_CANARY-a62b"));
+        assert!(!debug.contains("STATE_CANARY-c77e"));
+
+        let wire = serde_json::to_value(&response).expect("OAuth start response serializes");
+        assert_eq!(
+            wire["authorize_url"],
+            "https://idp.example/authorize?state=URL_CANARY-a62b"
+        );
+        assert_eq!(wire["state"], "STATE_CANARY-c77e");
+    }
+
+    #[test]
+    fn mfa_challenge_response_debug_redacts_plaintext_but_wire_keeps_it() {
+        const CANARY: &str = "MFA_CHALLENGE_CANARY-6f47";
+        let response = MfaChallengeResponse {
+            mfa_required: true,
+            challenge_token: CANARY.to_owned(),
+        };
+
+        assert!(!format!("{response:?}").contains(CANARY));
+        let wire = serde_json::to_value(&response).expect("MFA challenge response serializes");
+        assert_eq!(wire["challenge_token"], CANARY);
+    }
+
+    #[test]
+    fn auth_dto_debug_redacts_login_reset_mfa_and_session_authority() {
+        const CANARY: &str = "AUTHORITY_CANARY-8f2c";
+        let profile = || UserProfile {
+            user_id: CANARY.to_owned(),
+            email: format!("{CANARY}@example.test"),
+            display_name: CANARY.to_owned(),
+            avatar_url: Some(CANARY.to_owned()),
+            email_verified: true,
+            mfa_enabled: true,
+        };
+        let debug_values = [
+            format!(
+                "{:?}",
+                LoginRequest {
+                    email: format!("{CANARY}@example.test"),
+                    password: SecretString::new(CANARY.to_owned()),
+                    totp: Some(CANARY.to_owned()),
+                }
+            ),
+            format!(
+                "{:?}",
+                ResetPasswordRequest {
+                    token: CANARY.to_owned(),
+                    new_password: SecretString::new(CANARY.to_owned()),
+                }
+            ),
+            format!(
+                "{:?}",
+                VerifyEmailRequest {
+                    token: CANARY.to_owned(),
+                }
+            ),
+            format!(
+                "{:?}",
+                MfaConfirmEnrollRequest {
+                    code: CANARY.to_owned(),
+                }
+            ),
+            format!(
+                "{:?}",
+                MfaLoginCompleteRequest {
+                    code: CANARY.to_owned(),
+                    challenge_token: CANARY.to_owned(),
+                }
+            ),
+            format!(
+                "{:?}",
+                LoginResponse {
+                    user: profile(),
+                    csrf_token: CANARY.to_owned(),
+                }
+            ),
+            format!(
+                "{:?}",
+                MfaEnrollResponse {
+                    otpauth_uri: format!("otpauth://totp/{CANARY}?secret={CANARY}"),
+                    secret_base32: CANARY.to_owned(),
+                }
+            ),
+        ];
+
+        for debug in debug_values {
+            assert!(!debug.contains(CANARY), "Debug leaked authority: {debug}");
+        }
+
+        let login_wire = serde_json::to_value(LoginResponse {
+            user: profile(),
+            csrf_token: CANARY.to_owned(),
+        })
+        .expect("login response serializes");
+        assert!(login_wire.get("session_id").is_none());
+        assert_eq!(login_wire["csrf_token"], CANARY);
     }
 }

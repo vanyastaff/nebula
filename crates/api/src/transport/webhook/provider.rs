@@ -13,10 +13,19 @@ use uuid::Uuid;
 /// are infallible reads. The transport constructs one instance per
 /// `(trigger_uuid, nonce)` activation and injects it via
 /// `TriggerContext::with_webhook_endpoint` (in the `nebula_action` crate).
-#[derive(Debug, Clone)]
 pub struct EndpointProviderImpl {
     url: Url,
     path: String,
+}
+
+impl std::fmt::Debug for EndpointProviderImpl {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("EndpointProviderImpl")
+            .field("url", &"[redacted]")
+            .field("path", &"[redacted]")
+            .finish()
+    }
 }
 
 impl EndpointProviderImpl {
@@ -61,6 +70,21 @@ impl WebhookEndpointProvider for EndpointProviderImpl {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static_assertions::assert_not_impl_any!(EndpointProviderImpl: Clone);
+
+    #[test]
+    fn debug_redacts_capability_url_and_nonce_path() {
+        const CANARY: &str = "WEBHOOK_NONCE_CANARY-6f1a";
+        let base = Url::parse("https://nebula.example.com").unwrap();
+        let provider = EndpointProviderImpl::new(&base, "/webhooks", Uuid::nil(), CANARY)
+            .expect("static URL builds");
+
+        let debug = format!("{provider:?}");
+        assert!(debug.contains("EndpointProviderImpl"));
+        assert!(!debug.contains(CANARY));
+        assert!(!debug.contains("nebula.example.com"));
+    }
 
     #[test]
     fn builds_url_with_path_prefix() {

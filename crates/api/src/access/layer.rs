@@ -29,7 +29,7 @@ pub async fn require_permission(
                 tracing::warn!("access denied: missing auth context");
                 return Err(ApiError::Unauthorized("not authenticated".to_string()));
             };
-            current_span.record("auth.method", tracing::field::debug(auth.auth_method));
+            current_span.record("auth.method", tracing::field::debug(&auth.auth_method));
 
             let Some(tenant) = request.extensions().get::<TenantContext>() else {
                 current_span.record("outcome", "missing_tenant_context");

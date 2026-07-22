@@ -7,7 +7,7 @@ use serde_json::Value;
 ///
 /// Defines how and when a workflow is started. Supports manual,
 /// cron, webhook, event, and polling trigger kinds.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TriggerRow {
     /// `trig_` ULID, 16-byte BYTEA.
     pub id: Vec<u8>,
@@ -45,6 +45,60 @@ pub struct TriggerRow {
     /// Optimistic concurrency version.
     pub version: i64,
     pub deleted_at: Option<DateTime<Utc>>,
+}
+
+impl std::fmt::Debug for TriggerRow {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TriggerRow")
+            .field("id", &self.id)
+            .field("workspace_id", &self.workspace_id)
+            .field("workflow_id", &self.workflow_id)
+            .field("slug", &self.slug)
+            .field("display_name", &self.display_name)
+            .field("kind", &self.kind)
+            .field("config", &"[redacted]")
+            .field("state", &self.state)
+            .field("webhook_path", &self.webhook_path)
+            .field("run_as", &self.run_as)
+            .field("created_at", &self.created_at)
+            .field("created_by", &self.created_by)
+            .field("version", &self.version)
+            .field("deleted_at", &self.deleted_at)
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod trigger_row_debug_tests {
+    use chrono::Utc;
+
+    use super::TriggerRow;
+
+    #[test]
+    fn trigger_row_debug_redacts_config() {
+        const CANARY: &str = "TRIGGER_CONFIG_AUTHORITY_CANARY-c1e8";
+        let row = TriggerRow {
+            id: vec![1],
+            workspace_id: vec![2],
+            workflow_id: vec![3],
+            slug: "hook".to_owned(),
+            display_name: "Hook".to_owned(),
+            kind: "webhook".to_owned(),
+            config: serde_json::json!({ "challenge_token": CANARY }),
+            state: "active".to_owned(),
+            webhook_path: Some("hook".to_owned()),
+            run_as: None,
+            created_at: Utc::now(),
+            created_by: vec![4],
+            version: 1,
+            deleted_at: None,
+        };
+
+        let debug = format!("{row:?}");
+        assert!(!debug.contains(CANARY));
+        assert!(debug.contains("[redacted]"));
+    }
 }
 
 /// Table: `trigger_events`

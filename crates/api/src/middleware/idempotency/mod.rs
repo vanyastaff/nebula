@@ -46,9 +46,17 @@
 //!
 //! ## What gets cached
 //!
-//! Only `2xx` and `4xx` responses. `5xx` responses are passed through
-//! uncached so transient backend failures do not pin a permanent error for
-//! the TTL window. Responses larger than
+//! Only explicitly allow-listed `POST` route templates participate. The
+//! default route set is empty; product composition opts in authenticated
+//! operations whose responses carry no one-time authority. Auth/session,
+//! PAT, service-account, webhook activation, and interactive credential
+//! routes are deliberately absent. Responses with `Set-Cookie` or
+//! `Cache-Control: no-store` are never buffered or stored even on an
+//! allow-listed route.
+//!
+//! Within that route set, only `2xx` and `4xx` responses are cached. `5xx`
+//! responses are passed through uncached so transient backend failures do not
+//! pin a permanent error for the TTL window. Responses larger than
 //! [`IdempotencyConfig::max_response_body_bytes`] are passed through
 //! uncached as well.
 //!
@@ -119,6 +127,31 @@ pub const DEFAULT_MAX_BODY_BYTES: usize = 1024 * 1024;
 /// Picked to align with common gateway header limits and the draft RFC's
 /// "opaque token, ≤ 255 octets" guidance.
 pub const MAX_KEY_LEN: usize = 255;
+
+/// Matched POST route templates whose responses are approved for durable
+/// idempotent replay by the first-party API composition.
+///
+/// This is an allow-list, not an inventory. Any route absent here passes
+/// through normally even when a client supplies `Idempotency-Key`. New routes
+/// therefore default to non-replay until their response authority and retry
+/// semantics receive explicit review.
+pub(crate) const REPLAY_SAFE_POST_ROUTES: &[&str] = &[
+    "/api/v1/orgs/{org}/members",
+    "/api/v1/orgs/{org}/workspaces/{ws}/resources",
+    "/api/v1/orgs/{org}/workspaces/{ws}/credentials",
+    "/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/test",
+    "/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/refresh",
+    "/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/revoke",
+    "/api/v1/orgs/{org}/workspaces/{ws}/workflows",
+    "/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/activate",
+    "/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/execute",
+    "/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/validate",
+    "/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/executions",
+    "/api/v1/orgs/{org}/workspaces/{ws}/executions/{exec}/terminate",
+    "/api/v1/orgs/{org}/workspaces/{ws}/executions/{exec}/restart",
+    "/api/v1/_test/echo",
+    "/api/v1/_test/fail",
+];
 
 // ── Configuration ────────────────────────────────────────────────────────────
 

@@ -60,7 +60,8 @@ use crate::{
 /// `/api/v1/docs/` (self-hosted Swagger UI HTML) as a Tower service.
 pub fn create_routes(state: AppState, _config: &ApiConfig) -> (Router, OpenApi) {
     let api_router = build_openapi_router(&state);
-    let (router, openapi) = api_router.split_for_parts();
+    let (router, mut openapi) = api_router.split_for_parts();
+    crate::openapi::add_session_security(&mut openapi);
     crate::access::assert_tenant_access_coverage(&openapi)
         .expect("tenant routes must declare access permissions");
     let router = router.with_state(state);
@@ -73,10 +74,11 @@ fn build_openapi_router(state: &AppState) -> OpenApiRouter<AppState> {
     // Auth routes — not behind `auth_middleware` / `csrf_middleware`.
     //
     // signup / login / forgot-password / reset-password / verify-email /
-    // login-second-step / oauth-* never carry a pre-existing session
-    // cookie, so neither layer applies.
+    // login-second-step / oauth-* never authorize from a pre-existing session
+    // cookie; their explicit input or one-time challenge is the sole authority,
+    // so neither layer applies. Any ambient session cookie is ignored.
     //
-    // `logout` IS session-bearing (it revokes `nebula_session` when
+    // `logout` IS session-bearing (it revokes `__Host-nebula-session` when
     // present) but is intentionally kept CSRF-exempt: the worst a
     // CSRF attacker can achieve is forcing a logout, which is
     // annoying but not a confidentiality / integrity breach. Keeping
@@ -111,11 +113,16 @@ fn build_openapi_router(state: &AppState) -> OpenApiRouter<AppState> {
             auth_middleware,
         ));
 
-    // Catalog routes — auth required, no tenant scope.
-    let catalog_routes = catalog::routes::router().layer(middleware::from_fn_with_state(
-        state.clone(),
-        auth_middleware,
-    ));
+    // Catalog routes — auth required, no tenant scope. The catalog is
+    // read-only today, but carries the standard CSRF envelope so a future
+    // mutating operation cannot accidentally accept ambient session authority
+    // without the matching double-submit proof.
+    let catalog_routes = catalog::routes::router()
+        .layer(middleware::from_fn(csrf_middleware))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ));
 
     // Tenant-scoped routes — auth + tenancy + RBAC + CSRF.
     let tenant_routes = OpenApiRouter::new()

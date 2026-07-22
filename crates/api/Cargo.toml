@@ -165,7 +165,13 @@ insta = { workspace = true }
 mockall = { workspace = true }
 pretty_assertions = { workspace = true }
 rstest = { workspace = true }
+static_assertions = { workspace = true }
 wiremock = { workspace = true }
+# Private OAuth egress policy tests generate an ephemeral CA/leaf pair and
+# terminate TLS locally. They exercise the production rustls client policy;
+# no certificate-verification bypass is compiled.
+rcgen = { workspace = true }
+tokio-rustls = { workspace = true }
 # Dev-only: `tests/wiremock_smoke.rs` — HTTP client + mock server (no full `App` required).
 reqwest = { workspace = true, default-features = false, features = ["json", "rustls"] }
 serde_json = { workspace = true }

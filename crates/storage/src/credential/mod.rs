@@ -35,7 +35,7 @@ pub mod sqlite;
 #[cfg(feature = "postgres")]
 pub mod postgres;
 
-pub use key_provider::{EnvKeyProvider, FileKeyProvider, KeyProvider, ProviderError};
+pub use key_provider::{EnvKeyProvider, FileKeyProvider, KeyProvider, KeySnapshot, ProviderError};
 pub use layer::{
     AuditEvent, AuditLayer, AuditOperation, AuditResult, AuditSink, CacheConfig, CacheLayer,
     CacheStats, EncryptionLayer,

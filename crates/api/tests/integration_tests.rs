@@ -1846,6 +1846,49 @@ async fn cors_preflight_allows_authorization() {
     );
 }
 
+/// Browser session mutations must be able to send the double-submit header
+/// from every origin admitted by the deployment's CORS policy.
+#[tokio::test]
+async fn cors_preflight_allows_session_csrf_header() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use nebula_api::domain::auth::backend::CSRF_HEADER;
+    use tower::ServiceExt;
+
+    let state = create_test_state().await;
+    let api_config = ApiConfig::for_test();
+    let app = app::build_app(state, &api_config);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("OPTIONS")
+                .uri(ws_path("/workflows"))
+                .header("origin", "https://app.example")
+                .header("access-control-request-method", "POST")
+                .header("access-control-request-headers", CSRF_HEADER)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let allow_headers = response
+        .headers()
+        .get("access-control-allow-headers")
+        .expect("preflight response must include Access-Control-Allow-Headers")
+        .to_str()
+        .unwrap()
+        .to_ascii_lowercase();
+    assert!(
+        allow_headers.contains(CSRF_HEADER),
+        "{CSRF_HEADER} must appear in allow-headers, got: {allow_headers}"
+    );
+}
+
 #[tokio::test]
 async fn workflow_definition_payload_must_be_object() {
     use axum::{

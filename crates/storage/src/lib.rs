@@ -60,6 +60,8 @@ pub mod credential;
 mod error;
 /// Serialization format abstraction (JSON / MessagePack).
 pub mod format;
+/// Plane-A identity-secret envelopes and rotation-aware decryption.
+pub mod identity_secret;
 /// In-memory adapter implementing the `nebula-storage-port` contract.
 pub mod inmem;
 /// Row-to-domain type conversion utilities.
@@ -92,6 +94,8 @@ pub mod postgres;
 pub mod repos;
 /// Database row types.
 pub mod rows;
+/// Domain-separated lookup digests for opaque browser-session tokens.
+pub mod session_token;
 /// SQLite adapter implementing the `nebula-storage-port` contract
 /// (dev / edge single-writer; spec §5 SQLite parity boundary).
 #[cfg(feature = "sqlite")]

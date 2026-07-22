@@ -5,5 +5,5 @@
 //! signature policy, replay-window enforcement, and the dispatch pipeline.
 
 pub mod credential;
-pub mod oauth;
+pub(crate) mod oauth;
 pub mod webhook;

@@ -24,6 +24,8 @@
 //! - `signing_secret` is returned exactly once; never logged, never in metrics.
 //! - Handler build is refused when the built policy is `OptionalAcceptUnsigned`.
 //! - Ownership is validated under `scope` BEFORE any credential is minted.
+//! - The selected trusted factory validates `provider_config` before the first
+//!   credential, trigger, or activation write; factory defaults are closed.
 
 use std::sync::Arc;
 
@@ -73,7 +75,7 @@ use crate::{
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Workflow or trigger_id not found in this scope.", body = ProblemDetails),
-        (status = 422, description = "The factory refused to build a compliant handler (policy not `Required`).", body = ProblemDetails),
+        (status = 422, description = "Provider configuration is semantically invalid, contains inline authority, or produced a handler whose policy is not `Required`.", body = ProblemDetails),
         (status = 503, description = "Webhook transport, trigger store, credential service, or secret resolver not configured.", body = ProblemDetails),
     ),
 )]
@@ -103,6 +105,8 @@ pub async fn register_webhook(
             errors: vec![],
         });
     }
+    body.validate_provider_config_shape()
+        .map_err(|detail| ApiError::Unprocessable(detail.to_owned()))?;
 
     // ── Step 1: scope — server-derived, NEVER from request ──────────────────
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
@@ -124,6 +128,15 @@ pub async fn register_webhook(
     let action_registry = state.action_registry.as_ref().ok_or_else(|| {
         ApiError::ServiceUnavailable("action registry not configured".to_string())
     })?;
+    let factory = action_registry
+        .lookup_webhook_factory(&body.provider)
+        .ok_or_else(|| ApiError::Validation {
+            detail: format!("unknown webhook provider {:?}", body.provider),
+            errors: vec![],
+        })?;
+    factory
+        .validate_provider_config(body.provider_config.as_ref())
+        .map_err(|error| map_factory_error(&body.provider, error))?;
     let secret_resolver = state.webhook_secret_resolver.as_ref().ok_or_else(|| {
         ApiError::ServiceUnavailable("webhook secret resolver not configured".to_string())
     })?;
@@ -313,14 +326,6 @@ pub async fn register_webhook(
                 ApiError::Internal(format!("secret resolver failed: {e}"))
             })?;
 
-        // Look up the factory and build the handler.
-        let factory = action_registry
-            .lookup_webhook_factory(&body.provider)
-            .ok_or_else(|| ApiError::Validation {
-                detail: format!("unknown webhook provider {:?}", body.provider),
-                errors: vec![],
-            })?;
-
         use nebula_action::webhook::factory::WebhookActivationSpec as ActionSpec;
         let mut action_spec = ActionSpec::new(body.provider.clone(), raw_bytes);
         if let Some(secs) = body.replay_window_secs {
@@ -336,50 +341,9 @@ pub async fn register_webhook(
             action_spec = action_spec.with_rate_limit_per_minute(rpm);
         }
 
-        // P2: map FactoryError variants to the correct HTTP status.
-        // - InvalidSpec → 422 (semantically-invalid caller input, same tier as
-        //   the OptionalAcceptUnsigned gate just below).
-        // - UnknownKind → 400 (the provider string is not registered).
-        // - SecretResolution + catch-all → 500 (genuine server fault).
-        let built = factory.build(&action_spec).map_err(|e| {
-            use nebula_action::webhook::factory::FactoryError;
-            match e {
-                FactoryError::InvalidSpec { kind, ref reason } => {
-                    tracing::warn!(
-                        target: "nebula::api::webhook::register",
-                        provider = %body.provider,
-                        kind = %kind,
-                        reason = %reason,
-                        "factory rejected spec (invalid input)"
-                    );
-                    ApiError::Unprocessable(format!(
-                        "invalid webhook spec for provider {kind:?}: {reason}"
-                    ))
-                },
-                FactoryError::UnknownKind(ref kind) => {
-                    tracing::warn!(
-                        target: "nebula::api::webhook::register",
-                        provider = %body.provider,
-                        kind = %kind,
-                        "factory build failed — unknown provider kind"
-                    );
-                    ApiError::Validation {
-                        detail: format!("unknown webhook provider {kind:?}"),
-                        errors: vec![],
-                    }
-                },
-                // SecretResolution and any future variants are server faults.
-                _ => {
-                    tracing::error!(
-                        target: "nebula::api::webhook::register",
-                        error = %e,
-                        provider = %body.provider,
-                        "factory build failed (server fault)"
-                    );
-                    ApiError::Internal(format!("factory build failed for {:?}: {e}", body.provider))
-                },
-            }
-        })?;
+        let built = factory
+            .build(&action_spec)
+            .map_err(|error| map_factory_error(&body.provider, error))?;
 
         // Security gate: refuse `OptionalAcceptUnsigned` — the Prod producer
         // MUST result in a Required policy.  Any factory that produces
@@ -483,6 +447,51 @@ pub async fn register_webhook(
             activation_id,
         }),
     ))
+}
+
+fn map_factory_error(
+    provider: &str,
+    error: nebula_action::webhook::factory::FactoryError,
+) -> ApiError {
+    use nebula_action::webhook::factory::FactoryError;
+
+    match error {
+        FactoryError::InvalidSpec { kind, reason } => {
+            tracing::warn!(
+                target: "nebula::api::webhook::register",
+                provider = %provider,
+                kind = %kind,
+                reason = %reason,
+                "factory rejected spec (invalid input)"
+            );
+            ApiError::Unprocessable(format!(
+                "invalid webhook spec for provider {kind:?}: {reason}"
+            ))
+        },
+        FactoryError::UnknownKind(kind) => {
+            tracing::warn!(
+                target: "nebula::api::webhook::register",
+                provider = %provider,
+                kind = %kind,
+                "factory rejected unknown provider kind"
+            );
+            ApiError::Validation {
+                detail: format!("unknown webhook provider {kind:?}"),
+                errors: vec![],
+            }
+        },
+        // Future variants are server faults. Do not format an opaque error:
+        // a downstream factory must not be able to reflect provider payloads
+        // into either the public problem body or platform logs.
+        _ => {
+            tracing::error!(
+                target: "nebula::api::webhook::register",
+                provider = %provider,
+                "factory failed (server fault)"
+            );
+            ApiError::Internal("webhook factory failed".to_owned())
+        },
+    }
 }
 
 // ── Compensation helpers ──────────────────────────────────────────────────────

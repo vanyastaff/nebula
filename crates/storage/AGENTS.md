@@ -26,6 +26,11 @@
 - `src/inmem/` — in-memory port adapters (tests / single-process / loom probe).
 - `src/sqlite/` · `src/postgres/` — feature-gated port adapters over the port-scoped schema (Postgres uses real tx + `FOR UPDATE SKIP LOCKED`).
 - `src/repos/` — residual non-port traits with live consumers (`ControlQueueRepo`, `IdempotencyStoreRepo`, `WebhookActivationRepo`, identity glue).
+- `src/pg/oauth_login.rs` + `src/repos/oauth_login.rs` — storage-owned Plane-A
+  OAuth finalization: every call performs no network I/O and atomically records
+  either user/stable-link/session or an MFA challenge-without-session outcome.
+  A subject-only call may roll back as `VerifiedEmailRequired` before optional
+  verified-email egress; the later finalizer call rechecks all races.
 - `src/credential/refresh_claim/` — ADR-0041 CAS refresh-claim repo (`try_claim`/`heartbeat`/`release`/`reclaim_stuck`); in_memory + sqlite + postgres.
 - `src/credential/layer/` — encryption / audit / cache decorators around credential persistence.
 
@@ -33,6 +38,23 @@
 - `ExecutionStore::commit` is the single source of truth: CAS on `version` + lease `FencingToken` gating; if persistence is unavailable it FAILS — never silently mutate in-memory state.
 - Outbox atomicity (§12.2): control-queue writes share the SAME `TransitionBatch` as the state transition. Never transition without enqueueing, or enqueue without transitioning.
 - `try_claim` must be atomic under contention (exactly one winner of N replicas); `heartbeat` must validate `ClaimToken.generation` so a stale holder can't extend a reclaimed claim.
+- Plane-A OAuth completion has separate boundaries: atomic state consume,
+  provider egress, then a short storage-owned finalizer. An existing
+  `(provider, subject)` link is authoritative and same-subject races converge.
+  An email collision without that link is the deliberate
+  `AccountLinkRequired` outcome: roll back, create no session, and never
+  auto-link. For an MFA-enabled linked user, challenge + MFA-required outcome
+  commit atomically with no session. Never perform provider network I/O while a
+  finalizer transaction holds locks.
+- Plane-A OAuth-state admission is hard-capped at 10,000 live rows per shared
+  PostgreSQL deployment. Capacity check and insert must share one serialization
+  point; full or contended admission fails closed, writes no state, and maps to
+  HTTP 429. Do not replace it with an approximate count-then-insert sequence.
+- Pending MFA enrollment is separate from the active user factor. Starting an
+  enrollment may replace only the expiring candidate; installing a verified
+  candidate must consume the exact live candidate and update the active secret
+  in one transaction. Replays, replacements, expiry, and concurrent losers do
+  not modify active MFA state.
 - This crate is NOT the state machine (`nebula-execution`), orchestrator (`nebula-engine`), or tenant-scope enforcer (`nebula-tenancy` decorators wrap these adapters). Do NOT re-add the deleted legacy `ExecutionRepo`/`WorkflowRepo` surface (ADR-0072).
 - Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
 - Library code uses typed `thiserror`/`StorageError`; no panicking unwrap/expect/panic in lib code.

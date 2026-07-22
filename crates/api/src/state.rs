@@ -1210,7 +1210,7 @@ impl AppState {
 
     /// Set the publicly-reachable base URL for this Nebula instance.
     /// Required for Plane-A OAuth `redirect_uri` derivation per
-    /// ADR-0085 D-3 (recon-4). Composition roots call this with
+    /// ADR-0085 D-3. Composition roots call this with
     /// `ApiConfig::public_url`. Tests can pass any absolute URL.
     #[must_use = "builder methods must be chained or built"]
     pub fn with_public_url(mut self, public_url: impl Into<Arc<str>>) -> Self {

@@ -18,13 +18,16 @@ use common::{
     ws_path,
 };
 use nebula_api::{
-    ApiConfig, AppState, app, domain::org::InMemoryMembershipStore, state::MembershipStore,
+    ApiConfig, AppState, app,
+    domain::{auth::backend::InMemoryAuthBackend, org::InMemoryMembershipStore},
+    state::MembershipStore,
 };
 use nebula_core::{OrgRole, Principal, UserId};
 use tower::ServiceExt;
 
 const CREDENTIAL_ID: &str = "cred_00000000000000000000000001";
 const OAUTH_SECRET_CANARY: &str = "oauth-client-secret-NEVER-ECHO-7f3c9a";
+const VALID_OAUTH_STATE: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
 async fn state_with_real_credential_rbac() -> (AppState, String) {
     let (state, _queue) = create_state_with_queue().await;
@@ -141,19 +144,27 @@ async fn former_credential_oauth_operations_are_exact_404_after_real_auth_and_rb
 }
 
 #[tokio::test]
-async fn plane_a_oauth_routes_remain_mounted_and_report_missing_backend_as_503() {
+async fn plane_a_oauth_routes_remain_mounted_and_fail_closed_without_composition_or_binding() {
     let (state, _queue) = create_state_with_queue().await;
     let config = ApiConfig::for_test();
+    let state = state.with_public_url(config.public_url.clone());
 
-    for uri in [
-        "/api/v1/auth/oauth/github",
-        "/api/v1/auth/oauth/github/callback?state=unused&code=unused",
+    for (uri, expected) in [
+        (
+            "/api/v1/auth/oauth/github".to_owned(),
+            StatusCode::SERVICE_UNAVAILABLE,
+        ),
+        (
+            format!("/api/v1/auth/oauth/github/callback?state={VALID_OAUTH_STATE}&code=unused"),
+            StatusCode::UNAUTHORIZED,
+        ),
     ] {
         let response = app::build_app(state.clone(), &config)
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
-                    .uri(uri)
+                    .uri(&uri)
+                    .header("host", "127.0.0.1:0")
                     .body(Body::empty())
                     .expect("Plane-A OAuth request"),
             )
@@ -161,9 +172,119 @@ async fn plane_a_oauth_routes_remain_mounted_and_report_missing_backend_as_503()
             .expect("Plane-A OAuth response");
         assert_eq!(
             response.status(),
-            StatusCode::SERVICE_UNAVAILABLE,
-            "{uri} must remain mounted and auth/CSRF-exempt; an AppState without AuthBackend reports honest 503"
+            expected,
+            "{uri} must remain mounted and auth/CSRF-exempt; start reports missing composition as 503 while a callback without its browser binding fails before backend dispatch as 401"
         );
+        assert_eq!(
+            response
+                .headers()
+                .get("cache-control")
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store"),
+            "{uri} must never be cached, including problem responses"
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("pragma")
+                .and_then(|value| value.to_str().ok()),
+            Some("no-cache"),
+            "{uri} must carry the legacy no-cache directive"
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("referrer-policy")
+                .and_then(|value| value.to_str().ok()),
+            Some("no-referrer"),
+            "{uri} must not refer callback material to another origin"
+        );
+    }
+}
+
+#[tokio::test]
+async fn malformed_identity_oauth_callback_is_rejected_before_backend_dispatch() {
+    let config = ApiConfig::for_test();
+    let state = AppState::in_memory(config.jwt_secret.clone())
+        .with_auth_backend(InMemoryAuthBackend::new().into_arc())
+        .with_public_url(config.public_url.clone());
+
+    for (label, query) in [
+        ("short state", "state=too-short&code=visible-code"),
+        (
+            "empty code",
+            concat!(
+                "state=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "&code="
+            ),
+        ),
+    ] {
+        let response = app::build_app(state.clone(), &config)
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/auth/oauth/github/callback?{query}"))
+                    .body(Body::empty())
+                    .expect("malformed Plane-A OAuth callback request"),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{label} callback response failed: {error}"));
+
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "{label} must fail at the transport boundary; this backend would otherwise report OAuth disabled as 503"
+        );
+    }
+}
+
+#[tokio::test]
+async fn oauth_callback_query_rejections_are_fixed_problem_details_without_cookie_clear() {
+    const QUERY_CANARY: &str = "DUPLICATE_QUERY_CANARY_DO_NOT_ECHO";
+    let config = ApiConfig::for_test();
+    let state = AppState::in_memory(config.jwt_secret.clone())
+        .with_auth_backend(InMemoryAuthBackend::new().into_arc())
+        .with_public_url(config.public_url.clone());
+
+    for (label, query) in [
+        (
+            "duplicate field",
+            format!("state={VALID_OAUTH_STATE}&state={QUERY_CANARY}&code=visible-code"),
+        ),
+        (
+            "invalid UTF-8 escape",
+            "state=%FF&code=visible-code".to_owned(),
+        ),
+    ] {
+        let response = app::build_app(state.clone(), &config)
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/auth/oauth/github/callback?{query}"))
+                    .body(Body::empty())
+                    .expect("malformed OAuth query request"),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{label} response failed: {error}"));
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{label}");
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok()),
+            Some("application/problem+json")
+        );
+        assert!(
+            response
+                .headers()
+                .get_all("set-cookie")
+                .iter()
+                .next()
+                .is_none(),
+            "query rejection happens before browser binding and must not clear a transaction cookie"
+        );
+        let body = response_body(response).await;
+        assert!(!body.contains(QUERY_CANARY));
+        assert!(!body.contains("duplicate field"));
+        assert!(!body.contains("invalid utf-8"));
     }
 }
 

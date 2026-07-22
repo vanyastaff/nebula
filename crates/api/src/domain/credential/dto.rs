@@ -13,6 +13,26 @@ use std::{collections::HashMap, fmt};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
+fn write_only_object_schema() -> utoipa::openapi::schema::Object {
+    utoipa::openapi::schema::ObjectBuilder::new()
+        .schema_type(utoipa::openapi::schema::Type::Object)
+        .write_only(Some(true))
+        .description(Some(
+            "Sensitive caller-supplied credential material; accepted only as input.",
+        ))
+        .build()
+}
+
+fn read_only_object_schema() -> utoipa::openapi::schema::Object {
+    utoipa::openapi::schema::ObjectBuilder::new()
+        .schema_type(utoipa::openapi::schema::Type::Object)
+        .read_only(Some(true))
+        .description(Some(
+            "Server-generated, short-lived interaction authority; returned only as output.",
+        ))
+        .build()
+}
+
 // --- Capabilities ---
 
 /// Capability flags for a credential type.
@@ -41,6 +61,7 @@ pub struct CreateCredentialRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// Type-specific input data matching the credential's schema.
+    #[schema(schema_with = write_only_object_schema)]
     pub data: serde_json::Value,
     /// Optional user-defined tags.
     #[serde(default)]
@@ -71,6 +92,7 @@ pub struct UpdateCredentialRequest {
     pub description: Option<String>,
     /// Updated type-specific data.
     #[serde(default)]
+    #[schema(schema_with = write_only_object_schema)]
     pub data: Option<serde_json::Value>,
     /// Updated tags (replaces all tags if provided).
     #[serde(default)]
@@ -190,6 +212,7 @@ pub struct ResolveCredentialRequest {
     /// Credential type key to resolve.
     pub credential_key: String,
     /// Type-specific form field values matching the credential's input schema.
+    #[schema(schema_with = write_only_object_schema)]
     pub data: serde_json::Value,
 }
 
@@ -211,6 +234,7 @@ pub struct FormPostField {
     pub name: String,
     /// Sensitive form value sent to the provider. This may contain a SAML
     /// assertion, RelayState, authorization response, or other bearer material.
+    #[schema(read_only = true)]
     pub value: String,
 }
 
@@ -223,12 +247,14 @@ pub enum AcquisitionInteraction {
     Redirect {
         /// Sensitive, short-lived redirect URL; query parameters may contain
         /// anti-CSRF state or other bearer-adjacent protocol data.
+        #[schema(format = "uri", read_only = true)]
         url: String,
     },
     /// Client must auto-submit a POST form to the IdP (e.g. SAML POST binding).
     FormPost {
         /// IdP endpoint URL. Treat the complete interaction as sensitive
         /// transit data together with its form fields.
+        #[schema(format = "uri", read_only = true)]
         url: String,
         /// Form fields to submit.
         fields: Vec<FormPostField>,
@@ -241,6 +267,7 @@ pub enum AcquisitionInteraction {
         message: String,
         /// Sensitive structured display payload (e.g. a device `UserCode`
         /// with its verification URI, or protocol instructions).
+        #[schema(schema_with = read_only_object_schema)]
         data: serde_json::Value,
         /// Seconds until this information expires.
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -282,6 +309,7 @@ pub enum ResolveCredentialResponse {
     Pending {
         /// Sensitive opaque bearer token used to continue the acquisition
         /// flow. It is short-lived and must not be logged or casually persisted.
+        #[schema(format = "password", read_only = true)]
         pending_token: String,
         /// Interaction the client must perform next.
         interaction: AcquisitionInteraction,
@@ -319,10 +347,12 @@ pub struct ContinueResolveRequest {
     /// Credential type key the pending acquisition was started for.
     pub credential_key: String,
     /// Token from a previous `Pending` response.
+    #[schema(format = "password", write_only = true)]
     pub pending_token: String,
     /// Typed continuation payload — the serialized `UserInput` shape:
     /// `"Poll"`, `{"Code":{"code":".."}}`, `{"Callback":{"params":{..}}}`,
     /// or `{"FormData":{"params":{..}}}`.
+    #[schema(schema_with = write_only_object_schema)]
     pub user_input: serde_json::Value,
 }
 

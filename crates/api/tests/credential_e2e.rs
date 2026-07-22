@@ -32,7 +32,7 @@ use std::{
 
 use axum::{
     body::Body,
-    http::{Request, StatusCode},
+    http::{Request, StatusCode, header},
 };
 use common::{
     TEST_CSRF_COOKIE, TEST_CSRF_TOKEN, create_state_with_queue, create_test_jwt, ws_path,
@@ -689,6 +689,13 @@ async fn credential_lifecycle_and_acquisition_answer_through_the_facade() {
         "resolve must reach the handler and complete for a static type — \
          NOT a pre-handler 404 (the tenancy route-shadow this guards against)"
     );
+    assert_eq!(
+        resp.headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("no-store"),
+        "resolve is preclassified as an authority response because an interactive composition can return a pending bearer token"
+    );
     let resolved = body_string(resp).await;
     assert!(
         !resolved.contains(SECRET_TOKEN),
@@ -725,6 +732,13 @@ async fn credential_lifecycle_and_acquisition_answer_through_the_facade() {
         StatusCode::BAD_REQUEST,
         "continue on a non-interactive type must fail the capability gate \
          with 400 — and must reach the handler, not 404 in tenancy"
+    );
+    assert_eq!(
+        resp.headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("no-store"),
+        "continue is preclassified as an authority response for pending-token rotation"
     );
     let problem = body_string(resp).await;
     assert!(
