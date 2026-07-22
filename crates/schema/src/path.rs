@@ -151,6 +151,33 @@ impl FieldPath {
         self.0.len() >= prefix.0.len() && self.0[..prefix.0.len()] == prefix.0[..]
     }
 
+    /// Render this structural path as an RFC 6901 JSON Pointer.
+    ///
+    /// The root is the empty pointer, object keys are escaped per RFC 6901,
+    /// and list indices become decimal path segments. This is the canonical
+    /// representation for HTTP validation errors; [`Display`](fmt::Display)
+    /// remains the human-oriented dotted notation.
+    #[must_use]
+    pub fn to_json_pointer(&self) -> String {
+        let mut pointer = String::new();
+        for segment in &self.0 {
+            pointer.push('/');
+            match segment {
+                PathSegment::Key(key) => {
+                    for character in key.as_str().chars() {
+                        match character {
+                            '~' => pointer.push_str("~0"),
+                            '/' => pointer.push_str("~1"),
+                            _ => pointer.push(character),
+                        }
+                    }
+                },
+                PathSegment::Index(index) => pointer.push_str(&index.to_string()),
+            }
+        }
+        pointer
+    }
+
     fn err(value: &str, msg: &'static str) -> ValidationError {
         ValidationError::builder("invalid_path")
             .at(Self::root())
@@ -257,6 +284,13 @@ mod tests {
         assert_eq!(b.to_string(), "user.email");
         let c = b.join(PathSegment::Index(0));
         assert_eq!(c.to_string(), "user.email[0]");
+    }
+
+    #[test]
+    fn renders_rfc_6901_json_pointer() {
+        assert_eq!(FieldPath::root().to_json_pointer(), "");
+        let path = FieldPath::parse("users[2].api_key").unwrap();
+        assert_eq!(path.to_json_pointer(), "/users/2/api_key");
     }
 
     #[test]

@@ -9,7 +9,7 @@
 //! created_at, last_accessed, rotation counter, etc. It is the **domain**
 //! representation.
 //!
-//! `StoredCredential` is the **persisted row** the `CredentialStore` durable
+//! `StoredCredential` is the **persisted row** the `CredentialPersistence` durable
 //! backends (SQLite / Postgres) read and write. They are intentionally distinct
 //! (domain operational view vs persistence row) and may diverge as the storage
 //! schema evolves.

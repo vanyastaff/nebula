@@ -28,7 +28,7 @@ use crate::{
     Refreshable, Revocable, Testable,
 };
 
-use super::error::CredentialServiceError;
+use super::error::{CredentialServiceError, CredentialValidationIssue, CredentialValidationReport};
 
 /// Registration-time failure for the operation-dispatch table
 /// ([`DispatchOps`]). Relocated here when the parallel `CredentialDispatch`
@@ -589,11 +589,10 @@ where
                         // interactive kickoff or retry is not a stored
                         // credential. Interactive acquisition is a
                         // distinct operation.
-                        Err(CredentialServiceError::ValidationFailed {
-                            reason: "credential requires interactive acquisition; not creatable \
-                                     via the synchronous create path"
-                                .to_owned(),
-                        })
+                        Err(CredentialServiceError::validation(
+                            "",
+                            "credential.interactive_required",
+                        ))
                     },
                 }
             }) as ResolveFuture<'_>
@@ -621,18 +620,26 @@ where
         // schema validation but is refused by the typed deserialize below
         // (credential secrecy defense-in-depth #2).
         let schema = nebula_schema::schema_of::<C::Properties>();
-        let values = schema.values_from_wire(props.clone()).map_err(|e| {
-            CredentialServiceError::ValidationFailed {
-                reason: format!("[{}] {}", e.code, e.path),
-            }
+        let values = schema.values_from_wire(props.clone()).map_err(|error| {
+            CredentialServiceError::validation(
+                error.path.to_json_pointer(),
+                error.code.into_owned(),
+            )
         })?;
         let valid = schema.validate(&values).map_err(|report| {
+            let mut issues = report.errors().map(|error| {
+                CredentialValidationIssue::new(
+                    error.path.to_json_pointer(),
+                    error.code.as_ref().to_owned(),
+                )
+            });
+            let Some(first) = issues.next() else {
+                return CredentialServiceError::Internal(
+                    "schema validation returned an empty error report".to_owned(),
+                );
+            };
             CredentialServiceError::ValidationFailed {
-                reason: report
-                    .errors()
-                    .map(|e| format!("[{}] {}", e.code, e.path))
-                    .collect::<Vec<_>>()
-                    .join("; "),
+                report: CredentialValidationReport::from_issues(first, issues.collect()),
             }
         })?;
         // Deserialize the CANONICALIZED output — read-aliases already folded onto
@@ -649,11 +656,7 @@ where
             // The deserialize error text can echo the offending field value
             // (a secret); deliberately omitted — only the policy reason
             // is surfaced.
-            CredentialServiceError::ValidationFailed {
-                reason: "property payload rejected by typed schema (expression-bearing or \
-                         malformed credential properties are not accepted)"
-                    .to_owned(),
-            }
+            CredentialServiceError::validation("", "credential.properties_malformed")
         })?;
         Ok(())
     });
@@ -665,8 +668,11 @@ where
         // resolves through the same envelope `validate` / `resolve` consume.
         nebula_schema::schema_of::<C::Properties>()
             .values_from_wire(props.clone())
-            .map_err(|e| CredentialServiceError::ValidationFailed {
-                reason: format!("property ingest failed: [{}] {}", e.code, e.path),
+            .map_err(|error| {
+                CredentialServiceError::validation(
+                    error.path.to_json_pointer(),
+                    error.code.into_owned(),
+                )
             })
     });
 
@@ -778,8 +784,8 @@ fn executor_error_to_service_error(e: crate::runtime::ExecutorError) -> Credenti
         ExecutorError::PendingStore(PendingStoreError::Backend(src)) => {
             CredentialServiceError::Store(format!("pending store backend error: {src}"))
         },
-        ExecutorError::PendingStore(PendingStoreError::ValidationFailed { reason }) => {
-            CredentialServiceError::ValidationFailed { reason }
+        ExecutorError::PendingStore(PendingStoreError::ValidationFailed { .. }) => {
+            CredentialServiceError::validation("", "credential.pending_invalid")
         },
         ExecutorError::PendingStore(
             PendingStoreError::NotFound
@@ -812,9 +818,7 @@ fn credential_error_to_service_error(e: crate::CredentialError) -> CredentialSer
     }
     match e.category() {
         ErrorCategory::Validation | ErrorCategory::NotFound => {
-            CredentialServiceError::ValidationFailed {
-                reason: e.to_string(),
-            }
+            CredentialServiceError::validation("", "credential.invalid")
         },
         ErrorCategory::External => CredentialServiceError::Provider(e.to_string()),
         _ => CredentialServiceError::Internal(e.to_string()),

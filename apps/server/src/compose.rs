@@ -19,10 +19,13 @@ use nebula_api::{
     middleware::{IdempotencyStore, InMemoryIdempotencyStore},
     ports::email::{EchoSink, EmailPort},
 };
+use nebula_credential::{CredentialController, CredentialTenantAuthority};
 use nebula_metrics::{MetricsRegistry, OtlpInitError};
 use nebula_storage::credential::KeyProvider;
 
 use crate::{
+    credential_composition::{compose_first_party_runtime, resolve_first_party_key_provider},
+    credential_runtime::{ServerCredentialAuthority, ServerCredentialGateway},
     email::{SmtpEmailPort, SmtpEmailPortBuildError},
     transport::ServerTransport,
 };
@@ -125,20 +128,13 @@ pub(crate) enum TransportInitError {
         /// What is missing for that backend to work.
         requirement: &'static str,
     },
-    /// The credential-schema port could not be built (ADR-0052 P4 —
-    /// first-party credential registration failed; a composition bug).
-    /// Carried as a `String` so this crate needs no `nebula-credential`
-    /// dependency (the typed `RegisterError` stays inside `nebula-api`).
-    #[error("credential-schema port init failed: {0}")]
-    CredentialSchemaInit(String),
     /// The `CredentialService` facade could not be composed (registry
     /// registration, encryption key provider init, dispatch-ops
     /// registration, or the final secure-store build failed). Most common
     /// in production: `NEBULA_CRED_MASTER_KEY` is unset or malformed —
     /// fail closed rather than boot with a weak/absent key. Carried as a
-    /// `String` so this crate needs no credential dependency (the typed
-    /// `CredentialServiceFactoryError` stays inside `nebula-api`), mirroring
-    /// [`Self::CredentialSchemaInit`].
+    /// `String` to keep the process-level startup error stable while the
+    /// detailed composition error remains apps-owned.
     #[error("credential service init failed: {0}")]
     CredentialServiceInit(String),
     /// An OAuth identity-provider config entry failed boot-time
@@ -550,31 +546,36 @@ impl ServerRuntime {
         // (per ADR-0048).
         let idempotency_store = build_idempotency_store(&api_config).await?;
         state = state.with_idempotency_store(idempotency_store);
-        // Compose the production `CredentialService` facade inside the async
-        // context: the secure-store build spawns the lease-lifecycle reaper,
-        // which requires the tokio runtime (so this cannot live in the sync
-        // `default_state`). The factory lives in `nebula-api` (which already
-        // deps the credential crates + `tokio-util`) so this composition root
-        // stays credential-dependency-free; it mints its own process shutdown
-        // `CancellationToken` internally (no `tokio-util` dep here). Fails
-        // closed in production when `NEBULA_CRED_MASTER_KEY` is unset/malformed.
-        let key_provider =
-            nebula_api::ports::credential_service_factory::resolve_first_party_key_provider()
-                .map_err(|e| TransportInitError::CredentialServiceInit(e.to_string()))?;
-        let credential_service = nebula_api::ports::credential_service_factory::
-            try_default_credential_service_with_key_provider(Arc::clone(&key_provider))
-                .await
-                .map_err(|e| TransportInitError::CredentialServiceInit(e.to_string()))?;
-        // Install the webhook secret resolver before consuming `credential_service`
-        // into AppState — clone the Arc so both the state and the resolver share
-        // a single CredentialService instance (no second construction).
+        // Compose concrete credential adapters in the first-party app. The
+        // secure-store build spawns the lease reaper, so it must run inside
+        // this Tokio context. Key policy is shared with Plane-A identity.
+        let key_provider = resolve_first_party_key_provider()
+            .map_err(|error| TransportInitError::CredentialServiceInit(error.to_string()))?;
+        let credential_runtime = compose_first_party_runtime(Arc::clone(&key_provider))
+            .await
+            .map_err(|error| TransportInitError::CredentialServiceInit(error.to_string()))?;
+        let credential_service = credential_runtime.service;
+        // The webhook execution resolver and authenticated command controller
+        // share the same service instance. Only the resolver retains direct
+        // execution-plane access; AppState receives the API-owned gateway.
         let webhook_secret_resolver = Arc::new(
-            nebula_api::transport::webhook::CredentialBackedWebhookSecretResolver::new(Arc::clone(
-                &credential_service,
-            )),
+            crate::webhook_credential_resolver::CredentialBackedWebhookSecretResolver::new(
+                Arc::clone(&credential_service),
+            ),
         );
+        let credential_authority: Arc<dyn CredentialTenantAuthority> =
+            Arc::new(ServerCredentialAuthority::new(
+                state.membership_store.clone(),
+                state.workspace_resolver.clone(),
+            ));
+        let credential_controller = Arc::new(CredentialController::new(
+            Arc::clone(&credential_service),
+            credential_authority,
+        ));
+        let credential_gateway = Arc::new(ServerCredentialGateway::new(credential_controller));
         state = state
-            .with_credential_service(credential_service)
+            .with_credential_schema(credential_runtime.catalog)
+            .with_credential_gateway(credential_gateway)
             .with_webhook_secret_resolver(webhook_secret_resolver);
         // Build ONE shared `Arc<dyn EmailPort>` and pass the same Arc
         // to both `AppState::email_port` and the selected auth backend.
@@ -643,9 +644,8 @@ pub(crate) fn default_state(
     // NOTE: `membership_store` is intentionally LEFT UNWIRED (`None`) in
     // the default local-first composition.
     //
-    // Wiring a `MembershipStore` activates RBAC enforcement on every
-    // org/workspace route (the `is_some()` guard in
-    // `nebula_api::middleware::rbac`). With this default `AuthBackend`
+    // A `MembershipStore` is required by RBAC on every org/workspace route
+    // and by the credential command authority. With this default `AuthBackend`
     // empty (no users registered — `register_user` mints a *random*
     // `UserId`), no principal could authenticate as any auto-seeded
     // bootstrap owner, so a seeded store would deadlock EVERY
@@ -655,10 +655,9 @@ pub(crate) fn default_state(
     // be a hardcoded-credential / privileged-by-default surface (canon
     // §12.5) — both are strictly worse than honest degradation.
     //
-    // With `membership_store == None`: RBAC's `is_some()` guard stays
-    // inert (no spurious 404 — identical to every other route today),
-    // and the org member handlers' port-absent path returns an honest
-    // **503** (same posture as `me/*` when `auth_backend` is absent, and
+    // With `membership_store == None`, every tenant route fails closed with
+    // **503** before its handler; direct credential-gateway use also returns
+    // authority-unavailable. This matches `me/*` when `auth_backend` is absent and
     // as Postgres-for-durable-idempotency: the production path is
     // explicitly provisioned, never silently faked). An operator/
     // integrator provisions org membership by wiring a `MembershipStore`
@@ -671,16 +670,6 @@ pub(crate) fn default_state(
     // Process-local durability + this provisioning contract are
     // documented in `crates/api/README.md` ("Org membership durability")
     // and `nebula_api::domain::org` module docs (canon §11.6).
-
-    // ADR-0052 P4: wire the credential-schema port (first-party types
-    // registered) so the write path validates `data` before persist and
-    // the catalog exposes `json_schema()`. The concrete impl lives in
-    // `nebula-api` (deny.toml-allow-listed `nebula-credential` consumer),
-    // so this composition crate needs no `nebula-credential`/
-    // `nebula-schema` dep — just the api constructor.
-    let credential_schema =
-        nebula_api::ports::credential_schema_registry::try_default_registry_port()
-            .map_err(|e| TransportInitError::CredentialSchemaInit(e.to_string()))?;
 
     // Validate Plane-A OAuth providers at boot per ADR-0085
     // REQ-compose-001 Invariant 1. Empty providers map is
@@ -735,7 +724,6 @@ pub(crate) fn default_state(
         api_config.jwt_secret.clone(),
     )
     .with_api_keys(api_config.api_keys.clone())
-    .with_credential_schema(credential_schema)
     .with_metrics_registry(metrics_registry)
     // Public URL is required for Plane-A OAuth `redirect_uri`
     // derivation per ADR-0085 D-3. Boot-time validation above rejects

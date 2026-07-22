@@ -10,18 +10,21 @@
 //!
 //! # Contract
 //!
-//! `AuditLayer` wraps any [`crate::CredentialStore`] and delegates every
+//! `AuditLayer` wraps any [`crate::CredentialPersistence`] and delegates every
 //! operation to the inner store, emitting an [`AuditEvent`] to the pluggable
 //! [`AuditSink`] for each call. Only metadata flows through the sink —
 //! credential data never does.
 //!
-//! # Fail-closed invariant (no discard-and-log)
+//! # Error propagation and mutation boundary
 //!
-//! Audit is **in-line durable**: if [`AuditSink::record`] returns an error,
-//! the credential operation as a whole returns
-//! [`crate::StoreError::AuditFailure`]. There is no "log-and-continue" path.
+//! The storage decorator returns [`AuditSink::record`] errors instead of
+//! silently discarding them. The sink contract does not share a transaction
+//! with credential persistence: if recording fails after a successful
+//! mutation, that mutation remains committed and must not be compensated by
+//! the decorator. Atomic mutation-plus-audit persistence requires a
+//! backend-owned transaction or transactional outbox.
 
-use crate::StoreError;
+use crate::CredentialPersistenceError;
 
 /// Receives audit events for logging or persistence.
 ///
@@ -32,18 +35,20 @@ use crate::StoreError;
 ///
 /// - `record` must not block the calling task for extended periods.
 /// - Implementations must never inspect or log credential data.
-/// - Returning `Err(StoreError)` causes the wrapping `AuditLayer` to fail the
-///   whole credential operation with [`crate::StoreError::AuditFailure`]
-///   (fail-closed audit contract).
+/// - Returning `Err(CredentialPersistenceError)` causes the wrapping `AuditLayer` to return the
+///   error instead of silently succeeding. It does not roll back a mutation already committed by
+///   the wrapped persistence backend.
 pub trait AuditSink: Send + Sync {
     /// Record an audit event.
     ///
     /// # Errors
     ///
-    /// Return an error when the event cannot be durably persisted.
-    /// The wrapping `AuditLayer` will surface this as
-    /// [`crate::StoreError::AuditFailure`] — no silent discard.
-    fn record(&self, event: &AuditEvent) -> Result<(), StoreError>;
+    /// Return an error when the event cannot be accepted by this sink. The
+    /// sink's own contract determines whether acceptance means durable
+    /// persistence, an outbox append, or structured-log delivery.
+    /// The wrapping `AuditLayer` surfaces the error — no silent discard — but
+    /// cannot make the event atomic with an already-completed store mutation.
+    fn record(&self, event: &AuditEvent) -> Result<(), CredentialPersistenceError>;
 }
 
 /// A credential store operation recorded for audit purposes.
@@ -63,7 +68,7 @@ pub struct AuditEvent {
 
 /// Type of credential store operation.
 ///
-/// Variants without payloads describe `CredentialStore` operations
+/// Variants without payloads describe `CredentialPersistence` operations
 /// flowing through `AuditLayer`. Variants prefixed `RefreshCoord*`
 /// describe events emitted by the engine's two-tier refresh coordinator
 /// (sub-spec `docs/INTEGRATION_MODEL.md` (credential refresh coordinator)

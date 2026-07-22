@@ -6,9 +6,98 @@
 //! `internal` / `validation` / `external` (mirrors
 //! `crates/credential/src/error.rs`).
 
+use std::fmt;
+
 use thiserror::Error;
 
 use crate::ReauthReason;
+
+/// One secret-safe credential validation issue.
+///
+/// Only a structural JSON Pointer and a stable machine code cross the
+/// credential boundary. Validator messages, parameters, submitted values, and
+/// provider error text stay inside the bounded context because any of them may
+/// contain credential material.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CredentialValidationIssue {
+    path: String,
+    code: String,
+}
+
+impl CredentialValidationIssue {
+    pub(crate) fn new(path: impl Into<String>, code: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            code: code.into(),
+        }
+    }
+
+    /// RFC 6901 pointer to the rejected field; an empty string denotes the
+    /// document root.
+    #[must_use]
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// Stable machine-readable validation code.
+    #[must_use]
+    pub fn code(&self) -> &str {
+        &self.code
+    }
+}
+
+impl fmt::Debug for CredentialValidationIssue {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CredentialValidationIssue")
+            .field("path", &self.path)
+            .field("code", &self.code)
+            .finish()
+    }
+}
+
+/// Non-empty, secret-safe validation report.
+///
+/// Storing the first issue separately prevents an invalid "validation failed
+/// with no issues" state while preserving every field error for clients.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CredentialValidationReport {
+    first: CredentialValidationIssue,
+    related: Vec<CredentialValidationIssue>,
+}
+
+impl CredentialValidationReport {
+    pub(crate) fn single(path: impl Into<String>, code: impl Into<String>) -> Self {
+        Self {
+            first: CredentialValidationIssue::new(path, code),
+            related: Vec::new(),
+        }
+    }
+
+    pub(crate) fn from_issues(
+        first: CredentialValidationIssue,
+        related: Vec<CredentialValidationIssue>,
+    ) -> Self {
+        Self { first, related }
+    }
+
+    /// Primary issue; always present by construction.
+    #[must_use]
+    pub const fn primary(&self) -> &CredentialValidationIssue {
+        &self.first
+    }
+
+    /// Iterate over every issue in deterministic report order.
+    pub fn issues(&self) -> impl Iterator<Item = &CredentialValidationIssue> {
+        std::iter::once(&self.first).chain(self.related.iter())
+    }
+}
+
+impl fmt::Debug for CredentialValidationReport {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_list().entries(self.issues()).finish()
+    }
+}
 
 /// Failure modes of the credential management facade. The API layer maps
 /// each `category` to an HTTP status; `code` is the stable machine label.
@@ -37,10 +126,11 @@ pub enum CredentialServiceError {
 
     /// Property payload failed the credential type's schema validation.
     #[classify(category = "validation", code = "CREDENTIAL_SERVICE:VALIDATION_FAILED")]
-    #[error("credential property validation failed: {reason}")]
+    #[error("credential properties were rejected")]
     ValidationFailed {
-        /// Human-readable validation failure (never echoes secret values).
-        reason: String,
+        /// Non-empty structural report. It deliberately carries no validator
+        /// message, submitted value, or provider-controlled text.
+        report: CredentialValidationReport,
     },
 
     /// The requested lifecycle op needs a capability the type lacks.
@@ -199,6 +289,14 @@ pub enum CredentialServiceError {
     },
 }
 
+impl CredentialServiceError {
+    pub(crate) fn validation(path: impl Into<String>, code: impl Into<String>) -> Self {
+        Self::ValidationFailed {
+            report: CredentialValidationReport::single(path, code),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::CredentialServiceError;
@@ -244,9 +342,7 @@ mod tests {
         // retry layer does not re-POST a rejected grant (F14 / F23).
         let e = CredentialServiceError::ReauthRequired {
             credential_id: "cred-1".to_owned(),
-            reason: crate::ReauthReason::ProviderRejected {
-                detail: "invalid_grant".to_owned(),
-            },
+            reason: crate::ReauthReason::ProviderRejected,
         };
         assert_eq!(e.category(), nebula_error::ErrorCategory::Validation);
         assert!(

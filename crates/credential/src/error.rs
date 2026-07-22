@@ -4,7 +4,10 @@
 //! - [`CredentialError`]: Top-level error wrapping Crypto/Validation
 //! - [`CryptoError`]: Encryption, decryption, key derivation
 //! - [`ValidationError`]: Invalid credential IDs, malformed data
-//! - [`StoreError`](crate::StoreError): Storage-layer errors (not found, conflict)
+//!
+//! Persistence failures belong to the technical `nebula-storage-port`
+//! contract. They are deliberately not re-exported through the
+//! `nebula-credential` product surface.
 //!
 //! # Error Conversion Examples
 //!
@@ -23,16 +26,6 @@
 //! assert!(cred_err.to_string().contains("bad id"));
 //! ```
 //!
-//! [`StoreError`](crate::StoreError) is used directly by the storage layer:
-//!
-//! ```
-//! use nebula_credential::StoreError;
-//!
-//! let err = StoreError::NotFound {
-//!     id: "missing_cred".to_string(),
-//! };
-//! assert!(err.to_string().contains("missing_cred"));
-//! ```
 
 use compact_str::CompactString;
 use thiserror::Error;

@@ -34,8 +34,8 @@ pub mod ratelimit;
 pub(super) mod replay;
 pub(crate) mod resume;
 pub(crate) mod routing;
-pub mod secret_resolver;
 pub(super) mod signature;
+pub(crate) mod signing_secret;
 pub mod spec_lookup;
 pub mod token;
 pub mod transport;
@@ -49,7 +49,6 @@ pub use key::WebhookKey;
 pub use provider::EndpointProviderImpl;
 pub use ratelimit::{RateLimitExceeded, WebhookRateLimiter};
 pub use resume::ResumeHandlerComponents;
-pub use secret_resolver::{CredentialBackedWebhookSecretResolver, mint_whsec};
 pub use spec_lookup::TriggerStoreSpecLookup;
 pub use transport::{
     ActivateAndPersistError, ActivationError, ActivationHandle, PersistParams, WebhookTransport,

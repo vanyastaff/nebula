@@ -1,7 +1,7 @@
 //! Refresh-coordinator audit-event emission (sub-spec ).
 //!
 //! Sits on top of the credential `AuditSink` so operators reuse one sink
-//! implementation for both `CredentialStore` operations and refresh
+//! implementation for both `CredentialPersistence` operations and refresh
 //! coordination events.
 //!
 //! Three events surface here, mirroring the spec's audit list:
@@ -16,9 +16,10 @@
 //! Sink failures are logged at `warn` level but do NOT propagate to the
 //! caller. Audit on the refresh path is observational; failing the
 //! refresh on a sink hiccup would re-create the n8n #13088 retry storm
-//! the coordinator was built to prevent. The `CredentialStore` audit
-//! wrapper retains its fail-closed semantics — they
-//! apply to mutating store operations, not to refresh events.
+//! the coordinator was built to prevent. The `CredentialPersistence` audit
+//! wrapper propagates sink errors instead of silently discarding them, but its
+//! sink is not atomic with the mutation and an error may follow a committed
+//! write. Refresh events remain explicitly observational.
 
 use nebula_core::CredentialId;
 

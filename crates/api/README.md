@@ -129,9 +129,10 @@ Responsibility split:
 replace_slug_map / axum router. Owns the routing map, rate limiter, signature
 enforcement, replay-window check, and `pre_handle` short-circuit.
 - `bootstrap` — `bootstrap_webhook_activations` / `collect_webhook_activations`,
-`WebhookSecretResolver`, `WebhookContextFactory`. The composition root
-invokes the bootstrap before `build_app`; admin reload uses `collect_*` and
-`replace_slug_map` for atomic swaps.
+`WebhookSecretResolver`, `WebhookActivationContextFactory`. The API owns these
+object-safe, credential-neutral ports; the composition root supplies concrete
+adapters and invokes bootstrap before `build_app`. Admin reload uses
+`collect_*` and `replace_slug_map` for atomic swaps.
 - `events` — `TriggerLifecycleEvent` { Created / Updated / Deleted } +
 `TriggerLifecycleSubscriber`. M3.3 ships the consumer; producer-side
 wiring is deferred (ADR-0049 § "Out of scope").
@@ -469,9 +470,9 @@ The Postgres implementation persists users, sessions, PATs, verification tokens,
 OAuth state, and external identity links. OAuth state is consumed atomically
 with provider and expiry predicates; an expired-state cleanup is also attempted
 when a new flow starts. This identity
-backend does not imply a membership-store choice: the default server composition
-still leaves org membership unwired until an operator supplies a compatible
-`MembershipStore`.
+backend does not imply tenant-directory or membership policy: the default server composition
+leaves both `WorkspaceResolver` and org membership unwired. Supported operator-supplied
+directory and `MembershipStore` paths remain K4 work.
 
 ### Credential CRUD durability (canon §11.6 / §12.5)
 
@@ -479,11 +480,23 @@ Every credential operation — CRUD (`create` / `get` / `update` /
 `delete` / `list`), lifecycle (`test` / `refresh` / `revoke`), and
 acquisition (`resolve` / `resolve/continue`) under
 `…/workspaces/{ws}/credentials` — routes through the
-**`CredentialService` facade** (ADR-0088 D7), composed by `apps/server` at
-startup through the temporary K4 factory in
-`ports::credential_service_factory`. The facade owns the layered store
-(`Audit(Cache(Encryption(SQLite)))` in the production default), runs the
-typed validate→resolve pipeline on `data`, and owner-checks every operation.
+API-owned object-safe **`CredentialCommandGateway`**. Middleware supplies a private-field
+`AuthenticatedPrincipal` and the resolved request `Scope`; handlers submit public intent only.
+The first-party adapter in `apps/server` maps those claims into the credential-owned
+`CredentialController`, which obtains exactly one decision from its injected
+`CredentialTenantAuthority` before deriving an owner partition or calling `CredentialService`.
+That authority re-reads one consistent role snapshot from the same `MembershipStore` used by HTTP
+RBAC, maps the command to
+`CredentialRead` / `CredentialWrite` / `CredentialDelete`, and fails unavailable when the policy
+source is unwired or unreadable. A valid snapshot without organization membership denies the
+command; the route's Access Kernel guard separately enforces the authenticated token grant.
+Production key, persistence, catalog, refresh, and authority adapters live in `apps/server`.
+`ports::credential_service_factory` is compiled only as an unsupported `test-util` fixture. The
+service runs the typed validate→resolve pipeline and persists only through owner-bound
+`CredentialPersistence`.
+Handlers do not run a competing `CredentialSchemaPort` precheck: that port serves catalog/form
+schema reads only. Its absence does not block create/update/resolve or produce a mutation 503;
+authorized service validation is the single mutation authority.
 The universal `resolve` / `resolve/continue` endpoints are the only
 credential-acquisition HTTP contract. The former raw Plane-B
 `credentials/{id}/oauth2/{auth,callback}` ceremony is parked and returns
@@ -491,15 +504,15 @@ credential-acquisition HTTP contract. The former raw Plane-B
 facade's typed pending interaction before it can become a supported
 surface. Accordingly, the default registry/catalog does not register or
 advertise `oauth2`; attempts to create or resolve that key fail as an unknown
-credential type. When no service is wired, every credential endpoint returns
-an honest 503 — there is no raw-store fallback.
+credential type. When no command gateway is wired, every credential endpoint returns an honest
+503 — there is no service/store fallback.
 
-| Aspect | Credential operations (production default) |
+| Aspect | First-party credential storage composition (after membership authority is provisioned) |
 |---|---|
 | Restart-survival | **Yes for completed credentials** — the default file-backed SQLite store survives restart; in-flight pending interactions remain ephemeral |
 | Multi-replica share | **No by default** — the SQLite file is instance-local; a supported shared-store composition is still required for multi-replica deployments |
 | Encryption at rest | **Yes** — the facade composes the `EncryptionLayer` adjacent to the backend (AES-256-GCM; key from `NEBULA_CRED_MASTER_KEY`, fail-closed) |
-| Cross-workspace isolation | **Yes** — the facade owner-checks every operation against the canonical `Scope::credential_owner_id`; cross-workspace ids collapse to a flat 404 |
+| Cross-workspace isolation | **Yes once policy is provisioned** — authority verifies workspace existence/parentage, revalidates membership/role, reproduces the authenticated scope, and every persistence predicate uses the derived `(owner, credential_id)` selector; cross-workspace IDs collapse to a flat 404. The default server has no workspace-directory or membership source and returns 503 before this path. |
 | Lifecycle dispatch | **Live** — `test`/`refresh`/`revoke` dispatch the registered type's capability; a type without it is refused with 400 (capability gate), never a faked success. The test response is a tagged `status` union: success has no code; failure requires a frozen v1, payload-free code, and future core codes map to `other` |
 
 > **Operator warning:** completed credentials survive a normal process restart
@@ -521,19 +534,22 @@ end-to-end** (`crates/api/tests/org_e2e.rs`) against the in-memory
 `MembershipStore` (`nebula_api::domain::org::InMemoryMembershipStore`) —
 the **single shared store** `rbac_middleware` also consults, so an
 `add_member` is immediately visible to the next RBAC check (no
-propagation window). There is no storage-backed alternative
-(`nebula_storage` ships no membership repo); the in-memory impl is the
-§4.5-honest local backing, with the same restart/replica limits as
-`API_AUTH_BACKEND=memory`. Unlike Plane-A identity, membership has no
-selectable Postgres implementation yet.
+propagation window). `nebula-storage-port` has a generic row-level membership
+store with backend implementations, but no adapter currently satisfies this
+API port's consistent authorization snapshot and atomic guarded-mutation
+contract. It must not be wired directly as request authority. The in-memory
+implementation is the §4.5-honest reference backing, with the same
+restart/replica limits as `API_AUTH_BACKEND=memory`; unlike Plane-A identity,
+the API policy port has no selectable PostgreSQL implementation yet.
 
 **The default `nebula-server` binary does NOT auto-wire a
-`MembershipStore`.** It is an **explicitly-provisioned** feature — the
-same posture as Postgres-for-durable-idempotency (provision the
-production path; never silently fake it). Rationale: wiring a
-`MembershipStore` activates RBAC enforcement on every org/workspace
-route (`rbac_middleware`'s `is_some()` guard → a caller with no org
-role is 404'd). The default `AuthBackend` is an *empty*
+`MembershipStore`.** The current in-memory seam is an internal/reference
+composition capability, not a supported operator deployment path; that path remains K4 work.
+This is the same fail-honest posture as other unavailable capabilities: never silently fake
+policy. Rationale: wiring a
+`MembershipStore` is required by RBAC on every org/workspace route and by
+credential command authority (a caller with no org role is 404'd once the
+store is provisioned). The default `AuthBackend` is an *empty*
 `InMemoryAuthBackend` (no users; `register_user` mints a **random**
 `UserId`), so **no principal could authenticate as any auto-seeded
 bootstrap owner** — an auto-seeded store would 404-deadlock every
@@ -544,20 +560,21 @@ than honest degradation.
 
 | Aspect | Org membership (in-memory `MembershipStore`) |
 |---|---|
-| Default binary | **Unwired (`None`)** — org member endpoints return an honest **503** (port-absent), RBAC stays inert (no spurious 404 on any route) |
+| Default binary | **Unwired (`None`)** — every org/workspace route returns an honest **503** before its handler; credential authority also fails unavailable |
 | Restart-survival | **No** — memberships are lost on restart (once provisioned) |
 | Multi-replica share | **No** — state is process-local |
-| Provisioning | An operator/integrator wires `AppState::with_membership_store(...)` **and** registers the same bootstrap-owner identity in the wired `AuthBackend` so it can authenticate. `nebula_api::domain::org::InMemoryMembershipStore::seeded_bootstrap(org_id, owner_id)` is the documented constructor (fail-closed on a malformed id) |
+| Provisioning | Internal tests/reference composition may wire `AppState::with_membership_store(...)` and register the same bootstrap-owner identity in the wired `AuthBackend`. `InMemoryMembershipStore::seeded_bootstrap` is a technical helper, not a supported integration surface. The default binary has no operator configuration; supported deployment composition remains K4 work. |
 
 > **Operator warning:** in the default binary, `GET`/`POST`/`DELETE
 > `…/orgs/{org}/members` (and `GET /me/orgs` / `orgs_count`) return
-> **503** until you provision a `MembershipStore`. This is honest
-> degradation, **not** a bug — it deliberately avoids both an RBAC
-> deadlock (404 on every org/workspace route) and a default admin
-> credential. To enable: wire `with_membership_store(...)` with a
+> **503** until composition provides a `MembershipStore`. This is honest
+> degradation: it deliberately avoids a default admin credential and never
+> treats missing policy state as access. Internal/reference API composition can
+> exercise the seam by wiring `with_membership_store(...)` with a
 > bootstrap owner that is **also** a registered, authenticatable
-> principal in your `AuthBackend`. Once provisioned, wiring a
-> `MembershipStore` **activates RBAC enforcement** on every
+> principal in its `AuthBackend`; this is not a supported downstream deployment
+> recipe. Once provisioned, RBAC applies role
+> enforcement on every
 > `/orgs/{org}/...` and `/orgs/{org}/workspaces/{ws}/...` route — a
 > caller with no role in the resolved org is `404`'d *before* the
 > handler (enumeration prevention); the bootstrap owner grants further
@@ -883,6 +900,7 @@ src/
         ├── mod.rs
         ├── transport.rs  # WebhookTransport — activate/deactivate/router
         ├── bootstrap.rs  # bootstrap_webhook_activations, WebhookSecretResolver
+        ├── signing_secret.rs # private registration-time whsec generation
         ├── dispatch.rs   # dispatch_inner pipeline
         ├── events.rs     # TriggerLifecycleEvent + subscriber
         ├── provider.rs   # EndpointProviderImpl

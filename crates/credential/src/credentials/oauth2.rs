@@ -578,9 +578,7 @@ impl OAuth2Credential {
             // misconfigured grant (no refresh_token issued) from a
             // genuine provider invalidation.
             return Ok(RefreshOutcome::ReauthRequired(
-                crate::resolve::ReauthReason::MissingRefreshMaterial {
-                    detail: "OAuth2 state has no refresh_token".to_string(),
-                },
+                crate::resolve::ReauthReason::MissingRefreshMaterial,
             ));
         }
 
@@ -1332,7 +1330,7 @@ mod tests {
             matches!(
                 outcome,
                 RefreshOutcome::ReauthRequired(
-                    crate::resolve::ReauthReason::MissingRefreshMaterial { .. }
+                    crate::resolve::ReauthReason::MissingRefreshMaterial
                 )
             ),
             "expected ReauthRequired(MissingRefreshMaterial); got {outcome:?}"

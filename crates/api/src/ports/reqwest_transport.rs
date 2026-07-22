@@ -1,7 +1,9 @@
-//! Reqwest-backed [`RefreshTransport`] implementation (ADR-0092).
+//! Test-only Reqwest-backed [`RefreshTransport`] implementation.
 //!
-//! Relocated from `nebula-engine` to `nebula-api` (ADR-0092 step 7): the HTTP
-//! client lives at the composition root; `nebula-engine` carries no reqwest dep.
+//! Production transport policy and the corresponding adapter live in
+//! `apps/server`. This copy is compiled only with unsupported `test-util` so
+//! API integration fixtures can exercise the real refresh pipeline;
+//! `nebula-engine` carries no reqwest dependency.
 //!
 //! This is a dumb pipe: it performs the HTTP POST exactly as composed by the
 //! credential crate and returns raw `(status, bounded-body)`. It does NO url

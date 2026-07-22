@@ -6,6 +6,10 @@
 //! validated handles, closing the confused-deputy non-goal left open
 //! by the ADR-0052 cascade.
 
+use std::fmt;
+
+use nebula_storage_port::{CredentialOwner, CredentialSelector};
+
 use super::scope::TenantScope;
 
 /// Tenant-scope-checked credential binding.
@@ -28,8 +32,14 @@ pub struct ValidatedCredentialBinding {
 /// Constructed only from a [`TenantScope`] inside this crate. Equality
 /// is intentionally crate-private so downstream consumers cannot forge
 /// a fingerprint value.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TenantFingerprint(pub(crate) String);
+#[derive(Clone, PartialEq, Eq)]
+pub struct TenantFingerprint(pub(crate) CredentialOwner);
+
+impl fmt::Debug for TenantFingerprint {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("TenantFingerprint([redacted])")
+    }
+}
 
 impl ValidatedCredentialBinding {
     /// Crate-private constructor — the only call site is
@@ -56,9 +66,8 @@ impl ValidatedCredentialBinding {
     /// The runtime resolver consumes this to re-verify the stored row's owner
     /// at load, so a validated binding is backed by a load-time owner check
     /// rather than authorizing an unscoped load on its provenance alone.
-    #[must_use]
-    pub fn owner_scoped_key(&self) -> crate::store::OwnerScopedKey {
-        crate::store::OwnerScopedKey::new(
+    pub(crate) fn selector(&self) -> CredentialSelector {
+        CredentialSelector::new(
             self.tenant_fingerprint.0.clone(),
             self.credential_id.clone(),
         )
@@ -78,7 +87,7 @@ impl TenantFingerprint {
     /// the `owner_id` string — sufficient to detect cross-tenant misuse
     /// without embedding any secret material.
     pub(crate) fn from_scope(scope: &TenantScope) -> Self {
-        Self(scope.owner_id().to_owned())
+        Self(scope.owner().clone())
     }
 }
 

@@ -42,34 +42,47 @@ use nebula_storage_port::{
 };
 use thiserror::Error;
 
-/// Boxed error type returned by [`WebhookSecretResolver::resolve`].
-/// The bootstrap wraps it in [`BootstrapError::SecretResolution`]
-/// alongside the failing `secret_id`.
-pub type SecretResolutionError = Box<dyn std::error::Error + Send + Sync>;
+/// Credential-neutral, secret-free failure returned by
+/// [`WebhookSecretResolver::resolve`].
+///
+/// The enum deliberately carries no dynamic source or caller-provided text:
+/// resolver implementations sit across a trust boundary, and their backend
+/// errors may contain credential or provider material.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[non_exhaustive]
+pub enum SecretResolutionError {
+    /// No secret exists in the caller's owner partition.
+    #[error("webhook signing secret was not found")]
+    NotFound,
+    /// The backing credential system could not resolve material now.
+    #[error("webhook signing secret is unavailable")]
+    Unavailable,
+    /// Stored material does not satisfy the signing-secret format contract.
+    #[error("webhook signing secret material is invalid")]
+    InvalidMaterial,
+}
 
 /// Resolves a credential identifier (storage-layer string) to the
 /// raw HMAC secret bytes consumed by the factory.
 ///
-/// Production deployments wire this through [`nebula_credential::CredentialService`]
-/// via [`crate::transport::webhook::secret_resolver::CredentialBackedWebhookSecretResolver`];
-/// tests wire an in-memory map. Returning an empty `Vec` is **not** allowed —
-/// the factory would then build a fail-closed handler.  Surface the
-/// misconfiguration as a typed error inside the boxed return.
+/// Production deployments provide an owner-scoped adapter from their
+/// composition root; tests may wire an in-memory map. Returning an empty
+/// `Vec` is **not** allowed — the factory would then build a fail-closed
+/// handler. Surface the misconfiguration as
+/// [`SecretResolutionError::InvalidMaterial`].
 ///
 /// # Tenant isolation
 ///
-/// `scope` is mandatory: [`nebula_credential::CredentialService::resolve_for_slot`]
-/// requires a [`nebula_credential::TenantScope`] derived from the B-world
-/// activation row's `scope`.  Without it the credential layer cannot enforce
-/// the owner check.
+/// `scope` is mandatory. Implementations must use it as the authoritative
+/// owner partition and must not offer an unscoped lookup fallback.
 #[async_trait]
 pub trait WebhookSecretResolver: Send + Sync {
     /// Resolve `secret_id` to raw secret bytes, scoped to `scope`.
     ///
     /// # Errors
     ///
-    /// Returns a boxed error on lookup failure. The bootstrap wraps
-    /// it in [`BootstrapError::SecretResolution`].
+    /// Returns a closed, secret-free error on lookup failure. The bootstrap
+    /// wraps it in [`BootstrapError::SecretResolution`].
     async fn resolve(
         &self,
         scope: &Scope,
@@ -123,7 +136,7 @@ pub enum BootstrapError {
         secret_id: String,
         /// Underlying cause.
         #[source]
-        source: Box<dyn std::error::Error + Send + Sync>,
+        source: SecretResolutionError,
     },
     /// No factory registered for the spec's `action_kind`.
     #[error("no factory registered for kind '{0}'")]
@@ -244,7 +257,7 @@ pub async fn bootstrap_webhook_activations(
                 record_bootstrap_failure(metrics, bootstrap_failure_reason(&err));
                 tracing::warn!(
                     target: "nebula::api::webhook::bootstrap",
-                    error = %err,
+                    failure_reason = bootstrap_failure_reason(&err),
                     trigger_id = %record.trigger_id,
                     "skipping webhook activation"
                 );
@@ -307,6 +320,7 @@ async fn validate_one(
     let secret = secrets
         .resolve(&record.scope, &spec.secret_id)
         .await
+        .and_then(super::signing_secret::validate_resolved_secret)
         .map_err(|source| BootstrapError::SecretResolution {
             secret_id: spec.secret_id.clone(),
             source,

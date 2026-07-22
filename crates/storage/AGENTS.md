@@ -1,7 +1,7 @@
 # nebula-storage — Agent orientation
 > Agent quick-map for `crates/storage/`. Full design: `README.md`. Repo-wide rules: root `AGENTS.md`.
 
-**Purpose:** The sole adapter implementation (InMemory + SQLite + Postgres) of the spec-16 `nebula-storage-port` contract — execution CAS state, append-only journal, control-queue outbox, idempotency, leases, identity stores, and the durable credential refresh-claim repo.
+**Purpose:** The sole adapter implementation of the spec-16 `nebula-storage-port` contract — SQLite/PostgreSQL deployment backends plus internal in-memory test/reference adapters, including owner-bound credential persistence.
 **Layer:** Exec — depends only downward (root AGENTS.md -> Layered Dependency Map).
 
 ## Common Tasks
@@ -23,7 +23,7 @@
 
 ## Key files
 - `src/lib.rs` — adapter re-exports (`InMemory*`, `StorageError`, `StorageFormat`); module/feature map.
-- `src/inmem/` — in-memory port adapters (tests / single-process / loom probe).
+- `src/inmem/` — internal test/reference/conformance adapters and loom probes; not a supported deployment backend.
 - `src/sqlite/` · `src/postgres/` — feature-gated port adapters over the port-scoped schema (Postgres uses real tx + `FOR UPDATE SKIP LOCKED`).
 - `src/repos/` — residual non-port traits with live consumers (`ControlQueueRepo`, `IdempotencyStoreRepo`, `WebhookActivationRepo`, identity glue).
 - `src/pg/oauth_login.rs` + `src/repos/oauth_login.rs` — storage-owned Plane-A
@@ -33,6 +33,7 @@
   verified-email egress; the later finalizer call rechecks all races.
 - `src/credential/refresh_claim/` — ADR-0041 CAS refresh-claim repo (`try_claim`/`heartbeat`/`release`/`reclaim_stuck`); in_memory + sqlite + postgres.
 - `src/credential/layer/` — encryption / audit / cache decorators around credential persistence.
+- `src/credential/{sqlite,postgres}.rs` — deployment adapters for the owner-bound `CredentialPersistence` port; historical SQL owner columns remain nullable until K2.
 
 ## Conventions & never-do
 - `ExecutionStore::commit` is the single source of truth: CAS on `version` + lease `FencingToken` gating; if persistence is unavailable it FAILS — never silently mutate in-memory state.
@@ -55,7 +56,8 @@
   candidate must consume the exact live candidate and update the active secret
   in one transaction. Replays, replacements, expiry, and concurrent losers do
   not modify active MFA state.
-- This crate is NOT the state machine (`nebula-execution`), orchestrator (`nebula-engine`), or tenant-scope enforcer (`nebula-tenancy` decorators wrap these adapters). Do NOT re-add the deleted legacy `ExecutionRepo`/`WorkflowRepo` surface (ADR-0072).
+- This crate is NOT the state machine (`nebula-execution`), orchestrator (`nebula-engine`), or tenant-scope policy owner. `nebula-tenancy` wraps the general Scope-taking adapters; credential persistence is the deliberate owner-bound exception. Do NOT re-add the deleted legacy `ExecutionRepo`/`WorkflowRepo` surface (ADR-0072).
+- Every credential predicate is owner-bound (`CredentialSelector` or `CredentialOwner`); wrong-owner and missing are indistinguishable. Owner metadata is compatibility/audit data only and never grants authority.
 - Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
 - Library code uses typed `thiserror`/`StorageError`; no panicking unwrap/expect/panic in lib code.
 

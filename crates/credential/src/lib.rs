@@ -46,9 +46,10 @@
 //! - `CredentialMetadata` — static type descriptor: key, name, schema, `AuthPattern`.
 //! - `CredentialRecord` — runtime operational state (created_at, version, expiry, tags). Previously
 //!   named `Metadata` (ADR 0004).
-//! - `CredentialStore` — persistence trait. Concrete impls + composable layers (`EncryptionLayer`,
-//!   `CacheLayer`, `AuditLayer`) live in `nebula_storage::credential` per storage credential layers; the multi-tenant
-//!   scope layer was re-homed to `nebula_tenancy::CredentialScopeLayer` (spec §8).
+//! - `nebula_storage_port::CredentialPersistence` — the directly object-safe,
+//!   owner-scoped persistence port. Concrete adapters and encryption/cache/audit
+//!   decorators live in `nebula-storage`; this crate retains the controller,
+//!   never a parallel store trait or dyn bridge.
 //! - Runtime resolution (resolver / refresh-coordinator / lease / rotation-state)
 //!   lives in this crate's `runtime` module (relocated from `nebula-engine` per
 //!   ADR-0092); the engine keeps only the accessor bridges + a test coordinator.
@@ -60,9 +61,12 @@
 //!
 //! ## Security invariant (credential secrecy)
 //!
-//! Encryption at rest: AES-256-GCM with Argon2id KDF, credential ID bound as AAD.
-//! No bypass for debugging. All intermediate plaintext in `Zeroizing<Vec<u8>>`.
-//! `Debug` impls on credential wrappers redact secret fields.
+//! Encryption at rest: AES-256-GCM with an operator-supplied 256-bit key and
+//! credential ID bound as AAD. `nebula-crypto` also provides Argon2id for
+//! password-derived keys, but the default `EnvKeyProvider` consumes raw key
+//! material and does not run a KDF. No bypass for debugging. All intermediate
+//! plaintext lives in `Zeroizing<Vec<u8>>`; credential `Debug` implementations
+//! redact secret and user-controlled display fields.
 //!
 //! See `crates/credential/README.md` for the full contract and canon invariants.
 #![forbid(unsafe_code)]
@@ -128,8 +132,7 @@ mod record;
 // ── Utility modules ─────────────────────────────────────────────────────────
 // Free-standing concerns: errors, storage, refresh coordinator, etc.
 
-/// Dyn-erasure bridge for the two RPITIT storage ports — lets the
-/// `CredentialService` facade be non-generic (ADR-0088 D4).
+/// Dyn-erasure bridge for generic pending-state storage only.
 pub(crate) mod erased;
 /// Error types for credential operations.
 pub mod error;
@@ -141,14 +144,13 @@ pub mod pending_store;
 /// resolution executor, capability dispatchers, scoped accessor (ADR-0092,
 /// relocated from `nebula-engine::credential`).
 pub mod runtime;
-/// `CredentialService` facade — the sole public entry to the credential
-/// management bounded context (ADR-0092, relocated from
-/// `nebula-credential-runtime`).
+/// Credential semantic service plus the authority-bound management controller
+/// (ADR-0092, relocated from `nebula-credential-runtime`). Supported
+/// authenticated HTTP management enters through the controller; technical
+/// runtime/service seams remain direct until K3.
 pub(crate) mod service;
 /// Credential snapshot.
 pub(crate) mod snapshot;
-/// Credential store trait with layered composition.
-pub mod store;
 
 // ── Backward-compat re-export: `nebula_credential::resolve::*` ──────────
 // The proc-macro and downstream crates reference `nebula_credential::resolve::`.
@@ -200,12 +202,9 @@ pub use nebula_credential_macros::{AuthScheme, credential};
 // no Input form and is never registered in CredentialRegistry — it's a
 // Resource-side type marker per credential isolation).
 pub use no_credential::{NoCredential, NoCredentialState};
-// Dyn-erasure bridge (ADR-0088 D4): object-safe mirrors of the two RPITIT
-// storage ports + their `Arc<dyn …>` wrappers, so the runtime facade is
-// non-generic.
-pub use erased::{
-    DynCredentialStore, DynPendingStateStore, ErasedCredentialStore, ErasedPendingStore,
-};
+// Pending-state operations are generic and retain a byte-core dyn bridge.
+// Credential persistence itself is directly object-safe in storage-port.
+pub use erased::{DynPendingStateStore, ErasedPendingStore};
 // Pending state store
 pub use pending_store::{PendingStateStore, PendingStoreError};
 // External provider abstraction (redesigned per external provider):
@@ -251,8 +250,6 @@ pub use lifecycle::{
     CredentialLifecycle, CredentialPolicy, Decision, LeaseRef, RefreshStrategy,
     RefreshStrategyKind, RevokeStrategy, SchemeId,
 };
-// Store trait + DTOs (canonical impls live in `nebula_storage::credential` per storage credential layers)
-pub use store::{CredentialStore, PutMode, ScopeResolver, StoreError, StoredCredential};
 // Audit contract — trait + value types (decorator AuditLayer stays in nebula_storage::credential)
 pub use audit::{AuditEvent, AuditOperation, AuditResult, AuditSink};
 
@@ -281,12 +278,16 @@ pub use crate::{
 // The `CredentialServiceBuilder` is NOT re-exported here: it pulls in
 // `nebula-storage` + `nebula-engine` deps and lives at the api composition root.
 pub use service::{
-    Acquisition, CredentialHead, CredentialObserver, CredentialService, CredentialServiceError,
-    CredentialTypeInfo, DispatchError, DispatchOps, EventMetricObserver, FixedScopeResolver,
-    NoopObserver, RefreshReport, StateSource, TenantFingerprint, TenantScope, TypeCapabilities,
-    ValidatedCredentialBinding, ValidatedCredentialBindingError, register_all_builtin_ops,
-    register_interactive_ops, register_refreshable_ops, register_revocable_ops,
-    register_runtime_ops, register_testable_ops,
+    Acquisition, AuthorizationDecision, CredentialActor, CredentialActorBuildError,
+    CredentialActorKind, CredentialAuthenticationBinding, CredentialAuthenticationBindingError,
+    CredentialAuthorizationError, CredentialCommand, CredentialCommandResult, CredentialController,
+    CredentialControllerError, CredentialDisplayPatch, CredentialHead, CredentialObserver,
+    CredentialOperation, CredentialService, CredentialServiceError, CredentialTenantAuthority,
+    CredentialTypeInfo, CredentialValidationIssue, CredentialValidationReport, DispatchError,
+    DispatchOps, EventMetricObserver, NoopObserver, RefreshReport, StateSource, TenantFingerprint,
+    TenantScope, TypeCapabilities, ValidatedCredentialBinding, ValidatedCredentialBindingError,
+    register_all_builtin_ops, register_interactive_ops, register_refreshable_ops,
+    register_revocable_ops, register_runtime_ops, register_testable_ops,
 };
 
 // ── Prelude ───────────────────────────────────────────────────────────────────
@@ -306,3 +307,12 @@ pub mod prelude {
         credential_key, schema_of,
     };
 }
+
+// Internal imports of the Core-tier persistence contract. These names are not
+// re-exported from the credential product surface; adapters and composition
+// roots depend on `nebula-storage-port` directly.
+pub(crate) use nebula_storage_port::{
+    CredentialPersistence, CredentialPersistenceError, CredentialSelector, CredentialWriteMode,
+    LAST_VALIDATED_AT_METADATA_KEY, OWNER_ID_METADATA_KEY, REVOKED_AT_METADATA_KEY,
+    StoredCredential, StoredCredentialHead,
+};

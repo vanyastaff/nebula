@@ -26,7 +26,13 @@ mod scope;
 pub mod store;
 
 pub use batch::{TransitionBatch, TransitionBatchBuilder, TransitionOutcome};
+pub use dto::credential::{
+    CredentialOwner, CredentialSelector, CredentialWriteMode, LAST_VALIDATED_AT_METADATA_KEY,
+    OWNER_ID_METADATA_KEY, REVOKED_AT_METADATA_KEY, SecretBytes, StoredCredential,
+    StoredCredentialHead,
+};
 pub use dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash, TokenHashLengthError};
 pub use error::StorageError;
 pub use ids::FencingToken;
 pub use scope::Scope;
+pub use store::{CredentialPersistence, CredentialPersistenceError};

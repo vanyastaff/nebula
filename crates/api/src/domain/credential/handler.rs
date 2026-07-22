@@ -23,7 +23,7 @@ use crate::{
         validate_credential_id, validate_credential_key, validate_credential_name,
         validate_data_is_object,
     },
-    middleware::auth::AuthenticatedUser,
+    middleware::auth::AuthenticatedPrincipal,
     state::AppState,
 };
 
@@ -36,7 +36,7 @@ use crate::{
     get,
     path = "/orgs/{org}/workspaces/{ws}/credentials",
     tag = "workspaces.credentials",
-    security(("bearer" = []), ("api_key" = [])),
+    security(("bearer" = [])),
     params(
         ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
         ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
@@ -50,29 +50,27 @@ use crate::{
 )]
 pub async fn list_credentials(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthenticatedUser>,
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws)): Path<(String, String)>,
     Query(query): Query<ListCredentialsQuery>,
 ) -> ApiResult<Json<ListCredentialsResponse>> {
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
-    let response = crate::transport::credential::list_credentials(&state, &scope, query).await?;
+    let response =
+        crate::transport::credential::list_credentials(&state, &principal, &scope, query).await?;
     Ok(Json(response))
 }
 
 /// POST /orgs/{org}/workspaces/{ws}/credentials — Create a new credential.
 ///
-/// Validates the request body, then delegates to the credential store
-/// for persistence. When a credential-schema port is configured
-/// (credential-schema validation), `data` is validated against the credential type's
-/// resolved schema before encryption and storage; if no validator is
-/// configured the request is rejected with 503 — `data` is never
-/// persisted unvalidated.
+/// The authenticated command gateway authorizes first, then the
+/// credential-owned controller/service validates the type-specific data and
+/// persists it. The catalog/form read-model is not mutation authority.
 #[utoipa::path(
     post,
     path = "/orgs/{org}/workspaces/{ws}/credentials",
     tag = "workspaces.credentials",
-    security(("bearer" = []), ("api_key" = [])),
+    security(("bearer" = [])),
     params(
         ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
         ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
@@ -83,12 +81,12 @@ pub async fn list_credentials(
         (status = 400, description = "Validation error: `data` failed the credential type's schema, or key/name shape invalid.", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
-        (status = 503, description = "Credential-schema port not configured: `data` cannot be validated, so it is not persisted (credential-schema validation, honest capability fail-closed).", body = ProblemDetails),
+        (status = 503, description = "Authenticated credential command gateway is not available in this deployment.", body = ProblemDetails),
     ),
 )]
 pub async fn create_credential(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthenticatedUser>,
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws)): Path<(String, String)>,
     Json(body): Json<CreateCredentialRequest>,
@@ -99,7 +97,8 @@ pub async fn create_credential(
     validate_data_is_object(&body.data)?;
 
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
-    let response = crate::transport::credential::create_credential(&state, &scope, body).await?;
+    let response =
+        crate::transport::credential::create_credential(&state, &principal, &scope, body).await?;
     Ok(Json(response))
 }
 
@@ -110,7 +109,7 @@ pub async fn create_credential(
     get,
     path = "/orgs/{org}/workspaces/{ws}/credentials/{cred}",
     tag = "workspaces.credentials",
-    security(("bearer" = []), ("api_key" = [])),
+    security(("bearer" = [])),
     params(
         ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
         ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
@@ -126,7 +125,7 @@ pub async fn create_credential(
 )]
 pub async fn get_credential(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthenticatedUser>,
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, cred)): Path<(String, String, String)>,
 ) -> ApiResult<Json<CredentialResponse>> {
@@ -134,7 +133,8 @@ pub async fn get_credential(
     validate_credential_id(&cred)?;
 
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
-    let response = crate::transport::credential::get_credential(&state, &scope, &cred).await?;
+    let response =
+        crate::transport::credential::get_credential(&state, &principal, &scope, &cred).await?;
     Ok(Json(response))
 }
 
@@ -146,7 +146,7 @@ pub async fn get_credential(
     put,
     path = "/orgs/{org}/workspaces/{ws}/credentials/{cred}",
     tag = "workspaces.credentials",
-    security(("bearer" = []), ("api_key" = [])),
+    security(("bearer" = [])),
     params(
         ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
         ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
@@ -160,12 +160,12 @@ pub async fn get_credential(
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Credential does not exist.", body = ProblemDetails),
         (status = 409, description = "Optimistic-concurrency version mismatch.", body = ProblemDetails),
-        (status = 503, description = "Credential-schema port not configured: supplied `data` cannot be validated, so it is not persisted (credential-schema validation, honest capability fail-closed).", body = ProblemDetails),
+        (status = 503, description = "Authenticated credential command gateway is not available in this deployment.", body = ProblemDetails),
     ),
 )]
 pub async fn update_credential(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthenticatedUser>,
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, cred)): Path<(String, String, String)>,
     Json(body): Json<UpdateCredentialRequest>,
@@ -197,7 +197,8 @@ pub async fn update_credential(
 
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     let response =
-        crate::transport::credential::update_credential(&state, &scope, &cred, body).await?;
+        crate::transport::credential::update_credential(&state, &principal, &scope, &cred, body)
+            .await?;
     Ok(Json(response))
 }
 
@@ -209,7 +210,7 @@ pub async fn update_credential(
     delete,
     path = "/orgs/{org}/workspaces/{ws}/credentials/{cred}",
     tag = "workspaces.credentials",
-    security(("bearer" = []), ("api_key" = [])),
+    security(("bearer" = [])),
     params(
         ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
         ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
@@ -225,7 +226,7 @@ pub async fn update_credential(
 )]
 pub async fn delete_credential(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthenticatedUser>,
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, cred)): Path<(String, String, String)>,
 ) -> ApiResult<Json<AckResponse>> {
@@ -233,7 +234,7 @@ pub async fn delete_credential(
     validate_credential_id(&cred)?;
 
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
-    crate::transport::credential::delete_credential(&state, &scope, &cred).await?;
+    crate::transport::credential::delete_credential(&state, &principal, &scope, &cred).await?;
     Ok(Json(AckResponse::ok()))
 }
 
@@ -248,7 +249,7 @@ pub async fn delete_credential(
     post,
     path = "/orgs/{org}/workspaces/{ws}/credentials/{cred}/test",
     tag = "workspaces.credentials",
-    security(("bearer" = []), ("api_key" = [])),
+    security(("bearer" = [])),
     params(
         ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
         ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
@@ -264,14 +265,15 @@ pub async fn delete_credential(
 )]
 pub async fn test_credential(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthenticatedUser>,
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, cred)): Path<(String, String, String)>,
 ) -> ApiResult<Json<TestCredentialResponse>> {
     validate_credential_id(&cred)?;
 
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
-    let response = crate::transport::credential::test_credential(&state, &scope, &cred).await?;
+    let response =
+        crate::transport::credential::test_credential(&state, &principal, &scope, &cred).await?;
     Ok(Json(response))
 }
 
@@ -284,7 +286,7 @@ pub async fn test_credential(
     post,
     path = "/orgs/{org}/workspaces/{ws}/credentials/{cred}/refresh",
     tag = "workspaces.credentials",
-    security(("bearer" = []), ("api_key" = [])),
+    security(("bearer" = [])),
     params(
         ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
         ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
@@ -300,14 +302,15 @@ pub async fn test_credential(
 )]
 pub async fn refresh_credential(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthenticatedUser>,
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, cred)): Path<(String, String, String)>,
 ) -> ApiResult<Json<RefreshCredentialResponse>> {
     validate_credential_id(&cred)?;
 
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
-    let response = crate::transport::credential::refresh_credential(&state, &scope, &cred).await?;
+    let response =
+        crate::transport::credential::refresh_credential(&state, &principal, &scope, &cred).await?;
     Ok(Json(response))
 }
 
@@ -321,7 +324,7 @@ pub async fn refresh_credential(
     post,
     path = "/orgs/{org}/workspaces/{ws}/credentials/{cred}/revoke",
     tag = "workspaces.credentials",
-    security(("bearer" = []), ("api_key" = [])),
+    security(("bearer" = [])),
     params(
         ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
         ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
@@ -337,14 +340,15 @@ pub async fn refresh_credential(
 )]
 pub async fn revoke_credential(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthenticatedUser>,
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, cred)): Path<(String, String, String)>,
 ) -> ApiResult<Json<RevokeCredentialResponse>> {
     validate_credential_id(&cred)?;
 
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
-    let response = crate::transport::credential::revoke_credential(&state, &scope, &cred).await?;
+    let response =
+        crate::transport::credential::revoke_credential(&state, &principal, &scope, &cred).await?;
     Ok(Json(response))
 }
 
@@ -362,7 +366,7 @@ pub async fn revoke_credential(
     post,
     path = "/orgs/{org}/workspaces/{ws}/credentials/resolve",
     tag = "workspaces.credentials",
-    security(("bearer" = []), ("api_key" = [])),
+    security(("bearer" = [])),
     params(
         ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
         ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
@@ -373,12 +377,12 @@ pub async fn revoke_credential(
         (status = 400, description = "Validation error (key or data shape).", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
-        (status = 503, description = "Credential service or credential-schema port not wired into this deployment (operational honesty: refuses rather than faking success).", body = ProblemDetails),
+        (status = 503, description = "Authenticated credential command gateway is not available in this deployment.", body = ProblemDetails),
     ),
 )]
 pub async fn resolve_credential(
     State(state): State<AppState>,
-    Extension(user): Extension<AuthenticatedUser>,
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws)): Path<(String, String)>,
     Json(request): Json<ResolveCredentialRequest>,
@@ -389,7 +393,7 @@ pub async fn resolve_credential(
 
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     let response =
-        crate::transport::credential::resolve_credential(&state, &scope, &user.user_id, request)
+        crate::transport::credential::resolve_credential(&state, &principal, &scope, request)
             .await?;
     Ok(Json(response))
 }
@@ -404,7 +408,7 @@ pub async fn resolve_credential(
     post,
     path = "/orgs/{org}/workspaces/{ws}/credentials/resolve/continue",
     tag = "workspaces.credentials",
-    security(("bearer" = []), ("api_key" = [])),
+    security(("bearer" = [])),
     params(
         ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
         ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
@@ -420,7 +424,7 @@ pub async fn resolve_credential(
 )]
 pub async fn continue_resolve_credential(
     State(state): State<AppState>,
-    Extension(user): Extension<AuthenticatedUser>,
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws)): Path<(String, String)>,
     Json(request): Json<ContinueResolveRequest>,
@@ -436,8 +440,7 @@ pub async fn continue_resolve_credential(
 
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     let response =
-        crate::transport::credential::continue_resolve(&state, &scope, &user.user_id, request)
-            .await?;
+        crate::transport::credential::continue_resolve(&state, &principal, &scope, request).await?;
     Ok(Json(response))
 }
 
@@ -456,7 +459,7 @@ pub async fn continue_resolve_credential(
     responses(
         (status = 200, description = "Registered credential types with capability flags and input schema.", body = ListCredentialTypesResponse),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
-        (status = 503, description = "Credential-schema port not configured (credential-schema validation, honest capability stub).", body = ProblemDetails),
+        (status = 503, description = "Credential catalog/form read-model is not configured.", body = ProblemDetails),
     ),
 )]
 pub async fn list_credential_types(
@@ -483,7 +486,7 @@ pub async fn list_credential_types(
         (status = 400, description = "Invalid credential type key.", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 404, description = "Credential type not registered.", body = ProblemDetails),
-        (status = 503, description = "Credential-schema port not configured (credential-schema validation, honest capability stub).", body = ProblemDetails),
+        (status = 503, description = "Credential catalog/form read-model is not configured.", body = ProblemDetails),
     ),
 )]
 pub async fn get_credential_type(

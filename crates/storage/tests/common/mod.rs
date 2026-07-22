@@ -4,7 +4,7 @@
 //! integration test file that needs it. Cargo compiles it as part of those
 //! binaries only; it is never compiled standalone.
 
-use nebula_credential::StoredCredential;
+use nebula_storage_port::StoredCredential;
 
 /// Build a minimal [`StoredCredential`] for use in integration tests.
 pub(crate) fn make_credential(id: &str, data: &[u8]) -> StoredCredential {
@@ -12,7 +12,7 @@ pub(crate) fn make_credential(id: &str, data: &[u8]) -> StoredCredential {
         id: id.into(),
         name: None,
         credential_key: "test_credential".into(),
-        data: data.to_vec(),
+        data: data.to_vec().into(),
         state_kind: "test".into(),
         state_version: 1,
         version: 0,

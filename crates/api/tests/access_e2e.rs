@@ -18,7 +18,9 @@ use nebula_api::{
         AuthBackend, CreatePatParams, InMemoryAuthBackend, SignupRequest, dto::SecretString,
     },
     error::ApiError,
-    state::{AddMemberOutcome, MembershipStore, OrgMember, RemoveMemberOutcome},
+    state::{
+        AddMemberOutcome, MembershipStore, OrgMember, RemoveMemberOutcome, TenantMembershipSnapshot,
+    },
 };
 use nebula_core::{OrgId, OrgRole, Principal, UserId, WorkspaceId, WorkspaceRole};
 use tower::ServiceExt;
@@ -36,6 +38,20 @@ struct FixedMembershipStore {
 
 #[async_trait::async_trait]
 impl MembershipStore for FixedMembershipStore {
+    async fn get_tenant_membership(
+        &self,
+        org_id: OrgId,
+        workspace_id: Option<WorkspaceId>,
+        principal: &Principal,
+    ) -> Result<TenantMembershipSnapshot, ApiError> {
+        let org_matches = org_id == test_org_id() && principal == &self.principal;
+        let workspace_matches = workspace_id == Some(test_ws_id()) && org_matches;
+        Ok(TenantMembershipSnapshot {
+            org_role: org_matches.then_some(self.org_role),
+            workspace_role: workspace_matches.then_some(self.workspace_role),
+        })
+    }
+
     async fn get_org_role(
         &self,
         org_id: OrgId,

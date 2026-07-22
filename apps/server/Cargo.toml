@@ -12,7 +12,7 @@ name = "nebula-server"
 path = "src/main.rs"
 
 [dependencies]
-nebula-api = { path = "../../crates/api" }
+nebula-api = { path = "../../crates/api", features = ["first-party-composition"] }
 # In-memory adapters and the SQLite/Postgres execution-store paths live in
 # nebula-storage. The `sqlite` feature enables SqliteConnectOptions/Pool/stores;
 # PG-backed stores are gated behind the `postgres` cargo feature.
@@ -22,11 +22,20 @@ nebula-storage = { path = "../../crates/storage", features = ["credential-in-mem
 # storage-port crate must be a real dependency, not accessed through re-exports.
 # nebula-server is in deny.toml's nebula-storage-port `wrappers` allowlist.
 nebula-storage-port = { path = "../../crates/storage-port" }
+# First-party trust bridge: the server composition root binds API-authenticated
+# principals to the credential-owned authority/controller. Neither dependency
+# crosses into API handlers or wire DTOs.
+nebula-credential = { path = "../../crates/credential" }
+nebula-engine = { path = "../../crates/engine" }
+nebula-tenancy = { path = "../../crates/tenancy" }
+nebula-core = { path = "../../crates/core" }
+nebula-schema = { path = "../../crates/schema", features = ["schemars"] }
 # Composition root wires a process-wide `MetricsRegistry` and attaches the OTLP push
 # pipeline via `TelemetryGuard::attach_metrics_exporter`. Direct dep so the surface stays
 # stable across api re-export refactors.
 nebula-metrics = { path = "../../crates/metrics" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "net", "time"] }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
 axum = { workspace = true }
@@ -34,7 +43,15 @@ serde_json = { workspace = true }
 url = { workspace = true }
 thiserror = { workspace = true }
 async-trait = { workspace = true }
+base64 = { workspace = true }
 secrecy = { workspace = true }
+futures = "0.3"
+reqwest = { workspace = true, default-features = false, features = [
+  "json",
+  "rustls",
+  "form",
+  "stream",
+] }
 # Production SMTP transport for the `EmailPort`. The trait + dev EchoSink live
 # in nebula-api; the lettre-backed impl lives here so the api crate stays free
 # of the lettre direct dep (and library consumers of nebula-api do not pull
@@ -50,6 +67,7 @@ postgres = ["nebula-api/postgres", "sqlx/postgres", "sqlx/tls-rustls-ring-native
 
 [dev-dependencies]
 tempfile = { workspace = true }
+nebula-action = { path = "../../crates/action" }
 # Activate the `test-util` feature of nebula-api for tests — exposes
 # `ApiConfig::for_test()`. Cargo unions features from [dependencies] and
 # [dev-dependencies], so this only activates the feature in test builds.

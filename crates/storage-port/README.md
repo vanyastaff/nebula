@@ -2,7 +2,9 @@
 
 The **storage port** for Nebula: object-safe repository traits, port-local
 DTO rows, the plain-data `Scope` value type, `StorageError`, and the
-`TransitionBatch` atomic unit-of-work.
+`TransitionBatch` atomic unit-of-work. It also owns the object-safe,
+owner-bound `CredentialPersistence` technical contract and its port-local
+owner/selector/row/error values.
 
 ## What this crate is
 
@@ -20,19 +22,31 @@ does **not** implement any backend.
   (prevents a Core-tier dependency inversion).
 - **Plain-data `Scope`.** `Scope { workspace_id, org_id }` is a value type
   with no policy. Resolving a `Scope` from a principal and enforcing
-  cross-tenant denial is the job of `nebula-tenancy`.
+  cross-tenant denial for general Scope-taking stores is the job of
+  `nebula-tenancy`. Credential persistence is the deliberate exception: every
+  operation is directly bound to a mandatory `CredentialOwner` /
+  `CredentialSelector`, while actor authorization happens above this port.
+- **Technical, not branded.** These contracts are used directly by trusted
+  workspace crates and first-party composition roots. They are not a supported
+  integration surface; downstream authors depend on `nebula-sdk`.
 
 ## Layering
 
 ```text
-engine / api / core  ──depends on──▶  nebula-storage-port  (this crate)
-                                             ▲
-nebula-storage (adapters: InMemory/SQLite/Postgres)  ──implements──┘
-nebula-tenancy (scope-enforcing decorators)          ──wraps──┘
+engine / credential / api / apps ──depends on──▶ nebula-storage-port
+                                                    ▲
+nebula-storage (SQLite/Postgres + internal reference) ──implements──┘
+nebula-tenancy (general Scope-taking decorators)      ──wraps───────┘
 ```
 
-Only composition roots (api `AppState`, the knife test) wire the concrete
-adapter and the tenancy decorator together.
+First-party deployment composition belongs under `apps/`. `nebula-api` is a
+technical HTTP boundary, while tests may assemble reference adapters directly.
+Credential persistence is not wrapped by tenancy; its selectors are mandatory
+data but do not confer authority.
+
+The historical SQLite/PostgreSQL credential owner columns remain nullable until
+the K2 upgrade migration. Mandatory owner is currently enforced by the port and
+application, and `NULL` never means global or administrator access.
 
 ## Contract pointer
 

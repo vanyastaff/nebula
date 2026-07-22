@@ -16,7 +16,11 @@ use nebula_core::{
     role::effective_workspace_role,
 };
 
-use crate::{error::ApiError, middleware::auth::AuthContext, state::AppState};
+use crate::{
+    error::ApiError,
+    middleware::auth::AuthContext,
+    state::{AppState, TenantMembershipSnapshot},
+};
 
 /// RBAC middleware — must run AFTER auth and tenancy middleware.
 ///
@@ -51,16 +55,25 @@ pub async fn rbac_middleware(
     let insecure_bypass_without_store =
         state.allow_insecure_tenant_rbac_bypass() && state.membership_store.is_none();
 
-    // Load org role
-    let org_role = match &state.membership_store {
-        Some(store) => store.get_org_role(org_id, &auth_ctx.principal).await?,
-        None if insecure_bypass_without_store => Some(OrgRole::OrgOwner),
+    // Load one consistent org/workspace role snapshot. Implementations must
+    // not splice two independently observed membership states together.
+    let membership = match &state.membership_store {
+        Some(store) => {
+            store
+                .get_tenant_membership(org_id, resolved.workspace_id, &auth_ctx.principal)
+                .await?
+        },
+        None if insecure_bypass_without_store => TenantMembershipSnapshot {
+            org_role: Some(OrgRole::OrgOwner),
+            workspace_role: resolved.workspace_id.map(|_| WorkspaceRole::WorkspaceAdmin),
+        },
         None => {
             return Err(ApiError::ServiceUnavailable(
                 "membership store not configured; tenant routes are disabled".to_string(),
             ));
         },
     };
+    let org_role = membership.org_role;
 
     // If user has no org role at all, return 404 (enumeration prevention).
     if org_role.is_none() {
@@ -69,16 +82,7 @@ pub async fn rbac_middleware(
 
     // Load workspace role if workspace is resolved
     let workspace_role = if let Some(ws_id) = resolved.workspace_id {
-        let explicit_role = match &state.membership_store {
-            Some(store) => store.get_workspace_role(ws_id, &auth_ctx.principal).await?,
-            None if insecure_bypass_without_store => Some(WorkspaceRole::WorkspaceAdmin),
-            None => {
-                return Err(ApiError::ServiceUnavailable(
-                    "membership store not configured; tenant routes are disabled".to_string(),
-                ));
-            },
-        };
-        let effective = effective_workspace_role(org_role, explicit_role);
+        let effective = effective_workspace_role(org_role, membership.workspace_role);
 
         // If user has org access but no effective workspace role, return 404
         if effective.is_none() {

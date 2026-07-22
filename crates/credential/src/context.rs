@@ -155,10 +155,13 @@ impl fmt::Debug for CredentialContext {
             .field("scope", self.base.scope())
             .field("principal", self.base.principal())
             .field("trace_id", &self.base.trace_id())
-            .field("callback_url", &self.callback_url)
-            .field("app_url", &self.app_url)
-            .field("session_id", &self.session_id)
-            .field("owner_id_override", &self.owner_id_override)
+            .field("callback_url_present", &self.callback_url.is_some())
+            .field("app_url_present", &self.app_url.is_some())
+            .field("session_id_present", &self.session_id.is_some())
+            .field(
+                "owner_id_override_present",
+                &self.owner_id_override.is_some(),
+            )
             .field("cancel", &self.cancel)
             .finish()
     }
@@ -486,9 +489,15 @@ mod tests {
     }
 
     #[test]
-    fn debug_output_does_not_panic() {
-        let ctx = CredentialContext::for_owner("user_123");
+    fn debug_output_redacts_interactive_and_owner_values() {
+        const CANARY: &str = "credential-context-debug-canary";
+        let ctx = CredentialContext::for_owner(CANARY)
+            .with_callback_url(CANARY)
+            .with_app_url(CANARY)
+            .with_session_id(CANARY);
         let debug = format!("{ctx:?}");
         assert!(debug.contains("CredentialContext"));
+        assert!(!debug.contains(CANARY));
+        assert!(debug.contains("session_id_present: true"));
     }
 }

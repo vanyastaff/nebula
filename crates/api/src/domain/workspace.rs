@@ -176,7 +176,7 @@ pub fn router() -> OpenApiRouter<AppState> {
             routes!(credential::delete_credential),
         ))
         .routes(access::protected(
-            Permission::CredentialRead,
+            Permission::CredentialWrite,
             routes!(credential::test_credential),
         ))
         .routes(access::protected(

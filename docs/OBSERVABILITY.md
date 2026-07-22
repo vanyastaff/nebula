@@ -132,7 +132,9 @@ The metric labels `coalesced_total{tier=l1|l2}` keep the original two-value voca
 
 ### 7.3 Audit events
 
-The coordinator emits three events through the same `AuditSink` used by `AuditLayer` for `CredentialStore` operations. Variants live on `nebula_storage::credential::AuditOperation` (extended in Stage 4.1; the enum is `#[non_exhaustive]`).
+The coordinator emits three events through the same `AuditSink` used by `AuditLayer` for
+owner-bound `CredentialPersistence` operations. Audit value types live in `nebula-credential` and
+the storage decorator lives in `nebula-storage`; the operation enum is `#[non_exhaustive]`.
 
 | Variant | Fields | When |
 |---|---|---|
@@ -140,7 +142,7 @@ The coordinator emits three events through the same `AuditSink` used by `AuditLa
 | `RefreshCoordSentinelTriggered` | `credential_id`, `recent_count` | once per stuck `RefreshInFlight` detected |
 | `RefreshCoordReauthFlagged` | `credential_id`, `reason` (`"sentinel_repeated"` for sub-spec §3.4 escalations) | once per `CredentialEvent::ReauthRequired` publish |
 
-Sink failures are logged at `warn!` but do not propagate to the refresh caller — the refresh path is observational, and propagating audit-sink hiccups would re-create the n8n #13088 retry storm the coordinator was built to prevent. The store-side `AuditLayer` retains its fail-closed semantics (ADR-0028 inv 4).
+Sink failures are logged at `warn!` but do not propagate to the refresh caller — the refresh path is observational, and propagating audit-sink hiccups would re-create the n8n #13088 retry storm the coordinator was built to prevent. The store-side `AuditLayer` has a stricter error-propagating contract: it returns sink failures instead of silently succeeding. This decorator is not a transaction boundary, so a successful inner mutation remains committed if recording then fails; it never attempts a racy compensating write. Atomic mutation-plus-audit persistence requires a backend transaction or transactional outbox.
 
 ### 7.4 Sample PromQL queries
 

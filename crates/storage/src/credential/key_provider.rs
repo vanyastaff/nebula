@@ -120,7 +120,7 @@ pub trait KeyProvider: Send + Sync + 'static {
     ///
     /// Returns [`ProviderError`] when the backing source is unreachable or the
     /// material fails validation. The layer wraps this as
-    /// `StoreError::Backend` (from `nebula_credential`) so callers see a
+    /// `CredentialPersistenceError::Backend` (from `nebula_credential`) so callers see a
     /// uniform failure taxonomy.
     fn current(&self) -> Result<KeySnapshot, ProviderError>;
 }
@@ -524,8 +524,18 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use base64::Engine;
+    #[cfg(feature = "sqlite")]
+    use nebula_storage_port::{
+        CredentialOwner, CredentialPersistence, CredentialPersistenceError, CredentialSelector,
+        CredentialWriteMode,
+    };
 
     use super::*;
+
+    #[cfg(feature = "sqlite")]
+    fn selector(id: &str) -> CredentialSelector {
+        CredentialSelector::new(CredentialOwner::from_canonical("test-owner"), id)
+    }
 
     // ------------------------------------------------------------------------
     // ProviderError shape
@@ -883,27 +893,29 @@ mod tests {
         }
     }
 
-    // Cross-layer test — requires the sqlite feature for SqliteCredentialStore.
+    // Cross-layer test — requires the sqlite feature for SqliteCredentialPersistence.
     #[cfg(feature = "sqlite")]
     #[tokio::test]
-    async fn layer_refetches_provider_on_put_and_get() -> Result<(), nebula_credential::StoreError>
-    {
-        use nebula_credential::{CredentialStore, PutMode};
-
+    async fn layer_refetches_provider_on_put_and_get() -> Result<(), CredentialPersistenceError> {
         use crate::credential::test_support::make_credential;
 
-        use super::super::{layer::EncryptionLayer, sqlite::SqliteCredentialStore};
+        use super::super::{layer::EncryptionLayer, sqlite::SqliteCredentialPersistence};
 
         let key = Arc::new(EncryptionKey::from_bytes([0x33; 32]));
         let provider = Arc::new(CountingKeyProvider::new(Arc::clone(&key)));
         let store = EncryptionLayer::new(
-            SqliteCredentialStore::connect_memory().await?,
+            SqliteCredentialPersistence::connect_memory().await?,
             Arc::clone(&provider) as _,
         );
 
         let before_put = provider.snapshot_calls();
+        let credential = make_credential("refetch-1", b"secret");
         store
-            .put(make_credential("refetch-1", b"secret"), PutMode::CreateOnly)
+            .put(
+                &selector(&credential.id),
+                credential,
+                CredentialWriteMode::CreateOnly,
+            )
             .await
             .unwrap();
         assert!(
@@ -912,7 +924,7 @@ mod tests {
         );
 
         let before_get = provider.snapshot_calls();
-        store.get("refetch-1").await.unwrap();
+        store.get(&selector("refetch-1")).await.unwrap();
         assert!(
             provider.snapshot_calls() > before_get,
             "get must atomically snapshot the provider at least once"
@@ -921,7 +933,7 @@ mod tests {
     }
 
     /// Failure from `current()` surfaces through the layer as a
-    /// `StoreError::Backend` — the typed taxonomy the rest of the credential
+    /// `CredentialPersistenceError::Backend` — the typed taxonomy the rest of the credential
     /// surface expects.
     ///
     /// Only used by the cross-layer tests below (sqlite feature).
@@ -940,25 +952,28 @@ mod tests {
     // Cross-layer test — see `layer_refetches_provider_on_put_and_get`.
     #[cfg(feature = "sqlite")]
     #[tokio::test]
-    async fn provider_failure_surfaces_as_backend_error()
-    -> Result<(), nebula_credential::StoreError> {
-        use nebula_credential::{CredentialStore, PutMode, StoreError};
-
+    async fn provider_failure_surfaces_as_backend_error() -> Result<(), CredentialPersistenceError>
+    {
         use crate::credential::test_support::make_credential;
 
-        use super::super::{layer::EncryptionLayer, sqlite::SqliteCredentialStore};
+        use super::super::{layer::EncryptionLayer, sqlite::SqliteCredentialPersistence};
 
         let store = EncryptionLayer::new(
-            SqliteCredentialStore::connect_memory().await?,
+            SqliteCredentialPersistence::connect_memory().await?,
             Arc::new(FailingKeyProvider) as Arc<dyn KeyProvider>,
         );
 
+        let credential = make_credential("fail-1", b"x");
         let err = store
-            .put(make_credential("fail-1", b"x"), PutMode::CreateOnly)
+            .put(
+                &selector(&credential.id),
+                credential,
+                CredentialWriteMode::CreateOnly,
+            )
             .await
             .expect_err("provider failure must propagate");
         assert!(
-            matches!(err, StoreError::Backend(_)),
+            matches!(err, CredentialPersistenceError::Backend(_)),
             "expected Backend variant, got {err:?}"
         );
         Ok(())

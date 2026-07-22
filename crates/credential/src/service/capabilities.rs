@@ -13,10 +13,10 @@ use nebula_resilience::CallError;
 use nebula_resilience::retry::{BackoffConfig, RetryConfig, retry_with};
 use serde_json::Value;
 
-use crate::CredentialId;
 use crate::resolve::TestResult;
-use crate::store::{
-    LAST_VALIDATED_AT_METADATA_KEY, PutMode, REVOKED_AT_METADATA_KEY, StoredCredential,
+use crate::{
+    CredentialId, CredentialWriteMode, LAST_VALIDATED_AT_METADATA_KEY, REVOKED_AT_METADATA_KEY,
+    StoredCredential,
 };
 
 use super::error::CredentialServiceError;
@@ -222,7 +222,7 @@ impl CredentialService {
             id: stored.id.clone(),
             name: stored.name.clone(),
             credential_key: stored.credential_key.clone(),
-            data: refreshed.to_vec(),
+            data: refreshed.clone().into(),
             state_kind,
             state_version,
             version: stored.version,
@@ -245,8 +245,9 @@ impl CredentialService {
         // last-writer-wins and clobber the racing write.
         self.store
             .put(
+                &scope.selector(id),
                 stored_next,
-                PutMode::CompareAndSwap {
+                CredentialWriteMode::CompareAndSwap {
                     expected_version: stored.version,
                 },
             )
@@ -358,13 +359,17 @@ impl CredentialService {
             Value::String(now.to_rfc3339()),
         );
         let tombstoned = StoredCredential {
-            data: Vec::new(),
+            data: Vec::new().into(),
             updated_at: now,
             metadata,
             ..stored
         };
         self.store
-            .put(tombstoned, PutMode::CompareAndSwap { expected_version })
+            .put(
+                &scope.selector(id),
+                tombstoned,
+                CredentialWriteMode::CompareAndSwap { expected_version },
+            )
             .await
             .map_err(Self::map_store_err)?;
 

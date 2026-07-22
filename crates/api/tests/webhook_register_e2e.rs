@@ -42,27 +42,30 @@ use std::{
     time::Duration,
 };
 
+use async_trait::async_trait;
 use axum::{
     Extension, Json,
     body::Body,
     extract::{Path, State},
     http::{Request, StatusCode, header},
 };
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use nebula_action::{TriggerRuntimeContext, webhook::providers::default_factories};
 use nebula_api::{
     ApiConfig, AppState, app,
     domain::webhook::{dto::RegisterWebhookRequest, handler::register_webhook},
-    middleware::auth::AuthenticatedUser,
+    middleware::auth::AuthenticatedPrincipal,
     ports::credential_service_factory::with_memory_store,
     transport::webhook::{
-        CredentialBackedWebhookSecretResolver, TriggerStoreSpecLookup,
-        WebhookActivationContextFactory, WebhookTransport, WebhookTransportConfig,
+        SecretResolutionError, TriggerStoreSpecLookup, WebhookActivationContextFactory,
+        WebhookSecretResolver, WebhookTransport, WebhookTransportConfig,
     },
 };
 use nebula_core::{
     OrgId, TenantContext, WorkflowId, WorkspaceId, id::UserId, node_key, scope::Principal,
 };
-use nebula_credential::{CredentialService, TenantScope};
+use nebula_credential::{CredentialService, SigningKeyCredential, TenantScope};
 use nebula_engine::ActionRegistry;
 use nebula_storage::{
     credential::{EnvKeyProvider, KeyProvider},
@@ -93,6 +96,66 @@ const TEST_ORG_A: &str = "org_00000000000000000000000001";
 const TEST_WS_A: &str = "ws_00000000000000000000000001";
 const TEST_ORG_B: &str = "org_00000000000000000000000002";
 const TEST_WS_B: &str = "ws_00000000000000000000000002";
+
+/// Test-local adapter used by API registration tests. The production
+/// credential-aware adapter belongs to `apps/server`; this test double keeps
+/// `nebula-api` integration tests focused on the neutral resolver port.
+#[derive(Clone)]
+struct TestCredentialWebhookSecretResolver {
+    service: Arc<CredentialService>,
+}
+
+impl TestCredentialWebhookSecretResolver {
+    fn new(service: Arc<CredentialService>) -> Self {
+        Self { service }
+    }
+}
+
+#[async_trait]
+impl WebhookSecretResolver for TestCredentialWebhookSecretResolver {
+    async fn resolve(
+        &self,
+        scope: &Scope,
+        secret_id: &str,
+    ) -> Result<Vec<u8>, SecretResolutionError> {
+        let tenant = TenantScope::from_scope(scope);
+        let binding = self
+            .service
+            .validate_credential_binding(&tenant, secret_id)
+            .await
+            .map_err(|_| SecretResolutionError::NotFound)?;
+        let guard = self
+            .service
+            .resolve_for_slot::<SigningKeyCredential>(&tenant, &binding, CancellationToken::new())
+            .await
+            .map_err(|_| SecretResolutionError::Unavailable)?;
+        let encoded = guard
+            .key()
+            .expose_secret()
+            .strip_prefix("whsec_")
+            .ok_or(SecretResolutionError::InvalidMaterial)?;
+        let decoded = BASE64_STANDARD
+            .decode(encoded)
+            .map_err(|_| SecretResolutionError::InvalidMaterial)?;
+        if decoded.is_empty() {
+            return Err(SecretResolutionError::InvalidMaterial);
+        }
+        Ok(decoded)
+    }
+}
+
+struct EmptySecretResolver;
+
+#[async_trait]
+impl WebhookSecretResolver for EmptySecretResolver {
+    async fn resolve(
+        &self,
+        _scope: &Scope,
+        _secret_id: &str,
+    ) -> Result<Vec<u8>, SecretResolutionError> {
+        Ok(Vec::new())
+    }
+}
 
 #[derive(Debug)]
 struct ObservedTriggerStore {
@@ -180,10 +243,8 @@ fn tenant_for_scope_b() -> TenantContext {
     }
 }
 
-fn dummy_user() -> AuthenticatedUser {
-    AuthenticatedUser {
-        user_id: "usr_test_webhook_register".to_string(),
-    }
+fn dummy_user() -> AuthenticatedPrincipal {
+    AuthenticatedPrincipal::for_test_user(UserId::new().to_string())
 }
 
 // ── Fixture: minimal WorkflowDefinition JSON with a trigger binding ───────────
@@ -286,7 +347,7 @@ async fn build_full_state() -> (
         tenant_rate_limit_per_minute: None,
     });
 
-    let secret_resolver = Arc::new(CredentialBackedWebhookSecretResolver::new(
+    let secret_resolver = Arc::new(TestCredentialWebhookSecretResolver::new(
         credential_svc.clone(),
     ));
     let ctx_factory: Arc<dyn WebhookActivationContextFactory> = Arc::new(NoopCtxFactory);
@@ -304,7 +365,9 @@ async fn build_full_state() -> (
         Arc::new(control_queue),
         config.jwt_secret,
     )
-    .with_credential_service(credential_svc.clone())
+    .with_credential_gateway(
+        nebula_api::ports::credential_command::test_gateway_from_service(credential_svc.clone()),
+    )
     .with_trigger_store(Arc::clone(&trigger_store) as _)
     .with_webhook_activation_store(Arc::clone(&activation_store) as _)
     .with_action_registry(Arc::clone(&action_registry))
@@ -312,6 +375,7 @@ async fn build_full_state() -> (
     .with_webhook_secret_resolver(secret_resolver)
     .with_webhook_ctx_factory_b(ctx_factory)
     .with_webhook_spec_lookup(Arc::new(spec_lookup))
+    .with_workspace_resolver(Arc::new(common::TestWorkspaceResolver))
     .with_insecure_tenant_rbac_bypass_for_tests();
 
     (
@@ -743,6 +807,65 @@ async fn register_happy_path_rows_written() {
     );
 }
 
+/// A resolver returning `Ok(empty)` violates the neutral port postcondition.
+/// Registration must map it to the fixed internal-error lane before the
+/// generic factory (which otherwise accepts an empty key) or activation store.
+#[tokio::test]
+async fn register_rejects_empty_resolved_secret_before_activation() {
+    let (
+        state,
+        _trigger_store,
+        activation_store,
+        workflow_versions,
+        workflow_store,
+        _credential_service,
+    ) = build_full_state().await;
+    let state = state.with_webhook_secret_resolver(Arc::new(EmptySecretResolver));
+    let workflow_id = WorkflowId::new();
+    let trigger_node_key = "wh-trigger-empty-secret";
+    let scope = scope_a();
+
+    seed_workflow(
+        &workflow_store,
+        &workflow_versions,
+        &scope,
+        workflow_id,
+        workflow_definition_with_binding(workflow_id, trigger_node_key),
+    )
+    .await;
+
+    let error = register_webhook(
+        State(state),
+        Extension(dummy_user()),
+        Extension(tenant_for_scope_a()),
+        Path((TEST_ORG_A.to_owned(), TEST_WS_A.to_owned())),
+        Json(RegisterWebhookRequest {
+            workflow_id: workflow_id.to_string(),
+            trigger_id: trigger_node_key.to_owned(),
+            provider: "generic".to_owned(),
+            replay_window_secs: None,
+            timestamp_header: None,
+            provider_config: None,
+            rate_limit_per_minute: None,
+        }),
+    )
+    .await
+    .expect_err("empty resolved material must fail before activation");
+
+    let nebula_api::ApiError::Internal(detail) = error else {
+        panic!("empty material must use the fixed secret-resolution error lane");
+    };
+    assert_eq!(detail, "webhook secret resolution failed");
+    assert!(
+        activation_store
+            .list_all_active()
+            .await
+            .expect("activation lookup succeeds")
+            .is_empty(),
+        "empty material must never reach activation persistence",
+    );
+}
+
 /// T4 — Missing webhook transport → 503 (no panic, no 500).
 ///
 /// The handler must fail-closed when a required infrastructure piece is
@@ -781,7 +904,9 @@ async fn register_without_transport_returns_503() {
         Arc::new(control_queue),
         config.jwt_secret,
     )
-    .with_credential_service(credential_svc)
+    .with_credential_gateway(
+        nebula_api::ports::credential_command::test_gateway_from_service(credential_svc),
+    )
     .with_trigger_store(Arc::clone(&trigger_store) as _)
     .with_webhook_activation_store(Arc::clone(&activation_store) as _)
     // no .with_webhook_transport(...)
@@ -888,7 +1013,7 @@ async fn register_compensation_cleans_up_on_activation_failure() {
         tenant_rate_limit_per_minute: None,
     });
 
-    let secret_resolver = Arc::new(CredentialBackedWebhookSecretResolver::new(
+    let secret_resolver = Arc::new(TestCredentialWebhookSecretResolver::new(
         credential_svc.clone(),
     ));
     let ctx_factory: Arc<dyn WebhookActivationContextFactory> = Arc::new(NoopCtxFactory);
@@ -907,7 +1032,9 @@ async fn register_compensation_cleans_up_on_activation_failure() {
         Arc::new(control_queue),
         config.jwt_secret,
     )
-    .with_credential_service(credential_svc)
+    .with_credential_gateway(
+        nebula_api::ports::credential_command::test_gateway_from_service(credential_svc),
+    )
     .with_trigger_store(Arc::clone(&trigger_store) as _)
     .with_webhook_activation_store(Arc::clone(&activation_store) as _)
     .with_webhook_transport(transport)
@@ -1164,11 +1291,11 @@ async fn bootstrap_reconstruct_uses_spec_trigger_id() {
             &self,
             _scope: &Scope,
             secret_id: &str,
-        ) -> Result<Vec<u8>, nebula_api::transport::webhook::SecretResolutionError> {
+        ) -> Result<Vec<u8>, SecretResolutionError> {
             if secret_id == SECRET_ID {
                 Ok(vec![0x42u8; 32]) // 32-byte dummy HMAC key
             } else {
-                Err(format!("unknown secret_id: {secret_id}").into())
+                Err(SecretResolutionError::NotFound)
             }
         }
     }
@@ -1292,7 +1419,7 @@ async fn register_factory_invalid_spec_returns_422() {
         tenant_rate_limit_per_minute: None,
     });
 
-    let secret_resolver = Arc::new(CredentialBackedWebhookSecretResolver::new(
+    let secret_resolver = Arc::new(TestCredentialWebhookSecretResolver::new(
         credential_svc.clone(),
     ));
     let ctx_factory: Arc<dyn WebhookActivationContextFactory> = Arc::new(NoopCtxFactory);
@@ -1309,7 +1436,9 @@ async fn register_factory_invalid_spec_returns_422() {
         Arc::new(control_queue),
         config.jwt_secret,
     )
-    .with_credential_service(credential_svc)
+    .with_credential_gateway(
+        nebula_api::ports::credential_command::test_gateway_from_service(credential_svc),
+    )
     .with_trigger_store(Arc::clone(&trigger_store) as _)
     .with_webhook_activation_store(Arc::clone(&activation_store) as _)
     .with_action_registry(Arc::clone(&action_registry))

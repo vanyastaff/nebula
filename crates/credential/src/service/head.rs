@@ -13,14 +13,14 @@
 //! produces a typed guard, and the engine resolver owns snapshot projection.
 
 use chrono::{DateTime, Utc};
-use nebula_credential::{CredentialDisplay, StoredCredential};
+use nebula_credential::{CredentialDisplay, StoredCredentialHead};
 use serde::Serialize;
 
 /// Secret-free management view of one stored credential row.
 ///
 /// Returned by the facade CRUD operations (`create` / `get` / `list` /
 /// `update` / `refresh`). All fields are non-secret by construction:
-/// `StoredCredential::data` is never read to build a head.
+/// The persistence projection has no state-byte field.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[non_exhaustive]
 pub struct CredentialHead {
@@ -54,7 +54,7 @@ impl CredentialHead {
     /// separately because the `metadata["display"]` persistence convention
     /// is owned by the facade, not the row type.
     #[must_use]
-    pub(crate) fn from_stored(stored: &StoredCredential, display: CredentialDisplay) -> Self {
+    pub(crate) fn from_stored(stored: &StoredCredentialHead, display: CredentialDisplay) -> Self {
         Self {
             id: stored.id.clone(),
             credential_key: stored.credential_key.clone(),
@@ -80,13 +80,12 @@ impl CredentialHead {
 mod tests {
     use super::*;
 
-    fn stored(expires_at: Option<DateTime<Utc>>) -> StoredCredential {
+    fn stored(expires_at: Option<DateTime<Utc>>) -> StoredCredentialHead {
         let now = Utc::now();
-        StoredCredential {
+        StoredCredentialHead {
             id: "cred_01ABCDEFGHJKMNPQRSTVWXYZ0".to_owned(),
             name: None,
             credential_key: "api_key".to_owned(),
-            data: vec![1, 2, 3],
             state_kind: "api_key_state".to_owned(),
             state_version: 1,
             version: 4,
@@ -99,7 +98,7 @@ mod tests {
     }
 
     #[test]
-    fn from_stored_copies_row_fields_without_data() {
+    fn from_stored_head_copies_projection_fields() {
         let row = stored(None);
         let head = CredentialHead::from_stored(&row, CredentialDisplay::default());
         assert_eq!(head.id, row.id);
@@ -108,8 +107,7 @@ mod tests {
         assert_eq!(head.last_validated_at, None);
         assert!(!head.reauth_required);
         assert!(head.display.is_empty());
-        // No `data` field exists on the head — the projection is
-        // structurally secret-free; serialize and prove the bytes absent.
+        // No `data` field exists on either persistence or service projection.
         let json = serde_json::to_value(&head).expect("serialize head");
         assert!(json.get("data").is_none());
     }

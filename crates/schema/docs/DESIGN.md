@@ -152,7 +152,7 @@ credential/resource-крейтов, но несёт несколько load-bear
   схема описывает *параметры* концепта, а не binding-слоты — это разделение остаётся за
   пределами nebula-schema (в action/resource-авторинге).
 - **Что НЕ меняется:** ядро pipeline, таксономия кодов, единственное validator-пересечение,
-  proof-token custody. Конференц-коррекции credential (policy(&State)-routing, OwnerScopedKey,
+  proof-token custody. Конференц-коррекции credential (policy(&State)-routing, CredentialSelector,
   узкий типизированный RefreshTransport seam, lease first-class) — это контракты внутри
   credential-рантайма; nebula-schema их **не** реализует и от них не зависит.
 

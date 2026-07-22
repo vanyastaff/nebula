@@ -7,7 +7,8 @@
 //! 2. Ownership validation — `trigger_id` must exist in the workflow's
 //!    `trigger_bindings`, scoped to the caller's tenant.  Cross-scope or absent
 //!    ⇒ 404 (no existence oracle leak).
-//! 3. Credential mint — `CredentialService::create` writes the `whsec_` secret.
+//! 3. Credential mint — the authenticated credential command gateway writes
+//!    the `whsec_` secret.
 //! 4. Spec write — `TriggerStore::create` writes the `port_triggers` row.
 //! 5. Handler build + `activate_and_persist` — in-memory routing entry +
 //!    `port_webhook_activations` row.
@@ -36,7 +37,6 @@ use axum::{
 };
 use nebula_action::SignaturePolicy;
 use nebula_core::{TenantContext, TriggerId};
-use nebula_credential::{CredentialDisplay, TenantScope};
 use nebula_storage::rows::WebhookActivationSpec;
 use nebula_storage_port::dto::{TriggerRow, WebhookMode};
 use nebula_tenancy::ScopedTriggerStore;
@@ -48,10 +48,15 @@ use super::dto::{RegisterWebhookRequest, RegisterWebhookResponse};
 use nebula_storage_port::store::TriggerStore as _;
 
 use crate::{
+    domain::credential::dto::CreateCredentialRequest,
     error::{ApiError, ProblemDetails},
-    middleware::auth::AuthenticatedUser,
+    middleware::auth::AuthenticatedPrincipal,
+    ports::credential_command::{CredentialGatewayCommand, CredentialGatewayResult},
     state::AppState,
-    transport::webhook::{PersistParams, activate_and_persist, mint_whsec},
+    transport::webhook::{
+        PersistParams, activate_and_persist,
+        signing_secret::{mint_whsec, validate_resolved_secret},
+    },
 };
 
 /// POST /orgs/{org}/workspaces/{ws}/webhooks — Register a webhook trigger.
@@ -63,7 +68,7 @@ use crate::{
     post,
     path = "/orgs/{org}/workspaces/{ws}/webhooks",
     tag = "workspaces.webhooks",
-    security(("bearer" = []), ("api_key" = [])),
+    security(("bearer" = [])),
     params(
         ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
         ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
@@ -81,7 +86,7 @@ use crate::{
 )]
 pub async fn register_webhook(
     State(state): State<AppState>,
-    Extension(user): Extension<AuthenticatedUser>,
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws)): Path<(String, String)>,
     Json(body): Json<RegisterWebhookRequest>,
@@ -119,9 +124,11 @@ pub async fn register_webhook(
         .trigger_store
         .as_ref()
         .ok_or_else(|| ApiError::ServiceUnavailable("trigger store not configured".to_string()))?;
-    let credential_service = state.credential_service.as_ref().ok_or_else(|| {
-        ApiError::ServiceUnavailable("credential service not configured".to_string())
-    })?;
+    if state.credential_gateway.is_none() {
+        return Err(ApiError::ServiceUnavailable(
+            "credential command gateway not configured".to_owned(),
+        ));
+    }
     let webhook_activation_store = state.webhook_activation_store.as_ref().ok_or_else(|| {
         ApiError::ServiceUnavailable("webhook activation store not configured".to_string())
     })?;
@@ -218,30 +225,29 @@ pub async fn register_webhook(
     // copy that is ever returned to the caller.  The persistence layer stores
     // the id, not the plaintext bytes.
     let whsec = mint_whsec();
-    let tenant_scope = TenantScope::from_scope(&scope);
-    let credential_head = credential_service
-        .create(
-            &tenant_scope,
-            "signing_key",
-            json!({
+    let credential = crate::transport::credential::execute_gateway_command(
+        &state,
+        &principal,
+        &scope,
+        CredentialGatewayCommand::Create(CreateCredentialRequest {
+            credential_key: "signing_key".to_owned(),
+            name: format!("webhook-signing-key-{}", &body.trigger_id),
+            description: None,
+            data: json!({
                 "key": whsec,
                 "algorithm": "hmac-sha256"
             }),
-            CredentialDisplay {
-                display_name: Some(format!("webhook-signing-key-{}", &body.trigger_id)),
-                ..CredentialDisplay::default()
-            },
-        )
-        .await
-        .map_err(|e| {
-            tracing::error!(
-                target: "nebula::api::webhook::register",
-                error = %e,
-                "credential mint failed during webhook registration"
-            );
-            ApiError::Internal(format!("failed to create signing credential: {e}"))
-        })?;
-    let secret_id = credential_head.id.clone();
+            tags: None,
+        }),
+        "<webhook-signing-key>",
+    )
+    .await?;
+    let CredentialGatewayResult::Record(credential) = credential else {
+        return Err(ApiError::Internal(
+            "credential gateway returned an invalid webhook mint result".to_owned(),
+        ));
+    };
+    let secret_id = credential.id;
 
     // ── Step 4: build the spec and write the trigger row ────────────────────
     //
@@ -290,7 +296,7 @@ pub async fn register_webhook(
         run_as: None,
         webhook_path: None,
         created_at: chrono::Utc::now().to_rfc3339(),
-        created_by: user.user_id.clone(),
+        created_by: principal.subject().to_owned(),
         version: 1,
         deleted_at: None,
     };
@@ -298,7 +304,7 @@ pub async fn register_webhook(
     let scoped_trigger = ScopedTriggerStore::new(Arc::clone(trigger_store), scope.clone());
     if let Err(e) = scoped_trigger.create(&scope, trigger_row).await {
         // Compensation: best-effort credential delete.
-        compensate_delete_credential(credential_service, &tenant_scope, &secret_id).await;
+        compensate_delete_credential(&state, &principal, &scope, &secret_id).await;
         tracing::error!(
             target: "nebula::api::webhook::register",
             error = %e,
@@ -318,13 +324,8 @@ pub async fn register_webhook(
         let raw_bytes = secret_resolver
             .resolve(&scope, &secret_id)
             .await
-            .map_err(|e| {
-                tracing::error!(
-                    target: "nebula::api::webhook::register",
-                    "secret resolution failed after credential mint"
-                );
-                ApiError::Internal(format!("secret resolver failed: {e}"))
-            })?;
+            .and_then(validate_resolved_secret)
+            .map_err(|error| map_secret_resolution_error(&secret_id, error))?;
 
         use nebula_action::webhook::factory::WebhookActivationSpec as ActionSpec;
         let mut action_spec = ActionSpec::new(body.provider.clone(), raw_bytes);
@@ -420,7 +421,7 @@ pub async fn register_webhook(
         Err(api_err) => {
             // Compensation: best-effort spec-row soft-delete + credential delete.
             compensate_delete_trigger_spec(&scoped_trigger, &scope, &trigger_row_id).await;
-            compensate_delete_credential(credential_service, &tenant_scope, &secret_id).await;
+            compensate_delete_credential(&state, &principal, &scope, &secret_id).await;
             return Err(api_err);
         },
     };
@@ -494,6 +495,23 @@ fn map_factory_error(
     }
 }
 
+fn map_secret_resolution_error(
+    secret_id: &str,
+    _error: crate::transport::webhook::SecretResolutionError,
+) -> ApiError {
+    // The resolver is a public object-safe port and may be implemented by
+    // downstream code. Its Display text is therefore untrusted and may carry
+    // credential/provider material. Keep both logs and the HTTP problem body
+    // on a closed classification owned by this boundary.
+    tracing::error!(
+        target: "nebula::api::webhook::register",
+        error_class = "secret_resolution",
+        secret_id = %secret_id,
+        "secret resolution failed after credential mint"
+    );
+    ApiError::Internal("webhook secret resolution failed".to_owned())
+}
+
 // ── Compensation helpers ──────────────────────────────────────────────────────
 
 /// Best-effort credential deletion on registration failure.
@@ -501,11 +519,13 @@ fn map_factory_error(
 /// Logs warn on failure; does NOT return an error (the caller's original error
 /// is surfaced instead).  The credential id is never logged.
 async fn compensate_delete_credential(
-    service: &nebula_credential::CredentialService,
-    scope: &TenantScope,
+    state: &AppState,
+    principal: &AuthenticatedPrincipal,
+    scope: &nebula_storage_port::Scope,
     secret_id: &str,
 ) {
-    match service.delete(scope, secret_id).await {
+    match crate::transport::credential::delete_credential(state, principal, scope, secret_id).await
+    {
         Ok(()) => {
             tracing::warn!(
                 target: "nebula::api::webhook::register",
@@ -546,5 +566,44 @@ async fn compensate_delete_trigger_spec(
                 "compensation: trigger spec row soft-delete failed — orphan trigger row may exist"
             );
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SECRET_CANARY: &str = "whsec_DO_NOT_REFLECT_RESOLVER_SOURCE";
+
+    #[test]
+    fn resolver_errors_and_http_mapping_have_only_closed_text() {
+        use crate::transport::webhook::SecretResolutionError;
+
+        let cases = [
+            (
+                SecretResolutionError::NotFound,
+                "webhook signing secret was not found",
+            ),
+            (
+                SecretResolutionError::Unavailable,
+                "webhook signing secret is unavailable",
+            ),
+            (
+                SecretResolutionError::InvalidMaterial,
+                "webhook signing secret material is invalid",
+            ),
+        ];
+
+        for (error, expected_display) in cases {
+            assert_eq!(error.to_string(), expected_display);
+            assert!(!error.to_string().contains(SECRET_CANARY));
+
+            let mapped = map_secret_resolution_error("cred_non_secret_id", error);
+            let ApiError::Internal(detail) = mapped else {
+                panic!("secret resolution maps to the fixed internal-error lane");
+            };
+            assert_eq!(detail, "webhook secret resolution failed");
+            assert!(!detail.contains(SECRET_CANARY));
+        }
     }
 }

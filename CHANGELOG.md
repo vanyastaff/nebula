@@ -36,6 +36,38 @@ changes are expected between minor releases — call them out here.
 
 ### Added
 
+- **Authenticated credential command boundary.** API handlers now submit a
+  middleware-created `AuthenticatedPrincipal`, resolved tenant `Scope`, and
+  public intent through the object-safe `CredentialCommandGateway`. The
+  apps-owned trust bridge invokes a credential-owned `CredentialController`,
+  which obtains exactly one `CredentialTenantAuthority` decision before
+  deriving an owner partition and consuming a private one-use command. The
+  first-party authority revalidates the command permission from one consistent
+  membership-role snapshot after verifying workspace existence and parentage
+  through the canonical `WorkspaceResolver`. An unwired or unreachable
+  directory/membership source fails unavailable; a valid snapshot without
+  organization membership denies the command. The default server deliberately
+  leaves both policy ports unwired, so tenant routes remain 503 until the K4
+  supported composition path lands.
+- **Object-safe owner-bound credential persistence.** `nebula-storage-port`
+  now owns `CredentialPersistence` and its port-local owner/selector/row/error
+  DTOs. SQLite, PostgreSQL, the internal in-memory reference adapter, and
+  audit/encryption/cache decorators implement that one contract. Conformance
+  covers wrong-owner indistinguishability and metadata-owner spoof rejection;
+  live PostgreSQL execution remains a release gate.
+- **SDK-only external perimeter proof.** A downstream fixture with exactly one
+  Nebula dependency (`nebula-sdk`) compiles the currently supported
+  manual/builder subset (`ActionBuilder`, `WorkflowBuilder`, and credential
+  `TestResult`).
+  Separate negative probes assert precise diagnostics for forbidden authority,
+  owner-selector, raw-writer, admin-repository, runtime-constructor, and
+  unscoped-resolver access. This proof does not yet cover procedural derives;
+  their leaf-crate paths remain an explicit SDK gap.
+- **Structured secret-safe credential validation.** The credential service
+  preserves a non-empty report of RFC 6901 path + stable-code issues through the
+  controller/gateway, while discarding validator/provider messages, params,
+  values, and sources. `FieldPath::to_json_pointer` is the canonical renderer;
+  the API owns static value-free copy.
 - **Plane-A OAuth composition seam** — `OAuthIdentityRuntime` and the opaque,
   secret-free `OAuthRuntimeBuildError` are re-exported from `nebula-api` for
   composition roots. `OAuthIdentityRuntime::from_config` returns
@@ -73,6 +105,29 @@ changes are expected between minor releases — call them out here.
 
 ### Security
 
+- **(breaking) Credential owner authority is selector-bound.** At the
+  port/application boundary, persistence
+  operations require a mandatory `(owner, credential_id)` selector (or owner
+  for list); CAS includes both plus expected version, owner is never updated,
+  and wrong-owner access is indistinguishable from absence. The former
+  metadata-keyed scope decorator, optional/global owner convention, and
+  caller-created scope resolver are removed rather than aliased. The historical
+  SQLite/PostgreSQL columns remain nullable until the K2 upgrade migration;
+  `NULL` never grants administrator or global authority.
+- **(breaking) Credential connectivity tests require write authority.**
+  `POST .../credentials/{cred}/test` now consistently requires
+  `credentials:write` in the HTTP access kernel, OpenAPI contract, and the
+  credential command authority. Testing sends stored authority to an external
+  provider and is therefore not treated as a metadata read.
+- **Credential persistence diagnostics are secret-safe.** Secret-bearing port
+  rows redact state, display names, and metadata contents; dynamic backend and
+  audit failure details no longer render through `Display`/`Debug` or get
+  forwarded into credential-service errors.
+- **(breaking) Re-authentication reasons are payload-free.**
+  `ReauthReason::{ProviderRejected,MissingRefreshMaterial}` no longer accept a
+  provider/local `detail: String`; lifecycle events, errors, metrics, and logs
+  carry only closed reason codes. Provider response text can therefore never
+  enter the event bus or `Debug` through this type.
 - **(breaking) Plane-A session and TOTP authorities are hardened at rest.**
   PostgreSQL sessions now store only a domain-separated SHA-256 digest of the
   256-bit cookie token; migration `0038` intentionally invalidates existing
@@ -183,6 +238,52 @@ changes are expected between minor releases — call them out here.
 
 ### Changed
 
+- **(breaking) `nebula-sdk` is curated by persona, not workspace topology.**
+  Broad `nebula_sdk::nebula_{action,core,credential,plugin,resource,schema,
+  validator,workflow}` re-exports are gone. The currently verified one-dependency
+  path is the manual/builder subset through `prelude`, `integration`, builders,
+  and testing/runtime façades. Action, credential, plugin, resource, schema, and
+  validator procedural derives still emit leaf-crate paths and remain SDK gaps,
+  not permission to depend on implementation crates.
+- **(breaking) Credential persistence contracts moved down.** Consumers of
+  the old credential-local RPITIT/dyn store bridge migrate to the directly
+  object-safe `nebula_storage_port::CredentialPersistence` and port DTOs.
+  This is an unsupported technical workspace contract, not an integration SDK
+  surface, and there are no compatibility aliases.
+- **(breaking) Membership authorization reads are snapshot-based.**
+  `MembershipStore` implementors must add `get_tenant_membership` and return the
+  organization plus optional workspace roles from one logical snapshot. RBAC
+  and bounded-context authorities no longer reconstruct one decision from two
+  independent point reads.
+- **(breaking) Typed workspace paths are verified against the canonical
+  directory.** `WorkspaceResolver` implementors must add
+  `resolve_by_id(org_id, workspace_id)`. Middleware and credential authority no
+  longer treat well-formed organization/workspace path IDs as proof that the
+  workspace exists; they resolve the pair before making a membership decision.
+- **(breaking) Production credential adapters moved to the application.** Key
+  policy, SQLite selection, registry/catalog projection, refresh HTTP transport,
+  encryption/audit wiring, and the authenticated gateway now live in
+  `apps/server`. The similarly shaped API factory, registry adapter, and HTTP
+  transport are available only behind unsupported `test-util`; default
+  `nebula-api` has no direct credential implementation dependency.
+- **(breaking) Webhook secret resolution is an API-owned port.** The public
+  `CredentialBackedWebhookSecretResolver` and `mint_whsec` implementation
+  helpers were removed from `nebula-api`. Composition roots implement
+  `WebhookSecretResolver` using the closed, secret-free
+  `SecretResolutionError`; the first-party credential-backed adapter now lives
+  in `apps/server`.
+- **(breaking) Audit sink failure is explicitly non-atomic.** `AuditLayer`
+  propagates a sink error but never issues a compensating delete after an inner
+  mutation has committed. The old CreateOnly rollback could delete a newer
+  concurrent CAS write. Callers must reconcile a reported audit failure because
+  the mutation may already be durable; K3 owns transactional outbox/ledger
+  closure.
+- **Credential mutations have one validator.** Create, update, and acquisition
+  commands no longer run a competing API schema precheck. After the one
+  credential-authority decision, `CredentialService` performs the canonical
+  validate→resolve pipeline and returns structural path/code issues through the
+  gateway. `CredentialSchemaPort` is catalog/form-schema read-model only; its
+  absence does not make mutation routes return 503.
 - **Breaking Plane-A OAuth Rust migration.** `AuthBackend` implementors must
   add `cancel_oauth(provider, state, redirect_uri)`. `OAuthCompletion` is now a
   non-exhaustive enum (`SessionCreated` or `MfaRequired`) rather than a cloneable
@@ -335,6 +436,12 @@ changes are expected between minor releases — call them out here.
 
 ### Removed
 
+- **(breaking, security) Legacy credential authority/store surfaces.** Removed
+  the credential-local `CredentialStore`/erased dyn bridge, tenancy's
+  metadata-keyed credential scope layer/resolver, public optional-owner
+  authority, and broad SDK crate re-exports. No compatibility alias or supported
+  API/SDK raw handle replaces them; trusted technical code uses the new
+  storage-port contract directly.
 - **(breaking, security) Raw Plane-A OAuth internals are no longer public.**
   `transport::oauth` and its former `discovery`, `flow`, `http`, and `userinfo`
   modules are crate-private. This removes the raw singleton client, standalone
@@ -343,11 +450,13 @@ changes are expected between minor releases — call them out here.
   are also private. The in-memory backend encodes replay protection through
   atomic remove-on-consume, while Postgres retains its durable,
   provider-aware atomic consume contract.
-- **(breaking) Raw credential persistence access is no longer public.**
+- **(breaking) Raw credential persistence access is no longer exposed by the
+  supported credential/API surface.**
   Integrations using `CredentialService::credential_store_handle()` must use
   scoped facade methods instead; `CredentialHead::last_validated_at` exposes
   lifecycle metadata needed by supported callers without granting raw-store
-  or write-authority access.
+  or write-authority access. `CredentialPersistence` remains a public but
+  unsupported technical port for trusted workspace composition.
 - **(breaking, security) Raw Plane-B OAuth ceremony routes were removed.**
   Clients must start and continue credential acquisition through the universal
   workspace-scoped `/credentials/resolve` and `/credentials/resolve/continue`

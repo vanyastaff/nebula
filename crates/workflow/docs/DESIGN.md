@@ -152,7 +152,7 @@ storage, engine, validation) парсил бы и переинтерпретир
 - **Что меняется в пост-0092 мире — почти ничего в самом крейте.** Консолидация
   credential (одна `nebula-credential` = contract + runtime + facade + builtin;
   удаление `credential-runtime`/`builtin`/`testutil`/`vault`; `nebula-crypto`-порты),
-  per-slot rotation fan-out в `nebula-resource`, `OwnerScopedKey`-изоляция, узкий
+  per-slot rotation fan-out в `nebula-resource`, `CredentialSelector`-изоляция, узкий
   `RefreshTransport`-seam и lease-as-first-class — всё это **downstream** от
   `slot_bindings`. `nebula-workflow` остаётся стабильной точкой объявления; пока
   форма `SlotBinding` (плоский id-string на слот) не меняется, верхние слои свободны

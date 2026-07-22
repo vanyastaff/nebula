@@ -6,6 +6,7 @@
 //! Adapters map their backend rows to/from these DTOs at the port edge.
 
 mod control;
+pub mod credential;
 mod execution;
 mod idempotency;
 mod identity;
@@ -18,6 +19,10 @@ mod webhook;
 mod workflow;
 
 pub use control::{ControlCommand, ControlMsg, ResumeTarget};
+pub use credential::{
+    CredentialOwner, CredentialSelector, CredentialWriteMode, SecretBytes, StoredCredential,
+    StoredCredentialHead,
+};
 pub use execution::{ExecutionRecord, NewExecution};
 pub use idempotency::CachedRecord;
 pub use identity::{

@@ -14,9 +14,9 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroize;
 
-use crate::store::{OWNER_ID_METADATA_KEY as OWNER_ID_KEY, StoreError, StoredCredential};
 use crate::{
-    Credential, CredentialContext, CredentialGuard, CredentialLifecycle, Refreshable, SchemeFactory,
+    Credential, CredentialGuard, CredentialLifecycle, CredentialPersistenceError,
+    OWNER_ID_METADATA_KEY as OWNER_ID_KEY, Refreshable, SchemeFactory, StoredCredential,
 };
 
 use super::error::CredentialServiceError;
@@ -67,7 +67,7 @@ impl CredentialService {
         super::binding::ValidatedCredentialBindingError,
     > {
         let stored = self
-            .store_load_raw(id)
+            .store_load_raw(scope, id)
             .await
             .map_err(super::binding::ValidatedCredentialBindingError::Io)?
             .ok_or_else(
@@ -129,10 +129,11 @@ impl CredentialService {
     ///
     /// Called once per action node per execution. The engine resolver
     /// (`CredentialResolver::resolve`) goes through the full layered-store
-    /// stack (`Audit(Cache(Encryption(raw)))`) composed at `build()` —
-    /// the `EncryptionLayer` decrypts on every miss, `CacheLayer` coalesces
-    /// warm-cache hits to avoid repeated decrypt, and `AuditLayer` records
-    /// each access. Target p99 ≤ 1ms on warm cache.
+    /// stack (`Audit(Encryption(raw))`) composed by the deployment application.
+    /// `EncryptionLayer` decrypts the selected row and `AuditLayer` records the
+    /// access. No storage cache layer is part of the current first-party
+    /// composition; performance claims require measurement rather than an
+    /// assumed warm-cache path.
     ///
     /// # Cancellation
     ///
@@ -187,57 +188,60 @@ impl CredentialService {
             });
         }
 
-        // 2. Delegate to engine resolver, wrapped in cancellation. The
-        //    resolver goes through the full layered store stack
-        //    (EncryptionLayer → CacheLayer → AuditLayer) composed at
-        //    `build()`, so the EncryptionLayer is not bypassed.
+        // 2. Delegate to the resolver, wrapped in cancellation. The current
+        //    first-party factory supplies Audit(Encryption(raw)), so the
+        //    EncryptionLayer is not bypassed. No storage cache layer is part
+        //    of this composition.
         let credential_id = binding.credential_id();
         // Resolve through the binding's owner-scoped key: the resolver re-checks
         // the stored row's owner at load, so a cross-tenant id fails closed
         // (`NotFound`) by construction rather than relying on the fingerprint
         // check above alone.
-        let key = binding.owner_scoped_key();
+        let selector = binding.selector();
         let scheme = cancel
             .run_until_cancelled(async {
-                let handle = self.resolver.resolve_scoped::<C>(&key).await.map_err(|e| {
-                    // Preserve the documented `NotFound` contract for
-                    // resolver lookup misses. The resolver wraps store
-                    // errors in `ResolveError::Store(StoreError::NotFound)`
-                    // — surface that as `CredentialServiceError::NotFound`
-                    // so callers can branch on it. Other resolver errors
-                    // collapse to `Internal` with the underlying message.
-                    use crate::runtime::ResolveError;
-                    use crate::store::StoreError;
-                    match e {
-                        ResolveError::Store(StoreError::NotFound { id }) => {
-                            CredentialServiceError::NotFound { id }
-                        },
-                        // The resolver tail fail-closed on an external, unwired
-                        // source. Surface the typed facade error with the
-                        // configured provider's name (only `External` reaches
-                        // this arm — the gate is derived from the source).
-                        ResolveError::ExternalSourceNotWired => {
-                            CredentialServiceError::ExternalSourceNotWired {
-                                provider: match &self.source {
-                                    StateSource::External(p) => p.provider_name().to_owned(),
-                                    StateSource::LocalEncrypted => "unknown".to_owned(),
-                                },
-                            }
-                        },
-                        // Re-auth is a routine OAuth2 outcome (rejected grant /
-                        // sentinel / missing material), not an internal fault —
-                        // preserve the typed reason so the API can render a
-                        // "reconnect" instead of a 500 with a stringified reason.
-                        ResolveError::ReauthRequired {
-                            credential_id,
-                            reason,
-                        } => CredentialServiceError::ReauthRequired {
-                            credential_id,
-                            reason,
-                        },
-                        other => CredentialServiceError::Internal(other.to_string()),
-                    }
-                })?;
+                let handle = self
+                    .resolver
+                    .resolve_scoped::<C>(&selector)
+                    .await
+                    .map_err(|e| {
+                        // Preserve the documented `NotFound` contract for
+                        // resolver lookup misses. The resolver wraps store
+                        // errors in `ResolveError::Store(CredentialPersistenceError::NotFound)`
+                        // — surface that as `CredentialServiceError::NotFound`
+                        // so callers can branch on it. Other resolver errors
+                        // collapse to `Internal` with the underlying message.
+                        use crate::runtime::ResolveError;
+                        match e {
+                            ResolveError::Store(CredentialPersistenceError::NotFound {
+                                credential_id,
+                            }) => CredentialServiceError::NotFound { id: credential_id },
+                            // The resolver tail fail-closed on an external, unwired
+                            // source. Surface the typed facade error with the
+                            // configured provider's name (only `External` reaches
+                            // this arm — the gate is derived from the source).
+                            ResolveError::ExternalSourceNotWired => {
+                                CredentialServiceError::ExternalSourceNotWired {
+                                    provider: match &self.source {
+                                        StateSource::External(p) => p.provider_name().to_owned(),
+                                        StateSource::LocalEncrypted => "unknown".to_owned(),
+                                    },
+                                }
+                            },
+                            // Re-auth is a routine OAuth2 outcome (rejected grant /
+                            // sentinel / missing material), not an internal fault —
+                            // preserve the typed reason so the API can render a
+                            // "reconnect" instead of a 500 with a stringified reason.
+                            ResolveError::ReauthRequired {
+                                credential_id,
+                                reason,
+                            } => CredentialServiceError::ReauthRequired {
+                                credential_id,
+                                reason,
+                            },
+                            other => CredentialServiceError::Internal(other.to_string()),
+                        }
+                    })?;
 
                 // Extract the owned scheme from the snapshot `Arc`. The
                 // resolver caches live handles, so `try_unwrap` succeeds when
@@ -262,12 +266,13 @@ impl CredentialService {
     /// `create` and call [`SchemeFactory::acquire`] once per outbound
     /// request instead of retaining a [`CredentialGuard`] across spawn
     /// boundaries (which is forbidden — see SEC-05).
-    pub fn scheme_factory<C>(&self, credential_id: &str, ctx: CredentialContext) -> SchemeFactory<C>
+    pub fn scheme_factory<C>(&self, scope: &TenantScope, credential_id: &str) -> SchemeFactory<C>
     where
         C: Refreshable + CredentialLifecycle,
         C::Scheme: Zeroize + Clone + Send + Sync + 'static,
     {
-        self.resolver.scheme_factory(credential_id, ctx)
+        self.resolver
+            .scheme_factory(scope.selector(credential_id), Self::owner_context(scope))
     }
 
     /// Load the raw stored credential row **without** applying the
@@ -280,11 +285,12 @@ impl CredentialService {
     /// comparison is logged internally but not returned to callers).
     pub(crate) async fn store_load_raw(
         &self,
+        scope: &TenantScope,
         id: &str,
     ) -> Result<Option<StoredCredential>, CredentialServiceError> {
-        match self.store.get(id).await {
+        match self.store.get(&scope.selector(id)).await {
             Ok(stored) => Ok(Some(stored)),
-            Err(StoreError::NotFound { .. }) => Ok(None),
+            Err(CredentialPersistenceError::NotFound { .. }) => Ok(None),
             Err(e) => Err(Self::map_store_err(e)),
         }
     }

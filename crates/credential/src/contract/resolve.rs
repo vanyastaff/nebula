@@ -249,16 +249,13 @@ pub enum RefreshOutcome {
 ///
 /// Surfaces per sub-spec §3.4 (sentinel threshold) and the existing
 /// rotation-failure path (`refresh_token` invalidated by the IdP).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ReauthReason {
     /// The IdP rejected the refresh — typically a rotated `refresh_token`
-    /// that has been invalidated. The `detail` carries the provider's
-    /// human-readable reason for diagnostics.
-    ProviderRejected {
-        /// Provider-supplied detail (e.g. error_description).
-        detail: String,
-    },
+    /// that has been invalidated. Provider text is deliberately discarded:
+    /// it may echo tokens or request material.
+    ProviderRejected,
     /// Sentinel threshold exceeded — the credential keeps crashing
     /// mid-refresh. Per sub-spec §3.4 N=3 events within 1h escalate the
     /// credential to `ReauthRequired`.
@@ -277,10 +274,36 @@ pub enum ReauthReason {
     /// Distinct from [`ReauthReason::ProviderRejected`] — that variant
     /// implies the IdP returned an error; this one means we never even
     /// reached the IdP because the local state was unusable for refresh.
-    MissingRefreshMaterial {
-        /// Human-readable diagnostic (e.g. which field is missing).
-        detail: String,
-    },
+    MissingRefreshMaterial,
+}
+
+impl ReauthReason {
+    /// Stable, payload-free reason code for UI, metrics, audit, and errors.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::ProviderRejected => "provider_rejected",
+            Self::SentinelRepeated { .. } => "sentinel_repeated",
+            Self::MissingRefreshMaterial => "missing_refresh_material",
+        }
+    }
+}
+
+impl fmt::Debug for ReauthReason {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ProviderRejected => formatter.write_str("ProviderRejected"),
+            Self::SentinelRepeated {
+                event_count,
+                window_secs,
+            } => formatter
+                .debug_struct("SentinelRepeated")
+                .field("event_count", event_count)
+                .field("window_secs", window_secs)
+                .finish(),
+            Self::MissingRefreshMaterial => formatter.write_str("MissingRefreshMaterial"),
+        }
+    }
 }
 
 // ── TestResult ─────────────────────────────────────────────────────────

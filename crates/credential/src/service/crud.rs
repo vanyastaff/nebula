@@ -9,11 +9,10 @@
 
 use serde_json::Value;
 
-use crate::store::{
-    LAST_VALIDATED_AT_METADATA_KEY, OWNER_ID_METADATA_KEY as OWNER_ID_KEY, PutMode, StoreError,
-    StoredCredential,
+use crate::{
+    CredentialDisplay, CredentialId, CredentialPersistenceError, CredentialWriteMode,
+    LAST_VALIDATED_AT_METADATA_KEY, OWNER_ID_METADATA_KEY as OWNER_ID_KEY, StoredCredential,
 };
-use crate::{CredentialDisplay, CredentialId, DynCredentialStore};
 
 use super::error::CredentialServiceError;
 use super::facade::CredentialService;
@@ -35,7 +34,8 @@ impl CredentialService {
     /// - [`CredentialServiceError::TypeUnknown`] — no type registered under `credential_key`.
     /// - [`CredentialServiceError::ValidationFailed`] — schema or typed-deserialize rejection
     ///   (including `$expr` injection), or a resolve failure.
-    /// - [`CredentialServiceError::Store`] — persistence failure (incl. fail-closed audit).
+    /// - [`CredentialServiceError::Store`] — persistence failure, including a propagated audit
+    ///   sink error. A sink error does not imply that an inner mutation was rolled back.
     pub async fn create(
         &self,
         scope: &TenantScope,
@@ -120,7 +120,7 @@ impl CredentialService {
             id: id.to_string(),
             name: None,
             credential_key: credential_key.to_owned(),
-            data: resolved.data.to_vec(),
+            data: resolved.data.clone().into(),
             state_kind: resolved.state_kind,
             state_version: resolved.state_version,
             version: 0,
@@ -136,11 +136,15 @@ impl CredentialService {
         // CAS token must reflect what a subsequent `update` has to match.
         let persisted = self
             .store
-            .put(stored, PutMode::CreateOnly)
+            .put(
+                &scope.selector(stored.id.clone()),
+                stored,
+                CredentialWriteMode::CreateOnly,
+            )
             .await
             .map_err(Self::map_store_err)?;
 
-        Ok(CredentialHead::from_stored(&persisted, display))
+        Ok(Self::head_from(&persisted))
     }
 
     /// Fetch a credential's secret-free [`CredentialHead`], scoped to
@@ -157,25 +161,24 @@ impl CredentialService {
         scope: &TenantScope,
         id: &str,
     ) -> Result<CredentialHead, CredentialServiceError> {
-        let stored = self.load_owned(scope, id).await?;
-        Ok(Self::head_from(&stored))
+        let stored = match self.store.get_head(&scope.selector(id)).await {
+            Ok(stored) => stored,
+            Err(CredentialPersistenceError::NotFound { .. }) => {
+                return Err(CredentialServiceError::NotFound { id: id.to_owned() });
+            },
+            Err(error) => return Err(Self::map_store_err(error)),
+        };
+        if !Self::projected_owner_matches(&stored, scope) || stored.is_tombstoned() {
+            return Err(CredentialServiceError::NotFound { id: id.to_owned() });
+        }
+        Ok(Self::head_from_projection(&stored))
     }
 
     /// List the secret-free heads of every credential visible to `scope`
     /// (rows whose stored `owner_id` matches).
     ///
-    /// # Performance contract
-    ///
-    /// This is **O(N) in the global credential count**, not in the
-    /// caller's tenant size: it enumerates every stored id and does one
-    /// `get` (one decrypt) per row to read the `owner_id` stamp, because
-    /// the build-once layered stack omits the storage `ScopeLayer` and
-    /// tenancy is enforced at the operation level. That is acceptable for
-    /// the non-durable in-memory backend (the only backend that ships
-    /// with this facade today). Owner-scoped listing for the durable
-    /// backends belongs in the **store layer** (an indexed,
-    /// owner-filtered query), not a facade-side scan — a conscious
-    /// deferral, not an oversight.
+    /// Listing is owner-bound in the persistence port and therefore scales
+    /// with the caller's partition rather than the global credential count.
     ///
     /// # Errors
     ///
@@ -184,26 +187,17 @@ impl CredentialService {
         &self,
         scope: &TenantScope,
     ) -> Result<Vec<CredentialHead>, CredentialServiceError> {
-        // The id enumeration goes through the audited store (one `List`
-        // audit event); the per-row owner-filter reads go through the
-        // un-audited `scan_store` so foreign rows — fetched only to be
-        // discarded — never mint audit `Get` events against other
-        // tenants' ids (the audit trail must record accesses, not scans).
-        let ids = self.store.list(None).await.map_err(Self::map_store_err)?;
+        let rows = self
+            .store
+            .list_heads(scope.owner(), None)
+            .await
+            .map_err(Self::map_store_err)?;
         let mut visible = Vec::new();
-        for id in ids {
-            match self.scan_store.get(&id).await {
-                Ok(stored) => {
-                    // Skip foreign rows (owner filter) and revoked rows: a
-                    // tombstone is a retired credential, not a listable one.
-                    if Self::owner_matches(&stored, scope) && !stored.is_tombstoned() {
-                        visible.push(Self::head_from(&stored));
-                    }
-                },
-                // A row that vanished between `list` and `get` is simply
-                // not visible; a hard backend error propagates.
-                Err(StoreError::NotFound { .. }) => {},
-                Err(e) => return Err(Self::map_store_err(e)),
+        for stored in rows {
+            // The adapter already owner-filters; keep the metadata check as
+            // defence in depth against corrupt legacy rows.
+            if Self::projected_owner_matches(&stored, scope) && !stored.is_tombstoned() {
+                visible.push(Self::head_from_projection(&stored));
             }
         }
         Ok(visible)
@@ -213,9 +207,11 @@ impl CredentialService {
     ///
     /// `props = Some(..)` re-runs the canonical validate→resolve pipeline
     /// for the row's (unchanged) credential type and replaces the stored
-    /// state; `props = None` keeps the existing state bytes untouched and
-    /// rewrites only the display metadata — a rename/re-tag never
-    /// re-resolves or re-encrypts material.
+    /// state; `props = None` preserves the existing semantic state and rewrites
+    /// only display metadata at the service boundary — a rename/re-tag never
+    /// re-resolves provider material. The storage encryption decorator may
+    /// re-encrypt the same plaintext into a fresh envelope/current key during
+    /// that write.
     ///
     /// `display` is the **full replacement** value; callers that want
     /// field-wise merge semantics read the current head first and merge
@@ -286,7 +282,7 @@ impl CredentialService {
                     id: existing.id.clone(),
                     name: existing.name.clone(),
                     credential_key: existing.credential_key.clone(),
-                    data: resolved.data.to_vec(),
+                    data: resolved.data.clone().into(),
                     state_kind: resolved.state_kind,
                     state_version: resolved.state_version,
                     version: existing.version,
@@ -308,13 +304,13 @@ impl CredentialService {
         // CAS on the version loaded above. A display-only rename racing a
         // token refresh must conflict, never silently restore the stale
         // secret bytes captured at load time.
-        let mode = PutMode::CompareAndSwap {
+        let mode = CredentialWriteMode::CompareAndSwap {
             expected_version: expected_version.unwrap_or(existing.version),
         };
 
         let persisted = self
             .store
-            .put(stored, mode)
+            .put(&scope.selector(id), stored, mode)
             .await
             .map_err(Self::map_store_err)?;
 
@@ -335,8 +331,11 @@ impl CredentialService {
     ) -> Result<(), CredentialServiceError> {
         // Owner check: cross-tenant delete is indistinguishable from a
         // missing credential.
-        let _existing = self.load_owned(scope, id).await?;
-        self.store.delete(id).await.map_err(Self::map_store_err)?;
+        let _existing = self.get(scope, id).await?;
+        self.store
+            .delete(&scope.selector(id))
+            .await
+            .map_err(Self::map_store_err)?;
         tracing::info!(credential.id = %id, "credential deleted");
         Ok(())
     }

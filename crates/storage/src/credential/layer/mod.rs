@@ -1,14 +1,12 @@
-//! Composable storage layers for [`CredentialStore`](nebula_credential::CredentialStore).
+//! Composable storage layers for
+//! [`CredentialPersistence`](nebula_storage_port::CredentialPersistence).
 //!
-//! The multi-tenant **scope** layer was re-homed to the tenancy security
-//! boundary (`nebula_tenancy::CredentialScopeLayer` /
-//! `CredentialScopeResolver`, spec §8) — scope *policy* does not belong in
-//! the storage adapter. These layers (`EncryptionLayer`, `CacheLayer`,
-//! `AuditLayer`) stay here and re-compose **on top** of the tenancy scope
-//! layer at the composition root; the fail-closed audit +
-//! zeroize-on-drop invariants are unaffected by the move (layer order
-//! `ScopeLayer → AuditLayer → EncryptionLayer → CacheLayer → Backend` is
-//! preserved by the composition root, not by this module).
+//! Credential owner scope is part of every port operation through mandatory
+//! [`CredentialSelector`](nebula_storage_port::CredentialSelector) /
+//! [`CredentialOwner`](nebula_storage_port::CredentialOwner) values. There is
+//! no metadata-keyed scope decorator or optional admin owner. These layers
+//! preserve the selector while composing audit, encryption, and caching over
+//! the backend; each cache key and forwarded operation remains owner-bound.
 
 pub mod audit;
 pub mod cache;

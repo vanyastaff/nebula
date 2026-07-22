@@ -1,14 +1,17 @@
 //! Authentication middleware — **Plane A** (host / Nebula API).
 //!
 //! Accepts session cookies, PAT tokens, static API keys, or JWT Bearer tokens.
-//! Both [`AuthenticatedUser`] (legacy) and [`AuthContext`] are inserted into
-//! request extensions so downstream middleware and handlers can use either.
+//! [`AuthenticatedPrincipal`], [`AuthenticatedUser`] (legacy), and
+//! [`AuthContext`] are inserted into request extensions after successful
+//! authentication. Credential command handlers accept only the first: its
+//! fields and constructor are private, so request JSON can never mint trusted
+//! identity claims.
 //!
 //! This is **not** integration credential acquisition (**Plane B**). Plane B
 //! enters through the credential facade's universal `resolve` / `continue`
 //! protocol; it exposes no raw OAuth authorization/callback routes.
 
-use std::str::FromStr;
+use std::{fmt, str::FromStr};
 
 use axum::{
     extract::{Request, State},
@@ -16,9 +19,11 @@ use axum::{
     middleware::Next,
     response::Response,
 };
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 use nebula_core::UserId;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::{
     access::{Grant, parse_pat_grant},
@@ -66,6 +71,106 @@ pub struct AuthenticatedUser {
     pub user_id: String,
 }
 
+/// Stable identity classification exposed to API-owned command ports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum AuthenticatedPrincipalKind {
+    /// Human user.
+    User,
+    /// Non-human service account.
+    ServiceAccount,
+    /// Durable workflow identity.
+    Workflow,
+    /// Internal/system identity. Public credential commands reject this kind
+    /// unless a future composition supplies verified durable provenance.
+    System,
+}
+
+/// Trusted Plane-A principal inserted by authentication middleware.
+///
+/// The type intentionally has no public constructor and does not implement
+/// deserialization. Downstream ports may inspect the normalized kind and
+/// subject, but cannot construct an authenticated principal from request data.
+#[derive(Clone, PartialEq, Eq)]
+pub struct AuthenticatedPrincipal {
+    kind: AuthenticatedPrincipalKind,
+    subject: String,
+    authentication_binding: String,
+}
+
+impl AuthenticatedPrincipal {
+    fn from_core(principal: &nebula_core::Principal, authentication_binding: String) -> Self {
+        let (kind, subject) = match principal {
+            nebula_core::Principal::User(id) => (AuthenticatedPrincipalKind::User, id.to_string()),
+            nebula_core::Principal::ServiceAccount(id) => {
+                (AuthenticatedPrincipalKind::ServiceAccount, id.to_string())
+            },
+            nebula_core::Principal::Workflow { workflow_id, .. } => (
+                AuthenticatedPrincipalKind::Workflow,
+                workflow_id.to_string(),
+            ),
+            nebula_core::Principal::System => {
+                (AuthenticatedPrincipalKind::System, "system".to_owned())
+            },
+            _ => (AuthenticatedPrincipalKind::System, "system".to_owned()),
+        };
+        Self {
+            kind,
+            subject,
+            authentication_binding,
+        }
+    }
+
+    /// Normalized authenticated identity kind.
+    #[must_use]
+    pub const fn kind(&self) -> AuthenticatedPrincipalKind {
+        self.kind
+    }
+
+    /// Canonical authenticated subject.
+    #[must_use]
+    pub fn subject(&self) -> &str {
+        &self.subject
+    }
+
+    /// Opaque binding for the exact Plane-A credential used on this request.
+    ///
+    /// Interactive credential acquisition stores this value with pending
+    /// state, so another session, PAT, or JWT for the same principal cannot
+    /// continue the flow. It is a domain-separated digest; the presented
+    /// bearer or cookie value is never exposed through this type.
+    #[must_use]
+    pub fn authentication_binding(&self) -> &str {
+        &self.authentication_binding
+    }
+
+    /// Construct a user principal for hermetic API tests.
+    ///
+    /// This is unavailable in production builds; the `test-util` feature is an
+    /// explicitly unsupported harness surface.
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn for_test_user(subject: impl Into<String>) -> Self {
+        let subject = subject.into();
+        Self {
+            kind: AuthenticatedPrincipalKind::User,
+            authentication_binding: pending_authentication_binding("test-user", &subject),
+            subject,
+        }
+    }
+}
+
+impl fmt::Debug for AuthenticatedPrincipal {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AuthenticatedPrincipal")
+            .field("kind", &self.kind)
+            .field("subject", &"[REDACTED]")
+            .field("authentication_binding", &"[REDACTED]")
+            .finish()
+    }
+}
+
 /// Authentication context extracted by auth middleware.
 ///
 /// Inserted into request extensions for downstream middleware and handlers.
@@ -110,8 +215,8 @@ pub enum AuthMethod {
 ///
 /// At least one must succeed, otherwise 401 is returned.
 ///
-/// Both [`AuthenticatedUser`] (legacy) and [`AuthContext`] are inserted into
-/// request extensions on success.
+/// [`AuthenticatedPrincipal`], [`AuthenticatedUser`] (legacy), and
+/// [`AuthContext`] are inserted into request extensions on success.
 ///
 /// [`AuthBackend`]: crate::domain::auth::backend::AuthBackend
 pub async fn auth_middleware(
@@ -143,14 +248,15 @@ pub async fn auth_middleware(
 
             let grant = parse_pat_grant(&record.scopes).map_err(|_| StatusCode::UNAUTHORIZED)?;
             let principal = nebula_core::Principal::User(record.user_id);
-            request.extensions_mut().insert(AuthenticatedUser {
-                user_id: record.user_id.to_string(),
-            });
-            request.extensions_mut().insert(AuthContext {
+            let authentication_binding = pending_authentication_binding("pat", bearer_value);
+            insert_authenticated_extensions(
+                &mut request,
                 principal,
-                auth_method: AuthMethod::Pat,
+                AuthMethod::Pat,
                 grant,
-            });
+                record.user_id.to_string(),
+                authentication_binding,
+            );
             return Ok(next.run(request).await);
         }
 
@@ -168,14 +274,15 @@ pub async fn auth_middleware(
             // typed user IDs. This is independent of precedence hardening.
             nebula_core::Principal::System
         };
-        request.extensions_mut().insert(AuthenticatedUser {
-            user_id: user_id_str,
-        });
-        request.extensions_mut().insert(AuthContext {
+        let authentication_binding = pending_authentication_binding("jwt", bearer_value);
+        insert_authenticated_extensions(
+            &mut request,
             principal,
-            auth_method: AuthMethod::Jwt,
-            grant: Grant::UnrestrictedIdentity,
-        });
+            AuthMethod::Jwt,
+            Grant::UnrestrictedIdentity,
+            user_id_str,
+            authentication_binding,
+        );
         return Ok(next.run(request).await);
     }
 
@@ -198,14 +305,15 @@ pub async fn auth_middleware(
             return Err(StatusCode::UNAUTHORIZED);
         }
 
-        request.extensions_mut().insert(AuthenticatedUser {
-            user_id: "api_key".to_string(),
-        });
-        request.extensions_mut().insert(AuthContext {
-            principal: nebula_core::Principal::System,
-            auth_method: AuthMethod::ApiKey,
-            grant: Grant::SystemInternal,
-        });
+        let authentication_binding = pending_authentication_binding("api-key", provided);
+        insert_authenticated_extensions(
+            &mut request,
+            nebula_core::Principal::System,
+            AuthMethod::ApiKey,
+            Grant::SystemInternal,
+            "api_key".to_owned(),
+            authentication_binding,
+        );
         return Ok(next.run(request).await);
     }
 
@@ -222,17 +330,48 @@ pub async fn auth_middleware(
         .map_err(|_| StatusCode::UNAUTHORIZED)?
         .ok_or(StatusCode::UNAUTHORIZED)?;
     let user_id = principal_user_id(&session.principal);
-    request
-        .extensions_mut()
-        .insert(AuthenticatedUser { user_id });
-    request.extensions_mut().insert(AuthContext {
-        principal: session.principal,
-        auth_method: AuthMethod::Session {
+    insert_authenticated_extensions(
+        &mut request,
+        session.principal,
+        AuthMethod::Session {
             authenticated_at: session.authenticated_at,
         },
-        grant: Grant::UnrestrictedIdentity,
-    });
+        Grant::UnrestrictedIdentity,
+        user_id,
+        pending_authentication_binding("session", &session_id),
+    );
     Ok(next.run(request).await)
+}
+
+fn insert_authenticated_extensions(
+    request: &mut Request,
+    principal: nebula_core::Principal,
+    auth_method: AuthMethod,
+    grant: Grant,
+    legacy_user_id: String,
+    authentication_binding: String,
+) {
+    let authenticated = AuthenticatedPrincipal::from_core(&principal, authentication_binding);
+    request.extensions_mut().insert(authenticated);
+    request.extensions_mut().insert(AuthenticatedUser {
+        user_id: legacy_user_id,
+    });
+    request.extensions_mut().insert(AuthContext {
+        principal,
+        auth_method,
+        grant,
+    });
+}
+
+/// Derive a non-reversible, method-separated pending-flow binding from the
+/// exact Plane-A credential presented on this request.
+fn pending_authentication_binding(method: &str, credential: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"nebula:plane-a:credential-pending:v1\0");
+    hasher.update(method.as_bytes());
+    hasher.update([0]);
+    hasher.update(credential.as_bytes());
+    URL_SAFE_NO_PAD.encode(hasher.finalize())
 }
 
 /// Extract exactly one non-empty Bearer token from `Authorization`.
@@ -334,7 +473,9 @@ mod tests {
     use jsonwebtoken::{EncodingKey, Header, encode};
     use tower::ServiceExt;
 
-    use super::{AuthContext, AuthMethod, Claims, X_API_KEY, auth_middleware};
+    use super::{
+        AuthContext, AuthMethod, Claims, X_API_KEY, auth_middleware, pending_authentication_binding,
+    };
     use crate::{
         ApiConfig, AppState,
         domain::auth::backend::{
@@ -345,6 +486,19 @@ mod tests {
     };
 
     const API_KEY: &str = "nbl_sk_session-contract-test-key";
+
+    #[test]
+    fn pending_binding_is_credential_and_method_specific_without_echoing_input() {
+        const CANARY: &str = "plane-a-binding-secret-never-store-raw";
+        let session = pending_authentication_binding("session", CANARY);
+        let other_session = pending_authentication_binding("session", "other-credential");
+        let pat = pending_authentication_binding("pat", CANARY);
+
+        assert!(!session.contains(CANARY));
+        assert_ne!(session, other_session);
+        assert_ne!(session, pat);
+        assert_eq!(session.len(), 43, "SHA-256 base64url without padding");
+    }
 
     struct Fixture {
         app: Router,

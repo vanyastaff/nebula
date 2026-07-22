@@ -13,33 +13,17 @@
 //! Threat model (spec §6.1) is normative: id↔scope mismatch ⇒
 //! `NotFound` (existence never leaks), tenant-namespaced idempotency
 //! keys (no replay oracle), scoped control-queue enqueue (no
-//! cross-tenant Cancel), and the credential scope layer's fail-closed
-//! audit + zeroize preserved across the re-home.
+//! cross-tenant Cancel). Credential persistence receives mandatory
+//! owner-bound selectors directly from its controller-owned port.
 //!
 //! [`Scope`]: nebula_storage_port::Scope
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
-mod credential_scope;
 mod decorator;
 mod error;
 mod resolver;
 
-// Credential scope-layer (re-homed from `nebula_storage::credential`,
-// spec §8). Exported under `Credential`-prefixed names so they do not
-// collide with the port-scope [`ScopeResolver`] (`Principal` → `Scope`)
-// above — the credential layer keys on `metadata["owner_id"]`, a
-// different (legacy, owner-string) scoping model. The
-// `CredentialScopeResolver` **trait** is the canonical
-// `nebula_credential::ScopeResolver` (the credential contract crate —
-// downward-reachable by the credential runtime without an upward
-// `→ nebula-tenancy` edge, spec §3 data-vs-policy split); this crate
-// owns only the concrete `CredentialScopeLayer` policy. The legacy
-// `nebula_storage::credential::{ScopeLayer, ScopeResolver}` surface is
-// **deleted** (spec-16 CONTRACT phase) — there is no back-compat
-// re-export; consumers name `nebula_credential::ScopeResolver` /
-// `nebula_tenancy::CredentialScopeLayer` directly.
-pub use credential_scope::ScopeLayer as CredentialScopeLayer;
 pub use decorator::{
     ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore, ScopedIdempotencyGuard,
     ScopedIdempotencyStore, ScopedNodeResultStore, ScopedResourceStore, ScopedResumeTokenStore,
@@ -47,5 +31,4 @@ pub use decorator::{
     ScopedWorkflowVersionStore,
 };
 pub use error::TenancyError;
-pub use nebula_credential::ScopeResolver as CredentialScopeResolver;
 pub use resolver::{BindingScopeResolver, Principal, ScopeResolver, request_scope};

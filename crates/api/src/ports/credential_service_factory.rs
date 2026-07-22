@@ -1,36 +1,18 @@
-//! Temporary API-owned factory for the production [`CredentialService`] facade.
+//! Test-only credential service fixtures.
 //!
-//! `apps/server` remains the first-party composition root. Keeping this
-//! factory in `nebula-api` is tracked K4 migration debt; it must shrink and
-//! move outward rather than grow new policy or provider-specific wiring.
-//! It currently lives here because `nebula-api` already depends on
-//! `nebula-credential` (the `CredentialService` facade + the api-layer
-//! credential builder), `nebula-storage` (with the
-//! `credential-in-memory` adapter), `nebula-engine`, and `tokio-util` — so
-//! `apps/server` constructs a real service through a single typed call and
-//! stays free of any credential dependency, mirroring
-//! [`super::credential_schema_registry::try_default_registry_port`]. No
-//! `deny.toml` edge is added.
-//!
-//! The service composes the secure layered store
-//! (`Audit(Cache(Encryption(backend)))`), the engine resolver, and the lease
-//! lifecycle. Production ([`try_default_credential_service`]) uses a **durable
-//! SQLite backend** (`SqliteCredentialStore`, encrypted-at-rest, persisted
-//! across restart) selected by `NEBULA_CRED_DB`; the ephemeral in-memory
-//! backend (`with_memory_store`) is for tests and throwaway dev only. The
-//! pending-state store is always ephemeral in-memory (typed universal
-//! acquisition interactions, TTL ≤ 10 min). The default registry currently
-//! contains no interactive type. Postgres is available via
-//! `SqliteCredentialStore`'s sibling `PgCredentialStore` once a composition
-//! wires a `PgPool`.
+//! This module is compiled only for crate tests or the unsupported `test-util`
+//! feature. It deliberately contains no production key policy, database-path
+//! selection, or first-party process composition: those decisions live in
+//! `apps/server`. The fixtures still exercise the real SQLite CAS adapter and
+//! the same encryption/audit/resolver stack over an isolated in-memory
+//! database.
 
 use std::sync::Arc;
 
 use nebula_credential::provider::ExternalProvider;
 use nebula_credential::runtime::LeaseLifecycleConfig;
 use nebula_credential::{
-    ApiKeyCredential, BasicAuthCredential, CredentialStore, ErasedPendingStore,
-    SigningKeyCredential,
+    ApiKeyCredential, BasicAuthCredential, ErasedPendingStore, SigningKeyCredential,
 };
 use nebula_credential::{
     CredentialRegistry, CredentialService, CredentialServiceError, DispatchError, DispatchOps,
@@ -39,9 +21,9 @@ use nebula_credential::{
 
 use super::credential_builder::CredentialServiceBuilder;
 use nebula_storage::credential::{
-    AuditEvent, AuditSink, CacheConfig, EnvKeyProvider, InMemoryPendingStore, KeyProvider,
-    SqliteCredentialStore,
+    AuditEvent, AuditSink, InMemoryPendingStore, KeyProvider, SqliteCredentialPersistence,
 };
+use nebula_storage_port::{CredentialPersistence, CredentialPersistenceError};
 
 /// Audit sink that records every credential operation to the tracing log
 /// (metadata only — [`AuditEvent`] carries no secret material by design).
@@ -51,7 +33,7 @@ use nebula_storage::credential::{
 struct TracingAuditSink;
 
 impl AuditSink for TracingAuditSink {
-    fn record(&self, event: &AuditEvent) -> Result<(), nebula_credential::StoreError> {
+    fn record(&self, event: &AuditEvent) -> Result<(), CredentialPersistenceError> {
         tracing::info!(
             target: "nebula.credential.audit",
             cred_id = %event.credential_id,
@@ -63,13 +45,11 @@ impl AuditSink for TracingAuditSink {
     }
 }
 
-/// Construction failure for [`try_default_credential_service`].
+/// Construction failure for a credential service test fixture.
 ///
 /// Each variant names the composition step that failed. Source-chained
-/// (`#[source]`/`#[from]`) where the underlying type is reachable from
-/// `nebula-api`; stringified for the key-provider step, whose
-/// `nebula_storage::credential::ProviderError` would otherwise force an
-/// awkward direct dependency on a deeper storage error type at this seam.
+/// (`#[source]`/`#[from]`) where the underlying type is reachable from the
+/// test surface.
 #[derive(Debug, thiserror::Error)]
 pub enum CredentialServiceFactoryError {
     /// A first-party credential KEY failed to register in the shared
@@ -77,12 +57,6 @@ pub enum CredentialServiceFactoryError {
     /// unique, so this is unreachable in practice).
     #[error("credential registry registration failed")]
     Registry(#[from] nebula_credential::RegisterError),
-    /// The encryption key provider could not be initialized. In production
-    /// this means `NEBULA_CRED_MASTER_KEY` is unset, malformed, or the
-    /// refused dev placeholder. The message is the provider error's
-    /// sanitized `Display` (never key material).
-    #[error("credential key provider init failed: {0}")]
-    KeyProvider(String),
     /// A capability dispatch op failed to register (e.g. a duplicate KEY
     /// across two registrars).
     #[error("credential dispatch-ops registration failed")]
@@ -91,129 +65,20 @@ pub enum CredentialServiceFactoryError {
     /// registry capability advertised without a matching registered op.
     #[error("credential service build failed")]
     Build(#[from] CredentialServiceError),
-    /// The durable credential store could not be opened or migrated. In
-    /// production this means the SQLite database selected by `NEBULA_CRED_DB`
-    /// (default file `nebula-credentials.db`) is unreachable or migration 0030
-    /// failed to apply. The message is the store error's sanitized `Display`.
+    /// The isolated SQLite test store could not be opened or migrated.
     #[error("credential store init failed: {0}")]
     Store(String),
 }
 
-/// Build the production [`CredentialService`] with the first-party
-/// credential types registered (`api_key`, `basic_auth`, `signing_key`).
-///
-/// The service shares its registered type set with the schema port via
-/// `credential_schema_registry::default_registry`, so the
-/// registry-advertised capabilities and the dispatch ops table cannot
-/// drift. All default types are static and take base runtime ops only.
-/// `OAuth2Credential` remains implemented in `nebula-credential`, but is not
-/// part of this default composition until provider interaction is expressed
-/// through the universal typed pending-acquisition contract. A mismatch here
-/// would make
-/// [`CredentialServiceBuilder::build`] return
-/// [`CredentialServiceError::CapabilityWithoutOps`].
-///
-/// # Key provider (fail-closed in production)
-///
-/// Production reads a base64 AES-256 key from `NEBULA_CRED_MASTER_KEY`
-/// (via [`EnvKeyProvider::from_env`]); an unset or malformed key fails
-/// startup rather than silently using a weak key. For local development,
-/// `NEBULA_CRED_DEV_KEY=1` selects a fixed in-process key so the service
-/// boots without a configured master key — credentials are then **not**
-/// securely encrypted, and a loud `warn!` says so. Never set it in
-/// production.
-///
-/// # Storage durability
-///
-/// The raw store is a durable [`SqliteCredentialStore`] opened at the
-/// `NEBULA_CRED_DB` database (default file `nebula-credentials.db`, created on
-/// first boot); migration 0030 is applied on connect. Credential state is
-/// encrypted at rest **and** survives a process restart. Set `NEBULA_CRED_DB`
-/// to `sqlite::memory:` for an ephemeral store, or a `sqlite://…` URL/path. The
-/// pending-state store remains ephemeral in-memory for explicitly composed
-/// interactive types (ADR-0084).
-///
-/// # Errors
-///
-/// Returns [`CredentialServiceFactoryError`] if registry registration, key
-/// provider init, dispatch-ops registration, or the final service build
-/// fails. See each variant for the specific composition step.
-pub async fn try_default_credential_service()
--> Result<Arc<CredentialService>, CredentialServiceFactoryError> {
-    let key_provider = resolve_first_party_key_provider()?;
-    try_default_credential_service_with_key_provider(key_provider).await
-}
-
-/// Build the production credential service with a process-wide key provider
-/// already resolved by the first-party composition root.
-///
-/// This technical seam lets Plane-A identity encryption and credential
-/// encryption share the exact same provider instance and startup policy.
-///
-/// # Errors
-///
-/// Returns [`CredentialServiceFactoryError`] when the durable store or secure
-/// service stack cannot be initialized.
-#[doc(hidden)]
-pub async fn try_default_credential_service_with_key_provider(
-    key_provider: Arc<dyn KeyProvider>,
-) -> Result<Arc<CredentialService>, CredentialServiceFactoryError> {
-    let db_url = std::env::var("NEBULA_CRED_DB").unwrap_or_else(|_| DEFAULT_CRED_DB.to_owned());
-    let store = SqliteCredentialStore::connect(&db_url)
-        .await
-        .map_err(|e| CredentialServiceFactoryError::Store(e.to_string()))?;
-    tracing::info!(
-        db = %db_url,
-        "credential: durable SQLite store opened (migration 0030 applied)"
-    );
-    with_store(store, key_provider)
-}
-
-/// Default SQLite database for the durable credential store when
-/// `NEBULA_CRED_DB` is unset: a relative file in the working directory, opened
-/// read-write and created on first boot (n8n-style local-first default). Set
-/// `NEBULA_CRED_DB` to a path, a `sqlite://…` URL, or `sqlite::memory:` for an
-/// ephemeral store.
-const DEFAULT_CRED_DB: &str = "sqlite://nebula-credentials.db?mode=rwc";
-
-/// A fixed all-`0x42` 32-byte AES-256 key, base64-encoded — the dev-only key
-/// selected by `NEBULA_CRED_DEV_KEY=1`. The public `from_base64` constructor
-/// is used because the raw-byte `StaticKeyProvider` is test-gated and
-/// `nebula_crypto::EncryptionKey` is not a dependency of this crate. This is a
-/// deliberately weak dev placeholder, **not** a production secret.
-const DEV_KEY_B64: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=";
-
-/// Resolve the encryption key provider: fail-closed `NEBULA_CRED_MASTER_KEY`
-/// in production ([`EnvKeyProvider::from_env`]), or the fixed in-process dev
-/// key behind an explicit `NEBULA_CRED_DEV_KEY=1` opt-in (with a loud `warn!`).
-#[doc(hidden)]
-pub fn resolve_first_party_key_provider()
--> Result<Arc<dyn KeyProvider>, CredentialServiceFactoryError> {
-    if std::env::var("NEBULA_CRED_DEV_KEY").as_deref() == Ok("1") {
-        tracing::warn!(
-            "security: NEBULA_CRED_DEV_KEY=1 — using a fixed in-process dev key; \
-             credentials and Plane-A identity secrets are NOT securely encrypted. \
-             Never set this in production."
-        );
-        Ok(Arc::new(EnvKeyProvider::from_base64(DEV_KEY_B64).map_err(
-            |e| CredentialServiceFactoryError::KeyProvider(e.to_string()),
-        )?))
-    } else {
-        Ok(Arc::new(EnvKeyProvider::from_env().map_err(|e| {
-            CredentialServiceFactoryError::KeyProvider(e.to_string())
-        })?))
-    }
-}
-
 /// Build a [`CredentialService`] over a **unique in-memory SQLite database**
-/// (`SqliteCredentialStore::connect_memory`) with a caller-supplied key
+/// (`SqliteCredentialPersistence::connect_memory`) with a caller-supplied key
 /// provider — the test / throwaway-dev fixture.
 ///
 /// The backend is the same durable adapter production uses, bound to an
 /// ephemeral in-memory database that evaporates when the store is dropped, so
 /// tests exercise the real CAS + encryption path without touching disk.
-/// Production composes a file-backed SQLite store via
-/// [`try_default_credential_service`]. Delegates to [`with_store`].
+/// Production composition is intentionally unavailable from this module.
+/// Delegates to [`with_store`].
 ///
 /// Gated by `cfg(test)` / the `test-util` feature and not enabled by the
 /// first-party release composition; unsupported for production (ADR-0023).
@@ -227,7 +92,7 @@ pub fn resolve_first_party_key_provider()
 pub async fn with_memory_store(
     key_provider: Arc<dyn KeyProvider>,
 ) -> Result<Arc<CredentialService>, CredentialServiceFactoryError> {
-    let store = SqliteCredentialStore::connect_memory()
+    let store = SqliteCredentialPersistence::connect_memory()
         .await
         .map_err(|e| CredentialServiceFactoryError::Store(e.to_string()))?;
     with_store(store, key_provider)
@@ -236,9 +101,8 @@ pub async fn with_memory_store(
 /// Compose a [`CredentialService`] over an arbitrary `raw_store` backend with a
 /// caller-supplied [`KeyProvider`].
 ///
-/// The durable path ([`try_default_credential_service`]) passes a file-backed
-/// `SqliteCredentialStore`; the test path (`with_memory_store`) passes an
-/// ephemeral in-memory one. The pending-state store is **always** the ephemeral
+/// The ordinary test path (`with_memory_store`) passes an ephemeral in-memory
+/// SQLite adapter. The pending-state store is **always** the ephemeral
 /// in-memory `InMemoryPendingStore` (typed universal acquisition state,
 /// TTL ≤ 10 min; durable multi-replica pending is a 1.1 concern, ADR-0084).
 /// Registers the first-party type set (shared with the schema port via
@@ -249,7 +113,7 @@ pub async fn with_memory_store(
 ///
 /// Returns [`CredentialServiceFactoryError`] if registry registration,
 /// dispatch-ops registration, or the final service build fails.
-pub fn with_store<S: CredentialStore + 'static>(
+pub fn with_store<S: CredentialPersistence + 'static>(
     raw_store: S,
     key_provider: Arc<dyn KeyProvider>,
 ) -> Result<Arc<CredentialService>, CredentialServiceFactoryError> {
@@ -271,7 +135,7 @@ pub fn with_store<S: CredentialStore + 'static>(
 }
 
 /// Compose a [`CredentialService`] over `raw_store` with a **caller-supplied
-/// registry + dispatch ops**, wrapping the shared secure stack (audit / cache /
+/// registry + dispatch ops**, wrapping the shared secure stack (audit /
 /// encryption / in-memory pending / lease lifecycle). The registry's advertised
 /// capabilities MUST match the ops table or [`CredentialServiceBuilder::build`]
 /// returns [`CredentialServiceError::CapabilityWithoutOps`].
@@ -283,7 +147,7 @@ pub fn with_store<S: CredentialStore + 'static>(
 ///
 /// Returns [`CredentialServiceFactoryError::Build`] if the builder rejects the
 /// composed parts (capability/ops mismatch).
-fn compose_credential_service<S: CredentialStore + 'static>(
+fn compose_credential_service<S: CredentialPersistence + 'static>(
     raw_store: S,
     key_provider: Arc<dyn KeyProvider>,
     registry: CredentialRegistry,
@@ -298,7 +162,6 @@ fn compose_credential_service<S: CredentialStore + 'static>(
 
     let pending = ErasedPendingStore::new(Arc::new(InMemoryPendingStore::new()));
     let observer = Arc::new(NoopObserver::new());
-    let cache_config = CacheConfig::default();
     let lease_config = LeaseLifecycleConfig::default();
     // Process-wide shutdown token for the lease reaper. The token is owned by
     // the service; the lease task stops when the service (and so this token)
@@ -310,7 +173,6 @@ fn compose_credential_service<S: CredentialStore + 'static>(
         raw_store,
         key_provider,
         audit_sink,
-        cache_config,
         pending,
         Arc::new(registry),
         Arc::new(ops),
@@ -351,7 +213,7 @@ pub async fn with_memory_store_parts(
     registry: CredentialRegistry,
     ops: DispatchOps<ErasedPendingStore>,
 ) -> Result<Arc<CredentialService>, CredentialServiceFactoryError> {
-    let store = SqliteCredentialStore::connect_memory()
+    let store = SqliteCredentialPersistence::connect_memory()
         .await
         .map_err(|e| CredentialServiceFactoryError::Store(e.to_string()))?;
     compose_credential_service(store, key_provider, registry, ops, None)
@@ -376,7 +238,7 @@ pub async fn with_memory_store_external(
     ops: DispatchOps<ErasedPendingStore>,
     provider: Arc<dyn ExternalProvider>,
 ) -> Result<Arc<CredentialService>, CredentialServiceFactoryError> {
-    let store = SqliteCredentialStore::connect_memory()
+    let store = SqliteCredentialPersistence::connect_memory()
         .await
         .map_err(|e| CredentialServiceFactoryError::Store(e.to_string()))?;
     compose_credential_service(store, key_provider, registry, ops, Some(provider))

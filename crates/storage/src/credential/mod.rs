@@ -1,21 +1,19 @@
-//! Credential persistence — durable stores (`SqliteCredentialStore`,
-//! `PgCredentialStore`), `KeyProvider`, and composable layers.
+//! Credential persistence — durable stores (`SqliteCredentialPersistence`,
+//! `PgCredentialPersistence`), `KeyProvider`, and composable layers.
 //!
 //! Two distinct layer families live here:
 //!
-//! - `CredentialStore` wrappers — `EncryptionLayer`, `CacheLayer`,
+//! - `CredentialPersistence` wrappers — `EncryptionLayer`, `CacheLayer`,
 //!   `AuditLayer`. They compose around a backing store that persists
-//!   `StoredCredential` rows. The multi-tenant scope wrapper was
-//!   re-homed to `nebula_tenancy::CredentialScopeLayer` (spec §8) —
-//!   scope policy belongs in the tenancy security boundary; it
-//!   re-composes outermost at the composition root.
+//!   `StoredCredential` rows. Owner scoping is mandatory in the port itself;
+//!   every adapter predicate receives a complete owner-bound selector.
 //! - `ExternalProvider` wrappers — `ProviderCacheLayer`. They compose
 //!   around an `Arc<dyn ExternalProvider>` that resolves secrets from a
 //!   remote system (Vault, AWS SM, env var, …). The `Provider`-prefixed types
-//!   are scoped to that trait and do not interact with the `CredentialStore`
+//!   are scoped to that trait and do not interact with the `CredentialPersistence`
 //!   cache.
 //!
-//! The `CredentialStore` trait + DTOs live in `nebula_credential`; concrete
+//! The `CredentialPersistence` trait + DTOs live in `nebula-storage-port`; concrete
 //! implementations and layers live here. See `crates/storage/README.md` and
 //! `docs/INTEGRATION_MODEL.md` (Credential) for integration context.
 
@@ -43,7 +41,7 @@ pub use layer::{
 #[cfg(any(test, feature = "credential-in-memory"))]
 pub use pending::InMemoryPendingStore;
 #[cfg(feature = "postgres")]
-pub use postgres::PgCredentialStore;
+pub use postgres::PgCredentialPersistence;
 pub use provider_cache::{ProviderCacheConfig, ProviderCacheLayer, ProviderCacheStats};
 #[cfg(feature = "postgres")]
 pub use refresh_claim::PgRefreshClaimRepo;
@@ -54,20 +52,20 @@ pub use refresh_claim::{
     RefreshClaim, RefreshClaimRepo, ReplicaId, RepoError, SentinelState,
 };
 #[cfg(feature = "sqlite")]
-pub use sqlite::SqliteCredentialStore;
+pub use sqlite::SqliteCredentialPersistence;
 
-/// Crate-local test helpers for constructing [`nebula_credential::StoredCredential`] instances.
+/// Crate-local test helpers for constructing [`nebula_storage_port::StoredCredential`] instances.
 /// Gated on `sqlite` because all callers are `#[cfg(all(test, feature = "sqlite"))]` test modules.
 #[cfg(all(test, feature = "sqlite"))]
 pub(crate) mod test_support {
-    use nebula_credential::StoredCredential;
+    use nebula_storage_port::StoredCredential;
 
     pub(crate) fn make_credential(id: &str, data: &[u8]) -> StoredCredential {
         StoredCredential {
             id: id.into(),
             name: None,
             credential_key: "test_credential".into(),
-            data: data.to_vec(),
+            data: data.to_vec().into(),
             state_kind: "test".into(),
             state_version: 1,
             version: 0,

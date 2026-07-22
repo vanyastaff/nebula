@@ -2,7 +2,7 @@
 name: nebula-storage
 role: Storage Port (Repository Implementations + CAS + Outbox)
 status: partial
-last-reviewed: 2026-07-21
+last-reviewed: 2026-07-22
 canon-invariants: [L2-11.1, L2-11.3, L2-11.5, L2-12.2, L2-12.3]
 related: [nebula-execution, nebula-engine, nebula-core, nebula-error]
 ---
@@ -17,8 +17,9 @@ transitions, journal appends, and outbox writes can share the same logical opera
 "two truths" anti-pattern (canon §14) forbids splitting those writes across separate
 transactions. `nebula-storage` is that seam: it implements the spec-16 storage port for
 execution state, workflow definitions and versions, the append-only journal, idempotency keys,
-checkpoints, leases, identity stores, and the durable control-queue outbox — all backed by
-InMemory, SQLite (dev / test), or PostgreSQL (production).
+checkpoints, leases, identity stores, owner-bound credential persistence, and the durable
+control-queue outbox. SQLite and PostgreSQL are deployment backends; InMemory implementations are
+internal test/reference/conformance adapters only.
 
 ## Role
 
@@ -34,11 +35,12 @@ The contract is the spec-16 storage **port** in `nebula-storage-port`
 `NodeResultStore`, `CheckpointStore`, `IdempotencyGuard` /
 `IdempotencyStore`, `WorkflowStore` / `WorkflowVersionStore`,
 `ControlQueue`, `WebhookActivationStore`, `RefreshClaimStore`, and the
-identity-zoo stores; `StorageError`; the plain-data `Scope`). This crate
+identity-zoo stores; owner-bound `CredentialPersistence`; `StorageError`;
+the plain-data `Scope`). This crate
 provides the adapters:
 
-- `inmem::*` — in-memory adapters (tests, local single-process, the loom
-  probe).
+- `inmem::*` — internal test/reference/conformance adapters and the loom probe;
+  not a supported deployment backend.
 - `sqlite::*` (feature `sqlite`) — single-writer-correct adapters over a
   port-scoped schema; `init_schema` installs it for `:memory:` / test
   pools.
@@ -88,8 +90,14 @@ provides the adapters:
   safe retired advisory-lock connection, bounded reads, equality-guarded CAS,
   user-version fencing, explicit old-key rotation, and repeated verification;
   the Postgres auth backend is not exposed until convergence succeeds.
-- `StorageError` (re-exported from the port), `StorageFormat`
+- crate-local `StorageError`, plus `StorageFormat`
   (serialization format abstraction).
+
+Applied migration `0030_credentials_store.sql` is immutable SQLx-checksummed
+history, including its legacy owner comment. It is not the current authority
+contract: runtime writes take owner only from the mandatory selector and
+metadata never grants access. K2 must add a new migration for both backends
+rather than editing `0030` in place.
 
 Execution / workflow persistence goes through the port adapters; the
 legacy `ExecutionRepo` / `WorkflowRepo` / `Pg*Repo` surface and the
@@ -110,8 +118,8 @@ Credential coordination — durable refresh claim (П2 / ADR-0041):
 - `RefreshClaim`, `ClaimAttempt`, `ClaimToken`, `RepoError`, `HeartbeatError`,
   `ReclaimedClaim`, `SentinelState`, `ReplicaId` — DTO surface re-exported at
   `nebula_storage::{RefreshClaim, ClaimAttempt, ClaimToken, …}`.
-- `InMemoryRefreshClaimRepo` — production-shaped reference impl for tests + single-replica
-  deploys.
+- `InMemoryRefreshClaimRepo` — internal reference implementation for tests and
+  conformance; not a supported single-replica deployment backend.
 - Feature `sqlite` adds `SqliteRefreshClaimRepo` (default local backend; `SQLITE` migrations
   `0022_credential_refresh_claims` + `0023_credential_sentinel_events`).
 - Feature `postgres` adds `PgRefreshClaimRepo` (production multi-replica backend; `POSTGRES`
@@ -248,7 +256,7 @@ reviewed first-party legacy-key configuration surface ships.
   (port / adapter / tenancy decision, supersession, the three
   correctness bugs, the migration-gap history).
 - Siblings: `nebula-storage-port` (the port contract), `nebula-tenancy`
-  (scope-enforcing decorators), `nebula-execution` (state types),
+  (decorators for general Scope-taking ports), `nebula-execution` (state types),
   `nebula-engine` (transitions via the port `ExecutionStore` +
   `TransitionBatch`), `nebula-core` (ID types).
 
@@ -260,8 +268,11 @@ There is one architecture: the spec-16 storage **port**
 (`nebula-storage-port`, Core tier — ISP-segregated object-safe traits,
 port-local DTO rows, `StorageError`, the atomic `TransitionBatch`, the
 plain-data `Scope`). This crate implements it for **InMemory + SQLite +
-Postgres**; `nebula-tenancy` wraps it with scope-enforcing decorators;
-`engine` / `api` consume only the port. The legacy
+Postgres** (InMemory is internal reference/conformance only);
+`nebula-tenancy` wraps the general Scope-taking ports with scope-enforcing
+decorators, while credential persistence is directly owner-bound by
+`CredentialOwner` / `CredentialSelector`. `engine` / `credential` / `api` /
+first-party apps consume the technical port. The legacy
 `ExecutionRepo` / `WorkflowRepo` dual layer and the never-implemented
 `repos::{execution,workflow,execution_node,journal}` placeholders were
 deleted.

@@ -3573,18 +3573,28 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
+ "base64",
  "clap",
+ "futures",
  "lettre",
+ "nebula-action",
  "nebula-api",
+ "nebula-core",
+ "nebula-credential",
+ "nebula-engine",
  "nebula-metrics",
+ "nebula-schema",
  "nebula-storage",
  "nebula-storage-port",
+ "nebula-tenancy",
+ "reqwest 0.13.4",
  "secrecy",
  "serde_json",
  "sqlx",
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-util",
  "tracing",
  "url",
 ]
@@ -3644,6 +3654,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -3651,9 +3662,7 @@ name = "nebula-tenancy"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "chrono",
  "nebula-core",
- "nebula-credential",
  "nebula-storage-port",
  "serde_json",
  "thiserror",

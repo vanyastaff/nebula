@@ -572,7 +572,7 @@ async fn selected_operations_publish_expected_permissions() {
         (
             "post",
             "/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/test",
-            "credentials:read",
+            "credentials:write",
         ),
         (
             "post",

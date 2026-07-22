@@ -26,12 +26,9 @@ use crate::runtime::resolve_error::{
 };
 use crate::{
     Credential, CredentialContext, CredentialEvent, CredentialHandle, CredentialId,
-    CredentialLifecycle, CredentialState, Decision, Refreshable, SchemeFactory, SchemeGuard,
-    resolve::RefreshOutcome,
-    store::{
-        CredentialStore, LAST_VALIDATED_AT_METADATA_KEY, OwnerScopedKey, PutMode, StoreError,
-        StoredCredential,
-    },
+    CredentialLifecycle, CredentialPersistence, CredentialPersistenceError, CredentialSelector,
+    CredentialState, CredentialWriteMode, Decision, LAST_VALIDATED_AT_METADATA_KEY, Refreshable,
+    SchemeFactory, SchemeGuard, StoredCredential, resolve::RefreshOutcome,
 };
 
 /// Framework-imposed mandatory re-validation floor for a refreshable credential
@@ -54,10 +51,10 @@ use crate::runtime::refresh::token_refresh::refresh_oauth2_state;
 /// successful refresh (`replace`). `DashMap`'s per-shard sharding eliminates
 /// the write-lock contention that `Mutex<HashMap>` imposed under concurrent
 /// resolution — a write to one shard does not block reads on others.
-type HandleCache = DashMap<(String, TypeId), Arc<dyn Any + Send + Sync>>;
+type HandleCache = DashMap<(CredentialSelector, TypeId), Arc<dyn Any + Send + Sync>>;
 
 /// Runtime credential resolver with optional coordinated refresh.
-pub struct CredentialResolver<S: CredentialStore> {
+pub struct CredentialResolver<S: CredentialPersistence + ?Sized> {
     store: Arc<S>,
     refresh_coordinator: Arc<RefreshCoordinator>,
     transport: Arc<dyn RefreshTransport>,
@@ -76,7 +73,7 @@ pub struct CredentialResolver<S: CredentialStore> {
     external_source_unwired: bool,
 }
 
-impl<S: CredentialStore> Clone for CredentialResolver<S> {
+impl<S: CredentialPersistence + ?Sized> Clone for CredentialResolver<S> {
     fn clone(&self) -> Self {
         Self {
             store: Arc::clone(&self.store),
@@ -89,7 +86,7 @@ impl<S: CredentialStore> Clone for CredentialResolver<S> {
     }
 }
 
-impl<S: CredentialStore> CredentialResolver<S> {
+impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
     /// Construct a resolver from all required collaborators.
     ///
     /// Production composition roots call this directly, supplying a durable
@@ -130,15 +127,17 @@ impl<S: CredentialStore> CredentialResolver<S> {
         self
     }
 
-    fn handle_cache_key<C: Credential>(credential_id: &str) -> (String, TypeId) {
-        (credential_id.to_string(), TypeId::of::<C::Scheme>())
+    fn handle_cache_key<C: Credential>(
+        selector: &CredentialSelector,
+    ) -> (CredentialSelector, TypeId) {
+        (selector.clone(), TypeId::of::<C::Scheme>())
     }
 
     fn cached_handle<C: Credential>(
         &self,
-        credential_id: &str,
+        selector: &CredentialSelector,
     ) -> Option<CredentialHandle<C::Scheme>> {
-        let key = Self::handle_cache_key::<C>(credential_id);
+        let key = Self::handle_cache_key::<C>(selector);
         self.handle_cache.get(&key).and_then(|entry| {
             entry
                 .value()
@@ -151,24 +150,24 @@ impl<S: CredentialStore> CredentialResolver<S> {
 
     fn store_handle<C: Credential>(
         &self,
-        credential_id: &str,
+        selector: &CredentialSelector,
         handle: CredentialHandle<C::Scheme>,
     ) {
-        let key = Self::handle_cache_key::<C>(credential_id);
+        let key = Self::handle_cache_key::<C>(selector);
         self.handle_cache.insert(key, Arc::new(handle));
     }
 
     fn materialize_handle<C: Credential>(
         &self,
-        credential_id: &str,
+        selector: &CredentialSelector,
         scheme: C::Scheme,
     ) -> CredentialHandle<C::Scheme> {
-        if let Some(existing) = self.cached_handle::<C>(credential_id) {
+        if let Some(existing) = self.cached_handle::<C>(selector) {
             existing.replace(scheme);
             return existing;
         }
-        let handle = CredentialHandle::new(scheme, credential_id);
-        self.store_handle::<C>(credential_id, handle.clone());
+        let handle = CredentialHandle::new(scheme, selector.credential_id());
+        self.store_handle::<C>(selector, handle.clone());
         handle
     }
 
@@ -180,23 +179,22 @@ impl<S: CredentialStore> CredentialResolver<S> {
     /// [`SchemeGuard`] suitable for scoped use inside a single task.
     pub fn scheme_factory<C>(
         &self,
-        credential_id: impl Into<String>,
+        selector: CredentialSelector,
         ctx: CredentialContext,
     ) -> SchemeFactory<C>
     where
-        S: CredentialStore + 'static,
+        S: CredentialPersistence + 'static,
         C: Refreshable + CredentialLifecycle,
         C::Scheme: zeroize::Zeroize + Clone + Send + Sync + 'static,
     {
         let resolver = self.clone();
-        let credential_id = credential_id.into();
         SchemeFactory::new(move || {
             let resolver = resolver.clone();
-            let credential_id = credential_id.clone();
+            let selector = selector.clone();
             let ctx = ctx.clone();
             Box::pin(async move {
                 let handle = resolver
-                    .resolve_with_refresh::<C>(&credential_id, &ctx)
+                    .resolve_with_refresh::<C>(&selector, &ctx)
                     .await
                     .map_err(resolve_error_to_credential_error)?;
                 let scheme =
@@ -225,39 +223,40 @@ impl<S: CredentialStore> CredentialResolver<S> {
     }
 
     /// Resolve a credential state into a typed handle.
-    pub async fn resolve<C>(
+    async fn resolve<C>(
         &self,
-        credential_id: &str,
+        selector: &CredentialSelector,
     ) -> Result<CredentialHandle<C::Scheme>, ResolveError>
     where
         C: Credential,
     {
         self.ensure_source_wired()?;
-        let stored = self.load_and_verify::<C>(credential_id).await?;
+        let credential_id = selector.credential_id();
+        let stored = self.load_and_verify::<C>(selector).await?;
         let state: C::State = self.deserialize::<C>(credential_id, &stored)?;
         let scheme = C::project(&state);
-        Ok(self.materialize_handle::<C>(credential_id, scheme))
+        Ok(self.materialize_handle::<C>(selector, scheme))
     }
 
     /// Resolve a credential for an action slot through its owner-scoped key.
     ///
-    /// The [`OwnerScopedKey`] is obtainable only from a
+    /// The [`CredentialSelector`] is obtainable only from a
     /// `ValidatedCredentialBinding` (whose constructor is gated by
     /// `CredentialService::validate_credential_binding`). This method
     /// **re-verifies** the loaded row's stamped `owner_id` against the key before
     /// projecting the scheme, so a credential id belonging to another tenant
-    /// resolves to [`StoreError::NotFound`] (existence-hiding). The confused
+    /// resolves to [`CredentialPersistenceError::NotFound`] (existence-hiding). The confused
     /// deputy is closed at the load — binding provenance is backed by a load-time
     /// owner check, not trusted on its own.
     ///
     /// # Errors
     ///
-    /// Returns [`ResolveError::Store`] with [`StoreError::NotFound`] when the id
+    /// Returns [`ResolveError::Store`] with [`CredentialPersistenceError::NotFound`] when the id
     /// is absent **or** the stored row's owner does not match the key; other
     /// [`ResolveError`] variants on kind-mismatch or deserialization failure.
     pub async fn resolve_scoped<C>(
         &self,
-        key: &OwnerScopedKey,
+        selector: &CredentialSelector,
     ) -> Result<CredentialHandle<C::Scheme>, ResolveError>
     where
         C: Credential,
@@ -272,24 +271,24 @@ impl<S: CredentialStore> CredentialResolver<S> {
         // first).
         let stored = self
             .store
-            .get(key.credential_id())
+            .get(selector)
             .await
             .map_err(ResolveError::Store)?;
-        verify_owner(key, &stored)?;
-        reject_tombstoned(key.credential_id(), &stored)?;
+        verify_owner(selector, &stored)?;
+        reject_tombstoned(selector.credential_id(), &stored)?;
 
         let expected_kind = <C::State as CredentialState>::KIND;
         if stored.state_kind != expected_kind {
             return Err(ResolveError::KindMismatch {
-                credential_id: key.credential_id().to_owned(),
+                credential_id: selector.credential_id().to_owned(),
                 expected: expected_kind.to_string(),
                 actual: stored.state_kind,
             });
         }
 
-        let state: C::State = self.deserialize::<C>(key.credential_id(), &stored)?;
+        let state: C::State = self.deserialize::<C>(selector.credential_id(), &stored)?;
         let scheme = C::project(&state);
-        Ok(self.materialize_handle::<C>(key.credential_id(), scheme))
+        Ok(self.materialize_handle::<C>(selector, scheme))
     }
 
     /// Resolve a credential and refresh it when it enters the early-refresh window.
@@ -307,14 +306,15 @@ impl<S: CredentialStore> CredentialResolver<S> {
     #[expect(deprecated)] // Calls deprecated `is_circuit_open` until П3 typed-id migration completes.
     pub async fn resolve_with_refresh<C>(
         &self,
-        credential_id: &str,
+        selector: &CredentialSelector,
         ctx: &CredentialContext,
     ) -> Result<CredentialHandle<C::Scheme>, ResolveError>
     where
         C: Refreshable + CredentialLifecycle,
     {
         self.ensure_source_wired()?;
-        let stored = self.load_and_verify::<C>(credential_id).await?;
+        let credential_id = selector.credential_id();
+        let stored = self.load_and_verify::<C>(selector).await?;
         let state: C::State = self.deserialize::<C>(credential_id, &stored)?;
 
         // Route on the credential's own state-derived policy, not an ad-hoc
@@ -359,7 +359,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
 
         if decision == Decision::Usable {
             let scheme = C::project(&state);
-            return Ok(self.materialize_handle::<C>(credential_id, scheme));
+            return Ok(self.materialize_handle::<C>(selector, scheme));
         }
 
         if self.refresh_coordinator.is_circuit_open(credential_id) {
@@ -380,7 +380,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
                 "circuit breaker open: too many refresh failures, serving stale-but-valid credential within early-refresh window"
             );
             let scheme = C::project(&state);
-            return Ok(self.materialize_handle::<C>(credential_id, scheme));
+            return Ok(self.materialize_handle::<C>(selector, scheme));
         }
 
         // Parse the string id; the typed `CredentialId` is required by
@@ -390,11 +390,11 @@ impl<S: CredentialStore> CredentialResolver<S> {
         // process L2 path.
         match CredentialId::parse(credential_id) {
             Ok(typed_id) => {
-                self.refresh_via_coordinator::<C>(credential_id, &typed_id, state, stored, ctx)
+                self.refresh_via_coordinator::<C>(selector, &typed_id, state, stored, ctx)
                     .await
             },
             Err(_) => {
-                self.refresh_via_l1_only::<C>(credential_id, state, stored, ctx)
+                self.refresh_via_l1_only::<C>(selector, state, stored, ctx)
                     .await
             },
         }
@@ -404,7 +404,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
     #[expect(deprecated)] // Calls deprecated `record_success` / `record_failure` for L1 circuit breaker until П3.
     async fn refresh_via_coordinator<C>(
         &self,
-        credential_id: &str,
+        selector: &CredentialSelector,
         typed_id: &CredentialId,
         state: C::State,
         stored: StoredCredential,
@@ -413,6 +413,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
     where
         C: Refreshable + CredentialLifecycle,
     {
+        let credential_id = selector.credential_id();
         // The `refresh_coalesced` user closure must yield `Result<_,
         // RefreshError>`; we wrap the inner `ResolveError` in `Ok(Err(_))`
         // so it propagates without being mistaken for a coordinator failure.
@@ -420,7 +421,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
         let repo = Arc::clone(coord.repo());
         let resolver_state = state;
         let resolver_stored = stored;
-        let credential_id_owned = credential_id.to_string();
+        let selector_owned = selector.clone();
 
         // Sub-spec post-backoff state recheck. After the L2 backoff sleep the
         // contender's claim may have been released because their refresh
@@ -440,15 +441,16 @@ impl<S: CredentialStore> CredentialResolver<S> {
         // surfaces `CoalescedByOtherReplica` and the application layer routes
         // the credential to interactive reauth instead.
         let store_for_recheck = Arc::clone(&self.store);
-        let recheck_credential_id = credential_id.to_string();
+        let recheck_selector = selector.clone();
         let needs_refresh_after_backoff = move |_id: &CredentialId| {
             let store = Arc::clone(&store_for_recheck);
-            let credential_id = recheck_credential_id.clone();
+            let selector = recheck_selector.clone();
             async move {
+                let credential_id = selector.credential_id();
                 // On any read/decode failure, conservatively retry — the L2
                 // layer will gate further work via heartbeat / claim ownership,
                 // so retrying is safe.
-                let stored = match store.get(&credential_id).await {
+                let stored = match store.get(&selector).await {
                     Ok(s) => s,
                     Err(e) => {
                         tracing::debug!(
@@ -511,7 +513,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
 
                     Ok::<_, RefreshError>(
                         self.perform_refresh::<C>(
-                            &credential_id_owned,
+                            &selector_owned,
                             resolver_state,
                             resolver_stored,
                             ctx,
@@ -538,7 +540,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
                     "refresh coalesced by another replica; re-reading state from store"
                 );
                 self.refresh_coordinator.record_success(credential_id);
-                self.resolve::<C>(credential_id).await
+                self.resolve::<C>(selector).await
             },
             Err(e) => {
                 self.refresh_coordinator.record_failure(credential_id);
@@ -558,7 +560,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
     #[expect(deprecated)] // Whole function is the legacy-id fallback; uses deprecated L1 surface until П3.
     async fn refresh_via_l1_only<C>(
         &self,
-        credential_id: &str,
+        selector: &CredentialSelector,
         state: C::State,
         stored: StoredCredential,
         ctx: &CredentialContext,
@@ -567,6 +569,8 @@ impl<S: CredentialStore> CredentialResolver<S> {
         C: Refreshable,
     {
         use crate::runtime::refresh::RefreshAttempt;
+
+        let credential_id = selector.credential_id();
 
         match self.refresh_coordinator.try_refresh(credential_id) {
             RefreshAttempt::Winner => {
@@ -578,7 +582,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
                     coordinator.complete(&credential_id_for_guard);
                 });
                 let result = self
-                    .perform_refresh::<C>(credential_id, state, stored, ctx)
+                    .perform_refresh::<C>(selector, state, stored, ctx)
                     .await;
                 if result.is_ok() {
                     self.refresh_coordinator.record_success(credential_id);
@@ -597,7 +601,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
                         "refresh waiter timed out after 5s, re-reading from store"
                     );
                 }
-                self.resolve::<C>(credential_id).await
+                self.resolve::<C>(selector).await
             },
         }
     }
@@ -626,16 +630,18 @@ impl<S: CredentialStore> CredentialResolver<S> {
 
     async fn load_and_verify<C>(
         &self,
-        credential_id: &str,
+        selector: &CredentialSelector,
     ) -> Result<StoredCredential, ResolveError>
     where
         C: Credential,
     {
+        let credential_id = selector.credential_id();
         let stored = self
             .store
-            .get(credential_id)
+            .get(selector)
             .await
             .map_err(ResolveError::Store)?;
+        verify_owner(selector, &stored)?;
 
         // Fail-closed on EVERY load path, not just the scoped one: a revoked
         // (tombstoned) row must never project to a handle. Checked before the
@@ -643,7 +649,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
         // existence-hiding `NotFound` instead of leaking a `KindMismatch`
         // oracle. This closes the tombstone half of the resurrection class for
         // `resolve` / `resolve_with_refresh` / `scheme_factory`; the owner half
-        // stays on `resolve_scoped` (it requires an `OwnerScopedKey`).
+        // is enforced structurally by the mandatory `CredentialSelector`.
         reject_tombstoned(credential_id, &stored)?;
 
         let expected_kind = <C::State as CredentialState>::KIND;
@@ -674,7 +680,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
 
     async fn perform_refresh<C>(
         &self,
-        credential_id: &str,
+        selector: &CredentialSelector,
         mut state: C::State,
         stored: StoredCredential,
         ctx: &CredentialContext,
@@ -682,6 +688,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
     where
         C: Refreshable,
     {
+        let credential_id = selector.credential_id();
         #[cfg(feature = "rotation")]
         async fn try_oauth2_refresh<C: Refreshable>(
             state: &mut C::State,
@@ -804,7 +811,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
                     );
                     let expected_version = current.version;
                     let updated = StoredCredential {
-                        data: data.clone(),
+                        data: data.clone().into(),
                         updated_at: now,
                         expires_at: state.expires_at(),
                         // Clear the reauth flag on success — idempotent when
@@ -817,7 +824,11 @@ impl<S: CredentialStore> CredentialResolver<S> {
                     };
                     match self
                         .store
-                        .put(updated, PutMode::CompareAndSwap { expected_version })
+                        .put(
+                            selector,
+                            updated,
+                            CredentialWriteMode::CompareAndSwap { expected_version },
+                        )
                         .await
                     {
                         Ok(_) => {
@@ -831,9 +842,9 @@ impl<S: CredentialStore> CredentialResolver<S> {
                                 );
                             }
                             let scheme = C::project(&state);
-                            return Ok(self.materialize_handle::<C>(credential_id, scheme));
+                            return Ok(self.materialize_handle::<C>(selector, scheme));
                         },
-                        Err(StoreError::VersionConflict { actual, .. }) => {
+                        Err(CredentialPersistenceError::VersionConflict { actual, .. }) => {
                             tracing::warn!(
                                 credential_id,
                                 expected = expected_version,
@@ -842,7 +853,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
                             );
                             let refetched = self
                                 .store
-                                .get(credential_id)
+                                .get(selector)
                                 .await
                                 .map_err(ResolveError::Store)?;
                             // Fail-closed: never resurrect a revoked credential.
@@ -853,11 +864,13 @@ impl<S: CredentialStore> CredentialResolver<S> {
                         Err(e) => return Err(ResolveError::Store(e)),
                     }
                 }
-                Err(ResolveError::Store(StoreError::VersionConflict {
-                    id: credential_id.to_string(),
-                    expected: current.version,
-                    actual: current.version,
-                }))
+                Err(ResolveError::Store(
+                    CredentialPersistenceError::VersionConflict {
+                        credential_id: credential_id.to_string(),
+                        expected: current.version,
+                        actual: current.version,
+                    },
+                ))
             },
             RefreshOutcome::ReauthRequired(reason) => {
                 // Persist `reauth_required = true` on the credential row
@@ -893,14 +906,18 @@ impl<S: CredentialStore> CredentialResolver<S> {
                     };
                     match self
                         .store
-                        .put(updated, PutMode::CompareAndSwap { expected_version })
+                        .put(
+                            selector,
+                            updated,
+                            CredentialWriteMode::CompareAndSwap { expected_version },
+                        )
                         .await
                     {
                         Ok(_) => {
                             persist_outcome = Some(PersistOutcome::Persisted);
                             break;
                         },
-                        Err(StoreError::VersionConflict { actual, .. }) => {
+                        Err(CredentialPersistenceError::VersionConflict { actual, .. }) => {
                             tracing::warn!(
                                 credential_id,
                                 expected = expected_version,
@@ -910,7 +927,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
                             );
                             let refetched = self
                                 .store
-                                .get(credential_id)
+                                .get(selector)
                                 .await
                                 .map_err(ResolveError::Store)?;
                             // Fail-closed: if a revoke landed while we waited on
@@ -966,7 +983,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
             // adding consumers does not silently fall through.
             RefreshOutcome::CoalescedByOtherReplica => {
                 let scheme = C::project(&state);
-                Ok(self.materialize_handle::<C>(credential_id, scheme))
+                Ok(self.materialize_handle::<C>(selector, scheme))
             },
             // `RefreshOutcome` is `#[non_exhaustive]`; this arm is required for
             // forward-compatibility with future variants. Clippy flags it
@@ -974,7 +991,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
             #[expect(unreachable_patterns)]
             _ => {
                 let scheme = C::project(&state);
-                Ok(self.materialize_handle::<C>(credential_id, scheme))
+                Ok(self.materialize_handle::<C>(selector, scheme))
             },
         }
     }
@@ -983,7 +1000,7 @@ impl<S: CredentialStore> CredentialResolver<S> {
 /// FIX-1 regressions: a resolve/refresh must never project or resurrect a
 /// revoked credential.
 ///
-/// Hand-rolled test doubles of the crate's *own* ports (`CredentialStore`,
+/// Hand-rolled test doubles of the crate's *own* ports (`CredentialPersistence`,
 /// `RefreshClaimStore`, `RefreshTransport`) — no `nebula-storage` edge, so no
 /// dependency cycle. The `ScriptedStore` simulates a `revoke` landing between
 /// the resolver's load and the refresh write-back by tombstoning + version-
@@ -1013,8 +1030,10 @@ mod refresh_revoke_race {
     use crate::runtime::refresh::transport::{
         RefreshTransport, RefreshTransportError, TokenPostRequest, TokenPostResponse,
     };
-    use crate::store::REVOKED_AT_METADATA_KEY;
-    use crate::{CredentialMetadata, CredentialPolicy, RefreshStrategy, RevokeStrategy};
+    use crate::{
+        CredentialMetadata, CredentialPolicy, OWNER_ID_METADATA_KEY, REVOKED_AT_METADATA_KEY,
+        RefreshStrategy, RevokeStrategy,
+    };
 
     // ── Test doubles of the crate's own ports ──────────────────────────
 
@@ -1086,6 +1105,7 @@ mod refresh_revoke_race {
     /// In-memory single-row store. When `revoke_on_first_put` is set, the first
     /// CAS `put` tombstones + version-bumps the row and rejects the write —
     /// modelling a `revoke` that raced the refresh between load and write-back.
+    #[derive(Debug)]
     struct ScriptedStore {
         row: Mutex<StoredCredential>,
         revoke_on_first_put: bool,
@@ -1113,8 +1133,8 @@ mod refresh_revoke_race {
         fn put_sync(
             &self,
             credential: StoredCredential,
-            mode: PutMode,
-        ) -> Result<StoredCredential, StoreError> {
+            mode: CredentialWriteMode,
+        ) -> Result<StoredCredential, CredentialPersistenceError> {
             let mut row = self.row.lock();
             let id = row.id.clone();
             let first = {
@@ -1124,8 +1144,13 @@ mod refresh_revoke_race {
             };
 
             let expected = match mode {
-                PutMode::CompareAndSwap { expected_version } => Some(expected_version),
-                PutMode::CreateOnly | PutMode::Overwrite => None,
+                CredentialWriteMode::CompareAndSwap { expected_version } => Some(expected_version),
+                CredentialWriteMode::CreateOnly | CredentialWriteMode::Overwrite => None,
+                _ => {
+                    return Err(CredentialPersistenceError::InvalidRequest(
+                        "unsupported credential write mode",
+                    ));
+                },
             };
 
             if self.revoke_on_first_put && first {
@@ -1136,8 +1161,8 @@ mod refresh_revoke_race {
                     REVOKED_AT_METADATA_KEY.to_owned(),
                     serde_json::Value::String("2026-06-13T00:00:00Z".to_owned()),
                 );
-                return Err(StoreError::VersionConflict {
-                    id,
+                return Err(CredentialPersistenceError::VersionConflict {
+                    credential_id: id,
                     expected: expected.unwrap_or(0),
                     actual: row.version,
                 });
@@ -1146,8 +1171,8 @@ mod refresh_revoke_race {
             if let Some(expected_version) = expected
                 && expected_version != row.version
             {
-                return Err(StoreError::VersionConflict {
-                    id,
+                return Err(CredentialPersistenceError::VersionConflict {
+                    credential_id: id,
                     expected: expected_version,
                     actual: row.version,
                 });
@@ -1160,30 +1185,80 @@ mod refresh_revoke_race {
         }
     }
 
-    impl CredentialStore for ScriptedStore {
+    #[async_trait::async_trait]
+    impl CredentialPersistence for ScriptedStore {
         // No `.await` in any method body, so the (`!Send`) `parking_lot` guard
         // never crosses an await point — the returned futures stay `Send`.
-        async fn get(&self, _id: &str) -> Result<StoredCredential, StoreError> {
-            Ok(self.row.lock().clone())
+        async fn get(
+            &self,
+            selector: &CredentialSelector,
+        ) -> Result<StoredCredential, CredentialPersistenceError> {
+            let row = self.row.lock().clone();
+            let owner_matches = row
+                .metadata
+                .get(OWNER_ID_METADATA_KEY)
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|owner| owner == selector.owner().as_str());
+            if row.id == selector.credential_id() && owner_matches {
+                Ok(row)
+            } else {
+                Err(CredentialPersistenceError::NotFound {
+                    credential_id: selector.credential_id().to_owned(),
+                })
+            }
+        }
+
+        async fn get_head(
+            &self,
+            selector: &CredentialSelector,
+        ) -> Result<nebula_storage_port::StoredCredentialHead, CredentialPersistenceError> {
+            self.get(selector)
+                .await
+                .map(|stored| nebula_storage_port::StoredCredentialHead::from(&stored))
         }
 
         async fn put(
             &self,
+            selector: &CredentialSelector,
             credential: StoredCredential,
-            mode: PutMode,
-        ) -> Result<StoredCredential, StoreError> {
+            mode: CredentialWriteMode,
+        ) -> Result<StoredCredential, CredentialPersistenceError> {
+            if credential.id != selector.credential_id() {
+                return Err(CredentialPersistenceError::InvalidRequest(
+                    "selector credential id does not match row id",
+                ));
+            }
             self.put_sync(credential, mode)
         }
 
-        async fn delete(&self, _id: &str) -> Result<(), StoreError> {
+        async fn delete(
+            &self,
+            _selector: &CredentialSelector,
+        ) -> Result<(), CredentialPersistenceError> {
             unreachable!("delete is not exercised by the resolver refresh regressions")
         }
 
-        async fn list(&self, _state_kind: Option<&str>) -> Result<Vec<String>, StoreError> {
+        async fn list(
+            &self,
+            _owner: &nebula_storage_port::CredentialOwner,
+            _state_kind: Option<&str>,
+        ) -> Result<Vec<String>, CredentialPersistenceError> {
             Ok(Vec::new())
         }
 
-        async fn exists(&self, _id: &str) -> Result<bool, StoreError> {
+        async fn list_heads(
+            &self,
+            _owner: &nebula_storage_port::CredentialOwner,
+            _state_kind: Option<&str>,
+        ) -> Result<Vec<nebula_storage_port::StoredCredentialHead>, CredentialPersistenceError>
+        {
+            Ok(Vec::new())
+        }
+
+        async fn exists(
+            &self,
+            _selector: &CredentialSelector,
+        ) -> Result<bool, CredentialPersistenceError> {
             Ok(true)
         }
     }
@@ -1290,6 +1365,13 @@ mod refresh_revoke_race {
     // refresh path, which needs no L2 claim repo.
     const TEST_ID: &str = "test-cred";
 
+    fn test_selector() -> CredentialSelector {
+        CredentialSelector::new(
+            nebula_storage_port::CredentialOwner::from_canonical("test-owner"),
+            TEST_ID,
+        )
+    }
+
     fn test_state_bytes() -> Vec<u8> {
         serde_json::to_vec(&TestState {
             token: "live".to_owned(),
@@ -1302,7 +1384,7 @@ mod refresh_revoke_race {
             id: TEST_ID.to_owned(),
             name: None,
             credential_key: TestCred::KEY.to_owned(),
-            data: test_state_bytes(),
+            data: test_state_bytes().into(),
             state_kind: TestState::KIND.to_owned(),
             state_version: TestState::VERSION,
             version: 1,
@@ -1310,7 +1392,10 @@ mod refresh_revoke_race {
             updated_at: Utc::now(),
             expires_at: None,
             reauth_required: false,
-            metadata: serde_json::Map::new(),
+            metadata: serde_json::Map::from_iter([(
+                OWNER_ID_METADATA_KEY.to_owned(),
+                serde_json::Value::String("test-owner".to_owned()),
+            )]),
         }
     }
 
@@ -1345,12 +1430,15 @@ mod refresh_revoke_race {
         let ctx = CredentialContext::for_owner("test-owner");
 
         let err = resolver
-            .resolve_with_refresh::<TestCred>(TEST_ID, &ctx)
+            .resolve_with_refresh::<TestCred>(&test_selector(), &ctx)
             .await
             .expect_err("a refresh racing a revoke must fail closed, never resurrect");
 
         assert!(
-            matches!(err, ResolveError::Store(StoreError::NotFound { .. })),
+            matches!(
+                err,
+                ResolveError::Store(CredentialPersistenceError::NotFound { .. })
+            ),
             "expected existence-hiding NotFound, got {err:?}"
         );
 
@@ -1376,7 +1464,7 @@ mod refresh_revoke_race {
         let ctx = CredentialContext::for_owner("test-owner");
 
         resolver
-            .resolve_with_refresh::<TestCred>(TEST_ID, &ctx)
+            .resolve_with_refresh::<TestCred>(&test_selector(), &ctx)
             .await
             .expect("an uncontended refresh must succeed");
 
@@ -1403,12 +1491,15 @@ mod refresh_revoke_race {
         let ctx = CredentialContext::for_owner("test-owner");
 
         let err = resolver
-            .resolve_with_refresh::<TestCred>(TEST_ID, &ctx)
+            .resolve_with_refresh::<TestCred>(&test_selector(), &ctx)
             .await
             .expect_err("a row revoked before resolve must not refresh");
 
         assert!(
-            matches!(err, ResolveError::Store(StoreError::NotFound { .. })),
+            matches!(
+                err,
+                ResolveError::Store(CredentialPersistenceError::NotFound { .. })
+            ),
             "got {err:?}"
         );
         assert_eq!(
@@ -1424,12 +1515,15 @@ mod refresh_revoke_race {
         let resolver = resolver_with(Arc::clone(&store));
 
         let err = resolver
-            .resolve::<TestCred>(TEST_ID)
+            .resolve::<TestCred>(&test_selector())
             .await
             .expect_err("a tombstoned row must not resolve to a handle");
 
         assert!(
-            matches!(err, ResolveError::Store(StoreError::NotFound { .. })),
+            matches!(
+                err,
+                ResolveError::Store(CredentialPersistenceError::NotFound { .. })
+            ),
             "got {err:?}"
         );
     }
@@ -1445,7 +1539,7 @@ mod refresh_revoke_race {
         let resolver = resolver_with(Arc::clone(&store)).gate_external_source(true);
 
         let err = resolver
-            .resolve::<TestCred>(TEST_ID)
+            .resolve::<TestCred>(&test_selector())
             .await
             .expect_err("a gated resolver must refuse to resolve from the local store");
         assert!(
@@ -1552,7 +1646,8 @@ mod refresh_revoke_race {
             data: serde_json::to_vec(&TestState {
                 token: "live".to_owned(),
             })
-            .expect("serialize test state"),
+            .expect("serialize test state")
+            .into(),
             state_kind: TestState::KIND.to_owned(),
             state_version: TestState::VERSION,
             version: 1,
@@ -1560,7 +1655,10 @@ mod refresh_revoke_race {
             updated_at: Utc::now(),
             expires_at: None,
             reauth_required: false,
-            metadata: serde_json::Map::new(),
+            metadata: serde_json::Map::from_iter([(
+                OWNER_ID_METADATA_KEY.to_owned(),
+                serde_json::Value::String("test-owner".to_owned()),
+            )]),
         }
     }
 
@@ -1576,7 +1674,7 @@ mod refresh_revoke_race {
         let ctx = CredentialContext::for_owner("test-owner");
 
         let err = resolver
-            .resolve_with_refresh::<MismatchedPolicyCred>(TEST_ID, &ctx)
+            .resolve_with_refresh::<MismatchedPolicyCred>(&test_selector(), &ctx)
             .await
             .expect_err(
                 "an out-of-family refresh kind must be rejected in all build profiles \

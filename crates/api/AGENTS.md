@@ -88,6 +88,18 @@
   must use wildcard matches. Keep provider/failure additions semver-additive.
 - `nebula-api` is a technical HTTP/composition boundary. `nebula-sdk` remains the sole supported,
   branded Rust surface; do not promote private OAuth machinery into a second integration API.
+- Credential handlers submit only middleware-created `AuthenticatedPrincipal`, resolved scope,
+  and API-owned intent through `CredentialCommandGateway`; they never receive a credential
+  service, owner key, selector, authority proof, or raw persistence handle.
+- Credential mutations do not prevalidate through `CredentialSchemaPort`. That port is a
+  catalog/form-schema read model only; after authority, the credential service is the single
+  validate→resolve authority. An unwired schema port must not turn create/update/resolve into 503.
+- `MembershipStore::get_tenant_membership` returns org/workspace roles from one logical snapshot
+  (one lock guard or database read snapshot). RBAC and bounded-context authorities must use it;
+  do not reconstruct an authorization decision from two independent role reads. An unwired or
+  failed workspace resolver or membership source disables tenant routes with 503; a valid snapshot
+  without organization membership denies access (enumeration-safe 404 where the route contract
+  requires it). Neither case implies administrator access.
 
 ## See also
 - `README.md` — full design (endpoint table, CSRF route table, OAuth/idempotency env vars, durability caveats)

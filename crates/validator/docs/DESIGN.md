@@ -143,7 +143,7 @@
   параметры разделены, а сами значения хранятся без схемы: схема восстанавливается из
   зарегистрированных типов через `HasSchema → nebula-metadata → API catalog`. Validator
   исполняет правила этой восстановленной схемы — то есть **исполнительная сторона того же
-  seam'а**, без знания о credential/resource топологии (`OwnerScopedKey`, lease, rotation
+  seam'а**, без знания о credential/resource топологии (`CredentialSelector`, lease, rotation
   fan-out в `nebula-resource`, `RefreshTransport`-шов — всё это вне validator).
 - **Что остаётся.** `Rule` cross-kind safety, proof-token `Validated<T>`, policy-движок
   visibility/required и wire-format `Rule` — всё это уже стабильно и переживает redesign

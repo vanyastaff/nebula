@@ -1,17 +1,31 @@
 //! Caching layer for credential storage.
 //!
-//! Wraps any [`CredentialStore`] with a moka LRU + TTL cache.
-//! Caches [`StoredCredential`] including ciphertext data — the cache
-//! sits below `EncryptionLayer` in the layer stack, so it never holds
-//! plaintext secrets.
+//! Wraps any [`CredentialPersistence`] with a moka LRU + TTL cache.
+//! First-party deployment composition deliberately does not install this
+//! process-local layer: without a coherent durable invalidation protocol it
+//! cannot observe revocation performed by another replica. It is suitable
+//! only for explicitly single-process compositions, and must sit below
+//! `EncryptionLayer` so cached data is ciphertext.
 
 use std::{
+    collections::hash_map::DefaultHasher,
+    fmt,
+    hash::{Hash, Hasher},
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 
+use async_trait::async_trait;
 use moka::future::Cache;
-use nebula_credential::{CredentialStore, PutMode, StoreError, StoredCredential};
+use nebula_storage_port::{
+    CredentialOwner, CredentialPersistence, CredentialPersistenceError, CredentialSelector,
+    CredentialWriteMode, StoredCredential, StoredCredentialHead,
+};
+use tokio::sync::Mutex;
+
+/// Fixed-size lock striping keeps same-selector cache fills and mutations
+/// linearizable without retaining one lock per attacker-controlled key.
+const LOCK_SHARD_COUNT: usize = 64;
 
 /// Configuration for the credential cache.
 ///
@@ -91,10 +105,12 @@ impl CacheStats {
     }
 }
 
-/// Caching layer wrapping a [`CredentialStore`].
+/// Caching layer wrapping a [`CredentialPersistence`].
 ///
 /// Sits below [`EncryptionLayer`](super::EncryptionLayer) in the
 /// layer stack — cached values are **ciphertext**, never plaintext secrets.
+/// Do not use this layer in a multi-replica composition without a durable,
+/// source-of-truth coherence protocol.
 ///
 /// # Examples
 ///
@@ -104,9 +120,9 @@ impl CacheStats {
 /// ```rust,no_run
 /// # #[cfg(feature = "sqlite")]
 /// # async fn doc() -> Result<(), Box<dyn std::error::Error>> {
-/// use nebula_storage::credential::{CacheConfig, CacheLayer, SqliteCredentialStore};
+/// use nebula_storage::credential::{CacheConfig, CacheLayer, SqliteCredentialPersistence};
 ///
-/// let backend = SqliteCredentialStore::connect("sqlite://creds.db").await?;
+/// let backend = SqliteCredentialPersistence::connect("sqlite://creds.db").await?;
 /// let store = CacheLayer::new(backend, CacheConfig::default());
 /// # let _ = store;
 /// # Ok(())
@@ -116,11 +132,13 @@ pub struct CacheLayer<S> {
     /// The wrapped inner store.
     inner: S,
     /// Moka cache instance.
-    cache: Cache<String, StoredCredential>,
+    cache: Cache<CredentialSelector, StoredCredential>,
     /// Cache hit counter.
     hits: AtomicU64,
     /// Cache miss counter.
     misses: AtomicU64,
+    /// Bounded same-selector serialization for fill/write/delete races.
+    locks: Box<[Mutex<()>]>,
 }
 
 impl<S> CacheLayer<S> {
@@ -137,6 +155,10 @@ impl<S> CacheLayer<S> {
             cache,
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
+            locks: (0..LOCK_SHARD_COUNT)
+                .map(|_| Mutex::new(()))
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
         }
     }
 
@@ -150,82 +172,228 @@ impl<S> CacheLayer<S> {
     }
 
     /// Invalidates a specific cache entry.
-    pub async fn invalidate(&self, id: &str) {
-        self.cache.invalidate(id).await;
+    pub async fn invalidate(&self, selector: &CredentialSelector) {
+        let _guard = self.lock(selector).lock().await;
+        self.cache.invalidate(selector).await;
     }
 
-    /// Invalidates all cache entries.
-    pub fn invalidate_all(&self) {
-        self.cache.invalidate_all();
+    fn lock(&self, selector: &CredentialSelector) -> &Mutex<()> {
+        let mut hasher = DefaultHasher::new();
+        selector.hash(&mut hasher);
+        let shard = usize::from(hasher.finish().to_ne_bytes()[0]) % self.locks.len();
+        &self.locks[shard]
     }
 }
 
-impl<S: CredentialStore> CredentialStore for CacheLayer<S> {
-    async fn get(&self, id: &str) -> Result<StoredCredential, StoreError> {
-        if let Some(cached) = self.cache.get(id).await {
+impl<S> fmt::Debug for CacheLayer<S> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_struct("CacheLayer").finish_non_exhaustive()
+    }
+}
+
+#[async_trait]
+impl<S: CredentialPersistence> CredentialPersistence for CacheLayer<S> {
+    async fn get(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<StoredCredential, CredentialPersistenceError> {
+        // Keep a fill serialized with writes/deletes for this selector. Without
+        // this guard, a miss can fetch v1, a concurrent write can publish v2,
+        // and the delayed miss can then reinsert stale v1 after invalidation.
+        let _guard = self.lock(selector).lock().await;
+        if let Some(cached) = self.cache.get(selector).await {
             self.hits.fetch_add(1, Ordering::Relaxed);
             return Ok(cached);
         }
 
         self.misses.fetch_add(1, Ordering::Relaxed);
-        let credential = self.inner.get(id).await?;
-        self.cache.insert(id.to_string(), credential.clone()).await;
+        let credential = self.inner.get(selector).await?;
+        self.cache
+            .insert(selector.clone(), credential.clone())
+            .await;
         Ok(credential)
+    }
+
+    async fn get_head(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<StoredCredentialHead, CredentialPersistenceError> {
+        let _guard = self.lock(selector).lock().await;
+        self.inner.get_head(selector).await
     }
 
     async fn put(
         &self,
+        selector: &CredentialSelector,
         credential: StoredCredential,
-        mode: PutMode,
-    ) -> Result<StoredCredential, StoreError> {
-        // Invalidate before write to prevent stale reads during the write.
-        self.cache.invalidate(&credential.id).await;
-        let stored = self.inner.put(credential, mode).await?;
-        self.cache.insert(stored.id.clone(), stored.clone()).await;
+        mode: CredentialWriteMode,
+    ) -> Result<StoredCredential, CredentialPersistenceError> {
+        let _guard = self.lock(selector).lock().await;
+        // Clear the old entry before starting I/O. If the caller cancels after
+        // the backend write, the cache is empty rather than known-stale.
+        self.cache.invalidate(selector).await;
+        let stored = self.inner.put(selector, credential, mode).await?;
+        self.cache.insert(selector.clone(), stored.clone()).await;
         Ok(stored)
     }
 
-    async fn delete(&self, id: &str) -> Result<(), StoreError> {
-        self.cache.invalidate(id).await;
-        self.inner.delete(id).await
+    async fn delete(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<(), CredentialPersistenceError> {
+        let _guard = self.lock(selector).lock().await;
+        self.cache.invalidate(selector).await;
+        self.inner.delete(selector).await
     }
 
-    async fn list(&self, state_kind: Option<&str>) -> Result<Vec<String>, StoreError> {
+    async fn list(
+        &self,
+        owner: &CredentialOwner,
+        state_kind: Option<&str>,
+    ) -> Result<Vec<String>, CredentialPersistenceError> {
         // Pass through — list results are too dynamic to cache.
-        self.inner.list(state_kind).await
+        self.inner.list(owner, state_kind).await
     }
 
-    async fn exists(&self, id: &str) -> Result<bool, StoreError> {
-        if self.cache.get(id).await.is_some() {
+    async fn list_heads(
+        &self,
+        owner: &CredentialOwner,
+        state_kind: Option<&str>,
+    ) -> Result<Vec<StoredCredentialHead>, CredentialPersistenceError> {
+        self.inner.list_heads(owner, state_kind).await
+    }
+
+    async fn exists(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<bool, CredentialPersistenceError> {
+        let _guard = self.lock(selector).lock().await;
+        if self.cache.get(selector).await.is_some() {
             return Ok(true);
         }
-        self.inner.exists(id).await
+        self.inner.exists(selector).await
     }
 }
 
 #[cfg(all(test, feature = "sqlite"))]
 mod tests {
-    use nebula_credential::{PutMode, StoreError};
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    use async_trait::async_trait;
+    use nebula_storage_port::{
+        CredentialOwner, CredentialPersistence, CredentialPersistenceError, CredentialSelector,
+        CredentialWriteMode, StoredCredential, StoredCredentialHead,
+    };
+    use tokio::sync::Notify;
 
     use crate::credential::test_support::make_credential;
 
-    use super::{super::super::sqlite::SqliteCredentialStore, *};
+    use super::{super::super::sqlite::SqliteCredentialPersistence, *};
+
+    fn owner() -> CredentialOwner {
+        CredentialOwner::from_canonical("test-owner")
+    }
+
+    fn selector(id: &str) -> CredentialSelector {
+        CredentialSelector::new(owner(), id)
+    }
+
+    fn selector_for(owner: &str, id: &str) -> CredentialSelector {
+        CredentialSelector::new(CredentialOwner::from_canonical(owner), id)
+    }
+
+    #[derive(Debug, Default)]
+    struct ReadGate {
+        delay_next_get: AtomicBool,
+        snapshot_captured: Notify,
+        release_snapshot: Notify,
+    }
+
+    #[derive(Debug)]
+    struct DelayedReadPersistence<S> {
+        inner: S,
+        gate: Arc<ReadGate>,
+    }
+
+    #[async_trait]
+    impl<S: CredentialPersistence> CredentialPersistence for DelayedReadPersistence<S> {
+        async fn get(
+            &self,
+            selector: &CredentialSelector,
+        ) -> Result<StoredCredential, CredentialPersistenceError> {
+            let snapshot = self.inner.get(selector).await?;
+            if self.gate.delay_next_get.swap(false, Ordering::SeqCst) {
+                self.gate.snapshot_captured.notify_one();
+                self.gate.release_snapshot.notified().await;
+            }
+            Ok(snapshot)
+        }
+
+        async fn get_head(
+            &self,
+            selector: &CredentialSelector,
+        ) -> Result<StoredCredentialHead, CredentialPersistenceError> {
+            self.inner.get_head(selector).await
+        }
+
+        async fn put(
+            &self,
+            selector: &CredentialSelector,
+            credential: StoredCredential,
+            mode: CredentialWriteMode,
+        ) -> Result<StoredCredential, CredentialPersistenceError> {
+            self.inner.put(selector, credential, mode).await
+        }
+
+        async fn delete(
+            &self,
+            selector: &CredentialSelector,
+        ) -> Result<(), CredentialPersistenceError> {
+            self.inner.delete(selector).await
+        }
+
+        async fn list(
+            &self,
+            owner: &CredentialOwner,
+            state_kind: Option<&str>,
+        ) -> Result<Vec<String>, CredentialPersistenceError> {
+            self.inner.list(owner, state_kind).await
+        }
+
+        async fn list_heads(
+            &self,
+            owner: &CredentialOwner,
+            state_kind: Option<&str>,
+        ) -> Result<Vec<StoredCredentialHead>, CredentialPersistenceError> {
+            self.inner.list_heads(owner, state_kind).await
+        }
+
+        async fn exists(
+            &self,
+            selector: &CredentialSelector,
+        ) -> Result<bool, CredentialPersistenceError> {
+            self.inner.exists(selector).await
+        }
+    }
 
     #[tokio::test]
-    async fn cache_hit_returns_cached() -> Result<(), StoreError> {
+    async fn cache_hit_returns_cached() -> Result<(), CredentialPersistenceError> {
         let store = CacheLayer::new(
-            SqliteCredentialStore::connect_memory().await?,
+            SqliteCredentialPersistence::connect_memory().await?,
             CacheConfig::default(),
         );
         let cred = make_credential("c1", b"data");
-        store.put(cred, PutMode::CreateOnly).await.unwrap();
+        store
+            .put(&selector(&cred.id), cred, CredentialWriteMode::CreateOnly)
+            .await
+            .unwrap();
 
         // First get — cache was populated by put, so this is a hit.
-        let first = store.get("c1").await.unwrap();
+        let first = store.get(&selector("c1")).await.unwrap();
         assert_eq!(first.data, b"data");
 
         // Second get — definitely a cache hit.
-        let second = store.get("c1").await.unwrap();
+        let second = store.get(&selector("c1")).await.unwrap();
         assert_eq!(second.data, b"data");
 
         assert!(store.stats().hits >= 1);
@@ -233,105 +401,250 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn put_invalidates_and_caches_new_value() -> Result<(), StoreError> {
+    async fn put_invalidates_and_caches_new_value() -> Result<(), CredentialPersistenceError> {
         let store = CacheLayer::new(
-            SqliteCredentialStore::connect_memory().await?,
+            SqliteCredentialPersistence::connect_memory().await?,
             CacheConfig::default(),
         );
         let cred = make_credential("c1", b"v1");
-        store.put(cred, PutMode::CreateOnly).await.unwrap();
+        store
+            .put(&selector(&cred.id), cred, CredentialWriteMode::CreateOnly)
+            .await
+            .unwrap();
 
         // Read to populate cache.
-        let _ = store.get("c1").await.unwrap();
+        let _ = store.get(&selector("c1")).await.unwrap();
 
         // Overwrite with new data.
         let updated = make_credential("c1", b"v2");
-        store.put(updated, PutMode::Overwrite).await.unwrap();
+        store
+            .put(
+                &selector(&updated.id),
+                updated,
+                CredentialWriteMode::Overwrite,
+            )
+            .await
+            .unwrap();
 
         // Should see the new data (not stale cache).
-        let fetched = store.get("c1").await.unwrap();
+        let fetched = store.get(&selector("c1")).await.unwrap();
         assert_eq!(fetched.data, b"v2");
         Ok(())
     }
 
     #[tokio::test]
-    async fn delete_invalidates_cache() -> Result<(), StoreError> {
+    async fn delete_invalidates_cache() -> Result<(), CredentialPersistenceError> {
         let store = CacheLayer::new(
-            SqliteCredentialStore::connect_memory().await?,
+            SqliteCredentialPersistence::connect_memory().await?,
             CacheConfig::default(),
         );
         let cred = make_credential("c1", b"data");
-        store.put(cred, PutMode::CreateOnly).await.unwrap();
+        store
+            .put(&selector(&cred.id), cred, CredentialWriteMode::CreateOnly)
+            .await
+            .unwrap();
 
         // Populate cache.
-        let _ = store.get("c1").await.unwrap();
+        let _ = store.get(&selector("c1")).await.unwrap();
 
         // Delete.
-        store.delete("c1").await.unwrap();
+        store.delete(&selector("c1")).await.unwrap();
 
         // Should be gone.
-        let err = store.get("c1").await.unwrap_err();
-        assert!(matches!(err, StoreError::NotFound { .. }));
+        let err = store.get(&selector("c1")).await.unwrap_err();
+        assert!(matches!(err, CredentialPersistenceError::NotFound { .. }));
         Ok(())
     }
 
     #[tokio::test]
-    async fn stats_track_hits_and_misses() -> Result<(), StoreError> {
+    async fn stats_track_hits_and_misses() -> Result<(), CredentialPersistenceError> {
         let store = CacheLayer::new(
-            SqliteCredentialStore::connect_memory().await?,
+            SqliteCredentialPersistence::connect_memory().await?,
             CacheConfig::default(),
         );
         let cred = make_credential("c1", b"data");
-        store.put(cred, PutMode::CreateOnly).await.unwrap();
+        store
+            .put(&selector(&cred.id), cred, CredentialWriteMode::CreateOnly)
+            .await
+            .unwrap();
 
         // Miss — not yet read via get.
-        store.invalidate("c1").await;
-        let _ = store.get("c1").await.unwrap();
+        store.invalidate(&selector("c1")).await;
+        let _ = store.get(&selector("c1")).await.unwrap();
         assert_eq!(store.stats().misses, 1);
 
         // Hit — now cached.
-        let _ = store.get("c1").await.unwrap();
+        let _ = store.get(&selector("c1")).await.unwrap();
         assert_eq!(store.stats().hits, 1);
         Ok(())
     }
 
     #[tokio::test]
-    async fn exists_uses_cache() -> Result<(), StoreError> {
+    async fn exists_uses_cache() -> Result<(), CredentialPersistenceError> {
         let store = CacheLayer::new(
-            SqliteCredentialStore::connect_memory().await?,
+            SqliteCredentialPersistence::connect_memory().await?,
             CacheConfig::default(),
         );
         let cred = make_credential("c1", b"data");
-        store.put(cred, PutMode::CreateOnly).await.unwrap();
+        store
+            .put(&selector(&cred.id), cred, CredentialWriteMode::CreateOnly)
+            .await
+            .unwrap();
 
         // Populate cache via get.
-        let _ = store.get("c1").await.unwrap();
+        let _ = store.get(&selector("c1")).await.unwrap();
 
         // exists should return true from cache.
-        assert!(store.exists("c1").await.unwrap());
+        assert!(store.exists(&selector("c1")).await.unwrap());
 
         // Non-existent should fall through to inner.
-        assert!(!store.exists("missing").await.unwrap());
+        assert!(!store.exists(&selector("missing")).await.unwrap());
         Ok(())
     }
 
     #[tokio::test]
-    async fn list_passes_through() -> Result<(), StoreError> {
+    async fn list_passes_through() -> Result<(), CredentialPersistenceError> {
         let store = CacheLayer::new(
-            SqliteCredentialStore::connect_memory().await?,
+            SqliteCredentialPersistence::connect_memory().await?,
             CacheConfig::default(),
         );
         let cred = make_credential("c1", b"data");
-        store.put(cred, PutMode::CreateOnly).await.unwrap();
+        store
+            .put(&selector(&cred.id), cred, CredentialWriteMode::CreateOnly)
+            .await
+            .unwrap();
 
-        let ids = store.list(None).await.unwrap();
+        let ids = store.list(&owner(), None).await.unwrap();
         assert_eq!(ids, vec!["c1"]);
 
-        let filtered = store.list(Some("test")).await.unwrap();
+        let filtered = store.list(&owner(), Some("test")).await.unwrap();
         assert_eq!(filtered, vec!["c1"]);
 
-        let empty = store.list(Some("nonexistent")).await.unwrap();
+        let empty = store.list(&owner(), Some("nonexistent")).await.unwrap();
         assert!(empty.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cached_row_is_isolated_from_same_id_under_another_owner()
+    -> Result<(), CredentialPersistenceError> {
+        let store = CacheLayer::new(
+            SqliteCredentialPersistence::connect_memory().await?,
+            CacheConfig::default(),
+        );
+        let owner_a = selector_for("owner-a", "shared-id");
+        let owner_b = selector_for("owner-b", "shared-id");
+
+        store
+            .put(
+                &owner_a,
+                make_credential("shared-id", b"owner-a-secret"),
+                CredentialWriteMode::CreateOnly,
+            )
+            .await?;
+        let cached = store.get(&owner_a).await?;
+        assert_eq!(cached.data, b"owner-a-secret");
+        let stats_before_foreign_read = store.stats();
+
+        let foreign_read = store.get(&owner_b).await;
+        assert!(matches!(
+            foreign_read,
+            Err(CredentialPersistenceError::NotFound { .. })
+        ));
+        assert_eq!(
+            store.stats().misses,
+            stats_before_foreign_read.misses + 1,
+            "owner B must not hit owner A's same-id cache entry"
+        );
+        assert!(!store.exists(&owner_b).await?);
+
+        let foreign_delete = store.delete(&owner_b).await;
+        assert!(matches!(
+            foreign_delete,
+            Err(CredentialPersistenceError::NotFound { .. })
+        ));
+        let foreign_overwrite = store
+            .put(
+                &owner_b,
+                make_credential("shared-id", b"owner-b-write"),
+                CredentialWriteMode::Overwrite,
+            )
+            .await;
+        assert!(matches!(
+            foreign_overwrite,
+            Err(CredentialPersistenceError::NotFound { .. })
+        ));
+
+        let survivor = store.get(&owner_a).await?;
+        assert_eq!(survivor.data, b"owner-a-secret");
+        assert_eq!(survivor.version, 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn delayed_cache_fill_cannot_overwrite_a_concurrent_write()
+    -> Result<(), CredentialPersistenceError> {
+        let inner = SqliteCredentialPersistence::connect_memory().await?;
+        let race_selector = selector("fill-write-race");
+        inner
+            .put(
+                &race_selector,
+                make_credential("fill-write-race", b"v1"),
+                CredentialWriteMode::CreateOnly,
+            )
+            .await?;
+
+        let gate = Arc::new(ReadGate::default());
+        gate.delay_next_get.store(true, Ordering::SeqCst);
+        let store = Arc::new(CacheLayer::new(
+            DelayedReadPersistence {
+                inner,
+                gate: Arc::clone(&gate),
+            },
+            CacheConfig::default(),
+        ));
+
+        let reader_store = Arc::clone(&store);
+        let reader_selector = race_selector.clone();
+        let reader = tokio::spawn(async move { reader_store.get(&reader_selector).await });
+        gate.snapshot_captured.notified().await;
+
+        assert!(
+            store.lock(&race_selector).try_lock().is_err(),
+            "the selector shard must remain locked while a miss is being filled"
+        );
+
+        let writer_started = Arc::new(Notify::new());
+        let writer_store = Arc::clone(&store);
+        let writer_selector = race_selector.clone();
+        let writer_started_signal = Arc::clone(&writer_started);
+        let writer = tokio::spawn(async move {
+            writer_started_signal.notify_one();
+            writer_store
+                .put(
+                    &writer_selector,
+                    make_credential("fill-write-race", b"v2"),
+                    CredentialWriteMode::Overwrite,
+                )
+                .await
+        });
+        writer_started.notified().await;
+        tokio::task::yield_now().await;
+        assert!(
+            !writer.is_finished(),
+            "the write must wait until the in-flight cache fill releases its shard"
+        );
+
+        gate.release_snapshot.notify_one();
+        let delayed_read = reader.await.expect("reader task must not panic")?;
+        assert_eq!(delayed_read.data, b"v1");
+        let written = writer.await.expect("writer task must not panic")?;
+        assert_eq!(written.data, b"v2");
+        assert_eq!(written.version, 2);
+
+        let final_read = store.get(&race_selector).await?;
+        assert_eq!(final_read.data, b"v2");
+        assert_eq!(final_read.version, 2);
         Ok(())
     }
 }

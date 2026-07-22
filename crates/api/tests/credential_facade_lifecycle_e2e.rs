@@ -7,7 +7,7 @@
 //! universal pending-flow transport is integrated. The harness therefore
 //! registers a local `TestLifecycleCred` via the custom-registry factory
 //! variant ([`with_memory_store_parts`]) over the real
-//! `Audit(Cache(Encryption(SQLite)))` stack.
+//! `Audit(Encryption(SQLite))` stack.
 //!
 //! Regressions pinned here (the facade refresh/revoke paths have no in-crate
 //! unit coverage — `nebula-credential` cannot host this harness without a

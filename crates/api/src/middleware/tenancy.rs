@@ -138,10 +138,10 @@ async fn resolve_webhook_path(
     }
 
     let mut ids = ResolvedIds::default();
-    ids.org_id = Some(resolve_org(state, segments[3]).await?);
+    let org_id = resolve_org(state, segments[3]).await?;
+    ids.org_id = Some(org_id);
 
     if segments.len() >= 6 {
-        let org_id = ids.org_id.expect("org_id just resolved");
         ids.workspace_id = Some(resolve_workspace(state, org_id, segments[4]).await?);
     }
 
@@ -169,16 +169,19 @@ async fn resolve_workspace(
     org_id: OrgId,
     segment: &str,
 ) -> Result<WorkspaceId, ApiError> {
+    let resolver = state.workspace_resolver.as_ref().ok_or_else(|| {
+        ApiError::ServiceUnavailable("workspace authority is not configured".to_owned())
+    })?;
     if is_prefixed_ulid(segment) {
-        WorkspaceId::from_str(segment)
-            .map_err(|_| ApiError::NotFound(format!("invalid workspace identifier: {segment}")))
-    } else {
-        match &state.workspace_resolver {
-            Some(resolver) => resolver.resolve_by_slug(org_id, segment).await,
-            None => Err(ApiError::NotFound(format!(
-                "workspace not found: {segment}"
-            ))),
+        let workspace_id = WorkspaceId::from_str(segment)
+            .map_err(|_| ApiError::NotFound(format!("invalid workspace identifier: {segment}")))?;
+        match resolver.resolve_by_id(org_id, workspace_id).await {
+            Ok(resolved) if resolved == workspace_id => Ok(workspace_id),
+            Ok(_) => Err(ApiError::NotFound("workspace not found".to_owned())),
+            Err(error) => Err(error),
         }
+    } else {
+        resolver.resolve_by_slug(org_id, segment).await
     }
 }
 

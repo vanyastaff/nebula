@@ -9,10 +9,10 @@
 //! It is carried on [`CredentialSnapshot`](crate::CredentialSnapshot) and
 //! persisted by the credential runtime under a reserved `metadata["display"]`
 //! sub-object on the stored credential (a single-writer key, sibling to the
-//! tenancy `owner_id` key). It never holds secret material, so it derives
-//! `Debug`/`Serialize` without redaction.
+//! tenancy `owner_id` key). The API contract forbids secret material here, but
+//! `Debug` still redacts user-controlled strings defensively.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt};
 
 use serde::{Deserialize, Serialize};
 
@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 /// type is the API/management-tier shape (a created credential's name,
 /// description, and organizational tags), kept out of the secret/lifecycle
 /// state. `BTreeMap` keeps tag ordering deterministic for stable wire output.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CredentialDisplay {
     /// Human-readable instance name (e.g. `"Prod GitHub PAT"`). `None` when the
     /// creator supplied none.
@@ -36,6 +36,17 @@ pub struct CredentialDisplay {
     /// User-defined tags for organization and filtering.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tags: BTreeMap<String, String>,
+}
+
+impl fmt::Debug for CredentialDisplay {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CredentialDisplay")
+            .field("display_name_present", &self.display_name.is_some())
+            .field("description_present", &self.description.is_some())
+            .field("tag_count", &self.tags.len())
+            .finish()
+    }
 }
 
 impl CredentialDisplay {
@@ -62,6 +73,20 @@ mod tests {
             ..Default::default()
         };
         assert!(!d.is_empty());
+    }
+
+    #[test]
+    fn debug_redacts_user_controlled_display_values() {
+        const CANARY: &str = "credential-display-never-debug";
+        let display = CredentialDisplay {
+            display_name: Some(CANARY.to_owned()),
+            description: Some(CANARY.to_owned()),
+            tags: BTreeMap::from([(CANARY.to_owned(), CANARY.to_owned())]),
+        };
+
+        let debug = format!("{display:?}");
+        assert!(!debug.contains(CANARY));
+        assert!(debug.contains("tag_count: 1"));
     }
 
     #[test]

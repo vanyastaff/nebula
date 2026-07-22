@@ -15,8 +15,7 @@ use common::{create_state_with_queue_no_credential_port, create_test_jwt};
 use nebula_api::{
     ApiConfig, app,
     ports::credential_schema::{
-        CredentialCapabilityFlags, CredentialFieldError, CredentialSchemaPort,
-        CredentialTypeDescriptor,
+        CredentialCapabilityFlags, CredentialSchemaPort, CredentialTypeDescriptor,
     },
 };
 use tower::ServiceExt;
@@ -29,13 +28,6 @@ const TYPES_PATH: &str = "/api/v1/credentials/types";
 struct OneTypePort;
 
 impl CredentialSchemaPort for OneTypePort {
-    fn validate_data(
-        &self,
-        _k: &str,
-        _d: &serde_json::Value,
-    ) -> Result<(), Vec<CredentialFieldError>> {
-        Ok(())
-    }
     fn list_types(&self) -> Vec<CredentialTypeDescriptor> {
         vec![self.descriptor()]
     }

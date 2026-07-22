@@ -2,9 +2,10 @@
 
 Composition-root binary for the Nebula API. Wires the `nebula-api` HTTP
 surface to one of three ingress transports (`api`, `webhook`,
-`realtime`, or `all`) and instantiates every port the runtime needs
+`realtime`, or `all`) and instantiates the currently configured runtime ports
 (storage adapters, idempotency store, identity backend, email transport,
-metrics + telemetry exporters).
+metrics + telemetry exporters). Tenant membership policy is deliberately not
+wired by the default binary yet; this is an explicit K4 composition gap.
 
 Run the default profile locally:
 
@@ -19,6 +20,33 @@ All operator-facing configuration lives in environment variables; the
 canonical registry is `crates/api/src/config/env.rs`. The composition
 root in `apps/server/src/compose.rs` is the only place those values
 turn into concrete `Arc<dyn …>` ports.
+
+## Tenant membership and credential authority
+
+The default server has no operator-configurable `MembershipStore`. Every
+org/workspace route, including Plane-B credential management, therefore returns
+an honest 503 before performing tenant work. An unwired or failed policy source
+is unavailable; once a future supported source is wired, a valid snapshot with
+no organization membership is denied rather than treated as administrator.
+
+The in-memory membership adapter and `AppState::with_membership_store` are
+internal/reference composition seams. They do not make direct `nebula-api`
+embedding a supported deployment surface. K4 must ship the apps-owned durable
+bridge/operator configuration and the curated SDK composition façade.
+
+## Webhook credential bridge
+
+`nebula-api` exposes only the object-safe, credential-neutral
+`WebhookSecretResolver` bootstrap port. The first-party adapter lives in
+`apps/server/src/webhook_credential_resolver.rs`: it resolves a credential
+through the shared `CredentialService`, enforces the activation row's tenant
+scope, and converts stored `whsec_` material to raw HMAC bytes. Its failures
+cross the API port as a closed, secret-free classification; credential or
+provider error text is never forwarded to API logs or problem responses.
+
+Webhook registration still generates and returns the one-time `whsec_` value
+inside the HTTP boundary. That generator is API-private and is not a public
+credential-runtime or integration surface.
 
 ## Execution-store backend
 
@@ -174,7 +202,9 @@ and the callback returns
 202 without session/CSRF material; `/auth/login/mfa` completes the login.
 See `crates/api/README.md` for the full provider matrix and redirect URI shape.
 This is identity OAuth (Plane A); integration credential acquisition (Plane B)
-continues through the universal `resolve` / `resolve/continue` contract.
+continues through the universal `resolve` / `resolve/continue` contract once
+tenant membership authority is provisioned. In the default binary those tenant
+routes currently return 503, as described above.
 
 ## Email delivery (SMTP)
 

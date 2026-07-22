@@ -30,16 +30,13 @@ nebula-action = { path = "../action" }
 nebula-engine = { path = "../engine" }
 nebula-plugin = { path = "../plugin" }
 nebula-resilience = { path = "../resilience" }
-nebula-credential = { path = "../credential" }
-# ADR-0052 P4: production dep (with `schemars`) for the concrete
-# `CredentialSchemaPort` impl (`ValidSchema::validate` / `json_schema()`).
-# `nebula-schema` is Core-tier with no `deny.toml` wrapper rule (freely
-# importable), so this needs **no `deny.toml` change**. DTOs still carry
-# only `serde_json::Value` — no `ValidSchema` type crosses into any DTO
-# (ADR-0047 DTO-purity rule intact; the informal "api never imports
-# nebula-schema" prose is relaxed, recorded in the ADR-0052 P4 / ADR-0047
-# amendments).
-nebula-schema = { path = "../schema", features = ["schemars"] }
+# Only unsupported `test-util` fixtures compose a concrete credential runtime.
+# The default API surface owns ports/DTOs and has no credential implementation edge.
+nebula-credential = { path = "../credential", optional = true }
+# The `test-util` catalog fixture invokes `ValidSchema::json_schema()`; the
+# production adapter lives in apps/server. Only `serde_json::Value` crosses
+# the API port, never a schema implementation type.
+nebula-schema = { path = "../schema", optional = true, features = ["schemars"] }
 nebula-eventbus = { path = "../eventbus" }
 semver = { workspace = true }
 
@@ -97,7 +94,7 @@ zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
 secrecy = { workspace = true }
 async-trait = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
-tokio-util = { workspace = true }
+tokio-util = { workspace = true, optional = true }
 
 # Optional — only linked by `PgAuthBackend` (under `crate::domain::auth::backend::pg`,
 # feature-gated by `postgres`). The composition root constructs the `sqlx::Pool<Postgres>`
@@ -129,7 +126,7 @@ utoipa-swagger-ui = { workspace = true }
 [dev-dependencies]
 nebula-api = { path = ".", features = ["test-util"] }
 # Dev-only: api tests build a `CredentialService` over a unique in-memory SQLite
-# database via `SqliteCredentialStore::connect_memory`; `test-util` exposes that
+# database via `SqliteCredentialPersistence::connect_memory`; `test-util` exposes that
 # constructor. `sqlite`/`credential-in-memory` already come from the normal dep;
 # The first-party release composition does not enable `test-util`; enabling it
 # for a production build is unsupported (ADR-0023).
@@ -159,7 +156,6 @@ hex = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
-tokio-util = { workspace = true }
 async-trait = { workspace = true }
 insta = { workspace = true }
 mockall = { workspace = true }
@@ -183,10 +179,13 @@ sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
 
 [features]
 default = []
+# Unsupported workspace-internal seam used only by first-party apps to attach
+# concrete adapters. It is absent from the default public API snapshot.
+first-party-composition = []
 # Enables `ApiConfig::for_test()` and other test helpers. NEVER
 # enable this in production builds — it exposes a constructor that
 # bypasses the JwtSecret validation gate.
-test-util = []
+test-util = ["dep:nebula-credential", "dep:nebula-schema", "dep:tokio-util"]
 # Forwards `nebula-storage/postgres` so the `PgIdempotencyStore` impl becomes
 # available to composition roots (e.g. `nebula-server`). The `sqlx` pool is
 # constructed by the composition root, not by this library. When this feature

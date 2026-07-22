@@ -8,6 +8,7 @@
 
 mod checkpoint;
 mod control_queue;
+mod credential;
 mod execution;
 mod idempotency;
 mod identity;
@@ -23,6 +24,7 @@ mod workflow;
 
 pub use checkpoint::CheckpointStore;
 pub use control_queue::{ControlQueue, ReclaimOutcome};
+pub use credential::{CredentialPersistence, CredentialPersistenceError};
 pub use execution::ExecutionStore;
 pub use idempotency::{IdempotencyGuard, IdempotencyStore};
 pub use identity::{

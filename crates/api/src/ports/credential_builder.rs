@@ -1,84 +1,59 @@
-//! `CredentialServiceBuilder` — the only construction path for
-//! [`CredentialService`].
+//! Test-only `CredentialServiceBuilder`.
 //!
-//! Relocated to `nebula-api` (ADR-0092 step 6b): the builder is the
-//! credential composition root, so it legally pulls in `nebula-storage`
-//! (the layered store stack) and `nebula-engine` (the resolver + lease
-//! lifecycle), neither of which `nebula-credential` may depend on. The
-//! facade itself stays in `nebula-credential`; the only way to mint one is
-//! [`CredentialService::from_secure_parts`], which this builder's
-//! [`build`](CredentialServiceBuilder::build) is the sole caller of.
+//! The first-party production composition lives in `apps/server`. This helper
+//! remains inside the `test-util` surface so API integration tests can compose
+//! the real storage, resolver, and lease machinery without copying setup.
 //!
 //! Panel-refined shape (spec §5): every mandatory collaborator is a
 //! by-value argument to [`CredentialServiceBuilder::new`], so omitting
 //! one is a compile error; optional collaborators are chained setters;
 //! [`build`](CredentialServiceBuilder::build) is infallible and holds
 //! **no `Option`/`unwrap`** for mandatory state. `build()` performs the
-//! crate-private secure composition `Audit(Cache(Encryption(raw)))` +
+//! secure composition `Audit(Encryption(raw))` +
 //! the engine resolver + lease lifecycle — so an unencrypted or
 //! mis-composed service cannot be constructed.
 
 use std::sync::Arc;
 
 use crate::ports::reqwest_transport::ReqwestRefreshTransport;
-use nebula_credential::runtime::{
-    CredentialResolver, LeaseLifecycle, LeaseLifecycleConfig, RefreshCoordinator,
-};
-use nebula_credential::store::CredentialStore;
+use nebula_credential::runtime::{CredentialResolver, LeaseLifecycle, LeaseLifecycleConfig};
 use nebula_credential::{
     Capabilities, CredentialObserver, CredentialRegistry, CredentialService,
-    CredentialServiceError, DispatchOps, DynCredentialStore, ErasedCredentialStore,
-    ErasedPendingStore, StateSource,
+    CredentialServiceError, DispatchOps, ErasedPendingStore, StateSource,
 };
 use nebula_engine::credential::default_in_memory_coordinator;
-use nebula_storage::credential::{
-    AuditLayer, AuditSink, CacheConfig, CacheLayer, EncryptionLayer, KeyProvider,
-};
+use nebula_storage::credential::{AuditLayer, AuditSink, EncryptionLayer, KeyProvider};
+use nebula_storage_port::CredentialPersistence;
 use tokio_util::sync::CancellationToken;
-
-/// Layered store stack composed once at [`CredentialServiceBuilder::build`]:
-/// `Audit(Cache(Encryption(raw)))`. `Encryption` is adjacent to the raw
-/// backend so persisted bytes are always ciphertext (spec §6 #7); the
-/// cache+encryption core is erased once ([`ErasedCredentialStore`]) so the
-/// facade can hold a second, **un-audited** scan handle over the same
-/// cache for `list`'s owner filter.
-///
-/// `pub` so composition roots can name the concrete type without spelling
-/// out the layer wrappers. The builder's `build()` is still the only
-/// construction path — this is a type alias, not a constructor.
-pub type LayeredStore = AuditLayer<ErasedCredentialStore>;
 
 /// Builder for [`CredentialService`]. Construct via [`Self::new`] (all
 /// mandatory collaborators), chain optional setters, then [`build`].
 ///
 /// [`build`]: Self::build
-pub struct CredentialServiceBuilder<B: CredentialStore + 'static> {
+pub(crate) struct CredentialServiceBuilder<B: CredentialPersistence + 'static> {
     raw_store: B,
     key_provider: Arc<dyn KeyProvider>,
     audit_sink: Arc<dyn AuditSink>,
-    cache_config: CacheConfig,
     pending_store: ErasedPendingStore,
     registry: Arc<CredentialRegistry>,
     ops: Arc<DispatchOps<ErasedPendingStore>>,
     observer: Arc<dyn CredentialObserver>,
     lease_config: LeaseLifecycleConfig,
     shutdown: CancellationToken,
-    refresh_coordinator: Option<Arc<RefreshCoordinator>>,
     external: StateSource,
 }
 
-impl<B: CredentialStore + 'static> CredentialServiceBuilder<B> {
+impl<B: CredentialPersistence + 'static> CredentialServiceBuilder<B> {
     /// Provide every mandatory collaborator. Omitting any is a compile
     /// error (the secure-construction guarantee, no runtime check).
-    // guard-justified: the ten mandatory collaborators are the secure-construction
+    // guard-justified: the nine mandatory collaborators are the secure-construction
     // contract; bundling them into a params struct just moves the arity to that
     // struct's single literal at the call site.
     #[expect(clippy::too_many_arguments)]
-    pub fn new(
+    pub(crate) fn new(
         raw_store: B,
         key_provider: Arc<dyn KeyProvider>,
         audit_sink: Arc<dyn AuditSink>,
-        cache_config: CacheConfig,
         pending_store: ErasedPendingStore,
         registry: Arc<CredentialRegistry>,
         ops: Arc<DispatchOps<ErasedPendingStore>>,
@@ -90,24 +65,14 @@ impl<B: CredentialStore + 'static> CredentialServiceBuilder<B> {
             raw_store,
             key_provider,
             audit_sink,
-            cache_config,
             pending_store,
             registry,
             ops,
             observer,
             lease_config,
             shutdown,
-            refresh_coordinator: None,
             external: StateSource::LocalEncrypted,
         }
-    }
-
-    /// Override the default in-memory [`RefreshCoordinator`] with a
-    /// production (durable claim-repo) one.
-    #[must_use = "builder methods must be chained or built"]
-    pub fn refresh_coordinator(mut self, rc: Arc<RefreshCoordinator>) -> Self {
-        self.refresh_coordinator = Some(rc);
-        self
     }
 
     /// Configure an external provider chain as the credential
@@ -125,7 +90,7 @@ impl<B: CredentialStore + 'static> CredentialServiceBuilder<B> {
     /// hand back material from the wrong source). The default
     /// [`StateSource::LocalEncrypted`] is fully functional.
     #[must_use = "builder methods must be chained or built"]
-    pub fn external_providers(
+    pub(crate) fn external_providers(
         mut self,
         provider: Arc<dyn nebula_credential::provider::ExternalProvider>,
     ) -> Self {
@@ -147,7 +112,7 @@ impl<B: CredentialStore + 'static> CredentialServiceBuilder<B> {
     /// credential type advertises `refresh` / `test` / `revoke` /
     /// `interactive` but its matching `register_*_ops` call was skipped at
     /// the composition root.
-    pub fn build(self) -> Result<CredentialService, CredentialServiceError> {
+    pub(crate) fn build(self) -> Result<CredentialService, CredentialServiceError> {
         // registry-advertised capabilities ⊆ ops-registered closures, per
         // credential key. DYNAMIC is a lease concern with no ops closure, so
         // the subset is scoped to the four ops-modeled capabilities.
@@ -170,30 +135,17 @@ impl<B: CredentialStore + 'static> CredentialServiceBuilder<B> {
             }
         }
 
-        let cached = CacheLayer::new(
-            EncryptionLayer::new(self.raw_store, self.key_provider),
-            self.cache_config,
+        let encrypted = EncryptionLayer::new(self.raw_store, self.key_provider);
+        let persistence: Arc<dyn CredentialPersistence> = Arc::new(encrypted);
+        let layered = AuditLayer::new(Arc::clone(&persistence), self.audit_sink);
+        let store: Arc<dyn CredentialPersistence> = Arc::new(layered);
+        let refresh_coordinator = Arc::new(
+            default_in_memory_coordinator()
+                .map_err(|e| CredentialServiceError::Internal(e.to_string()))?,
         );
-        // Two handles over the SAME cache+encryption stack: the audited
-        // top (`store`) is the access path for every real per-id
-        // operation, while the un-audited `scan_store` exists solely for
-        // `list`'s owner-filter scan — enumerating foreign rows to filter
-        // them out is not an access, so it must not mint per-credential
-        // audit `Get` events against other tenants' ids.
-        let scan: Arc<dyn DynCredentialStore> = Arc::new(cached);
-        let scan_store = ErasedCredentialStore::new(Arc::clone(&scan));
-        let layered = AuditLayer::new(scan_store.clone(), self.audit_sink);
-        let store: Arc<dyn DynCredentialStore> = Arc::new(layered);
-        let refresh_coordinator = if let Some(rc) = self.refresh_coordinator {
-            rc
-        } else {
-            let coord = default_in_memory_coordinator()
-                .map_err(|e| CredentialServiceError::Internal(e.to_string()))?;
-            Arc::new(coord)
-        };
         let transport = Arc::new(ReqwestRefreshTransport);
         let resolver = CredentialResolver::with_dependencies(
-            Arc::new(ErasedCredentialStore::new(Arc::clone(&store))),
+            Arc::clone(&store),
             refresh_coordinator,
             transport,
         )
@@ -206,7 +158,6 @@ impl<B: CredentialStore + 'static> CredentialServiceBuilder<B> {
         );
         Ok(CredentialService::from_secure_parts(
             store,
-            scan_store,
             resolver,
             lease,
             self.pending_store,

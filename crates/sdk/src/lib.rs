@@ -1,20 +1,19 @@
 //! # nebula-sdk — Integration Author SDK
 //!
-//! Single-crate façade for writing Nebula integrations. Its supported API is
-//! organized by author persona through modules such as `prelude` and
-//! `integration`, plus `WorkflowBuilder`, `ActionBuilder`, and `TestRuntime`.
+//! Single-crate façade for writing Nebula integrations. Its current external
+//! one-dependency proof covers `WorkflowBuilder`, `ActionBuilder`, and credential
+//! `TestResult`; other manual/prelude workflows require focused proofs.
+//! Procedural derives remain an explicit SDK gap.
 //!
-//! Broad top-level workspace-crate re-exports remain temporarily for
-//! compatibility during active development. They expose internal crate
-//! topology, are unsupported for new integrations, and are not stable SDK
-//! personas. In particular, use
+//! Internal workspace crates are not re-exported. Use curated persona modules
+//! and the prelude so integrations remain insulated from crate-boundary
+//! refactors. In particular, use
 //! `nebula_sdk::integration::credential::{TestFailureCode, TestResult}` for
 //! credential-test outcomes instead of `nebula_sdk::nebula_credential`.
 //!
 //! ## Quick start
 //!
 //! ```rust,no_run
-//! use nebula_core::action_key;
 //! use nebula_sdk::prelude::*;
 //!
 //! let metadata = ActionBuilder::new(action_key!("example.greet"), "Greet")
@@ -44,29 +43,48 @@
 //! - §4.4 DX: curated persona APIs and builders are public contracts.
 //! - §7 open source contract: breaking changes need explicit announcement.
 //!
-//! See `crates/sdk/README.md` for persona APIs, temporary compatibility
-//! re-exports, and maturity notes.
+//! See `crates/sdk/README.md` for persona APIs and maturity notes.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
-// Re-export core crates
-pub use nebula_action;
-pub use nebula_core;
-pub use nebula_credential;
-pub use nebula_plugin;
-pub use nebula_resource;
-pub use nebula_schema;
-pub use nebula_validator;
-pub use nebula_workflow;
+// Ecosystem conveniences intentionally re-exported by the SDK. Nebula's
+// internal crate topology is not: curated modules and the prelude are the
+// supported surface.
 pub use serde;
 pub use serde_json;
 pub use thiserror;
 // Re-export tokio when needed for async
 #[cfg(feature = "testing")]
 pub use tokio;
+
+/// Macro implementation paths. This is public only because exported macros
+/// expand in downstream crates; it is hidden from documentation and is not a
+/// supported integration persona.
+#[doc(hidden)]
+pub mod __private {
+    /// Exact action items required by exported macro expansions.
+    #[doc(hidden)]
+    pub mod action {
+        pub use nebula_action::{
+            Action, ActionContext, ActionError, ActionMetadata, ActionResult, StatelessAction,
+        };
+    }
+
+    /// Exact core items required by exported macro expansions.
+    #[doc(hidden)]
+    pub mod core {
+        pub use nebula_core::{Dependencies, action_key};
+    }
+
+    /// Exact schema items required by exported macro expansions.
+    #[doc(hidden)]
+    pub mod schema {
+        pub use nebula_schema::value::FieldValues;
+    }
+}
 
 pub mod action;
 pub mod integration;
@@ -153,7 +171,7 @@ pub use serde_json::json;
 #[macro_export]
 macro_rules! params {
     ($($key:expr => $value:expr),* $(,)?) => {{
-        use $crate::nebula_schema::value::FieldValues;
+        use $crate::__private::schema::FieldValues;
         use $crate::serde_json::json;
 
         let mut values = FieldValues::new();
@@ -260,33 +278,33 @@ macro_rules! simple_action {
     ) => {
         pub struct $name;
 
-        impl $crate::nebula_action::Action for $name {
+        impl $crate::__private::action::Action for $name {
             type Input = $input;
             type Output = $output;
 
-            fn metadata() -> $crate::nebula_action::ActionMetadata {
-                $crate::nebula_action::ActionMetadata::for_action::<$name>(
-                    $crate::nebula_core::action_key!($key),
+            fn metadata() -> $crate::__private::action::ActionMetadata {
+                $crate::__private::action::ActionMetadata::for_action::<$name>(
+                    $crate::__private::core::action_key!($key),
                     stringify!($name),
                     "",
                 )
             }
 
-            fn dependencies() -> &'static $crate::nebula_core::Dependencies {
-                static DEPS: ::std::sync::OnceLock<$crate::nebula_core::Dependencies> =
+            fn dependencies() -> &'static $crate::__private::core::Dependencies {
+                static DEPS: ::std::sync::OnceLock<$crate::__private::core::Dependencies> =
                     ::std::sync::OnceLock::new();
-                DEPS.get_or_init($crate::nebula_core::Dependencies::new)
+                DEPS.get_or_init($crate::__private::core::Dependencies::new)
             }
         }
 
-        impl $crate::nebula_action::StatelessAction for $name {
+        impl $crate::__private::action::StatelessAction for $name {
             async fn execute(
                 &$self,
-                $input_param: <Self as $crate::nebula_action::Action>::Input,
-                $ctx_param: &(impl $crate::nebula_action::ActionContext + ?Sized),
+                $input_param: <Self as $crate::__private::action::Action>::Input,
+                $ctx_param: &(impl $crate::__private::action::ActionContext + ?Sized),
             ) -> ::std::result::Result<
-                $crate::nebula_action::ActionResult<<Self as $crate::nebula_action::Action>::Output>,
-                $crate::nebula_action::ActionError,
+                $crate::__private::action::ActionResult<<Self as $crate::__private::action::Action>::Output>,
+                $crate::__private::action::ActionError,
             > {
                 $body
             }

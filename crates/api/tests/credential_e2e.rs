@@ -37,13 +37,42 @@ use axum::{
 use common::{
     TEST_CSRF_COOKIE, TEST_CSRF_TOKEN, create_state_with_queue, create_test_jwt, ws_path,
 };
-use nebula_api::{ApiConfig, app};
+use nebula_api::{ApiConfig, app, error::ApiError, state::WorkspaceResolver};
+use nebula_core::{OrgId, WorkspaceId};
 use tower::ServiceExt;
 use tracing_subscriber::fmt::MakeWriter;
 
 /// A secret value that must never surface in any response, error, or log.
 const SECRET_TOKEN: &str = "sk-phase4-NEVER-LEAK-0xC0FFEE-abcdef0123456789";
 const OTHER_WS: &str = "ws_00000000000000000000000002";
+
+/// Directory fixture proving the IDOR case against two existing sibling
+/// workspaces, rather than accidentally probing a phantom workspace.
+struct TwoWorkspaceResolver;
+
+#[async_trait::async_trait]
+impl WorkspaceResolver for TwoWorkspaceResolver {
+    async fn resolve_by_slug(&self, _org_id: OrgId, _slug: &str) -> Result<WorkspaceId, ApiError> {
+        Ok(common::TEST_WS.parse().expect("valid test workspace ID"))
+    }
+
+    async fn resolve_by_id(
+        &self,
+        org_id: OrgId,
+        workspace_id: WorkspaceId,
+    ) -> Result<WorkspaceId, ApiError> {
+        let expected_org: OrgId = common::TEST_ORG.parse().expect("valid test org ID");
+        let primary: WorkspaceId = common::TEST_WS
+            .parse()
+            .expect("valid primary test workspace ID");
+        let sibling: WorkspaceId = OTHER_WS.parse().expect("valid sibling test workspace ID");
+        if org_id == expected_org && (workspace_id == primary || workspace_id == sibling) {
+            Ok(workspace_id)
+        } else {
+            Err(ApiError::NotFound("workspace not found".to_owned()))
+        }
+    }
+}
 
 // ── Log-capture helper (mirrors crates/credential/tests/redaction.rs) ─────────
 
@@ -404,6 +433,7 @@ async fn credential_stale_version_conflicts_409_without_secret() {
 #[tokio::test]
 async fn credential_created_in_one_workspace_is_404_from_another_workspace() {
     let (state, _q) = create_state_with_queue().await;
+    let state = state.with_workspace_resolver(Arc::new(TwoWorkspaceResolver));
     let config = ApiConfig::for_test();
     let token = create_test_jwt();
 

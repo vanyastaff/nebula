@@ -138,7 +138,7 @@ Dev: `nebula-credential-macros`, `nebula-expression`, `trybuild`, `insta`, `rste
   Re-export `CredentialGuard`/`CredentialRef` живёт в `lib.rs:132`. После ADR-0092 credential схлопывается в
   ОДИН крейт (contract+runtime+`CredentialService`+builtin); крейты `credential-runtime`/`builtin`/`testutil`/`vault`
   УДАЛЕНЫ. Для `nebula-action` это означает: те же типы guard'а, но из единого `nebula-credential` — точка
-  проекции state→scheme должна уважать correction «policy(&State) driving routing» и `OwnerScopedKey` owner-isolation
+  проекции state→scheme должна уважать correction «policy(&State) driving routing» и `CredentialSelector` owner-isolation
   на стороне резолвера (action их не реализует, но получает уже-изолированный guard).
 - **Resource-слоты.** `#[resource(key = "…")]`-поле держит `ResourceGuard<R>`; re-export `ResourceRef` в `lib.rs:133`.
   `ResourceAction` ставит `type Output = ResourceProduces<Self::Resource>` (graph-side эффект, пустая data-схема).

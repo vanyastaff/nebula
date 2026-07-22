@@ -9,7 +9,9 @@
 
 use crate::error::{CredentialError, ProviderErrorContext, ProviderErrorKind, SecretFreeMessage};
 use crate::resolve::ReauthReason;
-use crate::store::{OWNER_ID_METADATA_KEY, OwnerScopedKey, StoreError, StoredCredential};
+use crate::{
+    CredentialPersistenceError, CredentialSelector, OWNER_ID_METADATA_KEY, StoredCredential,
+};
 
 /// Map a [`ResolveError`] onto the public [`CredentialError`] returned by the
 /// `scheme_factory` path, preserving the permanent-vs-transient distinction that
@@ -20,7 +22,7 @@ use crate::store::{OWNER_ID_METADATA_KEY, OwnerScopedKey, StoreError, StoredCred
 /// faults — a backend I/O blip, a CAS version conflict, or a failed provider
 /// refresh call. Everything permanent — corrupt stored bytes, a state-kind
 /// mismatch, an unwired external source, a not-found/already-exists row, a
-/// fail-closed audit alarm, and (critically) a rejected refresh grant that needs
+/// propagated audit-sink alarm, and (critically) a rejected refresh grant that needs
 /// re-authentication — maps to a **non-retryable** variant, so a caller that
 /// drives retries off `is_retryable` cannot hammer the IdP or loop forever on a
 /// failure that will never succeed. (Previously every non-containment error was
@@ -46,7 +48,8 @@ pub(crate) fn resolve_error_to_credential_error(err: ResolveError) -> Credential
         } => CredentialError::Provider(Box::new(ProviderErrorContext::new(
             ProviderErrorKind::InvalidGrant,
             SecretFreeMessage::new(format!(
-                "credential {credential_id}: re-authentication required ({reason:?})"
+                "credential {credential_id}: re-authentication required ({})",
+                reason.code()
             )),
         ))),
         // Permanent data-integrity / configuration faults — no better on retry.
@@ -55,16 +58,17 @@ pub(crate) fn resolve_error_to_credential_error(err: ResolveError) -> Credential
         | ResolveError::ExternalSourceNotWired => CredentialError::InvalidInput(err.to_string()),
         // Permanent store faults for a specific row — missing or already
         // existing. Retrying will not change the outcome.
-        ResolveError::Store(StoreError::NotFound { .. } | StoreError::AlreadyExists { .. }) => {
-            CredentialError::InvalidInput(err.to_string())
-        },
-        // A fail-closed audit-sink alarm is an operational fault, NOT user
+        ResolveError::Store(
+            CredentialPersistenceError::NotFound { .. }
+            | CredentialPersistenceError::AlreadyExists { .. },
+        ) => CredentialError::InvalidInput(err.to_string()),
+        // A propagated audit-sink alarm is an operational fault, NOT user
         // input: the audit trail is compromised and an operator must
-        // investigate (the store contract says retry only once the sink is
-        // healthy). Keep it non-retryable (`Other`) but off the validation
+        // investigate. Keep it non-retryable (`Other`) but off the validation
         // path so it never reads as a client 4xx that hides a compromised
-        // audit trail.
-        ResolveError::Store(StoreError::AuditFailure(_)) => {
+        // audit trail. The decorator error does not promise rollback of an
+        // inner mutation, so blind retries are unsafe until reconciliation.
+        ResolveError::Store(CredentialPersistenceError::AuditFailure(_)) => {
             CredentialError::Provider(Box::new(ProviderErrorContext::new(
                 ProviderErrorKind::Other,
                 SecretFreeMessage::new(err.to_string()),
@@ -87,7 +91,7 @@ pub(crate) fn resolve_error_to_credential_error(err: ResolveError) -> Credential
 pub enum ResolveError {
     /// Backing credential store operation failed.
     #[error("store error: {0}")]
-    Store(#[from] StoreError),
+    Store(#[from] CredentialPersistenceError),
     /// Stored state kind does not match the credential state type.
     #[error("credential {credential_id}: expected kind {expected}, found {actual}")]
     KindMismatch {
@@ -159,13 +163,13 @@ pub enum ResolveError {
 
 /// Fail-closed owner gate for the scoped resolution path: the loaded row's
 /// stamped `owner_id` must equal the key's owner. A mismatch maps to
-/// [`StoreError::NotFound`] (existence-hiding, matching the management facade) so
+/// [`CredentialPersistenceError::NotFound`] (existence-hiding, matching the management facade) so
 /// a cross-tenant probe cannot tell "absent" from "owned by another tenant". An
 /// unstamped row (no `owner_id` metadata) is treated as foreign and rejected.
 ///
 /// Complexity: O(1).
 pub(crate) fn verify_owner(
-    key: &OwnerScopedKey,
+    selector: &CredentialSelector,
     stored: &StoredCredential,
 ) -> Result<(), ResolveError> {
     let stored_owner = stored
@@ -173,9 +177,9 @@ pub(crate) fn verify_owner(
         .get(OWNER_ID_METADATA_KEY)
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default();
-    if stored_owner != key.owner_id() {
-        return Err(ResolveError::Store(StoreError::NotFound {
-            id: key.credential_id().to_owned(),
+    if stored_owner != selector.owner().as_str() {
+        return Err(ResolveError::Store(CredentialPersistenceError::NotFound {
+            credential_id: selector.credential_id().to_owned(),
         }));
     }
     Ok(())
@@ -187,7 +191,7 @@ pub(crate) fn verify_owner(
 /// `CredentialService::validate_credential_binding` already rejects a tombstoned
 /// id when the binding is minted, but a binding validated immediately before a
 /// concurrent `revoke` could still reach `resolve_scoped`. A revoked row is
-/// mapped to [`StoreError::NotFound`] (same existence-hiding shape as
+/// mapped to [`CredentialPersistenceError::NotFound`] (same existence-hiding shape as
 /// [`verify_owner`]) so a revoked secret is never projected to a guard.
 ///
 /// Complexity: O(1).
@@ -196,8 +200,8 @@ pub(crate) fn reject_tombstoned(
     stored: &StoredCredential,
 ) -> Result<(), ResolveError> {
     if stored.is_tombstoned() {
-        return Err(ResolveError::Store(StoreError::NotFound {
-            id: credential_id.to_owned(),
+        return Err(ResolveError::Store(CredentialPersistenceError::NotFound {
+            credential_id: credential_id.to_owned(),
         }));
     }
     Ok(())
@@ -219,7 +223,7 @@ mod tests {
             id: "cred_x".to_owned(),
             name: None,
             credential_key: "github_oauth".to_owned(),
-            data: Vec::new(),
+            data: Vec::new().into(),
             state_kind: "oauth2_state".to_owned(),
             state_version: 1,
             version: 1,
@@ -241,9 +245,7 @@ mod tests {
         let permanent = [
             ResolveError::ReauthRequired {
                 credential_id: "cred_x".to_owned(),
-                reason: ReauthReason::ProviderRejected {
-                    detail: "invalid_grant".to_owned(),
-                },
+                reason: ReauthReason::ProviderRejected,
             },
             ResolveError::Deserialize {
                 credential_id: "cred_x".to_owned(),
@@ -255,8 +257,8 @@ mod tests {
                 actual: "b".to_owned(),
             },
             ResolveError::ExternalSourceNotWired,
-            ResolveError::Store(StoreError::NotFound {
-                id: "cred_x".to_owned(),
+            ResolveError::Store(CredentialPersistenceError::NotFound {
+                credential_id: "cred_x".to_owned(),
             }),
         ];
         for err in permanent {
@@ -274,9 +276,9 @@ mod tests {
         use nebula_error::Classify;
         // A backend I/O blip and a failed provider refresh call are genuinely
         // transient — the retry layer may legitimately re-attempt them.
-        let backend = resolve_error_to_credential_error(ResolveError::Store(StoreError::Backend(
-            "db timeout".into(),
-        )));
+        let backend = resolve_error_to_credential_error(ResolveError::Store(
+            CredentialPersistenceError::Backend(Box::new(std::io::Error::other("db timeout"))),
+        ));
         assert!(backend.is_retryable(), "backend blip should be retryable");
         let refresh = resolve_error_to_credential_error(ResolveError::Refresh {
             credential_id: "cred_x".to_owned(),
@@ -291,12 +293,12 @@ mod tests {
     #[test]
     fn audit_failure_is_operational_not_client_validation() {
         use nebula_error::Classify;
-        // A fail-closed audit-sink alarm must NOT be mislabelled as user input
+        // A propagated audit-sink alarm must NOT be mislabelled as user input
         // (which would surface as a client 4xx and hide a compromised audit
         // trail). It stays non-retryable but is classified operational, not
         // validation.
         let mapped = resolve_error_to_credential_error(ResolveError::Store(
-            StoreError::AuditFailure("audit sink refused".to_owned()),
+            CredentialPersistenceError::AuditFailure("audit sink refused".to_owned()),
         ));
         assert!(
             !matches!(mapped, CredentialError::InvalidInput(_)),
@@ -310,7 +312,10 @@ mod tests {
 
     #[test]
     fn verify_owner_accepts_matching_owner() {
-        let key = OwnerScopedKey::new("alice".to_owned(), "cred_x".to_owned());
+        let key = CredentialSelector::new(
+            nebula_storage_port::CredentialOwner::from_canonical("alice"),
+            "cred_x",
+        );
         assert!(verify_owner(&key, &stored_with_owner(Some("alice"))).is_ok());
     }
 
@@ -319,28 +324,34 @@ mod tests {
         // Confused-deputy regression: a key for owner "bob" must not read a row
         // stamped "alice"; the load fails closed as NotFound (existence-hiding),
         // so a foreign tenant cannot even distinguish existence.
-        let key = OwnerScopedKey::new("bob".to_owned(), "cred_x".to_owned());
+        let key = CredentialSelector::new(
+            nebula_storage_port::CredentialOwner::from_canonical("bob"),
+            "cred_x",
+        );
         let err = verify_owner(&key, &stored_with_owner(Some("alice"))).unwrap_err();
         assert!(matches!(
             err,
-            ResolveError::Store(StoreError::NotFound { .. })
+            ResolveError::Store(CredentialPersistenceError::NotFound { .. })
         ));
     }
 
     #[test]
     fn unstamped_row_is_treated_as_foreign() {
-        let key = OwnerScopedKey::new("alice".to_owned(), "cred_x".to_owned());
+        let key = CredentialSelector::new(
+            nebula_storage_port::CredentialOwner::from_canonical("alice"),
+            "cred_x",
+        );
         let err = verify_owner(&key, &stored_with_owner(None)).unwrap_err();
         assert!(matches!(
             err,
-            ResolveError::Store(StoreError::NotFound { .. })
+            ResolveError::Store(CredentialPersistenceError::NotFound { .. })
         ));
     }
 
     fn tombstoned(owner: Option<&str>) -> StoredCredential {
         let mut stored = stored_with_owner(owner);
         stored.metadata.insert(
-            crate::store::REVOKED_AT_METADATA_KEY.to_owned(),
+            crate::REVOKED_AT_METADATA_KEY.to_owned(),
             serde_json::Value::String("2026-06-13T10:00:00Z".to_owned()),
         );
         stored
@@ -354,7 +365,7 @@ mod tests {
         let err = reject_tombstoned("cred_x", &tombstoned(Some("alice"))).unwrap_err();
         assert!(matches!(
             err,
-            ResolveError::Store(StoreError::NotFound { .. })
+            ResolveError::Store(CredentialPersistenceError::NotFound { .. })
         ));
     }
 

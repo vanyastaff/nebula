@@ -93,7 +93,8 @@ impl fmt::Display for CredentialEvent {
             } => {
                 write!(
                     f,
-                    "credential reauth required: {credential_id} ({reason:?})"
+                    "credential reauth required: {credential_id} ({})",
+                    reason.code()
                 )
             },
         }
@@ -164,5 +165,25 @@ mod tests {
             display.starts_with("credential reauth required: cred_"),
             "display: {display}"
         );
+        assert!(display.ends_with("(sentinel_repeated)"));
+    }
+
+    #[test]
+    fn reauth_event_formatting_uses_only_closed_reason_codes() {
+        let id = CredentialId::new();
+        for reason in [
+            ReauthReason::ProviderRejected,
+            ReauthReason::MissingRefreshMaterial,
+        ] {
+            let event = CredentialEvent::ReauthRequired {
+                credential_id: id,
+                reason,
+            };
+            let display = event.to_string();
+            let debug = format!("{event:?}");
+            assert!(display.contains("reauth required"));
+            assert!(!display.contains("detail"));
+            assert!(!debug.contains("detail"));
+        }
     }
 }
