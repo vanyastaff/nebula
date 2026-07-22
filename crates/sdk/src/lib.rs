@@ -1,9 +1,15 @@
 //! # nebula-sdk — Integration Author SDK
 //!
-//! Single-crate façade for writing Nebula integrations. Re-exports the full
-//! integration surface (`nebula-action`, `nebula-credential`, `nebula-resource`,
-//! `nebula-schema`, `nebula-workflow`, `nebula-plugin`, `nebula-validator`) and
-//! adds `prelude`, `WorkflowBuilder`, `ActionBuilder`, and `TestRuntime`.
+//! Single-crate façade for writing Nebula integrations. Its supported API is
+//! organized by author persona through modules such as `prelude` and
+//! `integration`, plus `WorkflowBuilder`, `ActionBuilder`, and `TestRuntime`.
+//!
+//! Broad top-level workspace-crate re-exports remain temporarily for
+//! compatibility during active development. They expose internal crate
+//! topology, are unsupported for new integrations, and are not stable SDK
+//! personas. In particular, use
+//! `nebula_sdk::integration::credential::{TestFailureCode, TestResult}` for
+//! credential-test outcomes instead of `nebula_sdk::nebula_credential`.
 //!
 //! ## Quick start
 //!
@@ -26,6 +32,7 @@
 //! ## Modules
 //!
 //! - `prelude` — one-stop import for common types and traits.
+//! - `integration` — curated contracts for integration authors.
 //! - `action` — `ActionBuilder` for programmatic action metadata.
 //! - `workflow` — `WorkflowBuilder` for programmatic workflow construction.
 //! - `runtime` — `TestRuntime`, `RunReport` — in-process test harness.
@@ -34,10 +41,11 @@
 //! ## Canon
 //!
 //! - §3.5 integration model: Action, Credential, Resource, Schema, Plugin.
-//! - §4.4 DX: stable `prelude` + `WorkflowBuilder` API is a public contract.
+//! - §4.4 DX: curated persona APIs and builders are public contracts.
 //! - §7 open source contract: breaking changes need explicit announcement.
 //!
-//! See `crates/sdk/README.md` for the full re-export list and maturity notes.
+//! See `crates/sdk/README.md` for persona APIs, temporary compatibility
+//! re-exports, and maturity notes.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -61,6 +69,7 @@ pub use thiserror;
 pub use tokio;
 
 pub mod action;
+pub mod integration;
 pub mod prelude;
 pub mod runtime;
 pub mod workflow;

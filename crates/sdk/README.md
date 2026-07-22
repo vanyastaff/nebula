@@ -1,6 +1,6 @@
 ---
 name: nebula-sdk
-role: Integration Author SDK (Re-export Façade)
+role: Integration Author SDK (Persona Façade)
 status: partial
 last-reviewed: 2026-04-22
 canon-invariants: [L1-3.5, L1-4.4, L1-7]
@@ -16,19 +16,22 @@ workspace crates to add to `Cargo.toml` — they should import one crate and get
 traits, schema types, credential model, resource model, workflow builder, and test harness.
 Without a façade, every new contributor discovers the dependency graph by trial and error, which
 violates the §4.4 north star (focused day, no plumbing). `nebula-sdk` is that façade: a single
-crate that re-exports the common integration surface and provides the `prelude`, workflow
-builder, and test runtime that cover the canonical use cases.
+crate that provides persona-scoped integration contracts, the `prelude`, workflow builder, and
+test runtime that cover the canonical use cases.
 
 ## Role
 
-*Integration Author SDK (Re-export Façade).* Re-exports the cross-cutting integration surface
-— `nebula-action`, `nebula-credential`, `nebula-resource`, `nebula-schema`, `nebula-workflow`,
-`nebula-plugin`, `nebula-validator` — through a single dependency. Provides `prelude`,
-`WorkflowBuilder`, `ActionBuilder`, and a `TestRuntime` / `RunReport` for integration testing.
+*Integration Author SDK (Persona Façade).* Provides curated authoring contracts through
+`prelude`, persona modules such as `integration`, `WorkflowBuilder`, `ActionBuilder`, and a
+`TestRuntime` / `RunReport` for integration testing. Broad workspace-crate re-exports remain
+temporarily for compatibility; they expose internal topology and are not stable SDK personas.
 
 ## Public API
 
-Top-level re-exports (full crates):
+The sole supported credential-test path is
+`nebula_sdk::integration::credential::{TestFailureCode, TestResult}`.
+
+Temporary top-level compatibility re-exports (internal topology, not stable SDK personas):
 
 - `nebula_action` — action trait family (`StatelessAction`, `StatefulAction`, `TriggerAction`,
   `ResourceAction`), `ActionContext`, `ActionResult`, `ActionError`, `ActionMetadata`.
@@ -40,18 +43,19 @@ Top-level re-exports (full crates):
 - `nebula_validator` — validation traits.
 - `nebula_core` — core ID types (`ExecutionId`, `NodeKey`, `WorkflowId`).
 
-### Credential, OAuth, and the SDK (P11 re-export audit)
+### Credential, OAuth, and the SDK
 
-The SDK does not introduce a second OAuth façade on top of `nebula-credential`. Integration authors get credentials in two ways:
+Integration authors consume credential contracts through curated SDK personas:
 
 | Surface | What you use |
 |--------|----------------|
-| **Full crate** | `nebula_sdk::nebula_credential` (same as depending on `nebula-credential` directly). All OAuth2 resolver/engine types, errors, and helpers live here. |
+| **Curated integration contract** | `nebula_sdk::integration::credential::{TestFailureCode, TestResult}` for provider credential-test outcomes. This is the supported SDK path for this contract. |
 | **Prelude** | `nebula_sdk::prelude::*` re-exports the common credential and OAuth2 types used in actions (`Credential`, `OAuth2Credential`, `OAuth2Token`, `CredentialContext`, `CredentialSnapshot`, …) — see `prelude.rs`. |
+| **Temporary compatibility re-export** | `nebula_sdk::nebula_credential` exposes internal crate topology. It remains during active development for compatibility, but is unsupported for new integrations and is not a stable SDK persona. |
 
-**Not in the SDK:** HTTP token exchange/refresh against a provider, storage encryption, and engine `CredentialResolver` — those are product/runtime crates (`nebula-api`, `nebula-engine`, `nebula-storage`). If you outgrow the prelude list, import from `nebula_sdk::nebula_credential` without adding another workspace dependency.
+**Not in the SDK:** HTTP token exchange/refresh against a provider, storage encryption, and engine `CredentialResolver` — those are product/runtime concerns. If a contract needed by integration authors is absent from a curated SDK persona, treat that as an SDK API gap rather than depending on the temporary broad re-export.
 
-**Migration:** When credential/OAuth types move or rename, follow `nebula-credential` release notes and this README; the SDK version tracks workspace `nebula-credential` and does not add its own parallel OAuth type aliases.
+**Migration:** Provider tests import `TestFailureCode` and `TestResult` only from the curated integration path above and construct `TestResult::Failed { code }`; the removed `reason` field is not accepted. K4 may remove broad runtime or topology leaks while preserving this curated persona path. For other credential/OAuth moves, follow the SDK release notes and this README rather than internal crate topology.
 
 ### Resource authoring and the SDK
 
@@ -71,6 +75,7 @@ Note that prelude `Error` is `nebula_resource::Error` (the resource error type);
 Modules provided by this crate:
 
 - `prelude` — one-stop `use nebula_sdk::prelude::*` import for common types and traits.
+- `integration` — curated, persona-scoped contracts for integration authors.
 - `action` — `ActionBuilder` for programmatic action metadata construction.
 - `workflow` — `WorkflowBuilder` for programmatic workflow construction.
 - `runtime` — `TestRuntime`, `RunReport` — in-process test execution harness.

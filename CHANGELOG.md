@@ -67,12 +67,14 @@ changes are expected between minor releases — call them out here.
 - **(breaking, security) Credential test contracts are payload-free.** Provider
   adapters must replace `TestResult::Failed { reason: String }` with
   `TestResult::Failed { code: TestFailureCode }`; raw provider text must be
-  discarded locally. `CredentialService::test` now returns `TestResult`
-  directly and `TestReport` is removed. HTTP v1 clients must migrate from the
-  former boolean response to the tagged `status` response: `success` carries
-  `message`/`tested_at`, while `failed` additionally requires the frozen
-  `CredentialTestFailureCodeV1`. Platform-owned messages never interpolate
-  adapter errors; future core classifications map to wire code `other`.
+  discarded locally. SDK consumers import both types from
+  `nebula_sdk::integration::credential::{TestFailureCode, TestResult}`.
+  `CredentialService::test` now returns `TestResult` directly and `TestReport`
+  is removed. HTTP v1 clients must migrate from the former boolean response to
+  the tagged `status` response: `success` carries `message`/`tested_at`, while
+  `failed` additionally requires the frozen `CredentialTestFailureCodeV1`.
+  Platform-owned messages never interpolate adapter errors; future core
+  classifications map to wire code `other`.
 
 ### Changed
 

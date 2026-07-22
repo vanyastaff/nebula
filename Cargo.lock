@@ -3482,6 +3482,7 @@ dependencies = [
  "rstest",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
  "uuid",
