@@ -32,6 +32,12 @@ use crate::{Credential, CredentialContext, error::CredentialError, resolve::Test
 /// "not testable" carve-out because membership in `Testable` already
 /// guarantees the credential supports probing.
 ///
+/// A provider adapter must classify a rejection with the payload-free,
+/// extensible [`TestFailureCode`](crate::TestFailureCode) enum and discard raw
+/// provider text before returning. Provider messages are untrusted and may
+/// echo credentials; they must not cross this contract into logs or API
+/// responses.
+///
 /// # Examples
 ///
 /// ```
@@ -86,10 +92,11 @@ pub trait Testable: Credential {
     /// Implementations should perform a lightweight authenticated call
     /// against the provider (token introspection, "whoami" endpoint)
     /// and return [`TestResult::Success`] on a 2xx response or
-    /// [`TestResult::Failed { reason }`](TestResult::Failed) when the
-    /// provider rejects the credential. Network or provider-internal
-    /// errors that prevent determining validity surface as
-    /// `Err(CredentialError)`.
+    /// [`TestResult::Failed`](TestResult::Failed) with a payload-free,
+    /// extensible [`TestFailureCode`](crate::TestFailureCode) when the provider
+    /// definitively rejects the credential. Network, transport, and
+    /// provider-internal errors that prevent determining validity surface as
+    /// `Err(CredentialError)`; they are not negative probe outcomes.
     fn test(
         scheme: &Self::Scheme,
         ctx: &CredentialContext,

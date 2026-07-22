@@ -35,7 +35,7 @@ pub(crate) mod state_source;
 pub use binding::{TenantFingerprint, ValidatedCredentialBinding, ValidatedCredentialBindingError};
 pub use error::CredentialServiceError;
 pub use facade::{
-    Acquisition, CredentialService, CredentialTypeInfo, RefreshReport, TestReport, TypeCapabilities,
+    Acquisition, CredentialService, CredentialTypeInfo, RefreshReport, TypeCapabilities,
 };
 pub use head::CredentialHead;
 pub use observer::{CredentialObserver, EventMetricObserver, NoopObserver};

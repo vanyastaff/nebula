@@ -1,7 +1,7 @@
 # nebula-credential — Agent orientation
 > Agent quick-map for `crates/credential/`. Full design: `README.md`. Repo-wide rules: root `AGENTS.md`.
 
-**Purpose:** The typed Credential Contract — declares the split between stored `State` (encrypted at rest) and projected auth `Scheme` (what action code receives). Runtime resolve/refresh/rotation **orchestration** lives in `src/runtime/` and `CredentialService` (ADR-0092); `nebula-engine` and `nebula-api` are composition roots that wire transport, store layers, and tenant scope — they do not duplicate resolver logic.
+**Purpose:** The typed Credential Contract — declares the split between stored `State` (encrypted at rest) and projected auth `Scheme` (what action code receives). Runtime resolve/refresh/rotation **orchestration** lives in `src/runtime/` and `CredentialService` (ADR-0092). `apps/server` is the first-party composition root. The credential factory temporarily housed in `nebula-api` is K4 migration debt: it may bridge today's dependency graph, but must move outward and must not accumulate provider policy. `nebula-engine` consumes typed runtime seams; neither it nor `nebula-api` duplicates resolver logic.
 **Layer:** Shared-infra (credential contract) — importable by Exec/API/Business per the `deny.toml` `[bans].deny` `wrappers` allowlist; depends only on Core + cross-cutting (root AGENTS.md → Layered Dependency Map).
 
 ## Common Tasks
@@ -17,7 +17,7 @@
 ## Commands
 - `cargo check -p nebula-credential`
 - `cargo nextest run -p nebula-credential`  ·  doctests: `cargo test -p nebula-credential --doc`
-- Feature flags: `rotation` (gated, evolving), `test-util` (test-only ctors; `nextest run -p nebula-credential --features test-util` for sibling integration seams)
+- Feature flags: `rotation` (gated, evolving)
 - `compile_fail_*.rs` (trybuild) encode the load-bearing invariants — read these first when a change feels risky; may false-TIMEOUT on cold cache under nextest (warm + plain `cargo test`).
 
 ## Key files
@@ -36,6 +36,7 @@
 - **Capabilities are sub-trait membership, never const flags** — duplicate-KEY `register` is fatal in debug AND release; a declared-but-unimplemented capability is a compile error. Don't reintroduce capability bools or per-trait `*_schema` (schema = `Properties: HasSchema`, read via `schema_of`).
 - `CredentialState` requires `ZeroizeOnDrop`; `Debug` redacts secrets; `SchemeGuard` is `!Clone` and drop-zeroizes.
 - Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
+- First-party deployment wiring belongs in `apps/server`; do not expand the temporary `nebula-api::ports::credential_service_factory` with provider-specific policy.
 - Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code (`#![forbid(unsafe_code)]`).
 
 ## See also

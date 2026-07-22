@@ -3,8 +3,8 @@
 //!
 //! This is the runtime proof for the factory's two load-bearing invariants:
 //! (1) `CredentialServiceBuilder::build` runs a capability⊆ops gate, so a
-//! successful build proves OAuth2's four advertised capabilities each have a
-//! registered dispatch op (and api_key/basic_auth advertise none); (2) the
+//! successful build proves the default static types have matching base
+//! dispatch ops without advertising unsupported interactive capabilities; (2) the
 //! fixed dev key actually base64-decodes to a valid AES-256 key.
 
 use std::sync::Arc;
@@ -23,8 +23,7 @@ const TEST_KEY_B64: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=";
 async fn factory_builds_service_and_create_round_trips() {
     let key = Arc::new(EnvKeyProvider::from_base64(TEST_KEY_B64).expect("valid 32-byte AES key"));
     // `build()` runs the capability⊆ops gate; success proves the registry's
-    // advertised caps match the registered ops (OAuth2's four + none for the
-    // static types).
+    // advertised caps match the registered base ops for the static types.
     let svc = with_memory_store(key)
         .await
         .expect("service composes (advertised caps match ops)");

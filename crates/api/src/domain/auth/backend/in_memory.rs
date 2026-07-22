@@ -915,12 +915,9 @@ impl AuthBackend for InMemoryAuthBackend {
                 let pkce = mint_pkce()?;
                 let auth_req = AuthorizationUriRequest {
                     auth_url: endpoints.authorize_url.clone(),
-                    token_url: endpoints.token_url.clone(),
                     client_id: provider_cfg.client_id.expose_secret().to_owned(),
-                    client_secret: provider_cfg.client_secret.expose_secret().to_owned(),
                     redirect_uri: redirect_uri.clone(),
                     scopes: Some(endpoints.scopes),
-                    auth_style: None,
                 };
                 let authorize_url =
                     build_authorization_uri(&auth_req, &pkce.state, &pkce.code_challenge)
@@ -1056,7 +1053,7 @@ impl AuthBackend for InMemoryAuthBackend {
                 let token_req = TokenExchangeRequest {
                     token_url: endpoints.token_url.clone(),
                     client_id: provider_cfg.client_id.expose_secret().to_owned(),
-                    client_secret: provider_cfg.client_secret.expose_secret().to_owned(),
+                    client_secret: provider_cfg.client_secret.clone(),
                     code: code.clone(),
                     redirect_uri: redirect_uri.clone(),
                     code_verifier: entry.code_verifier.clone(),

@@ -17,10 +17,10 @@
 //! ## Why this module exists
 //!
 //! Per auth plane separation, **Plane A** (host / Nebula API auth) is kept disjoint from
-//! **Plane B** (integration credential OAuth). Plane B lives under
-//! [`crate::transport::oauth`] + `crates/credential/`; Plane A lives here.
-//! New auth-domain features land in [`crate::domain::auth`] — never in the
-//! credential / OAuth-integration tree.
+//! **Plane B** (integration credential acquisition). The OAuth transport helpers
+//! are private infrastructure for Plane A; Plane B uses `crates/credential/`
+//! through the universal credential facade. New auth-domain features land in
+//! [`crate::domain::auth`] — never in the credential tree.
 //!
 //! [`SecretString`]: dto::SecretString
 //! [`AuthBackend`]: provider::AuthBackend

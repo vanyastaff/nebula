@@ -135,11 +135,11 @@ fn build_openapi_router(state: &AppState) -> OpenApiRouter<AppState> {
             auth_middleware,
         ));
 
-    // Credential routes (Plane B — credential CRUD + API-owned OAuth flow).
+    // System-level credential type discovery (Plane B).
     //
-    // CSRF is enforced on state-changing methods because the write
-    // endpoints are session/JWT-reachable; PAT/ApiKey requests stay
-    // exempt by construction inside `csrf_middleware`.
+    // This router currently publishes read-only GET discovery. Keep the
+    // standard auth + CSRF middleware envelope so any future state-changing
+    // method cannot be added here without the same session protections.
     let credential_routes = credential::routes::router()
         .layer(middleware::from_fn(csrf_middleware))
         .layer(middleware::from_fn_with_state(

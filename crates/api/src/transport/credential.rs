@@ -13,12 +13,6 @@
 //! validate→resolve pipeline, and the per-operation tenant check, so the
 //! api layer never touches a raw store or re-implements validation.
 //!
-//! The OAuth2 two-phase flow (`domain::credential::oauth`) persists
-//! through `scoped_store` — a `CredentialScopeLayer` over the **same**
-//! facade store handle ([`CredentialService::credential_store_handle`]) —
-//! so an OAuth-acquired credential is visible to `get`/`list` and there
-//! is no second store to drift from.
-//!
 //! When no service is wired (`credential_service: None`) every credential
 //! operation returns an honest 503 (§4.5 operational honesty) — there is
 //! no raw-store fallback path.
@@ -50,22 +44,22 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use nebula_credential::resolve::{InteractionRequest, UserInput};
+use nebula_credential::CredentialDisplay;
+use nebula_credential::resolve::{InteractionRequest, TestResult, UserInput};
 use nebula_credential::{
     Acquisition, CredentialHead, CredentialService, CredentialServiceError, TenantScope,
+    TestFailureCode,
 };
-use nebula_credential::{CredentialDisplay, ErasedCredentialStore, ScopeResolver};
 use nebula_storage_port::Scope;
-use nebula_tenancy::CredentialScopeLayer;
 
 use crate::{
     domain::credential::dto::{
         AcquisitionInteraction, ContinueResolveRequest, ContinueResolveResponse,
         CreateCredentialRequest, CredentialCapabilities, CredentialResponse, CredentialSummary,
-        CredentialTypeInfo, FormPostField, ListCredentialTypesResponse, ListCredentialsQuery,
-        ListCredentialsResponse, RefreshCredentialResponse, ResolveCredentialRequest,
-        ResolveCredentialResponse, RevokeCredentialResponse, TestCredentialResponse,
-        UpdateCredentialRequest,
+        CredentialTestFailureCodeV1, CredentialTypeInfo, FormPostField,
+        ListCredentialTypesResponse, ListCredentialsQuery, ListCredentialsResponse,
+        RefreshCredentialResponse, ResolveCredentialRequest, ResolveCredentialResponse,
+        RevokeCredentialResponse, TestCredentialResponse, UpdateCredentialRequest,
     },
     error::{ApiError, ApiResult},
     state::AppState,
@@ -85,52 +79,18 @@ fn service(state: &AppState) -> ApiResult<&Arc<CredentialService>> {
         .ok_or_else(|| ApiError::ServiceUnavailable(NO_CREDENTIAL_SERVICE.to_owned()))
 }
 
-/// Canonical owner key for a resolved request scope (ADR-0088 D7) —
-/// shared with the OAuth pending-state binding so both planes key the
-/// same tenant identically.
-pub(crate) fn owner_id_from_scope(scope: &Scope) -> String {
-    scope.credential_owner_id()
-}
-
-#[derive(Debug)]
-struct RequestCredentialOwner(String);
-
-impl ScopeResolver for RequestCredentialOwner {
-    fn current_owner(&self) -> Option<&str> {
-        Some(&self.0)
-    }
-}
-
-/// Owner-scoped raw access to the **facade's** layered store for the
-/// OAuth two-phase write path (`domain::credential::oauth`).
-///
-/// Wraps [`CredentialService::credential_store_handle`] — the same
-/// `Audit(Cache(Encryption(raw)))` stack the facade CRUD uses — in a
-/// `CredentialScopeLayer` that stamps/checks `metadata["owner_id"]` on
-/// every call. One store, two access styles: typed facade operations and
-/// the OAuth raw-state writes; both planes stamp the same canonical
-/// owner key, so OAuth-acquired rows are visible to `get`/`list`.
-pub(crate) fn scoped_store(
-    state: &AppState,
-    owner_id: &str,
-) -> ApiResult<CredentialScopeLayer<ErasedCredentialStore>> {
-    let svc = service(state)?;
-    Ok(CredentialScopeLayer::new(
-        ErasedCredentialStore::new(svc.credential_store_handle()),
-        Arc::new(RequestCredentialOwner(owner_id.to_owned())),
-    ))
-}
-
 // ── Error mapping ────────────────────────────────────────────────────────────
 
 /// Map a [`CredentialServiceError`] onto a typed [`ApiError`].
 ///
 /// Cross-workspace / unknown ids collapse to a flat `404` with **no
 /// existence disclosure**. Capability gaps are client errors (`400`),
-/// optimistic-concurrency failures are `409`, expired interactive tokens
-/// are `401`, provider/backend unavailability is `503`. The mapped
-/// strings never carry secret material — the facade's error reasons are
-/// value-free by contract (schema code/path only).
+/// optimistic-concurrency failures are `409`, expired interactive tokens are
+/// `401`, provider/backend unavailability is `503`. Dynamic reason payloads
+/// are deliberately discarded at this boundary: credential implementations
+/// and storage/provider adapters are not trusted to produce client-safe text.
+/// Validated identifiers, capability names, and version numbers remain where
+/// they are actionable.
 fn map_service_err(err: CredentialServiceError, cred: &str) -> ApiError {
     match err {
         CredentialServiceError::NotFound { .. } => {
@@ -141,8 +101,8 @@ fn map_service_err(err: CredentialServiceError, cred: &str) -> ApiError {
         } => ApiError::VersionMismatch(format!(
             "credential {cred}: expected version {expected}, found {actual}"
         )),
-        CredentialServiceError::ValidationFailed { reason } => ApiError::Validation {
-            detail: format!("credential properties rejected: {reason}"),
+        CredentialServiceError::ValidationFailed { .. } => ApiError::Validation {
+            detail: "credential properties were rejected".to_owned(),
             errors: vec![],
         },
         CredentialServiceError::TypeUnknown { key } => ApiError::Validation {
@@ -156,19 +116,19 @@ fn map_service_err(err: CredentialServiceError, cred: &str) -> ApiError {
         CredentialServiceError::PendingExpired => ApiError::Unauthorized(
             "pending acquisition token expired or already consumed".to_owned(),
         ),
-        CredentialServiceError::TransientProvider(reason) => ApiError::ServiceUnavailable(format!(
-            "credential provider temporarily unavailable: {reason}"
-        )),
-        CredentialServiceError::Provider(reason) => {
-            ApiError::ServiceUnavailable(format!("credential provider error: {reason}"))
+        CredentialServiceError::TransientProvider(_) => ApiError::ServiceUnavailable(
+            "credential provider is temporarily unavailable".to_owned(),
+        ),
+        CredentialServiceError::Provider(_) => {
+            ApiError::ServiceUnavailable("credential provider request failed".to_owned())
         },
         CredentialServiceError::ExternalSourceNotWired { provider } => {
             ApiError::ServiceUnavailable(format!(
                 "external credential source '{provider}' is configured but not wired"
             ))
         },
-        CredentialServiceError::Store(reason) => {
-            ApiError::Internal(format!("credential store error: {reason}"))
+        CredentialServiceError::Store(_) => {
+            ApiError::Internal("credential storage operation failed".to_owned())
         },
         // Re-auth is a routine, client-actionable outcome (rejected grant /
         // sentinel escalation / missing refresh material) — a 401 "reconnect",
@@ -182,7 +142,7 @@ fn map_service_err(err: CredentialServiceError, cred: &str) -> ApiError {
         // (a session is always attached on the acquisition paths); surfacing
         // one is an internal bug, never a client error. `#[non_exhaustive]`
         // future variants land here too — fail closed, no secret echo.
-        other => ApiError::Internal(format!("credential runtime error: {other}")),
+        _ => ApiError::Internal("credential runtime operation failed".to_owned()),
     }
 }
 
@@ -479,6 +439,60 @@ pub async fn list_credentials(
 
 // ── Lifecycle (test / refresh / revoke) ──────────────────────────────────────
 
+fn map_test_failure_code(code: TestFailureCode) -> CredentialTestFailureCodeV1 {
+    match code {
+        TestFailureCode::AuthenticationRejected => {
+            CredentialTestFailureCodeV1::AuthenticationRejected
+        },
+        TestFailureCode::PermissionDenied => CredentialTestFailureCodeV1::PermissionDenied,
+        TestFailureCode::AccountRestricted => CredentialTestFailureCodeV1::AccountRestricted,
+        TestFailureCode::InvalidConfiguration => CredentialTestFailureCodeV1::InvalidConfiguration,
+        TestFailureCode::Other => CredentialTestFailureCodeV1::Other,
+        // Core is non-exhaustive. A newer classification must never turn into
+        // a success or surface provider text through a fallback string.
+        _ => CredentialTestFailureCodeV1::Other,
+    }
+}
+
+fn test_failure_message(code: CredentialTestFailureCodeV1) -> &'static str {
+    match code {
+        CredentialTestFailureCodeV1::AuthenticationRejected => "provider rejected the credential",
+        CredentialTestFailureCodeV1::PermissionDenied => {
+            "credential lacks required provider permissions"
+        },
+        CredentialTestFailureCodeV1::AccountRestricted => {
+            "provider account is disabled, locked, or restricted"
+        },
+        CredentialTestFailureCodeV1::InvalidConfiguration => "credential configuration is invalid",
+        CredentialTestFailureCodeV1::Other => "credential test failed",
+    }
+}
+
+/// Pure projection from the secret-free credential contract to the v1 wire
+/// shape. Provider text cannot enter because [`TestResult`] carries only a
+/// payload-free core code. The v1 wire vocabulary is frozen; future core codes
+/// fail closed to `other`.
+fn map_test_result(result: &TestResult, tested_at: String) -> TestCredentialResponse {
+    if result.is_success() {
+        return TestCredentialResponse::Success {
+            message: "credential accepted by provider".to_owned(),
+            tested_at,
+        };
+    }
+
+    // A future non-success result or core code fails closed to `other`; it can
+    // never be rendered as success or interpolate provider-controlled text.
+    let code = result
+        .failure_code()
+        .map(map_test_failure_code)
+        .unwrap_or(CredentialTestFailureCodeV1::Other);
+    TestCredentialResponse::Failed {
+        code,
+        message: test_failure_message(code).to_owned(),
+        tested_at,
+    }
+}
+
 /// Test credential connectivity against the external system.
 ///
 /// Dispatches the registered type's `Testable::test` through the facade.
@@ -491,21 +505,11 @@ pub async fn test_credential(
 ) -> ApiResult<TestCredentialResponse> {
     let svc = service(state)?;
     let tenant = TenantScope::from_scope(scope);
-    let report = svc
+    let result = svc
         .test(&tenant, cred)
         .await
         .map_err(|e| map_service_err(e, cred))?;
-    Ok(TestCredentialResponse {
-        success: report.ok,
-        message: report.message.unwrap_or_else(|| {
-            if report.ok {
-                "credential accepted by provider".to_owned()
-            } else {
-                "credential rejected by provider".to_owned()
-            }
-        }),
-        tested_at: chrono::Utc::now().to_rfc3339(),
-    })
+    Ok(map_test_result(&result, chrono::Utc::now().to_rfc3339()))
 }
 
 /// Force a token refresh for the credential.
@@ -589,14 +593,14 @@ fn map_interaction(interaction: InteractionRequest) -> ApiResult<AcquisitionInte
         } => Ok(AcquisitionInteraction::DisplayInfo {
             title,
             message,
-            data: serde_json::to_value(&data).map_err(|e| {
-                ApiError::Internal(format!("failed to encode interaction display data: {e}"))
+            data: serde_json::to_value(&data).map_err(|_| {
+                ApiError::Internal("failed to encode interaction display data".to_owned())
             })?,
             expires_in,
         }),
-        other => Err(ApiError::Internal(format!(
-            "unsupported credential interaction kind: {other:?}"
-        ))),
+        _ => Err(ApiError::Internal(
+            "unsupported credential interaction kind".to_owned(),
+        )),
     }
 }
 
@@ -613,9 +617,9 @@ fn map_acquisition(acq: Acquisition) -> ApiResult<ResolveCredentialResponse> {
         Acquisition::Retry { after } => Ok(ResolveCredentialResponse::Retry {
             retry_after_secs: after.as_secs(),
         }),
-        other => Err(ApiError::Internal(format!(
-            "unrecognized credential acquisition outcome: {other:?}"
-        ))),
+        _ => Err(ApiError::Internal(
+            "unrecognized credential acquisition outcome".to_owned(),
+        )),
     }
 }
 
@@ -748,6 +752,75 @@ mod tests {
     /// 32 `0x42` bytes, base64 — a valid AES-256 key fixture (mirrors the
     /// factory's dev key). Not a secret: a fixed test constant.
     const TEST_KEY_B64: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=";
+    const PROVIDER_SECRET_CANARY: &str = "provider-echoed-secret-NEVER-WIRE-a7d3";
+
+    #[test]
+    fn test_result_mapping_serializes_success_and_every_v1_failure() {
+        const TESTED_AT: &str = "2026-07-21T12:34:56Z";
+
+        let success = map_test_result(&TestResult::Success, TESTED_AT.to_owned());
+        assert_eq!(
+            serde_json::to_value(&success).expect("serialize success response"),
+            serde_json::json!({
+                "status": "success",
+                "message": "credential accepted by provider",
+                "tested_at": TESTED_AT,
+            })
+        );
+
+        for (core_code, wire_code, wire_name, message) in [
+            (
+                TestFailureCode::AuthenticationRejected,
+                CredentialTestFailureCodeV1::AuthenticationRejected,
+                "authentication_rejected",
+                "provider rejected the credential",
+            ),
+            (
+                TestFailureCode::PermissionDenied,
+                CredentialTestFailureCodeV1::PermissionDenied,
+                "permission_denied",
+                "credential lacks required provider permissions",
+            ),
+            (
+                TestFailureCode::AccountRestricted,
+                CredentialTestFailureCodeV1::AccountRestricted,
+                "account_restricted",
+                "provider account is disabled, locked, or restricted",
+            ),
+            (
+                TestFailureCode::InvalidConfiguration,
+                CredentialTestFailureCodeV1::InvalidConfiguration,
+                "invalid_configuration",
+                "credential configuration is invalid",
+            ),
+            (
+                TestFailureCode::Other,
+                CredentialTestFailureCodeV1::Other,
+                "other",
+                "credential test failed",
+            ),
+        ] {
+            assert_eq!(map_test_failure_code(core_code), wire_code);
+            let response = map_test_result(
+                &TestResult::Failed { code: core_code },
+                TESTED_AT.to_owned(),
+            );
+            let json = serde_json::to_value(&response).expect("serialize failed response");
+            assert_eq!(
+                json,
+                serde_json::json!({
+                    "status": "failed",
+                    "code": wire_name,
+                    "message": message,
+                    "tested_at": TESTED_AT,
+                })
+            );
+            assert!(!json.to_string().contains(PROVIDER_SECRET_CANARY));
+            let debug = format!("{response:?}");
+            assert!(debug.contains(&format!("{wire_code:?}")));
+            assert!(!debug.contains(PROVIDER_SECRET_CANARY));
+        }
+    }
 
     fn base_state() -> AppState {
         let exec_store = InMemoryExecutionStore::new();
@@ -845,10 +918,6 @@ mod tests {
                 }
             )
             .await,
-            Err(ApiError::ServiceUnavailable(_))
-        ));
-        assert!(matches!(
-            scoped_store(&s, "o:w"),
             Err(ApiError::ServiceUnavailable(_))
         ));
     }
@@ -1081,5 +1150,34 @@ mod tests {
             map_service_err(CredentialServiceError::Store("io".into()), "cred_x"),
             ApiError::Internal(_)
         ));
+    }
+
+    #[test]
+    fn service_error_mapping_discards_dynamic_reason_payloads() {
+        const ERROR_SECRET_CANARY: &str = "provider-error-secret-NEVER-WIRE-3b9e";
+
+        for service_error in [
+            CredentialServiceError::ValidationFailed {
+                reason: ERROR_SECRET_CANARY.to_owned(),
+            },
+            CredentialServiceError::Provider(ERROR_SECRET_CANARY.to_owned()),
+            CredentialServiceError::TransientProvider(ERROR_SECRET_CANARY.to_owned()),
+            CredentialServiceError::Store(ERROR_SECRET_CANARY.to_owned()),
+            CredentialServiceError::Internal(ERROR_SECRET_CANARY.to_owned()),
+        ] {
+            let api_error = map_service_err(service_error, "cred_safe");
+            let debug = format!("{api_error:?}");
+            assert!(
+                !debug.contains(ERROR_SECRET_CANARY),
+                "mapped API error must be safe for structured tracing: {debug}"
+            );
+
+            let (_status, problem) = api_error.to_problem_details();
+            let wire = serde_json::to_string(&problem).expect("serialize problem details");
+            assert!(
+                !wire.contains(ERROR_SECRET_CANARY),
+                "RFC 9457 response must discard dynamic service reasons: {wire}"
+            );
+        }
     }
 }

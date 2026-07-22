@@ -84,7 +84,6 @@ reqwest = { workspace = true, default-features = false, features = [
   "form",
   "stream",
 ] }
-hmac = { workspace = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }
 subtle = { workspace = true }
@@ -132,7 +131,8 @@ nebula-api = { path = ".", features = ["test-util"] }
 # Dev-only: api tests build a `CredentialService` over a unique in-memory SQLite
 # database via `SqliteCredentialStore::connect_memory`; `test-util` exposes that
 # constructor. `sqlite`/`credential-in-memory` already come from the normal dep;
-# `test-util` stays out of the release build (ADR-0023).
+# The first-party release composition does not enable `test-util`; enabling it
+# for a production build is unsupported (ADR-0023).
 nebula-storage = { path = "../storage" }
 # `testing` feature adds EnvGuard for the config env-precedence unit tests.
 nebula-env = { workspace = true, features = ["testing"] }
@@ -192,9 +192,7 @@ test-util = []
 # complete_password_reset) that cannot be expressed inside a single
 # `nebula-storage` repo call.
 postgres = ["nebula-storage/postgres", "dep:sqlx"]
-# Note: `credential-oauth` rollout feature gate deleted 2026-04-24 —
-# OAuth ceremony deps (nebula-credential, reqwest, hmac, sha2, zeroize)
-# are now unconditional base deps per ADR-0031 §6 (rollout window closed).
+# Plane-A identity OAuth uses the shared HTTP/PKCE dependencies above.
 
 [package.metadata.docs.rs]
 # Render feature-gated items on docs.rs (build with every feature).

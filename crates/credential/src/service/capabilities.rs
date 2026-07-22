@@ -20,7 +20,7 @@ use crate::store::{
 };
 
 use super::error::CredentialServiceError;
-use super::facade::{CredentialService, RefreshReport, TestReport};
+use super::facade::{CredentialService, RefreshReport};
 use super::head::CredentialHead;
 use super::scope::TenantScope;
 
@@ -42,7 +42,7 @@ impl CredentialService {
         &self,
         scope: &TenantScope,
         id: &str,
-    ) -> Result<TestReport, CredentialServiceError> {
+    ) -> Result<TestResult, CredentialServiceError> {
         let stored = self.load_owned(scope, id).await?;
         if !self.registry.is_testable(&stored.credential_key) {
             return Err(CredentialServiceError::CapabilityUnsupported {
@@ -55,21 +55,13 @@ impl CredentialService {
             .ops
             .test(&stored.credential_key, &stored.data, &ctx)
             .await?;
-        let report = match result {
-            TestResult::Success => TestReport {
-                ok: true,
-                message: None,
-            },
-            TestResult::Failed { reason } => TestReport {
-                ok: false,
-                message: Some(reason),
-            },
-            // `TestResult` is exhaustively matched here (this crate defines it).
-            // Adding a variant is a compile error at this arm, forcing a
-            // deliberate decision rather than silently presenting as a pass.
-        };
-        tracing::info!(credential.id = %id, ok = report.ok, "credential tested");
-        Ok(report)
+        tracing::info!(
+            credential.id = %id,
+            ok = result.is_success(),
+            failure_code = ?result.failure_code(),
+            "credential tested"
+        );
+        Ok(result)
     }
 
     /// Force-refresh the credential's stored state and re-persist it.

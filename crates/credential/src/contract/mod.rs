@@ -34,7 +34,7 @@ pub use refreshable::Refreshable;
 pub use registry::{CredentialRegistry, RegisterError};
 pub use resolve::{
     DisplayData, InteractionRequest, ReauthReason, RefreshOutcome, RefreshPolicy, ResolveResult,
-    StaticResolveResult, TestResult, UserInput,
+    StaticResolveResult, TestFailureCode, TestResult, UserInput,
 };
 pub use revocable::Revocable;
 pub use state::CredentialState;

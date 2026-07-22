@@ -172,7 +172,7 @@ operator IdP-client credentials are configured via environment
 variables (NOT a database table, NOT the credential store). Declaring
 a provider is opt-in; an undeclared provider returns
 `AuthError::ProviderNotConfigured` → HTTP 503 from
-`/auth/oauth/{provider}/start`.
+`GET /api/v1/auth/oauth/{provider}`.
 
 Supported providers in 1.0 (`OAuthProvider` enum):
 `google`, `microsoft`, `github`. Auth0 / Okta / generic OIDC require
@@ -231,7 +231,8 @@ export API_AUTH_OAUTH_GITHUB_SCOPES="user:email"
    returns the IdP `authorize_url` + opaque `state`.
 2. Client redirects user's browser to `authorize_url`.
 3. IdP redirects back to `{redirect_uri}?state=...&code=...`.
-4. Client posts to `GET /api/v1/auth/oauth/{provider}/callback`.
+4. The user's browser follows the IdP redirect to
+   `GET /api/v1/auth/oauth/{provider}/callback`.
 5. Server consumes the state row atomically, verifies `redirect_uri`
    match, exchanges code at the IdP token endpoint, fetches
    userinfo (+ verified emails for GitHub), applies the
@@ -245,6 +246,9 @@ export API_AUTH_OAUTH_GITHUB_SCOPES="user:email"
   use the flag-aware `validate_oauth_authorize_url` which accepts
   `http://localhost` only when `oauth_allow_insecure_localhost` is
   set AND the binary is built with debug assertions (dev mode).
+  This is URL-admission hardening, not complete connect-time protection:
+  DNS rebinding and redirects from token/userinfo requests still require
+  peer-IP pinning plus per-hop revalidation and remain a release blocker.
 - **Body caps**: token endpoint and userinfo / verified-emails GETs
   are capped at 256 KiB so a hostile IdP cannot DoS via unbounded
   responses.
@@ -353,30 +357,33 @@ Every credential operation — CRUD (`create` / `get` / `update` /
 `delete` / `list`), lifecycle (`test` / `refresh` / `revoke`), and
 acquisition (`resolve` / `resolve/continue`) under
 `…/workspaces/{ws}/credentials` — routes through the
-**`CredentialService` facade** (ADR-0088 D7), composed by the server at
-startup (`ports::credential_service_factory`). The facade owns the
-layered store (`Audit(Cache(Encryption(in-memory)))`), runs the typed
-validate→resolve pipeline on `data`, and owner-checks every operation.
-The OAuth2 callback persists through the **same** store handle, so an
-OAuth-acquired credential is visible to `get`/`list` (flagged
-`reauth_required` until the exchange completes). When no service is
-wired, every credential endpoint returns an honest 503 — there is no
-raw-store fallback.
+**`CredentialService` facade** (ADR-0088 D7), composed by `apps/server` at
+startup through the temporary K4 factory in
+`ports::credential_service_factory`. The facade owns the layered store
+(`Audit(Cache(Encryption(SQLite)))` in the production default), runs the
+typed validate→resolve pipeline on `data`, and owner-checks every operation.
+The universal `resolve` / `resolve/continue` endpoints are the only
+credential-acquisition HTTP contract. The former raw Plane-B
+`credentials/{id}/oauth2/{auth,callback}` ceremony is parked and returns
+404; provider-specific interaction must be represented through the
+facade's typed pending interaction before it can become a supported
+surface. Accordingly, the default registry/catalog does not register or
+advertise `oauth2`; attempts to create or resolve that key fail as an unknown
+credential type. When no service is wired, every credential endpoint returns
+an honest 503 — there is no raw-store fallback.
 
-| Aspect | Credential operations (facade, in-memory backend) |
+| Aspect | Credential operations (production default) |
 |---|---|
-| Restart-survival | **No** — the facade's backend is in-memory; credentials are lost on restart |
-| Multi-replica share | **No** — state is process-local |
+| Restart-survival | **Yes for completed credentials** — the default file-backed SQLite store survives restart; in-flight pending interactions remain ephemeral |
+| Multi-replica share | **No by default** — the SQLite file is instance-local; a supported shared-store composition is still required for multi-replica deployments |
 | Encryption at rest | **Yes** — the facade composes the `EncryptionLayer` adjacent to the backend (AES-256-GCM; key from `NEBULA_CRED_MASTER_KEY`, fail-closed) |
 | Cross-workspace isolation | **Yes** — the facade owner-checks every operation against the canonical `Scope::credential_owner_id`; cross-workspace ids collapse to a flat 404 |
-| Lifecycle dispatch | **Live** — `test`/`refresh`/`revoke` dispatch the registered type's capability; a type without it is refused with 400 (capability gate), never a faked success |
+| Lifecycle dispatch | **Live** — `test`/`refresh`/`revoke` dispatch the registered type's capability; a type without it is refused with 400 (capability gate), never a faked success. The test response is a tagged `status` union: success has no code; failure requires a frozen v1, payload-free code, and future core codes map to `other` |
 
-> **Operator warning:** a credential created via `POST …/credentials`
-> stops resolving the moment the process exits and is not shared across
-> replicas — the facade's backend is in-memory (encrypted at rest, not
-> durable). Same local-first caveat as `me/*` and the `memory`
-> idempotency backend; it closes when a durable credential backend is
-> swapped in behind the facade's erased store.
+> **Operator warning:** completed credentials survive a normal process restart
+> in the default file-backed SQLite database, but that database is not shared
+> across replicas. Pending acquisition state is still process-local and expires
+> after at most ten minutes; an interrupted interactive flow must be restarted.
 >
 > The tenancy path resolver special-cases the literal `resolve`
 > sub-route, so `resolve` / `resolve/continue` are **not** shadowed by
@@ -482,8 +489,9 @@ method (session cookie, JWT) are gated by `csrf_middleware`
 **Middleware order** — `auth_middleware` MUST be layered before
 `csrf_middleware`. The latter reads the `AuthContext` extension that the
 former installs to know whether to skip the gate for PAT/ApiKey callers.
-The Plane-B credential routes wire the pair explicitly in
-`crates/api/src/domain/mod.rs` (`auth_middleware` then `csrf_middleware`).
+The Plane-B credential CRUD/lifecycle/acquisition routes are part of the
+tenant router, which wires the pair in `crates/api/src/domain/mod.rs`
+(`auth_middleware` then `csrf_middleware`).
 
 **Header contract** — callers send the matching token as
 `X-CSRF-Token: <value>`. The middleware compares header against cookie
@@ -675,12 +683,13 @@ src/
 │       └── dto.rs
 └── transport/          # Protocol transports (was services/ — NOT business services)
     ├── mod.rs
-    ├── credential.rs   # Plane-B credential CRUD stubs (Phase 4 will implement)
-    ├── oauth/          # OAuth2 flow transport
+    ├── credential.rs   # Plane-B facade: CRUD, lifecycle, resolve/continue
+    ├── oauth/          # Plane-A identity OAuth HTTP helpers only
     │   ├── mod.rs
     │   ├── flow.rs
     │   ├── http.rs
-    │   └── state.rs
+    │   ├── discovery.rs
+    │   └── userinfo.rs
     └── webhook/        # Inbound trigger transport (§11.3 / §13.4)
         ├── mod.rs
         ├── transport.rs  # WebhookTransport — activate/deactivate/router
@@ -820,5 +829,3 @@ above for the enforcement guarantee.
 | `POST`   | `/webhooks/{trigger_uuid}/{nonce}`                                         | Inbound webhook trigger (mounted when `webhook_transport` is set)          |
 | `GET`    | `/api/v1/openapi.json`                                                    | OpenAPI 3.1 specification document                                         |
 | `GET`    | `/api/v1/docs/`                                                           | Swagger UI (self-hosted)                                                   |
-
-

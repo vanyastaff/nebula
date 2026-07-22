@@ -886,24 +886,13 @@ async fn no_token_in_url_path_route_exists() {
     let resp = harness.app.oneshot(get_with_path_param).await.unwrap();
 
     // The only `/resume` route is an exact-path `POST` (no path parameter), so
-    // `GET /resume/{token}` matches NOTHING.  It falls through to the merged
-    // `/internal/v1` sub-router's `internal_auth_middleware`, which — with no
-    // internal shared token configured in `ApiConfig::for_test` — deterministically
-    // returns `503 SERVICE_UNAVAILABLE` for any unmatched path that reaches it
-    // (`domain::internal::router` layers the middleware over its routes; axum 0.8
-    // applies that layer to the merged fallback).
-    //
-    // We pin the EXACT status rather than a bare `assert_ne!(200)`: the security
-    // property is that `/resume/{token}` matches NO route, and the only proof of
-    // "no match" is that the request lands on the unmatched-path fallback.  If a
-    // `/resume/{token}` route were ever added it would return that route's status
-    // instead (2xx on success — or even a 4xx/5xx of its own, which a bare
-    // `assert_ne!(200)` would silently accept while the URL-borne-token oracle is
-    // live).  Pinning 503 makes any such regression fail this assertion.
+    // `GET /resume/{token}` matches nothing and reaches axum's exact 404 fallback.
+    // Internal-route authentication is attached with `route_layer`, so it cannot
+    // mask unrelated missing paths with its own 401/503 response.
     assert_eq!(
         resp.status(),
-        StatusCode::SERVICE_UNAVAILABLE,
-        "GET /resume/{{token}} must hit the unmatched-path fallback (503), proving no \
+        StatusCode::NOT_FOUND,
+        "GET /resume/{{token}} must hit the unmatched-path fallback (404), proving no \
          path-parameter route exists that could echo or accept a URL-borne token"
     );
 }

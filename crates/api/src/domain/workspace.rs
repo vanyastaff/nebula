@@ -131,8 +131,8 @@ pub fn router() -> OpenApiRouter<AppState> {
             Permission::WorkflowWrite,
             routes!(webhook::register_webhook),
         ))
-        // Credentials (Plane B — API-owned OAuth flow). Literal paths first, then
-        // collection, then parameterized `{cred}`, then sub-resources.
+        // Credentials (Plane B). Universal acquisition literals first, then
+        // collection, then parameterized `{cred}` and lifecycle sub-resources.
         .routes(access::protected(
             Permission::CredentialWrite,
             routes!(credential::resolve_credential),
@@ -160,17 +160,6 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(access::protected(
             Permission::CredentialDelete,
             routes!(credential::delete_credential),
-        ))
-        .routes(access::protected(
-            Permission::CredentialWrite,
-            routes!(credential::get_oauth2_authorize_url_scoped),
-        ))
-        .routes(access::protected(
-            Permission::CredentialWrite,
-            routes!(
-                credential::get_oauth2_callback_scoped,
-                credential::post_oauth2_callback_scoped
-            ),
         ))
         .routes(access::protected(
             Permission::CredentialRead,

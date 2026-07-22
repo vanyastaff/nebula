@@ -62,7 +62,7 @@ ADR chain is **evolutionary**, not contradictory. Code and canon drift when diff
 | Historical | 0030 | Engine | credential trait | 0031 → API |
 | M6 contract | 0081 | `nebula-credential-runtime` (Exec) | separate runtime crate | API ceremony |
 | Rewrite draft | 0088 D7 (proposed) | Engine coordinator | merge into credential (**rejected**) | acquisition into credential |
-| **Current target** | **0092** | **`nebula-credential` `runtime/` + `service/`** | same crate | `RefreshTransport` injected from API |
+| **Current target** | **0092** | **`nebula-credential` `runtime/` + `service/`** | same crate | `RefreshTransport` injected; raw browser ceremony parked |
 
 **Canon/README drift:** “engine owns orchestration” describes 0030/0088 D7, not 0092. Update after implementation.
 
@@ -71,8 +71,8 @@ ADR chain is **evolutionary**, not contradictory. Code and canon drift when diff
 | Surface | ADR | Location | Result |
 |---------|-----|----------|--------|
 | **Plane A** — sign in to Nebula | 0085 | `api/domain/auth`, `plane_a_oauth_states` | Session cookie; IdP tokens discarded |
-| **Plane B HTTP** — token exchange | 0031 / 0088 | `api/transport/oauth` | SSRF-hardened reqwest; callback routes |
-| **Plane B logic** — state, pending, PKCE | 0033 / 0088 | `nebula-credential` | `OAuth2State`, pending types, `RefreshTransport` |
+| **Plane B acquisition HTTP** | 0033 / 0088 | `api/domain/credential` | Universal `resolve` / `resolve/continue`; no raw OAuth routes |
+| **Plane B logic** — state, pending, exchange/refresh | 0033 / 0088 | `nebula-credential` | `OAuth2State`, pending types, injected `RefreshTransport` |
 
 ### ADR-0088 migration checklist (post-0092)
 
@@ -83,7 +83,7 @@ ADR chain is **evolutionary**, not contradictory. Code and canon drift when diff
 | 3 | Collapse registries → one | **Partial** — `CredentialRegistry` + `DispatchOps` remain |
 | 4 | Facade + scope dedup | **Partial** — facade in credential; dual tenant enforcement |
 | 5 | Engine trim, rotation data down | Done relocation; engine shim remains |
-| 6 | API thin; OAuth routing | **Open** — dual kickoff, split pending stores |
+| 6 | API thin; OAuth routing | **API boundary done** — raw ceremony/pending store removed; universal acquisition only. Runtime unification remains. |
 | 7 | Delete dead CredentialRow SQL | Verify |
 | 8 | Delete sub-trait dispatch center | **Not done** |
 
@@ -487,37 +487,39 @@ Single `owner_id` format via `Scope::credential_owner_id` (0088 D7 amend). Facad
 
 ```mermaid
 sequenceDiagram
-  participant Browser
+  participant Client
   participant ApiAuth as api domain auth Plane A
   participant ApiCred as api domain credential Plane B
-  participant Transport as api transport oauth
   participant Runtime as CredentialRuntime
+  participant Transport as injected RefreshTransport
   participant Store as CredentialStore
 
-  Note over Browser,Store: Plane A
-  Browser->>ApiAuth: GET /auth/oauth/google
-  ApiAuth->>Browser: redirect state in plane_a_oauth_states
-  Browser->>ApiAuth: callback
+  Note over Client,Store: Plane A
+  Client->>ApiAuth: GET /api/v1/auth/oauth/google
+  ApiAuth->>Client: authorize URL; state in plane_a_oauth_states
+  Client->>ApiAuth: callback
   ApiAuth->>ApiAuth: session cookie discard IdP tokens
 
-  Note over Browser,Store: Plane B
-  Browser->>ApiCred: GET .../credentials/id/oauth2/auth
-  ApiCred->>Transport: PKCE signed state
-  ApiCred->>Runtime: prepare pending
-  Browser->>ApiCred: callback
-  ApiCred->>Transport: token POST
-  ApiCred->>Runtime: persist OAuth2State CAS
+  Note over Client,Store: Plane B universal acquisition
+  Client->>ApiCred: POST .../credentials/resolve
+  ApiCred->>Runtime: typed resolve
+  Runtime-->>ApiCred: Complete or Pending interaction + token
+  ApiCred-->>Client: typed acquisition response
+  Client->>ApiCred: POST .../credentials/resolve/continue
+  ApiCred->>Runtime: typed continue
+  Runtime->>Transport: bounded provider exchange when required
   Runtime->>Store: encrypted state
+  Note over Client,ApiCred: raw /oauth2/auth and /oauth2/callback are absent
 ```
 
 ### Hard rules (agent checklist)
 
 1. **`nebula-credential` never mounts HTTP routes.**
 2. **Plane A** — only `api/domain/auth`, `plane_a_oauth_states`; never `OAuth2Credential` ceremony.
-3. **Plane B ceremony** — only `api/transport/oauth` + `api/domain/credential/oauth.rs`; thin handlers.
-4. **One PKCE/state kernel** — credential crypto or api transport; not duplicated in monolith credential.
+3. **Plane B acquisition** — API exposes only universal `resolve` / `resolve/continue`; raw provider-specific OAuth routes stay absent until they can be expressed as typed pending interactions. Until that transport integration exists, the first-party default registry/catalog/dispatch does not register or advertise `oauth2`; the implementation remains parked for explicitly curated compositions.
+4. **One pending/state kernel** — credential runtime owns the typed interaction; no API-side parallel pending map or signed-state store.
 5. **Credential crate owns** — `OAuth2State`, pending **types**, `continue_resolve` **logic**, `refresh` with transport.
-6. **Remove dual kickoff** — deprecate `OAuth2Credential::initiate_authorization_code` as public; single workspace API kickoff.
+6. **No dual kickoff** — the universal workspace acquisition endpoint is the only HTTP kickoff; no raw OAuth wrapper.
 7. **AGENTS.md** — “Adding OAuth? Which plane?”
 8. **The `RefreshTransport` seam is a TYPE invariant, not a convention (conference Finding 3/4).** The seam type carries only `(Url + form) → capped bytes`; it must be **structurally unable** to carry `&mut OAuth2State` or keys, so a second composition root (CLI / test / worker) cannot inject a permissive transport that bypasses SSRF. DNS-rebind TOCTOU is closed by a **connect-layer resolver (MUST, not SHOULD)** in addition to the pre-call host/IP check.
 9. **Owner isolation is a TYPE, not a discipline (conference Finding 3).** The store port takes a privately-constructed `OwnerScopedKey` (length-prefixed `owner_id` + id) and exposes **no `get(&str)`** — the resolver cannot *express* an unscoped load. `ValidatedCredentialBinding` carries the `OwnerScopedKey`; `resolve_for_slot` stops relying on the tautological `fingerprint == fingerprint` check.
@@ -532,13 +534,13 @@ sequenceDiagram
 18. **Provider-returned strings are UNTRUSTED input (real bug class — n8n [#23182](https://github.com/n8n-io/n8n/issues/23182)/[#28055](https://github.com/n8n-io/n8n/issues/28055) "`dummy.stack.replace` leaks into the UI" + IdP echo of `refresh_token` in `error_description`).** Every IdP-supplied field that crosses into an operator-facing surface — `error`, `error_description`, `error_uri`, `WWW-Authenticate` — is treated as adversarial: `error_uri` is `Url::parse`d + `https`-scheme-allowlisted + length-capped before it appears in any log/span/alert (a raw concat is a SIEM/log-injection + phishing vector); `error_description` is redacted for token-shaped substrings (`(access|refresh)_token`, `bearer`, `client_secret`, `api_key`, `password`) **before** it enters a `tracing` event or a `CredentialError::refresh` message — providers routinely echo the offending token in `invalid_grant`. No provider string is ever string-interpolated into a template/placeholder pipeline.
 19. **"Success" is content-determined, not status-line-determined (real bug — n8n [#23410](https://github.com/n8n-io/n8n/issues/23410)).** A `200 OK` carrying `{"error":"invalid_grant"}` / `{"code":401}` in the body is a **failure**, and a refresh trigger keys on the typed refresh outcome (parsed body), never on the HTTP status alone — otherwise an error-in-200 is recorded as a fresh token and the credential silently rots.
 
-### Current pain (dual path)
+### Current API boundary
 
-| Issue | Location |
-|-------|----------|
-| Two Plane B kickoffs | `oauth2.rs` vs `api/domain/credential/oauth.rs` |
-| Split pending stores | `PendingStateStore`, `oauth_pending_store`, `oauth_state_tokens` |
-| HTTP “disabled” in credential but logic scattered | agents add wrong layer |
+| Invariant | Evidence |
+|-----------|----------|
+| No raw Plane-B ceremony | Former six GET/POST operations are exact 404; OpenAPI contains no credential OAuth path |
+| No API-side pending authority | `AppState` has no Plane-B pending/state fields; `domain/credential/oauth.rs` is absent |
+| One supported acquisition surface | `CredentialService::resolve` / `continue_resolve`, reached by the universal workspace routes |
 
 ---
 
@@ -981,7 +983,7 @@ Credential Phases 1–4 **do not block** Phase 5; Phase 5 must not block runtime
 
 ## 18. Agent guardrails (`crates/credential/AGENTS.md` updates)
 
-- **OAuth?** Plane A → `domain/auth`. Plane B → `transport/oauth` only.
+- **OAuth?** Plane A → `domain/auth` + API OAuth transport helpers. Plane B → credential runtime behind universal `resolve` / `resolve/continue`; no raw callback route.
 - **New SaaS API?** Provider config, not new OAuth2 credential type.
 - **Parameters?** `#[property]` → schema crate; values in DB only.
 - **Slots?** Never in `parameters`; always `slot_bindings`.
@@ -1159,7 +1161,7 @@ is a real structural moat — and it is currently the security hole.**
 | Active credential lifecycle as an engine primitive | **Parity** (moat vs Temporal/Dagster/Prefect/Airflow who have none; **parity** vs n8n `refreshOrFetchToken` / Windmill background refresh) | n8n/Windmill already ship reactive+background refresh; ours is only *better* if correct-by-construction — and today it is behind (policy ignores state, resolver hardcodes `C::KEY`). |
 | code-per-protocol / config-per-provider | **Parity** | literally n8n `extends ['oAuth2Api']`, Airflow `provider.yaml`, Vault `FieldSchema`, AWS `ImdsProvider`+config. And unimplemented here (zero grep hits; oauth2.rs still 1481 LoC). |
 | reactive-only refresh | **Behind** | n8n/Windmill refresh proactively on `expires_in`; deferring proactive to 1.1 while the lease scheduler already renews at N% TTL is a half-finished position, and it silently never-refreshes server-TTL credentials (Finding 2). |
-| OAuth Plane Law / zero routes in credential | **Internal hygiene, not a market diff** | no customer picks an engine because "the credential crate mounts no routes"; the narrow seam is correct but currently `SHOULD`, not enforced. |
+| OAuth Plane Law / zero routes in credential | **Internal hygiene, not a market diff** | no customer picks an engine because "the credential crate mounts no routes"; the boundary is mechanically guarded by OpenAPI, runtime-404, and source-structure regressions. |
 | single crate (AI-discoverability) | **Self-imposed tax** | AWS keeps `aws-credential-types` separate *to* touch the contract without recompiling runtime; a `#[cfg(test)]` arch-test is discipline-with-a-test, not a firewall. |
 | **`CredentialGuard<Scheme>` + `OwnerScopedKey` + typed slot-binding through the DAG** | **THE moat** | compile-time owner-isolation (no `get(&str)`) + scheme-bound guard + credential→resource→action slot type-checking across a durable DAG. **No competitor can express this**: n8n/Windmill/Prefect/Vault all do owner-isolation by discipline/RBAC/ACL at runtime; a slot type-mismatch is a runtime error there, a **compile error** here. |
 

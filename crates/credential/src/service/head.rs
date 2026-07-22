@@ -37,6 +37,9 @@ pub struct CredentialHead {
     pub updated_at: DateTime<Utc>,
     /// When the credential material expires, if it does.
     pub expires_at: Option<DateTime<Utc>>,
+    /// When the credential material was last validated or refreshed, if the
+    /// runtime has established that anchor.
+    pub last_validated_at: Option<DateTime<Utc>>,
     /// True when the credential cannot be used until re-authorized (e.g.
     /// an interactive flow was started but not completed, or a refresh
     /// failed terminally).
@@ -59,6 +62,7 @@ impl CredentialHead {
             created_at: stored.created_at,
             updated_at: stored.updated_at,
             expires_at: stored.expires_at,
+            last_validated_at: stored.last_validated_at(),
             reauth_required: stored.reauth_required,
             display,
         }
@@ -101,6 +105,7 @@ mod tests {
         assert_eq!(head.id, row.id);
         assert_eq!(head.credential_key, "api_key");
         assert_eq!(head.version, 4);
+        assert_eq!(head.last_validated_at, None);
         assert!(!head.reauth_required);
         assert!(head.display.is_empty());
         // No `data` field exists on the head — the projection is

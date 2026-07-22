@@ -4,8 +4,9 @@
 //! Both [`AuthenticatedUser`] (legacy) and [`AuthContext`] are inserted into
 //! request extensions so downstream middleware and handlers can use either.
 //!
-//! This is **not** integration credential OAuth (**Plane B**). Integration OAuth client routes
-//! live in the `credential` module; see auth plane separation.
+//! This is **not** integration credential acquisition (**Plane B**). Plane B
+//! enters through the credential facade's universal `resolve` / `continue`
+//! protocol; it exposes no raw OAuth authorization/callback routes.
 
 use std::str::FromStr;
 

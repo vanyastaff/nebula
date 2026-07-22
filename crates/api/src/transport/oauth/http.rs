@@ -1,8 +1,9 @@
-//! API-owned OAuth flow: bounded HTTP client and body handling for OAuth2 **token** endpoints
-//! (code exchange, refresh, client credentials, device code poll to `token_url`).
+//! Plane-A identity OAuth: bounded HTTP client and body handling for OAuth2
+//! token endpoints.
 //!
-//! Moved from `nebula-credential` per API-owned OAuth flow incremental split: the API layer
-//! owns the OAuth flow HTTP ceremony (auth URI construction, code→token exchange).
+//! Plane-B refresh and acquisition use the credential runtime's injected
+//! transport contract; this client is not a public integration-credential
+//! ceremony.
 
 use std::{sync::OnceLock, time::Duration};
 
@@ -45,8 +46,8 @@ pub enum TokenHttpError {
     Json(#[source] serde_json::Error),
 }
 
-/// Returns a shared [`reqwest::Client`] with API-owned OAuth flow policy for OAuth2 **token** calls
-/// (one process-wide instance for connection pooling and TLS session reuse).
+/// Returns a shared [`reqwest::Client`] with Plane-A identity OAuth policy for OAuth2 **token**
+/// calls (one process-wide instance for connection pooling and TLS session reuse).
 pub fn oauth_token_http_client() -> &'static reqwest::Client {
     OAUTH_TOKEN_HTTP_CLIENT.get_or_init(|| {
         reqwest::Client::builder()

@@ -1,9 +1,9 @@
 //! Plane-A OAuth helpers — sign-in via Google / GitHub / Microsoft.
 //!
-//! This is **distinct** from Plane-B integration credential OAuth (per
-//! auth plane separation and `crates/api/src/services/oauth/`). Plane A is "who is
-//! signing in to Nebula"; Plane B is "Nebula on behalf of a user
-//! talking to Slack/HubSpot/etc.".
+//! This is **distinct** from Plane-B integration credential acquisition.
+//! Plane A is "who is signing in to Nebula"; Plane B is "Nebula on behalf
+//! of a user talking to Slack/HubSpot/etc." and uses the universal credential
+//! resolve/continue protocol rather than raw OAuth routes.
 //!
 //! The state machine is small:
 //!

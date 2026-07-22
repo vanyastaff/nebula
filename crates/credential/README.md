@@ -38,14 +38,19 @@ lives in `nebula-storage-port`). All concrete SQLite / Postgres stores live in
 `nebula_storage::credential`; this crate ships no store impl and links no `sqlx`.
 
 **HTTP transport status:** the crate mounts **zero HTTP routes** and links **no
-`reqwest`**. OAuth2 authorization-URL construction, PKCE, signed-state, and pending
-logic are pure (`OAuth2State`, `secrets::crypto`). The bare token-exchange / refresh
-HTTP POST is inverted behind the **`RefreshTransport`** port (ADR-0092); the
-composition root (`nebula-api`) injects the hardened `reqwest` client
-(`ReqwestRefreshTransport::hardened()`), while SSRF host/IP validation, bounded
-reads, and `OAuth2State` mutation stay **inside** this crate. The browser-redirect
-ceremony (auth/callback routes) lives only in `nebula-api` (`transport/oauth`) — see
-the **OAuth Plane Law** in [`docs/DESIGN.md`](docs/DESIGN.md).
+`reqwest`**. OAuth2 state, pending interactions, and credential acquisition remain
+typed credential concerns. Token exchange / refresh HTTP is inverted behind the
+**`RefreshTransport`** port (ADR-0092); the composition injects the hardened
+transport, while SSRF validation, bounded reads, and `OAuth2State` mutation stay
+inside this crate. At the API boundary the only supported Plane-B acquisition
+contract is universal `resolve` / `resolve/continue`; the former raw
+`credentials/{id}/oauth2/{auth,callback}` browser ceremony is parked. The OAuth
+helpers under `nebula-api::transport::oauth` now serve Plane-A identity sign-in
+only. `OAuth2Credential` remains a parked implementation for explicitly curated
+compositions, but the first-party API registry/catalog/dispatch does not register
+or advertise it until provider interaction enters the universal typed pending
+flow through an injected hardened transport. See the **OAuth Plane Law** in
+[`docs/DESIGN.md`](docs/DESIGN.md).
 
 ## Public API (v4 — M6 / Phase 5, 2026-04-29)
 
@@ -157,7 +162,7 @@ Capabilities are not const flags — they are **sub-traits**. A credential opts 
 - `#[derive(Credential)]`, `#[derive(AuthScheme)]` (with `sensitive` / `public` / `external` argument) — proc-macro derivations.
 - `#[capability]` (in `nebula-credential-macros`) — capability sub-trait declaration with sealed companion + phantom-shim companion per ADR-0035.
 - `CredentialRotationEvent`, `RotationError` (feature `rotation`) — rotation event and error types.
-- `OAuth2Credential`, `ApiKeyCredential`, `BasicAuthCredential` — built-in credential implementations.
+- `OAuth2Credential`, `ApiKeyCredential`, `BasicAuthCredential` — built-in credential implementations. `OAuth2Credential` is parked and absent from the first-party API's default registry/dispatch until universal pending-flow transport integration lands.
 - `StaticProtocol` — reusable pattern for static credentials (State = Scheme).
 - `ExternalProvider`, `ExternalProviderChain`, `ExternalReference`, `ProviderFuture`, `ProviderResolution`, `LeaseHandle`, `LeasedProvider`, `ProviderKind`, `ProviderError` — external provider abstraction (per ADR-0051) for Vault, AWS Secrets Manager, GCP Secret Manager, Azure Key Vault, and other secret managers. Trait is dyn-safe via the `ProviderFuture<'a>` newtype (AWS `NowOrLater` pattern); resolutions return a `ProviderResolution` envelope (secret + optional lease + optional TTL); `ExternalProviderChain` composes providers with error-discriminated fallback (only `ProviderError::NotFound` falls through to the next provider, all other errors short-circuit). Lease-aware backends (Vault dynamic secrets, AWS STS) implement the `LeasedProvider` sub-trait for `renew` / `revoke`; capability is discovered without runtime downcasts via `ExternalProvider::lease_renewal()`, which the chain and the `ProviderCacheLayer` in `nebula-storage` forward to their inner.
 - `CredentialMetrics` — standardized credential operation metric names and label helpers (`resolve_total`, `refresh_total`, `rotations_total`, etc.).

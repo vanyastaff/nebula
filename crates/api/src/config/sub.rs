@@ -207,7 +207,7 @@ pub struct AuthApiConfig {
     /// Operator-supplied OAuth identity-provider configuration (Plane A).
     ///
     /// Empty by default — no OAuth providers declared, the
-    /// `/auth/oauth/{provider}/start` endpoints return
+    /// `GET /api/v1/auth/oauth/{provider}` endpoints return
     /// `AuthError::ProviderNotConfigured` per ADR-0085 D-6. When
     /// non-empty, every entry is validated synchronously at boot per
     /// REQ-compose-001 (PR-2 T2.8).

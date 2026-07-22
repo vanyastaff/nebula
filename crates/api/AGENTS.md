@@ -41,6 +41,12 @@
 - Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
 - Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code.
 
+## Invariants
+
+- `transport/oauth` is exclusively Plane-A identity OAuth. Plane-B credential acquisition exposes
+  only the universal `resolve` / `resolve/continue` public HTTP contract; raw provider ceremony
+  routes, state, and DTOs remain absent.
+
 ## See also
 - `README.md` — full design (endpoint table, CSRF route table, OAuth/idempotency env vars, durability caveats)
 - ADRs: 0047 (OpenAPI), 0048/0082 (idempotency), 0049 (webhook), 0050 (W3C trace), 0072 (storage port), 0085 (OAuth IdP)

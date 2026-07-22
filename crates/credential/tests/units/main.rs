@@ -7,6 +7,7 @@
 
 mod error_tests;
 // `pending_lifecycle_tests` moved to `crates/engine/tests/credential_pending_lifecycle_tests.rs`
-// (P8 migration: runtime executor ownership moved to nebula-engine).
+// as a cross-crate engine-bridge integration test; the runtime executor now
+// lives in `nebula-credential` per ADR-0092.
 mod scheme_roundtrip_tests;
 mod validation_tests;

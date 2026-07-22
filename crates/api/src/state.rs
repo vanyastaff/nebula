@@ -3,16 +3,14 @@
 //! Shared state for all handlers via Arc.
 //! Contains only ports (traits) — independent of concrete implementations.
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use nebula_core::{OrgId, OrgRole, WorkspaceId, WorkspaceRole, id::ExecutionId, scope::Principal};
 use nebula_credential::CredentialService;
-use nebula_credential::PendingToken;
 use nebula_engine::ActionRegistry;
 use nebula_metrics::MetricsRegistry;
 use nebula_plugin::PluginRegistry;
-use nebula_storage::credential::InMemoryPendingStore;
 use nebula_storage_port::Scope;
 use nebula_storage_port::dto::WorkflowVersionRecord;
 use nebula_storage_port::store::{
@@ -243,9 +241,7 @@ pub struct AppState {
 
     /// Optional `CredentialService` facade — the **single** credential
     /// persistence path (ADR-0088 D7). All credential CRUD, lifecycle, and
-    /// acquisition operations route through it; the OAuth two-phase flow
-    /// writes through a `CredentialScopeLayer` over the service's
-    /// encryption+audit+cache store handle, so both planes share one store.
+    /// acquisition operations route through it.
     ///
     /// When `None`, every credential endpoint returns an honest 503 —
     /// there is no raw-store fallback path.
@@ -261,12 +257,6 @@ pub struct AppState {
     /// triggers registered via `ActionRegistry::register_webhook`
     /// will never fire until the transport is attached.
     pub webhook_transport: Option<WebhookTransport>,
-
-    /// OAuth pending state store (API-owned OAuth flow §4.2 — TTL ≤ 10 min, single-use).
-    pub oauth_pending_store: Arc<InMemoryPendingStore>,
-
-    /// Maps signed state -> pending token so callback can consume pending data.
-    pub oauth_state_tokens: Arc<RwLock<HashMap<String, PendingToken>>>,
 
     /// Optional org-slug → [`OrgId`] resolver.
     pub org_resolver: Option<Arc<dyn OrgResolver>>,
@@ -548,8 +538,6 @@ impl AppState {
             credential_schema: None,
             credential_service: None,
             webhook_transport: None,
-            oauth_pending_store: Arc::new(InMemoryPendingStore::new()),
-            oauth_state_tokens: Arc::new(RwLock::new(HashMap::new())),
             org_resolver: None,
             workspace_resolver: None,
             auth_backend: None,

@@ -10,19 +10,18 @@
 //! rejects loopback / private / non-HTTPS URLs by design — production
 //! traffic must not reach internal infra.
 //!
-//! Per ADR-0085 D-14 + D-9-WAVE6, this module exposes ALL three bypass
-//! helpers needed to mount wiremock against `127.0.0.1` for tests:
+//! Per ADR-0085 D-14 + D-9-WAVE6, this module exposes the bypass helpers
+//! needed to mount wiremock against `127.0.0.1` for tests:
 //!
-//! - [`exchange_code_unchecked`] — token endpoint POST, skips
-//!   `validate_oauth_outbound_url`.
 //! - [`oauth_token_http_client_test_unchecked`] — returns the same
 //!   shared `reqwest::Client` used in production, intended for direct
 //!   userinfo / verified-emails GETs from test code that has already
 //!   confirmed it is using a safe localhost target.
-//! - [`fetch_oidc_discovery_unchecked`] — PR-3 will populate this once
-//!   the discovery cache lands; for now this is a placeholder so PR-2's
-//!   `test_support` scaffold compiles and integration test files can
-//!   import the module path.
+//! - [`fetch_oidc_discovery_unchecked`] — exercises the real cached
+//!   discovery fetch while skipping validation of the discovery URL and
+//!   allowing localhost authorization endpoints for wiremock fixtures;
+//!   response limits, disabled redirects, and returned server-side URL
+//!   validation remain active.
 //!
 //! ## Production-build guard
 //!
@@ -40,14 +39,6 @@
 //! ```
 
 use thiserror::Error;
-
-// Re-export `flow::exchange_code_unchecked` for integration tests.
-//
-// `exchange_code_unchecked` is private to `flow.rs` and the in-crate
-// tests reach it directly; integration tests live in a separate crate
-// and need this `pub` re-export to call it. The `nebula_test_util` cfg
-// gate ensures the symbol is unreachable from production builds.
-pub use crate::transport::oauth::flow::exchange_code_unchecked;
 
 use crate::transport::oauth::http::oauth_token_http_client;
 

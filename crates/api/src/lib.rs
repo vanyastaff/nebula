@@ -44,11 +44,11 @@
 //!   and the user-facing OAuth sign-in flow plus the cookie / JWT / `X-API-Key` middleware that
 //!   gates the Nebula API itself. The Plane-A backend subsystem lives under
 //!   [`domain::auth::backend`].
-//! - **[`domain::credential`]** — **Plane B infrastructure**: OAuth2 flow helpers (PKCE, signed
-//!   state, token exchange) and input validators for integration credentials. Flow helpers live
-//!   under [`transport::oauth`] with validators in [`extractors::credential`]. HTTP handlers live
-//!   in [`domain::credential::handler`]; route wiring in [`domain::workspace`] and
-//!   [`domain::credential::routes`]. All credential routes are **protected by Plane A** middleware.
+//! - **[`domain::credential`]** — **Plane B** CRUD, lifecycle, type discovery, and the universal
+//!   `resolve` / `resolve/continue` acquisition protocol. The former raw provider-specific
+//!   authorization/callback ceremony is parked and is not an HTTP surface. All credential routes
+//!   are protected by Plane-A middleware. [`transport::oauth`] serves Plane-A identity sign-in
+//!   only.
 //!
 //! Do not merge these into one conceptual “auth” module — naming stays explicit per auth plane separation.
 //!

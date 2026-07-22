@@ -1,6 +1,9 @@
-//! Composition-root factory for the production [`CredentialService`] facade.
+//! Temporary API-owned factory for the production [`CredentialService`] facade.
 //!
-//! Built here in `nebula-api` — which already depends on
+//! `apps/server` remains the first-party composition root. Keeping this
+//! factory in `nebula-api` is tracked K4 migration debt; it must shrink and
+//! move outward rather than grow new policy or provider-specific wiring.
+//! It currently lives here because `nebula-api` already depends on
 //! `nebula-credential` (the `CredentialService` facade + the api-layer
 //! credential builder), `nebula-storage` (with the
 //! `credential-in-memory` adapter), `nebula-engine`, and `tokio-util` — so
@@ -15,22 +18,23 @@
 //! SQLite backend** (`SqliteCredentialStore`, encrypted-at-rest, persisted
 //! across restart) selected by `NEBULA_CRED_DB`; the ephemeral in-memory
 //! backend (`with_memory_store`) is for tests and throwaway dev only. The
-//! pending-state store is always ephemeral in-memory (OAuth handshake state,
-//! TTL ≤ 10 min). Postgres is available via `SqliteCredentialStore`'s sibling
-//! `PgCredentialStore` once a composition wires a `PgPool`.
+//! pending-state store is always ephemeral in-memory (typed universal
+//! acquisition interactions, TTL ≤ 10 min). The default registry currently
+//! contains no interactive type. Postgres is available via
+//! `SqliteCredentialStore`'s sibling `PgCredentialStore` once a composition
+//! wires a `PgPool`.
 
 use std::sync::Arc;
 
 use nebula_credential::provider::ExternalProvider;
 use nebula_credential::runtime::LeaseLifecycleConfig;
 use nebula_credential::{
-    ApiKeyCredential, BasicAuthCredential, CredentialStore, ErasedPendingStore, OAuth2Credential,
+    ApiKeyCredential, BasicAuthCredential, CredentialStore, ErasedPendingStore,
     SigningKeyCredential,
 };
 use nebula_credential::{
     CredentialRegistry, CredentialService, CredentialServiceError, DispatchError, DispatchOps,
-    NoopObserver, register_interactive_ops, register_refreshable_ops, register_revocable_ops,
-    register_runtime_ops, register_testable_ops,
+    NoopObserver, register_runtime_ops,
 };
 
 use super::credential_builder::CredentialServiceBuilder;
@@ -96,15 +100,16 @@ pub enum CredentialServiceFactoryError {
 }
 
 /// Build the production [`CredentialService`] with the first-party
-/// credential types registered (`api_key`, `basic_auth`, `oauth2`).
+/// credential types registered (`api_key`, `basic_auth`, `signing_key`).
 ///
 /// The service shares its registered type set with the schema port via
 /// `credential_schema_registry::default_registry`, so the
 /// registry-advertised capabilities and the dispatch ops table cannot
-/// drift. OAuth2 advertises all four ops-modeled capabilities
-/// (interactive + refreshable + revocable + testable), so each matching
-/// `register_*_ops` is wired; API-key and basic-auth advertise none and
-/// take base ops only. A mismatch here would make
+/// drift. All default types are static and take base runtime ops only.
+/// `OAuth2Credential` remains implemented in `nebula-credential`, but is not
+/// part of this default composition until provider interaction is expressed
+/// through the universal typed pending-acquisition contract. A mismatch here
+/// would make
 /// [`CredentialServiceBuilder::build`] return
 /// [`CredentialServiceError::CapabilityWithoutOps`].
 ///
@@ -125,7 +130,8 @@ pub enum CredentialServiceFactoryError {
 /// first boot); migration 0030 is applied on connect. Credential state is
 /// encrypted at rest **and** survives a process restart. Set `NEBULA_CRED_DB`
 /// to `sqlite::memory:` for an ephemeral store, or a `sqlite://…` URL/path. The
-/// pending-state store remains ephemeral in-memory (OAuth handshake, ADR-0084).
+/// pending-state store remains ephemeral in-memory for explicitly composed
+/// interactive types (ADR-0084).
 ///
 /// # Errors
 ///
@@ -189,8 +195,8 @@ fn resolve_key_provider() -> Result<Arc<dyn KeyProvider>, CredentialServiceFacto
 /// Production composes a file-backed SQLite store via
 /// [`try_default_credential_service`]. Delegates to [`with_store`].
 ///
-/// Test-only (`test-util` feature / `cfg(test)`); never compiled into a release
-/// build (ADR-0023).
+/// Gated by `cfg(test)` / the `test-util` feature and not enabled by the
+/// first-party release composition; unsupported for production (ADR-0023).
 ///
 /// # Errors
 ///
@@ -213,7 +219,7 @@ pub async fn with_memory_store(
 /// The durable path ([`try_default_credential_service`]) passes a file-backed
 /// `SqliteCredentialStore`; the test path (`with_memory_store`) passes an
 /// ephemeral in-memory one. The pending-state store is **always** the ephemeral
-/// in-memory `InMemoryPendingStore` (OAuth / device-code handshake state,
+/// in-memory `InMemoryPendingStore` (typed universal acquisition state,
 /// TTL ≤ 10 min; durable multi-replica pending is a 1.1 concern, ADR-0084).
 /// Registers the first-party type set (shared with the schema port via
 /// `credential_schema_registry::default_registry`) and the matching dispatch
@@ -229,23 +235,17 @@ pub fn with_store<S: CredentialStore + 'static>(
 ) -> Result<Arc<CredentialService>, CredentialServiceFactoryError> {
     let registry = super::credential_schema_registry::default_registry()?;
 
-    // Dispatch ops, fixed to the erased pending store so the engine resolver
-    // and `DispatchOps` need no further monomorphization. Base ops for every
-    // type; the four capability registrars only for the types that advertise
-    // them (OAuth2). This set MUST match the registry's advertised caps or
-    // `build()` returns `CapabilityWithoutOps`.
+    // Dispatch ops, fixed to the erased pending store so the runtime resolver
+    // and `DispatchOps` need no further monomorphization. Every default type
+    // is static and receives base ops only. This set MUST match the registry's
+    // advertised caps or `build()` returns `CapabilityWithoutOps`.
     let mut ops = DispatchOps::<ErasedPendingStore>::new();
     register_runtime_ops::<ApiKeyCredential, ErasedPendingStore>(&mut ops)?;
     register_runtime_ops::<BasicAuthCredential, ErasedPendingStore>(&mut ops)?;
-    register_runtime_ops::<OAuth2Credential, ErasedPendingStore>(&mut ops)?;
     // signing_key: static non-interactive credential (HMAC webhook secret).
     // No capability ops beyond base runtime ops — it carries no
     // INTERACTIVE/REFRESHABLE/REVOCABLE/TESTABLE caps in the registry.
     register_runtime_ops::<SigningKeyCredential, ErasedPendingStore>(&mut ops)?;
-    register_interactive_ops::<OAuth2Credential, ErasedPendingStore>(&mut ops)?;
-    register_refreshable_ops::<OAuth2Credential, ErasedPendingStore>(&mut ops)?;
-    register_revocable_ops::<OAuth2Credential, ErasedPendingStore>(&mut ops)?;
-    register_testable_ops::<OAuth2Credential, ErasedPendingStore>(&mut ops)?;
 
     compose_credential_service(raw_store, key_provider, registry, ops, None)
 }
@@ -313,13 +313,13 @@ fn compose_credential_service<S: CredentialStore + 'static>(
 /// Build a [`CredentialService`] over a unique in-memory SQLite database with a
 /// **caller-supplied registry + dispatch ops** — the test fixture for exercising
 /// the facade against credential types the first-party set lacks (e.g. a
-/// non-interactive *and* Revocable type, which no builtin is: `api_key` /
-/// `basic_auth` aren't Revocable and `oauth2` is interactive, so neither can be
-/// created-then-revoked without an OAuth handshake).
+/// non-interactive *and* Revocable type; every default type is static and
+/// advertises no lifecycle capability).
 ///
-/// Test-only (`test-util` feature / `cfg(test)`); never compiled into a release
-/// build (ADR-0023). Mirrors [`with_memory_store`] but takes the registry/ops
-/// the caller composed instead of the first-party set.
+/// Gated by `cfg(test)` / the `test-util` feature and not enabled by the
+/// first-party release composition; unsupported for production (ADR-0023).
+/// Mirrors [`with_memory_store`] but takes the registry/ops the caller composed
+/// instead of the first-party set.
 ///
 /// # Errors
 ///
@@ -342,7 +342,8 @@ pub async fn with_memory_store_parts(
 /// not yet wired — every resolution path then fails closed with
 /// `ExternalSourceNotWired`. The test fixture for the wrong-source guard.
 ///
-/// Test-only (`test-util` feature / `cfg(test)`).
+/// Gated by `cfg(test)` / the `test-util` feature and not enabled by the
+/// first-party release composition; unsupported for production.
 ///
 /// # Errors
 ///

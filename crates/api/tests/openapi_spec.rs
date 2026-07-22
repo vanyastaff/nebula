@@ -60,6 +60,164 @@ async fn fetch_spec_json() -> Value {
 }
 
 #[tokio::test]
+async fn credential_oauth_ceremony_is_absent_while_identity_oauth_stays_public() {
+    let spec = fetch_spec_json().await;
+    let paths = spec
+        .get("paths")
+        .and_then(Value::as_object)
+        .expect("spec.paths must be present");
+
+    for removed in [
+        "/api/v1/credentials/{id}/oauth2/auth",
+        "/api/v1/credentials/{id}/oauth2/callback",
+        "/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/oauth2/auth",
+        "/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/oauth2/callback",
+    ] {
+        assert!(
+            !paths.contains_key(removed),
+            "Plane-B OAuth ceremony must not be advertised: {removed}"
+        );
+    }
+
+    let leaked: Vec<&String> = paths
+        .keys()
+        .filter(|path| path.contains("/credentials/") && path.contains("/oauth2/"))
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "no credential path may expose an OAuth ceremony; found {leaked:?}"
+    );
+
+    for retained in [
+        "/api/v1/auth/oauth/{provider}",
+        "/api/v1/auth/oauth/{provider}/callback",
+    ] {
+        let operation = paths
+            .get(retained)
+            .and_then(|item| item.get("get"))
+            .unwrap_or_else(|| panic!("Plane-A OAuth route must remain published: {retained}"));
+        let security = operation
+            .get("security")
+            .and_then(Value::as_array)
+            .unwrap_or_else(|| {
+                panic!("Plane-A OAuth route must declare empty security: {retained}")
+            });
+        assert!(
+            security.is_empty()
+                || security.iter().all(|requirement| requirement
+                    .as_object()
+                    .is_some_and(serde_json::Map::is_empty)),
+            "Plane-A OAuth route must remain unauthenticated: {retained}; security={security:?}"
+        );
+    }
+
+    for universal_acquisition in [
+        "/api/v1/orgs/{org}/workspaces/{ws}/credentials/resolve",
+        "/api/v1/orgs/{org}/workspaces/{ws}/credentials/resolve/continue",
+    ] {
+        let operation = paths
+            .get(universal_acquisition)
+            .and_then(|item| item.get("post"));
+        assert!(
+            operation.is_some(),
+            "universal Plane-B acquisition route must remain published: {universal_acquisition}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn credential_test_response_is_a_frozen_tagged_v1_union() {
+    let spec = fetch_spec_json().await;
+    let schemas = spec
+        .get("components")
+        .and_then(|components| components.get("schemas"))
+        .and_then(Value::as_object)
+        .expect("spec.components.schemas must be present");
+
+    let response = schemas
+        .get("TestCredentialResponse")
+        .expect("test response schema must be registered");
+    let branches = response
+        .get("oneOf")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("test response must be a oneOf union: {response}"));
+    assert_eq!(
+        branches.len(),
+        2,
+        "v1 test response has exactly success and failed branches: {response}"
+    );
+
+    let mut statuses = HashSet::new();
+    for branch in branches {
+        let properties = branch
+            .get("properties")
+            .and_then(Value::as_object)
+            .unwrap_or_else(|| panic!("tagged response branch needs properties: {branch}"));
+        let status = properties
+            .get("status")
+            .and_then(|schema| schema.get("enum"))
+            .and_then(Value::as_array)
+            .and_then(|values| values.first())
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("branch status must be a single literal: {branch}"));
+        assert!(
+            statuses.insert(status.to_owned()),
+            "duplicate tagged response status `{status}`"
+        );
+
+        let required: HashSet<&str> = branch
+            .get("required")
+            .and_then(Value::as_array)
+            .unwrap_or_else(|| panic!("tagged response branch needs required fields: {branch}"))
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(required.contains("status"));
+        assert!(required.contains("message"));
+        assert!(required.contains("tested_at"));
+        match status {
+            "success" => {
+                assert!(!required.contains("code"));
+                assert!(!properties.contains_key("code"));
+            },
+            "failed" => {
+                assert!(required.contains("code"));
+                assert!(properties.contains_key("code"));
+            },
+            other => panic!("v1 test response exposed unexpected status `{other}`"),
+        }
+    }
+    assert_eq!(
+        statuses,
+        HashSet::from(["success".to_owned(), "failed".to_owned()])
+    );
+
+    let code_values: Vec<&str> = schemas
+        .get("CredentialTestFailureCodeV1")
+        .and_then(|schema| schema.get("enum"))
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("v1 failure-code enum must be registered: {schemas:?}"))
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .unwrap_or_else(|| panic!("failure code must be a string: {value}"))
+        })
+        .collect();
+    assert_eq!(
+        code_values,
+        [
+            "authentication_rejected",
+            "permission_denied",
+            "account_restricted",
+            "invalid_configuration",
+            "other",
+        ],
+        "the exhaustive HTTP v1 failure-code vocabulary is frozen"
+    );
+}
+
+#[tokio::test]
 async fn served_spec_pins_openapi_3_1_0() {
     let spec = fetch_spec_json().await;
     let version = spec

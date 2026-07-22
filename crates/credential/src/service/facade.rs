@@ -27,8 +27,7 @@
 //! [`update`]: CredentialService::update
 //! [`delete`]: CredentialService::delete
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::{fmt, sync::Arc, time::Duration};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -60,18 +59,6 @@ use crate::store::OWNER_ID_METADATA_KEY as OWNER_ID_KEY;
 /// top-level metadata layout cannot recur.
 const DISPLAY_KEY: &str = "display";
 
-/// Outcome of [`CredentialService::test`] — a secret-free health-probe
-/// summary. `message` carries only the provider's failure reason (never
-/// secret material); `Debug` is derived because no field can hold a
-/// secret.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct TestReport {
-    /// `true` when the provider accepted the credential.
-    pub ok: bool,
-    /// Provider-supplied failure reason when `ok` is `false`.
-    pub message: Option<String>,
-}
-
 /// Outcome of [`CredentialService::refresh`]. `refreshed` distinguishes a
 /// real provider refresh from the fallback-on-interrupt path that served
 /// the still-valid stored material after a transient provider failure —
@@ -94,7 +81,6 @@ pub struct RefreshReport {
 /// arm carries the management-plane [`CredentialHead`] (id + row
 /// metadata, no state bytes); the `Pending` arm carries the opaque token
 /// string + the UI instruction.
-#[derive(Debug)]
 #[non_exhaustive]
 pub enum Acquisition {
     /// Resolved synchronously and persisted.
@@ -116,6 +102,23 @@ pub enum Acquisition {
         /// Delay before the next continuation poll.
         after: Duration,
     },
+}
+
+impl fmt::Debug for Acquisition {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Complete { .. } => formatter.debug_struct("Complete").finish(),
+            Self::Pending { .. } => formatter
+                .debug_struct("Pending")
+                .field("token", &"[REDACTED]")
+                .field("interaction", &"[REDACTED]")
+                .finish(),
+            Self::Retry { after } => formatter
+                .debug_struct("Retry")
+                .field("after", after)
+                .finish(),
+        }
+    }
 }
 
 /// Capability surface of a credential type, sourced from the
@@ -223,20 +226,6 @@ impl CredentialService {
             observer,
             source,
         }
-    }
-
-    /// Expose the composed layered store (`Audit(Cache(Encryption(raw)))`,
-    /// erased) as a shared arc for callers that need raw access to the
-    /// encrypted store without going through type dispatch.
-    ///
-    /// The api layer uses this to replace
-    /// the tenancy `CredentialScopeLayer<InMemoryStore>` with the
-    /// service's encryption + audit + cache stack while still managing
-    /// api-level metadata (`name` / `description` / `tags`) directly in
-    /// [`StoredCredential::metadata`]. The concrete layer stack is erased
-    /// behind [`DynCredentialStore`] so the backend stays swappable.
-    pub fn credential_store_handle(&self) -> Arc<dyn DynCredentialStore> {
-        Arc::clone(&self.store)
     }
 
     /// Guard the resolution path against a configured-but-unwired
@@ -403,6 +392,47 @@ impl CredentialService {
                 CredentialServiceError::Store(format!("audit sink refused: {msg}"))
             },
             StoreError::Backend(e) => CredentialServiceError::Store(e.to_string()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SECRET_CANARY: &str = "credential-acquisition-secret-NEVER-DEBUG-31af";
+
+    #[test]
+    fn acquisition_debug_redacts_complete_head_and_pending_payload() {
+        let now = chrono::Utc::now();
+        let complete = Acquisition::Complete {
+            head: CredentialHead {
+                id: SECRET_CANARY.to_owned(),
+                credential_key: "api_key".to_owned(),
+                version: 1,
+                created_at: now,
+                updated_at: now,
+                expires_at: None,
+                last_validated_at: Some(now),
+                reauth_required: false,
+                display: CredentialDisplay {
+                    display_name: Some(SECRET_CANARY.to_owned()),
+                    ..CredentialDisplay::default()
+                },
+            },
+        };
+        let pending = Acquisition::Pending {
+            token: SECRET_CANARY.to_owned(),
+            interaction: InteractionRequest::Redirect {
+                url: format!("https://provider.example/?state={SECRET_CANARY}"),
+            },
+        };
+
+        for debug in [format!("{complete:?}"), format!("{pending:?}")] {
+            assert!(
+                !debug.contains(SECRET_CANARY),
+                "acquisition Debug must not expose heads, tokens, or interactions: {debug}"
+            );
         }
     }
 }

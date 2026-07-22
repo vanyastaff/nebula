@@ -171,7 +171,7 @@ pub use contract::{
 // Resolve types
 pub use contract::{
     DisplayData, InteractionRequest, ReauthReason, RefreshOutcome, RefreshPolicy, ResolveResult,
-    StaticResolveResult, TestResult, UserInput,
+    StaticResolveResult, TestFailureCode, TestResult, UserInput,
 };
 // Built-in credential implementations
 pub use credential_ref::CredentialRef;
@@ -283,10 +283,10 @@ pub use crate::{
 pub use service::{
     Acquisition, CredentialHead, CredentialObserver, CredentialService, CredentialServiceError,
     CredentialTypeInfo, DispatchError, DispatchOps, EventMetricObserver, FixedScopeResolver,
-    NoopObserver, RefreshReport, StateSource, TenantFingerprint, TenantScope, TestReport,
-    TypeCapabilities, ValidatedCredentialBinding, ValidatedCredentialBindingError,
-    register_all_builtin_ops, register_interactive_ops, register_refreshable_ops,
-    register_revocable_ops, register_runtime_ops, register_testable_ops,
+    NoopObserver, RefreshReport, StateSource, TenantFingerprint, TenantScope, TypeCapabilities,
+    ValidatedCredentialBinding, ValidatedCredentialBindingError, register_all_builtin_ops,
+    register_interactive_ops, register_refreshable_ops, register_revocable_ops,
+    register_runtime_ops, register_testable_ops,
 };
 
 // ── Prelude ───────────────────────────────────────────────────────────────────

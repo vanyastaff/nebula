@@ -1,434 +1,302 @@
-// `expose_secret` needs a higher-ranked closure; `|s| s.to_owned()` is required (clippy false
-// positive).
-#![allow(clippy::redundant_closure_for_method_calls)]
+//! Permanent boundary regression for the two OAuth planes.
+//!
+//! Plane A (identity sign-in) remains mounted and intentionally public.
+//! Plane B (integration credentials) exposes only the universal
+//! `resolve` / `resolve/continue` acquisition protocol; its former raw
+//! provider OAuth ceremony is deliberately absent from HTTP.
 
 mod common;
 
-use axum::{
-    Json,
-    body::Body,
-    extract::Form,
-    http::{Request, StatusCode},
-    routing::post,
-};
-use common::{create_state_with_queue, create_test_jwt, ws_path};
-use nebula_api::ports::ReqwestRefreshTransport;
-use nebula_api::{ApiConfig, app};
-use nebula_credential::runtime::CredentialResolver;
-use nebula_credential::{
-    Credential, CredentialContext, CredentialState, CredentialStore, ErasedCredentialStore,
-    OAuth2Credential, OAuth2State, PutMode,
-};
-use nebula_engine::credential::default_in_memory_coordinator;
-use tower::ServiceExt;
-use url::form_urlencoded;
+use std::{path::Path, sync::Arc};
 
-/// The single credential store: the facade's layered store handle (the
-/// OAuth path and the CRUD plane share it — ADR-0088 D7).
-fn oauth_store_handle(state: &nebula_api::AppState) -> ErasedCredentialStore {
-    ErasedCredentialStore::new(
-        state
-            .credential_service
-            .as_ref()
-            .expect("credential service wired into test state")
-            .credential_store_handle(),
+use axum::{
+    body::Body,
+    http::{Method, Request, StatusCode},
+};
+use common::{
+    TEST_CSRF_COOKIE, TEST_CSRF_TOKEN, TEST_ORG, create_state_with_queue, me_support::jwt_for,
+    ws_path,
+};
+use nebula_api::{
+    ApiConfig, AppState, app, domain::org::InMemoryMembershipStore, state::MembershipStore,
+};
+use nebula_core::{OrgRole, Principal, UserId};
+use tower::ServiceExt;
+
+const CREDENTIAL_ID: &str = "cred_00000000000000000000000001";
+const OAUTH_SECRET_CANARY: &str = "oauth-client-secret-NEVER-ECHO-7f3c9a";
+
+async fn state_with_real_credential_rbac() -> (AppState, String) {
+    let (state, _queue) = create_state_with_queue().await;
+    let user_id = UserId::new();
+    let membership = InMemoryMembershipStore::seeded(
+        TEST_ORG.parse().expect("valid test org id"),
+        Principal::User(user_id),
+        OrgRole::OrgAdmin,
+    )
+    .into_arc();
+    let membership: Arc<dyn MembershipStore> = membership;
+
+    (
+        state.with_membership_store(membership),
+        jwt_for(&user_id.to_string()),
     )
 }
 
-async fn spawn_mock_token_endpoint() -> (String, tokio::task::JoinHandle<()>) {
-    let token_router = axum::Router::new().route(
-        "/token",
-        post(
-            |Form(form): Form<std::collections::HashMap<String, String>>| async move {
-                let grant_type = form
-                    .get("grant_type")
-                    .map(String::as_str)
-                    .unwrap_or_default();
-                let body = match grant_type {
-                    "authorization_code" => serde_json::json!({
-                        "access_token": "e2e-access-token",
-                        "refresh_token": "e2e-refresh-token",
-                        "token_type": "Bearer",
-                        "expires_in": 1800,
-                        "scope": "repo workflow"
-                    }),
-                    "refresh_token" => serde_json::json!({
-                        "access_token": "e2e-access-token-refreshed",
-                        "refresh_token": "e2e-refresh-token-refreshed",
-                        "token_type": "Bearer",
-                        "expires_in": 3600,
-                        "scope": "repo workflow"
-                    }),
-                    _ => serde_json::json!({
-                        "error": "unsupported_grant_type",
-                        "error_description": "unknown grant_type"
-                    }),
-                };
-                Json(body)
-            },
+fn protected_request(method: Method, uri: &str, token: &str) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .header("x-csrf-token", TEST_CSRF_TOKEN)
+        .header("cookie", TEST_CSRF_COOKIE)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from("code=unused&state=unused"))
+        .expect("protected OAuth regression request")
+}
+
+fn protected_json_request(uri: &str, token: &str, body: &serde_json::Value) -> Request<Body> {
+    Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .header("x-csrf-token", TEST_CSRF_TOKEN)
+        .header("cookie", TEST_CSRF_COOKIE)
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(body).expect("serialize credential resolve request"),
+        ))
+        .expect("protected credential resolve request")
+}
+
+async fn response_body(response: axum::response::Response) -> String {
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read response body");
+    String::from_utf8(bytes.to_vec()).expect("API response body is UTF-8")
+}
+
+#[tokio::test]
+async fn former_credential_oauth_operations_are_exact_404_after_real_auth_and_rbac() {
+    let (state, token) = state_with_real_credential_rbac().await;
+    let config = ApiConfig::for_test();
+
+    let control = app::build_app(state.clone(), &config)
+        .oneshot(protected_request(
+            Method::GET,
+            &ws_path("/credentials"),
+            &token,
+        ))
+        .await
+        .expect("credential control response");
+    assert_eq!(
+        control.status(),
+        StatusCode::OK,
+        "the same bearer, membership, tenant resolution, grant, and RBAC context must reach a protected credential handler"
+    );
+
+    let system_auth = format!(
+        "/api/v1/credentials/{CREDENTIAL_ID}/oauth2/auth?auth_url=https%3A%2F%2Fprovider.example%2Fauthorize&client_id=client&redirect_uri=https%3A%2F%2Fapp.example%2Fcallback"
+    );
+    let system_callback =
+        format!("/api/v1/credentials/{CREDENTIAL_ID}/oauth2/callback?code=unused&state=unused");
+    let scoped_auth = ws_path(&format!(
+        "/credentials/{CREDENTIAL_ID}/oauth2/auth?auth_url=https%3A%2F%2Fprovider.example%2Fauthorize&client_id=client&redirect_uri=https%3A%2F%2Fapp.example%2Fcallback"
+    ));
+    let scoped_callback = ws_path(&format!(
+        "/credentials/{CREDENTIAL_ID}/oauth2/callback?code=unused&state=unused"
+    ));
+
+    for (label, method, uri) in [
+        ("system authorize GET", Method::GET, system_auth.as_str()),
+        ("system callback GET", Method::GET, system_callback.as_str()),
+        (
+            "system callback POST",
+            Method::POST,
+            system_callback.as_str(),
         ),
-    );
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind mock token endpoint");
-    let addr = listener.local_addr().expect("mock token endpoint addr");
-    let handle = tokio::spawn(async move {
-        let _ = axum::serve(listener, token_router).await;
-    });
-
-    (format!("http://{addr}/token"), handle)
+        ("scoped authorize GET", Method::GET, scoped_auth.as_str()),
+        ("scoped callback GET", Method::GET, scoped_callback.as_str()),
+        (
+            "scoped callback POST",
+            Method::POST,
+            scoped_callback.as_str(),
+        ),
+    ] {
+        let response = app::build_app(state.clone(), &config)
+            .oneshot(protected_request(method, uri, &token))
+            .await
+            .unwrap_or_else(|error| panic!("{label} response failed: {error}"));
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap_or_else(|error| panic!("{label} body failed: {error}"));
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "{label} must be absent, not rejected by parsing/auth/RBAC/CSRF or retained as a tombstone; body={}",
+            String::from_utf8_lossy(&body)
+        );
+    }
 }
 
 #[tokio::test]
-async fn system_level_oauth_authorize_route_is_disabled() {
+async fn plane_a_oauth_routes_remain_mounted_and_report_missing_backend_as_503() {
     let (state, _queue) = create_state_with_queue().await;
     let config = ApiConfig::for_test();
-    let app = app::build_app(state, &config);
-    let token = create_test_jwt();
 
-    let auth_query = form_urlencoded::Serializer::new(String::new())
-        .append_pair("auth_url", "https://provider.example.com/oauth/authorize")
-        .append_pair("token_url", "https://provider.example.com/oauth/token")
-        .append_pair("client_id", "client")
-        .append_pair("client_secret", "secret")
-        .append_pair("redirect_uri", "https://app.example.com/oauth/callback")
-        .finish();
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri(format!(
-                    "/api/v1/credentials/cred_00000000000000000000000001/oauth2/auth?{auth_query}"
-                ))
-                .header("authorization", format!("Bearer {token}"))
-                .body(Body::empty())
-                .expect("oauth auth request"),
-        )
-        .await
-        .expect("oauth auth response");
-
-    assert_eq!(
-        response.status(),
-        StatusCode::GONE,
-        "OAuth credential flow must be tenant-scoped, not system-level"
-    );
+    for uri in [
+        "/api/v1/auth/oauth/github",
+        "/api/v1/auth/oauth/github/callback?state=unused&code=unused",
+    ] {
+        let response = app::build_app(state.clone(), &config)
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(uri)
+                    .body(Body::empty())
+                    .expect("Plane-A OAuth request"),
+            )
+            .await
+            .expect("Plane-A OAuth response");
+        assert_eq!(
+            response.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{uri} must remain mounted and auth/CSRF-exempt; an AppState without AuthBackend reports honest 503"
+        );
+    }
 }
 
 #[tokio::test]
-async fn oauth_authorize_rejects_loopback_token_url() {
-    let (state, _queue) = create_state_with_queue().await;
+async fn default_credential_composition_parks_oauth2_until_universal_pending_flow_exists() {
+    let (state, token) = state_with_real_credential_rbac().await;
     let config = ApiConfig::for_test();
-    let app = app::build_app(state, &config);
-    let token = create_test_jwt();
 
-    let auth_query = form_urlencoded::Serializer::new(String::new())
-        .append_pair("auth_url", "https://provider.example.com/oauth/authorize")
-        .append_pair("token_url", "http://127.0.0.1:1/token")
-        .append_pair("client_id", "client")
-        .append_pair("client_secret", "secret")
-        .append_pair("redirect_uri", "https://app.example.com/oauth/callback")
-        .finish();
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri(ws_path(&format!(
-                    "/credentials/cred_00000000000000000000000001/oauth2/auth?{auth_query}"
-                )))
-                .header("authorization", format!("Bearer {token}"))
-                .body(Body::empty())
-                .expect("oauth auth request"),
-        )
+    let catalog_response = app::build_app(state.clone(), &config)
+        .oneshot(protected_request(
+            Method::GET,
+            "/api/v1/credentials/types",
+            &token,
+        ))
         .await
-        .expect("oauth auth response");
-
-    assert_eq!(
-        response.status(),
-        StatusCode::BAD_REQUEST,
-        "OAuth token endpoint must reject loopback/private URLs before exchange"
-    );
-}
-
-// IGNORED 2026-04-24: test exercises engine's OAuth2 refresh path which requires
-// the `rotation` feature on nebula-engine. That feature currently fails to compile
-// due to missing `validation` submodule in nebula-credential::rotation (pre-existing
-// gap — `validation` is referenced by engine/src/credential/rotation.rs:34 but never
-// existed in credential crate after earlier refactor). Previously this test was
-// gated behind `credential-oauth` feature which effectively never ran in CI.
-// Un-ignore when engine's rotation feature compiles end-to-end (separate spec).
-#[ignore = "requires engine rotation feature which currently has broken module graph"]
-#[tokio::test]
-async fn e2e_oauth2_flow_persists_exchanged_credential_state() {
-    let (state, _queue) = create_state_with_queue().await;
-    let config = ApiConfig::for_test();
-    let app = app::build_app(state.clone(), &config);
-    let token = create_test_jwt();
-    let credential_id = "oauth-e2e-credential";
-    let client_id = "e2e-client-id";
-    let client_secret = "e2e-client-secret";
-    let redirect_uri = "https://app.example.com/oauth/callback";
-    let auth_url = "https://provider.example.com/oauth/authorize";
-    let (token_url, token_server_handle) = spawn_mock_token_endpoint().await;
-
-    let auth_query = form_urlencoded::Serializer::new(String::new())
-        .append_pair("auth_url", auth_url)
-        .append_pair("token_url", &token_url)
-        .append_pair("client_id", client_id)
-        .append_pair("client_secret", client_secret)
-        .append_pair("redirect_uri", redirect_uri)
-        .append_pair("scopes", "repo workflow")
-        .finish();
-    let auth_uri = format!("/api/v1/credentials/{credential_id}/oauth2/auth?{auth_query}");
-
-    let auth_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri(auth_uri)
-                .header("authorization", format!("Bearer {token}"))
-                .body(Body::empty())
-                .expect("oauth auth request"),
-        )
-        .await
-        .expect("oauth auth response");
-    assert_eq!(auth_response.status(), StatusCode::OK);
-
-    let auth_body = axum::body::to_bytes(auth_response.into_body(), usize::MAX)
-        .await
-        .expect("oauth auth body");
-    let auth_json: serde_json::Value =
-        serde_json::from_slice(&auth_body).expect("oauth auth response json");
-    let signed_state = auth_json["state"]
-        .as_str()
-        .expect("signed state")
-        .to_owned();
+        .expect("credential catalog response");
+    assert_eq!(catalog_response.status(), StatusCode::OK);
+    let catalog: serde_json::Value =
+        serde_json::from_str(&response_body(catalog_response).await).expect("credential catalog");
+    let advertised_keys: Vec<&str> = catalog["types"]
+        .as_array()
+        .expect("catalog types array")
+        .iter()
+        .filter_map(|credential_type| credential_type["key"].as_str())
+        .collect();
     assert!(
-        auth_json["authorize_url"]
-            .as_str()
-            .is_some_and(|url| url.starts_with(auth_url)),
-        "authorize_url should be built from provider auth_url"
+        advertised_keys.contains(&"api_key"),
+        "a supported static type must remain advertised as a positive control: {advertised_keys:?}"
     );
 
-    let callback_query = form_urlencoded::Serializer::new(String::new())
-        .append_pair("code", "e2e-auth-code")
-        .append_pair("state", &signed_state)
-        .finish();
-    let callback_uri =
-        format!("/api/v1/credentials/{credential_id}/oauth2/callback?{callback_query}");
-
-    let callback_response = app
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri(callback_uri)
-                .header("authorization", format!("Bearer {token}"))
-                .body(Body::empty())
-                .expect("oauth callback request"),
-        )
+    let oauth_type_response = app::build_app(state.clone(), &config)
+        .oneshot(protected_request(
+            Method::GET,
+            "/api/v1/credentials/types/oauth2",
+            &token,
+        ))
         .await
-        .expect("oauth callback response");
-    assert_eq!(callback_response.status(), StatusCode::OK);
+        .expect("parked OAuth2 type response");
+    let oauth_type_status = oauth_type_response.status();
 
-    let callback_body = axum::body::to_bytes(callback_response.into_body(), usize::MAX)
+    let resolve_response = app::build_app(state, &config)
+        .oneshot(protected_json_request(
+            &ws_path("/credentials/resolve"),
+            &token,
+            &serde_json::json!({
+                "credential_key": "oauth2",
+                "data": {
+                    "client_id": "parked-client",
+                    "client_secret": OAUTH_SECRET_CANARY,
+                    "token_url": "https://provider.example.com/oauth/token",
+                    "grant_type": "client_credentials"
+                }
+            }),
+        ))
         .await
-        .expect("oauth callback body");
-    let callback_json: serde_json::Value =
-        serde_json::from_slice(&callback_body).expect("oauth callback response json");
-    assert_eq!(callback_json["credential_id"], credential_id);
-    assert_eq!(callback_json["exchanged"], true);
-
-    let stored = oauth_store_handle(&state)
-        .get(credential_id)
-        .await
-        .expect("stored oauth credential");
-    assert_eq!(
-        stored.version, 2,
-        "authorize creates the placeholder (v1); the callback CAS bumps it to v2"
-    );
-    assert_eq!(stored.credential_key, OAuth2Credential::KEY);
-    assert_eq!(stored.state_kind, OAuth2State::KIND);
-
-    let mut persisted_state: OAuth2State =
-        serde_json::from_slice(&stored.data).expect("persisted oauth state");
-    assert_eq!(
-        persisted_state.access_token.expose_secret().to_owned(),
-        "e2e-access-token"
-    );
-    assert_eq!(
-        persisted_state
-            .refresh_token
-            .as_ref()
-            .expect("refresh token")
-            .expose_secret()
-            .to_owned(),
-        "e2e-refresh-token"
-    );
-    assert_eq!(persisted_state.scopes, vec!["repo", "workflow"]);
-    assert_eq!(
-        persisted_state.client_id.expose_secret().to_owned(),
-        client_id
-    );
-    assert_eq!(persisted_state.token_url, token_url);
-
-    // Force state into early-refresh window to exercise engine refresh path.
-    persisted_state.expires_at = Some(chrono::Utc::now() - chrono::Duration::seconds(30));
-    let mut stale_record = stored.clone();
-    // Mirror the production persist path: cleartext only inside the storage
-    // scope, so the engine refresh path below reads back real tokens (the
-    // default sink would persist `[REDACTED]`).
-    stale_record.data = nebula_credential::serde_secret::expose_for_serialization(|| {
-        serde_json::to_vec(&persisted_state)
-    })
-    .expect("serialize stale oauth state");
-    stale_record.expires_at = persisted_state.expires_at();
-    let stale_put = oauth_store_handle(&state)
-        .put(stale_record, PutMode::Overwrite)
-        .await
-        .expect("persist stale oauth state");
-    assert_eq!(
-        stale_put.version, 3,
-        "manual overwrite of stale state should bump StoredCredential::version (CAS basis)"
+        .expect("parked OAuth2 resolve response");
+    let resolve_status = resolve_response.status();
+    let resolve_body = response_body(resolve_response).await;
+    assert!(
+        !resolve_body.contains(OAUTH_SECRET_CANARY),
+        "unknown-type rejection must never echo caller-supplied secret material: {resolve_body}"
     );
 
-    let coord = std::sync::Arc::new(
-        default_in_memory_coordinator()
-            .expect("default in-memory coordinator must build with static config"),
-    );
-    let transport = std::sync::Arc::new(ReqwestRefreshTransport);
-    let resolver = CredentialResolver::with_dependencies(
-        std::sync::Arc::new(oauth_store_handle(&state)),
-        coord,
-        transport,
-    );
-    let ctx = CredentialContext::for_owner("test-user");
-    let handle = resolver
-        .resolve_with_refresh::<OAuth2Credential>(credential_id, &ctx)
-        .await
-        .expect("resolve with refresh should succeed");
-    assert_eq!(handle.credential_id(), credential_id);
-    let token = handle.snapshot();
-    assert_eq!(token.token_type, "Bearer");
-    assert_eq!(token.scopes, vec!["repo".to_owned(), "workflow".to_owned()]);
     assert_eq!(
-        token.access_token().expose_secret().to_owned(),
-        "e2e-access-token-refreshed"
+        (
+            advertised_keys.contains(&"oauth2"),
+            oauth_type_status,
+            resolve_status,
+        ),
+        (false, StatusCode::NOT_FOUND, StatusCode::BAD_REQUEST),
+        "the default public composition must neither advertise nor dispatch the parked oauth2 type"
     );
-
-    let refreshed = oauth_store_handle(&state)
-        .get(credential_id)
-        .await
-        .expect("refreshed oauth credential in store");
+    let resolve_problem: serde_json::Value =
+        serde_json::from_str(&resolve_body).expect("unknown-type ProblemDetails");
     assert_eq!(
-        refreshed.version, 4,
-        "engine refresh should persist via CAS and increment version"
-    );
-    let refreshed_state: OAuth2State =
-        serde_json::from_slice(&refreshed.data).expect("deserialize refreshed oauth state");
-    assert_eq!(
-        refreshed_state.access_token.expose_secret().to_owned(),
-        "e2e-access-token-refreshed"
+        resolve_problem["errors"][0]["code"], "unknown_credential_type",
+        "resolve must fail with the structured unknown-type classification: {resolve_body}"
     );
     assert_eq!(
-        refreshed_state
-            .refresh_token
-            .clone()
-            .expect("refreshed refresh token")
-            .expose_secret()
-            .to_owned(),
-        "e2e-refresh-token-refreshed"
-    );
-
-    token_server_handle.abort();
-}
-
-#[tokio::test]
-async fn system_level_oauth_callback_post_route_is_disabled() {
-    let (state, _queue) = create_state_with_queue().await;
-    let config = ApiConfig::for_test();
-    let app = app::build_app(state, &config);
-    let token = create_test_jwt();
-
-    let callback_body = form_urlencoded::Serializer::new(String::new())
-        .append_pair("code", "unused-auth-code")
-        .append_pair("state", "unused-signed-state")
-        .finish();
-    let credential_id = "cred_00000000000000000000000001";
-    let callback_uri = format!("/api/v1/credentials/{credential_id}/oauth2/callback");
-
-    // Provide the double-submit CSRF pair: `csrf_middleware` now runs on
-    // `credential_routes` (M3.1 box 2). Without the headers the request
-    // would be rejected with 403 *before* reaching the disabled route,
-    // hiding the 410-GONE contract this test is asserting.
-    let callback_response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(callback_uri)
-                .header("authorization", format!("Bearer {token}"))
-                .header("content-type", "application/x-www-form-urlencoded")
-                .header("x-csrf-token", common::TEST_CSRF_TOKEN)
-                .header("cookie", common::TEST_CSRF_COOKIE)
-                .body(Body::from(callback_body))
-                .expect("oauth callback POST"),
-        )
-        .await
-        .expect("oauth callback response");
-    assert_eq!(
-        callback_response.status(),
-        StatusCode::GONE,
-        "OAuth form_post callback must also be tenant-scoped"
+        resolve_problem["errors"][0]["pointer"], "/credential_key",
+        "the unknown-type error must identify the credential-key field: {resolve_body}"
     );
 }
 
-/// Direct coverage of the newly-CSRF-gated system-level
-/// `credential::routes::router()` surface (M3.1 box 2).
-///
-/// `seam_credential_write_path_validation` exercises the tenant-scoped
-/// `/orgs/.../workspaces/.../credentials/*` group, which had CSRF
-/// enforcement applied long before this PR. The system-level
-/// `/api/v1/credentials/*` group only got `csrf_middleware` in this PR,
-/// so verify the contract directly: a state-changing POST against
-/// `POST /api/v1/credentials/{id}/oauth2/callback` without the
-/// double-submit pair must be rejected at 403 by `csrf_middleware`
-/// *before* reaching the disabled-route 410 handler.
-#[tokio::test]
-async fn system_level_oauth_callback_post_requires_csrf_pair() {
-    let (state, _queue) = create_state_with_queue().await;
-    let config = ApiConfig::for_test();
-    let app = app::build_app(state, &config);
-    let token = create_test_jwt();
+#[test]
+fn removed_credential_oauth_source_surface_cannot_regrow_accidentally() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for removed_file in [
+        "src/domain/credential/oauth.rs",
+        "src/transport/oauth/state.rs",
+    ] {
+        assert!(
+            !root.join(removed_file).exists(),
+            "removed Plane-B ceremony source file must stay absent: {removed_file}"
+        );
+    }
 
-    let callback_body = form_urlencoded::Serializer::new(String::new())
-        .append_pair("code", "unused-auth-code")
-        .append_pair("state", "unused-signed-state")
-        .finish();
-    let credential_id = "cred_00000000000000000000000001";
-    let callback_uri = format!("/api/v1/credentials/{credential_id}/oauth2/callback");
+    let source_files = [
+        "src/domain/credential/mod.rs",
+        "src/domain/credential/routes.rs",
+        "src/domain/credential/handler.rs",
+        "src/domain/workspace.rs",
+        "src/state.rs",
+        "src/transport/credential.rs",
+        "src/transport/oauth/mod.rs",
+    ];
+    let source = source_files
+        .iter()
+        .map(|path| {
+            std::fs::read_to_string(root.join(path))
+                .unwrap_or_else(|error| panic!("read {path}: {error}"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
 
-    // No `x-csrf-token` header, no `cookie` header — JWT auth alone.
-    // The expected response is the CSRF 403, NOT the disabled-route 410,
-    // proving that `csrf_middleware` runs before the route handler.
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(callback_uri)
-                .header("authorization", format!("Bearer {token}"))
-                .header("content-type", "application/x-www-form-urlencoded")
-                .body(Body::from(callback_body))
-                .expect("oauth callback POST without CSRF"),
-        )
-        .await
-        .expect("oauth callback response");
-    assert_eq!(
-        response.status(),
-        StatusCode::FORBIDDEN,
-        "csrf_middleware must reject the system-level OAuth POST when the \
-         double-submit CSRF pair is absent, even though the route itself \
-         is also disabled (410)"
-    );
+    for removed_name in [
+        "get_oauth2_authorize_url",
+        "get_oauth2_callback",
+        "post_oauth2_callback",
+        "get_oauth2_authorize_url_for_owner",
+        "handle_callback_for_owner",
+        "oauth_controller",
+        "oauth_pending_store",
+        "oauth_state_tokens",
+        "RequestCredentialOwner",
+        "owner_id_from_scope",
+        "scoped_store",
+        "AuthUriResponse",
+        "CallbackResponse",
+    ] {
+        assert!(
+            !source.contains(removed_name),
+            "removed Plane-B route/controller/wrapper symbol must stay absent: {removed_name}"
+        );
+    }
 }

@@ -1,11 +1,12 @@
 //! Facade lifecycle E2E (Increment 3b): exercise `CredentialService` refresh /
-//! revoke / binding-validation against a credential type the first-party set
+//! revoke / binding-validation against a credential type the default API set
 //! lacks — one that is **non-interactive *and* Revocable *and* Refreshable**.
 //!
-//! No first-party builtin fits: `api_key`/`basic_auth` aren't Revocable, and
-//! `oauth2` is interactive (can't be created without the OAuth handshake). So
-//! the harness registers a local `TestLifecycleCred` via the custom-registry
-//! factory variant ([`with_memory_store_parts`]) over the real
+//! The default static credentials (`api_key`, `basic_auth`, `signing_key`) are
+//! not Revocable or Refreshable; interactive `oauth2` is parked until the
+//! universal pending-flow transport is integrated. The harness therefore
+//! registers a local `TestLifecycleCred` via the custom-registry factory
+//! variant ([`with_memory_store_parts`]) over the real
 //! `Audit(Cache(Encryption(SQLite)))` stack.
 //!
 //! Regressions pinned here (the facade refresh/revoke paths have no in-crate
@@ -34,8 +35,8 @@ use nebula_credential::provider::{
 use nebula_credential::resolve::{RefreshOutcome, ResolveResult};
 use nebula_credential::{
     CredentialContext, CredentialDisplay, CredentialMetadata, CredentialRegistry,
-    CredentialService, CredentialServiceError, DispatchOps, DynCredentialStore, ErasedPendingStore,
-    TenantScope, ValidatedCredentialBindingError, identity_state, register_refreshable_ops,
+    CredentialService, CredentialServiceError, DispatchOps, ErasedPendingStore, TenantScope,
+    ValidatedCredentialBindingError, identity_state, register_refreshable_ops,
     register_revocable_ops, register_runtime_ops, schema_of,
 };
 use nebula_schema::{FieldValues, Schema};
@@ -219,12 +220,12 @@ impl ExternalProvider for StubExternalProvider {
     }
 }
 
-/// Read the persisted `last_validated_at` straight off the layered store (the
-/// service head does not expose it).
+/// Read the persisted validation anchor through the facade's secret-free head.
 async fn last_validated(svc: &CredentialService, id: &str) -> chrono::DateTime<chrono::Utc> {
-    let store: Arc<dyn DynCredentialStore> = svc.credential_store_handle();
-    let row = store.get(id).await.expect("stored row present");
-    row.last_validated_at()
+    svc.get(&scope(), id)
+        .await
+        .expect("stored row present")
+        .last_validated_at
         .expect("a created/refreshed credential carries a last_validated_at stamp")
 }
 

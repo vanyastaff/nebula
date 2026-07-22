@@ -1955,14 +1955,8 @@ async fn get_resource_status_without_repo_is_503() {
 ///
 /// The guarantee under test is *route absence*: a lifecycle POST must be
 /// rejected exactly like any path that names no route — it must NEVER be
-/// a success and never reach a resource handler. The precise status of an
-/// unmatched path is **not** decided by the resource route table: the
-/// merged `/internal/v1/*` router carries a blanket auth layer that
-/// becomes the whole-app fallback for unmatched paths (401 with a token
-/// configured, 503 without — an artifact of the internal-route
-/// subsystem, unrelated to resources and pre-existing this endpoint). A
-/// brittle literal-404 assertion would therefore be testing that
-/// unrelated fallback, not the no-lifecycle guarantee.
+/// a success and never reach a resource handler. Internal authentication
+/// is route-scoped and cannot mask the application's exact 404 fallback.
 ///
 /// So the guarantee is proven structurally: `POST .../{res}/acquire` returns the
 /// **same** response as `POST .../{res}/<a definitely-nonexistent

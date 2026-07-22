@@ -1,13 +1,13 @@
 //! OAuth HTTP flow helpers for the API layer.
 //!
-//! API-owned OAuth flow: the API layer owns the OAuth flow HTTP ceremony (auth URI
-//! construction, code→token exchange). Token endpoint policy and bounded
-//! body reads live in the sibling [`super::http`] module.
+//! Plane-A identity OAuth flow helpers: authorization URI construction and
+//! code-to-token exchange. Token endpoint policy and bounded body reads live
+//! in the sibling [`super::http`] module.
 
 use std::net::IpAddr;
 
 use nebula_credential::AuthStyle;
-use serde::Deserialize;
+use secrecy::{ExposeSecret, SecretString};
 use url::{Host, Url};
 
 pub use super::http::{
@@ -16,26 +16,19 @@ pub use super::http::{
 };
 
 /// Request parameters for authorization URI construction.
-#[derive(Debug, Clone, Deserialize)]
-pub struct AuthorizationUriRequest {
+pub(crate) struct AuthorizationUriRequest {
     /// OAuth authorization endpoint URL.
-    pub auth_url: String,
-    /// OAuth token endpoint URL (persisted for callback exchange).
-    pub token_url: String,
+    pub(crate) auth_url: String,
     /// OAuth client identifier.
-    pub client_id: String,
-    /// OAuth client secret (persisted for callback exchange).
-    pub client_secret: String,
+    pub(crate) client_id: String,
     /// Redirect URI registered with provider.
-    pub redirect_uri: String,
+    pub(crate) redirect_uri: String,
     /// Space-separated scopes.
-    pub scopes: Option<String>,
-    /// Client auth style for token endpoint.
-    pub auth_style: Option<AuthStyle>,
+    pub(crate) scopes: Option<String>,
 }
 
 /// Build OAuth2 Authorization Code URI with mandatory PKCE S256 parameters.
-pub fn build_authorization_uri(
+pub(crate) fn build_authorization_uri(
     req: &AuthorizationUriRequest,
     state: &str,
     code_challenge: &str,
@@ -59,39 +52,30 @@ pub fn build_authorization_uri(
 }
 
 /// Token endpoint exchange request.
-#[derive(Debug, Clone, Deserialize)]
-pub struct TokenExchangeRequest {
+pub(crate) struct TokenExchangeRequest {
     /// OAuth token endpoint URL.
-    pub token_url: String,
+    pub(crate) token_url: String,
     /// OAuth client identifier.
-    pub client_id: String,
+    pub(crate) client_id: String,
     /// OAuth client secret.
-    pub client_secret: String,
+    pub(crate) client_secret: SecretString,
     /// Authorization code received from callback.
-    pub code: String,
+    pub(crate) code: String,
     /// Redirect URI to echo in token exchange.
-    pub redirect_uri: String,
+    pub(crate) redirect_uri: String,
     /// PKCE verifier paired with `code_challenge`.
-    pub code_verifier: String,
+    pub(crate) code_verifier: String,
     /// Client auth style for token endpoint.
-    #[serde(default)]
-    pub auth_style: AuthStyle,
+    pub(crate) auth_style: AuthStyle,
 }
 
 /// Exchange authorization code for tokens.
-pub async fn exchange_code(req: &TokenExchangeRequest) -> Result<serde_json::Value, String> {
+pub(crate) async fn exchange_code(req: &TokenExchangeRequest) -> Result<serde_json::Value, String> {
     validate_oauth_outbound_url(&req.token_url)?;
     exchange_code_unchecked(req).await
 }
 
-// `pub(crate)` so the test-only `crate::test_support` module (gated by
-// `#[cfg(nebula_test_util)]`) can `pub use` this for integration tests
-// against localhost wiremock IdPs per ADR-0085 D-14. Production builds
-// without the cfg never compile `test_support`, so the symbol stays
-// effectively private to flow.rs internals.
-pub(crate) async fn exchange_code_unchecked(
-    req: &TokenExchangeRequest,
-) -> Result<serde_json::Value, String> {
+async fn exchange_code_unchecked(req: &TokenExchangeRequest) -> Result<serde_json::Value, String> {
     let client = oauth_token_http_client();
 
     let mut form: Vec<(&str, &str)> = vec![
@@ -104,12 +88,12 @@ pub(crate) async fn exchange_code_unchecked(
     let mut builder = client.post(&req.token_url);
     match req.auth_style {
         AuthStyle::Header => {
-            builder = builder.basic_auth(&req.client_id, Some(&req.client_secret));
+            builder = builder.basic_auth(&req.client_id, Some(req.client_secret.expose_secret()));
             builder = builder.form(&form);
         },
         AuthStyle::PostBody => {
             form.push(("client_id", req.client_id.as_str()));
-            form.push(("client_secret", req.client_secret.as_str()));
+            form.push(("client_secret", req.client_secret.expose_secret()));
             builder = builder.form(&form);
         },
     }
@@ -313,12 +297,9 @@ mod tests {
     fn authorization_uri_contains_pkce_fields() {
         let req = AuthorizationUriRequest {
             auth_url: "https://provider.example.com/oauth/authorize".to_owned(),
-            token_url: "https://provider.example.com/oauth/token".to_owned(),
             client_id: "client_123".to_owned(),
-            client_secret: "secret_123".to_owned(),
             redirect_uri: "https://app.example.com/callback".to_owned(),
             scopes: Some("read write".to_owned()),
-            auth_style: None,
         };
 
         let url = build_authorization_uri(&req, "signed_state", "code_challenge_123")
@@ -356,7 +337,7 @@ mod tests {
         TokenExchangeRequest {
             token_url: String::new(), // set per test
             client_id: "client-id".to_owned(),
-            client_secret: "client-secret".to_owned(),
+            client_secret: SecretString::new("client-secret".into()),
             code: "auth-code".to_owned(),
             redirect_uri: "https://app.example.com/cb".to_owned(),
             code_verifier: "pkce-verifier".to_owned(),

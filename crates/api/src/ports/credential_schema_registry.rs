@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use nebula_credential::{
     AnyCredential, ApiKeyCredential, BasicAuthCredential, Capabilities, CredentialRegistry,
-    OAuth2Credential, SigningKeyCredential,
+    SigningKeyCredential,
 };
 use nebula_schema::FieldValues;
 
@@ -194,7 +194,6 @@ pub(crate) fn default_registry() -> Result<CredentialRegistry, nebula_credential
     let mut registry = CredentialRegistry::new();
     registry.register(ApiKeyCredential, "nebula-credential")?;
     registry.register(BasicAuthCredential, "nebula-credential")?;
-    registry.register(OAuth2Credential, "nebula-credential")?;
     // signing_key: static non-interactive credential used for webhook HMAC
     // secrets (Standard Webhooks `whsec_` format).
     registry.register(SigningKeyCredential, "nebula-credential")?;
@@ -277,15 +276,20 @@ mod tests {
         );
         assert!(p.get_type("nope").is_none());
 
-        // The composition default registers all first-party types.
+        // The composition default registers the curated first-party static
+        // set; parked implementations are deliberately absent.
         let default = try_default_registry_port().expect("first-party set registers (unique KEYs)");
         let listed = default.list_types();
-        for k in ["api_key", "basic_auth", "oauth2", "signing_key"] {
+        for k in ["api_key", "basic_auth", "signing_key"] {
             assert!(
                 listed.iter().any(|t| t.key == k),
                 "default port must register {k}; got {:?}",
                 listed.iter().map(|t| &t.key).collect::<Vec<_>>()
             );
         }
+        assert!(
+            listed.iter().all(|t| t.key != "oauth2"),
+            "oauth2 remains implemented in nebula-credential but must stay out of the default API catalog until universal pending acquisition is wired"
+        );
     }
 }

@@ -62,6 +62,18 @@ changes are expected between minor releases — call them out here.
   userinfo response is authoritative. See `crates/api/README.md`
   "OAuth identity providers (Plane A)" for operator setup.
 
+### Security
+
+- **(breaking, security) Credential test contracts are payload-free.** Provider
+  adapters must replace `TestResult::Failed { reason: String }` with
+  `TestResult::Failed { code: TestFailureCode }`; raw provider text must be
+  discarded locally. `CredentialService::test` now returns `TestResult`
+  directly and `TestReport` is removed. HTTP v1 clients must migrate from the
+  former boolean response to the tagged `status` response: `success` carries
+  `message`/`tested_at`, while `failed` additionally requires the frozen
+  `CredentialTestFailureCodeV1`. Platform-owned messages never interpolate
+  adapter errors; future core classifications map to wire code `other`.
+
 ### Changed
 
 - **(breaking) `Topology<R>` async hooks are RPITIT, not `#[async_trait]`** —
@@ -108,6 +120,17 @@ changes are expected between minor releases — call them out here.
   updated accordingly.
 
 ### Removed
+
+- **(breaking) Raw credential persistence access is no longer public.**
+  Integrations using `CredentialService::credential_store_handle()` must use
+  scoped facade methods instead; `CredentialHead::last_validated_at` exposes
+  lifecycle metadata needed by supported callers without granting raw-store
+  or write-authority access.
+- **(breaking, security) Raw Plane-B OAuth ceremony routes were removed.**
+  Clients must start and continue credential acquisition through the universal
+  workspace-scoped `/credentials/resolve` and `/credentials/resolve/continue`
+  endpoints. Plane-A identity OAuth routes are unchanged. The default
+  credential catalog no longer advertises the unfinished `oauth2` adapter.
 
 - `nebula-resource::docs/recovery.md` `WatchdogHandle` /
   `WatchdogConfig` section — these types are not in the public surface.
