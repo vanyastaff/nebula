@@ -92,7 +92,7 @@ pub trait Testable: Credential {
     /// Implementations should perform a lightweight authenticated call
     /// against the provider (token introspection, "whoami" endpoint)
     /// and return [`TestResult::Success`] on a 2xx response or
-    /// [`TestResult::Failed`](TestResult::Failed) with a payload-free,
+    /// [`TestResult::Failed`] with a payload-free,
     /// extensible [`TestFailureCode`](crate::TestFailureCode) when the provider
     /// definitively rejects the credential. Network, transport, and
     /// provider-internal errors that prevent determining validity surface as
