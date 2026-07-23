@@ -509,15 +509,16 @@ credential type. When no command gateway is wired, every credential endpoint ret
 
 | Aspect | First-party credential storage composition (after membership authority is provisioned) |
 |---|---|
-| Restart-survival | **Yes for completed credentials** — the default file-backed SQLite store survives restart; in-flight pending interactions remain ephemeral |
-| Multi-replica share | **No by default** — the SQLite file is instance-local; a supported shared-store composition is still required for multi-replica deployments |
+| Restart-survival | **Yes for completed credentials** — `NEBULA_CRED_DB` selects the default file-backed SQLite store or PostgreSQL; in-flight pending interactions remain ephemeral |
+| Multi-replica share | **Yes with PostgreSQL** — build `nebula-server` with `--features postgres` and set `NEBULA_CRED_DB=postgres://…`; the credential rows and refresh-claim repository share one admitted credential-owned pool. SQLite remains instance-local. |
 | Encryption at rest | **Yes** — the facade composes the `EncryptionLayer` adjacent to the backend (AES-256-GCM; key from `NEBULA_CRED_MASTER_KEY`, fail-closed) |
 | Cross-workspace isolation | **Yes once policy is provisioned** — authority verifies workspace existence/parentage, revalidates membership/role, reproduces the authenticated scope, and every persistence predicate uses the derived `(owner, credential_id)` selector; cross-workspace IDs collapse to a flat 404. The default server has no workspace-directory or membership source and returns 503 before this path. |
-| Lifecycle dispatch | **Live** — `test`/`refresh`/`revoke` dispatch the registered type's capability; a type without it is refused with 400 (capability gate), never a faked success. The test response is a tagged `status` union: success has no code; failure requires a frozen v1, payload-free code, and future core codes map to `other` |
+| Lifecycle dispatch | **Live** — `test`/`refresh`/`revoke` dispatch the registered type's capability; a type without it is refused with 400 (capability gate), never a faked success. Provider rejection requiring an integration reconnect is the typed 409 `API:CREDENTIAL_REAUTH_REQUIRED`, not Plane-A 401. The test response is a tagged `status` union: success has no code; failure requires a frozen v1, payload-free code, and future core codes map to `other`. |
 
-> **Operator warning:** completed credentials survive a normal process restart
-> in the default file-backed SQLite database, but that database is not shared
-> across replicas. Pending acquisition state is still process-local and expires
+> **Operator warning:** completed credentials survive a normal process restart.
+> The default SQLite database is not shared across replicas; use the explicit
+> PostgreSQL `NEBULA_CRED_DB` profile for multi-replica credential and refresh
+> coordination. Pending acquisition state is still process-local and expires
 > after at most ten minutes; an interrupted interactive flow must be restarted.
 >
 > The tenancy path resolver special-cases the literal `resolve`
@@ -1031,7 +1032,7 @@ above for the enforcement guarantee.
 | `PUT`    | `/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}`                   | Update credential                                                          |
 | `DELETE` | `/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}`                   | Delete credential                                                          |
 | `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/test`              | Test credential (capability-gated dispatch)                                |
-| `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/refresh`           | Refresh credential token (capability-gated dispatch)                       |
+| `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/refresh`           | Refresh credential token; integration reconnect is a typed 409, not user-auth 401 |
 | `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/revoke`            | Revoke credential (capability-gated dispatch)                              |
 | `POST`   | `/webhooks/{trigger_uuid}/{nonce}`                                         | Inbound webhook trigger (mounted when `webhook_transport` is set)          |
 | `GET`    | `/api/v1/openapi.json`                                                    | OpenAPI 3.1 specification document                                         |

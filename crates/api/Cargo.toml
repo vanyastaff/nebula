@@ -30,9 +30,10 @@ nebula-action = { path = "../action" }
 nebula-engine = { path = "../engine" }
 nebula-plugin = { path = "../plugin" }
 nebula-resilience = { path = "../resilience" }
-# Only unsupported `test-util` fixtures compose a concrete credential runtime.
-# The default API surface owns ports/DTOs and has no credential implementation edge.
-nebula-credential = { path = "../credential", optional = true }
+# Plane-A and credential refresh share the credential-owned OAuth endpoint/IP
+# classifier. Concrete credential runtime composition still lives only in
+# unsupported `test-util` fixtures and apps/server.
+nebula-credential = { path = "../credential" }
 # The `test-util` catalog fixture invokes `ValidSchema::json_schema()`; the
 # production adapter lives in apps/server. Only `serde_json::Value` crosses
 # the API port, never a schema implementation type.
@@ -185,7 +186,7 @@ first-party-composition = []
 # Enables `ApiConfig::for_test()` and other test helpers. NEVER
 # enable this in production builds — it exposes a constructor that
 # bypasses the JwtSecret validation gate.
-test-util = ["dep:nebula-credential", "dep:nebula-schema", "dep:tokio-util"]
+test-util = ["dep:nebula-schema", "dep:tokio-util"]
 # Forwards `nebula-storage/postgres` so the `PgIdempotencyStore` impl becomes
 # available to composition roots (e.g. `nebula-server`). The `sqlx` pool is
 # constructed by the composition root, not by this library. When this feature

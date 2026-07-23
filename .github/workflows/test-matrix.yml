@@ -179,10 +179,8 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
-  postgres-authority:
-    name: PostgreSQL authority invariants
-    needs: [select-matrix]
-    if: needs.select-matrix.outputs.storage_selected == 'true'
+  postgres-conformance:
+    name: PostgreSQL storage conformance
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -190,7 +188,7 @@ jobs:
       NEBULA_REQUIRE_POSTGRES: "1"
     services:
       postgres:
-        image: postgres:17-alpine
+        image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -216,7 +214,7 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
         with:
-          key: nebula-storage-postgres-authority
+          key: nebula-storage-postgres-conformance
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
 
@@ -225,15 +223,45 @@ jobs:
         with:
           tool: cargo-nextest
 
-      - name: Run real PostgreSQL authority tests
+      - name: Run PostgreSQL storage conformance
         shell: bash
-        run: >-
-          cargo nextest run
-          -p nebula-storage
-          --features postgres
-          --profile ci
-          --no-tests=fail
-          -E 'package(=nebula-storage) & binary(=nebula_storage) & test(/pg::(oauth_state::tests|identity_secret::postgres_tests|session::tests|mfa_enrollment::tests)::/)'
+        run: |
+          set -euo pipefail
+
+          common=(
+            -p nebula-storage
+            --no-default-features
+            --features postgres
+            --profile ci
+            --no-tests=fail
+          )
+
+          # Keep lifecycle selection limited to fixtures that own isolated
+          # PostgreSQL schemas. Broad storage selection would also run
+          # unrelated legacy integration tests against `public`; the
+          # pre-existing authority set is preserved explicitly below.
+          cargo nextest run "${common[@]}" \
+            --lib post_commit_ack_loss_is_unknown_and_is_not_retried
+          cargo nextest run "${common[@]}" \
+            --lib commit_sqlstate_classification_preserves_unknown_outcomes
+          cargo nextest run "${common[@]}" \
+            --lib observation_fetch_errors_distinguish_schema_evidence_from_unavailability
+          cargo nextest run "${common[@]}" --lib semantic_oracle
+
+          # Preserve the pre-K2 live PostgreSQL authority gate. These tests
+          # predate the credential lifecycle suites and remain part of the
+          # required storage contract.
+          cargo nextest run "${common[@]}" \
+            -E 'package(=nebula-storage) & binary(=nebula_storage) & test(/pg::(oauth_state::tests|identity_secret::postgres_tests|session::tests|mfa_enrollment::tests)::/)'
+
+          for suite in \
+            credential_lifecycle_postgres \
+            credential_migration_postgres \
+            credential_schema_admission_postgres \
+            refresh_claim_pg_integration
+          do
+            cargo nextest run "${common[@]}" --test "$suite"
+          done
 
       - name: Test summary
         if: always()
@@ -247,7 +275,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: test-results-nebula-storage-postgres-authority
+          name: test-results-nebula-storage-postgres-conformance
           path: target/nextest/ci/junit.xml
           if-no-files-found: ignore
           retention-days: 3
@@ -255,7 +283,7 @@ jobs:
   # Branch protection points at this stable required check.
   tests:
     name: Tests
-    needs: [select-matrix, test-crates, postgres-authority]
+    needs: [select-matrix, test-crates, postgres-conformance]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -267,7 +295,7 @@ jobs:
           TEST_RESULT: ${{ needs.test-crates.result }}
           SELECTED_COUNT: ${{ needs.select-matrix.outputs.count }}
           STORAGE_SELECTED: ${{ needs.select-matrix.outputs.storage_selected }}
-          POSTGRES_AUTHORITY_RESULT: ${{ needs.postgres-authority.result }}
+          POSTGRES_CONFORMANCE_RESULT: ${{ needs.postgres-conformance.result }}
         run: |
           set -euo pipefail
 
@@ -283,13 +311,10 @@ jobs:
             echo "::error::select-matrix emitted invalid storage-selected: $STORAGE_SELECTED"
             exit 1
           fi
-          if [[ "$STORAGE_SELECTED" == "true" ]]; then
-            if [[ "$POSTGRES_AUTHORITY_RESULT" != "success" ]]; then
-              echo "::error::postgres-authority result: $POSTGRES_AUTHORITY_RESULT"
-              exit 1
-            fi
-          elif [[ "$POSTGRES_AUTHORITY_RESULT" != "skipped" ]]; then
-            echo "::error::postgres-authority must be skipped when storage is not selected; got $POSTGRES_AUTHORITY_RESULT"
+          if [[ "$POSTGRES_CONFORMANCE_RESULT" == "success" ]]; then
+            echo "PostgreSQL storage conformance passed."
+          else
+            echo "::error::postgres-conformance result: $POSTGRES_CONFORMANCE_RESULT"
             exit 1
           fi
           if [[ "$SELECTED_COUNT" == "0" ]]; then

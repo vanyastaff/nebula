@@ -118,7 +118,7 @@ pub enum CredentialOperation {
     List,
     /// Update credential material or display metadata.
     Update,
-    /// Permanently delete a credential.
+    /// Terminally tombstone a credential while reserving its id.
     Delete,
     /// Probe provider connectivity.
     Test,
@@ -227,7 +227,7 @@ pub enum CredentialCommand {
         /// Display fields to overlay on the stored head.
         display: CredentialDisplayPatch,
     },
-    /// Permanently delete one credential.
+    /// Terminally tombstone one credential while reserving its id.
     Delete {
         /// Credential identifier.
         credential_id: String,

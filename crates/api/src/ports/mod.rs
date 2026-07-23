@@ -14,5 +14,3 @@ pub mod credential_schema_registry;
 #[cfg(any(test, feature = "test-util"))]
 pub mod credential_service_factory;
 pub mod email;
-#[cfg(any(test, feature = "test-util"))]
-pub mod reqwest_transport;

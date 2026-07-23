@@ -2,7 +2,7 @@
 name: Nebula crate maturity dashboard
 description: Manual per-crate state dashboard. Edited in PRs that change a crate's API stability, test coverage, doc state, engine integration, or SLI-readiness.
 status: accepted
-last-reviewed: 2026-07-22
+last-reviewed: 2026-07-23
 related: [PRODUCT_CANON.md, STYLE.md]
 ---
 
@@ -22,7 +22,7 @@ Legend:
 | nebula-api           | frontier | stable  | stable | partial (pure library — no binaries; composition root is `apps/server` (`nebula-server` crate); per-domain module structure under `domain/` (§12.7); god-files split: `config/`, `error/`, `middleware/idempotency/`; `services/` renamed `transport/`; behavior-neutral Phase 0 refactor — 239 total tests green (236 `nebula-api` + 3 `nebula-server`), OpenAPI drift byte-identical, knife §13 green; knife steps 3+5: Start/Cancel producers stable #332/#330; EngineControlDispatch ADR-0008 A2/A3; ADR-0016 cancel registry; Phases 1–4 stub completion still pending) | partial |
 | nebula-server        | frontier | stable  | partial | partial (thin composition root; selects transport via `--transport=api\|webhook\|realtime\|all`; verbatim-ported transport runtime from pre-refactor `nebula-api` bins; 3 nextest tests green; Postgres idempotency path gated behind `postgres` feature) | n/a |
 | nebula-core          | frontier | stable  | stable | stable (6 public modules: `role`, `permission`, `tenancy`, `slug`, `auth`, `guard` — `TenantContext`, `ResolvedIds`, `OrgRole`, `WorkspaceRole`, `Permission`, `PermissionDenied`, `Slug`, `SlugKind`, `SlugError`, `is_prefixed_ulid()`, `AuthScheme`, `AuthPattern`, `Guard`, `TypedGuard`, `BaseContext`, `Context`) | n/a |
-| nebula-credential    | partial (**M12.2 hardening closed 2026-05-20** — error taxonomy reshape per Smithy RFC-0022 with per-variant context structs + boxed payloads + 32-byte size cap (closes #588), `SecretString` as thin wrapper over `secrecy::SecretBox<String>` with `ExposeSecret` trait surface for grep-able audits, `ValidatedCredentialBinding` newtype closes the `slot_bindings` confused-deputy non-goal from the ADR-0052 cascade, `CredentialService::resolve_for_slot` is the production bind-population seam, fallback-on-interrupt protects in-flight executions from transient provider failures, three-registry sync invariant probe + composite `register_credential_complete` close the silent-drift vector, dyn-compat probe locks the plugin registry against Rust 1.95 next-gen solver regressions. `AuthStyle` moved to `scheme::oauth2`. ADR-0084 defers proactive pre-expiry refresh to 1.1. **ADR-0092 consolidation (2026-06-10): the runtime (resolver/refresh/lease/rotation-state, ex-`nebula-engine`) + the `CredentialService` facade (ex-`nebula-credential-runtime`) + the builtin types (ex-`nebula-credential-builtin`) were all folded into this crate; `nebula-credential-testutil` was deleted; crypto extracted to `nebula-crypto`; heavy I/O inverted to `RefreshTransport`/`Cipher`/`Kdf` ports.** Follow-ups (see `crates/credential/docs/DESIGN.md`): finish the single `CredentialRuntime` pipeline (ADR-0088 D1/D2/D6 unfinished), design any future Plane-B browser interaction through universal acquisition, keep production credential adapters in `apps/server` (authority, persistence, catalog, and refresh composition landed 2026-07-22). The raw API OAuth ceremony is parked; `resolve` / `resolve/continue` is the supported HTTP acquisition surface.) | stable  | stable | stable (**П2 refresh coordination L2 landed 2026-04-26** per PR [#583](https://github.com/vanyastaff/nebula/pull/583) — two-tier coordinator: in-process L1 (`L1RefreshCoalescer`) + durable L2 (`RefreshClaimRepo` per ADR-0041) with TTL/heartbeat/reclaim sweep; sentinel N=3-in-1h threshold + `ReauthRequired` escalation; 5 metrics + 3 spans + 3 audit events; nightly chaos test (3 replicas × 100 creds × 10 min) — closes n8n #13088 cross-replica `refresh_token_v1`-invalidates-`v2` race; engine `iter_compatible` slot-picker consumer wiring + manager-side `OnCredentialRefresh<C>` fan-out tracked as post-П1 follow-ups in credential concerns register; **security hardening 2026-04-27 SEC-cluster landed** per archived credential security hardening spec (the maintainers' private design vault) — SEC-01/02 IdP boundary (bounded reader + sanitize_error_uri), SEC-05/06 plaintext-lifecycle invariants (CredentialGuard !Clone, SchemeGuard !Send + !Sync), SEC-09/10 Zeroizing discipline (bearer_header buffer, refresh_oauth2_state scope-tighten), SEC-11 bare crypto::encrypt removed from public surface, SEC-13 redact_sensitive_fields + ADR-0030 §4 redaction CI gate) | n/a |
+| nebula-credential    | partial (**M12.2 hardening closed 2026-05-20** — error taxonomy reshape per Smithy RFC-0022 with per-variant context structs + boxed payloads + 32-byte size cap (closes #588), `SecretString` as thin wrapper over `secrecy::SecretBox<String>` with `ExposeSecret` trait surface for grep-able audits, `ValidatedCredentialBinding` newtype closes the `slot_bindings` confused-deputy non-goal from the ADR-0052 cascade, `CredentialService::resolve_for_slot` is the production bind-population seam, fallback-on-interrupt protects in-flight executions from transient provider failures, three-registry sync invariant probe + composite `register_credential_complete` close the silent-drift vector, dyn-compat probe locks the plugin registry against Rust 1.95 next-gen solver regressions. `AuthStyle` moved to `scheme::oauth2`. ADR-0084 defers proactive pre-expiry refresh to 1.1. **ADR-0092 consolidation (2026-06-10): the runtime (resolver/refresh/lease/rotation-state, ex-`nebula-engine`) + the `CredentialService` facade (ex-`nebula-credential-runtime`) + the builtin types (ex-`nebula-credential-builtin`) were all folded into this crate; `nebula-credential-testutil` was deleted; crypto extracted to `nebula-crypto`; heavy I/O inverted to `RefreshTransport`/`Cipher`/`Kdf` ports.** Follow-ups (see `crates/credential/docs/DESIGN.md`): finish the single `CredentialRuntime` pipeline (ADR-0088 D1/D2/D6 unfinished), design any future Plane-B browser interaction through universal acquisition, keep production credential adapters in `apps/server` (authority, persistence, catalog, and refresh composition landed 2026-07-22). The raw API OAuth ceremony is parked; `resolve` / `resolve/continue` is the supported HTTP acquisition surface.) | stable | stable | partial (**П2 refresh coordination L2 landed 2026-04-26** per PR [#583](https://github.com/vanyastaff/nebula/pull/583) — two-tier coordinator: in-process L1 (`L1RefreshCoalescer`) + durable L2 (`RefreshClaimRepo` per ADR-0041) with TTL/heartbeat/reclaim sweep; sentinel N=3-in-1h threshold emits a lossy `ReauthRequired` observation, while the owner-qualified durable sentinel transition remains a K3/1.0 blocker; 5 metrics + 3 spans + 3 audit events; nightly chaos test (3 replicas × 100 creds × 10 min) — closes n8n #13088 cross-replica `refresh_token_v1`-invalidates-`v2` race; engine `iter_compatible` slot-picker consumer wiring + manager-side `OnCredentialRefresh<C>` fan-out tracked as post-П1 follow-ups in credential concerns register; **security hardening 2026-04-27 SEC-cluster landed** per archived credential security hardening spec (the maintainers' private design vault) — SEC-01/02 IdP boundary (bounded reader + sanitize_error_uri), SEC-05/06 plaintext-lifecycle invariants (CredentialGuard !Clone, SchemeGuard !Send + !Sync), SEC-09/10 Zeroizing discipline (bearer_header buffer, refresh_oauth2_state scope-tighten), SEC-11 bare crypto::encrypt removed from public surface, SEC-13 redact_sensitive_fields + ADR-0030 §4 redaction CI gate) | n/a |
 | nebula-crypto        | stable   | stable  | stable | n/a (cross-cutting leaf — AES-256-GCM + Argon2id + `Cipher`/`Kdf` ports + `EncryptedData`/`key_id` envelope; extracted from `nebula-credential` per ADR-0088/0092; consumed by `nebula-credential` + `nebula-storage`) | n/a |
 | nebula-env           | stable   | stable  | stable | n/a (cross-cutting typed environment reader — ADR-0086) | n/a |
 | nebula-engine        | partial  | stable  | stable | partial (ControlConsumer skeleton lands §12.2; all five control commands dispatched via EngineControlDispatch — ADR-0008 A2 (Start/Resume/Restart) + A3 (Cancel/Terminate) + ADR-0016 cancel registry; ADR-0008 B1 reclaim sweep implemented via ControlQueueRepo::reclaim_stuck + ADR-0017; operator-declared retry is implemented via `retry_policy` → `WaitingRetry` / `next_attempt_at` / re-dispatch with `ExecutionBudget.max_total_retries`, while result-driven `ActionResult::Retry` is not a public surface; **the engine `credential` module is now bridge + test-harness only** — the runtime surface was relocated into `nebula-credential::runtime` per ADR-0092, engine keeps the credential/resource accessor bridges + `default_in_memory_coordinator`) | n/a |
@@ -47,16 +47,17 @@ Legend:
 
 Credential authority/persistence delivery is intentionally staged:
 
-- **K1 (current):** supported authenticated HTTP management authority, owner-bound technical
+- **K1 (delivered):** supported authenticated HTTP management authority, owner-bound technical
   persistence, and the verified manual/builder SDK subset.
-- **K2 (debt):** upgrade the still-nullable SQLite/PostgreSQL credential owner columns, collect
-  live PostgreSQL owner/concurrency evidence, and make write outcomes linearizable. The current
-  SQL adapters perform a separate read after a committed write and overwrite version calculation
-  is not atomic, so concurrent writers can observe a later row, return `NotFound`, or collapse two
-  version increments; callers must not yet treat the returned `StoredCredential` as a fenced
-  commit receipt.
+- **K2 (current, implemented):** paired SQLite/PostgreSQL migration `0039` makes owner and
+  live/tombstoned structure database invariants; ready-store admission prevents raw-pool bypass;
+  statement `RETURNING` plus bounded versions provide linearizable secret-free commit receipts;
+  and live PostgreSQL owner/concurrency suites are a required gate. Refresh/revoke now run behind
+  one cancel-safe L1/L2 boundary: ambiguous provider or commit outcomes retain UUID-identified
+  durable poison and never gain replay authority from elapsed TTL.
 - **K3 (debt):** make the controller plus semantic idempotency/operation ledger the sole management
-  writer.
+  writer; add owner-qualified poison reconciliation and the durable sentinel-to-reauth command;
+  replace trace-only audit with transactional audit/outbox evidence.
 - **K4 (debt):** ship supported apps-owned membership/deployment composition and complete SDK
   client/embedded/procedural-derive paths. Concrete credential adapters now live in `apps/server`,
   but the default server still leaves workspace-directory and membership policy unwired, so tenant
@@ -130,14 +131,17 @@ ADR-0041 (refresh coordination; design archived — see the maintainers' private
 6 stages — Stage 1 storage infrastructure (`RefreshClaimRepo` trait + 3 impls + migrations
 0022/0023 + loom CAS probe); Stage 2 engine refactor (`L1RefreshCoalescer` private + new
 outer two-tier `RefreshCoordinator` composing L1 + L2 claim repo + sentinel set before
-IdP POST); Stage 3 sentinel N=3-in-1h threshold + `ReauthRequired` escalation + reclaim
-sweep with `RefreshOutcome::CoalescedByOtherReplica` + `reauth_required` persisted on
-`StoredCredential` (sub-spec §3.6); Stage 4 observability (5 metrics + 3 spans + 3
+IdP POST); Stage 3 sentinel N=3-in-1h threshold + lossy `ReauthRequired` observation +
+reclaim sweep with `RefreshOutcome::CoalescedByOtherReplica`; the
+`reauth_required` field exists on `StoredCredential` and provider rejection persists it,
+but the sentinel-driven owner-qualified durable command remains K3; Stage 4 observability (5 metrics + 3 spans + 3
 audit events) + nightly chaos test (3 replicas × 100 creds × 10 min); Stage 5 doc sync.
-`nebula-credential` Engine integration upgraded `partial → stable` honestly — multi-replica
-mid-refresh race handled via durable claim repo. Closes n8n #13088 class production race
+`nebula-credential` Engine integration handles the multi-replica mid-refresh race through
+the durable claim repo but remains `partial` until the K3 sentinel command lands. Closes n8n #13088 class production race
 where rotated `refresh_token_v2` invalidates `refresh_token_v1` on a parallel replica.
-Default chaos test gated behind `--features chaos-full`; nightly workflow runs it. Public
+The concrete shared-L2 chaos harness lives in `nebula-storage`, is always ignored by ordinary
+test gates, and nightly CI opts into its 10-minute plane with `--features chaos-full
+--run-ignored only`. Public
 API breaking change: `AuditOperation` lost `Copy` derive. PRODUCT_CANON anchor
 `#132-rotation-refresh-seam` fixed in this PR (out-of-band cleanup).
 Tracked under PR [#583](https://github.com/vanyastaff/nebula/pull/583) (squash-merge to `main`).

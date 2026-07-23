@@ -44,9 +44,10 @@ technical HTTP boundary, while tests may assemble reference adapters directly.
 Credential persistence is not wrapped by tenancy; its selectors are mandatory
 data but do not confer authority.
 
-The historical SQLite/PostgreSQL credential owner columns remain nullable until
-the K2 upgrade migration. Mandatory owner is currently enforced by the port and
-application, and `NULL` never means global or administrator access.
+Credential writes are explicit `create`, version-fenced `replace`, and
+version-fenced `tombstone` intents. The selector owns a typed global
+`CredentialId`; terminal state is structural and cannot carry live-only data.
+Generic overwrite and physical-delete operations are not part of the port.
 
 ## Contract pointer
 

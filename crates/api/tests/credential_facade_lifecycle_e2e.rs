@@ -19,7 +19,10 @@
 //! - `validate_credential_binding` rejects a tombstoned id with the typed
 //!   `CredentialTombstoned` (Q9 end-to-end).
 
-use std::sync::Arc;
+use std::sync::{
+    Arc, OnceLock,
+    atomic::{AtomicUsize, Ordering},
+};
 use std::time::Duration;
 
 use nebula_api::ports::credential_service_factory::{
@@ -43,11 +46,29 @@ use nebula_schema::{FieldValues, Schema};
 use nebula_storage::credential::EnvKeyProvider;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::sync::Notify;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// 32 `0x42` bytes, base64 — a valid AES-256 key fixture (mirrors the factory's
 /// dev key). Not a secret: a fixed test constant.
 const TEST_KEY_B64: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=";
+static STALE_UPDATE_RESOLVE_CALLS: AtomicUsize = AtomicUsize::new(0);
+static COALESCED_REFRESH_CALLS: AtomicUsize = AtomicUsize::new(0);
+static DROPPED_REFRESH_CALLS: AtomicUsize = AtomicUsize::new(0);
+static COALESCED_REVOKE_CALLS: AtomicUsize = AtomicUsize::new(0);
+static DROPPED_REVOKE_CALLS: AtomicUsize = AtomicUsize::new(0);
+static COALESCED_REFRESH_ENTERED: OnceLock<Notify> = OnceLock::new();
+static COALESCED_REFRESH_CONTINUE: OnceLock<Notify> = OnceLock::new();
+static DROPPED_REFRESH_ENTERED: OnceLock<Notify> = OnceLock::new();
+static DROPPED_REFRESH_CONTINUE: OnceLock<Notify> = OnceLock::new();
+static COALESCED_REVOKE_ENTERED: OnceLock<Notify> = OnceLock::new();
+static COALESCED_REVOKE_CONTINUE: OnceLock<Notify> = OnceLock::new();
+static DROPPED_REVOKE_ENTERED: OnceLock<Notify> = OnceLock::new();
+static DROPPED_REVOKE_CONTINUE: OnceLock<Notify> = OnceLock::new();
+
+fn signal(cell: &'static OnceLock<Notify>) -> &'static Notify {
+    cell.get_or_init(Notify::new)
+}
 
 // ── A non-interactive, Refreshable, Revocable test credential ──────────
 
@@ -134,6 +155,9 @@ impl TestLifecycleCred {
         let token = values.get_string_by_str("token").ok_or_else(|| {
             CredentialError::InvalidInput("missing required field 'token'".into())
         })?;
+        if token == "must-not-resolve" {
+            STALE_UPDATE_RESOLVE_CALLS.fetch_add(1, Ordering::SeqCst);
+        }
         Ok(ResolveResult::Complete(TestScheme {
             token: token.to_owned(),
             generation: 1,
@@ -144,11 +168,26 @@ impl TestLifecycleCred {
         state: &mut TestScheme,
         _ctx: &CredentialContext,
     ) -> Result<RefreshOutcome, CredentialError> {
+        match state.token.as_str() {
+            "refresh-coalesce" => {
+                COALESCED_REFRESH_CALLS.fetch_add(1, Ordering::SeqCst);
+                signal(&COALESCED_REFRESH_ENTERED).notify_one();
+                signal(&COALESCED_REFRESH_CONTINUE).notified().await;
+            },
+            "refresh-drop" => {
+                DROPPED_REFRESH_CALLS.fetch_add(1, Ordering::SeqCst);
+                signal(&DROPPED_REFRESH_ENTERED).notify_one();
+                signal(&DROPPED_REFRESH_CONTINUE).notified().await;
+            },
+            _ => {},
+        }
         // Simulate a provider-contacting rotation: bump the material so the
         // facade takes the `Rewrote` success arm (which must stamp
         // `last_validated_at`).
         state.generation += 1;
-        state.token = format!("v{}", state.generation);
+        if !matches!(state.token.as_str(), "refresh-coalesce" | "refresh-drop") {
+            state.token = format!("v{}", state.generation);
+        }
         Ok(RefreshOutcome::Refreshed)
     }
 
@@ -156,6 +195,19 @@ impl TestLifecycleCred {
         state: &mut TestScheme,
         _ctx: &CredentialContext,
     ) -> Result<(), CredentialError> {
+        match state.token.as_str() {
+            "revoke-coalesce" => {
+                COALESCED_REVOKE_CALLS.fetch_add(1, Ordering::SeqCst);
+                signal(&COALESCED_REVOKE_ENTERED).notify_one();
+                signal(&COALESCED_REVOKE_CONTINUE).notified().await;
+            },
+            "revoke-drop" => {
+                DROPPED_REVOKE_CALLS.fetch_add(1, Ordering::SeqCst);
+                signal(&DROPPED_REVOKE_ENTERED).notify_one();
+                signal(&DROPPED_REVOKE_CONTINUE).notified().await;
+            },
+            _ => {},
+        }
         // Provider-side revoke succeeds; the facade writes the tombstone and
         // drops the bytes. Clearing here mirrors a real impl zeroing material.
         state.token.clear();
@@ -234,10 +286,14 @@ fn scope() -> TenantScope {
 }
 
 async fn create_cred(svc: &CredentialService) -> String {
+    create_cred_with_token(svc, "v1").await
+}
+
+async fn create_cred_with_token(svc: &CredentialService, token: &str) -> String {
     svc.create(
         &scope(),
         "test_lifecycle",
-        json!({ "token": "v1" }),
+        json!({ "token": token }),
         CredentialDisplay::default(),
     )
     .await
@@ -268,6 +324,205 @@ async fn refresh_advances_last_validated_at() {
         t1 > t0,
         "refresh must advance last_validated_at (was {t0}, now {t1}) — a discarded \
          stamp would leave it at creation time"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn concurrent_management_refreshes_coalesce_to_one_provider_call() {
+    COALESCED_REFRESH_CALLS.store(0, Ordering::SeqCst);
+    let svc = build_service().await;
+    let id = create_cred_with_token(&svc, "refresh-coalesce").await;
+
+    let first = tokio::spawn({
+        let svc = Arc::clone(&svc);
+        let id = id.clone();
+        async move { svc.refresh(&scope(), &id).await }
+    });
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        signal(&COALESCED_REFRESH_ENTERED).notified(),
+    )
+    .await
+    .expect("first provider refresh must enter");
+
+    let second = tokio::spawn({
+        let svc = Arc::clone(&svc);
+        let id = id.clone();
+        async move { svc.refresh(&scope(), &id).await }
+    });
+    // Give the second call time to complete its real SQLite load and park
+    // behind the first request's L1 lease before releasing provider work.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        COALESCED_REFRESH_CALLS.load(Ordering::SeqCst),
+        1,
+        "the local waiter must not enter provider code"
+    );
+
+    signal(&COALESCED_REFRESH_CONTINUE).notify_one();
+    let first_report = tokio::time::timeout(Duration::from_secs(2), first)
+        .await
+        .expect("first refresh must finish")
+        .expect("first task must not panic")
+        .expect("first refresh must succeed");
+    let second_report = tokio::time::timeout(Duration::from_secs(2), second)
+        .await
+        .expect("coalesced refresh must finish")
+        .expect("second task must not panic")
+        .expect("coalesced refresh must succeed");
+
+    assert!(first_report.refreshed);
+    assert!(second_report.refreshed);
+    assert_eq!(first_report.head.version, 2);
+    assert_eq!(second_report.head.version, 2);
+    assert_eq!(COALESCED_REFRESH_CALLS.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dropping_management_refresh_caller_cannot_cancel_provider_and_cas() {
+    DROPPED_REFRESH_CALLS.store(0, Ordering::SeqCst);
+    let svc = build_service().await;
+    let id = create_cred_with_token(&svc, "refresh-drop").await;
+
+    let caller = tokio::spawn({
+        let svc = Arc::clone(&svc);
+        let id = id.clone();
+        async move { svc.refresh(&scope(), &id).await }
+    });
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        signal(&DROPPED_REFRESH_ENTERED).notified(),
+    )
+    .await
+    .expect("provider refresh must enter before caller drop");
+
+    caller.abort();
+    let _ = caller.await;
+    signal(&DROPPED_REFRESH_CONTINUE).notify_one();
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if svc
+                .get(&scope(), &id)
+                .await
+                .is_ok_and(|head| head.version == 2)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("owned provider+persistence task must commit after caller Drop");
+    assert_eq!(DROPPED_REFRESH_CALLS.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn concurrent_management_revokes_coalesce_to_one_provider_call() {
+    COALESCED_REVOKE_CALLS.store(0, Ordering::SeqCst);
+    let svc = build_service().await;
+    let id = create_cred_with_token(&svc, "revoke-coalesce").await;
+
+    let first = tokio::spawn({
+        let svc = Arc::clone(&svc);
+        let id = id.clone();
+        async move { svc.revoke(&scope(), &id).await }
+    });
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        signal(&COALESCED_REVOKE_ENTERED).notified(),
+    )
+    .await
+    .expect("first provider revoke must enter");
+
+    let second = tokio::spawn({
+        let svc = Arc::clone(&svc);
+        let id = id.clone();
+        async move { svc.revoke(&scope(), &id).await }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(COALESCED_REVOKE_CALLS.load(Ordering::SeqCst), 1);
+
+    signal(&COALESCED_REVOKE_CONTINUE).notify_one();
+    tokio::time::timeout(Duration::from_secs(2), first)
+        .await
+        .expect("first revoke must finish")
+        .expect("first task must not panic")
+        .expect("first revoke must succeed");
+    tokio::time::timeout(Duration::from_secs(2), second)
+        .await
+        .expect("coalesced revoke must finish")
+        .expect("second task must not panic")
+        .expect("coalesced revoke must be idempotent");
+    assert_eq!(COALESCED_REVOKE_CALLS.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dropping_management_revoke_caller_cannot_cancel_provider_and_tombstone() {
+    DROPPED_REVOKE_CALLS.store(0, Ordering::SeqCst);
+    let svc = build_service().await;
+    let id = create_cred_with_token(&svc, "revoke-drop").await;
+
+    let caller = tokio::spawn({
+        let svc = Arc::clone(&svc);
+        let id = id.clone();
+        async move { svc.revoke(&scope(), &id).await }
+    });
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        signal(&DROPPED_REVOKE_ENTERED).notified(),
+    )
+    .await
+    .expect("provider revoke must enter before caller drop");
+
+    caller.abort();
+    let _ = caller.await;
+    signal(&DROPPED_REVOKE_CONTINUE).notify_one();
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if matches!(
+                svc.get(&scope(), &id).await,
+                Err(CredentialServiceError::NotFound { .. })
+            ) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("owned provider+tombstone task must finish after caller Drop");
+    assert_eq!(DROPPED_REVOKE_CALLS.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn stale_update_is_rejected_before_provider_resolution() {
+    let svc = build_service().await;
+    let id = create_cred(&svc).await;
+
+    let error = svc
+        .update(
+            &scope(),
+            &id,
+            Some(json!({ "token": "must-not-resolve" })),
+            Some(2),
+            CredentialDisplay::default(),
+        )
+        .await
+        .expect_err("a deterministically stale update must fail before provider work");
+
+    assert!(matches!(
+        error,
+        CredentialServiceError::VersionConflict {
+            expected: 2,
+            actual: 1,
+            ..
+        }
+    ));
+    assert_eq!(
+        STALE_UPDATE_RESOLVE_CALLS.load(Ordering::SeqCst),
+        0,
+        "stale optimistic concurrency is a semantic precondition, not only a storage CAS"
     );
 }
 

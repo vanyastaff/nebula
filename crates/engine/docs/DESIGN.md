@@ -65,8 +65,9 @@ plugin-registry — и рискует разойтись с canon §12.2 control
   `nebula-storage-port`, `nebula-storage` (feature `credential-in-memory`), `nebula-metrics`.
   Внешние ключевые: `tokio`, `dashmap`, `opentelemetry` / `tracing-opentelemetry`, `async-trait`,
   `zeroize`.
-- **Фичи:** `rotation` (пробрасывается в credential/storage/resource), `chaos-full` (nightly
-  chaos-CI), `test-util` (не в prod, ADR-0023).
+- **Фичи:** `rotation` (пробрасывается в credential/storage/resource), `test-util` (не в prod,
+  ADR-0023). Multi-replica refresh chaos после ADR-0092 живёт рядом с concrete shared-L2
+  adapter в `nebula-storage`, а не в engine.
 - **Зависимые:** **только `nebula-api`** (`crates/api/Cargo.toml:29`; комментарий :143 — api
   получает runner-типы через engine). `sdk` / `server` на engine **не** зависят.
 

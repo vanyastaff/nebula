@@ -218,7 +218,7 @@ pub use provider::{
     ExternalProvider, ExternalProviderChain, ExternalReference, LeaseEvent, LeaseExpiryReason,
     LeaseHandle, LeasedProvider, ProviderError, ProviderFuture, ProviderKind, ProviderResolution,
 };
-// Refresh coordination (`RefreshCoordinator`, `RefreshAttempt`, …) lives in the
+// Refresh coordination (`RefreshCoordinator`, `RefreshDisposition`, …) lives in the
 // `runtime::refresh` module of this crate (relocated from `nebula-engine` per
 // ADR-0092); reach it via `nebula_credential::runtime::*` rather than a flat
 // crate-root re-export.
@@ -312,7 +312,13 @@ pub mod prelude {
 // re-exported from the credential product surface; adapters and composition
 // roots depend on `nebula-storage-port` directly.
 pub(crate) use nebula_storage_port::{
-    CredentialPersistence, CredentialPersistenceError, CredentialSelector, CredentialWriteMode,
-    LAST_VALIDATED_AT_METADATA_KEY, OWNER_ID_METADATA_KEY, REVOKED_AT_METADATA_KEY,
-    StoredCredential, StoredCredentialHead,
+    CredentialAlreadyExistsKey, CredentialCreate, CredentialPersistence,
+    CredentialPersistenceError, CredentialReplacement, CredentialSelector, CredentialTombstone,
+    CredentialVersion, StoredCredential, StoredCredentialHead, StoredLiveCredential,
 };
+
+// Credential-owned metadata conventions. Persistence authority comes only
+// from the selector/owner column; these values are semantic state maintained
+// by the credential service and are never interpreted as authority by storage.
+pub(crate) const OWNER_ID_METADATA_KEY: &str = "owner_id";
+pub(crate) const LAST_VALIDATED_AT_METADATA_KEY: &str = "last_validated_at";

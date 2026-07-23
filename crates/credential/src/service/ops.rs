@@ -781,9 +781,7 @@ fn executor_error_to_service_error(e: crate::runtime::ExecutorError) -> Credenti
         ExecutorError::Timeout { timeout } => CredentialServiceError::TransientProvider(format!(
             "credential resolution timed out after {timeout:?}"
         )),
-        ExecutorError::PendingStore(PendingStoreError::Backend(src)) => {
-            CredentialServiceError::Store(format!("pending store backend error: {src}"))
-        },
+        ExecutorError::PendingStore(PendingStoreError::Backend(_)) => CredentialServiceError::Store,
         ExecutorError::PendingStore(PendingStoreError::ValidationFailed { .. }) => {
             CredentialServiceError::validation("", "credential.pending_invalid")
         },
@@ -825,34 +823,50 @@ fn credential_error_to_service_error(e: crate::CredentialError) -> CredentialSer
     }
 }
 
-/// Map a `CredentialError` from a `Refreshable::refresh` call to a
-/// `CredentialServiceError`, preserving transience information so the
-/// fallback-on-interrupt path in `CredentialService::refresh` can
-/// pattern-match without re-parsing error strings.
+/// Map an error returned after entering an erased
+/// [`Refreshable::refresh`] implementation.
 ///
-/// Transient kinds (`RefreshFailed(TransientNetwork | ProviderUnavailable)`
-/// and `Provider(Network | RateLimit | ServerError)`) → `TransientProvider`.
-/// All other failures → `Provider` (terminal / non-retryable).
-fn classify_refresh_error(e: crate::CredentialError) -> CredentialServiceError {
+/// The erased trait seam cannot prove whether an implementation performed
+/// provider I/O before returning an error. Fail closed: only an explicit
+/// invalid-grant/expired/revoked classification is an exact re-auth decision;
+/// every other opaque error is outcome-unknown and must not be retried. Exact
+/// post-provider local-finalization failures retain their distinct taxonomy.
+fn classify_post_dispatch_refresh_error(e: crate::CredentialError) -> CredentialServiceError {
     use crate::error::{ProviderErrorKind, RefreshErrorKind};
-    match &e {
+    match e {
+        crate::CredentialError::OutcomeUnknown => CredentialServiceError::OutcomeUnknown,
+        crate::CredentialError::PostProviderPersistence => {
+            CredentialServiceError::PostProviderPersistence
+        },
         crate::CredentialError::RefreshFailed(ctx) => match ctx.kind() {
-            RefreshErrorKind::TransientNetwork | RefreshErrorKind::ProviderUnavailable => {
-                CredentialServiceError::TransientProvider(format!(
-                    "credential refresh failed transiently: {e}"
-                ))
+            RefreshErrorKind::TokenExpired | RefreshErrorKind::TokenRevoked => {
+                CredentialServiceError::ReauthRequired {
+                    credential_id: String::new(),
+                    reason: crate::ReauthReason::ProviderRejected,
+                }
             },
-            _ => CredentialServiceError::Provider(format!("credential refresh failed: {e}")),
+            RefreshErrorKind::TransientNetwork
+            | RefreshErrorKind::ProviderUnavailable
+            | RefreshErrorKind::ProtocolError => CredentialServiceError::OutcomeUnknown,
         },
         crate::CredentialError::Provider(ctx) => match ctx.kind() {
+            ProviderErrorKind::InvalidGrant => CredentialServiceError::ReauthRequired {
+                credential_id: String::new(),
+                reason: crate::ReauthReason::ProviderRejected,
+            },
             ProviderErrorKind::Network
+            | ProviderErrorKind::Auth
             | ProviderErrorKind::RateLimit
-            | ProviderErrorKind::ServerError => CredentialServiceError::TransientProvider(format!(
-                "credential refresh failed transiently: {e}"
-            )),
-            _ => CredentialServiceError::Provider(format!("credential refresh failed: {e}")),
+            | ProviderErrorKind::ServerError
+            | ProviderErrorKind::Schema
+            | ProviderErrorKind::Other => CredentialServiceError::OutcomeUnknown,
         },
-        _ => CredentialServiceError::Provider(format!("credential refresh failed: {e}")),
+        crate::CredentialError::Crypto(_)
+        | crate::CredentialError::Validation(_)
+        | crate::CredentialError::NotInteractive
+        | crate::CredentialError::SchemeMismatch(_)
+        | crate::CredentialError::InvalidInput(_)
+        | crate::CredentialError::Resolution(_) => CredentialServiceError::OutcomeUnknown,
     }
 }
 
@@ -887,7 +901,7 @@ where
             })?;
             let outcome = <C as Refreshable>::refresh(&mut state, ctx)
                 .await
-                .map_err(classify_refresh_error)?;
+                .map_err(classify_post_dispatch_refresh_error)?;
             match outcome {
                 crate::RefreshOutcome::Refreshed => {
                     // Read the expiry off the *refreshed* state — a token
@@ -902,9 +916,11 @@ where
                             serde_json::to_vec(&state)
                         })
                         .map_err(|e| {
-                            CredentialServiceError::Internal(format!(
-                                "refreshed state serialization failed: {e}"
-                            ))
+                            tracing::warn!(
+                                ?e,
+                                "provider refresh succeeded but state serialization failed"
+                            );
+                            CredentialServiceError::PostProviderPersistence
                         })?,
                     );
                     Ok(RefreshOutcomeKind::Rewrote { data, expires_at })
@@ -985,9 +1001,19 @@ where
             // deleting it — so the id is non-resurrectable and slot bindings
             // still pointing at it surface a typed `CredentialTombstoned`
             // error. See this fn's doc comment and `CredentialService::revoke`.
-            dispatch_revoke::<C>(&mut state, ctx).await.map_err(|e| {
-                CredentialServiceError::Provider(format!("credential revoke failed: {e}"))
-            })
+            dispatch_revoke::<C>(&mut state, ctx)
+                .await
+                .map_err(|error| match error {
+                    // The integration may know that provider work completed
+                    // and only local finalization failed.
+                    crate::CredentialError::PostProviderPersistence => {
+                        CredentialServiceError::PostProviderPersistence
+                    },
+                    // Once the erased revoke implementation is entered, any
+                    // other error is phase-ambiguous: the trait has no proof
+                    // that provider-side revocation did not occur.
+                    _ => CredentialServiceError::OutcomeUnknown,
+                })
         }) as RevokeFuture<'_>
     });
     entry.revoke_fn = Some(revoke_fn);
@@ -1048,4 +1074,44 @@ where
     register_runtime_ops::<crate::SharedKeyCredential, PS>(ops)?;
     register_runtime_ops::<crate::SigningKeyCredential, PS>(ops)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod refresh_error_tests {
+    use super::*;
+    use crate::error::{ProviderErrorContext, ProviderErrorKind, SecretFreeMessage};
+
+    fn provider_error(kind: ProviderErrorKind) -> crate::CredentialError {
+        crate::CredentialError::Provider(Box::new(ProviderErrorContext::new(
+            kind,
+            SecretFreeMessage::new("closed provider failure"),
+        )))
+    }
+
+    #[test]
+    fn opaque_post_dispatch_network_error_is_outcome_unknown() {
+        assert!(matches!(
+            classify_post_dispatch_refresh_error(provider_error(ProviderErrorKind::Network)),
+            CredentialServiceError::OutcomeUnknown
+        ));
+    }
+
+    #[test]
+    fn exact_invalid_grant_requires_reauth() {
+        assert!(matches!(
+            classify_post_dispatch_refresh_error(provider_error(ProviderErrorKind::InvalidGrant)),
+            CredentialServiceError::ReauthRequired {
+                reason: crate::ReauthReason::ProviderRejected,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn exact_post_provider_finalization_failure_stays_distinct() {
+        assert!(matches!(
+            classify_post_dispatch_refresh_error(crate::CredentialError::PostProviderPersistence),
+            CredentialServiceError::PostProviderPersistence
+        ));
+    }
 }

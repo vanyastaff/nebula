@@ -46,14 +46,17 @@ non-cloneable/non-serializable authorized command, and consumes it in the same c
 actor is never administrator authority; system provenance is denied until backed by a verified
 durable record.
 
-`CredentialPersistence`, `CredentialOwner`, `CredentialSelector`, `StoredCredential`, write modes,
-and persistence errors are port-local types in `nebula-storage-port`. This crate depends downward
-on that object-safe contract. SQLite/PostgreSQL and the internal in-memory reference adapter,
-encryption/audit/cache decorators, and key providers live only in `nebula-storage`.
+`CredentialPersistence`, `CredentialOwner`, typed `CredentialSelector`, structural
+`StoredCredential`, lifecycle commands, and closed persistence errors are port-local types in
+`nebula-storage-port`. This crate depends downward on that object-safe contract.
+SQLite/PostgreSQL and the internal in-memory reference adapter, encryption/audit/cache decorators,
+schema admission, and key providers live only in `nebula-storage`.
 
-Every read, write, CAS, delete, existence check, cache key, and list is owner-bound. Metadata may
-carry a compatibility/audit owner stamp, but it never grants authority and is overwritten from the
-selector on write. Wrong-owner and missing rows are intentionally indistinguishable.
+Every read, create, version-fenced replace/tombstone, existence check, cache key, and list is
+owner-bound. Generic overwrite and ordinary hard delete do not exist. Metadata may carry a
+compatibility/audit owner stamp, but storage never reads it as authority; the owner-qualified
+selector and physical owner column are authoritative. Wrong-owner and missing rows are
+intentionally indistinguishable.
 
 ## Main public contracts
 
@@ -130,6 +133,10 @@ wired to a hardened injected transport.
 - Supported authenticated HTTP management reaches persistence only after one authority decision for
   the exact command. Technical runtime/service seams remain below that supported boundary until K3.
 - Owner identity is mandatory and selector-bound; there is no optional/global owner shortcut.
+- Revocation and management deletion are the same terminal, version-fenced tombstone transition;
+  a tombstone cannot carry secret bytes or other live-only fields and its id cannot be resurrected.
+- Ready SQLite/PostgreSQL stores pass fail-closed schema admission and canonical migration before
+  they can be constructed; unchecked raw pools are not a composition surface.
 - Credential properties never resolve workflow expressions.
 - Durable business state never relies on `nebula-eventbus`; events are observations/wake hints.
 - Provider-controlled strings never become public validation or HTTP error text.
@@ -147,14 +154,26 @@ wired to a hardened injected transport.
 
 ## Known limits
 
-- Universal first-party interactive OAuth acquisition remains parked pending the hardened
-  transport composition.
+- Universal first-party interactive OAuth acquisition remains parked pending the universal
+  acquisition and authority flow.
 - Proactive pre-expiry refresh and some rotation behavior remain evolving.
 - Production composition (key policy, persistence, catalog, refresh transport, and authority)
-  lives in `apps/server`. The similarly shaped API factory is gated behind unsupported
-  `test-util` and exists only for hermetic integration fixtures.
-- K2 must add deployment upgrade migrations for both SQLite and PostgreSQL owner columns, which
-  remain nullable for legacy compatibility, and produce live PostgreSQL conformance evidence.
+  lives in `apps/server`. API fixtures inject a deterministic no-network refresh adapter; they do
+  not carry a second HTTP implementation. The first-party refresh transport enforces
+  rustls/HTTPS-only, no redirects/retries/implicit proxies, and connect-time all-answer
+  global-unicast DNS validation. A downstream implementation of the technical `RefreshTransport`
+  seam must enforce the same connect policy; only the first-party adapter is mechanically covered
+  by this workspace's DNS/redirect/proxy behavior tests. The first-party server binds claims to
+  the admitted credential SQLite pool, uses a process-unique replica ID, and retains the sole
+  periodic poison-accounting sweep for its complete serving lifecycle.
+- A lost database acknowledgement after commit is `OutcomeUnknown`; K2 deliberately does not
+  replay it. An expired provider-side-effect claim remains durable fail-closed poison; elapsed TTL
+  never grants replay authority. Explicit reconciliation and safe operation replay/idempotency
+  belong to K3.
+- Interim audit is non-authoritative observation. It cannot make a confirmed mutation fail;
+  atomic audit/outbox evidence belongs to K3.
+- Tombstoning clears current live material but does not claim historical erasure from database
+  WAL, snapshots, or backups; retention/key-destruction policy is a separate operator concern.
 - K3 must make the controller plus semantic idempotency/operation ledger the sole management writer;
   K1 intentionally proves only the authenticated HTTP command path.
 - K4 must provide supported workspace-directory and membership/deployment composition. The default

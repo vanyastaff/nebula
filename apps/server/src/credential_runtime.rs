@@ -437,6 +437,9 @@ fn map_service_error(error: CredentialServiceError) -> CredentialGatewayError {
         CredentialServiceError::VersionConflict {
             expected, actual, ..
         } => CredentialGatewayError::VersionConflict { expected, actual },
+        CredentialServiceError::IdAlreadyExists => CredentialGatewayError::IdAlreadyExists,
+        CredentialServiceError::NameAlreadyExists => CredentialGatewayError::NameAlreadyExists,
+        CredentialServiceError::VersionExhausted => CredentialGatewayError::VersionExhausted,
         CredentialServiceError::ValidationFailed { report } => {
             CredentialGatewayError::ValidationFailed {
                 report: CredentialGatewayValidationReport::new(
@@ -465,10 +468,11 @@ fn map_service_error(error: CredentialServiceError) -> CredentialGatewayError {
         CredentialServiceError::ReauthRequired { .. } => CredentialGatewayError::ReauthRequired,
         CredentialServiceError::TransientProvider(_)
         | CredentialServiceError::Provider(_)
-        | CredentialServiceError::ExternalSourceNotWired { .. } => {
-            CredentialGatewayError::Unavailable
-        },
-        CredentialServiceError::Store(_)
+        | CredentialServiceError::ExternalSourceNotWired { .. }
+        | CredentialServiceError::PersistenceUnavailable => CredentialGatewayError::Unavailable,
+        CredentialServiceError::OutcomeUnknown
+        | CredentialServiceError::PostProviderPersistence => CredentialGatewayError::OutcomeUnknown,
+        CredentialServiceError::Store
         | CredentialServiceError::SessionRequired { .. }
         | CredentialServiceError::CapabilityWithoutOps { .. }
         | CredentialServiceError::Internal(_)
@@ -496,6 +500,27 @@ mod tests {
     use super::*;
 
     const TEST_KEY_B64: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=";
+
+    #[test]
+    fn production_gateway_preserves_unknown_commit_outcome() {
+        assert_eq!(
+            map_service_error(CredentialServiceError::OutcomeUnknown),
+            CredentialGatewayError::OutcomeUnknown
+        );
+        assert_eq!(
+            map_service_error(CredentialServiceError::PostProviderPersistence),
+            CredentialGatewayError::OutcomeUnknown,
+            "definite local failure after provider mutation must preserve no-replay semantics"
+        );
+        assert_eq!(
+            map_service_error(CredentialServiceError::NameAlreadyExists),
+            CredentialGatewayError::NameAlreadyExists
+        );
+        assert_eq!(
+            map_service_error(CredentialServiceError::VersionExhausted),
+            CredentialGatewayError::VersionExhausted
+        );
+    }
 
     #[derive(Debug)]
     struct CountingAuthority {

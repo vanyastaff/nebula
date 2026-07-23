@@ -63,6 +63,34 @@ pub enum ApiError {
     #[error("Conflict: {0}")]
     Conflict(String),
 
+    /// A unique domain identity or name is already reserved (409).
+    #[classify(category = "conflict", code = "API:ALREADY_EXISTS")]
+    #[error("Already exists: {0}")]
+    AlreadyExists(String),
+
+    /// A bounded structural version can no longer advance (409).
+    #[classify(category = "conflict", code = "API:VERSION_EXHAUSTED")]
+    #[error("Version exhausted: {0}")]
+    VersionExhausted(String),
+
+    /// A mutation may have committed, but its acknowledgement was lost (409).
+    ///
+    /// This is non-retryable by default: the client must reconcile state before
+    /// deciding whether replay is safe.
+    #[classify(category = "conflict", code = "API:OUTCOME_UNKNOWN")]
+    #[error("Operation outcome unknown: {0}")]
+    OutcomeUnknown(String),
+
+    /// The external integration credential must be reconnected (409).
+    ///
+    /// This is deliberately distinct from [`Self::Unauthorized`]: the
+    /// caller's Nebula identity/session is still authenticated. Retrying the
+    /// same provider grant is unsafe or impossible until the integration is
+    /// re-authorized.
+    #[classify(category = "conflict", code = "API:CREDENTIAL_REAUTH_REQUIRED")]
+    #[error("Integration credential requires re-authentication")]
+    CredentialReauthRequired,
+
     /// Rate limit exceeded (429)
     #[classify(category = "rate_limit", code = "API:RATE_LIMIT")]
     #[error("Rate limit exceeded")]
@@ -328,6 +356,44 @@ impl ApiError {
                 )
                 .with_detail(msg),
             ),
+            ApiError::AlreadyExists(msg) => (
+                StatusCode::CONFLICT,
+                ProblemDetails::new(
+                    "https://nebula.dev/problems/already-exists",
+                    "Already Exists",
+                    StatusCode::CONFLICT,
+                )
+                .with_detail(msg),
+            ),
+            ApiError::VersionExhausted(msg) => (
+                StatusCode::CONFLICT,
+                ProblemDetails::new(
+                    "https://nebula.dev/problems/version-exhausted",
+                    "Version Exhausted",
+                    StatusCode::CONFLICT,
+                )
+                .with_detail(msg),
+            ),
+            ApiError::OutcomeUnknown(msg) => (
+                StatusCode::CONFLICT,
+                ProblemDetails::new(
+                    "https://nebula.dev/problems/outcome-unknown",
+                    "Operation Outcome Unknown",
+                    StatusCode::CONFLICT,
+                )
+                .with_detail(msg),
+            ),
+            ApiError::CredentialReauthRequired => (
+                StatusCode::CONFLICT,
+                ProblemDetails::new(
+                    "https://nebula.dev/problems/credential-reauth-required",
+                    "Credential Reauthentication Required",
+                    StatusCode::CONFLICT,
+                )
+                .with_detail(
+                    "Reconnect the integration credential before retrying this operation.",
+                ),
+            ),
             ApiError::RateLimitExceeded => (
                 StatusCode::TOO_MANY_REQUESTS,
                 ProblemDetails::new(
@@ -503,7 +569,7 @@ impl IntoResponse for ApiError {
         let mut response = (status, Json(problem)).into_response();
         response.headers_mut().insert(
             axum::http::header::CONTENT_TYPE,
-            "application/problem+json".parse().unwrap(),
+            axum::http::HeaderValue::from_static("application/problem+json"),
         );
         response
     }

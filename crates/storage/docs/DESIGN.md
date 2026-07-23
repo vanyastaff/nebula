@@ -125,10 +125,11 @@ SQLite/Postgres, под Mutex в InMemory).
   HashMap-backend.
 - **[ADR-0041] Refresh-claim atomicity.** `try_claim` атомарен под контеншеном — ровно один
   из N acquirers по N репликам выигрывает (CAS `INSERT … ON CONFLICT DO UPDATE WHERE
-  expires_at < now()` в SQL; per-key Mutex-swap в in-memory). `heartbeat` валидирует
-  `ClaimToken.generation` (stale-holder не продлит reclaimed-claim); `reclaim_stuck`
-  возвращает reclaimed-credentials атомарно (иначе sentinel-state un-observed, N=3-in-1h
-  escalation недосчитан).
+  expires_at < now() AND sentinel = Normal` в SQL; per-key Mutex-swap в in-memory).
+  `heartbeat`, `mark_sentinel` и `release` валидируют UUID `claim_id` вместе с generation.
+  Expired `Normal` безопасно удаляется; expired `RefreshInFlight` никогда не reclaim-ится в
+  provider replay. `reclaim_stuck` атомарно записывает ровно одно evidence-событие на claim UUID,
+  сохраняет poison-row и возвращает только newly-accounted incidents для threshold observation.
 - **Multi-tenant by construction.** `rows::*` несут обязательные `workspace_id`/`org_id`;
   identity-стора tenant-scoped на уровне row-DTO.
 
@@ -209,11 +210,12 @@ builtin types), а `nebula-crypto` владеет `Cipher`/`Kdf`-портами.
 - **Унифицировать `StorageError`.** Решить порт-локальный vs крейт-локальный enum
   (напряжение №1) — выбрать один канон до того, как residual-repos семья вырастет. README
   теперь явно различает эти два технических error-типа.
-- **K2 owner schema migration.** Исторические SQLite/PostgreSQL `owner_id` columns остаются
-  nullable. Добавить upgrade migrations для обоих backend'ов и live-verify PostgreSQL; до этого
-  mandatory owner — port/application invariant, а `NULL` не даёт global/admin authority. Applied
-  `0030_credentials_store.sql` SQLx-checksummed и byte-immutable, включая legacy-комментарий;
-  исправление делается только новой migration, не редактированием `0030`.
+- **K2 owner schema migration закрыта новой `0039`.** Историческая
+  `0030_credentials_store.sql` остаётся SQLx-checksummed и byte-immutable, включая legacy-комментарий.
+  Paired SQLite/PostgreSQL `0039_credentials_owner_and_record_state.sql` проверяет legacy rows,
+  делает owner/state структурными DB-инвариантами и добавляет nullable `claim_id` только ради
+  совместимости со старым evidence; все новые sentinel incidents несут UUID и защищены глобальным
+  partial unique index.
 - **Свернуть refresh-CAS×2.** Дубль refresh-claim между storage и credential-rewrite-планом
   — закрыть _до_ старта rewrite credential (иначе мигрируем дубль). Решить, чья сторона
   владеет CAS-предикатом.

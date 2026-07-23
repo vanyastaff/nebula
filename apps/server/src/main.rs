@@ -5,6 +5,7 @@ mod credential_adapters;
 mod credential_composition;
 mod credential_runtime;
 mod email;
+mod oauth_egress;
 mod transport;
 mod webhook_credential_resolver;
 

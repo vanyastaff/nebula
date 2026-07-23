@@ -17,12 +17,20 @@
 //! implementations and layers live here. See `crates/storage/README.md` and
 //! `docs/INTEGRATION_MODEL.md` (Credential) for integration context.
 
+#[cfg(test)]
+mod conformance;
+#[cfg(test)]
+mod conformance_tests;
 pub mod key_provider;
 pub mod layer;
 pub mod provider_cache;
+#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
+mod schema;
 
 #[cfg(any(test, feature = "credential-in-memory"))]
 pub mod pending;
+#[cfg(test)]
+mod reference;
 
 /// Cross-replica refresh claim repository (CAS + heartbeat).
 pub mod refresh_claim;
@@ -33,6 +41,8 @@ pub mod sqlite;
 #[cfg(feature = "postgres")]
 pub mod postgres;
 
+#[cfg(test)]
+pub(crate) use conformance::CredentialPersistenceConformance;
 pub use key_provider::{EnvKeyProvider, FileKeyProvider, KeyProvider, KeySnapshot, ProviderError};
 pub use layer::{
     AuditEvent, AuditLayer, AuditOperation, AuditResult, AuditSink, CacheConfig, CacheLayer,
@@ -43,37 +53,58 @@ pub use pending::InMemoryPendingStore;
 #[cfg(feature = "postgres")]
 pub use postgres::PgCredentialPersistence;
 pub use provider_cache::{ProviderCacheConfig, ProviderCacheLayer, ProviderCacheStats};
+#[cfg(test)]
+pub(crate) use reference::ReferenceCredentialPersistence;
 #[cfg(feature = "postgres")]
 pub use refresh_claim::PgRefreshClaimRepo;
 #[cfg(feature = "sqlite")]
 pub use refresh_claim::SqliteRefreshClaimRepo;
 pub use refresh_claim::{
-    ClaimAttempt, ClaimToken, HeartbeatError, InMemoryRefreshClaimRepo, ReclaimedClaim,
-    RefreshClaim, RefreshClaimRepo, ReplicaId, RepoError, SentinelState,
+    ClaimAttempt, ClaimToken, ExpiredClaim, HeartbeatError, InMemoryRefreshClaimRepo, RefreshClaim,
+    RefreshClaimRepo, ReplicaId, RepoError, SentinelState,
+};
+#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
+pub use schema::{
+    AdmissionReason as CredentialSchemaAdmissionReason, CredentialStoreStartupError,
+    UnsupportedSchemaVersion,
 };
 #[cfg(feature = "sqlite")]
 pub use sqlite::SqliteCredentialPersistence;
 
-/// Crate-local test helpers for constructing [`nebula_storage_port::StoredCredential`] instances.
+/// Crate-local helpers for constructing credential lifecycle test commands.
 /// Gated on `sqlite` because all callers are `#[cfg(all(test, feature = "sqlite"))]` test modules.
 #[cfg(all(test, feature = "sqlite"))]
 pub(crate) mod test_support {
-    use nebula_storage_port::StoredCredential;
+    use nebula_storage_port::{
+        CredentialCreate, CredentialReplacement, CredentialVersion, SecretBytes,
+    };
 
-    pub(crate) fn make_credential(id: &str, data: &[u8]) -> StoredCredential {
-        StoredCredential {
-            id: id.into(),
-            name: None,
-            credential_key: "test_credential".into(),
-            data: data.to_vec().into(),
-            state_kind: "test".into(),
-            state_version: 1,
-            version: 0,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            expires_at: None,
-            reauth_required: false,
-            metadata: Default::default(),
-        }
+    pub(crate) fn make_credential(data: &[u8]) -> CredentialCreate {
+        CredentialCreate::new(
+            "test_credential".to_owned(),
+            SecretBytes::new(data.to_vec()),
+            "test".to_owned(),
+            1,
+            None,
+            None,
+            false,
+            Default::default(),
+        )
+    }
+
+    pub(crate) fn make_replacement(
+        expected_version: CredentialVersion,
+        data: &[u8],
+    ) -> CredentialReplacement {
+        CredentialReplacement::new(
+            expected_version,
+            SecretBytes::new(data.to_vec()),
+            "test".to_owned(),
+            1,
+            None,
+            None,
+            false,
+            Default::default(),
+        )
     }
 }

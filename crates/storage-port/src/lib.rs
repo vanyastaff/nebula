@@ -27,12 +27,13 @@ pub mod store;
 
 pub use batch::{TransitionBatch, TransitionBatchBuilder, TransitionOutcome};
 pub use dto::credential::{
-    CredentialOwner, CredentialSelector, CredentialWriteMode, LAST_VALIDATED_AT_METADATA_KEY,
-    OWNER_ID_METADATA_KEY, REVOKED_AT_METADATA_KEY, SecretBytes, StoredCredential,
-    StoredCredentialHead,
+    CredentialCommit, CredentialCreate, CredentialOwner, CredentialRecordState,
+    CredentialReplacement, CredentialSelector, CredentialTombstone, CredentialVersion,
+    CredentialVersionError, SecretBytes, StoredCredential, StoredCredentialHead,
+    StoredLiveCredential, StoredTombstonedCredential,
 };
 pub use dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash, TokenHashLengthError};
 pub use error::StorageError;
-pub use ids::FencingToken;
+pub use ids::{CredentialId, FencingToken};
 pub use scope::Scope;
-pub use store::{CredentialPersistence, CredentialPersistenceError};
+pub use store::{CredentialAlreadyExistsKey, CredentialPersistence, CredentialPersistenceError};

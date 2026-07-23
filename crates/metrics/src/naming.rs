@@ -711,16 +711,18 @@ pub const NEBULA_CREDENTIAL_EXPIRED_TOTAL: &str = "nebula_credential_expired_tot
 
 /// Counter: L2 claim acquisition outcomes.
 ///
-/// Labeled by `outcome` (see [`refresh_coord_claim_outcome`]). Three
+/// Labeled by `outcome` (see [`refresh_coord_claim_outcome`]). Four
 /// closed labels:
 ///
 /// - `acquired` — `RefreshClaimRepo::try_claim` returned `Acquired`; the holder owns the L2 row and
 ///   may run the refresh closure.
 /// - `contended` — `try_claim` returned `Contended`; another replica held the row and the holder
 ///   slept on backoff (n8n #13088 mitigation lineage).
+/// - `outcome_unknown` — `try_claim` found an expired `RefreshInFlight` row. Provider dispatch was
+///   denied because the row remains durable fail-closed poison pending explicit reconciliation.
 /// - `exhausted` — backoff retries were exhausted before a claim could be obtained.
 ///
-/// `outcome="exhausted" > 0` is a real production signal; pair with the
+/// `outcome=~"exhausted|outcome_unknown" > 0` is a real production signal; pair with the
 /// `holder.contender` log lines to triage. `acquired` rises in lockstep
 /// with refresh load.
 pub const NEBULA_CREDENTIAL_REFRESH_COORD_CLAIMS_TOTAL: &str =
@@ -736,6 +738,9 @@ pub mod refresh_coord_claim_outcome {
     pub const ACQUIRED: &str = "acquired";
     /// `RefreshClaimRepo::try_claim` returned `Contended`.
     pub const CONTENDED: &str = "contended";
+    /// `try_claim` rejected replay because an expired provider-side-effect
+    /// claim remains fail-closed.
+    pub const OUTCOME_UNKNOWN: &str = "outcome_unknown";
     /// Backoff retries exhausted before a claim could be obtained.
     pub const EXHAUSTED: &str = "exhausted";
 }
@@ -770,11 +775,14 @@ pub mod refresh_coord_coalesced_tier {
 /// Labeled by `action` (see [`refresh_coord_sentinel_action`]). Two
 /// closed labels:
 ///
-/// - `recorded` — sweep observed an expired `RefreshInFlight` row, recorded the event in
-///   `credential_sentinel_events`, and returned `SentinelDecision::Recoverable`.
-/// - `reauth_triggered` — same as above, but the rolling-window count crossed `sentinel_threshold`
-///   so the sweep emitted `CredentialEvent::ReauthRequired`. Crossing zero is an immediate operator
-///   signal (a holder crashed mid-refresh repeatedly within `sentinel_window`).
+/// - `recorded` — sweep atomically accounted an expired `RefreshInFlight` row in
+///   `credential_sentinel_events`, retained it as poison, and returned
+///   `SentinelDecision::BelowThreshold`.
+/// - `reauth_triggered` — same as above, but the database-clock rolling-window count of distinct
+///   claim UUID incidents crossed `sentinel_threshold`, so the sweep emitted a lossy
+///   `CredentialEvent::ReauthRequired` observation. Repeated requests/sweeps of one poison row do
+///   not increase the count. The event does not prove that the credential aggregate was durably
+///   transitioned.
 pub const NEBULA_CREDENTIAL_REFRESH_COORD_SENTINEL_EVENTS_TOTAL: &str =
     "nebula_credential_refresh_coord_sentinel_events_total";
 
@@ -782,41 +790,46 @@ pub const NEBULA_CREDENTIAL_REFRESH_COORD_SENTINEL_EVENTS_TOTAL: &str =
 pub mod refresh_coord_sentinel_action {
     /// Sentinel event recorded; threshold not yet reached.
     pub const RECORDED: &str = "recorded";
-    /// Sentinel threshold crossed; `ReauthRequired` published.
+    /// Sentinel threshold crossed; a `ReauthRequired` observation was published.
     pub const REAUTH_TRIGGERED: &str = "reauth_triggered";
 }
 
 /// Counter: reclaim-sweep outcomes.
 ///
-/// Labeled by `outcome` (see [`refresh_coord_reclaim_outcome`]). Two
+/// Labeled by `outcome` (see [`refresh_coord_reclaim_outcome`]). Three
 /// closed labels:
 ///
 /// - `reclaimed` — sweep deleted at least one expired claim row from `credential_refresh_claims`.
+/// - `outcome_unknown_accounted` — sweep atomically recorded evidence for at least one expired
+///   `RefreshInFlight` row while retaining it as durable fail-closed poison. This outcome takes
+///   precedence when a sweep also reclaims normal rows.
 /// - `no_work` — sweep ran and found nothing to reclaim (the steady state for healthy systems).
 ///
-/// The ratio `reclaimed / (reclaimed + no_work)` is the sweep's hit-rate.
-/// Sustained high `reclaimed` rate signals a crashed-runner storm; pair
-/// with [`NEBULA_CREDENTIAL_REFRESH_COORD_SENTINEL_EVENTS_TOTAL`] to
-/// distinguish clean timeouts from mid-refresh crashes.
+/// `outcome_unknown_accounted > 0` is paging-class because provider replay is
+/// now blocked pending explicit reconciliation.
 pub const NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIM_SWEEPS_TOTAL: &str =
     "nebula_credential_refresh_coord_reclaim_sweeps_total";
 
 /// Outcome labels for [`NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIM_SWEEPS_TOTAL`].
 pub mod refresh_coord_reclaim_outcome {
-    /// At least one claim row was reclaimed in this sweep.
+    /// One or more expired normal claim rows were reclaimed, and no poison
+    /// claim was accounted in this sweep.
     pub const RECLAIMED: &str = "reclaimed";
+    /// At least one expired provider-side-effect claim was atomically
+    /// accounted and retained as poison.
+    pub const OUTCOME_UNKNOWN_ACCOUNTED: &str = "outcome_unknown_accounted";
     /// Sweep ran with no expired rows to reclaim.
     pub const NO_WORK: &str = "no_work";
 }
 
 /// Histogram: how long a holder owned the L2 claim row.
 ///
-/// Observed in seconds at the moment of release (success path) or
-/// reclaim (crash / timeout path). Includes the heartbeat ticks plus
-/// the user closure under `refresh_timeout`. P99 should sit below
-/// `claim_ttl` by construction (otherwise `validate()` would have
-/// rejected the config); P50 should sit near `refresh_timeout` for
-/// hot credentials.
+/// Observed in seconds when the coordinator finalizes or drops its lease.
+/// The owned provider/persistence section is not cancelled by
+/// `refresh_timeout`, and successful heartbeats renew `claim_ttl`, so this
+/// duration may legitimately exceed both values. A rising tail is an
+/// operational signal for slow or stuck integrations, not proof that the
+/// lease invariant was violated.
 pub const NEBULA_CREDENTIAL_REFRESH_COORD_HOLD_DURATION_SECONDS: &str =
     "nebula_credential_refresh_coord_hold_duration_seconds";
 
@@ -1178,10 +1191,11 @@ mod tests {
         let claim = [
             refresh_coord_claim_outcome::ACQUIRED,
             refresh_coord_claim_outcome::CONTENDED,
+            refresh_coord_claim_outcome::OUTCOME_UNKNOWN,
             refresh_coord_claim_outcome::EXHAUSTED,
         ];
         let claim_set: HashSet<&str> = claim.iter().copied().collect();
-        assert_eq!(claim_set.len(), 3, "claim outcome labels must be unique");
+        assert_eq!(claim_set.len(), 4, "claim outcome labels must be unique");
 
         let tier = [
             refresh_coord_coalesced_tier::L1,
@@ -1199,12 +1213,13 @@ mod tests {
 
         let reclaim = [
             refresh_coord_reclaim_outcome::RECLAIMED,
+            refresh_coord_reclaim_outcome::OUTCOME_UNKNOWN_ACCOUNTED,
             refresh_coord_reclaim_outcome::NO_WORK,
         ];
         let reclaim_set: HashSet<&str> = reclaim.iter().copied().collect();
         assert_eq!(
             reclaim_set.len(),
-            2,
+            3,
             "reclaim outcome labels must be unique"
         );
     }

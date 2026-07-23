@@ -27,8 +27,8 @@
 //!
 //! The winner **must** call `L1RefreshCoalescer::complete()` when done
 //! (success or failure) to wake waiters and remove the in-flight entry.
-//! Wrapping the call in a `scopeguard` is recommended so the guarantee
-//! survives panics and error paths.
+//! The outer coordinator's owned RAII lease performs this completion so the
+//! guarantee survives cancellation, panics, and error paths.
 //!
 //! ## Coalescer audit (2026-05-20)
 //!
@@ -53,21 +53,19 @@
 //!   No LRU, no TTL sweep for the in-flight table (the circuit-breaker
 //!   LRU is separate and would need to stay).
 //!
-//! - **Cancellation:** Not observed via a `CancellationToken`. A dropped
-//!   waiter receiver is silently ignored in `complete()`. `acquire_permit`
-//!   (the semaphore path) is cancel-safe by `tokio::sync::Semaphore`
-//!   contract. `OnceCell::get_or_init` is also not cancellation-aware;
-//!   neither is strictly better here.
+//! - **Cancellation:** Not observed via a `CancellationToken`. The outer
+//!   coordinator bounds each waiter by `refresh_timeout` and prunes closed
+//!   receivers so a permanently stuck winner cannot retain one sender per
+//!   timed-out request. `acquire_permit` (the semaphore path) is cancel-safe
+//!   by `tokio::sync::Semaphore` contract.
 //!
-//! - **Error sharing:** `complete()` sends `()` (unit), not a `Result`.
-//!   Waiters learn only that the winner finished; they receive no error
-//!   payload. The coordinator maps all waiter wakeups to
-//!   `CoalescedByOtherReplica` and lets the caller re-read state
-//!   regardless of the winner's outcome. `OnceCell<Result<T, E>>`
-//!   would be *more* expressive here, but the current design intentionally
-//!   discards the error to avoid propagating winner failures to unrelated
-//!   waiters. This is a deliberate semantic choice, not a OnceCell
-//!   limitation.
+//! - **Error sharing:** `complete()` sends a payload-free [`L1Completion`],
+//!   never a provider error. The signal distinguishes authoritative state
+//!   progress, an exact replay-safe outcome without progress, and an
+//!   unsafe/unknown outcome. The outer coordinator always re-runs the caller's
+//!   authoritative state predicate after wakeup before deciding whether to
+//!   coalesce, admit a newer refresh epoch, or fail closed. This keeps error
+//!   details isolated without flattening materially different replay policies.
 //!
 //! - **Circuit breaker (bonus axis, not in task scoring grid):**
 //!   `L1RefreshCoalescer` holds a per-credential `nebula_resilience::CircuitBreaker`
@@ -112,7 +110,32 @@ struct InFlightEntry {
     /// Senders to wake on completion. `parking_lot::Mutex` because the list
     /// is touched only while holding (or having just released) the outer
     /// map lock, with no `.await` in between.
-    senders: parking_lot::Mutex<Vec<oneshot::Sender<()>>>,
+    senders: parking_lot::Mutex<Vec<oneshot::Sender<L1Completion>>>,
+}
+
+/// Payload-free completion policy delivered from one L1 winner to its waiters.
+///
+/// The signal deliberately carries no integration result or error details.
+/// Waiters combine it with a fresh authoritative state read in the outer
+/// coordinator before deciding what may happen next.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum L1Completion {
+    /// The winner durably advanced the authoritative operation state.
+    ///
+    /// If a fresh predicate still requires work, it represents a later epoch
+    /// and one waiter may safely enter a new winner election.
+    StateAdvanced,
+    /// The winner reached an exact, replay-safe outcome without advancing
+    /// authoritative state.
+    ///
+    /// Waiters must not form an immediate retry herd. They return a typed
+    /// no-progress coordination error and leave retry policy to their caller.
+    NoStateChange,
+    /// Provider dispatch or persistence may have changed external state, but
+    /// the outcome cannot safely be replayed.
+    ///
+    /// A still-true authoritative predicate is fail-closed.
+    ReplayUnsafe,
 }
 
 /// Coalesces credential refresh attempts inside a single replica process.
@@ -129,8 +152,8 @@ struct InFlightEntry {
 pub(crate) struct L1RefreshCoalescer {
     /// In-flight refresh entries. Uses `parking_lot::Mutex` (not `tokio::sync::Mutex`)
     /// because the lock is held only for brief `HashMap` insert/remove/get operations
-    /// with no `.await` while locked. This allows `complete()` to be sync, which is
-    /// critical for calling it from a `scopeguard` drop (B8 fix).
+    /// with no `.await` while locked. This allows `complete()` to run from the
+    /// outer coordinator's RAII lease drop (B8 fix).
     in_flight: parking_lot::Mutex<HashMap<String, Arc<InFlightEntry>>>,
     /// Per-credential circuit breakers via `nebula-resilience`.
     circuit_breakers: parking_lot::Mutex<LruCache<String, Arc<CircuitBreaker>>>,
@@ -139,12 +162,9 @@ pub(crate) struct L1RefreshCoalescer {
     /// Prevents cascading failures when many credentials expire simultaneously
     /// and the provider rate-limits (429). Default: 32 concurrent refreshes.
     ///
-    /// Consumed by **both** entry points:
-    /// - `RefreshCoordinator::refresh_coalesced` (typed `CredentialId` path) — acquires a permit
-    ///   Winner-only after the L1 in-flight check, holds it for the L2 acquisition + IdP POST
-    ///   window, releases on RAII Drop.
-    /// - `RefreshCoordinator::acquire_permit` (legacy `String`-id path, deprecated) — caller binds
-    ///   the permit explicitly via `let _permit = ...`.
+    /// Consumed by `RefreshCoordinator::refresh_coalesced`, winner-only after
+    /// the L1 in-flight check. The owned lease holds it for the L2 acquisition
+    /// and provider/persistence window, then releases it through RAII.
     ///
     /// The Winner-only acquisition pattern matches the per-credential
     /// coalescing model: Waiters already park on the in-flight oneshot
@@ -174,11 +194,11 @@ impl fmt::Debug for L1RefreshCoalescer {
 pub(crate) enum RefreshAttempt {
     /// This caller won the race -- should perform the refresh, then call
     /// `L1RefreshCoalescer::complete()` to wake waiters and release the
-    /// in-flight entry. Wrapping the call in a `scopeguard` is recommended
-    /// so the guarantee survives panics and error paths.
+    /// in-flight entry. The outer coordinator binds this to its owned RAII
+    /// lease so the guarantee survives panics and error paths.
     Winner,
     /// Another caller is already refreshing. Await the receiver; it
-    /// resolves to `Ok(())` as soon as the winner calls
+    /// resolves to `Ok(L1Completion)` as soon as the winner calls
     /// `L1RefreshCoalescer::complete()`.
     ///
     /// `Err(oneshot::error::RecvError)` means the sender was dropped
@@ -193,7 +213,7 @@ pub(crate) enum RefreshAttempt {
     /// while holding the map mutex — the same mutex the winner holds when
     /// it removes the entry — so a waiter's registration and a winner's
     /// `complete()` are strictly ordered (GitHub issue #268).
-    Waiter(oneshot::Receiver<()>),
+    Waiter(oneshot::Receiver<L1Completion>),
 }
 
 /// Default maximum number of concurrent refresh operations.
@@ -293,25 +313,38 @@ impl L1RefreshCoalescer {
     /// every waiter registered against it.
     ///
     /// Called by the winner after refresh completes (success or failure).
-    /// Sync so it can be called from a `scopeguard` drop to prevent
+    /// Sync so it can be called from an RAII lease drop to prevent
     /// permanent in-flight map poisoning on panic.
     ///
     /// A `oneshot::Sender::send` that fails (receiver dropped by a
     /// cancelled waiter) is silently ignored — the cancelled task does
     /// not need to be woken.
-    pub(crate) fn complete(&self, credential_id: &str) {
+    pub(crate) fn complete(&self, credential_id: &str, completion: L1Completion) {
         let entry = self.in_flight.lock().remove(credential_id);
         if let Some(entry) = entry {
             let senders = std::mem::take(&mut *entry.senders.lock());
             for tx in senders {
-                let _ = tx.send(());
+                let _ = tx.send(completion);
             }
+        }
+    }
+
+    /// Remove waiter senders whose receivers were cancelled or timed out.
+    ///
+    /// The in-flight winner entry intentionally remains: only its owned lease
+    /// may call [`Self::complete`]. Pruning bounds memory when a critical
+    /// provider task hangs and repeated callers stop waiting.
+    pub(crate) fn prune_closed_waiters(&self, credential_id: &str) {
+        let entry = self.in_flight.lock().get(credential_id).cloned();
+        if let Some(entry) = entry {
+            entry.senders.lock().retain(|sender| !sender.is_closed());
         }
     }
 
     /// Returns the number of credentials currently being refreshed.
     ///
     /// Primarily useful for testing and diagnostics.
+    #[cfg(test)]
     pub(crate) fn in_flight_count(&self) -> usize {
         self.in_flight.lock().len()
     }
@@ -320,7 +353,7 @@ impl L1RefreshCoalescer {
     ///
     /// The returned permit must be held for the entire duration of the
     /// refresh HTTP call. It is released automatically on drop (including
-    /// when a `scopeguard` fires on panic or timeout).
+    /// when the owner unwinds or is cancelled).
     ///
     /// # Cancel safety
     ///
@@ -345,6 +378,7 @@ impl L1RefreshCoalescer {
     /// Returns the number of available permits in the concurrency limiter.
     ///
     /// Primarily useful for testing and diagnostics.
+    #[cfg(test)]
     pub(crate) fn available_permits(&self) -> usize {
         self.refresh_semaphore.available_permits()
     }
@@ -380,6 +414,13 @@ impl L1RefreshCoalescer {
     /// Returns the number of circuit breaker entries currently tracked (test-only).
     fn circuit_breaker_len_for_test(&self) -> usize {
         self.circuit_breakers.lock().len()
+    }
+
+    pub(crate) fn waiter_count_for_test(&self, credential_id: &str) -> usize {
+        self.in_flight
+            .lock()
+            .get(credential_id)
+            .map_or(0, |entry| entry.senders.lock().len())
     }
 }
 
@@ -425,7 +466,7 @@ mod tests {
         let _ = coord.try_refresh("cred-1");
         assert_eq!(coord.in_flight_count(), 1);
 
-        coord.complete("cred-1");
+        coord.complete("cred-1", L1Completion::StateAdvanced);
         assert_eq!(coord.in_flight_count(), 0);
     }
 
@@ -443,12 +484,15 @@ mod tests {
             RefreshAttempt::Winner => panic!("expected Waiter"),
         };
 
-        let waiter = tokio::spawn(async move { waiter_rx.await.is_ok() });
+        let waiter = tokio::spawn(waiter_rx);
 
-        coord.complete("cred-1");
+        coord.complete("cred-1", L1Completion::ReplayUnsafe);
 
-        let result = waiter.await.unwrap();
-        assert!(result);
+        let result = waiter
+            .await
+            .expect("waiter task must join")
+            .expect("winner must send a completion policy");
+        assert_eq!(result, L1Completion::ReplayUnsafe);
     }
 
     #[tokio::test]
@@ -462,17 +506,17 @@ mod tests {
         assert!(matches!(b, RefreshAttempt::Winner));
         assert_eq!(coord.in_flight_count(), 2);
 
-        coord.complete("cred-a");
+        coord.complete("cred-a", L1Completion::StateAdvanced);
         assert_eq!(coord.in_flight_count(), 1);
 
-        coord.complete("cred-b");
+        coord.complete("cred-b", L1Completion::StateAdvanced);
         assert_eq!(coord.in_flight_count(), 0);
     }
 
     #[tokio::test]
     async fn complete_on_unknown_credential_is_noop() {
         let coord = L1RefreshCoalescer::new();
-        coord.complete("nonexistent");
+        coord.complete("nonexistent", L1Completion::NoStateChange);
         assert_eq!(coord.in_flight_count(), 0);
     }
 
@@ -482,11 +526,11 @@ mod tests {
 
         let first = coord.try_refresh("cred-1");
         assert!(matches!(first, RefreshAttempt::Winner));
-        coord.complete("cred-1");
+        coord.complete("cred-1", L1Completion::StateAdvanced);
 
         let second = coord.try_refresh("cred-1");
         assert!(matches!(second, RefreshAttempt::Winner));
-        coord.complete("cred-1");
+        coord.complete("cred-1", L1Completion::StateAdvanced);
     }
 
     #[tokio::test]
@@ -504,13 +548,19 @@ mod tests {
                 RefreshAttempt::Waiter(rx) => rx,
                 RefreshAttempt::Winner => panic!("expected Waiter"),
             };
-            handles.push(tokio::spawn(async move { rx.await.is_ok() }));
+            handles.push(tokio::spawn(rx));
         }
 
-        coord.complete("cred-1");
+        coord.complete("cred-1", L1Completion::NoStateChange);
 
         for handle in handles {
-            assert!(handle.await.unwrap());
+            assert_eq!(
+                handle
+                    .await
+                    .expect("waiter task must join")
+                    .expect("winner must send a completion policy"),
+                L1Completion::NoStateChange
+            );
         }
     }
 
@@ -533,7 +583,7 @@ mod tests {
             RefreshAttempt::Waiter(rx) => rx,
             RefreshAttempt::Winner => panic!("expected Waiter"),
         };
-        coord.complete("cred-1");
+        coord.complete("cred-1", L1Completion::StateAdvanced);
 
         tokio::time::timeout(Duration::from_millis(50), rx)
             .await
@@ -596,12 +646,12 @@ mod tests {
         drop(attempt);
         assert_eq!(coord.in_flight_count(), 1);
 
-        coord.complete("cred-1");
+        coord.complete("cred-1", L1Completion::NoStateChange);
         assert_eq!(coord.in_flight_count(), 0);
 
         let attempt2 = coord.try_refresh("cred-1");
         assert!(matches!(attempt2, RefreshAttempt::Winner));
-        coord.complete("cred-1");
+        coord.complete("cred-1", L1Completion::StateAdvanced);
     }
 
     #[tokio::test]
@@ -625,7 +675,32 @@ mod tests {
             RefreshAttempt::Winner => panic!("expected Waiter"),
         }
 
-        coord.complete("cred-1");
+        coord.complete("cred-1", L1Completion::NoStateChange);
         assert_eq!(coord.in_flight_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn closed_waiters_are_pruned_without_completing_winner() {
+        let coord = L1RefreshCoalescer::new();
+        assert!(matches!(
+            coord.try_refresh("cred-1"),
+            RefreshAttempt::Winner
+        ));
+        let receiver = match coord.try_refresh("cred-1") {
+            RefreshAttempt::Waiter(receiver) => receiver,
+            RefreshAttempt::Winner => panic!("expected waiter"),
+        };
+        assert_eq!(coord.waiter_count_for_test("cred-1"), 1);
+
+        drop(receiver);
+        coord.prune_closed_waiters("cred-1");
+
+        assert_eq!(coord.waiter_count_for_test("cred-1"), 0);
+        assert_eq!(
+            coord.in_flight_count(),
+            1,
+            "only the winner's owned lease may complete the in-flight entry"
+        );
+        coord.complete("cred-1", L1Completion::NoStateChange);
     }
 }

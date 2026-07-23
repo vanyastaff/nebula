@@ -108,6 +108,15 @@ fn map_gateway_err(err: CredentialGatewayError, cred: &str) -> ApiError {
         CredentialGatewayError::VersionConflict { expected, actual } => ApiError::VersionMismatch(
             format!("credential {cred}: expected version {expected}, found {actual}"),
         ),
+        CredentialGatewayError::IdAlreadyExists => {
+            ApiError::AlreadyExists("credential id is already reserved".to_owned())
+        },
+        CredentialGatewayError::NameAlreadyExists => {
+            ApiError::AlreadyExists("credential display name is already in use".to_owned())
+        },
+        CredentialGatewayError::VersionExhausted => ApiError::VersionExhausted(
+            "credential can no longer be changed; create a replacement credential".to_owned(),
+        ),
         CredentialGatewayError::ValidationFailed { report } => ApiError::Validation {
             detail: "credential properties were rejected".to_owned(),
             errors: report
@@ -134,14 +143,16 @@ fn map_gateway_err(err: CredentialGatewayError, cred: &str) -> ApiError {
         CredentialGatewayError::PendingExpired => ApiError::Unauthorized(
             "pending acquisition token expired or already consumed".to_owned(),
         ),
-        CredentialGatewayError::ReauthRequired => ApiError::Unauthorized(format!(
-            "credential '{cred}' requires re-authentication; reconnect the account"
-        )),
+        CredentialGatewayError::ReauthRequired => ApiError::CredentialReauthRequired,
         CredentialGatewayError::Forbidden => {
             ApiError::Forbidden("credential command is not authorized".to_owned())
         },
         CredentialGatewayError::Unavailable => ApiError::ServiceUnavailable(
             "credential command service is temporarily unavailable".to_owned(),
+        ),
+        CredentialGatewayError::OutcomeUnknown => ApiError::OutcomeUnknown(
+            "credential mutation may have committed; reconcile credential state before retrying"
+                .to_owned(),
         ),
         CredentialGatewayError::Internal => {
             ApiError::Internal("credential runtime operation failed".to_owned())
@@ -316,7 +327,7 @@ pub async fn update_credential(
     Ok(to_response(state, record))
 }
 
-/// Delete a credential from the workspace.
+/// Tombstone a credential in the workspace.
 #[tracing::instrument(skip_all, fields(cred.id = %cred))]
 pub async fn delete_credential(
     state: &AppState,
@@ -339,7 +350,7 @@ pub async fn delete_credential(
             "credential gateway returned an invalid delete result".to_owned(),
         ));
     }
-    tracing::info!(cred.id = %cred, "credential deleted");
+    tracing::info!(cred.id = %cred, "credential tombstoned");
     Ok(())
 }
 
@@ -527,7 +538,7 @@ pub async fn refresh_credential(
     })
 }
 
-/// Explicitly revoke the credential at the provider and delete the row.
+/// Explicitly revoke the credential at the provider and tombstone the row.
 #[tracing::instrument(skip_all, fields(cred.id = %cred))]
 pub async fn revoke_credential(
     state: &AppState,
@@ -552,7 +563,7 @@ pub async fn revoke_credential(
     }
     Ok(RevokeCredentialResponse {
         revoked: true,
-        message: "credential revoked at the provider and removed".to_owned(),
+        message: "credential revoked at the provider and tombstoned".to_owned(),
     })
 }
 
@@ -1085,6 +1096,18 @@ mod tests {
             ApiError::VersionMismatch(_)
         ));
         assert!(matches!(
+            map_gateway_err(CredentialGatewayError::IdAlreadyExists, "cred_x"),
+            ApiError::AlreadyExists(_)
+        ));
+        assert!(matches!(
+            map_gateway_err(CredentialGatewayError::NameAlreadyExists, "cred_x"),
+            ApiError::AlreadyExists(_)
+        ));
+        assert!(matches!(
+            map_gateway_err(CredentialGatewayError::VersionExhausted, "cred_x"),
+            ApiError::VersionExhausted(_)
+        ));
+        assert!(matches!(
             map_gateway_err(
                 CredentialGatewayError::ValidationFailed {
                     report: CredentialGatewayValidationReport::single(
@@ -1118,8 +1141,16 @@ mod tests {
             ApiError::Unauthorized(_)
         ));
         assert!(matches!(
+            map_gateway_err(CredentialGatewayError::ReauthRequired, "cred_x"),
+            ApiError::CredentialReauthRequired
+        ));
+        assert!(matches!(
             map_gateway_err(CredentialGatewayError::Unavailable, "cred_x"),
             ApiError::ServiceUnavailable(_)
+        ));
+        assert!(matches!(
+            map_gateway_err(CredentialGatewayError::OutcomeUnknown, "cred_x"),
+            ApiError::OutcomeUnknown(_)
         ));
         assert!(matches!(
             map_gateway_err(CredentialGatewayError::Internal, "cred_x"),
@@ -1142,6 +1173,7 @@ mod tests {
                 ),
             },
             CredentialGatewayError::Unavailable,
+            CredentialGatewayError::OutcomeUnknown,
             CredentialGatewayError::Internal,
         ] {
             let api_error = map_gateway_err(gateway_error, "cred_safe");

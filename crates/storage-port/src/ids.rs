@@ -5,7 +5,8 @@
 //! storage contract and the port does not re-define IDs.
 
 pub use nebula_core::id::{
-    ExecutionId, OrgId, ResourceId, TriggerId, UserId, WorkflowId, WorkflowVersionId, WorkspaceId,
+    CredentialId, ExecutionId, OrgId, ResourceId, TriggerId, UserId, WorkflowId, WorkflowVersionId,
+    WorkspaceId,
 };
 
 /// Monotone lease fencing token.

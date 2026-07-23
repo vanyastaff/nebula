@@ -11,24 +11,23 @@ use std::{
 
 #[cfg(feature = "rotation")]
 use crate::credentials::{OAuth2Credential, OAuth2State};
-// The resolve-error mapping moved to `resolve_error`; what remains here that
-// names `CredentialError` is the (rotation-gated) OAuth2 HTTP-refresh relic plus
-// the in-crate refresh-race tests, while the typed provider-error constructors
-// are relic-only.
-#[cfg(any(feature = "rotation", test))]
+// The resolve-error mapping moved to `resolve_error`; tests still implement
+// credential traits whose signatures name `CredentialError`.
+#[cfg(test)]
 use crate::error::CredentialError;
-#[cfg(feature = "rotation")]
-use crate::error::{ProviderErrorContext, ProviderErrorKind, SecretFreeMessage};
 use crate::runtime::refresh::transport::RefreshTransport;
-use crate::runtime::refresh::{RefreshCoordinator, RefreshError};
+use crate::runtime::refresh::{
+    RefreshCoordinator, RefreshDisposition, RefreshError, RefreshRecheckError,
+};
 use crate::runtime::resolve_error::{
-    ResolveError, reject_tombstoned, resolve_error_to_credential_error, verify_owner,
+    ResolveError, reject_tombstoned, resolve_error_to_credential_error,
 };
 use crate::{
     Credential, CredentialContext, CredentialEvent, CredentialHandle, CredentialId,
-    CredentialLifecycle, CredentialPersistence, CredentialPersistenceError, CredentialSelector,
-    CredentialState, CredentialWriteMode, Decision, LAST_VALIDATED_AT_METADATA_KEY, Refreshable,
-    SchemeFactory, SchemeGuard, StoredCredential, resolve::RefreshOutcome,
+    CredentialLifecycle, CredentialPersistence, CredentialPersistenceError, CredentialReplacement,
+    CredentialSelector, CredentialState, Decision, LAST_VALIDATED_AT_METADATA_KEY, Refreshable,
+    SchemeFactory, SchemeGuard, StoredCredential, StoredLiveCredential,
+    resolve::{ReauthReason, RefreshOutcome},
 };
 
 /// Framework-imposed mandatory re-validation floor for a refreshable credential
@@ -37,12 +36,46 @@ use crate::{
 /// without re-contacting its provider. Owner ruling: there is no "valid forever".
 /// (Per-credential override is a later configuration concern; this is the default.)
 const DEFAULT_REVALIDATION_FLOOR: std::time::Duration = std::time::Duration::from_hours(24);
+
+/// Bound transparent re-evaluation when authoritative state changes while a
+/// caller waits behind L1/L2. Continuous management churn must not create an
+/// unbounded async recursion chain or retain stale snapshots indefinitely.
+const MAX_COORDINATED_REEVALUATIONS: usize = 3;
+
+fn reject_persisted_reauth(stored: &StoredLiveCredential) -> Result<(), ResolveError> {
+    if stored.reauth_required() {
+        return Err(ResolveError::ReauthRequired {
+            credential_id: stored.credential_id().to_string(),
+            // K2 persists only the security decision, not its reason. Both a
+            // provider rejection and locally missing refresh material can set
+            // this bit; subsequent reads therefore use the conservative
+            // ProviderRejected classification. A reason-bearing durable
+            // transition is explicit K3 model debt.
+            reason: ReauthReason::ProviderRejected,
+        });
+    }
+    Ok(())
+}
+
+fn last_validated_at(stored: &StoredLiveCredential) -> Option<chrono::DateTime<chrono::Utc>> {
+    stored
+        .metadata()
+        .get(LAST_VALIDATED_AT_METADATA_KEY)
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .map(|instant| instant.with_timezone(&chrono::Utc))
+}
+
+fn last_validated_or_created(stored: &StoredLiveCredential) -> chrono::DateTime<chrono::Utc> {
+    last_validated_at(stored).unwrap_or_else(|| stored.created_at())
+}
+
 use dashmap::DashMap;
 use nebula_core::auth::{AuthScheme, SchemeFamily};
 use nebula_eventbus::EventBus;
 
 #[cfg(feature = "rotation")]
-use crate::runtime::refresh::token_refresh::refresh_oauth2_state;
+use crate::runtime::refresh::token_refresh::{TokenRefreshError, refresh_oauth2_state};
 
 /// Live [`CredentialHandle`] cache keyed by `(credential_id, scheme TypeId)`.
 ///
@@ -52,6 +85,11 @@ use crate::runtime::refresh::token_refresh::refresh_oauth2_state;
 /// the write-lock contention that `Mutex<HashMap>` imposed under concurrent
 /// resolution — a write to one shard does not block reads on others.
 type HandleCache = DashMap<(CredentialSelector, TypeId), Arc<dyn Any + Send + Sync>>;
+
+enum CoordinatedResolve<S: AuthScheme> {
+    Resolved(CredentialHandle<S>),
+    Reevaluate,
+}
 
 /// Runtime credential resolver with optional coordinated refresh.
 pub struct CredentialResolver<S: CredentialPersistence + ?Sized> {
@@ -113,8 +151,8 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
     ///
     /// Set by the composition root when the service is built with
     /// [`StateSource::External`](crate::StateSource). Once gated, **every** resolution
-    /// entry point ([`resolve`](Self::resolve) / [`resolve_scoped`](Self::resolve_scoped)
-    /// / [`resolve_with_refresh`](Self::resolve_with_refresh), and therefore
+    /// entry point ([`resolve_scoped`](Self::resolve_scoped) /
+    /// [`resolve_with_refresh`](Self::resolve_with_refresh), and therefore
     /// [`scheme_factory`](Self::scheme_factory)) returns
     /// [`ResolveError::ExternalSourceNotWired`] instead of reading local bytes —
     /// so the direct-resolver paths that bypass the facade's per-call source
@@ -166,7 +204,7 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
             existing.replace(scheme);
             return existing;
         }
-        let handle = CredentialHandle::new(scheme, selector.credential_id());
+        let handle = CredentialHandle::new(scheme, selector.credential_id().to_string());
         self.store_handle::<C>(selector, handle.clone());
         handle
     }
@@ -222,7 +260,9 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
         self
     }
 
-    /// Resolve a credential state into a typed handle.
+    /// Test-only direct resolution path used to exercise common load gates
+    /// independently from the action-slot façade.
+    #[cfg(test)]
     async fn resolve<C>(
         &self,
         selector: &CredentialSelector,
@@ -243,11 +283,11 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
     /// The [`CredentialSelector`] is obtainable only from a
     /// `ValidatedCredentialBinding` (whose constructor is gated by
     /// `CredentialService::validate_credential_binding`). This method
-    /// **re-verifies** the loaded row's stamped `owner_id` against the key before
-    /// projecting the scheme, so a credential id belonging to another tenant
-    /// resolves to [`CredentialPersistenceError::NotFound`] (existence-hiding). The confused
-    /// deputy is closed at the load — binding provenance is backed by a load-time
-    /// owner check, not trusted on its own.
+    /// Relies on the persistence port's complete `(owner, credential_id)`
+    /// predicate before projecting the scheme, so a credential id belonging to
+    /// another tenant resolves to [`CredentialPersistenceError::NotFound`]
+    /// (existence-hiding). Owner metadata is ordinary application data and is
+    /// never treated as authority.
     ///
     /// # Errors
     ///
@@ -262,27 +302,26 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
         C: Credential,
     {
         self.ensure_source_wired()?;
-        // Load the raw row, then verify owner BEFORE any type/kind signal: a
-        // kind-mismatch error on a foreign id would be an existence/type oracle
-        // (a cross-tenant probe could distinguish "absent" from "exists but wrong
-        // type"). `verify_owner` maps a foreign owner to `NotFound`
-        // (existence-hiding), so the kind check below only ever runs on a row the
-        // caller is entitled to — never use `load_and_verify` here (it kind-checks
-        // first).
-        let stored = self
+        // The port applies the complete owner-bound selector before returning a
+        // physical record, closing the cross-tenant existence oracle before
+        // this code can inspect lifecycle state or kind.
+        let physical = self
             .store
             .get(selector)
             .await
             .map_err(ResolveError::Store)?;
-        verify_owner(selector, &stored)?;
-        reject_tombstoned(selector.credential_id(), &stored)?;
+        reject_tombstoned(&physical)?;
+        let StoredCredential::Live(stored) = physical else {
+            return Err(ResolveError::Store(CredentialPersistenceError::NotFound));
+        };
+        reject_persisted_reauth(&stored)?;
 
         let expected_kind = <C::State as CredentialState>::KIND;
-        if stored.state_kind != expected_kind {
+        if stored.state_kind() != expected_kind {
             return Err(ResolveError::KindMismatch {
-                credential_id: selector.credential_id().to_owned(),
+                credential_id: selector.credential_id().to_string(),
                 expected: expected_kind.to_string(),
-                actual: stored.state_kind,
+                actual: stored.state_kind().to_owned(),
             });
         }
 
@@ -298,130 +337,140 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
     /// (`compile_fail_engine_dispatch_capability`) cements the structural
     /// barrier with `E0277` at the dispatch site.
     ///
-    /// Refresh path goes through the two-tier
-    /// [`RefreshCoordinator::refresh_coalesced`] when `credential_id`
-    /// parses as a typed [`CredentialId`]. Non-parseable legacy ids fall
-    /// back to the L1-only coalescing path. `CoalescedByOtherReplica` is
-    /// success — caller re-reads state.
-    #[expect(deprecated)] // Calls deprecated `is_circuit_open` until П3 typed-id migration completes.
+    /// Refresh always goes through the two-tier
+    /// [`RefreshCoordinator::refresh_coalesced`]: the persistence selector
+    /// carries a typed [`CredentialId`], so there is no legacy string-id bypass.
+    /// `CoalescedByOtherReplica` is success — caller re-reads state.
     pub async fn resolve_with_refresh<C>(
         &self,
         selector: &CredentialSelector,
         ctx: &CredentialContext,
     ) -> Result<CredentialHandle<C::Scheme>, ResolveError>
     where
+        S: 'static,
         C: Refreshable + CredentialLifecycle,
     {
         self.ensure_source_wired()?;
-        let credential_id = selector.credential_id();
-        let stored = self.load_and_verify::<C>(selector).await?;
-        let state: C::State = self.deserialize::<C>(credential_id, &stored)?;
+        for reevaluation in 0..=MAX_COORDINATED_REEVALUATIONS {
+            let credential_id = selector.credential_id();
+            let credential_id_text = credential_id.to_string();
+            let stored = self.load_and_verify::<C>(selector).await?;
+            let state: C::State = self.deserialize::<C>(credential_id, &stored)?;
 
-        // Route on the credential's own state-derived policy, not an ad-hoc
-        // inline expiry test: `decide_refresh` is the single, pure, tested
-        // decision. It distinguishes "expiring but nothing to renew" (serve and
-        // let it ride) from "expiring and renewable" (refresh), and applies the
-        // mandatory re-validation floor for a signal-less credential. Jitter is
-        // deliberately not applied on this hot path — proactive jittered refresh
-        // is a scheduler-seam concern, not a per-resolve one.
-        let policy = C::policy(&state);
+            // Route on the credential's own state-derived policy, not an ad-hoc
+            // inline expiry test: `decide_refresh` is the single, pure, tested
+            // decision. It distinguishes "expiring but nothing to renew" (serve and
+            // let it ride) from "expiring and renewable" (refresh), and applies the
+            // mandatory re-validation floor for a signal-less credential. Jitter is
+            // deliberately not applied on this hot path — proactive jittered refresh
+            // is a scheduler-seam concern, not a per-resolve one.
+            let policy = C::policy(&state);
 
-        // F3 containment law, state-level: the live policy's refresh kind must be
-        // one the scheme family sanctions. Registration enforces the
-        // capability-level half at boot (a `Refreshable` credential on a
-        // `Static`-only family is rejected); this runtime guard catches a
-        // hand-written or plugin policy that returns a refresh kind outside its
-        // family's declared classes. `Lease` and `Watched` are exempt (orthogonal
-        // lifecycle wrappers — see `SchemeFamily::refresh_classes`).
-        //
-        // Hard `Err` in all build profiles — a policy drift is a security
-        // containment violation that must not silently proceed even in release.
-        // The structured `RefreshContainmentViolation` error carries all the
-        // diagnostic information (credential id, disallowed kind, family pattern)
-        // that a developer needs to diagnose the drift without a backtrace.
-        if !<C::Scheme as AuthScheme>::Family::permits_refresh(policy.refresh.kind()) {
-            return Err(ResolveError::RefreshContainmentViolation {
-                credential_id: credential_id.to_owned(),
-                refresh_kind: format!("{:?}", policy.refresh.kind()),
-                family_pattern: format!("{:?}", <C::Scheme as AuthScheme>::Family::pattern()),
-            });
-        }
-
-        let decision = policy.decide_refresh(
-            // Measure the re-validation floor from the last real provider
-            // validation, NOT `updated_at` (a display-only rename/tag bumps
-            // `updated_at` without revalidating — it must not postpone the floor).
-            stored.last_validated_or_created(),
-            chrono::Utc::now(),
-            <C as Refreshable>::REFRESH_POLICY.early_refresh,
-            DEFAULT_REVALIDATION_FLOOR,
-        );
-
-        if decision == Decision::Usable {
-            let scheme = C::project(&state);
-            return Ok(self.materialize_handle::<C>(selector, scheme));
-        }
-
-        if self.refresh_coordinator.is_circuit_open(credential_id) {
-            let now = chrono::Utc::now();
-            let truly_expired = state.expires_at().is_some_and(|exp| exp <= now);
-            if truly_expired {
-                tracing::warn!(
-                    credential_id,
-                    "circuit breaker open and token has passed its expiry; failing fast"
-                );
-                return Err(ResolveError::Refresh {
-                    credential_id: credential_id.to_string(),
-                    reason: "refresh circuit breaker open and token is expired".to_string(),
+            // F3 containment law, state-level: the live policy's refresh kind must be
+            // one the scheme family sanctions. Registration enforces the
+            // capability-level half at boot (a `Refreshable` credential on a
+            // `Static`-only family is rejected); this runtime guard catches a
+            // hand-written or plugin policy that returns a refresh kind outside its
+            // family's declared classes. `Lease` and `Watched` are exempt (orthogonal
+            // lifecycle wrappers — see `SchemeFamily::refresh_classes`).
+            //
+            // Hard `Err` in all build profiles — a policy drift is a security
+            // containment violation that must not silently proceed even in release.
+            // The structured `RefreshContainmentViolation` error carries all the
+            // diagnostic information (credential id, disallowed kind, family pattern)
+            // that a developer needs to diagnose the drift without a backtrace.
+            if !<C::Scheme as AuthScheme>::Family::permits_refresh(policy.refresh.kind()) {
+                return Err(ResolveError::RefreshContainmentViolation {
+                    credential_id: credential_id_text.clone(),
+                    refresh_kind: format!("{:?}", policy.refresh.kind()),
+                    family_pattern: format!("{:?}", <C::Scheme as AuthScheme>::Family::pattern()),
                 });
             }
-            tracing::warn!(
-                credential_id,
-                "circuit breaker open: too many refresh failures, serving stale-but-valid credential within early-refresh window"
-            );
-            let scheme = C::project(&state);
-            return Ok(self.materialize_handle::<C>(selector, scheme));
-        }
 
-        // Parse the string id; the typed `CredentialId` is required by
-        // the L2 claim repo. Legacy non-parseable ids (test fixtures
-        // such as `"herd-cred"`) skip the L2 layer and use only the L1
-        // coalescer — Stage 4 chaos test exercises the typed-id cross-
-        // process L2 path.
-        match CredentialId::parse(credential_id) {
-            Ok(typed_id) => {
-                self.refresh_via_coordinator::<C>(selector, &typed_id, state, stored, ctx)
-                    .await
-            },
-            Err(_) => {
-                self.refresh_via_l1_only::<C>(selector, state, stored, ctx)
-                    .await
-            },
+            let decision = policy.decide_refresh(
+                // Measure the re-validation floor from the last real provider
+                // validation, NOT `updated_at` (a display-only rename/tag bumps
+                // `updated_at` without revalidating — it must not postpone the floor).
+                last_validated_or_created(&stored),
+                chrono::Utc::now(),
+                <C as Refreshable>::REFRESH_POLICY.early_refresh,
+                DEFAULT_REVALIDATION_FLOOR,
+            );
+
+            if decision == Decision::Usable {
+                let scheme = C::project(&state);
+                return Ok(self.materialize_handle::<C>(selector, scheme));
+            }
+
+            if self
+                .refresh_coordinator
+                .is_circuit_open(&credential_id_text)
+            {
+                let now = chrono::Utc::now();
+                let truly_expired = state.expires_at().is_some_and(|exp| exp <= now);
+                if truly_expired {
+                    tracing::warn!(
+                        credential_id = %credential_id,
+                        "circuit breaker open and token has passed its expiry; failing fast"
+                    );
+                    return Err(ResolveError::Refresh {
+                        credential_id: credential_id_text,
+                        reason: "refresh circuit breaker open and token is expired".to_string(),
+                    });
+                }
+                tracing::warn!(
+                    credential_id = %credential_id,
+                    "circuit breaker open: too many refresh failures, serving stale-but-valid credential within early-refresh window"
+                );
+                let scheme = C::project(&state);
+                return Ok(self.materialize_handle::<C>(selector, scheme));
+            }
+
+            match self
+                .refresh_via_coordinator::<C>(selector, &credential_id, state, stored, ctx)
+                .await?
+            {
+                CoordinatedResolve::Resolved(handle) => return Ok(handle),
+                CoordinatedResolve::Reevaluate if reevaluation < MAX_COORDINATED_REEVALUATIONS => {
+                    continue;
+                },
+                CoordinatedResolve::Reevaluate => {
+                    return Err(ResolveError::Refresh {
+                        credential_id: credential_id_text,
+                        reason: "credential state kept changing during coordinated refresh"
+                            .to_owned(),
+                    });
+                },
+            }
         }
+        unreachable!("the bounded coordinated re-evaluation loop always returns")
     }
 
-    /// Two-tier coordinated refresh path (parseable [`CredentialId`]).
-    #[expect(deprecated)] // Calls deprecated `record_success` / `record_failure` for L1 circuit breaker until П3.
+    /// Two-tier coordinated refresh path for a typed [`CredentialId`].
     async fn refresh_via_coordinator<C>(
         &self,
         selector: &CredentialSelector,
         typed_id: &CredentialId,
         state: C::State,
-        stored: StoredCredential,
+        stored: StoredLiveCredential,
         ctx: &CredentialContext,
-    ) -> Result<CredentialHandle<C::Scheme>, ResolveError>
+    ) -> Result<CoordinatedResolve<C::Scheme>, ResolveError>
     where
+        S: 'static,
         C: Refreshable + CredentialLifecycle,
     {
         let credential_id = selector.credential_id();
-        // The `refresh_coalesced` user closure must yield `Result<_,
-        // RefreshError>`; we wrap the inner `ResolveError` in `Ok(Err(_))`
-        // so it propagates without being mistaken for a coordinator failure.
+        let credential_id_text = credential_id.to_string();
+        // The coordinator owns transport/claim failures. The critical closure
+        // returns the resolver result together with its exact commit
+        // disposition so `OutcomeUnknown` retains L2 to TTL.
         let coord = Arc::clone(&self.refresh_coordinator);
-        let repo = Arc::clone(coord.repo());
+        let resolver = self.clone();
         let resolver_state = state;
         let resolver_stored = stored;
+        let observed_version = resolver_stored.version();
         let selector_owned = selector.clone();
+        let ctx_owned = ctx.clone();
 
         // Sub-spec post-backoff state recheck. After the L2 backoff sleep the
         // contender's claim may have been released because their refresh
@@ -447,38 +496,52 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
             let selector = recheck_selector.clone();
             async move {
                 let credential_id = selector.credential_id();
-                // On any read/decode failure, conservatively retry — the L2
-                // layer will gate further work via heartbeat / claim ownership,
-                // so retrying is safe.
-                let stored = match store.get(&selector).await {
-                    Ok(s) => s,
+                let physical = match store.get(&selector).await {
+                    Ok(stored) => stored,
                     Err(e) => {
-                        tracing::debug!(
-                            credential_id,
+                        tracing::warn!(
+                            credential_id = %credential_id,
                             ?e,
-                            "post-backoff state recheck: store read failed; retrying claim"
+                            "post-backoff state recheck: store read failed; provider dispatch denied"
                         );
-                        return true;
+                        return Err(RefreshRecheckError::Unavailable);
                     },
                 };
-                if stored.reauth_required {
+                let StoredCredential::Live(stored) = physical else {
                     tracing::debug!(
-                        credential_id,
+                        credential_id = %credential_id,
+                        "post-backoff state recheck: credential is tombstoned; \
+                         short-circuiting to CoalescedByOtherReplica"
+                    );
+                    return Ok(false);
+                };
+                if stored.version() != observed_version {
+                    tracing::debug!(
+                        credential_id = %credential_id,
+                        observed_version = %observed_version,
+                        current_version = %stored.version(),
+                        "post-backoff state recheck: captured row is stale; re-reading through the parent path"
+                    );
+                    return Ok(false);
+                }
+                if stored.reauth_required() {
+                    tracing::debug!(
+                        credential_id = %credential_id,
                         "post-backoff state recheck: reauth_required=true on stored \
                          credential — short-circuiting to CoalescedByOtherReplica \
                          (sub-spec §3.6 / I1)"
                     );
-                    return false;
+                    return Ok(false);
                 }
-                let state: C::State = match serde_json::from_slice(&stored.data) {
+                let state: C::State = match serde_json::from_slice(stored.data()) {
                     Ok(s) => s,
                     Err(e) => {
-                        tracing::debug!(
-                            credential_id,
+                        tracing::warn!(
+                            credential_id = %credential_id,
                             ?e,
-                            "post-backoff state recheck: state decode failed; retrying claim"
+                            "post-backoff state recheck: state decode failed; provider dispatch denied"
                         );
-                        return true;
+                        return Err(RefreshRecheckError::InvalidState);
                     },
                 };
                 // Mirror the parent `resolve_with_refresh` routing: re-run the
@@ -489,119 +552,92 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
                 // `CoalescedByOtherReplica` and the parent serves it stale. Jitter
                 // is deliberately omitted here (it belongs on the initial decision
                 // to de-correlate replicas at startup, not on the coalesce gate).
-                C::policy(&state).decide_refresh(
-                    stored.last_validated_or_created(),
+                Ok(C::policy(&state).decide_refresh(
+                    last_validated_or_created(&stored),
                     chrono::Utc::now(),
                     <C as Refreshable>::REFRESH_POLICY.early_refresh,
                     DEFAULT_REVALIDATION_FLOOR,
-                ) != Decision::Usable
+                ) != Decision::Usable)
             }
         };
 
         let outcome: Result<Result<CredentialHandle<C::Scheme>, ResolveError>, RefreshError> =
             coord
-                .refresh_coalesced(typed_id, needs_refresh_after_backoff, |claim| async move {
-                    // Stage 2.4 — mark sentinel = RefreshInFlight
-                    // immediately before the IdP POST (perform_refresh
-                    // dispatches into the OAuth2 token endpoint via
-                    // refresh_oauth2_state). On the success path
-                    // RefreshCoordinator::refresh_coalesced calls
-                    // repo.release(token) which deletes the row,
-                    // clearing the sentinel by removal — no separate
-                    // clear call needed.
-                    repo.mark_sentinel(&claim.token).await?;
-
-                    Ok::<_, RefreshError>(
-                        self.perform_refresh::<C>(
+                .refresh_coalesced(typed_id, needs_refresh_after_backoff, move || async move {
+                    // The coordinator has durably marked RefreshInFlight and
+                    // transferred both claim and heartbeat into this owned task
+                    // before invoking us. From this point provider contact and
+                    // its persistence transition cannot be cancelled by caller
+                    // Drop, timeout, or heartbeat loss.
+                    let result = resolver
+                        .perform_refresh::<C>(
                             &selector_owned,
                             resolver_state,
                             resolver_stored,
-                            ctx,
+                            &ctx_owned,
                         )
-                        .await,
-                    )
+                        .await;
+                    match &result {
+                        Err(
+                            ResolveError::PostProviderPersistence {
+                                source: CredentialPersistenceError::OutcomeUnknown,
+                                ..
+                            }
+                            | ResolveError::ProviderOutcomeUnknown { .. },
+                        ) => RefreshDisposition::outcome_unknown(result),
+                        Err(
+                            ResolveError::PostProviderPersistence { .. }
+                            | ResolveError::PostProviderStateEncoding { .. },
+                        ) => RefreshDisposition::retry_unsafe(result),
+                        Ok(_) | Err(ResolveError::ReauthRequired { .. }) => {
+                            RefreshDisposition::state_advanced(result)
+                        },
+                        Err(_) => RefreshDisposition::no_state_change(result),
+                    }
                 })
                 .await;
 
         match outcome {
             Ok(Ok(handle)) => {
-                self.refresh_coordinator.record_success(credential_id);
-                Ok(handle)
+                self.refresh_coordinator.record_success(&credential_id_text);
+                Ok(CoordinatedResolve::Resolved(handle))
             },
             Ok(Err(e)) => {
-                self.refresh_coordinator.record_failure(credential_id);
+                self.refresh_coordinator.record_failure(&credential_id_text);
                 Err(e)
             },
             // CoalescedByOtherReplica is success — another replica refreshed
             // while we were waiting on L2. Re-read state from the store.
             Err(RefreshError::CoalescedByOtherReplica) => {
                 tracing::debug!(
-                    credential_id,
+                    credential_id = %credential_id,
                     "refresh coalesced by another replica; re-reading state from store"
                 );
-                self.refresh_coordinator.record_success(credential_id);
-                self.resolve::<C>(selector).await
+                self.refresh_coordinator.record_success(&credential_id_text);
+                Ok(CoordinatedResolve::Reevaluate)
             },
-            Err(e) => {
-                self.refresh_coordinator.record_failure(credential_id);
-                Err(ResolveError::Refresh {
-                    credential_id: credential_id.to_string(),
-                    reason: e.to_string(),
+            Err(RefreshError::CriticalOutcomePending) => {
+                self.refresh_coordinator.record_failure(&credential_id_text);
+                Err(ResolveError::RefreshOutcomePending {
+                    credential_id: credential_id_text,
                 })
             },
-        }
-    }
-
-    /// Legacy L1-only refresh path for non-parseable string ids.
-    ///
-    /// Mirrors the pre-Stage-2 single-process coalescer behavior: first
-    /// caller wins, others wait on a `oneshot::Receiver`, completion
-    /// drains all waiters. No L2 claim is acquired.
-    #[expect(deprecated)] // Whole function is the legacy-id fallback; uses deprecated L1 surface until П3.
-    async fn refresh_via_l1_only<C>(
-        &self,
-        selector: &CredentialSelector,
-        state: C::State,
-        stored: StoredCredential,
-        ctx: &CredentialContext,
-    ) -> Result<CredentialHandle<C::Scheme>, ResolveError>
-    where
-        C: Refreshable,
-    {
-        use crate::runtime::refresh::RefreshAttempt;
-
-        let credential_id = selector.credential_id();
-
-        match self.refresh_coordinator.try_refresh(credential_id) {
-            RefreshAttempt::Winner => {
-                let _permit = self.refresh_coordinator.acquire_permit().await;
-
-                let credential_id_for_guard = credential_id.to_string();
-                let coordinator = Arc::clone(&self.refresh_coordinator);
-                let _guard = scopeguard::guard((), |()| {
-                    coordinator.complete(&credential_id_for_guard);
-                });
-                let result = self
-                    .perform_refresh::<C>(selector, state, stored, ctx)
-                    .await;
-                if result.is_ok() {
-                    self.refresh_coordinator.record_success(credential_id);
-                } else {
-                    self.refresh_coordinator.record_failure(credential_id);
-                }
-                result
+            Err(RefreshError::StateRecheck(RefreshRecheckError::Unavailable)) => {
+                self.refresh_coordinator.record_failure(&credential_id_text);
+                Err(ResolveError::Store(CredentialPersistenceError::Unavailable))
             },
-            RefreshAttempt::Waiter(rx) => {
-                if tokio::time::timeout(std::time::Duration::from_secs(5), rx)
-                    .await
-                    .is_err()
-                {
-                    tracing::debug!(
-                        credential_id,
-                        "refresh waiter timed out after 5s, re-reading from store"
-                    );
-                }
-                self.resolve::<C>(selector).await
+            Err(RefreshError::StateRecheck(RefreshRecheckError::InvalidState)) => {
+                self.refresh_coordinator.record_failure(&credential_id_text);
+                Err(ResolveError::Store(
+                    CredentialPersistenceError::CorruptRecord,
+                ))
+            },
+            Err(e) => {
+                self.refresh_coordinator.record_failure(&credential_id_text);
+                Err(ResolveError::Refresh {
+                    credential_id: credential_id_text,
+                    reason: e.to_string(),
+                })
             },
         }
     }
@@ -631,17 +667,16 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
     async fn load_and_verify<C>(
         &self,
         selector: &CredentialSelector,
-    ) -> Result<StoredCredential, ResolveError>
+    ) -> Result<StoredLiveCredential, ResolveError>
     where
         C: Credential,
     {
         let credential_id = selector.credential_id();
-        let stored = self
+        let physical = self
             .store
             .get(selector)
             .await
             .map_err(ResolveError::Store)?;
-        verify_owner(selector, &stored)?;
 
         // Fail-closed on EVERY load path, not just the scoped one: a revoked
         // (tombstoned) row must never project to a handle. Checked before the
@@ -650,14 +685,18 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
         // oracle. This closes the tombstone half of the resurrection class for
         // `resolve` / `resolve_with_refresh` / `scheme_factory`; the owner half
         // is enforced structurally by the mandatory `CredentialSelector`.
-        reject_tombstoned(credential_id, &stored)?;
+        reject_tombstoned(&physical)?;
+        let StoredCredential::Live(stored) = physical else {
+            return Err(ResolveError::Store(CredentialPersistenceError::NotFound));
+        };
+        reject_persisted_reauth(&stored)?;
 
         let expected_kind = <C::State as CredentialState>::KIND;
-        if stored.state_kind != expected_kind {
+        if stored.state_kind() != expected_kind {
             return Err(ResolveError::KindMismatch {
                 credential_id: credential_id.to_string(),
                 expected: expected_kind.to_string(),
-                actual: stored.state_kind,
+                actual: stored.state_kind().to_owned(),
             });
         }
 
@@ -666,13 +705,13 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
 
     fn deserialize<C>(
         &self,
-        credential_id: &str,
-        stored: &StoredCredential,
+        credential_id: CredentialId,
+        stored: &StoredLiveCredential,
     ) -> Result<C::State, ResolveError>
     where
         C: Credential,
     {
-        serde_json::from_slice(&stored.data).map_err(|e| ResolveError::Deserialize {
+        serde_json::from_slice(stored.data()).map_err(|e| ResolveError::Deserialize {
             credential_id: credential_id.to_string(),
             reason: e.to_string(),
         })
@@ -682,18 +721,20 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
         &self,
         selector: &CredentialSelector,
         mut state: C::State,
-        stored: StoredCredential,
+        stored: StoredLiveCredential,
         ctx: &CredentialContext,
     ) -> Result<CredentialHandle<C::Scheme>, ResolveError>
     where
         C: Refreshable,
     {
         let credential_id = selector.credential_id();
+        let credential_id_text = credential_id.to_string();
         #[cfg(feature = "rotation")]
         async fn try_oauth2_refresh<C: Refreshable>(
             state: &mut C::State,
             transport: &dyn RefreshTransport,
-        ) -> Result<Option<RefreshOutcome>, CredentialError> {
+            credential_id: &str,
+        ) -> Result<Option<RefreshOutcome>, ResolveError> {
             if C::KEY != OAuth2Credential::KEY {
                 return Ok(None);
             }
@@ -705,48 +746,66 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
             // hence the explicit scope.
             let state_value =
                 crate::serde_secret::expose_for_serialization(|| serde_json::to_value(&*state))
-                    .map_err(|e| {
-                        CredentialError::Provider(Box::new(ProviderErrorContext::new(
-                            ProviderErrorKind::Schema,
-                            SecretFreeMessage::new(format!(
-                                "oauth2 refresh state serialization failed: {e}"
-                            )),
-                        )))
+                    .map_err(|error| ResolveError::Refresh {
+                        credential_id: credential_id.to_owned(),
+                        reason: format!("oauth2 refresh state serialization failed: {error}"),
                     })?;
             let mut oauth_state: OAuth2State =
-                serde_json::from_value(state_value).map_err(|e| {
-                    CredentialError::Provider(Box::new(ProviderErrorContext::new(
-                        ProviderErrorKind::Schema,
-                        SecretFreeMessage::new(format!("oauth2 refresh state decode failed: {e}")),
-                    )))
+                serde_json::from_value(state_value).map_err(|error| ResolveError::Refresh {
+                    credential_id: credential_id.to_owned(),
+                    reason: format!("oauth2 refresh state decode failed: {error}"),
                 })?;
 
-            refresh_oauth2_state(&mut oauth_state, transport)
-                .await
-                .map_err(|e| {
-                    CredentialError::Provider(Box::new(ProviderErrorContext::new(
-                        ProviderErrorKind::ServerError,
-                        SecretFreeMessage::new(e.to_string()),
-                    )))
-                })?;
+            match refresh_oauth2_state(&mut oauth_state, transport).await {
+                Ok(()) => {},
+                Err(TokenRefreshError::MissingRefreshToken) => {
+                    return Ok(Some(RefreshOutcome::ReauthRequired(
+                        ReauthReason::MissingRefreshMaterial,
+                    )));
+                },
+                Err(TokenRefreshError::InvalidGrant { .. }) => {
+                    return Ok(Some(RefreshOutcome::ReauthRequired(
+                        ReauthReason::ProviderRejected,
+                    )));
+                },
+                Err(TokenRefreshError::TransportOutcomeUnknown | TokenRefreshError::Parse) => {
+                    return Err(ResolveError::ProviderOutcomeUnknown {
+                        credential_id: credential_id.to_owned(),
+                    });
+                },
+                Err(
+                    error @ (TokenRefreshError::PreDispatch(_)
+                    | TokenRefreshError::TokenEndpoint { .. }),
+                ) => {
+                    return Err(ResolveError::Refresh {
+                        credential_id: credential_id.to_owned(),
+                        reason: error.to_string(),
+                    });
+                },
+                #[expect(
+                    unreachable_patterns,
+                    reason = "TokenRefreshError is non-exhaustive; future phases must choose an explicit replay policy"
+                )]
+                Err(_unknown) => {
+                    return Err(ResolveError::ProviderOutcomeUnknown {
+                        credential_id: credential_id.to_owned(),
+                    });
+                },
+            }
 
             // Cleartext serialization for the same internal round-trip on the
             // way back (`OAuth2State` → `state`).
             let refreshed_value =
                 crate::serde_secret::expose_for_serialization(|| serde_json::to_value(oauth_state))
-                    .map_err(|e| {
-                        CredentialError::Provider(Box::new(ProviderErrorContext::new(
-                            ProviderErrorKind::Schema,
-                            SecretFreeMessage::new(format!(
-                                "oauth2 refresh state serialization failed: {e}"
-                            )),
-                        )))
+                    .map_err(|error| ResolveError::PostProviderStateEncoding {
+                        credential_id: credential_id.to_owned(),
+                        reason: format!("oauth2 refreshed state serialization failed: {error}"),
                     })?;
-            *state = serde_json::from_value(refreshed_value).map_err(|e| {
-                CredentialError::Provider(Box::new(ProviderErrorContext::new(
-                    ProviderErrorKind::Schema,
-                    SecretFreeMessage::new(format!("oauth2 refresh state encode failed: {e}")),
-                )))
+            *state = serde_json::from_value(refreshed_value).map_err(|error| {
+                ResolveError::PostProviderStateEncoding {
+                    credential_id: credential_id.to_owned(),
+                    reason: format!("oauth2 refreshed state encode failed: {error}"),
+                }
             })?;
 
             Ok(Some(RefreshOutcome::Refreshed))
@@ -760,117 +819,89 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
             )
         )]
         let transport = Arc::clone(&self.transport);
-        let outcome = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        // This future already runs inside the coordinator's owned
+        // provider/persistence task. Do not wrap it in a cancelling timeout:
+        // dropping an HTTP future cannot prove the provider did not consume or
+        // rotate the grant. The coordinator's caller-wait timeout instead
+        // returns a non-retryable `RefreshOutcomePending` while this owned
+        // future continues under heartbeat + L2 to an exact disposition.
+        let outcome = async {
             #[cfg(feature = "rotation")]
-            if let Some(outcome) = try_oauth2_refresh::<C>(&mut state, &*transport).await? {
+            if let Some(outcome) =
+                try_oauth2_refresh::<C>(&mut state, &*transport, &credential_id_text).await?
+            {
                 return Ok(outcome);
             }
-            <C as Refreshable>::refresh(&mut state, ctx).await
-        })
-        .await
-        .map_err(|_| ResolveError::Refresh {
-            credential_id: credential_id.to_string(),
-            reason: "framework timeout: refresh took longer than 30s".to_string(),
-        })?
-        .map_err(|e| ResolveError::Refresh {
-            credential_id: credential_id.to_string(),
-            reason: e.to_string(),
-        })?;
+            <C as Refreshable>::refresh(&mut state, ctx)
+                .await
+                .map_err(|_error| ResolveError::ProviderOutcomeUnknown {
+                    credential_id: credential_id_text.clone(),
+                })
+        }
+        .await?;
 
         match outcome {
             RefreshOutcome::Refreshed => {
                 // Cleartext serialization for the encrypted-at-rest store.
                 let data =
                     crate::serde_secret::expose_for_serialization(|| serde_json::to_vec(&state))
-                        .map_err(|e| ResolveError::Refresh {
-                            credential_id: credential_id.to_string(),
-                            reason: format!("failed to serialize refreshed state: {e}"),
+                        .map_err(|e| ResolveError::PostProviderStateEncoding {
+                            credential_id: credential_id_text.clone(),
+                            reason: e.to_string(),
                         })?;
 
                 // Refresh contacted the provider successfully → stamp the
                 // validation time so the mandatory re-validation floor measures
-                // from this real validation, not from a later display edit. The
-                // metadata map is rebuilt from the CURRENT row on each attempt
-                // (never the stale pre-refresh snapshot): a `revoke` racing this
-                // write bumps the version and stamps `revoked_at`, and rebuilding
-                // from `..stored.clone()` would overwrite the whole metadata
-                // column on the next CAS — erasing `revoked_at` and RESURRECTING
-                // a revoked credential. On conflict we re-read and abort
-                // fail-closed when the row is now tombstoned.
+                // from this real validation, not from a later display edit.
                 //
-                // Bounded at 3 attempts; perform_refresh runs inside the L2
-                // refresh claim, so a concurrent version bump is a revoke /
-                // display-edit / reauth-flag write, never another refresh.
+                // The provider response was derived from exactly `stored`.
+                // Retrying it against a newer persistence version could overwrite
+                // a concurrent management replacement with stale provider state,
+                // so a CAS conflict is a reconciliation boundary, not a retry.
                 let now = chrono::Utc::now();
-                let mut current = stored;
-                for _attempt in 0..3 {
-                    let mut validated_metadata = current.metadata.clone();
-                    validated_metadata.insert(
-                        LAST_VALIDATED_AT_METADATA_KEY.to_owned(),
-                        serde_json::Value::String(now.to_rfc3339()),
-                    );
-                    let expected_version = current.version;
-                    let updated = StoredCredential {
-                        data: data.clone().into(),
-                        updated_at: now,
-                        expires_at: state.expires_at(),
-                        // Clear the reauth flag on success — idempotent when
-                        // already false, recovers from a stale `true` left
-                        // over by a previous ReauthRequired outcome that the
-                        // application has since re-authorized (sub-spec / I1).
-                        reauth_required: false,
-                        metadata: validated_metadata,
-                        ..current.clone()
-                    };
-                    match self
-                        .store
-                        .put(
-                            selector,
-                            updated,
-                            CredentialWriteMode::CompareAndSwap { expected_version },
-                        )
-                        .await
-                    {
-                        Ok(_) => {
-                            if let Ok(id) = CredentialId::parse(credential_id) {
-                                self.emit_refreshed(id);
-                            } else {
-                                tracing::warn!(
-                                    credential_id,
-                                    "credential ID is not a valid `CredentialId` (expected \
-                                     `cred_<ULID>`), refresh event not emitted",
-                                );
-                            }
-                            let scheme = C::project(&state);
-                            return Ok(self.materialize_handle::<C>(selector, scheme));
-                        },
-                        Err(CredentialPersistenceError::VersionConflict { actual, .. }) => {
-                            tracing::warn!(
-                                credential_id,
-                                expected = expected_version,
-                                actual,
-                                "CAS conflict on refresh write; re-reading row before retry"
-                            );
-                            let refetched = self
-                                .store
-                                .get(selector)
-                                .await
-                                .map_err(ResolveError::Store)?;
-                            // Fail-closed: never resurrect a revoked credential.
-                            reject_tombstoned(credential_id, &refetched)?;
-                            current = refetched;
-                            continue;
-                        },
-                        Err(e) => return Err(ResolveError::Store(e)),
-                    }
-                }
-                Err(ResolveError::Store(
-                    CredentialPersistenceError::VersionConflict {
-                        credential_id: credential_id.to_string(),
-                        expected: current.version,
-                        actual: current.version,
+                let mut validated_metadata = stored.metadata().clone();
+                validated_metadata.insert(
+                    LAST_VALIDATED_AT_METADATA_KEY.to_owned(),
+                    serde_json::Value::String(now.to_rfc3339()),
+                );
+                let expected_version = stored.version();
+                let replacement = CredentialReplacement::new(
+                    expected_version,
+                    data.into(),
+                    stored.state_kind().to_owned(),
+                    stored.state_version(),
+                    stored.name().map(str::to_owned),
+                    state.expires_at(),
+                    // Clear the reauth flag on success — idempotent when
+                    // already false, recovers from a stale `true` left
+                    // over by a previous ReauthRequired outcome that the
+                    // application has since re-authorized (sub-spec / I1).
+                    false,
+                    validated_metadata,
+                );
+                match self.store.replace(selector, replacement).await {
+                    Ok(_) => {
+                        self.emit_refreshed(credential_id);
+                        let scheme = C::project(&state);
+                        Ok(self.materialize_handle::<C>(selector, scheme))
                     },
-                ))
+                    Err(conflict @ CredentialPersistenceError::VersionConflict { actual, .. }) => {
+                        tracing::warn!(
+                            credential_id = %credential_id,
+                            expected = %expected_version,
+                            actual = %actual,
+                            "CAS conflict on refresh write; refusing to replay stale provider state"
+                        );
+                        Err(ResolveError::PostProviderPersistence {
+                            credential_id: credential_id_text,
+                            source: conflict,
+                        })
+                    },
+                    Err(error) => Err(ResolveError::PostProviderPersistence {
+                        credential_id: credential_id_text,
+                        source: error,
+                    }),
+                }
             },
             RefreshOutcome::ReauthRequired(reason) => {
                 // Persist `reauth_required = true` on the credential row
@@ -880,96 +911,54 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
                 // persisted bit, every replica would re-run the IdP
                 // closure and produce another invalid_grant rejection.
                 //
-                // CAS retry loop mirrors the Refreshed-path write so we
-                // do not clobber a concurrent successful refresh that
-                // bumped the version while we were waiting for the IdP
-                // POST. CAS conflict here means another replica already
-                // committed something — retry with the new version so
-                // our reauth flag is layered on the latest row.
-                enum PersistOutcome {
-                    /// CAS landed; row now has `reauth_required = true`.
-                    Persisted,
-                    /// Store returned a non-CAS error; loop body has
-                    /// already logged it and the typed `ReauthRequired`
-                    /// is surfaced to the caller anyway.
-                    OtherStoreError,
-                }
-
-                let mut current = stored;
-                let mut persist_outcome: Option<PersistOutcome> = None;
-                for _attempt in 0..3 {
-                    let expected_version = current.version;
-                    let updated = StoredCredential {
-                        updated_at: chrono::Utc::now(),
-                        reauth_required: true,
-                        ..current.clone()
-                    };
-                    match self
-                        .store
-                        .put(
-                            selector,
-                            updated,
-                            CredentialWriteMode::CompareAndSwap { expected_version },
-                        )
-                        .await
-                    {
-                        Ok(_) => {
-                            persist_outcome = Some(PersistOutcome::Persisted);
-                            break;
-                        },
-                        Err(CredentialPersistenceError::VersionConflict { actual, .. }) => {
-                            tracing::warn!(
-                                credential_id,
-                                expected = expected_version,
-                                actual,
-                                "CAS conflict while persisting reauth_required=true; \
-                                 re-reading row before retry"
-                            );
-                            let refetched = self
-                                .store
-                                .get(selector)
-                                .await
-                                .map_err(ResolveError::Store)?;
-                            // Fail-closed: if a revoke landed while we waited on
-                            // the IdP, surface `NotFound` rather than writing the
-                            // reauth flag onto a tombstoned row (the CAS would
-                            // clobber `revoked_at` and resurrect it).
-                            reject_tombstoned(credential_id, &refetched)?;
-                            current = refetched;
-                            continue;
-                        },
-                        Err(e) => {
-                            // Best-effort persist: log but still surface the
-                            // typed error to the caller. The next refresh
-                            // attempt will hit the same provider rejection and
-                            // retry the persist.
-                            tracing::warn!(
-                                credential_id,
-                                ?e,
-                                "failed to persist reauth_required=true; surfacing ReauthRequired anyway"
-                            );
-                            persist_outcome = Some(PersistOutcome::OtherStoreError);
-                            break;
-                        },
-                    }
-                }
-                match persist_outcome {
-                    Some(PersistOutcome::Persisted | PersistOutcome::OtherStoreError) => {},
-                    None => {
-                        // CAS budget exhausted without committing — every attempt
-                        // observed a `VersionConflict`. Without observability this
-                        // is invisible: the post-backoff state-recheck on a
-                        // different replica will read `reauth_required = false`,
-                        // re-run the IdP closure, and produce another
-                        // `invalid_grant`. Surface the failure mode at WARN.
+                // The provider rejection was derived from exactly `stored`.
+                // A conflict means a newer row may already contain a successful
+                // refresh or operator replacement. Replaying the stale rejection
+                // would incorrectly mark that newer state as requiring reauth.
+                let expected_version = stored.version();
+                let replacement = CredentialReplacement::new(
+                    expected_version,
+                    stored.data().clone(),
+                    stored.state_kind().to_owned(),
+                    stored.state_version(),
+                    stored.name().map(str::to_owned),
+                    stored.expires_at(),
+                    true,
+                    stored.metadata().clone(),
+                );
+                match self.store.replace(selector, replacement).await {
+                    Ok(_) => {},
+                    Err(conflict @ CredentialPersistenceError::VersionConflict { actual, .. }) => {
                         tracing::warn!(
-                            credential_id,
-                            "reauth_required CAS exhausted after 3 attempts; next refresh will retry"
+                            credential_id = %credential_id,
+                            expected = %expected_version,
+                            actual = %actual,
+                            "CAS conflict while persisting reauth_required=true; refusing to replay stale provider state"
                         );
+                        return Err(ResolveError::PostProviderPersistence {
+                            credential_id: credential_id_text,
+                            source: conflict,
+                        });
+                    },
+                    Err(error) => {
+                        // The reauth decision is replica-visible only after an
+                        // acknowledged durable write. Surfacing the provider
+                        // result on any persistence failure would release the
+                        // refresh claim while leaving another replica free to
+                        // re-POST the same known-dead grant.
+                        tracing::warn!(
+                            credential_id = %credential_id,
+                            ?error,
+                            "failed to persist reauth_required=true; failing closed"
+                        );
+                        return Err(ResolveError::PostProviderPersistence {
+                            credential_id: credential_id_text,
+                            source: error,
+                        });
                     },
                 }
                 Err(ResolveError::ReauthRequired {
-                    credential_id: credential_id.to_string(),
+                    credential_id: credential_id_text,
                     reason,
                 })
             },
@@ -1004,25 +993,39 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
 /// `RefreshClaimStore`, `RefreshTransport`) — no `nebula-storage` edge, so no
 /// dependency cycle. The `ScriptedStore` simulates a `revoke` landing between
 /// the resolver's load and the refresh write-back by tombstoning + version-
-/// bumping the row on the first CAS `put`, which is exactly the race the
+/// bumping the row on the first version-fenced replacement, which is exactly the race the
 /// resurrection bug exploited.
 #[cfg(test)]
 mod refresh_revoke_race {
     use std::future::Future;
     use std::pin::Pin;
+    use std::sync::{
+        OnceLock,
+        atomic::{AtomicUsize, Ordering},
+    };
     use std::time::Duration;
 
-    use chrono::{DateTime, Utc};
+    use chrono::Utc;
     use nebula_core::auth::{AuthPattern, EgressShape, RefreshStrategyKind};
     use nebula_schema::FieldValues;
+    #[cfg(feature = "rotation")]
+    use nebula_storage_port::SecretBytes;
     use nebula_storage_port::store::{
-        ClaimAttempt, ClaimToken, HeartbeatError, ReclaimedClaim, RefreshClaimError,
+        ClaimAttempt, ClaimToken, ExpiredClaim, HeartbeatError, RefreshClaimError,
         RefreshClaimStore, ReplicaId,
+    };
+    use nebula_storage_port::{
+        CredentialAlreadyExistsKey, CredentialCommit, CredentialCreate, CredentialOwner,
+        CredentialTombstone, CredentialVersion, StoredCredentialHead, StoredTombstonedCredential,
     };
     use serde::{Deserialize, Serialize};
     use zeroize::{Zeroize, ZeroizeOnDrop};
 
     use parking_lot::Mutex;
+    #[cfg(feature = "rotation")]
+    use std::sync::atomic::AtomicBool;
+    #[cfg(feature = "rotation")]
+    use tokio::sync::Notify;
 
     use super::*;
     use crate::resolve::{RefreshPolicy, ResolveResult};
@@ -1030,58 +1033,169 @@ mod refresh_revoke_race {
     use crate::runtime::refresh::transport::{
         RefreshTransport, RefreshTransportError, TokenPostRequest, TokenPostResponse,
     };
-    use crate::{
-        CredentialMetadata, CredentialPolicy, OWNER_ID_METADATA_KEY, REVOKED_AT_METADATA_KEY,
-        RefreshStrategy, RevokeStrategy,
-    };
+    use crate::{CredentialMetadata, CredentialPolicy, RefreshStrategy, RevokeStrategy};
 
     // ── Test doubles of the crate's own ports ──────────────────────────
 
-    /// No-op L2 claim repo: the legacy l1-only refresh path (non-parseable id)
-    /// never acquires an L2 claim, so every method is unreachable. It exists
-    /// solely to satisfy `RefreshCoordinator::new_with`.
+    /// Single-caller L2 claim repo. Typed K2 selectors always exercise the L2
+    /// path, so this fixture grants every claim and accepts its lifecycle.
     struct StubClaimRepo;
 
     #[async_trait::async_trait]
     impl RefreshClaimStore for StubClaimRepo {
         async fn try_claim(
             &self,
-            _credential_id: &CredentialId,
+            credential_id: &CredentialId,
             _holder: &ReplicaId,
-            _ttl: Duration,
+            ttl: Duration,
         ) -> Result<ClaimAttempt, RefreshClaimError> {
-            unreachable!("l1-only refresh path never acquires an L2 claim")
+            let acquired_at = Utc::now();
+            let ttl =
+                chrono::Duration::from_std(ttl).expect("test refresh-claim TTL is representable");
+            Ok(ClaimAttempt::Acquired(
+                nebula_storage_port::store::RefreshClaim {
+                    credential_id: credential_id.to_owned(),
+                    token: ClaimToken {
+                        claim_id: "00000000-0000-0000-0000-000000000001"
+                            .parse()
+                            .expect("test claim id is a UUID"),
+                        generation: 1,
+                    },
+                    acquired_at,
+                    expires_at: acquired_at + ttl,
+                },
+            ))
         }
         async fn heartbeat(
             &self,
             _token: &ClaimToken,
             _ttl: Duration,
         ) -> Result<(), HeartbeatError> {
-            unreachable!("l1-only refresh path never heartbeats an L2 claim")
+            Ok(())
         }
         async fn release(&self, _token: ClaimToken) -> Result<(), RefreshClaimError> {
-            unreachable!("l1-only refresh path never releases an L2 claim")
+            Ok(())
         }
         async fn mark_sentinel(&self, _token: &ClaimToken) -> Result<(), RefreshClaimError> {
-            unreachable!("l1-only refresh path never marks a sentinel")
+            Ok(())
         }
-        async fn reclaim_stuck(&self) -> Result<Vec<ReclaimedClaim>, RefreshClaimError> {
-            unreachable!("l1-only refresh path never sweeps claims")
-        }
-        async fn record_sentinel_event(
-            &self,
-            _credential_id: &CredentialId,
-            _crashed_holder: &ReplicaId,
-            _generation: u64,
-        ) -> Result<(), RefreshClaimError> {
-            unreachable!("l1-only refresh path never records a sentinel event")
+        async fn reclaim_stuck(&self) -> Result<Vec<ExpiredClaim>, RefreshClaimError> {
+            Ok(Vec::new())
         }
         async fn count_sentinel_events_in_window(
             &self,
             _credential_id: &CredentialId,
-            _window_start: DateTime<Utc>,
+            _window: Duration,
         ) -> Result<u32, RefreshClaimError> {
-            unreachable!("l1-only refresh path never counts sentinel events")
+            Ok(0)
+        }
+    }
+
+    /// Stateful L2 fixture used by replay-safety regressions. Unlike
+    /// [`StubClaimRepo`], it keeps an acquired claim active until an explicit
+    /// release, so a retained sentinel claim can prove that a second request
+    /// reaches L2 but cannot repeat provider work.
+    #[cfg(feature = "rotation")]
+    #[derive(Default)]
+    struct StatefulClaimRepo {
+        active: AtomicBool,
+        try_claim_count: AtomicUsize,
+        release_count: AtomicUsize,
+        try_claim_seen: Notify,
+        release_seen: Notify,
+    }
+
+    #[cfg(feature = "rotation")]
+    impl StatefulClaimRepo {
+        async fn wait_for_try_claim_count(&self, target: usize) {
+            while self.try_claim_count.load(Ordering::SeqCst) < target {
+                self.try_claim_seen.notified().await;
+            }
+        }
+
+        async fn wait_for_release_count(&self, target: usize) {
+            while self.release_count.load(Ordering::SeqCst) < target {
+                self.release_seen.notified().await;
+            }
+        }
+    }
+
+    #[cfg(feature = "rotation")]
+    #[async_trait::async_trait]
+    impl RefreshClaimStore for StatefulClaimRepo {
+        async fn try_claim(
+            &self,
+            credential_id: &CredentialId,
+            _holder: &ReplicaId,
+            ttl: Duration,
+        ) -> Result<ClaimAttempt, RefreshClaimError> {
+            self.try_claim_count.fetch_add(1, Ordering::SeqCst);
+            self.try_claim_seen.notify_one();
+            let acquired_at = Utc::now();
+            let ttl =
+                chrono::Duration::from_std(ttl).expect("test refresh-claim TTL is representable");
+            if self
+                .active
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
+            {
+                return Ok(ClaimAttempt::Contended {
+                    existing_expires_at: acquired_at + ttl,
+                });
+            }
+
+            Ok(ClaimAttempt::Acquired(
+                nebula_storage_port::store::RefreshClaim {
+                    credential_id: credential_id.to_owned(),
+                    token: ClaimToken {
+                        claim_id: "00000000-0000-0000-0000-000000000002"
+                            .parse()
+                            .expect("test claim id is a UUID"),
+                        generation: 1,
+                    },
+                    acquired_at,
+                    expires_at: acquired_at + ttl,
+                },
+            ))
+        }
+
+        async fn heartbeat(
+            &self,
+            _token: &ClaimToken,
+            _ttl: Duration,
+        ) -> Result<(), HeartbeatError> {
+            if self.active.load(Ordering::SeqCst) {
+                Ok(())
+            } else {
+                Err(HeartbeatError::ClaimLost)
+            }
+        }
+
+        async fn release(&self, _token: ClaimToken) -> Result<(), RefreshClaimError> {
+            self.active.store(false, Ordering::SeqCst);
+            self.release_count.fetch_add(1, Ordering::SeqCst);
+            self.release_seen.notify_one();
+            Ok(())
+        }
+
+        async fn mark_sentinel(&self, _token: &ClaimToken) -> Result<(), RefreshClaimError> {
+            if self.active.load(Ordering::SeqCst) {
+                Ok(())
+            } else {
+                Err(RefreshClaimError::InvalidState)
+            }
+        }
+
+        async fn reclaim_stuck(&self) -> Result<Vec<ExpiredClaim>, RefreshClaimError> {
+            Ok(Vec::new())
+        }
+
+        async fn count_sentinel_events_in_window(
+            &self,
+            _credential_id: &CredentialId,
+            _window: Duration,
+        ) -> Result<u32, RefreshClaimError> {
+            Ok(0)
         }
     }
 
@@ -1102,22 +1216,97 @@ mod refresh_revoke_race {
         }
     }
 
-    /// In-memory single-row store. When `revoke_on_first_put` is set, the first
-    /// CAS `put` tombstones + version-bumps the row and rejects the write —
+    #[cfg(feature = "rotation")]
+    #[derive(Clone, Copy)]
+    enum OAuthTransportResult {
+        AckLost,
+        InvalidGrant,
+    }
+
+    /// Deterministic OAuth2 transport used to distinguish an ambiguous
+    /// post-dispatch failure from an exact RFC 6749 provider rejection.
+    #[cfg(feature = "rotation")]
+    struct ScriptedOAuthTransport {
+        result: OAuthTransportResult,
+        calls: AtomicUsize,
+    }
+
+    #[cfg(feature = "rotation")]
+    impl ScriptedOAuthTransport {
+        fn new(result: OAuthTransportResult) -> Self {
+            Self {
+                result,
+                calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn call_count(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    #[cfg(feature = "rotation")]
+    impl RefreshTransport for ScriptedOAuthTransport {
+        fn post_token<'a>(
+            &'a self,
+            _request: TokenPostRequest,
+        ) -> Pin<
+            Box<dyn Future<Output = Result<TokenPostResponse, RefreshTransportError>> + Send + 'a>,
+        > {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let result = self.result;
+            Box::pin(async move {
+                match result {
+                    OAuthTransportResult::AckLost => Err(RefreshTransportError::ReadBody),
+                    OAuthTransportResult::InvalidGrant => Ok(TokenPostResponse::try_new(
+                        400,
+                        SecretBytes::new(
+                            br#"{"error":"invalid_grant","error_description":"grant revoked"}"#
+                                .to_vec(),
+                        ),
+                    )
+                    .expect("scripted response is bounded")),
+                }
+            })
+        }
+    }
+
+    /// In-memory single-row store. When `revoke_on_first_replace` is set, the
+    /// first replacement structurally tombstones + version-bumps the row —
     /// modelling a `revoke` that raced the refresh between load and write-back.
     #[derive(Debug)]
     struct ScriptedStore {
+        owner: CredentialOwner,
         row: Mutex<StoredCredential>,
-        revoke_on_first_put: bool,
-        puts: Mutex<u32>,
+        revoke_on_first_replace: bool,
+        replace_error: Option<CredentialPersistenceError>,
+        replacements: Mutex<u32>,
+        gets: Mutex<u32>,
     }
 
     impl ScriptedStore {
-        fn new(row: StoredCredential, revoke_on_first_put: bool) -> Self {
+        fn new(row: StoredCredential, revoke_on_first_replace: bool) -> Self {
             Self {
+                owner: test_owner(),
                 row: Mutex::new(row),
-                revoke_on_first_put,
-                puts: Mutex::new(0),
+                revoke_on_first_replace,
+                replace_error: None,
+                replacements: Mutex::new(0),
+                gets: Mutex::new(0),
+            }
+        }
+
+        fn failing_replace(
+            row: StoredCredential,
+            replace_error: CredentialPersistenceError,
+        ) -> Self {
+            Self {
+                owner: test_owner(),
+                row: Mutex::new(row),
+                revoke_on_first_replace: false,
+                replace_error: Some(replace_error),
+                replacements: Mutex::new(0),
+                gets: Mutex::new(0),
             }
         }
 
@@ -1125,63 +1314,128 @@ mod refresh_revoke_race {
             self.row.lock().clone()
         }
 
-        fn put_count(&self) -> u32 {
-            *self.puts.lock()
+        fn replacement_count(&self) -> u32 {
+            *self.replacements.lock()
+        }
+
+        fn get_count(&self) -> u32 {
+            *self.gets.lock()
         }
 
         // Synchronous core so the trait futures hold no lock across an `.await`.
-        fn put_sync(
+        fn replace_sync(
             &self,
-            credential: StoredCredential,
-            mode: CredentialWriteMode,
-        ) -> Result<StoredCredential, CredentialPersistenceError> {
+            selector: &CredentialSelector,
+            replacement: CredentialReplacement,
+        ) -> Result<CredentialCommit, CredentialPersistenceError> {
             let mut row = self.row.lock();
-            let id = row.id.clone();
+            if selector.owner() != &self.owner || row.credential_id() != selector.credential_id() {
+                return Err(CredentialPersistenceError::NotFound);
+            }
+            let StoredCredential::Live(current) = row.clone() else {
+                return Err(CredentialPersistenceError::NotFound);
+            };
             let first = {
-                let mut puts = self.puts.lock();
-                *puts += 1;
-                *puts == 1
+                let mut replacements = self.replacements.lock();
+                *replacements += 1;
+                *replacements == 1
             };
+            let expected = replacement.expected_version();
 
-            let expected = match mode {
-                CredentialWriteMode::CompareAndSwap { expected_version } => Some(expected_version),
-                CredentialWriteMode::CreateOnly | CredentialWriteMode::Overwrite => None,
-                _ => {
-                    return Err(CredentialPersistenceError::InvalidRequest(
-                        "unsupported credential write mode",
-                    ));
-                },
-            };
+            if let Some(error) = self.replace_error {
+                return Err(error);
+            }
 
-            if self.revoke_on_first_put && first {
+            if self.revoke_on_first_replace && first {
                 // A `revoke` lands between the resolver's load and this CAS:
-                // bump the version and tombstone the row, then reject the write.
-                row.version += 1;
-                row.metadata.insert(
-                    REVOKED_AT_METADATA_KEY.to_owned(),
-                    serde_json::Value::String("2026-06-13T00:00:00Z".to_owned()),
-                );
+                // consume the next version, clear every live-only field by
+                // construction, then reject the stale replacement.
+                let actual = current.version().next_tombstone()?;
+                let now = Utc::now();
+                *row = StoredTombstonedCredential::new(
+                    current.credential_id(),
+                    current.credential_key().to_owned(),
+                    current.state_kind().to_owned(),
+                    current.state_version(),
+                    actual,
+                    current.created_at(),
+                    now,
+                    now,
+                )
+                .into();
+                return Err(CredentialPersistenceError::VersionConflict { expected, actual });
+            }
+
+            if expected != current.version() {
                 return Err(CredentialPersistenceError::VersionConflict {
-                    credential_id: id,
-                    expected: expected.unwrap_or(0),
-                    actual: row.version,
+                    expected,
+                    actual: current.version(),
                 });
             }
 
-            if let Some(expected_version) = expected
-                && expected_version != row.version
-            {
+            let version = current.version().next_live()?;
+            let updated_at = Utc::now();
+            let committed = StoredLiveCredential::new(
+                current.credential_id(),
+                replacement.name().map(str::to_owned),
+                current.credential_key().to_owned(),
+                replacement.data().clone(),
+                replacement.state_kind().to_owned(),
+                replacement.state_version(),
+                version,
+                current.created_at(),
+                updated_at,
+                replacement.expires_at(),
+                replacement.reauth_required(),
+                replacement.metadata().clone(),
+            )?;
+            *row = committed.into();
+            CredentialCommit::live(
+                current.credential_id(),
+                version,
+                current.created_at(),
+                updated_at,
+            )
+        }
+
+        fn tombstone_sync(
+            &self,
+            selector: &CredentialSelector,
+            tombstone: CredentialTombstone,
+        ) -> Result<CredentialCommit, CredentialPersistenceError> {
+            let mut row = self.row.lock();
+            if selector.owner() != &self.owner || row.credential_id() != selector.credential_id() {
+                return Err(CredentialPersistenceError::NotFound);
+            }
+            let StoredCredential::Live(current) = row.clone() else {
+                return Err(CredentialPersistenceError::NotFound);
+            };
+            if tombstone.expected_version() != current.version() {
                 return Err(CredentialPersistenceError::VersionConflict {
-                    credential_id: id,
-                    expected: expected_version,
-                    actual: row.version,
+                    expected: tombstone.expected_version(),
+                    actual: current.version(),
                 });
             }
-
-            let mut committed = credential;
-            committed.version = row.version + 1;
-            *row = committed.clone();
-            Ok(committed)
+            let version = current.version().next_tombstone()?;
+            let now = Utc::now();
+            *row = StoredTombstonedCredential::new(
+                current.credential_id(),
+                current.credential_key().to_owned(),
+                current.state_kind().to_owned(),
+                current.state_version(),
+                version,
+                current.created_at(),
+                now,
+                now,
+            )
+            .into();
+            Ok(CredentialCommit::tombstoned(
+                current.credential_id(),
+                version,
+                current.created_at(),
+                now,
+                now,
+            ))
         }
     }
 
@@ -1193,73 +1447,94 @@ mod refresh_revoke_race {
             &self,
             selector: &CredentialSelector,
         ) -> Result<StoredCredential, CredentialPersistenceError> {
+            *self.gets.lock() += 1;
             let row = self.row.lock().clone();
-            let owner_matches = row
-                .metadata
-                .get(OWNER_ID_METADATA_KEY)
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|owner| owner == selector.owner().as_str());
-            if row.id == selector.credential_id() && owner_matches {
+            if selector.owner() == &self.owner && row.credential_id() == selector.credential_id() {
                 Ok(row)
             } else {
-                Err(CredentialPersistenceError::NotFound {
-                    credential_id: selector.credential_id().to_owned(),
-                })
+                Err(CredentialPersistenceError::NotFound)
             }
         }
 
         async fn get_head(
             &self,
             selector: &CredentialSelector,
-        ) -> Result<nebula_storage_port::StoredCredentialHead, CredentialPersistenceError> {
-            self.get(selector)
-                .await
-                .map(|stored| nebula_storage_port::StoredCredentialHead::from(&stored))
+        ) -> Result<StoredCredentialHead, CredentialPersistenceError> {
+            match self.get(selector).await? {
+                StoredCredential::Live(stored) => Ok(StoredCredentialHead::from(&stored)),
+                StoredCredential::Tombstoned(_) => Err(CredentialPersistenceError::NotFound),
+            }
         }
 
-        async fn put(
+        async fn create(
             &self,
             selector: &CredentialSelector,
-            credential: StoredCredential,
-            mode: CredentialWriteMode,
-        ) -> Result<StoredCredential, CredentialPersistenceError> {
-            if credential.id != selector.credential_id() {
-                return Err(CredentialPersistenceError::InvalidRequest(
-                    "selector credential id does not match row id",
-                ));
+            _create: CredentialCreate,
+        ) -> Result<CredentialCommit, CredentialPersistenceError> {
+            if selector.owner() != &self.owner {
+                return Err(CredentialPersistenceError::NotFound);
             }
-            self.put_sync(credential, mode)
+            Err(CredentialPersistenceError::AlreadyExists {
+                key: CredentialAlreadyExistsKey::Id,
+            })
         }
 
-        async fn delete(
+        async fn replace(
             &self,
-            _selector: &CredentialSelector,
-        ) -> Result<(), CredentialPersistenceError> {
-            unreachable!("delete is not exercised by the resolver refresh regressions")
+            selector: &CredentialSelector,
+            replacement: CredentialReplacement,
+        ) -> Result<CredentialCommit, CredentialPersistenceError> {
+            self.replace_sync(selector, replacement)
+        }
+
+        async fn tombstone(
+            &self,
+            selector: &CredentialSelector,
+            tombstone: CredentialTombstone,
+        ) -> Result<CredentialCommit, CredentialPersistenceError> {
+            self.tombstone_sync(selector, tombstone)
         }
 
         async fn list(
             &self,
-            _owner: &nebula_storage_port::CredentialOwner,
-            _state_kind: Option<&str>,
-        ) -> Result<Vec<String>, CredentialPersistenceError> {
-            Ok(Vec::new())
+            owner: &CredentialOwner,
+            state_kind: Option<&str>,
+        ) -> Result<Vec<CredentialId>, CredentialPersistenceError> {
+            let row = self.row.lock();
+            let listed = owner == &self.owner
+                && row
+                    .as_live()
+                    .is_some_and(|live| state_kind.is_none_or(|kind| live.state_kind() == kind));
+            Ok(if listed {
+                vec![row.credential_id()]
+            } else {
+                Vec::new()
+            })
         }
 
         async fn list_heads(
             &self,
-            _owner: &nebula_storage_port::CredentialOwner,
-            _state_kind: Option<&str>,
-        ) -> Result<Vec<nebula_storage_port::StoredCredentialHead>, CredentialPersistenceError>
-        {
-            Ok(Vec::new())
+            owner: &CredentialOwner,
+            state_kind: Option<&str>,
+        ) -> Result<Vec<StoredCredentialHead>, CredentialPersistenceError> {
+            let row = self.row.lock();
+            let Some(live) = row.as_live() else {
+                return Ok(Vec::new());
+            };
+            if owner != &self.owner || state_kind.is_some_and(|kind| live.state_kind() != kind) {
+                return Ok(Vec::new());
+            }
+            Ok(vec![StoredCredentialHead::from(live)])
         }
 
         async fn exists(
             &self,
-            _selector: &CredentialSelector,
+            selector: &CredentialSelector,
         ) -> Result<bool, CredentialPersistenceError> {
-            Ok(true)
+            let row = self.row.lock();
+            Ok(selector.owner() == &self.owner
+                && row.credential_id() == selector.credential_id()
+                && matches!(&*row, StoredCredential::Live(_)))
         }
     }
 
@@ -1302,6 +1577,12 @@ mod refresh_revoke_race {
 
     struct TestCred;
 
+    static CAS_PROVIDER_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static NAME_PROVIDER_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static UNAVAILABLE_PROVIDER_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static UNKNOWN_PROVIDER_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static REAUTH_PROVIDER_CALLS: AtomicUsize = AtomicUsize::new(0);
+
     impl Credential for TestCred {
         type Properties = ();
         type Scheme = TestScheme;
@@ -1341,6 +1622,29 @@ mod refresh_revoke_race {
             state: &mut TestState,
             _ctx: &CredentialContext,
         ) -> Result<RefreshOutcome, CredentialError> {
+            match state.token.as_str() {
+                "counted-cas" => {
+                    CAS_PROVIDER_CALLS.fetch_add(1, Ordering::SeqCst);
+                },
+                "counted-name" => {
+                    NAME_PROVIDER_CALLS.fetch_add(1, Ordering::SeqCst);
+                },
+                "counted-unavailable" => {
+                    UNAVAILABLE_PROVIDER_CALLS.fetch_add(1, Ordering::SeqCst);
+                },
+                "counted-unknown" => {
+                    UNKNOWN_PROVIDER_CALLS.fetch_add(1, Ordering::SeqCst);
+                },
+                "reject" => {
+                    REAUTH_PROVIDER_CALLS.fetch_add(1, Ordering::SeqCst);
+                },
+                _ => {},
+            }
+            if state.token == "reject" {
+                return Ok(RefreshOutcome::ReauthRequired(
+                    ReauthReason::ProviderRejected,
+                ));
+            }
             state.token = "refreshed".to_owned();
             Ok(RefreshOutcome::Refreshed)
         }
@@ -1361,15 +1665,18 @@ mod refresh_revoke_race {
 
     // ── Fixtures ───────────────────────────────────────────────────────
 
-    // Non-parseable id (not `cred_<ULID>`) → the resolver takes the l1-only
-    // refresh path, which needs no L2 claim repo.
-    const TEST_ID: &str = "test-cred";
+    static TEST_ID: OnceLock<CredentialId> = OnceLock::new();
+
+    fn test_id() -> CredentialId {
+        TEST_ID.get_or_init(CredentialId::new).to_owned()
+    }
+
+    fn test_owner() -> CredentialOwner {
+        CredentialOwner::from_canonical("test-owner")
+    }
 
     fn test_selector() -> CredentialSelector {
-        CredentialSelector::new(
-            nebula_storage_port::CredentialOwner::from_canonical("test-owner"),
-            TEST_ID,
-        )
+        CredentialSelector::new(test_owner(), test_id())
     }
 
     fn test_state_bytes() -> Vec<u8> {
@@ -1380,32 +1687,106 @@ mod refresh_revoke_race {
     }
 
     fn live_row() -> StoredCredential {
-        StoredCredential {
-            id: TEST_ID.to_owned(),
-            name: None,
-            credential_key: TestCred::KEY.to_owned(),
-            data: test_state_bytes().into(),
-            state_kind: TestState::KIND.to_owned(),
-            state_version: TestState::VERSION,
-            version: 1,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            expires_at: None,
-            reauth_required: false,
-            metadata: serde_json::Map::from_iter([(
-                OWNER_ID_METADATA_KEY.to_owned(),
-                serde_json::Value::String("test-owner".to_owned()),
-            )]),
-        }
+        live_row_with_token("live")
+    }
+
+    fn live_row_with_token(token: &str) -> StoredCredential {
+        let now = Utc::now();
+        let data = serde_json::to_vec(&TestState {
+            token: token.to_owned(),
+        })
+        .expect("serialize test state");
+        StoredLiveCredential::new(
+            test_id(),
+            None,
+            TestCred::KEY.to_owned(),
+            data.into(),
+            TestState::KIND.to_owned(),
+            TestState::VERSION,
+            CredentialVersion::MIN,
+            now,
+            now,
+            None,
+            false,
+            serde_json::Map::new(),
+        )
+        .expect("fixture is a valid live credential")
+        .into()
+    }
+
+    #[cfg(feature = "rotation")]
+    fn oauth2_row(refresh_token: Option<&str>) -> StoredCredential {
+        let now = Utc::now();
+        let expires_at = now - chrono::Duration::minutes(5);
+        let state = OAuth2State {
+            access_token: crate::SecretString::new("expired-access-token"),
+            token_type: "Bearer".to_owned(),
+            refresh_token: refresh_token.map(crate::SecretString::new),
+            expires_at: Some(expires_at),
+            scopes: vec!["read".to_owned()],
+            client_id: crate::SecretString::new("client-id"),
+            client_secret: crate::SecretString::new("client-secret"),
+            token_url: "https://provider.example/token".to_owned(),
+            auth_style: crate::AuthStyle::Header,
+        };
+        let data = crate::serde_secret::expose_for_serialization(|| serde_json::to_vec(&state))
+            .expect("serialize OAuth2 test state with explicit secret scope");
+        StoredLiveCredential::new(
+            test_id(),
+            None,
+            OAuth2Credential::KEY.to_owned(),
+            data.into(),
+            OAuth2State::KIND.to_owned(),
+            OAuth2State::VERSION,
+            CredentialVersion::MIN,
+            now,
+            now,
+            Some(expires_at),
+            false,
+            serde_json::Map::new(),
+        )
+        .expect("fixture is a valid OAuth2 credential")
+        .into()
+    }
+
+    fn reauth_required_row() -> StoredCredential {
+        let now = Utc::now();
+        StoredLiveCredential::new(
+            test_id(),
+            None,
+            TestCred::KEY.to_owned(),
+            test_state_bytes().into(),
+            TestState::KIND.to_owned(),
+            TestState::VERSION,
+            CredentialVersion::MIN,
+            now,
+            now,
+            None,
+            true,
+            serde_json::Map::new(),
+        )
+        .expect("fixture is a valid reauth-required credential")
+        .into()
     }
 
     fn tombstoned_row() -> StoredCredential {
-        let mut row = live_row();
-        row.metadata.insert(
-            REVOKED_AT_METADATA_KEY.to_owned(),
-            serde_json::Value::String("2026-06-13T00:00:00Z".to_owned()),
-        );
-        row
+        let StoredCredential::Live(live) = live_row() else {
+            unreachable!("live fixture must be structurally live");
+        };
+        let now = Utc::now();
+        StoredTombstonedCredential::new(
+            live.credential_id(),
+            live.credential_key().to_owned(),
+            live.state_kind().to_owned(),
+            live.state_version(),
+            live.version()
+                .next_tombstone()
+                .expect("fixture has tombstone headroom"),
+            live.created_at(),
+            now,
+            now,
+        )
+        .into()
     }
 
     fn resolver_with(store: Arc<ScriptedStore>) -> CredentialResolver<ScriptedStore> {
@@ -1418,13 +1799,29 @@ mod refresh_revoke_race {
         CredentialResolver::with_dependencies(store, Arc::new(coord), Arc::new(StubTransport))
     }
 
+    #[cfg(feature = "rotation")]
+    fn resolver_with_runtime(
+        store: Arc<ScriptedStore>,
+        claims: Arc<dyn RefreshClaimStore>,
+        transport: Arc<dyn RefreshTransport>,
+    ) -> CredentialResolver<ScriptedStore> {
+        let coord = RefreshCoordinator::new_with(
+            claims,
+            ReplicaId::new("stateful-test-replica"),
+            RefreshCoordConfig::default(),
+        )
+        .expect("default coordinator config is valid");
+        CredentialResolver::with_dependencies(store, Arc::new(coord), transport)
+    }
+
     // ── Regressions ────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn refresh_racing_revoke_does_not_resurrect() {
+        CAS_PROVIDER_CALLS.store(0, Ordering::SeqCst);
         let store = Arc::new(ScriptedStore::new(
-            live_row(),
-            /* revoke_on_first_put */ true,
+            live_row_with_token("counted-cas"),
+            /* revoke_on_first_replace */ true,
         ));
         let resolver = resolver_with(Arc::clone(&store));
         let ctx = CredentialContext::for_owner("test-owner");
@@ -1436,21 +1833,40 @@ mod refresh_revoke_race {
 
         assert!(
             matches!(
-                err,
-                ResolveError::Store(CredentialPersistenceError::NotFound { .. })
+                &err,
+                ResolveError::PostProviderPersistence {
+                    source: CredentialPersistenceError::VersionConflict { .. },
+                    ..
+                }
             ),
-            "expected existence-hiding NotFound, got {err:?}"
+            "the stale provider result must stop at its original CAS boundary, got {err:?}"
         );
 
         let final_row = store.snapshot();
         assert!(
-            final_row.is_tombstoned(),
-            "the revoke tombstone must survive — a resurrection bug would erase revoked_at"
+            matches!(final_row, StoredCredential::Tombstoned(_)),
+            "the structural tombstone must survive"
         );
         assert_eq!(
-            store.put_count(),
+            store.replacement_count(),
             1,
-            "must not issue a second CAS write after observing the revoke"
+            "must not issue a second replacement after observing the tombstone"
+        );
+        assert_eq!(
+            store.get_count(),
+            1,
+            "a version conflict must not trigger a hidden retry or reconciliation read"
+        );
+        assert_eq!(
+            CAS_PROVIDER_CALLS.load(Ordering::SeqCst),
+            1,
+            "a CAS conflict after provider success must not repeat provider work"
+        );
+        use nebula_error::Classify;
+        let mapped = resolve_error_to_credential_error(err);
+        assert!(
+            !mapped.is_retryable(),
+            "a post-provider CAS conflict must stop generic retry loops"
         );
     }
 
@@ -1458,7 +1874,7 @@ mod refresh_revoke_race {
     async fn refresh_without_race_succeeds_and_stamps_validation() {
         let store = Arc::new(ScriptedStore::new(
             live_row(),
-            /* revoke_on_first_put */ false,
+            /* revoke_on_first_replace */ false,
         ));
         let resolver = resolver_with(Arc::clone(&store));
         let ctx = CredentialContext::for_owner("test-owner");
@@ -1469,18 +1885,22 @@ mod refresh_revoke_race {
             .expect("an uncontended refresh must succeed");
 
         let final_row = store.snapshot();
+        let StoredCredential::Live(final_row) = final_row else {
+            panic!("an uncontended refresh must remain live");
+        };
         assert!(
-            !final_row.is_tombstoned(),
-            "an uncontended refresh must not tombstone"
-        );
-        assert!(
-            final_row.last_validated_at().is_some(),
+            last_validated_at(&final_row).is_some(),
             "a provider-contacting refresh must stamp the re-validation anchor"
         );
         assert_eq!(
-            store.put_count(),
+            store.replacement_count(),
             1,
-            "exactly one CAS write on the happy path"
+            "exactly one replacement on the happy path"
+        );
+        assert_eq!(
+            store.get_count(),
+            1,
+            "a confirmed replacement must not trigger a post-write read"
         );
     }
 
@@ -1498,12 +1918,12 @@ mod refresh_revoke_race {
         assert!(
             matches!(
                 err,
-                ResolveError::Store(CredentialPersistenceError::NotFound { .. })
+                ResolveError::Store(CredentialPersistenceError::NotFound)
             ),
             "got {err:?}"
         );
         assert_eq!(
-            store.put_count(),
+            store.replacement_count(),
             0,
             "a tombstoned row must be rejected at load, before any write"
         );
@@ -1522,10 +1942,342 @@ mod refresh_revoke_race {
         assert!(
             matches!(
                 err,
-                ResolveError::Store(CredentialPersistenceError::NotFound { .. })
+                ResolveError::Store(CredentialPersistenceError::NotFound)
             ),
             "got {err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn persisted_reauth_blocks_plain_and_refresh_resolution_without_provider_work() {
+        for path in ["plain", "scoped", "refresh"] {
+            let store = Arc::new(ScriptedStore::new(reauth_required_row(), false));
+            let resolver = resolver_with(Arc::clone(&store));
+            let error = match path {
+                "plain" => resolver
+                    .resolve::<TestCred>(&test_selector())
+                    .await
+                    .expect_err("plain resolve must honor persisted reauth"),
+                "scoped" => resolver
+                    .resolve_scoped::<TestCred>(&test_selector())
+                    .await
+                    .expect_err("scoped resolve must honor persisted reauth"),
+                "refresh" => resolver
+                    .resolve_with_refresh::<TestCred>(
+                        &test_selector(),
+                        &CredentialContext::for_owner("test-owner"),
+                    )
+                    .await
+                    .expect_err("refresh resolve must honor persisted reauth"),
+                _ => unreachable!("closed test path set"),
+            };
+
+            assert!(
+                matches!(
+                    error,
+                    ResolveError::ReauthRequired {
+                        reason: ReauthReason::ProviderRejected,
+                        ..
+                    }
+                ),
+                "{path} returned {error:?}"
+            );
+            assert_eq!(
+                store.replacement_count(),
+                0,
+                "{path} must reject before provider or persistence work"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_rejection_is_not_reported_without_durable_reauth_acknowledgement() {
+        REAUTH_PROVIDER_CALLS.store(0, Ordering::SeqCst);
+        let store = Arc::new(ScriptedStore::failing_replace(
+            live_row_with_token("reject"),
+            CredentialPersistenceError::Unavailable,
+        ));
+        let resolver = resolver_with(Arc::clone(&store));
+
+        let error = resolver
+            .resolve_with_refresh::<TestCred>(
+                &test_selector(),
+                &CredentialContext::for_owner("test-owner"),
+            )
+            .await
+            .expect_err("an unpersisted reauth decision must fail closed");
+
+        assert!(matches!(
+            &error,
+            ResolveError::PostProviderPersistence {
+                source: CredentialPersistenceError::Unavailable,
+                ..
+            }
+        ));
+        assert_eq!(store.replacement_count(), 1);
+        let StoredCredential::Live(row) = store.snapshot() else {
+            panic!("failed replacement must preserve the live row");
+        };
+        assert!(
+            !row.reauth_required(),
+            "failed persistence cannot pretend the replica-visible bit was committed"
+        );
+        assert_eq!(REAUTH_PROVIDER_CALLS.load(Ordering::SeqCst), 1);
+        use nebula_error::Classify;
+        let mapped = resolve_error_to_credential_error(error);
+        assert!(
+            !mapped.is_retryable(),
+            "an unpersisted provider rejection must not POST the dead grant again"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_provider_name_conflict_and_unavailable_are_typed_non_retryable() {
+        use nebula_error::Classify;
+
+        NAME_PROVIDER_CALLS.store(0, Ordering::SeqCst);
+        let name_store = Arc::new(ScriptedStore::failing_replace(
+            live_row_with_token("counted-name"),
+            CredentialPersistenceError::AlreadyExists {
+                key: CredentialAlreadyExistsKey::Name,
+            },
+        ));
+        let name_error = resolver_with(Arc::clone(&name_store))
+            .resolve_with_refresh::<TestCred>(
+                &test_selector(),
+                &CredentialContext::for_owner("test-owner"),
+            )
+            .await
+            .expect_err("a post-provider name collision must fail closed");
+        assert!(matches!(
+            &name_error,
+            ResolveError::PostProviderPersistence {
+                source: CredentialPersistenceError::AlreadyExists {
+                    key: CredentialAlreadyExistsKey::Name,
+                },
+                ..
+            }
+        ));
+        assert_eq!(NAME_PROVIDER_CALLS.load(Ordering::SeqCst), 1);
+        assert!(
+            !resolve_error_to_credential_error(name_error).is_retryable(),
+            "a name-only race must not replay provider work"
+        );
+
+        UNAVAILABLE_PROVIDER_CALLS.store(0, Ordering::SeqCst);
+        let unavailable_store = Arc::new(ScriptedStore::failing_replace(
+            live_row_with_token("counted-unavailable"),
+            CredentialPersistenceError::Unavailable,
+        ));
+        let unavailable_error = resolver_with(Arc::clone(&unavailable_store))
+            .resolve_with_refresh::<TestCred>(
+                &test_selector(),
+                &CredentialContext::for_owner("test-owner"),
+            )
+            .await
+            .expect_err("a post-provider definite outage must fail closed");
+        assert!(matches!(
+            &unavailable_error,
+            ResolveError::PostProviderPersistence {
+                source: CredentialPersistenceError::Unavailable,
+                ..
+            }
+        ));
+        assert_eq!(UNAVAILABLE_PROVIDER_CALLS.load(Ordering::SeqCst), 1);
+        assert!(
+            !resolve_error_to_credential_error(unavailable_error).is_retryable(),
+            "a definite persistence outage after provider success is not a safe full retry"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_provider_unknown_commit_outcome_remains_exact_and_non_retryable() {
+        use nebula_error::Classify;
+
+        UNKNOWN_PROVIDER_CALLS.store(0, Ordering::SeqCst);
+        let store = Arc::new(ScriptedStore::failing_replace(
+            live_row_with_token("counted-unknown"),
+            CredentialPersistenceError::OutcomeUnknown,
+        ));
+        let error = resolver_with(Arc::clone(&store))
+            .resolve_with_refresh::<TestCred>(
+                &test_selector(),
+                &CredentialContext::for_owner("test-owner"),
+            )
+            .await
+            .expect_err("unknown commit acknowledgement must survive the resolver");
+        assert!(matches!(
+            &error,
+            ResolveError::PostProviderPersistence {
+                source: CredentialPersistenceError::OutcomeUnknown,
+                ..
+            }
+        ));
+        assert_eq!(UNKNOWN_PROVIDER_CALLS.load(Ordering::SeqCst), 1);
+        let mapped = resolve_error_to_credential_error(error);
+        assert!(matches!(mapped, CredentialError::OutcomeUnknown));
+        assert!(!mapped.is_retryable());
+    }
+
+    #[cfg(feature = "rotation")]
+    #[tokio::test]
+    async fn oauth_ack_loss_is_outcome_unknown_and_retains_l2_against_immediate_replay() {
+        use nebula_error::Classify;
+
+        let store = Arc::new(ScriptedStore::new(
+            oauth2_row(Some("rotating-grant")),
+            false,
+        ));
+        let claims = Arc::new(StatefulClaimRepo::default());
+        let transport = Arc::new(ScriptedOAuthTransport::new(OAuthTransportResult::AckLost));
+        let claim_port: Arc<dyn RefreshClaimStore> = claims.clone();
+        let transport_port: Arc<dyn RefreshTransport> = transport.clone();
+        let resolver = resolver_with_runtime(Arc::clone(&store), claim_port, transport_port);
+        let selector = test_selector();
+        let ctx = CredentialContext::for_owner("test-owner");
+
+        let error = resolver
+            .resolve_with_refresh::<OAuth2Credential>(&selector, &ctx)
+            .await
+            .expect_err("a response acknowledgement loss cannot prove provider outcome");
+
+        assert!(matches!(
+            &error,
+            ResolveError::ProviderOutcomeUnknown { .. }
+        ));
+        assert_eq!(transport.call_count(), 1, "exactly one provider dispatch");
+        assert_eq!(
+            store.replacement_count(),
+            0,
+            "unknown provider outcome must not synthesize a persistence transition"
+        );
+        assert!(
+            claims.active.load(Ordering::SeqCst),
+            "the sentinel L2 claim must remain active and become poison until reconciliation"
+        );
+        assert_eq!(
+            claims.release_count.load(Ordering::SeqCst),
+            0,
+            "unknown outcome must not release L2"
+        );
+        let mapped = resolve_error_to_credential_error(error);
+        assert!(matches!(mapped, CredentialError::OutcomeUnknown));
+        assert!(!mapped.is_retryable());
+
+        let second = tokio::spawn({
+            let resolver = resolver.clone();
+            let selector = selector.clone();
+            let ctx = ctx.clone();
+            async move {
+                resolver
+                    .resolve_with_refresh::<OAuth2Credential>(&selector, &ctx)
+                    .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(1), claims.wait_for_try_claim_count(2))
+            .await
+            .expect("the second local request must reach the retained L2 claim");
+        assert_eq!(
+            transport.call_count(),
+            1,
+            "a retained ambiguous claim must prevent an immediate second POST"
+        );
+        second.abort();
+        let _ = second.await;
+    }
+
+    #[cfg(feature = "rotation")]
+    #[tokio::test]
+    async fn oauth_invalid_grant_persists_reauth_and_releases_confirmed_claim() {
+        use nebula_error::Classify;
+
+        let store = Arc::new(ScriptedStore::new(oauth2_row(Some("revoked-grant")), false));
+        let claims = Arc::new(StatefulClaimRepo::default());
+        let transport = Arc::new(ScriptedOAuthTransport::new(
+            OAuthTransportResult::InvalidGrant,
+        ));
+        let claim_port: Arc<dyn RefreshClaimStore> = claims.clone();
+        let transport_port: Arc<dyn RefreshTransport> = transport.clone();
+        let resolver = resolver_with_runtime(Arc::clone(&store), claim_port, transport_port);
+
+        let error = resolver
+            .resolve_with_refresh::<OAuth2Credential>(
+                &test_selector(),
+                &CredentialContext::for_owner("test-owner"),
+            )
+            .await
+            .expect_err("invalid_grant must require user re-authorization");
+
+        assert!(matches!(
+            &error,
+            ResolveError::ReauthRequired {
+                reason: ReauthReason::ProviderRejected,
+                ..
+            }
+        ));
+        assert_eq!(transport.call_count(), 1);
+        assert_eq!(
+            store.replacement_count(),
+            1,
+            "the replica-visible reauth decision must be persisted exactly once"
+        );
+        let StoredCredential::Live(row) = store.snapshot() else {
+            panic!("invalid_grant must retain a live row marked for reauth");
+        };
+        assert!(row.reauth_required());
+
+        tokio::time::timeout(Duration::from_secs(1), claims.wait_for_release_count(1))
+            .await
+            .expect("a confirmed provider rejection should release L2 best-effort");
+        assert!(!claims.active.load(Ordering::SeqCst));
+
+        let mapped = resolve_error_to_credential_error(error);
+        let CredentialError::Provider(context) = mapped else {
+            panic!("reauth must map to the public provider error taxonomy");
+        };
+        assert_eq!(
+            context.kind(),
+            crate::error::ProviderErrorKind::InvalidGrant
+        );
+        assert!(!CredentialError::Provider(context).is_retryable());
+    }
+
+    #[cfg(feature = "rotation")]
+    #[tokio::test]
+    async fn oauth_missing_refresh_material_is_exact_without_transport_dispatch() {
+        let store = Arc::new(ScriptedStore::new(oauth2_row(None), false));
+        let claims = Arc::new(StatefulClaimRepo::default());
+        let transport = Arc::new(ScriptedOAuthTransport::new(
+            OAuthTransportResult::InvalidGrant,
+        ));
+        let claim_port: Arc<dyn RefreshClaimStore> = claims.clone();
+        let transport_port: Arc<dyn RefreshTransport> = transport.clone();
+        let resolver = resolver_with_runtime(Arc::clone(&store), claim_port, transport_port);
+
+        let error = resolver
+            .resolve_with_refresh::<OAuth2Credential>(
+                &test_selector(),
+                &CredentialContext::for_owner("test-owner"),
+            )
+            .await
+            .expect_err("a credential without refresh material must require reacquisition");
+
+        assert!(matches!(
+            error,
+            ResolveError::ReauthRequired {
+                reason: ReauthReason::MissingRefreshMaterial,
+                ..
+            }
+        ));
+        assert_eq!(
+            transport.call_count(),
+            0,
+            "missing local material is known before provider dispatch"
+        );
+        assert_eq!(store.replacement_count(), 1);
+        tokio::time::timeout(Duration::from_secs(1), claims.wait_for_release_count(1))
+            .await
+            .expect("a locally exact reauth outcome should release L2");
     }
 
     #[tokio::test]
@@ -1639,27 +2391,27 @@ mod refresh_revoke_race {
     }
 
     fn mismatched_row() -> StoredCredential {
-        StoredCredential {
-            id: TEST_ID.to_owned(),
-            name: None,
-            credential_key: MismatchedPolicyCred::KEY.to_owned(),
-            data: serde_json::to_vec(&TestState {
+        let now = Utc::now();
+        StoredLiveCredential::new(
+            test_id(),
+            None,
+            MismatchedPolicyCred::KEY.to_owned(),
+            serde_json::to_vec(&TestState {
                 token: "live".to_owned(),
             })
             .expect("serialize test state")
             .into(),
-            state_kind: TestState::KIND.to_owned(),
-            state_version: TestState::VERSION,
-            version: 1,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            expires_at: None,
-            reauth_required: false,
-            metadata: serde_json::Map::from_iter([(
-                OWNER_ID_METADATA_KEY.to_owned(),
-                serde_json::Value::String("test-owner".to_owned()),
-            )]),
-        }
+            TestState::KIND.to_owned(),
+            TestState::VERSION,
+            CredentialVersion::MIN,
+            now,
+            now,
+            None,
+            false,
+            serde_json::Map::new(),
+        )
+        .expect("fixture is a valid live credential")
+        .into()
     }
 
     /// FIX-1 regression: an out-of-family refresh kind from `policy()` must
@@ -1687,7 +2439,7 @@ mod refresh_revoke_race {
         );
         // The row must not have been written — the guard fires before any refresh.
         assert_eq!(
-            store.put_count(),
+            store.replacement_count(),
             0,
             "no CAS write must occur when the F3 guard rejects the refresh"
         );

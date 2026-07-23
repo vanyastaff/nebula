@@ -10,8 +10,9 @@
 use serde_json::Value;
 
 use crate::{
-    CredentialDisplay, CredentialId, CredentialPersistenceError, CredentialWriteMode,
-    LAST_VALIDATED_AT_METADATA_KEY, OWNER_ID_METADATA_KEY as OWNER_ID_KEY, StoredCredential,
+    CredentialCreate, CredentialDisplay, CredentialId, CredentialPersistenceError,
+    CredentialReplacement, CredentialTombstone, CredentialVersion, LAST_VALIDATED_AT_METADATA_KEY,
+    OWNER_ID_METADATA_KEY as OWNER_ID_KEY,
 };
 
 use super::error::CredentialServiceError;
@@ -34,8 +35,9 @@ impl CredentialService {
     /// - [`CredentialServiceError::TypeUnknown`] — no type registered under `credential_key`.
     /// - [`CredentialServiceError::ValidationFailed`] — schema or typed-deserialize rejection
     ///   (including `$expr` injection), or a resolve failure.
-    /// - [`CredentialServiceError::Store`] — persistence failure, including a propagated audit
-    ///   sink error. A sink error does not imply that an inner mutation was rolled back.
+    /// - [`CredentialServiceError::Store`] — a definite persistence failure.
+    /// - [`CredentialServiceError::OutcomeUnknown`] — commit acknowledgement
+    ///   was lost; reconcile before replaying the command.
     pub async fn create(
         &self,
         scope: &TenantScope,
@@ -116,35 +118,34 @@ impl CredentialService {
             LAST_VALIDATED_AT_METADATA_KEY.to_owned(),
             Value::String(now.to_rfc3339()),
         );
-        let stored = StoredCredential {
-            id: id.to_string(),
-            name: None,
-            credential_key: credential_key.to_owned(),
-            data: resolved.data.clone().into(),
-            state_kind: resolved.state_kind,
-            state_version: resolved.state_version,
-            version: 0,
-            created_at: now,
-            updated_at: now,
-            expires_at: resolved.expires_at,
-            reauth_required: false,
+        let create = CredentialCreate::new(
+            credential_key.to_owned(),
+            resolved.data.clone().into(),
+            resolved.state_kind,
+            resolved.state_version,
+            display.display_name.clone(),
+            resolved.expires_at,
+            false,
             metadata,
-        };
+        );
 
-        // The store returns the persisted row (with its post-put version),
-        // which is the authoritative source for the returned head — the
-        // CAS token must reflect what a subsequent `update` has to match.
-        let persisted = self
+        let commit = self
             .store
-            .put(
-                &scope.selector(stored.id.clone()),
-                stored,
-                CredentialWriteMode::CreateOnly,
-            )
+            .create(&scope.selector(id), create)
             .await
-            .map_err(Self::map_store_err)?;
+            .map_err(|error| Self::map_store_err_for(&id.to_string(), error))?;
 
-        Ok(Self::head_from(&persisted))
+        Ok(CredentialHead {
+            id: commit.credential_id().to_string(),
+            credential_key: credential_key.to_owned(),
+            version: commit.version().get() as u64,
+            created_at: commit.created_at(),
+            updated_at: commit.updated_at(),
+            expires_at: resolved.expires_at,
+            last_validated_at: Some(now),
+            reauth_required: false,
+            display,
+        })
     }
 
     /// Fetch a credential's secret-free [`CredentialHead`], scoped to
@@ -161,16 +162,15 @@ impl CredentialService {
         scope: &TenantScope,
         id: &str,
     ) -> Result<CredentialHead, CredentialServiceError> {
-        let stored = match self.store.get_head(&scope.selector(id)).await {
+        let credential_id = CredentialId::parse(id)
+            .map_err(|_| CredentialServiceError::NotFound { id: id.to_owned() })?;
+        let stored = match self.store.get_head(&scope.selector(credential_id)).await {
             Ok(stored) => stored,
-            Err(CredentialPersistenceError::NotFound { .. }) => {
+            Err(CredentialPersistenceError::NotFound) => {
                 return Err(CredentialServiceError::NotFound { id: id.to_owned() });
             },
-            Err(error) => return Err(Self::map_store_err(error)),
+            Err(error) => return Err(Self::map_store_err_for(id, error)),
         };
-        if !Self::projected_owner_matches(&stored, scope) || stored.is_tombstoned() {
-            return Err(CredentialServiceError::NotFound { id: id.to_owned() });
-        }
         Ok(Self::head_from_projection(&stored))
     }
 
@@ -191,16 +191,11 @@ impl CredentialService {
             .store
             .list_heads(scope.owner(), None)
             .await
-            .map_err(Self::map_store_err)?;
-        let mut visible = Vec::new();
-        for stored in rows {
-            // The adapter already owner-filters; keep the metadata check as
-            // defence in depth against corrupt legacy rows.
-            if Self::projected_owner_matches(&stored, scope) && !stored.is_tombstoned() {
-                visible.push(Self::head_from_projection(&stored));
-            }
-        }
-        Ok(visible)
+            .map_err(|error| Self::map_store_err_for("credential", error))?;
+        Ok(rows
+            .into_iter()
+            .map(|stored| Self::head_from_projection(&stored))
+            .collect())
     }
 
     /// Update a credential's stored state and/or display metadata.
@@ -243,24 +238,40 @@ impl CredentialService {
         // Owner check first: a cross-tenant id is reported as missing,
         // never as a version conflict (no existence leak).
         let existing = self.load_owned(scope, id).await?;
+        let actual = existing.version();
+        let requested = expected_version.unwrap_or_else(|| actual.get() as u64);
+        let expected = CredentialVersion::try_from(requested).map_err(|_| {
+            CredentialServiceError::VersionConflict {
+                id: id.to_owned(),
+                expected: requested,
+                actual: actual.get() as u64,
+            }
+        })?;
+        if expected != actual {
+            return Err(CredentialServiceError::VersionConflict {
+                id: id.to_owned(),
+                expected: requested,
+                actual: actual.get() as u64,
+            });
+        }
 
         // Re-resolve only when new properties were supplied; a
         // display-only update carries the existing state through.
         let resolved = match props {
             Some(props) => {
-                self.ops.validate(&existing.credential_key, &props)?;
-                let values = self.ops.ingest(&existing.credential_key, &props)?;
+                self.ops.validate(existing.credential_key(), &props)?;
+                let values = self.ops.ingest(existing.credential_key(), &props)?;
                 let ctx = Self::owner_context(scope);
                 Some(
                     self.ops
-                        .resolve(&existing.credential_key, &values, &ctx, &self.pending)
+                        .resolve(existing.credential_key(), &values, &ctx, &self.pending)
                         .await?,
                 )
             },
             None => None,
         };
 
-        let mut metadata = existing.metadata.clone();
+        let mut metadata = existing.metadata().clone();
         metadata.insert(
             OWNER_ID_KEY.to_owned(),
             Value::String(scope.owner_id().to_owned()),
@@ -268,57 +279,77 @@ impl CredentialService {
         Self::set_display(&mut metadata, &display);
 
         let now = chrono::Utc::now();
-        let stored = match resolved {
-            // Props supplied ⇒ re-resolved against the provider ⇒ stamp the
-            // validation time. A display-only edit (the `None` arm) preserves the
-            // existing stamp and bumps only `updated_at`, so it cannot postpone
-            // the re-validation floor.
-            Some(resolved) => {
-                metadata.insert(
-                    LAST_VALIDATED_AT_METADATA_KEY.to_owned(),
-                    Value::String(now.to_rfc3339()),
-                );
-                StoredCredential {
-                    id: existing.id.clone(),
-                    name: existing.name.clone(),
-                    credential_key: existing.credential_key.clone(),
-                    data: resolved.data.clone().into(),
-                    state_kind: resolved.state_kind,
-                    state_version: resolved.state_version,
-                    version: existing.version,
-                    created_at: existing.created_at,
-                    updated_at: now,
-                    expires_at: resolved.expires_at,
-                    reauth_required: false,
-                    metadata,
-                }
-            },
-            None => StoredCredential {
-                updated_at: now,
-                metadata,
-                ..existing.clone()
-            },
-        };
+        let (data, state_kind, state_version, expires_at, reauth_required, last_validated_at) =
+            match resolved {
+                // Props supplied ⇒ re-resolved against the provider ⇒ stamp the
+                // validation time. A display-only edit (the `None` arm) preserves the
+                // existing stamp and bumps only `updated_at`, so it cannot postpone
+                // the re-validation floor.
+                Some(resolved) => {
+                    metadata.insert(
+                        LAST_VALIDATED_AT_METADATA_KEY.to_owned(),
+                        Value::String(now.to_rfc3339()),
+                    );
+                    (
+                        resolved.data.clone().into(),
+                        resolved.state_kind,
+                        resolved.state_version,
+                        resolved.expires_at,
+                        false,
+                        Some(now),
+                    )
+                },
+                None => (
+                    existing.data().clone(),
+                    existing.state_kind().to_owned(),
+                    existing.state_version(),
+                    existing.expires_at(),
+                    existing.reauth_required(),
+                    metadata
+                        .get(LAST_VALIDATED_AT_METADATA_KEY)
+                        .and_then(Value::as_str)
+                        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+                        .map(|instant| instant.with_timezone(&chrono::Utc)),
+                ),
+            };
 
         // No blind-overwrite path: when the caller supplied no version,
         // CAS on the version loaded above. A display-only rename racing a
         // token refresh must conflict, never silently restore the stale
         // secret bytes captured at load time.
-        let mode = CredentialWriteMode::CompareAndSwap {
-            expected_version: expected_version.unwrap_or(existing.version),
-        };
+        let replacement = CredentialReplacement::new(
+            expected,
+            data,
+            state_kind,
+            state_version,
+            display.display_name.clone(),
+            expires_at,
+            reauth_required,
+            metadata,
+        );
 
-        let persisted = self
+        let commit = self
             .store
-            .put(&scope.selector(id), stored, mode)
+            .replace(&scope.selector(existing.credential_id()), replacement)
             .await
-            .map_err(Self::map_store_err)?;
+            .map_err(|error| Self::map_store_err_for(id, error))?;
 
         tracing::info!(credential.id = %id, "credential updated");
-        Ok(Self::head_from(&persisted))
+        Ok(CredentialHead {
+            id: commit.credential_id().to_string(),
+            credential_key: existing.credential_key().to_owned(),
+            version: commit.version().get() as u64,
+            created_at: commit.created_at(),
+            updated_at: commit.updated_at(),
+            expires_at,
+            last_validated_at,
+            reauth_required,
+            display,
+        })
     }
 
-    /// Delete a credential scoped to `scope`.
+    /// Replace a live credential with a secret-free tombstone scoped to
+    /// `scope`.
     ///
     /// # Errors
     ///
@@ -329,14 +360,22 @@ impl CredentialService {
         scope: &TenantScope,
         id: &str,
     ) -> Result<(), CredentialServiceError> {
-        // Owner check: cross-tenant delete is indistinguishable from a
-        // missing credential.
-        let _existing = self.get(scope, id).await?;
-        self.store
-            .delete(&scope.selector(id))
+        let credential_id = CredentialId::parse(id)
+            .map_err(|_| CredentialServiceError::NotFound { id: id.to_owned() })?;
+        let selector = scope.selector(credential_id);
+        // Tombstoning needs only the live structural version. Reading the
+        // secret-bearing row would unnecessarily make revocation depend on
+        // successful ciphertext decryption.
+        let existing = self
+            .store
+            .get_head(&selector)
             .await
-            .map_err(Self::map_store_err)?;
-        tracing::info!(credential.id = %id, "credential deleted");
+            .map_err(|error| Self::map_store_err_for(id, error))?;
+        self.store
+            .tombstone(&selector, CredentialTombstone::new(existing.version()))
+            .await
+            .map_err(|error| Self::map_store_err_for(id, error))?;
+        tracing::info!(credential.id = %id, "credential tombstoned");
         Ok(())
     }
 }

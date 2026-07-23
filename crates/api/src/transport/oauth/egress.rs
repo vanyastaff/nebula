@@ -7,13 +7,17 @@
 
 use std::{
     future::Future,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    net::{IpAddr, SocketAddr},
     pin::Pin,
     sync::Arc,
     time::Duration,
 };
 
 use futures::StreamExt;
+use nebula_credential::runtime::{
+    OAUTH_DNS_MAX_ANSWERS, OAUTH_ENDPOINT_MAX_BYTES, oauth_egress_ip_is_globally_routable,
+    validate_oauth_dns_answers,
+};
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use secrecy::{ExposeSecret, SecretString};
 use tokio::sync::Semaphore;
@@ -24,7 +28,6 @@ use super::error::{OAuthFailureCode, OAuthRuntimeBuildError};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
-const MAX_DNS_ANSWERS: usize = 32;
 const MAX_OUTBOUND_REQUESTS: usize = 64;
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -76,7 +79,7 @@ impl HostLookup for SystemLookup {
                 .await
                 .map(|answers| {
                     answers
-                        .take(MAX_DNS_ANSWERS.saturating_add(1))
+                        .take(OAUTH_DNS_MAX_ANSWERS.saturating_add(1))
                         .map(|answer| answer.ip())
                         .collect()
                 })
@@ -127,17 +130,7 @@ impl GuardedResolver {
     }
 
     fn validate_answers(answers: Vec<IpAddr>) -> Result<Vec<SocketAddr>, LookupError> {
-        if answers.is_empty()
-            || answers.len() > MAX_DNS_ANSWERS
-            || answers.iter().any(|answer| !is_public_global_ip(*answer))
-        {
-            return Err(LookupError::Failed);
-        }
-
-        Ok(answers
-            .into_iter()
-            .map(|answer| SocketAddr::new(answer, 0))
-            .collect())
+        validate_oauth_dns_answers(answers).map_err(|_| LookupError::Failed)
     }
 }
 
@@ -450,8 +443,15 @@ impl std::fmt::Debug for BrowserAuthorizationUrl {
 }
 
 fn validate_url_shape(raw: &str) -> Result<Url, OAuthFailureCode> {
+    if raw.len() > OAUTH_ENDPOINT_MAX_BYTES {
+        return Err(OAuthFailureCode::EndpointRejected);
+    }
     let url = Url::parse(raw).map_err(|_| OAuthFailureCode::EndpointRejected)?;
-    if !url.username().is_empty() || url.password().is_some() || url.fragment().is_some() {
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+        || url.port() == Some(0)
+    {
         return Err(OAuthFailureCode::EndpointRejected);
     }
     Ok(url)
@@ -461,8 +461,8 @@ fn validate_host(host: Option<Host<&str>>) -> Result<(), OAuthFailureCode> {
     match host.ok_or(OAuthFailureCode::EndpointRejected)? {
         Host::Domain(host) if is_localhost_name(host) => Err(OAuthFailureCode::EndpointRejected),
         Host::Domain(_) => Ok(()),
-        Host::Ipv4(ip) if is_public_global_ip(IpAddr::V4(ip)) => Ok(()),
-        Host::Ipv6(ip) if is_public_global_ip(IpAddr::V6(ip)) => Ok(()),
+        Host::Ipv4(ip) if oauth_egress_ip_is_globally_routable(IpAddr::V4(ip)) => Ok(()),
+        Host::Ipv6(ip) if oauth_egress_ip_is_globally_routable(IpAddr::V6(ip)) => Ok(()),
         Host::Ipv4(_) | Host::Ipv6(_) => Err(OAuthFailureCode::EndpointRejected),
     }
 }
@@ -473,68 +473,13 @@ fn is_localhost_name(host: &str) -> bool {
         || normalized.to_ascii_lowercase().ends_with(".localhost")
 }
 
-fn is_public_global_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ip) => is_public_global_ipv4(ip),
-        IpAddr::V6(ip) => is_public_global_ipv6(ip),
-    }
-}
-
-fn is_public_global_ipv4(ip: Ipv4Addr) -> bool {
-    const SPECIAL: &[(Ipv4Addr, u8)] = &[
-        (Ipv4Addr::UNSPECIFIED, 8),
-        (Ipv4Addr::new(10, 0, 0, 0), 8),
-        (Ipv4Addr::new(100, 64, 0, 0), 10),
-        (Ipv4Addr::new(127, 0, 0, 0), 8),
-        (Ipv4Addr::new(169, 254, 0, 0), 16),
-        (Ipv4Addr::new(172, 16, 0, 0), 12),
-        (Ipv4Addr::new(192, 0, 0, 0), 24),
-        (Ipv4Addr::new(192, 0, 2, 0), 24),
-        (Ipv4Addr::new(192, 88, 99, 0), 24),
-        (Ipv4Addr::new(192, 168, 0, 0), 16),
-        (Ipv4Addr::new(198, 18, 0, 0), 15),
-        (Ipv4Addr::new(198, 51, 100, 0), 24),
-        (Ipv4Addr::new(203, 0, 113, 0), 24),
-        (Ipv4Addr::new(224, 0, 0, 0), 4),
-        (Ipv4Addr::new(240, 0, 0, 0), 4),
-    ];
-
-    !SPECIAL
-        .iter()
-        .any(|(network, prefix)| ipv4_in_prefix(ip, *network, *prefix))
-}
-
-fn is_public_global_ipv6(ip: Ipv6Addr) -> bool {
-    if ip.to_ipv4_mapped().is_some() {
-        return false;
-    }
-
-    const SPECIAL_WITHIN_GLOBAL_UNICAST: &[(Ipv6Addr, u8)] = &[
-        (Ipv6Addr::new(0x2001, 0, 0, 0, 0, 0, 0, 0), 23),
-        (Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 0), 32),
-        (Ipv6Addr::new(0x2002, 0, 0, 0, 0, 0, 0, 0), 16),
-        (Ipv6Addr::new(0x3fff, 0, 0, 0, 0, 0, 0, 0), 20),
-    ];
-
-    ipv6_in_prefix(ip, Ipv6Addr::new(0x2000, 0, 0, 0, 0, 0, 0, 0), 3)
-        && !SPECIAL_WITHIN_GLOBAL_UNICAST
-            .iter()
-            .any(|(network, prefix)| ipv6_in_prefix(ip, *network, *prefix))
-}
-
-fn ipv4_in_prefix(ip: Ipv4Addr, network: Ipv4Addr, prefix: u8) -> bool {
-    let mask = u32::MAX.checked_shl(u32::from(32 - prefix)).unwrap_or(0);
-    u32::from(ip) & mask == u32::from(network) & mask
-}
-
-fn ipv6_in_prefix(ip: Ipv6Addr, network: Ipv6Addr, prefix: u8) -> bool {
-    let mask = u128::MAX.checked_shl(u32::from(128 - prefix)).unwrap_or(0);
-    u128::from(ip) & mask == u128::from(network) & mask
-}
-
 #[cfg(test)]
 mod tests {
-    use std::{str::FromStr, sync::Mutex};
+    use std::{
+        net::{Ipv4Addr, SocketAddr},
+        str::FromStr,
+        sync::Mutex,
+    };
 
     use super::*;
 
@@ -606,7 +551,10 @@ mod tests {
             "ff02::1",
         ] {
             let ip: IpAddr = raw.parse().expect("valid table IP");
-            assert!(!is_public_global_ip(ip), "special-use IP accepted: {raw}");
+            assert!(
+                !oauth_egress_ip_is_globally_routable(ip),
+                "special-use IP accepted: {raw}"
+            );
         }
 
         for raw in [
@@ -617,7 +565,10 @@ mod tests {
             "2606:4700:4700::1111",
         ] {
             let ip: IpAddr = raw.parse().expect("valid public IP");
-            assert!(is_public_global_ip(ip), "public control rejected: {raw}");
+            assert!(
+                oauth_egress_ip_is_globally_routable(ip),
+                "public control rejected: {raw}"
+            );
         }
     }
 
@@ -661,6 +612,32 @@ mod tests {
                 "public literal rejected: {raw}"
             );
         }
+    }
+
+    #[test]
+    fn server_fetched_url_rejects_explicit_zero_port() {
+        assert!(
+            ServerFetchedUrl::parse("https://provider.example:0/token").is_err(),
+            "port zero must never reach the connector"
+        );
+        assert!(ServerFetchedUrl::parse("https://provider.example:1/token").is_ok());
+        assert!(ServerFetchedUrl::parse("https://provider.example:65535/token").is_ok());
+    }
+
+    #[test]
+    fn all_oauth_url_surfaces_share_the_exact_length_bound() {
+        const PREFIX: &str = "https://provider.example/";
+        let boundary = format!(
+            "{PREFIX}{}",
+            "a".repeat(OAUTH_ENDPOINT_MAX_BYTES - PREFIX.len())
+        );
+        assert_eq!(boundary.len(), OAUTH_ENDPOINT_MAX_BYTES);
+        assert!(ServerFetchedUrl::parse(&boundary).is_ok());
+        assert!(BrowserAuthorizationUrl::parse(&boundary, false, true).is_ok());
+
+        let oversized = format!("{boundary}x");
+        assert!(ServerFetchedUrl::parse(&oversized).is_err());
+        assert!(BrowserAuthorizationUrl::parse(&oversized, false, true).is_err());
     }
 
     #[test]

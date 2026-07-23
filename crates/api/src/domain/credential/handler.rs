@@ -46,6 +46,7 @@ use crate::{
         (status = 200, description = "Page of credential summaries (no secret material).", body = ListCredentialsResponse),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
+        (status = 503, description = "Credential authority or persistence is temporarily unavailable.", body = ProblemDetails),
     ),
 )]
 pub async fn list_credentials(
@@ -81,7 +82,8 @@ pub async fn list_credentials(
         (status = 400, description = "Validation error: `data` failed the credential type's schema, or key/name shape invalid.", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
-        (status = 503, description = "Authenticated credential command gateway is not available in this deployment.", body = ProblemDetails),
+        (status = 409, description = "Credential id/name is already reserved, or the persistence outcome is unknown and must be reconciled.", body = ProblemDetails),
+        (status = 503, description = "Credential authority or persistence is temporarily unavailable.", body = ProblemDetails),
     ),
 )]
 pub async fn create_credential(
@@ -121,6 +123,7 @@ pub async fn create_credential(
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Credential does not exist.", body = ProblemDetails),
+        (status = 503, description = "Credential authority or persistence is temporarily unavailable.", body = ProblemDetails),
     ),
 )]
 pub async fn get_credential(
@@ -159,8 +162,8 @@ pub async fn get_credential(
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Credential does not exist.", body = ProblemDetails),
-        (status = 409, description = "Optimistic-concurrency version mismatch.", body = ProblemDetails),
-        (status = 503, description = "Authenticated credential command gateway is not available in this deployment.", body = ProblemDetails),
+        (status = 409, description = "Version/name conflict, exhausted version, or unknown persistence outcome requiring reconciliation.", body = ProblemDetails),
+        (status = 503, description = "Credential authority or persistence is temporarily unavailable.", body = ProblemDetails),
     ),
 )]
 pub async fn update_credential(
@@ -204,7 +207,11 @@ pub async fn update_credential(
 
 /// DELETE /orgs/{org}/workspaces/{ws}/credentials/{cred} — Delete a credential.
 ///
-/// Permanently removes the credential and its encrypted state.
+/// Replaces the live row with a secret-free tombstone.
+///
+/// The identifier stays reserved and ordinary management reads treat it as
+/// absent. This endpoint does not claim physical erasure from WAL, snapshots,
+/// or backups.
 /// Returns a JSON acknowledgement on success.
 #[utoipa::path(
     delete,
@@ -217,11 +224,13 @@ pub async fn update_credential(
         ("cred" = String, Path, description = "Credential identifier (`cred_<ULID>`)."),
     ),
     responses(
-        (status = 200, description = "Credential deleted.", body = AckResponse),
+        (status = 200, description = "Credential tombstoned; live material is no longer available.", body = AckResponse),
         (status = 400, description = "Invalid credential identifier.", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Credential does not exist.", body = ProblemDetails),
+        (status = 409, description = "Concurrent/version conflict or unknown persistence outcome requiring reconciliation.", body = ProblemDetails),
+        (status = 503, description = "Credential authority or persistence is temporarily unavailable.", body = ProblemDetails),
     ),
 )]
 pub async fn delete_credential(
@@ -261,6 +270,7 @@ pub async fn delete_credential(
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Credential does not exist.", body = ProblemDetails),
+        (status = 503, description = "Credential authority, provider, or persistence is temporarily unavailable.", body = ProblemDetails),
     ),
 )]
 pub async fn test_credential(
@@ -298,6 +308,8 @@ pub async fn test_credential(
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Credential does not exist.", body = ProblemDetails),
+        (status = 409, description = "The integration credential requires reconnection, a concurrent version changed, or the provider/persistence outcome is unknown and must be reconciled.", body = ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Credential authority, pre-provider coordination, or persistence is temporarily unavailable.", body = ProblemDetails),
     ),
 )]
 pub async fn refresh_credential(
@@ -336,6 +348,8 @@ pub async fn refresh_credential(
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Credential does not exist.", body = ProblemDetails),
+        (status = 409, description = "Concurrent version changed or provider/persistence outcome is unknown and must be reconciled.", body = ProblemDetails),
+        (status = 503, description = "Credential authority, pre-provider coordination, or persistence is temporarily unavailable.", body = ProblemDetails),
     ),
 )]
 pub async fn revoke_credential(
@@ -377,7 +391,8 @@ pub async fn revoke_credential(
         (status = 400, description = "Validation error (key or data shape).", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
-        (status = 503, description = "Authenticated credential command gateway is not available in this deployment.", body = ProblemDetails),
+        (status = 409, description = "Generated identity/name conflict or unknown persistence outcome requiring reconciliation.", body = ProblemDetails),
+        (status = 503, description = "Credential authority, provider, or persistence is temporarily unavailable.", body = ProblemDetails),
     ),
 )]
 pub async fn resolve_credential(
@@ -419,7 +434,8 @@ pub async fn resolve_credential(
         (status = 400, description = "Validation error (e.g. empty `pending_token`).", body = ProblemDetails),
         (status = 401, description = "Authentication required or pending token expired/already-consumed.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
-        (status = 503, description = "Credential service not wired into this deployment (operational honesty: refuses rather than faking success).", body = ProblemDetails),
+        (status = 409, description = "Generated identity/name conflict or unknown persistence outcome requiring reconciliation.", body = ProblemDetails),
+        (status = 503, description = "Credential authority, provider, or persistence is temporarily unavailable.", body = ProblemDetails),
     ),
 )]
 pub async fn continue_resolve_credential(

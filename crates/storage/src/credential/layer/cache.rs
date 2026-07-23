@@ -17,9 +17,11 @@ use std::{
 
 use async_trait::async_trait;
 use moka::future::Cache;
+use nebula_core::CredentialId;
 use nebula_storage_port::{
-    CredentialOwner, CredentialPersistence, CredentialPersistenceError, CredentialSelector,
-    CredentialWriteMode, StoredCredential, StoredCredentialHead,
+    CredentialCommit, CredentialCreate, CredentialOwner, CredentialPersistence,
+    CredentialPersistenceError, CredentialRecordState, CredentialReplacement, CredentialSelector,
+    CredentialTombstone, StoredCredential, StoredCredentialHead,
 };
 use tokio::sync::Mutex;
 
@@ -222,35 +224,45 @@ impl<S: CredentialPersistence> CredentialPersistence for CacheLayer<S> {
         self.inner.get_head(selector).await
     }
 
-    async fn put(
+    async fn create(
         &self,
         selector: &CredentialSelector,
-        credential: StoredCredential,
-        mode: CredentialWriteMode,
-    ) -> Result<StoredCredential, CredentialPersistenceError> {
+        create: CredentialCreate,
+    ) -> Result<CredentialCommit, CredentialPersistenceError> {
         let _guard = self.lock(selector).lock().await;
-        // Clear the old entry before starting I/O. If the caller cancels after
-        // the backend write, the cache is empty rather than known-stale.
+        // Clear before I/O. If the caller is cancelled after the durable
+        // operation, the cache remains empty rather than known-stale. The
+        // secret-free commit cannot populate a physical-record cache without a
+        // forbidden post-write read.
         self.cache.invalidate(selector).await;
-        let stored = self.inner.put(selector, credential, mode).await?;
-        self.cache.insert(selector.clone(), stored.clone()).await;
-        Ok(stored)
+        self.inner.create(selector, create).await
     }
 
-    async fn delete(
+    async fn replace(
         &self,
         selector: &CredentialSelector,
-    ) -> Result<(), CredentialPersistenceError> {
+        replacement: CredentialReplacement,
+    ) -> Result<CredentialCommit, CredentialPersistenceError> {
         let _guard = self.lock(selector).lock().await;
         self.cache.invalidate(selector).await;
-        self.inner.delete(selector).await
+        self.inner.replace(selector, replacement).await
+    }
+
+    async fn tombstone(
+        &self,
+        selector: &CredentialSelector,
+        tombstone: CredentialTombstone,
+    ) -> Result<CredentialCommit, CredentialPersistenceError> {
+        let _guard = self.lock(selector).lock().await;
+        self.cache.invalidate(selector).await;
+        self.inner.tombstone(selector, tombstone).await
     }
 
     async fn list(
         &self,
         owner: &CredentialOwner,
         state_kind: Option<&str>,
-    ) -> Result<Vec<String>, CredentialPersistenceError> {
+    ) -> Result<Vec<CredentialId>, CredentialPersistenceError> {
         // Pass through — list results are too dynamic to cache.
         self.inner.list(owner, state_kind).await
     }
@@ -268,8 +280,8 @@ impl<S: CredentialPersistence> CredentialPersistence for CacheLayer<S> {
         selector: &CredentialSelector,
     ) -> Result<bool, CredentialPersistenceError> {
         let _guard = self.lock(selector).lock().await;
-        if self.cache.get(selector).await.is_some() {
-            return Ok(true);
+        if let Some(cached) = self.cache.get(selector).await {
+            return Ok(cached.state() == CredentialRecordState::Live);
         }
         self.inner.exists(selector).await
     }
@@ -280,13 +292,15 @@ mod tests {
     use std::sync::{Arc, atomic::AtomicBool};
 
     use async_trait::async_trait;
+    use nebula_core::CredentialId;
     use nebula_storage_port::{
-        CredentialOwner, CredentialPersistence, CredentialPersistenceError, CredentialSelector,
-        CredentialWriteMode, StoredCredential, StoredCredentialHead,
+        CredentialCommit, CredentialCreate, CredentialOwner, CredentialPersistence,
+        CredentialPersistenceError, CredentialReplacement, CredentialSelector, CredentialTombstone,
+        CredentialVersion, StoredCredential, StoredCredentialHead, StoredLiveCredential,
     };
     use tokio::sync::Notify;
 
-    use crate::credential::test_support::make_credential;
+    use crate::credential::test_support::{make_credential, make_replacement};
 
     use super::{super::super::sqlite::SqliteCredentialPersistence, *};
 
@@ -294,12 +308,23 @@ mod tests {
         CredentialOwner::from_canonical("test-owner")
     }
 
-    fn selector(id: &str) -> CredentialSelector {
+    fn selector(id: CredentialId) -> CredentialSelector {
         CredentialSelector::new(owner(), id)
     }
 
-    fn selector_for(owner: &str, id: &str) -> CredentialSelector {
+    fn selector_for(owner: &str, id: CredentialId) -> CredentialSelector {
         CredentialSelector::new(CredentialOwner::from_canonical(owner), id)
+    }
+
+    fn version(value: i64) -> CredentialVersion {
+        CredentialVersion::try_from(value).expect("test version must be valid")
+    }
+
+    fn into_live(record: StoredCredential) -> StoredLiveCredential {
+        let StoredCredential::Live(record) = record else {
+            panic!("test fixture must remain live");
+        };
+        record
     }
 
     #[derive(Debug, Default)]
@@ -336,27 +361,35 @@ mod tests {
             self.inner.get_head(selector).await
         }
 
-        async fn put(
+        async fn create(
             &self,
             selector: &CredentialSelector,
-            credential: StoredCredential,
-            mode: CredentialWriteMode,
-        ) -> Result<StoredCredential, CredentialPersistenceError> {
-            self.inner.put(selector, credential, mode).await
+            create: CredentialCreate,
+        ) -> Result<CredentialCommit, CredentialPersistenceError> {
+            self.inner.create(selector, create).await
         }
 
-        async fn delete(
+        async fn replace(
             &self,
             selector: &CredentialSelector,
-        ) -> Result<(), CredentialPersistenceError> {
-            self.inner.delete(selector).await
+            replacement: CredentialReplacement,
+        ) -> Result<CredentialCommit, CredentialPersistenceError> {
+            self.inner.replace(selector, replacement).await
+        }
+
+        async fn tombstone(
+            &self,
+            selector: &CredentialSelector,
+            tombstone: CredentialTombstone,
+        ) -> Result<CredentialCommit, CredentialPersistenceError> {
+            self.inner.tombstone(selector, tombstone).await
         }
 
         async fn list(
             &self,
             owner: &CredentialOwner,
             state_kind: Option<&str>,
-        ) -> Result<Vec<String>, CredentialPersistenceError> {
+        ) -> Result<Vec<CredentialId>, CredentialPersistenceError> {
             self.inner.list(owner, state_kind).await
         }
 
@@ -382,77 +415,64 @@ mod tests {
             SqliteCredentialPersistence::connect_memory().await?,
             CacheConfig::default(),
         );
-        let cred = make_credential("c1", b"data");
-        store
-            .put(&selector(&cred.id), cred, CredentialWriteMode::CreateOnly)
-            .await
-            .unwrap();
+        let selector = selector(CredentialId::new());
+        store.create(&selector, make_credential(b"data")).await?;
 
-        // First get — cache was populated by put, so this is a hit.
-        let first = store.get(&selector("c1")).await.unwrap();
-        assert_eq!(first.data, b"data");
+        // Secret-free mutation commits leave the physical-record cache empty.
+        let first = into_live(store.get(&selector).await?);
+        assert_eq!(first.data().as_ref(), b"data");
 
-        // Second get — definitely a cache hit.
-        let second = store.get(&selector("c1")).await.unwrap();
-        assert_eq!(second.data, b"data");
+        let second = into_live(store.get(&selector).await?);
+        assert_eq!(second.data().as_ref(), b"data");
 
-        assert!(store.stats().hits >= 1);
+        assert_eq!(store.stats(), CacheStats { hits: 1, misses: 1 });
         Ok(())
     }
 
     #[tokio::test]
-    async fn put_invalidates_and_caches_new_value() -> Result<(), CredentialPersistenceError> {
+    async fn replace_invalidates_cached_value() -> Result<(), CredentialPersistenceError> {
         let store = CacheLayer::new(
             SqliteCredentialPersistence::connect_memory().await?,
             CacheConfig::default(),
         );
-        let cred = make_credential("c1", b"v1");
-        store
-            .put(&selector(&cred.id), cred, CredentialWriteMode::CreateOnly)
-            .await
-            .unwrap();
+        let selector = selector(CredentialId::new());
+        let created = store.create(&selector, make_credential(b"v1")).await?;
 
         // Read to populate cache.
-        let _ = store.get(&selector("c1")).await.unwrap();
+        let _ = store.get(&selector).await?;
 
-        // Overwrite with new data.
-        let updated = make_credential("c1", b"v2");
+        // Replace with new data.
         store
-            .put(
-                &selector(&updated.id),
-                updated,
-                CredentialWriteMode::Overwrite,
-            )
-            .await
-            .unwrap();
+            .replace(&selector, make_replacement(created.version(), b"v2"))
+            .await?;
 
         // Should see the new data (not stale cache).
-        let fetched = store.get(&selector("c1")).await.unwrap();
-        assert_eq!(fetched.data, b"v2");
+        let fetched = into_live(store.get(&selector).await?);
+        assert_eq!(fetched.data().as_ref(), b"v2");
         Ok(())
     }
 
     #[tokio::test]
-    async fn delete_invalidates_cache() -> Result<(), CredentialPersistenceError> {
+    async fn tombstone_invalidates_cached_live_record() -> Result<(), CredentialPersistenceError> {
         let store = CacheLayer::new(
             SqliteCredentialPersistence::connect_memory().await?,
             CacheConfig::default(),
         );
-        let cred = make_credential("c1", b"data");
-        store
-            .put(&selector(&cred.id), cred, CredentialWriteMode::CreateOnly)
-            .await
-            .unwrap();
+        let selector = selector(CredentialId::new());
+        let created = store.create(&selector, make_credential(b"data")).await?;
 
         // Populate cache.
-        let _ = store.get(&selector("c1")).await.unwrap();
+        let _ = store.get(&selector).await?;
 
-        // Delete.
-        store.delete(&selector("c1")).await.unwrap();
+        store
+            .tombstone(&selector, CredentialTombstone::new(created.version()))
+            .await?;
 
-        // Should be gone.
-        let err = store.get(&selector("c1")).await.unwrap_err();
-        assert!(matches!(err, CredentialPersistenceError::NotFound { .. }));
+        assert!(matches!(
+            store.get(&selector).await?,
+            StoredCredential::Tombstoned(_)
+        ));
+        assert!(!store.exists(&selector).await?);
         Ok(())
     }
 
@@ -462,19 +482,16 @@ mod tests {
             SqliteCredentialPersistence::connect_memory().await?,
             CacheConfig::default(),
         );
-        let cred = make_credential("c1", b"data");
-        store
-            .put(&selector(&cred.id), cred, CredentialWriteMode::CreateOnly)
-            .await
-            .unwrap();
+        let selector = selector(CredentialId::new());
+        store.create(&selector, make_credential(b"data")).await?;
 
         // Miss — not yet read via get.
-        store.invalidate(&selector("c1")).await;
-        let _ = store.get(&selector("c1")).await.unwrap();
+        store.invalidate(&selector).await;
+        let _ = store.get(&selector).await?;
         assert_eq!(store.stats().misses, 1);
 
         // Hit — now cached.
-        let _ = store.get(&selector("c1")).await.unwrap();
+        let _ = store.get(&selector).await?;
         assert_eq!(store.stats().hits, 1);
         Ok(())
     }
@@ -485,20 +502,19 @@ mod tests {
             SqliteCredentialPersistence::connect_memory().await?,
             CacheConfig::default(),
         );
-        let cred = make_credential("c1", b"data");
+        let primary_selector = selector(CredentialId::new());
         store
-            .put(&selector(&cred.id), cred, CredentialWriteMode::CreateOnly)
-            .await
-            .unwrap();
+            .create(&primary_selector, make_credential(b"data"))
+            .await?;
 
         // Populate cache via get.
-        let _ = store.get(&selector("c1")).await.unwrap();
+        let _ = store.get(&primary_selector).await?;
 
         // exists should return true from cache.
-        assert!(store.exists(&selector("c1")).await.unwrap());
+        assert!(store.exists(&primary_selector).await?);
 
         // Non-existent should fall through to inner.
-        assert!(!store.exists(&selector("missing")).await.unwrap());
+        assert!(!store.exists(&selector(CredentialId::new())).await?);
         Ok(())
     }
 
@@ -508,19 +524,18 @@ mod tests {
             SqliteCredentialPersistence::connect_memory().await?,
             CacheConfig::default(),
         );
-        let cred = make_credential("c1", b"data");
+        let credential_id = CredentialId::new();
         store
-            .put(&selector(&cred.id), cred, CredentialWriteMode::CreateOnly)
-            .await
-            .unwrap();
+            .create(&selector(credential_id), make_credential(b"data"))
+            .await?;
 
-        let ids = store.list(&owner(), None).await.unwrap();
-        assert_eq!(ids, vec!["c1"]);
+        let ids = store.list(&owner(), None).await?;
+        assert_eq!(ids, vec![credential_id]);
 
-        let filtered = store.list(&owner(), Some("test")).await.unwrap();
-        assert_eq!(filtered, vec!["c1"]);
+        let filtered = store.list(&owner(), Some("test")).await?;
+        assert_eq!(filtered, vec![credential_id]);
 
-        let empty = store.list(&owner(), Some("nonexistent")).await.unwrap();
+        let empty = store.list(&owner(), Some("nonexistent")).await?;
         assert!(empty.is_empty());
         Ok(())
     }
@@ -532,25 +547,19 @@ mod tests {
             SqliteCredentialPersistence::connect_memory().await?,
             CacheConfig::default(),
         );
-        let owner_a = selector_for("owner-a", "shared-id");
-        let owner_b = selector_for("owner-b", "shared-id");
+        let credential_id = CredentialId::new();
+        let owner_a = selector_for("owner-a", credential_id);
+        let owner_b = selector_for("owner-b", credential_id);
 
         store
-            .put(
-                &owner_a,
-                make_credential("shared-id", b"owner-a-secret"),
-                CredentialWriteMode::CreateOnly,
-            )
+            .create(&owner_a, make_credential(b"owner-a-secret"))
             .await?;
-        let cached = store.get(&owner_a).await?;
-        assert_eq!(cached.data, b"owner-a-secret");
+        let cached = into_live(store.get(&owner_a).await?);
+        assert_eq!(cached.data().as_ref(), b"owner-a-secret");
         let stats_before_foreign_read = store.stats();
 
         let foreign_read = store.get(&owner_b).await;
-        assert!(matches!(
-            foreign_read,
-            Err(CredentialPersistenceError::NotFound { .. })
-        ));
+        assert_eq!(foreign_read, Err(CredentialPersistenceError::NotFound));
         assert_eq!(
             store.stats().misses,
             stats_before_foreign_read.misses + 1,
@@ -558,26 +567,18 @@ mod tests {
         );
         assert!(!store.exists(&owner_b).await?);
 
-        let foreign_delete = store.delete(&owner_b).await;
-        assert!(matches!(
-            foreign_delete,
-            Err(CredentialPersistenceError::NotFound { .. })
-        ));
-        let foreign_overwrite = store
-            .put(
-                &owner_b,
-                make_credential("shared-id", b"owner-b-write"),
-                CredentialWriteMode::Overwrite,
-            )
+        let foreign_tombstone = store
+            .tombstone(&owner_b, CredentialTombstone::new(version(1)))
             .await;
-        assert!(matches!(
-            foreign_overwrite,
-            Err(CredentialPersistenceError::NotFound { .. })
-        ));
+        assert_eq!(foreign_tombstone, Err(CredentialPersistenceError::NotFound));
+        let foreign_replace = store
+            .replace(&owner_b, make_replacement(version(1), b"owner-b-write"))
+            .await;
+        assert_eq!(foreign_replace, Err(CredentialPersistenceError::NotFound));
 
-        let survivor = store.get(&owner_a).await?;
-        assert_eq!(survivor.data, b"owner-a-secret");
-        assert_eq!(survivor.version, 1);
+        let survivor = into_live(store.get(&owner_a).await?);
+        assert_eq!(survivor.data().as_ref(), b"owner-a-secret");
+        assert_eq!(survivor.version(), version(1));
         Ok(())
     }
 
@@ -585,14 +586,8 @@ mod tests {
     async fn delayed_cache_fill_cannot_overwrite_a_concurrent_write()
     -> Result<(), CredentialPersistenceError> {
         let inner = SqliteCredentialPersistence::connect_memory().await?;
-        let race_selector = selector("fill-write-race");
-        inner
-            .put(
-                &race_selector,
-                make_credential("fill-write-race", b"v1"),
-                CredentialWriteMode::CreateOnly,
-            )
-            .await?;
+        let race_selector = selector(CredentialId::new());
+        inner.create(&race_selector, make_credential(b"v1")).await?;
 
         let gate = Arc::new(ReadGate::default());
         gate.delay_next_get.store(true, Ordering::SeqCst);
@@ -621,11 +616,7 @@ mod tests {
         let writer = tokio::spawn(async move {
             writer_started_signal.notify_one();
             writer_store
-                .put(
-                    &writer_selector,
-                    make_credential("fill-write-race", b"v2"),
-                    CredentialWriteMode::Overwrite,
-                )
+                .replace(&writer_selector, make_replacement(version(1), b"v2"))
                 .await
         });
         writer_started.notified().await;
@@ -636,15 +627,14 @@ mod tests {
         );
 
         gate.release_snapshot.notify_one();
-        let delayed_read = reader.await.expect("reader task must not panic")?;
-        assert_eq!(delayed_read.data, b"v1");
+        let delayed_read = into_live(reader.await.expect("reader task must not panic")?);
+        assert_eq!(delayed_read.data().as_ref(), b"v1");
         let written = writer.await.expect("writer task must not panic")?;
-        assert_eq!(written.data, b"v2");
-        assert_eq!(written.version, 2);
+        assert_eq!(written.version(), version(2));
 
-        let final_read = store.get(&race_selector).await?;
-        assert_eq!(final_read.data, b"v2");
-        assert_eq!(final_read.version, 2);
+        let final_read = into_live(store.get(&race_selector).await?);
+        assert_eq!(final_read.data().as_ref(), b"v2");
+        assert_eq!(final_read.version(), version(2));
         Ok(())
     }
 }

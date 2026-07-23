@@ -20,8 +20,10 @@ mod workflow;
 
 pub use control::{ControlCommand, ControlMsg, ResumeTarget};
 pub use credential::{
-    CredentialOwner, CredentialSelector, CredentialWriteMode, SecretBytes, StoredCredential,
-    StoredCredentialHead,
+    CredentialCommit, CredentialCreate, CredentialOwner, CredentialRecordState,
+    CredentialReplacement, CredentialSelector, CredentialTombstone, CredentialVersion,
+    CredentialVersionError, SecretBytes, StoredCredential, StoredCredentialHead,
+    StoredLiveCredential, StoredTombstonedCredential,
 };
 pub use execution::{ExecutionRecord, NewExecution};
 pub use idempotency::CachedRecord;

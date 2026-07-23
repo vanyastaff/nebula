@@ -159,7 +159,7 @@ fn live_workspace_full_equals_cargo_metadata_and_has_no_retired_telemetry() {
     assert!(!actual.contains(&"nebula-telemetry"));
     assert!(actual.contains(&"nebula-xtask"));
     assert_entry_features(&plan, "nebula-engine", &["rotation"]);
-    assert_entry_features(&plan, "nebula-storage", &["credential-in-memory"]);
+    assert_entry_features(&plan, "nebula-storage", &["credential-in-memory", "sqlite"]);
 }
 
 #[test]
@@ -637,6 +637,133 @@ fn workflow_push_always_reaches_the_metadata_selector() {
     assert!(
         yaml_mapping_value_at_path(&workflow, &["on", "push", "paths"]).is_none(),
         "on.push.paths can bypass the sole Cargo-metadata selector"
+    );
+}
+
+#[test]
+fn workflow_requires_digest_pinned_postgres_credential_conformance() {
+    const POSTGRES_IMAGE: &str = "postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193";
+
+    let workflow = fs::read_to_string(workspace_root().join(".github/workflows/test-matrix.yml"))
+        .expect("test-matrix workflow is readable");
+
+    assert!(
+        yaml_mapping_value_at_path(&workflow, &["jobs", "postgres-conformance"]).is_some(),
+        "the unconditional PostgreSQL credential gate must keep its stable job id"
+    );
+    assert!(
+        yaml_mapping_value_at_path(&workflow, &["jobs", "postgres-conformance", "if"]).is_none(),
+        "PostgreSQL credential conformance must not depend on the diff selector"
+    );
+    assert_eq!(
+        yaml_mapping_value_at_path(
+            &workflow,
+            &[
+                "jobs",
+                "postgres-conformance",
+                "services",
+                "postgres",
+                "image",
+            ],
+        ),
+        Some(POSTGRES_IMAGE),
+        "the live server image must be immutable"
+    );
+    assert_eq!(
+        yaml_mapping_value_at_path(
+            &workflow,
+            &[
+                "jobs",
+                "postgres-conformance",
+                "env",
+                "NEBULA_REQUIRE_POSTGRES",
+            ],
+        ),
+        Some("\"1\""),
+        "missing PostgreSQL must fail rather than skip"
+    );
+
+    let aggregate_needs = yaml_mapping_value_at_path(&workflow, &["jobs", "tests", "needs"])
+        .expect("Tests aggregator declares dependencies");
+    assert!(
+        aggregate_needs.contains("postgres-conformance"),
+        "the stable Tests check must depend on PostgreSQL credential conformance"
+    );
+    assert!(
+        workflow.contains("POSTGRES_CONFORMANCE_RESULT: ${{ needs.postgres-conformance.result }}"),
+        "the aggregator must inspect the PostgreSQL credential result"
+    );
+    assert!(
+        workflow.contains("[[ \"$POSTGRES_CONFORMANCE_RESULT\" == \"success\" ]]"),
+        "the aggregator must accept only a successful PostgreSQL credential result"
+    );
+    for isolated_suite in [
+        "post_commit_ack_loss_is_unknown_and_is_not_retried",
+        "commit_sqlstate_classification_preserves_unknown_outcomes",
+        "observation_fetch_errors_distinguish_schema_evidence_from_unavailability",
+        "semantic_oracle",
+        "credential_lifecycle_postgres",
+        "credential_migration_postgres",
+        "credential_schema_admission_postgres",
+        "refresh_claim_pg_integration",
+    ] {
+        assert!(
+            workflow.contains(isolated_suite),
+            "the unconditional PostgreSQL gate must run isolated suite {isolated_suite}"
+        );
+    }
+    assert!(
+        workflow.contains("--lib post_commit_ack_loss_is_unknown_and_is_not_retried")
+            && workflow.contains("--test \"$suite\""),
+        "the PostgreSQL gate must select the isolated suites explicitly"
+    );
+    for preserved_authority_suite in [
+        "oauth_state::tests",
+        "identity_secret::postgres_tests",
+        "session::tests",
+        "mfa_enrollment::tests",
+    ] {
+        assert!(
+            workflow.contains(preserved_authority_suite),
+            "the K2 gate must preserve the existing live PostgreSQL authority suite {preserved_authority_suite}"
+        );
+    }
+}
+
+#[test]
+fn nightly_refresh_chaos_targets_the_existing_storage_harness() {
+    let workflow = fs::read_to_string(workspace_root().join(".github/workflows/nightly-chaos.yml"))
+        .expect("nightly chaos workflow is readable");
+    let storage_manifest = fs::read_to_string(workspace_root().join("crates/storage/Cargo.toml"))
+        .expect("storage manifest is readable");
+    let engine_manifest = fs::read_to_string(workspace_root().join("crates/engine/Cargo.toml"))
+        .expect("engine manifest is readable");
+
+    assert!(
+        workspace_root()
+            .join("crates/storage/tests/refresh_coordinator_chaos.rs")
+            .is_file(),
+        "nightly refresh chaos target must exist in the package selected by the workflow"
+    );
+    for required in [
+        "toolchain: 1.96.1",
+        "-p nebula-storage",
+        "--test refresh_coordinator_chaos",
+        "--features chaos-full",
+        "--run-ignored only",
+    ] {
+        assert!(
+            workflow.contains(required),
+            "nightly refresh chaos workflow is missing `{required}`"
+        );
+    }
+    assert!(
+        storage_manifest.contains("chaos-full = []"),
+        "the package selected by nightly chaos must declare chaos-full"
+    );
+    assert!(
+        !engine_manifest.contains("chaos-full = []"),
+        "the migrated chaos feature must not remain as a dead engine feature"
     );
 }
 

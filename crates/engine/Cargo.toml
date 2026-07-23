@@ -12,11 +12,6 @@ repository.workspace = true
 [features]
 default = []
 rotation = ["nebula-credential/rotation", "nebula-resource/rotation"]
-# Run the full 10-min refresh-coordinator chaos test (sub-spec §5.4) in
-# `crates/engine/tests/refresh_coordinator_chaos.rs`. Default CI runs the
-# scaled-down 30s version; this feature is enabled in the nightly chaos
-# CI job to widen the test plane to 100 credentials × 10 minutes.
-chaos-full = []
 # Exposes `RefreshCoordMetrics::for_tests()` and other test-only helpers
 # that need to construct private MetricsRegistry instances without
 # routing through the engine-shared registry. Must NOT be enabled in a

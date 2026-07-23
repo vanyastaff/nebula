@@ -15,8 +15,9 @@
 
 use std::sync::Arc;
 
-use crate::ports::reqwest_transport::ReqwestRefreshTransport;
-use nebula_credential::runtime::{CredentialResolver, LeaseLifecycle, LeaseLifecycleConfig};
+use nebula_credential::runtime::{
+    CredentialResolver, LeaseLifecycle, LeaseLifecycleConfig, RefreshTransport,
+};
 use nebula_credential::{
     Capabilities, CredentialObserver, CredentialRegistry, CredentialService,
     CredentialServiceError, DispatchOps, ErasedPendingStore, StateSource,
@@ -37,6 +38,7 @@ pub(crate) struct CredentialServiceBuilder<B: CredentialPersistence + 'static> {
     pending_store: ErasedPendingStore,
     registry: Arc<CredentialRegistry>,
     ops: Arc<DispatchOps<ErasedPendingStore>>,
+    refresh_transport: Arc<dyn RefreshTransport>,
     observer: Arc<dyn CredentialObserver>,
     lease_config: LeaseLifecycleConfig,
     shutdown: CancellationToken,
@@ -46,7 +48,7 @@ pub(crate) struct CredentialServiceBuilder<B: CredentialPersistence + 'static> {
 impl<B: CredentialPersistence + 'static> CredentialServiceBuilder<B> {
     /// Provide every mandatory collaborator. Omitting any is a compile
     /// error (the secure-construction guarantee, no runtime check).
-    // guard-justified: the nine mandatory collaborators are the secure-construction
+    // guard-justified: the ten mandatory collaborators are the secure-construction
     // contract; bundling them into a params struct just moves the arity to that
     // struct's single literal at the call site.
     #[expect(clippy::too_many_arguments)]
@@ -57,6 +59,7 @@ impl<B: CredentialPersistence + 'static> CredentialServiceBuilder<B> {
         pending_store: ErasedPendingStore,
         registry: Arc<CredentialRegistry>,
         ops: Arc<DispatchOps<ErasedPendingStore>>,
+        refresh_transport: Arc<dyn RefreshTransport>,
         observer: Arc<dyn CredentialObserver>,
         lease_config: LeaseLifecycleConfig,
         shutdown: CancellationToken,
@@ -68,6 +71,7 @@ impl<B: CredentialPersistence + 'static> CredentialServiceBuilder<B> {
             pending_store,
             registry,
             ops,
+            refresh_transport,
             observer,
             lease_config,
             shutdown,
@@ -143,11 +147,10 @@ impl<B: CredentialPersistence + 'static> CredentialServiceBuilder<B> {
             default_in_memory_coordinator()
                 .map_err(|e| CredentialServiceError::Internal(e.to_string()))?,
         );
-        let transport = Arc::new(ReqwestRefreshTransport);
         let resolver = CredentialResolver::with_dependencies(
             Arc::clone(&store),
             refresh_coordinator,
-            transport,
+            self.refresh_transport,
         )
         .with_event_bus(self.observer.event_bus());
         let lease = LeaseLifecycle::spawn(

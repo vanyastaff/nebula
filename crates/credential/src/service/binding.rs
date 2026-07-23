@@ -8,6 +8,7 @@
 
 use std::fmt;
 
+use nebula_core::CredentialId;
 use nebula_storage_port::{CredentialOwner, CredentialSelector};
 
 use super::scope::TenantScope;
@@ -23,7 +24,7 @@ use super::scope::TenantScope;
 /// `ValidatedCredentialBinding`.
 #[derive(Debug, Clone)]
 pub struct ValidatedCredentialBinding {
-    credential_id: String,
+    credential_id: CredentialId,
     tenant_fingerprint: TenantFingerprint,
 }
 
@@ -46,17 +47,17 @@ impl ValidatedCredentialBinding {
     /// [`CredentialService::validate_credential_binding`].
     ///
     /// [`CredentialService::validate_credential_binding`]: crate::CredentialService::validate_credential_binding
-    pub(crate) fn new(credential_id: String, tenant_fingerprint: TenantFingerprint) -> Self {
+    pub(crate) fn new(credential_id: CredentialId, tenant_fingerprint: TenantFingerprint) -> Self {
         Self {
             credential_id,
             tenant_fingerprint,
         }
     }
 
-    /// The validated credential's string identifier.
+    /// The validated credential's typed identifier.
     #[must_use]
-    pub fn credential_id(&self) -> &str {
-        &self.credential_id
+    pub fn credential_id(&self) -> CredentialId {
+        self.credential_id
     }
 
     /// The owner-scoped lookup key for this binding — the credential id paired
@@ -67,10 +68,7 @@ impl ValidatedCredentialBinding {
     /// at load, so a validated binding is backed by a load-time owner check
     /// rather than authorizing an unscoped load on its provenance alone.
     pub(crate) fn selector(&self) -> CredentialSelector {
-        CredentialSelector::new(
-            self.tenant_fingerprint.0.clone(),
-            self.credential_id.clone(),
-        )
+        CredentialSelector::new(self.tenant_fingerprint.0.clone(), self.credential_id)
     }
 
     /// Crate-private access to the scope fingerprint. Consumed by the
@@ -126,8 +124,8 @@ pub enum ValidatedCredentialBindingError {
         actual: String,
     },
 
-    /// The credential exists and is owned by the caller but has been revoked
-    /// (carries a tombstone epoch).
+    /// The credential exists and is owned by the caller but is in the
+    /// structural terminal tombstone state.
     ///
     /// Distinct from [`NotFound`] on purpose: a binding pointing at a revoked
     /// credential is a *clear* error ("this credential was revoked"), not a
@@ -141,8 +139,7 @@ pub enum ValidatedCredentialBindingError {
     CredentialTombstoned {
         /// The revoked credential id.
         id: String,
-        /// When the credential was revoked, when the tombstone epoch is
-        /// well-formed (`None` for a tombstone whose stamp did not parse).
+        /// Physical persistence timestamp of the terminal transition.
         revoked_at: Option<chrono::DateTime<chrono::Utc>>,
     },
 

@@ -167,6 +167,18 @@ deadline. It also owns bounded zeroizing provider buffers and the opaque
 bearer-token capability. There is no public raw-client or custom-cfg escape
 hatch.
 
+Credential OAuth refresh uses the same credential-owned endpoint and
+global-unicast address policy through a separate private server adapter.
+Its reqwest client is likewise rustls/HTTPS-only with redirects, retries,
+referer propagation, Hickory fallback, and implicit system proxies disabled.
+The custom resolver rejects empty, excessive, non-global, and mixed DNS
+answers, then returns that exact validated set to reqwest's connect path.
+Provider-required endpoint queries are retained but the endpoint, response
+body, request/response DTOs, and transport errors have constant redacted
+diagnostics. The application-owned accumulated response buffer is zeroized on
+every success and failure path; reqwest/rustls necessarily retain their own
+short-lived transport buffers outside this type-level guarantee.
+
 Provider configuration is opt-in only through
 `API_AUTH_OAUTH_{GOOGLE,GITHUB}_{CLIENT_ID,CLIENT_SECRET}`. Either variable
 declares the profile; an incomplete pair aborts startup. Google discovery URL,
@@ -205,6 +217,36 @@ This is identity OAuth (Plane A); integration credential acquisition (Plane B)
 continues through the universal `resolve` / `resolve/continue` contract once
 tenant membership authority is provisioned. In the default binary those tenant
 routes currently return 503, as described above.
+
+## Credential persistence backend
+
+`NEBULA_CRED_DB` independently selects the Plane-B credential database. It
+does not inherit `DATABASE_URL` and never reuses the execution/auth pool:
+credential schema admission, migrations, rows, refresh claims, and sentinel
+evidence have one credential-owned readiness lifecycle.
+
+| `NEBULA_CRED_DB` | Backend | Deployment |
+|------------------|---------|------------|
+| **unset** | `sqlite://nebula-credentials.db?mode=rwc` | Durable single-process default |
+| `sqlite://…`, `sqlite::memory:`, or a bare relative/absolute/Windows path | SQLite | Single process; the memory form is test/development only |
+| `postgres://…` or `postgresql://…` | PostgreSQL (build with `--features postgres`) | Shared multi-replica production |
+
+An explicit unsupported URL scheme aborts startup. A malformed PostgreSQL
+locator such as `postgres:…` / `postgresql:…` also aborts instead of being
+interpreted as a SQLite path. Requesting PostgreSQL from a build without the
+`postgres` feature likewise aborts; none of these cases falls back to SQLite or
+memory. Startup diagnostics expose only the backend class and closed error
+taxonomy—database URLs, credentials, and tenant-specific paths are never
+logged.
+
+Plane-B credential persistence and refresh coordination share the same admitted
+private pool for either supported backend. The server creates a unique
+`nebula-server:<uuid>` replica identity on each process start and retains one
+periodic reclaim-sweep guard until `serve` exits. Expired pre-provider claims
+may be reclaimed; expired `RefreshInFlight` claims remain durable
+`OutcomeUnknown` poison, are accounted exactly once, and never become
+replayable merely because TTL elapsed. There is no in-memory claim fallback in
+the production composition.
 
 ## Email delivery (SMTP)
 

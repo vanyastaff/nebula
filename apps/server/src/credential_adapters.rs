@@ -3,7 +3,7 @@
 //! These types implement lower-layer runtime and API read-model ports without
 //! entering `nebula-api`'s default public surface.
 
-use std::{future::Future, sync::Arc, time::Duration};
+use std::{future::Future, sync::Arc};
 
 use futures::StreamExt as _;
 use nebula_api::ports::credential_schema::{
@@ -14,13 +14,13 @@ use nebula_credential::{
     runtime::{RefreshTransport, RefreshTransportError, TokenPostRequest, TokenPostResponse},
 };
 use nebula_schema::ValidSchema;
+use nebula_storage_port::SecretBytes;
+use zeroize::Zeroizing;
 
-const OAUTH_TOKEN_HTTP_MAX_REDIRECTS: usize = 5;
-const OAUTH_TOKEN_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
-const OAUTH_TOKEN_HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+use crate::oauth_egress::build_oauth_client;
 
 /// Reqwest-backed token refresh transport for the first-party process.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct ReqwestRefreshTransport {
     client: reqwest::Client,
 }
@@ -28,14 +28,23 @@ pub(crate) struct ReqwestRefreshTransport {
 impl ReqwestRefreshTransport {
     /// Build the process-wide policy-bearing client.
     pub(crate) fn new() -> Result<Self, reqwest::Error> {
-        reqwest::Client::builder()
-            .connect_timeout(OAUTH_TOKEN_HTTP_CONNECT_TIMEOUT)
-            .timeout(OAUTH_TOKEN_HTTP_TIMEOUT)
-            .redirect(reqwest::redirect::Policy::limited(
-                OAUTH_TOKEN_HTTP_MAX_REDIRECTS,
-            ))
-            .build()
+        build_oauth_client().map(|client| Self { client })
+    }
+
+    #[cfg(test)]
+    fn for_test(
+        trust_anchor: reqwest::Certificate,
+        connect_ip: std::net::IpAddr,
+        dns_answers: Vec<std::net::IpAddr>,
+    ) -> Result<Self, reqwest::Error> {
+        crate::oauth_egress::build_test_oauth_client(trust_anchor, connect_ip, dns_answers)
             .map(|client| Self { client })
+    }
+}
+
+impl std::fmt::Debug for ReqwestRefreshTransport {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ReqwestRefreshTransport")
     }
 }
 
@@ -48,24 +57,30 @@ impl RefreshTransport for ReqwestRefreshTransport {
     > {
         Box::pin(async move {
             let form_pairs: Vec<(&str, &str)> = request
-                .form
+                .form()
                 .iter()
                 .map(|(key, value)| (key.as_str(), value.expose_secret()))
                 .collect();
-            let mut builder = self.client.post(&request.url).form(&form_pairs);
-            if let Some((user, password)) = &request.basic_auth {
-                builder = builder.basic_auth(user, Some(password.expose_secret()));
+            let max_response_bytes = request.max_response_bytes();
+            let mut builder = self
+                .client
+                .post(request.endpoint().expose_url().clone())
+                .form(&form_pairs);
+            if let Some((user, password)) = request.basic_auth() {
+                builder = builder.basic_auth(user.expose_secret(), Some(password.expose_secret()));
             }
+            drop(form_pairs);
+            drop(request);
 
             let response = builder
                 .send()
                 .await
-                .map_err(|error| RefreshTransportError::Send(error.to_string()))?;
+                .map_err(|_| RefreshTransportError::Send)?;
             let status = response.status().as_u16();
-            let body = read_bounded(response, request.max_response_bytes)
+            let body = read_bounded(response, max_response_bytes)
                 .await
-                .map_err(|error| RefreshTransportError::ReadBody(error.to_string()))?;
-            Ok(TokenPostResponse { status, body })
+                .map_err(|_| RefreshTransportError::ReadBody)?;
+            TokenPostResponse::try_new(status, body).map_err(|_| RefreshTransportError::ReadBody)
         })
     }
 }
@@ -73,7 +88,7 @@ impl RefreshTransport for ReqwestRefreshTransport {
 async fn read_bounded(
     response: reqwest::Response,
     max_bytes: usize,
-) -> Result<Vec<u8>, ReadBoundedError> {
+) -> Result<SecretBytes, ReadBoundedError> {
     if let Some(claimed) = response.content_length() {
         let max = u64::try_from(max_bytes).unwrap_or(u64::MAX);
         if claimed > max {
@@ -84,7 +99,7 @@ async fn read_bounded(
         }
     }
 
-    let mut body = Vec::new();
+    let mut body = Zeroizing::new(Vec::new());
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(ReadBoundedError::Read)?;
@@ -93,7 +108,7 @@ async fn read_bounded(
         }
         body.extend_from_slice(&chunk);
     }
-    Ok(body)
+    Ok(SecretBytes::from(body))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -167,3 +182,7 @@ impl CredentialSchemaPort for RegistryCredentialSchema {
             .map(|credential| self.descriptor(credential))
     }
 }
+
+#[cfg(test)]
+#[path = "credential_adapters_tests.rs"]
+mod transport_security_tests;

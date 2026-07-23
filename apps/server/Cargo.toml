@@ -45,7 +45,9 @@ thiserror = { workspace = true }
 async-trait = { workspace = true }
 base64 = { workspace = true }
 secrecy = { workspace = true }
-futures = "0.3"
+zeroize = { workspace = true }
+futures = { workspace = true }
+uuid = { workspace = true }
 reqwest = { workspace = true, default-features = false, features = [
   "json",
   "rustls",
@@ -63,7 +65,12 @@ lettre = { workspace = true }
 sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
 
 [features]
-postgres = ["nebula-api/postgres", "sqlx/postgres", "sqlx/tls-rustls-ring-native-roots"]
+postgres = [
+  "nebula-api/postgres",
+  "nebula-storage/postgres",
+  "sqlx/postgres",
+  "sqlx/tls-rustls-ring-native-roots",
+]
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -72,6 +79,8 @@ nebula-action = { path = "../../crates/action" }
 # `ApiConfig::for_test()`. Cargo unions features from [dependencies] and
 # [dev-dependencies], so this only activates the feature in test builds.
 nebula-api = { path = "../../crates/api", features = ["test-util"] }
+rcgen = { workspace = true }
+tokio-rustls = { workspace = true }
 
 [lints]
 workspace = true

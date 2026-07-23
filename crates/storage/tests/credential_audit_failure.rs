@@ -1,108 +1,110 @@
-//! CI gate for error-propagating credential audit (no silent discard).
+//! CI gate for the non-authoritative credential audit observation boundary.
 //!
-//! `AuditLayer` reports sink failures to its caller, but the sink does not
-//! share a transaction with the wrapped persistence backend. A successful
-//! inner mutation therefore remains committed when audit recording fails.
-//! The decorator must never attempt a compensating mutation: another writer
-//! may have advanced the record between the original commit and sink failure.
-//!
-//! This test is the seam that stops future PRs from silently
-//! regressing the error-propagating audit invariant back to the old
-//! `sink.log(event)` fire-and-forget shape.
-//!
-//! Ref: ADR-0028, ADR-0032 (historical — the maintainers' private design vault)
-//! Ref: the maintainers' private design vault §P6.7
+//! `AuditLayer` never shares a transaction with the wrapped persistence
+//! backend. Sink rejection is therefore telemetry only: it must not replace a
+//! successful store result, retry a mutation, or compensate committed state.
 
-// The layers + the durable SQLite store are feature-gated in storage. Gate on
-// `sqlite` so this file is only compiled when that backend is available.
 #![cfg(feature = "sqlite")]
 
 use std::sync::{Arc, Barrier};
 
-mod common;
-
-use common::make_credential;
+use nebula_core::CredentialId;
 use nebula_storage::credential::{
     AuditEvent, AuditLayer, AuditOperation, AuditSink, SqliteCredentialPersistence,
 };
 use nebula_storage_port::{
-    CredentialOwner, CredentialPersistence, CredentialPersistenceError, CredentialSelector,
-    CredentialWriteMode,
+    CredentialCreate, CredentialOwner, CredentialPersistence, CredentialPersistenceError,
+    CredentialReplacement, CredentialSelector, CredentialTombstone, CredentialVersion, SecretBytes,
+    StoredCredential,
 };
 
 fn owner() -> CredentialOwner {
     CredentialOwner::from_canonical("audit-test-owner")
 }
 
-fn selector(id: &str) -> CredentialSelector {
+fn selector(id: CredentialId) -> CredentialSelector {
     CredentialSelector::new(owner(), id)
 }
 
-/// Sink that always refuses to record, proving that `AuditLayer` surfaces
-/// rather than swallows audit failures.
+fn file_url(path: &std::path::Path) -> String {
+    format!("sqlite://{}?mode=rwc", path.display())
+}
+
+fn version(value: i64) -> CredentialVersion {
+    CredentialVersion::try_from(value).expect("test version must be valid")
+}
+
+fn create(data: &[u8]) -> CredentialCreate {
+    CredentialCreate::new(
+        "test_credential".to_owned(),
+        SecretBytes::new(data.to_vec()),
+        "test".to_owned(),
+        1,
+        None,
+        None,
+        false,
+        Default::default(),
+    )
+}
+
+fn replacement(expected_version: CredentialVersion, data: &[u8]) -> CredentialReplacement {
+    CredentialReplacement::new(
+        expected_version,
+        SecretBytes::new(data.to_vec()),
+        "test".to_owned(),
+        1,
+        None,
+        None,
+        false,
+        Default::default(),
+    )
+}
+
 #[derive(Debug, Default)]
 struct FailingAuditSink;
 
 impl AuditSink for FailingAuditSink {
     fn record(&self, _event: &AuditEvent) -> Result<(), CredentialPersistenceError> {
-        Err(CredentialPersistenceError::AuditFailure(
-            "synthetic audit sink failure".into(),
-        ))
+        Err(CredentialPersistenceError::Unavailable)
     }
 }
 
-/// Primary gate: `put` with a failing audit sink reports the audit error while
-/// preserving the mutation already committed by the inner store.
 #[tokio::test]
-async fn put_surfaces_audit_failure_after_committed_mutation() {
+async fn create_preserves_success_and_committed_mutation_when_sink_rejects() {
     let inner = SqliteCredentialPersistence::connect_memory()
         .await
         .expect("in-memory SQLite store");
-    // Share the inner store so the test can inspect it directly after
-    // the failed put. `SqliteCredentialPersistence` is cheap-cloneable (the pool is
-    // `Arc`-backed), so the clone observes the same in-memory database.
     let audited = AuditLayer::new(inner.clone(), Arc::new(FailingAuditSink));
+    let selector = selector(CredentialId::new());
 
-    let credential_id = "cred_audit_failure_put";
-    let record = make_credential(credential_id, b"committed-before-audit");
-
-    let result = audited
-        .put(
-            &selector(&record.id),
-            record,
-            CredentialWriteMode::CreateOnly,
-        )
-        .await;
-
-    assert!(
-        matches!(result, Err(CredentialPersistenceError::AuditFailure(_))),
-        "audit failure must surface as CredentialPersistenceError::AuditFailure, got {result:?}"
-    );
-
-    let committed = inner
-        .get(&selector(credential_id))
+    let committed = audited
+        .create(&selector, create(b"committed-before-audit"))
         .await
-        .expect("inner mutation commits before audit recording");
-    assert_eq!(committed.version, 1);
-    assert_eq!(committed.data, b"committed-before-audit");
+        .expect("audit observation cannot override the authoritative commit");
+    assert_eq!(committed.version(), version(1));
 
-    let lookup_via_layer = audited.get(&selector(credential_id)).await;
-    // Reads still propagate sink failure even though the committed row is
-    // observable through the backend.
-    assert!(
-        matches!(
-            lookup_via_layer,
-            Err(CredentialPersistenceError::AuditFailure(_))
-        ),
-        "get via AuditLayer must propagate the sink failure, got {lookup_via_layer:?}"
-    );
+    let StoredCredential::Live(stored) = inner
+        .get(&selector)
+        .await
+        .expect("inner mutation commits before audit observation")
+    else {
+        panic!("create must persist a live record");
+    };
+    assert_eq!(stored.version(), version(1));
+    assert_eq!(stored.data().as_ref(), b"committed-before-audit");
+
+    let StoredCredential::Live(via_layer) = audited
+        .get(&selector)
+        .await
+        .expect("read results also remain authoritative when observation fails")
+    else {
+        panic!("created record must remain live");
+    };
+    assert_eq!(via_layer.data().as_ref(), b"committed-before-audit");
 }
 
-/// Regression for the unsafe compensation race: the audit sink pauses after
-/// the CreateOnly insert, a concurrent writer advances the row with CAS, and
-/// the later sink failure must not delete that newer version.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn failed_create_audit_never_deletes_a_concurrent_update() {
+async fn delayed_sink_rejection_never_compensates_a_concurrent_replacement() {
     #[derive(Debug)]
     struct BlockingFailingAuditSink {
         entered: Arc<Barrier>,
@@ -111,18 +113,21 @@ async fn failed_create_audit_never_deletes_a_concurrent_update() {
 
     impl AuditSink for BlockingFailingAuditSink {
         fn record(&self, event: &AuditEvent) -> Result<(), CredentialPersistenceError> {
-            assert_eq!(event.operation, AuditOperation::Put);
+            assert_eq!(event.operation, AuditOperation::Create);
             self.entered.wait();
             self.release.wait();
-            Err(CredentialPersistenceError::AuditFailure(
-                "synthetic delayed audit sink failure".into(),
-            ))
+            Err(CredentialPersistenceError::Unavailable)
         }
     }
 
-    let inner = SqliteCredentialPersistence::connect_memory()
+    let directory = tempfile::tempdir().expect("temporary directory must be created");
+    let url = file_url(&directory.path().join("audit-observation-race.sqlite"));
+    let inner = SqliteCredentialPersistence::connect(&url)
         .await
-        .expect("in-memory SQLite store");
+        .expect("audited SQLite store");
+    let concurrent = SqliteCredentialPersistence::connect(&url)
+        .await
+        .expect("concurrent writer must use an independent pool");
     let entered = Arc::new(Barrier::new(2));
     let release = Arc::new(Barrier::new(2));
     let audited = AuditLayer::new(
@@ -132,168 +137,97 @@ async fn failed_create_audit_never_deletes_a_concurrent_update() {
             release: Arc::clone(&release),
         }),
     );
-    let selector = selector("cred_audit_concurrent_update");
+    let selector = selector(CredentialId::new());
     let task_selector = selector.clone();
 
-    let put_task = tokio::spawn(async move {
-        audited
-            .put(
-                &task_selector,
-                make_credential(task_selector.credential_id(), b"version-one"),
-                CredentialWriteMode::CreateOnly,
-            )
-            .await
-    });
+    let create_task =
+        tokio::spawn(async move { audited.create(&task_selector, create(b"version-one")).await });
 
     let entered_wait = Arc::clone(&entered);
-    tokio::task::spawn_blocking(move || {
-        entered_wait.wait();
-    })
-    .await
-    .expect("audit sink reaches the deterministic pause");
+    tokio::task::spawn_blocking(move || entered_wait.wait())
+        .await
+        .expect("audit sink reaches the deterministic pause");
 
-    let committed = inner
+    let StoredCredential::Live(first) = concurrent
         .get(&selector)
         .await
-        .expect("CreateOnly insert commits before the sink is called");
-    assert_eq!(committed.version, 1);
-    assert_eq!(committed.data, b"version-one");
+        .expect("create commits before the sink is called")
+    else {
+        panic!("create fixture must be live");
+    };
+    assert_eq!(first.version(), version(1));
 
-    let mut concurrent_update = committed;
-    concurrent_update.data = b"version-two".to_vec().into();
-    let updated = inner
-        .put(
-            &selector,
-            concurrent_update,
-            CredentialWriteMode::CompareAndSwap {
-                expected_version: 1,
-            },
-        )
+    let updated = concurrent
+        .replace(&selector, replacement(version(1), b"version-two"))
         .await
         .expect("concurrent CAS advances the committed row");
-    assert_eq!(updated.version, 2);
-    assert_eq!(updated.data, b"version-two");
+    assert_eq!(updated.version(), version(2));
 
     let release_wait = Arc::clone(&release);
-    tokio::task::spawn_blocking(move || {
-        release_wait.wait();
-    })
-    .await
-    .expect("blocked audit sink is released");
+    tokio::task::spawn_blocking(move || release_wait.wait())
+        .await
+        .expect("blocked audit sink is released");
 
-    let result = put_task.await.expect("audited put task completes");
-    assert!(
-        matches!(result, Err(CredentialPersistenceError::AuditFailure(_))),
-        "delayed audit failure must surface to the original caller, got {result:?}"
-    );
+    let original = create_task
+        .await
+        .expect("audited create task completes")
+        .expect("sink rejection cannot replace create success");
+    assert_eq!(original.version(), version(1));
 
-    let retained = inner
+    let StoredCredential::Live(retained) = concurrent
         .get(&selector)
         .await
-        .expect("audit failure must not compensate away a newer write");
-    assert_eq!(retained.version, 2);
-    assert_eq!(retained.data, b"version-two");
+        .expect("sink rejection must not compensate a newer write")
+    else {
+        panic!("concurrent replacement must remain live");
+    };
+    assert_eq!(retained.version(), version(2));
+    assert_eq!(retained.data().as_ref(), b"version-two");
 }
 
-/// Read-path gate: a failing sink must fail `get` too (no silent log).
-///
-/// Exercises the `?` after `sink.record` in the `get` impl.
 #[tokio::test]
-async fn get_propagates_audit_failure() {
+async fn read_management_and_tombstone_results_ignore_sink_rejection() {
     let inner = SqliteCredentialPersistence::connect_memory()
         .await
         .expect("in-memory SQLite store");
-    // Pre-populate via the raw inner (no AuditLayer) so the test
-    // isolates the read-path invariant.
-    let record = make_credential("cred_audit_read", b"x");
+    let selector = selector(CredentialId::new());
     inner
-        .put(
-            &selector(&record.id),
-            record,
-            CredentialWriteMode::CreateOnly,
-        )
+        .create(&selector, create(b"x"))
         .await
-        .unwrap();
-
-    let audited = AuditLayer::new(inner, Arc::new(FailingAuditSink));
-
-    let result = audited.get(&selector("cred_audit_read")).await;
-
-    assert!(
-        matches!(result, Err(CredentialPersistenceError::AuditFailure(_))),
-        "get must surface audit failures, got {result:?}"
-    );
-}
-
-/// `delete` under a failing sink must also propagate the audit error. The inner
-/// delete has already happened (destructive at that layer), but the
-/// operation must still surface the audit failure so the caller cannot mistake
-/// the mutation for an audit-confirmed success.
-#[tokio::test]
-async fn delete_propagates_audit_failure_after_committed_delete() {
-    let inner = SqliteCredentialPersistence::connect_memory()
-        .await
-        .expect("in-memory SQLite store");
-    let record = make_credential("cred_audit_delete", b"x");
-    inner
-        .put(
-            &selector(&record.id),
-            record,
-            CredentialWriteMode::CreateOnly,
-        )
-        .await
-        .unwrap();
-
+        .expect("fixture create");
     let audited = AuditLayer::new(inner.clone(), Arc::new(FailingAuditSink));
 
-    let result = audited.delete(&selector("cred_audit_delete")).await;
-
-    assert!(
-        matches!(result, Err(CredentialPersistenceError::AuditFailure(_))),
-        "delete must surface audit failures, got {result:?}"
-    );
-    let lookup = inner.get(&selector("cred_audit_delete")).await;
-    assert!(
-        matches!(lookup, Err(CredentialPersistenceError::NotFound { .. })),
-        "inner delete remains committed after audit failure, got {lookup:?}"
-    );
-}
-
-/// `list` under a failing sink must propagate the audit error too. Proves the
-/// wildcard-event path in `AuditLayer::list` hits the `?` propagation
-/// identically to id-scoped operations.
-#[tokio::test]
-async fn list_propagates_audit_failure() {
-    let audited = AuditLayer::new(
-        SqliteCredentialPersistence::connect_memory()
+    assert!(matches!(
+        audited
+            .get(&selector)
             .await
-            .expect("in-memory SQLite store"),
-        Arc::new(FailingAuditSink),
-    );
-
-    let result = audited.list(&owner(), None).await;
-
-    assert!(
-        matches!(result, Err(CredentialPersistenceError::AuditFailure(_))),
-        "list must surface audit failures, got {result:?}"
-    );
-}
-
-/// `exists` under a failing sink must propagate the audit error. Closes the last
-/// mutating/non-mutating surface on `CredentialPersistence`.
-#[tokio::test]
-async fn exists_propagates_audit_failure() {
-    let audited = AuditLayer::new(
-        SqliteCredentialPersistence::connect_memory()
+            .expect("get remains authoritative"),
+        StoredCredential::Live(_)
+    ));
+    assert_eq!(
+        audited
+            .list(&owner(), None)
             .await
-            .expect("in-memory SQLite store"),
-        Arc::new(FailingAuditSink),
+            .expect("list remains authoritative"),
+        vec![selector.credential_id()]
     );
-
-    let result = audited.exists(&selector("anything")).await;
-
     assert!(
-        matches!(result, Err(CredentialPersistenceError::AuditFailure(_))),
-        "exists must surface audit failures, got {result:?}"
+        audited
+            .exists(&selector)
+            .await
+            .expect("exists remains authoritative")
     );
+
+    let tombstoned = audited
+        .tombstone(&selector, CredentialTombstone::new(version(1)))
+        .await
+        .expect("tombstone remains authoritative");
+    assert_eq!(tombstoned.version(), version(2));
+    assert!(matches!(
+        inner
+            .get(&selector)
+            .await
+            .expect("committed tombstone remains physical"),
+        StoredCredential::Tombstoned(_)
+    ));
 }

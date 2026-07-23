@@ -8,6 +8,7 @@
 pub mod dispatchers;
 pub mod executor;
 pub mod lease;
+pub mod oauth_egress;
 pub mod refresh;
 /// Resolution error taxonomy + fail-closed owner/tombstone gates (split from
 /// `resolver` for size; behaviour-preserving).
@@ -20,11 +21,15 @@ pub use lease::{
     LeaseLifecycle, LeaseLifecycleConfig, LeaseLifecycleError, LeaseToken, RenewalPolicy,
     StalenessCeiling, StalenessCeilingError,
 };
+pub use oauth_egress::{
+    OAUTH_DNS_MAX_ANSWERS, OAUTH_ENDPOINT_MAX_BYTES, OAuthDnsAnswerError, OAuthEndpointError,
+    OAuthServerEndpoint, oauth_egress_ip_is_globally_routable, validate_oauth_dns_answers,
+};
 pub use refresh::{
-    ConfigError, ReclaimSweepHandle, RefreshAttempt, RefreshConfigError, RefreshCoordConfig,
-    RefreshCoordMetrics, RefreshCoordinator, RefreshError, RefreshTransport, RefreshTransportError,
-    SentinelDecision, SentinelThresholdConfig, SentinelTrigger, TokenPostRequest,
-    TokenPostResponse,
+    ConfigError, OAuthProviderErrorCode, ReclaimSweepHandle, RefreshCoordConfig,
+    RefreshCoordMetrics, RefreshCoordinator, RefreshDisposition, RefreshError, RefreshRecheckError,
+    RefreshTransport, RefreshTransportError, SentinelThresholdConfig, SentinelTrigger,
+    TokenPostRequest, TokenPostResponse, TokenPostResponseError,
 };
 pub use resolve_error::ResolveError;
 pub use resolver::CredentialResolver;

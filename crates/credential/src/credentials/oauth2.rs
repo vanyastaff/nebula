@@ -67,8 +67,9 @@ use crate::{
 /// Per Tech Spec §15.4 amendment — `Zeroize` + `ZeroizeOnDrop` derived
 /// so the decrypted plaintext (access/refresh tokens, client creds)
 /// is scrubbed deterministically when this state is dropped. Non-secret
-/// fields (token type, expiry, scopes, URL, auth-style enum) carry
-/// `#[zeroize(skip)]`.
+/// fields (token type, expiry, scopes, auth-style enum) carry
+/// `#[zeroize(skip)]`. `token_url` is scrubbed because provider-routing query
+/// parameters can contain tenant or credential-adjacent values.
 #[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 pub struct OAuth2State {
     /// Current access token.
@@ -92,8 +93,8 @@ pub struct OAuth2State {
     /// Stored for refresh operations (encrypted at rest via `EncryptionLayer`).
     #[serde(with = "crate::serde_secret")]
     pub client_secret: SecretString,
-    /// Token endpoint URL for refresh requests — non-secret endpoint URL.
-    #[zeroize(skip)]
+    /// Token endpoint URL for refresh requests. Query parameters are treated
+    /// as sensitive routing material and zeroized with the state.
     pub token_url: String,
     /// How client credentials are sent (preserved from initial token
     /// exchange) — non-secret enum discriminant.
@@ -115,7 +116,7 @@ impl fmt::Debug for OAuth2State {
             .field("scopes", &self.scopes)
             .field("client_id", &"[REDACTED]")
             .field("client_secret", &"[REDACTED]")
-            .field("token_url", &self.token_url)
+            .field("token_url", &"[REDACTED]")
             .field("auth_style", &self.auth_style)
             .finish()
     }
@@ -220,36 +221,18 @@ pub struct OAuth2Pending {
     pub redirect_uri: Option<String>,
 }
 
-// Manual `Debug` so that `tracing::debug!(?pending)` cannot leak the
-// `client_secret` (already redacted by `SecretString`'s own `Debug`),
-// the `device_code` (device-flow bearer), the `pkce_verifier` (one-shot
-// auth-code verifier), or the `state` (callback CSRF token). The
-// `redirect_uri` is not secret and is shown verbatim.
+// Constant `Debug` keeps URLs (including provider-routing query parameters),
+// client material, device bearer material, PKCE, state, and redirect values
+// out of diagnostics without leaking their presence or length.
 impl fmt::Debug for OAuth2Pending {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OAuth2Pending")
-            .field("config", &self.config)
-            .field("client_id", &"[REDACTED]")
-            .field("client_secret", &"[REDACTED]")
-            .field("grant_type", &self.grant_type)
-            .field("auth_style", &self.auth_style)
-            .field(
-                "device_code",
-                &self.device_code.as_ref().map(|_| "[REDACTED]"),
-            )
-            .field("interval", &self.interval)
-            .field(
-                "pkce_verifier",
-                &self.pkce_verifier.as_ref().map(|_| "[REDACTED]"),
-            )
-            .field("state", &self.state.as_ref().map(|_| "[REDACTED]"))
-            .field("redirect_uri", &self.redirect_uri)
-            .finish()
+        f.write_str("OAuth2Pending(<redacted>)")
     }
 }
 
 impl Zeroize for OAuth2Pending {
     fn zeroize(&mut self) {
+        self.config.zeroize();
         // Zeroize the existing SecretString in place before replacing it, so
         // the underlying heap buffer is scrubbed rather than relying solely
         // on Drop of the replacement.
@@ -531,9 +514,7 @@ impl OAuth2Credential {
                     .ct_eq(expected_state.as_bytes())
                     .into();
                 if !state_matches {
-                    return Err(CredentialError::InvalidInput(
-                        "OAuth2 state mismatch".into(),
-                    ));
+                    return Err(CredentialError::InvalidInput(FAILED.into()));
                 }
 
                 let verifier_secret = pending
@@ -740,10 +721,10 @@ fn build_auth_url(
         )))
     })?;
 
-    let mut url = url::Url::parse(&config.auth_url).map_err(|e| {
+    let mut url = url::Url::parse(&config.auth_url).map_err(|_| {
         CredentialError::Provider(Box::new(ProviderErrorContext::new(
             ProviderErrorKind::Schema,
-            SecretFreeMessage::new(format!("invalid auth_url: {e}")),
+            SecretFreeMessage::new("invalid OAuth2 authorization endpoint URL"),
         )))
     })?;
 
@@ -855,7 +836,7 @@ mod tests {
             scopes: vec!["read".into(), "write".into()],
             client_id: SecretString::new("cid"),
             client_secret: SecretString::new("csecret"),
-            token_url: "https://example.com/token".into(),
+            token_url: "https://example.com/token?routing=state-url-canary".into(),
             auth_style: AuthStyle::default(),
         }
     }
@@ -1391,6 +1372,10 @@ mod tests {
         };
 
         pending.zeroize();
+        assert!(pending.config.auth_url.is_empty());
+        assert!(pending.config.token_url.is_empty());
+        assert!(pending.config.scopes.is_empty());
+        assert!(pending.config.redirect_uri.is_none());
         assert!(pending.client_secret.expose_secret().is_empty());
         assert!(pending.device_code.is_none());
         assert!(pending.client_id.is_empty());
@@ -1401,11 +1386,11 @@ mod tests {
     }
 
     #[test]
-    fn pending_state_debug_redacts_pkce_verifier_and_state_but_shows_redirect_uri() {
-        let pending = OAuth2Pending {
+    fn pending_state_debug_is_constant_and_redacts_all_urls() {
+        let first = OAuth2Pending {
             config: OAuth2Config::authorization_code(TEST_CALLBACK)
-                .auth_url("https://a.com/auth")
-                .token_url("https://a.com/token")
+                .auth_url("https://a.com/auth?diagnostic=auth-url-canary")
+                .token_url("https://a.com/token?diagnostic=token-url-canary")
                 .build(),
             client_id: "cid".into(),
             client_secret: SecretString::new("cs"),
@@ -1417,11 +1402,33 @@ mod tests {
             state: Some("my_csrf_state_value".into()),
             redirect_uri: Some(TEST_CALLBACK.into()),
         };
-        let debug = format!("{pending:?}");
-        assert!(!debug.contains("my_pkce_verifier_value"));
-        assert!(!debug.contains("my_csrf_state_value"));
-        assert!(debug.contains(TEST_CALLBACK));
-        assert!(debug.contains("[REDACTED]"));
+        let second = OAuth2Pending {
+            config: OAuth2Config::device_code()
+                .auth_url("https://different.example/long/device/path")
+                .token_url("https://different.example/token")
+                .build(),
+            client_id: "different-client".into(),
+            client_secret: SecretString::new("different-secret"),
+            grant_type: GrantType::DeviceCode,
+            auth_style: AuthStyle::PostBody,
+            device_code: Some("different-device-code".into()),
+            interval: Some(42),
+            pkce_verifier: None,
+            state: None,
+            redirect_uri: None,
+        };
+        let debug = format!("{first:?}");
+        assert_eq!(debug, format!("{second:?}"));
+        assert_eq!(debug, "OAuth2Pending(<redacted>)");
+        for canary in [
+            "my_pkce_verifier_value",
+            "my_csrf_state_value",
+            "auth-url-canary",
+            "token-url-canary",
+            TEST_CALLBACK,
+        ] {
+            assert!(!debug.contains(canary));
+        }
     }
 
     #[test]
@@ -1471,9 +1478,35 @@ mod tests {
         assert!(!debug.contains("tok_abc"), "access_token leaked in Debug");
         assert!(!debug.contains("ref_xyz"), "refresh_token leaked in Debug");
         assert!(!debug.contains("csecret"), "client_secret leaked in Debug");
+        assert!(
+            !debug.contains("state-url-canary"),
+            "query-bearing token_url leaked in Debug"
+        );
+        assert!(!debug.contains("example.com"));
         assert!(debug.contains("[REDACTED]"));
         assert!(debug.contains("Bearer"));
-        assert!(debug.contains("https://example.com/token"));
+    }
+
+    #[test]
+    fn oauth2_state_zeroize_scrubs_token_url() {
+        let mut state = make_state();
+        state.zeroize();
+        assert!(state.token_url.is_empty());
+    }
+
+    #[test]
+    fn build_auth_url_parse_failure_is_fixed_and_input_free() {
+        let config = OAuth2Config::authorization_code(TEST_CALLBACK)
+            .auth_url("://auth-url-diagnostic-canary")
+            .token_url("https://provider.example/token")
+            .build();
+
+        let error = build_auth_url(&config, "client", "challenge", "state")
+            .expect_err("invalid authorization endpoint must fail");
+        let diagnostic = format!("{error:?} {error}");
+        assert!(!diagnostic.contains("auth-url-diagnostic-canary"));
+        assert!(!diagnostic.contains("://"));
+        assert!(diagnostic.contains("invalid OAuth2 authorization endpoint URL"));
     }
 
     #[test]

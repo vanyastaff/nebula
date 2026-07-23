@@ -15,14 +15,13 @@
 //! [`AuditSink`] for each call. Only metadata flows through the sink —
 //! credential data never does.
 //!
-//! # Error propagation and mutation boundary
+//! # Observation boundary
 //!
-//! The storage decorator returns [`AuditSink::record`] errors instead of
-//! silently discarding them. The sink contract does not share a transaction
-//! with credential persistence: if recording fails after a successful
-//! mutation, that mutation remains committed and must not be compensated by
-//! the decorator. Atomic mutation-plus-audit persistence requires a
-//! backend-owned transaction or transactional outbox.
+//! This interim sink is a non-authoritative observation. It does not share a
+//! transaction with credential persistence, so a recording failure must never
+//! turn a confirmed store mutation into an error, trigger a retry, or attempt
+//! compensation. Atomic mutation-plus-audit evidence requires the K3
+//! backend-owned outbox/operation ledger.
 
 use crate::CredentialPersistenceError;
 
@@ -35,9 +34,9 @@ use crate::CredentialPersistenceError;
 ///
 /// - `record` must not block the calling task for extended periods.
 /// - Implementations must never inspect or log credential data.
-/// - Returning `Err(CredentialPersistenceError)` causes the wrapping `AuditLayer` to return the
-///   error instead of silently succeeding. It does not roll back a mutation already committed by
-///   the wrapped persistence backend.
+/// - Returning `Err(CredentialPersistenceError)` asks the wrapping `AuditLayer`
+///   to emit bounded failure telemetry. It never changes the persistence
+///   result.
 pub trait AuditSink: Send + Sync {
     /// Record an audit event.
     ///
@@ -46,8 +45,8 @@ pub trait AuditSink: Send + Sync {
     /// Return an error when the event cannot be accepted by this sink. The
     /// sink's own contract determines whether acceptance means durable
     /// persistence, an outbox append, or structured-log delivery.
-    /// The wrapping `AuditLayer` surfaces the error — no silent discard — but
-    /// cannot make the event atomic with an already-completed store mutation.
+    /// The wrapping `AuditLayer` observes the error through bounded telemetry
+    /// and preserves the authoritative persistence result.
     fn record(&self, event: &AuditEvent) -> Result<(), CredentialPersistenceError>;
 }
 
@@ -80,10 +79,12 @@ pub struct AuditEvent {
 pub enum AuditOperation {
     /// A credential was retrieved.
     Get,
-    /// A credential was stored or updated.
-    Put,
-    /// A credential was deleted.
-    Delete,
+    /// A new live credential was created.
+    Create,
+    /// Mutable state of a live credential was replaced.
+    Replace,
+    /// A live credential transitioned to a terminal tombstone.
+    Tombstone,
     /// Credential IDs were listed.
     List,
     /// A credential existence check was performed.
@@ -105,11 +106,11 @@ pub enum AuditOperation {
         /// detection (includes the new event).
         recent_count: u32,
     },
-    /// Credential transitioned to `ReauthRequired` after the sentinel
-    /// threshold was crossed. `reason` is the textual form of the
-    /// `ReauthReason` published on the event bus. Sub-spec §6 audit
-    /// event.
-    RefreshCoordReauthFlagged {
+    /// The sentinel threshold was crossed and the reclaim sweep emitted
+    /// its reauthentication-required observation. This audit operation
+    /// does not claim that the credential row was durably mutated.
+    /// `reason` is the textual form of the `ReauthReason` observation.
+    RefreshCoordReauthThresholdReached {
         /// Sanitized reason string. For sentinel-driven escalations:
         /// `"sentinel_repeated"` (the `ReauthReason::SentinelRepeated`
         /// arm's stable identifier).

@@ -1,7 +1,8 @@
 //! Versioned, user-bound envelopes for Plane-A identity secrets.
 //!
 //! Active TOTP seeds and pending enrollment candidates share the platform
-//! credential [`KeyProvider`] but use distinct, versioned AAD domains. An
+//! credential [`KeyProvider`](crate::credential::KeyProvider) but use distinct,
+//! versioned AAD domains. An
 //! enrollment ciphertext therefore cannot be copied into the active-factor
 //! column: confirmation must decrypt the exact candidate and re-seal it for
 //! the active purpose.

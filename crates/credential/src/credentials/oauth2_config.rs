@@ -12,7 +12,10 @@
 //! Closes the missing-`redirect_uri` / missing-`state` / missing-PKCE
 //! holes from GitHub issues #250 and #251.
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// OAuth2 client authentication style (RFC 6749 §2.3.1).
 ///
@@ -74,19 +77,28 @@ impl PkceMethod {
 /// - `pkce == Some(PkceMethod::S256)` — PKCE protection is mandatory.
 ///
 /// For other grant types both fields are `None`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 pub struct OAuth2Config {
     pub auth_url: String,
     pub token_url: String,
     pub scopes: Vec<String>,
+    #[zeroize(skip)]
     pub grant_type: GrantType,
+    #[zeroize(skip)]
     pub auth_style: AuthStyle,
     /// PKCE method. `Some(_)` iff `grant_type == AuthorizationCode`.
     #[serde(default)]
+    #[zeroize(skip)]
     pub pkce: Option<PkceMethod>,
     /// Redirect URI. `Some(_)` iff `grant_type == AuthorizationCode`.
     #[serde(default)]
     pub redirect_uri: Option<String>,
+}
+
+impl fmt::Debug for OAuth2Config {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("OAuth2Config(<redacted>)")
+    }
 }
 
 impl OAuth2Config {
@@ -134,7 +146,6 @@ impl OAuth2Config {
 /// [`OAuth2Config::authorization_code`]). PKCE S256 is enabled by
 /// default and cannot be disabled — pass a different [`PkceMethod`] to
 /// `.pkce()` if a future variant is added.
-#[derive(Debug)]
 pub struct AuthCodeBuilder {
     redirect_uri: String,
     auth_url: String,
@@ -142,6 +153,12 @@ pub struct AuthCodeBuilder {
     scopes: Vec<String>,
     auth_style: AuthStyle,
     pkce: PkceMethod,
+}
+
+impl fmt::Debug for AuthCodeBuilder {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AuthCodeBuilder(<redacted>)")
+    }
 }
 
 impl AuthCodeBuilder {
@@ -188,12 +205,17 @@ impl AuthCodeBuilder {
 }
 
 /// Builder for Client Credentials grant configs.
-#[derive(Debug)]
 pub struct ClientCredentialsBuilder {
     auth_url: String,
     token_url: String,
     scopes: Vec<String>,
     auth_style: AuthStyle,
+}
+
+impl fmt::Debug for ClientCredentialsBuilder {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ClientCredentialsBuilder(<redacted>)")
+    }
 }
 
 impl ClientCredentialsBuilder {
@@ -235,12 +257,17 @@ impl ClientCredentialsBuilder {
 }
 
 /// Builder for Device Code grant configs.
-#[derive(Debug)]
 pub struct DeviceCodeBuilder {
     auth_url: String,
     token_url: String,
     scopes: Vec<String>,
     auth_style: AuthStyle,
+}
+
+impl fmt::Debug for DeviceCodeBuilder {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("DeviceCodeBuilder(<redacted>)")
+    }
 }
 
 impl DeviceCodeBuilder {
@@ -359,5 +386,56 @@ mod tests {
             .auth_style(AuthStyle::PostBody)
             .build();
         assert_eq!(config.auth_style, AuthStyle::PostBody);
+    }
+
+    #[test]
+    fn config_and_builder_debug_are_constant_and_url_free() {
+        let first_config = OAuth2Config::authorization_code("https://first.example/callback")
+            .auth_url("https://first.example/auth?tenant=alpha")
+            .token_url("https://first.example/token?client_secret=config-canary")
+            .build();
+        let second_config = OAuth2Config::client_credentials()
+            .auth_url("https://second.example/a")
+            .token_url("https://second.example/a/much/longer/token/path?routing=another-canary")
+            .build();
+        assert_eq!(format!("{first_config:?}"), format!("{second_config:?}"));
+        assert_eq!(format!("{first_config:?}"), "OAuth2Config(<redacted>)");
+
+        let auth_code = OAuth2Config::authorization_code(
+            "https://callback.example/path?diagnostic=builder-canary",
+        )
+        .auth_url("https://provider.example/auth?diagnostic=builder-canary");
+        let client_credentials = OAuth2Config::client_credentials()
+            .token_url("https://provider.example/token?diagnostic=builder-canary");
+        let device_code = OAuth2Config::device_code()
+            .auth_url("https://provider.example/device?diagnostic=builder-canary");
+
+        for debug in [
+            format!("{auth_code:?}"),
+            format!("{client_credentials:?}"),
+            format!("{device_code:?}"),
+        ] {
+            assert!(!debug.contains("builder-canary"));
+            assert!(!debug.contains("provider.example"));
+            assert!(debug.ends_with("(<redacted>)"));
+        }
+    }
+
+    #[test]
+    fn config_zeroize_scrubs_all_retained_url_strings() {
+        let mut config = OAuth2Config::authorization_code(
+            "https://callback.example/path?diagnostic=redirect-canary",
+        )
+        .auth_url("https://provider.example/auth?diagnostic=auth-canary")
+        .token_url("https://provider.example/token?diagnostic=token-canary")
+        .scopes(["read", "write"])
+        .build();
+
+        config.zeroize();
+
+        assert!(config.auth_url.is_empty());
+        assert!(config.token_url.is_empty());
+        assert!(config.scopes.is_empty());
+        assert!(config.redirect_uri.is_none());
     }
 }

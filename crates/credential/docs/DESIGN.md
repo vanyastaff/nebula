@@ -3,7 +3,7 @@
 | Field | Value |
 |---|---|
 | Status | Current implementation boundary; pre-1.0 |
-| Reviewed | 2026-07-22 |
+| Reviewed | 2026-07-23 |
 | Layer | Core/shared infrastructure |
 
 ## Bounded contexts
@@ -58,18 +58,56 @@ Access Kernel guard remains responsible for the separate token-grant check.
 
 ## Persistence boundary
 
-`CredentialSelector` is `(CredentialOwner, credential_id)` with private fields and accessors.
+`CredentialSelector` is `(CredentialOwner, CredentialId)` with private fields and accessors.
 `CredentialOwner` is mandatory. All persistence methods are object-safe and owner-bound:
 
-- `get`, `put`, `delete`, and `exists` take a selector;
-- `list` takes an owner;
-- CAS compares owner, credential ID, and expected version;
-- owner is never updated; and
-- wrong-owner access has the same observable result as absence.
+- physical `get`, live-only `get_head`/`exists`, and explicit `create`/`replace`/`tombstone` take
+  a selector;
+- `list`/`list_heads` take an owner and expose live rows only;
+- replace and tombstone compare owner, typed credential ID, live state, and expected
+  `CredentialVersion`;
+- create cannot smuggle identity/owner/version/timestamps, replacement cannot change immutable
+  identity/type/creation fields, and tombstone carries only its expected version;
+- owner is never updated; wrong-owner access has the same observable result as absence; and
+- generic overwrite and physical delete are unnameable.
 
-`StoredCredential` is a port DTO with redacted `Debug` and no serde contract. Its owner metadata
-stamp is compatibility/audit information only; adapters overwrite it from the selector and never
-use it as authorization input.
+`StoredCredential` is structural `Live | Tombstoned`, redacted, and has no serde contract. The
+tombstone payload cannot represent data, name, expiry, reauthentication, or metadata. Its id
+remains permanently reserved while its owner-local name is released. Owner metadata is ordinary
+compatibility/audit data only; the selector plus physical owner column are the sole persistence
+authority.
+
+SQLite/PostgreSQL ready-store constructors hold a bounded backend-specific startup lock across
+read-only schema admission, canonical migration through paired `0039`, and postflight. Raw pools
+cannot construct a ready credential store. Confirmed mutations return a secret-free
+`CredentialCommit` from statement `RETURNING` only after commit; a lost commit acknowledgement is
+the non-retryable `OutcomeUnknown`.
+
+Coordinated refresh has an explicit irreversible boundary: the L2 claim is marked
+`RefreshInFlight` before provider dispatch, then the provider call, state encoding, and credential
+replacement run in an owned task. Caller cancellation, caller-wait timeout, and heartbeat loss do
+not cancel that task or release L1/L2 early. A lost commit acknowledgement, or a definite
+post-provider encoding/persistence failure, stops heartbeat but retains the sentinel claim.
+After TTL, storage keeps an expired `RefreshInFlight` row as durable fail-closed poison:
+`try_claim` returns `OutcomeUnknown`, provider dispatch remains forbidden, and the reclaim sweep
+atomically records evidence without deleting the row. Provider transport/read failure, a malformed
+successful response, and an opaque integration error are likewise
+`OutcomeUnknown`: dispatch began, so lack of a complete acknowledgement cannot prove the rotating
+grant survived. Exact `invalid_grant` is instead persisted as `reauth_required`; missing local
+refresh material is classified separately and performs no transport dispatch. Ambiguous and
+post-provider outcomes are non-retryable to the originating caller. This is storm containment, not
+provider-side exactly-once: explicit, authorized reconciliation of poisoned operations remains K3
+work, and elapsed time alone never grants replay authority. A live critical task with no exact
+disposition deliberately keeps heartbeating fail-closed;
+cancelling it cannot prove the provider did not consume the grant.
+
+The authenticated management `refresh` and `revoke` commands use the same owned L1/L2 boundary.
+Their erased integration closures are invoked at most once: an opaque error after entry is
+`OutcomeUnknown`, while a definite local encode/CAS/tombstone failure after provider success is
+`PostProviderPersistence`. Concurrent callers coalesce, re-check the observed credential version,
+and never repeat provider work merely because the first caller disconnected. Refresh fallback to
+still-valid material is permitted only for coordination failures proven to occur before provider
+dispatch.
 
 The resolver cache key includes `CredentialSelector` and output `TypeId`. Encryption retains the
 credential-ID AAD format for existing ciphertext compatibility; owner isolation is enforced by the
@@ -111,10 +149,10 @@ leaf-crate paths and remain an explicit SDK gap rather than an implied direct-de
 
 ## Remaining design work
 
-- **K2:** add deployment upgrade migrations for the still-nullable SQLite and PostgreSQL owner
-  columns and live-verify PostgreSQL owner/concurrency conformance.
 - **K3:** make the controller plus semantic idempotency/operation ledger the sole management writer;
-  add versioned state envelopes and durable cross-aggregate convergence.
+  add an explicit reconciliation command that can resolve durable `OutcomeUnknown` poison and
+  authorize safe replay when evidence permits, plus transactional audit/outbox evidence, versioned
+  state envelopes, and durable cross-aggregate convergence.
 - **K4:** provide supported membership/deployment wiring and finish curated SDK
   `client`/`embedded` façades without exposing internal authority. Production credential adapters
   already live in `apps/server`; the API-side factory is an unsupported test fixture only.

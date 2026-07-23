@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use nebula_core::CredentialId;
 use nebula_storage::credential::{
-    ClaimAttempt, ClaimToken, HeartbeatError, InMemoryRefreshClaimRepo, RefreshClaimRepo,
-    ReplicaId, RepoError, SentinelState,
+    ClaimAttempt, ClaimToken, ExpiredClaim, HeartbeatError, InMemoryRefreshClaimRepo,
+    RefreshClaimRepo, ReplicaId, RepoError,
 };
 
 #[tokio::test]
@@ -28,6 +28,7 @@ async fn try_claim_acquires_when_no_holder() {
             assert_eq!(claim.token.generation, 0);
         },
         ClaimAttempt::Contended { .. } => panic!("expected Acquired"),
+        ClaimAttempt::OutcomeUnknown { .. } => panic!("fresh claim cannot be poisoned"),
     }
 }
 
@@ -55,6 +56,7 @@ async fn try_claim_returns_contended_when_held() {
             assert!(existing_expires_at > chrono::Utc::now());
         },
         ClaimAttempt::Acquired(_) => panic!("expected Contended"),
+        ClaimAttempt::OutcomeUnknown { .. } => panic!("live claim cannot be poisoned"),
     }
 }
 
@@ -70,6 +72,7 @@ async fn heartbeat_validates_generation() {
     {
         ClaimAttempt::Acquired(c) => c,
         ClaimAttempt::Contended { .. } => panic!("expected Acquired"),
+        ClaimAttempt::OutcomeUnknown { .. } => panic!("fresh claim cannot be poisoned"),
     };
 
     // Stale token — bump generation manually
@@ -99,6 +102,7 @@ async fn release_is_idempotent() {
     {
         ClaimAttempt::Acquired(c) => c,
         ClaimAttempt::Contended { .. } => panic!("expected Acquired"),
+        ClaimAttempt::OutcomeUnknown { .. } => panic!("fresh claim cannot be poisoned"),
     };
 
     repo.release(claim.token.clone()).await.unwrap();
@@ -113,7 +117,7 @@ async fn release_is_idempotent() {
 }
 
 #[tokio::test]
-async fn reclaim_returns_expired_with_sentinel_state() {
+async fn reclaim_accounts_expired_in_flight_as_retained_poison() {
     let repo = InMemoryRefreshClaimRepo::new();
     let cid = CredentialId::new();
 
@@ -124,6 +128,7 @@ async fn reclaim_returns_expired_with_sentinel_state() {
     {
         ClaimAttempt::Acquired(c) => c,
         ClaimAttempt::Contended { .. } => panic!("expected Acquired"),
+        ClaimAttempt::OutcomeUnknown { .. } => panic!("fresh claim cannot be poisoned"),
     };
     repo.mark_sentinel(&claim.token).await.unwrap();
 
@@ -131,24 +136,30 @@ async fn reclaim_returns_expired_with_sentinel_state() {
     let reclaimed = repo.reclaim_stuck().await.unwrap();
 
     assert_eq!(reclaimed.len(), 1);
-    assert_eq!(reclaimed[0].credential_id, cid);
-    assert_eq!(reclaimed[0].previous_holder, ReplicaId::new("A"));
-    assert_eq!(reclaimed[0].previous_generation, 0);
-    assert_eq!(reclaimed[0].sentinel, SentinelState::RefreshInFlight);
+    assert!(matches!(
+        &reclaimed[0],
+        ExpiredClaim::OutcomeUnknownAccounted {
+            credential_id,
+            previous_holder,
+            previous_generation: 0,
+        } if *credential_id == cid && *previous_holder == ReplicaId::new("A")
+    ));
+    let recorded = repo
+        .count_sentinel_events_in_window(&cid, Duration::from_mins(1))
+        .await
+        .expect("count accounted event");
+    assert_eq!(recorded, 1);
 
-    // After reclaim, a new acquirer wins with bumped generation.
-    let next = match repo
+    // Accounting never releases an unknown provider outcome.
+    let next = repo
         .try_claim(&cid, &ReplicaId::new("B"), Duration::from_secs(30))
         .await
-        .unwrap()
-    {
-        ClaimAttempt::Acquired(c) => c,
-        ClaimAttempt::Contended { .. } => panic!("expected Acquired after reclaim"),
-    };
-    // Generation resets only because reclaim_stuck removed the row entirely;
-    // a fresh row starts at 0. (Generation only bumps when an expired row is
-    // overwritten in-place, not when it has been swept.)
-    assert_eq!(next.token.generation, 0);
+        .unwrap();
+    assert!(matches!(next, ClaimAttempt::OutcomeUnknown { .. }));
+    assert!(
+        repo.reclaim_stuck().await.unwrap().is_empty(),
+        "retained poison evidence must be recorded exactly once"
+    );
 }
 
 #[tokio::test]
@@ -170,19 +181,21 @@ async fn mark_sentinel_after_reclaim_returns_invalid_state() {
     {
         ClaimAttempt::Acquired(c) => c.token,
         ClaimAttempt::Contended { .. } => panic!("expected Acquired"),
+        ClaimAttempt::OutcomeUnknown { .. } => panic!("fresh claim cannot be poisoned"),
     };
 
     // Wait past TTL, then sweep — the row is now gone.
     tokio::time::sleep(Duration::from_millis(60)).await;
     let reclaimed = repo.reclaim_stuck().await.unwrap();
     assert_eq!(reclaimed.len(), 1, "the expired row must be reclaimed");
+    assert!(matches!(reclaimed[0], ExpiredClaim::ReclaimedNormal { .. }));
 
     let err = repo
         .mark_sentinel(&token)
         .await
         .expect_err("mark_sentinel must fail after reclaim");
     assert!(
-        matches!(err, RepoError::InvalidState(_)),
+        matches!(err, RepoError::InvalidState),
         "expected InvalidState, got {err:?}"
     );
 }
@@ -199,6 +212,7 @@ async fn try_claim_after_expiry_bumps_generation_in_place() {
     {
         ClaimAttempt::Acquired(c) => c,
         ClaimAttempt::Contended { .. } => panic!("expected Acquired"),
+        ClaimAttempt::OutcomeUnknown { .. } => panic!("fresh claim cannot be poisoned"),
     };
     assert_eq!(first.token.generation, 0);
 
@@ -212,6 +226,7 @@ async fn try_claim_after_expiry_bumps_generation_in_place() {
     {
         ClaimAttempt::Acquired(c) => c,
         ClaimAttempt::Contended { .. } => panic!("expected Acquired after expiry"),
+        ClaimAttempt::OutcomeUnknown { .. } => panic!("Normal expiry cannot be poisoned"),
     };
     assert_eq!(
         second.token.generation, 1,
@@ -228,52 +243,58 @@ async fn try_claim_after_expiry_bumps_generation_in_place() {
 // ──────────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn record_and_count_sentinel_events_within_window() {
+async fn accounted_sentinel_events_are_windowed_and_credential_scoped() {
     let repo = InMemoryRefreshClaimRepo::new();
     let cid = CredentialId::new();
     let other_cid = CredentialId::new();
     let holder = ReplicaId::new("replica-A");
 
     // Empty window → 0.
-    let now = chrono::Utc::now();
-    let window_start = now - chrono::Duration::seconds(60);
+    let window = Duration::from_mins(1);
     let count = repo
-        .count_sentinel_events_in_window(&cid, window_start)
+        .count_sentinel_events_in_window(&cid, window)
         .await
         .unwrap();
     assert_eq!(count, 0, "no events recorded yet");
 
-    // Record three events for `cid` in quick succession; all fall
-    // inside a 60s window.
-    repo.record_sentinel_event(&cid, &holder, 1).await.unwrap();
-    repo.record_sentinel_event(&cid, &holder, 2).await.unwrap();
-    repo.record_sentinel_event(&cid, &holder, 3).await.unwrap();
+    for credential_id in [&cid, &other_cid] {
+        let claim = match repo
+            .try_claim(credential_id, &holder, Duration::from_millis(20))
+            .await
+            .unwrap()
+        {
+            ClaimAttempt::Acquired(claim) => claim,
+            ClaimAttempt::Contended { .. } | ClaimAttempt::OutcomeUnknown { .. } => {
+                panic!("fresh credential must be claimable")
+            },
+        };
+        repo.mark_sentinel(&claim.token).await.unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let accounted = repo.reclaim_stuck().await.unwrap();
+    assert_eq!(accounted.len(), 2);
 
     let count = repo
-        .count_sentinel_events_in_window(&cid, window_start)
+        .count_sentinel_events_in_window(&cid, window)
         .await
         .unwrap();
-    assert_eq!(count, 3, "three events inside the rolling window");
+    assert_eq!(count, 1, "the accounted event is inside the window");
 
-    // Window starting in the future → 0 (events predate it).
-    let future_window_start = chrono::Utc::now() + chrono::Duration::seconds(10);
+    // A zero-width window excludes all prior events.
     let count = repo
-        .count_sentinel_events_in_window(&cid, future_window_start)
-        .await
-        .unwrap();
-    assert_eq!(count, 0, "events predating window_start are excluded");
-
-    // Cross-credential isolation: an event for a DIFFERENT credential
-    // must not contribute to `cid`'s count.
-    repo.record_sentinel_event(&other_cid, &holder, 1)
-        .await
-        .unwrap();
-    let count = repo
-        .count_sentinel_events_in_window(&cid, window_start)
+        .count_sentinel_events_in_window(&cid, Duration::ZERO)
         .await
         .unwrap();
     assert_eq!(
-        count, 3,
-        "another credential's event must not pollute this credential's count"
+        count, 0,
+        "events outside the zero-width window are excluded"
     );
+
+    // Cross-credential isolation: the separately accounted event for a
+    // different credential must not contribute to `cid`'s count.
+    let count = repo
+        .count_sentinel_events_in_window(&cid, window)
+        .await
+        .unwrap();
+    assert_eq!(count, 1, "another credential must not pollute this count");
 }

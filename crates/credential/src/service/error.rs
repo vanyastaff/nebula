@@ -124,6 +124,22 @@ pub enum CredentialServiceError {
         actual: u64,
     },
 
+    /// A generated credential id collided with an id already reserved by this
+    /// owner. This is distinct from a display-name conflict.
+    #[classify(category = "conflict", code = "CREDENTIAL_SERVICE:ID_ALREADY_EXISTS")]
+    #[error("credential id is already reserved")]
+    IdAlreadyExists,
+
+    /// A live credential already owns the requested owner-local display name.
+    #[classify(category = "conflict", code = "CREDENTIAL_SERVICE:NAME_ALREADY_EXISTS")]
+    #[error("credential display name is already in use")]
+    NameAlreadyExists,
+
+    /// The bounded structural version cannot advance again.
+    #[classify(category = "conflict", code = "CREDENTIAL_SERVICE:VERSION_EXHAUSTED")]
+    #[error("credential version is exhausted")]
+    VersionExhausted,
+
     /// Property payload failed the credential type's schema validation.
     #[classify(category = "validation", code = "CREDENTIAL_SERVICE:VALIDATION_FAILED")]
     #[error("credential properties were rejected")]
@@ -198,13 +214,13 @@ pub enum CredentialServiceError {
     #[error("external provider error: {0}")]
     Provider(String),
 
-    /// A transient provider failure during refresh — network error, rate-limit,
-    /// or temporary unavailability. Discriminated from [`Provider`] so the
-    /// fallback-on-interrupt path can pattern-match without string-scanning.
+    /// A replay-safe transient failure during credential work.
     ///
-    /// The fallback wrapper in [`CredentialService::refresh`] intercepts this
-    /// variant when the stored material is still non-expired and returns the
-    /// cached head instead of propagating the error.
+    /// On management refresh this is emitted only when coordination fails
+    /// before provider dispatch. The fallback wrapper may then return a
+    /// still-valid cached head. Once an erased integration is entered, opaque
+    /// network/rate-limit/server errors become [`Self::OutcomeUnknown`] instead
+    /// because the trait cannot prove a rotating grant was not consumed.
     ///
     /// [`Provider`]: Self::Provider
     /// [`CredentialService::refresh`]: crate::CredentialService::refresh
@@ -214,9 +230,11 @@ pub enum CredentialServiceError {
 
     /// The credential can no longer refresh itself and needs interactive
     /// re-authentication — the IdP rejected the stored grant
-    /// ([`ReauthReason::ProviderRejected`]), the sentinel threshold escalated
-    /// ([`ReauthReason::SentinelRepeated`]), or the local state lacks refresh
-    /// material ([`ReauthReason::MissingRefreshMaterial`]).
+    /// ([`ReauthReason::ProviderRejected`]), an authoritative sentinel command
+    /// requested reauthentication ([`ReauthReason::SentinelRepeated`]), or the
+    /// local state lacks refresh material
+    /// ([`ReauthReason::MissingRefreshMaterial`]). The lossy sentinel event
+    /// alone does not construct this durable service outcome.
     ///
     /// A routine OAuth2 outcome, **not** a server fault: classified
     /// `validation` (a client-actionable 4xx "reconnect", never a retryable
@@ -236,10 +254,46 @@ pub enum CredentialServiceError {
         reason: ReauthReason,
     },
 
-    /// The persistence layer failed.
+    /// Persisted state is structurally corrupt or a non-recoverable pending
+    /// store failure occurred.
     #[classify(category = "internal", code = "CREDENTIAL_SERVICE:STORE")]
-    #[error("credential store error: {0}")]
-    Store(String),
+    #[error("credential persistence failed")]
+    Store,
+
+    /// The authoritative persistence source could not be reached.
+    ///
+    /// Kept distinct from [`Self::Store`] so API/composition adapters can
+    /// return an honest retryable 503 without exposing backend diagnostics.
+    #[classify(
+        category = "external",
+        code = "CREDENTIAL_SERVICE:PERSISTENCE_UNAVAILABLE"
+    )]
+    #[error("credential persistence is temporarily unavailable")]
+    PersistenceUnavailable,
+
+    /// Persistence may have committed, but its acknowledgement was lost.
+    ///
+    /// This is deliberately distinct from [`Self::Store`]: callers must
+    /// reconcile through an owner-qualified read and must not blindly replay
+    /// the mutation.
+    #[classify(category = "internal", code = "CREDENTIAL_SERVICE:OUTCOME_UNKNOWN")]
+    #[error("credential mutation outcome is unknown; reconcile before retrying")]
+    OutcomeUnknown,
+
+    /// Provider-side refresh completed, but the durable local transition
+    /// definitely failed.
+    ///
+    /// The failure is exact, but replaying the provider operation is unsafe:
+    /// a rotating grant may already have been consumed. Callers must reconcile
+    /// or re-authorize rather than retry the whole command.
+    #[classify(
+        category = "internal",
+        code = "CREDENTIAL_SERVICE:POST_PROVIDER_PERSISTENCE"
+    )]
+    #[error(
+        "provider refresh completed but durable credential finalization failed; reconcile before retrying"
+    )]
+    PostProviderPersistence,
 
     /// An external [`StateSource`](crate::StateSource) was configured via
     /// the api-layer credential builder's `external_providers`
@@ -348,6 +402,34 @@ mod tests {
         assert!(
             !e.is_retryable(),
             "re-authentication must not be retried — retrying re-POSTs a dead grant"
+        );
+    }
+
+    #[test]
+    fn outcome_unknown_is_explicit_and_not_retryable() {
+        use nebula_error::Classify;
+
+        let error = CredentialServiceError::OutcomeUnknown;
+        assert_eq!(error.category(), nebula_error::ErrorCategory::Internal);
+        assert!(
+            !error.is_retryable(),
+            "an unacknowledged commit requires reconciliation, not replay"
+        );
+    }
+
+    #[test]
+    fn post_provider_persistence_is_explicit_and_not_retryable() {
+        use nebula_error::Classify;
+
+        let error = CredentialServiceError::PostProviderPersistence;
+        assert_eq!(error.category(), nebula_error::ErrorCategory::Internal);
+        assert!(
+            !error.is_retryable(),
+            "provider work cannot be replayed after definite local finalization failure"
+        );
+        assert_eq!(
+            error.code().as_str(),
+            "CREDENTIAL_SERVICE:POST_PROVIDER_PERSISTENCE"
         );
     }
 }

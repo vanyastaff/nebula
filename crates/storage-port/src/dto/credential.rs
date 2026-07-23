@@ -1,25 +1,25 @@
 //! Port-local credential persistence values.
 //!
-//! These types carry opaque encrypted state and tenant selectors across the
-//! credential-controller → persistence boundary. They intentionally depend on
-//! no credential-domain crate.
+//! These types carry opaque encrypted state and owner-qualified selectors
+//! across the credential-controller → persistence boundary. They intentionally
+//! depend on no credential-domain crate.
 
 use std::fmt;
 use std::ops::Deref;
 
-use serde_json::Value;
+use nebula_core::CredentialId;
+use serde_json::{Map, Value};
 use zeroize::Zeroizing;
 
 use crate::Scope;
+use crate::store::CredentialPersistenceError;
 
 /// Canonical credential-owner partition.
 ///
 /// This value is data, not authority. Possessing one grants no persistence
-/// access. Trusted technical services, decorators, adapters, and composition
-/// roots may retain a [`CredentialPersistence`](crate::CredentialPersistence)
-/// handle, while supported API handlers and SDK consumers do not. Unlike the
-/// retired optional owner resolver, an empty value is still an ordinary isolated
-/// partition and never means administrator access.
+/// access. Trusted technical services, adapters, and composition roots may
+/// retain a [`CredentialPersistence`](crate::CredentialPersistence) handle,
+/// while supported API handlers and SDK consumers do not.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct CredentialOwner(String);
 
@@ -32,8 +32,8 @@ impl CredentialOwner {
 
     /// Wrap an already-canonical owner partition.
     ///
-    /// This constructor exists for durable system records and compatibility
-    /// reads. The value never confers authority by itself.
+    /// This constructor exists for trusted durable system records. The value
+    /// never confers actor authority by itself.
     #[must_use]
     pub fn from_canonical(value: impl Into<String>) -> Self {
         Self(value.into())
@@ -52,24 +52,23 @@ impl fmt::Debug for CredentialOwner {
     }
 }
 
-/// Owner-bound selector for one credential row.
+/// Owner-bound selector for one globally unique credential.
 ///
-/// Persistence adapters must include both fields in every read, delete, and
-/// compare-and-swap predicate. Wrong-owner and missing rows therefore share
-/// the same not-found result.
+/// Persistence adapters include both values in every row predicate.
+/// Wrong-owner and missing rows therefore share the same not-found result.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct CredentialSelector {
     owner: CredentialOwner,
-    credential_id: String,
+    credential_id: CredentialId,
 }
 
 impl CredentialSelector {
-    /// Bind a credential id to one owner partition.
+    /// Bind a server-generated credential id to one owner partition.
     #[must_use]
-    pub fn new(owner: CredentialOwner, credential_id: impl Into<String>) -> Self {
+    pub fn new(owner: CredentialOwner, credential_id: CredentialId) -> Self {
         Self {
             owner,
-            credential_id: credential_id.into(),
+            credential_id,
         }
     }
 
@@ -79,44 +78,113 @@ impl CredentialSelector {
         &self.owner
     }
 
-    /// Borrow the credential id.
+    /// Return the typed credential id.
     #[must_use]
-    pub fn credential_id(&self) -> &str {
-        &self.credential_id
+    pub fn credential_id(&self) -> CredentialId {
+        self.credential_id
     }
 }
 
 impl fmt::Debug for CredentialSelector {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("CredentialSelector")
-            .field("credential_id", &self.credential_id)
-            .field("owner", &"[redacted]")
-            .finish()
+        formatter.write_str("CredentialSelector([redacted])")
     }
 }
 
-/// Conflict policy for a credential write.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum CredentialWriteMode {
-    /// Insert only when the id is unused in this owner partition.
-    CreateOnly,
-    /// Replace the current row without a version predicate.
-    Overwrite,
-    /// Replace only the version the caller observed.
-    CompareAndSwap {
-        /// Expected persisted version.
-        expected_version: u64,
-    },
+/// Validated persisted credential version.
+///
+/// The database representation is a signed 64-bit integer, but zero and
+/// negative values are invalid. The terminal value is reserved for a
+/// tombstone so every live row retains one final transition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CredentialVersion(i64);
+
+impl CredentialVersion {
+    /// First valid persisted version.
+    pub const MIN: Self = Self(1);
+
+    /// Last version a live record may consume.
+    pub const MAX_LIVE: Self = Self(i64::MAX - 1);
+
+    /// Last representable version, reserved for terminal state.
+    pub const MAX: Self = Self(i64::MAX);
+
+    /// Return the database representation.
+    #[must_use]
+    pub const fn get(self) -> i64 {
+        self.0
+    }
+
+    /// Whether this version is admissible on a live record.
+    #[must_use]
+    pub const fn is_live(self) -> bool {
+        self.0 <= Self::MAX_LIVE.0
+    }
+
+    /// Advance a live record while preserving terminal tombstone headroom.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CredentialPersistenceError::VersionExhausted`] when the next
+    /// value would consume the terminal version.
+    pub const fn next_live(self) -> Result<Self, CredentialPersistenceError> {
+        if self.0 >= Self::MAX_LIVE.0 {
+            return Err(CredentialPersistenceError::VersionExhausted);
+        }
+        Ok(Self(self.0 + 1))
+    }
+
+    /// Advance a live record into a tombstone.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CredentialPersistenceError::VersionExhausted`] at the
+    /// terminal value. Callers classify terminal records as not found before
+    /// attempting this advance.
+    pub const fn next_tombstone(self) -> Result<Self, CredentialPersistenceError> {
+        if self.0 == Self::MAX.0 {
+            return Err(CredentialPersistenceError::VersionExhausted);
+        }
+        Ok(Self(self.0 + 1))
+    }
+}
+
+impl fmt::Display for CredentialVersion {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+/// Persisted credential version lies outside `1..=i64::MAX`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("credential version is outside the supported range")]
+pub struct CredentialVersionError;
+
+impl TryFrom<i64> for CredentialVersion {
+    type Error = CredentialVersionError;
+
+    fn try_from(value: i64) -> Result<Self, Self::Error> {
+        if value < Self::MIN.0 {
+            return Err(CredentialVersionError);
+        }
+        Ok(Self(value))
+    }
+}
+
+impl TryFrom<u64> for CredentialVersion {
+    type Error = CredentialVersionError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        let value = i64::try_from(value).map_err(|_| CredentialVersionError)?;
+        Self::try_from(value)
+    }
 }
 
 /// Zeroizing opaque credential-state bytes.
 ///
-/// Both plaintext above the encryption decorator and ciphertext below it use
-/// this wrapper, so every owned intermediate buffer is cleared on drop. Raw
-/// bytes are borrowable but cannot be extracted into a non-zeroizing `Vec`
-/// through the public API.
+/// Both plaintext above an encryption decorator and ciphertext below it use
+/// this wrapper. Raw bytes are borrowable but cannot be extracted into a
+/// non-zeroizing `Vec` through the public API.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct SecretBytes(Zeroizing<Vec<u8>>);
 
@@ -174,163 +242,687 @@ impl PartialEq<Vec<u8>> for SecretBytes {
 
 impl fmt::Debug for SecretBytes {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "SecretBytes([redacted; {} bytes])", self.len())
+        formatter.write_str("SecretBytes([redacted])")
     }
 }
 
-/// Opaque credential row carried by the storage port.
+/// Complete live value for a new credential.
 ///
-/// `data` is ciphertext at a backend boundary and plaintext only inside the
-/// credential service/resolver side of the encryption decorator. The controller
-/// and HTTP layer never receive this row. The type has no serde implementation,
-/// and its manual `Debug` omits both bytes and metadata values.
-#[derive(Clone)]
-pub struct StoredCredential {
-    /// Credential identifier.
-    pub id: String,
-    /// Optional owner-local display name.
-    pub name: Option<String>,
-    /// Registered credential type key.
-    pub credential_key: String,
-    /// Opaque state bytes.
-    pub data: SecretBytes,
-    /// State type identifier.
-    pub state_kind: String,
-    /// State schema version.
-    pub state_version: u32,
-    /// Monotonic persistence version.
-    pub version: u64,
-    /// Creation instant.
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    /// Last mutation instant.
-    pub updated_at: chrono::DateTime<chrono::Utc>,
-    /// Optional material expiry.
-    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
-    /// Whether interactive re-authentication is required.
-    pub reauth_required: bool,
-    /// Opaque metadata. Values are never rendered by `Debug`.
-    pub metadata: serde_json::Map<String, Value>,
+/// Identity, owner, version, and timestamps are deliberately absent. The
+/// trusted controller supplies identity through [`CredentialSelector`], while
+/// the backend assigns version `1` and commit timestamps.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CredentialCreate {
+    credential_key: String,
+    data: SecretBytes,
+    state_kind: String,
+    state_version: u32,
+    name: Option<String>,
+    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    reauth_required: bool,
+    metadata: Map<String, Value>,
 }
 
-impl fmt::Debug for StoredCredential {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("StoredCredential")
-            .field("id", &self.id)
-            .field("name_present", &self.name.is_some())
-            .field("credential_key", &self.credential_key)
-            .field(
-                "data",
-                &format_args!("[redacted; {} bytes]", self.data.len()),
-            )
-            .field("state_kind", &self.state_kind)
-            .field("state_version", &self.state_version)
-            .field("version", &self.version)
-            .field("created_at", &self.created_at)
-            .field("updated_at", &self.updated_at)
-            .field("expires_at", &self.expires_at)
-            .field("reauth_required", &self.reauth_required)
-            .field("metadata_key_count", &self.metadata.len())
-            .finish()
+impl CredentialCreate {
+    /// Construct a complete live create value.
+    #[must_use]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the constructor mirrors the closed persistence record and keeps every field explicit"
+    )]
+    pub fn new(
+        credential_key: String,
+        data: SecretBytes,
+        state_kind: String,
+        state_version: u32,
+        name: Option<String>,
+        expires_at: Option<chrono::DateTime<chrono::Utc>>,
+        reauth_required: bool,
+        metadata: Map<String, Value>,
+    ) -> Self {
+        Self {
+            credential_key,
+            data,
+            state_kind,
+            state_version,
+            name,
+            expires_at,
+            reauth_required,
+            metadata,
+        }
     }
+
+    /// Borrow the immutable registered credential key.
+    #[must_use]
+    pub fn credential_key(&self) -> &str {
+        &self.credential_key
+    }
+
+    /// Borrow the opaque live state bytes.
+    #[must_use]
+    pub fn data(&self) -> &SecretBytes {
+        &self.data
+    }
+
+    /// Borrow the state type identifier.
+    #[must_use]
+    pub fn state_kind(&self) -> &str {
+        &self.state_kind
+    }
+
+    /// Return the state schema version.
+    #[must_use]
+    pub fn state_version(&self) -> u32 {
+        self.state_version
+    }
+
+    /// Borrow the optional owner-local display-name projection.
+    #[must_use]
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    /// Return the optional material expiry.
+    #[must_use]
+    pub fn expires_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.expires_at
+    }
+
+    /// Whether interactive re-authentication is required.
+    #[must_use]
+    pub fn reauth_required(&self) -> bool {
+        self.reauth_required
+    }
+
+    /// Borrow the opaque live metadata.
+    #[must_use]
+    pub fn metadata(&self) -> &Map<String, Value> {
+        &self.metadata
+    }
+}
+
+impl fmt::Debug for CredentialCreate {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CredentialCreate([redacted])")
+    }
+}
+
+/// Version-fenced replacement of mutable live credential state.
+///
+/// Identity, owner, registered credential key, and creation time are absent
+/// and therefore cannot be changed through replacement.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CredentialReplacement {
+    expected_version: CredentialVersion,
+    data: SecretBytes,
+    state_kind: String,
+    state_version: u32,
+    name: Option<String>,
+    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    reauth_required: bool,
+    metadata: Map<String, Value>,
+}
+
+impl CredentialReplacement {
+    /// Construct a complete version-fenced replacement value.
+    #[must_use]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the constructor mirrors the closed mutable record and keeps every field explicit"
+    )]
+    pub fn new(
+        expected_version: CredentialVersion,
+        data: SecretBytes,
+        state_kind: String,
+        state_version: u32,
+        name: Option<String>,
+        expires_at: Option<chrono::DateTime<chrono::Utc>>,
+        reauth_required: bool,
+        metadata: Map<String, Value>,
+    ) -> Self {
+        Self {
+            expected_version,
+            data,
+            state_kind,
+            state_version,
+            name,
+            expires_at,
+            reauth_required,
+            metadata,
+        }
+    }
+
+    /// Return the version this replacement observed.
+    #[must_use]
+    pub fn expected_version(&self) -> CredentialVersion {
+        self.expected_version
+    }
+
+    /// Borrow the replacement state bytes.
+    #[must_use]
+    pub fn data(&self) -> &SecretBytes {
+        &self.data
+    }
+
+    /// Borrow the replacement state type identifier.
+    #[must_use]
+    pub fn state_kind(&self) -> &str {
+        &self.state_kind
+    }
+
+    /// Return the replacement state schema version.
+    #[must_use]
+    pub fn state_version(&self) -> u32 {
+        self.state_version
+    }
+
+    /// Borrow the replacement display-name projection.
+    #[must_use]
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    /// Return the replacement material expiry.
+    #[must_use]
+    pub fn expires_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.expires_at
+    }
+
+    /// Whether the replacement requires interactive re-authentication.
+    #[must_use]
+    pub fn reauth_required(&self) -> bool {
+        self.reauth_required
+    }
+
+    /// Borrow the replacement metadata.
+    #[must_use]
+    pub fn metadata(&self) -> &Map<String, Value> {
+        &self.metadata
+    }
+}
+
+impl fmt::Debug for CredentialReplacement {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CredentialReplacement([redacted])")
+    }
+}
+
+/// Version-fenced transition from live state to a terminal tombstone.
+///
+/// The backend supplies the tombstone timestamp and clears every live-only
+/// value atomically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CredentialTombstone {
+    expected_version: CredentialVersion,
+}
+
+impl CredentialTombstone {
+    /// Construct a tombstone command for an observed live version.
+    #[must_use]
+    pub const fn new(expected_version: CredentialVersion) -> Self {
+        Self { expected_version }
+    }
+
+    /// Return the version this command observed.
+    #[must_use]
+    pub const fn expected_version(self) -> CredentialVersion {
+        self.expected_version
+    }
+}
+
+/// Structural lifecycle state returned by persistence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CredentialRecordState {
+    /// The credential carries a live value.
+    Live,
+    /// The credential id is permanently reserved without a live value.
+    Tombstoned,
+}
+
+/// Physical credential record.
+///
+/// The tombstone variant has a distinct payload, making secret bytes, name,
+/// expiry, re-authentication, and metadata unrepresentable in terminal state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoredCredential {
+    /// Live record carrying opaque credential state.
+    Live(StoredLiveCredential),
+    /// Terminal record that permanently reserves the id.
+    Tombstoned(StoredTombstonedCredential),
 }
 
 impl StoredCredential {
-    /// Whether the row carries a terminal revocation tombstone.
+    /// Return the structural lifecycle state.
     #[must_use]
-    pub fn is_tombstoned(&self) -> bool {
-        self.metadata.contains_key(REVOKED_AT_METADATA_KEY)
+    pub const fn state(&self) -> CredentialRecordState {
+        match self {
+            Self::Live(_) => CredentialRecordState::Live,
+            Self::Tombstoned(_) => CredentialRecordState::Tombstoned,
+        }
     }
 
-    /// Parse the revocation epoch when it is present and well formed.
+    /// Return the typed credential id.
     #[must_use]
-    pub fn revoked_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
-        self.metadata
-            .get(REVOKED_AT_METADATA_KEY)
-            .and_then(Value::as_str)
-            .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
-            .map(|instant| instant.with_timezone(&chrono::Utc))
+    pub fn credential_id(&self) -> CredentialId {
+        match self {
+            Self::Live(record) => record.credential_id(),
+            Self::Tombstoned(record) => record.credential_id(),
+        }
     }
 
-    /// Return the last provider-validation instant, when stamped.
+    /// Return the persisted version.
     #[must_use]
-    pub fn last_validated_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
-        self.metadata
-            .get(LAST_VALIDATED_AT_METADATA_KEY)
-            .and_then(Value::as_str)
-            .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
-            .map(|instant| instant.with_timezone(&chrono::Utc))
+    pub fn version(&self) -> CredentialVersion {
+        match self {
+            Self::Live(record) => record.version(),
+            Self::Tombstoned(record) => record.version(),
+        }
     }
 
-    /// Return the validation instant, falling back to creation for legacy rows.
+    /// Borrow the live record, if this record is live.
     #[must_use]
-    pub fn last_validated_or_created(&self) -> chrono::DateTime<chrono::Utc> {
-        self.last_validated_at().unwrap_or(self.created_at)
+    pub const fn as_live(&self) -> Option<&StoredLiveCredential> {
+        match self {
+            Self::Live(record) => Some(record),
+            Self::Tombstoned(_) => None,
+        }
     }
 
-    /// Stamp a successful provider validation.
-    pub fn stamp_validated(&mut self, at: chrono::DateTime<chrono::Utc>) {
-        self.metadata.insert(
-            LAST_VALIDATED_AT_METADATA_KEY.to_owned(),
-            Value::String(at.to_rfc3339()),
-        );
+    /// Borrow the tombstone record, if this record is terminal.
+    #[must_use]
+    pub const fn as_tombstoned(&self) -> Option<&StoredTombstonedCredential> {
+        match self {
+            Self::Live(_) => None,
+            Self::Tombstoned(record) => Some(record),
+        }
     }
 }
 
-/// Secret-free persisted credential projection for management reads.
-///
-/// Backends build this value without selecting `data`; encryption decorators
-/// delegate it unchanged. Consequently `get_head` and `list_heads` cannot
-/// decrypt or retain credential material as an implementation detail.
-#[derive(Clone)]
-pub struct StoredCredentialHead {
-    /// Credential identifier.
-    pub id: String,
-    /// Optional owner-local display name.
-    pub name: Option<String>,
-    /// Registered credential type key.
-    pub credential_key: String,
-    /// State type identifier, used only for non-secret filtering.
-    pub state_kind: String,
-    /// State schema version.
-    pub state_version: u32,
-    /// Monotonic persistence version.
-    pub version: u64,
-    /// Creation instant.
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    /// Last mutation instant.
-    pub updated_at: chrono::DateTime<chrono::Utc>,
-    /// Optional material expiry.
-    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+impl From<StoredLiveCredential> for StoredCredential {
+    fn from(record: StoredLiveCredential) -> Self {
+        Self::Live(record)
+    }
+}
+
+impl From<StoredTombstonedCredential> for StoredCredential {
+    fn from(record: StoredTombstonedCredential) -> Self {
+        Self::Tombstoned(record)
+    }
+}
+
+/// Live physical credential record.
+#[derive(Clone, PartialEq, Eq)]
+pub struct StoredLiveCredential {
+    credential_id: CredentialId,
+    name: Option<String>,
+    credential_key: String,
+    data: SecretBytes,
+    state_kind: String,
+    state_version: u32,
+    version: CredentialVersion,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    reauth_required: bool,
+    metadata: Map<String, Value>,
+}
+
+impl StoredLiveCredential {
+    /// Construct a live record from an adapter row.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CredentialPersistenceError::CorruptRecord`] if the record
+    /// consumes the version reserved for a terminal tombstone.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the constructor is the explicit validation boundary for a physical database row"
+    )]
+    pub fn new(
+        credential_id: CredentialId,
+        name: Option<String>,
+        credential_key: String,
+        data: SecretBytes,
+        state_kind: String,
+        state_version: u32,
+        version: CredentialVersion,
+        created_at: chrono::DateTime<chrono::Utc>,
+        updated_at: chrono::DateTime<chrono::Utc>,
+        expires_at: Option<chrono::DateTime<chrono::Utc>>,
+        reauth_required: bool,
+        metadata: Map<String, Value>,
+    ) -> Result<Self, CredentialPersistenceError> {
+        if !version.is_live() {
+            return Err(CredentialPersistenceError::CorruptRecord);
+        }
+        Ok(Self {
+            credential_id,
+            name,
+            credential_key,
+            data,
+            state_kind,
+            state_version,
+            version,
+            created_at,
+            updated_at,
+            expires_at,
+            reauth_required,
+            metadata,
+        })
+    }
+
+    /// Return the typed credential id.
+    #[must_use]
+    pub fn credential_id(&self) -> CredentialId {
+        self.credential_id
+    }
+
+    /// Borrow the optional owner-local display-name projection.
+    #[must_use]
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    /// Borrow the immutable registered credential key.
+    #[must_use]
+    pub fn credential_key(&self) -> &str {
+        &self.credential_key
+    }
+
+    /// Borrow the opaque state bytes.
+    #[must_use]
+    pub fn data(&self) -> &SecretBytes {
+        &self.data
+    }
+
+    /// Borrow the state type identifier.
+    #[must_use]
+    pub fn state_kind(&self) -> &str {
+        &self.state_kind
+    }
+
+    /// Return the state schema version.
+    #[must_use]
+    pub fn state_version(&self) -> u32 {
+        self.state_version
+    }
+
+    /// Return the persisted version.
+    #[must_use]
+    pub fn version(&self) -> CredentialVersion {
+        self.version
+    }
+
+    /// Return the creation instant.
+    #[must_use]
+    pub fn created_at(&self) -> chrono::DateTime<chrono::Utc> {
+        self.created_at
+    }
+
+    /// Return the last mutation instant.
+    #[must_use]
+    pub fn updated_at(&self) -> chrono::DateTime<chrono::Utc> {
+        self.updated_at
+    }
+
+    /// Return the optional material expiry.
+    #[must_use]
+    pub fn expires_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.expires_at
+    }
+
     /// Whether interactive re-authentication is required.
-    pub reauth_required: bool,
-    /// Opaque non-secret metadata; values are omitted from `Debug`.
-    pub metadata: serde_json::Map<String, Value>,
-}
+    #[must_use]
+    pub fn reauth_required(&self) -> bool {
+        self.reauth_required
+    }
 
-impl fmt::Debug for StoredCredentialHead {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("StoredCredentialHead")
-            .field("id", &self.id)
-            .field("name_present", &self.name.is_some())
-            .field("credential_key", &self.credential_key)
-            .field("state_kind", &self.state_kind)
-            .field("state_version", &self.state_version)
-            .field("version", &self.version)
-            .field("created_at", &self.created_at)
-            .field("updated_at", &self.updated_at)
-            .field("expires_at", &self.expires_at)
-            .field("reauth_required", &self.reauth_required)
-            .field("metadata_key_count", &self.metadata.len())
-            .finish()
+    /// Borrow the opaque metadata.
+    #[must_use]
+    pub fn metadata(&self) -> &Map<String, Value> {
+        &self.metadata
     }
 }
 
-impl From<&StoredCredential> for StoredCredentialHead {
-    fn from(stored: &StoredCredential) -> Self {
+impl fmt::Debug for StoredLiveCredential {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("StoredLiveCredential([redacted])")
+    }
+}
+
+/// Terminal physical credential record.
+///
+/// This type deliberately has no data, name, expiry, re-authentication, or
+/// metadata field.
+#[derive(Clone, PartialEq, Eq)]
+pub struct StoredTombstonedCredential {
+    credential_id: CredentialId,
+    credential_key: String,
+    state_kind: String,
+    state_version: u32,
+    version: CredentialVersion,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+    tombstoned_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl StoredTombstonedCredential {
+    /// Construct a terminal record from an adapter row.
+    #[must_use]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the constructor mirrors the complete secret-free terminal database row"
+    )]
+    pub fn new(
+        credential_id: CredentialId,
+        credential_key: String,
+        state_kind: String,
+        state_version: u32,
+        version: CredentialVersion,
+        created_at: chrono::DateTime<chrono::Utc>,
+        updated_at: chrono::DateTime<chrono::Utc>,
+        tombstoned_at: chrono::DateTime<chrono::Utc>,
+    ) -> Self {
         Self {
-            id: stored.id.clone(),
+            credential_id,
+            credential_key,
+            state_kind,
+            state_version,
+            version,
+            created_at,
+            updated_at,
+            tombstoned_at,
+        }
+    }
+
+    /// Return the typed credential id.
+    #[must_use]
+    pub fn credential_id(&self) -> CredentialId {
+        self.credential_id
+    }
+
+    /// Borrow the immutable registered credential key.
+    #[must_use]
+    pub fn credential_key(&self) -> &str {
+        &self.credential_key
+    }
+
+    /// Borrow the retained state type identifier.
+    #[must_use]
+    pub fn state_kind(&self) -> &str {
+        &self.state_kind
+    }
+
+    /// Return the retained state schema version.
+    #[must_use]
+    pub fn state_version(&self) -> u32 {
+        self.state_version
+    }
+
+    /// Return the terminal persisted version.
+    #[must_use]
+    pub fn version(&self) -> CredentialVersion {
+        self.version
+    }
+
+    /// Return the original creation instant.
+    #[must_use]
+    pub fn created_at(&self) -> chrono::DateTime<chrono::Utc> {
+        self.created_at
+    }
+
+    /// Return the last mutation instant.
+    #[must_use]
+    pub fn updated_at(&self) -> chrono::DateTime<chrono::Utc> {
+        self.updated_at
+    }
+
+    /// Return the terminal transition instant.
+    #[must_use]
+    pub fn tombstoned_at(&self) -> chrono::DateTime<chrono::Utc> {
+        self.tombstoned_at
+    }
+}
+
+impl fmt::Debug for StoredTombstonedCredential {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("StoredTombstonedCredential([redacted])")
+    }
+}
+
+/// Secret-free persisted live projection for management reads.
+///
+/// Backends build this value without selecting `data`; consequently
+/// `get_head` and `list_heads` cannot decrypt credential material as an
+/// implementation detail.
+#[derive(Clone, PartialEq, Eq)]
+pub struct StoredCredentialHead {
+    credential_id: CredentialId,
+    name: Option<String>,
+    credential_key: String,
+    state_kind: String,
+    state_version: u32,
+    version: CredentialVersion,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    reauth_required: bool,
+    metadata: Map<String, Value>,
+}
+
+impl StoredCredentialHead {
+    /// Construct a live secret-free projection from an adapter row.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CredentialPersistenceError::CorruptRecord`] if the projection
+    /// consumes the version reserved for a terminal tombstone.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the constructor is the explicit validation boundary for a secret-free database projection"
+    )]
+    pub fn new(
+        credential_id: CredentialId,
+        name: Option<String>,
+        credential_key: String,
+        state_kind: String,
+        state_version: u32,
+        version: CredentialVersion,
+        created_at: chrono::DateTime<chrono::Utc>,
+        updated_at: chrono::DateTime<chrono::Utc>,
+        expires_at: Option<chrono::DateTime<chrono::Utc>>,
+        reauth_required: bool,
+        metadata: Map<String, Value>,
+    ) -> Result<Self, CredentialPersistenceError> {
+        if !version.is_live() {
+            return Err(CredentialPersistenceError::CorruptRecord);
+        }
+        Ok(Self {
+            credential_id,
+            name,
+            credential_key,
+            state_kind,
+            state_version,
+            version,
+            created_at,
+            updated_at,
+            expires_at,
+            reauth_required,
+            metadata,
+        })
+    }
+
+    /// Return the typed credential id.
+    #[must_use]
+    pub fn credential_id(&self) -> CredentialId {
+        self.credential_id
+    }
+
+    /// Borrow the optional owner-local display-name projection.
+    #[must_use]
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    /// Borrow the immutable registered credential key.
+    #[must_use]
+    pub fn credential_key(&self) -> &str {
+        &self.credential_key
+    }
+
+    /// Borrow the state type identifier.
+    #[must_use]
+    pub fn state_kind(&self) -> &str {
+        &self.state_kind
+    }
+
+    /// Return the state schema version.
+    #[must_use]
+    pub fn state_version(&self) -> u32 {
+        self.state_version
+    }
+
+    /// Return the persisted version.
+    #[must_use]
+    pub fn version(&self) -> CredentialVersion {
+        self.version
+    }
+
+    /// Return the creation instant.
+    #[must_use]
+    pub fn created_at(&self) -> chrono::DateTime<chrono::Utc> {
+        self.created_at
+    }
+
+    /// Return the last mutation instant.
+    #[must_use]
+    pub fn updated_at(&self) -> chrono::DateTime<chrono::Utc> {
+        self.updated_at
+    }
+
+    /// Return the optional material expiry.
+    #[must_use]
+    pub fn expires_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.expires_at
+    }
+
+    /// Whether interactive re-authentication is required.
+    #[must_use]
+    pub fn reauth_required(&self) -> bool {
+        self.reauth_required
+    }
+
+    /// Borrow the opaque non-secret metadata.
+    #[must_use]
+    pub fn metadata(&self) -> &Map<String, Value> {
+        &self.metadata
+    }
+}
+
+impl From<&StoredLiveCredential> for StoredCredentialHead {
+    fn from(stored: &StoredLiveCredential) -> Self {
+        Self {
+            credential_id: stored.credential_id,
             name: stored.name.clone(),
             credential_key: stored.credential_key.clone(),
             state_kind: stored.state_kind.clone(),
@@ -345,124 +937,159 @@ impl From<&StoredCredential> for StoredCredentialHead {
     }
 }
 
-impl StoredCredentialHead {
-    /// Whether the projection carries a terminal revocation tombstone.
-    #[must_use]
-    pub fn is_tombstoned(&self) -> bool {
-        self.metadata.contains_key(REVOKED_AT_METADATA_KEY)
-    }
-
-    /// Return the last provider-validation instant, when stamped.
-    #[must_use]
-    pub fn last_validated_at(&self) -> Option<chrono::DateTime<chrono::Utc>> {
-        self.metadata
-            .get(LAST_VALIDATED_AT_METADATA_KEY)
-            .and_then(Value::as_str)
-            .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
-            .map(|instant| instant.with_timezone(&chrono::Utc))
+impl fmt::Debug for StoredCredentialHead {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StoredCredentialHead")
+            .field("credential_id", &"[redacted]")
+            .field("name_present", &self.name.is_some())
+            .field("credential_key", &"[redacted]")
+            .field("state_kind", &"[redacted]")
+            .field("state_version", &self.state_version)
+            .field("version", &self.version)
+            .field("created_at", &self.created_at)
+            .field("updated_at", &self.updated_at)
+            .field("expires_at", &self.expires_at)
+            .field("reauth_required", &self.reauth_required)
+            .field("metadata_key_count", &self.metadata.len())
+            .finish()
     }
 }
 
-/// Reserved metadata key for the canonical owner partition.
+/// Secret-free projection of one confirmed credential mutation.
 ///
-/// New adapters derive their SQL owner column from [`CredentialSelector`]
-/// and overwrite this defense-in-depth stamp on write; callers never choose it.
-pub const OWNER_ID_METADATA_KEY: &str = "owner_id";
+/// Adapters construct this from the modifying statement's `RETURNING`
+/// projection and release it only after commit acknowledgement.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct CredentialCommit {
+    credential_id: CredentialId,
+    version: CredentialVersion,
+    state: CredentialRecordState,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+    tombstoned_at: Option<chrono::DateTime<chrono::Utc>>,
+}
 
-/// Reserved metadata key for the terminal revocation epoch.
-pub const REVOKED_AT_METADATA_KEY: &str = "revoked_at";
+impl CredentialCommit {
+    /// Construct a confirmed live commit.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CredentialPersistenceError::CorruptRecord`] if a backend
+    /// reports the terminal version for a live mutation.
+    pub fn live(
+        credential_id: CredentialId,
+        version: CredentialVersion,
+        created_at: chrono::DateTime<chrono::Utc>,
+        updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Self, CredentialPersistenceError> {
+        if !version.is_live() {
+            return Err(CredentialPersistenceError::CorruptRecord);
+        }
+        Ok(Self {
+            credential_id,
+            version,
+            state: CredentialRecordState::Live,
+            created_at,
+            updated_at,
+            tombstoned_at: None,
+        })
+    }
 
-/// Reserved metadata key for the last provider-validation instant.
-pub const LAST_VALIDATED_AT_METADATA_KEY: &str = "last_validated_at";
+    /// Construct a confirmed terminal commit.
+    #[must_use]
+    pub fn tombstoned(
+        credential_id: CredentialId,
+        version: CredentialVersion,
+        created_at: chrono::DateTime<chrono::Utc>,
+        updated_at: chrono::DateTime<chrono::Utc>,
+        tombstoned_at: chrono::DateTime<chrono::Utc>,
+    ) -> Self {
+        Self {
+            credential_id,
+            version,
+            state: CredentialRecordState::Tombstoned,
+            created_at,
+            updated_at,
+            tombstoned_at: Some(tombstoned_at),
+        }
+    }
+
+    /// Return the typed credential id.
+    #[must_use]
+    pub fn credential_id(self) -> CredentialId {
+        self.credential_id
+    }
+
+    /// Return the committed version.
+    #[must_use]
+    pub const fn version(self) -> CredentialVersion {
+        self.version
+    }
+
+    /// Return the committed lifecycle state.
+    #[must_use]
+    pub const fn state(self) -> CredentialRecordState {
+        self.state
+    }
+
+    /// Return the original creation instant.
+    #[must_use]
+    pub const fn created_at(self) -> chrono::DateTime<chrono::Utc> {
+        self.created_at
+    }
+
+    /// Return the committed mutation instant.
+    #[must_use]
+    pub const fn updated_at(self) -> chrono::DateTime<chrono::Utc> {
+        self.updated_at
+    }
+
+    /// Return the terminal transition instant, when terminal.
+    #[must_use]
+    pub const fn tombstoned_at(self) -> Option<chrono::DateTime<chrono::Utc>> {
+        self.tombstoned_at
+    }
+}
+
+impl fmt::Debug for CredentialCommit {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CredentialCommit")
+            .field("credential_id", &"[redacted]")
+            .field("version", &self.version)
+            .field("state", &self.state)
+            .field("created_at", &self.created_at)
+            .field("updated_at", &self.updated_at)
+            .field("tombstoned_at", &self.tombstoned_at)
+            .finish()
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn row_with(metadata: serde_json::Map<String, Value>) -> StoredCredential {
-        StoredCredential {
-            id: "cred_x".to_owned(),
-            name: None,
-            credential_key: "github_oauth".to_owned(),
-            data: vec![1, 2, 3].into(),
-            state_kind: "oauth2_state".to_owned(),
-            state_version: 1,
-            version: 1,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            expires_at: None,
-            reauth_required: false,
-            metadata,
-        }
+    fn instant(seconds: i64) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::from_timestamp(seconds, 0).expect("test timestamp is representable")
     }
 
-    #[test]
-    fn debug_redacts_state_and_metadata_values() {
-        let secret = "STORAGE-PORT-SECRET-CANARY-9b3f";
-        let mut metadata = serde_json::Map::new();
-        metadata.insert("secret".to_owned(), Value::String(secret.to_owned()));
-        let mut row = row_with(metadata);
-        row.name = Some(secret.to_owned());
-        row.data = secret.as_bytes().to_vec().into();
-
-        let rendered = format!("{row:?}");
-        assert!(!rendered.contains(secret));
-        assert!(rendered.contains("[redacted;"));
-        assert!(rendered.contains("metadata_key_count"));
-    }
-
-    #[test]
-    fn live_row_is_not_tombstoned() {
-        let row = row_with(serde_json::Map::new());
-        assert!(!row.is_tombstoned());
-        assert!(row.revoked_at().is_none());
-    }
-
-    #[test]
-    fn well_formed_epoch_parses() {
-        let mut metadata = serde_json::Map::new();
-        metadata.insert(
-            REVOKED_AT_METADATA_KEY.to_owned(),
-            Value::String("2026-06-13T10:00:00Z".to_owned()),
-        );
-        let row = row_with(metadata);
-        assert!(row.is_tombstoned());
-        assert!(row.revoked_at().is_some());
-    }
-
-    #[test]
-    fn malformed_epoch_still_reads_as_tombstoned() {
-        let mut metadata = serde_json::Map::new();
-        metadata.insert(
-            REVOKED_AT_METADATA_KEY.to_owned(),
-            Value::String("not-a-timestamp".to_owned()),
-        );
-        let row = row_with(metadata);
-        assert!(row.is_tombstoned());
-        assert!(row.revoked_at().is_none());
-    }
-
-    #[test]
-    fn last_validated_falls_back_to_created_when_absent() {
-        let row = row_with(serde_json::Map::new());
-        assert!(row.last_validated_at().is_none());
-        assert_eq!(row.last_validated_or_created(), row.created_at);
-    }
-
-    #[test]
-    fn display_edit_does_not_postpone_the_validation_time() {
-        let validated = chrono::Utc::now() - chrono::Duration::days(30);
-        let mut metadata = serde_json::Map::new();
-        metadata.insert(
-            LAST_VALIDATED_AT_METADATA_KEY.to_owned(),
-            Value::String(validated.to_rfc3339()),
-        );
-        let mut row = row_with(metadata);
-        row.updated_at = chrono::Utc::now();
-
-        let resolved = row.last_validated_or_created();
-        assert!(resolved < row.updated_at);
-        assert!((resolved - validated).num_seconds().abs() <= 1);
+    fn live(version: CredentialVersion, secret: Vec<u8>) -> StoredLiveCredential {
+        StoredLiveCredential::new(
+            CredentialId::new(),
+            Some("production".to_owned()),
+            "github_oauth".to_owned(),
+            SecretBytes::new(secret),
+            "oauth2_state".to_owned(),
+            1,
+            version,
+            instant(1_700_000_000),
+            instant(1_700_000_001),
+            None,
+            false,
+            Map::new(),
+        )
+        .expect("test live version is admissible")
     }
 
     #[test]
@@ -471,5 +1098,58 @@ mod tests {
         let other = CredentialOwner::from_canonical("tenant");
         assert_ne!(empty, other);
         assert_eq!(empty.as_str(), "");
+    }
+
+    #[test]
+    fn terminal_version_is_valid_but_not_live() {
+        let terminal = CredentialVersion::try_from(i64::MAX).expect("terminal version is valid");
+        assert!(!terminal.is_live());
+        assert_eq!(
+            StoredLiveCredential::new(
+                CredentialId::new(),
+                None,
+                "key".to_owned(),
+                SecretBytes::default(),
+                "state".to_owned(),
+                1,
+                terminal,
+                instant(1_700_000_000),
+                instant(1_700_000_001),
+                None,
+                false,
+                Map::new(),
+            ),
+            Err(CredentialPersistenceError::CorruptRecord)
+        );
+    }
+
+    #[test]
+    fn live_debug_shape_is_independent_of_secret_content_and_length() {
+        let version = CredentialVersion::MIN;
+        let empty = format!("{:?}", live(version, Vec::new()));
+        let short = format!("{:?}", live(version, vec![0x41]));
+        let long = format!("{:?}", live(version, vec![0x5a; 4_096]));
+        assert_eq!(empty, short);
+        assert_eq!(short, long);
+    }
+
+    #[test]
+    fn structural_tombstone_carries_no_live_value() {
+        let at = instant(1_700_000_002);
+        let tombstone = StoredTombstonedCredential::new(
+            CredentialId::new(),
+            "github_oauth".to_owned(),
+            "oauth2_state".to_owned(),
+            1,
+            CredentialVersion::MIN,
+            instant(1_700_000_000),
+            at,
+            at,
+        );
+        let stored = StoredCredential::from(tombstone);
+
+        assert_eq!(stored.state(), CredentialRecordState::Tombstoned);
+        assert!(stored.as_live().is_none());
+        assert!(stored.as_tombstoned().is_some());
     }
 }

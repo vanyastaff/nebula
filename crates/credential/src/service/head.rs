@@ -13,8 +13,9 @@
 //! produces a typed guard, and the engine resolver owns snapshot projection.
 
 use chrono::{DateTime, Utc};
-use nebula_credential::{CredentialDisplay, StoredCredentialHead};
+use nebula_credential::{CredentialDisplay, LAST_VALIDATED_AT_METADATA_KEY, StoredCredentialHead};
 use serde::Serialize;
+use serde_json::Value;
 
 /// Secret-free management view of one stored credential row.
 ///
@@ -56,14 +57,19 @@ impl CredentialHead {
     #[must_use]
     pub(crate) fn from_stored(stored: &StoredCredentialHead, display: CredentialDisplay) -> Self {
         Self {
-            id: stored.id.clone(),
-            credential_key: stored.credential_key.clone(),
-            version: stored.version,
-            created_at: stored.created_at,
-            updated_at: stored.updated_at,
-            expires_at: stored.expires_at,
-            last_validated_at: stored.last_validated_at(),
-            reauth_required: stored.reauth_required,
+            id: stored.credential_id().to_string(),
+            credential_key: stored.credential_key().to_owned(),
+            version: stored.version().get() as u64,
+            created_at: stored.created_at(),
+            updated_at: stored.updated_at(),
+            expires_at: stored.expires_at(),
+            last_validated_at: stored
+                .metadata()
+                .get(LAST_VALIDATED_AT_METADATA_KEY)
+                .and_then(Value::as_str)
+                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                .map(|instant| instant.with_timezone(&Utc)),
+            reauth_required: stored.reauth_required(),
             display,
         }
     }
@@ -79,29 +85,31 @@ impl CredentialHead {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nebula_storage_port::{CredentialVersion, StoredCredentialHead};
 
     fn stored(expires_at: Option<DateTime<Utc>>) -> StoredCredentialHead {
         let now = Utc::now();
-        StoredCredentialHead {
-            id: "cred_01ABCDEFGHJKMNPQRSTVWXYZ0".to_owned(),
-            name: None,
-            credential_key: "api_key".to_owned(),
-            state_kind: "api_key_state".to_owned(),
-            state_version: 1,
-            version: 4,
-            created_at: now,
-            updated_at: now,
+        StoredCredentialHead::new(
+            crate::CredentialId::new(),
+            None,
+            "api_key".to_owned(),
+            "api_key_state".to_owned(),
+            1,
+            CredentialVersion::try_from(4_i64).expect("fixture version is valid"),
+            now,
+            now,
             expires_at,
-            reauth_required: false,
-            metadata: serde_json::Map::new(),
-        }
+            false,
+            serde_json::Map::new(),
+        )
+        .expect("fixture is a live head")
     }
 
     #[test]
     fn from_stored_head_copies_projection_fields() {
         let row = stored(None);
         let head = CredentialHead::from_stored(&row, CredentialDisplay::default());
-        assert_eq!(head.id, row.id);
+        assert_eq!(head.id, row.credential_id().to_string());
         assert_eq!(head.credential_key, "api_key");
         assert_eq!(head.version, 4);
         assert_eq!(head.last_validated_at, None);

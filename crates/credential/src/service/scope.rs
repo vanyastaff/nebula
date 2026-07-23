@@ -6,6 +6,7 @@
 
 use std::fmt;
 
+use nebula_core::CredentialId;
 use nebula_storage_port::{CredentialOwner, CredentialSelector, Scope};
 use thiserror::Error;
 
@@ -133,7 +134,7 @@ impl TenantScope {
     }
 
     /// Derive the owner-bound persistence selector for one credential id.
-    pub(crate) fn selector(&self, credential_id: impl Into<String>) -> CredentialSelector {
+    pub(crate) fn selector(&self, credential_id: CredentialId) -> CredentialSelector {
         CredentialSelector::new(self.owner.clone(), credential_id)
     }
 
@@ -158,6 +159,7 @@ impl fmt::Debug for TenantScope {
 
 #[cfg(test)]
 mod tests {
+    use nebula_core::CredentialId;
     use nebula_storage_port::Scope;
 
     use super::{CredentialAuthenticationBinding, TenantScope};
@@ -226,8 +228,9 @@ mod tests {
     #[test]
     fn selector_is_always_owner_bound() {
         let scope = TenantScope::new("o", "w");
-        let selector = scope.selector("cred_1");
-        assert_eq!(selector.credential_id(), "cred_1");
+        let credential_id = CredentialId::new();
+        let selector = scope.selector(credential_id);
+        assert_eq!(selector.credential_id(), credential_id);
         assert_eq!(selector.owner().as_str(), scope.owner_id());
     }
 }

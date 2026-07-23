@@ -330,8 +330,9 @@ impl ResourceFanoutDriver {
                 )
                 .await;
             },
-            // Not a rotation of stored material — the sentinel/reauth
-            // surface is consumed elsewhere; nothing to fan out.
+            // Not a rotation of stored material. This driver is only a
+            // resource-material fan-out observer; it has no credential
+            // aggregate write authority.
             // `CredentialEvent` is `#[non_exhaustive]`; any future
             // additive variant defaults to "not a rotation/revoke of
             // resolved material" until a unit deliberately wires it.

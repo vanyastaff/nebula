@@ -348,6 +348,11 @@ pub enum CredentialAccessError {
 ///   [`RefreshFailedContext::new`] + accessors.
 /// - `SchemeMismatch(Box<SchemeMismatch>)` — boxed; carries two scheme-name strings.
 /// - `NotInteractive` — unit variant.
+/// - `OutcomeUnknown` — unit variant; a durable mutation may have committed,
+///   so callers must reconcile instead of retrying it blindly.
+/// - `PostProviderPersistence` — unit variant; the provider has already
+///   accepted the refresh, so replaying the provider operation is unsafe even
+///   when the following persistence failure was definite.
 /// - `InvalidInput(String)` — 24-byte string payload (ptr+len+cap); fits.
 /// - `Crypto(Box<CryptoError>)` — boxed so the largest CryptoError variant
 ///   does not push the enum past 32 bytes.
@@ -378,6 +383,23 @@ pub enum CredentialError {
     /// is non-interactive.
     #[error("credential does not support interactive flows")]
     NotInteractive,
+
+    /// A durable credential mutation may have committed, but its
+    /// acknowledgement was lost. This is deliberately non-retryable because
+    /// replaying the mutation can duplicate work or race the committed state.
+    #[error("credential mutation outcome is unknown; reconcile before retrying")]
+    OutcomeUnknown,
+
+    /// The provider accepted a credential refresh, but preparing or committing
+    /// the following durable credential update definitely failed.
+    ///
+    /// This is deliberately distinct from a pre-provider storage outage. The
+    /// provider may already have rotated or invalidated the old grant, so a
+    /// generic retry loop must not issue the provider operation again.
+    #[error(
+        "provider refresh succeeded but durable credential finalization failed; reconcile before retrying"
+    )]
+    PostProviderPersistence,
 
     /// Scheme type mismatch between credential and resource. Boxed because
     /// the inner `SchemeMismatch` carries two [`CompactString`] scheme names —
@@ -419,6 +441,8 @@ impl nebula_error::Classify for CredentialError {
             Self::Crypto(s) => nebula_error::Classify::category(s.as_ref()),
             Self::Validation(s) => nebula_error::Classify::category(s.as_ref()),
             Self::NotInteractive => nebula_error::ErrorCategory::Unsupported,
+            Self::OutcomeUnknown => nebula_error::ErrorCategory::Internal,
+            Self::PostProviderPersistence => nebula_error::ErrorCategory::Internal,
             Self::Provider(_) => nebula_error::ErrorCategory::External,
             Self::RefreshFailed(_) => nebula_error::ErrorCategory::External,
             Self::SchemeMismatch(_) => nebula_error::ErrorCategory::Validation,
@@ -432,6 +456,10 @@ impl nebula_error::Classify for CredentialError {
             Self::Crypto(s) => nebula_error::Classify::code(s.as_ref()),
             Self::Validation(s) => nebula_error::Classify::code(s.as_ref()),
             Self::NotInteractive => nebula_error::ErrorCode::new("CREDENTIAL:NOT_INTERACTIVE"),
+            Self::OutcomeUnknown => nebula_error::ErrorCode::new("CREDENTIAL:OUTCOME_UNKNOWN"),
+            Self::PostProviderPersistence => {
+                nebula_error::ErrorCode::new("CREDENTIAL:POST_PROVIDER_PERSISTENCE")
+            },
             Self::Provider(_) => nebula_error::ErrorCode::new("CREDENTIAL:PROVIDER"),
             Self::RefreshFailed(_) => nebula_error::ErrorCode::new("CREDENTIAL:REFRESH_FAILED"),
             Self::SchemeMismatch(_) => nebula_error::ErrorCode::new("CREDENTIAL:SCHEME_MISMATCH"),

@@ -551,10 +551,11 @@ impl ServerRuntime {
         // this Tokio context. Key policy is shared with Plane-A identity.
         let key_provider = resolve_first_party_key_provider()
             .map_err(|error| TransportInitError::CredentialServiceInit(error.to_string()))?;
-        let credential_runtime = compose_first_party_runtime(Arc::clone(&key_provider))
-            .await
-            .map_err(|error| TransportInitError::CredentialServiceInit(error.to_string()))?;
-        let credential_service = credential_runtime.service;
+        let credential_runtime =
+            compose_first_party_runtime(Arc::clone(&key_provider), Arc::clone(&metrics_registry))
+                .await
+                .map_err(|error| TransportInitError::CredentialServiceInit(error.to_string()))?;
+        let credential_service = Arc::clone(&credential_runtime.service);
         // The webhook execution resolver and authenticated command controller
         // share the same service instance. Only the resolver retains direct
         // execution-plane access; AppState receives the API-owned gateway.
@@ -574,7 +575,7 @@ impl ServerRuntime {
         ));
         let credential_gateway = Arc::new(ServerCredentialGateway::new(credential_controller));
         state = state
-            .with_credential_schema(credential_runtime.catalog)
+            .with_credential_schema(Arc::clone(&credential_runtime.catalog))
             .with_credential_gateway(credential_gateway)
             .with_webhook_secret_resolver(webhook_secret_resolver);
         // Build ONE shared `Arc<dyn EmailPort>` and pass the same Arc
@@ -604,7 +605,11 @@ impl ServerRuntime {
         let app = transport.build_router(state, &api_config)?;
 
         tracing::info!(transport = transport.name(), %bind_address, "starting transport");
-        app::serve(app, bind_address).await?;
+        let serve_result = app::serve(app, bind_address).await;
+        // Keep credential background ownership (notably the reclaim sweep)
+        // alive for the entire serving lifecycle, then abort it by Drop.
+        drop(credential_runtime);
+        serve_result?;
         Ok(())
     }
 }

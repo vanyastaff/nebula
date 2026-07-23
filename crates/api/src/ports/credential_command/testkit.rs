@@ -306,6 +306,9 @@ fn map_service_error(error: CredentialServiceError) -> CredentialGatewayError {
         CredentialServiceError::VersionConflict {
             expected, actual, ..
         } => CredentialGatewayError::VersionConflict { expected, actual },
+        CredentialServiceError::IdAlreadyExists => CredentialGatewayError::IdAlreadyExists,
+        CredentialServiceError::NameAlreadyExists => CredentialGatewayError::NameAlreadyExists,
+        CredentialServiceError::VersionExhausted => CredentialGatewayError::VersionExhausted,
         CredentialServiceError::ValidationFailed { report } => {
             CredentialGatewayError::ValidationFailed {
                 report: CredentialGatewayValidationReport::new(
@@ -334,10 +337,11 @@ fn map_service_error(error: CredentialServiceError) -> CredentialGatewayError {
         CredentialServiceError::ReauthRequired { .. } => CredentialGatewayError::ReauthRequired,
         CredentialServiceError::TransientProvider(_)
         | CredentialServiceError::Provider(_)
-        | CredentialServiceError::ExternalSourceNotWired { .. } => {
-            CredentialGatewayError::Unavailable
-        },
-        CredentialServiceError::Store(_)
+        | CredentialServiceError::ExternalSourceNotWired { .. }
+        | CredentialServiceError::PersistenceUnavailable => CredentialGatewayError::Unavailable,
+        CredentialServiceError::OutcomeUnknown
+        | CredentialServiceError::PostProviderPersistence => CredentialGatewayError::OutcomeUnknown,
+        CredentialServiceError::Store
         | CredentialServiceError::SessionRequired { .. }
         | CredentialServiceError::CapabilityWithoutOps { .. }
         | CredentialServiceError::Internal(_)

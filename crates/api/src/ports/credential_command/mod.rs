@@ -41,7 +41,7 @@ pub enum CredentialGatewayCommand {
         /// Partial update request.
         request: UpdateCredentialRequest,
     },
-    /// Permanently delete one credential.
+    /// Tombstone one credential and remove its live material.
     Delete {
         /// Credential identifier.
         credential_id: String,
@@ -347,6 +347,15 @@ pub enum CredentialGatewayError {
         /// Stored version.
         actual: u64,
     },
+    /// A generated credential id is already reserved.
+    #[error("credential id is already reserved")]
+    IdAlreadyExists,
+    /// A live credential already owns the requested display name.
+    #[error("credential display name is already in use")]
+    NameAlreadyExists,
+    /// The bounded structural version cannot advance.
+    #[error("credential version is exhausted")]
+    VersionExhausted,
     /// Type-specific properties were rejected.
     #[error("credential properties were rejected")]
     ValidationFailed {
@@ -380,6 +389,12 @@ pub enum CredentialGatewayError {
     /// A required provider, authority, or persistence service is unavailable.
     #[error("credential command service unavailable")]
     Unavailable,
+    /// Persistence may have committed, but acknowledgement was lost.
+    ///
+    /// The caller must reconcile the owner-qualified credential state before
+    /// deciding whether another mutation is safe.
+    #[error("credential mutation outcome is unknown; reconcile before retrying")]
+    OutcomeUnknown,
     /// Internal invariant or composition failure.
     #[error("credential command failed internally")]
     Internal,

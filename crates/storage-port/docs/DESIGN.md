@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Current K1 contract; pre-1.0 |
+| Status | Current K2 port contract; pre-1.0 |
 | Reviewed | 2026-07-22 |
 | Layer | Core contract; no backend code |
 | Related | ADR-0072, ADR-0041, ADR-0088, ADR-0092, product canon §11–§12 |
@@ -20,7 +20,7 @@ The crate owns:
 - port-local DTO rows with no dependency on higher-tier domain types;
 - plain-data `Scope { workspace_id, org_id }` with no policy;
 - `StorageError`, `FencingToken`, and the builder-only `TransitionBatch` atomic unit of work; and
-- the K1 `CredentialPersistence` contract plus owner/selector/row/error DTOs.
+- the K2 lifecycle-safe `CredentialPersistence` contract plus owner/selector/row/error DTOs.
 
 It deliberately owns no SQL, migrations, connection pools, encryption implementation, cache,
 audit sink, tenant-policy resolution, API authentication, or deployment configuration.
@@ -66,18 +66,20 @@ traits. `src/dto/` contains their port-local rows. Exact exports are defined by 
 All repository traits remain directly dyn-compatible and are consumed as `Arc<dyn …>`. Adding a
 generic/RPITIT-only method without an object-safe alternative is an architectural break.
 
-## K1 credential persistence
+## K2 credential persistence
 
 `CredentialPersistence` is the one object-safe credential persistence contract. The retired
 credential-local store/RPITIT bridge and tenancy metadata decorator have no compatibility aliases.
 The port exposes:
 
 - `CredentialOwner` — one mandatory canonical owner partition;
-- `CredentialSelector` — `(owner, credential_id)` for every row operation;
-- `CredentialWriteMode` — create-only, overwrite, or compare-and-swap;
-- `StoredCredential` and `StoredCredentialHead` — opaque row/full and secret-free projection DTOs;
-- `CredentialPersistenceError` — redacted port diagnostics; and
-- `CredentialPersistence` — `get`, `get_head`, `put`, `delete`, `list`, `list_heads`, and `exists`.
+- `CredentialSelector` — mandatory owner plus typed, globally unique `CredentialId`;
+- private-field `CredentialCreate`, `CredentialReplacement`, and `CredentialTombstone` intents;
+- bounded `CredentialVersion`, reserving `i64::MAX` for terminal state;
+- structural `StoredCredential::{Live, Tombstoned}` and live-only `StoredCredentialHead`;
+- closed, secret-free `CredentialPersistenceError` outcomes; and
+- `CredentialPersistence` — physical `get`, live-only reads/lists, and explicit
+  `create`/`replace`/`tombstone` mutations.
 
 Owner and selector values are data, not authorization proofs. Their constructors are public because
 trusted technical runtime/storage code must carry them across crate boundaries. They are absent
@@ -92,13 +94,13 @@ operation ledger the sole semantic management writer.
 
 Every credential adapter must obey these laws:
 
-1. per-row reads, writes, deletes, existence checks, and CAS include owner plus credential ID;
+1. every row read and mutation includes owner plus typed credential ID;
 2. list operations require exactly one owner;
 3. wrong-owner access is indistinguishable from absence;
-4. owner never changes during update;
-5. metadata owner stamps are compatibility/audit data overwritten from the selector, never an
-   authorization source; and
-6. backend/audit-controlled diagnostic text is redacted at the port and service mapping boundaries.
+4. owner, id, credential key, and creation time cannot change during replacement;
+5. the only lifecycle transition is live to tombstoned, and terminal records cannot carry
+   secret/name/expiry/reauth/metadata fields; and
+6. driver-controlled diagnostic text never enters the closed port error.
 
 `nebula-storage` is the sole implementation owner: SQLite, PostgreSQL, internal in-memory
 reference/conformance adapters, and audit/encryption/cache decorators implement this contract.
@@ -130,21 +132,17 @@ above the port.
 
 - Object-safety probes ensure the role traits can be held behind `Arc<dyn …>`.
 - `TransitionBatch` tests protect builder-only scope/CAS/fencing construction.
-- Credential persistence conformance covers owner-bound reads/lists/deletes, metadata spoof
-  rejection, secret-redacted diagnostics, and adapter/decorator equivalence.
+- Credential persistence contract tests cover typed owner-bound selectors, explicit lifecycle
+  intents, terminal version headroom, structural tombstones, constant-shape secret `Debug`,
+  closed diagnostics, typed lists, and direct object safety.
 - SQLite and internal reference tests are local evidence only. Live PostgreSQL execution remains a
   release gate and skip-clean tests are not that proof.
 
 ## Explicit remaining work
 
-- **K2 — schema ownership migration.** The historical SQLite and PostgreSQL `owner_id` columns are
-  still nullable. Add deployment upgrade migrations for both backends, then run live PostgreSQL
-  owner/concurrency conformance. Until then mandatory owner is a port/application invariant; `NULL`
-  grants no global or administrator access. Applied migration `0030_credentials_store.sql` is
-  SQLx-checksummed immutable history, including its legacy comment; K2 adds a new migration rather
-  than editing `0030`. K2 must also make SQL write outcomes linearizable: the current adapters
-  read after commit and calculate overwrite versions outside a fenced mutation, so the returned
-  row is not yet a commit receipt under concurrent writers.
+- **K2 — backend adoption.** Apply the frozen port across reference/SQLite/PostgreSQL adapters,
+  land the new shared migration without editing immutable history, gate ready-store construction,
+  and prove statement-owned commit outcomes plus live PostgreSQL conformance.
 - **K3 — semantic writer closure.** Make the authority-bound controller plus semantic
   idempotency/operation ledger the sole credential management writer and add durable convergence
   contracts without moving authority into this port.

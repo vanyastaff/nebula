@@ -66,6 +66,12 @@ rmp-serde = { version = "1", optional = true }
 [features]
 default = []
 credential-in-memory = []
+# Widens the ignored refresh-coordinator chaos harness from its local
+# 5-second plane to the nightly 10-minute / 100-credential plane. The test
+# remains `#[ignore]` even with this feature so ordinary `--all-features`
+# gates never acquire a hidden ten-minute workload; nightly CI opts in with
+# `--run-ignored only`.
+chaos-full = []
 # Postgres backend. TLS is included by default because every managed
 # Postgres tier (RDS, Cloud SQL, Neon, Supabase, Azure) requires TLS —
 # without this, downstream consumers had to layer the TLS feature
@@ -120,7 +126,7 @@ ignored = []
 all-features = true
 
 [package.metadata.nebula.ci]
-test-features = ["credential-in-memory"]
+test-features = ["credential-in-memory", "sqlite"]
 
 [lints]
 workspace = true

@@ -3,127 +3,123 @@
 use std::{fmt, sync::Arc};
 
 use async_trait::async_trait;
+use nebula_core::CredentialId;
 
 use crate::dto::credential::{
-    CredentialOwner, CredentialSelector, CredentialWriteMode, StoredCredential,
-    StoredCredentialHead,
+    CredentialCommit, CredentialCreate, CredentialOwner, CredentialReplacement, CredentialSelector,
+    CredentialTombstone, CredentialVersion, StoredCredential, StoredCredentialHead,
 };
 
-/// Credential persistence failure.
-#[derive(thiserror::Error)]
-#[non_exhaustive]
-pub enum CredentialPersistenceError {
-    /// No row exists for the complete owner-bound selector.
-    #[error("credential not found")]
-    NotFound {
-        /// Opaque credential id.
-        credential_id: String,
-    },
-    /// Compare-and-swap observed a different version.
-    #[error("credential version conflict: expected {expected}, got {actual}")]
-    VersionConflict {
-        /// Opaque credential id.
-        credential_id: String,
-        /// Expected version.
-        expected: u64,
-        /// Actual persisted version.
-        actual: u64,
-    },
-    /// Create-only write collided with an existing row.
-    #[error("credential already exists")]
-    AlreadyExists {
-        /// Opaque credential id.
-        credential_id: String,
-    },
-    /// Audit recording failed. The mutation may already be committed because
-    /// the interim sink seam is not transactional with persistence.
-    #[error("credential audit sink refused the operation")]
-    AuditFailure(String),
-    /// Caller supplied structurally inconsistent port data.
-    #[error("invalid credential persistence request: {0}")]
-    InvalidRequest(&'static str),
-    /// Backend failure.
-    #[error("credential persistence backend failed")]
-    Backend(Box<dyn std::error::Error + Send + Sync>),
+/// Unique credential field that rejected a create.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CredentialAlreadyExistsKey {
+    /// The globally unique credential id is permanently reserved.
+    Id,
+    /// A live credential already owns the owner-local display name.
+    Name,
 }
 
-impl fmt::Debug for CredentialPersistenceError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotFound { .. } => formatter
-                .debug_struct("NotFound")
-                .field("credential_id", &"[redacted]")
-                .finish(),
-            Self::VersionConflict {
-                expected, actual, ..
-            } => formatter
-                .debug_struct("VersionConflict")
-                .field("credential_id", &"[redacted]")
-                .field("expected", expected)
-                .field("actual", actual)
-                .finish(),
-            Self::AlreadyExists { .. } => formatter
-                .debug_struct("AlreadyExists")
-                .field("credential_id", &"[redacted]")
-                .finish(),
-            Self::AuditFailure(_) => formatter.write_str("AuditFailure([redacted])"),
-            Self::InvalidRequest(message) => formatter
-                .debug_tuple("InvalidRequest")
-                .field(message)
-                .finish(),
-            Self::Backend(_) => formatter.write_str("Backend([redacted])"),
-        }
-    }
+/// Closed credential persistence failure.
+///
+/// Variants contain only bounded typed context. Driver messages, SQL,
+/// database locations, owner keys, credential ids, names, and secret material
+/// never cross this boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum CredentialPersistenceError {
+    /// No admissible live row exists for the complete owner-bound selector.
+    #[error("credential not found")]
+    NotFound,
+
+    /// Compare-and-swap observed a different live version.
+    #[error("credential version conflict: expected {expected}, got {actual}")]
+    VersionConflict {
+        /// Version supplied by the command.
+        expected: CredentialVersion,
+        /// Version stored by the backend.
+        actual: CredentialVersion,
+    },
+
+    /// Create collided with a permanently reserved id or live name.
+    #[error("credential already exists")]
+    AlreadyExists {
+        /// Typed uniqueness boundary that collided.
+        key: CredentialAlreadyExistsKey,
+    },
+
+    /// The requested transition cannot preserve the version bound.
+    #[error("credential version exhausted")]
+    VersionExhausted,
+
+    /// A persisted row violates the closed credential record contract.
+    #[error("credential record is corrupt")]
+    CorruptRecord,
+
+    /// The operation definitely did not commit.
+    #[error("credential persistence is unavailable")]
+    Unavailable,
+
+    /// Commit was dispatched but authoritative acknowledgement was lost.
+    #[error("credential persistence outcome is unknown; do not retry blindly")]
+    OutcomeUnknown,
 }
 
 /// Owner-scoped credential persistence.
 ///
 /// The trait is directly object-safe; consumers store `Arc<dyn
-/// CredentialPersistence>` without a parallel RPITIT bridge. Every per-row
-/// operation receives one owner-bound selector, and list receives a mandatory
-/// owner. Adapters must never interpret an absent or empty owner as global
-/// access.
+/// CredentialPersistence>`. Every row operation receives a mandatory
+/// owner-bound selector. Management projections and existence checks are
+/// live-only; [`Self::get`] deliberately exposes a physical tombstone to
+/// trusted binding logic.
 #[async_trait]
 pub trait CredentialPersistence: Send + Sync + fmt::Debug {
-    /// Load one row by its complete owner-bound selector.
+    /// Load one physical live or terminal record.
     async fn get(
         &self,
         selector: &CredentialSelector,
     ) -> Result<StoredCredential, CredentialPersistenceError>;
 
-    /// Load one secret-free projection without fetching state bytes.
+    /// Load one secret-free live projection without fetching state bytes.
     async fn get_head(
         &self,
         selector: &CredentialSelector,
     ) -> Result<StoredCredentialHead, CredentialPersistenceError>;
 
-    /// Insert or replace one row under its complete owner-bound selector.
-    async fn put(
+    /// Insert one new live credential.
+    async fn create(
         &self,
         selector: &CredentialSelector,
-        credential: StoredCredential,
-        mode: CredentialWriteMode,
-    ) -> Result<StoredCredential, CredentialPersistenceError>;
+        create: CredentialCreate,
+    ) -> Result<CredentialCommit, CredentialPersistenceError>;
 
-    /// Delete one row by its complete owner-bound selector.
-    async fn delete(&self, selector: &CredentialSelector)
-    -> Result<(), CredentialPersistenceError>;
+    /// Replace mutable state of one version-matched live credential.
+    async fn replace(
+        &self,
+        selector: &CredentialSelector,
+        replacement: CredentialReplacement,
+    ) -> Result<CredentialCommit, CredentialPersistenceError>;
 
-    /// List ids in exactly one owner partition, optionally filtered by state kind.
+    /// Transition one version-matched live credential to terminal state.
+    async fn tombstone(
+        &self,
+        selector: &CredentialSelector,
+        tombstone: CredentialTombstone,
+    ) -> Result<CredentialCommit, CredentialPersistenceError>;
+
+    /// List typed ids of live credentials in exactly one owner partition.
     async fn list(
         &self,
         owner: &CredentialOwner,
         state_kind: Option<&str>,
-    ) -> Result<Vec<String>, CredentialPersistenceError>;
+    ) -> Result<Vec<CredentialId>, CredentialPersistenceError>;
 
-    /// List secret-free projections in exactly one owner partition.
+    /// List secret-free live projections in exactly one owner partition.
     async fn list_heads(
         &self,
         owner: &CredentialOwner,
         state_kind: Option<&str>,
     ) -> Result<Vec<StoredCredentialHead>, CredentialPersistenceError>;
 
-    /// Test existence under the complete owner-bound selector.
+    /// Test live-record existence under the complete owner-bound selector.
     async fn exists(
         &self,
         selector: &CredentialSelector,
@@ -149,27 +145,35 @@ where
         (**self).get_head(selector).await
     }
 
-    async fn put(
+    async fn create(
         &self,
         selector: &CredentialSelector,
-        credential: StoredCredential,
-        mode: CredentialWriteMode,
-    ) -> Result<StoredCredential, CredentialPersistenceError> {
-        (**self).put(selector, credential, mode).await
+        create: CredentialCreate,
+    ) -> Result<CredentialCommit, CredentialPersistenceError> {
+        (**self).create(selector, create).await
     }
 
-    async fn delete(
+    async fn replace(
         &self,
         selector: &CredentialSelector,
-    ) -> Result<(), CredentialPersistenceError> {
-        (**self).delete(selector).await
+        replacement: CredentialReplacement,
+    ) -> Result<CredentialCommit, CredentialPersistenceError> {
+        (**self).replace(selector, replacement).await
+    }
+
+    async fn tombstone(
+        &self,
+        selector: &CredentialSelector,
+        tombstone: CredentialTombstone,
+    ) -> Result<CredentialCommit, CredentialPersistenceError> {
+        (**self).tombstone(selector, tombstone).await
     }
 
     async fn list(
         &self,
         owner: &CredentialOwner,
         state_kind: Option<&str>,
-    ) -> Result<Vec<String>, CredentialPersistenceError> {
+    ) -> Result<Vec<CredentialId>, CredentialPersistenceError> {
         (**self).list(owner, state_kind).await
     }
 
@@ -191,30 +195,42 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::CredentialPersistenceError;
+    use super::{CredentialAlreadyExistsKey, CredentialPersistenceError};
+    use crate::CredentialVersion;
 
     #[test]
-    fn dynamic_failure_details_never_render() {
-        const CANARY: &str = "credential-persistence-error-secret-73af";
+    fn errors_have_closed_secret_free_diagnostics() {
+        let one = CredentialVersion::MIN;
+        let two = one.next_live().expect("one can advance");
         let failures = [
-            CredentialPersistenceError::AuditFailure(CANARY.to_owned()),
-            CredentialPersistenceError::Backend(Box::new(std::io::Error::other(CANARY))),
-            CredentialPersistenceError::NotFound {
-                credential_id: CANARY.to_owned(),
+            CredentialPersistenceError::NotFound,
+            CredentialPersistenceError::VersionConflict {
+                expected: one,
+                actual: two,
             },
             CredentialPersistenceError::AlreadyExists {
-                credential_id: CANARY.to_owned(),
+                key: CredentialAlreadyExistsKey::Id,
             },
-            CredentialPersistenceError::VersionConflict {
-                credential_id: CANARY.to_owned(),
-                expected: 1,
-                actual: 2,
+            CredentialPersistenceError::AlreadyExists {
+                key: CredentialAlreadyExistsKey::Name,
             },
+            CredentialPersistenceError::VersionExhausted,
+            CredentialPersistenceError::CorruptRecord,
+            CredentialPersistenceError::Unavailable,
+            CredentialPersistenceError::OutcomeUnknown,
         ];
 
         for failure in failures {
-            assert!(!failure.to_string().contains(CANARY));
-            assert!(!format!("{failure:?}").contains(CANARY));
+            let rendered = format!("{failure} {failure:?}");
+            for canary in [
+                "credential-secret-canary",
+                "tenant-canary",
+                "cred_",
+                "postgres://",
+                "SELECT ",
+            ] {
+                assert!(!rendered.contains(canary));
+            }
         }
     }
 }

@@ -45,9 +45,11 @@ mod common;
 
 use axum::{
     body::Body,
-    http::{Request, header::CONTENT_TYPE},
+    http::{Request, StatusCode, header::CONTENT_TYPE},
+    response::IntoResponse,
 };
-use nebula_api::{ApiConfig, build_app};
+use nebula_api::{ApiConfig, ApiError, build_app};
+use nebula_error::Classify;
 use serde_json::Value;
 use tower::ServiceExt;
 
@@ -58,6 +60,41 @@ use crate::common::{
 const HTTP_METHODS: &[&str] = &[
     "get", "post", "put", "patch", "delete", "options", "head", "trace",
 ];
+
+#[tokio::test]
+async fn credential_reauth_problem_contract_is_stable_and_not_plane_a_unauthorized() {
+    let error = ApiError::CredentialReauthRequired;
+    assert_eq!(
+        error.code().as_str(),
+        "API:CREDENTIAL_REAUTH_REQUIRED",
+        "the typed client classification is part of the public contract"
+    );
+
+    let response = error.into_response();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("application/problem+json")
+    );
+    let body = axum::body::to_bytes(response.into_body(), 16 * 1024)
+        .await
+        .expect("credential reauth problem body must be bounded and readable");
+    let problem: Value =
+        serde_json::from_slice(&body).expect("credential reauth must be RFC 9457 JSON");
+
+    assert_eq!(
+        problem,
+        serde_json::json!({
+            "type": "https://nebula.dev/problems/credential-reauth-required",
+            "title": "Credential Reauthentication Required",
+            "status": 409,
+            "detail": "Reconnect the integration credential before retrying this operation."
+        })
+    );
+}
 
 async fn fetch_spec(app: &axum::Router) -> Value {
     let response = app

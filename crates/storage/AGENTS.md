@@ -33,12 +33,19 @@
   verified-email egress; the later finalizer call rechecks all races.
 - `src/credential/refresh_claim/` — ADR-0041 CAS refresh-claim repo (`try_claim`/`heartbeat`/`release`/`reclaim_stuck`); in_memory + sqlite + postgres.
 - `src/credential/layer/` — encryption / audit / cache decorators around credential persistence.
-- `src/credential/{sqlite,postgres}.rs` — deployment adapters for the owner-bound `CredentialPersistence` port; historical SQL owner columns remain nullable until K2.
+- `src/credential/{sqlite,postgres}.rs` — ready-store deployment adapters for the owner-bound
+  `CredentialPersistence` port. Paired migration `0039` makes owner and structural record state
+  final invariants; unchecked raw-pool constructors are deliberately unavailable.
 
 ## Conventions & never-do
 - `ExecutionStore::commit` is the single source of truth: CAS on `version` + lease `FencingToken` gating; if persistence is unavailable it FAILS — never silently mutate in-memory state.
 - Outbox atomicity (§12.2): control-queue writes share the SAME `TransitionBatch` as the state transition. Never transition without enqueueing, or enqueue without transitioning.
-- `try_claim` must be atomic under contention (exactly one winner of N replicas); `heartbeat` must validate `ClaimToken.generation` so a stale holder can't extend a reclaimed claim.
+- `try_claim` must be atomic under contention (exactly one winner of N replicas). It may replace
+  only an expired `Normal` row. An expired `RefreshInFlight` row is durable
+  `OutcomeUnknown` poison: reclaim atomically records its event exactly once but never deletes
+  the row, and no caller may retry provider egress. The event's incident identity is the globally
+  unique claim UUID; holder, generation, and timestamps are observability fields, not dedup keys.
+  `heartbeat` and `mark_sentinel` require an unexpired, generation-matching claim.
 - Plane-A OAuth completion has separate boundaries: atomic state consume,
   provider egress, then a short storage-owned finalizer. An existing
   `(provider, subject)` link is authoritative and same-subject races converge.

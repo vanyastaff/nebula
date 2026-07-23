@@ -1,9 +1,10 @@
 //! Encryption layer -- encrypts data before storage, decrypts after retrieval.
 //!
 //! Wraps any [`CredentialPersistence`] implementation and applies AES-256-GCM
-//! encryption to the [`StoredCredential::data`] field. The credential ID is
+//! encryption to the live [`StoredCredential`] payload. The credential ID is
 //! bound as Additional Authenticated Data (AAD), preventing record-swapping
 //! attacks where encrypted data from one credential is copied to another.
+//! Structural tombstones carry no data and bypass cryptography entirely.
 //!
 //! AAD validation is mandatory — data encrypted without AAD (or with a
 //! mismatched credential ID) is rejected with a hard error. There is no
@@ -32,8 +33,9 @@ use std::{collections::HashMap, fmt, sync::Arc};
 use async_trait::async_trait;
 use nebula_crypto::{EncryptedData, EncryptionKey, decrypt_with_aad, encrypt_with_key_id};
 use nebula_storage_port::{
-    CredentialOwner, CredentialPersistence, CredentialPersistenceError, CredentialSelector,
-    CredentialWriteMode, StoredCredential, StoredCredentialHead,
+    CredentialCommit, CredentialCreate, CredentialOwner, CredentialPersistence,
+    CredentialPersistenceError, CredentialReplacement, CredentialSelector, CredentialTombstone,
+    SecretBytes, StoredCredential, StoredCredentialHead, StoredLiveCredential,
 };
 
 use super::super::key_provider::{KeyProvider, KeySnapshot};
@@ -141,15 +143,14 @@ impl<S> EncryptionLayer<S> {
     fn current_snapshot(&self) -> Result<KeySnapshot, CredentialPersistenceError> {
         self.key_provider
             .current()
-            .map_err(|e| CredentialPersistenceError::Backend(Box::new(e)))
+            .map_err(|_| CredentialPersistenceError::Unavailable)
     }
 
     fn legacy_key(&self, key_id: &str) -> Result<Arc<EncryptionKey>, CredentialPersistenceError> {
-        self.legacy_keys.get(key_id).cloned().ok_or_else(|| {
-            CredentialPersistenceError::Backend(
-                format!("encryption key '{key_id}' not found — cannot decrypt").into(),
-            )
-        })
+        self.legacy_keys
+            .get(key_id)
+            .cloned()
+            .ok_or(CredentialPersistenceError::CorruptRecord)
     }
 }
 
@@ -168,10 +169,28 @@ impl<S: CredentialPersistence> CredentialPersistence for EncryptionLayer<S> {
         &self,
         selector: &CredentialSelector,
     ) -> Result<StoredCredential, CredentialPersistenceError> {
-        let mut credential = self.inner.get(selector).await?;
-        let plaintext = self.decrypt_data(&credential.data, selector.credential_id())?;
-        credential.data = plaintext.into();
-        Ok(credential)
+        match self.inner.get(selector).await? {
+            StoredCredential::Live(record) => {
+                let credential_id = record.credential_id();
+                let plaintext = self.decrypt_data(record.data(), credential_id)?;
+                StoredLiveCredential::new(
+                    credential_id,
+                    record.name().map(str::to_owned),
+                    record.credential_key().to_owned(),
+                    SecretBytes::from(plaintext),
+                    record.state_kind().to_owned(),
+                    record.state_version(),
+                    record.version(),
+                    record.created_at(),
+                    record.updated_at(),
+                    record.expires_at(),
+                    record.reauth_required(),
+                    record.metadata().clone(),
+                )
+                .map(StoredCredential::Live)
+            },
+            tombstone @ StoredCredential::Tombstoned(_) => Ok(tombstone),
+        }
     }
 
     async fn get_head(
@@ -183,33 +202,65 @@ impl<S: CredentialPersistence> CredentialPersistence for EncryptionLayer<S> {
         self.inner.get_head(selector).await
     }
 
-    async fn put(
+    async fn create(
         &self,
         selector: &CredentialSelector,
-        mut credential: StoredCredential,
-        mode: CredentialWriteMode,
-    ) -> Result<StoredCredential, CredentialPersistenceError> {
-        let id = selector.credential_id().to_owned();
-        let plaintext_data = credential.data.clone();
-        credential.data = self.encrypt_data(&plaintext_data, &id)?.into();
-        let mut stored = self.inner.put(selector, credential, mode).await?;
-        // Restore original plaintext instead of decrypting again
-        stored.data = plaintext_data;
-        Ok(stored)
+        create: CredentialCreate,
+    ) -> Result<CredentialCommit, CredentialPersistenceError> {
+        let encrypted = self.encrypt_data(create.data(), selector.credential_id())?;
+        self.inner
+            .create(
+                selector,
+                CredentialCreate::new(
+                    create.credential_key().to_owned(),
+                    SecretBytes::new(encrypted),
+                    create.state_kind().to_owned(),
+                    create.state_version(),
+                    create.name().map(str::to_owned),
+                    create.expires_at(),
+                    create.reauth_required(),
+                    create.metadata().clone(),
+                ),
+            )
+            .await
     }
 
-    async fn delete(
+    async fn replace(
         &self,
         selector: &CredentialSelector,
-    ) -> Result<(), CredentialPersistenceError> {
-        self.inner.delete(selector).await
+        replacement: CredentialReplacement,
+    ) -> Result<CredentialCommit, CredentialPersistenceError> {
+        let encrypted = self.encrypt_data(replacement.data(), selector.credential_id())?;
+        self.inner
+            .replace(
+                selector,
+                CredentialReplacement::new(
+                    replacement.expected_version(),
+                    SecretBytes::new(encrypted),
+                    replacement.state_kind().to_owned(),
+                    replacement.state_version(),
+                    replacement.name().map(str::to_owned),
+                    replacement.expires_at(),
+                    replacement.reauth_required(),
+                    replacement.metadata().clone(),
+                ),
+            )
+            .await
+    }
+
+    async fn tombstone(
+        &self,
+        selector: &CredentialSelector,
+        tombstone: CredentialTombstone,
+    ) -> Result<CredentialCommit, CredentialPersistenceError> {
+        self.inner.tombstone(selector, tombstone).await
     }
 
     async fn list(
         &self,
         owner: &CredentialOwner,
         state_kind: Option<&str>,
-    ) -> Result<Vec<String>, CredentialPersistenceError> {
+    ) -> Result<Vec<nebula_core::CredentialId>, CredentialPersistenceError> {
         self.inner.list(owner, state_kind).await
     }
 
@@ -234,13 +285,14 @@ impl<S> EncryptionLayer<S> {
     fn encrypt_data(
         &self,
         plaintext: &[u8],
-        id: &str,
+        credential_id: nebula_core::CredentialId,
     ) -> Result<Vec<u8>, CredentialPersistenceError> {
         let current = self.current_snapshot()?;
+        let aad = credential_id.to_string();
         let encrypted =
-            encrypt_with_key_id(current.key(), current.key_id(), plaintext, id.as_bytes())
-                .map_err(|e| CredentialPersistenceError::Backend(Box::new(e)))?;
-        serde_json::to_vec(&encrypted).map_err(|e| CredentialPersistenceError::Backend(Box::new(e)))
+            encrypt_with_key_id(current.key(), current.key_id(), plaintext, aad.as_bytes())
+                .map_err(|_| CredentialPersistenceError::Unavailable)?;
+        serde_json::to_vec(&encrypted).map_err(|_| CredentialPersistenceError::Unavailable)
     }
 
     /// Decrypt `ciphertext` with the current or explicitly configured legacy key.
@@ -250,34 +302,39 @@ impl<S> EncryptionLayer<S> {
     fn decrypt_data(
         &self,
         ciphertext: &[u8],
-        id: &str,
+        credential_id: nebula_core::CredentialId,
     ) -> Result<zeroize::Zeroizing<Vec<u8>>, CredentialPersistenceError> {
         let encrypted: EncryptedData = serde_json::from_slice(ciphertext)
-            .map_err(|e| CredentialPersistenceError::Backend(Box::new(e)))?;
+            .map_err(|_| CredentialPersistenceError::CorruptRecord)?;
 
         let current = self.current_snapshot()?;
+        let aad = credential_id.to_string();
 
         // Data encrypted with the current key — normal path.
         if encrypted.key_id == current.key_id() {
-            let plaintext = decrypt_with_aad(current.key(), &encrypted, id.as_bytes())
-                .map_err(|e| CredentialPersistenceError::Backend(Box::new(e)))?;
+            let plaintext = decrypt_with_aad(current.key(), &encrypted, aad.as_bytes())
+                .map_err(|_| CredentialPersistenceError::CorruptRecord)?;
             return Ok(plaintext);
         }
 
         // Data encrypted with an older key is readable during the migration
         // window, but a read must never become a hidden durable write.
         let old_key = self.legacy_key(&encrypted.key_id)?;
-        decrypt_with_aad(&old_key, &encrypted, id.as_bytes())
-            .map_err(|e| CredentialPersistenceError::Backend(Box::new(e)))
+        decrypt_with_aad(&old_key, &encrypted, aad.as_bytes())
+            .map_err(|_| CredentialPersistenceError::CorruptRecord)
     }
 }
 
 #[cfg(all(test, feature = "sqlite"))]
 mod tests {
+    use nebula_core::CredentialId;
     use nebula_credential::{AuthStyle, SecretString, credentials::oauth2::OAuth2State};
-    use nebula_storage_port::{CredentialOwner, CredentialSelector, CredentialWriteMode};
+    use nebula_storage_port::{
+        CredentialOwner, CredentialSelector, CredentialTombstone, CredentialVersion,
+        StoredCredential, StoredLiveCredential,
+    };
 
-    use crate::credential::test_support::make_credential;
+    use crate::credential::test_support::{make_credential, make_replacement};
     use nebula_crypto::encrypt_with_key_id;
 
     use super::{
@@ -289,8 +346,19 @@ mod tests {
         CredentialOwner::from_canonical("test-owner")
     }
 
-    fn selector(id: &str) -> CredentialSelector {
+    fn selector(id: CredentialId) -> CredentialSelector {
         CredentialSelector::new(owner(), id)
+    }
+
+    fn version(value: i64) -> CredentialVersion {
+        CredentialVersion::try_from(value).expect("test version must be valid")
+    }
+
+    fn into_live(record: StoredCredential) -> StoredLiveCredential {
+        let StoredCredential::Live(record) = record else {
+            panic!("test fixture must remain live");
+        };
+        record
     }
 
     fn static_provider_with_version(
@@ -319,16 +387,13 @@ mod tests {
             SqliteCredentialPersistence::connect_memory().await?,
             default_provider(),
         );
-        let cred = make_credential("enc-1", b"super-secret");
+        let selector = selector(CredentialId::new());
+        store
+            .create(&selector, make_credential(b"super-secret"))
+            .await?;
 
-        let stored = store
-            .put(&selector(&cred.id), cred, CredentialWriteMode::CreateOnly)
-            .await
-            .unwrap();
-        assert_eq!(stored.data, b"super-secret");
-
-        let fetched = store.get(&selector("enc-1")).await.unwrap();
-        assert_eq!(fetched.data, b"super-secret");
+        let fetched = into_live(store.get(&selector).await?);
+        assert_eq!(fetched.data().as_ref(), b"super-secret");
         Ok(())
     }
 
@@ -337,15 +402,14 @@ mod tests {
         let inner = SqliteCredentialPersistence::connect_memory().await?;
         let store = EncryptionLayer::new(inner.clone(), default_provider());
 
-        let cred = make_credential("enc-2", b"plaintext-secret");
+        let selector = selector(CredentialId::new());
         store
-            .put(&selector(&cred.id), cred, CredentialWriteMode::CreateOnly)
-            .await
-            .unwrap();
+            .create(&selector, make_credential(b"plaintext-secret"))
+            .await?;
 
         // Read directly from inner store — data should NOT be plaintext
-        let raw = inner.get(&selector("enc-2")).await.unwrap();
-        assert_ne!(raw.data, b"plaintext-secret");
+        let raw = into_live(inner.get(&selector).await?);
+        assert_ne!(raw.data().as_ref(), b"plaintext-secret");
         Ok(())
     }
 
@@ -353,27 +417,24 @@ mod tests {
     async fn management_heads_do_not_read_or_decrypt_material()
     -> Result<(), CredentialPersistenceError> {
         let inner = SqliteCredentialPersistence::connect_memory().await?;
-        let invalid_ciphertext = make_credential("head-only", b"not-an-encryption-envelope");
+        let credential_id = CredentialId::new();
+        let selector = selector(credential_id);
         inner
-            .put(
-                &selector("head-only"),
-                invalid_ciphertext,
-                CredentialWriteMode::CreateOnly,
-            )
+            .create(&selector, make_credential(b"not-an-encryption-envelope"))
             .await?;
         let store = EncryptionLayer::new(inner, default_provider());
 
-        let head = store.get_head(&selector("head-only")).await?;
-        assert_eq!(head.id, "head-only");
+        let head = store.get_head(&selector).await?;
+        assert_eq!(head.credential_id(), credential_id);
         let heads = store.list_heads(&owner(), None).await?;
         assert_eq!(heads.len(), 1);
-        assert_eq!(heads[0].id, "head-only");
+        assert_eq!(heads[0].credential_id(), credential_id);
 
         let error = store
-            .get(&selector("head-only"))
+            .get(&selector)
             .await
             .expect_err("full material read must still reject invalid ciphertext");
-        assert!(matches!(error, CredentialPersistenceError::Backend(_)));
+        assert_eq!(error, CredentialPersistenceError::CorruptRecord);
         Ok(())
     }
 
@@ -408,15 +469,12 @@ mod tests {
             serde_json::to_vec(&state)
         })
         .expect("serialize OAuth2 state");
-        let cred = make_credential("enc-oauth2-state", &data);
-        store
-            .put(&selector(&cred.id), cred, CredentialWriteMode::CreateOnly)
-            .await
-            .unwrap();
+        let selector = selector(CredentialId::new());
+        store.create(&selector, make_credential(&data)).await?;
 
-        let raw = inner.get(&selector("enc-oauth2-state")).await.unwrap();
-        let lossy = String::from_utf8_lossy(&raw.data);
-        let stored_len = raw.data.len();
+        let raw = into_live(inner.get(&selector).await?);
+        let lossy = String::from_utf8_lossy(raw.data());
+        let stored_len = raw.data().len();
         assert!(
             !lossy.contains(PLAINTEXT_ACCESS) && !lossy.contains(PLAINTEXT_REFRESH),
             "inner row must not contain discoverable credential secrets (stored bytes: {stored_len})"
@@ -431,20 +489,29 @@ mod tests {
             default_provider(),
         );
 
-        let cred = make_credential("enc-3", b"data");
+        let credential_id = CredentialId::new();
+        let primary_selector = selector(credential_id);
+        let created = store
+            .create(&primary_selector, make_credential(b"data"))
+            .await?;
+
+        assert!(store.exists(&primary_selector).await?);
+        assert!(!store.exists(&selector(CredentialId::new())).await?);
+
+        let ids = store.list(&owner(), None).await?;
+        assert_eq!(ids, vec![credential_id]);
+
         store
-            .put(&selector(&cred.id), cred, CredentialWriteMode::CreateOnly)
-            .await
-            .unwrap();
-
-        assert!(store.exists(&selector("enc-3")).await.unwrap());
-        assert!(!store.exists(&selector("missing")).await.unwrap());
-
-        let ids = store.list(&owner(), None).await.unwrap();
-        assert_eq!(ids, vec!["enc-3"]);
-
-        store.delete(&selector("enc-3")).await.unwrap();
-        assert!(!store.exists(&selector("enc-3")).await.unwrap());
+            .tombstone(
+                &primary_selector,
+                CredentialTombstone::new(created.version()),
+            )
+            .await?;
+        assert!(!store.exists(&primary_selector).await?);
+        assert!(matches!(
+            store.get(&primary_selector).await?,
+            StoredCredential::Tombstoned(_)
+        ));
         Ok(())
     }
 
@@ -453,31 +520,22 @@ mod tests {
         let inner = SqliteCredentialPersistence::connect_memory().await?;
         let store = EncryptionLayer::new(inner.clone(), default_provider());
 
-        let cred = make_credential("cred-1", b"secret-data");
+        let first = selector(CredentialId::new());
         store
-            .put(&selector(&cred.id), cred, CredentialWriteMode::CreateOnly)
-            .await
-            .unwrap();
+            .create(&first, make_credential(b"secret-data"))
+            .await?;
 
         // Read raw encrypted data from inner store and insert it under a different ID
-        let raw = inner.get(&selector("cred-1")).await.unwrap();
-        let swapped = StoredCredential {
-            id: "cred-2".into(),
-            ..raw
-        };
+        let raw = into_live(inner.get(&first).await?);
+        let second = selector(CredentialId::new());
         inner
-            .put(
-                &selector(&swapped.id),
-                swapped,
-                CredentialWriteMode::CreateOnly,
-            )
-            .await
-            .unwrap();
+            .create(&second, make_credential(raw.data().as_ref()))
+            .await?;
 
         // Reading cred-2 through the encryption layer should fail because
         // the AAD (credential ID) doesn't match
-        let err = store.get(&selector("cred-2")).await.unwrap_err();
-        assert!(matches!(err, CredentialPersistenceError::Backend(_)));
+        let err = store.get(&second).await.unwrap_err();
+        assert_eq!(err, CredentialPersistenceError::CorruptRecord);
         Ok(())
     }
 
@@ -503,31 +561,17 @@ mod tests {
             .expect("encrypt with empty AAD should succeed at the crypto layer");
         let encrypted_bytes = serde_json::to_vec(&envelope).unwrap();
 
-        let cred = StoredCredential {
-            id: "legacy-1".into(),
-            name: None,
-            credential_key: "test_credential".into(),
-            data: encrypted_bytes.into(),
-            state_kind: "test".into(),
-            state_version: 1,
-            version: 0,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            expires_at: None,
-            reauth_required: false,
-            metadata: Default::default(),
-        };
+        let selector = selector(CredentialId::new());
         inner
-            .put(&selector(&cred.id), cred, CredentialWriteMode::CreateOnly)
-            .await
-            .unwrap();
+            .create(&selector, make_credential(&encrypted_bytes))
+            .await?;
 
         // Reading through the encryption layer must fail with an AAD
         // mismatch: the envelope was sealed with empty AAD but the layer
         // unconditionally binds `credential_id` as AAD on decrypt.
         let store = EncryptionLayer::new(inner, default_provider());
-        let err = store.get(&selector("legacy-1")).await.unwrap_err();
-        assert!(matches!(err, CredentialPersistenceError::Backend(_)));
+        let err = store.get(&selector).await.unwrap_err();
+        assert_eq!(err, CredentialPersistenceError::CorruptRecord);
         Ok(())
     }
 
@@ -538,15 +582,12 @@ mod tests {
         let provider2 = static_provider_with_version([0x02; 32], "default");
 
         let store1 = EncryptionLayer::new(inner.clone(), provider1);
-        let cred = make_credential("enc-4", b"secret");
-        store1
-            .put(&selector(&cred.id), cred, CredentialWriteMode::CreateOnly)
-            .await
-            .unwrap();
+        let selector = selector(CredentialId::new());
+        store1.create(&selector, make_credential(b"secret")).await?;
 
         let store2 = EncryptionLayer::new(inner, provider2);
-        let err = store2.get(&selector("enc-4")).await.unwrap_err();
-        assert!(matches!(err, CredentialPersistenceError::Backend(_)));
+        let err = store2.get(&selector).await.unwrap_err();
+        assert_eq!(err, CredentialPersistenceError::CorruptRecord);
         Ok(())
     }
 
@@ -559,15 +600,12 @@ mod tests {
         let inner = SqliteCredentialPersistence::connect_memory().await?;
         let store = EncryptionLayer::new(inner.clone(), default_provider());
 
-        let cred = make_credential("key-id-check", b"secret");
-        store
-            .put(&selector(&cred.id), cred, CredentialWriteMode::CreateOnly)
-            .await
-            .unwrap();
+        let selector = selector(CredentialId::new());
+        store.create(&selector, make_credential(b"secret")).await?;
 
         // Inspect the raw bytes stored — should contain "default" as key_id
-        let raw = inner.get(&selector("key-id-check")).await.unwrap();
-        let envelope: EncryptedData = serde_json::from_slice(&raw.data).unwrap();
+        let raw = into_live(inner.get(&selector).await?);
+        let envelope: EncryptedData = serde_json::from_slice(raw.data()).unwrap();
         assert_eq!(envelope.key_id, "default");
         Ok(())
     }
@@ -585,14 +623,13 @@ mod tests {
             vec![("key-1".to_string(), key1)],
         );
 
-        let cred = make_credential("mk-1", b"multi-key-secret");
+        let selector = selector(CredentialId::new());
         store
-            .put(&selector(&cred.id), cred, CredentialWriteMode::CreateOnly)
-            .await
-            .unwrap();
+            .create(&selector, make_credential(b"multi-key-secret"))
+            .await?;
 
-        let fetched = store.get(&selector("mk-1")).await.unwrap();
-        assert_eq!(fetched.data, b"multi-key-secret");
+        let fetched = into_live(store.get(&selector).await?);
+        assert_eq!(fetched.data().as_ref(), b"multi-key-secret");
         Ok(())
     }
 
@@ -607,11 +644,10 @@ mod tests {
             inner.clone(),
             static_provider_with_version(key1_bytes, "key-1"),
         );
-        let cred = make_credential("rotate-1", b"old-key-data");
+        let selector = selector(CredentialId::new());
         store_old
-            .put(&selector(&cred.id), cred, CredentialWriteMode::CreateOnly)
-            .await
-            .unwrap();
+            .create(&selector, make_credential(b"old-key-data"))
+            .await?;
 
         // Now rotate: key-2 is current, key-1 available as a legacy decrypt-only key
         let store_new = EncryptionLayer::with_legacy_keys(
@@ -623,8 +659,8 @@ mod tests {
             )],
         );
 
-        let fetched = store_new.get(&selector("rotate-1")).await.unwrap();
-        assert_eq!(fetched.data, b"old-key-data");
+        let fetched = into_live(store_new.get(&selector).await?);
+        assert_eq!(fetched.data().as_ref(), b"old-key-data");
         Ok(())
     }
 
@@ -641,14 +677,13 @@ mod tests {
             inner.clone(),
             static_provider_with_version(key1_bytes, "key-1"),
         );
-        let cred = make_credential("rotate-version-1", b"needs-rotation");
+        let selector = selector(CredentialId::new());
         let pre_rotation = store_old
-            .put(&selector(&cred.id), cred, CredentialWriteMode::CreateOnly)
-            .await
-            .unwrap();
-        let version_before_rotation = pre_rotation.version;
+            .create(&selector, make_credential(b"needs-rotation"))
+            .await?;
+        let version_before_rotation = pre_rotation.version();
 
-        let raw_before = inner.get(&selector("rotate-version-1")).await.unwrap();
+        let raw_before = into_live(inner.get(&selector).await?);
 
         // Read through the new layer using the explicitly configured legacy key.
         let store_new = EncryptionLayer::with_legacy_keys(
@@ -659,20 +694,22 @@ mod tests {
                 Arc::new(EncryptionKey::from_bytes(key1_bytes)),
             )],
         );
-        let fetched = store_new.get(&selector("rotate-version-1")).await.unwrap();
+        let fetched = into_live(store_new.get(&selector).await?);
 
-        let raw_after = inner.get(&selector("rotate-version-1")).await.unwrap();
-        assert_eq!(fetched.data, b"needs-rotation");
+        let raw_after = into_live(inner.get(&selector).await?);
+        assert_eq!(fetched.data().as_ref(), b"needs-rotation");
         assert_eq!(
-            fetched.version, version_before_rotation,
+            fetched.version(),
+            version_before_rotation,
             "a read must return the existing durable version"
         );
         assert_eq!(
-            raw_after.version, raw_before.version,
+            raw_after.version(),
+            raw_before.version(),
             "a read must not advance the durable version"
         );
-        assert_eq!(raw_after.updated_at, raw_before.updated_at);
-        assert_eq!(raw_after.data, raw_before.data);
+        assert_eq!(raw_after.updated_at(), raw_before.updated_at());
+        assert_eq!(raw_after.data(), raw_before.data());
         Ok(())
     }
 
@@ -688,11 +725,10 @@ mod tests {
             inner.clone(),
             static_provider_with_version(key1_bytes, "key-1"),
         );
-        let cred = make_credential("lazy-1", b"will-be-rotated");
+        let selector = selector(CredentialId::new());
         let originally_stored = store_old
-            .put(&selector(&cred.id), cred, CredentialWriteMode::CreateOnly)
-            .await
-            .unwrap();
+            .create(&selector, make_credential(b"will-be-rotated"))
+            .await?;
 
         // A read decrypts through key-1 but remains side-effect free.
         let store_new = EncryptionLayer::with_legacy_keys(
@@ -703,30 +739,25 @@ mod tests {
                 Arc::new(EncryptionKey::from_bytes(key1_bytes)),
             )],
         );
-        let mut fetched = store_new.get(&selector("lazy-1")).await.unwrap();
-        assert_eq!(fetched.data, b"will-be-rotated");
-        assert_eq!(fetched.version, originally_stored.version);
+        let fetched = into_live(store_new.get(&selector).await?);
+        assert_eq!(fetched.data().as_ref(), b"will-be-rotated");
+        assert_eq!(fetched.version(), originally_stored.version());
 
         // The next semantic write rotates to the current key and consumes one
         // version, instead of a hidden read consuming a separate version.
-        fetched.name = Some("updated".to_owned());
         let updated = store_new
-            .put(
-                &selector("lazy-1"),
-                fetched,
-                CredentialWriteMode::CompareAndSwap {
-                    expected_version: originally_stored.version,
-                },
+            .replace(
+                &selector,
+                make_replacement(originally_stored.version(), b"rotated"),
             )
-            .await
-            .unwrap();
-        assert_eq!(updated.version, originally_stored.version + 1);
+            .await?;
+        assert_eq!(updated.version(), version(2));
 
         // The one real mutation encrypted with key-2 in the backing store.
-        let raw = inner.get(&selector("lazy-1")).await.unwrap();
-        let envelope: EncryptedData = serde_json::from_slice(&raw.data).unwrap();
+        let raw = into_live(inner.get(&selector).await?);
+        let envelope: EncryptedData = serde_json::from_slice(raw.data()).unwrap();
         assert_eq!(envelope.key_id, "key-2");
-        assert_eq!(raw.version, updated.version);
+        assert_eq!(raw.version(), updated.version());
         Ok(())
     }
 
@@ -748,29 +779,16 @@ mod tests {
         // Encrypt normally under "default", then mutate key_id to "" to
         // simulate a legacy pre-guard envelope persisted by an older build.
         let plaintext = b"legacy-record";
+        let selector = selector(CredentialId::new());
+        let aad = selector.credential_id().to_string();
         let mut legacy_envelope =
-            encrypt_with_key_id(&key, "default", plaintext, b"legacy-1").unwrap();
+            encrypt_with_key_id(&key, "default", plaintext, aad.as_bytes()).unwrap();
         legacy_envelope.key_id = String::new();
         let envelope_bytes = serde_json::to_vec(&legacy_envelope).unwrap();
 
-        let cred = StoredCredential {
-            id: "legacy-1".into(),
-            name: None,
-            credential_key: "test_credential".into(),
-            data: envelope_bytes.into(),
-            state_kind: "test".into(),
-            state_version: 1,
-            version: 0,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            expires_at: None,
-            reauth_required: false,
-            metadata: Default::default(),
-        };
         inner
-            .put(&selector(&cred.id), cred, CredentialWriteMode::CreateOnly)
-            .await
-            .unwrap();
+            .create(&selector, make_credential(&envelope_bytes))
+            .await?;
 
         // `new(_, provider)` must refuse to decrypt the `""`-tagged record —
         // the empty alias no longer maps to the default key.
@@ -778,10 +796,10 @@ mod tests {
             inner.clone(),
             static_provider_with_version(key_bytes, "default"),
         );
-        let err = store.get(&selector("legacy-1")).await.unwrap_err();
+        let err = store.get(&selector).await.unwrap_err();
         assert!(
-            matches!(&err, CredentialPersistenceError::Backend(_)),
-            "expected a Backend error for unknown key_id, got {err:?}",
+            matches!(&err, CredentialPersistenceError::CorruptRecord),
+            "expected a corruption error for unknown key_id, got {err:?}",
         );
 
         // Explicit opt-in via `with_legacy_keys` still works — the migration
@@ -791,8 +809,8 @@ mod tests {
             static_provider_with_version(key_bytes, "default"),
             vec![(String::new(), Arc::clone(&key))],
         );
-        let fetched = store_with_legacy.get(&selector("legacy-1")).await.unwrap();
-        assert_eq!(fetched.data, plaintext);
+        let fetched = into_live(store_with_legacy.get(&selector).await?);
+        assert_eq!(fetched.data().as_ref(), plaintext);
         Ok(())
     }
 }

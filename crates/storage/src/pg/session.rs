@@ -67,10 +67,10 @@ fn tuple_to_row(t: SessionTuple) -> Result<SessionRow, StorageError> {
     })
 }
 
-// `ip_address::text` casts INET → TEXT in Postgres so the column
-// projects directly into `Option<String>` on the Rust side.
+// `host(ip_address)` projects the address without PostgreSQL's implicit
+// host-netmask suffix (`/32` for IPv4, `/128` for IPv6).
 const SELECT_COLS: &str = "token_digest, user_id, created_at, last_active_at, expires_at, \
-     ip_address::text AS ip_address, user_agent, revoked_at";
+     host(ip_address) AS ip_address, user_agent, revoked_at";
 
 impl SessionRepo for PgSessionRepo {
     #[tracing::instrument(level = "debug", skip(self, presented_token, session))]
@@ -238,6 +238,19 @@ mod tests {
         assert_eq!(loaded.user_id, user_id);
         assert_eq!(loaded.ip_address.as_deref(), Some("192.0.2.1"));
         assert!(loaded.revoked_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn ipv6_roundtrip_preserves_the_bare_host_contract() {
+        let Some(pool) = pool().await else { return };
+        let user_id = seed_user(&pool, "sess-ipv6").await;
+        let repo = PgSessionRepo::new(pool);
+        let (token, mut session) = fresh_session(&user_id);
+        session.ip_address = Some("2001:db8::1".to_owned());
+
+        repo.create(&token, &session).await.expect("create");
+        let loaded = repo.get(&token).await.expect("get").expect("some");
+        assert_eq!(loaded.ip_address.as_deref(), Some("2001:db8::1"));
     }
 
     #[tokio::test]

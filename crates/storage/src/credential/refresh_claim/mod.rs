@@ -3,18 +3,18 @@
 //!
 //! See `docs/INTEGRATION_MODEL.md` (credential refresh) for integration context.
 //!
-//! The canonical trait + supporting types now live in the spec-16 port
-//! crate (`nebula_storage_port::store`) — this component is loom-verified,
-//! so its surface was re-homed **shape-unchanged**. This module re-exports
-//! the port types under their historical names so existing consumers
-//! (engine refresh-coordinator, audit chain, tests) compile across the
-//! move without churn, and binds the three concrete backends to the port
-//! trait via those aliases.
+//! The canonical trait + supporting types live in the spec-16 port crate
+//! (`nebula_storage_port::store`). The acquisition CAS shape remains
+//! loom-verified; the result surface intentionally breaks from the historical
+//! adapter so an expired in-flight provider call is represented as durable
+//! `OutcomeUnknown` poison rather than ordinary contention. This module binds
+//! the three concrete backends to that port.
 //!
-//! The only behavioral delta from the pre-move definition is the
-//! backend-error variant: the port's `RepoError::Storage` carries a
-//! `String` (the port has no sqlx dependency). The SQL adapters map their
-//! driver error into that variant at the edge via `SqlxClaimResultExt`.
+//! The port exposes a closed, payload-free error taxonomy. SQL adapters
+//! discard driver diagnostics at the edge via `SqlxClaimResultExt`. All
+//! adapters preserve expired
+//! `RefreshInFlight` rows for the atomic reclaim sweep and reject sentinel
+//! marks once a claim expires.
 
 mod in_memory;
 pub use in_memory::InMemoryRefreshClaimRepo;
@@ -29,37 +29,32 @@ mod postgres;
 #[cfg(feature = "postgres")]
 pub use postgres::PgRefreshClaimRepo;
 
-// Re-home (spec §4.2, shape-unchanged): the canonical trait + value types
-// moved to the port crate. These aliases keep the historical
+// The canonical trait + value types live in the port crate. These aliases keep the historical
 // `nebula_storage::credential` paths valid — `RefreshClaimRepo` is the port
 // trait, `RepoError` the port's `RefreshClaimError`. Not a shim: there is
 // exactly one definition (in the port); this is a rename-on-import.
 pub use nebula_storage_port::store::{
-    ClaimAttempt, ClaimToken, HeartbeatError, ReclaimedClaim, RefreshClaim,
+    ClaimAttempt, ClaimToken, ExpiredClaim, HeartbeatError, RefreshClaim,
     RefreshClaimError as RepoError, RefreshClaimStore as RefreshClaimRepo, ReplicaId,
     SentinelState,
 };
 
-/// Maps a SQL driver error into the port's string-typed backend-error
-/// variant at the adapter edge.
+/// Maps a SQL driver error into the closed backend-error variant at the
+/// adapter edge.
 ///
-/// The port crate has no sqlx dependency, so `RepoError::Storage`
-/// carries a `String` rather than `#[from] sqlx::Error`. Each SQL adapter
-/// (`sqlite`, `postgres`) calls `.store_err()?` on its driver results so the
-/// CAS / heartbeat / sentinel / reclaim invariants stay byte-for-byte
-/// identical to the loom-verified pre-move logic — only the error
-/// conversion point changed.
+/// Each SQL adapter (`sqlite`, `postgres`) calls `.store_err()?` on driver
+/// results. The concrete diagnostic is deliberately discarded so database
+/// text and persisted identifiers cannot cross the public port.
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 pub(crate) trait SqlxClaimResultExt<T> {
-    /// Convert a `Result<T, sqlx::Error>` into the port's
-    /// `Result<T, RefreshClaimError>` by stringifying the driver error.
+    /// Convert a `Result<T, sqlx::Error>` into the closed port error.
     fn store_err(self) -> Result<T, RepoError>;
 }
 
 #[cfg(any(feature = "postgres", feature = "sqlite"))]
 impl<T> SqlxClaimResultExt<T> for Result<T, sqlx::Error> {
     fn store_err(self) -> Result<T, RepoError> {
-        self.map_err(|e| RepoError::Storage(e.to_string()))
+        self.map_err(|_| RepoError::Storage)
     }
 }
 

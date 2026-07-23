@@ -1,4 +1,5 @@
-//! Schema parity check for the refresh-claim migrations (0022 + 0023).
+//! Schema parity check for refresh-claim migrations 0022, 0023, and the
+//! incident-identity extension in 0039.
 //!
 //! Both SQLite and Postgres dialects must define the same tables with the
 //! same logical column names. The driver-specific types differ
@@ -113,6 +114,35 @@ fn sentinel_events_table_columns_match() {
     assert!(s.contains("detected_at"));
     assert!(s.contains("crashed_holder"));
     assert!(s.contains("generation"));
+}
+
+#[test]
+fn sentinel_incident_identity_is_paired_and_globally_unique() {
+    let sqlite = read("migrations/sqlite/0039_credentials_owner_and_record_state.sql");
+    let pg = read("migrations/postgres/0039_credentials_owner_and_record_state.sql");
+
+    for (backend, migration, data_type) in [
+        ("SQLite", sqlite.as_str(), "ADD COLUMN claim_id TEXT"),
+        ("Postgres", pg.as_str(), "ADD COLUMN claim_id UUID"),
+    ] {
+        assert!(
+            migration.contains("ALTER TABLE credential_sentinel_events"),
+            "{backend} 0039 must extend the sentinel event relation"
+        );
+        assert!(
+            migration.contains(data_type),
+            "{backend} 0039 must use its canonical claim-id type"
+        );
+        assert!(
+            migration.contains("CREATE UNIQUE INDEX idx_credential_sentinel_events_claim_id"),
+            "{backend} 0039 must enforce global incident identity"
+        );
+        assert!(
+            migration.contains("ON credential_sentinel_events(claim_id)")
+                && migration.contains("WHERE claim_id IS NOT NULL"),
+            "{backend} incident identity must be a partial single-column unique index"
+        );
+    }
 }
 
 #[test]

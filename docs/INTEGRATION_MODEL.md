@@ -133,6 +133,16 @@ Long-lived managed object: connection pool, SDK client, file handle. Resource li
 
 **Plane B (integration credentials):** workflow-facing secrets for **external** systems (API keys, OAuth to third parties, certificates, …) live in this model. They are **not** the same as authenticating **to Nebula**. Plane-A identity policy, fixed Google/GitHub.com sign-in profiles, provider client secrets, browser/API sessions, PATs, and MFA belong to the `nebula-api` auth boundary plus the server composition root — never `CredentialService`. The selected Memory backend provides process-local atomicity; PostgreSQL delegates its short user/link/session-or-MFA finalizer and globally capped OAuth-state admission to storage-owned seams. Provider egress never runs under finalizer locks, `(provider, subject)` is authoritative, and verified email alone never authorizes account linking. Future SSO/LDAP work must extend Plane A rather than leaking host identity into `nebula-credential`. This crate split is an implementation boundary: `nebula-sdk` remains the sole supported, branded Rust surface.
 
+**Rotation/refresh failure contract:** an integration receives projected auth material, never claim
+tokens or storage mutation authority. Refresh/revoke is single-flight in-process and across
+replicas. The durable claim is marked `RefreshInFlight` before provider egress; caller
+cancellation cannot cancel the owned provider→persistence section. A confirmed result may release
+the exact claim, while an ambiguous or post-provider unpersisted result retains it. Once expired,
+that row is durable poison: it records one incident by claim UUID, denies all provider replay, and
+requires an explicit owner-qualified reconciliation command. The N-in-window sentinel threshold
+is an operational escalation observation, not retry authority and not itself a durable
+`ReauthRequired` mutation.
+
 **Where to read:** `crates/credential/README.md`, `crates/credential/src/lib.rs`, **ADR-0033** — Integration credentials (Plane B).
 
 ### Industry reference — n8n credential taxonomy vs Nebula axes

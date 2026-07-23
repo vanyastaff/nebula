@@ -3073,9 +3073,7 @@ dependencies = [
  "percent-encoding",
  "pretty_assertions",
  "rand 0.10.1",
- "regex",
  "rstest",
- "scopeguard",
  "secrecy",
  "semver",
  "serde",
@@ -3587,6 +3585,7 @@ dependencies = [
  "nebula-storage",
  "nebula-storage-port",
  "nebula-tenancy",
+ "rcgen",
  "reqwest 0.13.4",
  "secrecy",
  "serde_json",
@@ -3594,9 +3593,12 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-rustls",
  "tokio-util",
  "tracing",
  "url",
+ "uuid",
+ "zeroize",
 ]
 
 [[package]]

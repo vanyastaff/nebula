@@ -144,6 +144,29 @@ async fn credential_oauth_ceremony_is_absent_while_identity_oauth_stays_public()
 }
 
 #[tokio::test]
+async fn credential_refresh_advertises_integration_reauth_as_conflict() {
+    let spec = fetch_spec_json().await;
+    let responses = spec
+        .pointer(
+            "/paths/~1api~1v1~1orgs~1{org}~1workspaces~1{ws}~1credentials~1{cred}~1refresh/post/responses",
+        )
+        .and_then(Value::as_object)
+        .expect("credential refresh must publish typed responses");
+
+    let response = responses
+        .get("409")
+        .expect("credential refresh must advertise integration reauth as 409");
+    let schema_ref = response
+        .pointer("/content/application~1problem+json/schema/$ref")
+        .and_then(Value::as_str)
+        .expect("credential reauth conflict must use the shared ProblemDetails schema");
+    assert!(
+        schema_ref.ends_with("/ProblemDetails"),
+        "credential reauth conflict must remain RFC 9457: {response}"
+    );
+}
+
+#[tokio::test]
 async fn identity_oauth_provider_and_mfa_continuation_are_typed_closed_contracts() {
     let spec = fetch_spec_json().await;
     let paths = spec

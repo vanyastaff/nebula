@@ -7,10 +7,13 @@
 //! the same encryption/audit/resolver stack over an isolated in-memory
 //! database.
 
-use std::sync::Arc;
+use std::{future::Future, pin::Pin, sync::Arc};
 
 use nebula_credential::provider::ExternalProvider;
-use nebula_credential::runtime::LeaseLifecycleConfig;
+use nebula_credential::runtime::{
+    LeaseLifecycleConfig, RefreshTransport, RefreshTransportError, TokenPostRequest,
+    TokenPostResponse,
+};
 use nebula_credential::{
     ApiKeyCredential, BasicAuthCredential, ErasedPendingStore, SigningKeyCredential,
 };
@@ -42,6 +45,25 @@ impl AuditSink for TracingAuditSink {
             "credential audit event"
         );
         Ok(())
+    }
+}
+
+/// Deterministic no-network refresh transport for API-only fixtures.
+///
+/// The default fixture catalog contains no OAuth credential type. Tests that
+/// need real HTTP transport policy belong to the first-party composition root
+/// in `apps/server`; injecting this collaborator prevents an API fixture from
+/// silently acquiring proxy, redirect, retry, or DNS behavior.
+#[derive(Debug)]
+struct NoNetworkRefreshTransport;
+
+impl RefreshTransport for NoNetworkRefreshTransport {
+    fn post_token<'a>(
+        &'a self,
+        _request: TokenPostRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<TokenPostResponse, RefreshTransportError>> + Send + 'a>>
+    {
+        Box::pin(async { Err(RefreshTransportError::Send) })
     }
 }
 
@@ -176,6 +198,7 @@ fn compose_credential_service<S: CredentialPersistence + 'static>(
         pending,
         Arc::new(registry),
         Arc::new(ops),
+        Arc::new(NoNetworkRefreshTransport),
         observer,
         lease_config,
         shutdown,

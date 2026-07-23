@@ -104,11 +104,11 @@ All five series live in `nebula_metrics::naming::NEBULA_CREDENTIAL_REFRESH_COORD
 
 | Metric | Type | Labels | Cardinality | Meaning |
 |---|---|---|---|---|
-| `nebula_credential_refresh_coord_claims_total` | counter | `outcome={acquired,contended,exhausted}` | 3 series | L2 claim acquisition outcomes. `outcome="exhausted" > 0` is a real production signal — the holder backed off the configured retry budget without acquiring the L2 row. |
+| `nebula_credential_refresh_coord_claims_total` | counter | `outcome={acquired,contended,outcome_unknown,exhausted}` | 4 series | L2 claim acquisition outcomes. `exhausted` means ordinary contention consumed the retry budget; `outcome_unknown` means an expired `RefreshInFlight` row denied provider replay and remains durable poison until explicit reconciliation. |
 | `nebula_credential_refresh_coord_coalesced_total` | counter | `tier={l1,l2}` | 2 series | Refresh calls coalesced rather than running an IdP POST. `l1` = same-process oneshot waiter; `l2` = post-backoff state recheck found another replica refreshed first (`CoalescedByOtherReplica`). |
-| `nebula_credential_refresh_coord_sentinel_events_total` | counter | `action={recorded,reauth_triggered}` | 2 series | Sentinel detections by the reclaim sweep. `recorded` ticks once per stuck `RefreshInFlight` row; `reauth_triggered` ticks once when the rolling-window count crosses `sentinel_threshold` and `CredentialEvent::ReauthRequired` is published. |
-| `nebula_credential_refresh_coord_reclaim_sweeps_total` | counter | `outcome={reclaimed,no_work}` | 2 series | Reclaim-sweep outcomes. `no_work` is the steady state for healthy systems; sustained `reclaimed > 0` signals crashed-runner load. |
-| `nebula_credential_refresh_coord_hold_duration_seconds` | histogram | (none) | 1 series | Time from L2 claim acquisition to release. P99 should sit below `claim_ttl` by construction (config invariants reject otherwise); P50 should sit near `refresh_timeout` for hot credentials. |
+| `nebula_credential_refresh_coord_sentinel_events_total` | counter | `action={recorded,reauth_triggered}` | 2 series | Sentinel accounting by the reclaim sweep. `recorded` ticks once per distinct poisoned claim UUID; repeated requests/sweeps do not spend the threshold budget. `reauth_triggered` ticks when the database-clock rolling-window count crosses `sentinel_threshold` and publishes a lossy `CredentialEvent::ReauthRequired` observation. It does not prove a durable aggregate transition. |
+| `nebula_credential_refresh_coord_reclaim_sweeps_total` | counter | `outcome={reclaimed,outcome_unknown_accounted,no_work}` | 3 series | Reclaim-sweep outcomes. `reclaimed` means only pre-provider normal rows were deleted. `outcome_unknown_accounted` takes precedence for a mixed sweep: evidence was recorded while an expired `RefreshInFlight` row remained fail-closed poison. |
+| `nebula_credential_refresh_coord_hold_duration_seconds` | histogram | (none) | 1 series | Time from L2 acquisition until coordinator finalization/drop. The cancel-safe critical section may outlive `refresh_timeout`, and heartbeat renews `claim_ttl`; a rising tail is a slow/stuck-integration signal, not proof of lease expiry. |
 
 ### 7.2 Tracing spans
 
@@ -116,19 +116,22 @@ Three spans wrap the coordinator and reclaim sweep paths.
 
 | Span | Site | Attributes |
 |---|---|---|
-| `credential.refresh.coordinate` | `RefreshCoordinator::refresh_coalesced` | `credential_id`, `replica_id`, `tier` (closed set `{l1, l2_acquired, l2_coalesced}` — see note below) |
+| `credential.refresh.coordinate` | `RefreshCoordinator::refresh_coalesced` | `credential_id`, `replica_id`, `tier` (closed set `{l1, l1_no_progress, l1_outcome_unknown, l2_acquired, l2_coalesced, l2_outcome_unknown}` — see note below) |
 | `credential.refresh.claim.acquire` | per L2 `try_claim` attempt inside the backoff loop | `credential_id`, `replica_id`, `attempt` (0-indexed) |
 | `credential.refresh.sentinel.detected` | per stuck `RefreshInFlight` row in `run_one_sweep` | `credential_id`, `crashed_holder`, `generation` |
 
-**`tier` value semantics (closed set of three).** The span field is recorded at the actual outcome site, never speculatively, so an operator reading the span knows precisely which path the call took:
+**`tier` value semantics (closed set of six).** The span field is recorded at the actual outcome site, never speculatively, so an operator reading the span knows precisely which path the call took:
 
 - `l1` — same-process L1 oneshot resolved; the caller was a waiter and was woken without running the closure. Pairs with `coalesced_total{tier="l1"}`.
+- `l1_no_progress` — the L1 winner reached an exact, replay-safe outcome without advancing authoritative state. The waiter surfaces `PriorAttemptNoProgress`; it does not automatically replay the operation and does not increment the coalesced metric.
+- `l1_outcome_unknown` — same-process waiter reached `refresh_timeout` or its sender closed abnormally before exact completion. It surfaces `CriticalOutcomePending`, never increments the coalesced metric, and emits `credential.refresh.l1.wait.outcome_unknown`.
 - `l2_acquired` — won L1, acquired the L2 claim, and ran the user's refresh closure. Pairs with `claims_total{outcome="acquired"}`.
 - `l2_coalesced` — won L1, contended L2, slept on backoff, then the post-backoff state recheck found another replica had already refreshed. Surfaces as `RefreshError::CoalescedByOtherReplica`. Pairs with `coalesced_total{tier="l2"}`.
+- `l2_outcome_unknown` — won L1 but found an expired `RefreshInFlight` row. Provider dispatch was denied, the call surfaced `CriticalOutcomePending`, and the row remains durable poison. Pairs with `claims_total{outcome="outcome_unknown"}` and the structured `credential.refresh.claim.outcome_unknown` event.
 
 The distinction between `l2_acquired` and `l2_coalesced` is load-bearing: a span tagged `l2_acquired` in production logs is a true claim acquisition, whereas `l2_coalesced` is a near-miss that fired the n8n #13088 protection path. Treating them as a single `l2` value (as an earlier draft did) would conflate "acquired the row" with "another replica beat us to it" — operationally distinct outcomes.
 
-The metric labels `coalesced_total{tier=l1|l2}` keep the original two-value vocabulary because the metric only counts coalesce events; the third span value `l2_acquired` corresponds to `claims_total{outcome="acquired"}`, not a coalesce.
+The metric labels `coalesced_total{tier=l1|l2}` keep the original two-value vocabulary because the metric only counts exact coalesce events. `l1_no_progress` and `l1_outcome_unknown` are deliberately excluded. The L2 non-coalesce span values map to `claims_total`: `l2_acquired` to `outcome="acquired"` and `l2_outcome_unknown` to `outcome="outcome_unknown"`.
 
 ### 7.3 Audit events
 
@@ -139,10 +142,15 @@ the storage decorator lives in `nebula-storage`; the operation enum is `#[non_ex
 | Variant | Fields | When |
 |---|---|---|
 | `RefreshCoordClaimAcquired` | `credential_id`, `holder`, `ttl_secs` | once per L2 claim acquired |
-| `RefreshCoordSentinelTriggered` | `credential_id`, `recent_count` | once per stuck `RefreshInFlight` detected |
-| `RefreshCoordReauthFlagged` | `credential_id`, `reason` (`"sentinel_repeated"` for sub-spec §3.4 escalations) | once per `CredentialEvent::ReauthRequired` publish |
+| `RefreshCoordSentinelTriggered` | `credential_id`, `recent_count` | once per newly-accounted poisoned claim UUID |
+| `RefreshCoordReauthThresholdReached` | `credential_id`, `reason` (`"sentinel_repeated"` for sub-spec §3.4 escalations) | once per newly-accounted incident whose rolling-window count is at or above the threshold; observational, not proof of a durable credential mutation |
 
-Sink failures are logged at `warn!` but do not propagate to the refresh caller — the refresh path is observational, and propagating audit-sink hiccups would re-create the n8n #13088 retry storm the coordinator was built to prevent. The store-side `AuditLayer` has a stricter error-propagating contract: it returns sink failures instead of silently succeeding. This decorator is not a transaction boundary, so a successful inner mutation remains committed if recording then fails; it never attempts a racy compensating write. Atomic mutation-plus-audit persistence requires a backend transaction or transactional outbox.
+Sink failures are logged at `warn!` but do not propagate to callers. The
+store-side `AuditLayer` emits mutation observations only after an acknowledged
+commit and is likewise best-effort: it never turns an audit-sink outage into a
+false mutation failure or retries an ambiguous write. The decorator is not a
+transaction boundary; durable mutation-plus-audit delivery belongs to the K3
+transactional outbox.
 
 ### 7.4 Sample PromQL queries
 
@@ -170,13 +178,15 @@ sum(rate(nebula_credential_refresh_coord_coalesced_total{tier="l2"}[5m]))
 
 # Crashed-runner storm signal — pair these to triage.
 sum(rate(nebula_credential_refresh_coord_reclaim_sweeps_total{outcome="reclaimed"}[5m]))
+sum(increase(nebula_credential_refresh_coord_reclaim_sweeps_total{outcome="outcome_unknown_accounted"}[5m])) > 0
 sum(rate(nebula_credential_refresh_coord_sentinel_events_total{action="recorded"}[5m]))
 
-# ReauthRequired escalations crossing zero in the last hour — alert level.
+# Reauth-required observations crossing zero in the last hour — alert level.
 increase(nebula_credential_refresh_coord_sentinel_events_total{action="reauth_triggered"}[1h]) > 0
 
-# Hold duration P99 — must sit below configured claim_ttl.
+# Hold duration P99 — compare with refresh_timeout to detect detached slow work.
+# Values above the original claim_ttl are allowed while heartbeat renews the lease.
 histogram_quantile(0.99, sum(rate(nebula_credential_refresh_coord_hold_duration_seconds_bucket[5m])) by (le))
 ```
 
-**Analysis loop integration:** an `outcome="exhausted"` crossing zero or a `reauth_triggered` increment is a paging-class event. Cross-reference the `credential.refresh.coordinate` span's `trace_id` with the `execution_journal` to find which actions were waiting on the failed refresh.
+**Analysis loop integration:** an `outcome="exhausted"` crossing zero or a `reauth_triggered` increment is a paging-class event. Cross-reference the `credential.refresh.coordinate` span's `trace_id` with the `execution_journal` to find which actions were waiting on the failed refresh. The sentinel event bus is deliberately non-authoritative; until the K3 owner-qualified command lands, operators must not interpret `reauth_triggered` as evidence that `reauth_required = true` was persisted.

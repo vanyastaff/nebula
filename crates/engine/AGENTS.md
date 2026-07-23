@@ -18,7 +18,10 @@
 ## Commands
 - `cargo check -p nebula-engine`
 - `cargo nextest run -p nebula-engine`  ·  doctests: none (`[lib] doctest = false`)
-- Features: `rotation`, `test-util` (never in prod build — ADR-0023), `chaos-full` (nightly). (Out-of-process plugin execution was retired — ADR-0091; the engine dispatches actions in-process via `InProcessRunner`.)
+- Features: `rotation`, `test-util` (never in prod build — ADR-0023). The refresh-coordinator
+  chaos harness follows its concrete shared-L2 adapter and lives in `nebula-storage`.
+  (Out-of-process plugin execution was retired — ADR-0091; the engine dispatches actions
+  in-process via `InProcessRunner`.)
 
 ## Key files
 - `src/lib.rs` — module map + crate-root re-exports (downstream uses `nebula_engine::X`, not deep paths).

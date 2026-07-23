@@ -2,12 +2,12 @@
 //!
 //! See `docs/INTEGRATION_MODEL.md` (credential refresh) for integration context.
 //!
-//! Re-homed from the adapter **shape-unchanged**: this component is
-//! loom-verified, so its trait surface and supporting types are preserved
-//! exactly. The only difference from the adapter's former definition is that
-//! the backend-error variant carries a `String` instead of `sqlx::Error`
-//! (the port has no sqlx; the adapter maps `sqlx::Error` → this at the
-//! edge). The CAS / heartbeat / sentinel / reclaim invariants are identical.
+//! The original acquisition CAS shape remains loom-verified. The public result
+//! model is deliberately stricter than the historical adapter: an expired
+//! `RefreshInFlight` row is durable poison, and reclaim accounting is a single
+//! atomic port operation so evidence cannot be overwritten or recorded twice.
+//! Errors are a closed, payload-free taxonomy so driver diagnostics and
+//! persisted identifiers cannot cross the adapter boundary.
 
 use std::time::Duration;
 
@@ -86,14 +86,22 @@ pub enum ClaimAttempt {
         /// When the existing claim is expected to expire (backoff hint).
         existing_expires_at: DateTime<Utc>,
     },
+    /// A previous holder crossed the provider side-effect boundary and its
+    /// claim expired before the outcome was durably resolved.
+    ///
+    /// This is a persistent, fail-closed poison state. Callers must not retry
+    /// provider egress. Only an explicit future reconciliation command may
+    /// clear the retained claim.
+    OutcomeUnknown {
+        /// When the poisoned claim expired.
+        expired_at: DateTime<Utc>,
+    },
 }
 
 /// Errors from `RefreshClaimStore::heartbeat`.
 ///
-/// Variant names are preserved verbatim from the loom-verified
-/// `RefreshClaimRepo` this trait re-homes (spec §4.2: shape unchanged) —
-/// `Repo` (not `Store`) so existing `match HeartbeatError::Repo(_)` arms
-/// in consumers remain valid across the move.
+/// `Repo` (not `Store`) is retained for source compatibility with existing
+/// consumer match arms.
 #[derive(Debug, thiserror::Error)]
 pub enum HeartbeatError {
     /// Our claim expired and another replica took it.
@@ -104,16 +112,17 @@ pub enum HeartbeatError {
     Repo(#[from] RefreshClaimError),
 }
 
-/// Errors from `try_claim` / `release` / `reclaim_stuck` / sentinel ops.
+/// Errors from claim acquisition, release, reclaim accounting, and sentinel
+/// transitions.
 #[derive(Debug, thiserror::Error)]
 pub enum RefreshClaimError {
-    /// Backend failure (the adapter maps its driver error into this).
-    #[error("storage error: {0}")]
-    Storage(String),
-    /// Invariant violation observed in the store (bad TTL, missing row
-    /// after CAS lost, decode failure, etc.).
-    #[error("invalid state: {0}")]
-    InvalidState(String),
+    /// Backend operation or decoding failed. Driver diagnostics stay inside
+    /// the adapter and are never rendered through this public error.
+    #[error("refresh claim storage unavailable")]
+    Storage,
+    /// The adapter observed an invalid claim state or argument.
+    #[error("refresh claim state is invalid")]
+    InvalidState,
 }
 
 /// Sentinel mark applied to an in-flight refresh row (sub-spec §3.4).
@@ -125,25 +134,45 @@ pub enum SentinelState {
     RefreshInFlight,
 }
 
-/// One row returned by `reclaim_stuck`.
+/// One newly-accounted result returned by [`RefreshClaimStore::reclaim_stuck`].
+///
+/// The variants are structural: a normal expiry is released, while an
+/// in-flight expiry is retained as durable poison after its sentinel evidence
+/// is recorded exactly once.
 #[derive(Debug, Clone)]
-pub struct ReclaimedClaim {
-    /// Credential whose stale claim was released by the sweep.
-    pub credential_id: CredentialId,
-    /// Replica that previously held the claim (now presumed gone).
-    pub previous_holder: ReplicaId,
-    /// Generation of the previous holder's claim.
-    pub previous_generation: u64,
-    /// Sentinel state observed at sweep time.
-    pub sentinel: SentinelState,
+pub enum ExpiredClaim {
+    /// A claim that expired before provider egress and was deleted.
+    ReclaimedNormal {
+        /// Credential whose stale claim was released.
+        credential_id: CredentialId,
+        /// Replica that previously held the claim.
+        previous_holder: ReplicaId,
+        /// Generation of the previous holder's claim.
+        previous_generation: u64,
+    },
+    /// A claim that expired after provider egress began. Its evidence was
+    /// durably recorded while the claim row remained as fail-closed poison.
+    OutcomeUnknownAccounted {
+        /// Credential retained in the poisoned claim row.
+        credential_id: CredentialId,
+        /// Replica whose provider outcome is unknown.
+        previous_holder: ReplicaId,
+        /// Generation whose provider outcome is unknown.
+        previous_generation: u64,
+    },
 }
 
-/// Cross-replica claim store. Shape preserved verbatim from the loom-verified
-/// adapter trait.
+/// Cross-replica claim store.
+///
+/// Acquisition keeps the loom-verified single-winner CAS semantics. Reclaim
+/// is deliberately stronger: poison accounting and claim retention form one
+/// atomic operation exposed through this port.
 #[async_trait::async_trait]
 pub trait RefreshClaimStore: Send + Sync + 'static {
     /// Try to acquire a refresh claim for `credential_id` on behalf of
-    /// `holder`.
+    /// `holder`. A missing row or expired [`SentinelState::Normal`] row can
+    /// be acquired. An expired [`SentinelState::RefreshInFlight`] row returns
+    /// [`ClaimAttempt::OutcomeUnknown`] and remains durable fail-closed poison.
     async fn try_claim(
         &self,
         credential_id: &CredentialId,
@@ -155,29 +184,65 @@ pub trait RefreshClaimStore: Send + Sync + 'static {
     /// `now + ttl`. Fails with `ClaimLost` if the token was superseded.
     async fn heartbeat(&self, token: &ClaimToken, ttl: Duration) -> Result<(), HeartbeatError>;
 
-    /// Release a claim (idempotent).
+    /// Release the exact token's claim (idempotent).
+    ///
+    /// There are exactly two release authorities: pre-provider cleanup, when
+    /// the provider closure has not started, and exact `Confirmed`
+    /// finalization, including after lease expiry. `RetryUnsafe`,
+    /// `OutcomeUnknown`, and cancelled provider paths must retain the token;
+    /// the store cannot infer side-effect certainty from the token alone.
     async fn release(&self, token: ClaimToken) -> Result<(), RefreshClaimError>;
 
     /// Mark the claim `RefreshInFlight` immediately before the IdP POST.
+    /// The token must still identify an unexpired claim; an expired token
+    /// cannot authorize provider egress.
     async fn mark_sentinel(&self, token: &ClaimToken) -> Result<(), RefreshClaimError>;
 
-    /// Sweep claims past TTL; returns reclaimed credentials + sentinel
-    /// state observed.
-    async fn reclaim_stuck(&self) -> Result<Vec<ReclaimedClaim>, RefreshClaimError>;
+    /// Account claims past TTL in one atomic storage boundary.
+    ///
+    /// Expired Normal rows are deleted and returned as
+    /// [`ExpiredClaim::ReclaimedNormal`]. Expired `RefreshInFlight` rows are
+    /// never deleted: their sentinel event is inserted idempotently under the
+    /// claim-row lock, keyed by the globally unique claim UUID, and only a
+    /// newly recorded event is returned as
+    /// [`ExpiredClaim::OutcomeUnknownAccounted`]. If accounting fails, neither
+    /// the event nor claim state is partially advanced.
+    async fn reclaim_stuck(&self) -> Result<Vec<ExpiredClaim>, RefreshClaimError>;
 
-    /// Record a sentinel event into `credential_sentinel_events`.
-    async fn record_sentinel_event(
-        &self,
-        credential_id: &CredentialId,
-        crashed_holder: &ReplicaId,
-        generation: u64,
-    ) -> Result<(), RefreshClaimError>;
-
-    /// Count sentinel events for `credential_id` whose `detected_at` is
-    /// strictly after `window_start`.
+    /// Count sentinel events for `credential_id` strictly inside `window`.
+    ///
+    /// SQL adapters derive the cutoff from the same database clock that
+    /// authors `detected_at`; callers provide a duration, never a
+    /// replica-clock timestamp.
     async fn count_sentinel_events_in_window(
         &self,
         credential_id: &CredentialId,
-        window_start: DateTime<Utc>,
+        window: Duration,
     ) -> Result<u32, RefreshClaimError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RefreshClaimError;
+
+    #[test]
+    fn refresh_claim_errors_are_closed_and_payload_free() {
+        for (error, expected) in [
+            (
+                RefreshClaimError::Storage,
+                "refresh claim storage unavailable",
+            ),
+            (
+                RefreshClaimError::InvalidState,
+                "refresh claim state is invalid",
+            ),
+        ] {
+            let category = match &error {
+                RefreshClaimError::Storage => "storage",
+                RefreshClaimError::InvalidState => "invalid_state",
+            };
+            assert!(!category.is_empty());
+            assert_eq!(error.to_string(), expected);
+        }
+    }
 }
