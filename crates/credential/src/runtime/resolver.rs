@@ -9,11 +9,6 @@ use std::{
     sync::Arc,
 };
 
-#[cfg(feature = "rotation")]
-use crate::credentials::{OAuth2Credential, OAuth2State};
-// The resolve-error mapping moved to `resolve_error`; tests still implement
-// credential traits whose signatures name `CredentialError`.
-#[cfg(test)]
 use crate::error::CredentialError;
 use crate::runtime::refresh::transport::RefreshTransport;
 use crate::runtime::refresh::{
@@ -74,9 +69,6 @@ use dashmap::DashMap;
 use nebula_core::auth::{AuthScheme, SchemeFamily};
 use nebula_eventbus::EventBus;
 
-#[cfg(feature = "rotation")]
-use crate::runtime::refresh::token_refresh::{TokenRefreshError, refresh_oauth2_state};
-
 /// Live [`CredentialHandle`] cache keyed by `(credential_id, scheme TypeId)`.
 ///
 /// Read-heavy / write-light: `resolve` and `resolve_with_refresh` read on
@@ -89,6 +81,25 @@ type HandleCache = DashMap<(CredentialSelector, TypeId), Arc<dyn Any + Send + Sy
 enum CoordinatedResolve<S: AuthScheme> {
     Resolved(CredentialHandle<S>),
     Reevaluate,
+}
+
+/// Translate the only proof-bearing credential refresh failure into the
+/// coordinator's replay-safe class. All other implementation-defined errors
+/// fail closed because the generic resolver cannot infer whether provider
+/// dispatch crossed an irreversible boundary.
+fn classify_refresh_error(error: CredentialError, credential_id: &str) -> ResolveError {
+    match error {
+        CredentialError::RefreshFailed(context) => ResolveError::ExactRefreshFailure {
+            credential_id: credential_id.to_owned(),
+            context,
+        },
+        CredentialError::OutcomeUnknown => ResolveError::ProviderOutcomeUnknown {
+            credential_id: credential_id.to_owned(),
+        },
+        _ => ResolveError::ProviderOutcomeUnknown {
+            credential_id: credential_id.to_owned(),
+        },
+    }
 }
 
 /// Runtime credential resolver with optional coordinated refresh.
@@ -592,6 +603,9 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
                         Ok(_) | Err(ResolveError::ReauthRequired { .. }) => {
                             RefreshDisposition::state_advanced(result)
                         },
+                        // Includes proof-bearing ExactRefreshFailure: provider
+                        // state is known not to have advanced, so L2 can be
+                        // released without poisoning subsequent attempts.
                         Err(_) => RefreshDisposition::no_state_change(result),
                     }
                 })
@@ -729,116 +743,18 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
     {
         let credential_id = selector.credential_id();
         let credential_id_text = credential_id.to_string();
-        #[cfg(feature = "rotation")]
-        async fn try_oauth2_refresh<C: Refreshable>(
-            state: &mut C::State,
-            transport: &dyn RefreshTransport,
-            credential_id: &str,
-        ) -> Result<Option<RefreshOutcome>, ResolveError> {
-            if C::KEY != OAuth2Credential::KEY {
-                return Ok(None);
-            }
-
-            // Cleartext serialization for an internal full-fidelity round-trip
-            // (`state` → `OAuth2State`); the intermediate `Value` is transient.
-            // Outside this scope the same serialize redacts to `[REDACTED]`,
-            // which `OAuth2State`'s secret fields would then ingest verbatim —
-            // hence the explicit scope.
-            let state_value =
-                crate::serde_secret::expose_for_serialization(|| serde_json::to_value(&*state))
-                    .map_err(|error| ResolveError::Refresh {
-                        credential_id: credential_id.to_owned(),
-                        reason: format!("oauth2 refresh state serialization failed: {error}"),
-                    })?;
-            let mut oauth_state: OAuth2State =
-                serde_json::from_value(state_value).map_err(|error| ResolveError::Refresh {
-                    credential_id: credential_id.to_owned(),
-                    reason: format!("oauth2 refresh state decode failed: {error}"),
-                })?;
-
-            match refresh_oauth2_state(&mut oauth_state, transport).await {
-                Ok(()) => {},
-                Err(TokenRefreshError::MissingRefreshToken) => {
-                    return Ok(Some(RefreshOutcome::ReauthRequired(
-                        ReauthReason::MissingRefreshMaterial,
-                    )));
-                },
-                Err(TokenRefreshError::InvalidGrant { .. }) => {
-                    return Ok(Some(RefreshOutcome::ReauthRequired(
-                        ReauthReason::ProviderRejected,
-                    )));
-                },
-                Err(TokenRefreshError::TransportOutcomeUnknown | TokenRefreshError::Parse) => {
-                    return Err(ResolveError::ProviderOutcomeUnknown {
-                        credential_id: credential_id.to_owned(),
-                    });
-                },
-                Err(
-                    error @ (TokenRefreshError::PreDispatch(_)
-                    | TokenRefreshError::TokenEndpoint { .. }),
-                ) => {
-                    return Err(ResolveError::Refresh {
-                        credential_id: credential_id.to_owned(),
-                        reason: error.to_string(),
-                    });
-                },
-                #[expect(
-                    unreachable_patterns,
-                    reason = "TokenRefreshError is non-exhaustive; future phases must choose an explicit replay policy"
-                )]
-                Err(_unknown) => {
-                    return Err(ResolveError::ProviderOutcomeUnknown {
-                        credential_id: credential_id.to_owned(),
-                    });
-                },
-            }
-
-            // Cleartext serialization for the same internal round-trip on the
-            // way back (`OAuth2State` → `state`).
-            let refreshed_value =
-                crate::serde_secret::expose_for_serialization(|| serde_json::to_value(oauth_state))
-                    .map_err(|error| ResolveError::PostProviderStateEncoding {
-                        credential_id: credential_id.to_owned(),
-                        reason: format!("oauth2 refreshed state serialization failed: {error}"),
-                    })?;
-            *state = serde_json::from_value(refreshed_value).map_err(|error| {
-                ResolveError::PostProviderStateEncoding {
-                    credential_id: credential_id.to_owned(),
-                    reason: format!("oauth2 refreshed state encode failed: {error}"),
-                }
-            })?;
-
-            Ok(Some(RefreshOutcome::Refreshed))
-        }
-
-        #[cfg_attr(
-            not(feature = "rotation"),
-            expect(
-                unused_variables,
-                reason = "transport feeds only the rotation-gated oauth2 refresh path"
-            )
-        )]
-        let transport = Arc::clone(&self.transport);
+        let refresh_ctx = ctx
+            .clone()
+            .with_refresh_transport(Arc::clone(&self.transport));
         // This future already runs inside the coordinator's owned
         // provider/persistence task. Do not wrap it in a cancelling timeout:
         // dropping an HTTP future cannot prove the provider did not consume or
         // rotate the grant. The coordinator's caller-wait timeout instead
         // returns a non-retryable `RefreshOutcomePending` while this owned
         // future continues under heartbeat + L2 to an exact disposition.
-        let outcome = async {
-            #[cfg(feature = "rotation")]
-            if let Some(outcome) =
-                try_oauth2_refresh::<C>(&mut state, &*transport, &credential_id_text).await?
-            {
-                return Ok(outcome);
-            }
-            <C as Refreshable>::refresh(&mut state, ctx)
-                .await
-                .map_err(|_error| ResolveError::ProviderOutcomeUnknown {
-                    credential_id: credential_id_text.clone(),
-                })
-        }
-        .await?;
+        let outcome = <C as Refreshable>::refresh(&mut state, &refresh_ctx)
+            .await
+            .map_err(|error| classify_refresh_error(error, &credential_id_text))?;
 
         match outcome {
             RefreshOutcome::Refreshed => {
@@ -1028,6 +944,8 @@ mod refresh_revoke_race {
     use tokio::sync::Notify;
 
     use super::*;
+    #[cfg(feature = "rotation")]
+    use crate::credentials::{OAuth2Credential, OAuth2State};
     use crate::resolve::{RefreshPolicy, ResolveResult};
     use crate::runtime::refresh::RefreshCoordConfig;
     use crate::runtime::refresh::transport::{
@@ -1221,6 +1139,9 @@ mod refresh_revoke_race {
     enum OAuthTransportResult {
         AckLost,
         InvalidGrant,
+        EndpointUnavailable,
+        MalformedSuccess,
+        Success,
     }
 
     /// Deterministic OAuth2 transport used to distinguish an ambiguous
@@ -1266,6 +1187,30 @@ mod refresh_revoke_race {
                         ),
                     )
                     .expect("scripted response is bounded")),
+                    OAuthTransportResult::EndpointUnavailable => Ok(
+                        TokenPostResponse::try_new(
+                            503,
+                            SecretBytes::new(br#"{"error":"server_error"}"#.to_vec()),
+                        )
+                        .expect("scripted response is bounded"),
+                    ),
+                    OAuthTransportResult::MalformedSuccess => Ok(
+                        TokenPostResponse::try_new(
+                            200,
+                            SecretBytes::new(br#"{"token_type":"Bearer"}"#.to_vec()),
+                        )
+                        .expect("scripted response is bounded"),
+                    ),
+                    OAuthTransportResult::Success => Ok(
+                        TokenPostResponse::try_new(
+                            200,
+                            SecretBytes::new(
+                                br#"{"access_token":"new-access-token","token_type":"Bearer","refresh_token":"new-refresh-token","expires_in":3600,"scope":"read"}"#
+                                    .to_vec(),
+                            ),
+                        )
+                        .expect("scripted response is bounded"),
+                    ),
                 }
             })
         }
@@ -1582,6 +1527,7 @@ mod refresh_revoke_race {
     static UNAVAILABLE_PROVIDER_CALLS: AtomicUsize = AtomicUsize::new(0);
     static UNKNOWN_PROVIDER_CALLS: AtomicUsize = AtomicUsize::new(0);
     static REAUTH_PROVIDER_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static SAME_KEY_TYPED_REFRESH_CALLS: AtomicUsize = AtomicUsize::new(0);
 
     impl Credential for TestCred {
         type Properties = ();
@@ -1663,6 +1609,163 @@ mod refresh_revoke_race {
         }
     }
 
+    /// Regression credential deliberately sharing OAuth2's registry key while
+    /// carrying a different state type. A generic resolver must dispatch its
+    /// own `Refreshable` implementation, never reinterpret state by key.
+    struct SameKeyNonOAuthCred;
+
+    impl Credential for SameKeyNonOAuthCred {
+        type Properties = ();
+        type Scheme = TestScheme;
+        type State = TestState;
+
+        const KEY: &'static str = "oauth2";
+
+        fn metadata() -> CredentialMetadata {
+            CredentialMetadata::new(
+                nebula_core::credential_key!("oauth2"),
+                "Same-key typed test credential",
+                "proves refresh dispatch follows the Rust type rather than its registry key",
+                crate::schema_of::<Self::Properties>(),
+                AuthPattern::OAuth2,
+            )
+        }
+
+        fn project(_state: &TestState) -> TestScheme {
+            TestScheme
+        }
+
+        async fn resolve(
+            _values: &FieldValues,
+            _ctx: &CredentialContext,
+        ) -> Result<ResolveResult<TestState, ()>, CredentialError> {
+            Ok(ResolveResult::Complete(TestState {
+                token: "same-key-live".to_owned(),
+            }))
+        }
+    }
+
+    impl Refreshable for SameKeyNonOAuthCred {
+        async fn refresh(
+            state: &mut TestState,
+            ctx: &CredentialContext,
+        ) -> Result<RefreshOutcome, CredentialError> {
+            if ctx.refresh_transport().is_none() {
+                return Err(CredentialError::InvalidInput(
+                    "resolver did not stamp its internal refresh transport".to_owned(),
+                ));
+            }
+            SAME_KEY_TYPED_REFRESH_CALLS.fetch_add(1, Ordering::SeqCst);
+            state.token = "same-key-typed-refresh".to_owned();
+            Ok(RefreshOutcome::Refreshed)
+        }
+    }
+
+    impl CredentialLifecycle for SameKeyNonOAuthCred {
+        fn policy(_state: &TestState) -> CredentialPolicy {
+            CredentialPolicy {
+                expires_at: Some(Utc::now() - chrono::Duration::minutes(5)),
+                lease: None,
+                refresh: RefreshStrategy::RefreshToken,
+                revoke: RevokeStrategy::HandleBased,
+            }
+        }
+    }
+
+    #[cfg(feature = "rotation")]
+    #[derive(Deserialize, Zeroize, ZeroizeOnDrop)]
+    struct PostProviderEncodingState {
+        fail_serialization: bool,
+    }
+
+    #[cfg(feature = "rotation")]
+    impl Serialize for PostProviderEncodingState {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            if self.fail_serialization {
+                return Err(serde::ser::Error::custom(
+                    "intentional post-provider encoding failure",
+                ));
+            }
+
+            use serde::ser::SerializeStruct as _;
+
+            let mut state = serializer.serialize_struct("PostProviderEncodingState", 1)?;
+            state.serialize_field("fail_serialization", &false)?;
+            state.end()
+        }
+    }
+
+    #[cfg(feature = "rotation")]
+    impl CredentialState for PostProviderEncodingState {
+        const KIND: &'static str = "post_provider_encoding_test";
+        const VERSION: u32 = 1;
+    }
+
+    #[cfg(feature = "rotation")]
+    struct PostProviderEncodingCred;
+
+    #[cfg(feature = "rotation")]
+    static ENCODING_PROVIDER_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    #[cfg(feature = "rotation")]
+    impl Credential for PostProviderEncodingCred {
+        type Properties = ();
+        type Scheme = TestScheme;
+        type State = PostProviderEncodingState;
+
+        const KEY: &'static str = "test.post_provider_encoding";
+
+        fn metadata() -> CredentialMetadata {
+            CredentialMetadata::new(
+                nebula_core::credential_key!("test.post_provider_encoding"),
+                "Post-provider encoding test",
+                "proves state encoding failures retain replay-unsafe disposition",
+                crate::schema_of::<Self::Properties>(),
+                AuthPattern::OAuth2,
+            )
+        }
+
+        fn project(_state: &PostProviderEncodingState) -> TestScheme {
+            TestScheme
+        }
+
+        async fn resolve(
+            _values: &FieldValues,
+            _ctx: &CredentialContext,
+        ) -> Result<ResolveResult<PostProviderEncodingState, ()>, CredentialError> {
+            Ok(ResolveResult::Complete(PostProviderEncodingState {
+                fail_serialization: false,
+            }))
+        }
+    }
+
+    #[cfg(feature = "rotation")]
+    impl Refreshable for PostProviderEncodingCred {
+        async fn refresh(
+            state: &mut PostProviderEncodingState,
+            _ctx: &CredentialContext,
+        ) -> Result<RefreshOutcome, CredentialError> {
+            ENCODING_PROVIDER_CALLS.fetch_add(1, Ordering::SeqCst);
+            state.fail_serialization = true;
+            Ok(RefreshOutcome::Refreshed)
+        }
+    }
+
+    #[cfg(feature = "rotation")]
+    impl CredentialLifecycle for PostProviderEncodingCred {
+        fn policy(_state: &PostProviderEncodingState) -> CredentialPolicy {
+            CredentialPolicy {
+                expires_at: Some(Utc::now() - chrono::Duration::minutes(5)),
+                lease: None,
+                refresh: RefreshStrategy::RefreshToken,
+                revoke: RevokeStrategy::HandleBased,
+            }
+        }
+    }
+
     // ── Fixtures ───────────────────────────────────────────────────────
 
     static TEST_ID: OnceLock<CredentialId> = OnceLock::new();
@@ -1714,8 +1817,62 @@ mod refresh_revoke_race {
         .into()
     }
 
+    fn same_key_non_oauth_row() -> StoredCredential {
+        let now = Utc::now();
+        let data = serde_json::to_vec(&TestState {
+            token: "same-key-live".to_owned(),
+        })
+        .expect("serialize same-key test state");
+        StoredLiveCredential::new(
+            test_id(),
+            None,
+            SameKeyNonOAuthCred::KEY.to_owned(),
+            data.into(),
+            TestState::KIND.to_owned(),
+            TestState::VERSION,
+            CredentialVersion::MIN,
+            now,
+            now,
+            Some(now - chrono::Duration::minutes(5)),
+            false,
+            serde_json::Map::new(),
+        )
+        .expect("fixture is a valid same-key credential")
+        .into()
+    }
+
+    #[cfg(feature = "rotation")]
+    fn post_provider_encoding_row() -> StoredCredential {
+        let now = Utc::now();
+        let data = serde_json::to_vec(&PostProviderEncodingState {
+            fail_serialization: false,
+        })
+        .expect("initial state encoding must succeed");
+        StoredLiveCredential::new(
+            test_id(),
+            None,
+            PostProviderEncodingCred::KEY.to_owned(),
+            data.into(),
+            PostProviderEncodingState::KIND.to_owned(),
+            PostProviderEncodingState::VERSION,
+            CredentialVersion::MIN,
+            now,
+            now,
+            Some(now - chrono::Duration::minutes(5)),
+            false,
+            serde_json::Map::new(),
+        )
+        .expect("fixture is a valid encoding-failure credential")
+        .into()
+    }
+
     #[cfg(feature = "rotation")]
     fn oauth2_row(refresh_token: Option<&str>) -> StoredCredential {
+        oauth2_row_with_token_url(refresh_token, "https://provider.example/token")
+    }
+
+    #[cfg(feature = "rotation")]
+    fn oauth2_row_with_token_url(refresh_token: Option<&str>, token_url: &str) -> StoredCredential {
         let now = Utc::now();
         let expires_at = now - chrono::Duration::minutes(5);
         let state = OAuth2State {
@@ -1726,7 +1883,7 @@ mod refresh_revoke_race {
             scopes: vec!["read".to_owned()],
             client_id: crate::SecretString::new("client-id"),
             client_secret: crate::SecretString::new("client-secret"),
-            token_url: "https://provider.example/token".to_owned(),
+            token_url: token_url.to_owned(),
             auth_style: crate::AuthStyle::Header,
         };
         let data = crate::serde_secret::expose_for_serialization(|| serde_json::to_vec(&state))
@@ -1815,6 +1972,100 @@ mod refresh_revoke_race {
     }
 
     // ── Regressions ────────────────────────────────────────────────────
+
+    #[test]
+    fn generic_refresh_errors_fail_closed_unless_they_carry_exact_proof() {
+        let opaque = classify_refresh_error(
+            CredentialError::InvalidInput("custom credential failure".to_owned()),
+            "cred_x",
+        );
+        assert!(matches!(
+            opaque,
+            ResolveError::ProviderOutcomeUnknown { .. }
+        ));
+
+        let exact = classify_refresh_error(
+            CredentialError::RefreshFailed(Box::new(crate::error::RefreshFailedContext::new(
+                crate::error::RefreshErrorKind::ProtocolError,
+                crate::error::RetryAdvice::Never,
+                crate::error::SecretFreeMessage::new(
+                    "custom credential proved no provider state transition",
+                ),
+            ))),
+            "cred_x",
+        );
+        let ResolveError::ExactRefreshFailure { context, .. } = exact else {
+            panic!("proof-bearing refresh error must remain exact");
+        };
+        assert_eq!(context.retry(), crate::error::RetryAdvice::Never);
+    }
+
+    #[tokio::test]
+    async fn refresh_dispatch_is_type_directed_even_when_key_matches_oauth2() {
+        SAME_KEY_TYPED_REFRESH_CALLS.store(0, Ordering::SeqCst);
+        let store = Arc::new(ScriptedStore::new(same_key_non_oauth_row(), false));
+        let resolver = resolver_with(Arc::clone(&store));
+
+        resolver
+            .resolve_with_refresh::<SameKeyNonOAuthCred>(
+                &test_selector(),
+                &CredentialContext::for_owner("test-owner"),
+            )
+            .await
+            .expect("same-key credential must use its own typed refresh");
+
+        assert_eq!(
+            SAME_KEY_TYPED_REFRESH_CALLS.load(Ordering::SeqCst),
+            1,
+            "typed Refreshable implementation must be called exactly once"
+        );
+        let StoredCredential::Live(row) = store.snapshot() else {
+            panic!("typed refresh must leave a live credential row");
+        };
+        let persisted: TestState =
+            serde_json::from_slice(row.data()).expect("persisted typed state must decode");
+        assert_eq!(persisted.token, "same-key-typed-refresh");
+    }
+
+    #[cfg(feature = "rotation")]
+    #[tokio::test]
+    async fn post_provider_state_encoding_failure_is_replay_unsafe() {
+        use nebula_error::Classify;
+
+        ENCODING_PROVIDER_CALLS.store(0, Ordering::SeqCst);
+        let store = Arc::new(ScriptedStore::new(post_provider_encoding_row(), false));
+        let claims = Arc::new(StatefulClaimRepo::default());
+        let claim_port: Arc<dyn RefreshClaimStore> = claims.clone();
+        let transport_port: Arc<dyn RefreshTransport> = Arc::new(StubTransport);
+        let resolver = resolver_with_runtime(Arc::clone(&store), claim_port, transport_port);
+
+        let error = resolver
+            .resolve_with_refresh::<PostProviderEncodingCred>(
+                &test_selector(),
+                &CredentialContext::for_owner("test-owner"),
+            )
+            .await
+            .expect_err("encoding after provider success must fail closed");
+
+        assert!(matches!(
+            &error,
+            ResolveError::PostProviderStateEncoding { .. }
+        ));
+        assert_eq!(ENCODING_PROVIDER_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            store.replacement_count(),
+            0,
+            "encoding failure must stop before persistence"
+        );
+        assert!(
+            claims.active.load(Ordering::SeqCst),
+            "post-provider encoding failure must retain fail-closed L2 poison"
+        );
+        assert_eq!(claims.release_count.load(Ordering::SeqCst), 0);
+        let mapped = resolve_error_to_credential_error(error);
+        assert!(matches!(&mapped, CredentialError::PostProviderPersistence));
+        assert!(!mapped.is_retryable());
+    }
 
     #[tokio::test]
     async fn refresh_racing_revoke_does_not_resurrect() {
@@ -2278,6 +2529,159 @@ mod refresh_revoke_race {
         tokio::time::timeout(Duration::from_secs(1), claims.wait_for_release_count(1))
             .await
             .expect("a locally exact reauth outcome should release L2");
+    }
+
+    #[cfg(feature = "rotation")]
+    #[tokio::test]
+    async fn oauth_pre_dispatch_rejection_is_exact_never_retry_and_releases_l2() {
+        let store = Arc::new(ScriptedStore::new(
+            oauth2_row_with_token_url(Some("refresh-grant"), "http://provider.example/token"),
+            false,
+        ));
+        let claims = Arc::new(StatefulClaimRepo::default());
+        let transport = Arc::new(ScriptedOAuthTransport::new(OAuthTransportResult::Success));
+        let claim_port: Arc<dyn RefreshClaimStore> = claims.clone();
+        let transport_port: Arc<dyn RefreshTransport> = transport.clone();
+        let resolver = resolver_with_runtime(Arc::clone(&store), claim_port, transport_port);
+
+        let error = resolver
+            .resolve_with_refresh::<OAuth2Credential>(
+                &test_selector(),
+                &CredentialContext::for_owner("test-owner"),
+            )
+            .await
+            .expect_err("invalid local endpoint must fail before dispatch");
+
+        assert!(matches!(&error, ResolveError::ExactRefreshFailure { .. }));
+        assert_eq!(transport.call_count(), 0);
+        assert_eq!(store.replacement_count(), 0);
+        tokio::time::timeout(Duration::from_secs(1), claims.wait_for_release_count(1))
+            .await
+            .expect("a proven pre-dispatch failure should release L2");
+
+        let CredentialError::RefreshFailed(context) = resolve_error_to_credential_error(error)
+        else {
+            panic!("pre-dispatch failure must retain typed refresh context");
+        };
+        assert_eq!(
+            context.kind(),
+            crate::error::RefreshErrorKind::ProtocolError
+        );
+        assert_eq!(context.retry(), crate::error::RetryAdvice::Never);
+    }
+
+    #[cfg(feature = "rotation")]
+    #[tokio::test]
+    async fn oauth_complete_endpoint_rejection_preserves_bounded_retry_advice() {
+        let store = Arc::new(ScriptedStore::new(oauth2_row(Some("refresh-grant")), false));
+        let claims = Arc::new(StatefulClaimRepo::default());
+        let transport = Arc::new(ScriptedOAuthTransport::new(
+            OAuthTransportResult::EndpointUnavailable,
+        ));
+        let claim_port: Arc<dyn RefreshClaimStore> = claims.clone();
+        let transport_port: Arc<dyn RefreshTransport> = transport.clone();
+        let resolver = resolver_with_runtime(Arc::clone(&store), claim_port, transport_port);
+
+        let error = resolver
+            .resolve_with_refresh::<OAuth2Credential>(
+                &test_selector(),
+                &CredentialContext::for_owner("test-owner"),
+            )
+            .await
+            .expect_err("complete 503 response must be an exact no-state-change failure");
+
+        assert!(matches!(&error, ResolveError::ExactRefreshFailure { .. }));
+        assert_eq!(transport.call_count(), 1);
+        assert_eq!(store.replacement_count(), 0);
+        tokio::time::timeout(Duration::from_secs(1), claims.wait_for_release_count(1))
+            .await
+            .expect("a complete provider rejection should release L2");
+
+        let CredentialError::RefreshFailed(context) = resolve_error_to_credential_error(error)
+        else {
+            panic!("endpoint rejection must retain typed refresh context");
+        };
+        assert_eq!(
+            context.kind(),
+            crate::error::RefreshErrorKind::ProviderUnavailable
+        );
+        assert_eq!(
+            context.retry(),
+            crate::error::RetryAdvice::After(RefreshPolicy::DEFAULT.min_retry_backoff)
+        );
+    }
+
+    #[cfg(feature = "rotation")]
+    #[tokio::test]
+    async fn oauth_success_parse_failure_is_outcome_unknown_and_retains_l2() {
+        let store = Arc::new(ScriptedStore::new(
+            oauth2_row(Some("rotating-grant")),
+            false,
+        ));
+        let claims = Arc::new(StatefulClaimRepo::default());
+        let transport = Arc::new(ScriptedOAuthTransport::new(
+            OAuthTransportResult::MalformedSuccess,
+        ));
+        let claim_port: Arc<dyn RefreshClaimStore> = claims.clone();
+        let transport_port: Arc<dyn RefreshTransport> = transport.clone();
+        let resolver = resolver_with_runtime(Arc::clone(&store), claim_port, transport_port);
+
+        let error = resolver
+            .resolve_with_refresh::<OAuth2Credential>(
+                &test_selector(),
+                &CredentialContext::for_owner("test-owner"),
+            )
+            .await
+            .expect_err("an unusable 2xx response cannot prove provider state");
+
+        assert!(matches!(
+            &error,
+            ResolveError::ProviderOutcomeUnknown { .. }
+        ));
+        assert_eq!(transport.call_count(), 1);
+        assert_eq!(store.replacement_count(), 0);
+        assert!(claims.active.load(Ordering::SeqCst));
+        assert_eq!(claims.release_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[cfg(feature = "rotation")]
+    #[tokio::test]
+    async fn oauth_post_provider_persistence_failure_is_replay_unsafe() {
+        use nebula_error::Classify;
+
+        let store = Arc::new(ScriptedStore::failing_replace(
+            oauth2_row(Some("rotating-grant")),
+            CredentialPersistenceError::Unavailable,
+        ));
+        let claims = Arc::new(StatefulClaimRepo::default());
+        let transport = Arc::new(ScriptedOAuthTransport::new(OAuthTransportResult::Success));
+        let claim_port: Arc<dyn RefreshClaimStore> = claims.clone();
+        let transport_port: Arc<dyn RefreshTransport> = transport.clone();
+        let resolver = resolver_with_runtime(Arc::clone(&store), claim_port, transport_port);
+
+        let error = resolver
+            .resolve_with_refresh::<OAuth2Credential>(
+                &test_selector(),
+                &CredentialContext::for_owner("test-owner"),
+            )
+            .await
+            .expect_err("persistence after provider success must not become replay-safe");
+
+        assert!(matches!(
+            &error,
+            ResolveError::PostProviderPersistence {
+                source: CredentialPersistenceError::Unavailable,
+                ..
+            }
+        ));
+        assert_eq!(transport.call_count(), 1);
+        assert_eq!(store.replacement_count(), 1);
+        assert!(
+            claims.active.load(Ordering::SeqCst),
+            "post-provider persistence failure must retain fail-closed L2 poison"
+        );
+        assert_eq!(claims.release_count.load(Ordering::SeqCst), 0);
+        assert!(!resolve_error_to_credential_error(error).is_retryable());
     }
 
     #[tokio::test]

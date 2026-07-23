@@ -8,7 +8,10 @@
 //! persistence selector, not metadata. Kept in the
 //! `runtime` module so `resolver.rs` reaches the `pub(crate)` gate fns.
 
-use crate::error::{CredentialError, ProviderErrorContext, ProviderErrorKind, SecretFreeMessage};
+use crate::error::{
+    CredentialError, ProviderErrorContext, ProviderErrorKind, RefreshFailedContext,
+    SecretFreeMessage,
+};
 use crate::resolve::ReauthReason;
 use crate::{CredentialPersistenceError, StoredCredential};
 
@@ -17,19 +20,23 @@ use crate::{CredentialPersistenceError, StoredCredential};
 /// [`CredentialError`]'s [`is_retryable`](nebula_error::Classify::is_retryable)
 /// contract keys on.
 ///
-/// Retryable (`Provider{ServerError}`) is reserved for replay-safe transient
-/// faults — a backend I/O blip or CAS conflict before provider contact, a local
-/// pre-dispatch rejection, or a complete provider response known not to have
-/// consumed the grant. Everything permanent or ambiguous — corrupt stored
-/// bytes, a state-kind mismatch, an unwired external source, a
-/// not-found/already-exists row, an unknown provider/commit outcome, and
-/// (critically) a rejected refresh grant that needs re-authentication — maps to
-/// a **non-retryable** variant. A caller that drives retries off
-/// `is_retryable` therefore cannot hammer the IdP or loop forever on a failure
-/// that will never succeed. (Previously every non-containment error was
-/// blanket-mapped to retryable `ServerError`.)
+/// Replay-safe framework faults map to retryable `Provider{ServerError}`;
+/// proof-bearing credential failures preserve their structured
+/// `RefreshFailedContext` (including retry advice). Everything permanent or
+/// ambiguous — corrupt stored bytes, a state-kind mismatch, an unwired
+/// external source, a not-found/already-exists row, an unknown provider/commit
+/// outcome, and (critically) a rejected refresh grant that needs
+/// re-authentication — maps to a **non-retryable** variant. A caller that
+/// drives retries off `is_retryable` therefore cannot hammer the IdP or loop
+/// forever on a failure that will never succeed.
 pub(crate) fn resolve_error_to_credential_error(err: ResolveError) -> CredentialError {
     match &err {
+        // Preserve the credential's proof-bearing failure class and retry
+        // advice end-to-end instead of flattening it into a generic provider
+        // server error.
+        ResolveError::ExactRefreshFailure { context, .. } => {
+            CredentialError::RefreshFailed(context.clone())
+        },
         // Local policy/configuration defect — non-retryable, actionable.
         ResolveError::RefreshContainmentViolation {
             credential_id,
@@ -157,6 +164,19 @@ pub enum ResolveError {
         credential_id: String,
         /// Refresh error message.
         reason: String,
+    },
+    /// A credential implementation proved that refresh failed without an
+    /// accepted provider-side state transition.
+    ///
+    /// Unlike [`Self::Refresh`], this carries the credential's structured
+    /// retry advice intact across coordinator handling and back to the public
+    /// [`CredentialError`] surface.
+    #[error("credential {credential_id}: exact refresh failure: {context}")]
+    ExactRefreshFailure {
+        /// Credential identifier.
+        credential_id: String,
+        /// Proof-bearing typed failure context.
+        context: Box<RefreshFailedContext>,
     },
     /// The provider/persistence critical section crossed its irreversible
     /// boundary, but the caller stopped waiting before an exact disposition.
@@ -356,6 +376,35 @@ mod tests {
             refresh.is_retryable(),
             "provider refresh call should be retryable"
         );
+    }
+
+    #[test]
+    fn exact_refresh_failure_preserves_typed_retry_advice() {
+        use crate::error::{RefreshErrorKind, RetryAdvice};
+
+        let backoff = std::time::Duration::from_secs(7);
+        let mapped = resolve_error_to_credential_error(ResolveError::ExactRefreshFailure {
+            credential_id: "cred_x".to_owned(),
+            context: Box::new(
+                RefreshFailedContext::new(
+                    RefreshErrorKind::ProviderUnavailable,
+                    RetryAdvice::After(backoff),
+                    SecretFreeMessage::new("provider returned a complete rejection"),
+                )
+                .with_code("server_error"),
+            ),
+        });
+
+        let CredentialError::RefreshFailed(context) = mapped else {
+            panic!("exact refresh failure must retain its public typed context");
+        };
+        assert_eq!(context.kind(), RefreshErrorKind::ProviderUnavailable);
+        assert_eq!(context.retry(), RetryAdvice::After(backoff));
+        assert_eq!(
+            context.cause().as_str(),
+            "provider returned a complete rejection"
+        );
+        assert_eq!(context.provider_code(), Some("server_error"));
     }
 
     #[test]

@@ -234,6 +234,12 @@ pub enum RetryAdvice {
 
 /// Context struct for [`CredentialError::RefreshFailed`].
 ///
+/// This classification is proof-bearing on the runtime refresh path: use it
+/// only when provider dispatch did not begin, or when a complete provider
+/// response proves that no credential mutation was accepted. If dispatch may
+/// have crossed an irreversible boundary, return
+/// [`CredentialError::OutcomeUnknown`] instead.
+///
 /// Each field is accessible only via the provided accessor methods — the
 /// struct is `#[non_exhaustive]` so future fields do not break callers.
 #[derive(Debug, Clone)]

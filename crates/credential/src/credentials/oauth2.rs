@@ -5,9 +5,10 @@
 //! - **Client Credentials** -- server-to-server, resolves in one step
 //! - **Device Code** -- CLI/TV apps, polling flow (interactive)
 //!
-//! The provider-I/O integration is parked and this type is absent from the
-//! first-party API's default registry; see [`OAuth2Credential`] for the exact
-//! enablement boundary.
+//! Interactive acquisition, revocation, and testing provider I/O remain
+//! parked, and this type is absent from the first-party API's default
+//! registry. Typed refresh uses the runtime-injected hardened transport; see
+//! [`OAuth2Credential`] for the exact enablement boundary.
 //!
 //! State/scheme separation: OAuth2State is stored (contains refresh
 //! internals), while OAuth2Token is the consumer-facing auth material produced by `project()`.
@@ -47,9 +48,13 @@ use super::oauth2_config;
 use crate::{
     CredentialContext, CredentialPolicy, CredentialState, PendingState, RefreshStrategy,
     RevokeStrategy, SecretString,
-    error::{CredentialError, ProviderErrorContext, ProviderErrorKind, SecretFreeMessage},
+    error::{
+        CredentialError, ProviderErrorContext, ProviderErrorKind, RefreshErrorKind,
+        RefreshFailedContext, RetryAdvice, SecretFreeMessage,
+    },
     metadata::CredentialMetadata,
     resolve::{InteractionRequest, RefreshOutcome, ResolveResult, TestResult, UserInput},
+    runtime::refresh::{OAuthProviderErrorCode, TokenRefreshError, refresh_oauth2_state},
     scheme::OAuth2Token,
 };
 
@@ -295,13 +300,13 @@ impl PendingState for OAuth2Pending {
 ///
 /// This implementation is deliberately parked: the first-party API's default
 /// registry, catalog, and dispatch table do not register or advertise
-/// `oauth2`. An explicitly curated composition may still register the type,
-/// but its provider-contacting operations currently return the typed
-/// transport-disabled error. First-party enablement requires a hardened HTTP
-/// transport injected into the credential runtime and must enter through the
-/// universal typed `resolve` / `resolve/continue` pending flow. It must not
-/// restore a provider-specific raw HTTP ceremony or move credential lifecycle
-/// logic into the engine or API layer.
+/// `oauth2`. An explicitly curated composition may still register the type.
+/// Typed refresh uses the hardened transport injected by the credential
+/// resolver; interactive acquisition, revocation, and testing remain parked.
+/// First-party acquisition enablement must enter through the universal typed
+/// `resolve` / `resolve/continue` pending flow. It must not restore a
+/// provider-specific raw HTTP ceremony or move credential lifecycle logic into
+/// the engine or API layer.
 ///
 /// Configuration (auth URL, token URL, grant type, scopes) is provided
 /// via `nebula_schema::schema_of::<Self::Properties>()` (schema-of properties) and
@@ -550,7 +555,7 @@ impl OAuth2Credential {
 
     async fn refresh(
         state: &mut OAuth2State,
-        _ctx: &CredentialContext,
+        ctx: &CredentialContext,
     ) -> Result<RefreshOutcome, CredentialError> {
         if state.refresh_token.is_none() {
             // Locally detected: we never spoke to the IdP, so this is
@@ -563,9 +568,49 @@ impl OAuth2Credential {
             ));
         }
 
-        // Provider token refresh is not yet integrated through the credential
-        // runtime's injected hardened transport.
-        Err(oauth2_http_transport_disabled())
+        let transport = ctx.refresh_transport().ok_or_else(|| {
+            exact_refresh_failure(
+                RefreshErrorKind::ProtocolError,
+                RetryAdvice::Never,
+                "OAuth2 refresh transport is not configured",
+            )
+        })?;
+
+        match refresh_oauth2_state(state, transport).await {
+            Ok(()) => Ok(RefreshOutcome::Refreshed),
+            Err(TokenRefreshError::MissingRefreshToken) => Ok(RefreshOutcome::ReauthRequired(
+                crate::resolve::ReauthReason::MissingRefreshMaterial,
+            )),
+            Err(TokenRefreshError::InvalidGrant { .. }) => Ok(RefreshOutcome::ReauthRequired(
+                crate::resolve::ReauthReason::ProviderRejected,
+            )),
+            Err(TokenRefreshError::PreDispatch(_)) => Err(exact_refresh_failure(
+                RefreshErrorKind::ProtocolError,
+                RetryAdvice::Never,
+                "OAuth2 refresh request was rejected before provider dispatch",
+            )),
+            Err(TokenRefreshError::TokenEndpoint { status, code }) => {
+                let (kind, retry) = endpoint_rejection_advice(status, code);
+                Err(CredentialError::RefreshFailed(Box::new(
+                    RefreshFailedContext::new(
+                        kind,
+                        retry,
+                        SecretFreeMessage::new(
+                            "OAuth2 token endpoint definitively rejected the refresh request",
+                        ),
+                    )
+                    .with_code(code.to_string()),
+                )))
+            },
+            Err(TokenRefreshError::TransportOutcomeUnknown | TokenRefreshError::Parse) => {
+                Err(CredentialError::OutcomeUnknown)
+            },
+            #[expect(
+                unreachable_patterns,
+                reason = "new token-refresh errors must default to replay-unsafe until classified"
+            )]
+            Err(_unknown) => Err(CredentialError::OutcomeUnknown),
+        }
     }
 
     async fn revoke(
@@ -693,6 +738,35 @@ fn oauth2_http_transport_disabled() -> CredentialError {
         ProviderErrorKind::Other,
         SecretFreeMessage::new("OAuth2 interactive acquisition is not wired in this composition"),
     )))
+}
+
+fn exact_refresh_failure(
+    kind: RefreshErrorKind,
+    retry: RetryAdvice,
+    cause: &'static str,
+) -> CredentialError {
+    CredentialError::RefreshFailed(Box::new(RefreshFailedContext::new(
+        kind,
+        retry,
+        SecretFreeMessage::new(cause),
+    )))
+}
+
+fn endpoint_rejection_advice(
+    status: u16,
+    code: OAuthProviderErrorCode,
+) -> (RefreshErrorKind, RetryAdvice) {
+    match code {
+        OAuthProviderErrorCode::TemporarilyUnavailable | OAuthProviderErrorCode::ServerError => (
+            RefreshErrorKind::ProviderUnavailable,
+            RetryAdvice::After(crate::resolve::RefreshPolicy::DEFAULT.min_retry_backoff),
+        ),
+        _ if status == 408 || status == 429 || status >= 500 => (
+            RefreshErrorKind::ProviderUnavailable,
+            RetryAdvice::After(crate::resolve::RefreshPolicy::DEFAULT.min_retry_backoff),
+        ),
+        _ => (RefreshErrorKind::ProtocolError, RetryAdvice::Never),
+    }
 }
 
 /// Build the authorization URL for the Authorization Code grant.
@@ -844,6 +918,27 @@ mod tests {
     #[test]
     fn key_is_oauth2() {
         assert_eq!(OAuth2Credential::KEY, "oauth2");
+    }
+
+    #[test]
+    fn endpoint_rejection_advice_is_bounded_for_transient_responses() {
+        let after_default =
+            RetryAdvice::After(crate::resolve::RefreshPolicy::DEFAULT.min_retry_backoff);
+
+        for status in [408, 429, 500, 503] {
+            assert_eq!(
+                endpoint_rejection_advice(status, OAuthProviderErrorCode::Other),
+                (RefreshErrorKind::ProviderUnavailable, after_default)
+            );
+        }
+        assert_eq!(
+            endpoint_rejection_advice(400, OAuthProviderErrorCode::TemporarilyUnavailable),
+            (RefreshErrorKind::ProviderUnavailable, after_default)
+        );
+        assert_eq!(
+            endpoint_rejection_advice(401, OAuthProviderErrorCode::InvalidClient),
+            (RefreshErrorKind::ProtocolError, RetryAdvice::Never)
+        );
     }
 
     #[test]
@@ -1316,6 +1411,24 @@ mod tests {
             ),
             "expected ReauthRequired(MissingRefreshMaterial); got {outcome:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn refresh_without_runtime_transport_is_exact_and_never_retryable() {
+        use nebula_error::Classify;
+
+        let mut state = make_state();
+        let error =
+            OAuth2Credential::refresh(&mut state, &CredentialContext::for_owner("test-user"))
+                .await
+                .expect_err("direct refresh outside the resolver has no runtime transport");
+
+        assert!(!error.is_retryable());
+        let CredentialError::RefreshFailed(context) = error else {
+            panic!("missing runtime transport must be an exact refresh failure");
+        };
+        assert_eq!(context.kind(), RefreshErrorKind::ProtocolError);
+        assert_eq!(context.retry(), RetryAdvice::Never);
     }
 
     #[test]

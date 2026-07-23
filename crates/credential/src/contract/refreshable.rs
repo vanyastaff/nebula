@@ -112,6 +112,16 @@ pub trait Refreshable: Credential {
     /// fails irrecoverably (refresh token revoked, scope changed) — the
     /// engine surfaces this as an explicit re-auth signal rather than
     /// silently swallowing the failure.
+    ///
+    /// # Failure disposition
+    ///
+    /// [`CredentialError::RefreshFailed`] is proof-bearing: return it only
+    /// when provider dispatch never began, or when a complete provider
+    /// response proves that no credential state transition was accepted.
+    /// Once dispatch begins, any transport/read failure or unusable success
+    /// response whose provider effect cannot be proven must return
+    /// [`CredentialError::OutcomeUnknown`]. The runtime treats every other
+    /// implementation-defined error conservatively as outcome-unknown.
     fn refresh(
         state: &mut Self::State,
         ctx: &CredentialContext,
