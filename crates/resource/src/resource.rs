@@ -789,6 +789,7 @@ mod tests {
     use nebula_core::resource_key;
     use nebula_metadata::BaseCompatError;
     use nebula_schema::ValidSchema;
+    use semver::Version;
 
     use super::{MetadataCompatibilityError, ResourceMetadata};
 
@@ -802,7 +803,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_partial_eq_roundtrip() {
+    fn metadata_equality_tracks_version() {
         let a = ResourceMetadata::new(resource_key!("postgres"), "pg", "d", empty_schema())
             .with_version(1, 2);
         let b = ResourceMetadata::new(resource_key!("postgres"), "pg", "d", empty_schema())
@@ -820,9 +821,29 @@ mod tests {
             .with_version(2, 1);
 
         let json = serde_json::to_string(&original).expect("serialization succeeds");
+        let json_value: serde_json::Value =
+            serde_json::from_str(&json).expect("serialized metadata is valid JSON");
+        assert!(
+            json_value.get("base").is_none(),
+            "base metadata must be flattened"
+        );
+        assert_eq!(
+            json_value.get("key").and_then(serde_json::Value::as_str),
+            Some("postgres")
+        );
+
         let decoded: ResourceMetadata =
             serde_json::from_str(&json).expect("deserialization succeeds");
         assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn full_version_preserves_all_semver_components() {
+        let version = Version::parse("2.1.3-alpha.1+build.7").expect("valid test version");
+        let metadata = ResourceMetadata::new(resource_key!("postgres"), "pg", "d", empty_schema())
+            .with_version_full(version.clone());
+
+        assert_eq!(metadata.base.version, version);
     }
 
     #[test]
