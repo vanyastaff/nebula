@@ -18,6 +18,9 @@
 //! - `ResolvedPlugin` — per-plugin wrapper with eager component caches; enforces namespace
 //!   invariant at construction.
 //! - `PluginRegistry` — in-memory `PluginKey → Arc<ResolvedPlugin>` registry.
+//! - `FrozenPluginRegistry` — dependency-validated immutable activation product with read parity.
+//! - `PluginSet` / `WorkerFlavorRevision` — canonical registered-surface and artifact-bound
+//!   worker-flavor identities.
 //! - `PluginError` — typed error for plugin operations.
 //! - `ComponentKind` — discriminant for namespace and duplicate errors.
 //! - `#[derive(Plugin)]` — proc-macro derivation.
@@ -27,6 +30,15 @@
 //! `impl Plugin` is the single runtime source of truth for what is registered.
 //! Do not duplicate `fn actions()` / `fn resources()` / `fn credentials()` in
 //! `plugin.toml` — that is spec theater. See `crates/plugin/README.md`.
+//!
+//! ## Staged activation boundary
+//!
+//! [`PluginRegistry::freeze`] provides the ADR-0115 identity and immutability
+//! foundation. This crate does not claim that engine dispatch, API transport,
+//! or persisted routing have already migrated to the frozen registry. The
+//! artifact digest and runtime contract version passed to `freeze` must come
+//! from trusted activation state; derived identifiers do not authenticate
+//! caller-provided inputs, and `PluginSet::id` is not a capability proof.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -34,6 +46,8 @@
 
 mod dependency;
 mod error;
+mod flavor;
+mod flavor_context;
 mod manifest;
 mod plugin;
 pub mod plugin_toml;
@@ -44,11 +58,16 @@ mod resolved_plugin;
 
 pub use dependency::PluginDependencyError;
 pub use error::{ComponentKind, PluginError};
+pub use flavor::{
+    PluginContractDescriptor, PluginSet, RuntimeContractVersion, RuntimeContractVersionError,
+    WorkerFlavorRevision,
+};
+pub use flavor_context::WorkerFlavorContext;
 pub use manifest::{ManifestError, PluginManifest, PluginManifestBuilder};
 // Re-export PluginKey from core for convenience.
 pub use nebula_core::PluginKey;
 pub use nebula_metadata::PluginDependency;
 pub use nebula_plugin_macros::Plugin;
 pub use plugin::Plugin;
-pub use registry::PluginRegistry;
+pub use registry::{FrozenPluginRegistry, PluginRegistry, RegistryFreezeError};
 pub use resolved_plugin::ResolvedPlugin;

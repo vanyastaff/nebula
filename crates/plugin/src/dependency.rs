@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use nebula_core::PluginKey;
 use semver::{Version, VersionReq};
 
-use crate::PluginRegistry;
+use crate::{PluginRegistry, flavor::compare_version_requirements};
 
 /// Detail payload for [`PluginDependencyError::VersionMismatch`].
 ///
@@ -134,23 +134,34 @@ struct NodeSnapshot {
 /// Only the first problem is returned, with a deterministic precedence:
 /// unsatisfiable declared dependencies ([`PluginDependencyError::MissingDependency`]
 /// and [`PluginDependencyError::VersionMismatch`]) are detected while building the
-/// edge graph in ascending dependent-key order — before any
+/// edge graph in ascending dependent-key and dependency-key order — before any
 /// [`PluginDependencyError::Cycle`] is reported.
 pub(crate) fn resolve(reg: &PluginRegistry) -> Result<Vec<PluginKey>, PluginDependencyError> {
     // Snapshot every registered plugin as (key, version, declared deps), sorted
-    // by key so the traversal — and thus the output — is deterministic
-    // regardless of `HashMap` iteration order.
+    // by plugin key and then dependency key/requirement so the traversal — and
+    // thus the output — is deterministic regardless of `HashMap` or manifest
+    // declaration order.
     let mut entries: Vec<NodeSnapshot> = reg
         .iter()
         .map(|(key, rp)| NodeSnapshot {
             key: key.clone(),
             version: rp.version().clone(),
-            deps: rp
-                .manifest()
-                .dependencies()
-                .iter()
-                .map(|d| (d.key().clone(), d.req().clone()))
-                .collect(),
+            deps: {
+                let mut dependencies = rp
+                    .manifest()
+                    .dependencies()
+                    .iter()
+                    .map(|d| (d.key().clone(), d.req().clone()))
+                    .collect::<Vec<_>>();
+                dependencies.sort_unstable_by(
+                    |(left_key, left_requirement), (right_key, right_requirement)| {
+                        left_key.cmp(right_key).then_with(|| {
+                            compare_version_requirements(left_requirement, right_requirement)
+                        })
+                    },
+                );
+                dependencies
+            },
         })
         .collect();
     entries.sort_by(|a, b| a.key.as_str().cmp(b.key.as_str()));
