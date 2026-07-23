@@ -350,6 +350,35 @@ mod tests {
     }
 
     #[test]
+    fn metadata_wire_shape_is_flat_and_round_trips() {
+        let metadata = CredentialMetadata::new(
+            credential_key!("cred"),
+            "C",
+            "d",
+            empty_schema(),
+            AuthPattern::SecretToken,
+        )
+        .with_version(2, 1)
+        .with_icon("sync");
+
+        let encoded = serde_json::to_string(&metadata).expect("metadata serializes");
+        let value: serde_json::Value =
+            serde_json::from_str(&encoded).expect("serialized metadata is valid JSON");
+        assert!(
+            value.get("base").is_none(),
+            "shared metadata must stay flattened on the wire"
+        );
+        assert_eq!(
+            value.get("key").and_then(serde_json::Value::as_str),
+            Some("cred")
+        );
+
+        let decoded: CredentialMetadata =
+            serde_json::from_str(&encoded).expect("metadata deserializes");
+        assert_eq!(decoded, metadata);
+    }
+
+    #[test]
     fn pattern_change_requires_major_bump() {
         let prev = cred(AuthPattern::SecretToken, 1, 0);
         let next = cred(AuthPattern::OAuth2, 1, 1);

@@ -405,15 +405,14 @@ impl OAuth2Credential {
     type State = OAuth2State;
 
     fn metadata() -> CredentialMetadata {
-        CredentialMetadata::builder()
-            .key(nebula_core::credential_key!("oauth2"))
-            .name("OAuth2")
-            .description("OAuth2 authentication supporting Authorization Code, Client Credentials, and Device Code grant types.")
-            .schema(nebula_schema::schema_of::<Self::Properties>())
-            .pattern(crate::AuthPattern::OAuth2)
-            .icon("oauth2")
-            .build()
-            .expect("oauth2 metadata is valid")
+        CredentialMetadata::new(
+            nebula_core::credential_key!("oauth2"),
+            "OAuth2",
+            "OAuth2 authentication supporting Authorization Code, Client Credentials, and Device Code grant types.",
+            nebula_schema::schema_of::<Self::Properties>(),
+            crate::AuthPattern::OAuth2,
+        )
+        .with_icon("oauth2")
     }
 
     fn project(state: &OAuth2State) -> OAuth2Token {
