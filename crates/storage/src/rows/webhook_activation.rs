@@ -328,7 +328,7 @@ mod tests {
     #[test]
     fn debug_redacts_secret_reference_and_provider_config() {
         const SECRET_ID_CANARY: &str = "cred_SECRET_REFERENCE_CANARY-c7f3";
-        const CONFIG_CANARY: &str = "PROVIDER_CONFIG_AUTHORITY_CANARY-94ba";
+        const CONFIG_CANARY: &str = "PROVIDER_CONFIG_AUTHORITY_CANARY-94c7";
         let spec = WebhookActivationSpec::new("generic", SECRET_ID_CANARY)
             .with_provider_config(serde_json::json!({ "challenge_token": CONFIG_CANARY }));
 

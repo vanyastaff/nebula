@@ -33,9 +33,10 @@ use crate::{
 /// Database-wide namespace/resource pair for Plane-A OAuth-state admission.
 ///
 /// PostgreSQL's two-`int4` advisory-lock key space is shared by every
-/// connection to one database. These fixed ASCII-derived values (`NBLA`,
-/// `OAUT`) therefore serialize all Nebula replicas while remaining separate
-/// from unrelated advisory-lock users. The try-lock form is load-bearing:
+/// connection to one database. These fixed ASCII-derived values use `NBLA`
+/// plus an upper-case four-byte OAuth prefix, so they serialize all Nebula
+/// replicas while remaining separate from unrelated advisory-lock users. The
+/// try-lock form is load-bearing:
 /// admission never waits while occupying a pool connection.
 const OAUTH_STATE_ADMISSION_LOCK_KEY: (i32, i32) = (0x4E42_4C41, 0x4F41_5554);
 
