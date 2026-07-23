@@ -245,30 +245,29 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
                 }
             }
         } else {
-            // Icon / doc_url require the builder, whose `build()` is fallible;
-            // the `expect` here mirrors the hand-written built-ins and the
-            // legacy `#[derive(Credential)]` (the `metadata()` trait method is
-            // infallible, and the builder is the only icon/doc_url path).
-            let mut builder = quote! {
-                ::nebula_credential::CredentialMetadata::builder()
-                    .key(::nebula_credential::credential_key!(#key))
-                    .name(#name)
-                    .description(#description)
-                    .schema(::nebula_credential::schema_of::<Self::Properties>())
-                    .pattern(<#scheme_ty as ::nebula_credential::AuthScheme>::pattern())
+            // Every required field is known at expansion time, so start with
+            // the infallible constructor and add optional catalog fields.
+            let mut metadata = quote! {
+                ::nebula_credential::CredentialMetadata::new(
+                    ::nebula_credential::credential_key!(#key),
+                    #name,
+                    #description,
+                    ::nebula_credential::schema_of::<Self::Properties>(),
+                    <#scheme_ty as ::nebula_credential::AuthScheme>::pattern(),
+                )
             };
             if let Some(icon) = &icon {
-                builder = quote! { #builder .icon(#icon) };
+                metadata = quote! { #metadata.with_icon(#icon) };
             }
             if let Some(url) = &doc_url {
-                builder = quote! { #builder .documentation_url(#url) };
+                metadata = quote! { #metadata.with_documentation_url(#url) };
             }
             quote! {
                 fn metadata() -> ::nebula_credential::CredentialMetadata
                 where
                     Self: Sized,
                 {
-                    #builder .build().expect("credential metadata is valid")
+                    #metadata
                 }
             }
         }

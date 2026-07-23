@@ -73,15 +73,14 @@ impl ApiKeyCredential {
     type State = SecretToken;
 
     fn metadata() -> CredentialMetadata {
-        CredentialMetadata::builder()
-            .key(nebula_core::credential_key!("api_key"))
-            .name("API Key")
-            .description("Static API key or bearer token for HTTP APIs.")
-            .schema(nebula_schema::schema_of::<Self::Properties>())
-            .pattern(crate::AuthPattern::SecretToken)
-            .icon("key")
-            .build()
-            .expect("api_key metadata is valid")
+        CredentialMetadata::new(
+            nebula_core::credential_key!("api_key"),
+            "API Key",
+            "Static API key or bearer token for HTTP APIs.",
+            nebula_schema::schema_of::<Self::Properties>(),
+            crate::AuthPattern::SecretToken,
+        )
+        .with_icon("key")
     }
 
     fn project(state: &SecretToken) -> SecretToken {

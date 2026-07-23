@@ -69,14 +69,13 @@ impl Credential for NoCredential {
     const KEY: &'static str = "no_credential";
 
     fn metadata() -> CredentialMetadata {
-        CredentialMetadata::builder()
-            .key(nebula_core::credential_key!("no_credential"))
-            .name("No credential")
-            .description("Opt-out marker for resources without an authenticated binding.")
-            .schema(nebula_schema::schema_of::<Self::Properties>())
-            .pattern(AuthPattern::NoAuth)
-            .build()
-            .expect("NoCredential metadata is statically valid")
+        CredentialMetadata::new(
+            nebula_core::credential_key!("no_credential"),
+            "No credential",
+            "Opt-out marker for resources without an authenticated binding.",
+            nebula_schema::schema_of::<Self::Properties>(),
+            AuthPattern::NoAuth,
+        )
     }
 
     fn project(_state: &Self::State) {}
