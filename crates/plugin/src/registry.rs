@@ -62,8 +62,9 @@ pub enum RegistryFreezeError {
 
 /// Validated immutable plugin registry and its reproducible flavor revision.
 ///
-/// This type exposes the mutable registry's complete read surface but no
-/// registration, removal, or clearing operations.
+/// This type preserves the mutable registry's catalog lookup and iteration
+/// surface, exposes the validated load order, and provides no registration,
+/// removal, or clearing operations.
 pub struct FrozenPluginRegistry {
     registry: PluginRegistry,
     load_order: Vec<PluginKey>,
