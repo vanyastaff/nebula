@@ -3,7 +3,9 @@
 //! These types establish the shared vocabulary and wire shape for revision pins.
 //! They do not migrate existing runtime or persistence consumers by themselves.
 
-use nebula_core::{WorkerFlavorRevisionId, WorkflowVersionId};
+use std::{fmt, str::FromStr};
+
+use nebula_core::{UlidParseError, WorkerFlavorRevisionId, WorkflowVersionId};
 use serde::{Deserialize, Serialize};
 
 /// Execution-facing semantic type for the canonical identity of a published workflow version.
@@ -39,6 +41,20 @@ impl From<WorkflowVersionId> for WorkflowRevision {
 impl From<WorkflowRevision> for WorkflowVersionId {
     fn from(revision: WorkflowRevision) -> Self {
         revision.workflow_version_id()
+    }
+}
+
+impl fmt::Display for WorkflowRevision {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, formatter)
+    }
+}
+
+impl FromStr for WorkflowRevision {
+    type Err = UlidParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        value.parse::<WorkflowVersionId>().map(Self::new)
     }
 }
 
@@ -78,7 +94,7 @@ impl ExecutionRevisions {
 
 #[cfg(test)]
 mod tests {
-    use nebula_core::WorkflowId;
+    use nebula_core::{UlidParseError, WorkflowId};
 
     use super::*;
 
@@ -100,6 +116,26 @@ mod tests {
 
         let converted: WorkflowVersionId = WorkflowRevision::from(workflow_version_id).into();
         assert_eq!(converted, workflow_version_id);
+    }
+
+    #[test]
+    fn workflow_revision_display_and_parse_round_trip_canonical_wire_value() {
+        let workflow_version_id = WorkflowVersionId::new();
+        let revision = WorkflowRevision::new(workflow_version_id);
+
+        let encoded = revision.to_string();
+        assert_eq!(encoded, workflow_version_id.to_string());
+
+        let decoded: Result<WorkflowRevision, UlidParseError> = encoded.parse();
+        assert_eq!(decoded, Ok(revision));
+
+        let wrong_domain = WorkflowId::new().to_string().parse::<WorkflowRevision>();
+        assert!(matches!(
+            wrong_domain,
+            Err(UlidParseError::WrongPrefix {
+                expected_prefix: "wfv"
+            })
+        ));
     }
 
     #[test]
