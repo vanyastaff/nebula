@@ -339,9 +339,6 @@ pub enum CredentialGatewayRefreshRetry {
     /// The current credential state must not be retried automatically.
     Never,
     /// Retry after a non-zero whole-second delay.
-    ///
-    /// The follow-up request uses a new `Idempotency-Key`; reusing the
-    /// original key intentionally replays the original response.
     After {
         /// Validated non-zero delay exposed through HTTP `Retry-After`.
         seconds: NonZeroU64,

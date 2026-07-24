@@ -1,7 +1,7 @@
 # nebula-sdk — Agent orientation
 > Agent quick-map for `crates/sdk/`. Full design: `README.md`. Repo-wide rules: root `AGENTS.md`.
 
-**Purpose:** The sole supported and branded Rust façade, organized by persona. The current external one-dependency proof covers `ActionBuilder`, `WorkflowBuilder`, and credential `TestResult`; broader manual/prelude workflows, `client`, `embedded`, and SDK-hygienic procedural derives require workflow-specific proofs or remain explicit gaps. Integration authors do not treat implementation crates as supported substitutes.
+**Purpose:** The sole supported and branded Rust façade, organized by persona. External one-dependency proofs cover `ActionBuilder`, `WorkflowBuilder`, credential `TestResult`, and representative Action/Credential/Plugin/Resource/Schema/Validator derives; broader manual/prelude workflows, `client`, and `embedded` require workflow-specific proofs or remain explicit gaps. Integration authors do not treat implementation crates as supported substitutes.
 **Layer:** API/Public — depends only downward (root AGENTS.md → Layered Dependency Map).
 
 ## Commands
@@ -18,7 +18,7 @@
 - `src/testing.rs` — test helpers/fixtures (feature `testing`).
 
 ## Conventions & never-do
-- This is a curated façade, not a crate-topology mirror. Its canonical target covers exactly the five §3.5 integration concepts (Action, Credential, Resource, Schema, Plugin), but maturity is per workflow: the current external proof covers builders/manual contracts, not every derive-based workflow. Do NOT expose implementation crates or add a sixth integration concept without canon revision (§0.2).
+- This is a curated façade, not a crate-topology mirror. Its canonical target covers exactly the five §3.5 integration concepts (Action, Credential, Resource, Schema, Plugin), but maturity is per workflow. Public derives resolve through the hidden macro namespace; that namespace is implementation plumbing, not a supported persona. Do NOT expose implementation crates outside it or add a sixth integration concept without canon revision (§0.2).
 - `prelude` / `WorkflowBuilder` / `ActionBuilder` are a public open-source contract (§4.4/§7): breaking changes need explicit announcement + migration, not drive-by edits.
 - Not the engine/runtime or an expression evaluator. `nebula-resilience` is not currently curated; author demand for it is an SDK gap, not permission to import a Nebula leaf directly. Plugins remain trusted in-process adapters (ADR-0091), while the supported author contract must come through this SDK.
 - `anyhow` ergonomics are allowed for author scripts, but first-party lib code uses typed `thiserror`/`NebulaError`; no unwrap/expect/panic in lib code.

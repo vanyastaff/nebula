@@ -28,6 +28,9 @@ org/workspace route, including Plane-B credential management, therefore returns
 an honest 503 before performing tenant work. An unwired or failed policy source
 is unavailable; once a future supported source is wired, a valid snapshot with
 no organization membership is denied rather than treated as administrator.
+The composition root also leaves the credential command gateway unmounted in
+that state, so it does not construct an unusable management surface behind a
+guaranteed authority failure.
 
 The in-memory membership adapter and `AppState::with_membership_store` are
 internal/reference composition seams. They do not make direct `nebula-api`

@@ -41,8 +41,9 @@ workspace — extend `nebula-core` deliberately (canon §3.10).
 - `Permission` — granular permission definitions (module `permission`). `PermissionDenied` — access-control error type (module `tenancy`).
 - `TenantContext`, `WorkspaceGrant`, `ResolvedIds` — multi-tenant context, workspace-bound role grants, and resolved organization/workspace IDs (module `tenancy`).
 - `Slug`, `SlugKind`, `SlugError`, `is_prefixed_ulid()` — validated slug strings for human-readable identifiers (module `slug`).
-- `PluginSetId`, `WorkerFlavorRevisionId`, `ArtifactSetDigest` — opaque 32-byte transport
-  identities with strict lowercase 64-hex wire encoding. This is a representation foundation;
+- `PluginSetId`, `WorkerFlavorRevisionId`, `ArtifactSetDigest` — experimental opaque 32-byte
+  transport identities behind `unstable-worker-flavor`, with strict lowercase 64-hex wire
+  encoding. This is not part of the supported default API;
   derivation, hashing policy, and consumers belong to their owning crates.
 
 Credential-specific vocabulary (`CredentialEvent`) lives in `nebula-credential`. `CredentialId` is defined in this crate (module `id`). The `AuthScheme` trait and `AuthPattern` enum are canonical in this crate (module `auth`); `nebula-credential` re-exports them for discoverability.

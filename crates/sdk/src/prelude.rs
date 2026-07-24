@@ -10,12 +10,10 @@
 //!
 //! ## Authoring a pooled resource
 //!
-//! Types and traits for resource authoring live in the prelude. All current
-//! Nebula procedural derive families (action, credential, plugin, resource,
-//! schema, and validator) still emit or fall back to implementation-crate paths
-//! and are not yet part of the strict one-Nebula-dependency perimeter. That is
-//! an explicit SDK gap, not a supported reason to depend on internal Nebula crates. The manual
-//! [`Provider`] surface below is curated; `type Topology = Pooled<Self>` opts
+//! Types, traits, and procedural derives for resource authoring live in the
+//! prelude. Generated paths resolve through the SDK when the integration has no
+//! direct leaf-crate dependency. The manual [`Provider`] surface below is also
+//! curated; `type Topology = Pooled<Self>` opts
 //! into pool checkout/recycle (every [`PoolProvider`] hook has a default, so an
 //! empty impl suffices).
 //!
@@ -82,9 +80,11 @@ pub use nebula_action::{
 // DX codegen macros — re-exported so authors can write `impl_paginated_action!(...)`
 // without reaching into `nebula_action::`.
 pub use nebula_action::{impl_batch_action, impl_paginated_action};
+pub use nebula_core::AuthScheme as AuthSchemeContract;
+pub use nebula_core::auth::NoAuthFamily;
 pub use nebula_core::{
-    ActionKey, ExecutionId, NodeKey, PluginKey, ResourceKey, ScopeLevel, WorkflowId, action_key,
-    resource_key,
+    ActionKey, AuthPattern, ExecutionId, NodeKey, PluginKey, ResourceKey, ScopeLevel, WorkflowId,
+    action_key, resource_key,
 };
 // Credential types (v2)
 pub use nebula_credential::{
@@ -108,6 +108,7 @@ pub use nebula_credential::{
     SecretToken,
     SnapshotError,
 };
+pub use nebula_credential::{AuthScheme, credential};
 pub use nebula_credential::{CredentialContext, CredentialId};
 // Shared catalog-metadata vocabulary — the `Metadata` trait plus the
 // `BaseMetadata` prefix and value types that `ActionMetadata`,
@@ -118,9 +119,7 @@ pub use nebula_metadata::{BaseMetadata, DeprecationNotice, Icon, MaturityLevel, 
 // Plugin types
 pub use nebula_plugin::{Plugin, PluginManifest};
 // Resource authoring surface — mirrors `nebula_resource::prelude` plus the
-// `Resource` / `ResourceConfig` / `ClassifyError` derive names. Manual Provider
-// authoring needs no direct Nebula leaf dependency; the derives still emit
-// implementation paths and remain outside the verified SDK-only perimeter.
+// `Resource` / `ResourceConfig` / `ClassifyError` derive names.
 //
 // `Error` here is the resource error *type*; `thiserror::Error` below is a
 // derive *macro* — different namespaces, so both live in the glob.
@@ -134,10 +133,9 @@ pub use nebula_resource::{
     ResourceContext, ResourceGuard, ResourceMetadata, SlotCell, SlotIdentity, TopologyTag,
     no_credential_slots,
 };
-// Derive names are re-exported from their respective domain crates. Action,
-// Credential, and Plugin derives are already in scope from the domain imports
-// above (same names, macro namespace), but generated leaf-crate paths make all
-// current procedural derives an explicit SDK gap.
+// Derive names are re-exported from their respective domain crates. Generated
+// paths prefer a direct (including renamed) leaf dependency, then the SDK's
+// hidden macro namespace.
 // Schema types — Field/Schema/ValidSchema/field_key already re-exported via nebula_action
 // above.
 pub use nebula_schema::{

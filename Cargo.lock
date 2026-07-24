@@ -3318,6 +3318,7 @@ dependencies = [
 name = "nebula-macro-support"
 version = "0.1.0"
 dependencies = [
+ "proc-macro-crate",
  "proc-macro2",
  "quote",
  "syn",
@@ -3534,7 +3535,7 @@ name = "nebula-schema-macros"
 version = "0.1.0"
 dependencies = [
  "heck",
- "proc-macro-crate",
+ "nebula-macro-support",
  "proc-macro2",
  "quote",
  "syn",
@@ -3558,6 +3559,7 @@ dependencies = [
  "nebula-workflow",
  "pretty_assertions",
  "rstest",
+ "semver",
  "serde",
  "serde_json",
  "tempfile",

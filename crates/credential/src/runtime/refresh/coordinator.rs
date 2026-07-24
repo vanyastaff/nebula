@@ -265,14 +265,14 @@ pub enum RefreshError {
     /// as durable fail-closed poison until explicit reconciliation.
     #[error("provider/persistence refresh outcome is pending or unknown; do not retry")]
     CriticalOutcomePending,
-    /// Another in-process attempt reached an exact post-provider disposition
-    /// that cannot safely be replayed.
+    /// Another in-process attempt reached an exact finalization failure that
+    /// cannot safely be replayed.
     ///
     /// The winner retained the durable claim as poison. Unlike
     /// [`Self::CriticalOutcomePending`], the operation outcome is known; the
     /// command owner must surface its operation-specific reconciliation
     /// contract.
-    #[error("a concurrent provider operation requires reconciliation before retrying")]
+    #[error("a concurrent refresh operation requires reconciliation before retrying")]
     ReconciliationRequired,
     /// Another in-process attempt reached an exact, replay-safe outcome but
     /// did not advance authoritative state.
@@ -334,11 +334,11 @@ pub enum RefreshRecheck {
 /// safely and tell L1 waiters what the completion proves. A durable state
 /// advance may release immediately and permits a later refresh epoch. An exact
 /// replay-safe outcome without a state advance also releases, but waiters do
-/// not automatically retry it. A post-provider finalization failure or unknown
-/// provider/commit outcome stops heartbeats but deliberately leaves the
-/// sentinel claim in place. Once its lease expires, storage keeps it as durable
-/// fail-closed poison so provider work cannot replay before explicit
-/// reconciliation.
+/// not automatically retry it. An exact finalization failure after either a
+/// provider or local refresh, or an unknown provider/commit outcome, stops
+/// heartbeats but deliberately leaves the sentinel claim in place. Once its
+/// lease expires, storage keeps it as durable fail-closed poison so refresh
+/// work cannot replay before explicit reconciliation.
 #[derive(Debug)]
 #[must_use = "the refresh disposition controls whether the durable claim may be released"]
 #[non_exhaustive]
@@ -358,20 +358,12 @@ pub enum RefreshDisposition<T> {
     /// [`RefreshError::PriorAttemptNoProgress`] instead of immediately
     /// replaying the operation as a herd.
     NoStateChange(T),
-    /// The operation has no provider-side effect and is therefore safe to
-    /// release even though the local commit acknowledgement is unknown.
-    ///
-    /// This is reserved for providerless refreshes. Waiters receive the same
-    /// no-progress signal as [`Self::NoStateChange`] and must re-read
-    /// authoritative state before deciding what to do next.
-    ReplaySafe(T),
-    /// The provider accepted the refresh, but its new state was definitely not
-    /// persisted.
+    /// Refresh work completed, but its new state was definitely not persisted.
     ///
     /// The enclosed error is exact, yet another replica must not immediately
-    /// re-POST the still-expired stored grant. Like an unknown acknowledgement,
-    /// this retains the sentinel claim. Expiry converts it into durable poison;
-    /// explicit reconcile authority is K3 work.
+    /// repeat the refresh against stale authoritative state. Like an unknown
+    /// acknowledgement, this retains the sentinel claim. Expiry converts it
+    /// into durable poison; explicit reconcile authority is K3 work.
     RetryUnsafe(T),
     /// Provider dispatch or persistence commit completed without an exact
     /// acknowledgement.
@@ -395,12 +387,7 @@ impl<T> RefreshDisposition<T> {
         Self::NoStateChange(value)
     }
 
-    /// Construct an unacknowledged but providerless, replay-safe disposition.
-    pub fn replay_safe(value: T) -> Self {
-        Self::ReplaySafe(value)
-    }
-
-    /// Construct a definite but unsafe-to-replay post-provider disposition.
+    /// Construct a definite finalization failure that is unsafe to replay.
     pub fn retry_unsafe(value: T) -> Self {
         Self::RetryUnsafe(value)
     }
@@ -1147,11 +1134,6 @@ impl RefreshCoordinator {
                     result,
                 ),
                 RefreshDisposition::NoStateChange(result) => (
-                    ClaimFinalization::Release,
-                    L1Completion::NoStateChange,
-                    result,
-                ),
-                RefreshDisposition::ReplaySafe(result) => (
                     ClaimFinalization::Release,
                     L1Completion::NoStateChange,
                     result,
@@ -2207,7 +2189,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retry_unsafe_completion_requires_exact_waiter_reconciliation() {
+    async fn exact_local_finalization_failure_requires_waiter_reconciliation() {
         let repo = Arc::new(ScriptedClaimRepo::new());
         let coordinator = coordinator(Arc::clone(&repo), RefreshCoordConfig::default());
         let credential_id = CredentialId::new();
@@ -2226,6 +2208,9 @@ mod tests {
                     move || async move {
                         winner_entered.notify_one();
                         winner_continue.notified().await;
+                        // Exact local finalization failures use RetryUnsafe:
+                        // the winner keeps its concrete error while L1 remains
+                        // deliberately payload-free.
                         RefreshDisposition::retry_unsafe(1_u8)
                     },
                 )

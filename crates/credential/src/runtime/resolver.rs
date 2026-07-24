@@ -96,7 +96,6 @@ fn map_refresh_disposition<T, U>(
     match disposition {
         RefreshDisposition::StateAdvanced(value) => RefreshDisposition::state_advanced(map(value)),
         RefreshDisposition::NoStateChange(value) => RefreshDisposition::no_state_change(map(value)),
-        RefreshDisposition::ReplaySafe(value) => RefreshDisposition::replay_safe(map(value)),
         RefreshDisposition::RetryUnsafe(value) => RefreshDisposition::retry_unsafe(map(value)),
         RefreshDisposition::OutcomeUnknown(value) => {
             RefreshDisposition::outcome_unknown(map(value))
@@ -517,8 +516,7 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
                     Err(_) => return Err(RefreshRecheckError::Unavailable),
                 };
                 if let RefreshRetryAdmission::Blocked(block) = snapshot.admission() {
-                    let context = context_from_block(block.clone())
-                        .map_err(|_| RefreshRecheckError::InvalidState)?;
+                    let context = Box::new(context_from_block(block.clone()));
                     return Ok(RefreshRecheck::Suppressed(context));
                 }
                 if snapshot.material_epoch() != observed_material_epoch {
@@ -685,9 +683,7 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
                 let RefreshRetryAdmission::Blocked(block) = snapshot.admission() else {
                     return Ok(None);
                 };
-                context_from_block(block.clone())
-                    .map(Some)
-                    .map_err(|_| ResolveError::Store(CredentialPersistenceError::CorruptRecord))
+                Ok(Some(Box::new(context_from_block(block.clone()))))
             },
             Err(error) => Err(ResolveError::Store(error)),
         }
@@ -753,9 +749,9 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
     where
         C: Credential,
     {
-        serde_json::from_slice(stored.data()).map_err(|e| ResolveError::Deserialize {
+        serde_json::from_slice(stored.data()).map_err(|_| ResolveError::Deserialize {
             credential_id: credential_id.to_string(),
-            reason: e.to_string(),
+            reason: "stored credential state is invalid".to_owned(),
         })
     }
 
@@ -895,24 +891,26 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
     {
         let credential_id = selector.credential_id();
         let credential_id_text = credential_id.to_string();
-        let data =
-            match crate::serde_secret::expose_for_serialization(|| serde_json::to_vec(&state)) {
-                Ok(data) => data,
-                Err(error) if phase == RefreshCommitPhase::ProviderConfirmed => {
-                    return RefreshDisposition::retry_unsafe(Err(
-                        ResolveError::PostProviderStateEncoding {
-                            credential_id: credential_id_text,
-                            reason: error.to_string(),
-                        },
-                    ));
-                },
-                Err(error) => {
-                    return RefreshDisposition::no_state_change(Err(ResolveError::Refresh {
+        let data = match crate::serde_secret::expose_for_serialization(|| {
+            serde_json::to_vec(&state)
+        }) {
+            Ok(data) => data,
+            Err(_) if phase == RefreshCommitPhase::ProviderConfirmed => {
+                return RefreshDisposition::retry_unsafe(Err(
+                    ResolveError::PostProviderStateEncoding {
                         credential_id: credential_id_text,
-                        reason: format!("local refresh state encoding failed: {error}"),
-                    }));
-                },
-            };
+                        reason: "credential state serializer rejected refreshed state".to_owned(),
+                    },
+                ));
+            },
+            Err(_) => {
+                return RefreshDisposition::retry_unsafe(Err(
+                    ResolveError::RefreshReconciliationRequired {
+                        credential_id: credential_id_text,
+                    },
+                ));
+            },
+        };
 
         let now = chrono::Utc::now();
         let mut validated_metadata = stored.metadata().clone();
@@ -962,11 +960,11 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
                 }))
             },
             Err(CredentialPersistenceError::OutcomeUnknown) => {
-                RefreshDisposition::replay_safe(Err(ResolveError::Store(
+                RefreshDisposition::outcome_unknown(Err(ResolveError::Store(
                     CredentialPersistenceError::OutcomeUnknown,
                 )))
             },
-            Err(error) => RefreshDisposition::no_state_change(Err(ResolveError::Store(error))),
+            Err(error) => RefreshDisposition::retry_unsafe(Err(ResolveError::Store(error))),
         }
     }
 }
@@ -2024,6 +2022,63 @@ mod refresh_revoke_race {
         }
     }
 
+    struct LocalRefreshCred;
+
+    static LOCAL_REFRESH_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    impl Credential for LocalRefreshCred {
+        type Properties = ();
+        type Scheme = TestScheme;
+        type State = TestState;
+
+        const KEY: &'static str = "test.local_refreshable";
+
+        fn metadata() -> CredentialMetadata {
+            CredentialMetadata::builder()
+                .key(nebula_core::credential_key!("test.local_refreshable"))
+                .name("LocalRefreshCred")
+                .description("providerless refresh credential for finalization regressions")
+                .schema(crate::schema_of::<Self::Properties>())
+                .pattern(AuthPattern::OAuth2)
+                .build()
+                .expect("LocalRefreshCred metadata is valid")
+        }
+
+        fn project(_state: &TestState) -> TestScheme {
+            TestScheme
+        }
+
+        async fn resolve(
+            _values: &FieldValues,
+            _ctx: &CredentialContext,
+        ) -> Result<ResolveResult<TestState, ()>, CredentialError> {
+            Ok(ResolveResult::Complete(TestState {
+                token: "local-live".to_owned(),
+            }))
+        }
+    }
+
+    impl Refreshable for LocalRefreshCred {
+        const REFRESH_EXECUTION_MODE: crate::RefreshExecutionMode =
+            crate::RefreshExecutionMode::Local;
+        const REFRESH_POLICY: RefreshPolicy = RefreshPolicy::DEFAULT;
+
+        async fn refresh(
+            state: &mut TestState,
+            attempt: RefreshAttempt<'_>,
+        ) -> crate::RefreshReport {
+            LOCAL_REFRESH_CALLS.fetch_add(1, Ordering::SeqCst);
+            state.token = "local-refreshed".to_owned();
+            attempt.local_refresh_completed()
+        }
+    }
+
+    impl CredentialLifecycle for LocalRefreshCred {
+        fn policy(state: &TestState) -> CredentialPolicy {
+            TestCred::policy(state)
+        }
+    }
+
     /// Deliberately invalid implementation: it declares the default provider
     /// execution mode but attempts to complete through the providerless path.
     /// The linear attempt must reject this before any transport call.
@@ -2226,15 +2281,15 @@ mod refresh_revoke_race {
         fail_serialization: bool,
     }
 
+    const HOSTILE_SERIALIZE_CANARY: &str = "client_secret=super-secret-refresh-canary";
+
     impl Serialize for PostProviderEncodingState {
         fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
         where
             S: serde::Serializer,
         {
             if self.fail_serialization {
-                return Err(serde::ser::Error::custom(
-                    "intentional post-provider encoding failure",
-                ));
+                return Err(serde::ser::Error::custom(HOSTILE_SERIALIZE_CANARY));
             }
 
             use serde::ser::SerializeStruct as _;
@@ -2364,6 +2419,32 @@ mod refresh_revoke_race {
             None,
         )
         .expect("fixture is a valid live credential")
+        .into()
+    }
+
+    fn local_refresh_row() -> StoredCredential {
+        let now = Utc::now();
+        let data = serde_json::to_vec(&TestState {
+            token: "local-live".to_owned(),
+        })
+        .expect("serialize local refresh state");
+        StoredLiveCredential::new(
+            test_id(),
+            None,
+            LocalRefreshCred::KEY.to_owned(),
+            data.into(),
+            TestState::KIND.to_owned(),
+            TestState::VERSION,
+            CredentialVersion::MIN,
+            CredentialMaterialEpoch::MIN,
+            now,
+            now,
+            None,
+            false,
+            serde_json::Map::new(),
+            None,
+        )
+        .expect("fixture is a valid local refresh credential")
         .into()
     }
 
@@ -2749,6 +2830,14 @@ mod refresh_revoke_race {
             &error,
             ResolveError::PostProviderStateEncoding { .. }
         ));
+        assert!(
+            !error.to_string().contains(HOSTILE_SERIALIZE_CANARY),
+            "serializer diagnostics must not escape through Display"
+        );
+        assert!(
+            !format!("{error:?}").contains(HOSTILE_SERIALIZE_CANARY),
+            "serializer diagnostics must not escape through Debug"
+        );
         assert_eq!(ENCODING_PROVIDER_CALLS.load(Ordering::SeqCst), 1);
         assert_eq!(
             store.replacement_count(),
@@ -2763,6 +2852,76 @@ mod refresh_revoke_race {
         let mapped = resolve_error_to_credential_error(error);
         assert!(matches!(&mapped, CredentialError::PostProviderPersistence));
         assert!(!mapped.is_retryable());
+    }
+
+    #[tokio::test]
+    async fn exact_local_finalization_failure_is_distinct_and_retains_l2() {
+        LOCAL_REFRESH_CALLS.store(0, Ordering::SeqCst);
+        let store = Arc::new(ScriptedStore::failing_replace(
+            local_refresh_row(),
+            CredentialPersistenceError::Unavailable,
+        ));
+        let claims = Arc::new(StatefulClaimRepo::default());
+        let resolver = resolver_with_runtime(
+            Arc::clone(&store),
+            Arc::clone(&claims) as Arc<dyn RefreshClaimStore>,
+            Arc::new(StubTransport),
+        );
+
+        let error = resolver
+            .resolve_with_refresh::<LocalRefreshCred>(
+                &test_selector(),
+                &CredentialContext::for_owner("test-owner"),
+            )
+            .await
+            .expect_err("an exact local finalization failure must reach its winner");
+
+        assert!(matches!(
+            error,
+            ResolveError::Store(CredentialPersistenceError::Unavailable)
+        ));
+        assert_eq!(LOCAL_REFRESH_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(store.replacement_count(), 1);
+        assert!(
+            claims.active.load(Ordering::SeqCst),
+            "exact local finalization failure must retain fail-closed L2 poison"
+        );
+        assert_eq!(claims.release_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn local_commit_ack_loss_is_outcome_unknown_and_retains_l2() {
+        LOCAL_REFRESH_CALLS.store(0, Ordering::SeqCst);
+        let store = Arc::new(ScriptedStore::failing_replace(
+            local_refresh_row(),
+            CredentialPersistenceError::OutcomeUnknown,
+        ));
+        let claims = Arc::new(StatefulClaimRepo::default());
+        let resolver = resolver_with_runtime(
+            Arc::clone(&store),
+            Arc::clone(&claims) as Arc<dyn RefreshClaimStore>,
+            Arc::new(StubTransport),
+        );
+
+        let error = resolver
+            .resolve_with_refresh::<LocalRefreshCred>(
+                &test_selector(),
+                &CredentialContext::for_owner("test-owner"),
+            )
+            .await
+            .expect_err("lost local commit acknowledgement must remain unknown");
+
+        assert!(matches!(
+            error,
+            ResolveError::Store(CredentialPersistenceError::OutcomeUnknown)
+        ));
+        assert_eq!(LOCAL_REFRESH_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(store.replacement_count(), 1);
+        assert!(
+            claims.active.load(Ordering::SeqCst),
+            "unknown local commit outcome must retain fail-closed L2 poison"
+        );
+        assert_eq!(claims.release_count.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

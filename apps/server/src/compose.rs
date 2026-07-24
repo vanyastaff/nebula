@@ -564,20 +564,27 @@ impl ServerRuntime {
                 Arc::clone(&credential_service),
             ),
         );
-        let credential_authority: Arc<dyn CredentialTenantAuthority> =
-            Arc::new(ServerCredentialAuthority::new(
-                state.membership_store.clone(),
-                state.workspace_resolver.clone(),
-            ));
-        let credential_controller = Arc::new(CredentialController::new(
-            Arc::clone(&credential_service),
-            credential_authority,
-        ));
-        let credential_gateway = Arc::new(ServerCredentialGateway::new(credential_controller));
         state = state
             .with_credential_schema(Arc::clone(&credential_runtime.catalog))
-            .with_credential_gateway(credential_gateway)
             .with_webhook_secret_resolver(webhook_secret_resolver);
+        if state.membership_store.is_some() && state.workspace_resolver.is_some() {
+            let credential_authority: Arc<dyn CredentialTenantAuthority> =
+                Arc::new(ServerCredentialAuthority::new(
+                    state.membership_store.clone(),
+                    state.workspace_resolver.clone(),
+                ));
+            let credential_controller = Arc::new(CredentialController::new(
+                Arc::clone(&credential_service),
+                credential_authority,
+            ));
+            let credential_gateway = Arc::new(ServerCredentialGateway::new(credential_controller));
+            state = state.with_credential_gateway(credential_gateway);
+        } else {
+            tracing::warn!(
+                "credential management gateway is not mounted because tenant membership \
+                 authority is not provisioned"
+            );
+        }
         // Build ONE shared `Arc<dyn EmailPort>` and pass the same Arc
         // to both `AppState::email_port` and the selected auth backend.
         // `API_SMTP_HOST` unset → dev `EchoSink` (unchanged local-first

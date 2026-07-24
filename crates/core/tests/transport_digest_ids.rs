@@ -1,3 +1,5 @@
+#![cfg(feature = "unstable-worker-flavor")]
+
 use std::{fmt::Debug, str::FromStr};
 
 use nebula_core::{

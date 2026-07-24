@@ -863,11 +863,11 @@ where
             // re-persists the `Rewrote` bytes under compare-and-swap.
             let mut state: C::State = match serde_json::from_slice(data) {
                 Ok(state) => state,
-                Err(error) => {
+                Err(_) => {
                     return Ok(RefreshExecutionResult::PreparationFailed(
-                        CredentialServiceError::Internal(format!(
-                            "stored state deserialization failed: {error}"
-                        )),
+                        CredentialServiceError::Internal(
+                            "stored credential state is invalid".to_owned(),
+                        ),
                     ));
                 },
             };
@@ -894,26 +894,23 @@ where
                     // already-elapsed) expiry.
                     let expires_at = state.expires_at();
                     // Cleartext serialization for the encrypted-at-rest store.
-                    let data = match crate::serde_secret::expose_for_serialization(|| {
+                    let Ok(data) = crate::serde_secret::expose_for_serialization(|| {
                         serde_json::to_vec(&state)
-                    }) {
-                        Ok(data) => Zeroizing::new(data),
-                        Err(error) => {
-                            tracing::warn!(
-                                ?error,
-                                refresh.commit_phase = ?phase,
-                                "credential refresh succeeded but state serialization failed"
-                            );
-                            return Ok(match phase {
-                                RefreshCommitPhase::ProviderConfirmed => {
-                                    RefreshExecutionResult::PostProviderPersistence
-                                },
-                                RefreshCommitPhase::LocalOnly => {
-                                    RefreshExecutionResult::LocalFinalizationFailed
-                                },
-                            });
-                        },
+                    }) else {
+                        tracing::warn!(
+                            refresh.commit_phase = ?phase,
+                            "credential refresh succeeded but state serialization failed"
+                        );
+                        return Ok(match phase {
+                            RefreshCommitPhase::ProviderConfirmed => {
+                                RefreshExecutionResult::PostProviderPersistence
+                            },
+                            RefreshCommitPhase::LocalOnly => {
+                                RefreshExecutionResult::LocalFinalizationFailed
+                            },
+                        });
                     };
+                    let data = Zeroizing::new(data);
                     Ok(RefreshExecutionResult::Rewrote {
                         data,
                         expires_at,

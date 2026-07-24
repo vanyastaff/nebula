@@ -698,20 +698,22 @@ without exposing a base32/plaintext contract to persistence.
 
 ### Idempotency-Key (M3.4 / ADR-0048)
 
-Idempotent replay is fail-closed: only explicitly reviewed `POST` route
-templates participate, and `IdempotencyLayer::new` starts with an empty
-allow-list. First-party composition opts in authenticated membership,
-resource, credential lifecycle, workflow, and execution-control operations
-whose responses carry no one-time authority. Auth/session, PAT,
-service-account, webhook-registration, and interactive credential-resolution
-routes pass through normally even if a client sends `Idempotency-Key`; a new
-route is non-replayable until reviewed and added deliberately.
+`IdempotencyLayer::new` starts with an empty allow-list. First-party
+composition currently opts in only internal `_test` fixtures; product routes
+pass through normally even if a client sends `Idempotency-Key`.
 
 For an approved route, clients opt in by sending an `Idempotency-Key` header on
-a `POST` request. The middleware caches the first response (status + body +
-filtered headers) keyed by
+a `POST` request. After the middleware successfully caches a completed response
+(status + body + filtered headers) keyed by
 `(method, path, key, identity-fingerprint, body-fingerprint)` and replays
 it byte-for-byte on subsequent requests within the configured TTL.
+
+This is completed-response caching, not an at-most-once execution guarantee.
+Concurrent misses can both invoke the handler, and a completed mutation can run
+again when its response was not stored. Product mutations must not rely on this
+middleware for retry safety. They remain outside the allow-list until a durable
+atomic pending/terminal operation ledger owns in-flight coordination and
+reconciliation.
 
 **Protocol contract** — the IETF draft
 [`draft-ietf-httpapi-idempotency-key`](https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key/)
@@ -741,13 +743,13 @@ governs header semantics. Highlights:
 
 | Backend | When | Restart-survival | Multi-replica share |
 |---|---|---|---|
-| `memory` | Dev / single-process tests / one-replica deployments | No — state lost on restart | No — process-local |
-| `postgres` | Production deployments (≥ 2 replicas, or restart-tolerance required) | Yes — table survives restart | Yes — same `DATABASE_URL` shared |
+| `memory` | Dev / single-process tests | No — state lost on restart | No — process-local |
+| `postgres` | Durable completed-response caching across replicas or restarts | Yes — table survives restart | Yes — same `DATABASE_URL` shared |
 
 > **Operator warning:** selecting `memory` outside `NEBULA_ENV=development`
-> emits a startup `tracing::warn!` — dedup state is lost on restart and
-> across runners. The §M3 1.0 closure criterion requires `postgres` for
-> production.
+> emits a startup `tracing::warn!` because cached responses are lost on restart
+> and across runners. `postgres` makes completed responses durable; neither
+> backend supplies an in-flight claim or at-most-once mutation execution.
 
 The `postgres` backend is gated behind the `nebula-api/postgres` cargo
 feature so default builds remain lightweight. Selecting

@@ -12,9 +12,10 @@ related: [nebula-action, nebula-credential, nebula-resource, nebula-schema, nebu
 ## Purpose
 
 The product contract is that an integration author should depend on one Nebula crate rather than
-learn the workspace topology. Today the external one-dependency proof covers the narrow
-manual/builder subset of `ActionBuilder`, `WorkflowBuilder`, and credential `TestResult`; other
-manual/prelude workflows need their own compile-pass proof before being described as verified.
+learn the workspace topology. External one-dependency proofs cover `ActionBuilder`,
+`WorkflowBuilder`, credential `TestResult`, and representative derives for every current
+procedural-macro family; other manual/prelude workflows need their own compile-pass proof before
+being described as verified.
 Without a façade, every new contributor discovers the dependency graph by trial and error, which
 violates the §4.4 north star (focused day, no plumbing). `nebula-sdk` is that façade: a single
 crate that provides persona-scoped integration contracts, while uncurated workflows are recorded
@@ -32,7 +33,7 @@ re-exported: crate-boundary refactors must not become integration migrations.
 Supported entry points are `nebula_sdk::prelude`, the `action` / `workflow` builders,
 `integration`, `runtime`, and feature-gated `testing`. The sole supported credential-test path is
 `nebula_sdk::integration::credential::{TestFailureCode, TestResult}`. A hidden `__private` module
-exists only so exported declarative macros can resolve their implementation dependencies; it is
+exists only so exported declarative and procedural macros can resolve their implementation dependencies; it is
 not a compatibility namespace or a supported persona.
 
 ### Credential, OAuth, and the SDK
@@ -50,31 +51,21 @@ Integration authors consume credential contracts through curated SDK personas:
 
 ### Procedural derive status
 
-The SDK re-exports derive names, but the generated code for all current Nebula procedural derive
-families still names implementation crates directly. Therefore derive-based authoring is **not yet**
-inside the strict one-Nebula-dependency perimeter:
-
-- Action derives emit `nebula_action`, `nebula_core`, and `nebula_workflow` paths;
-- Credential derives emit `nebula_credential`/`nebula_core` paths;
-- Plugin derives emit `nebula_plugin` paths;
-- Resource derives emit `nebula_resource`, `nebula_core`, `nebula_credential`, and
-  `nebula_schema` paths;
-- Schema derives fall back to `nebula_schema` when only the SDK is a direct dependency; and
-- Validator derives emit `nebula_validator` paths.
-
-Direct dependencies on those leaves may make generated code compile, but they are not a supported
-SDK workaround. K4 must make the procedural derives SDK-resolvable and add external one-dependency
-compile-pass fixtures for every supported derive workflow.
+The SDK re-exports the current Action, Credential, Plugin, Resource, Schema, and Validator derive
+families. Their generated paths prefer a directly declared leaf crate (including a renamed
+dependency) and otherwise resolve through `nebula_sdk::__private`. The external
+`derive_consumer` fixture compiles representative derives with `nebula-sdk` as its only
+dependency. `__private` remains unstable implementation plumbing and must not be used directly by
+integrations.
 
 ### Resource authoring and the SDK
 
-Resource authoring types and traits are in the prelude; derive macros still need
-their target crates on the dependency graph:
+Resource authoring types, traits, and derives are in the prelude:
 
 | Surface | What you use |
 |--------|----------------|
 | **Prelude** | `nebula_sdk::prelude::*` re-exports the author surface: derives `Resource` / `ResourceConfig` / `ClassifyError`; traits `Provider`, `ResourceConfig`, `HasCredentialSlots`, `PoolProvider`, `ResidentProvider`, `BoundedProvider`; topologies `Pooled`, `Resident`, `Bounded` with `PoolConfig` / `ResidentConfig` / `BoundedMode`; and `AcquireOptions`, `RegistrationSpec`, `ResourceContext`, `ResourceGuard`, `ResourceMetadata`, `ResourceKey`, `resource_key!`, `ScopeLevel`, `SlotIdentity`, `SlotCell`, `TopologyTag`, `ReloadOutcome`, `Error`, `ErrorKind`, `no_credential_slots!`. See `prelude.rs` for a runnable pooled-resource example. |
-| **Current derive limitation** | Resource derives are part of the general procedural-derive gap above. Manual `Provider` authoring is the currently curated path and uses the prelude plus the general-purpose `async-trait` crate. |
+| **Derives** | `Resource` and `ResourceConfig` are covered by the SDK-only derive compile contract. Manual `Provider` authoring remains available through the prelude plus the general-purpose `async-trait` crate. |
 
 **Not in the prelude:** the engine-owned lifecycle (`Manager::register` / `acquire_*`, `Registry`, dispatch, rotation fan-out). Authors implement `Provider`; the engine drives it. Missing authoring contracts are SDK gaps, not permission to reach through to implementation crates.
 
@@ -120,8 +111,7 @@ SDK-level error:
   driving executions. See `nebula-engine` for that.
 - Not an expression evaluator — see `nebula-expression`.
 - Plugins are trusted in-process adapters — there is no separate plugin process binary (ADR-0091).
-  The supported plugin-author contract must be curated through this SDK; the current derive path is
-  listed above as incomplete.
+  The supported plugin-author contract is curated through this SDK.
 - Does not currently curate `nebula-resilience`; a missing author contract is an SDK gap rather
   than a supported direct dependency on that technical crate.
 
@@ -135,9 +125,8 @@ See `docs/MATURITY.md` row for `nebula-sdk`.
   SDK surface. First-party libraries use typed errors.
 - `simple_action!` macro covers the common case but more complex action shapes (stateful,
   trigger, resource-backed) require direct trait implementation.
-- The external one-dependency proof currently covers `ActionBuilder`, `WorkflowBuilder`, and
-  credential `TestResult`. Action/Credential/Plugin/Resource/Schema/Validator procedural derives
-  remain unverified and leaf-path-dependent.
+- External one-dependency proofs cover `ActionBuilder`, `WorkflowBuilder`, credential
+  `TestResult`, and representative Action/Credential/Plugin/Resource/Schema/Validator derives.
 
 ## Related
 

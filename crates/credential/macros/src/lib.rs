@@ -69,7 +69,10 @@ mod credential_attr;
 /// capability — move inherent helpers to a separate `impl` block).
 #[proc_macro_attribute]
 pub fn credential(args: TokenStream, input: TokenStream) -> TokenStream {
-    credential_attr::expand(args, input)
+    nebula_macro_support::paths::resolve_generated_crate_paths(
+        credential_attr::expand(args, input).into(),
+    )
+    .into()
 }
 
 /// Derive macro for the `AuthScheme` trait.
@@ -107,7 +110,8 @@ pub fn credential(args: TokenStream, input: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro_derive(AuthScheme, attributes(auth_scheme))]
 pub fn derive_auth_scheme(input: TokenStream) -> TokenStream {
-    auth_scheme::derive(input)
+    nebula_macro_support::paths::resolve_generated_crate_paths(auth_scheme::derive(input).into())
+        .into()
 }
 
 /// Attribute macro for declaring a capability sub-trait.
@@ -181,5 +185,8 @@ pub fn derive_auth_scheme(input: TokenStream) -> TokenStream {
 /// as `E0433` at the emitted blanket impl line per capability macro 4.1.
 #[proc_macro_attribute]
 pub fn capability(args: TokenStream, input: TokenStream) -> TokenStream {
-    capability::expand(args, input)
+    nebula_macro_support::paths::resolve_generated_crate_paths(
+        capability::expand(args, input).into(),
+    )
+    .into()
 }

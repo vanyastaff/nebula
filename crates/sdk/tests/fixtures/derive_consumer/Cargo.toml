@@ -1,0 +1,10 @@
+[package]
+name = "nebula-sdk-derive-consumer"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+nebula = { package = "nebula-sdk", version = "=0.1.0", default-features = false }
+
+[workspace]

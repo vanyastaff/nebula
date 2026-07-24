@@ -1,24 +1,21 @@
 //! Idempotency-Key Middleware (M3.4).
 //!
-//! Generic POST-replay protection per the IETF draft
+//! Generic completed-response replay per the IETF draft
 //! [draft-ietf-httpapi-idempotency-key]. A client supplies an `Idempotency-Key`
-//! header with any state-changing request; the middleware caches the first
-//! response and replays it byte-for-byte for subsequent requests carrying the
-//! same key (within the configured TTL).
+//! header on an explicitly allow-listed request; after a response is
+//! successfully cached, the middleware replays it byte-for-byte for subsequent
+//! requests carrying the same key (within the configured TTL).
 //!
-//! ## At-most-once semantics
+//! ## Cached replay, not at-most-once execution
 //!
-//! After the first response is cached, subsequent requests with the same
-//! `(method, path, key, identity, body)` tuple replay the cached
-//! response without invoking the handler. **Concurrent in-flight
-//! requests are not deduplicated**: two requests that race past the
-//! `get` lookup before the first `put` lands both run the handler;
-//! `put` is first-writer-wins, so the second request's response is
-//! discarded but the side effects of its handler invocation are not
-//! rolled back. True at-most-once under contention requires a "pending
-//! claim" record (followers wait or replay instead of running the
-//! handler again) — tracked as a follow-up under idempotency backend
-//! "Open Questions / Follow-ups".
+//! After a response is cached, subsequent requests with the same `(method,
+//! path, key, identity, body)` tuple replay it without invoking the handler.
+//! This layer does **not** provide an in-flight claim or an at-most-once
+//! execution guarantee. Concurrent cache misses may both run the handler, and
+//! a completed handler whose response cannot be stored may run again on retry.
+//! Product mutations therefore remain outside the first-party allow-list until
+//! a durable atomic pending/terminal operation ledger owns their retry
+//! protocol.
 //!
 //! [draft-ietf-httpapi-idempotency-key]: https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key/
 //!
@@ -47,12 +44,10 @@
 //! ## What gets cached
 //!
 //! Only explicitly allow-listed `POST` route templates participate. The
-//! default route set is empty; product composition opts in authenticated
-//! operations whose responses carry no one-time authority. Auth/session,
-//! PAT, service-account, webhook activation, and interactive credential
-//! routes are deliberately absent. Responses with `Set-Cookie` or
-//! `Cache-Control: no-store` are never buffered or stored even on an
-//! allow-listed route.
+//! default route set is empty. First-party composition currently opts in only
+//! internal `_test` fixtures; no product mutation relies on this cache for
+//! retry safety. Responses with `Set-Cookie` or `Cache-Control: no-store` are
+//! never buffered or stored even on an allow-listed route.
 //!
 //! Within that route set, only `2xx` and `4xx` responses are cached. `5xx`
 //! responses are passed through uncached so transient backend failures do not
@@ -128,30 +123,15 @@ pub const DEFAULT_MAX_BODY_BYTES: usize = 1024 * 1024;
 /// "opaque token, ≤ 255 octets" guidance.
 pub const MAX_KEY_LEN: usize = 255;
 
-/// Matched POST route templates whose responses are approved for durable
-/// idempotent replay by the first-party API composition.
+/// Matched POST route templates whose completed responses may be cached by the
+/// first-party API composition.
 ///
-/// This is an allow-list, not an inventory. Any route absent here passes
-/// through normally even when a client supplies `Idempotency-Key`. New routes
-/// therefore default to non-replay until their response authority and retry
-/// semantics receive explicit review.
-pub(crate) const REPLAY_SAFE_POST_ROUTES: &[&str] = &[
-    "/api/v1/orgs/{org}/members",
-    "/api/v1/orgs/{org}/workspaces/{ws}/resources",
-    "/api/v1/orgs/{org}/workspaces/{ws}/credentials",
-    "/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/test",
-    "/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/refresh",
-    "/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/revoke",
-    "/api/v1/orgs/{org}/workspaces/{ws}/workflows",
-    "/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/activate",
-    "/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/execute",
-    "/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/validate",
-    "/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/executions",
-    "/api/v1/orgs/{org}/workspaces/{ws}/executions/{exec}/terminate",
-    "/api/v1/orgs/{org}/workspaces/{ws}/executions/{exec}/restart",
-    "/api/v1/_test/echo",
-    "/api/v1/_test/fail",
-];
+/// Only internal test fixtures participate. Product mutations pass through
+/// normally even when a client supplies `Idempotency-Key`: this cache has no
+/// atomic in-flight claim and must not be presented as at-most-once execution.
+/// A product route may join only after a durable pending/terminal operation
+/// ledger defines its retry protocol.
+pub(crate) const REPLAY_SAFE_POST_ROUTES: &[&str] = &["/api/v1/_test/echo", "/api/v1/_test/fail"];
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
@@ -183,3 +163,24 @@ pub use memory::InMemoryIdempotencyStore;
 pub use store::{
     CachedResponse, IdempotencyStore, IdempotencyStoreError, StorageBackedIdempotencyStore,
 };
+
+#[cfg(test)]
+mod tests {
+    use super::REPLAY_SAFE_POST_ROUTES;
+
+    #[test]
+    fn product_mutations_are_not_replay_allowlisted() {
+        assert_eq!(
+            REPLAY_SAFE_POST_ROUTES,
+            ["/api/v1/_test/echo", "/api/v1/_test/fail"]
+        );
+        assert!(
+            !REPLAY_SAFE_POST_ROUTES
+                .contains(&"/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/refresh")
+        );
+        assert!(
+            !REPLAY_SAFE_POST_ROUTES
+                .contains(&"/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/revoke")
+        );
+    }
+}

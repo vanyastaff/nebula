@@ -28,8 +28,8 @@
 //!   engine retry advances the attempt number on re-dispatch.
 //! - [`IdempotencyKey`] — deterministic key `{execution_id}:{node_id}:{attempt}`; dedup enforcement
 //!   lives behind the storage port's idempotency guard.
-//! - [`WorkflowRevision`], [`ExecutionRevisions`] — revision-pin vocabulary for staged
-//!   runtime and persistence integration.
+//! - `ExecutionRevisions` — experimental revision-pin vocabulary, available only with the
+//!   explicitly unstable `unstable-revisions` feature.
 //! - [`ExecutionError`] — typed error for state machine violations.
 //!
 //! ## Non-goals
@@ -47,6 +47,7 @@ pub mod output;
 pub mod plan;
 pub mod replay;
 pub mod result;
+#[cfg(feature = "unstable-revisions")]
 pub mod revision;
 pub mod state;
 pub mod status;
@@ -64,6 +65,7 @@ pub use output::{ExecutionOutput, NodeOutput};
 pub use plan::ExecutionPlan;
 pub use replay::ReplayPlan;
 pub use result::ExecutionResult;
-pub use revision::{ExecutionRevisions, WorkflowRevision};
+#[cfg(feature = "unstable-revisions")]
+pub use revision::ExecutionRevisions;
 pub use state::{ExecutionState, NodeExecutionState};
 pub use status::ExecutionStatus;

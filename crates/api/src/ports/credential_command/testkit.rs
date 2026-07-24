@@ -8,6 +8,7 @@
 use std::{collections::BTreeMap, fmt, num::NonZeroU64, sync::Arc};
 
 use async_trait::async_trait;
+use nebula_core::{CredentialId, CredentialKey, ServiceAccountId, UserId, WorkflowId};
 use nebula_credential::{
     Acquisition, AuthorizationDecision, CredentialActor, CredentialAuthenticationBinding,
     CredentialAuthorizationError, CredentialCommand, CredentialCommandResult, CredentialController,
@@ -65,15 +66,33 @@ impl TestGateway {
     fn actor(
         principal: &AuthenticatedPrincipal,
     ) -> Result<CredentialActor, CredentialGatewayError> {
-        let actor = match principal.kind() {
-            AuthenticatedPrincipalKind::User => CredentialActor::user(principal.subject()),
+        match principal.kind() {
+            AuthenticatedPrincipalKind::User => UserId::parse(principal.subject())
+                .map(CredentialActor::user)
+                .map_err(|_| CredentialGatewayError::Forbidden),
             AuthenticatedPrincipalKind::ServiceAccount => {
-                CredentialActor::service_account(principal.subject())
+                ServiceAccountId::parse(principal.subject())
+                    .map(CredentialActor::service_account)
+                    .map_err(|_| CredentialGatewayError::Forbidden)
             },
-            AuthenticatedPrincipalKind::Workflow => CredentialActor::workflow(principal.subject()),
-            AuthenticatedPrincipalKind::System => return Err(CredentialGatewayError::Forbidden),
-        };
-        actor.map_err(|_| CredentialGatewayError::Forbidden)
+            AuthenticatedPrincipalKind::Workflow => WorkflowId::parse(principal.subject())
+                .map(CredentialActor::workflow)
+                .map_err(|_| CredentialGatewayError::Forbidden),
+            AuthenticatedPrincipalKind::System => Err(CredentialGatewayError::Forbidden),
+        }
+    }
+
+    fn credential_id(value: &str) -> Result<CredentialId, CredentialGatewayError> {
+        CredentialId::parse(value).map_err(|_| CredentialGatewayError::NotFound)
+    }
+
+    fn credential_key(value: &str) -> Result<CredentialKey, CredentialGatewayError> {
+        CredentialKey::new(value).map_err(|_| CredentialGatewayError::ValidationFailed {
+            report: CredentialGatewayValidationReport::single(
+                CredentialValidationLocation::CredentialKey,
+                CredentialValidationCode::InvalidKey,
+            ),
+        })
     }
 
     fn command(
@@ -85,7 +104,7 @@ impl TestGateway {
                 .map_err(|_| CredentialGatewayError::Internal)?;
         Ok(match command {
             CredentialGatewayCommand::Create(request) => CredentialCommand::Create {
-                credential_key: request.credential_key,
+                credential_key: Self::credential_key(&request.credential_key)?,
                 properties: request.data,
                 display: CredentialDisplay {
                     display_name: Some(request.name),
@@ -93,15 +112,15 @@ impl TestGateway {
                     tags: request.tags.unwrap_or_default().into_iter().collect(),
                 },
             },
-            CredentialGatewayCommand::Get { credential_id } => {
-                CredentialCommand::Get { credential_id }
+            CredentialGatewayCommand::Get { credential_id } => CredentialCommand::Get {
+                credential_id: Self::credential_id(&credential_id)?,
             },
             CredentialGatewayCommand::List => CredentialCommand::List,
             CredentialGatewayCommand::Update {
                 credential_id,
                 request,
             } => CredentialCommand::Update {
-                credential_id,
+                credential_id: Self::credential_id(&credential_id)?,
                 properties: request.data,
                 expected_version: request.version,
                 display: CredentialDisplayPatch {
@@ -112,20 +131,20 @@ impl TestGateway {
                         .map(|tags| tags.into_iter().collect::<BTreeMap<_, _>>()),
                 },
             },
-            CredentialGatewayCommand::Delete { credential_id } => {
-                CredentialCommand::Delete { credential_id }
+            CredentialGatewayCommand::Delete { credential_id } => CredentialCommand::Delete {
+                credential_id: Self::credential_id(&credential_id)?,
             },
-            CredentialGatewayCommand::Test { credential_id } => {
-                CredentialCommand::Test { credential_id }
+            CredentialGatewayCommand::Test { credential_id } => CredentialCommand::Test {
+                credential_id: Self::credential_id(&credential_id)?,
             },
-            CredentialGatewayCommand::Refresh { credential_id } => {
-                CredentialCommand::Refresh { credential_id }
+            CredentialGatewayCommand::Refresh { credential_id } => CredentialCommand::Refresh {
+                credential_id: Self::credential_id(&credential_id)?,
             },
-            CredentialGatewayCommand::Revoke { credential_id } => {
-                CredentialCommand::Revoke { credential_id }
+            CredentialGatewayCommand::Revoke { credential_id } => CredentialCommand::Revoke {
+                credential_id: Self::credential_id(&credential_id)?,
             },
             CredentialGatewayCommand::Resolve(request) => CredentialCommand::Resolve {
-                credential_key: request.credential_key,
+                credential_key: Self::credential_key(&request.credential_key)?,
                 properties: request.data,
                 authentication_binding,
             },
@@ -140,7 +159,7 @@ impl TestGateway {
                         }
                     })?;
                 CredentialCommand::ContinueResolve {
-                    credential_key: request.credential_key,
+                    credential_key: Self::credential_key(&request.credential_key)?,
                     pending_token: request.pending_token,
                     user_input,
                     authentication_binding,

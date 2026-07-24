@@ -132,8 +132,8 @@ pub(crate) enum L1Completion {
     /// Waiters must not form an immediate retry herd. They return a typed
     /// no-progress coordination error and leave retry policy to their caller.
     NoStateChange,
-    /// The winner reached an exact post-provider outcome that cannot safely be
-    /// replayed without reconciliation.
+    /// The winner reached an exact refresh-finalization failure that cannot
+    /// safely be replayed without reconciliation.
     ///
     /// A still-true authoritative predicate is fail-closed, but callers retain
     /// the proof that the outcome itself is known.

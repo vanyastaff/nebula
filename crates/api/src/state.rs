@@ -340,10 +340,10 @@ pub struct AppState {
     /// Optional idempotency store backing [`crate::middleware::IdempotencyLayer`].
     ///
     /// When `Some`, `build_app` mounts the layer on `api_routes` (NOT on the
-    /// merged webhook transport) so every state-changing API endpoint is
-    /// replay-protected. When `None`, the layer is not mounted and POST
-    /// endpoints have no replay protection — acceptable for tests that build
-    /// minimal routers but a misconfiguration in production.
+    /// merged webhook transport). First-party composition currently allow-lists
+    /// only internal test fixtures: product mutations require a durable atomic
+    /// operation ledger before they may advertise retry safety. When `None`,
+    /// completed-response caching is disabled.
     ///
     /// See idempotency backend for the backend selection contract; the composition root
     /// chooses between [`crate::middleware::InMemoryIdempotencyStore`] and a

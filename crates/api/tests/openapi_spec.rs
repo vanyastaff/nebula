@@ -159,16 +159,10 @@ async fn credential_refresh_publishes_typed_retry_protocol() {
             parameters.iter().find(|parameter| {
                 parameter.get("name").and_then(Value::as_str) == Some("Idempotency-Key")
             })
-        })
-        .expect("credential refresh must publish its optional Idempotency-Key request header");
-    assert_eq!(
-        idempotency_key.get("in").and_then(Value::as_str),
-        Some("header")
-    );
-    assert_eq!(
-        idempotency_key.get("required").and_then(Value::as_bool),
-        Some(false),
-        "Idempotency-Key remains optional: {idempotency_key}"
+        });
+    assert!(
+        idempotency_key.is_none(),
+        "credential refresh must not advertise cached replay as mutation safety: {idempotency_key:?}"
     );
 
     let response = operation

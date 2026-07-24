@@ -469,7 +469,7 @@ impl ApiError {
                     StatusCode::CONFLICT,
                 )
                 .with_detail(
-                    "The credential refresh was not applied. Retry only after the Retry-After delay and with a new Idempotency-Key; reusing the same key intentionally replays this response."
+                    "The credential refresh was not applied. Retry only after the Retry-After delay."
                 ),
             ),
             ApiError::CredentialRefreshReconciliationRequired => (
@@ -862,9 +862,7 @@ mod tests {
         assert_eq!(problem.title, "Credential Refresh Not Applied");
         assert_eq!(
             problem.detail.as_deref(),
-            Some(
-                "The credential refresh was not applied. Retry only after the Retry-After delay and with a new Idempotency-Key; reusing the same key intentionally replays this response."
-            )
+            Some("The credential refresh was not applied. Retry only after the Retry-After delay.")
         );
 
         let response = error.into_response();

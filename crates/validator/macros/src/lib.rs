@@ -100,10 +100,8 @@ mod types;
 pub fn derive_validator(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
-    match expand(input) {
-        Ok(ts) => ts.into(),
-        Err(e) => nebula_macro_support::diag::to_compile_error(e).into(),
-    }
+    let tokens = expand(input).unwrap_or_else(nebula_macro_support::diag::to_compile_error);
+    nebula_macro_support::paths::resolve_generated_crate_paths(tokens).into()
 }
 
 fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {

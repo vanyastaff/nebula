@@ -38,10 +38,9 @@ pub(crate) mod state_source;
 
 pub use binding::{TenantFingerprint, ValidatedCredentialBinding, ValidatedCredentialBindingError};
 pub use controller::{
-    AuthorizationDecision, CredentialActor, CredentialActorBuildError, CredentialActorKind,
-    CredentialAuthorizationError, CredentialCommand, CredentialCommandResult, CredentialController,
-    CredentialControllerError, CredentialDisplayPatch, CredentialOperation,
-    CredentialTenantAuthority,
+    AuthorizationDecision, CredentialActor, CredentialAuthorizationError, CredentialCommand,
+    CredentialCommandResult, CredentialController, CredentialControllerError,
+    CredentialDisplayPatch, CredentialOperation, CredentialTenantAuthority,
 };
 pub use error::{CredentialServiceError, CredentialValidationIssue, CredentialValidationReport};
 pub use facade::{

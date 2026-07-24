@@ -16,12 +16,16 @@
 - `src/state.rs` — `ExecutionState` / `NodeExecutionState`, serialized into the `executions` row (largest module).
 - `src/journal.rs` — `JournalEntry`, backs the append-only `execution_journal` table.
 - `src/idempotency.rs` — `IdempotencyKey` shape `{execution_id}:{node_id}:{attempt}` (format only; dedup lives in storage).
-- `src/revision.rs` — semantic workflow-version and worker-flavor revision-pin vocabulary; consumer migration is separate.
+- `src/revision.rs` — experimental workflow-version and worker-flavor revision-pin aggregate,
+  available only under `unstable-revisions`; it is not a supported surface before end-to-end
+  runtime/storage/admission adoption.
 - `src/plan.rs` / `src/replay.rs` — `ExecutionPlan` (parallel schedule) and `ReplayPlan` (checkpoint resume).
 
 ## Conventions & never-do
 - This crate defines *types + transition legality only*. It must NOT own a repository interface, persist state, or enforce CAS — the spec-16 storage port (`nebula-storage-port::ExecutionStore` + `TransitionBatch`, implemented by `nebula-storage`) is the single source of truth for persisted state (canon §11.1; ADR-0072).
-- `WorkflowRevision` is a transparent semantic newtype over the canonical `WorkflowVersionId`; a numeric publication number is metadata, not a second identity.
+- Do not enable or advertise `unstable-revisions` as a supported contract until durable state,
+  admission, and runtime all consume the pins. `WorkflowVersionId` remains the stable workflow
+  revision identity.
 - This crate defines retry state shapes only: legal `Failed → WaitingRetry → Ready` node transitions, `next_attempt_at`, `total_retries`, `ExecutionBudget.max_total_retries`, `NodeAttempt`, and idempotency-key shape. The engine owns operator-declared node retry (`retry_policy`) and re-dispatch; `nebula-resilience` remains the in-action outbound-call retry surface. Do not add an `ActionResult::Retry` scheduler here.
 - `IdempotencyKey` here is just the deterministic key shape (§11.3); check-before-side-effect / mark-after enforcement is in storage. The control-queue / outbox also live in storage, not here.
 - 5 `panic!` sites in `transition`/`status` are state-machine invariant guards (flagged debt); do not add new ones — use typed `ExecutionError`.

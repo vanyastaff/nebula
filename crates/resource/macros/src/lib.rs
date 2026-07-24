@@ -144,7 +144,7 @@ mod topology_attr;
 /// - `#[resource(...)]` container attribute: compile error (removed).
 #[proc_macro_derive(Resource, attributes(credential, topology))]
 pub fn derive_resource(input: TokenStream) -> TokenStream {
-    slots::derive(input)
+    nebula_macro_support::paths::resolve_generated_crate_paths(slots::derive(input).into()).into()
 }
 
 /// Derive macro that generates `impl ResourceConfig` with a deterministic structural
@@ -190,7 +190,7 @@ pub fn derive_resource(input: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro_derive(ResourceConfig, attributes(config))]
 pub fn derive_resource_config(input: TokenStream) -> TokenStream {
-    config::derive(input)
+    nebula_macro_support::paths::resolve_generated_crate_paths(config::derive(input).into()).into()
 }
 
 /// Derive macro that generates `From<T> for nebula_resource::Error`.
@@ -230,10 +230,8 @@ pub fn derive_resource_config(input: TokenStream) -> TokenStream {
 #[proc_macro_derive(ClassifyError, attributes(classify))]
 pub fn derive_classify_error(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    match classify_error_impl(&input) {
-        Ok(tokens) => tokens.into(),
-        Err(err) => err.to_compile_error().into(),
-    }
+    let tokens = classify_error_impl(&input).unwrap_or_else(|err| err.to_compile_error());
+    nebula_macro_support::paths::resolve_generated_crate_paths(tokens).into()
 }
 
 /// Parsed classification for a single variant.

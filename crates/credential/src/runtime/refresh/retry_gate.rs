@@ -4,100 +4,46 @@
 use nebula_storage_port::{
     CredentialMaterialTransition, CredentialPersistence, CredentialPersistenceError,
     CredentialReplacement, CredentialSelector, RefreshRetryAdmission, RefreshRetryBlock,
-    RefreshRetryDelay, RefreshRetryDiagnosticCode, RefreshRetryEvidence, RefreshRetryKind,
-    RefreshRetryPhase, RefreshRetryTransition, StoredCredential, StoredLiveCredential,
+    RefreshRetryEvidence, RefreshRetryTransition, StoredCredential, StoredLiveCredential,
 };
 
-use crate::error::{
-    RefreshDiagnosticCode, RefreshErrorKind, RefreshFailureSpec, RefreshNotAppliedContext,
-    RefreshNotAppliedPhase, RetryAdvice, RetryDelay,
-};
-
-/// A supposedly equivalent credential/storage retry representation drifted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub(crate) enum RefreshRetryGateConversionError {
-    /// The fixed diagnostic-code contracts no longer agree.
-    #[error("credential refresh retry diagnostic contract mismatch")]
-    DiagnosticCode,
-    /// The bounded whole-second delay contracts no longer agree.
-    #[error("credential refresh retry delay contract mismatch")]
-    Delay,
-}
+use crate::error::{RefreshFailureSpec, RefreshNotAppliedContext, RetryAdvice};
 
 /// Convert one proof-bearing exact failure into a structural CAS transition.
 pub(crate) fn transition_from_context(
     context: &RefreshNotAppliedContext,
-) -> Result<RefreshRetryTransition, RefreshRetryGateConversionError> {
-    let evidence = evidence_from_context(context)?;
+) -> RefreshRetryTransition {
+    let evidence = evidence_from_context(context);
     match context.retry() {
-        RetryAdvice::Never => Ok(RefreshRetryTransition::SetNever { evidence }),
-        RetryAdvice::After(delay) => {
-            let delay = RefreshRetryDelay::new(delay.get())
-                .map_err(|_| RefreshRetryGateConversionError::Delay)?;
-            Ok(RefreshRetryTransition::SetAfter { delay, evidence })
-        },
+        RetryAdvice::Never => RefreshRetryTransition::SetNever { evidence },
+        RetryAdvice::After(delay) => RefreshRetryTransition::SetAfter { delay, evidence },
     }
 }
 
 /// Reconstruct the typed exact failure from backend-clock gate admission.
-pub(crate) fn context_from_block(
-    block: RefreshRetryBlock,
-) -> Result<Box<RefreshNotAppliedContext>, RefreshRetryGateConversionError> {
+pub(crate) fn context_from_block(block: RefreshRetryBlock) -> RefreshNotAppliedContext {
     let (evidence, retry) = match block {
         RefreshRetryBlock::Never { evidence } => (evidence, RetryAdvice::Never),
         RefreshRetryBlock::After {
             remaining,
             evidence,
-        } => {
-            let delay = RetryDelay::new(remaining.get())
-                .map_err(|_| RefreshRetryGateConversionError::Delay)?;
-            (evidence, RetryAdvice::After(delay))
-        },
+        } => (evidence, RetryAdvice::After(remaining)),
     };
 
-    let phase = match evidence.phase() {
-        RefreshRetryPhase::BeforeDispatch => RefreshNotAppliedPhase::BeforeDispatch,
-        RefreshRetryPhase::ProviderConfirmedNotApplied => {
-            RefreshNotAppliedPhase::ProviderConfirmedNotApplied
-        },
-    };
-    let kind = match evidence.kind() {
-        RefreshRetryKind::TransientNetwork => RefreshErrorKind::TransientNetwork,
-        RefreshRetryKind::ProviderUnavailable => RefreshErrorKind::ProviderUnavailable,
-        RefreshRetryKind::ProtocolError => RefreshErrorKind::ProtocolError,
-    };
-    let mut spec = RefreshFailureSpec::new(kind, retry);
+    let mut spec = RefreshFailureSpec::new(evidence.kind(), retry);
     if let Some(code) = evidence.diagnostic_code() {
-        let code = RefreshDiagnosticCode::parse(code.as_str())
-            .map_err(|_| RefreshRetryGateConversionError::DiagnosticCode)?;
-        spec = spec.with_diagnostic_code(code);
+        spec = spec.with_diagnostic_code(code.clone());
     }
-    Ok(Box::new(RefreshNotAppliedContext::from_spec(phase, spec)))
+    RefreshNotAppliedContext::from_spec(evidence.phase(), spec)
 }
 
-fn evidence_from_context(
-    context: &RefreshNotAppliedContext,
-) -> Result<RefreshRetryEvidence, RefreshRetryGateConversionError> {
-    let phase = match context.phase() {
-        RefreshNotAppliedPhase::BeforeDispatch => RefreshRetryPhase::BeforeDispatch,
-        RefreshNotAppliedPhase::ProviderConfirmedNotApplied => {
-            RefreshRetryPhase::ProviderConfirmedNotApplied
-        },
-    };
-    let kind = match context.kind() {
-        RefreshErrorKind::TransientNetwork => RefreshRetryKind::TransientNetwork,
-        RefreshErrorKind::ProviderUnavailable => RefreshRetryKind::ProviderUnavailable,
-        RefreshErrorKind::ProtocolError => RefreshRetryKind::ProtocolError,
-    };
-    let diagnostic_code = context
-        .diagnostic_code()
-        .map(|code| RefreshRetryDiagnosticCode::parse(code.as_str()))
-        .transpose()
-        .map_err(|_| RefreshRetryGateConversionError::DiagnosticCode)?;
-    Ok(RefreshRetryEvidence::new(phase, kind, diagnostic_code))
+fn evidence_from_context(context: &RefreshNotAppliedContext) -> RefreshRetryEvidence {
+    RefreshRetryEvidence::new(
+        context.phase(),
+        context.kind(),
+        context.diagnostic_code().cloned(),
+    )
 }
-
-static_assertions::const_assert_eq!(RetryDelay::MAX_SECS, RefreshRetryDelay::MAX_SECS);
 
 const MAX_DISPLAY_RACE_RETRIES: usize = 3;
 
@@ -147,13 +93,8 @@ pub(crate) async fn persist_retry_gate<S>(
 where
     S: CredentialPersistence + ?Sized,
 {
-    let transition = match transition_from_context(&context) {
-        Ok(transition) => transition,
-        Err(_) => {
-            return RetryGateWrite::DefiniteFailure(CredentialPersistenceError::CorruptRecord);
-        },
-    };
-    let baseline = observed.clone();
+    let transition = transition_from_context(&context);
+    let baseline_epoch = observed.material_epoch();
     let mut current = observed;
     let mut last_conflict = None;
 
@@ -177,18 +118,15 @@ where
                     },
                     Err(error) => return RetryGateWrite::DefiniteFailure(error),
                 };
-                if !same_refresh_authority(&baseline, &latest) {
+                if !same_refresh_authority(baseline_epoch, &latest) {
                     return RetryGateWrite::Superseded(conflict);
                 }
                 match store.refresh_retry_snapshot(selector).await {
                     Ok(snapshot) => match snapshot.admission() {
                         RefreshRetryAdmission::Blocked(block) => {
-                            return match context_from_block(block.clone()) {
-                                Ok(context) => RetryGateWrite::Applied(context),
-                                Err(_) => RetryGateWrite::DefiniteFailure(
-                                    CredentialPersistenceError::CorruptRecord,
-                                ),
-                            };
+                            return RetryGateWrite::Applied(Box::new(context_from_block(
+                                block.clone(),
+                            )));
                         },
                         RefreshRetryAdmission::Open => current = latest,
                     },
@@ -217,7 +155,7 @@ pub(crate) async fn persist_reauth_required<S>(
 where
     S: CredentialPersistence + ?Sized,
 {
-    let baseline = observed.clone();
+    let baseline_epoch = observed.material_epoch();
     let mut current = observed;
     let mut last_conflict = None;
 
@@ -243,7 +181,7 @@ where
                 if latest.reauth_required() {
                     return ReauthWrite::Applied;
                 }
-                if !same_refresh_authority(&baseline, &latest) {
+                if !same_refresh_authority(baseline_epoch, &latest) {
                     return ReauthWrite::Superseded(conflict);
                 }
                 current = latest;
@@ -287,6 +225,88 @@ fn reauth_replacement(current: &StoredLiveCredential) -> CredentialReplacement {
     )
 }
 
-fn same_refresh_authority(baseline: &StoredLiveCredential, current: &StoredLiveCredential) -> bool {
-    baseline.material_epoch() == current.material_epoch()
+fn same_refresh_authority(
+    baseline_epoch: nebula_storage_port::CredentialMaterialEpoch,
+    current: &StoredLiveCredential,
+) -> bool {
+    baseline_epoch == current.material_epoch()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use nebula_storage_port::{
+        RefreshRetryBlock, RefreshRetryDiagnosticCode, RefreshRetryKind, RefreshRetryPhase,
+        RefreshRetryTransition,
+    };
+
+    use super::{context_from_block, transition_from_context};
+    use crate::error::{
+        RefreshDiagnosticCode, RefreshErrorKind, RefreshFailureSpec, RefreshNotAppliedContext,
+        RefreshNotAppliedPhase, RetryAdvice, RetryDelay,
+    };
+
+    #[test]
+    fn credential_brands_are_the_storage_port_primitives() {
+        let delay = RetryDelay::new(Duration::from_millis(1_001))
+            .expect("canonical delay rounds conservatively");
+        let code = RefreshDiagnosticCode::parse("oauth.server_error")
+            .expect("fixed diagnostic code is valid");
+        let context = RefreshNotAppliedContext::from_spec(
+            RefreshNotAppliedPhase::ProviderConfirmedNotApplied,
+            RefreshFailureSpec::new(
+                RefreshErrorKind::ProviderUnavailable,
+                RetryAdvice::After(delay),
+            )
+            .with_diagnostic_code(code.clone()),
+        );
+
+        let transition = transition_from_context(&context);
+        let RefreshRetryTransition::SetAfter {
+            delay: stored_delay,
+            evidence,
+        } = transition
+        else {
+            panic!("timed advice must install a timed gate");
+        };
+
+        assert_eq!(stored_delay, delay);
+        assert_eq!(
+            evidence.phase(),
+            RefreshRetryPhase::ProviderConfirmedNotApplied
+        );
+        assert_eq!(evidence.kind(), RefreshRetryKind::ProviderUnavailable);
+        assert_eq!(
+            evidence
+                .diagnostic_code()
+                .map(RefreshRetryDiagnosticCode::as_str),
+            Some(code.as_str())
+        );
+    }
+
+    #[test]
+    fn durable_block_reuses_the_same_validated_values_infallibly() {
+        let remaining = RetryDelay::new(Duration::from_secs(7)).expect("test delay is in range");
+        let code =
+            RefreshDiagnosticCode::parse("oauth.retry").expect("fixed diagnostic code is valid");
+        let block = RefreshRetryBlock::After {
+            remaining,
+            evidence: nebula_storage_port::RefreshRetryEvidence::new(
+                RefreshNotAppliedPhase::BeforeDispatch,
+                RefreshErrorKind::TransientNetwork,
+                Some(code.clone()),
+            ),
+        };
+
+        let context = context_from_block(block);
+
+        assert_eq!(context.phase(), RefreshNotAppliedPhase::BeforeDispatch);
+        assert_eq!(context.kind(), RefreshErrorKind::TransientNetwork);
+        assert_eq!(context.retry(), RetryAdvice::After(remaining));
+        assert_eq!(
+            context.diagnostic_code().map(RefreshDiagnosticCode::as_str),
+            Some(code.as_str())
+        );
+    }
 }

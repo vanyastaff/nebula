@@ -178,8 +178,7 @@ impl CredentialService {
                 match store.refresh_retry_snapshot(&selector).await {
                     Ok(snapshot) => {
                         if let RefreshRetryAdmission::Blocked(block) = snapshot.admission() {
-                            let context = context_from_block(block.clone())
-                                .map_err(|_| RefreshRecheckError::InvalidState)?;
+                            let context = Box::new(context_from_block(block.clone()));
                             return Ok(RefreshRecheck::Suppressed(context));
                         }
                         Ok(
@@ -326,10 +325,8 @@ impl CredentialService {
                             ));
                         },
                         Ok(super::ops::RefreshExecutionResult::LocalFinalizationFailed) => {
-                            return RefreshDisposition::no_state_change(Err(
-                                CredentialServiceError::Internal(
-                                    "local credential refresh finalization failed".to_owned(),
-                                ),
+                            return RefreshDisposition::retry_unsafe(Err(
+                                CredentialServiceError::RefreshReconciliationRequired,
                             ));
                         },
                         Ok(super::ops::RefreshExecutionResult::NotApplied(context)) => {
@@ -433,12 +430,12 @@ impl CredentialService {
                             ));
                         },
                         Err(CredentialPersistenceError::OutcomeUnknown) => {
-                            return RefreshDisposition::replay_safe(Err(
+                            return RefreshDisposition::outcome_unknown(Err(
                                 CredentialServiceError::OutcomeUnknown,
                             ));
                         },
                         Err(error) => {
-                            return RefreshDisposition::no_state_change(Err(
+                            return RefreshDisposition::retry_unsafe(Err(
                                 Self::map_store_err_for(&id_owned, error),
                             ));
                         },
@@ -532,9 +529,9 @@ impl CredentialService {
         match self.store.refresh_retry_snapshot(selector).await {
             Ok(snapshot) => match snapshot.admission() {
                 RefreshRetryAdmission::Open => Ok(None),
-                RefreshRetryAdmission::Blocked(block) => context_from_block(block.clone())
-                    .map(Some)
-                    .map_err(|_| CredentialServiceError::Store),
+                RefreshRetryAdmission::Blocked(block) => {
+                    Ok(Some(Box::new(context_from_block(block.clone()))))
+                },
             },
             Err(error) => Err(Self::map_store_err_for(id, error)),
         }

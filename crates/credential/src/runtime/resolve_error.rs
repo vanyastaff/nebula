@@ -196,7 +196,7 @@ pub enum ResolveError {
         /// Credential identifier.
         credential_id: String,
     },
-    /// A concurrent refresh reached an exact post-provider result that cannot
+    /// A concurrent refresh reached an exact finalization failure that cannot
     /// safely be replayed without reconciling durable aggregate state.
     ///
     /// L1 completion signals are intentionally payload-free, so a waiter

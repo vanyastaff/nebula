@@ -1,10 +1,10 @@
 //! Tower [`Layer`] + [`Service`] implementing idempotent-replay middleware.
 //!
-//! [`IdempotencyLayer`] wraps any inner service with the full idempotency backend
-//! idempotency contract: request-body buffering, SHA-256 fingerprinting,
-//! cache lookup, 422 on body mismatch, 5xx pass-through (not cached),
-//! response-header filtering, `Idempotent-Replay: true` on replay, and
-//! metrics emission via [`MetricsRegistry`].
+//! [`IdempotencyLayer`] wraps any inner service with a completed-response
+//! replay contract: request-body buffering, SHA-256 fingerprinting, cache
+//! lookup, 422 on body mismatch, 5xx pass-through (not cached), response-header
+//! filtering, `Idempotent-Replay: true` on replay, and metrics emission via
+//! [`MetricsRegistry`]. It does not claim or deduplicate in-flight requests.
 
 use std::{
     collections::HashSet,
@@ -407,7 +407,7 @@ where
                 "idempotency-store get failed — failing the request closed (idempotency backend)"
             );
             return Ok(internal_error(
-                "idempotency store unavailable; request rejected to preserve replay protection",
+                "idempotency store unavailable; request rejected because cached replay cannot be evaluated",
             ));
         },
     };

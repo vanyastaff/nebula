@@ -2,11 +2,14 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use nebula_core::{ArtifactSetDigest, PluginKey};
+#[cfg(feature = "unstable-worker-flavor")]
+use nebula_core::ArtifactSetDigest;
+use nebula_core::PluginKey;
 
+#[cfg(feature = "unstable-worker-flavor")]
+use crate::{PluginContractDescriptor, PluginSet, RuntimeContractVersion, WorkerFlavorRevision};
 use crate::{
-    PluginContractDescriptor, PluginError, PluginSet, ResolvedPlugin, RuntimeContractVersion,
-    WorkerFlavorRevision,
+    PluginError, ResolvedPlugin,
     dependency::{self, PluginDependencyError},
 };
 
@@ -43,6 +46,7 @@ pub struct PluginRegistry {
 /// Failure to consume a mutable registry into a validated immutable registry.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
+#[cfg(feature = "unstable-worker-flavor")]
 pub enum RegistryFreezeError {
     /// A worker flavor cannot be identified without at least one plugin.
     #[error("cannot freeze an empty plugin registry")]
@@ -65,6 +69,7 @@ pub enum RegistryFreezeError {
 /// This type preserves the mutable registry's catalog lookup and iteration
 /// surface, exposes the validated load order, and provides no registration,
 /// removal, or clearing operations.
+#[cfg(feature = "unstable-worker-flavor")]
 pub struct FrozenPluginRegistry {
     registry: PluginRegistry,
     load_order: Vec<PluginKey>,
@@ -235,6 +240,7 @@ impl PluginRegistry {
             worker_flavor_revision_id = tracing::field::Empty,
         )
     )]
+    #[cfg(feature = "unstable-worker-flavor")]
     pub fn freeze(
         self,
         artifact_set_digest: ArtifactSetDigest,
@@ -311,6 +317,7 @@ impl PluginRegistry {
     }
 }
 
+#[cfg(feature = "unstable-worker-flavor")]
 impl FrozenPluginRegistry {
     /// Looks up a resolved plugin by key.
     pub fn get(&self, key: &PluginKey) -> Option<Arc<ResolvedPlugin>> {
@@ -400,6 +407,7 @@ impl FrozenPluginRegistry {
     }
 }
 
+#[cfg(feature = "unstable-worker-flavor")]
 impl nebula_error::Classify for RegistryFreezeError {
     fn category(&self) -> nebula_error::ErrorCategory {
         match self {
@@ -421,6 +429,7 @@ impl nebula_error::Classify for RegistryFreezeError {
     }
 }
 
+#[cfg(feature = "unstable-worker-flavor")]
 impl std::fmt::Debug for FrozenPluginRegistry {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter

@@ -22,15 +22,15 @@ use nebula_api::{
     state::{MembershipStore, WorkspaceResolver},
 };
 use nebula_core::{
-    OrgId, Permission, Principal as CorePrincipal, ServiceAccountId, TenantContext, UserId,
-    WorkspaceGrant, WorkspaceId, effective_workspace_role,
+    CredentialId, CredentialKey, OrgId, Permission, Principal as CorePrincipal, ServiceAccountId,
+    TenantContext, UserId, WorkflowId, WorkspaceGrant, WorkspaceId, effective_workspace_role,
 };
 use nebula_credential::{
-    Acquisition, AuthorizationDecision, CredentialActor, CredentialActorKind,
-    CredentialAuthenticationBinding, CredentialAuthorizationError, CredentialCommand,
-    CredentialCommandResult, CredentialController, CredentialControllerError, CredentialDisplay,
-    CredentialDisplayPatch, CredentialOperation, CredentialServiceError, CredentialTenantAuthority,
-    InteractionRequest, TestFailureCode, UserInput,
+    Acquisition, AuthorizationDecision, CredentialActor, CredentialAuthenticationBinding,
+    CredentialAuthorizationError, CredentialCommand, CredentialCommandResult, CredentialController,
+    CredentialControllerError, CredentialDisplay, CredentialDisplayPatch, CredentialOperation,
+    CredentialServiceError, CredentialTenantAuthority, InteractionRequest, TestFailureCode,
+    UserInput,
 };
 use nebula_storage_port::Scope;
 use nebula_tenancy::{BindingScopeResolver, Principal as TenantPrincipal, ScopeResolver as _};
@@ -121,14 +121,10 @@ impl CredentialTenantAuthority for ServerCredentialAuthority {
             Err(_) => return Err(CredentialAuthorizationError::Unavailable),
         }
 
-        let core_actor = match actor.kind() {
-            CredentialActorKind::User => UserId::parse(actor.subject())
-                .map(CorePrincipal::User)
-                .map_err(|_| CredentialAuthorizationError::Denied)?,
-            CredentialActorKind::ServiceAccount => ServiceAccountId::parse(actor.subject())
-                .map(CorePrincipal::ServiceAccount)
-                .map_err(|_| CredentialAuthorizationError::Denied)?,
-            CredentialActorKind::Workflow => return Ok(AuthorizationDecision::Deny),
+        let core_actor = match actor {
+            CredentialActor::User(subject) => CorePrincipal::User(*subject),
+            CredentialActor::ServiceAccount(subject) => CorePrincipal::ServiceAccount(*subject),
+            CredentialActor::Workflow(_) => return Ok(AuthorizationDecision::Deny),
             _ => return Ok(AuthorizationDecision::Deny),
         };
 
@@ -195,16 +191,34 @@ impl ServerCredentialGateway {
     fn actor(
         principal: &AuthenticatedPrincipal,
     ) -> Result<CredentialActor, CredentialGatewayError> {
-        let actor = match principal.kind() {
-            AuthenticatedPrincipalKind::User => CredentialActor::user(principal.subject()),
+        match principal.kind() {
+            AuthenticatedPrincipalKind::User => UserId::parse(principal.subject())
+                .map(CredentialActor::user)
+                .map_err(|_| CredentialGatewayError::Forbidden),
             AuthenticatedPrincipalKind::ServiceAccount => {
-                CredentialActor::service_account(principal.subject())
+                ServiceAccountId::parse(principal.subject())
+                    .map(CredentialActor::service_account)
+                    .map_err(|_| CredentialGatewayError::Forbidden)
             },
-            AuthenticatedPrincipalKind::Workflow => CredentialActor::workflow(principal.subject()),
-            AuthenticatedPrincipalKind::System => return Err(CredentialGatewayError::Forbidden),
-            _ => return Err(CredentialGatewayError::Forbidden),
-        };
-        actor.map_err(|_| CredentialGatewayError::Forbidden)
+            AuthenticatedPrincipalKind::Workflow => WorkflowId::parse(principal.subject())
+                .map(CredentialActor::workflow)
+                .map_err(|_| CredentialGatewayError::Forbidden),
+            AuthenticatedPrincipalKind::System => Err(CredentialGatewayError::Forbidden),
+            _ => Err(CredentialGatewayError::Forbidden),
+        }
+    }
+
+    fn credential_id(value: &str) -> Result<CredentialId, CredentialGatewayError> {
+        CredentialId::parse(value).map_err(|_| CredentialGatewayError::NotFound)
+    }
+
+    fn credential_key(value: &str) -> Result<CredentialKey, CredentialGatewayError> {
+        CredentialKey::new(value).map_err(|_| CredentialGatewayError::ValidationFailed {
+            report: CredentialGatewayValidationReport::single(
+                CredentialValidationLocation::CredentialKey,
+                CredentialValidationCode::InvalidKey,
+            ),
+        })
     }
 
     fn command(
@@ -217,7 +231,7 @@ impl ServerCredentialGateway {
         let command =
             match command {
                 CredentialGatewayCommand::Create(request) => CredentialCommand::Create {
-                    credential_key: request.credential_key,
+                    credential_key: Self::credential_key(&request.credential_key)?,
                     properties: request.data,
                     display: CredentialDisplay {
                         display_name: Some(request.name),
@@ -225,15 +239,15 @@ impl ServerCredentialGateway {
                         tags: request.tags.unwrap_or_default().into_iter().collect(),
                     },
                 },
-                CredentialGatewayCommand::Get { credential_id } => {
-                    CredentialCommand::Get { credential_id }
+                CredentialGatewayCommand::Get { credential_id } => CredentialCommand::Get {
+                    credential_id: Self::credential_id(&credential_id)?,
                 },
                 CredentialGatewayCommand::List => CredentialCommand::List,
                 CredentialGatewayCommand::Update {
                     credential_id,
                     request,
                 } => CredentialCommand::Update {
-                    credential_id,
+                    credential_id: Self::credential_id(&credential_id)?,
                     properties: request.data,
                     expected_version: request.version,
                     display: CredentialDisplayPatch {
@@ -244,20 +258,20 @@ impl ServerCredentialGateway {
                             .map(|tags| tags.into_iter().collect::<BTreeMap<_, _>>()),
                     },
                 },
-                CredentialGatewayCommand::Delete { credential_id } => {
-                    CredentialCommand::Delete { credential_id }
+                CredentialGatewayCommand::Delete { credential_id } => CredentialCommand::Delete {
+                    credential_id: Self::credential_id(&credential_id)?,
                 },
-                CredentialGatewayCommand::Test { credential_id } => {
-                    CredentialCommand::Test { credential_id }
+                CredentialGatewayCommand::Test { credential_id } => CredentialCommand::Test {
+                    credential_id: Self::credential_id(&credential_id)?,
                 },
-                CredentialGatewayCommand::Refresh { credential_id } => {
-                    CredentialCommand::Refresh { credential_id }
+                CredentialGatewayCommand::Refresh { credential_id } => CredentialCommand::Refresh {
+                    credential_id: Self::credential_id(&credential_id)?,
                 },
-                CredentialGatewayCommand::Revoke { credential_id } => {
-                    CredentialCommand::Revoke { credential_id }
+                CredentialGatewayCommand::Revoke { credential_id } => CredentialCommand::Revoke {
+                    credential_id: Self::credential_id(&credential_id)?,
                 },
                 CredentialGatewayCommand::Resolve(request) => CredentialCommand::Resolve {
-                    credential_key: request.credential_key,
+                    credential_key: Self::credential_key(&request.credential_key)?,
                     properties: request.data,
                     authentication_binding,
                 },
@@ -270,7 +284,7 @@ impl ServerCredentialGateway {
                             ),
                         })?;
                     CredentialCommand::ContinueResolve {
-                        credential_key: request.credential_key,
+                        credential_key: Self::credential_key(&request.credential_key)?,
                         pending_token: request.pending_token,
                         user_input,
                         authentication_binding,
@@ -792,7 +806,7 @@ mod tests {
     }
 
     fn actor() -> CredentialActor {
-        CredentialActor::user(UserId::new().to_string()).expect("typed user subject")
+        CredentialActor::user(UserId::new())
     }
 
     #[tokio::test]
@@ -853,8 +867,7 @@ mod tests {
                 .expect("middleware test principal emits a valid binding");
 
         let actor = ServerCredentialGateway::actor(&principal).expect("user actor maps");
-        assert_eq!(actor.kind(), CredentialActorKind::User);
-        assert_eq!(actor.subject(), subject.to_string());
+        assert_eq!(actor, CredentialActor::User(subject));
 
         let resolve = ServerCredentialGateway::command(
             &principal,
@@ -895,6 +908,54 @@ mod tests {
         assert_ne!(principal.authentication_binding(), principal.subject());
     }
 
+    #[test]
+    fn production_gateway_rejects_malformed_command_ids_at_adapter_boundary() {
+        let principal = AuthenticatedPrincipal::for_test_user(UserId::new().to_string());
+
+        for command in [
+            CredentialGatewayCommand::Get {
+                credential_id: "not-a-credential-id".to_owned(),
+            },
+            CredentialGatewayCommand::Refresh {
+                credential_id: "not-a-credential-id".to_owned(),
+            },
+            CredentialGatewayCommand::Revoke {
+                credential_id: "not-a-credential-id".to_owned(),
+            },
+        ] {
+            assert_eq!(
+                ServerCredentialGateway::command(&principal, command)
+                    .expect_err("malformed credential id must not reach the controller"),
+                CredentialGatewayError::NotFound
+            );
+        }
+    }
+
+    #[test]
+    fn production_gateway_rejects_malformed_credential_key_at_adapter_boundary() {
+        let principal = AuthenticatedPrincipal::for_test_user(UserId::new().to_string());
+        let error = ServerCredentialGateway::command(
+            &principal,
+            CredentialGatewayCommand::Resolve(
+                nebula_api::domain::credential::dto::ResolveCredentialRequest {
+                    credential_key: "Not Normalized".to_owned(),
+                    data: serde_json::json!({}),
+                },
+            ),
+        )
+        .expect_err("malformed credential key must not reach the controller");
+
+        let CredentialGatewayError::ValidationFailed { report } = error else {
+            panic!("malformed credential key must be a validation failure");
+        };
+        let issue = report
+            .issues()
+            .next()
+            .expect("validation report is structurally non-empty");
+        assert_eq!(issue.path(), "/credential_key");
+        assert_eq!(issue.code(), "invalid_key");
+    }
+
     #[tokio::test]
     async fn denied_command_stops_before_service_dispatch() {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -909,7 +970,7 @@ mod tests {
                 &actor(),
                 &Scope::new("workspace", "org"),
                 CredentialCommand::Get {
-                    credential_id: "cred_missing".to_owned(),
+                    credential_id: CredentialId::new(),
                 },
             )
             .await
@@ -926,41 +987,32 @@ mod tests {
     async fn every_command_gets_one_exact_decision_before_any_effect() {
         let binding = CredentialAuthenticationBinding::parse("A".repeat(43))
             .expect("fixed test authentication binding");
+        let credential_id = CredentialId::new();
         let commands = vec![
             CredentialCommand::Create {
-                credential_key: "api_key".to_owned(),
+                credential_key: CredentialKey::new("api_key").expect("valid test credential key"),
                 properties: serde_json::json!({ "api_key": "secret" }),
                 display: CredentialDisplay::default(),
             },
-            CredentialCommand::Get {
-                credential_id: "cred-1".to_owned(),
-            },
+            CredentialCommand::Get { credential_id },
             CredentialCommand::List,
             CredentialCommand::Update {
-                credential_id: "cred-1".to_owned(),
+                credential_id,
                 properties: None,
                 expected_version: None,
                 display: CredentialDisplayPatch::default(),
             },
-            CredentialCommand::Delete {
-                credential_id: "cred-1".to_owned(),
-            },
-            CredentialCommand::Test {
-                credential_id: "cred-1".to_owned(),
-            },
-            CredentialCommand::Refresh {
-                credential_id: "cred-1".to_owned(),
-            },
-            CredentialCommand::Revoke {
-                credential_id: "cred-1".to_owned(),
-            },
+            CredentialCommand::Delete { credential_id },
+            CredentialCommand::Test { credential_id },
+            CredentialCommand::Refresh { credential_id },
+            CredentialCommand::Revoke { credential_id },
             CredentialCommand::Resolve {
-                credential_key: "oauth2".to_owned(),
+                credential_key: CredentialKey::new("oauth2").expect("valid test credential key"),
                 properties: serde_json::json!({}),
                 authentication_binding: binding.clone(),
             },
             CredentialCommand::ContinueResolve {
-                credential_key: "oauth2".to_owned(),
+                credential_key: CredentialKey::new("oauth2").expect("valid test credential key"),
                 pending_token: "opaque".to_owned(),
                 user_input: UserInput::Poll,
                 authentication_binding: binding,
@@ -1031,7 +1083,7 @@ mod tests {
             workspace_resolver(org_id, workspace_id),
         );
         let scope = Scope::new(workspace_id.to_string(), org_id.to_string());
-        let user = CredentialActor::user(user_id.to_string()).expect("typed user");
+        let user = CredentialActor::user(user_id);
         assert_eq!(
             authority
                 .decide(&user, &scope, CredentialOperation::Get)
@@ -1040,8 +1092,7 @@ mod tests {
             AuthorizationDecision::Allow
         );
 
-        let workflow = CredentialActor::workflow(nebula_core::WorkflowId::new().to_string())
-            .expect("typed workflow");
+        let workflow = CredentialActor::workflow(WorkflowId::new());
         assert_eq!(
             authority
                 .decide(&workflow, &scope, CredentialOperation::Get)
@@ -1058,7 +1109,7 @@ mod tests {
         let authority =
             ServerCredentialAuthority::new(None, workspace_resolver(org_id, workspace_id));
         let scope = Scope::new(workspace_id.to_string(), org_id.to_string());
-        let user = CredentialActor::user(UserId::new().to_string()).expect("typed user");
+        let user = CredentialActor::user(UserId::new());
 
         assert_eq!(
             authority
@@ -1083,7 +1134,7 @@ mod tests {
             Some(membership),
             workspace_resolver(org_id, workspace_id),
         );
-        let outsider = CredentialActor::user(UserId::new().to_string()).expect("typed outsider");
+        let outsider = CredentialActor::user(UserId::new());
 
         assert_eq!(
             authority
@@ -1107,7 +1158,7 @@ mod tests {
         let workspace = ExactWorkspaceResolver::new(org_id, real_workspace);
         let authority =
             ServerCredentialAuthority::new(Some(membership.clone()), Some(workspace.clone()));
-        let user = CredentialActor::user(UserId::new().to_string()).expect("typed user");
+        let user = CredentialActor::user(UserId::new());
 
         assert_eq!(
             authority
@@ -1129,7 +1180,7 @@ mod tests {
         let org_id = OrgId::new();
         let workspace_id = WorkspaceId::new();
         let scope = Scope::new(workspace_id.to_string(), org_id.to_string());
-        let user = CredentialActor::user(UserId::new().to_string()).expect("typed user");
+        let user = CredentialActor::user(UserId::new());
         let operations = [
             CredentialOperation::Create,
             CredentialOperation::Get,
@@ -1205,7 +1256,7 @@ mod tests {
         let org_id = OrgId::new();
         let workspace_id = WorkspaceId::new();
         let scope = Scope::new(workspace_id.to_string(), org_id.to_string());
-        let user = CredentialActor::user(UserId::new().to_string()).expect("typed user");
+        let user = CredentialActor::user(UserId::new());
 
         let non_member = Arc::new(RecordingMembershipStore::new(
             None,
@@ -1246,13 +1297,11 @@ mod tests {
             Some(unread.clone()),
             workspace_resolver(org_id, workspace_id),
         );
-        let malformed_actor = CredentialActor::user("not-a-typed-user").expect("non-empty actor");
+        let malformed_principal = AuthenticatedPrincipal::for_test_user("not-a-typed-user");
         assert_eq!(
-            authority
-                .decide(&malformed_actor, &scope, CredentialOperation::Get)
-                .await
-                .expect_err("malformed actor is rejected"),
-            CredentialAuthorizationError::Denied
+            ServerCredentialGateway::actor(&malformed_principal)
+                .expect_err("malformed actor is rejected at the adapter boundary"),
+            CredentialGatewayError::Forbidden
         );
         assert_eq!(unread.snapshot_calls.load(Ordering::SeqCst), 0);
 
@@ -1283,8 +1332,7 @@ mod tests {
             Some(store.clone()),
             workspace_resolver(org_id, workspace_id),
         );
-        let actor = CredentialActor::service_account(service_account_id.to_string())
-            .expect("typed service account");
+        let actor = CredentialActor::service_account(service_account_id);
         let scope = Scope::new(workspace_id.to_string(), org_id.to_string());
 
         assert_eq!(

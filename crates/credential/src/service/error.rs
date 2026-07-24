@@ -264,7 +264,7 @@ pub enum CredentialServiceError {
     #[error("credential mutation outcome is unknown; reconcile before retrying")]
     OutcomeUnknown,
 
-    /// A concurrent refresh reached an exact post-provider disposition whose
+    /// A concurrent refresh reached an exact finalization failure whose
     /// operation-specific details are intentionally not shared through L1.
     ///
     /// The durable claim remains retained as poison. The result is therefore

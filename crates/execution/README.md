@@ -40,10 +40,9 @@ Patterns:
   the `transition` module.
 - `ExecutionState`, `NodeExecutionState` — persistent state tracking per execution and per
   node; serialized into the `executions` table row.
-- `WorkflowRevision`, `ExecutionRevisions` — immutable revision-pin vocabulary. A
-  `WorkflowRevision` is a serde-transparent semantic newtype over the canonical
-  `WorkflowVersionId`; a human-facing numeric publication number remains metadata. These types
-  are a foundation for staged integration and do not imply that existing consumers have migrated.
+- `ExecutionRevisions` — experimental revision-pin aggregate behind `unstable-revisions`. It uses
+  the canonical `WorkflowVersionId` directly and is not part of the stable contract until durable
+  state, admission, and runtime consume both pins end to end.
 - `ExecutionPlan` — pre-computed parallel execution schedule derived from `DependencyGraph`.
   Feeds the engine scheduler.
 - `ReplayPlan` — resume plan for restarting from a checkpoint.
@@ -110,8 +109,8 @@ See `docs/MATURITY.md` row for `nebula-execution`.
 
 - API stability: `stable` — state machine, journal, idempotency key, and plan types are
   in active use by `nebula-engine` and `nebula-storage`; no known planned breaking changes.
-- Revision-pin vocabulary is present as a foundation; durable state, admission, and runtime
-  consumers migrate only through separate end-to-end changes.
+- Revision-pin vocabulary is opt-in and explicitly unstable; the default stable feature set does
+  not expose a partial contract.
 - Layer 1 lease enforcement (`lease_holder`/`lease_expires_at`) shipped via M2.2 — heartbeat-driven via `acquire_and_heartbeat_lease` (see `DEFAULT_EXECUTION_LEASE_TTL` / `DEFAULT_EXECUTION_LEASE_HEARTBEAT_INTERVAL`), verified by `crates/engine/tests/lease_takeover.rs`, `crates/storage/tests/execution_lease_pg_integration.rs`, and the loom probe at `crates/storage-loom-probe/src/lease_handoff.rs`. Layer 2 (`claimed_by`/`claimed_until` from `migrations/postgres/0011_executions.sql`) remains Sprint E (1.1) scaffolding — see the durability matrix below.
 - Integration tests: 0 in `tests/`; state machine and plan coverage via unit tests +
   engine-level integration tests.

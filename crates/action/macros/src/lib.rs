@@ -66,7 +66,7 @@ mod field_slots;
 /// ```
 #[proc_macro_derive(Action, attributes(action, nebula, resource, credential))]
 pub fn derive_action(input: TokenStream) -> TokenStream {
-    action::derive(input)
+    nebula_macro_support::paths::resolve_generated_crate_paths(action::derive(input).into()).into()
 }
 
 /// Attribute macro for action structs with capability-bound credential fields.
@@ -110,5 +110,8 @@ pub fn derive_action(input: TokenStream) -> TokenStream {
 /// no extra error emission from this macro.
 #[proc_macro_attribute]
 pub fn action_phantom(args: TokenStream, input: TokenStream) -> TokenStream {
-    action_attr::expand(args, input)
+    nebula_macro_support::paths::resolve_generated_crate_paths(
+        action_attr::expand(args, input).into(),
+    )
+    .into()
 }

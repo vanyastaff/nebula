@@ -1,9 +1,9 @@
 //! # nebula-sdk — Integration Author SDK
 //!
-//! Single-crate façade for writing Nebula integrations. Its current external
-//! one-dependency proof covers `WorkflowBuilder`, `ActionBuilder`, and credential
-//! `TestResult`; other manual/prelude workflows require focused proofs.
-//! Procedural derives remain an explicit SDK gap.
+//! Single-crate façade for writing Nebula integrations. External one-dependency
+//! contracts cover `WorkflowBuilder`, `ActionBuilder`, credential `TestResult`,
+//! and representative Action, Credential, Plugin, Resource, Schema, and
+//! Validator derives; other manual/prelude workflows require focused proofs.
 //!
 //! Internal workspace crates are not re-exported. Use curated persona modules
 //! and the prelude so integrations remain insulated from crate-boundary
@@ -65,25 +65,141 @@ pub use tokio;
 /// supported integration persona.
 #[doc(hidden)]
 pub mod __private {
-    /// Exact action items required by exported macro expansions.
+    /// Action contracts referenced by generated implementations.
     #[doc(hidden)]
     pub mod action {
         pub use nebula_action::{
-            Action, ActionContext, ActionError, ActionMetadata, ActionResult, StatelessAction,
+            Action, ActionContext, ActionContextExt, ActionError, ActionMetadata, ActionResult,
+            FromWorkflowNode, StatelessAction,
         };
     }
 
-    /// Exact core items required by exported macro expansions.
+    /// Core contracts referenced by generated implementations.
     #[doc(hidden)]
     pub mod core {
-        pub use nebula_core::{Dependencies, action_key};
+        pub use nebula_core::{
+            ActionKey, CredentialKey, DeclaresDependencies, Dependencies, ResourceKey, SlotField,
+            SlotKind, action_key,
+        };
+
+        pub mod auth {
+            pub use nebula_core::auth::{
+                AuthPattern, AuthScheme, ExternalScheme, PublicScheme, SensitiveScheme,
+            };
+        }
+
+        pub mod sync {
+            pub use nebula_core::sync::Lazy;
+        }
     }
 
-    /// Exact schema items required by exported macro expansions.
+    /// Credential contracts referenced by generated implementations.
+    #[doc(hidden)]
+    pub mod credential {
+        pub use nebula_credential::{
+            AuthScheme, Credential, CredentialGuard, CredentialLifecycle, CredentialMetadata,
+            CredentialPolicy, CredentialState, Dynamic, Interactive, RefreshStrategy, Refreshable,
+            Revocable, RevokeStrategy, Testable, credential_key, schema_of,
+        };
+
+        pub mod contract {
+            pub mod plugin_capability_report {
+                pub use nebula_credential::contract::plugin_capability_report::{
+                    IsDynamic, IsInteractive, IsRefreshable, IsRevocable, IsTestable,
+                };
+            }
+        }
+    }
+
+    /// Plugin contracts referenced by generated implementations.
+    #[doc(hidden)]
+    pub mod plugin {
+        pub use nebula_plugin::{Plugin, PluginManifest};
+    }
+
+    /// Resource contracts referenced by generated implementations.
+    #[doc(hidden)]
+    pub mod resource {
+        pub use nebula_resource::{
+            Error, HasCredentialSlots, Manager, ResourceConfig, ResourceFactory, ResourceMetadata,
+            SlotIdentity,
+        };
+
+        pub mod factory {
+            pub use nebula_resource::factory::{BoxFut, KindActivator, RegisterRequest};
+        }
+
+        #[expect(
+            clippy::module_inception,
+            reason = "the hidden macro ABI mirrors nebula_resource::resource paths emitted by existing derives"
+        )]
+        pub mod resource {
+            pub use nebula_resource::resource::Provider;
+        }
+
+        pub mod topology {
+            pub use nebula_resource::topology::{Pooled, Resident};
+
+            pub mod pooled {
+                pub mod config {
+                    pub use nebula_resource::topology::pooled::config::Config;
+                }
+            }
+
+            pub mod resident {
+                pub mod config {
+                    pub use nebula_resource::topology::resident::config::Config;
+                }
+            }
+        }
+    }
+
+    /// Schema contracts referenced by generated implementations.
     #[doc(hidden)]
     pub mod schema {
         pub use nebula_schema::value::FieldValues;
+        pub use nebula_schema::{
+            ExpressionMode, Field, FieldKey, HasSchema, HasSelectOptions, InputHint, Rule, Schema,
+            SelectOption, SerdeTagging, StringWidget, ValidSchema,
+        };
+
+        pub mod error {
+            pub use nebula_schema::error::ValidationReport;
+        }
+
+        pub mod __private {
+            pub use nebula_schema::__private::{serde_json, tracing, union_newtype_payload};
+        }
     }
+
+    /// Validator contracts referenced by generated implementations.
+    #[doc(hidden)]
+    pub mod validator {
+        pub use nebula_validator::validators;
+
+        pub mod combinators {
+            pub use nebula_validator::combinators::{SelfValidating, and, nested_validator, or};
+        }
+
+        pub mod foundation {
+            pub use nebula_validator::foundation::{Validate, ValidationError, ValidationErrors};
+        }
+
+        pub mod __private {
+            pub mod regex {
+                pub use nebula_validator::__private::regex::Regex;
+            }
+        }
+    }
+
+    /// Workflow contracts referenced by generated implementations.
+    #[doc(hidden)]
+    pub mod workflow {
+        pub use nebula_workflow::NodeDefinition;
+    }
+
+    #[doc(hidden)]
+    pub use semver;
 }
 
 pub mod action;

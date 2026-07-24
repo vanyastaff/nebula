@@ -281,16 +281,16 @@ pub use crate::{
 // The `CredentialServiceBuilder` is NOT re-exported here: it pulls in
 // `nebula-storage` + `nebula-engine` deps and lives at the api composition root.
 pub use service::{
-    Acquisition, AuthorizationDecision, CredentialActor, CredentialActorBuildError,
-    CredentialActorKind, CredentialAuthenticationBinding, CredentialAuthenticationBindingError,
-    CredentialAuthorizationError, CredentialCommand, CredentialCommandResult, CredentialController,
-    CredentialControllerError, CredentialDisplayPatch, CredentialHead, CredentialObserver,
-    CredentialOperation, CredentialService, CredentialServiceError, CredentialTenantAuthority,
-    CredentialTypeInfo, CredentialValidationIssue, CredentialValidationReport, DispatchError,
-    DispatchOps, EventMetricObserver, ManagementRefreshReport, NoopObserver, StateSource,
-    TenantFingerprint, TenantScope, TypeCapabilities, ValidatedCredentialBinding,
-    ValidatedCredentialBindingError, register_all_builtin_ops, register_interactive_ops,
-    register_refreshable_ops, register_revocable_ops, register_runtime_ops, register_testable_ops,
+    Acquisition, AuthorizationDecision, CredentialActor, CredentialAuthenticationBinding,
+    CredentialAuthenticationBindingError, CredentialAuthorizationError, CredentialCommand,
+    CredentialCommandResult, CredentialController, CredentialControllerError,
+    CredentialDisplayPatch, CredentialHead, CredentialObserver, CredentialOperation,
+    CredentialService, CredentialServiceError, CredentialTenantAuthority, CredentialTypeInfo,
+    CredentialValidationIssue, CredentialValidationReport, DispatchError, DispatchOps,
+    EventMetricObserver, ManagementRefreshReport, NoopObserver, StateSource, TenantFingerprint,
+    TenantScope, TypeCapabilities, ValidatedCredentialBinding, ValidatedCredentialBindingError,
+    register_all_builtin_ops, register_interactive_ops, register_refreshable_ops,
+    register_revocable_ops, register_runtime_ops, register_testable_ops,
 };
 
 // ── Prelude ───────────────────────────────────────────────────────────────────

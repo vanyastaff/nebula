@@ -93,7 +93,7 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
     let api_routes = api_routes.layer(DefaultBodyLimit::max(config.max_body_size));
 
     // Test-only echo / fail routes (used by `tests/idempotency_e2e.rs`).
-    // Merged BEFORE the idempotency layer so the dedup contract covers
+    // Merged BEFORE the idempotency layer so completed-response replay covers
     // them; gated behind `test-util` so production builds never include
     // these endpoints. Per stub-endpoint policy they go through `axum::Router::merge`
     // (not `OpenApiRouter`) so the spec stays clean — no `_test/*` paths
@@ -124,7 +124,7 @@ pub fn build_app(state: AppState, config: &ApiConfig) -> Router {
         )
     } else {
         tracing::warn!(
-            "build_app: idempotency_store not configured — POST endpoints lack replay protection"
+            "build_app: idempotency_store not configured — completed-response replay disabled"
         );
         api_routes
     };
@@ -366,7 +366,7 @@ fn build_cors_layer(config: &ApiConfig) -> CorsLayer {
     // should not need a restart for preflight to work.
     //
     // `Idempotency-Key` is here so cross-origin POSTs that opt into
-    // replay protection clear the preflight; without it browsers
+    // completed-response replay clear the preflight; without it browsers
     // strip the header before the server sees it (idempotency backend).
     // `X-CSRF-Token` is equally load-bearing for an allowed browser
     // origin using the session-cookie contract.

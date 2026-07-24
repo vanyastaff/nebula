@@ -9,6 +9,7 @@
 use std::{collections::BTreeMap, fmt, sync::Arc};
 
 use async_trait::async_trait;
+use nebula_core::{CredentialId, CredentialKey, ServiceAccountId, UserId, WorkflowId};
 use nebula_storage_port::Scope;
 use serde_json::Value;
 use thiserror::Error;
@@ -21,86 +22,52 @@ use super::{
     ManagementRefreshReport, TenantScope,
 };
 
-/// Kind of authenticated actor presenting a credential command.
+/// Typed authenticated actor presenting a credential command.
 ///
 /// There is deliberately no public `System` variant. System authority may only
 /// be introduced from a verified durable provenance record; absence of an
 /// ordinary actor is never interpreted as administrator access.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum CredentialActorKind {
-    /// Human user authenticated by Plane A.
-    User,
-    /// Non-human service account authenticated by Plane A.
-    ServiceAccount,
-    /// Durable workflow identity.
-    Workflow,
-}
-
-/// Invalid authenticated-actor claims.
-#[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum CredentialActorBuildError {
-    /// The canonical subject was empty.
-    #[error("credential actor subject must not be empty")]
-    EmptySubject,
-}
-
-/// Authenticated actor claims presented to [`CredentialTenantAuthority`].
-///
-/// Claims grant no authority on their own. Only the injected authority can
-/// bind this actor to the requested tenant scope.
 #[derive(Clone, PartialEq, Eq)]
-pub struct CredentialActor {
-    kind: CredentialActorKind,
-    subject: String,
+#[non_exhaustive]
+pub enum CredentialActor {
+    /// Human user authenticated by Plane A.
+    User(UserId),
+    /// Non-human service account authenticated by Plane A.
+    ServiceAccount(ServiceAccountId),
+    /// Durable workflow identity.
+    Workflow(WorkflowId),
 }
 
 impl CredentialActor {
-    /// Construct user claims from a canonical Plane-A subject.
-    pub fn user(subject: impl Into<String>) -> Result<Self, CredentialActorBuildError> {
-        Self::new(CredentialActorKind::User, subject)
-    }
-
-    /// Construct service-account claims from a canonical Plane-A subject.
-    pub fn service_account(subject: impl Into<String>) -> Result<Self, CredentialActorBuildError> {
-        Self::new(CredentialActorKind::ServiceAccount, subject)
-    }
-
-    /// Construct workflow claims from a canonical durable workflow subject.
-    pub fn workflow(subject: impl Into<String>) -> Result<Self, CredentialActorBuildError> {
-        Self::new(CredentialActorKind::Workflow, subject)
-    }
-
-    fn new(
-        kind: CredentialActorKind,
-        subject: impl Into<String>,
-    ) -> Result<Self, CredentialActorBuildError> {
-        let subject = subject.into();
-        if subject.trim().is_empty() {
-            return Err(CredentialActorBuildError::EmptySubject);
-        }
-        Ok(Self { kind, subject })
-    }
-
-    /// Actor kind used by tenant policy.
+    /// Construct claims for a typed Plane-A user.
     #[must_use]
-    pub const fn kind(&self) -> CredentialActorKind {
-        self.kind
+    pub const fn user(subject: UserId) -> Self {
+        Self::User(subject)
     }
 
-    /// Canonical authenticated subject.
+    /// Construct claims for a typed Plane-A service account.
     #[must_use]
-    pub fn subject(&self) -> &str {
-        &self.subject
+    pub const fn service_account(subject: ServiceAccountId) -> Self {
+        Self::ServiceAccount(subject)
+    }
+
+    /// Construct claims for a typed durable workflow.
+    #[must_use]
+    pub const fn workflow(subject: WorkflowId) -> Self {
+        Self::Workflow(subject)
     }
 }
 
 impl fmt::Debug for CredentialActor {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let kind = match self {
+            Self::User(_) => "User",
+            Self::ServiceAccount(_) => "ServiceAccount",
+            Self::Workflow(_) => "Workflow",
+        };
         formatter
             .debug_struct("CredentialActor")
-            .field("kind", &self.kind)
+            .field("kind", &kind)
             .field("subject", &"[REDACTED]")
             .finish()
     }
@@ -202,7 +169,7 @@ pub enum CredentialCommand {
     /// Create a credential from type-specific properties.
     Create {
         /// Registered credential type key.
-        credential_key: String,
+        credential_key: CredentialKey,
         /// Type-specific properties. This value may contain secrets and is
         /// never rendered by `Debug`.
         properties: Value,
@@ -212,14 +179,14 @@ pub enum CredentialCommand {
     /// Read one credential.
     Get {
         /// Credential identifier.
-        credential_id: String,
+        credential_id: CredentialId,
     },
     /// Enumerate credentials in the authorized owner partition.
     List,
     /// Update material and/or display metadata.
     Update {
         /// Credential identifier.
-        credential_id: String,
+        credential_id: CredentialId,
         /// Replacement type-specific properties when supplied.
         properties: Option<Value>,
         /// Compare-and-swap version when supplied.
@@ -230,27 +197,27 @@ pub enum CredentialCommand {
     /// Terminally tombstone one credential while reserving its id.
     Delete {
         /// Credential identifier.
-        credential_id: String,
+        credential_id: CredentialId,
     },
     /// Test provider connectivity.
     Test {
         /// Credential identifier.
-        credential_id: String,
+        credential_id: CredentialId,
     },
     /// Refresh provider material.
     Refresh {
         /// Credential identifier.
-        credential_id: String,
+        credential_id: CredentialId,
     },
     /// Revoke provider material.
     Revoke {
         /// Credential identifier.
-        credential_id: String,
+        credential_id: CredentialId,
     },
     /// Begin credential acquisition.
     Resolve {
         /// Registered credential type key.
-        credential_key: String,
+        credential_key: CredentialKey,
         /// Type-specific properties. This value may contain secrets.
         properties: Value,
         /// Opaque Plane-A authentication binding for pending state.
@@ -259,7 +226,7 @@ pub enum CredentialCommand {
     /// Continue credential acquisition.
     ContinueResolve {
         /// Registered credential type key.
-        credential_key: String,
+        credential_key: CredentialKey,
         /// Opaque pending token.
         pending_token: String,
         /// Typed user input.
@@ -378,7 +345,7 @@ impl CredentialController {
         let operation = command.operation();
         let decision = self.authority.decide(actor, scope, operation).await?;
         if decision == AuthorizationDecision::Deny {
-            tracing::warn!(?operation, actor.kind = ?actor.kind(), "credential command denied");
+            tracing::warn!(?operation, ?actor, "credential command denied");
             return Err(CredentialAuthorizationError::Denied.into());
         }
 
@@ -401,12 +368,12 @@ impl CredentialController {
                 display,
             } => CredentialCommandResult::Head(
                 self.service
-                    .create(&scope, &credential_key, properties, display)
+                    .create(&scope, credential_key.as_str(), properties, display)
                     .await?,
             ),
-            CredentialCommand::Get { credential_id } => {
-                CredentialCommandResult::Head(self.service.get(&scope, &credential_id).await?)
-            },
+            CredentialCommand::Get { credential_id } => CredentialCommandResult::Head(
+                self.service.get(&scope, &credential_id.to_string()).await?,
+            ),
             CredentialCommand::List => {
                 CredentialCommandResult::Heads(self.service.list(&scope).await?)
             },
@@ -416,6 +383,7 @@ impl CredentialController {
                 expected_version,
                 display,
             } => {
+                let credential_id = credential_id.to_string();
                 let existing = self.service.get(&scope, &credential_id).await?;
                 let mut merged = existing.display;
                 if let Some(display_name) = display.display_name {
@@ -439,17 +407,25 @@ impl CredentialController {
                 )
             },
             CredentialCommand::Delete { credential_id } => {
-                self.service.delete(&scope, &credential_id).await?;
+                self.service
+                    .delete(&scope, &credential_id.to_string())
+                    .await?;
                 CredentialCommandResult::Deleted
             },
-            CredentialCommand::Test { credential_id } => {
-                CredentialCommandResult::Tested(self.service.test(&scope, &credential_id).await?)
-            },
+            CredentialCommand::Test { credential_id } => CredentialCommandResult::Tested(
+                self.service
+                    .test(&scope, &credential_id.to_string())
+                    .await?,
+            ),
             CredentialCommand::Refresh { credential_id } => CredentialCommandResult::Refreshed(
-                self.service.refresh(&scope, &credential_id).await?,
+                self.service
+                    .refresh(&scope, &credential_id.to_string())
+                    .await?,
             ),
             CredentialCommand::Revoke { credential_id } => {
-                self.service.revoke(&scope, &credential_id).await?;
+                self.service
+                    .revoke(&scope, &credential_id.to_string())
+                    .await?;
                 CredentialCommandResult::Revoked
             },
             CredentialCommand::Resolve {
@@ -460,7 +436,7 @@ impl CredentialController {
                 let scope = scope.with_authentication_binding(authentication_binding);
                 CredentialCommandResult::Acquisition(
                     self.service
-                        .resolve(&scope, &credential_key, properties)
+                        .resolve(&scope, credential_key.as_str(), properties)
                         .await?,
                 )
             },
@@ -473,7 +449,12 @@ impl CredentialController {
                 let scope = scope.with_authentication_binding(authentication_binding);
                 CredentialCommandResult::Acquisition(
                     self.service
-                        .continue_resolve(&scope, &credential_key, &pending_token, user_input)
+                        .continue_resolve(
+                            &scope,
+                            credential_key.as_str(),
+                            &pending_token,
+                            user_input,
+                        )
                         .await?,
                 )
             },
@@ -504,18 +485,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn actor_subject_must_not_be_empty() {
-        assert_eq!(
-            CredentialActor::user("  ").expect_err("empty subject must fail"),
-            CredentialActorBuildError::EmptySubject
-        );
+    fn actor_debug_redacts_typed_subject() {
+        let subject = UserId::new();
+        let debug = format!("{:?}", CredentialActor::user(subject));
+        assert!(!debug.contains(&subject.to_string()));
+        assert!(debug.contains("[REDACTED]"));
     }
 
     #[test]
     fn command_debug_never_renders_sensitive_payloads() {
         const CANARY: &str = "credential-controller-secret-never-debug";
         let command = CredentialCommand::Create {
-            credential_key: "api_key".to_owned(),
+            credential_key: CredentialKey::new("api_key").expect("valid test credential key"),
             properties: serde_json::json!({ "api_key": CANARY }),
             display: CredentialDisplay {
                 display_name: Some(CANARY.to_owned()),

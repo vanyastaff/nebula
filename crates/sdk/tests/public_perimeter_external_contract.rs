@@ -4,7 +4,8 @@
 //! the currently supported builder/testing subset (`ActionBuilder`,
 //! `WorkflowBuilder`, and credential `TestResult`), while each negative binary
 //! targets one distinct authority or persistence escape hatch that must stay
-//! unavailable. Procedural derives are not proved by this fixture.
+//! unavailable. Procedural derives have a separate SDK-only compile-pass
+//! contract in `derive_external_contract.rs`.
 
 use std::{
     ffi::OsString,
@@ -119,22 +120,108 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
 
 #[test]
 fn macro_private_surface_matches_the_explicit_allowlist() {
-    const EXPECTED: &str = r"
+    const EXPECTED: &str = r#"
         pub mod __private {
             pub mod action {
                 pub use nebula_action::{
-                    Action, ActionContext, ActionError, ActionMetadata, ActionResult,
-                    StatelessAction,
+                    Action, ActionContext, ActionContextExt, ActionError, ActionMetadata,
+                    ActionResult, FromWorkflowNode, StatelessAction,
                 };
             }
             pub mod core {
-                pub use nebula_core::{Dependencies, action_key};
+                pub use nebula_core::{
+                    ActionKey, CredentialKey, DeclaresDependencies, Dependencies, ResourceKey,
+                    SlotField, SlotKind, action_key,
+                };
+                pub mod auth {
+                    pub use nebula_core::auth::{
+                        AuthPattern, AuthScheme, ExternalScheme, PublicScheme, SensitiveScheme,
+                    };
+                }
+                pub mod sync {
+                    pub use nebula_core::sync::Lazy;
+                }
+            }
+            pub mod credential {
+                pub use nebula_credential::{
+                    AuthScheme, Credential, CredentialGuard, CredentialLifecycle,
+                    CredentialMetadata, CredentialPolicy, CredentialState, Dynamic, Interactive,
+                    RefreshStrategy, Refreshable, Revocable, RevokeStrategy, Testable,
+                    credential_key, schema_of,
+                };
+                pub mod contract {
+                    pub mod plugin_capability_report {
+                        pub use nebula_credential::contract::plugin_capability_report::{
+                            IsDynamic, IsInteractive, IsRefreshable, IsRevocable, IsTestable,
+                        };
+                    }
+                }
+            }
+            pub mod plugin {
+                pub use nebula_plugin::{Plugin, PluginManifest};
+            }
+            pub mod resource {
+                pub use nebula_resource::{
+                    Error, HasCredentialSlots, Manager, ResourceConfig, ResourceFactory,
+                    ResourceMetadata, SlotIdentity,
+                };
+                pub mod factory {
+                    pub use nebula_resource::factory::{BoxFut, KindActivator, RegisterRequest};
+                }
+                #[expect(
+                    clippy::module_inception,
+                    reason = "the hidden macro ABI mirrors nebula_resource::resource paths emitted by existing derives"
+                )]
+                pub mod resource {
+                    pub use nebula_resource::resource::Provider;
+                }
+                pub mod topology {
+                    pub use nebula_resource::topology::{Pooled, Resident};
+                    pub mod pooled {
+                        pub mod config {
+                            pub use nebula_resource::topology::pooled::config::Config;
+                        }
+                    }
+                    pub mod resident {
+                        pub mod config {
+                            pub use nebula_resource::topology::resident::config::Config;
+                        }
+                    }
+                }
             }
             pub mod schema {
                 pub use nebula_schema::value::FieldValues;
+                pub use nebula_schema::{
+                    ExpressionMode, Field, FieldKey, HasSchema, HasSelectOptions, InputHint, Rule,
+                    Schema, SelectOption, SerdeTagging, StringWidget, ValidSchema,
+                };
+                pub mod error {
+                    pub use nebula_schema::error::ValidationReport;
+                }
+                pub mod __private {
+                    pub use nebula_schema::__private::{serde_json, tracing, union_newtype_payload};
+                }
             }
+            pub mod validator {
+                pub use nebula_validator::validators;
+                pub mod combinators {
+                    pub use nebula_validator::combinators::{SelfValidating, and, nested_validator, or};
+                }
+                pub mod foundation {
+                    pub use nebula_validator::foundation::{Validate, ValidationError, ValidationErrors};
+                }
+                pub mod __private {
+                    pub mod regex {
+                        pub use nebula_validator::__private::regex::Regex;
+                    }
+                }
+            }
+            pub mod workflow {
+                pub use nebula_workflow::NodeDefinition;
+            }
+            pub use semver;
         }
-    ";
+    "#;
 
     let source = include_str!("../src/lib.rs");
     let start = source

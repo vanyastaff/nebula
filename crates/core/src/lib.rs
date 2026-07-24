@@ -18,8 +18,8 @@
 //!   `ServiceAccountId` (`svc_…`), `ResourceId` (`res_…`), `CredentialId` (`cred_…`),
 //!   `TriggerId` (`trg_…`), `TriggerEventId` (`evt_…`), `AttemptId` (`att_…`),
 //!   `InstanceId` (`nbl_…`), `SessionId` (`sess_…`) — all defined in this crate.
-//! - **Transport digest IDs** — `PluginSetId`, `WorkerFlavorRevisionId`,
-//!   `ArtifactSetDigest`; fixed-width representation only, with derivation owned elsewhere.
+//! - **Experimental transport digest IDs** — available only with
+//!   `unstable-worker-flavor`; fixed-width representation only.
 //! - **Keys** — `PluginKey`, `ActionKey`, `CredentialKey`, `ParameterKey`, `ResourceKey`, `NodeKey`
 //!   — normalized string keys with validation.
 //! - **Scope** — `ScopeLevel`, `Scope`, `Principal`, `ScopeResolver` (Global → Organization → Workspace → Workflow → Execution).
@@ -79,6 +79,7 @@ pub mod sync;
 /// Multi-tenant context and resolved IDs.
 pub mod tenancy;
 /// Fixed-width transport identifiers with canonical lowercase hexadecimal encoding.
+#[cfg(feature = "unstable-worker-flavor")]
 pub mod transport_digest;
 
 mod error;
@@ -110,6 +111,7 @@ pub use scope::*;
 pub use slug::{Slug, SlugError, SlugKind, is_prefixed_ulid};
 pub use sync::Lazy;
 pub use tenancy::{PermissionDenial, PermissionDenied, ResolvedIds, TenantContext, WorkspaceGrant};
+#[cfg(feature = "unstable-worker-flavor")]
 pub use transport_digest::{
     ArtifactSetDigest, PluginSetId, TransportDigestParseError, WorkerFlavorRevisionId,
 };

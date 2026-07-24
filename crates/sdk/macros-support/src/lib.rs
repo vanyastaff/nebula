@@ -13,6 +13,8 @@ pub mod attrs;
 pub mod credential_ref;
 /// Diagnostic helpers for compile errors.
 pub mod diag;
+/// Resolve generated Nebula crate paths for leaf-crate and SDK-only consumers.
+pub mod paths;
 /// General proc-macro utility functions.
 pub mod utils;
 /// Code generation helpers for validator/config derives.

@@ -30,6 +30,19 @@
 use compact_str::CompactString;
 use thiserror::Error;
 
+/// Branded credential-surface name for the canonical storage-port retry delay.
+pub use nebula_storage_port::RefreshRetryDelay as RetryDelay;
+/// Error returned when the canonical retry delay is invalid.
+pub use nebula_storage_port::RefreshRetryDelayError as RetryDelayError;
+/// Branded credential-surface name for the canonical storage-port diagnostic code.
+pub use nebula_storage_port::RefreshRetryDiagnosticCode as RefreshDiagnosticCode;
+/// Error returned when the canonical diagnostic code is invalid.
+pub use nebula_storage_port::RefreshRetryDiagnosticCodeError as RefreshDiagnosticCodeError;
+/// Branded credential-surface name for the canonical storage-port retry kind.
+pub use nebula_storage_port::RefreshRetryKind as RefreshErrorKind;
+/// Branded credential-surface name for the canonical storage-port retry phase.
+pub use nebula_storage_port::RefreshRetryPhase as RefreshNotAppliedPhase;
+
 // ── Secret-free message wrapper ─────────────────────────────────────────────
 
 /// A message that has been hand-validated as not containing raw secret
@@ -204,79 +217,6 @@ impl std::fmt::Display for ProviderErrorContext {
 
 // ── Refresh failure ──────────────────────────────────────────────────────────
 
-/// Diagnostic class of a replay-safe refresh failure.
-///
-/// This classification is orthogonal to [`RefreshNotAppliedPhase`]. It may
-/// describe a failure observed either before dispatch or in a completed
-/// provider response; consumers must use the phase, never the kind, as the
-/// proof of whether provider dispatch occurred.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum RefreshErrorKind {
-    /// A transient network or transport condition.
-    TransientNetwork,
-    /// The provider was temporarily unavailable.
-    ProviderUnavailable,
-    /// A request, response, or framework contract was rejected at the protocol
-    /// layer.
-    ProtocolError,
-}
-
-/// Validated non-zero delay before a replay-safe refresh retry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct RetryDelay(std::time::Duration);
-
-impl RetryDelay {
-    /// Largest retry delay accepted by credential, persistence, and HTTP
-    /// boundaries (365 days).
-    pub const MAX_SECS: u64 = 31_536_000;
-
-    /// Validate a non-zero retry delay.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RetryDelayError::Zero`] for `Duration::ZERO`; immediate
-    /// retries are deliberately absent from the refresh contract.
-    pub fn new(duration: std::time::Duration) -> std::result::Result<Self, RetryDelayError> {
-        if duration.is_zero() {
-            return Err(RetryDelayError::Zero);
-        }
-        let seconds = duration
-            .as_secs()
-            .saturating_add(u64::from(duration.subsec_nanos() != 0));
-        if seconds > Self::MAX_SECS {
-            return Err(RetryDelayError::TooLong);
-        }
-        Ok(Self(std::time::Duration::from_secs(seconds)))
-    }
-
-    /// Borrow the validated duration value.
-    #[must_use]
-    pub const fn get(self) -> std::time::Duration {
-        self.0
-    }
-}
-
-impl TryFrom<std::time::Duration> for RetryDelay {
-    type Error = RetryDelayError;
-
-    fn try_from(duration: std::time::Duration) -> std::result::Result<Self, Self::Error> {
-        Self::new(duration)
-    }
-}
-
-/// Invalid retry delay.
-#[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum RetryDelayError {
-    /// Immediate retries would permit an unbounded hot loop.
-    #[error("credential refresh retry delay must be non-zero")]
-    Zero,
-    /// Delays beyond the shared persistence/API bound are rejected.
-    #[error("credential refresh retry delay exceeds 365 days")]
-    TooLong,
-}
-
 /// Retry guidance from credential to framework.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -290,83 +230,6 @@ pub enum RetryAdvice {
     Never,
     /// Retry after a validated non-zero duration.
     After(RetryDelay),
-}
-
-/// Validated low-cardinality diagnostic code for an exact refresh refusal.
-///
-/// Values are limited to 64 ASCII alphanumeric/`_`/`-`/`.`/`:` bytes. The
-/// value is never rendered by `Debug` or `Display`; explicit access through
-/// [`as_str`](Self::as_str) is required.
-///
-/// Codes must come from a fixed vocabulary owned by the integration. Provider
-/// data may select a predeclared code only after mapping through a closed
-/// integration enum. Never pass provider descriptions, extension codes,
-/// secrets, tenant data, or other free-form input here. Shape validation is a
-/// defense in depth; it is not sanitization.
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct RefreshDiagnosticCode(CompactString);
-
-impl RefreshDiagnosticCode {
-    /// Maximum encoded diagnostic-code length.
-    pub const MAX_LEN: usize = 64;
-
-    /// Parse and validate a fixed, integration-authored diagnostic code.
-    ///
-    /// # Errors
-    ///
-    /// Rejects empty, oversized, non-ASCII, or free-form values.
-    ///
-    /// This validates shape only. Callers must first map any provider value
-    /// onto their own closed, low-cardinality vocabulary.
-    pub fn parse(value: impl AsRef<str>) -> std::result::Result<Self, RefreshDiagnosticCodeError> {
-        let value = value.as_ref();
-        if value.is_empty() {
-            return Err(RefreshDiagnosticCodeError::Empty);
-        }
-        if value.len() > Self::MAX_LEN {
-            return Err(RefreshDiagnosticCodeError::TooLong);
-        }
-        let valid = value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':'));
-        if !valid {
-            return Err(RefreshDiagnosticCodeError::InvalidCharacter);
-        }
-        Ok(Self(CompactString::new(value)))
-    }
-
-    /// Explicitly expose the validated diagnostic code.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-}
-
-impl std::fmt::Debug for RefreshDiagnosticCode {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("RefreshDiagnosticCode([REDACTED])")
-    }
-}
-
-impl std::fmt::Display for RefreshDiagnosticCode {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("[REDACTED]")
-    }
-}
-
-/// Invalid [`RefreshDiagnosticCode`].
-#[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum RefreshDiagnosticCodeError {
-    /// Codes are required when the optional field is present.
-    #[error("credential refresh diagnostic code cannot be empty")]
-    Empty,
-    /// Codes must remain low-cardinality and bounded.
-    #[error("credential refresh diagnostic code exceeds 64 bytes")]
-    TooLong,
-    /// Free-form or non-ASCII values are forbidden.
-    #[error("credential refresh diagnostic code contains an invalid character")]
-    InvalidCharacter,
 }
 
 /// Replay-safe failure detail supplied before a linear proof is consumed.
@@ -425,20 +288,6 @@ impl std::fmt::Debug for RefreshFailureSpec {
             .field("diagnostic_code_present", &self.diagnostic_code.is_some())
             .finish()
     }
-}
-
-/// Sole dispatch-proof phase for [`CredentialError::RefreshNotApplied`].
-///
-/// Failure kind is diagnostic only. Retry and dispatch decisions must derive
-/// from this linear-evidence phase plus [`RetryAdvice`], never by inferring a
-/// phase from [`RefreshErrorKind`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum RefreshNotAppliedPhase {
-    /// Request construction failed before transport dispatch.
-    BeforeDispatch,
-    /// A complete provider response proved that the operation had no effect.
-    ProviderConfirmedNotApplied,
 }
 
 /// Proof-bearing context for [`CredentialError::RefreshNotApplied`].
