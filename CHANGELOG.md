@@ -56,13 +56,14 @@ changes are expected between minor releases — call them out here.
   covers wrong-owner indistinguishability and metadata-owner spoof rejection;
   live PostgreSQL execution remains a release gate.
 - **SDK-only external perimeter proof.** A downstream fixture with exactly one
-  Nebula dependency (`nebula-sdk`) compiles the currently supported
+  renamed Nebula dependency (`nebula-sdk`) compiles the currently supported
   manual/builder subset (`ActionBuilder`, `WorkflowBuilder`, and credential
-  `TestResult`).
+  `TestResult`) plus representative Action, Credential, Plugin, Resource,
+  Schema, and Validator derives.
   Separate negative probes assert precise diagnostics for forbidden authority,
   owner-selector, raw-writer, admin-repository, runtime-constructor, and
-  unscoped-resolver access. This proof does not yet cover procedural derives;
-  their leaf-crate paths remain an explicit SDK gap.
+  unscoped-resolver access. A second compile-pass fixture proves those derives
+  also resolve explicitly renamed leaf-crate dependencies.
 - **Structured secret-safe credential validation.** The credential service
   preserves a non-empty report of RFC 6901 path + stable-code issues through the
   controller/gateway, while discarding validator/provider messages, params,
@@ -242,9 +243,10 @@ changes are expected between minor releases — call them out here.
   Broad `nebula_sdk::nebula_{action,core,credential,plugin,resource,schema,
   validator,workflow}` re-exports are gone. The currently verified one-dependency
   path is the manual/builder subset through `prelude`, `integration`, builders,
-  and testing/runtime façades. Action, credential, plugin, resource, schema, and
-  validator procedural derives still emit leaf-crate paths and remain SDK gaps,
-  not permission to depend on implementation crates.
+  and testing/runtime façades, plus the Action, Credential, Plugin, Resource,
+  Schema, and Validator procedural-derive families. Generated derive paths
+  support a renamed SDK dependency and explicitly renamed leaf dependencies;
+  direct implementation-crate use remains unsupported.
 - **(breaking) Credential persistence contracts moved down.** Consumers of
   the old credential-local RPITIT/dyn store bridge migrate to the directly
   object-safe `nebula_storage_port::CredentialPersistence` and port DTOs.
