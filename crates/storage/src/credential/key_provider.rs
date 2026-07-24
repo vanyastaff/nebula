@@ -8,16 +8,13 @@
 //!
 //! ## Invariants
 //!
-//! - `version()` must be non-empty. The encryption-layer envelope writer refuses empty `key_id`
-//!   values (see `secrets::encrypt_with_key_id`).
-//! - **`version()` must change whenever the key bytes change.** `EncryptionLayer` routes a record
-//!   whose envelope `key_id` differs from `version()` through the legacy-key path, so a
-//!   stable-version/rotating-key provider would silently mis-decrypt under the new key.
-//!   `EnvKeyProvider` / `FileKeyProvider` derive `version()` from a SHA-256 fingerprint of the key
-//!   material so an in-place rotation (same env var / same file path, new bytes) produces a fresh
-//!   identifier automatically on in-place key rotation.
-//! - `current_key()` returns `Arc<EncryptionKey>` — a stable handle over the zeroize-on-drop key
-//!   newtype. Providers do not expose raw key bytes.
+//! - [`KeyProvider::current`] returns the key id and key handle in one atomic
+//!   [`KeySnapshot`]. A dynamic KMS/Vault provider must never expose a key id
+//!   from one generation with bytes from another.
+//! - The snapshot key id must change whenever the key bytes change.
+//!   `EnvKeyProvider` / `FileKeyProvider` derive it from a SHA-256 fingerprint.
+//! - Snapshots expose only `Arc<EncryptionKey>` — a stable handle over the
+//!   zeroize-on-drop key newtype. Providers do not expose raw key bytes.
 //! - `Debug` / `Display` on providers and on `ProviderError` must not reveal key material
 //!   (secret handling).
 //! - Intermediate plaintext (env-var strings, file bytes) is wrapped in `Zeroizing<_>` so scope
@@ -33,7 +30,7 @@ use zeroize::Zeroizing;
 /// Short, non-secret fingerprint of 32-byte key material.
 ///
 /// Returns the first 8 bytes of SHA-256 over the key, hex-encoded (16 chars).
-/// Used as the rotating segment of [`KeyProvider::version`] so an in-place
+/// Used as the rotating segment of [`KeySnapshot::key_id`] so an in-place
 /// key rotation (same env var, same file path, new bytes) produces a
 /// **different** envelope `key_id`. Stored records then flow through the
 /// legacy-key path instead of silently mis-decrypting under the new key.
@@ -52,35 +49,80 @@ fn key_fingerprint(bytes: &[u8; 32]) -> String {
     out
 }
 
+/// One atomically observed encryption-key generation.
+pub struct KeySnapshot {
+    key_id: Arc<str>,
+    key: Arc<EncryptionKey>,
+}
+
+impl KeySnapshot {
+    /// Construct a validated snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProviderError::KeyMaterialRejected`] when `key_id` is empty,
+    /// contains control characters, or exceeds the envelope bound.
+    pub fn new(
+        key_id: impl Into<Arc<str>>,
+        key: Arc<EncryptionKey>,
+    ) -> Result<Self, ProviderError> {
+        let key_id = key_id.into();
+        if key_id.is_empty() || key_id.len() > 255 || key_id.chars().any(char::is_control) {
+            return Err(ProviderError::KeyMaterialRejected {
+                reason: "key identifier is invalid".to_owned(),
+            });
+        }
+        Ok(Self { key_id, key })
+    }
+
+    /// Stable non-secret identifier stored in new envelopes.
+    #[must_use]
+    pub fn key_id(&self) -> &str {
+        &self.key_id
+    }
+
+    /// Borrow the zeroize-on-drop key handle.
+    #[must_use]
+    pub fn key(&self) -> &EncryptionKey {
+        &self.key
+    }
+
+    /// Split the snapshot into its non-secret id and key handle.
+    #[must_use]
+    pub fn into_parts(self) -> (Arc<str>, Arc<EncryptionKey>) {
+        (self.key_id, self.key)
+    }
+}
+
+impl std::fmt::Debug for KeySnapshot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("KeySnapshot")
+            .field("key_id", &self.key_id)
+            .field("key", &"[REDACTED]")
+            .finish()
+    }
+}
+
 /// Source of the current encryption key for [`EncryptionLayer`](super::layer::EncryptionLayer).
 ///
 /// Implementations must preserve every secret-handling rule:
 /// zeroized intermediate plaintext, redacted `Debug`, typed errors without
 /// embedded secret material.
 pub trait KeyProvider: Send + Sync + 'static {
-    /// Return the current encryption key. Called on every encrypt/decrypt
-    /// cycle, so implementations cache internally rather than re-reading the
-    /// backing source on every call.
+    /// Atomically snapshot the current key identifier and key handle.
+    ///
+    /// Called on every encrypt/decrypt cycle, so implementations should cache
+    /// internally. Dynamic providers must synchronize rotation so both fields
+    /// come from the same generation.
     ///
     /// # Errors
     ///
     /// Returns [`ProviderError`] when the backing source is unreachable or the
     /// material fails validation. The layer wraps this as
-    /// `StoreError::Backend` (from `nebula_credential`) so callers see a
-    /// uniform failure taxonomy.
-    fn current_key(&self) -> Result<Arc<EncryptionKey>, ProviderError>;
-
-    /// Stable identifier for the current key. Stored as
-    /// `EncryptedData::key_id` (from `nebula_credential::secrets`) in new
-    /// envelopes; used by the rotation path to detect mismatches. Must be
-    /// non-empty, and **must change whenever `current_key()` returns
-    /// different key bytes** — otherwise the layer will treat pre-rotation
-    /// records as "current" and silently mis-decrypt them under the new
-    /// key. `EnvKeyProvider` / `FileKeyProvider` derive this from a
-    /// SHA-256 fingerprint of the key material; operator-authored
-    /// providers that hand-manage the version string must preserve the
-    /// same invariant.
-    fn version(&self) -> &str;
+    /// `CredentialPersistenceError::Unavailable` so callers see the closed
+    /// persistence failure taxonomy without a dynamic driver message.
+    fn current(&self) -> Result<KeySnapshot, ProviderError>;
 }
 
 /// Typed errors returned by [`KeyProvider`] implementations.
@@ -176,9 +218,10 @@ pub enum ProviderError {
 /// let key_b64 = base64::engine::general_purpose::STANDARD.encode([0x42u8; 32]);
 /// let provider = EnvKeyProvider::from_base64(&key_b64).expect("valid 32-byte key");
 ///
-/// // The version is a stable, non-secret fingerprint of the key material.
-/// assert!(provider.version().starts_with("env:"));
-/// assert!(provider.current_key().is_ok());
+/// // The id and key are observed as one atomic generation.
+/// let snapshot = provider.current()?;
+/// assert!(snapshot.key_id().starts_with("env:"));
+/// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub struct EnvKeyProvider {
     key: Arc<EncryptionKey>,
@@ -252,12 +295,8 @@ impl EnvKeyProvider {
 }
 
 impl KeyProvider for EnvKeyProvider {
-    fn current_key(&self) -> Result<Arc<EncryptionKey>, ProviderError> {
-        Ok(Arc::clone(&self.key))
-    }
-
-    fn version(&self) -> &str {
-        &self.version
+    fn current(&self) -> Result<KeySnapshot, ProviderError> {
+        KeySnapshot::new(Arc::clone(&self.version), Arc::clone(&self.key))
     }
 }
 
@@ -305,8 +344,8 @@ impl std::fmt::Debug for EnvKeyProvider {
 /// key_file.write_all(&[0x42u8; 32])?;
 ///
 /// let provider = FileKeyProvider::from_path(key_file.path())?;
-/// assert!(provider.version().starts_with("file:"));
-/// assert!(provider.current_key().is_ok());
+/// let snapshot = provider.current()?;
+/// assert!(snapshot.key_id().starts_with("file:"));
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub struct FileKeyProvider {
@@ -411,12 +450,8 @@ impl FileKeyProvider {
 }
 
 impl KeyProvider for FileKeyProvider {
-    fn current_key(&self) -> Result<Arc<EncryptionKey>, ProviderError> {
-        Ok(Arc::clone(&self.key))
-    }
-
-    fn version(&self) -> &str {
-        &self.version
+    fn current(&self) -> Result<KeySnapshot, ProviderError> {
+        KeySnapshot::new(Arc::clone(&self.version), Arc::clone(&self.key))
     }
 }
 
@@ -464,12 +499,8 @@ impl StaticKeyProvider {
 
 #[cfg(test)]
 impl KeyProvider for StaticKeyProvider {
-    fn current_key(&self) -> Result<Arc<EncryptionKey>, ProviderError> {
-        Ok(Arc::clone(&self.key))
-    }
-
-    fn version(&self) -> &str {
-        &self.version
+    fn current(&self) -> Result<KeySnapshot, ProviderError> {
+        KeySnapshot::new(Arc::clone(&self.version), Arc::clone(&self.key))
     }
 }
 
@@ -493,8 +524,19 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use base64::Engine;
+    #[cfg(feature = "sqlite")]
+    use nebula_core::CredentialId;
+    #[cfg(feature = "sqlite")]
+    use nebula_storage_port::{
+        CredentialOwner, CredentialPersistence, CredentialPersistenceError, CredentialSelector,
+    };
 
     use super::*;
+
+    #[cfg(feature = "sqlite")]
+    fn selector(id: CredentialId) -> CredentialSelector {
+        CredentialSelector::new(CredentialOwner::from_canonical("test-owner"), id)
+    }
 
     // ------------------------------------------------------------------------
     // ProviderError shape
@@ -562,7 +604,8 @@ mod tests {
     fn env_provider_valid_key_round_trips_via_base64() {
         let provider =
             EnvKeyProvider::from_base64(&valid_base64_key()).expect("valid key must succeed");
-        let version = provider.version();
+        let snapshot = provider.current().expect("key snapshot available");
+        let version = snapshot.key_id();
         assert!(
             version.starts_with("env:"),
             "version has env prefix; got {version}"
@@ -572,7 +615,6 @@ mod tests {
             "env:".len() + 16,
             "version ends in 16-char (8-byte) hex fingerprint; got {version}"
         );
-        provider.current_key().expect("key available");
     }
 
     #[test]
@@ -599,11 +641,15 @@ mod tests {
         let k2 = base64::engine::general_purpose::STANDARD.encode([0x22u8; 32]);
         let v1 = EnvKeyProvider::from_base64(&k1)
             .unwrap()
-            .version()
+            .current()
+            .unwrap()
+            .key_id()
             .to_owned();
         let v2 = EnvKeyProvider::from_base64(&k2)
             .unwrap()
-            .version()
+            .current()
+            .unwrap()
+            .key_id()
             .to_owned();
         assert_ne!(
             v1, v2,
@@ -619,11 +665,15 @@ mod tests {
         let k = valid_base64_key();
         let v1 = EnvKeyProvider::from_base64(&k)
             .unwrap()
-            .version()
+            .current()
+            .unwrap()
+            .key_id()
             .to_owned();
         let v2 = EnvKeyProvider::from_base64(&k)
             .unwrap()
-            .version()
+            .current()
+            .unwrap()
+            .key_id()
             .to_owned();
         assert_eq!(v1, v2);
     }
@@ -645,7 +695,8 @@ mod tests {
             std::fs::set_permissions(&path, perms).unwrap();
         }
         let provider = FileKeyProvider::from_path(&path).expect("valid file must succeed");
-        let version = provider.version();
+        let snapshot = provider.current().expect("key snapshot available");
+        let version = snapshot.key_id();
         assert!(
             version.starts_with("file:nebula.key:"),
             "version has file prefix + filename; got {version}"
@@ -655,7 +706,6 @@ mod tests {
             "file:nebula.key:".len() + 16,
             "version ends in 16-char fingerprint; got {version}"
         );
-        provider.current_key().expect("key available");
     }
 
     /// In-place file rewrite (same path, new bytes) must produce a different
@@ -675,13 +725,17 @@ mod tests {
         }
         let v1 = FileKeyProvider::from_path(&path)
             .unwrap()
-            .version()
+            .current()
+            .unwrap()
+            .key_id()
             .to_owned();
 
         std::fs::write(&path, [0x22u8; 32]).unwrap();
         let v2 = FileKeyProvider::from_path(&path)
             .unwrap()
-            .version()
+            .current()
+            .unwrap()
+            .key_id()
             .to_owned();
 
         assert_ne!(
@@ -791,22 +845,23 @@ mod tests {
     fn static_provider_round_trip() {
         let key = Arc::new(EncryptionKey::from_bytes([0x11; 32]));
         let provider = StaticKeyProvider::new(Arc::clone(&key));
-        assert_eq!(provider.version(), "static:test");
-        assert!(Arc::ptr_eq(&provider.current_key().unwrap(), &key));
+        let snapshot = provider.current().unwrap();
+        assert_eq!(snapshot.key_id(), "static:test");
+        assert!(std::ptr::eq(snapshot.key(), key.as_ref()));
     }
 
     #[test]
     fn static_provider_with_version_preserves_version() {
         let key = Arc::new(EncryptionKey::from_bytes([0x22; 32]));
         let provider = StaticKeyProvider::with_version(key, "rot-v2");
-        assert_eq!(provider.version(), "rot-v2");
+        assert_eq!(provider.current().unwrap().key_id(), "rot-v2");
     }
 
     // ------------------------------------------------------------------------
     // Trait-level: rotation triggers re-fetch
     // ------------------------------------------------------------------------
 
-    /// Counts `current_key()` invocations. Used to assert that the layer
+    /// Counts atomic snapshot invocations. Used to assert that the layer
     /// re-queries the provider on each read/write rather than caching the
     /// key at construction time.
     ///
@@ -814,8 +869,7 @@ mod tests {
     #[cfg(feature = "sqlite")]
     struct CountingKeyProvider {
         inner: StaticKeyProvider,
-        current_key_calls: AtomicUsize,
-        version_calls: AtomicUsize,
+        snapshot_calls: AtomicUsize,
     }
 
     #[cfg(feature = "sqlite")]
@@ -823,78 +877,58 @@ mod tests {
         fn new(key: Arc<EncryptionKey>) -> Self {
             Self {
                 inner: StaticKeyProvider::new(key),
-                current_key_calls: AtomicUsize::new(0),
-                version_calls: AtomicUsize::new(0),
+                snapshot_calls: AtomicUsize::new(0),
             }
         }
 
-        fn current_key_calls(&self) -> usize {
-            self.current_key_calls.load(Ordering::SeqCst)
-        }
-
-        fn version_calls(&self) -> usize {
-            self.version_calls.load(Ordering::SeqCst)
+        fn snapshot_calls(&self) -> usize {
+            self.snapshot_calls.load(Ordering::SeqCst)
         }
     }
 
     #[cfg(feature = "sqlite")]
     impl KeyProvider for CountingKeyProvider {
-        fn current_key(&self) -> Result<Arc<EncryptionKey>, ProviderError> {
-            self.current_key_calls.fetch_add(1, Ordering::SeqCst);
-            self.inner.current_key()
-        }
-
-        fn version(&self) -> &str {
-            self.version_calls.fetch_add(1, Ordering::SeqCst);
-            self.inner.version()
+        fn current(&self) -> Result<KeySnapshot, ProviderError> {
+            self.snapshot_calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.current()
         }
     }
 
-    // Cross-layer test — requires the sqlite feature for SqliteCredentialStore.
+    // Cross-layer test — requires the sqlite feature for SqliteCredentialPersistence.
     #[cfg(feature = "sqlite")]
     #[tokio::test]
-    async fn layer_refetches_provider_on_put_and_get() -> Result<(), nebula_credential::StoreError>
+    async fn layer_refetches_provider_on_create_and_get() -> Result<(), CredentialPersistenceError>
     {
-        use nebula_credential::{CredentialStore, PutMode};
-
         use crate::credential::test_support::make_credential;
 
-        use super::super::{layer::EncryptionLayer, sqlite::SqliteCredentialStore};
+        use super::super::{layer::EncryptionLayer, sqlite::SqliteCredentialPersistence};
 
         let key = Arc::new(EncryptionKey::from_bytes([0x33; 32]));
         let provider = Arc::new(CountingKeyProvider::new(Arc::clone(&key)));
         let store = EncryptionLayer::new(
-            SqliteCredentialStore::connect_memory().await?,
+            SqliteCredentialPersistence::connect_memory().await?,
             Arc::clone(&provider) as _,
         );
 
-        let before_put = provider.current_key_calls();
-        store
-            .put(make_credential("refetch-1", b"secret"), PutMode::CreateOnly)
-            .await
-            .unwrap();
+        let before_create = provider.snapshot_calls();
+        let selector = selector(CredentialId::new());
+        store.create(&selector, make_credential(b"secret")).await?;
         assert!(
-            provider.current_key_calls() > before_put,
-            "put must call current_key at least once"
+            provider.snapshot_calls() > before_create,
+            "create must atomically snapshot the provider at least once"
         );
 
-        let before_get = provider.current_key_calls();
-        store.get("refetch-1").await.unwrap();
+        let before_get = provider.snapshot_calls();
+        store.get(&selector).await?;
         assert!(
-            provider.current_key_calls() > before_get,
-            "get must call current_key at least once"
-        );
-
-        assert!(
-            provider.version_calls() > 0,
-            "provider version must be queried too"
+            provider.snapshot_calls() > before_get,
+            "get must atomically snapshot the provider at least once"
         );
         Ok(())
     }
 
-    /// Failure from `current_key()` surfaces through the layer as a
-    /// `StoreError::Backend` — the typed taxonomy the rest of the credential
-    /// surface expects.
+    /// Failure from `current()` surfaces through the layer as a
+    /// closed `CredentialPersistenceError::Unavailable` taxonomy.
     ///
     /// Only used by the cross-layer tests below (sqlite feature).
     #[cfg(feature = "sqlite")]
@@ -902,41 +936,32 @@ mod tests {
 
     #[cfg(feature = "sqlite")]
     impl KeyProvider for FailingKeyProvider {
-        fn current_key(&self) -> Result<Arc<EncryptionKey>, ProviderError> {
+        fn current(&self) -> Result<KeySnapshot, ProviderError> {
             Err(ProviderError::NotConfigured {
                 name: "test-injected".into(),
             })
-        }
-
-        fn version(&self) -> &'static str {
-            "failing:test"
         }
     }
 
     // Cross-layer test — see `layer_refetches_provider_on_put_and_get`.
     #[cfg(feature = "sqlite")]
     #[tokio::test]
-    async fn provider_failure_surfaces_as_backend_error()
-    -> Result<(), nebula_credential::StoreError> {
-        use nebula_credential::{CredentialStore, PutMode, StoreError};
-
+    async fn provider_failure_surfaces_as_unavailable() -> Result<(), CredentialPersistenceError> {
         use crate::credential::test_support::make_credential;
 
-        use super::super::{layer::EncryptionLayer, sqlite::SqliteCredentialStore};
+        use super::super::{layer::EncryptionLayer, sqlite::SqliteCredentialPersistence};
 
         let store = EncryptionLayer::new(
-            SqliteCredentialStore::connect_memory().await?,
+            SqliteCredentialPersistence::connect_memory().await?,
             Arc::new(FailingKeyProvider) as Arc<dyn KeyProvider>,
         );
 
+        let selector = selector(CredentialId::new());
         let err = store
-            .put(make_credential("fail-1", b"x"), PutMode::CreateOnly)
+            .create(&selector, make_credential(b"x"))
             .await
             .expect_err("provider failure must propagate");
-        assert!(
-            matches!(err, StoreError::Backend(_)),
-            "expected Backend variant, got {err:?}"
-        );
+        assert_eq!(err, CredentialPersistenceError::Unavailable);
         Ok(())
     }
 }

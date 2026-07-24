@@ -48,10 +48,36 @@ impl PgUserRepo {
     pub fn new(pool: Pool<Postgres>) -> Self {
         Self { pool }
     }
+
+    /// Compare-and-swap an active TOTP envelope after decrypting it with an
+    /// explicitly configured legacy key.
+    ///
+    /// A lost race is benign: another request or the startup migrator already
+    /// replaced the exact ciphertext. Callers may continue using plaintext
+    /// that was authenticated under the configured legacy key.
+    pub async fn rotate_mfa_secret_envelope(
+        &self,
+        user_id: &[u8],
+        expected_envelope: &[u8],
+        replacement_envelope: &[u8],
+    ) -> Result<bool, StorageError> {
+        let rows = sqlx::query(
+            "UPDATE users SET mfa_secret_envelope = $3, version = version + 1 \
+             WHERE id = $1 AND mfa_secret_envelope = $2 AND deleted_at IS NULL",
+        )
+        .bind(user_id)
+        .bind(expected_envelope)
+        .bind(replacement_envelope)
+        .execute(&self.pool)
+        .await
+        .map_err(|error| map_db_err("user", error))?
+        .rows_affected();
+        Ok(rows == 1)
+    }
 }
 
 // Column order must match every `SELECT ... FROM users` in this file.
-type UserTuple = (
+pub(super) type UserTuple = (
     Vec<u8>,                               // id
     String,                                // email
     Option<chrono::DateTime<chrono::Utc>>, // email_verified_at
@@ -63,12 +89,12 @@ type UserTuple = (
     Option<chrono::DateTime<chrono::Utc>>, // locked_until
     i32,                                   // failed_login_count
     bool,                                  // mfa_enabled
-    Option<Vec<u8>>,                       // mfa_secret
+    Option<Vec<u8>>,                       // mfa_secret_envelope
     i64,                                   // version
     Option<chrono::DateTime<chrono::Utc>>, // deleted_at
 );
 
-fn tuple_to_row(t: UserTuple) -> UserRow {
+pub(super) fn tuple_to_row(t: UserTuple) -> UserRow {
     UserRow {
         id: t.0,
         email: t.1,
@@ -81,15 +107,15 @@ fn tuple_to_row(t: UserTuple) -> UserRow {
         locked_until: t.8,
         failed_login_count: t.9,
         mfa_enabled: t.10,
-        mfa_secret: t.11,
+        mfa_secret_envelope: t.11,
         version: t.12,
         deleted_at: t.13,
     }
 }
 
-const SELECT_COLS: &str = "id, email, email_verified_at, display_name, avatar_url, \
+pub(super) const SELECT_COLS: &str = "id, email, email_verified_at, display_name, avatar_url, \
      password_hash, created_at, last_login_at, locked_until, failed_login_count, \
-     mfa_enabled, mfa_secret, version, deleted_at";
+     mfa_enabled, mfa_secret_envelope, version, deleted_at";
 
 impl UserRepo for PgUserRepo {
     #[tracing::instrument(level = "debug", skip(self, user), fields(user_id = %hex::encode(&user.id)))]
@@ -100,7 +126,7 @@ impl UserRepo for PgUserRepo {
             "INSERT INTO users \
              (id, email, email_verified_at, display_name, avatar_url, password_hash, \
               created_at, last_login_at, locked_until, failed_login_count, mfa_enabled, \
-              mfa_secret, version, deleted_at) \
+              mfa_secret_envelope, version, deleted_at) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
         )
         .bind(&user.id)
@@ -114,7 +140,7 @@ impl UserRepo for PgUserRepo {
         .bind(user.locked_until)
         .bind(user.failed_login_count)
         .bind(user.mfa_enabled)
-        .bind(user.mfa_secret.as_deref())
+        .bind(user.mfa_secret_envelope.as_deref())
         .bind(user.version)
         .bind(user.deleted_at)
         .execute(&self.pool)
@@ -158,7 +184,7 @@ impl UserRepo for PgUserRepo {
             "UPDATE users SET \
                  email = $2, email_verified_at = $3, display_name = $4, avatar_url = $5, \
                  password_hash = $6, last_login_at = $7, locked_until = $8, \
-                 failed_login_count = $9, mfa_enabled = $10, mfa_secret = $11, \
+                 failed_login_count = $9, mfa_enabled = $10, mfa_secret_envelope = $11, \
                  version = version + 1 \
              WHERE id = $1 AND version = $12 AND deleted_at IS NULL",
         )
@@ -172,7 +198,7 @@ impl UserRepo for PgUserRepo {
         .bind(user.locked_until)
         .bind(user.failed_login_count)
         .bind(user.mfa_enabled)
-        .bind(user.mfa_secret.as_deref())
+        .bind(user.mfa_secret_envelope.as_deref())
         .bind(expected_version)
         .execute(&self.pool)
         .await

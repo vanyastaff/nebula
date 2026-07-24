@@ -7,7 +7,8 @@
 //! 2. Ownership validation — `trigger_id` must exist in the workflow's
 //!    `trigger_bindings`, scoped to the caller's tenant.  Cross-scope or absent
 //!    ⇒ 404 (no existence oracle leak).
-//! 3. Credential mint — `CredentialService::create` writes the `whsec_` secret.
+//! 3. Credential mint — the authenticated credential command gateway writes
+//!    the `whsec_` secret.
 //! 4. Spec write — `TriggerStore::create` writes the `port_triggers` row.
 //! 5. Handler build + `activate_and_persist` — in-memory routing entry +
 //!    `port_webhook_activations` row.
@@ -24,6 +25,8 @@
 //! - `signing_secret` is returned exactly once; never logged, never in metrics.
 //! - Handler build is refused when the built policy is `OptionalAcceptUnsigned`.
 //! - Ownership is validated under `scope` BEFORE any credential is minted.
+//! - The selected trusted factory validates `provider_config` before the first
+//!   credential, trigger, or activation write; factory defaults are closed.
 
 use std::sync::Arc;
 
@@ -34,7 +37,6 @@ use axum::{
 };
 use nebula_action::SignaturePolicy;
 use nebula_core::{TenantContext, TriggerId};
-use nebula_credential::{CredentialDisplay, TenantScope};
 use nebula_storage::rows::WebhookActivationSpec;
 use nebula_storage_port::dto::{TriggerRow, WebhookMode};
 use nebula_tenancy::ScopedTriggerStore;
@@ -46,10 +48,15 @@ use super::dto::{RegisterWebhookRequest, RegisterWebhookResponse};
 use nebula_storage_port::store::TriggerStore as _;
 
 use crate::{
+    domain::credential::dto::CreateCredentialRequest,
     error::{ApiError, ProblemDetails},
-    middleware::auth::AuthenticatedUser,
+    middleware::auth::AuthenticatedPrincipal,
+    ports::credential_command::{CredentialGatewayCommand, CredentialGatewayResult},
     state::AppState,
-    transport::webhook::{PersistParams, activate_and_persist, mint_whsec},
+    transport::webhook::{
+        PersistParams, activate_and_persist,
+        signing_secret::{mint_whsec, validate_resolved_secret},
+    },
 };
 
 /// POST /orgs/{org}/workspaces/{ws}/webhooks — Register a webhook trigger.
@@ -61,7 +68,7 @@ use crate::{
     post,
     path = "/orgs/{org}/workspaces/{ws}/webhooks",
     tag = "workspaces.webhooks",
-    security(("bearer" = []), ("api_key" = [])),
+    security(("bearer" = [])),
     params(
         ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
         ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
@@ -73,13 +80,13 @@ use crate::{
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Workflow or trigger_id not found in this scope.", body = ProblemDetails),
-        (status = 422, description = "The factory refused to build a compliant handler (policy not `Required`).", body = ProblemDetails),
+        (status = 422, description = "Provider configuration is semantically invalid, contains inline authority, or produced a handler whose policy is not `Required`.", body = ProblemDetails),
         (status = 503, description = "Webhook transport, trigger store, credential service, or secret resolver not configured.", body = ProblemDetails),
     ),
 )]
 pub async fn register_webhook(
     State(state): State<AppState>,
-    Extension(user): Extension<AuthenticatedUser>,
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws)): Path<(String, String)>,
     Json(body): Json<RegisterWebhookRequest>,
@@ -103,6 +110,8 @@ pub async fn register_webhook(
             errors: vec![],
         });
     }
+    body.validate_provider_config_shape()
+        .map_err(|detail| ApiError::Unprocessable(detail.to_owned()))?;
 
     // ── Step 1: scope — server-derived, NEVER from request ──────────────────
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
@@ -115,15 +124,26 @@ pub async fn register_webhook(
         .trigger_store
         .as_ref()
         .ok_or_else(|| ApiError::ServiceUnavailable("trigger store not configured".to_string()))?;
-    let credential_service = state.credential_service.as_ref().ok_or_else(|| {
-        ApiError::ServiceUnavailable("credential service not configured".to_string())
-    })?;
+    if state.credential_gateway.is_none() {
+        return Err(ApiError::ServiceUnavailable(
+            "credential command gateway not configured".to_owned(),
+        ));
+    }
     let webhook_activation_store = state.webhook_activation_store.as_ref().ok_or_else(|| {
         ApiError::ServiceUnavailable("webhook activation store not configured".to_string())
     })?;
     let action_registry = state.action_registry.as_ref().ok_or_else(|| {
         ApiError::ServiceUnavailable("action registry not configured".to_string())
     })?;
+    let factory = action_registry
+        .lookup_webhook_factory(&body.provider)
+        .ok_or_else(|| ApiError::Validation {
+            detail: format!("unknown webhook provider {:?}", body.provider),
+            errors: vec![],
+        })?;
+    factory
+        .validate_provider_config(body.provider_config.as_ref())
+        .map_err(|error| map_factory_error(&body.provider, error))?;
     let secret_resolver = state.webhook_secret_resolver.as_ref().ok_or_else(|| {
         ApiError::ServiceUnavailable("webhook secret resolver not configured".to_string())
     })?;
@@ -205,30 +225,29 @@ pub async fn register_webhook(
     // copy that is ever returned to the caller.  The persistence layer stores
     // the id, not the plaintext bytes.
     let whsec = mint_whsec();
-    let tenant_scope = TenantScope::from_scope(&scope);
-    let credential_head = credential_service
-        .create(
-            &tenant_scope,
-            "signing_key",
-            json!({
+    let credential = crate::transport::credential::execute_gateway_command(
+        &state,
+        &principal,
+        &scope,
+        CredentialGatewayCommand::Create(CreateCredentialRequest {
+            credential_key: "signing_key".to_owned(),
+            name: format!("webhook-signing-key-{}", &body.trigger_id),
+            description: None,
+            data: json!({
                 "key": whsec,
                 "algorithm": "hmac-sha256"
             }),
-            CredentialDisplay {
-                display_name: Some(format!("webhook-signing-key-{}", &body.trigger_id)),
-                ..CredentialDisplay::default()
-            },
-        )
-        .await
-        .map_err(|e| {
-            tracing::error!(
-                target: "nebula::api::webhook::register",
-                error = %e,
-                "credential mint failed during webhook registration"
-            );
-            ApiError::Internal(format!("failed to create signing credential: {e}"))
-        })?;
-    let secret_id = credential_head.id.clone();
+            tags: None,
+        }),
+        "<webhook-signing-key>",
+    )
+    .await?;
+    let CredentialGatewayResult::Record(credential) = credential else {
+        return Err(ApiError::Internal(
+            "credential gateway returned an invalid webhook mint result".to_owned(),
+        ));
+    };
+    let secret_id = credential.id;
 
     // ── Step 4: build the spec and write the trigger row ────────────────────
     //
@@ -277,7 +296,7 @@ pub async fn register_webhook(
         run_as: None,
         webhook_path: None,
         created_at: chrono::Utc::now().to_rfc3339(),
-        created_by: user.user_id.clone(),
+        created_by: principal.subject().to_owned(),
         version: 1,
         deleted_at: None,
     };
@@ -285,7 +304,7 @@ pub async fn register_webhook(
     let scoped_trigger = ScopedTriggerStore::new(Arc::clone(trigger_store), scope.clone());
     if let Err(e) = scoped_trigger.create(&scope, trigger_row).await {
         // Compensation: best-effort credential delete.
-        compensate_delete_credential(credential_service, &tenant_scope, &secret_id).await;
+        compensate_delete_credential(&state, &principal, &scope, &secret_id).await;
         tracing::error!(
             target: "nebula::api::webhook::register",
             error = %e,
@@ -305,21 +324,8 @@ pub async fn register_webhook(
         let raw_bytes = secret_resolver
             .resolve(&scope, &secret_id)
             .await
-            .map_err(|e| {
-                tracing::error!(
-                    target: "nebula::api::webhook::register",
-                    "secret resolution failed after credential mint"
-                );
-                ApiError::Internal(format!("secret resolver failed: {e}"))
-            })?;
-
-        // Look up the factory and build the handler.
-        let factory = action_registry
-            .lookup_webhook_factory(&body.provider)
-            .ok_or_else(|| ApiError::Validation {
-                detail: format!("unknown webhook provider {:?}", body.provider),
-                errors: vec![],
-            })?;
+            .and_then(validate_resolved_secret)
+            .map_err(|error| map_secret_resolution_error(&secret_id, error))?;
 
         use nebula_action::webhook::factory::WebhookActivationSpec as ActionSpec;
         let mut action_spec = ActionSpec::new(body.provider.clone(), raw_bytes);
@@ -336,50 +342,9 @@ pub async fn register_webhook(
             action_spec = action_spec.with_rate_limit_per_minute(rpm);
         }
 
-        // P2: map FactoryError variants to the correct HTTP status.
-        // - InvalidSpec → 422 (semantically-invalid caller input, same tier as
-        //   the OptionalAcceptUnsigned gate just below).
-        // - UnknownKind → 400 (the provider string is not registered).
-        // - SecretResolution + catch-all → 500 (genuine server fault).
-        let built = factory.build(&action_spec).map_err(|e| {
-            use nebula_action::webhook::factory::FactoryError;
-            match e {
-                FactoryError::InvalidSpec { kind, ref reason } => {
-                    tracing::warn!(
-                        target: "nebula::api::webhook::register",
-                        provider = %body.provider,
-                        kind = %kind,
-                        reason = %reason,
-                        "factory rejected spec (invalid input)"
-                    );
-                    ApiError::Unprocessable(format!(
-                        "invalid webhook spec for provider {kind:?}: {reason}"
-                    ))
-                },
-                FactoryError::UnknownKind(ref kind) => {
-                    tracing::warn!(
-                        target: "nebula::api::webhook::register",
-                        provider = %body.provider,
-                        kind = %kind,
-                        "factory build failed — unknown provider kind"
-                    );
-                    ApiError::Validation {
-                        detail: format!("unknown webhook provider {kind:?}"),
-                        errors: vec![],
-                    }
-                },
-                // SecretResolution and any future variants are server faults.
-                _ => {
-                    tracing::error!(
-                        target: "nebula::api::webhook::register",
-                        error = %e,
-                        provider = %body.provider,
-                        "factory build failed (server fault)"
-                    );
-                    ApiError::Internal(format!("factory build failed for {:?}: {e}", body.provider))
-                },
-            }
-        })?;
+        let built = factory
+            .build(&action_spec)
+            .map_err(|error| map_factory_error(&body.provider, error))?;
 
         // Security gate: refuse `OptionalAcceptUnsigned` — the Prod producer
         // MUST result in a Required policy.  Any factory that produces
@@ -456,7 +421,7 @@ pub async fn register_webhook(
         Err(api_err) => {
             // Compensation: best-effort spec-row soft-delete + credential delete.
             compensate_delete_trigger_spec(&scoped_trigger, &scope, &trigger_row_id).await;
-            compensate_delete_credential(credential_service, &tenant_scope, &secret_id).await;
+            compensate_delete_credential(&state, &principal, &scope, &secret_id).await;
             return Err(api_err);
         },
     };
@@ -485,6 +450,68 @@ pub async fn register_webhook(
     ))
 }
 
+fn map_factory_error(
+    provider: &str,
+    error: nebula_action::webhook::factory::FactoryError,
+) -> ApiError {
+    use nebula_action::webhook::factory::FactoryError;
+
+    match error {
+        FactoryError::InvalidSpec { kind, reason } => {
+            tracing::warn!(
+                target: "nebula::api::webhook::register",
+                provider = %provider,
+                kind = %kind,
+                reason = %reason,
+                "factory rejected spec (invalid input)"
+            );
+            ApiError::Unprocessable(format!(
+                "invalid webhook spec for provider {kind:?}: {reason}"
+            ))
+        },
+        FactoryError::UnknownKind(kind) => {
+            tracing::warn!(
+                target: "nebula::api::webhook::register",
+                provider = %provider,
+                kind = %kind,
+                "factory rejected unknown provider kind"
+            );
+            ApiError::Validation {
+                detail: format!("unknown webhook provider {kind:?}"),
+                errors: vec![],
+            }
+        },
+        // Future variants are server faults. Do not format an opaque error:
+        // a downstream factory must not be able to reflect provider payloads
+        // into either the public problem body or platform logs.
+        _ => {
+            tracing::error!(
+                target: "nebula::api::webhook::register",
+                provider = %provider,
+                "factory failed (server fault)"
+            );
+            ApiError::Internal("webhook factory failed".to_owned())
+        },
+    }
+}
+
+fn map_secret_resolution_error(
+    secret_id: &str,
+    _error: crate::transport::webhook::SecretResolutionError,
+) -> ApiError {
+    // The resolver is a public object-safe port and may be implemented by
+    // downstream code. Its Display text is therefore untrusted and may carry
+    // credential/provider material. Keep both logs and the HTTP problem body
+    // on a closed classification owned by this boundary.
+    tracing::error!(
+        target: "nebula::api::webhook::register",
+        error_class = "secret_resolution",
+        secret_id = %secret_id,
+        "secret resolution failed after credential mint"
+    );
+    ApiError::Internal("webhook secret resolution failed".to_owned())
+}
+
 // ── Compensation helpers ──────────────────────────────────────────────────────
 
 /// Best-effort credential deletion on registration failure.
@@ -492,11 +519,13 @@ pub async fn register_webhook(
 /// Logs warn on failure; does NOT return an error (the caller's original error
 /// is surfaced instead).  The credential id is never logged.
 async fn compensate_delete_credential(
-    service: &nebula_credential::CredentialService,
-    scope: &TenantScope,
+    state: &AppState,
+    principal: &AuthenticatedPrincipal,
+    scope: &nebula_storage_port::Scope,
     secret_id: &str,
 ) {
-    match service.delete(scope, secret_id).await {
+    match crate::transport::credential::delete_credential(state, principal, scope, secret_id).await
+    {
         Ok(()) => {
             tracing::warn!(
                 target: "nebula::api::webhook::register",
@@ -537,5 +566,44 @@ async fn compensate_delete_trigger_spec(
                 "compensation: trigger spec row soft-delete failed — orphan trigger row may exist"
             );
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SECRET_CANARY: &str = "whsec_DO_NOT_REFLECT_RESOLVER_SOURCE";
+
+    #[test]
+    fn resolver_errors_and_http_mapping_have_only_closed_text() {
+        use crate::transport::webhook::SecretResolutionError;
+
+        let cases = [
+            (
+                SecretResolutionError::NotFound,
+                "webhook signing secret was not found",
+            ),
+            (
+                SecretResolutionError::Unavailable,
+                "webhook signing secret is unavailable",
+            ),
+            (
+                SecretResolutionError::InvalidMaterial,
+                "webhook signing secret material is invalid",
+            ),
+        ];
+
+        for (error, expected_display) in cases {
+            assert_eq!(error.to_string(), expected_display);
+            assert!(!error.to_string().contains(SECRET_CANARY));
+
+            let mapped = map_secret_resolution_error("cred_non_secret_id", error);
+            let ApiError::Internal(detail) = mapped else {
+                panic!("secret resolution maps to the fixed internal-error lane");
+            };
+            assert_eq!(detail, "webhook secret resolution failed");
+            assert!(!detail.contains(SECRET_CANARY));
+        }
     }
 }

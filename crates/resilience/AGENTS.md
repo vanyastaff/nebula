@@ -35,7 +35,7 @@
 - NOT a durable control plane (in-process only — durable cancel/dispatch lives in `execution_control_queue`) and NOT a metrics exporter (events feed `nebula-metrics` via sinks, not the reverse).
 - `CallError<E>` keeps the caller's `E` — no forced mapping, no `Box<dyn Error>` erasure; keep variants additive (`#[non_exhaustive]`).
 - `#![deny(unsafe_code)]`; loom-gated atomics behind `cfg(loom)` for model checks only.
-- Cross-crate calls go through `nebula-eventbus`, not direct sibling imports.
+- Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
 - Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also

@@ -12,6 +12,10 @@ repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
 
+[features]
+default = []
+unstable-revisions = ["nebula-core/unstable-worker-flavor"]
+
 [dependencies]
 nebula-core = { path = "../core" }
 nebula-error = { workspace = true, features = ["derive"] }

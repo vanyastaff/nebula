@@ -17,7 +17,13 @@
 
 use sqlx::{Pool, Postgres};
 
-use crate::{error::StorageError, pg::map_db_err, repos::SessionRepo, rows::SessionRow};
+use crate::{
+    error::StorageError,
+    pg::map_db_err,
+    repos::SessionRepo,
+    rows::{SessionDraft, SessionRow},
+    session_token::{SessionTokenDigest, session_token_digest},
+};
 
 /// Postgres-backed session repository.
 #[derive(Clone)]
@@ -35,7 +41,7 @@ impl PgSessionRepo {
 
 // Column order must match every `SELECT ... FROM sessions` in this file.
 type SessionTuple = (
-    Vec<u8>,                               // id
+    Vec<u8>,                               // token_digest
     Vec<u8>,                               // user_id
     chrono::DateTime<chrono::Utc>,         // created_at
     chrono::DateTime<chrono::Utc>,         // last_active_at
@@ -45,9 +51,12 @@ type SessionTuple = (
     Option<chrono::DateTime<chrono::Utc>>, // revoked_at
 );
 
-fn tuple_to_row(t: SessionTuple) -> SessionRow {
-    SessionRow {
-        id: t.0,
+fn tuple_to_row(t: SessionTuple) -> Result<SessionRow, StorageError> {
+    let digest: [u8; 32] = t.0.try_into().map_err(|_: Vec<u8>| {
+        StorageError::Serialization("session token digest is not 32 bytes".to_owned())
+    })?;
+    Ok(SessionRow {
+        token_digest: SessionTokenDigest::from_bytes(digest),
         user_id: t.1,
         created_at: t.2,
         last_active_at: t.3,
@@ -55,33 +64,36 @@ fn tuple_to_row(t: SessionTuple) -> SessionRow {
         ip_address: t.5,
         user_agent: t.6,
         revoked_at: t.7,
-    }
+    })
 }
 
-// `ip_address::text` casts INET → TEXT in Postgres so the column
-// projects directly into `Option<String>` on the Rust side.
-const SELECT_COLS: &str = "id, user_id, created_at, last_active_at, expires_at, \
-     ip_address::text AS ip_address, user_agent, revoked_at";
+// `host(ip_address)` projects the address without PostgreSQL's implicit
+// host-netmask suffix (`/32` for IPv4, `/128` for IPv6).
+const SELECT_COLS: &str = "token_digest, user_id, created_at, last_active_at, expires_at, \
+     host(ip_address) AS ip_address, user_agent, revoked_at";
 
 impl SessionRepo for PgSessionRepo {
-    #[tracing::instrument(
-        level = "debug",
-        skip(self, session),
-        fields(session_id = %hex::encode(&session.id), user_id = %hex::encode(&session.user_id))
-    )]
-    async fn create(&self, session: &SessionRow) -> Result<(), StorageError> {
-        debug_assert!(!session.id.is_empty(), "session.id must not be empty");
+    #[tracing::instrument(level = "debug", skip(self, presented_token, session))]
+    async fn create(
+        &self,
+        presented_token: &[u8],
+        session: &SessionDraft,
+    ) -> Result<(), StorageError> {
+        debug_assert!(
+            !presented_token.is_empty(),
+            "presented session token must not be empty"
+        );
         debug_assert!(
             !session.user_id.is_empty(),
             "session.user_id must not be empty"
         );
         sqlx::query(
             "INSERT INTO sessions \
-             (id, user_id, created_at, last_active_at, expires_at, \
+             (token_digest, user_id, created_at, last_active_at, expires_at, \
               ip_address, user_agent, revoked_at) \
              VALUES ($1, $2, $3, $4, $5, $6::inet, $7, $8)",
         )
-        .bind(&session.id)
+        .bind(session_token_digest(presented_token).as_bytes().as_slice())
         .bind(&session.user_id)
         .bind(session.created_at)
         .bind(session.last_active_at)
@@ -95,42 +107,45 @@ impl SessionRepo for PgSessionRepo {
         Ok(())
     }
 
-    #[tracing::instrument(level = "debug", skip(self), fields(session_id = %hex::encode(id)))]
-    async fn get(&self, id: &[u8]) -> Result<Option<SessionRow>, StorageError> {
+    #[tracing::instrument(level = "debug", skip(self, presented_token))]
+    async fn get(&self, presented_token: &[u8]) -> Result<Option<SessionRow>, StorageError> {
+        let digest = session_token_digest(presented_token);
         let sql = format!(
             "SELECT {SELECT_COLS} FROM sessions \
-             WHERE id = $1 AND revoked_at IS NULL AND expires_at > NOW()"
+             WHERE token_digest = $1 AND revoked_at IS NULL AND expires_at > NOW()"
         );
         let row = sqlx::query_as::<_, SessionTuple>(sqlx::AssertSqlSafe(sql))
-            .bind(id)
+            .bind(digest.as_bytes().as_slice())
             .fetch_optional(&self.pool)
             .await
             .map_err(|e| map_db_err("session", e))?;
-        Ok(row.map(tuple_to_row))
+        row.map(tuple_to_row).transpose()
     }
 
-    #[tracing::instrument(level = "debug", skip(self), fields(session_id = %hex::encode(id)))]
-    async fn touch(&self, id: &[u8]) -> Result<(), StorageError> {
+    #[tracing::instrument(level = "debug", skip(self, presented_token))]
+    async fn touch(&self, presented_token: &[u8]) -> Result<(), StorageError> {
+        let digest = session_token_digest(presented_token);
         sqlx::query(
             "UPDATE sessions SET last_active_at = NOW() \
-             WHERE id = $1 AND revoked_at IS NULL AND expires_at > NOW()",
+             WHERE token_digest = $1 AND revoked_at IS NULL AND expires_at > NOW()",
         )
-        .bind(id)
+        .bind(digest.as_bytes().as_slice())
         .execute(&self.pool)
         .await
         .map_err(|e| map_db_err("session", e))?;
         Ok(())
     }
 
-    #[tracing::instrument(level = "debug", skip(self), fields(session_id = %hex::encode(id)))]
-    async fn revoke(&self, id: &[u8]) -> Result<(), StorageError> {
+    #[tracing::instrument(level = "debug", skip(self, presented_token))]
+    async fn revoke(&self, presented_token: &[u8]) -> Result<(), StorageError> {
+        let digest = session_token_digest(presented_token);
         // Idempotent: `revoked_at IS NULL` guards re-revocation so the
         // original revocation timestamp is preserved.
         sqlx::query(
             "UPDATE sessions SET revoked_at = NOW() \
-             WHERE id = $1 AND revoked_at IS NULL",
+             WHERE token_digest = $1 AND revoked_at IS NULL",
         )
-        .bind(id)
+        .bind(digest.as_bytes().as_slice())
         .execute(&self.pool)
         .await
         .map_err(|e| map_db_err("session", e))?;
@@ -156,7 +171,8 @@ mod tests {
     use crate::{
         pg::user::PgUserRepo,
         repos::UserRepo,
-        rows::SessionRow,
+        rows::SessionDraft,
+        session_token::session_token_digest,
         test_support::{random_id, test_user},
     };
 
@@ -193,18 +209,20 @@ mod tests {
         user.id
     }
 
-    fn fresh_session(user_id: &[u8]) -> SessionRow {
+    fn fresh_session(user_id: &[u8]) -> (Vec<u8>, SessionDraft) {
         let now = Utc::now();
-        SessionRow {
-            id: random_id(),
-            user_id: user_id.to_vec(),
-            created_at: now,
-            last_active_at: now,
-            expires_at: now + Duration::hours(2),
-            ip_address: Some("192.0.2.1".to_string()),
-            user_agent: Some("nebula-test/1.0".to_string()),
-            revoked_at: None,
-        }
+        (
+            random_id(),
+            SessionDraft {
+                user_id: user_id.to_vec(),
+                created_at: now,
+                last_active_at: now,
+                expires_at: now + Duration::hours(2),
+                ip_address: Some("192.0.2.1".to_string()),
+                user_agent: Some("nebula-test/1.0".to_string()),
+                revoked_at: None,
+            },
+        )
     }
 
     #[tokio::test]
@@ -212,14 +230,27 @@ mod tests {
         let Some(pool) = pool().await else { return };
         let user_id = seed_user(&pool, "sess-create").await;
         let repo = PgSessionRepo::new(pool);
-        let session = fresh_session(&user_id);
+        let (token, session) = fresh_session(&user_id);
 
-        repo.create(&session).await.expect("create");
-        let loaded = repo.get(&session.id).await.expect("get").expect("some");
-        assert_eq!(loaded.id, session.id);
+        repo.create(&token, &session).await.expect("create");
+        let loaded = repo.get(&token).await.expect("get").expect("some");
+        assert_eq!(loaded.token_digest, session_token_digest(&token));
         assert_eq!(loaded.user_id, user_id);
         assert_eq!(loaded.ip_address.as_deref(), Some("192.0.2.1"));
         assert!(loaded.revoked_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn ipv6_roundtrip_preserves_the_bare_host_contract() {
+        let Some(pool) = pool().await else { return };
+        let user_id = seed_user(&pool, "sess-ipv6").await;
+        let repo = PgSessionRepo::new(pool);
+        let (token, mut session) = fresh_session(&user_id);
+        session.ip_address = Some("2001:db8::1".to_owned());
+
+        repo.create(&token, &session).await.expect("create");
+        let loaded = repo.get(&token).await.expect("get").expect("some");
+        assert_eq!(loaded.ip_address.as_deref(), Some("2001:db8::1"));
     }
 
     #[tokio::test]
@@ -227,11 +258,11 @@ mod tests {
         let Some(pool) = pool().await else { return };
         let user_id = seed_user(&pool, "sess-dup").await;
         let repo = PgSessionRepo::new(pool);
-        let session = fresh_session(&user_id);
-        repo.create(&session).await.expect("first create");
+        let (token, session) = fresh_session(&user_id);
+        repo.create(&token, &session).await.expect("first create");
 
         let err = repo
-            .create(&session)
+            .create(&token, &session)
             .await
             .expect_err("duplicate session id must reject");
         assert!(
@@ -251,15 +282,15 @@ mod tests {
         let Some(pool) = pool().await else { return };
         let user_id = seed_user(&pool, "sess-revoke").await;
         let repo = PgSessionRepo::new(pool);
-        let session = fresh_session(&user_id);
-        repo.create(&session).await.expect("create");
+        let (token, session) = fresh_session(&user_id);
+        repo.create(&token, &session).await.expect("create");
 
-        repo.revoke(&session.id).await.expect("revoke");
-        let after = repo.get(&session.id).await.expect("get");
+        repo.revoke(&token).await.expect("revoke");
+        let after = repo.get(&token).await.expect("get");
         assert!(after.is_none(), "revoked session must not surface from get");
 
         // Second revoke is a no-op (no error).
-        repo.revoke(&session.id).await.expect("idempotent revoke");
+        repo.revoke(&token).await.expect("idempotent revoke");
     }
 
     #[tokio::test]
@@ -268,30 +299,34 @@ mod tests {
         let user_id = seed_user(&pool, "sess-cleanup").await;
         let repo = PgSessionRepo::new(pool);
 
-        let mut expired = fresh_session(&user_id);
+        let (expired_token, mut expired) = fresh_session(&user_id);
         expired.expires_at = Utc::now() - Duration::seconds(60);
-        let mut live = fresh_session(&user_id);
+        let (live_token, mut live) = fresh_session(&user_id);
         live.expires_at = Utc::now() + Duration::hours(1);
 
-        let expired_id = expired.id.clone();
-        let live_id = live.id.clone();
-        repo.create(&expired).await.expect("create expired");
-        repo.create(&live).await.expect("create live");
+        let expired_digest = session_token_digest(&expired_token);
+        let live_digest = session_token_digest(&live_token);
+        repo.create(&expired_token, &expired)
+            .await
+            .expect("create expired");
+        repo.create(&live_token, &live).await.expect("create live");
 
         let _deleted = repo.cleanup_expired().await.expect("cleanup");
 
         // Expired row gone; live row remains.
-        let after_expired: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE id = $1")
-            .bind(&expired_id)
-            .fetch_one(&repo.pool)
-            .await
-            .expect("count expired");
+        let after_expired: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE token_digest = $1")
+                .bind(expired_digest.as_bytes().as_slice())
+                .fetch_one(&repo.pool)
+                .await
+                .expect("count expired");
         assert_eq!(after_expired, 0);
-        let after_live: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE id = $1")
-            .bind(&live_id)
-            .fetch_one(&repo.pool)
-            .await
-            .expect("count live");
+        let after_live: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE token_digest = $1")
+                .bind(live_digest.as_bytes().as_slice())
+                .fetch_one(&repo.pool)
+                .await
+                .expect("count live");
         assert_eq!(after_live, 1);
     }
 }

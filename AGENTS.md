@@ -127,6 +127,8 @@ Run via `task <name>`. See `task --list` for the full catalog.
 | `task deny` | `cargo-deny`: layer wrappers + advisories + licenses |
 | `task test` | All workspace tests |
 | `task ci` | Full CI pipeline locally |
+| `cargo xtask ci-plan full` | Emit the versioned full CI package plan |
+| `cargo xtask ci-plan diff --base <sha> --head <sha> --comparison merge-base` | Emit a metadata-driven diff plan |
 
 ### Single Crate
 
@@ -161,6 +163,7 @@ nebula/
 ├── rustfmt.toml        # rustfmt config (stable-only)
 ├── clippy.toml         # lint thresholds (msrv 1.96)
 ├── crates/             # workspace members
+├── tools/xtask/        # repository automation; outside the product layer graph
 ├── scripts/            # worktree.sh + lefthook helpers
 ├── .claude/            # Claude Code: guard hooks, slash commands
 └── .github/            # CI workflows, CODEOWNERS, templates
@@ -174,27 +177,65 @@ some carry a sibling derive crate (`<name>/macros`) and/or a `docs/` folder.
 ## Layered Dependency Map
 
 **Mechanically enforced** by `cargo deny check` against `deny.toml` `[bans].deny` wrappers.
-Each layer depends only on layers below. Upward dependency = CI failure.
+Each layer depends only on layers below. Direct imports of lower-layer domain types and ports are
+normal; upward dependencies and undeclared lateral coupling are CI failures.
 
 | Layer | Crates |
 |-------|--------|
-| **API / Public** | `api`, `sdk` |
+| **API / Surfaces** | `api`, `sdk` |
 | **Exec** | `engine`, `orchestrator`, `worker`, `storage`, `storage-loom-probe` |
 | **Business** | `resource`, `action`, `plugin`, `plugin-core`, `tenancy` |
 | **Core / shared-infra** | `core`, `validator`, `expression`, `workflow`, `execution`, `schema`, `metadata`, `storage-port`, `credential` |
 | **Cross-cutting** | `crypto`, `log`, `eventbus`, `metrics`, `resilience`, `error`, `env` |
 
+`nebula-xtask` is repository tooling, not a product crate or architectural
+layer. It may depend on general-purpose tooling libraries but never on a
+`nebula-*` product package.
+
 **Architecture Invariants** (rust-analyzer convention: each states what holds — or is
 *deliberately absent* — everywhere; violating one is an architecture change, not a refactor):
 
-- **Invariant:** cross-crate communication goes through `nebula-eventbus`, **not** direct imports between siblings.
+- **Invariant:** durable commands and business facts cross crate boundaries through persisted state
+  or explicit outbox/inbox ports. Direct downward dependencies on domain types and ports are normal.
+  `nebula-eventbus` carries only ephemeral observations (telemetry, cache/UI invalidation, wake
+  hints); consumers must tolerate loss, duplication, and reordering, and it is never a source of
+  truth.
 - **Invariant:** `nebula-storage-port` (Core) is the object-safe storage seam — it contains no backend code and never will.
-- **Invariant:** `nebula-storage` (Exec) is the sole adapter implementation (InMemory + SQLite + Postgres); no other crate implements the port.
+- **Invariant:** `nebula-storage` (Exec) is the sole persistence-backend implementation. SQLite and
+  Postgres are deployment backends; InMemory is an internal test/reference/conformance adapter,
+  not a supported deployment backend. Policy decorators such as `nebula-tenancy` may wrap the
+  port, but no other crate implements a persistence backend.
 - **Invariant:** `nebula-credential` is shared infra importable from Exec, Business, and API tiers; secrets never appear in error messages (`SecretFreeMessage`) or `Debug` output.
-- **Invariant:** `nebula-worker` (Exec) is the composition root that wires the engine into the `nebula-orchestrator` pull-loop (ADR-0095); only per-flavor binaries (`apps/worker`) may depend on it.
-- **Invariant:** plugins register in-process (ADR-0091); WASM/process isolation is a non-goal (canon §12.6). `nebula-plugin-core` (Business) is the first-party `core` plugin built on `action`/`plugin`.
+- **Invariant:** durable write authority is aggregate-scoped. Runtime control owns the execution
+  aggregate, execution journal and queues, execution outbox/inbox, and operation ledger;
+  credential runtime owns credential/refresh/lease state; resource lifecycle owns
+  resource/binding/fan-out state. Cross-aggregate commands and facts use durable persisted seams;
+  `nebula-eventbus` may only wake or observe their owners.
+- **Invariant:** every first-party deployment composition root in this workspace lives under
+  `apps/`. `nebula-worker` (Exec) is reusable assembly that wires the engine into the
+  `nebula-orchestrator` pull-loop (ADR-0095); `apps/worker` selects concrete adapters,
+  configuration, and process lifecycle. A downstream host becomes a supported composition root
+  only through the curated `nebula_sdk::embedded::RuntimeBuilder`; until that façade ships,
+  downstream embedding is not a supported deployment surface. It cannot replace or bypass
+  aggregate ownership, admission, or tenant authority.
+- **Invariant:** plugins are statically linked, trusted in-process adapters (ADR-0091); WASM/process
+  isolation is a non-goal (canon §12.6). `nebula-plugin-core` (Business) is the first-party `core`
+  plugin built on `action`/`plugin`.
 - **Invariant:** each `+macros` companion lives at the same layer as its parent and ships derives only — no runtime code.
-- **API boundary crates:** `sdk`, `api` (semver-relevant public surface). Everything else is internal; internal crates may break their APIs freely within a release.
+- **Invariant:** CI package selection comes only from Cargo metadata through
+  `cargo xtask ci-plan`; workflow and hook scripts consume its versioned JSON
+  and do not maintain package-selection name lists or path-to-crate inference.
+  The pre-push names `nebula-resilience`, `nebula-log`, `nebula-expression`,
+  `nebula-credential`, `nebula-resource`, and `nebula-storage` form an
+  independent no-default-feature gate-policy list applied only after selection;
+  they never decide matrix membership.
+- **API boundaries:** `sdk` is the sole supported and branded Rust surface, organized by persona:
+  workflow/authoring, integration, schema, testing, client, and embedded façades. The curated
+  client submits versioned transport requests; the curated embedded façade submits typed runtime
+  commands. Neither exposes raw stores, mutation/admission capabilities, claim tokens, or tenant
+  proofs. The HTTP API contract and all implementation crates remain technical boundaries, not
+  separately supported Rust products. Required internal packages may be published as exact-version,
+  lockstep dependencies of `nebula-sdk`, but direct use is unsupported (private ADR-0117).
 
 Per-crate invariants live in each `crates/<crate>/AGENTS.md` (convention: prefer a
 dedicated `## Invariants` section; state what the crate deliberately does NOT do).
@@ -223,7 +264,9 @@ All persistent branches go through `scripts/worktree.sh` (or `task wt:*` wrapper
 - **Branch from `main`, squash-merge to `main`.** Never force-push shared history.
 - **Use Conventional Commits**, validated by `convco`. Scope = crate name without `nebula-` prefix.
 - **Use `thiserror` in libs, `anyhow` in bins.** No `unwrap()`/`expect()`/`panic!()` in library code.
-- **Route cross-crate calls through `nebula-eventbus`** — never direct sibling imports.
+- **Use the right cross-crate seam:** direct downward imports for domain types and ports; persisted
+  state or explicit outbox/inbox ports for durable commands and facts; `nebula-eventbus` only for
+  lossy observations and wake hints.
 - **Ship observability with every new state/error/hot path** — typed error variant + tracing span + invariant check.
 - **Use Serena's symbolic tools** (find_symbol, rename_symbol, replace_symbol_body) instead of grep/read for code navigation.
 - **Run `cargo check -p nebula-<name>`** after editing a crate for fast feedback.
@@ -249,7 +292,10 @@ All persistent branches go through `scripts/worktree.sh` (or `task wt:*` wrapper
 
 When you hit a build/test error:
 
-1. **Layer violation (cargo-deny)** → check `deny.toml` `[bans].deny` wrappers. The crate you're importing from is in a higher layer. Use `nebula-eventbus` for cross-crate communication, or move the code down a layer.
+1. **Layer violation (cargo-deny)** → check `deny.toml` `[bans].deny` wrappers. The crate you're
+   importing from is in a higher layer or is an undeclared lateral dependency. Depend on a
+   lower-layer domain/port crate, move the shared contract down, or communicate a durable command
+   through its owning persisted port. Do not bypass the layer map with `nebula-eventbus`.
 2. **`unwrap()` in lib code** → replace with `?` operator + typed `thiserror` variant.
 3. **Missing trait bound** → check if the type needs `Send + Sync` (all async paths require it).
 4. **Clippy warning** → run `task clippy` to see workspace-wide. Fix the warning, don't suppress it.
@@ -318,4 +364,5 @@ Slash commands: `.claude/commands/` (project-specific, load on demand).
 | `Taskfile.yml` | `task dev:check` = full pre-PR gate |
 | `.mcp.json` | MCP server config (Serena, rust-analyzer, cratesio, etc.) |
 | `scripts/worktree.sh` | Branch lifecycle helper |
+| `tools/xtask/` | Metadata-driven repository automation and its contract tests |
 | `.github/workflows/ci.yml` | CI required jobs |

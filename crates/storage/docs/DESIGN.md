@@ -23,7 +23,8 @@
   audit / blob);
 - credential-персистенцию: durable stores, шифрование / аудит / кэш-слои, `KeyProvider`,
   ADR-0041 refresh-claim CAS-repo;
-- три бэкенда: InMemory (всегда), SQLite (feature `sqlite`), Postgres (feature `postgres`).
+- SQLite (feature `sqlite`) и Postgres (feature `postgres`) как deployment-бэкенды;
+  InMemory — только internal test/reference/conformance adapter.
 
 **ЯВНО НЕ делает** (из non-goals README + границы fact-sheet):
 - не execution state-machine (типы состояний / легальность переходов — `nebula-execution`);
@@ -39,7 +40,8 @@
 Контракт — это порт в `nebula-storage-port` (`ExecutionStore` + атомарный
 `TransitionBatch`, `ExecutionJournalReader`, `NodeResultStore`, `CheckpointStore`,
 `IdempotencyGuard`/`IdempotencyStore`, `WorkflowStore`/`WorkflowVersionStore`,
-`ControlQueue`, `WebhookActivationStore`, `RefreshClaimStore`, identity-стора; `Scope`).
+`ControlQueue`, `WebhookActivationStore`, `RefreshClaimStore`, identity-стора,
+owner-bound `CredentialPersistence`; `Scope`).
 Этот крейт даёт адаптеры:
 
 | Item | Where |
@@ -56,7 +58,7 @@
 | `repos::*` (не-портовые трейты с живыми потребителями) | `ControlQueueRepo`+`InMemoryControlQueueRepo` `src/repos/control_queue.rs`; `IdempotencyStoreRepo` `src/repos/idempotency.rs`; `WebhookActivationRepo` `src/repos/webhook_activation.rs:67`; identity-row трейты `src/repos/user.rs` (+ org/workspace/quota/trigger/audit/blob/resource) |
 | `pg::*` (feature postgres) — Postgres-глю для `repos`-трейтов | `PgUserRepo` `src/pg/user.rs:41`, `PgWebhookActivationRepo` `src/pg/webhook_activation.rs:44`, `PgControlQueueRepo`, `PgSessionRepo`, … |
 | `rows::*` — row-DTO (multi-tenant by construction) | `UserRow` `src/rows/user.rs:11`, `WorkflowRow`, `WebhookActivationSpec` `src/rows/webhook_activation.rs:72`, … |
-| credential stores | `SqliteCredentialStore` `src/credential/sqlite.rs:40`; `PgCredentialStore` `src/credential/postgres.rs` |
+| credential persistence | `SqliteCredentialPersistence` and `PgCredentialPersistence`, both implementing the port-local object-safe contract |
 | `KeyProvider` / `EnvKeyProvider` / `FileKeyProvider` | `src/credential/key_provider.rs` |
 | credential decorator-слои `EncryptionLayer`/`CacheLayer`/`AuditLayer` | `src/credential/layer/` |
 | `ProviderCacheLayer` / `RotationBackup` (feature rotation) / `InMemoryPendingStore` | `src/credential/provider_cache.rs`, `src/credential/backup.rs`, `src/credential/pending.rs` |
@@ -123,10 +125,11 @@ SQLite/Postgres, под Mutex в InMemory).
   HashMap-backend.
 - **[ADR-0041] Refresh-claim atomicity.** `try_claim` атомарен под контеншеном — ровно один
   из N acquirers по N репликам выигрывает (CAS `INSERT … ON CONFLICT DO UPDATE WHERE
-  expires_at < now()` в SQL; per-key Mutex-swap в in-memory). `heartbeat` валидирует
-  `ClaimToken.generation` (stale-holder не продлит reclaimed-claim); `reclaim_stuck`
-  возвращает reclaimed-credentials атомарно (иначе sentinel-state un-observed, N=3-in-1h
-  escalation недосчитан).
+  expires_at < now() AND sentinel = Normal` в SQL; per-key Mutex-swap в in-memory).
+  `heartbeat`, `mark_sentinel` и `release` валидируют UUID `claim_id` вместе с generation.
+  Expired `Normal` безопасно удаляется; expired `RefreshInFlight` никогда не reclaim-ится в
+  provider replay. `reclaim_stuck` атомарно записывает ровно одно evidence-событие на claim UUID,
+  сохраняет poison-row и возвращает только newly-accounted incidents для threshold observation.
 - **Multi-tenant by construction.** `rows::*` несут обязательные `workspace_id`/`org_id`;
   identity-стора tenant-scoped на уровне row-DTO.
 
@@ -182,9 +185,10 @@ builtin types), а `nebula-crypto` владеет `Cipher`/`Kdf`-портами.
 - **Values-only persistence.** Credential-стора персистят _значения_; схема приходит из
   зарегистрированных типов (`HasSchema` → `nebula-metadata` → API catalog), не из storage.
   Крейт не хранит схему — только зашифрованные данные + метаданные ротации.
-- **Owner-scoped isolation.** Тенант-изоляция делается row-DTO `workspace_id`/`org_id` +
-  `nebula-tenancy`-декораторами; это согласуется с `OwnerScopedKey` owner-isolation
-  (conference correction) — durable-сторона уже multi-tenant by construction.
+- **Owner-scoped credential isolation.** Credential-операции напрямую принимают обязательный
+  `CredentialOwner`/`CredentialSelector`; каждый SQL-предикат включает owner, а metadata stamp
+  никогда не является authority. В отличие от общих Scope-taking портов, credential persistence
+  намеренно не оборачивается `nebula-tenancy`-декоратором.
 
 **Что пересматривается:**
 - **Граница storage↔credential.** План full-rewrite `nebula-credential`
@@ -204,8 +208,14 @@ builtin types), а `nebula-crypto` владеет `Cipher`/`Kdf`-портами.
 ## 8. Forward design / открытые вопросы
 
 - **Унифицировать `StorageError`.** Решить порт-локальный vs крейт-локальный enum
-  (напряжение №1) — выбрать один канон до того, как residual-repos семья вырастет; сейчас
-  README врёт про re-export.
+  (напряжение №1) — выбрать один канон до того, как residual-repos семья вырастет. README
+  теперь явно различает эти два технических error-типа.
+- **K2 owner schema migration закрыта новой `0039`.** Историческая
+  `0030_credentials_store.sql` остаётся SQLx-checksummed и byte-immutable, включая legacy-комментарий.
+  Paired SQLite/PostgreSQL `0039_credentials_owner_and_record_state.sql` проверяет legacy rows,
+  делает owner/state структурными DB-инвариантами и добавляет nullable `claim_id` только ради
+  совместимости со старым evidence; все новые sentinel incidents несут UUID и защищены глобальным
+  partial unique index.
 - **Свернуть refresh-CAS×2.** Дубль refresh-claim между storage и credential-rewrite-планом
   — закрыть _до_ старта rewrite credential (иначе мигрируем дубль). Решить, чья сторона
   владеет CAS-предикатом.

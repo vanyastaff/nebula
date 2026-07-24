@@ -49,8 +49,8 @@ pub use org::{OrgMemberRow, OrgRow, ServiceAccountRow, WorkspaceMemberRow, Works
 pub use quota::{OrgQuotaRow, OrgQuotaUsageRow, WorkspaceQuotaUsageRow};
 pub use trigger::{CronFireSlotRow, PendingSignalRow, TriggerEventRow, TriggerRow};
 pub use user::{
-    ExternalIdentityRow, OAuthLinkRow, OAuthStateRow, PersonalAccessTokenRow, SessionRow, UserRow,
-    VerificationTokenRow,
+    ExternalIdentityRow, OAuthLinkRow, OAuthStateRow, PersonalAccessTokenRow, SessionDraft,
+    SessionRow, UserRow, VerificationTokenRow,
 };
 pub use webhook_activation::{
     WEBHOOK_ACTIVATION_KEY, WebhookActivationSpec, WebhookActivationSpecError,

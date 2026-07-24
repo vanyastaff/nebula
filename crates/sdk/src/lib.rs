@@ -1,14 +1,19 @@
 //! # nebula-sdk — Integration Author SDK
 //!
-//! Single-crate façade for writing Nebula integrations. Re-exports the full
-//! integration surface (`nebula-action`, `nebula-credential`, `nebula-resource`,
-//! `nebula-schema`, `nebula-workflow`, `nebula-plugin`, `nebula-validator`) and
-//! adds `prelude`, `WorkflowBuilder`, `ActionBuilder`, and `TestRuntime`.
+//! Single-crate façade for writing Nebula integrations. External one-dependency
+//! contracts cover `WorkflowBuilder`, `ActionBuilder`, credential `TestResult`,
+//! and representative Action, Credential, Plugin, Resource, Schema, and
+//! Validator derives; other manual/prelude workflows require focused proofs.
+//!
+//! Internal workspace crates are not re-exported. Use curated persona modules
+//! and the prelude so integrations remain insulated from crate-boundary
+//! refactors. In particular, use
+//! `nebula_sdk::integration::credential::{TestFailureCode, TestResult}` for
+//! credential-test outcomes instead of `nebula_sdk::nebula_credential`.
 //!
 //! ## Quick start
 //!
 //! ```rust,no_run
-//! use nebula_core::action_key;
 //! use nebula_sdk::prelude::*;
 //!
 //! let metadata = ActionBuilder::new(action_key!("example.greet"), "Greet")
@@ -26,6 +31,7 @@
 //! ## Modules
 //!
 //! - `prelude` — one-stop import for common types and traits.
+//! - `integration` — curated contracts for integration authors.
 //! - `action` — `ActionBuilder` for programmatic action metadata.
 //! - `workflow` — `WorkflowBuilder` for programmatic workflow construction.
 //! - `runtime` — `TestRuntime`, `RunReport` — in-process test harness.
@@ -34,25 +40,19 @@
 //! ## Canon
 //!
 //! - §3.5 integration model: Action, Credential, Resource, Schema, Plugin.
-//! - §4.4 DX: stable `prelude` + `WorkflowBuilder` API is a public contract.
+//! - §4.4 DX: curated persona APIs and builders are public contracts.
 //! - §7 open source contract: breaking changes need explicit announcement.
 //!
-//! See `crates/sdk/README.md` for the full re-export list and maturity notes.
+//! See `crates/sdk/README.md` for persona APIs and maturity notes.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
-// Re-export core crates
-pub use nebula_action;
-pub use nebula_core;
-pub use nebula_credential;
-pub use nebula_plugin;
-pub use nebula_resource;
-pub use nebula_schema;
-pub use nebula_validator;
-pub use nebula_workflow;
+// Ecosystem conveniences intentionally re-exported by the SDK. Nebula's
+// internal crate topology is not: curated modules and the prelude are the
+// supported surface.
 pub use serde;
 pub use serde_json;
 pub use thiserror;
@@ -60,7 +60,150 @@ pub use thiserror;
 #[cfg(feature = "testing")]
 pub use tokio;
 
+/// Macro implementation paths. This is public only because exported macros
+/// expand in downstream crates; it is hidden from documentation and is not a
+/// supported integration persona.
+#[doc(hidden)]
+pub mod __private {
+    /// Action contracts referenced by generated implementations.
+    #[doc(hidden)]
+    pub mod action {
+        pub use nebula_action::{
+            Action, ActionContext, ActionContextExt, ActionError, ActionMetadata, ActionResult,
+            FromWorkflowNode, StatelessAction,
+        };
+    }
+
+    /// Core contracts referenced by generated implementations.
+    #[doc(hidden)]
+    pub mod core {
+        pub use nebula_core::{
+            ActionKey, CredentialKey, DeclaresDependencies, Dependencies, ResourceKey, SlotField,
+            SlotKind, action_key,
+        };
+
+        pub mod auth {
+            pub use nebula_core::auth::{
+                AuthPattern, AuthScheme, ExternalScheme, PublicScheme, SensitiveScheme,
+            };
+        }
+
+        pub mod sync {
+            pub use nebula_core::sync::Lazy;
+        }
+    }
+
+    /// Credential contracts referenced by generated implementations.
+    #[doc(hidden)]
+    pub mod credential {
+        pub use nebula_credential::{
+            AuthScheme, Credential, CredentialGuard, CredentialLifecycle, CredentialMetadata,
+            CredentialPolicy, CredentialState, Dynamic, Interactive, RefreshStrategy, Refreshable,
+            Revocable, RevokeStrategy, Testable, credential_key, schema_of,
+        };
+
+        pub mod contract {
+            pub mod plugin_capability_report {
+                pub use nebula_credential::contract::plugin_capability_report::{
+                    IsDynamic, IsInteractive, IsRefreshable, IsRevocable, IsTestable,
+                };
+            }
+        }
+    }
+
+    /// Plugin contracts referenced by generated implementations.
+    #[doc(hidden)]
+    pub mod plugin {
+        pub use nebula_plugin::{Plugin, PluginManifest};
+    }
+
+    /// Resource contracts referenced by generated implementations.
+    #[doc(hidden)]
+    pub mod resource {
+        pub use nebula_resource::{
+            Error, HasCredentialSlots, Manager, ResourceConfig, ResourceFactory, ResourceMetadata,
+            SlotIdentity,
+        };
+
+        pub mod factory {
+            pub use nebula_resource::factory::{BoxFut, KindActivator, RegisterRequest};
+        }
+
+        #[expect(
+            clippy::module_inception,
+            reason = "the hidden macro ABI mirrors nebula_resource::resource paths emitted by existing derives"
+        )]
+        pub mod resource {
+            pub use nebula_resource::resource::Provider;
+        }
+
+        pub mod topology {
+            pub use nebula_resource::topology::{Pooled, Resident};
+
+            pub mod pooled {
+                pub mod config {
+                    pub use nebula_resource::topology::pooled::config::Config;
+                }
+            }
+
+            pub mod resident {
+                pub mod config {
+                    pub use nebula_resource::topology::resident::config::Config;
+                }
+            }
+        }
+    }
+
+    /// Schema contracts referenced by generated implementations.
+    #[doc(hidden)]
+    pub mod schema {
+        pub use nebula_schema::value::FieldValues;
+        pub use nebula_schema::{
+            ExpressionMode, Field, FieldKey, HasSchema, HasSelectOptions, InputHint, Rule, Schema,
+            SelectOption, SerdeTagging, StringWidget, ValidSchema,
+        };
+
+        pub mod error {
+            pub use nebula_schema::error::ValidationReport;
+        }
+
+        pub mod __private {
+            pub use nebula_schema::__private::{serde_json, tracing, union_newtype_payload};
+        }
+    }
+
+    /// Validator contracts referenced by generated implementations.
+    #[doc(hidden)]
+    pub mod validator {
+        pub use nebula_validator::validators;
+
+        pub mod combinators {
+            pub use nebula_validator::combinators::{SelfValidating, and, nested_validator, or};
+        }
+
+        pub mod foundation {
+            pub use nebula_validator::foundation::{Validate, ValidationError, ValidationErrors};
+        }
+
+        pub mod __private {
+            pub mod regex {
+                pub use nebula_validator::__private::regex::Regex;
+            }
+        }
+    }
+
+    /// Workflow contracts referenced by generated implementations.
+    #[doc(hidden)]
+    pub mod workflow {
+        pub use nebula_workflow::NodeDefinition;
+    }
+
+    #[doc(hidden)]
+    pub use semver;
+}
+
 pub mod action;
+pub mod integration;
 pub mod prelude;
 pub mod runtime;
 pub mod workflow;
@@ -144,7 +287,7 @@ pub use serde_json::json;
 #[macro_export]
 macro_rules! params {
     ($($key:expr => $value:expr),* $(,)?) => {{
-        use $crate::nebula_schema::value::FieldValues;
+        use $crate::__private::schema::FieldValues;
         use $crate::serde_json::json;
 
         let mut values = FieldValues::new();
@@ -251,33 +394,33 @@ macro_rules! simple_action {
     ) => {
         pub struct $name;
 
-        impl $crate::nebula_action::Action for $name {
+        impl $crate::__private::action::Action for $name {
             type Input = $input;
             type Output = $output;
 
-            fn metadata() -> $crate::nebula_action::ActionMetadata {
-                $crate::nebula_action::ActionMetadata::for_action::<$name>(
-                    $crate::nebula_core::action_key!($key),
+            fn metadata() -> $crate::__private::action::ActionMetadata {
+                $crate::__private::action::ActionMetadata::for_action::<$name>(
+                    $crate::__private::core::action_key!($key),
                     stringify!($name),
                     "",
                 )
             }
 
-            fn dependencies() -> &'static $crate::nebula_core::Dependencies {
-                static DEPS: ::std::sync::OnceLock<$crate::nebula_core::Dependencies> =
+            fn dependencies() -> &'static $crate::__private::core::Dependencies {
+                static DEPS: ::std::sync::OnceLock<$crate::__private::core::Dependencies> =
                     ::std::sync::OnceLock::new();
-                DEPS.get_or_init($crate::nebula_core::Dependencies::new)
+                DEPS.get_or_init($crate::__private::core::Dependencies::new)
             }
         }
 
-        impl $crate::nebula_action::StatelessAction for $name {
+        impl $crate::__private::action::StatelessAction for $name {
             async fn execute(
                 &$self,
-                $input_param: <Self as $crate::nebula_action::Action>::Input,
-                $ctx_param: &(impl $crate::nebula_action::ActionContext + ?Sized),
+                $input_param: <Self as $crate::__private::action::Action>::Input,
+                $ctx_param: &(impl $crate::__private::action::ActionContext + ?Sized),
             ) -> ::std::result::Result<
-                $crate::nebula_action::ActionResult<<Self as $crate::nebula_action::Action>::Output>,
-                $crate::nebula_action::ActionError,
+                $crate::__private::action::ActionResult<<Self as $crate::__private::action::Action>::Output>,
+                $crate::__private::action::ActionError,
             > {
                 $body
             }

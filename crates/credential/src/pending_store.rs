@@ -6,7 +6,7 @@ use crate::{PendingState, PendingToken};
 
 /// Manages ephemeral pending state for interactive credential flows.
 ///
-/// Separate subsystem from [`CredentialStore`](crate::store::CredentialStore):
+/// Separate subsystem from [`CredentialPersistence`](nebula_storage_port::CredentialPersistence):
 /// different lifecycle (minutes, not years), TTL-enforced, single-use consume.
 ///
 /// # Security: 4-dimensional token binding

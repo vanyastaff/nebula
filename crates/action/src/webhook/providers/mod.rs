@@ -18,8 +18,10 @@
 //! Operator-supplied webhook activations carry an `action_kind`
 //! ("slack" | "stripe" | "generic") in storage. The runtime registry
 //! looks up a [`crate::webhook::factory::WebhookActionFactory`] for
-//! that kind and constructs the right provider with the stored
-//! secret, replay window, and (for Generic) optional challenge token.
+//! that kind and constructs the right provider with the stored signing secret
+//! and replay window. Generic challenge authority is available only to trusted
+//! Rust composition through `GenericWebhookAction::with_challenge_token`; the
+//! built-in factories reject authority embedded in `provider_config`.
 
 pub mod generic;
 pub mod slack;

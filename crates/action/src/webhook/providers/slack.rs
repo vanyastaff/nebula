@@ -202,6 +202,7 @@ impl WebhookActionFactory for SlackWebhookActionFactory {
     }
 
     fn build(&self, spec: &WebhookActivationSpec) -> Result<BuiltWebhookHandler, FactoryError> {
+        self.validate_provider_config(spec.provider_config.as_ref())?;
         let mut action = SlackWebhookAction::new(spec.secret().reveal().to_vec());
         if let Some(secs) = spec.replay_window_secs {
             action = action.with_replay_window(Duration::from_secs(secs));

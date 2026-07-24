@@ -3,8 +3,8 @@
 //!
 //! This is the runtime proof for the factory's two load-bearing invariants:
 //! (1) `CredentialServiceBuilder::build` runs a capability⊆ops gate, so a
-//! successful build proves OAuth2's four advertised capabilities each have a
-//! registered dispatch op (and api_key/basic_auth advertise none); (2) the
+//! successful build proves the default static types have matching base
+//! dispatch ops without advertising unsupported interactive capabilities; (2) the
 //! fixed dev key actually base64-decodes to a valid AES-256 key.
 
 use std::sync::Arc;
@@ -12,7 +12,7 @@ use std::sync::Arc;
 use nebula_api::ports::credential_service_factory::{with_memory_store, with_store};
 use nebula_credential::CredentialDisplay;
 use nebula_credential::TenantScope;
-use nebula_storage::credential::{EnvKeyProvider, SqliteCredentialStore};
+use nebula_storage::credential::{EnvKeyProvider, SqliteCredentialPersistence};
 use serde_json::json;
 
 /// 32 `0x42` bytes, base64 — a valid AES-256 key fixture (mirrors the
@@ -23,8 +23,7 @@ const TEST_KEY_B64: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=";
 async fn factory_builds_service_and_create_round_trips() {
     let key = Arc::new(EnvKeyProvider::from_base64(TEST_KEY_B64).expect("valid 32-byte AES key"));
     // `build()` runs the capability⊆ops gate; success proves the registry's
-    // advertised caps match the registered ops (OAuth2's four + none for the
-    // static types).
+    // advertised caps match the registered base ops for the static types.
     let svc = with_memory_store(key)
         .await
         .expect("service composes (advertised caps match ops)");
@@ -60,10 +59,10 @@ async fn factory_builds_service_and_create_round_trips() {
 async fn factory_composes_over_durable_sqlite_store_and_round_trips() {
     // The production path composes the service over a durable SQLite backend
     // (here an ephemeral `:memory:` DB so the test needs no filesystem). Proves
-    // `with_store` wires `SqliteCredentialStore` behind the full layer stack and
+    // `with_store` wires `SqliteCredentialPersistence` behind the full layer stack and
     // a create/get round-trips through the durable backend.
     let key = Arc::new(EnvKeyProvider::from_base64(TEST_KEY_B64).expect("valid 32-byte AES key"));
-    let store = SqliteCredentialStore::connect("sqlite::memory:")
+    let store = SqliteCredentialPersistence::connect("sqlite::memory:")
         .await
         .expect("open + migrate in-memory SQLite");
     let svc = with_store(store, key).expect("service composes over SQLite backend");

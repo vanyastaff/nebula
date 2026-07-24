@@ -26,8 +26,10 @@ Machine-enforced agent rules and the canonical workspace map live in
 See the *Workspace Layout* and *Layered Dependency Map* sections of
 [`AGENTS.md`](AGENTS.md). Short version:
 
-- `crates/` — 36 workspace members.
-- `examples/` — runnable examples (one workspace member, not per-crate).
+- `crates/` — 36 crate workspace members.
+- `apps/` — two first-party deployment workspace members.
+- `examples/` — one runnable-examples workspace member (not per-crate).
+- **Total:** 36 crates + 2 apps + 1 examples member = 39 workspace members.
 - `docs/` — agent doc map (`docs/README.md` is the entry point).
 - `Taskfile.yml` — the canonical task runner. Don't call raw `cargo` for
   fmt / lint.
@@ -49,7 +51,7 @@ lefthook install
 
 | Tool             | Why                                                      |
 |------------------|----------------------------------------------------------|
-| `cargo`          | Rust 1.95+, edition 2024, resolver 3                     |
+| `cargo`          | Rust 1.96+, edition 2024, resolver 3                     |
 | `task`           | `Taskfile.yml` is the canonical entry point              |
 | `lefthook`       | Local pre-commit / pre-push (mirrors CI required jobs)   |
 | `convco`         | Conventional-Commits validation                          |
@@ -78,8 +80,10 @@ Use `task --list` for the full catalog.
 - **No `TODO` / `FIXME` / `HACK` / plan-IDs in committed code.** Use ADRs and
   GitHub issues for tracking; comments should read fine after the plan is
   deleted.
-- **Cross-crate communication goes through `nebula-eventbus`.** Don't reach
-  across layer boundaries with direct imports.
+- **Use the right cross-crate seam.** Direct downward imports of domain types
+  and ports are normal. Durable commands and facts cross through persisted
+  state or explicit outbox/inbox ports. `nebula-eventbus` carries only lossy
+  observations and wake hints; never use it to bypass the layer map.
 - **No async locks across `.await`.** No unbounded channels without explicit
   justification.
 - **Layered dependency.** New code must respect the *Layered Dependency Map*

@@ -11,6 +11,11 @@
 # single-thread group makes the gate deterministic; they still pass serially.
 [test-groups]
 trybuild = { max-threads = 1 }
+# Plane-A authority migrations/admission use fixed database-wide advisory keys.
+# libtest's in-process mutex cannot serialize nextest's per-test processes, so
+# keep the outer test processes single-threaded while each contention test
+# still creates its own concurrent database clients internally.
+postgres-authority = { max-threads = 1 }
 
 [profile.default]
 # Use up to all available CPUs
@@ -24,6 +29,10 @@ fail-fast = false
 [[profile.default.overrides]]
 filter = 'binary(/compile_fail/) | binary(=seam_action_schema_method_removed) | (package(=nebula-validator) & binary(=ui))'
 test-group = 'trybuild'
+
+[[profile.default.overrides]]
+filter = 'package(=nebula-storage) & binary(=nebula_storage) & test(/pg::(oauth_state::tests|identity_secret::postgres_tests|session::tests|mfa_enrollment::tests)::/)'
+test-group = 'postgres-authority'
 
 [profile.ci]
 # Retry flaky tests up to 2 times

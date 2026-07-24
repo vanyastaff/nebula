@@ -32,6 +32,10 @@
 
 use async_trait::async_trait;
 use nebula_core::ResourceKey;
+use nebula_metadata::{BaseCompatError, BaseMetadata, Metadata, validate_base_compat};
+use nebula_schema::ValidSchema;
+use semver::Version;
+use serde::{Deserialize, Serialize};
 
 use crate::context::ResourceContext;
 
@@ -116,37 +120,37 @@ impl ResourceConfig for () {
 ///
 /// The shared catalog prefix (`key`, `name`, `description`, `schema`, `icon`,
 /// `documentation_url`, `tags`, `maturity`, `deprecation`) lives on the
-/// composed [`BaseMetadata`](nebula_metadata::BaseMetadata). Resource has no
-/// additional top-level metadata fields today — every catalog-level concern
-/// lives on the shared base.
+/// composed [`BaseMetadata`]. Resource has no additional top-level metadata
+/// fields today — every catalog-level concern lives on the shared base.
 #[non_exhaustive]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResourceMetadata {
     /// Shared catalog prefix.
-    pub base: nebula_metadata::BaseMetadata<ResourceKey>,
+    #[serde(flatten)]
+    pub base: BaseMetadata<ResourceKey>,
 }
 
-impl nebula_metadata::Metadata for ResourceMetadata {
+impl Metadata for ResourceMetadata {
     type Key = ResourceKey;
-    fn base(&self) -> &nebula_metadata::BaseMetadata<ResourceKey> {
+    fn base(&self) -> &BaseMetadata<ResourceKey> {
         &self.base
     }
 }
 
 /// Compatibility validation errors for resource metadata evolution.
 ///
-/// Wraps [`nebula_metadata::BaseCompatError`] for parity with the
-/// action- and credential-side error shapes. Resource has no
-/// entity-specific compat rules today, so the enum currently has a
-/// single `Base` variant; new variants will be added here (alongside
-/// `Base`) if `ResourceMetadata` later gains entity-specific fields
-/// whose changes should break version compatibility.
+/// Wraps [`BaseCompatError`] for parity with the action- and
+/// credential-side error shapes. Resource has no entity-specific compat
+/// rules today, so the enum currently has a single `Base` variant; new
+/// variants will be added here (alongside `Base`) if `ResourceMetadata`
+/// later gains entity-specific fields whose changes should break version
+/// compatibility.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum MetadataCompatibilityError {
     /// A generic catalog-citizen rule fired (key / version / schema).
     #[error(transparent)]
-    Base(#[from] nebula_metadata::BaseCompatError<ResourceKey>),
+    Base(#[from] BaseCompatError<ResourceKey>),
 }
 
 impl ResourceMetadata {
@@ -158,7 +162,7 @@ impl ResourceMetadata {
         description: impl Into<String>,
     ) -> ResourceMetadataBuilder {
         ResourceMetadataBuilder {
-            inner: Self::new(key, name, description, nebula_schema::ValidSchema::empty()),
+            inner: Self::new(key, name, description, ValidSchema::empty()),
         }
     }
 
@@ -167,11 +171,28 @@ impl ResourceMetadata {
         key: ResourceKey,
         name: impl Into<String>,
         description: impl Into<String>,
-        schema: nebula_schema::ValidSchema,
+        schema: ValidSchema,
     ) -> Self {
         Self {
-            base: nebula_metadata::BaseMetadata::new(key, name, description, schema),
+            base: BaseMetadata::new(key, name, description, schema),
         }
+    }
+
+    /// Set the interface version from `(major, minor)` components.
+    ///
+    /// Symmetric with `ActionMetadata::with_version` and
+    /// `CredentialMetadata::with_version`.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_version(mut self, major: u64, minor: u64) -> Self {
+        self.base.version = Version::new(major, minor, 0);
+        self
+    }
+
+    /// Set the full interface version, including patch and pre-release data.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_version_full(mut self, version: Version) -> Self {
+        self.base.version = version;
+        self
     }
 
     /// Build resource metadata whose schema is auto-derived from a
@@ -200,16 +221,16 @@ impl ResourceMetadata {
             key.clone(),
             key.to_string(),
             String::new(),
-            nebula_schema::ValidSchema::empty(),
+            ValidSchema::empty(),
         )
     }
 
     /// Validate that this metadata update is version-compatible with `previous`.
     ///
     /// Delegates `key immutable / version monotonic / schema-break-requires-
-    /// major` to [`nebula_metadata::validate_base_compat`]. Resource has no
-    /// entity-specific rules today, so the wrapper enum has only the `Base`
-    /// variant; the wrapper exists for shape parity with `nebula-action` and
+    /// major` to [`validate_base_compat`]. Resource has no entity-specific
+    /// rules today, so the wrapper enum has only the `Base` variant; the
+    /// wrapper exists for shape parity with `nebula-action` and
     /// `nebula-credential`, so callers can match the error across all three
     /// catalog-leaf consumers uniformly.
     ///
@@ -218,13 +239,13 @@ impl ResourceMetadata {
     /// Returns [`MetadataCompatibilityError`] when `self.base.key` differs
     /// from `previous.base.key`, `self.base.version` is not monotonically
     /// increasing over `previous.base.version`, or the schema changed in a
-    /// way that requires a major version bump — see
-    /// [`nebula_metadata::validate_base_compat`] for the exact rule set.
+    /// way that requires a major version bump — see [`validate_base_compat`]
+    /// for the exact rule set.
     pub fn validate_compatibility(
         &self,
         previous: &Self,
     ) -> Result<(), MetadataCompatibilityError> {
-        nebula_metadata::validate_base_compat(&self.base, &previous.base)?;
+        validate_base_compat(&self.base, &previous.base)?;
         Ok(())
     }
 }
@@ -241,7 +262,7 @@ pub struct ResourceMetadataBuilder {
 impl ResourceMetadataBuilder {
     /// Set the configuration schema for this resource.
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_schema(mut self, schema: nebula_schema::ValidSchema) -> Self {
+    pub fn with_schema(mut self, schema: ValidSchema) -> Self {
         self.inner.base.schema = schema;
         self
     }
@@ -249,7 +270,7 @@ impl ResourceMetadataBuilder {
     /// Set the interface version from `(major, minor)` components.
     #[must_use = "builder methods must be chained or built"]
     pub fn with_version(mut self, major: u64, minor: u64) -> Self {
-        self.inner.base.version = semver::Version::new(major, minor, 0);
+        self.inner = self.inner.with_version(major, minor);
         self
     }
 
@@ -633,7 +654,7 @@ pub trait Provider: HasCredentialSlots + Send + Sync + Sized + 'static {
     /// Returns the schema for this resource's configuration.
     ///
     /// Default: derives from `Config` via [`HasSchema`](nebula_schema::HasSchema).
-    fn schema() -> nebula_schema::ValidSchema {
+    fn schema() -> ValidSchema {
         <Self::Config as nebula_schema::HasSchema>::schema()
     }
 
@@ -767,18 +788,62 @@ macro_rules! no_credential_slots {
 mod tests {
     use nebula_core::resource_key;
     use nebula_metadata::BaseCompatError;
+    use nebula_schema::ValidSchema;
     use semver::Version;
 
     use super::{MetadataCompatibilityError, ResourceMetadata};
 
-    fn empty_schema() -> nebula_schema::ValidSchema {
-        nebula_schema::ValidSchema::empty()
+    fn empty_schema() -> ValidSchema {
+        ValidSchema::empty()
     }
 
     fn md(major: u64, minor: u64) -> ResourceMetadata {
-        let mut m = ResourceMetadata::new(resource_key!("postgres"), "pg", "d", empty_schema());
-        m.base.version = Version::new(major, minor, 0);
-        m
+        ResourceMetadata::new(resource_key!("postgres"), "pg", "d", empty_schema())
+            .with_version(major, minor)
+    }
+
+    #[test]
+    fn metadata_equality_tracks_version() {
+        let a = ResourceMetadata::new(resource_key!("postgres"), "pg", "d", empty_schema())
+            .with_version(1, 2);
+        let b = ResourceMetadata::new(resource_key!("postgres"), "pg", "d", empty_schema())
+            .with_version(1, 2);
+        assert_eq!(a, b);
+
+        let c = ResourceMetadata::new(resource_key!("postgres"), "pg", "d", empty_schema())
+            .with_version(1, 3);
+        assert_ne!(a, c, "different minor version must break equality");
+    }
+
+    #[test]
+    fn metadata_serde_roundtrip() {
+        let original = ResourceMetadata::new(resource_key!("postgres"), "pg", "d", empty_schema())
+            .with_version(2, 1);
+
+        let json = serde_json::to_string(&original).expect("serialization succeeds");
+        let json_value: serde_json::Value =
+            serde_json::from_str(&json).expect("serialized metadata is valid JSON");
+        assert!(
+            json_value.get("base").is_none(),
+            "base metadata must be flattened"
+        );
+        assert_eq!(
+            json_value.get("key").and_then(serde_json::Value::as_str),
+            Some("postgres")
+        );
+
+        let decoded: ResourceMetadata =
+            serde_json::from_str(&json).expect("deserialization succeeds");
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn full_version_preserves_all_semver_components() {
+        let version = Version::parse("2.1.3-alpha.1+build.7").expect("valid test version");
+        let metadata = ResourceMetadata::new(resource_key!("postgres"), "pg", "d", empty_schema())
+            .with_version_full(version.clone());
+
+        assert_eq!(metadata.base.version, version);
     }
 
     #[test]

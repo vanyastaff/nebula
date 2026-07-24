@@ -2,9 +2,10 @@
 //!
 //! [`PendingState`] represents ephemeral data held between the initial
 //! `resolve()` call and the subsequent `continue_resolve()` callback.
-//! The framework stores it encrypted with TTL and single-use semantics
-//! via `PendingStateStore` -- credential authors never manage storage
-//! directly.
+//! The framework stores it through an injected `PendingStateStore` with TTL and
+//! single-use semantics -- credential authors never manage storage directly.
+//! The current first-party adapter is ephemeral in-memory and never writes to
+//! disk; a future durable adapter must add encryption at rest explicitly.
 //!
 //! Non-interactive credentials use [`NoPendingState`] as a zero-cost
 //! marker type.
@@ -18,14 +19,16 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Typed pending state for interactive credential flows.
 ///
-/// Stored via `PendingStateStore` with encryption, TTL, single-use.
+/// Stored via `PendingStateStore` with TTL and single-use semantics.
 ///
 /// # Security properties
 ///
 /// - **TTL enforced:** [`expires_in`](PendingState::expires_in) determines max lifetime (typically
 ///   5-15 min).
 /// - **Single-use:** consumed (deleted) on first read by `continue_resolve()`.
-/// - **Encrypted at rest** by the `PendingStateStore` implementation.
+/// - **Adapter-owned at-rest policy:** the current first-party store is
+///   process-local memory; any future durable implementation must encrypt its
+///   persisted representation.
 /// - **Zeroize on drop:** the [`ZeroizeOnDrop`] supertrait — added per Tech Spec §15.4 to mirror
 ///   the [`CredentialState`](crate::CredentialState) requirement — guarantees deterministic
 ///   scrubbing of ephemeral interactive secrets (PKCE verifiers, anti-CSRF state, device codes) on

@@ -1,25 +1,25 @@
-//! `CredentialService` — the sole public entry to the credential
-//! management bounded context. **Non-generic** (ADR-0088 D4): the raw
-//! backend and pending store are erased to `Arc<dyn DynCredentialStore>` /
+//! `CredentialService` — the technical semantic service behind the
+//! authority-bound controller and runtime consumers. **Non-generic** (ADR-0088 D4): the raw
+//! backend and pending store are erased to `Arc<dyn CredentialPersistence>` /
 //! [`ErasedPendingStore`] at
 //! construction, so a durable backend can be swapped in without
-//! re-monomorphizing every consumer. Both ports are RPITIT (and the
-//! pending port additionally generic per call), so the erasure is the
-//! hand-rolled boxed-future bridge in `nebula_credential::erased`. All
-//! invariant-bearing composition is crate-private: the only constructor
-//! path is the api-layer credential builder, whose `build()` wraps the raw
-//! backend in the layered store so an unencrypted/mis-composed service is
-//! unrepresentable.
+//! re-monomorphizing every consumer. Credential persistence is directly
+//! object-safe; only the generic pending port uses the boxed-future bridge in
+//! `nebula_credential::erased`. The first-party production composition root
+//! lives in `apps/server` and supplies the secure layered store.
+//! `from_secure_parts` remains a public, doc-hidden technical seam for trusted
+//! workspace application/test composition; it is not exposed by the supported
+//! API/SDK and its caller must preserve the layering invariant.
 //!
 //! ## Tenant isolation
 //!
-//! Tenancy is enforced at the operation level (not via the storage
-//! `ScopeLayer`, which the build-once stack omits): [`create`] persists
-//! `StoredCredential.metadata["owner_id"] = scope.owner_id()`;
-//! [`get`]/[`list`]/[`update`]/[`delete`] load then reject rows whose
-//! `owner_id` differs with [`CredentialServiceError::NotFound`] — no
-//! cross-tenant existence leak (a credential in another tenant is
-//! indistinguishable from a missing one).
+//! Tenancy is enforced by mandatory owner-bound persistence inputs. Every
+//! single-row operation derives a [`CredentialSelector`](crate::CredentialSelector) from
+//! `TenantScope`;
+//! list takes the mandatory owner. Backends include owner in the query/CAS
+//! predicate, so a credential in another tenant is indistinguishable from a
+//! missing one and no post-read authority check is required. The metadata
+//! owner stamp is retained only as a compatibility/integrity check.
 //!
 //! [`create`]: CredentialService::create
 //! [`get`]: CredentialService::get
@@ -27,18 +27,17 @@
 //! [`update`]: CredentialService::update
 //! [`delete`]: CredentialService::delete
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::{fmt, sync::Arc, time::Duration};
 
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::resolve::InteractionRequest;
 use crate::runtime::{CredentialResolver, LeaseLifecycle};
-use crate::store::{StoreError, StoredCredential};
 use crate::{
-    AuthPattern, CredentialContext, CredentialDisplay, CredentialRegistry, DynCredentialStore,
-    ErasedCredentialStore, ErasedPendingStore,
+    AuthPattern, CredentialAlreadyExistsKey, CredentialContext, CredentialDisplay, CredentialId,
+    CredentialPersistence, CredentialPersistenceError, CredentialRegistry, ErasedPendingStore,
+    StoredCredential, StoredCredentialHead, StoredLiveCredential,
 };
 
 use super::error::CredentialServiceError;
@@ -48,44 +47,26 @@ use super::ops::DispatchOps;
 use super::scope::TenantScope;
 use super::state_source::StateSource;
 
-// Metadata key the facade stamps with the owning tenant, read on every
-// get/list/update/delete to enforce tenant isolation. Aliased from the single
-// source of truth in `store` so the facade write-stamp and the runtime
-// resolver's load-time owner check can never disagree on the key.
-use crate::store::OWNER_ID_METADATA_KEY as OWNER_ID_KEY;
-
 /// Metadata key holding the facade-owned [`CredentialDisplay`] sub-object
-/// (a sibling to [`OWNER_ID_KEY`]). Single-writer: only the facade reads or
-/// writes it, so the multi-writer shape conflict that affected the api's old
-/// top-level metadata layout cannot recur.
+/// Single-writer: only the facade reads or writes it, so the multi-writer shape
+/// conflict that affected the api's old top-level metadata layout cannot recur.
 const DISPLAY_KEY: &str = "display";
 
-/// Outcome of [`CredentialService::test`] — a secret-free health-probe
-/// summary. `message` carries only the provider's failure reason (never
-/// secret material); `Debug` is derived because no field can hold a
-/// secret.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct TestReport {
-    /// `true` when the provider accepted the credential.
-    pub ok: bool,
-    /// Provider-supplied failure reason when `ok` is `false`.
-    pub message: Option<String>,
-}
-
 /// Outcome of [`CredentialService::refresh`]. `refreshed` distinguishes a
-/// real provider refresh from the fallback-on-interrupt path that served
-/// the still-valid stored material after a transient provider failure —
-/// a management caller asking "did the refresh happen?" must not be told
-/// `yes` when the provider was unreachable.
+/// real provider refresh from the pre-dispatch fallback path that served the
+/// still-valid stored material after coordination failed before provider I/O.
+/// Errors returned after entering an erased integration are outcome-unknown
+/// and never take this fallback.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub struct RefreshReport {
+pub struct ManagementRefreshReport {
     /// Secret-free head of the row after the call (post-refresh on the
     /// success path; the pre-call head on the fallback path).
     pub head: CredentialHead,
     /// `true` iff the provider refresh ran and the rotated state was
     /// persisted (or coalesced by another replica). `false` when the
-    /// fallback served the existing non-expired material instead.
+    /// fallback served existing non-expired material after a failure proven to
+    /// occur before provider dispatch.
     pub refreshed: bool,
 }
 
@@ -94,7 +75,6 @@ pub struct RefreshReport {
 /// arm carries the management-plane [`CredentialHead`] (id + row
 /// metadata, no state bytes); the `Pending` arm carries the opaque token
 /// string + the UI instruction.
-#[derive(Debug)]
 #[non_exhaustive]
 pub enum Acquisition {
     /// Resolved synchronously and persisted.
@@ -116,6 +96,23 @@ pub enum Acquisition {
         /// Delay before the next continuation poll.
         after: Duration,
     },
+}
+
+impl fmt::Debug for Acquisition {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Complete { .. } => formatter.debug_struct("Complete").finish(),
+            Self::Pending { .. } => formatter
+                .debug_struct("Pending")
+                .field("token", &"[REDACTED]")
+                .field("interaction", &"[REDACTED]")
+                .finish(),
+            Self::Retry { after } => formatter
+                .debug_struct("Retry")
+                .field("after", after)
+                .finish(),
+        }
+    }
 }
 
 /// Capability surface of a credential type, sourced from the
@@ -150,22 +147,22 @@ pub struct CredentialTypeInfo {
     pub capabilities: TypeCapabilities,
 }
 
-/// Sole public entry to the credential management bounded context.
+/// Technical semantic service for the credential bounded context.
 ///
-/// Constructed only via the api-layer credential builder.
+/// Supported authenticated HTTP management enters through
+/// [`CredentialController`](super::CredentialController), which authorizes
+/// before calling this service. Runtime/webhook technical consumers also use
+/// selected service methods directly; K3 will make the controller plus
+/// operation ledger the sole semantic management writer. First-party secure
+/// production construction belongs to the deployment application; API is a
+/// transport boundary, not a composition root.
 pub struct CredentialService {
-    pub(crate) store: Arc<dyn DynCredentialStore>,
-    /// Un-audited handle over the same cache+encryption core as `store`.
-    /// Used ONLY by [`list`](Self::list)'s owner-filter scan: enumerating
-    /// rows to discard the foreign ones is not an access, so it must not
-    /// mint per-credential audit `Get` events against other tenants' ids.
-    /// Every real per-id operation goes through the audited `store`.
-    pub(crate) scan_store: ErasedCredentialStore,
+    pub(crate) store: Arc<dyn CredentialPersistence>,
     /// Engine resolver wired through the layered store stack (erased at the
     /// store→resolver boundary). Used by
     /// [`resolve_for_slot`](Self::resolve_for_slot) to produce a typed
     /// [`CredentialGuard`](crate::CredentialGuard) for action slot consumption.
-    pub(crate) resolver: CredentialResolver<ErasedCredentialStore>,
+    pub(crate) resolver: CredentialResolver<dyn CredentialPersistence>,
     pub(crate) lease: LeaseLifecycle,
     pub(crate) pending: ErasedPendingStore,
     pub(crate) registry: Arc<CredentialRegistry>,
@@ -179,25 +176,21 @@ pub struct CredentialService {
 }
 
 impl CredentialService {
-    /// Composition-root constructor — the only caller is `nebula-api`'s
-    /// credential builder. The layered store MUST already be the secure
-    /// `Audit(Cache(Encryption(raw)))` stack; assemble it via the api
-    /// builder, never by hand. Bypassing the builder forfeits the
-    /// encryption-at-rest guarantee.
-    // `#[doc(hidden)]`: `pub` only so the `nebula-api` composition-root builder
-    // (a different crate) can call it after composing the decorator stack. It is
-    // NOT supported surface — `nebula-sdk` never re-exports it, and the
-    // `deny.toml` wrappers allowlist limits who may depend on `nebula-credential`
-    // to the trusted in-workspace composition roots, so no external crate reaches it.
+    /// Trusted composition constructor. The layered store MUST already be the
+    /// secure `Audit(Encryption(raw))` stack; production assembly belongs to
+    /// the deployment application, while API-local callers are test factories.
+    // `#[doc(hidden)]`: `pub` only so trusted in-workspace application/test
+    // composition can supply the complete collaborator set. It is NOT a
+    // supported surface — `nebula-sdk` never re-exports it, and dependency
+    // wrappers limit direct use to technical boundaries.
     #[doc(hidden)]
-    // guard-justified: from_secure_parts mirrors the eight mandatory collaborators
+    // guard-justified: from_secure_parts mirrors the mandatory collaborators
     // the builder composes; bundling them into a struct would just move the
     // arity to that struct's literal at the single call site.
     #[expect(clippy::too_many_arguments)]
     pub fn from_secure_parts(
-        store: Arc<dyn DynCredentialStore>,
-        scan_store: ErasedCredentialStore,
-        resolver: CredentialResolver<ErasedCredentialStore>,
+        store: Arc<dyn CredentialPersistence>,
+        resolver: CredentialResolver<dyn CredentialPersistence>,
         lease: LeaseLifecycle,
         pending: ErasedPendingStore,
         registry: Arc<CredentialRegistry>,
@@ -214,7 +207,6 @@ impl CredentialService {
         let resolver = resolver.gate_external_source(matches!(source, StateSource::External(_)));
         Self {
             store,
-            scan_store,
             resolver,
             lease,
             pending,
@@ -223,20 +215,6 @@ impl CredentialService {
             observer,
             source,
         }
-    }
-
-    /// Expose the composed layered store (`Audit(Cache(Encryption(raw)))`,
-    /// erased) as a shared arc for callers that need raw access to the
-    /// encrypted store without going through type dispatch.
-    ///
-    /// The api layer uses this to replace
-    /// the tenancy `CredentialScopeLayer<InMemoryStore>` with the
-    /// service's encryption + audit + cache stack while still managing
-    /// api-level metadata (`name` / `description` / `tags`) directly in
-    /// [`StoredCredential::metadata`]. The concrete layer stack is erased
-    /// behind [`DynCredentialStore`] so the backend stays swappable.
-    pub fn credential_store_handle(&self) -> Arc<dyn DynCredentialStore> {
-        Arc::clone(&self.store)
     }
 
     /// Guard the resolution path against a configured-but-unwired
@@ -280,46 +258,30 @@ impl CredentialService {
         &self,
         scope: &TenantScope,
         id: &str,
-    ) -> Result<StoredCredential, CredentialServiceError> {
-        let stored = match self.store.get(id).await {
-            Ok(s) => s,
-            Err(StoreError::NotFound { .. }) => {
+    ) -> Result<StoredLiveCredential, CredentialServiceError> {
+        let credential_id = CredentialId::parse(id)
+            .map_err(|_| CredentialServiceError::NotFound { id: id.to_owned() })?;
+        let stored = match self.store.get(&scope.selector(credential_id)).await {
+            Ok(stored) => stored,
+            Err(CredentialPersistenceError::NotFound) => {
                 return Err(CredentialServiceError::NotFound { id: id.to_owned() });
             },
-            Err(e) => return Err(Self::map_store_err(e)),
+            Err(error) => return Err(Self::map_store_err_for(id, error)),
         };
-        if !Self::owner_matches(&stored, scope) {
-            // Deliberately the same error as a missing credential — a
-            // caller cannot probe other tenants' ids.
-            return Err(CredentialServiceError::NotFound { id: id.to_owned() });
+        match stored {
+            StoredCredential::Live(live) => Ok(live),
+            StoredCredential::Tombstoned(_) => {
+                // The trusted binding path may inspect a physical tombstone,
+                // while every management operation treats it as absent.
+                Err(CredentialServiceError::NotFound { id: id.to_owned() })
+            },
         }
-        if stored.is_tombstoned() {
-            // A revoked credential reads back as gone to every management path
-            // (get / update / test / refresh) and to a repeat revoke, so the
-            // surviving row is a non-resurrectable tombstone, not a live
-            // credential. The slot-binding path surfaces the typed "revoked"
-            // signal separately in `validate_credential_binding`; management
-            // ops see `NotFound` so a revoked id behaves as absent.
-            return Err(CredentialServiceError::NotFound { id: id.to_owned() });
-        }
-        Ok(stored)
     }
 
-    /// Project a stored row to its secret-free [`CredentialHead`],
-    /// attaching the facade-owned display sub-object. Never touches
-    /// `stored.data`.
-    pub(crate) fn head_from(stored: &StoredCredential) -> CredentialHead {
-        CredentialHead::from_stored(stored, Self::display_from(stored))
-    }
-
-    /// Whether `stored` is owned by `scope`. A row missing the
-    /// `owner_id` stamp is treated as foreign (fail-closed).
-    pub(crate) fn owner_matches(stored: &StoredCredential, scope: &TenantScope) -> bool {
-        stored
-            .metadata
-            .get(OWNER_ID_KEY)
-            .and_then(Value::as_str)
-            .is_some_and(|o| o == scope.owner_id())
+    /// Project a persistence head to the public management head without
+    /// touching credential material.
+    pub(crate) fn head_from_projection(stored: &StoredCredentialHead) -> CredentialHead {
+        CredentialHead::from_stored(stored, Self::display_from_metadata(stored.metadata()))
     }
 
     /// Write `display` into `metadata[DISPLAY_KEY]`, or remove the key when
@@ -349,9 +311,10 @@ impl CredentialService {
     /// Read the facade-owned display sub-object back from a stored row. A
     /// missing or malformed entry yields the empty default — display metadata
     /// is non-critical and must never fail a credential read.
-    fn display_from(stored: &StoredCredential) -> CredentialDisplay {
-        stored
-            .metadata
+    pub(crate) fn display_from_metadata(
+        metadata: &serde_json::Map<String, Value>,
+    ) -> CredentialDisplay {
+        metadata
             .get(DISPLAY_KEY)
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default()
@@ -368,41 +331,131 @@ impl CredentialService {
     /// them) is a follow-up; routing every call through this one helper keeps
     /// that migration to a single site.
     ///
-    /// When the scope carries a session it is threaded onto the context
-    /// via `with_session_id`: the engine's `execute_continue` (and the
+    /// When the scope carries a Plane-A authentication binding it is threaded
+    /// onto the context's legacy `session_id` slot: the engine's
+    /// `execute_continue` (and the
     /// `PendingStateStore` `(kind, owner, session, token)` binding) reads
     /// `ctx.session_id()`, so without this the interactive paths would
-    /// always fail `MissingSessionId`. CRUD passes a session-less scope
-    /// and the accessors ignore the (absent) session.
+    /// always fail `MissingSessionId`. CRUD passes a binding-less scope
+    /// and the accessors ignore the absent value.
     pub(crate) fn owner_context(scope: &TenantScope) -> CredentialContext {
         let ctx = CredentialContext::for_owner(scope.owner_id());
-        match scope.session_id() {
-            Some(session) => ctx.with_session_id(session),
+        match scope.authentication_binding() {
+            Some(binding) => ctx.with_session_id(binding),
             None => ctx,
         }
     }
 
-    /// Map a [`StoreError`] into a [`CredentialServiceError`] without ever
-    /// embedding secret material (store errors carry ids/versions only).
-    pub(crate) fn map_store_err(err: StoreError) -> CredentialServiceError {
+    /// Map a [`CredentialPersistenceError`] into a [`CredentialServiceError`] without ever
+    /// forwarding backend- or audit-controlled diagnostic text.
+    pub(crate) fn map_store_err_for(
+        id: &str,
+        err: CredentialPersistenceError,
+    ) -> CredentialServiceError {
         match err {
-            StoreError::NotFound { id } => CredentialServiceError::NotFound { id },
-            StoreError::VersionConflict {
-                id,
-                expected,
-                actual,
-            } => CredentialServiceError::VersionConflict {
-                id,
-                expected,
-                actual,
+            CredentialPersistenceError::NotFound => {
+                CredentialServiceError::NotFound { id: id.to_owned() }
             },
-            StoreError::AlreadyExists { id } => {
-                CredentialServiceError::Store(format!("credential already exists: {id}"))
+            CredentialPersistenceError::VersionConflict { expected, actual } => {
+                CredentialServiceError::VersionConflict {
+                    id: id.to_owned(),
+                    expected: expected.get() as u64,
+                    actual: actual.get() as u64,
+                }
             },
-            StoreError::AuditFailure(msg) => {
-                CredentialServiceError::Store(format!("audit sink refused: {msg}"))
+            CredentialPersistenceError::AlreadyExists {
+                key: CredentialAlreadyExistsKey::Id,
+            } => CredentialServiceError::IdAlreadyExists,
+            CredentialPersistenceError::AlreadyExists {
+                key: CredentialAlreadyExistsKey::Name,
+            } => CredentialServiceError::NameAlreadyExists,
+            CredentialPersistenceError::VersionExhausted
+            | CredentialPersistenceError::MaterialEpochExhausted => {
+                CredentialServiceError::VersionExhausted
             },
-            StoreError::Backend(e) => CredentialServiceError::Store(e.to_string()),
+            CredentialPersistenceError::OutcomeUnknown => CredentialServiceError::OutcomeUnknown,
+            CredentialPersistenceError::CorruptRecord => CredentialServiceError::Store,
+            CredentialPersistenceError::Unavailable => {
+                CredentialServiceError::PersistenceUnavailable
+            },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SECRET_CANARY: &str = "credential-acquisition-secret-NEVER-DEBUG-31af";
+
+    #[test]
+    fn acquisition_debug_redacts_complete_head_and_pending_payload() {
+        let now = chrono::Utc::now();
+        let complete = Acquisition::Complete {
+            head: CredentialHead {
+                id: SECRET_CANARY.to_owned(),
+                credential_key: "api_key".to_owned(),
+                version: 1,
+                created_at: now,
+                updated_at: now,
+                expires_at: None,
+                last_validated_at: Some(now),
+                reauth_required: false,
+                display: CredentialDisplay {
+                    display_name: Some(SECRET_CANARY.to_owned()),
+                    ..CredentialDisplay::default()
+                },
+            },
+        };
+        let pending = Acquisition::Pending {
+            token: SECRET_CANARY.to_owned(),
+            interaction: InteractionRequest::Redirect {
+                url: format!("https://provider.example/?state={SECRET_CANARY}"),
+            },
+        };
+
+        for debug in [format!("{complete:?}"), format!("{pending:?}")] {
+            assert!(
+                !debug.contains(SECRET_CANARY),
+                "acquisition Debug must not expose heads, tokens, or interactions: {debug}"
+            );
+        }
+    }
+
+    #[test]
+    fn persistence_mapping_preserves_only_closed_context() {
+        let mapped = CredentialService::map_store_err_for(
+            "cred_test",
+            CredentialPersistenceError::OutcomeUnknown,
+        );
+        assert!(matches!(&mapped, CredentialServiceError::OutcomeUnknown));
+        assert!(!mapped.to_string().contains(SECRET_CANARY));
+        assert!(!format!("{mapped:?}").contains(SECRET_CANARY));
+
+        assert!(matches!(
+            CredentialService::map_store_err_for(
+                "cred_test",
+                CredentialPersistenceError::AlreadyExists {
+                    key: CredentialAlreadyExistsKey::Name,
+                },
+            ),
+            CredentialServiceError::NameAlreadyExists
+        ));
+        assert!(matches!(
+            CredentialService::map_store_err_for(
+                "cred_test",
+                CredentialPersistenceError::AlreadyExists {
+                    key: CredentialAlreadyExistsKey::Id,
+                },
+            ),
+            CredentialServiceError::IdAlreadyExists
+        ));
+        assert!(matches!(
+            CredentialService::map_store_err_for(
+                "cred_test",
+                CredentialPersistenceError::VersionExhausted,
+            ),
+            CredentialServiceError::VersionExhausted
+        ));
     }
 }

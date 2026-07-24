@@ -26,7 +26,10 @@ use axum::{
 use common::build_me_state;
 use nebula_api::{
     ApiConfig, AppState, app,
-    domain::auth::backend::{AuthBackend, InMemoryAuthBackend, SignupRequest, dto::SecretString},
+    domain::auth::backend::{
+        AuthBackend, CSRF_COOKIE, CreatePatParams, InMemoryAuthBackend, SESSION_COOKIE,
+        SignupRequest, dto::SecretString,
+    },
 };
 use tower::ServiceExt;
 
@@ -43,17 +46,19 @@ async fn session_state() -> (AppState, String, String) {
         })
         .await
         .expect("register user");
-    let session = backend
+    let mut session = backend
         .create_session(&profile.user_id)
         .await
         .expect("create session");
     let backend_dyn: Arc<dyn AuthBackend> = Arc::clone(&backend) as _;
     let state = build_me_state().with_auth_backend(backend_dyn);
-    (state, session.id, session.csrf_token)
+    let session_id = std::mem::take(&mut session.id);
+    let csrf_token = std::mem::take(&mut session.csrf_token);
+    (state, session_id, csrf_token)
 }
 
 fn session_cookie_pair(session_id: &str, csrf_value: &str) -> String {
-    format!("nebula_session={session_id}; nebula_csrf={csrf_value}")
+    format!("{SESSION_COOKIE}={session_id}; {CSRF_COOKIE}={csrf_value}")
 }
 
 // ── 1. enroll: missing CSRF header on session-bearing request → 403 ──────────
@@ -165,4 +170,58 @@ async fn mfa_complete_login_succeeds_without_csrf_header() {
         StatusCode::UNAUTHORIZED,
         "invalid challenge token must reach the handler and return 401"
     );
+}
+
+#[tokio::test]
+async fn pat_cannot_start_or_confirm_mfa_enrollment() {
+    let backend = Arc::new(InMemoryAuthBackend::new());
+    let profile = backend
+        .register_user(SignupRequest {
+            email: "mfa-pat-authority@nebula.dev".to_owned(),
+            password: SecretString::new("hunter22".to_owned()),
+            display_name: "Mfa PAT Authority".to_owned(),
+        })
+        .await
+        .expect("register user");
+    let pat = backend
+        .create_pat(
+            &profile.user_id,
+            CreatePatParams {
+                name: "mfa-authority-probe".to_owned(),
+                scopes: vec!["full_access".to_owned()],
+                ttl_seconds: None,
+            },
+        )
+        .await
+        .expect("create PAT");
+    let backend_dyn: Arc<dyn AuthBackend> = Arc::clone(&backend) as _;
+    let state = build_me_state().with_auth_backend(backend_dyn);
+    let app = app::build_app(state, &ApiConfig::for_test());
+
+    for (path, body) in [
+        ("/api/v1/auth/mfa/enroll", Body::empty()),
+        (
+            "/api/v1/auth/mfa/verify",
+            Body::from(r#"{"code":"123456"}"#),
+        ),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(path)
+                    .header("authorization", format!("Bearer {}", pat.plaintext))
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .expect("MFA authority request"),
+            )
+            .await
+            .expect("MFA authority response");
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "PAT authority must be denied for {path}"
+        );
+    }
 }

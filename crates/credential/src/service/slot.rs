@@ -14,15 +14,61 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroize;
 
-use crate::store::{OWNER_ID_METADATA_KEY as OWNER_ID_KEY, StoreError, StoredCredential};
 use crate::{
-    Credential, CredentialContext, CredentialGuard, CredentialLifecycle, Refreshable, SchemeFactory,
+    Credential, CredentialGuard, CredentialId, CredentialLifecycle, CredentialPersistenceError,
+    Refreshable, SchemeFactory, StoredCredential, runtime::ResolveError,
 };
 
 use super::error::CredentialServiceError;
 use super::facade::CredentialService;
 use super::scope::TenantScope;
 use super::state_source::StateSource;
+
+fn map_slot_resolve_error(
+    source: &StateSource,
+    requested_id: &str,
+    error: ResolveError,
+) -> CredentialServiceError {
+    match error {
+        ResolveError::Store(error) => CredentialService::map_store_err_for(requested_id, error),
+        ResolveError::ExternalSourceNotWired => CredentialServiceError::ExternalSourceNotWired {
+            provider: match source {
+                StateSource::External(provider) => provider.provider_name().to_owned(),
+                StateSource::LocalEncrypted => "unknown".to_owned(),
+            },
+        },
+        ResolveError::ReauthRequired {
+            credential_id,
+            reason,
+        } => CredentialServiceError::ReauthRequired {
+            credential_id,
+            reason,
+        },
+        ResolveError::RefreshNotApplied { context, .. } => {
+            CredentialServiceError::RefreshNotApplied(context)
+        },
+        ResolveError::RefreshOutcomePending { .. }
+        | ResolveError::ProviderOutcomeUnknown { .. }
+        | ResolveError::PostProviderPersistence {
+            source: CredentialPersistenceError::OutcomeUnknown,
+            ..
+        } => CredentialServiceError::OutcomeUnknown,
+        ResolveError::RefreshRetryGateFinalization { .. } => {
+            CredentialServiceError::RefreshRetryGateFinalization
+        },
+        ResolveError::RefreshReconciliationRequired { .. } => {
+            CredentialServiceError::RefreshReconciliationRequired
+        },
+        ResolveError::ReauthDecisionFinalization { .. } => {
+            CredentialServiceError::ReauthDecisionFinalization
+        },
+        ResolveError::PostProviderPersistence { .. }
+        | ResolveError::PostProviderStateEncoding { .. } => {
+            CredentialServiceError::RefreshPostProviderPersistence
+        },
+        other => CredentialServiceError::Internal(other.to_string()),
+    }
+}
 
 impl CredentialService {
     /// Validate a workflow `slot_bindings` reference against the caller's
@@ -41,14 +87,8 @@ impl CredentialService {
     /// A cross-tenant probe (the id exists but belongs to a different tenant)
     /// returns [`crate::ValidatedCredentialBindingError::NotFound`] —
     /// existence-hiding, matching every other cross-tenant read in this service.
-    /// The real owner is logged internally (at `WARN`) for operator visibility
-    /// but is never surfaced to the caller, so an ordinary caller cannot
-    /// distinguish "id absent" from "id owned by another tenant". Workflow
-    /// authors can diagnose a misconfigured binding by checking service logs
-    /// (operator-accessible) rather than by parsing the error message.
-    ///
-    /// The raw read path (`store_load_raw`) is used so the owner field is
-    /// readable for the internal log; it does not bypass any other gate.
+    /// The owner-qualified storage predicate deliberately makes both cases the
+    /// same `NotFound`; metadata is never consulted as authority.
     ///
     /// # Errors
     ///
@@ -66,57 +106,34 @@ impl CredentialService {
         super::binding::ValidatedCredentialBinding,
         super::binding::ValidatedCredentialBindingError,
     > {
-        let stored = self
-            .store_load_raw(id)
-            .await
-            .map_err(super::binding::ValidatedCredentialBindingError::Io)?
-            .ok_or_else(
-                || super::binding::ValidatedCredentialBindingError::NotFound { id: id.to_owned() },
-            )?;
+        let credential_id = CredentialId::parse(id).map_err(|_| {
+            super::binding::ValidatedCredentialBindingError::NotFound { id: id.to_owned() }
+        })?;
+        let stored = match self.store.get(&scope.selector(credential_id)).await {
+            Ok(stored) => stored,
+            Err(CredentialPersistenceError::NotFound) => {
+                return Err(super::binding::ValidatedCredentialBindingError::NotFound {
+                    id: id.to_owned(),
+                });
+            },
+            Err(error) => {
+                return Err(super::binding::ValidatedCredentialBindingError::Io(
+                    Self::map_store_err_for(id, error),
+                ));
+            },
+        };
 
-        let owner = stored
-            .metadata
-            .get(OWNER_ID_KEY)
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-
-        if owner != scope.owner_id() {
-            // Log the real owner for internal audit/tracing but do NOT expose it
-            // to the caller. Returning the actual owning tenant in a
-            // `ScopeMismatch` error would be a cross-tenant existence oracle — an
-            // ordinary caller could enumerate which ids are owned by other tenants
-            // by observing whether the mismatch error names their id. We return
-            // `NotFound` instead, matching every other cross-tenant probe in this
-            // service (existence-hiding). The structured diagnostic lives only in
-            // the trace, where it is visible to operators but not to API consumers.
-            tracing::warn!(
-                credential.id = id,
-                requested_owner = scope.owner_id(),
-                actual_owner = %owner,
-                "credential binding validation: owner mismatch (cross-tenant probe or misconfigured binding)"
-            );
-            return Err(super::binding::ValidatedCredentialBindingError::NotFound {
-                id: id.to_owned(),
-            });
-        }
-
-        // Reject a revoked credential here — before any binding (and thus any
-        // guard) is produced — with a typed `CredentialTombstoned` rather than
-        // a bare `NotFound`, so the caller learns the slot stopped resolving
-        // because the credential was revoked. The check is owner-gated above,
-        // so it never reveals another tenant's revoke status. No reverse
-        // `references()` index is consulted: the tombstone travels with the row.
-        if stored.is_tombstoned() {
+        if let StoredCredential::Tombstoned(tombstone) = stored {
             return Err(
                 super::binding::ValidatedCredentialBindingError::CredentialTombstoned {
                     id: id.to_owned(),
-                    revoked_at: stored.revoked_at(),
+                    revoked_at: Some(tombstone.tombstoned_at()),
                 },
             );
         }
 
         Ok(super::binding::ValidatedCredentialBinding::new(
-            id.to_owned(),
+            credential_id,
             super::binding::TenantFingerprint::from_scope(scope),
         ))
     }
@@ -129,16 +146,22 @@ impl CredentialService {
     ///
     /// Called once per action node per execution. The engine resolver
     /// (`CredentialResolver::resolve`) goes through the full layered-store
-    /// stack (`Audit(Cache(Encryption(raw)))`) composed at `build()` —
-    /// the `EncryptionLayer` decrypts on every miss, `CacheLayer` coalesces
-    /// warm-cache hits to avoid repeated decrypt, and `AuditLayer` records
-    /// each access. Target p99 ≤ 1ms on warm cache.
+    /// stack (`Audit(Encryption(raw))`) composed by the deployment application.
+    /// `EncryptionLayer` decrypts the selected row and `AuditLayer` records the
+    /// access. No storage cache layer is part of the current first-party
+    /// composition; performance claims require measurement rather than an
+    /// assumed warm-cache path.
     ///
     /// # Cancellation
     ///
     /// `cancel` is observed via [`CancellationToken::run_until_cancelled`]
-    /// wrapping the entire resolver delegation. On cancellation, returns
-    /// [`CredentialServiceError::Cancelled`] without partial state.
+    /// around this method's read-only `resolve_scoped` delegation. On
+    /// cancellation, returns [`CredentialServiceError::Cancelled`] without
+    /// partial state. Provider-refreshing acquisition is deliberately not
+    /// hidden inside this wrapper: long-lived refreshable consumers enter via
+    /// [`scheme_factory`](Self::scheme_factory), whose resolver path transfers
+    /// provider+persistence work to the owned coordinator before exposing an
+    /// outer wait/cancellation boundary.
     ///
     /// # Defence in depth
     ///
@@ -187,57 +210,27 @@ impl CredentialService {
             });
         }
 
-        // 2. Delegate to engine resolver, wrapped in cancellation. The
-        //    resolver goes through the full layered store stack
-        //    (EncryptionLayer → CacheLayer → AuditLayer) composed at
-        //    `build()`, so the EncryptionLayer is not bypassed.
+        // 2. Delegate to the resolver, wrapped in cancellation. The current
+        //    first-party factory supplies Audit(Encryption(raw)), so the
+        //    EncryptionLayer is not bypassed. No storage cache layer is part
+        //    of this composition.
         let credential_id = binding.credential_id();
         // Resolve through the binding's owner-scoped key: the resolver re-checks
         // the stored row's owner at load, so a cross-tenant id fails closed
         // (`NotFound`) by construction rather than relying on the fingerprint
         // check above alone.
-        let key = binding.owner_scoped_key();
+        let selector = binding.selector();
         let scheme = cancel
             .run_until_cancelled(async {
-                let handle = self.resolver.resolve_scoped::<C>(&key).await.map_err(|e| {
-                    // Preserve the documented `NotFound` contract for
-                    // resolver lookup misses. The resolver wraps store
-                    // errors in `ResolveError::Store(StoreError::NotFound)`
-                    // — surface that as `CredentialServiceError::NotFound`
-                    // so callers can branch on it. Other resolver errors
-                    // collapse to `Internal` with the underlying message.
-                    use crate::runtime::ResolveError;
-                    use crate::store::StoreError;
-                    match e {
-                        ResolveError::Store(StoreError::NotFound { id }) => {
-                            CredentialServiceError::NotFound { id }
-                        },
-                        // The resolver tail fail-closed on an external, unwired
-                        // source. Surface the typed facade error with the
-                        // configured provider's name (only `External` reaches
-                        // this arm — the gate is derived from the source).
-                        ResolveError::ExternalSourceNotWired => {
-                            CredentialServiceError::ExternalSourceNotWired {
-                                provider: match &self.source {
-                                    StateSource::External(p) => p.provider_name().to_owned(),
-                                    StateSource::LocalEncrypted => "unknown".to_owned(),
-                                },
-                            }
-                        },
-                        // Re-auth is a routine OAuth2 outcome (rejected grant /
-                        // sentinel / missing material), not an internal fault —
-                        // preserve the typed reason so the API can render a
-                        // "reconnect" instead of a 500 with a stringified reason.
-                        ResolveError::ReauthRequired {
-                            credential_id,
-                            reason,
-                        } => CredentialServiceError::ReauthRequired {
-                            credential_id,
-                            reason,
-                        },
-                        other => CredentialServiceError::Internal(other.to_string()),
-                    }
-                })?;
+                let handle =
+                    self.resolver
+                        .resolve_scoped::<C>(&selector)
+                        .await
+                        .map_err(|error| {
+                            // Preserve phase-aware no-replay taxonomy across the
+                            // resolver/service boundary.
+                            map_slot_resolve_error(&self.source, &credential_id.to_string(), error)
+                        })?;
 
                 // Extract the owned scheme from the snapshot `Arc`. The
                 // resolver caches live handles, so `try_unwrap` succeeds when
@@ -250,7 +243,7 @@ impl CredentialService {
             .ok_or(CredentialServiceError::Cancelled)??;
 
         tracing::debug!(
-            credential.id = credential_id,
+            credential.id = %credential_id,
             "credential resolved for slot"
         );
         Ok(CredentialGuard::new(scheme))
@@ -262,30 +255,127 @@ impl CredentialService {
     /// `create` and call [`SchemeFactory::acquire`] once per outbound
     /// request instead of retaining a [`CredentialGuard`] across spawn
     /// boundaries (which is forbidden — see SEC-05).
-    pub fn scheme_factory<C>(&self, credential_id: &str, ctx: CredentialContext) -> SchemeFactory<C>
+    pub fn scheme_factory<C>(
+        &self,
+        scope: &TenantScope,
+        credential_id: CredentialId,
+    ) -> SchemeFactory<C>
     where
         C: Refreshable + CredentialLifecycle,
         C::Scheme: Zeroize + Clone + Send + Sync + 'static,
     {
-        self.resolver.scheme_factory(credential_id, ctx)
+        self.resolver
+            .scheme_factory(scope.selector(credential_id), Self::owner_context(scope))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::{
+        RefreshErrorKind, RefreshFailureSpec, RefreshNotAppliedContext, RefreshNotAppliedPhase,
+        RetryAdvice,
+    };
+
+    #[test]
+    fn slot_mapping_preserves_unknown_and_definite_post_provider_failures() {
+        let source = StateSource::LocalEncrypted;
+        let unknown = map_slot_resolve_error(
+            &source,
+            "cred-test",
+            ResolveError::ProviderOutcomeUnknown {
+                credential_id: "cred-test".to_owned(),
+            },
+        );
+        assert!(matches!(unknown, CredentialServiceError::OutcomeUnknown));
+
+        let lost_commit = map_slot_resolve_error(
+            &source,
+            "cred-test",
+            ResolveError::PostProviderPersistence {
+                credential_id: "cred-test".to_owned(),
+                source: CredentialPersistenceError::OutcomeUnknown,
+            },
+        );
+        assert!(matches!(
+            lost_commit,
+            CredentialServiceError::OutcomeUnknown
+        ));
+
+        let definite = map_slot_resolve_error(
+            &source,
+            "cred-test",
+            ResolveError::PostProviderStateEncoding {
+                credential_id: "cred-test".to_owned(),
+                reason: "closed test failure".to_owned(),
+            },
+        );
+        assert!(matches!(
+            definite,
+            CredentialServiceError::RefreshPostProviderPersistence
+        ));
+
+        let retry_gate = map_slot_resolve_error(
+            &source,
+            "cred-test",
+            ResolveError::RefreshRetryGateFinalization {
+                credential_id: "cred-test".to_owned(),
+            },
+        );
+        assert!(matches!(
+            retry_gate,
+            CredentialServiceError::RefreshRetryGateFinalization
+        ));
+
+        let reconciliation = map_slot_resolve_error(
+            &source,
+            "cred-test",
+            ResolveError::RefreshReconciliationRequired {
+                credential_id: "cred-test".to_owned(),
+            },
+        );
+        assert!(matches!(
+            reconciliation,
+            CredentialServiceError::RefreshReconciliationRequired
+        ));
+
+        let reauth = map_slot_resolve_error(
+            &source,
+            "cred-test",
+            ResolveError::ReauthDecisionFinalization {
+                credential_id: "cred-test".to_owned(),
+            },
+        );
+        assert!(matches!(
+            reauth,
+            CredentialServiceError::ReauthDecisionFinalization
+        ));
     }
 
-    /// Load the raw stored credential row **without** applying the
-    /// `owner_id` existence-hiding gate that `load_owned` enforces.
-    ///
-    /// `pub(crate)` — callers outside this crate cannot bypass the tenant
-    /// isolation enforced by the public operations. The only in-crate
-    /// caller today is `validate_credential_binding`, which reads the stored
-    /// `owner_id` to compare against the requested scope (the result of that
-    /// comparison is logged internally but not returned to callers).
-    pub(crate) async fn store_load_raw(
-        &self,
-        id: &str,
-    ) -> Result<Option<StoredCredential>, CredentialServiceError> {
-        match self.store.get(id).await {
-            Ok(stored) => Ok(Some(stored)),
-            Err(StoreError::NotFound { .. }) => Ok(None),
-            Err(e) => Err(Self::map_store_err(e)),
-        }
+    #[test]
+    fn slot_mapping_preserves_proof_bearing_refresh_failure() {
+        let source = StateSource::LocalEncrypted;
+        let context = RefreshNotAppliedContext::from_spec(
+            RefreshNotAppliedPhase::ProviderConfirmedNotApplied,
+            RefreshFailureSpec::new(RefreshErrorKind::ProtocolError, RetryAdvice::Never),
+        );
+
+        let mapped = map_slot_resolve_error(
+            &source,
+            "cred-test",
+            ResolveError::RefreshNotApplied {
+                credential_id: "cred-test".to_owned(),
+                context: Box::new(context),
+            },
+        );
+
+        let CredentialServiceError::RefreshNotApplied(context) = mapped else {
+            panic!("slot resolution must preserve the typed exact failure");
+        };
+        assert_eq!(
+            context.phase(),
+            RefreshNotAppliedPhase::ProviderConfirmedNotApplied
+        );
+        assert_eq!(context.retry(), RetryAdvice::Never);
     }
 }

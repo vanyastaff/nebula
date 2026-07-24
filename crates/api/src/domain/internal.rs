@@ -107,7 +107,7 @@ async fn reload_webhooks(State(state): State<AppState>) -> impl IntoResponse {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/internal/v1/webhooks/reload", post(reload_webhooks))
-        .layer(axum::middleware::from_fn_with_state(
+        .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::middleware::internal_auth_middleware,
         ))

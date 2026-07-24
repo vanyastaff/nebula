@@ -88,13 +88,14 @@ impl CredentialService {
                 key: credential_key.to_owned(),
             });
         }
-        // A continuation is structurally dead without a session: the
+        // A continuation is structurally dead without a Plane-A
+        // authentication binding: the
         // engine's `execute_continue` requires `ctx.session_id()` and the
         // `PendingStateStore` binds the pending on
         // `(kind, owner, session, token)`. Surface that explicitly here
         // rather than letting it collapse into a misleading
         // `ValidationFailed` deep inside the executor.
-        if scope.session_id().is_none() {
+        if scope.authentication_binding().is_none() {
             return Err(CredentialServiceError::SessionRequired {
                 capability: "continue",
             });
@@ -104,8 +105,8 @@ impl CredentialService {
         // serde round-trip contract), so reconstruct the client-returned
         // token through serde — the only public inbound path.
         let token: PendingToken = serde_json::from_value(Value::String(pending_token.to_owned()))
-            .map_err(|_| CredentialServiceError::ValidationFailed {
-            reason: "malformed pending acquisition token".to_owned(),
+            .map_err(|_| {
+            CredentialServiceError::validation("/pending_token", "credential.pending_token_invalid")
         })?;
         let ctx = Self::owner_context(scope);
         let outcome = self
@@ -154,7 +155,7 @@ impl CredentialService {
                 // the scope the issued token is unusable, so refuse the
                 // kickoff explicitly instead of handing back a token that
                 // can never be redeemed.
-                if scope.session_id().is_none() {
+                if scope.authentication_binding().is_none() {
                     return Err(CredentialServiceError::SessionRequired {
                         capability: "resolve",
                     });

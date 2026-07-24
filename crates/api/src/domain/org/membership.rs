@@ -1,19 +1,20 @@
-//! Canonical in-memory [`MembershipStore`] implementation.
+//! Canonical in-memory reference implementation of the API-tier
+//! [`MembershipStore`].
 //!
-//! This is the honest capability-honest production-quality default backing for org
-//! membership — the same "the real impl *is* the in-memory one" posture
-//! the durable control queue ([`InMemoryControlQueueRepo`]) and the
-//! Plane-A identity backend ([`InMemoryAuthBackend`]) carry. There is no
-//! storage-backed alternative to wire: `nebula_storage` ships no
-//! `MembershipRepo` (the trait is an API-tier port, not a storage repo —
-//! cf. 3 / the Phase-2 `AuthBackend` precedent).
+//! This adapter implements the complete authorization-policy contract,
+//! including consistent role snapshots and atomic last-admin guards, but its
+//! state is process-local. `nebula-storage-port` also defines a generic
+//! row-level `MembershipStore`; that lower-level port does not implement this
+//! API policy contract, and there is currently no bridge that combines it with
+//! the required authorization/lockout semantics. Do not wire the row store
+//! directly as request authority.
 //!
 //! ## One shared store — RBAC coherence
 //!
 //! When provisioned, **one** `Arc<InMemoryMembershipStore>` is wired into
-//! [`crate::AppState::membership_store`]; [`crate::middleware::rbac`] and
-//! the `…/orgs/{org}/members` handlers therefore read and write the *same*
-//! map. A membership added by `POST /members` is visible to the very next
+//! [`crate::AppState::membership_store`]; [`crate::middleware::rbac`], the
+//! credential command authority, and the `…/orgs/{org}/members` handlers
+//! therefore read and write the *same* map. A membership added by `POST /members` is visible to the very next
 //! RBAC check (no propagation window) — locked by
 //! `tests/org_e2e.rs::added_member_is_immediately_rbac_authorized`.
 //!
@@ -21,28 +22,30 @@
 //!
 //! The default `apps/server` binary deliberately leaves
 //! [`crate::AppState::membership_store`] **unwired** (`None`). It is an
-//! explicitly-provisioned feature: the org member endpoints return an
-//! honest **503** (port-absent) in the un-provisioned default binary, and
-//! [`crate::middleware::rbac`] stays inert (no spurious 404 on any
-//! route). Auto-seeding a bootstrap owner was removed (PR #671 P1) —
+//! unavailable capability: every org/workspace route returns an
+//! honest **503** before its handler in the unprovisioned default binary,
+//! and credential command authority fails unavailable. Auto-seeding a bootstrap owner was removed (PR #671 P1) —
 //! the default `AuthBackend` is empty, so an auto-seeded owner could
 //! never authenticate and a seeded store would 404-deadlock every
 //! org/workspace route (a deployment-level honest capability false capability); a
 //! hardcoded auto-seeded admin would also be a default-credential
-//! surface (credential secrecy). An operator/integrator provisions via
+//! surface (credential secrecy). Internal/reference API composition can exercise the seam via
 //! [`InMemoryMembershipStore::seeded_bootstrap`] +
 //! [`crate::AppState::with_membership_store`], registering the same
-//! bootstrap-owner identity in the wired `AuthBackend`.
+//! bootstrap-owner identity in the wired `AuthBackend`. This is not a supported
+//! downstream deployment recipe; the default binary does not yet expose K4
+//! operator configuration for this seam.
 //!
-//! ## Durability (provisioning durability / engine durability — operator-facing)
+//! ## Durability
 //!
 //! State is **process-local**: org memberships are held in a
 //! [`tokio::sync::RwLock`]-guarded map, lost on restart and **not** shared
 //! across replicas. This is the identical local-first caveat the in-memory
-//! `AuthBackend` and the `memory` idempotency backend carry; it closes
-//! when a storage-backed membership adapter lands (none exists today).
+//! `AuthBackend` and the `memory` idempotency backend carry. Closing it
+//! requires a durable adapter for the API policy port (or an apps-owned bridge
+//! over the lower-level storage port) that preserves one-snapshot reads and
+//! atomic guarded mutations.
 //!
-//! [`InMemoryControlQueueRepo`]: nebula_storage::repos::InMemoryControlQueueRepo
 //! [`InMemoryAuthBackend`]: crate::domain::auth::backend::InMemoryAuthBackend
 
 use std::{collections::HashMap, str::FromStr, sync::Arc};
@@ -54,7 +57,9 @@ use tokio::sync::RwLock;
 
 use crate::{
     error::ApiError,
-    state::{AddMemberOutcome, MembershipStore, OrgMember, RemoveMemberOutcome},
+    state::{
+        AddMemberOutcome, MembershipStore, OrgMember, RemoveMemberOutcome, TenantMembershipSnapshot,
+    },
 };
 
 /// Failure parsing the bootstrap-seed identities passed to
@@ -164,14 +169,14 @@ fn write_keeps_an_admin(
     privileged_excluding_target + usize::from(target_privileged_after) >= 1
 }
 
-/// In-memory, process-local [`MembershipStore`] — the canonical default.
+/// In-memory, process-local [`MembershipStore`] reference adapter.
 #[derive(Debug, Default)]
 pub struct InMemoryMembershipStore {
     /// `org_id → (principal_key → Entry)`. Workspace-level explicit roles
     /// are not modelled here (none of the graduated endpoints touch them);
     /// `get_workspace_role` returns `None` so RBAC falls back to the
-    /// org-implied role via `effective_workspace_role`, exactly as when no
-    /// store is wired.
+    /// org-implied role via `effective_workspace_role`. This differs from an
+    /// unwired store, which makes tenant policy unavailable and returns 503.
     orgs: RwLock<HashMap<OrgId, HashMap<String, Entry>>>,
 }
 
@@ -190,8 +195,8 @@ impl InMemoryMembershipStore {
     /// *is* the root-of-trust bootstrap (the first org admin) and
     /// intentionally bypasses the handler authz gate — it is the
     /// provisioning entry point, not a request path. The string-id
-    /// wrapper [`Self::seeded_bootstrap`] (the documented
-    /// operator/integrator constructor) and the `tests/common::org_support`
+    /// wrapper [`Self::seeded_bootstrap`] (a technical reference-composition
+    /// helper) and the `tests/common::org_support`
     /// fixtures build on this; it is **not** auto-called by the default
     /// `apps/server` binary (see [`Self::seeded_bootstrap`] for why).
     #[must_use]
@@ -208,19 +213,20 @@ impl InMemoryMembershipStore {
     /// Parse string bootstrap identities and return a seeded store
     /// granting `OrgOwner` on `org_id_str` to `owner_id_str`.
     ///
-    /// This is the **documented operator/integrator provisioning entry
-    /// point** for the org member-management feature: a deployment that
-    /// wants org memberships wires `AppState::with_membership_store(this)`
-    /// **and** registers the same `owner_id_str` in its `AuthBackend` so
-    /// the bootstrap owner can actually authenticate. It is deliberately
+    /// This is a **technical reference/test provisioning helper** for the org
+    /// member-management feature: internal composition wires
+    /// `AppState::with_membership_store(this)` **and** registers the same
+    /// `owner_id_str` in its `AuthBackend` so the bootstrap owner can actually
+    /// authenticate. It is not a supported downstream deployment surface; K4
+    /// must provide apps-owned operator wiring. It is deliberately
     /// **not** called by the default `apps/server` composition — see
     /// `apps/server/src/compose.rs::default_state` for why auto-seeding
     /// would deadlock RBAC (no authenticatable owner) or introduce a
     /// hardcoded-credential surface (credential secrecy); the default binary
     /// returns an honest 503 for org member endpoints instead.
     ///
-    /// String-typed (not `OrgId`/`UserId`) so an integrator in a crate
-    /// that does not depend on `nebula_core` can still call it — the id
+    /// String-typed (not `OrgId`/`UserId`) so technical composition code need
+    /// not duplicate parsing — the id
     /// parsing stays in the API tier (3). A malformed identity
     /// is a hard [`BootstrapSeedError`] (fail closed — never seed
     /// nothing, which would dead-lock the RBAC gate).
@@ -266,6 +272,23 @@ impl InMemoryMembershipStore {
 
 #[async_trait]
 impl MembershipStore for InMemoryMembershipStore {
+    async fn get_tenant_membership(
+        &self,
+        org_id: OrgId,
+        _workspace_id: Option<WorkspaceId>,
+        principal: &Principal,
+    ) -> Result<TenantMembershipSnapshot, ApiError> {
+        let guard = self.orgs.read().await;
+        let org_role = guard
+            .get(&org_id)
+            .and_then(|members| members.get(&principal_key(principal)))
+            .map(|entry| entry.role);
+        Ok(TenantMembershipSnapshot {
+            org_role,
+            workspace_role: None,
+        })
+    }
+
     async fn get_org_role(
         &self,
         org_id: OrgId,
@@ -285,7 +308,8 @@ impl MembershipStore for InMemoryMembershipStore {
     ) -> Result<Option<WorkspaceRole>, ApiError> {
         // No explicit workspace-role grants in this index — RBAC derives
         // the effective workspace role from the org role
-        // (`effective_workspace_role`), identical to the no-store path.
+        // (`effective_workspace_role`). An unwired store is a separate,
+        // fail-closed 503 path and never implies an administrator role.
         Ok(None)
     }
 
@@ -425,6 +449,25 @@ mod tests {
             store.get_org_role(org, &user()).await.unwrap(),
             None,
             "only the bootstrap owner is seeded"
+        );
+    }
+
+    #[tokio::test]
+    async fn tenant_membership_snapshot_resolves_roles_together() {
+        let owner = UserId::new();
+        let org = OrgId::new();
+        let workspace = WorkspaceId::new();
+        let store = InMemoryMembershipStore::seeded(org, Principal::User(owner), OrgRole::OrgOwner);
+
+        assert_eq!(
+            store
+                .get_tenant_membership(org, Some(workspace), &Principal::User(owner))
+                .await
+                .unwrap(),
+            TenantMembershipSnapshot {
+                org_role: Some(OrgRole::OrgOwner),
+                workspace_role: None,
+            }
         );
     }
 

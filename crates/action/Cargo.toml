@@ -62,6 +62,7 @@ hex = { workspace = true }
 insta = { workspace = true }
 pretty_assertions = { workspace = true }
 rstest = { workspace = true }
+static_assertions = { workspace = true }
 # Closes Stage-4 review I3 — fixture in tests/action_attr_phantom_rewrite.rs
 # wires #[capability] and #[action_phantom] together via local stand-in types.
 zeroize = { version = "1.8.2", features = ["zeroize_derive"] }

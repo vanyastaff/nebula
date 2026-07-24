@@ -5,8 +5,8 @@
 #[expect(unused_imports)]
 use nebula_credential::{
     AuthScheme, CredentialContext, CredentialError, CredentialId, CredentialMetadata,
-    CredentialRecord, CredentialRegistry, CredentialSnapshot, CredentialState, CredentialStore,
-    Dynamic, Interactive, PendingStateStore, Refreshable, Revocable, ScopeResolver, SecretString,
+    CredentialRecord, CredentialRegistry, CredentialSnapshot, CredentialState, Dynamic,
+    Interactive, PendingStateStore, Refreshable, Revocable, SecretString, TestFailureCode,
     Testable,
 };
 
@@ -14,4 +14,5 @@ use nebula_credential::{
 fn public_contract_surface_stable() {
     // Existence-only check — compiles iff every named symbol is `pub` at root.
     let _ = std::any::TypeId::of::<CredentialError>();
+    let _ = std::any::TypeId::of::<TestFailureCode>();
 }

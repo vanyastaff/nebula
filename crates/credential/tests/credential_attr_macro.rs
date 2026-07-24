@@ -20,10 +20,11 @@ use std::time::Duration;
 
 use nebula_credential::{
     Capabilities, Credential, CredentialContext, CredentialLifecycle, CredentialPolicy,
-    CredentialRegistry, LeaseRef, PendingState, RefreshStrategy, RegisterError, RevokeStrategy,
-    SecretString, compute_capabilities,
+    CredentialRegistry, LeaseRef, PendingState, RefreshAttempt, RefreshExecutionMode,
+    RefreshReport, RefreshStrategy, RegisterError, RevokeStrategy, SecretString,
+    compute_capabilities,
     error::CredentialError,
-    resolve::{RefreshOutcome, ResolveResult, TestResult, UserInput},
+    resolve::{ResolveResult, TestResult, UserInput},
     scheme::SecretToken,
 };
 use nebula_metadata::Metadata;
@@ -42,12 +43,15 @@ struct RefreshOnly;
     key = "test_refresh_only",
     name = "Refresh Only",
     description = "fixture",
-    icon = "sync"
+    icon = "sync",
+    doc_url = "https://example.test/credentials/refresh-only"
 )]
 impl RefreshOnly {
     type Properties = FieldValues;
     type Scheme = SecretToken;
     type State = SecretToken;
+
+    const REFRESH_EXECUTION_MODE: RefreshExecutionMode = RefreshExecutionMode::Local;
 
     fn project(state: &SecretToken) -> SecretToken {
         state.clone()
@@ -60,11 +64,8 @@ impl RefreshOnly {
         Ok(ResolveResult::Complete(token()))
     }
 
-    async fn refresh(
-        _state: &mut SecretToken,
-        _ctx: &CredentialContext,
-    ) -> Result<RefreshOutcome, CredentialError> {
-        Ok(RefreshOutcome::Refreshed)
+    async fn refresh(_state: &mut SecretToken, attempt: RefreshAttempt<'_>) -> RefreshReport {
+        attempt.local_refresh_completed()
     }
 }
 
@@ -85,6 +86,11 @@ fn refresh_only_infers_refreshable_and_synthesizes_refresh_token_policy() {
 fn refresh_only_synthesizes_metadata_from_args() {
     let meta = RefreshOnly::metadata();
     assert_eq!(meta.name(), "Refresh Only");
+    assert_eq!(meta.icon().as_inline(), Some("sync"));
+    assert_eq!(
+        meta.documentation_url(),
+        Some("https://example.test/credentials/refresh-only")
+    );
 }
 
 // ── Dynamic (leased): infers DYNAMIC; lease policy is hand-written ─────────

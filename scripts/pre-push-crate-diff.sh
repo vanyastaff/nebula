@@ -1,83 +1,119 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Determine comparison range for this push.
-current_branch="$(git branch --show-current)"
-upstream_remote="$(git config --get "branch.${current_branch}.remote" 2>/dev/null || true)"
-upstream_merge="$(git config --get "branch.${current_branch}.merge" 2>/dev/null || true)"
-
-if [[ -n "$upstream_remote" && -n "$upstream_merge" ]]; then
-  upstream_branch="$(printf '%s' "$upstream_merge" | sed 's#^refs/heads/##')"
-  range="$upstream_remote/$upstream_branch...HEAD"
-elif git rev-parse --verify origin/main >/dev/null 2>&1; then
-  range="origin/main...HEAD"
-else
-  echo "lefthook: no upstream ref found; running fallback smoke gate"
-  cargo nextest run -p nebula-core -p nebula-engine -p nebula-execution --profile agent
-  cargo check --workspace --all-features --all-targets --quiet
-  # CI "Documentation" required-job parity, also on the fallback path
-  # (reference_rustdoc_verification_gap.md): mirror the workspace-wide
-  # `RUSTDOCFLAGS=-D warnings cargo doc --no-deps` so the no-upstream scenario
-  # this branch handles is not a rustdoc blind spot.
-  RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace --quiet
-  exit 0
-fi
-
-changed_files="$(git diff --name-only "$range" || true)"
-changed_crates="$(printf '%s\n' "$changed_files" | sed -n 's#^crates/\([^/]*\)/.*#\1#p' | sort -u)"
-
-if [[ -z "$changed_crates" ]]; then
-  echo "lefthook: no crate changes in $range; skipping pre-push crate checks"
-  exit 0
-fi
-
-pkg_args=()
-existing_crates=()
-while IFS= read -r crate; do
-  [[ -z "$crate" ]] && continue
-  # Skip deleted crates: if Cargo.toml no longer exists in the working tree,
-  # the package was removed (e.g. crate consolidation per ADR) and there is
-  # nothing to test for it.
-  if [[ ! -f "crates/$crate/Cargo.toml" ]]; then
-    echo "lefthook: skipping deleted crate nebula-$crate"
-    continue
+# Determine the same comparison mode used by pull-request CI. Git resolves the
+# configured upstream so local remotes and custom fetch refspecs retain their
+# native semantics. Only verified commit IDs cross the selector boundary.
+plan_args=(ci-plan full)
+comparison_label="full workspace (no upstream)"
+if upstream_sha="$(git rev-parse --verify --quiet '@{upstream}^{commit}')"; then
+  if ! upstream_label="$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)" \
+    || [[ -z "$upstream_label" ]]; then
+    upstream_label="${upstream_sha:0:12}"
   fi
-  pkg_args+=("-p" "nebula-$crate")
-  existing_crates+=("$crate")
-done <<<"$changed_crates"
+  plan_args=(ci-plan diff --base "$upstream_sha" --head HEAD --comparison merge-base)
+  comparison_label="$upstream_label...HEAD"
+elif origin_main_sha="$(git rev-parse --verify --quiet 'origin/main^{commit}')"; then
+  plan_args=(ci-plan diff --base "$origin_main_sha" --head HEAD --comparison merge-base)
+  comparison_label="origin/main...HEAD"
+fi
 
-if [[ ${#pkg_args[@]} -eq 0 ]]; then
-  echo "lefthook: all changed crates were deletions; nothing to test"
+plan_json="$(cargo xtask "${plan_args[@]}")"
+if (( ${#plan_json} > 460800 )); then
+  echo "lefthook: CI plan exceeds the conservative 450 KiB output limit" >&2
+  exit 1
+fi
+
+if ! jq -e '
+  ((keys | sort) == ["count", "include", "reason", "schema_version", "scope"]) and
+  (.schema_version == 1) and
+  (.scope == "full" or .scope == "diff") and
+  ((.reason | type) == "string") and
+  ((.count | type) == "number") and
+  (.count >= 0 and .count <= 256 and .count == (.count | floor)) and
+  ((.include | type) == "array") and
+  (.count == (.include | length)) and
+  ([.include[].package] == ([.include[].package] | sort | unique)) and
+  all(.include[];
+    ((keys | sort) == ["package", "test_features"]) and
+    ((.package | type) == "string") and
+    (.package | length) > 0 and
+    ((.test_features | type) == "array") and
+    (.test_features == (.test_features | sort | unique)) and
+    all(.test_features[]; type == "string")
+  )
+' >/dev/null <<< "$plan_json"; then
+  echo "lefthook: nebula-xtask emitted an invalid CI plan" >&2
+  exit 1
+fi
+
+selected_count="$(jq -r '.count' <<< "$plan_json")"
+if [[ "$selected_count" == "0" ]]; then
+  echo "lefthook: no package checks required for $comparison_label"
   exit 0
 fi
 
-echo "lefthook: checking changed crates: ${existing_crates[*]}"
-cargo nextest run "${pkg_args[@]}" --profile agent
-cargo check "${pkg_args[@]}" --all-features --all-targets --quiet
+mapfile -t packages < <(jq -r '.include[].package' <<< "$plan_json")
+echo "lefthook: checking ${#packages[@]} package(s) for $comparison_label: ${packages[*]}"
 
-# CI "Documentation" required-job parity, scoped to changed crates.
-# The authoritative gate is the workspace-wide
-# `RUSTDOCFLAGS=-D warnings cargo doc --no-deps`, but it was CI-only, so a
-# private-intra-doc-link or broken `[link]` in a touched crate slipped past
-# pre-push (reference_rustdoc_verification_gap.md). Mirror CI exactly here
-# (default features, `--no-deps`) for the changed crates.
-echo "lefthook: rustdoc -D warnings for changed crates: ${existing_crates[*]}"
-RUSTDOCFLAGS="-D warnings" cargo doc "${pkg_args[@]}" --no-deps --quiet
+# Test one package at a time because test-only feature bundles belong to that
+# package's metadata and must never leak into cargo check or rustdoc.
+for index in "${!packages[@]}"; do
+  package="${packages[$index]}"
+  mapfile -t test_features < <(jq -r ".include[$index].test_features[]" <<< "$plan_json")
+  test_command=(cargo nextest run -p "$package")
+  if (( ${#test_features[@]} > 0 )); then
+    saved_ifs="$IFS"
+    IFS=,
+    joined_features="${test_features[*]}"
+    IFS="$saved_ifs"
+    test_command+=(--features "$joined_features")
+  fi
+  test_command+=(--profile agent --no-tests=pass)
+  "${test_command[@]}"
+done
 
-# Keep no-default-features checks for crates that support this gate.
-for crate in resilience log expression; do
-  if printf '%s\n' "${existing_crates[@]}" | rg -x "$crate" >/dev/null; then
-    cargo check -p "nebula-$crate" --no-default-features --quiet
+package_args=()
+for package in "${packages[@]}"; do
+  package_args+=(-p "$package")
+done
+
+# Keep the existing all-target/all-feature static gate for every selected
+# package. Test-only feature metadata is intentionally not consulted here.
+cargo check "${package_args[@]}" --all-features --all-targets --quiet
+
+echo "lefthook: rustdoc -D warnings for selected packages"
+RUSTDOCFLAGS="-D warnings" cargo doc "${package_args[@]}" --no-deps --quiet
+
+package_selected() {
+  local wanted="$1"
+  local selected
+  for selected in "${packages[@]}"; do
+    if [[ "$selected" == "$wanted" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# These six names are an independent no-default-feature gate policy, not a
+# package-selection list. The metadata plan decides which packages are selected;
+# this policy only adds checks for selected packages that promise a minimal
+# feature surface.
+for package in \
+  nebula-resilience \
+  nebula-log \
+  nebula-expression \
+  nebula-credential \
+  nebula-resource \
+  nebula-storage; do
+  if package_selected "$package"; then
+    cargo check -p "$package" --no-default-features --quiet
   fi
 done
 
-# DATABASE_URL-gated PG storage tests (M2.2 / M3.4 contract). When the
-# operator has a Postgres reachable, run the `feature = "postgres"`
-# integration tests for nebula-storage to catch concurrency / migration
-# regressions before push. When `DATABASE_URL` is unset, emit a single
-# WARN line and skip — exit 0 so dev machines without Postgres don't
-# fail on this gate.
-if printf '%s\n' "${existing_crates[@]}" | rg -x "storage" >/dev/null; then
+# DATABASE_URL-gated Postgres storage tests preserve the local parity contract.
+if package_selected nebula-storage; then
   if [[ -n "${DATABASE_URL:-}" ]]; then
     echo "lefthook: DATABASE_URL set — running PG-gated storage tests"
     cargo nextest run \

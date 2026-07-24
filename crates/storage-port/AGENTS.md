@@ -11,14 +11,15 @@
 ## Key files
 - `src/lib.rs` — crate root; re-exports `Scope`, `StorageError`, `FencingToken`, `TransitionBatch{,Builder,Outcome}`
 - `src/batch.rs` — `TransitionBatch`: private fields, builder-only construction; `commit` writes state+outbox+journal in one CAS+fencing-gated transaction
-- `src/store/mod.rs` — ISP-segregated role traits (`ExecutionStore`, `WorkflowStore`, `ControlQueue`, `NodeResultStore`, `ExecutionJournalReader`, identity/idempotency/refresh-claim stores)
-- `src/dto/` — port-local row DTOs (execution/workflow/control/journal/node_result/identity/webhook/idempotency), `serde_json::Value`-only
+- `src/store/mod.rs` — ISP-segregated object-safe role traits, including `CredentialPersistence`
+- `src/dto/` — private-field lifecycle DTOs, typed `CredentialSelector`, bounded `CredentialVersion`, and structural live/tombstoned records
 - `src/scope.rs` — plain-data `Scope { workspace_id, org_id }`; `src/ids.rs` — re-exported core ULIDs + lease `FencingToken`
 
 ## Conventions & never-do
-- This crate declares *what* storage does; **never implement a backend here** (adapters live in `nebula-storage`; scope enforcement in `nebula-tenancy`).
-- DTOs depend only on `serde_json::Value` — never on `ActionResult` or any higher-tier type (avoids Core-tier dependency inversion).
-- `Scope` is a value type with **no policy**; resolving it from a principal and cross-tenant denial belong to `nebula-tenancy`, not here.
+- This crate declares *what* storage does; **never implement a backend here** (adapters live in `nebula-storage`). `nebula-tenancy` enforces policy for the general Scope-taking stores; credential persistence is owner-bound directly and intentionally has no tenancy decorator.
+- DTOs never depend on higher-tier domain types. Opaque payloads use `serde_json::Value`/bytes, and credential rows/selectors remain port-local so this crate never imports `nebula-credential`.
+- `Scope` is a value type with **no policy**; resolving it from a principal and general cross-tenant denial belong to `nebula-tenancy`, not here. `CredentialOwner`/`CredentialSelector` are also data, not actor authority; their public technical constructors must not be exposed through HTTP or `nebula-sdk`.
+- Credential persistence exposes only explicit `create`, version-fenced `replace`, and version-fenced `tombstone`; never restore generic overwrite or physical delete. Its refresh-retry gate and material epoch are structural aggregate state (never metadata or claim TTL). The backend authors epochs: create/migration starts at `CredentialMaterialEpoch::MIN`; `CredentialMaterialTransition::Preserve { refresh_retry }` retains the epoch and applies the explicit gate transition; `Advance` increments the epoch and unconditionally clears the gate; overflow fails closed. Admission is evaluated against the backend clock.
 - Every repository trait stays `#[async_trait]` + `dyn`-compatible (consumed as `Arc<dyn …>`); keep `TransitionBatch` fields private and builder-only so a transition can't skip scope/CAS/fencing.
 - Library code uses typed `thiserror`/`StorageError`; no panicking unwrap/expect/panic in lib code.
 

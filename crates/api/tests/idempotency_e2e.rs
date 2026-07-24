@@ -19,8 +19,12 @@
 
 mod common;
 
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
+use async_trait::async_trait;
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
@@ -30,11 +34,39 @@ use nebula_api::{
     ApiConfig, AppState, app,
     middleware::idempotency::{
         IDEMPOTENCY_KEY_HEADER, IDEMPOTENT_REPLAY_HEADER, InMemoryIdempotencyStore,
+        store::{CachedResponse, IdempotencyStore, IdempotencyStoreError},
     },
 };
 use tower::ServiceExt;
 
 const X_REQUEST_ID: &str = "x-request-id";
+
+#[derive(Debug, Default)]
+struct CountingIdempotencyStore {
+    gets: AtomicUsize,
+    puts: AtomicUsize,
+}
+
+#[async_trait]
+impl IdempotencyStore for CountingIdempotencyStore {
+    async fn get(&self, _key: &str) -> Result<Option<Arc<CachedResponse>>, IdempotencyStoreError> {
+        self.gets.fetch_add(1, Ordering::Relaxed);
+        Ok(None)
+    }
+
+    async fn put(
+        &self,
+        _key: String,
+        _response: Arc<CachedResponse>,
+    ) -> Result<(), IdempotencyStoreError> {
+        self.puts.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn store_kind(&self) -> &'static str {
+        "counting-test"
+    }
+}
 
 /// Build an `AppState` with the in-memory idempotency store wired in.
 ///
@@ -114,6 +146,43 @@ async fn replay_returns_cached_body_through_full_stack() {
     assert_ne!(
         id_a, id_b,
         "cached replays must receive a fresh X-Request-ID — request_id layer sits outside idempotency",
+    );
+}
+
+#[tokio::test]
+async fn auth_routes_never_touch_the_replay_store_through_full_stack() {
+    let (state, _queue) = create_state_with_queue().await;
+    let store = Arc::new(CountingIdempotencyStore::default());
+    let state = state.with_idempotency_store(store.clone());
+    let api_config = ApiConfig::for_test();
+    let app = app::build_app(state, &api_config);
+
+    let login = || {
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/auth/login")
+            .header("content-type", "application/json")
+            .header(IDEMPOTENCY_KEY_HEADER, "must-not-cache-auth")
+            .body(Body::from(
+                r#"{"email":"nobody@example.test","password":"secret"}"#,
+            ))
+            .expect("valid login request")
+    };
+
+    let first = app.clone().oneshot(login()).await.expect("first login");
+    let second = app.oneshot(login()).await.expect("second login");
+
+    assert!(first.headers().get(IDEMPOTENT_REPLAY_HEADER).is_none());
+    assert!(second.headers().get(IDEMPOTENT_REPLAY_HEADER).is_none());
+    assert_eq!(
+        store.gets.load(Ordering::Relaxed),
+        0,
+        "an auth route must be rejected by the route authority before cache lookup"
+    );
+    assert_eq!(
+        store.puts.load(Ordering::Relaxed),
+        0,
+        "an auth response must never be persisted for replay"
     );
 }
 
@@ -256,7 +325,7 @@ async fn cors_allows_idempotency_key_in_preflight() {
 }
 
 #[tokio::test]
-async fn cors_exposes_idempotent_replay_header() {
+async fn cors_exposes_idempotency_and_retry_headers() {
     // Per the CORS spec, `Access-Control-Expose-Headers` is set on the
     // **actual** cross-origin response (not the preflight); browsers strip
     // any non-listed response header before `fetch().headers` sees it. So
@@ -287,5 +356,9 @@ async fn cors_exposes_idempotent_replay_header() {
     assert!(
         expose_headers.contains("idempotent-replay"),
         "Access-Control-Expose-Headers must list `idempotent-replay` on actual cross-origin responses: got {expose_headers:?}",
+    );
+    assert!(
+        expose_headers.contains("retry-after"),
+        "Access-Control-Expose-Headers must list `retry-after` on actual cross-origin responses: got {expose_headers:?}",
     );
 }

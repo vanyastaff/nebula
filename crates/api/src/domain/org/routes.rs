@@ -10,11 +10,15 @@
 //! non-deprecated member handlers are unaffected by the allow.
 #![allow(deprecated)]
 
+use axum::middleware;
 use nebula_core::Permission;
-use utoipa_axum::{router::OpenApiRouter, routes};
+use utoipa_axum::{
+    router::{OpenApiRouter, UtoipaMethodRouterExt},
+    routes,
+};
 
 use super::handler;
-use crate::{access, state::AppState};
+use crate::{access, middleware::no_store_authority_response, state::AppState};
 
 /// Organization routes under `/api/v1/orgs/{org}/*`.
 pub fn router() -> OpenApiRouter<AppState> {
@@ -45,10 +49,17 @@ pub fn router() -> OpenApiRouter<AppState> {
         ))
         .routes(access::protected(
             Permission::ServiceAccountManage,
-            routes!(
-                handler::list_service_accounts,
-                handler::create_service_account,
-                handler::delete_service_account
-            ),
+            routes!(handler::list_service_accounts),
+        ))
+        .routes(
+            access::protected(
+                Permission::ServiceAccountManage,
+                routes!(handler::create_service_account),
+            )
+            .layer(middleware::from_fn(no_store_authority_response)),
+        )
+        .routes(access::protected(
+            Permission::ServiceAccountManage,
+            routes!(handler::delete_service_account),
         ))
 }

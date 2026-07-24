@@ -1,8 +1,7 @@
-//! credential-schema validation seam (V2): the credential write path validates `data`
-//! against the credential type's schema **before persist**; rejection is
-//! secret-safe (no submitted value echoed); an unconfigured port yields
-//! 503 — `data` is never persisted unvalidated (closes the verified
-//! honest capability/§10 fail-open).
+//! Canonical credential write validation: authenticated commands cross the
+//! gateway first, then the credential-owned controller/service validates
+//! exactly once before persistence. The API catalog port is not a competing
+//! mutation validator.
 
 mod common;
 
@@ -18,38 +17,9 @@ use common::{
 };
 use nebula_api::{
     ApiConfig, app,
-    ports::credential_schema::{
-        CredentialFieldError, CredentialSchemaPort, CredentialTypeDescriptor,
-    },
+    domain::auth::backend::{AuthBackend, InMemoryAuthBackend, SignupRequest, dto::SecretString},
 };
 use tower::ServiceExt;
-
-/// Rejects any `data` that lacks an `api_key` field; accepts otherwise.
-struct RequireApiKeyPort;
-
-impl CredentialSchemaPort for RequireApiKeyPort {
-    fn validate_data(
-        &self,
-        _credential_key: &str,
-        data: &serde_json::Value,
-    ) -> Result<(), Vec<CredentialFieldError>> {
-        if data.get("api_key").is_some() {
-            Ok(())
-        } else {
-            Err(vec![CredentialFieldError {
-                path: "/api_key".to_owned(),
-                code: "required".to_owned(),
-                message: "api_key is required".to_owned(),
-            }])
-        }
-    }
-    fn list_types(&self) -> Vec<CredentialTypeDescriptor> {
-        Vec::new()
-    }
-    fn get_type(&self, _k: &str) -> Option<CredentialTypeDescriptor> {
-        None
-    }
-}
 
 fn auth_json(method: &str, uri: &str, token: &str, body: &serde_json::Value) -> Request<Body> {
     Request::builder()
@@ -85,8 +55,7 @@ const NEVER_LEAK: &str = "SUPERSECRET-must-never-surface-0xDEADBEEF";
 
 #[tokio::test]
 async fn create_credential_rejects_invalid_data_secret_safe() {
-    let (state, _q) = create_state_with_queue().await;
-    let state = state.with_credential_schema(Arc::new(RequireApiKeyPort));
+    let (state, _q) = create_state_with_queue_no_credential_port().await;
     let config = ApiConfig::for_test();
     let token = create_test_jwt();
     let app = app::build_app(state, &config);
@@ -111,19 +80,18 @@ async fn create_credential_rejects_invalid_data_secret_safe() {
     );
     let text = body_string(resp).await;
     assert!(
-        text.contains("/api_key") && text.contains("required"),
-        "422 body must carry the secret-safe path+code; got: {text}"
+        text.contains("/data") && text.contains("required"),
+        "400 body must carry the API-owned coarse path+code; got: {text}"
     );
     assert!(
         !text.contains(NEVER_LEAK),
-        "422 body must NOT echo any submitted value (secret-safe); got: {text}"
+        "400 body must NOT echo any submitted value (secret-safe); got: {text}"
     );
 }
 
 #[tokio::test]
 async fn create_credential_persists_valid_data() {
     let (state, _q) = create_state_with_queue().await;
-    let state = state.with_credential_schema(Arc::new(RequireApiKeyPort));
     let config = ApiConfig::for_test();
     let token = create_test_jwt();
     let app = app::build_app(state, &config);
@@ -146,14 +114,14 @@ async fn create_credential_persists_valid_data() {
 }
 
 #[tokio::test]
-async fn create_credential_503_when_port_unconfigured_never_persists() {
+async fn create_credential_uses_canonical_validation_without_catalog_port() {
     let (state, _q) = create_state_with_queue_no_credential_port().await;
     let config = ApiConfig::for_test();
     let token = create_test_jwt();
 
     let body = serde_json::json!({
         "credential_key": "api_key",
-        "name": "never-persist-probe",
+        "name": "canonical-validation-probe",
         "data": { "api_key": "k", "leaky": NEVER_LEAK },
         "tags": {}
     });
@@ -164,17 +132,17 @@ async fn create_credential_503_when_port_unconfigured_never_persists() {
         .unwrap();
     assert_eq!(
         resp.status(),
-        StatusCode::SERVICE_UNAVAILABLE,
-        "no credential-schema port ⇒ 503 (never persist unvalidated)"
+        StatusCode::OK,
+        "catalog availability must not control the authenticated mutation path"
     );
     let text = body_string(resp).await;
     assert!(
         !text.contains(NEVER_LEAK),
-        "503 body must not echo submitted data; got: {text}"
+        "successful response must not echo submitted data; got: {text}"
     );
 
-    // Prove the "never persists" guarantee (not just the 503 status):
-    // the rejected create must have written nothing to the store.
+    // The credential-owned service validated and persisted the command even
+    // though type discovery is unavailable.
     let app = app::build_app(state, &config);
     let list = app
         .oneshot(auth_get(&ws_path("/credentials"), &token))
@@ -183,36 +151,59 @@ async fn create_credential_503_when_port_unconfigured_never_persists() {
     assert_eq!(list.status(), StatusCode::OK, "list must be reachable");
     let listed = body_string(list).await;
     assert!(
-        !listed.contains("never-persist-probe") && !listed.contains(NEVER_LEAK),
-        "rejected create must persist nothing — credential absent from list; got: {listed}"
+        listed.contains("canonical-validation-probe") && !listed.contains(NEVER_LEAK),
+        "canonical validation must persist only the secret-free head; got: {listed}"
     );
 }
 
 // ── CSRF wiring on credential write paths (M3.1 box 2) ────────────────────
 //
 // `csrf_middleware` is layered on `credential_routes` in `domain/mod.rs`.
-// JWT auth is a cookie-bearing auth method, so the double-submit
-// `X-CSRF-Token` header MUST match the `nebula_csrf` cookie for any
-// state-changing request to reach the handler.
+// Only ambient session-cookie authentication needs the double-submit proof;
+// explicit Bearer/JWT authority is deliberately exempt. These tests therefore
+// create a real session and prove that `X-CSRF-Token` MUST match the
+// `__Host-nebula-csrf` cookie before a state-changing request reaches the
+// handler.
+
+async fn session_authenticated_credential_state() -> (nebula_api::AppState, String, String) {
+    let (state, _q) = create_state_with_queue().await;
+    let backend = Arc::new(InMemoryAuthBackend::new());
+    let profile = backend
+        .register_user(SignupRequest {
+            email: "credential-csrf@nebula.dev".to_owned(),
+            password: SecretString::new("hunter22".to_owned()),
+            display_name: "Credential CSRF".to_owned(),
+        })
+        .await
+        .expect("register session-authenticated user");
+    let mut session = backend
+        .create_session(&profile.user_id)
+        .await
+        .expect("create session authority");
+    let session_id = std::mem::take(&mut session.id);
+    let csrf_token = std::mem::take(&mut session.csrf_token);
+    let backend_dyn: Arc<dyn AuthBackend> = backend;
+    (state.with_auth_backend(backend_dyn), session_id, csrf_token)
+}
 
 fn json_with_csrf_headers(
     method: &str,
     uri: &str,
-    token: &str,
     body: &serde_json::Value,
     csrf_header: Option<&str>,
-    csrf_cookie: Option<&str>,
+    session_cookie: &str,
+    csrf_cookie: &str,
 ) -> Request<Body> {
     let mut b = Request::builder()
         .method(method)
         .uri(uri)
         .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {token}"));
+        .header(
+            "cookie",
+            format!("__Host-nebula-session={session_cookie}; __Host-nebula-csrf={csrf_cookie}"),
+        );
     if let Some(h) = csrf_header {
         b = b.header("x-csrf-token", h);
-    }
-    if let Some(c) = csrf_cookie {
-        b = b.header("cookie", c);
     }
     b.body(Body::from(serde_json::to_vec(body).unwrap()))
         .unwrap()
@@ -220,13 +211,11 @@ fn json_with_csrf_headers(
 
 #[tokio::test]
 async fn create_credential_returns_403_when_csrf_header_missing() {
-    // Cookie-bearing JWT auth + state-changing method + missing CSRF header
+    // Ambient session auth + state-changing method + missing CSRF header
     // ⇒ csrf_middleware rejects with 403 *before* the handler runs (and
     // therefore *before* any credential-schema validation).
-    let (state, _q) = create_state_with_queue().await;
-    let state = state.with_credential_schema(Arc::new(RequireApiKeyPort));
+    let (state, session_id, csrf_token) = session_authenticated_credential_state().await;
     let config = ApiConfig::for_test();
-    let token = create_test_jwt();
     let app = app::build_app(state, &config);
 
     let body = serde_json::json!({
@@ -239,10 +228,10 @@ async fn create_credential_returns_403_when_csrf_header_missing() {
         .oneshot(json_with_csrf_headers(
             "POST",
             &ws_path("/credentials"),
-            &token,
             &body,
             None,
-            Some(TEST_CSRF_COOKIE),
+            &session_id,
+            &csrf_token,
         ))
         .await
         .unwrap();
@@ -260,10 +249,8 @@ async fn create_credential_returns_403_when_csrf_header_missing() {
 
 #[tokio::test]
 async fn create_credential_returns_403_when_csrf_header_mismatches_cookie() {
-    let (state, _q) = create_state_with_queue().await;
-    let state = state.with_credential_schema(Arc::new(RequireApiKeyPort));
+    let (state, session_id, csrf_token) = session_authenticated_credential_state().await;
     let config = ApiConfig::for_test();
-    let token = create_test_jwt();
     let app = app::build_app(state, &config);
 
     let body = serde_json::json!({
@@ -276,10 +263,10 @@ async fn create_credential_returns_403_when_csrf_header_mismatches_cookie() {
         .oneshot(json_with_csrf_headers(
             "POST",
             &ws_path("/credentials"),
-            &token,
             &body,
             Some("different-from-cookie"),
-            Some(TEST_CSRF_COOKIE),
+            &session_id,
+            &csrf_token,
         ))
         .await
         .unwrap();
@@ -297,14 +284,13 @@ async fn create_credential_returns_403_when_csrf_header_mismatches_cookie() {
 
 #[tokio::test]
 async fn update_credential_rejects_invalid_data_secret_safe() {
-    // credential-schema validation: the V2 gate also covers the update path (validates the
-    // supplied `data` against the *existing* credential type's schema).
+    // The credential-owned service validates supplied `data` against the
+    // existing credential type under the same authority decision as the write.
     let (state, _q) = create_state_with_queue().await;
-    let state = state.with_credential_schema(Arc::new(RequireApiKeyPort));
     let config = ApiConfig::for_test();
     let token = create_test_jwt();
 
-    // Seed a valid credential (RequireApiKeyPort accepts `api_key`).
+    // Seed a valid credential through the same canonical service path.
     let app = app::build_app(state.clone(), &config);
     let created = app
         .oneshot(auth_json(
@@ -342,7 +328,7 @@ async fn update_credential_rejects_invalid_data_secret_safe() {
     );
     let text = body_string(resp).await;
     assert!(
-        text.contains("/api_key") && text.contains("required") && !text.contains(NEVER_LEAK),
+        text.contains("/data") && text.contains("required") && !text.contains(NEVER_LEAK),
         "update 400 must carry path+code and echo no value (symmetric with the \
          create-path contract); got: {text}"
     );

@@ -7,8 +7,8 @@
 //! port); it acquires the typed [`PendingStateStore`] surface — generic over
 //! `<P: PendingState>` — via the blanket impl in
 //! `nebula_credential::erased`, which does the serde round-trip. The serde
-//! lives in the blanket, not here: this store persists raw `Vec<u8>` plus the
-//! binding tuple and absolute expiry.
+//! lives in the blanket, not here: this store persists
+//! `Zeroizing<Vec<u8>>` plus the binding tuple and absolute expiry.
 //!
 //! This is the single canonical in-memory `PendingStateStore`. A Business-tier
 //! consumer that cannot dev-dep `nebula-storage` (the Exec adapter) keeps a
@@ -32,10 +32,8 @@
 //! |   |                                    | `ValidationFailed` without destroying the entry.    |
 //! | 5 | Typed secret fields                | Enforced at the `PendingState` implementer level    |
 //! |   |                                    | (e.g. `OAuth2Pending.client_secret: SecretString`). |
-//! | 6 | Zeroize on drop                    | `PendingState: Zeroize` trait bound; implementers   |
-//! |   |                                    | zeroize on drop. Serialized bytes in this store     |
-//! |   |                                    | are `Vec<u8>`; wrapping in `Zeroizing<Vec<u8>>` is  |
-//! |   |                                    | a tracked follow-up.                                |
+//! | 6 | Zeroize on drop                    | Typed state and every serialized byte buffer use    |
+//! |   |                                    | zeroizing wrappers.                                 |
 //!
 //! See `crates/storage/README.md` for credential persistence layout.
 
@@ -47,6 +45,7 @@ use std::{collections::HashMap, sync::Arc};
 use chrono::Utc;
 use nebula_credential::{DynPendingStateStore, PendingStoreError, PendingToken};
 use tokio::sync::RwLock;
+use zeroize::Zeroizing;
 
 /// In-memory pending store backed by a `HashMap`.
 ///
@@ -108,7 +107,7 @@ struct PendingEntry {
     credential_kind: String,
     owner_id: String,
     session_id: String,
-    data: Vec<u8>,
+    data: Zeroizing<Vec<u8>>,
     expires_at: chrono::DateTime<Utc>,
 }
 
@@ -140,7 +139,7 @@ impl DynPendingStateStore for InMemoryPendingStore {
         credential_kind: &'a str,
         owner_id: &'a str,
         session_id: &'a str,
-        data: Vec<u8>,
+        data: Zeroizing<Vec<u8>>,
         expires_in: Duration,
     ) -> Pin<Box<dyn Future<Output = Result<PendingToken, PendingStoreError>> + Send + 'a>> {
         Box::pin(async move {
@@ -167,7 +166,8 @@ impl DynPendingStateStore for InMemoryPendingStore {
     fn get_serialized<'a>(
         &'a self,
         token: &'a PendingToken,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, PendingStoreError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Zeroizing<Vec<u8>>, PendingStoreError>> + Send + 'a>>
+    {
         Box::pin(async move {
             let mut entries = self.entries.write().await;
             let entry = entries
@@ -190,7 +190,8 @@ impl DynPendingStateStore for InMemoryPendingStore {
         token: &'a PendingToken,
         owner_id: &'a str,
         session_id: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, PendingStoreError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Zeroizing<Vec<u8>>, PendingStoreError>> + Send + 'a>>
+    {
         Box::pin(async move {
             let mut entries = self.entries.write().await;
             let entry = entries
@@ -221,7 +222,8 @@ impl DynPendingStateStore for InMemoryPendingStore {
         token: &'a PendingToken,
         owner_id: &'a str,
         session_id: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, PendingStoreError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Zeroizing<Vec<u8>>, PendingStoreError>> + Send + 'a>>
+    {
         Box::pin(async move {
             // Validate *before* removing. A wrong-owner (or otherwise
             // malformed) `consume` request must not be able to destroy the
@@ -352,6 +354,35 @@ mod tests {
         TestPending {
             data: data.to_owned(),
         }
+    }
+
+    #[tokio::test]
+    async fn serialized_byte_core_keeps_zeroizing_buffers_end_to_end() {
+        let store = InMemoryPendingStore::new();
+        let serialized = Zeroizing::new(br#"{"data":"pending-secret-canary"}"#.to_vec());
+        let token = DynPendingStateStore::put_serialized(
+            &store,
+            "oauth2",
+            "user_1",
+            "sess_1",
+            serialized,
+            Duration::from_mins(5),
+        )
+        .await
+        .expect("serialized pending state stores");
+
+        {
+            let entries = store.entries.read().await;
+            let entry = entries
+                .get(token.as_str())
+                .expect("pending entry remains present");
+            let _: &Zeroizing<Vec<u8>> = &entry.data;
+        }
+
+        let restored: Zeroizing<Vec<u8>> = DynPendingStateStore::get_serialized(&store, &token)
+            .await
+            .expect("serialized pending state reads");
+        assert!(restored.windows(6).any(|window| window == b"canary"));
     }
 
     #[tokio::test]

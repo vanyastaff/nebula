@@ -1,9 +1,9 @@
 name: Nightly Chaos
 
 # Runs the full sub-spec §5.4 chaos plane (10 minutes × 100 credentials
-# × 3 replicas) plus loom probes. Default CI runs the scaled-down
-# 5s × 5-credential version; this workflow widens it via the
-# `chaos-full` feature.
+# × 3 replicas) plus loom probes. The harness is always ignored in ordinary
+# gates; an explicit local ignored run uses the 5s × 5-credential plane,
+# while this workflow widens it via `nebula-storage/chaos-full`.
 
 on:
   schedule:
@@ -42,7 +42,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: stable
+          toolchain: 1.96.1
 
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
@@ -63,10 +63,11 @@ jobs:
         run: |
           set -euo pipefail
           cargo nextest run \
-            -p nebula-engine \
+            -p nebula-storage \
             --test refresh_coordinator_chaos \
             --features chaos-full \
             --profile chaos \
+            --run-ignored only \
             --no-tests=pass
 
       - name: Upload chaos junit
@@ -92,7 +93,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: stable
+          toolchain: 1.96.1
 
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
@@ -127,7 +128,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: stable
+          toolchain: 1.96.1
 
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1

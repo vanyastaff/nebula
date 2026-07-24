@@ -21,7 +21,7 @@ pub use internal_auth::{X_INTERNAL_TOKEN, internal_auth_middleware};
 pub use rate_limit::RateLimitState;
 pub use rbac::rbac_middleware;
 pub use request_id::RequestIdLayer;
-pub use security_headers::security_headers_middleware;
+pub use security_headers::{no_store_authority_response, security_headers_middleware};
 pub use tenancy::tenancy_middleware;
 pub use trace_w3c::{
     InboundW3cTraceContext, inject_w3c_trace_response_headers, trace_context_middleware,

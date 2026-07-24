@@ -44,5 +44,5 @@ mod plugin_attrs;
 /// example see `nebula_plugin::Plugin` in the parent `nebula-plugin` crate.
 #[proc_macro_derive(Plugin, attributes(plugin))]
 pub fn derive_plugin(input: TokenStream) -> TokenStream {
-    plugin::derive(input)
+    nebula_macro_support::paths::resolve_generated_crate_paths(plugin::derive(input).into()).into()
 }

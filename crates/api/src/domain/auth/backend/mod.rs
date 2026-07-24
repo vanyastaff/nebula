@@ -11,16 +11,16 @@
 //!   lookup) for dev / tests / `simple_server`.
 //! - [`dto`]: HTTP request/response shapes (with [`SecretString`] for plaintext passwords).
 //! - [`error`]: [`AuthError`] type and the mapping into [`crate::ApiError`].
-//! - [`session`] / [`pat`] / [`oauth`] / [`password`] / [`mfa`]: per-feature primitives reused by
+//! - `session` / `pat` / `oauth` / `password` / `mfa`: per-feature primitives reused by
 //!   the in-memory backend.
 //!
 //! ## Why this module exists
 //!
 //! Per auth plane separation, **Plane A** (host / Nebula API auth) is kept disjoint from
-//! **Plane B** (integration credential OAuth). Plane B lives under
-//! [`crate::transport::oauth`] + `crates/credential/`; Plane A lives here.
-//! New auth-domain features land in [`crate::domain::auth`] — never in the
-//! credential / OAuth-integration tree.
+//! **Plane B** (integration credential acquisition). The OAuth transport helpers
+//! are private infrastructure for Plane A; Plane B uses `crates/credential/`
+//! through the universal credential facade. New auth-domain features land in
+//! [`crate::domain::auth`] — never in the credential tree.
 //!
 //! [`SecretString`]: dto::SecretString
 //! [`AuthBackend`]: provider::AuthBackend
@@ -30,7 +30,7 @@ pub mod dto;
 pub mod error;
 pub mod in_memory;
 pub mod mfa;
-pub mod oauth;
+mod oauth;
 pub mod password;
 pub mod pat;
 /// Postgres-backed [`AuthBackend`] implementation. Linked only when
@@ -55,10 +55,10 @@ pub use pat::{MintedPat, PAT_PREFIX, PatRecord, hash_for_lookup, hashes_equal, m
 #[cfg(feature = "postgres")]
 pub use pg::PgAuthBackend;
 pub use provider::{
-    AuthBackend, CreatePatParams, MfaEnrollment, OAuthCompletion, OAuthStart, PasswordOutcome,
-    ProfilePatch,
+    AuthBackend, AuthenticatedSession, CreatePatParams, MfaEnrollment, OAuthCompletion, OAuthStart,
+    PasswordOutcome, ProfilePatch,
 };
 pub use session::{
-    CSRF_COOKIE, SESSION_COOKIE, SESSION_TTL, SessionRecord, cleared_cookie, csrf_cookie,
-    random_token, session_cookie,
+    CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE, SESSION_TTL, SessionRecord, cleared_csrf_cookie,
+    cleared_session_cookie, csrf_cookie, random_token, session_cookie,
 };

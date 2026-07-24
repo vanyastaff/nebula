@@ -22,7 +22,7 @@
 - This is the foundation error crate: library crates use `thiserror` + `Classify` + `NebulaError`; `anyhow` is binaries-only (L2-§12.4).
 - Stay in your lane: NOT a resilience pipeline (`RetryHint` is data; execution lives in `nebula-resilience`), NOT an API formatter (`nebula-api` maps to RFC 9457 `problem+json`), NOT logging (`nebula-log`).
 - `Classify::retry_hint()` is the single transient-vs-permanent decision surface — do not re-implement classification per crate.
-- Cross-crate calls go through `nebula-eventbus`, not direct sibling imports.
+- Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
 - Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also

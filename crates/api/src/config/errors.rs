@@ -57,6 +57,23 @@ pub enum ApiConfigError {
         raw: String,
     },
 
+    /// Configuration was supplied for an identity provider whose security
+    /// contract is intentionally parked rather than partially supported.
+    #[error("OAuth provider is parked: {provider} (provider_parked)")]
+    OAuthProviderParked {
+        /// Stable public provider key; never an operator-supplied value.
+        provider: &'static str,
+    },
+
+    /// A legacy OAuth knob was supplied even though the corresponding
+    /// protocol behavior is not implemented. The reason is a fixed keyword;
+    /// environment values are deliberately neither stored nor formatted.
+    #[error("OAuth configuration is unsupported ({reason})")]
+    OAuthConfigUnsupported {
+        /// Stable secret-free reason keyword.
+        reason: &'static str,
+    },
+
     /// An `API_*` numeric env var must be strictly positive but the
     /// operator supplied `0`.
     ///

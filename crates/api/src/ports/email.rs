@@ -61,7 +61,7 @@ impl std::fmt::Display for EmailKind {
 /// directly into [`Self::body`] so tests can pull the token out without
 /// parsing rendered HTML; production transports replace this with a
 /// rendered template.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct EmailMessage {
     /// Recipient address. The transport is responsible for any final
     /// address validation; the [`EchoSink`] applies a minimal `@` check.
@@ -75,13 +75,25 @@ pub struct EmailMessage {
     pub kind: EmailKind,
 }
 
+impl std::fmt::Debug for EmailMessage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("EmailMessage")
+            .field("to", &"[redacted]")
+            .field("subject", &"[redacted]")
+            .field("body", &"[redacted]")
+            .field("kind", &self.kind)
+            .finish()
+    }
+}
+
 /// Failure modes for an [`EmailPort::send`] call.
 ///
 /// Deliberately small: every transport-side fault collapses into
 /// [`Self::Transport`], and any address rejected before transit becomes
 /// [`Self::InvalidAddress`]. Callers should treat both as terminal for
 /// the current attempt (no implicit retry).
-#[derive(Debug, Error)]
+#[derive(Error)]
 #[non_exhaustive]
 pub enum EmailError {
     /// The transport failed to accept / deliver the message (network
@@ -98,6 +110,21 @@ pub enum EmailError {
     /// value when operator forensics genuinely need it.
     #[error("invalid email address: [redacted]")]
     InvalidAddress(String),
+}
+
+impl std::fmt::Debug for EmailError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Transport(_) => formatter
+                .debug_tuple("Transport")
+                .field(&"[redacted]")
+                .finish(),
+            Self::InvalidAddress(_) => formatter
+                .debug_tuple("InvalidAddress")
+                .field(&"[redacted]")
+                .finish(),
+        }
+    }
 }
 
 /// Outbound email seam — the API never imports a concrete transport.
@@ -192,6 +219,21 @@ mod tests {
         assert_eq!(inbox[0].body, "token-abc");
     }
 
+    #[test]
+    fn email_message_debug_redacts_recipient_subject_and_body() {
+        const CANARY: &str = "EMAIL_AUTHORITY_CANARY-713d";
+        let message = EmailMessage {
+            to: format!("{CANARY}@example.test"),
+            subject: CANARY.to_owned(),
+            body: CANARY.to_owned(),
+            kind: EmailKind::PasswordReset,
+        };
+
+        let debug = format!("{message:?}");
+        assert!(!debug.contains(CANARY));
+        assert!(debug.contains("PasswordReset"));
+    }
+
     #[tokio::test]
     async fn echo_sink_drain_clears_inbox() {
         let sink = EchoSink::new();
@@ -222,6 +264,7 @@ mod tests {
         // never reaches `Internal(format!("email: {e}"))` strings or
         // operator-facing log lines.
         assert_eq!(err.to_string(), "invalid email address: [redacted]");
+        assert!(!format!("{err:?}").contains("not-an-email"));
         assert!(sink.peek().is_empty(), "rejected message must not buffer");
     }
 

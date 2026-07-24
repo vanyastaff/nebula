@@ -12,24 +12,30 @@
 //! [`RefreshClaimRepo::release`]) so the sentinel clears by removal --
 //! no separate "clear sentinel" call is needed on the success path.
 //! If the reclaim sweep finds an expired claim still flagged
-//! `RefreshInFlight`, the holder is presumed crashed mid-refresh.
+//! `RefreshInFlight`, the holder is presumed crashed mid-refresh. The
+//! repository atomically records one event and retains that claim as durable
+//! fail-closed poison; threshold evaluation never authorizes provider replay.
 //!
-//! N=3 sentinel events within 1h (default) escalate the credential to
-//! `ReauthRequired`. The Stage 3.2 implementation records each detected
-//! event in `credential_sentinel_events` and consults the rolling-window
-//! count via `RefreshClaimStore::count_sentinel_events_in_window`.
+//! N=3 distinct, explicitly reconciled incidents within 1h (default) produce
+//! an `EscalateToReauth` decision. Repeated denied requests or sweeps of one
+//! poisoned claim do not consume the budget. The implementation records each
+//! newly-accounted claim UUID in `credential_sentinel_events` and consults the
+//! database-clock-authoritative rolling-window count via
+//! `RefreshClaimStore::count_sentinel_events_in_window`. The current
+//! reclaim sweep publishes a lossy observation for that decision; it
+//! does not durably mutate the credential aggregate.
 
 use std::{sync::Arc, time::Duration};
 
 use nebula_storage_port::store::{
-    RefreshClaimError as RepoError, RefreshClaimStore as RefreshClaimRepo, ReplicaId,
+    RefreshClaimError as RepoError, RefreshClaimStore as RefreshClaimRepo,
 };
 
-/// Configuration for the sentinel threshold logic. Default = 3-in-1h.
+/// Configuration for the distinct-incident threshold. Default = 3-in-1h.
 #[derive(Clone, Debug)]
 pub struct SentinelThresholdConfig {
-    /// Sentinel events within `window` before escalation to
-    /// `ReauthRequired`.
+    /// Newly-accounted claim incidents within `window` before escalation to
+    /// `ReauthRequired`. Repeated sweeps of one incident count once.
     pub threshold: u32,
     /// Rolling window over which `threshold` events are counted.
     pub window: Duration,
@@ -44,20 +50,21 @@ impl Default for SentinelThresholdConfig {
     }
 }
 
-/// Decision returned by [`SentinelTrigger::on_sentinel_detected`].
+/// Decision returned after an expired provider-side-effect claim has been
+/// durably accounted.
 ///
-/// `Recoverable` means the threshold has not yet been reached -- the
-/// reclaim sweep should clear the claim row and let normal refresh
-/// retry resume. `EscalateToReauth` means the threshold was met or
-/// exceeded -- the engine must transition the credential to
-/// `ReauthRequired` and emit
-/// `nebula_credential::CredentialEvent::ReauthRequired` per
-/// sub-spec.
+/// `BelowThreshold` means only that escalation has not yet been reached; the
+/// claim remains poison and provider replay is still forbidden.
+/// `EscalateToReauth` means the threshold was met or exceeded -- the aggregate
+/// owner must durably transition the credential to `ReauthRequired`. A
+/// `nebula_credential::CredentialEvent::ReauthRequired` may accompany
+/// that command as an observation, but cannot substitute for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum SentinelDecision {
-    /// Sentinel event count is below threshold; resume normal flow.
-    Recoverable {
+pub(crate) enum SentinelDecision {
+    /// Sentinel event count is below threshold. The claim remains poisoned
+    /// pending explicit reconciliation.
+    BelowThreshold {
         /// Number of sentinel events observed in the rolling window
         /// after this one.
         event_count: u32,
@@ -75,11 +82,10 @@ pub enum SentinelDecision {
 /// Tracks sentinel events per credential; emits escalations when the
 /// rolling-window threshold is reached.
 ///
-/// Stage 3.2 implementation: each call to `on_sentinel_detected`
-/// inserts one row into `credential_sentinel_events` and queries the
-/// rolling-window count to decide whether to escalate. The persistence
-/// layer (in-memory / SQLite / Postgres) lives behind
-/// [`RefreshClaimRepo`].
+/// The repository atomically inserts the sentinel evidence while retaining
+/// the claim row, then this trigger queries the rolling-window count to decide
+/// whether to escalate. The persistence layer (in-memory / SQLite / Postgres)
+/// lives behind [`RefreshClaimRepo`].
 pub struct SentinelTrigger {
     repo: Arc<dyn RefreshClaimRepo>,
     config: SentinelThresholdConfig,
@@ -92,64 +98,32 @@ impl SentinelTrigger {
         Self { repo, config }
     }
 
-    /// Borrow the threshold configuration.
-    #[must_use]
-    pub fn config(&self) -> &SentinelThresholdConfig {
-        &self.config
-    }
-
-    // guard-justified: consumed by reclaim-sweep wiring that lands in Stage 3.3; removing
-    // silences the compiler but breaks the planned composition root
-    #[expect(dead_code)]
-    pub(crate) fn repo(&self) -> &Arc<dyn RefreshClaimRepo> {
-        &self.repo
-    }
-
-    /// Called by the reclaim sweep when an expired claim has
-    /// `sentinel = RefreshInFlight`. Records the event in
-    /// `credential_sentinel_events` then queries the rolling-window
-    /// count; returns `EscalateToReauth` when the count is at or above
-    /// threshold (default 3-in-1h per sub-spec).
+    /// Evaluate an event that the claim repository already recorded atomically
+    /// while retaining an expired `RefreshInFlight` row as durable poison.
     ///
-    /// # Concurrency
+    /// This method does not insert an event. The accountable reclaim contract
+    /// guarantees exactly-once evidence before returning
+    /// [`ExpiredClaim::OutcomeUnknownAccounted`](nebula_storage_port::store::ExpiredClaim::OutcomeUnknownAccounted).
     ///
-    /// The record-then-count sequence is **not atomic**. Two failure
-    /// modes to consider:
-    ///
-    /// - **Same-row case** (two sweepers race on the same stuck claim): prevented at the storage
-    ///   layer -- `RefreshClaimRepo::reclaim_stuck` uses `DELETE ... RETURNING` (postgres + sqlite) so
-    ///   each expired row is observed by exactly one sweeper, never double-counted.
-    /// - **Distinct-row near-threshold case** (two sweepers each find their own stuck row for the
-    ///   same credential, then both insert and read count >= threshold): both will return
-    ///   [`SentinelDecision::EscalateToReauth`] and the consumer will see two
-    ///   `CredentialEvent::ReauthRequired` for the same credential. The consumer
-    ///   (`CredentialEvent::ReauthRequired` handler in the credential engine) MUST be idempotent --
-    ///   flipping `reauth_required = true` is a fixed-point write so a duplicate is harmless.
-    ///   Tightening this to bit-exact single-emit would require an atomic `record_and_count` repo
-    ///   primitive (deferred, out of scope for the wave 2 review).
-    ///
-    /// # Errors
-    ///
-    /// Surfaces underlying [`RepoError`] from
-    /// `record_sentinel_event` / `count_sentinel_events_in_window`.
-    pub async fn on_sentinel_detected(
+    /// Distinct, explicitly reconciled incidents for one credential may cross
+    /// the threshold over time. Repeated sweeps of one poisoned claim are
+    /// idempotent and do not increment the count. Event-bus observations
+    /// remain non-authoritative; durable reauth transition belongs to the
+    /// aggregate owner.
+    pub(crate) async fn decision_for_accounted_event(
         &self,
         credential_id: &nebula_core::CredentialId,
-        crashed_holder: &ReplicaId,
-        generation: u64,
     ) -> Result<SentinelDecision, RepoError> {
-        // Record the event first, then query so the just-recorded row
-        // is included in the threshold count.
-        self.repo
-            .record_sentinel_event(credential_id, crashed_holder, generation)
-            .await?;
+        self.decision_for_recorded_event(credential_id).await
+    }
 
-        let window = chrono::Duration::from_std(self.config.window)
-            .unwrap_or_else(|_| chrono::Duration::seconds(3600));
-        let window_start = chrono::Utc::now() - window;
+    async fn decision_for_recorded_event(
+        &self,
+        credential_id: &nebula_core::CredentialId,
+    ) -> Result<SentinelDecision, RepoError> {
         let count = self
             .repo
-            .count_sentinel_events_in_window(credential_id, window_start)
+            .count_sentinel_events_in_window(credential_id, self.config.window)
             .await?;
 
         if count >= self.config.threshold {
@@ -164,7 +138,7 @@ impl SentinelTrigger {
                 window_secs: self.config.window.as_secs().max(1),
             })
         } else {
-            Ok(SentinelDecision::Recoverable { event_count: count })
+            Ok(SentinelDecision::BelowThreshold { event_count: count })
         }
     }
 }

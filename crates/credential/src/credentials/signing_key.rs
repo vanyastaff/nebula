@@ -38,15 +38,14 @@ impl Credential for SigningKeyCredential {
     const KEY: &'static str = "signing_key";
 
     fn metadata() -> CredentialMetadata {
-        CredentialMetadata::builder()
-            .key(nebula_core::credential_key!("signing_key"))
-            .name("Signing Key")
-            .description("Request-signing secret (HMAC, SigV4, webhook signatures).")
-            .schema(nebula_schema::schema_of::<Self::Properties>())
-            .pattern(AuthPattern::RequestSigning)
-            .icon("key")
-            .build()
-            .expect("signing_key metadata is valid")
+        CredentialMetadata::new(
+            nebula_core::credential_key!("signing_key"),
+            "Signing Key",
+            "Request-signing secret (HMAC, SigV4, webhook signatures).",
+            nebula_schema::schema_of::<Self::Properties>(),
+            AuthPattern::RequestSigning,
+        )
+        .with_icon("key")
     }
 
     fn project(state: &SigningKey) -> SigningKey {

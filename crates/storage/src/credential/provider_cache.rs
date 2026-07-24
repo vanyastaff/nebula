@@ -21,7 +21,7 @@
 //! Sibling to the existing `CacheLayer` / `EncryptionLayer` /
 //! `AuditLayer` credential-store wrappers, but wraps the
 //! [`ExternalProvider`] trait rather than
-//! [`CredentialStore`](nebula_credential::CredentialStore) — hence the
+//! [`CredentialPersistence`](nebula_storage_port::CredentialPersistence) — hence the
 //! disambiguating `Provider` prefix in the type name.
 //!
 //! See ADR-0081 (ADR-0051, consolidated)

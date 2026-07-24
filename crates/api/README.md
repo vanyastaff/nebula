@@ -3,7 +3,7 @@
 ## name: nebula-api
 role: API Gateway
 status: frontier
-last-reviewed: 2026-05-15
+last-reviewed: 2026-07-21
 canon-invariants: [L2-§4.5, L2-§12.3, L2-§12.4, L2-§13]
 related: [nebula-storage, nebula-runtime, nebula-engine, nebula-plugin, nebula-metrics, nebula-credential, nebula-core]
 
@@ -44,9 +44,19 @@ constructor + builder methods (`with_api_keys`, `with_metrics_registry`,
   responses where applicable, and stamped onto durable `execution_control_queue` rows
   for `Start` / `Cancel` (see ADR-0050).
 - `ApiConfig` / `ApiConfig::from_env` — runtime configuration with sub-configs:
-`TlsConfig`, `CookieConfig`, `CorsConfig`, `VersioningConfig`,
+`TlsConfig`, `CorsConfig`, `VersioningConfig`,
 `PaginationConfig`. Startup fails hard on a missing or short JWT secret
 (no `Default` impl).
+- `OAuthIdentityRuntime::from_config` / `OAuthRuntimeBuildError` — narrow,
+  technical composition exports for constructing the optional opaque Plane-A
+  runtime. The runtime exposes no raw HTTP client, provider responses, bearer
+  tokens, cache, or admission controls. `nebula-sdk` remains the sole supported
+  and branded Rust product surface; direct `nebula-api` use is an implementation
+  boundary.
+- Technical auth types `OAuthProvider` and `AuthError` are
+  `#[non_exhaustive]`; downstream composition code must retain a wildcard arm
+  so new providers and failures can be added without another exhaustive-match
+  break.
 - `JwtSecret` — newtype that enforces a 32-byte minimum length at construction;
 any value in hand is valid.
 - `ApiError` / `ProblemDetails` — RFC 9457 error envelope; seam for §12.4.
@@ -119,9 +129,10 @@ Responsibility split:
 replace_slug_map / axum router. Owns the routing map, rate limiter, signature
 enforcement, replay-window check, and `pre_handle` short-circuit.
 - `bootstrap` — `bootstrap_webhook_activations` / `collect_webhook_activations`,
-`WebhookSecretResolver`, `WebhookContextFactory`. The composition root
-invokes the bootstrap before `build_app`; admin reload uses `collect_*` and
-`replace_slug_map` for atomic swaps.
+`WebhookSecretResolver`, `WebhookActivationContextFactory`. The API owns these
+object-safe, credential-neutral ports; the composition root supplies concrete
+adapters and invokes bootstrap before `build_app`. Admin reload uses
+`collect_*` and `replace_slug_map` for atomic swaps.
 - `events` — `TriggerLifecycleEvent` { Created / Updated / Deleted } +
 `TriggerLifecycleSubscriber`. M3.3 ships the consumer; producer-side
 wiring is deferred (ADR-0049 § "Out of scope").
@@ -172,24 +183,36 @@ operator IdP-client credentials are configured via environment
 variables (NOT a database table, NOT the credential store). Declaring
 a provider is opt-in; an undeclared provider returns
 `AuthError::ProviderNotConfigured` → HTTP 503 from
-`/auth/oauth/{provider}/start`.
+`GET /api/v1/auth/oauth/{provider}`.
 
-Supported providers in 1.0 (`OAuthProvider` enum):
-`google`, `microsoft`, `github`. Auth0 / Okta / generic OIDC require
-extending the enum (tracked as a 1.1 follow-up).
+Supported production profiles in 1.0 (`#[non_exhaustive] OAuthProvider` enum):
+canonical Google OIDC (`google`) and GitHub.com (`github`). Microsoft,
+Auth0/Okta/generic OIDC, GitHub Enterprise Server, custom endpoints, and
+operator-supplied JWKS are parked. They require a reviewed application change,
+not an environment switch; legacy/profile override variables fail boot with a
+secret-free configuration error.
 
 ### Configuration shape
 
-Each provider exposes one of two endpoint shapes:
+Operator configuration is credentials-only:
 
-| Shape | When to use | Required env vars |
+| Profile | Required env vars | Runtime-owned policy |
 |---|---|---|
-| **OIDC** (`Google`, `Microsoft`) | IdP publishes `.well-known/openid-configuration` | `CLIENT_ID`, `CLIENT_SECRET`, `DISCOVERY_URL` |
-| **Manual** (`GitHub`) | No discovery doc OR operator pins endpoints | `CLIENT_ID`, `CLIENT_SECRET`, `AUTHORIZE_URL`, `TOKEN_URL`, `USERINFO_URL`, `SCOPES` (+ optional `VERIFIED_EMAILS_URL`, `JWKS_URL`) |
+| Google | `API_AUTH_OAUTH_GOOGLE_CLIENT_ID`, `API_AUTH_OAUTH_GOOGLE_CLIENT_SECRET` | Canonical Google discovery URL, pinned issuer, `openid email profile` scopes |
+| GitHub.com | `API_AUTH_OAUTH_GITHUB_CLIENT_ID`, `API_AUTH_OAUTH_GITHUB_CLIENT_SECRET` | Canonical GitHub.com authorize/token/user/emails URLs, `user:email` scope |
 
-All env vars are prefixed `API_AUTH_OAUTH_<UPPERCASE_PROVIDER>_*`.
-A provider is "declared" if its `CLIENT_ID` is set; if `DISCOVERY_URL`
-is also set the OIDC arm is chosen, otherwise Manual.
+Either credential variable declares the profile; an incomplete pair fails boot.
+Endpoint, scope, token-auth, JWKS, and insecure-localhost override variables are
+rejected even when empty, so stale deployment configuration cannot silently
+change the runtime profile.
+
+Every token request uses exactly one client-authentication method. GitHub.com
+uses its fixed `client_secret_post` profile. Google selects from
+`token_endpoint_auth_methods_supported`: `client_secret_basic` is preferred,
+`client_secret_post` is the fallback, and an omitted field uses the OIDC Basic
+default. For Basic, each credential component is first
+application/x-www-form-urlencoded, then joined with `:` and Base64-encoded per
+RFC 6749 section 2.3.1. Client credentials are never also placed in the form.
 
 ### `API_PUBLIC_URL`
 
@@ -199,8 +222,21 @@ The Plane-A OAuth flow derives `redirect_uri` from `API_PUBLIC_URL`
 `/api/v1` prefix matches the actual router mount point in
 `crates/api/src/domain/mod.rs`. Operators that need multiple callback
 URIs deploy multiple Nebula instances. Boot fails closed if
-`API_PUBLIC_URL` is empty / relative / scheme-less while any provider
-is declared (REQ-compose-001 Invariant 1).
+`API_PUBLIC_URL` is not a canonical external base URL while any provider is
+declared: it may contain a normalized reverse-proxy mount prefix such as
+`/nebula`, but never credentials, query, fragment, dot segments, encoded path
+separators, or ambiguous empty path segments. For example,
+`https://app.example.com/nebula` derives
+`https://app.example.com/nebula/api/v1/auth/oauth/{provider}/callback`.
+Release builds require HTTPS and reject localhost/loopback, while debug builds
+additionally permit HTTP localhost.
+
+The start and callback requests must arrive on that configured authority,
+including its effective port. Reverse proxies must preserve the public `Host`
+instead of rewriting it to an internal upstream name. OAuth transaction
+cookies are host-bound (web cookies are not port-bound), so a dedicated,
+trusted auth hostname is recommended when unrelated services otherwise share
+one hostname.
 
 ### Example: Google + GitHub side-by-side
 
@@ -208,60 +244,150 @@ is declared (REQ-compose-001 Invariant 1).
 # Required by all Plane-A OAuth flows.
 export API_PUBLIC_URL=https://app.example.com
 
-# Google — OIDC arm.
+# Google — canonical OIDC profile; endpoints/scopes are fixed by Nebula.
 export API_AUTH_OAUTH_GOOGLE_CLIENT_ID="..."
 export API_AUTH_OAUTH_GOOGLE_CLIENT_SECRET="..."
-export API_AUTH_OAUTH_GOOGLE_DISCOVERY_URL="https://accounts.google.com/.well-known/openid-configuration"
 
-# GitHub — Manual arm (no discovery doc; userinfo lacks email_verified
-# so verified_emails_url is required for the truth-table to pass).
+# GitHub.com — canonical endpoints and user:email scope are fixed by Nebula.
 export API_AUTH_OAUTH_GITHUB_CLIENT_ID="Iv1.xxxxxxxx"
 export API_AUTH_OAUTH_GITHUB_CLIENT_SECRET="..."
-export API_AUTH_OAUTH_GITHUB_AUTHORIZE_URL="https://github.com/login/oauth/authorize"
-export API_AUTH_OAUTH_GITHUB_TOKEN_URL="https://github.com/login/oauth/access_token"
-export API_AUTH_OAUTH_GITHUB_USERINFO_URL="https://api.github.com/user"
-export API_AUTH_OAUTH_GITHUB_VERIFIED_EMAILS_URL="https://api.github.com/user/emails"
-export API_AUTH_OAUTH_GITHUB_SCOPES="user:email"
 ```
 
 ### Flow
 
-1. Client `GET /api/v1/auth/oauth/{provider}` → server derives
-   `redirect_uri`, mints PKCE pair, persists `OAuthStateRow`,
-   returns the IdP `authorize_url` + opaque `state`.
+1. A same-site browser client `GET /api/v1/auth/oauth/{provider}` → server
+   derives `redirect_uri`, mints a PKCE pair, persists `OAuthStateRow`, sets a
+   per-flow `Secure; HttpOnly; SameSite=Lax; Path=/` `__Host-` transaction
+   cookie, and returns the IdP `authorize_url` + opaque `state`.
 2. Client redirects user's browser to `authorize_url`.
-3. IdP redirects back to `{redirect_uri}?state=...&code=...`.
-4. Client posts to `GET /api/v1/auth/oauth/{provider}/callback`.
-5. Server consumes the state row atomically, verifies `redirect_uri`
-   match, exchanges code at the IdP token endpoint, fetches
-   userinfo (+ verified emails for GitHub), applies the
-   REQ-oauth-004/-005/-006 truth table, mints a Nebula session.
+3. IdP redirects back with `state` and exactly one bounded `code` or `error`.
+4. The user's browser follows the IdP redirect to
+   `GET /api/v1/auth/oauth/{provider}/callback`, carrying that one transaction
+   cookie. Missing, duplicate, swapped, or malformed bindings fail before the
+   backend sees the state or code.
+5. After the exact browser binding is accepted, the server clears its cookie
+   on every terminal backend outcome and atomically consumes the live matching
+   `(state, provider, redirect_uri)` row. A later upstream failure does not
+   resurrect that state. For a code callback, token exchange and primary
+   identity verification run without database locks under one 30-second
+   callback-network deadline. An existing subject link may be finalized
+   immediately; otherwise optional verified-email egress uses the same original
+   deadline before a short finalizer atomically commits user/link/session.
+6. A valid provider-error callback consumes the matching state without token or
+   userinfo egress and returns a fixed 401. Provider `error`,
+   `error_description`, and `error_uri` text is ignored and never logged.
+7. If the provider identity is valid but a first-link flow has no
+   policy-acceptable verified email, the callback returns 403
+   `EmailNotVerified` and writes no link/session. Transport failures, non-success
+   responses, or malformed provider identity payloads remain fixed 502 failures.
+8. If a verified email already belongs to an account but the provider subject
+   is not linked, finalization rolls back with 409 `AccountLinkRequired`; email
+   possession never auto-links and no session is created.
+9. If the authoritative linked user has MFA enabled, finalization atomically
+   records an opaque, single-use MFA challenge and returns 202. No session row,
+   session cookie, or CSRF cookie is created until the caller completes
+   `POST /api/v1/auth/login/mfa`.
+
+Clients that do not use a browser cookie jar must preserve the start response's
+`Set-Cookie` value and present it only on the matching callback. A request that
+already carries eight names with the Nebula OAuth transaction-cookie prefix
+receives 429 before a new server-side state is created. This is a request-local
+Cookie-header bound; it is not a globally atomic browser quota. Cross-site
+subresource login starts are deliberately unsupported by this Lax cookie
+contract; deploy the UI and API same-site or initiate through the canonical
+site. Independent flows use independent cookie names and may complete in any
+order.
+
+Separately, OAuth-state admission has a hard global bound of 10,000 live rows
+per process (Memory) or shared PostgreSQL deployment. Capacity check and insert
+are one fail-closed admission operation: a full or contended gate returns 429
+without issuing state, PKCE material, or a transaction cookie.
 
 ### Security posture (REQ-obs-001)
 
-- **Anti-SSRF**: every server-side OAuth HTTP URL passes
-  `validate_oauth_outbound_url` (HTTPS-only; rejects loopback /
-  private / link-local / multicast). Browser-fetched authorize URLs
-  use the flag-aware `validate_oauth_authorize_url` which accepts
-  `http://localhost` only when `oauth_allow_insecure_localhost` is
-  set AND the binary is built with debug assertions (dev mode).
-- **Body caps**: token endpoint and userinfo / verified-emails GETs
-  are capped at 256 KiB so a hostile IdP cannot DoS via unbounded
-  responses.
-- **Discovery cache**: process-wide; key includes the
-  `oauth_allow_insecure_localhost` flag so flag=true and flag=false
-  callers never share a cache entry.
-- **Tokens discarded**: per D-7, access / id / refresh tokens are
-  dropped after the userinfo lookup; only the
-  `(provider, subject) → user_id` link and the minted Nebula session
-  are persisted.
-- **id_token JWKS signature validation**: deferred to 1.1 per D-16.
-  Userinfo response is authoritative for `(email, sub)`. The TLS
-  trust chain to the IdP is the integrity boundary.
-- **Account-takeover defense**: a user whose Nebula `email_verified`
-  is `false` cannot link an OAuth identity even if the IdP attests
-  `email_verified = true` (Scenario 5.2). The unverified user must
-  complete email verification through the password flow first.
+- **One opaque owner**: `ApiConfig` temporarily owns parsed `SecretString`
+  credentials during load-time validation. `apps/server` moves that map into
+  `OAuthIdentityRuntime::from_config`; afterward the runtime is the sole
+  long-lived owner of credentials, fixed profiles, HTTP/DNS policy, Google
+  discovery state, outbound concurrency, and network-deadline policy. The
+  router config retains an empty OAuth map, and the selected backend receives
+  the same opaque `Arc`, never raw configuration, duplicate secrets, or a
+  replaceable client. An empty map constructs neither runtime nor HTTP client.
+- **Connect-time SSRF protection**: all server-fetched endpoints use the fixed
+  rustls client with HTTPS-only mode and redirects, retries, proxy discovery,
+  referer emission, and connection-verbose logging disabled. Literal IPs and
+  DNS names share one policy. DNS must return 1–32 addresses and every answer
+  must be globally routable; an empty, oversized, private, special-use, or
+  mixed global/non-global answer set is rejected. Reqwest receives only the
+  exact validated socket addresses, so it cannot perform a second unguarded
+  resolution. The two production authorization profiles are HTTPS-only; a
+  private test-only constructor can admit an explicit debug localhost fixture
+  without creating a production configuration escape hatch.
+- **Unambiguous token authentication**: every exchange emits exactly one
+  provider client-authentication method, never credentials in both the Basic
+  header and form body. GitHub.com uses fixed `client_secret_post`; Google
+  prefers discovered `client_secret_basic`, falls back to
+  `client_secret_post`, applies the OIDC Basic default when metadata omits the
+  field, and fails closed on unsupported-only metadata. The Basic path
+  form-encodes each credential component before the colon/Base64 step.
+- **Browser-bound state**: PKCE and globally stored state are not treated as a
+  browser-session binding. Each start creates a versioned, provider/state-bound
+  `__Host-` transaction cookie; callback validation happens before state
+  consumption or provider egress, compares the exact cookie value, rejects
+  duplicate-name shadowing, and clears an accepted binding on every terminal
+  backend outcome. A request carrying eight recognized cookie names cannot
+  create another flow; concurrent responses may temporarily exceed that
+  request-local browser bound. The separate global state-admission gate is hard:
+  at most 10,000 live rows per Memory process or shared PostgreSQL deployment,
+  with full/contended admission returning 429 before state creation.
+- **Bounded secret lifetime**: every discovery, token, userinfo, and verified-
+  email response is read into a preallocated, zeroizing buffer capped at 256
+  KiB. Provider JSON is parsed into owned values and the raw body is dropped
+  immediately. The access token remains inside a non-cloneable, non-debuggable
+  capability until the optional verified-email lookup consumes it; only the
+  normalized Nebula user, `(provider, subject) → user_id` link, and Nebula
+  session are persisted. Provider access, ID, and refresh tokens are not.
+- **Runtime-local discovery**: the fixed Google profile has one
+  cache/singleflight slot (one-hour success TTL, five-second failure cooldown).
+  Followers wait for the leader before acquiring an outbound permit, so a cold
+  profile cannot multiply egress pressure. GitHub.com uses reviewed fixed URLs
+  and performs no discovery.
+- **One callback-network budget**: one 30-second absolute deadline is created
+  after atomic state consumption and reused across Google discovery/admission,
+  DNS, token exchange, userinfo, and optional verified-email lookup. Finalizer
+  calls are short storage operations outside that timeout and never hold locks
+  across provider egress.
+- **Secret-free diagnostics**: internal OAuth failures use a closed,
+  low-cardinality code set and map to fixed RFC 9457 responses. Global request
+  spans record only HTTP method plus the matched route template (or the fixed
+  `<unmatched>` marker), never the raw URI/query; inbound W3C parent context is
+  preserved. Callback `code` and `state` are redacted from `Debug` output.
+- **Google direct-TLS ID-token validation**: Google requires an ID token and
+  validates compact/header shape, `RS256`, pinned issuer, exact audience/`azp`,
+  bounded `exp`/`iat`, nonce, `at_hash`, and equality between ID-token and
+  userinfo subjects. Local cryptographic signature verification against JWKS is
+  explicitly deferred: the discovered JWKS URL is policy-validated but not
+  fetched, and signature bytes are syntax/size checked only. Thus not all
+  ID-token or issuer validation is deferred; TLS to the fixed token endpoint is
+  the authenticity boundary for this increment.
+- **Verified-email outcome boundary**: once a stable provider subject is valid,
+  absence of a policy-acceptable verified email for a first link is a semantic
+  403 `EmailNotVerified`, not a provider outage. It creates no link or session.
+  Network/non-success responses and malformed provider identity payloads remain
+  fixed 502 upstream failures; provider-controlled detail never crosses the
+  RFC 9457 boundary.
+- **No email auto-link**: an existing `(provider, subject)` link is
+  authoritative. An unused verified email may create a new OAuth-only account;
+  an email owned by any existing account produces 409 `AccountLinkRequired`,
+  rolls back the finalizer, and creates no session. Linking requires a separate
+  authenticated capability.
+- **MFA-preserving OAuth**: an authoritative linked user with MFA enabled gets
+  202 plus an opaque challenge. The finalizer records the challenge and
+  MFA-required outcome atomically and creates no session/CSRF material; only
+  `/auth/login/mfa` may consume it and mint the session.
+- **Provider denial**: a provider-error callback with a valid browser binding
+  atomically cancels the state, performs no egress, clears the accepted cookie,
+  and returns a fixed 401. Provider-controlled error text is ignored.
 - **Observability**: `nebula_api_auth_oauth_attempts_total` carries
   closed-set `outcome` + `provider` labels;
   `nebula_api_auth_duration_seconds` histogram keyed by `outcome`
@@ -294,7 +420,8 @@ a review-time catch.
 - `operation_ids_are_unique` — every handler function name is observed
   exactly once across the spec.
 - `all_refs_resolve_to_declared_components` — recursive `$ref` walk.
-- `security_schemes_match_adr_0047` — `bearer` / `api_key` / `csrf`.
+- `security_schemes_match_adr_0047` — `bearer` / `api_key` /
+  `session_cookie` / `csrf`.
 - `drift_smoke_known_paths_are_present` — load-bearing paths inventory.
 - `served_spec_round_trips_through_oas3_parser` — strict 3.1 parse.
 
@@ -326,26 +453,26 @@ both directions (every deprecated operation has a 501 response; every
 stub module reaches the handler at runtime returning 500/501) so a
 silently-shipped endpoint cannot pass review.
 
-### `me/*` durability (canon §11.6 / §11.5)
+### `me/*` and Plane-A auth durability (canon §11.6 / §11.5)
 
-The `me/*` profile + PAT endpoints (`get_me`, `update_me`,
-`list_my_tokens`, `create_token`, `delete_token`) are **implemented and
-work end-to-end**, but the only wired `AuthBackend` is the in-memory
-one (`InMemoryAuthBackend`) — there is no storage-backed `AuthBackend`
-impl, and (unlike idempotency) no feature-gated PG path, because
-`nebula_storage` ships no `UserRepo` / `PatRepo` / `SessionRepo`.
+The profile, PAT, password, MFA, session, and Plane-A OAuth paths are implemented
+for both selectable identity backends. `API_AUTH_BACKEND` defaults to `memory`;
+`postgres` is available when `nebula-server` is built with the `postgres` feature
+and `DATABASE_URL` is reachable. An explicitly requested Postgres backend fails
+closed instead of silently falling back to memory.
 
-| Aspect | `me/*` (in-memory `AuthBackend`) |
-|---|---|
-| Restart-survival | **No** — profiles, PATs, sessions are lost on restart |
-| Multi-replica share | **No** — state is process-local; a PAT minted on one instance is invisible to others |
+| Backend | Restart-survival | Multi-replica share | Intended use |
+|---|---|---|---|
+| `memory` | **No** | **No** | Local development and tests |
+| `postgres` | **Yes** | **Yes**, for replicas using the same database | Durable production identity |
 
-> **Operator warning:** a personal access token created via
-> `POST /api/v1/me/tokens` stops authenticating the moment the process
-> exits and is not shared across replicas. This is the same local-first
-> caveat the `memory` idempotency backend carries (see *Store-backend
-> tradeoffs* below) — the gap is strictly persistence, not capability.
-> It closes when a storage-backed `AuthBackend` lands.
+The Postgres implementation persists users, sessions, PATs, verification tokens,
+OAuth state, and external identity links. OAuth state is consumed atomically
+with provider and expiry predicates; an expired-state cleanup is also attempted
+when a new flow starts. This identity
+backend does not imply tenant-directory or membership policy: the default server composition
+leaves both `WorkspaceResolver` and org membership unwired. Supported operator-supplied
+directory and `MembershipStore` paths remain K4 work.
 
 ### Credential CRUD durability (canon §11.6 / §12.5)
 
@@ -353,30 +480,46 @@ Every credential operation — CRUD (`create` / `get` / `update` /
 `delete` / `list`), lifecycle (`test` / `refresh` / `revoke`), and
 acquisition (`resolve` / `resolve/continue`) under
 `…/workspaces/{ws}/credentials` — routes through the
-**`CredentialService` facade** (ADR-0088 D7), composed by the server at
-startup (`ports::credential_service_factory`). The facade owns the
-layered store (`Audit(Cache(Encryption(in-memory)))`), runs the typed
-validate→resolve pipeline on `data`, and owner-checks every operation.
-The OAuth2 callback persists through the **same** store handle, so an
-OAuth-acquired credential is visible to `get`/`list` (flagged
-`reauth_required` until the exchange completes). When no service is
-wired, every credential endpoint returns an honest 503 — there is no
-raw-store fallback.
+API-owned object-safe **`CredentialCommandGateway`**. Middleware supplies a private-field
+`AuthenticatedPrincipal` and the resolved request `Scope`; handlers submit public intent only.
+The first-party adapter in `apps/server` maps those claims into the credential-owned
+`CredentialController`, which obtains exactly one decision from its injected
+`CredentialTenantAuthority` before deriving an owner partition or calling `CredentialService`.
+That authority re-reads one consistent role snapshot from the same `MembershipStore` used by HTTP
+RBAC, maps the command to
+`CredentialRead` / `CredentialWrite` / `CredentialDelete`, and fails unavailable when the policy
+source is unwired or unreadable. A valid snapshot without organization membership denies the
+command; the route's Access Kernel guard separately enforces the authenticated token grant.
+Production key, persistence, catalog, refresh, and authority adapters live in `apps/server`.
+`ports::credential_service_factory` is compiled only as an unsupported `test-util` fixture. The
+service runs the typed validate→resolve pipeline and persists only through owner-bound
+`CredentialPersistence`.
+Handlers do not run a competing `CredentialSchemaPort` precheck: that port serves catalog/form
+schema reads only. Its absence does not block create/update/resolve or produce a mutation 503;
+authorized service validation is the single mutation authority.
+The universal `resolve` / `resolve/continue` endpoints are the only
+credential-acquisition HTTP contract. The former raw Plane-B
+`credentials/{id}/oauth2/{auth,callback}` ceremony is parked and returns
+404; provider-specific interaction must be represented through the
+facade's typed pending interaction before it can become a supported
+surface. Accordingly, the default registry/catalog does not register or
+advertise `oauth2`; attempts to create or resolve that key fail as an unknown
+credential type. When no command gateway is wired, every credential endpoint returns an honest
+503 — there is no service/store fallback.
 
-| Aspect | Credential operations (facade, in-memory backend) |
+| Aspect | First-party credential storage composition (after membership authority is provisioned) |
 |---|---|
-| Restart-survival | **No** — the facade's backend is in-memory; credentials are lost on restart |
-| Multi-replica share | **No** — state is process-local |
+| Restart-survival | **Yes for completed credentials** — `NEBULA_CRED_DB` selects the default file-backed SQLite store or PostgreSQL; in-flight pending interactions remain ephemeral |
+| Multi-replica share | **Yes with PostgreSQL** — build `nebula-server` with `--features postgres` and set `NEBULA_CRED_DB=postgres://…`; the credential rows and refresh-claim repository share one admitted credential-owned pool. SQLite remains instance-local. |
 | Encryption at rest | **Yes** — the facade composes the `EncryptionLayer` adjacent to the backend (AES-256-GCM; key from `NEBULA_CRED_MASTER_KEY`, fail-closed) |
-| Cross-workspace isolation | **Yes** — the facade owner-checks every operation against the canonical `Scope::credential_owner_id`; cross-workspace ids collapse to a flat 404 |
-| Lifecycle dispatch | **Live** — `test`/`refresh`/`revoke` dispatch the registered type's capability; a type without it is refused with 400 (capability gate), never a faked success |
+| Cross-workspace isolation | **Yes once policy is provisioned** — authority verifies workspace existence/parentage, revalidates membership/role, reproduces the authenticated scope, and every persistence predicate uses the derived `(owner, credential_id)` selector; cross-workspace IDs collapse to a flat 404. The default server has no workspace-directory or membership source and returns 503 before this path. |
+| Lifecycle dispatch | **Live** — `test`/`refresh`/`revoke` dispatch the registered type's capability; a type without it is refused with 400 (capability gate), never a faked success. Provider rejection requiring an integration reconnect is the typed 409 `API:CREDENTIAL_REAUTH_REQUIRED`, not Plane-A 401. The test response is a tagged `status` union: success has no code; failure requires a frozen v1, payload-free code, and future core codes map to `other`. |
 
-> **Operator warning:** a credential created via `POST …/credentials`
-> stops resolving the moment the process exits and is not shared across
-> replicas — the facade's backend is in-memory (encrypted at rest, not
-> durable). Same local-first caveat as `me/*` and the `memory`
-> idempotency backend; it closes when a durable credential backend is
-> swapped in behind the facade's erased store.
+> **Operator warning:** completed credentials survive a normal process restart.
+> The default SQLite database is not shared across replicas; use the explicit
+> PostgreSQL `NEBULA_CRED_DB` profile for multi-replica credential and refresh
+> coordination. Pending acquisition state is still process-local and expires
+> after at most ten minutes; an interrupted interactive flow must be restarted.
 >
 > The tenancy path resolver special-cases the literal `resolve`
 > sub-route, so `resolve` / `resolve/continue` are **not** shadowed by
@@ -392,19 +535,22 @@ end-to-end** (`crates/api/tests/org_e2e.rs`) against the in-memory
 `MembershipStore` (`nebula_api::domain::org::InMemoryMembershipStore`) —
 the **single shared store** `rbac_middleware` also consults, so an
 `add_member` is immediately visible to the next RBAC check (no
-propagation window). There is no storage-backed alternative
-(`nebula_storage` ships no membership repo); the in-memory impl *is*
-the §4.5-honest backing, exactly as `InMemoryAuthBackend` is for
-`me/*` identity and `InMemoryControlQueueRepo` is for the durable
-control plane.
+propagation window). `nebula-storage-port` has a generic row-level membership
+store with backend implementations, but no adapter currently satisfies this
+API port's consistent authorization snapshot and atomic guarded-mutation
+contract. It must not be wired directly as request authority. The in-memory
+implementation is the §4.5-honest reference backing, with the same
+restart/replica limits as `API_AUTH_BACKEND=memory`; unlike Plane-A identity,
+the API policy port has no selectable PostgreSQL implementation yet.
 
 **The default `nebula-server` binary does NOT auto-wire a
-`MembershipStore`.** It is an **explicitly-provisioned** feature — the
-same posture as Postgres-for-durable-idempotency (provision the
-production path; never silently fake it). Rationale: wiring a
-`MembershipStore` activates RBAC enforcement on every org/workspace
-route (`rbac_middleware`'s `is_some()` guard → a caller with no org
-role is 404'd). The default `AuthBackend` is an *empty*
+`MembershipStore`.** The current in-memory seam is an internal/reference
+composition capability, not a supported operator deployment path; that path remains K4 work.
+This is the same fail-honest posture as other unavailable capabilities: never silently fake
+policy. Rationale: wiring a
+`MembershipStore` is required by RBAC on every org/workspace route and by
+credential command authority (a caller with no org role is 404'd once the
+store is provisioned). The default `AuthBackend` is an *empty*
 `InMemoryAuthBackend` (no users; `register_user` mints a **random**
 `UserId`), so **no principal could authenticate as any auto-seeded
 bootstrap owner** — an auto-seeded store would 404-deadlock every
@@ -415,20 +561,21 @@ than honest degradation.
 
 | Aspect | Org membership (in-memory `MembershipStore`) |
 |---|---|
-| Default binary | **Unwired (`None`)** — org member endpoints return an honest **503** (port-absent), RBAC stays inert (no spurious 404 on any route) |
+| Default binary | **Unwired (`None`)** — every org/workspace route returns an honest **503** before its handler; credential authority also fails unavailable |
 | Restart-survival | **No** — memberships are lost on restart (once provisioned) |
 | Multi-replica share | **No** — state is process-local |
-| Provisioning | An operator/integrator wires `AppState::with_membership_store(...)` **and** registers the same bootstrap-owner identity in the wired `AuthBackend` so it can authenticate. `nebula_api::domain::org::InMemoryMembershipStore::seeded_bootstrap(org_id, owner_id)` is the documented constructor (fail-closed on a malformed id) |
+| Provisioning | Internal tests/reference composition may wire `AppState::with_membership_store(...)` and register the same bootstrap-owner identity in the wired `AuthBackend`. `InMemoryMembershipStore::seeded_bootstrap` is a technical helper, not a supported integration surface. The default binary has no operator configuration; supported deployment composition remains K4 work. |
 
 > **Operator warning:** in the default binary, `GET`/`POST`/`DELETE
 > `…/orgs/{org}/members` (and `GET /me/orgs` / `orgs_count`) return
-> **503** until you provision a `MembershipStore`. This is honest
-> degradation, **not** a bug — it deliberately avoids both an RBAC
-> deadlock (404 on every org/workspace route) and a default admin
-> credential. To enable: wire `with_membership_store(...)` with a
+> **503** until composition provides a `MembershipStore`. This is honest
+> degradation: it deliberately avoids a default admin credential and never
+> treats missing policy state as access. Internal/reference API composition can
+> exercise the seam by wiring `with_membership_store(...)` with a
 > bootstrap owner that is **also** a registered, authenticatable
-> principal in your `AuthBackend`. Once provisioned, wiring a
-> `MembershipStore` **activates RBAC enforcement** on every
+> principal in its `AuthBackend`; this is not a supported downstream deployment
+> recipe. Once provisioned, RBAC applies role
+> enforcement on every
 > `/orgs/{org}/...` and `/orgs/{org}/workspaces/{ws}/...` route — a
 > caller with no role in the resolved org is `404`'d *before* the
 > handler (enumeration prevention); the bootstrap owner grants further
@@ -454,14 +601,24 @@ locally, run any test that calls `nebula_api::build_app` — for example
 
 ### CSRF (M3.1)
 
-State-changing endpoints reached over a cookie-bearing authentication
-method (session cookie, JWT) are gated by `csrf_middleware`
+State-changing endpoints authenticated by the host-bound session cookie are
+gated by `csrf_middleware`
 (`crates/api/src/middleware/csrf.rs`). The double-submit-cookie pattern:
 
-- On login the API issues two cookies: `nebula_session` (HttpOnly) and
-  `nebula_csrf` (readable by the SPA, `SameSite=Lax`, `Secure`).
+- On login the API issues two host-bound cookies:
+  `__Host-nebula-session` (HttpOnly) and `__Host-nebula-csrf` (readable by
+  the SPA). Both are `Secure`, `SameSite=Lax`, `Path=/`, carry no `Domain`,
+  and share the backend's 14-day session lifetime. The fixed policy is
+  deliberate: Nebula no longer advertises cookie knobs the runtime ignores.
 - Every state-changing request (`POST`/`PUT`/`PATCH`/`DELETE`) must echo
-  the `nebula_csrf` value back in an `X-CSRF-Token` request header.
+  the `__Host-nebula-csrf` value back in an `X-CSRF-Token` request header.
+- `X-CSRF-Token` is part of the canonical CORS allow-header policy, so an
+  origin explicitly admitted with credentialed CORS can complete preflight.
+- The session-cookie lane is intentionally **schemeful same-site only**.
+  Allowing an origin through CORS does not override `SameSite=Lax`; a truly
+  cross-site SPA will not receive ambient session authority and must use an
+  explicit Bearer credential. Deploy the browser UI and API under the same
+  site when cookie sessions are required.
 - The middleware rejects the request with `403 Forbidden` when the
   header is missing or does not byte-match the cookie.
 
@@ -469,21 +626,22 @@ method (session cookie, JWT) are gated by `csrf_middleware`
 
 | Route group | Method gate | CSRF | Rationale |
 |---|---|---|---|
-| `/api/v1/me/*` | `POST`/`PUT`/`PATCH`/`DELETE` | **enforced** | session/JWT auth + state-changing |
-| `/api/v1/orgs/{org}/workspaces/{ws}/credentials/*` | `POST`/`PUT`/`PATCH`/`DELETE` | **enforced** | session/JWT auth + state-changing |
-| `/api/v1/orgs/{org}/*` (tenant-scoped) | `POST`/`PUT`/`PATCH`/`DELETE` | **enforced** | session/JWT auth + state-changing |
-| `/api/v1/auth/mfa/enroll` | `POST` | **enforced** | session-bearing |
-| `/api/v1/auth/mfa/verify` | `POST` | **enforced** | session-bearing (enrollment confirm) |
+| `/api/v1/me/*` | `POST`/`PUT`/`PATCH`/`DELETE` | **enforced for session auth** | ambient session cookie + state-changing |
+| `/api/v1/orgs/{org}/workspaces/{ws}/credentials/*` | `POST`/`PUT`/`PATCH`/`DELETE` | **enforced for session auth** | ambient session cookie + state-changing |
+| `/api/v1/orgs/{org}/*` (tenant-scoped) | `POST`/`PUT`/`PATCH`/`DELETE` | **enforced for session auth** | ambient session cookie + state-changing |
+| `/api/v1/auth/mfa/enroll` | `POST` | **enforced** | requires a session created by primary authentication within the 10-minute freshness window, plus matching CSRF proof |
+| `/api/v1/auth/mfa/verify` | `POST` | **enforced** | same fresh-session + CSRF authority; confirms the pending enrollment |
 | `/api/v1/auth/login/mfa` | `POST` | **exempt by construction** | cookie-less second-factor login completion; `challenge_token` is the sole authority |
-| `/api/v1/auth/logout` | `POST` | **exempt by deliberate choice** | revokes `nebula_session` when present; a CSRF attack can only force a sign-out (annoying, not a confidentiality / integrity breach). Keeps logout reachable when the CSRF cookie has drifted / been cleared. |
-| `/api/v1/auth/{signup,login,forgot-password,reset-password,verify-email,oauth/*}` | `POST`/`GET` | **exempt by construction** | request does not carry a pre-existing session cookie |
-| Any request authenticating via PAT (`pat_…`) or `X-API-Key` | any | **exempt by construction** | no cookie ⇒ no CSRF risk; verified inside `csrf_middleware` by reading the `AuthContext::auth_method` extension |
+| `/api/v1/auth/logout` | `POST` | **exempt by deliberate choice** | revokes `__Host-nebula-session` when present; a CSRF attack can only force a sign-out (annoying, not a confidentiality / integrity breach). Keeps logout reachable when the CSRF cookie has drifted / been cleared. |
+| `/api/v1/auth/{signup,login,forgot-password,reset-password,verify-email,oauth/*}` | `POST`/`GET` | **exempt by construction** | these routes never authorize from an ambient session; their explicit input/challenge is the sole authority |
+| Any request authenticating via JWT/PAT `Authorization: Bearer …` or `X-API-Key` | any | **exempt by construction** | explicit header authority is not ambient browser authority; verified inside `csrf_middleware` from `AuthContext::auth_method` |
 
 **Middleware order** — `auth_middleware` MUST be layered before
 `csrf_middleware`. The latter reads the `AuthContext` extension that the
-former installs to know whether to skip the gate for PAT/ApiKey callers.
-The Plane-B credential routes wire the pair explicitly in
-`crates/api/src/domain/mod.rs` (`auth_middleware` then `csrf_middleware`).
+former installs to know whether to skip the gate for JWT/PAT/API-key callers.
+The Plane-B credential CRUD/lifecycle/acquisition routes are part of the
+tenant router, which wires the pair in `crates/api/src/domain/mod.rs`
+(`auth_middleware` then `csrf_middleware`).
 
 **Header contract** — callers send the matching token as
 `X-CSRF-Token: <value>`. The middleware compares header against cookie
@@ -491,14 +649,71 @@ byte-for-byte; partial matches and case-normalised matches are rejected.
 Missing header **or** missing cookie yields `403 "CSRF token missing"`;
 mismatch yields `403 "CSRF token mismatch"`.
 
+**Credential precedence** — explicit credentials are evaluated before the
+ambient session cookie: `Authorization: Bearer …`, then `X-API-Key`, then
+`__Host-nebula-session`. A present but malformed, expired, unknown, or duplicate
+explicit credential fails with 401 and never falls back to a valid cookie. This
+makes SDK/CLI behavior deterministic and prevents credential-confusion or
+downgrade. Supplying both `Authorization` and `X-API-Key` is ambiguous and also
+fails with 401. Duplicate session-cookie names and duplicate/empty CSRF authority
+are rejected rather than accepting an arbitrary first value.
+
+OpenAPI publishes the same alternatives: `bearer` (JWT or PAT), `api_key`, and
+`session_cookie`; mutating cookie-auth operations require `session_cookie` and
+`csrf` together in one security requirement. MFA enrollment/confirmation expose
+only the fresh `session_cookie` + `csrf` lane.
+
+### Cache policy for authority-bearing responses
+
+The complete auth and MFA routers, PAT and service-account creation, webhook
+registration, and interactive credential `resolve` / `resolve/continue` routes
+are wrapped in `no_store_authority_response`. That route-level boundary applies
+to successes and errors and overwrites weaker handler policy with
+`Cache-Control: no-store`, `Pragma: no-cache`, and
+`Referrer-Policy: no-referrer`. Keep the middleware on the whole sensitive
+route subtree when adding a new branch; a per-handler header is not an
+equivalent invariant because early extractor and routing failures would bypass
+it.
+
+This cache policy and the idempotency replay allow-list are independent
+defenses. Authority-bearing routes are absent from replay admission, while the
+response headers also veto storage if an approved route's response contract
+later changes.
+
+### MFA enrollment authority
+
+MFA enrollment is a replacement protocol, not an in-place edit. `enroll`
+creates or replaces one candidate with a ten-minute lifetime and returns its QR
+material once; it does not change the active seed or `mfa_enabled`, including
+when the account already has MFA. A wrong code leaves the live candidate
+available for a corrected attempt. `verify` promotes only a live candidate;
+success consumes it atomically, while expiry, replay, replacement, and a losing
+concurrent confirmation fail closed without modifying the active factor.
+
+The Memory backend serializes candidate installation process-locally. The
+PostgreSQL backend persists candidates separately from `users` and owns the
+consume-plus-active-update transaction. At the storage boundary candidate
+secret material is an opaque envelope, so encryption/key rotation can evolve
+without exposing a base32/plaintext contract to persistence.
+
 ### Idempotency-Key (M3.4 / ADR-0048)
 
-Every state-changing endpoint reachable from `build_app` is replay-protected
-through the `IdempotencyLayer` middleware. Clients opt in by sending an
-`Idempotency-Key` header on a `POST` request — the middleware caches the
-first response (status + body + filtered headers) keyed by
+`IdempotencyLayer::new` starts with an empty allow-list. First-party
+composition currently opts in only internal `_test` fixtures; product routes
+pass through normally even if a client sends `Idempotency-Key`.
+
+For an approved route, clients opt in by sending an `Idempotency-Key` header on
+a `POST` request. After the middleware successfully caches a completed response
+(status + body + filtered headers) keyed by
 `(method, path, key, identity-fingerprint, body-fingerprint)` and replays
 it byte-for-byte on subsequent requests within the configured TTL.
+
+This is completed-response caching, not an at-most-once execution guarantee.
+Concurrent misses can both invoke the handler, and a completed mutation can run
+again when its response was not stored. Product mutations must not rely on this
+middleware for retry safety. They remain outside the allow-list until a durable
+atomic pending/terminal operation ledger owns in-flight coordination and
+reconciliation.
 
 **Protocol contract** — the IETF draft
 [`draft-ietf-httpapi-idempotency-key`](https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key/)
@@ -510,6 +725,8 @@ governs header semantics. Highlights:
   `application/problem+json`.
 - `5xx` responses are passed through uncached so transient backend failures
   do not pin a permanent error for the TTL window.
+- Responses carrying `Set-Cookie` or `Cache-Control: no-store` are returned
+  without buffering, persistence, or replay even on an approved route.
 
 **Environment variables** (defaults applied by `ApiConfig::from_env`):
 
@@ -526,13 +743,13 @@ governs header semantics. Highlights:
 
 | Backend | When | Restart-survival | Multi-replica share |
 |---|---|---|---|
-| `memory` | Dev / single-process tests / one-replica deployments | No — state lost on restart | No — process-local |
-| `postgres` | Production deployments (≥ 2 replicas, or restart-tolerance required) | Yes — table survives restart | Yes — same `DATABASE_URL` shared |
+| `memory` | Dev / single-process tests | No — state lost on restart | No — process-local |
+| `postgres` | Durable completed-response caching across replicas or restarts | Yes — table survives restart | Yes — same `DATABASE_URL` shared |
 
 > **Operator warning:** selecting `memory` outside `NEBULA_ENV=development`
-> emits a startup `tracing::warn!` — dedup state is lost on restart and
-> across runners. The §M3 1.0 closure criterion requires `postgres` for
-> production.
+> emits a startup `tracing::warn!` because cached responses are lost on restart
+> and across runners. `postgres` makes completed responses durable; neither
+> backend supplies an in-flight claim or at-most-once mutation execution.
 
 The `postgres` backend is gated behind the `nebula-api/postgres` cargo
 feature so default builds remain lightweight. Selecting
@@ -552,8 +769,9 @@ type evolution.
 - Not a storage driver — no SQL or schema knowledge; see `nebula-storage`.
 - Not a workflow engine — no execution logic; see `nebula-engine` / `nebula-runtime`.
 - Not an expression evaluator — see `nebula-expression`.
-- Not an outbound HTTP client — webhook *delivery* outbound lives in action
-plugins, not here. This module handles inbound receipt only.
+- Not a general-purpose outbound HTTP client — the only API-owned egress is the
+  private, fixed-policy Plane-A OAuth runtime. Webhook *delivery* and integration
+  HTTP clients live in action/resource plugins, not here.
 - WebSocket / SSE for real-time execution updates — not yet wired end-to-end
 (§4.5: hidden until the engine side exists).
 
@@ -596,7 +814,7 @@ src/
 │   ├── mod.rs          # ApiConfig re-exports
 │   ├── jwt.rs          # JwtSecret (32-byte min enforcement)
 │   ├── errors.rs       # ConfigError
-│   ├── sub.rs          # TlsConfig, CookieConfig, CorsConfig, VersioningConfig, PaginationConfig
+│   ├── sub.rs          # TlsConfig, CorsConfig, VersioningConfig, PaginationConfig
 │   └── env.rs          # ApiConfig::from_env loader
 ├── error/              # Was 759-line errors.rs — split into:
 │   ├── mod.rs          # ApiError (§12.4 seam, #[non_exhaustive])
@@ -675,16 +893,17 @@ src/
 │       └── dto.rs
 └── transport/          # Protocol transports (was services/ — NOT business services)
     ├── mod.rs
-    ├── credential.rs   # Plane-B credential CRUD stubs (Phase 4 will implement)
-    ├── oauth/          # OAuth2 flow transport
-    │   ├── mod.rs
-    │   ├── flow.rs
-    │   ├── http.rs
-    │   └── state.rs
+    ├── credential.rs   # Plane-B facade: CRUD, lifecycle, resolve/continue
+    ├── oauth/          # Private Plane-A identity OAuth runtime
+    │   ├── mod.rs      # Visibility boundary; narrow root composition exports
+    │   ├── egress.rs   # Fixed rustls/DNS/admission/body-limit policy
+    │   ├── error.rs    # Closed internal failures + secret-free build error
+    │   └── runtime.rs  # Opaque config/cache/singleflight/deadline owner
     └── webhook/        # Inbound trigger transport (§11.3 / §13.4)
         ├── mod.rs
         ├── transport.rs  # WebhookTransport — activate/deactivate/router
         ├── bootstrap.rs  # bootstrap_webhook_activations, WebhookSecretResolver
+        ├── signing_secret.rs # private registration-time whsec generation
         ├── dispatch.rs   # dispatch_inner pipeline
         ├── events.rs     # TriggerLifecycleEvent + subscriber
         ├── provider.rs   # EndpointProviderImpl
@@ -765,16 +984,16 @@ above for the enforcement guarantee.
 | `GET`    | `/ready`                                                                  | Readiness check (verifies dependencies)                                    |
 | `GET`    | `/version`                                                                | Version info                                                               |
 | `POST`   | `/api/v1/auth/signup`                                                     | Account registration                                                       |
-| `POST`   | `/api/v1/auth/login`                                                      | Session login                                                              |
+| `POST`   | `/api/v1/auth/login`                                                      | Password login: 200 mints a session; MFA-required returns 202 challenge with no session/CSRF |
 | `POST`   | `/api/v1/auth/logout`                                                     | Session logout                                                             |
 | `POST`   | `/api/v1/auth/forgot-password`                                            | Initiate password reset                                                    |
 | `POST`   | `/api/v1/auth/reset-password`                                             | Complete password reset                                                    |
 | `POST`   | `/api/v1/auth/verify-email`                                               | Verify email address                                                       |
 | `POST`   | `/api/v1/auth/mfa/enroll`                                                 | Enrol a MFA device (session + CSRF)                                        |
 | `POST`   | `/api/v1/auth/mfa/verify`                                                 | Confirm MFA enrollment (session + CSRF)                                    |
-| `POST`   | `/api/v1/auth/login/mfa`                                                  | Complete second-factor login (cookie-less, CSRF-exempt)                    |
+| `POST`   | `/api/v1/auth/login/mfa`                                                  | Consume an opaque MFA challenge and mint the session (cookie-less, CSRF-exempt) |
 | `GET`    | `/api/v1/auth/oauth/{provider}`                                           | Start OAuth2 login flow                                                    |
-| `GET`    | `/api/v1/auth/oauth/{provider}/callback`                                  | OAuth2 login callback                                                      |
+| `GET`    | `/api/v1/auth/oauth/{provider}/callback`                                  | OAuth2 callback: 200 session, 202 MFA challenge/no session, or 409 explicit linking required |
 | `GET`    | `/api/v1/me`                                                              | Current user profile                                                       |
 | `PUT`    | `/api/v1/me`                                                              | Update current user profile                                                |
 | `GET`    | `/api/v1/me/orgs`                                                         | List orgs the caller belongs to (real — shared `MembershipStore`)          |
@@ -815,10 +1034,8 @@ above for the enforcement guarantee.
 | `PUT`    | `/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}`                   | Update credential                                                          |
 | `DELETE` | `/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}`                   | Delete credential                                                          |
 | `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/test`              | Test credential (capability-gated dispatch)                                |
-| `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/refresh`           | Refresh credential token (capability-gated dispatch)                       |
+| `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/refresh`           | Refresh credential token; integration reconnect is a typed 409, not user-auth 401 |
 | `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/credentials/{cred}/revoke`            | Revoke credential (capability-gated dispatch)                              |
 | `POST`   | `/webhooks/{trigger_uuid}/{nonce}`                                         | Inbound webhook trigger (mounted when `webhook_transport` is set)          |
 | `GET`    | `/api/v1/openapi.json`                                                    | OpenAPI 3.1 specification document                                         |
 | `GET`    | `/api/v1/docs/`                                                           | Swagger UI (self-hosted)                                                   |
-
-

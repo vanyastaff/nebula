@@ -6,21 +6,11 @@ mod common;
 
 use std::sync::Arc;
 
-use nebula_api::ports::credential_schema::{
-    CredentialFieldError, CredentialSchemaPort, CredentialTypeDescriptor,
-};
+use nebula_api::ports::credential_schema::{CredentialSchemaPort, CredentialTypeDescriptor};
 
 struct StubPort;
 
 impl CredentialSchemaPort for StubPort {
-    fn validate_data(
-        &self,
-        _credential_key: &str,
-        _data: &serde_json::Value,
-    ) -> Result<(), Vec<CredentialFieldError>> {
-        Ok(())
-    }
-
     fn list_types(&self) -> Vec<CredentialTypeDescriptor> {
         Vec::new()
     }

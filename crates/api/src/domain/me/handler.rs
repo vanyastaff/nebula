@@ -34,12 +34,11 @@ use axum::{
     http::StatusCode,
 };
 use nebula_core::Principal;
-use zeroize::Zeroize;
 
 use crate::{
     access::validate_new_pat_scopes,
     domain::{
-        auth::backend::{AuthBackend, CreatePatParams, PatRecord, ProfilePatch},
+        auth::backend::{AuthBackend, CreatePatParams, MintedPat, PatRecord, ProfilePatch},
         me::dto::{
             CreateTokenRequest, CreateTokenResponse, MeResponse, MyOrgsResponse, MyTokensResponse,
             OrgSummary, TokenSummary, UpdateMeRequest,
@@ -299,8 +298,8 @@ pub async fn list_my_tokens(
 /// `POST /api/v1/me/tokens` — create a new personal access token.
 ///
 /// The plaintext token is returned **exactly once** in the response body
-/// and is zeroized from this handler's memory immediately after the
-/// response is built. The stored form is its SHA-256; subsequent
+/// and is moved without cloning into a response that zeroizes it on drop.
+/// The stored form is its SHA-256; subsequent
 /// [`list_my_tokens`] calls expose metadata only.
 #[utoipa::path(
     post,
@@ -346,21 +345,19 @@ pub async fn create_token(
         scopes: body.scopes,
         ttl_seconds: body.ttl_seconds,
     };
-    let mut minted = backend.create_pat(&user_id, params).await?;
+    let MintedPat { plaintext, record } = backend.create_pat(&user_id, params).await?;
 
-    // Build the response (the one and only plaintext exposure), then
-    // zeroize the handler-held copy. The plaintext never reaches a log or
-    // error path: no `tracing` call below references it, and `MintedPat`'s
-    // `Debug` is not emitted anywhere.
+    // Move the one and only plaintext allocation into the one-time response.
+    // `CreateTokenResponse::drop` zeroizes it after serialization; no duplicate
+    // plaintext allocation exists in this handler.
     let response = CreateTokenResponse {
-        token: minted.plaintext.clone(),
-        summary: token_summary(&minted.record),
+        token: plaintext,
+        summary: token_summary(&record),
     };
-    minted.plaintext.zeroize();
 
     tracing::info!(
         user_id = %user_id,
-        pat_id = %minted.record.id,
+        pat_id = %record.id,
         "me token created"
     );
 
@@ -378,7 +375,7 @@ pub async fn create_token(
     tag = "me",
     security(("bearer" = []), ("api_key" = [])),
     params(
-        ("pat" = String, Path, description = "Personal access token identifier (`pat_<token>` — the `pat_`-prefixed URL-safe base64 form, not a ULID)."),
+        ("pat" = String, Path, description = "Opaque PAT record identifier returned in token metadata; never the plaintext credential."),
     ),
     responses(
         (status = 200, description = "Token revoked (idempotent).", body = AckResponse),

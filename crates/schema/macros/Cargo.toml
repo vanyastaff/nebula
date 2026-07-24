@@ -14,10 +14,10 @@ description = "Procedural macros for nebula-schema"
 proc-macro = true
 
 [dependencies]
+nebula-macro-support = { path = "../../sdk/macros-support" }
 syn = { version = "2", features = ["full", "extra-traits"] }
 quote = "1"
 proc-macro2 = "1"
-proc-macro-crate = "3"
 # Case conversion for `#[derive(EnumSelect)]` option values — `heck` splits
 # acronym runs correctly (`HTTPProxy` → `http_proxy`) where a hand-rolled pass
 # does not. Small, maintained, the de-facto standard (used by serde/clap).

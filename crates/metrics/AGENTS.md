@@ -23,7 +23,7 @@
 - `src/otlp.rs` is the ONLY place OTel SDK types appear; do not import `opentelemetry*` from primitives/export. README still calls OTLP "planned" — it is now implemented.
 - Not a log system (`nebula-log`), not the `/metrics` HTTP host (`nebula-api` serves `snapshot()`), not a tracing/spans system (use `tracing` directly).
 - `#![forbid(unsafe_code)]` and `#![warn(missing_docs)]` are crate-wide — every `pub` item needs a doc comment.
-- Cross-crate calls go through `nebula-eventbus`, not direct sibling imports.
+- Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
 - Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also

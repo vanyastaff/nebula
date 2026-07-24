@@ -36,6 +36,46 @@ changes are expected between minor releases — call them out here.
 
 ### Added
 
+- **Authenticated credential command boundary.** API handlers now submit a
+  middleware-created `AuthenticatedPrincipal`, resolved tenant `Scope`, and
+  public intent through the object-safe `CredentialCommandGateway`. The
+  apps-owned trust bridge invokes a credential-owned `CredentialController`,
+  which obtains exactly one `CredentialTenantAuthority` decision before
+  deriving an owner partition and consuming a private one-use command. The
+  first-party authority revalidates the command permission from one consistent
+  membership-role snapshot after verifying workspace existence and parentage
+  through the canonical `WorkspaceResolver`. An unwired or unreachable
+  directory/membership source fails unavailable; a valid snapshot without
+  organization membership denies the command. The default server deliberately
+  leaves both policy ports unwired, so tenant routes remain 503 until the K4
+  supported composition path lands.
+- **Object-safe owner-bound credential persistence.** `nebula-storage-port`
+  now owns `CredentialPersistence` and its port-local owner/selector/row/error
+  DTOs. SQLite, PostgreSQL, the internal in-memory reference adapter, and
+  audit/encryption/cache decorators implement that one contract. Conformance
+  covers wrong-owner indistinguishability and metadata-owner spoof rejection;
+  live PostgreSQL execution remains a release gate.
+- **SDK-only external perimeter proof.** A downstream fixture with exactly one
+  renamed Nebula dependency (`nebula-sdk`) compiles the currently supported
+  manual/builder subset (`ActionBuilder`, `WorkflowBuilder`, and credential
+  `TestResult`) plus representative Action, Credential, Plugin, Resource,
+  Schema, and Validator derives.
+  Separate negative probes assert precise diagnostics for forbidden authority,
+  owner-selector, raw-writer, admin-repository, runtime-constructor, and
+  unscoped-resolver access. A second compile-pass fixture proves those derives
+  also resolve explicitly renamed leaf-crate dependencies.
+- **Structured secret-safe credential validation.** The credential service
+  preserves a non-empty report of RFC 6901 path + stable-code issues through the
+  controller/gateway, while discarding validator/provider messages, params,
+  values, and sources. `FieldPath::to_json_pointer` is the canonical renderer;
+  the API owns static value-free copy.
+- **Plane-A OAuth composition seam** — `OAuthIdentityRuntime` and the opaque,
+  secret-free `OAuthRuntimeBuildError` are re-exported from `nebula-api` for
+  composition roots. `OAuthIdentityRuntime::from_config` returns
+  `Result<Option<_>, _>`: an empty provider set creates no HTTP client, while a
+  declared set creates one runtime for the selected Memory/Postgres backend.
+  These are technical server-wiring exports; `nebula-sdk` remains the sole
+  supported, branded Rust surface.
 - **Library-first hardening pass** — `[package.metadata.docs.rs]
   all-features = true` on 15 feature-gated crates so docs.rs renders the
   complete API; a CI `feature-hygiene` job (`cargo hack --each-feature`, wired
@@ -46,24 +86,313 @@ changes are expected between minor releases — call them out here.
   (zeroizing-secret invariant) and `nebula-resource` (typed retry-classified
   errors).
 - **Plane-A OAuth identity providers from operator secrets (ROADMAP
-  §M3.1)** — shipped via 5-PR chain (#757 ADR-0085 + #758 trait +
-  #759 real authorize URL + OIDC discovery + #761 real
-  `complete_oauth` + `external_identities` + #*** docs). Operators
-  configure IdP-client credentials via
-  `API_AUTH_OAUTH_<PROVIDER>_*` env vars; `PgAuthBackend::complete_oauth`
-  no longer returns `NotImplemented` — it runs the canonical OAuth
-  flow (code exchange → userinfo → REQ-oauth-006 short-circuit →
-  email truth-table → session mint). New migration
-  `0029_external_identities.sql` adds the `(provider, subject) →
-  user_id` linkage with `ON DELETE CASCADE`. Three providers in 1.0:
-  `google`, `microsoft`, `github`. GitHub triggers a second
-  `/user/emails` fetch to resolve verified email per ADR-0085 D-5
-  wave-6. id_token JWKS signature validation deferred to 1.1 (D-16);
-  userinfo response is authoritative. See `crates/api/README.md`
-  "OAuth identity providers (Plane A)" for operator setup.
+  §M3.1)** — the 1.0 surface contains exactly two reviewed profiles:
+  canonical Google OIDC and GitHub.com. Operators supply only
+  `API_AUTH_OAUTH_{GOOGLE,GITHUB}_{CLIENT_ID,CLIENT_SECRET}`; endpoints,
+  scopes, token-auth policy, and JWKS are runtime-owned and cannot be
+  overridden by environment. Microsoft, generic OIDC, GitHub Enterprise
+  Server, and operator-supplied JWKS remain parked and fail boot through a
+  secret-free configuration error. PostgreSQL and Memory both implement the
+  staged callback: atomically consume state, perform provider egress without
+  database locks, then atomically finalize local identity state. Migration
+  `0029_external_identities.sql` adds the authoritative
+  `(provider, subject) -> user_id` link with `ON DELETE CASCADE`.
+- **OAuth MFA completion is challenge-based.** An existing linked user with
+  MFA enabled receives `202 Accepted` plus an opaque, single-use challenge;
+  the callback creates neither a session nor session/CSRF cookies. The
+  finalizer records the MFA-required outcome and challenge atomically with its
+  identity decision, and `POST /api/v1/auth/login/mfa` consumes the challenge
+  to complete login and mint the session.
+
+### Security
+
+- **(breaking) Credential owner authority is selector-bound.** At the
+  port/application boundary, persistence
+  operations require a mandatory `(owner, credential_id)` selector (or owner
+  for list); CAS includes both plus expected version, owner is never updated,
+  and wrong-owner access is indistinguishable from absence. The former
+  metadata-keyed scope decorator, optional/global owner convention, and
+  caller-created scope resolver are removed rather than aliased. The historical
+  SQLite/PostgreSQL columns remain nullable until the K2 upgrade migration;
+  `NULL` never grants administrator or global authority.
+- **(breaking) Credential connectivity tests require write authority.**
+  `POST .../credentials/{cred}/test` now consistently requires
+  `credentials:write` in the HTTP access kernel, OpenAPI contract, and the
+  credential command authority. Testing sends stored authority to an external
+  provider and is therefore not treated as a metadata read.
+- **Credential persistence diagnostics are secret-safe.** Secret-bearing port
+  rows redact state, display names, and metadata contents; dynamic backend and
+  audit failure details no longer render through `Display`/`Debug` or get
+  forwarded into credential-service errors.
+- **(breaking) Re-authentication reasons are payload-free.**
+  `ReauthReason::{ProviderRejected,MissingRefreshMaterial}` no longer accept a
+  provider/local `detail: String`; lifecycle events, errors, metrics, and logs
+  carry only closed reason codes. Provider response text can therefore never
+  enter the event bus or `Debug` through this type.
+- **(breaking) Plane-A session and TOTP authorities are hardened at rest.**
+  PostgreSQL sessions now store only a domain-separated SHA-256 digest of the
+  256-bit cookie token; migration `0038` intentionally invalidates existing
+  sessions. Active and pending TOTP seeds use versioned AES-256-GCM envelopes
+  with distinct user/purpose-bound AAD, and promotion decrypts/re-seals rather
+  than copying ciphertext. Credential and identity encryption consume one
+  atomic `KeyProvider` snapshot, preventing key-id/key-generation races.
+  Startup performs bounded, advisory-lock-serialized, crash-resumable live-row
+  conversion and fails closed on tamper, unknown keys, or malformed legacy
+  seeds. This conversion is not historical erasure: operators must quarantine
+  or expire pre-migration backups/WAL/snapshots/replicas, retain old keys until
+  every dependent backup expires, or invalidate and re-enroll MFA in strict
+  deployments.
+
+- **MFA re-enrollment no longer weakens an active factor.** Starting enrollment
+  now writes a separate, ten-minute candidate and leaves the active secret
+  envelope / `mfa_enabled` untouched. Confirmation verifies that candidate and promotes it
+  through a storage-owned atomic consume-and-install operation; expiry, replay,
+  replacement, and concurrent confirmation fail closed. Both enrollment routes
+  require a CSRF-protected host-bound session created by primary authentication
+  within the previous ten minutes; PAT, JWT, and API-key authority is denied.
+- **Secret-bearing HTTP responses have a route-level no-store boundary.** Every
+  response, including errors, from the auth and MFA routers, PAT and service-
+  account creation, webhook registration, and interactive credential
+  resolution now overwrites weaker inner cache policy with
+  `Cache-Control: no-store`, `Pragma: no-cache`, and
+  `Referrer-Policy: no-referrer`. This defense is independent of the
+  idempotency replay allow-list, so adding a handler branch cannot silently
+  make one-time authority cacheable.
+- **(breaking, security) Webhook provider configuration is no longer an
+  authority side channel.** The selected trusted factory now validates its
+  complete provider configuration before registration mints a credential or
+  writes a trigger/activation row; the default is fail-closed. The built-in
+  Generic, Slack, and Stripe factories reject every unsupported non-empty
+  `provider_config`, so arbitrary JSON is neither silently ignored nor retained
+  in a soft-deleted failure tombstone, and legacy Generic `challenge_token`
+  JSON fails closed. Trusted Rust composition can still set a Generic challenge
+  through `GenericWebhookAction::with_challenge_token`; its authority now uses
+  one shared zeroizing allocation with redacted diagnostics rather than
+  cloneable plaintext strings.
+- **Plane-A OAuth egress is fixed and connect-time guarded.** One opaque runtime
+  now owns the fixed provider profiles, a rustls HTTPS-only client, DNS
+  admission, redirects/retries/proxy prohibition, outbound concurrency, and a
+  30-second per-operation network deadline; every callback egress stage reuses
+  its one original deadline. Google discovery uses a singleflight/cache.
+  Literal IPs and all
+  DNS answers must be globally routable, and reqwest receives only the exact
+  validated addresses. Provider bodies are capped at 256 KiB in zeroizing
+  buffers; access tokens remain inside a one-shot opaque capability. Raw
+  provider errors cannot cross the fixed RFC 9457 boundary.
+- **Plane-A token-endpoint authentication is explicit and singular.** GitHub.com
+  uses its fixed `client_secret_post` profile. Google prefers discovered
+  `client_secret_basic`, falls back to `client_secret_post`, applies the OIDC
+  Basic default when metadata omits the field, and rejects unsupported-only
+  metadata. Basic authentication form-encodes each credential component before
+  joining with `:` and Base64 encoding. A token request never carries client
+  credentials in both the Authorization header and form body.
+- **Google ID-token claims are validated on the direct-TLS path.** Google
+  requires an ID token and validates its compact shape, RS256 header, pinned
+  issuer, exact audience/`azp`, bounded `exp`/`iat`, nonce, `at_hash`, and subject
+  equality with userinfo. Local cryptographic signature verification against
+  provider JWKS remains deferred: the discovered JWKS URL is policy-validated
+  but not fetched, and signature bytes receive syntax/size validation only.
+- **OAuth callback traces are query-free.** HTTP request spans record method and
+  the matched route template (or fixed `<unmatched>` marker), preserve inbound
+  W3C parent context, and never record the raw URI containing one-time `code`
+  and `state` values.
+- **(breaking, security) Plane-A state is browser-bound.** OAuth start now sets
+  a per-flow `Secure; HttpOnly; SameSite=Lax; Path=/` `__Host-` transaction
+  cookie, and callback requires its exact version/provider/state binding before
+  backend state consumption or provider egress. Accepted bindings are cleared
+  on every terminal backend outcome; missing, duplicate, or swapped cookies
+  return a fixed 401 without consuming the flow. A request carrying eight
+  Nebula OAuth transaction-cookie names is rejected with 429 before state
+  creation; this is a request-local cookie bound, not a globally atomic browser
+  quota. Independently, each process or PostgreSQL deployment admits at most
+  10,000 live OAuth state rows globally. A full or contended admission gate
+  fails closed with 429 and does not mint state. Start and
+  callback must use the `API_PUBLIC_URL` authority, so reverse proxies must
+  preserve the public `Host`. Non-browser clients must migrate to a cookie jar
+  that carries the matching start `Set-Cookie` into callback.
+- **Provider-error callbacks are terminal without egress.** A bounded callback
+  with exactly one `error` (and no `code`) must still pass authority, state, and
+  browser-cookie binding. The backend consumes the matching state atomically,
+  clears the accepted transaction cookie, performs no token/userinfo request,
+  and returns a fixed 401 without surfacing provider text.
+- **Verified-email absence is distinct from upstream failure.** After a valid
+  provider identity is established, a first-link flow with no policy-acceptable
+  verified email returns `EmailNotVerified` (403) and writes no link/session.
+  Network failures, non-success provider responses, and malformed identity
+  payloads remain the fixed upstream-failure lane (502).
+- **OAuth email possession never auto-links accounts.** An existing
+  `(provider, subject)` link is authoritative. A first login may create a new
+  account only for an unused verified email; collision with an existing local
+  account rolls back with `AccountLinkRequired` (409), creates no session, and
+  requires a separate authenticated linking flow.
+- **(breaking, security) Credential test contracts are payload-free.** Provider
+  adapters must replace `TestResult::Failed { reason: String }` with
+  `TestResult::Failed { code: TestFailureCode }`; raw provider text must be
+  discarded locally. SDK consumers import both types from
+  `nebula_sdk::integration::credential::{TestFailureCode, TestResult}`.
+  `CredentialService::test` now returns `TestResult` directly and `TestReport`
+  is removed. HTTP v1 clients must migrate from the former boolean response to
+  the tagged `status` response: `success` carries `message`/`tested_at`, while
+  `failed` additionally requires the frozen `CredentialTestFailureCodeV1`.
+  Platform-owned messages never interpolate adapter errors; future core
+  classifications map to wire code `other`.
 
 ### Changed
 
+- **(breaking) `nebula-sdk` is curated by persona, not workspace topology.**
+  Broad `nebula_sdk::nebula_{action,core,credential,plugin,resource,schema,
+  validator,workflow}` re-exports are gone. The currently verified one-dependency
+  path is the manual/builder subset through `prelude`, `integration`, builders,
+  and testing/runtime façades, plus the Action, Credential, Plugin, Resource,
+  Schema, and Validator procedural-derive families. Generated derive paths
+  support a renamed SDK dependency and explicitly renamed leaf dependencies;
+  direct implementation-crate use remains unsupported.
+- **(breaking) Credential persistence contracts moved down.** Consumers of
+  the old credential-local RPITIT/dyn store bridge migrate to the directly
+  object-safe `nebula_storage_port::CredentialPersistence` and port DTOs.
+  This is an unsupported technical workspace contract, not an integration SDK
+  surface, and there are no compatibility aliases.
+- **(breaking) Membership authorization reads are snapshot-based.**
+  `MembershipStore` implementors must add `get_tenant_membership` and return the
+  organization plus optional workspace roles from one logical snapshot. RBAC
+  and bounded-context authorities no longer reconstruct one decision from two
+  independent point reads.
+- **(breaking) Typed workspace paths are verified against the canonical
+  directory.** `WorkspaceResolver` implementors must add
+  `resolve_by_id(org_id, workspace_id)`. Middleware and credential authority no
+  longer treat well-formed organization/workspace path IDs as proof that the
+  workspace exists; they resolve the pair before making a membership decision.
+- **(breaking) Production credential adapters moved to the application.** Key
+  policy, SQLite selection, registry/catalog projection, refresh HTTP transport,
+  encryption/audit wiring, and the authenticated gateway now live in
+  `apps/server`. The similarly shaped API factory, registry adapter, and HTTP
+  transport are available only behind unsupported `test-util`; default
+  `nebula-api` has no direct credential implementation dependency.
+- **(breaking) Webhook secret resolution is an API-owned port.** The public
+  `CredentialBackedWebhookSecretResolver` and `mint_whsec` implementation
+  helpers were removed from `nebula-api`. Composition roots implement
+  `WebhookSecretResolver` using the closed, secret-free
+  `SecretResolutionError`; the first-party credential-backed adapter now lives
+  in `apps/server`.
+- **(breaking) Audit sink failure is explicitly non-atomic.** `AuditLayer`
+  propagates a sink error but never issues a compensating delete after an inner
+  mutation has committed. The old CreateOnly rollback could delete a newer
+  concurrent CAS write. Callers must reconcile a reported audit failure because
+  the mutation may already be durable; K3 owns transactional outbox/ledger
+  closure.
+- **Credential mutations have one validator.** Create, update, and acquisition
+  commands no longer run a competing API schema precheck. After the one
+  credential-authority decision, `CredentialService` performs the canonical
+  validate→resolve pipeline and returns structural path/code issues through the
+  gateway. `CredentialSchemaPort` is catalog/form-schema read-model only; its
+  absence does not make mutation routes return 503.
+- **Breaking Plane-A OAuth Rust migration.** `AuthBackend` implementors must
+  add `cancel_oauth(provider, state, redirect_uri)`. `OAuthCompletion` is now a
+  non-exhaustive enum (`SessionCreated` or `MfaRequired`) rather than a cloneable
+  struct, and callback query construction must account for the provider-error
+  lane; `OAuthCallbackParams` is now non-exhaustive so future standard callback
+  fields can be added without repeating this break. Raw Axum handlers remain a
+  technical boundary; supported integrations should consume the HTTP contract
+  or `nebula-sdk`, not construct handler DTOs directly.
+- **Breaking auth diagnostic hardening.** `Debug` for login/reset/verify/MFA
+  DTOs, session records, freshly minted PATs, token-creation responses, and
+  service-account key responses and email envelopes/messages now preserves
+  type/shape diagnostics while
+  redacting passwords, TOTP values, reset/verification/challenge tokens,
+  session/CSRF authority, PAT plaintext/hash material, MFA seeds, recipients,
+  and message bodies. Secret-bearing authority values are no longer `Clone`:
+  the password wrapper, live session, password/MFA outcome, MFA enrollment,
+  OAuth start, freshly minted PAT, and one-time token/key responses must be
+  moved through their single-owner path.
+- **(breaking, security) Configuration and generated-client secret safety.**
+  `ApiConfig`, its OAuth credential containers, and `SmtpEmailConfig` are now
+  move-only so JWT, API-key, OAuth, and SMTP authority cannot be multiplied by
+  a broad configuration clone. Serializing `ApiConfig` also omits static
+  `api_keys` entirely. OpenAPI marks freshly generated PATs and service-account
+  keys as response-only (`readOnly`) rather than request-only (`writeOnly`), so
+  generated clients retain the one-time credential in creation responses
+  without offering it as request input.
+- **(breaking) Plane-A OAuth transport internals are private runtime state.**
+  The former public `transport::oauth::{discovery,flow,http,userinfo}` modules,
+  endpoint/config override types, raw HTTP helpers, PKCE internals, and custom-
+  cfg bypass surface are removed. Composition roots receive only the opaque
+  `OAuthIdentityRuntime` plus its secret-free build error; HTTP integrations
+  use the versioned API and supported Rust integrations use `nebula-sdk`.
+- **(breaking) Identity persistence contracts carry no reusable plaintext
+  authority.** `UserRow::mfa_secret` becomes `mfa_secret_envelope`; storage-port
+  user reads return `Arc<UserRow>` and the identity row is move-only with
+  redacted diagnostics. Storage `SessionRow::id` becomes `token_digest`, new
+  writes use `SessionDraft` plus a separately presented token, and
+  `SessionRepo::{create,get,touch,revoke}` accept the presented token at the
+  repository boundary. `OAuthStateRepo::create` becomes atomic `admit` with
+  closed `Created | AtCapacity | Contended` outcomes; secret-bearing
+  `UserRow`, `SessionRow`, `SessionDraft`, and `OAuthStateRow` values are
+  move-only.
+- **(breaking) Encryption-key providers return atomic generations.**
+  `KeyProvider::{current_key,version}` is replaced by one `current() ->
+  KeySnapshot`, whose validated key id and `Arc<EncryptionKey>` come from the
+  same observation. External providers must synchronize rotation and return a
+  new key id whenever key bytes change.
+- **(breaking, security) Session bearers are cookie-only.** Successful
+  password, MFA, and OAuth login responses no longer serialize `session_id`.
+  The bearer exists only in the `Secure; HttpOnly` session cookie, preserving
+  its XSS-containment boundary; JSON retains the non-bearer CSRF token needed
+  by clients for the double-submit contract.
+- **(breaking) Fixed browser-session protocol and Rust auth contract.** The
+  former `nebula_session` / `nebula_csrf` cookies become
+  `__Host-nebula-session` / `__Host-nebula-csrf`; `CookieConfig` and
+  `ApiConfig::cookies` are removed because the runtime now fixes
+  `Secure; Path=/; SameSite=Lax`, no `Domain`, a 14-day TTL, and `HttpOnly`
+  only on the session cookie. `AuthMethod::Session` becomes
+  `Session { authenticated_at }`, and `AuthBackend::get_principal_by_session`
+  returns the session-authentication metadata required by fresh-session
+  policy. Migration `0038` intentionally invalidates existing sessions while
+  replacing persisted raw bearers with lookup digests. Operators must perform
+  a coordinated cutover (mixed old/new nodes are unsupported) and users must
+  authenticate again; browser clients must discard both legacy cookie names.
+- **Webhook signing secrets are one-owner diagnostics.** The one-time
+  registration response now redacts its `signing_secret` in `Debug`, is
+  non-`Clone`, and describes the generated value as response-only in OpenAPI.
+  `HmacSecret`, `WebhookActivationSpec`, and `GenericWebhookAction` are likewise
+  move-only; webhook activation handles and endpoint providers redact the
+  nonce-bearing capability URL, and the concrete endpoint provider is
+  non-`Clone`. Integrations must move these authority-bearing values into the
+  trusted factory/runtime rather than retaining broad clones.
+- **(breaking) Webhook factory failures are a closed, secret-free contract.**
+  `FactoryError::InvalidSpec.reason` and `FactoryError::UnknownKind` now accept
+  only `&'static str`, preventing implementations from forwarding operator
+  JSON or secret material into logs and problem responses. The unused
+  `SecretResolution` variant is removed: authority resolution belongs before
+  factory admission, and integrations must map failures to a static provider-
+  owned classification.
+- **(breaking, security) Idempotency replay is explicit and secret-free.**
+  `IdempotencyLayer` now defaults to no replay-safe routes and requires an
+  explicit matched-route allow-list. First-party composition opts in only
+  authenticated POST contracts without one-time authority; auth/session, PAT,
+  service-account, webhook activation, and interactive credential responses
+  bypass cache lookup and storage. `Set-Cookie` and `Cache-Control: no-store`
+  provide a second response-side veto, and cached-record `Debug` output redacts
+  headers, bodies, and fingerprints across API, storage, and storage-port.
+- **Breaking metrics vocabulary.** The parked Microsoft Plane-A profile and
+  public `auth_oauth_provider::MICROSOFT` label were removed; the closed metric
+  provider vocabulary is exactly `google|github` until another authority-bound
+  profile is reviewed and implemented.
+- **Closed provider wire tokens.** `OAuthProvider` now pins both serde and
+  OpenAPI spellings explicitly to `google|github`; generated clients no longer
+  receive the mechanical but invalid `git_hub` spelling for GitHub.
+- **Release train:** these changes follow the released `0.1.0` frontier and
+  contain intentional semver-major findings for pre-1.0 crates. The Unreleased
+  train must be versioned as at least `0.2.0` by the release workflow; it must
+  not be published again as `0.1.x`.
+- **(breaking, security) Plane-A backend injection is runtime-based.**
+  `InMemoryAuthBackend::with_oauth_providers` and
+  `PgAuthBackend::with_oauth_providers` are replaced by
+  `with_oauth_runtime(Arc<OAuthIdentityRuntime>)`. `AuthError` no longer carries
+  attacker/provider-controlled OAuth payloads:
+  `ProviderNotConfigured { provider }` and `OAuthFailed(String)` are now
+  payload-free unit variants with fixed public messages. `AuthError` and
+  `OAuthProvider` are now `#[non_exhaustive]`; downstream exhaustive matches
+  must add a wildcard arm.
 - **(breaking) `Topology<R>` async hooks are RPITIT, not `#[async_trait]`** —
   the five async hooks (`create_entry`, `accept`, `prepare`, `on_release`,
   `dispatch_credential_hook`) now return `impl Future<Output = …> + Send`
@@ -108,6 +437,33 @@ changes are expected between minor releases — call them out here.
   updated accordingly.
 
 ### Removed
+
+- **(breaking, security) Legacy credential authority/store surfaces.** Removed
+  the credential-local `CredentialStore`/erased dyn bridge, tenancy's
+  metadata-keyed credential scope layer/resolver, public optional-owner
+  authority, and broad SDK crate re-exports. No compatibility alias or supported
+  API/SDK raw handle replaces them; trusted technical code uses the new
+  storage-port contract directly.
+- **(breaking, security) Raw Plane-A OAuth internals are no longer public.**
+  `transport::oauth` and its former `discovery`, `flow`, `http`, and `userinfo`
+  modules are crate-private. This removes the raw singleton client, standalone
+  URL validators, discovery/userinfo wire values and errors, and the
+  test-only discovery bypass from downstream reach. OAuth state/PKCE helpers
+  are also private. The in-memory backend encodes replay protection through
+  atomic remove-on-consume, while Postgres retains its durable,
+  provider-aware atomic consume contract.
+- **(breaking) Raw credential persistence access is no longer exposed by the
+  supported credential/API surface.**
+  Integrations using `CredentialService::credential_store_handle()` must use
+  scoped facade methods instead; `CredentialHead::last_validated_at` exposes
+  lifecycle metadata needed by supported callers without granting raw-store
+  or write-authority access. `CredentialPersistence` remains a public but
+  unsupported technical port for trusted workspace composition.
+- **(breaking, security) Raw Plane-B OAuth ceremony routes were removed.**
+  Clients must start and continue credential acquisition through the universal
+  workspace-scoped `/credentials/resolve` and `/credentials/resolve/continue`
+  endpoints. Plane-A identity OAuth routes are unchanged. The default
+  credential catalog no longer advertises the unfinished `oauth2` adapter.
 
 - `nebula-resource::docs/recovery.md` `WatchdogHandle` /
   `WatchdogConfig` section — these types are not in the public surface.

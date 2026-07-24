@@ -12,6 +12,89 @@ Layer order (strongest first): rustc / Clippy (`-D warnings` in CI) →
 `cargo deny` (`deny.toml`) → committed guard hooks (`.claude/hooks/`, the D10
 no-cheat core + the ADR-0083 Layer-2 budget) → human review.
 
+## Metadata-driven package selection
+
+`cargo xtask ci-plan` is the sole package selector for the test-matrix workflow
+and the pre-push crate gate. It asks Cargo for locked format-v1 metadata with
+all features and without a platform filter, then computes the transitive
+reverse closure of changed workspace packages across normal, development,
+build, optional, and target-specific dependency edges. A missing or stale
+lockfile is an error and the planner never updates it. Package names and
+ownership therefore come from manifests rather than directory-name conventions.
+
+The commands are:
+
+```bash
+cargo xtask ci-plan full
+cargo xtask ci-plan diff --base <sha> --head <sha> --comparison merge-base
+cargo xtask ci-plan diff --base <sha> --head <sha> --comparison direct
+```
+
+`merge-base` uses Git three-dot semantics and is the pull-request/local mode;
+`direct` compares the two tips and is the merge-queue mode. Push and manual CI
+runs request `full`. A local pre-push without a discoverable upstream also
+requests `full`; it is not downgraded to a smoke list.
+
+A successful `ci-plan` writes exactly one compact, deterministic JSON document
+(plus its trailing newline). `--help` and `--version` use Clap's successful
+human-readable stdout contract; invalid CLI usage uses stderr and Clap's exit
+code. Planner diagnostics go to stderr and never emit partial JSON. Schema
+version 1 is:
+
+```json
+{"schema_version":1,"scope":"diff","reason":"workspace-packages-changed","count":1,"include":[{"package":"nebula-core","test_features":[]}]}
+```
+
+Entries use exact Cargo package names, are sorted and deduplicated, and are
+limited to 256. The serialized document is conservatively capped at 450 KiB.
+GitHub accounts job outputs as UTF-16, so this leaves headroom below its 1 MiB
+per-job boundary even for an ASCII-heavy plan. CI and the pre-push hook validate
+the schema, count, ordering, and entry types before invoking Cargo. Only
+`{ "include": ... }` is exported as the GitHub matrix; `count` is a separate
+job output so an empty matrix skips the test job without weakening the stable
+aggregator check.
+
+Per-package test features are declared only here:
+
+```toml
+[package.metadata.nebula.ci]
+test-features = ["feature-name"]
+```
+
+The `metadata.nebula.ci` table is a strict policy object: scalar values and
+unknown keys are errors. The selector also rejects feature names absent from
+that package's declared `[features]`; unrelated package metadata remains
+unrestricted. It never copies Cargo's resolved feature set. These features
+apply only to `nextest`; `cargo check --all-features
+--all-targets`, rustdoc with `-D warnings`, the six no-default checks
+(`resilience`, `log`, `expression`, `credential`, `resource`, `storage`), and
+the `DATABASE_URL`-gated Postgres suite retain their independent contracts.
+The six names are an explicit no-default-feature **gate-policy** list, not a
+second package selector: the metadata plan decides membership first, and this
+policy only adds a check when one of those selected packages promises a usable
+minimal feature surface.
+
+Package ownership uses the deepest workspace manifest directory, so a nested
+derive package wins over its parent. Git copy detection includes unchanged
+sources, and rename/copy records examine both old and new paths. Backslashes in
+raw Git paths are treated as uncertain rather than rewritten. Deletions,
+unresolved old owners, unknown or ambiguous paths,
+selector/bootstrap changes, and paths below `crates/*/fuzz` select the full
+workspace. Fuzz packages are excluded from the root workspace and are **not**
+claimed as tested by this matrix; a fuzz-path change triggers full root-workspace
+coverage as the conservative fallback. Explicit documentation/editor/assets
+paths that are not owned by a workspace package may produce a valid
+zero-package plan. Ownership is resolved first: package-local README, docs, and
+assets changes select that package and its reverse dependents because those
+files may be compile-time inputs. A deletion or any other full-scope condition
+takes precedence over the docs-only classification.
+
+Bootstrap paths are the root `Cargo.toml`, `Cargo.lock`, `.cargo/**`,
+`rust-toolchain*`, `Taskfile.yml`, `deny.toml`, the selector implementation
+under `tools/xtask/**`, `.github/workflows/test-matrix.yml`, and
+`scripts/pre-push-crate-diff.sh`. Changing how selection works must therefore
+prove the complete workspace rather than trusting the changed selector.
+
 ## Mechanized junior markers
 
 What is enforced today, observable in the repo (the `Cargo.toml`

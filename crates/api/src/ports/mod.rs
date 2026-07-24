@@ -5,11 +5,12 @@
 //! legally depends on the lower-layer crates. This keeps `nebula-api` free
 //! of lower-layer types in its DTOs (stub-endpoint policy Cross-Layer Schema Strategy).
 
-pub mod credential_builder;
+#[cfg(any(test, feature = "test-util"))]
+pub(crate) mod credential_builder;
+pub mod credential_command;
 pub mod credential_schema;
+#[cfg(any(test, feature = "test-util"))]
 pub mod credential_schema_registry;
+#[cfg(any(test, feature = "test-util"))]
 pub mod credential_service_factory;
 pub mod email;
-pub mod reqwest_transport;
-
-pub use reqwest_transport::ReqwestRefreshTransport;

@@ -18,6 +18,8 @@
 //! - `ResolvedPlugin` — per-plugin wrapper with eager component caches; enforces namespace
 //!   invariant at construction.
 //! - `PluginRegistry` — in-memory `PluginKey → Arc<ResolvedPlugin>` registry.
+//! - `FrozenPluginRegistry`, `PluginSet`, and `WorkerFlavorRevision` — experimental activation
+//!   vocabulary available only with `unstable-worker-flavor`.
 //! - `PluginError` — typed error for plugin operations.
 //! - `ComponentKind` — discriminant for namespace and duplicate errors.
 //! - `#[derive(Plugin)]` — proc-macro derivation.
@@ -27,6 +29,13 @@
 //! `impl Plugin` is the single runtime source of truth for what is registered.
 //! Do not duplicate `fn actions()` / `fn resources()` / `fn credentials()` in
 //! `plugin.toml` — that is spec theater. See `crates/plugin/README.md`.
+//!
+//! ## Staged activation boundary
+//!
+//! The `unstable-worker-flavor` feature exposes the ADR-0115 identity and
+//! immutability experiment. It is not part of the supported default surface:
+//! engine dispatch, API transport, and persisted routing have not migrated to
+//! it end to end.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -34,6 +43,10 @@
 
 mod dependency;
 mod error;
+#[cfg(feature = "unstable-worker-flavor")]
+mod flavor;
+#[cfg(feature = "unstable-worker-flavor")]
+mod flavor_context;
 mod manifest;
 mod plugin;
 pub mod plugin_toml;
@@ -44,6 +57,13 @@ mod resolved_plugin;
 
 pub use dependency::PluginDependencyError;
 pub use error::{ComponentKind, PluginError};
+#[cfg(feature = "unstable-worker-flavor")]
+pub use flavor::{
+    PluginContractDescriptor, PluginSet, RuntimeContractVersion, RuntimeContractVersionError,
+    WorkerFlavorRevision,
+};
+#[cfg(feature = "unstable-worker-flavor")]
+pub use flavor_context::WorkerFlavorContext;
 pub use manifest::{ManifestError, PluginManifest, PluginManifestBuilder};
 // Re-export PluginKey from core for convenience.
 pub use nebula_core::PluginKey;
@@ -51,4 +71,6 @@ pub use nebula_metadata::PluginDependency;
 pub use nebula_plugin_macros::Plugin;
 pub use plugin::Plugin;
 pub use registry::PluginRegistry;
+#[cfg(feature = "unstable-worker-flavor")]
+pub use registry::{FrozenPluginRegistry, RegistryFreezeError};
 pub use resolved_plugin::ResolvedPlugin;

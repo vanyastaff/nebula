@@ -1,26 +1,14 @@
-//! Dyn-erasure bridge for the two RPITIT credential storage ports.
+//! Dyn-erasure bridge for the generic pending-state store.
 //!
-//! [`CredentialStore`] and [`PendingStateStore`] both use return-position
-//! `impl Future` in trait position (RPITIT); [`PendingStateStore`]'s
-//! non-`delete` methods are additionally generic over `<P: PendingState>`.
-//! Neither is object-safe, so neither can be stored behind `dyn`. The
-//! [`CredentialService`](crate::CredentialService) facade
-//! must be **non-generic** (ADR-0088 D4) so a durable backend can be swapped
-//! in without re-monomorphizing every consumer; that requires erasing both
-//! ports to `dyn`.
+//! Credential persistence is directly object-safe in `nebula-storage-port`;
+//! there is deliberately no parallel mirror or wrapper here. Pending-state
+//! operations remain generic over `<P: PendingState>`, so this module retains
+//! only their byte-core erasure:
 //!
-//! This module provides the hand-rolled boxed-future bridge that does it,
-//! mirroring the `ProviderFuture` idiom in
-//! [`ProviderFuture`](crate::ProviderFuture) — no `async_trait`, no
-//! `bon` (records the ADR-0088 D4 bon-deviation):
-//!
-//! - [`DynCredentialStore`] — object-safe boxed-future mirror of
-//!   [`CredentialStore`]; a blanket impl gives every `CredentialStore` a
-//!   `DynCredentialStore`, and [`ErasedCredentialStore`] wraps an
-//!   `Arc<dyn DynCredentialStore>` back into a concrete `CredentialStore`.
-//! - [`DynPendingStateStore`] — object-safe **byte-core** mirror of
+//! - [`DynPendingStateStore`] is the object-safe **byte-core** mirror of
 //!   [`PendingStateStore`]: the `<P: PendingState>` generic is erased to
-//!   `Vec<u8>` (serialize on put, deserialize on get/consume/get_bound). A
+//!   `Zeroizing<Vec<u8>>` (serialize on put, deserialize on
+//!   get/consume/get_bound). A
 //!   blanket impl gives every `DynPendingStateStore` a typed
 //!   [`PendingStateStore`], and [`ErasedPendingStore`] wraps an
 //!   `Arc<dyn DynPendingStateStore>` back into a concrete
@@ -45,9 +33,9 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+use zeroize::Zeroizing;
 
 use crate::pending_store::{PendingStateStore, PendingStoreError};
-use crate::store::{CredentialStore, PutMode, StoreError, StoredCredential};
 use crate::{PendingState, PendingToken};
 
 /// Boxed, `Send` future used by both bridge traits. `'a` ties the future
@@ -55,134 +43,13 @@ use crate::{PendingState, PendingToken};
 /// future may borrow from the store for its whole lifetime.
 type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-// ── Credential store bridge ──────────────────────────────────────────────
-
-/// Object-safe boxed-future mirror of [`CredentialStore`].
-///
-/// Each method ties `&self` and every borrowed argument to a single
-/// lifetime `'a`, so the returned `BoxFut` may borrow from the store. A
-/// blanket impl (`impl<T: CredentialStore> DynCredentialStore for T`) makes
-/// every `CredentialStore` usable as `dyn DynCredentialStore`, and
-/// [`ErasedCredentialStore`] erases the backend at the resolver→store
-/// boundary so the facade can be non-generic.
-///
-/// The five methods mirror [`CredentialStore`] one-for-one; see that trait
-/// for the per-method contract and error semantics.
-pub trait DynCredentialStore: Send + Sync {
-    /// Boxed-future mirror of [`CredentialStore::get`].
-    fn get<'a>(&'a self, id: &'a str) -> BoxFut<'a, Result<StoredCredential, StoreError>>;
-
-    /// Boxed-future mirror of [`CredentialStore::put`].
-    fn put(
-        &self,
-        credential: StoredCredential,
-        mode: PutMode,
-    ) -> BoxFut<'_, Result<StoredCredential, StoreError>>;
-
-    /// Boxed-future mirror of [`CredentialStore::delete`].
-    fn delete<'a>(&'a self, id: &'a str) -> BoxFut<'a, Result<(), StoreError>>;
-
-    /// Boxed-future mirror of [`CredentialStore::list`].
-    fn list<'a>(
-        &'a self,
-        state_kind: Option<&'a str>,
-    ) -> BoxFut<'a, Result<Vec<String>, StoreError>>;
-
-    /// Boxed-future mirror of [`CredentialStore::exists`].
-    fn exists<'a>(&'a self, id: &'a str) -> BoxFut<'a, Result<bool, StoreError>>;
-}
-
-impl<T: CredentialStore> DynCredentialStore for T {
-    fn get<'a>(&'a self, id: &'a str) -> BoxFut<'a, Result<StoredCredential, StoreError>> {
-        Box::pin(CredentialStore::get(self, id))
-    }
-
-    fn put(
-        &self,
-        credential: StoredCredential,
-        mode: PutMode,
-    ) -> BoxFut<'_, Result<StoredCredential, StoreError>> {
-        Box::pin(CredentialStore::put(self, credential, mode))
-    }
-
-    fn delete<'a>(&'a self, id: &'a str) -> BoxFut<'a, Result<(), StoreError>> {
-        Box::pin(CredentialStore::delete(self, id))
-    }
-
-    fn list<'a>(
-        &'a self,
-        state_kind: Option<&'a str>,
-    ) -> BoxFut<'a, Result<Vec<String>, StoreError>> {
-        Box::pin(CredentialStore::list(self, state_kind))
-    }
-
-    fn exists<'a>(&'a self, id: &'a str) -> BoxFut<'a, Result<bool, StoreError>> {
-        Box::pin(CredentialStore::exists(self, id))
-    }
-}
-
-/// Concrete, `Clone`-able [`CredentialStore`] over an erased backend.
-///
-/// Wraps an `Arc<dyn DynCredentialStore>` and re-implements
-/// [`CredentialStore`] by forwarding to the boxed-future methods. This is
-/// the type the facade's resolver is monomorphized over, so the backend can
-/// be swapped (in-memory ↔ SQLite ↔ Postgres) without re-typing any
-/// consumer.
-#[derive(Clone)]
-pub struct ErasedCredentialStore(Arc<dyn DynCredentialStore>);
-
-impl std::fmt::Debug for ErasedCredentialStore {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ErasedCredentialStore")
-            .finish_non_exhaustive()
-    }
-}
-
-impl ErasedCredentialStore {
-    /// Wrap an erased credential backend.
-    #[must_use]
-    pub fn new(inner: Arc<dyn DynCredentialStore>) -> Self {
-        Self(inner)
-    }
-}
-
-impl CredentialStore for ErasedCredentialStore {
-    // `async fn` (not a bare forward returning the `BoxFut`) so the impl's
-    // opaque return type captures the `&self`/arg borrows the boxed future
-    // holds — a bare `self.0.get(id)` is E0700 (captured lifetime not in
-    // bounds).
-    async fn get(&self, id: &str) -> Result<StoredCredential, StoreError> {
-        self.0.get(id).await
-    }
-
-    async fn put(
-        &self,
-        credential: StoredCredential,
-        mode: PutMode,
-    ) -> Result<StoredCredential, StoreError> {
-        self.0.put(credential, mode).await
-    }
-
-    async fn delete(&self, id: &str) -> Result<(), StoreError> {
-        self.0.delete(id).await
-    }
-
-    async fn list(&self, state_kind: Option<&str>) -> Result<Vec<String>, StoreError> {
-        self.0.list(state_kind).await
-    }
-
-    async fn exists(&self, id: &str) -> Result<bool, StoreError> {
-        self.0.exists(id).await
-    }
-}
-
 // ── Pending store bridge ─────────────────────────────────────────────────
 
 /// Object-safe **byte-core** mirror of [`PendingStateStore`].
 ///
 /// [`PendingStateStore`]'s `put`/`get`/`get_bound`/`consume` are generic
 /// over `<P: PendingState>`, which makes the trait non-object-safe. This
-/// bridge erases the generic to `Vec<u8>`: the typed [`PendingStateStore`]
+/// bridge erases the generic to `Zeroizing<Vec<u8>>`: the typed [`PendingStateStore`]
 /// blanket below serializes on `put` and deserializes on the read paths,
 /// so a `dyn DynPendingStateStore` carries exactly the same serde round-trip
 /// the original direct impls did. `delete` carries no type parameter and is
@@ -203,7 +70,7 @@ pub trait DynPendingStateStore: Send + Sync {
         credential_kind: &'a str,
         owner_id: &'a str,
         session_id: &'a str,
-        data: Vec<u8>,
+        data: Zeroizing<Vec<u8>>,
         expires_in: Duration,
     ) -> BoxFut<'a, Result<PendingToken, PendingStoreError>>;
 
@@ -212,7 +79,7 @@ pub trait DynPendingStateStore: Send + Sync {
     fn get_serialized<'a>(
         &'a self,
         token: &'a PendingToken,
-    ) -> BoxFut<'a, Result<Vec<u8>, PendingStoreError>>;
+    ) -> BoxFut<'a, Result<Zeroizing<Vec<u8>>, PendingStoreError>>;
 
     /// Byte-core mirror of [`PendingStateStore::get_bound`]. Returns the
     /// stored serialized bytes after validating the 3 binding dimensions
@@ -223,7 +90,7 @@ pub trait DynPendingStateStore: Send + Sync {
         token: &'a PendingToken,
         owner_id: &'a str,
         session_id: &'a str,
-    ) -> BoxFut<'a, Result<Vec<u8>, PendingStoreError>>;
+    ) -> BoxFut<'a, Result<Zeroizing<Vec<u8>>, PendingStoreError>>;
 
     /// Byte-core mirror of [`PendingStateStore::consume`]. Validates all 4
     /// dimensions then atomically reads-and-deletes, returning the stored
@@ -234,7 +101,7 @@ pub trait DynPendingStateStore: Send + Sync {
         token: &'a PendingToken,
         owner_id: &'a str,
         session_id: &'a str,
-    ) -> BoxFut<'a, Result<Vec<u8>, PendingStoreError>>;
+    ) -> BoxFut<'a, Result<Zeroizing<Vec<u8>>, PendingStoreError>>;
 
     /// Mirror of [`PendingStateStore::delete`] (no type parameter).
     fn delete<'a>(&'a self, token: &'a PendingToken) -> BoxFut<'a, Result<(), PendingStoreError>>;
@@ -257,10 +124,14 @@ impl<T: DynPendingStateStore + ?Sized> PendingStateStore for T {
         pending: P,
     ) -> Result<PendingToken, PendingStoreError> {
         // Pending interactive state (PKCE verifier, partial OAuth2 secrets) is
-        // persisted to the (encrypted-at-rest) pending store; serialize it in
-        // cleartext only here. Outside this scope its secret fields redact.
-        let data = crate::serde_secret::expose_for_serialization(|| serde_json::to_vec(&pending))
-            .map_err(|e| PendingStoreError::Backend(Box::new(e)))?;
+        // serialized in cleartext only into this zeroizing buffer. The current
+        // first-party adapter is ephemeral in-memory and writes no disk; a
+        // future durable adapter must provide encryption at rest explicitly.
+        // Outside this scope the state's secret fields redact.
+        let data = Zeroizing::new(
+            crate::serde_secret::expose_for_serialization(|| serde_json::to_vec(&pending))
+                .map_err(|e| PendingStoreError::Backend(Box::new(e)))?,
+        );
         let expires_in = pending.expires_in();
         self.put_serialized(credential_kind, owner_id, session_id, data, expires_in)
             .await
@@ -380,16 +251,12 @@ impl PendingStateStore for ErasedPendingStore {
 mod tests {
     use super::*;
 
-    // Compile-time object-safety probe: naming `Arc<dyn …>` for both bridge
-    // traits proves they are dyn-compatible — the contract the facade's
-    // `store: Arc<dyn DynCredentialStore>` / `ErasedPendingStore(Arc<dyn …>)`
-    // rely on. Never called; mirrors `crates/storage-port/tests/object_safe.rs`.
-    fn _assert_object_safe(_a: Arc<dyn DynCredentialStore>, _b: Arc<dyn DynPendingStateStore>) {}
+    // Compile-time object-safety probe for the one remaining erasure bridge.
+    // Credential persistence has its own direct dyn probe in storage-port.
+    fn _assert_object_safe(_: Arc<dyn DynPendingStateStore>) {}
 
     #[test]
     fn bridge_traits_are_object_safe() {
-        // Compiling `_assert_object_safe`'s `Arc<dyn …>` parameters above is
-        // the proof; this test exists so the probe participates in the
-        // test target.
+        // Compiling `_assert_object_safe`'s parameter above is the proof.
     }
 }

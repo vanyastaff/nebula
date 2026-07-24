@@ -3,8 +3,7 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
 use proc_macro::TokenStream;
-use proc_macro_crate::{FoundCrate, crate_name};
-use proc_macro2::{Span, TokenStream as TokenStream2};
+use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{DeriveInput, LitStr, parse_macro_input};
 
@@ -14,24 +13,10 @@ mod derive_enum_union;
 mod derive_schema;
 mod type_infer;
 
-/// Resolve the path to the `nebula-schema` crate so the generated code
-/// works whether the caller renamed the dependency or derives are
-/// expanded from inside `nebula-schema` itself.
-///
-/// Resolution rules (driven by [`proc_macro_crate::crate_name`]):
-/// - [`FoundCrate::Itself`] → `::nebula_schema` (works in lib code via `extern crate self as
-///   nebula_schema;` in `lib.rs`, in doctests via the doctest binary's external crate alias, and in
-///   integration tests / examples / benches via the package's own crate alias).
-/// - `FoundCrate::Name(name)` → `::name` (external crate that renamed the dependency).
-/// - `Err(_)` → fall back to `::nebula_schema` for unknown contexts.
+/// Canonical schema path; the shared final expansion pass resolves it for the
+/// invoking crate.
 pub(crate) fn crate_path() -> TokenStream2 {
-    match crate_name("nebula-schema") {
-        Ok(FoundCrate::Itself) | Err(_) => quote!(::nebula_schema),
-        Ok(FoundCrate::Name(name)) => {
-            let ident = syn::Ident::new(&name, Span::call_site());
-            quote!(::#ident)
-        },
-    }
+    quote!(::nebula_schema)
 }
 
 /// Build a `FieldKey` (from `nebula-schema`) from a string literal, using the same rules as
@@ -64,7 +49,7 @@ pub fn field_key(input: TokenStream) -> TokenStream {
         #crate_path::FieldKey::new(#lit)
             .expect("field_key! validated at compile time")
     };
-    out.into()
+    nebula_macro_support::paths::resolve_generated_crate_paths(out).into()
 }
 
 /// Derive `HasSchema` (from `nebula-schema`).
@@ -93,9 +78,8 @@ pub fn field_key(input: TokenStream) -> TokenStream {
 #[proc_macro_derive(Schema, attributes(field, validate, schema))]
 pub fn derive_schema(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    derive_schema::expand(input)
-        .unwrap_or_else(|e| e.to_compile_error())
-        .into()
+    let tokens = derive_schema::expand(input).unwrap_or_else(|error| error.to_compile_error());
+    nebula_macro_support::paths::resolve_generated_crate_paths(tokens).into()
 }
 
 /// Derive `HasSelectOptions` (from `nebula-schema`) for a unit-only enum.
@@ -105,9 +89,8 @@ pub fn derive_schema(input: TokenStream) -> TokenStream {
 #[proc_macro_derive(EnumSelect, attributes(field))]
 pub fn derive_enum_select(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    derive_enum::expand(input)
-        .unwrap_or_else(|e| e.to_compile_error())
-        .into()
+    let tokens = derive_enum::expand(input).unwrap_or_else(|error| error.to_compile_error());
+    nebula_macro_support::paths::resolve_generated_crate_paths(tokens).into()
 }
 
 /// Validate a candidate schema field key against the `FieldKey` rules

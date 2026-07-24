@@ -19,8 +19,8 @@ use nebula_storage::repos::{CachedRecord, IdempotencyStoreRepo};
 ///
 /// Storage backends bubble these through the middleware. The handler
 /// translates them to a 500 response — silently treating a `Decode`
-/// error as a cache miss would drop replay protection on data
-/// corruption (rejected by idempotency backend).
+/// error as a cache miss would bypass an existing completed-response
+/// replay record on data corruption (rejected by idempotency backend).
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum IdempotencyStoreError {
@@ -42,7 +42,7 @@ pub enum IdempotencyStoreError {
 ///
 /// Stored behind an [`Arc`] inside the [`IdempotencyStore`] so concurrent
 /// readers share the bytes without copying.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CachedResponse {
     /// HTTP status code returned by the original handler.
     pub status: StatusCode,
@@ -53,6 +53,21 @@ pub struct CachedResponse {
     /// SHA-256 fingerprint of the original request body — used to detect
     /// "same key, different body" reuse and reject it with 422 per draft §2.5.
     pub request_fingerprint: [u8; 32],
+}
+
+impl fmt::Debug for CachedResponse {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CachedResponse")
+            .field("status", &self.status)
+            .field("headers", &"[redacted]")
+            .field(
+                "body",
+                &format_args!("[redacted; {} bytes]", self.body.len()),
+            )
+            .field("request_fingerprint", &"[redacted]")
+            .finish()
+    }
 }
 
 // ── Store trait ──────────────────────────────────────────────────────────────
@@ -71,7 +86,7 @@ pub trait IdempotencyStore: Send + Sync + fmt::Debug {
     /// [`IdempotencyStoreError`] when the read itself failed (backend
     /// connection error or decode failure). The middleware translates
     /// errors to 500 — see idempotency backend: silent cache-miss fallback would
-    /// drop replay protection on data corruption.
+    /// bypass an existing replay record on data corruption.
     async fn get(&self, key: &str) -> Result<Option<Arc<CachedResponse>>, IdempotencyStoreError>;
 
     /// Persist a cached response under `key`. Implementations MUST honour the
@@ -122,7 +137,8 @@ pub trait IdempotencyStore: Send + Sync + fmt::Debug {
 /// `CachedRecord ↔ CachedResponse` (`StatusCode` / `HeaderMap`). Decode
 /// failures map to [`IdempotencyStoreError::Decode`] and bubble up to
 /// the middleware as 500 — silently treating them as cache misses
-/// would drop replay protection on data corruption (idempotency backend).
+/// would bypass an existing replay record on data corruption (idempotency
+/// backend).
 pub struct StorageBackedIdempotencyStore<R: IdempotencyStoreRepo> {
     repo: Arc<R>,
     ttl: Duration,
@@ -215,5 +231,31 @@ impl<R: IdempotencyStoreRepo + 'static> IdempotencyStore for StorageBackedIdempo
         // `API_IDEMPOTENCY_BACKEND` instead. Returning a generic label
         // here keeps the cardinality low without leaking R's typename.
         "storage-backed"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CachedResponse;
+    use axum::http::{HeaderMap, HeaderValue, StatusCode};
+
+    #[test]
+    fn cached_response_debug_redacts_headers_body_and_fingerprint() {
+        const CANARY: &str = "IDEMPOTENCY_SECRET_CANARY-8c4d";
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-secret-canary",
+            HeaderValue::from_static("IDEMPOTENCY_SECRET_CANARY-8c4d"),
+        );
+        let response = CachedResponse {
+            status: StatusCode::OK,
+            headers,
+            body: CANARY.as_bytes().to_vec(),
+            request_fingerprint: [0x8c; 32],
+        };
+
+        let debug = format!("{response:?}");
+        assert!(debug.contains("CachedResponse"));
+        assert!(!debug.contains(CANARY));
     }
 }

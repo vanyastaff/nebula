@@ -12,9 +12,9 @@
 //! variant in this module makes that mistake structurally impossible:
 //! only credentials that explicitly `impl Refreshable` can route
 //! through the engine's refresh dispatcher, and `refresh` has no
-//! defaulted body (`E0046` if omitted). The runtime back-channel
-//! variant has been removed from [`RefreshOutcome`]
-//! to seal the silent-downgrade vector at the type level.
+//! defaulted body (`E0046` if omitted). Runtime-only outcomes are absent
+//! from [`RefreshReport`], sealing the
+//! silent-downgrade vector at the type level.
 //!
 //! Engine `RefreshDispatcher::for_credential<C>` binds
 //! `where C: Refreshable`. A non-`Refreshable` credential cannot be
@@ -26,11 +26,22 @@
 
 use std::future::Future;
 
-use crate::{
-    Credential, CredentialContext,
-    error::CredentialError,
-    resolve::{RefreshOutcome, RefreshPolicy},
-};
+use crate::{Credential, RefreshAttempt, RefreshReport, resolve::RefreshPolicy};
+
+/// Declared side-effect model for a credential refresh implementation.
+///
+/// Provider-backed refresh is the safe default. It can report success only
+/// through a completed dispatch witness. A credential whose refresh transition
+/// is entirely local must opt in explicitly before
+/// [`RefreshAttempt::local_refresh_completed`] can report success.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RefreshExecutionMode {
+    /// Refresh may mutate provider state and must cross the dispatch witness.
+    Provider,
+    /// Refresh changes only local credential state.
+    Local,
+}
 
 /// Credentials that support refreshing their stored [`State`] without
 /// requiring full re-authentication (OAuth2 refresh token, dynamic AWS
@@ -46,11 +57,11 @@ use crate::{
 ///
 /// ```
 /// use nebula_credential::{
-///     AuthPattern, Credential, CredentialContext, CredentialMetadata, Refreshable,
-///     SecretString, scheme::SecretToken,
+///     AuthPattern, Credential, CredentialContext, CredentialMetadata, RefreshAttempt,
+///     RefreshExecutionMode, RefreshReport, Refreshable, SecretString, scheme::SecretToken,
 /// };
 /// use nebula_credential::error::CredentialError;
-/// use nebula_credential::resolve::{RefreshOutcome, RefreshPolicy, ResolveResult};
+/// use nebula_credential::resolve::{RefreshPolicy, ResolveResult};
 /// use nebula_core::credential_key;
 /// use nebula_schema::{FieldValues, ValidSchema};
 ///
@@ -76,15 +87,16 @@ use crate::{
 /// #     }
 /// # }
 /// impl Refreshable for OAuth2Cred {
+///     const REFRESH_EXECUTION_MODE: RefreshExecutionMode = RefreshExecutionMode::Local;
 ///     const REFRESH_POLICY: RefreshPolicy = RefreshPolicy::DEFAULT;
 ///
 ///     async fn refresh(
 ///         state: &mut SecretToken,
-///         _ctx: &CredentialContext,
-///     ) -> Result<RefreshOutcome, CredentialError> {
-///         // Exchange the refresh token for a new access token, mutating in place.
+///         attempt: RefreshAttempt<'_>,
+///     ) -> RefreshReport {
+///         // This example uses a providerless local rotation.
 ///         *state = SecretToken::new(SecretString::new("new-access-token"));
-///         Ok(RefreshOutcome::Refreshed)
+///         attempt.local_refresh_completed()
 ///     }
 /// }
 ///
@@ -95,6 +107,13 @@ use crate::{
 ///
 /// [`State`]: crate::CredentialState
 pub trait Refreshable: Credential {
+    /// Side-effect model for this refresh implementation.
+    ///
+    /// Provider-backed is deliberately the default: forgetting to declare a
+    /// local implementation fails closed instead of weakening persistence
+    /// failure handling.
+    const REFRESH_EXECUTION_MODE: RefreshExecutionMode = RefreshExecutionMode::Provider;
+
     /// Refresh timing policy — controls early refresh, retry backoff,
     /// and jitter. Default: [`RefreshPolicy::DEFAULT`] (5 min early
     /// refresh, 5 s minimum retry backoff, 30 s jitter window).
@@ -106,16 +125,16 @@ pub trait Refreshable: Credential {
     /// early-refresh window or when downstream consumers detect a
     /// credential failure indicating expiry. Implementations should
     /// mutate `state` in place (e.g., replace the access token while
-    /// preserving the refresh token) and return [`RefreshOutcome`].
+    /// preserving the refresh token) and return a [`RefreshReport`].
     ///
-    /// Return [`RefreshOutcome::ReauthRequired`] when the refresh path
-    /// fails irrecoverably (refresh token revoked, scope changed) — the
-    /// engine surfaces this as an explicit re-auth signal rather than
-    /// silently swallowing the failure.
+    /// The runtime supplies one linear [`RefreshAttempt`]. Implementations
+    /// consume it before dispatch, through its provider-dispatch boundary, or
+    /// through a providerless local completion. A failed dispatched future can
+    /// produce only an outcome-unknown report.
     fn refresh(
         state: &mut Self::State,
-        ctx: &CredentialContext,
-    ) -> impl Future<Output = Result<RefreshOutcome, CredentialError>> + Send
+        attempt: RefreshAttempt<'_>,
+    ) -> impl Future<Output = RefreshReport> + Send
     where
         Self: Sized;
 }

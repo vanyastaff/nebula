@@ -5,184 +5,172 @@
 //!
 //! ## One persistence path (ADR-0088 D7)
 //!
-//! Every credential operation routes through the **`CredentialService`
-//! facade** (`AppState::credential_service`): CRUD (`create` / `get` /
-//! `update` / `delete` / `list`), lifecycle (`test` / `refresh` /
-//! `revoke`), and acquisition (`resolve` / `continue_resolve`). The facade
-//! owns the layered store (`Audit(Cache(Encryption(raw)))`), the typed
-//! validate→resolve pipeline, and the per-operation tenant check, so the
-//! api layer never touches a raw store or re-implements validation.
+//! Every credential operation routes through the API-owned, object-safe
+//! [`CredentialCommandGateway`]. The deployment adapter invokes the
+//! credential-owned authority/controller and is the only code that can reach
+//! the service. Handlers can submit authenticated intent, but cannot construct
+//! an owner selector, authority proof, repository, or raw writer.
 //!
-//! The OAuth2 two-phase flow (`domain::credential::oauth`) persists
-//! through `scoped_store` — a `CredentialScopeLayer` over the **same**
-//! facade store handle ([`CredentialService::credential_store_handle`]) —
-//! so an OAuth-acquired credential is visible to `get`/`list` and there
-//! is no second store to drift from.
-//!
-//! When no service is wired (`credential_service: None`) every credential
+//! When no gateway is wired (`credential_gateway: None`) every credential
 //! operation returns an honest 503 (§4.5 operational honesty) — there is
 //! no raw-store fallback path.
 //!
 //! ## Credential secrecy
 //!
-//! - Request `data` is validated against the credential type's schema
-//!   (api-side [`CredentialSchemaPort`] pre-check for structured field
-//!   errors, then the facade's canonical pipeline) and resolved into
-//!   typed state that the facade encrypts at rest. The api never stores
-//!   or echoes the raw payload.
+//! - Request `data` crosses the authenticated gateway and is validated once
+//!   by the credential controller/service before it is resolved into typed
+//!   state and encrypted at rest. The catalog port never sees mutation
+//!   payloads; the API never stores or echoes them.
 //! - The wire response types ([`CredentialResponse`] /
 //!   [`CredentialSummary`]) are projected from the secret-free
-//!   [`CredentialHead`] — they structurally cannot carry material.
+//!   [`CredentialGatewayRecord`] — they structurally cannot carry material.
 //! - Errors carry the credential id only; no secret reaches an
 //!   `ApiError` / `ProblemDetails`. Tracing spans log `cred.id` /
 //!   `cred.key` only.
 //!
 //! ## Workspace isolation
 //!
-//! Handlers derive a [`TenantScope`] from the resolved request scope via
-//! the single canonical derivation ([`TenantScope::from_scope`] →
-//! `Scope::credential_owner_id`, ADR-0088 D7). The facade enforces the
-//! owner check on every operation; cross-workspace ids collapse to a
-//! flat 404 with no existence disclosure.
+//! Handlers submit an [`AuthenticatedPrincipal`] together with the resolved
+//! [`Scope`]. The deployment gateway and credential controller authorize that
+//! intent, then derive the persistence owner only through
+//! [`Scope::credential_owner_id`] (ADR-0088 D7). Every command is owner-bound;
+//! cross-workspace ids collapse to a flat 404 with no existence disclosure.
 //!
-//! [`CredentialSchemaPort`]: crate::ports::credential_schema::CredentialSchemaPort
-
-use std::collections::HashMap;
-use std::sync::Arc;
-
-use nebula_credential::resolve::{InteractionRequest, UserInput};
-use nebula_credential::{
-    Acquisition, CredentialHead, CredentialService, CredentialServiceError, TenantScope,
-};
-use nebula_credential::{CredentialDisplay, ErasedCredentialStore, ScopeResolver};
 use nebula_storage_port::Scope;
-use nebula_tenancy::CredentialScopeLayer;
 
 use crate::{
     domain::credential::dto::{
-        AcquisitionInteraction, ContinueResolveRequest, ContinueResolveResponse,
-        CreateCredentialRequest, CredentialCapabilities, CredentialResponse, CredentialSummary,
-        CredentialTypeInfo, FormPostField, ListCredentialTypesResponse, ListCredentialsQuery,
+        ContinueResolveRequest, ContinueResolveResponse, CreateCredentialRequest,
+        CredentialCapabilities, CredentialResponse, CredentialSummary, CredentialTestFailureCodeV1,
+        CredentialTypeInfo, ListCredentialTypesResponse, ListCredentialsQuery,
         ListCredentialsResponse, RefreshCredentialResponse, ResolveCredentialRequest,
         ResolveCredentialResponse, RevokeCredentialResponse, TestCredentialResponse,
         UpdateCredentialRequest,
     },
     error::{ApiError, ApiResult},
+    middleware::auth::AuthenticatedPrincipal,
+    ports::credential_command::{
+        CredentialCommandGateway, CredentialGatewayAcquisition, CredentialGatewayCommand,
+        CredentialGatewayError, CredentialGatewayRecord, CredentialGatewayRefreshRetry,
+        CredentialGatewayResult, CredentialGatewayTestFailure, CredentialGatewayTestResult,
+    },
     state::AppState,
 };
 
 // ── Service access ───────────────────────────────────────────────────────────
 
-const NO_CREDENTIAL_SERVICE: &str = "credential service not wired: the composition root did not provide a CredentialService \
-     (set NEBULA_CRED_MASTER_KEY and compose via try_default_credential_service)";
+const NO_CREDENTIAL_GATEWAY: &str = "credential command gateway not wired: the composition root did not provide an authenticated credential controller";
 
-/// The wired [`CredentialService`], or an honest 503 when the composition
-/// root provided none (§4.5 operational honesty — no raw-store fallback).
-fn service(state: &AppState) -> ApiResult<&Arc<CredentialService>> {
+/// The wired [`CredentialCommandGateway`], or an honest 503 when the
+/// composition root provided none.
+fn gateway(state: &AppState) -> ApiResult<&dyn CredentialCommandGateway> {
     state
-        .credential_service
+        .credential_gateway
         .as_ref()
-        .ok_or_else(|| ApiError::ServiceUnavailable(NO_CREDENTIAL_SERVICE.to_owned()))
+        .map(AsRef::as_ref)
+        .ok_or_else(|| ApiError::ServiceUnavailable(NO_CREDENTIAL_GATEWAY.to_owned()))
 }
 
-/// Canonical owner key for a resolved request scope (ADR-0088 D7) —
-/// shared with the OAuth pending-state binding so both planes key the
-/// same tenant identically.
-pub(crate) fn owner_id_from_scope(scope: &Scope) -> String {
-    scope.credential_owner_id()
-}
-
-#[derive(Debug)]
-struct RequestCredentialOwner(String);
-
-impl ScopeResolver for RequestCredentialOwner {
-    fn current_owner(&self) -> Option<&str> {
-        Some(&self.0)
-    }
-}
-
-/// Owner-scoped raw access to the **facade's** layered store for the
-/// OAuth two-phase write path (`domain::credential::oauth`).
+/// Execute one authenticated API-owned command for a composite handler.
 ///
-/// Wraps [`CredentialService::credential_store_handle`] — the same
-/// `Audit(Cache(Encryption(raw)))` stack the facade CRUD uses — in a
-/// `CredentialScopeLayer` that stamps/checks `metadata["owner_id"]` on
-/// every call. One store, two access styles: typed facade operations and
-/// the OAuth raw-state writes; both planes stamp the same canonical
-/// owner key, so OAuth-acquired rows are visible to `get`/`list`.
-pub(crate) fn scoped_store(
+/// Composite operations such as webhook registration use this seam for
+/// platform-generated credential material: the credential controller still
+/// authorizes and canonically validates the command, while the handler does not
+/// pretend that generated data came through the public schema-precheck path.
+pub(crate) async fn execute_gateway_command(
     state: &AppState,
-    owner_id: &str,
-) -> ApiResult<CredentialScopeLayer<ErasedCredentialStore>> {
-    let svc = service(state)?;
-    Ok(CredentialScopeLayer::new(
-        ErasedCredentialStore::new(svc.credential_store_handle()),
-        Arc::new(RequestCredentialOwner(owner_id.to_owned())),
-    ))
+    principal: &AuthenticatedPrincipal,
+    scope: &Scope,
+    command: CredentialGatewayCommand,
+    credential_label: &str,
+) -> ApiResult<CredentialGatewayResult> {
+    gateway(state)?
+        .execute(principal, scope, command)
+        .await
+        .map_err(|error| map_gateway_err(error, credential_label))
 }
 
 // ── Error mapping ────────────────────────────────────────────────────────────
 
-/// Map a [`CredentialServiceError`] onto a typed [`ApiError`].
+/// Map a [`CredentialGatewayError`] onto a typed [`ApiError`].
 ///
 /// Cross-workspace / unknown ids collapse to a flat `404` with **no
 /// existence disclosure**. Capability gaps are client errors (`400`),
-/// optimistic-concurrency failures are `409`, expired interactive tokens
-/// are `401`, provider/backend unavailability is `503`. The mapped
-/// strings never carry secret material — the facade's error reasons are
-/// value-free by contract (schema code/path only).
-fn map_service_err(err: CredentialServiceError, cred: &str) -> ApiError {
+/// optimistic-concurrency failures are `409`, expired interactive tokens are
+/// `401`, provider/backend unavailability is `503`. Dynamic reason payloads
+/// are deliberately discarded at this boundary: credential implementations
+/// and storage/provider adapters are not trusted to produce client-safe text.
+/// Validated identifiers, capability names, and version numbers remain where
+/// they are actionable.
+fn map_gateway_err(err: CredentialGatewayError, cred: &str) -> ApiError {
     match err {
-        CredentialServiceError::NotFound { .. } => {
-            ApiError::NotFound("credential not found".to_owned())
+        CredentialGatewayError::NotFound => ApiError::NotFound("credential not found".to_owned()),
+        CredentialGatewayError::VersionConflict { expected, actual } => ApiError::VersionMismatch(
+            format!("credential {cred}: expected version {expected}, found {actual}"),
+        ),
+        CredentialGatewayError::IdAlreadyExists => {
+            ApiError::AlreadyExists("credential id is already reserved".to_owned())
         },
-        CredentialServiceError::VersionConflict {
-            expected, actual, ..
-        } => ApiError::VersionMismatch(format!(
-            "credential {cred}: expected version {expected}, found {actual}"
-        )),
-        CredentialServiceError::ValidationFailed { reason } => ApiError::Validation {
-            detail: format!("credential properties rejected: {reason}"),
-            errors: vec![],
+        CredentialGatewayError::NameAlreadyExists => {
+            ApiError::AlreadyExists("credential display name is already in use".to_owned())
         },
-        CredentialServiceError::TypeUnknown { key } => ApiError::Validation {
+        CredentialGatewayError::VersionExhausted => ApiError::VersionExhausted(
+            "credential can no longer be changed; create a replacement credential".to_owned(),
+        ),
+        CredentialGatewayError::ValidationFailed { report } => ApiError::Validation {
+            detail: "credential properties were rejected".to_owned(),
+            errors: report
+                .issues()
+                .map(|issue| crate::error::ValidationFieldError {
+                    detail: issue.message().to_owned(),
+                    pointer: issue.path().to_owned(),
+                    code: issue.code().to_owned(),
+                })
+                .collect(),
+        },
+        CredentialGatewayError::TypeUnknown { key } => ApiError::Validation {
             detail: format!("unknown credential type: {key}"),
-            errors: vec![],
+            errors: vec![crate::error::ValidationFieldError {
+                detail: "no such credential type".to_owned(),
+                pointer: "/credential_key".to_owned(),
+                code: "unknown_credential_type".to_owned(),
+            }],
         },
-        CredentialServiceError::CapabilityUnsupported { capability, key } => ApiError::Validation {
+        CredentialGatewayError::CapabilityUnsupported { capability, key } => ApiError::Validation {
             detail: format!("credential type '{key}' does not support capability '{capability}'"),
             errors: vec![],
         },
-        CredentialServiceError::PendingExpired => ApiError::Unauthorized(
+        CredentialGatewayError::PendingExpired => ApiError::Unauthorized(
             "pending acquisition token expired or already consumed".to_owned(),
         ),
-        CredentialServiceError::TransientProvider(reason) => ApiError::ServiceUnavailable(format!(
-            "credential provider temporarily unavailable: {reason}"
-        )),
-        CredentialServiceError::Provider(reason) => {
-            ApiError::ServiceUnavailable(format!("credential provider error: {reason}"))
+        CredentialGatewayError::ReauthRequired => ApiError::CredentialReauthRequired,
+        CredentialGatewayError::RefreshNotApplied {
+            retry: CredentialGatewayRefreshRetry::Never,
+        } => ApiError::CredentialRefreshNotAppliedNever,
+        CredentialGatewayError::RefreshNotApplied {
+            retry: CredentialGatewayRefreshRetry::After { seconds },
+        } => ApiError::CredentialRefreshNotAppliedAfter {
+            retry_after_secs: seconds,
         },
-        CredentialServiceError::ExternalSourceNotWired { provider } => {
-            ApiError::ServiceUnavailable(format!(
-                "external credential source '{provider}' is configured but not wired"
-            ))
+        CredentialGatewayError::RefreshReconciliationRequired => {
+            ApiError::CredentialRefreshReconciliationRequired
         },
-        CredentialServiceError::Store(reason) => {
-            ApiError::Internal(format!("credential store error: {reason}"))
+        CredentialGatewayError::RevokeReconciliationRequired => {
+            ApiError::CredentialRevokeReconciliationRequired
         },
-        // Re-auth is a routine, client-actionable outcome (rejected grant /
-        // sentinel escalation / missing refresh material) — a 401 "reconnect",
-        // never a 500. The typed `reason` stays on the service error for
-        // programmatic consumers; the response avoids echoing provider detail.
-        CredentialServiceError::ReauthRequired { .. } => ApiError::Unauthorized(format!(
-            "credential '{cred}' requires re-authentication; reconnect the account"
-        )),
-        // SessionRequired / ScopeViolation / Cancelled / CapabilityWithoutOps
-        // are composition or defence-in-depth faults the api wiring prevents
-        // (a session is always attached on the acquisition paths); surfacing
-        // one is an internal bug, never a client error. `#[non_exhaustive]`
-        // future variants land here too — fail closed, no secret echo.
-        other => ApiError::Internal(format!("credential runtime error: {other}")),
+        CredentialGatewayError::Forbidden => {
+            ApiError::Forbidden("credential command is not authorized".to_owned())
+        },
+        CredentialGatewayError::Unavailable => ApiError::ServiceUnavailable(
+            "credential command service is temporarily unavailable".to_owned(),
+        ),
+        CredentialGatewayError::OutcomeUnknown => ApiError::OutcomeUnknown(
+            "credential mutation may have committed; reconcile credential state before retrying"
+                .to_owned(),
+        ),
+        CredentialGatewayError::Internal => {
+            ApiError::Internal("credential runtime operation failed".to_owned())
+        },
     }
 }
 
@@ -221,100 +209,36 @@ fn type_facts(state: &AppState, credential_key: &str) -> (String, CredentialCapa
         })
 }
 
-/// Project a secret-free [`CredentialHead`] into the full wire response.
-fn to_response(state: &AppState, head: CredentialHead) -> CredentialResponse {
-    let (auth_pattern, capabilities) = type_facts(state, &head.credential_key);
+/// Project a secret-free gateway record into the full wire response.
+fn to_response(state: &AppState, record: CredentialGatewayRecord) -> CredentialResponse {
+    let (auth_pattern, capabilities) = type_facts(state, &record.credential_key);
     CredentialResponse {
-        id: head.id,
-        credential_key: head.credential_key,
-        name: head.display.display_name.unwrap_or_default(),
-        description: head.display.description,
+        id: record.id,
+        credential_key: record.credential_key,
+        name: record.display_name.unwrap_or_default(),
+        description: record.description,
         auth_pattern,
         capabilities,
-        created_at: head.created_at.to_rfc3339(),
-        updated_at: head.updated_at.to_rfc3339(),
-        expires_at: head.expires_at.map(|t| t.to_rfc3339()),
-        version: head.version,
-        reauth_required: head.reauth_required,
-        tags: head.display.tags.into_iter().collect(),
+        created_at: record.created_at.to_rfc3339(),
+        updated_at: record.updated_at.to_rfc3339(),
+        expires_at: record.expires_at.map(|t| t.to_rfc3339()),
+        version: record.version,
+        reauth_required: record.reauth_required,
+        tags: record.tags.into_iter().collect(),
     }
 }
 
-/// Project a secret-free [`CredentialHead`] into the list summary.
-fn to_summary(state: &AppState, head: CredentialHead) -> CredentialSummary {
-    let (auth_pattern, _) = type_facts(state, &head.credential_key);
+/// Project a secret-free gateway record into the list summary.
+fn to_summary(state: &AppState, record: CredentialGatewayRecord) -> CredentialSummary {
+    let (auth_pattern, _) = type_facts(state, &record.credential_key);
     CredentialSummary {
-        id: head.id,
-        credential_key: head.credential_key,
-        name: head.display.display_name.unwrap_or_default(),
+        id: record.id,
+        credential_key: record.credential_key,
+        name: record.display_name.unwrap_or_default(),
         auth_pattern,
-        expires_at: head.expires_at.map(|t| t.to_rfc3339()),
-        version: head.version,
-        reauth_required: head.reauth_required,
-    }
-}
-
-/// Build the per-instance display metadata from request fields.
-fn display_from_parts(
-    name: Option<String>,
-    description: Option<String>,
-    tags: Option<HashMap<String, String>>,
-) -> CredentialDisplay {
-    CredentialDisplay {
-        display_name: name,
-        description,
-        tags: tags.unwrap_or_default().into_iter().collect(),
-    }
-}
-
-// ── Request `data` pre-validation (api-side structured 400s) ────────────────
-
-/// Map a secret-safe [`CredentialFieldError`] list to the api-wide
-/// validation status (400 — `ApiError::Validation`, consistent with every
-/// other request-validation failure).
-///
-/// `CredentialFieldError` carries only an RFC-6901 path, a validator code,
-/// and a static message — never the submitted value. The mapping
-/// introduces no value either.
-///
-/// [`CredentialFieldError`]: crate::ports::credential_schema::CredentialFieldError
-fn credential_validation_error(
-    errs: Vec<crate::ports::credential_schema::CredentialFieldError>,
-) -> ApiError {
-    let errors = errs
-        .into_iter()
-        .map(|e| crate::error::ValidationFieldError {
-            code: e.code,
-            detail: e.message,
-            pointer: e.path,
-        })
-        .collect();
-    ApiError::Validation {
-        detail: "credential data failed schema validation".to_owned(),
-        errors,
-    }
-}
-
-/// Validate credential `data` against the credential type's resolved
-/// schema **before** it reaches the facade. The facade re-validates
-/// through its canonical pipeline (authoritative); this api-side
-/// pre-check exists to return structured field errors (RFC-6901
-/// pointers) instead of the facade's flattened reason string. When no
-/// port is configured the request is rejected with 503 — credential
-/// `data` is **never** forwarded unvalidated (fail-closed).
-fn validate_credential_data(
-    state: &AppState,
-    credential_key: &str,
-    data: &serde_json::Value,
-) -> ApiResult<()> {
-    match state.credential_schema.as_ref() {
-        Some(port) => port
-            .validate_data(credential_key, data)
-            .map_err(credential_validation_error),
-        None => Err(ApiError::ServiceUnavailable(
-            "credential data validation unavailable: no credential-schema port configured"
-                .to_owned(),
-        )),
+        expires_at: record.expires_at.map(|t| t.to_rfc3339()),
+        version: record.version,
+        reauth_required: record.reauth_required,
     }
 }
 
@@ -330,23 +254,22 @@ fn validate_credential_data(
 #[tracing::instrument(skip_all, fields(cred.key = %req.credential_key))]
 pub async fn create_credential(
     state: &AppState,
+    principal: &AuthenticatedPrincipal,
     scope: &Scope,
     req: CreateCredentialRequest,
 ) -> ApiResult<CredentialResponse> {
-    // api-side pre-check for structured field errors; no port ⇒ 503
-    // (never forward unvalidated). The facade re-validates afterwards.
-    validate_credential_data(state, &req.credential_key, &req.data)?;
-
-    let svc = service(state)?;
-    let tenant = TenantScope::from_scope(scope);
-    let display = display_from_parts(Some(req.name), req.description, req.tags);
-    let head = svc
-        .create(&tenant, &req.credential_key, req.data, display)
+    let result = gateway(state)?
+        .execute(principal, scope, CredentialGatewayCommand::Create(req))
         .await
-        .map_err(|e| map_service_err(e, "<create>"))?;
+        .map_err(|e| map_gateway_err(e, "<create>"))?;
+    let CredentialGatewayResult::Record(record) = result else {
+        return Err(ApiError::Internal(
+            "credential gateway returned an invalid create result".to_owned(),
+        ));
+    };
 
-    tracing::info!(cred.id = %head.id, "credential created");
-    Ok(to_response(state, head))
+    tracing::info!(cred.id = %record.id, "credential created");
+    Ok(to_response(state, record))
 }
 
 /// Retrieve a single credential by ID within a workspace.
@@ -356,16 +279,26 @@ pub async fn create_credential(
 #[tracing::instrument(skip_all, fields(cred.id = %cred))]
 pub async fn get_credential(
     state: &AppState,
+    principal: &AuthenticatedPrincipal,
     scope: &Scope,
     cred: &str,
 ) -> ApiResult<CredentialResponse> {
-    let svc = service(state)?;
-    let tenant = TenantScope::from_scope(scope);
-    let head = svc
-        .get(&tenant, cred)
+    let result = gateway(state)?
+        .execute(
+            principal,
+            scope,
+            CredentialGatewayCommand::Get {
+                credential_id: cred.to_owned(),
+            },
+        )
         .await
-        .map_err(|e| map_service_err(e, cred))?;
-    Ok(to_response(state, head))
+        .map_err(|e| map_gateway_err(e, cred))?;
+    let CredentialGatewayResult::Record(record) = result else {
+        return Err(ApiError::Internal(
+            "credential gateway returned an invalid get result".to_owned(),
+        ));
+    };
+    Ok(to_response(state, record))
 }
 
 /// Update an existing credential in the workspace.
@@ -373,59 +306,65 @@ pub async fn get_credential(
 /// Partial update: only provided fields change. A provided `version`
 /// engages compare-and-swap (409 on mismatch). A provided `data`
 /// re-runs the typed validate→resolve pipeline for the (unchanged)
-/// credential type; a metadata-only update never re-resolves or
-/// re-encrypts state.
+/// credential type; a metadata-only update never re-resolves provider
+/// material, although the storage layer may re-encrypt the unchanged semantic
+/// state into a fresh envelope/current key during the write.
 #[tracing::instrument(skip_all, fields(cred.id = %cred))]
 pub async fn update_credential(
     state: &AppState,
+    principal: &AuthenticatedPrincipal,
     scope: &Scope,
     cred: &str,
     req: UpdateCredentialRequest,
 ) -> ApiResult<CredentialResponse> {
-    let svc = service(state)?;
-    let tenant = TenantScope::from_scope(scope);
-
-    // Merge semantics: only provided display fields change. Read the
-    // current head (owner-checked) and overlay. The read-modify-write
-    // window on display is closed by the CAS version when supplied.
-    let existing = svc
-        .get(&tenant, cred)
+    // The credential-owned controller performs the owner-bound read, display
+    // merge, canonical type validation, and write under one authorization
+    // decision. The API never fetches a head to manufacture write authority.
+    let result = gateway(state)?
+        .execute(
+            principal,
+            scope,
+            CredentialGatewayCommand::Update {
+                credential_id: cred.to_owned(),
+                request: req,
+            },
+        )
         .await
-        .map_err(|e| map_service_err(e, cred))?;
+        .map_err(|e| map_gateway_err(e, cred))?;
+    let CredentialGatewayResult::Record(record) = result else {
+        return Err(ApiError::Internal(
+            "credential gateway returned an invalid update result".to_owned(),
+        ));
+    };
 
-    if let Some(ref data) = req.data {
-        validate_credential_data(state, &existing.credential_key, data)?;
-    }
-
-    let mut display = existing.display;
-    if let Some(name) = req.name {
-        display.display_name = Some(name);
-    }
-    if req.description.is_some() {
-        display.description = req.description;
-    }
-    if let Some(tags) = req.tags {
-        display.tags = tags.into_iter().collect();
-    }
-
-    let head = svc
-        .update(&tenant, cred, req.data, req.version, display)
-        .await
-        .map_err(|e| map_service_err(e, cred))?;
-
-    tracing::info!(cred.id = %head.id, "credential updated");
-    Ok(to_response(state, head))
+    tracing::info!(cred.id = %record.id, "credential updated");
+    Ok(to_response(state, record))
 }
 
-/// Delete a credential from the workspace.
+/// Tombstone a credential in the workspace.
 #[tracing::instrument(skip_all, fields(cred.id = %cred))]
-pub async fn delete_credential(state: &AppState, scope: &Scope, cred: &str) -> ApiResult<()> {
-    let svc = service(state)?;
-    let tenant = TenantScope::from_scope(scope);
-    svc.delete(&tenant, cred)
+pub async fn delete_credential(
+    state: &AppState,
+    principal: &AuthenticatedPrincipal,
+    scope: &Scope,
+    cred: &str,
+) -> ApiResult<()> {
+    let result = gateway(state)?
+        .execute(
+            principal,
+            scope,
+            CredentialGatewayCommand::Delete {
+                credential_id: cred.to_owned(),
+            },
+        )
         .await
-        .map_err(|e| map_service_err(e, cred))?;
-    tracing::info!(cred.id = %cred, "credential deleted");
+        .map_err(|e| map_gateway_err(e, cred))?;
+    if !matches!(result, CredentialGatewayResult::Deleted) {
+        return Err(ApiError::Internal(
+            "credential gateway returned an invalid delete result".to_owned(),
+        ));
+    }
+    tracing::info!(cred.id = %cred, "credential tombstoned");
     Ok(())
 }
 
@@ -438,17 +377,21 @@ pub async fn delete_credential(state: &AppState, scope: &Scope, cred: &str) -> A
 #[tracing::instrument(skip_all)]
 pub async fn list_credentials(
     state: &AppState,
+    principal: &AuthenticatedPrincipal,
     scope: &Scope,
     query: ListCredentialsQuery,
 ) -> ApiResult<ListCredentialsResponse> {
-    let svc = service(state)?;
-    let tenant = TenantScope::from_scope(scope);
-    let heads = svc
-        .list(&tenant)
+    let result = gateway(state)?
+        .execute(principal, scope, CredentialGatewayCommand::List)
         .await
-        .map_err(|e| map_service_err(e, "<list>"))?;
+        .map_err(|e| map_gateway_err(e, "<list>"))?;
+    let CredentialGatewayResult::Records(records) = result else {
+        return Err(ApiError::Internal(
+            "credential gateway returned an invalid list result".to_owned(),
+        ));
+    };
 
-    let mut summaries: Vec<CredentialSummary> = heads
+    let mut summaries: Vec<CredentialSummary> = records
         .into_iter()
         .map(|head| to_summary(state, head))
         .filter(|s| {
@@ -479,6 +422,59 @@ pub async fn list_credentials(
 
 // ── Lifecycle (test / refresh / revoke) ──────────────────────────────────────
 
+fn map_test_failure_code(code: CredentialGatewayTestFailure) -> CredentialTestFailureCodeV1 {
+    match code {
+        CredentialGatewayTestFailure::AuthenticationRejected => {
+            CredentialTestFailureCodeV1::AuthenticationRejected
+        },
+        CredentialGatewayTestFailure::PermissionDenied => {
+            CredentialTestFailureCodeV1::PermissionDenied
+        },
+        CredentialGatewayTestFailure::AccountRestricted => {
+            CredentialTestFailureCodeV1::AccountRestricted
+        },
+        CredentialGatewayTestFailure::InvalidConfiguration => {
+            CredentialTestFailureCodeV1::InvalidConfiguration
+        },
+        CredentialGatewayTestFailure::Other => CredentialTestFailureCodeV1::Other,
+    }
+}
+
+fn test_failure_message(code: CredentialTestFailureCodeV1) -> &'static str {
+    match code {
+        CredentialTestFailureCodeV1::AuthenticationRejected => "provider rejected the credential",
+        CredentialTestFailureCodeV1::PermissionDenied => {
+            "credential lacks required provider permissions"
+        },
+        CredentialTestFailureCodeV1::AccountRestricted => {
+            "provider account is disabled, locked, or restricted"
+        },
+        CredentialTestFailureCodeV1::InvalidConfiguration => "credential configuration is invalid",
+        CredentialTestFailureCodeV1::Other => "credential test failed",
+    }
+}
+
+/// Pure projection from the payload-free gateway result to the v1 wire shape.
+fn map_test_result(
+    result: CredentialGatewayTestResult,
+    tested_at: String,
+) -> TestCredentialResponse {
+    match result {
+        CredentialGatewayTestResult::Success => TestCredentialResponse::Success {
+            message: "credential accepted by provider".to_owned(),
+            tested_at,
+        },
+        CredentialGatewayTestResult::Failed(failure) => {
+            let code = map_test_failure_code(failure);
+            TestCredentialResponse::Failed {
+                code,
+                message: test_failure_message(code).to_owned(),
+                tested_at,
+            }
+        },
+    }
+}
+
 /// Test credential connectivity against the external system.
 ///
 /// Dispatches the registered type's `Testable::test` through the facade.
@@ -486,26 +482,26 @@ pub async fn list_credentials(
 #[tracing::instrument(skip_all, fields(cred.id = %cred))]
 pub async fn test_credential(
     state: &AppState,
+    principal: &AuthenticatedPrincipal,
     scope: &Scope,
     cred: &str,
 ) -> ApiResult<TestCredentialResponse> {
-    let svc = service(state)?;
-    let tenant = TenantScope::from_scope(scope);
-    let report = svc
-        .test(&tenant, cred)
+    let result = gateway(state)?
+        .execute(
+            principal,
+            scope,
+            CredentialGatewayCommand::Test {
+                credential_id: cred.to_owned(),
+            },
+        )
         .await
-        .map_err(|e| map_service_err(e, cred))?;
-    Ok(TestCredentialResponse {
-        success: report.ok,
-        message: report.message.unwrap_or_else(|| {
-            if report.ok {
-                "credential accepted by provider".to_owned()
-            } else {
-                "credential rejected by provider".to_owned()
-            }
-        }),
-        tested_at: chrono::Utc::now().to_rfc3339(),
-    })
+        .map_err(|e| map_gateway_err(e, cred))?;
+    let CredentialGatewayResult::Tested(result) = result else {
+        return Err(ApiError::Internal(
+            "credential gateway returned an invalid test result".to_owned(),
+        ));
+    };
+    Ok(map_test_result(result, chrono::Utc::now().to_rfc3339()))
 }
 
 /// Force a token refresh for the credential.
@@ -517,23 +513,33 @@ pub async fn test_credential(
 #[tracing::instrument(skip_all, fields(cred.id = %cred))]
 pub async fn refresh_credential(
     state: &AppState,
+    principal: &AuthenticatedPrincipal,
     scope: &Scope,
     cred: &str,
 ) -> ApiResult<RefreshCredentialResponse> {
-    let svc = service(state)?;
-    let tenant = TenantScope::from_scope(scope);
-    let report = svc
-        .refresh(&tenant, cred)
+    let result = gateway(state)?
+        .execute(
+            principal,
+            scope,
+            CredentialGatewayCommand::Refresh {
+                credential_id: cred.to_owned(),
+            },
+        )
         .await
-        .map_err(|e| map_service_err(e, cred))?;
+        .map_err(|e| map_gateway_err(e, cred))?;
+    let CredentialGatewayResult::Refreshed { record, refreshed } = result else {
+        return Err(ApiError::Internal(
+            "credential gateway returned an invalid refresh result".to_owned(),
+        ));
+    };
     // The facade's fallback-on-interrupt serves the still-valid stored
     // material when the provider failed transiently — honest reporting:
     // that is NOT a refresh, and the old expiry is not a "new" one.
-    Ok(if report.refreshed {
+    Ok(if refreshed {
         RefreshCredentialResponse {
             refreshed: true,
             message: "credential refreshed".to_owned(),
-            new_expires_at: report.head.expires_at.map(|t| t.to_rfc3339()),
+            new_expires_at: record.expires_at.map(|t| t.to_rfc3339()),
         }
     } else {
         RefreshCredentialResponse {
@@ -546,76 +552,53 @@ pub async fn refresh_credential(
     })
 }
 
-/// Explicitly revoke the credential at the provider and delete the row.
+/// Explicitly revoke the credential at the provider and tombstone the row.
 #[tracing::instrument(skip_all, fields(cred.id = %cred))]
 pub async fn revoke_credential(
     state: &AppState,
+    principal: &AuthenticatedPrincipal,
     scope: &Scope,
     cred: &str,
 ) -> ApiResult<RevokeCredentialResponse> {
-    let svc = service(state)?;
-    let tenant = TenantScope::from_scope(scope);
-    svc.revoke(&tenant, cred)
+    let result = gateway(state)?
+        .execute(
+            principal,
+            scope,
+            CredentialGatewayCommand::Revoke {
+                credential_id: cred.to_owned(),
+            },
+        )
         .await
-        .map_err(|e| map_service_err(e, cred))?;
+        .map_err(|e| map_gateway_err(e, cred))?;
+    if !matches!(result, CredentialGatewayResult::Revoked) {
+        return Err(ApiError::Internal(
+            "credential gateway returned an invalid revoke result".to_owned(),
+        ));
+    }
     Ok(RevokeCredentialResponse {
         revoked: true,
-        message: "credential revoked at the provider and removed".to_owned(),
+        message: "credential revoked at the provider and tombstoned".to_owned(),
     })
 }
 
 // ── Acquisition (resolve / continue) ─────────────────────────────────────────
 
-/// Map the facade's [`InteractionRequest`] onto the wire DTO.
-///
-/// `InteractionRequest` is `#[non_exhaustive]`; an unrecognized future
-/// arm is an internal composition gap (the api cannot instruct a UI it
-/// does not understand), surfaced as 500 — never a fake interaction.
-fn map_interaction(interaction: InteractionRequest) -> ApiResult<AcquisitionInteraction> {
-    match interaction {
-        InteractionRequest::Redirect { url } => Ok(AcquisitionInteraction::Redirect { url }),
-        InteractionRequest::FormPost { url, fields } => Ok(AcquisitionInteraction::FormPost {
-            url,
-            fields: fields
-                .into_iter()
-                .map(|(name, value)| FormPostField { name, value })
-                .collect(),
-        }),
-        InteractionRequest::DisplayInfo {
-            title,
-            message,
-            data,
-            expires_in,
-        } => Ok(AcquisitionInteraction::DisplayInfo {
-            title,
-            message,
-            data: serde_json::to_value(&data).map_err(|e| {
-                ApiError::Internal(format!("failed to encode interaction display data: {e}"))
-            })?,
-            expires_in,
-        }),
-        other => Err(ApiError::Internal(format!(
-            "unsupported credential interaction kind: {other:?}"
-        ))),
-    }
-}
-
-/// Map a facade [`Acquisition`] outcome onto the wire response.
-fn map_acquisition(acq: Acquisition) -> ApiResult<ResolveCredentialResponse> {
+/// Map an API-owned gateway acquisition onto the wire response.
+fn map_acquisition(acq: CredentialGatewayAcquisition) -> ResolveCredentialResponse {
     match acq {
-        Acquisition::Complete { head } => Ok(ResolveCredentialResponse::Complete {
-            credential_id: head.id,
-        }),
-        Acquisition::Pending { token, interaction } => Ok(ResolveCredentialResponse::Pending {
-            pending_token: token,
-            interaction: map_interaction(interaction)?,
-        }),
-        Acquisition::Retry { after } => Ok(ResolveCredentialResponse::Retry {
-            retry_after_secs: after.as_secs(),
-        }),
-        other => Err(ApiError::Internal(format!(
-            "unrecognized credential acquisition outcome: {other:?}"
-        ))),
+        CredentialGatewayAcquisition::Complete { credential_id } => {
+            ResolveCredentialResponse::Complete { credential_id }
+        },
+        CredentialGatewayAcquisition::Pending {
+            pending_token,
+            interaction,
+        } => ResolveCredentialResponse::Pending {
+            pending_token,
+            interaction,
+        },
+        CredentialGatewayAcquisition::Retry { retry_after_secs } => {
+            ResolveCredentialResponse::Retry { retry_after_secs }
+        },
     }
 }
 
@@ -628,50 +611,48 @@ fn map_acquisition(acq: Acquisition) -> ApiResult<ResolveCredentialResponse> {
 #[tracing::instrument(skip_all, fields(cred.key = %req.credential_key))]
 pub async fn resolve_credential(
     state: &AppState,
+    principal: &AuthenticatedPrincipal,
     scope: &Scope,
-    user_id: &str,
     req: ResolveCredentialRequest,
 ) -> ApiResult<ResolveCredentialResponse> {
-    validate_credential_data(state, &req.credential_key, &req.data)?;
-
-    let svc = service(state)?;
-    let tenant = TenantScope::from_scope(scope).with_session(user_id);
-    let acq = svc
-        .resolve(&tenant, &req.credential_key, req.data)
+    let result = gateway(state)?
+        .execute(principal, scope, CredentialGatewayCommand::Resolve(req))
         .await
-        .map_err(|e| map_service_err(e, "<resolve>"))?;
-    map_acquisition(acq)
+        .map_err(|e| map_gateway_err(e, "<resolve>"))?;
+    let CredentialGatewayResult::Acquisition(acquisition) = result else {
+        return Err(ApiError::Internal(
+            "credential gateway returned an invalid resolve result".to_owned(),
+        ));
+    };
+    Ok(map_acquisition(acquisition))
 }
 
 /// Continue a multi-step credential acquisition.
 ///
 /// `user_input` is the typed continuation payload (the serialized
-/// [`UserInput`] shape: `"Poll"`, `{"Code":{"code":".."}}`,
+/// [`ContinueResolveRequest::user_input`] shape: `"Poll"`, `{"Code":{"code":".."}}`,
 /// `{"Callback":{"params":{..}}}`, `{"FormData":{"params":{..}}}`).
 #[tracing::instrument(skip_all, fields(cred.key = %req.credential_key))]
 pub async fn continue_resolve(
     state: &AppState,
+    principal: &AuthenticatedPrincipal,
     scope: &Scope,
-    user_id: &str,
     req: ContinueResolveRequest,
 ) -> ApiResult<ContinueResolveResponse> {
-    let svc = service(state)?;
-    let user_input: UserInput = serde_json::from_value(req.user_input).map_err(|_| {
-        // The serde error text can echo the (potentially secret) payload —
-        // deliberately omitted.
-        ApiError::Validation {
-            detail: "user_input is not a recognized continuation payload \
-                     (expected Poll / Code / Callback / FormData)"
-                .to_owned(),
-            errors: vec![],
-        }
-    })?;
-    let tenant = TenantScope::from_scope(scope).with_session(user_id);
-    let acq = svc
-        .continue_resolve(&tenant, &req.credential_key, &req.pending_token, user_input)
+    let result = gateway(state)?
+        .execute(
+            principal,
+            scope,
+            CredentialGatewayCommand::ContinueResolve(req),
+        )
         .await
-        .map_err(|e| map_service_err(e, "<continue>"))?;
-    map_acquisition(acq)
+        .map_err(|e| map_gateway_err(e, "<continue>"))?;
+    let CredentialGatewayResult::Acquisition(acquisition) = result else {
+        return Err(ApiError::Internal(
+            "credential gateway returned an invalid continuation result".to_owned(),
+        ));
+    };
+    Ok(map_acquisition(acquisition))
 }
 
 // ── Type discovery (schema port) ─────────────────────────────────────────────
@@ -739,6 +720,10 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+    use crate::ports::credential_command::{
+        CredentialGatewayValidationIssue, CredentialGatewayValidationReport,
+    };
+    use crate::ports::credential_schema::{CredentialValidationCode, CredentialValidationLocation};
     use nebula_storage::credential::EnvKeyProvider;
     use nebula_storage::inmem::{
         InMemoryControlQueue, InMemoryExecutionStore, InMemoryJournalReader,
@@ -748,6 +733,75 @@ mod tests {
     /// 32 `0x42` bytes, base64 — a valid AES-256 key fixture (mirrors the
     /// factory's dev key). Not a secret: a fixed test constant.
     const TEST_KEY_B64: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=";
+    const PROVIDER_SECRET_CANARY: &str = "provider-echoed-secret-NEVER-WIRE-a7d3";
+
+    #[test]
+    fn test_result_mapping_serializes_success_and_every_v1_failure() {
+        const TESTED_AT: &str = "2026-07-21T12:34:56Z";
+
+        let success = map_test_result(CredentialGatewayTestResult::Success, TESTED_AT.to_owned());
+        assert_eq!(
+            serde_json::to_value(&success).expect("serialize success response"),
+            serde_json::json!({
+                "status": "success",
+                "message": "credential accepted by provider",
+                "tested_at": TESTED_AT,
+            })
+        );
+
+        for (gateway_code, wire_code, wire_name, message) in [
+            (
+                CredentialGatewayTestFailure::AuthenticationRejected,
+                CredentialTestFailureCodeV1::AuthenticationRejected,
+                "authentication_rejected",
+                "provider rejected the credential",
+            ),
+            (
+                CredentialGatewayTestFailure::PermissionDenied,
+                CredentialTestFailureCodeV1::PermissionDenied,
+                "permission_denied",
+                "credential lacks required provider permissions",
+            ),
+            (
+                CredentialGatewayTestFailure::AccountRestricted,
+                CredentialTestFailureCodeV1::AccountRestricted,
+                "account_restricted",
+                "provider account is disabled, locked, or restricted",
+            ),
+            (
+                CredentialGatewayTestFailure::InvalidConfiguration,
+                CredentialTestFailureCodeV1::InvalidConfiguration,
+                "invalid_configuration",
+                "credential configuration is invalid",
+            ),
+            (
+                CredentialGatewayTestFailure::Other,
+                CredentialTestFailureCodeV1::Other,
+                "other",
+                "credential test failed",
+            ),
+        ] {
+            assert_eq!(map_test_failure_code(gateway_code), wire_code);
+            let response = map_test_result(
+                CredentialGatewayTestResult::Failed(gateway_code),
+                TESTED_AT.to_owned(),
+            );
+            let json = serde_json::to_value(&response).expect("serialize failed response");
+            assert_eq!(
+                json,
+                serde_json::json!({
+                    "status": "failed",
+                    "code": wire_name,
+                    "message": message,
+                    "tested_at": TESTED_AT,
+                })
+            );
+            assert!(!json.to_string().contains(PROVIDER_SECRET_CANARY));
+            let debug = format!("{response:?}");
+            assert!(debug.contains(&format!("{wire_code:?}")));
+            assert!(!debug.contains(PROVIDER_SECRET_CANARY));
+        }
+    }
 
     fn base_state() -> AppState {
         let exec_store = InMemoryExecutionStore::new();
@@ -782,11 +836,17 @@ mod tests {
         };
         base_state()
             .with_credential_schema(port)
-            .with_credential_service(svc)
+            .with_credential_gateway(crate::ports::credential_command::test_gateway_from_service(
+                svc,
+            ))
     }
 
     fn test_scope() -> Scope {
         Scope::new("w", "o")
+    }
+
+    fn test_principal() -> AuthenticatedPrincipal {
+        AuthenticatedPrincipal::for_test_user("usr_01ARZ3NDEKTSV4RRFFQ69G5FAV")
     }
 
     /// §4.5 operational honesty: with no `CredentialService` wired, every
@@ -796,17 +856,19 @@ mod tests {
     async fn all_credential_fns_are_503_without_service() {
         let s = base_state();
         let scope = test_scope();
+        let principal = test_principal();
         assert!(matches!(
-            get_credential(&s, &scope, "cred_x").await,
+            get_credential(&s, &principal, &scope, "cred_x").await,
             Err(ApiError::ServiceUnavailable(_))
         ));
         assert!(matches!(
-            delete_credential(&s, &scope, "cred_x").await,
+            delete_credential(&s, &principal, &scope, "cred_x").await,
             Err(ApiError::ServiceUnavailable(_))
         ));
         assert!(matches!(
             list_credentials(
                 &s,
+                &principal,
                 &scope,
                 ListCredentialsQuery {
                     page: 1,
@@ -819,15 +881,15 @@ mod tests {
             Err(ApiError::ServiceUnavailable(_))
         ));
         assert!(matches!(
-            test_credential(&s, &scope, "cred_x").await,
+            test_credential(&s, &principal, &scope, "cred_x").await,
             Err(ApiError::ServiceUnavailable(_))
         ));
         assert!(matches!(
-            refresh_credential(&s, &scope, "cred_x").await,
+            refresh_credential(&s, &principal, &scope, "cred_x").await,
             Err(ApiError::ServiceUnavailable(_))
         ));
         assert!(matches!(
-            revoke_credential(&s, &scope, "cred_x").await,
+            revoke_credential(&s, &principal, &scope, "cred_x").await,
             Err(ApiError::ServiceUnavailable(_))
         ));
         // create/resolve hit the schema-port gate first (also absent here)
@@ -835,6 +897,7 @@ mod tests {
         assert!(matches!(
             create_credential(
                 &s,
+                &principal,
                 &scope,
                 CreateCredentialRequest {
                     credential_key: "api_key".into(),
@@ -847,10 +910,6 @@ mod tests {
             .await,
             Err(ApiError::ServiceUnavailable(_))
         ));
-        assert!(matches!(
-            scoped_store(&s, "o:w"),
-            Err(ApiError::ServiceUnavailable(_))
-        ));
     }
 
     /// CRUD through the facade: create → get → list → update (rename via
@@ -860,9 +919,11 @@ mod tests {
     async fn crud_round_trips_without_secret_in_projection() {
         let s = test_state().await;
         let scope = test_scope();
+        let principal = test_principal();
         let secret = "sk-unit-crud-NEVER-LEAK-7a7a";
         let created = create_credential(
             &s,
+            &principal,
             &scope,
             CreateCredentialRequest {
                 credential_key: "api_key".into(),
@@ -885,12 +946,15 @@ mod tests {
             "CredentialResponse Debug must not carry the secret: {dbg}"
         );
 
-        let got = get_credential(&s, &scope, &created.id).await.expect("get");
+        let got = get_credential(&s, &principal, &scope, &created.id)
+            .await
+            .expect("get");
         assert_eq!(got.id, created.id);
         assert!(!format!("{got:?}").contains(secret));
 
         let listed = list_credentials(
             &s,
+            &principal,
             &scope,
             ListCredentialsQuery {
                 page: 1,
@@ -908,6 +972,7 @@ mod tests {
         // secret state is untouched and the description survives.
         let renamed = update_credential(
             &s,
+            &principal,
             &scope,
             &created.id,
             UpdateCredentialRequest {
@@ -924,11 +989,11 @@ mod tests {
         assert_eq!(renamed.description.as_deref(), Some("d"));
         assert!(renamed.version > created.version);
 
-        delete_credential(&s, &scope, &created.id)
+        delete_credential(&s, &principal, &scope, &created.id)
             .await
             .expect("delete");
         assert!(matches!(
-            get_credential(&s, &scope, &created.id).await,
+            get_credential(&s, &principal, &scope, &created.id).await,
             Err(ApiError::NotFound(_))
         ));
     }
@@ -940,8 +1005,10 @@ mod tests {
     async fn lifecycle_on_static_type_is_validation_error() {
         let s = test_state().await;
         let scope = test_scope();
+        let principal = test_principal();
         let created = create_credential(
             &s,
+            &principal,
             &scope,
             CreateCredentialRequest {
                 credential_key: "api_key".into(),
@@ -955,15 +1022,15 @@ mod tests {
         .expect("create");
 
         assert!(matches!(
-            test_credential(&s, &scope, &created.id).await,
+            test_credential(&s, &principal, &scope, &created.id).await,
             Err(ApiError::Validation { .. })
         ));
         assert!(matches!(
-            refresh_credential(&s, &scope, &created.id).await,
+            refresh_credential(&s, &principal, &scope, &created.id).await,
             Err(ApiError::Validation { .. })
         ));
         assert!(matches!(
-            revoke_credential(&s, &scope, &created.id).await,
+            revoke_credential(&s, &principal, &scope, &created.id).await,
             Err(ApiError::Validation { .. })
         ));
     }
@@ -974,10 +1041,11 @@ mod tests {
     async fn resolve_complete_persists_and_is_visible_to_crud() {
         let s = test_state().await;
         let scope = test_scope();
+        let principal = test_principal();
         let res = resolve_credential(
             &s,
+            &principal,
             &scope,
-            "user-1",
             ResolveCredentialRequest {
                 credential_key: "api_key".into(),
                 data: serde_json::json!({ "api_key": "k-resolved" }),
@@ -988,7 +1056,7 @@ mod tests {
         let ResolveCredentialResponse::Complete { credential_id } = res else {
             panic!("expected Complete for a static type, got {res:?}");
         };
-        let got = get_credential(&s, &scope, &credential_id)
+        let got = get_credential(&s, &principal, &scope, &credential_id)
             .await
             .expect("resolved credential is gettable");
         assert_eq!(got.credential_key, "api_key");
@@ -1001,8 +1069,10 @@ mod tests {
         let s = test_state().await;
         let scope_a = Scope::new("ws-a", "org");
         let scope_b = Scope::new("ws-b", "org");
+        let principal = test_principal();
         let created = create_credential(
             &s,
+            &principal,
             &scope_a,
             CreateCredentialRequest {
                 credential_key: "api_key".into(),
@@ -1015,71 +1085,170 @@ mod tests {
         .await
         .expect("create");
 
-        let err = get_credential(&s, &scope_b, &created.id)
+        let err = get_credential(&s, &principal, &scope_b, &created.id)
             .await
             .expect_err("cross-workspace get denied");
         assert!(matches!(err, ApiError::NotFound(_)));
     }
 
-    /// The service-error mapping is total and secret-safe for the
+    /// The gateway-error mapping is total and secret-safe for the
     /// client-relevant arms.
     #[test]
-    fn service_error_mapping_statuses() {
+    fn gateway_error_mapping_statuses() {
         assert!(matches!(
-            map_service_err(
-                CredentialServiceError::NotFound { id: "x".into() },
-                "cred_x"
-            ),
+            map_gateway_err(CredentialGatewayError::NotFound, "cred_x"),
             ApiError::NotFound(_)
         ));
         assert!(matches!(
-            map_service_err(
-                CredentialServiceError::VersionConflict {
-                    id: "x".into(),
+            map_gateway_err(
+                CredentialGatewayError::VersionConflict {
                     expected: 1,
-                    actual: 2
+                    actual: 2,
                 },
                 "cred_x"
             ),
             ApiError::VersionMismatch(_)
         ));
         assert!(matches!(
-            map_service_err(
-                CredentialServiceError::ValidationFailed {
-                    reason: "[code] /path".into()
+            map_gateway_err(CredentialGatewayError::IdAlreadyExists, "cred_x"),
+            ApiError::AlreadyExists(_)
+        ));
+        assert!(matches!(
+            map_gateway_err(CredentialGatewayError::NameAlreadyExists, "cred_x"),
+            ApiError::AlreadyExists(_)
+        ));
+        assert!(matches!(
+            map_gateway_err(CredentialGatewayError::VersionExhausted, "cred_x"),
+            ApiError::VersionExhausted(_)
+        ));
+        assert!(matches!(
+            map_gateway_err(
+                CredentialGatewayError::ValidationFailed {
+                    report: CredentialGatewayValidationReport::single(
+                        CredentialValidationLocation::Data,
+                        CredentialValidationCode::Required,
+                    ),
                 },
                 "cred_x"
             ),
             ApiError::Validation { .. }
         ));
         assert!(matches!(
-            map_service_err(
-                CredentialServiceError::TypeUnknown { key: "nope".into() },
+            map_gateway_err(
+                CredentialGatewayError::TypeUnknown { key: "nope".into() },
                 "cred_x"
             ),
             ApiError::Validation { .. }
         ));
         assert!(matches!(
-            map_service_err(
-                CredentialServiceError::CapabilityUnsupported {
+            map_gateway_err(
+                CredentialGatewayError::CapabilityUnsupported {
                     capability: "refresh".into(),
-                    key: "api_key".into()
+                    key: "api_key".into(),
                 },
                 "cred_x"
             ),
             ApiError::Validation { .. }
         ));
         assert!(matches!(
-            map_service_err(CredentialServiceError::PendingExpired, "cred_x"),
+            map_gateway_err(CredentialGatewayError::PendingExpired, "cred_x"),
             ApiError::Unauthorized(_)
         ));
         assert!(matches!(
-            map_service_err(CredentialServiceError::Provider("down".into()), "cred_x"),
+            map_gateway_err(CredentialGatewayError::ReauthRequired, "cred_x"),
+            ApiError::CredentialReauthRequired
+        ));
+        assert!(matches!(
+            map_gateway_err(
+                CredentialGatewayError::RefreshNotApplied {
+                    retry: CredentialGatewayRefreshRetry::Never,
+                },
+                "cred_x"
+            ),
+            ApiError::CredentialRefreshNotAppliedNever
+        ));
+        assert!(matches!(
+            map_gateway_err(
+                CredentialGatewayError::RefreshNotApplied {
+                    retry: CredentialGatewayRefreshRetry::After {
+                        seconds: std::num::NonZeroU64::new(17)
+                            .expect("test delay is non-zero"),
+                    },
+                },
+                "cred_x"
+            ),
+            ApiError::CredentialRefreshNotAppliedAfter { retry_after_secs }
+                if retry_after_secs.get() == 17
+        ));
+        assert!(matches!(
+            map_gateway_err(CredentialGatewayError::Unavailable, "cred_x"),
             ApiError::ServiceUnavailable(_)
         ));
         assert!(matches!(
-            map_service_err(CredentialServiceError::Store("io".into()), "cred_x"),
+            map_gateway_err(CredentialGatewayError::OutcomeUnknown, "cred_x"),
+            ApiError::OutcomeUnknown(_)
+        ));
+        assert!(matches!(
+            map_gateway_err(
+                CredentialGatewayError::RefreshReconciliationRequired,
+                "cred_x"
+            ),
+            ApiError::CredentialRefreshReconciliationRequired
+        ));
+        assert!(matches!(
+            map_gateway_err(
+                CredentialGatewayError::RevokeReconciliationRequired,
+                "cred_x"
+            ),
+            ApiError::CredentialRevokeReconciliationRequired
+        ));
+        assert!(matches!(
+            map_gateway_err(CredentialGatewayError::Internal, "cred_x"),
             ApiError::Internal(_)
         ));
+    }
+
+    #[test]
+    fn gateway_error_contract_cannot_carry_dynamic_reason_payloads() {
+        const ERROR_SECRET_CANARY: &str = "provider-error-secret-NEVER-WIRE-3b9e";
+
+        for gateway_error in [
+            CredentialGatewayError::ValidationFailed {
+                report: CredentialGatewayValidationReport::new(
+                    CredentialGatewayValidationIssue::new(
+                        CredentialValidationLocation::Data,
+                        CredentialValidationCode::Required,
+                    ),
+                    Vec::new(),
+                ),
+            },
+            CredentialGatewayError::RefreshNotApplied {
+                retry: CredentialGatewayRefreshRetry::Never,
+            },
+            CredentialGatewayError::RefreshNotApplied {
+                retry: CredentialGatewayRefreshRetry::After {
+                    seconds: std::num::NonZeroU64::new(17).expect("test delay is non-zero"),
+                },
+            },
+            CredentialGatewayError::Unavailable,
+            CredentialGatewayError::OutcomeUnknown,
+            CredentialGatewayError::RefreshReconciliationRequired,
+            CredentialGatewayError::RevokeReconciliationRequired,
+            CredentialGatewayError::Internal,
+        ] {
+            let api_error = map_gateway_err(gateway_error, "cred_safe");
+            let debug = format!("{api_error:?}");
+            assert!(
+                !debug.contains(ERROR_SECRET_CANARY),
+                "mapped API error must be safe for structured tracing: {debug}"
+            );
+
+            let (_status, problem) = api_error.to_problem_details();
+            let wire = serde_json::to_string(&problem).expect("serialize problem details");
+            assert!(
+                !wire.contains(ERROR_SECRET_CANARY),
+                "RFC 9457 response must discard dynamic service reasons: {wire}"
+            );
+        }
     }
 }

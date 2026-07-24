@@ -14,14 +14,20 @@
 - `src/plugin.rs` — the `Plugin` base trait (`actions()`/`credentials()`/`resources()`/`on_load`/`on_unload`).
 - `src/resolved_plugin.rs` — `ResolvedPlugin`: eager component caches; enforces `{plugin.key()}.` namespace invariant + within-plugin dup rejection at construction (ADR-0027).
 - `src/registry.rs` — `PluginRegistry`: `PluginKey → Arc<ResolvedPlugin>`; `all_*` / `resolve_*` accessors.
+- `src/flavor.rs` — experimental `PluginSet` and `WorkerFlavorRevision` derivation behind
+  `unstable-worker-flavor`; not part of the supported default surface.
 - `src/manifest.rs` — local `PluginManifest` (canonical home is `nebula-metadata`; re-exported for source compat).
 
 ## Conventions & never-do
 - `impl Plugin` is the single runtime source of truth for what's registered. Do NOT duplicate `fn actions()`/`fn credentials()`/`fn resources()` in `plugin.toml` (spec theater).
 - `PluginManifest` does NOT compose `BaseMetadata<K>` — a plugin is a container, not a schematized leaf.
 - This crate is NOT `plugin.toml` parsing/signing tooling and NOT a persistent catalog — registry is in-memory only. Process/WASM isolation is a non-goal (ADR-0091, canon §12.6).
+- Do not enable or advertise `unstable-worker-flavor` as supported until engine dispatch, API,
+  persisted routing, and admission consume the frozen registry end to end.
+- `PluginSetId` identifies the normalized registered surface (plugin/component/dependency keys and logical semver). It is not a schema-capability, artifact-authenticity, or authorization proof. Artifact digest and runtime contract version are trusted composition-root inputs.
+- Flavor fingerprint domains are persisted protocol versions: never change v1 field order, structural semver tags, normalization, or framing in place. Introduce a new domain version and golden vectors.
 - Cross-plugin type references come via `Cargo.toml [dependencies]` — the Rust compiler enforces the dependency closure at link time (in-process model).
-- Cross-crate calls go through `nebula-eventbus`, not direct sibling imports.
+- Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
 - Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also

@@ -22,9 +22,11 @@ serde_json = { workspace = true }
 # No sqlx — the port carries no database driver.
 chrono = { workspace = true }
 uuid = { workspace = true }
+zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
+static_assertions = { workspace = true }
 
 [lib]
 doctest = false

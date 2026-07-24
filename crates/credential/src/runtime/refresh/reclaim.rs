@@ -5,35 +5,32 @@
 //! +.
 //!
 //! On a fixed cadence the task calls `RefreshClaimRepo::reclaim_stuck`,
-//! atomically sweeping every claim row whose `expires_at` is in the
-//! past. For each row the sweep returns paired with its observed
-//! sentinel state:
+//! atomically accounting every claim row whose `expires_at` is in the past:
 //!
-//! - `SentinelState::Normal` -- the holder simply timed out without ever entering the IdP POST. The
-//!   row is already deleted by `reclaim_stuck`; nothing more to do.
-//! - `SentinelState::RefreshInFlight` -- the holder crashed mid-refresh. The sweep routes the event
-//!   to [`SentinelTrigger::on_sentinel_detected`] which records it in `credential_sentinel_events`
-//!   and consults the rolling-window count. When the threshold is reached the sweep publishes
-//!   `CredentialEvent::ReauthRequired { credential_id, reason: SentinelRepeated }` so downstream
-//!   consumers (UI, monitoring, resource pools) react immediately.
+//! - `Normal` -- the holder timed out before provider egress. The row is
+//!   deleted and may be safely acquired again.
+//! - `RefreshInFlight` -- provider outcome is unknown. The repository records
+//!   one durable sentinel event atomically but retains the claim row as
+//!   fail-closed poison. The sweep only evaluates the already-recorded count;
+//!   it never authorizes provider replay. Explicit reconciliation is K3.
 //!
-//! Two sweeps observing the same expired row are prevented at the
-//! storage layer -- `reclaim_stuck` issues one atomic `DELETE ... RETURNING`
-//! so each row appears in exactly one sweeper's result.
+//! The storage boundary makes repeated and concurrent sweeps idempotent:
+//! normal rows are deleted at most once, while each poisoned
+//! credential/generation is returned only when its evidence is newly recorded.
 
 use std::{sync::Arc, time::Duration};
 
 use crate::{CredentialEvent, contract::resolve::ReauthReason};
 use nebula_eventbus::EventBus;
 use nebula_storage_port::store::{
-    RefreshClaimError as RepoError, RefreshClaimStore as RefreshClaimRepo, SentinelState,
+    ExpiredClaim, RefreshClaimError as RepoError, RefreshClaimStore as RefreshClaimRepo,
 };
 use tracing::Instrument;
 
 use crate::audit::AuditSink;
 
 use super::{
-    audit::{emit_reauth_flagged, emit_sentinel_triggered},
+    audit::{emit_reauth_threshold_reached, emit_sentinel_triggered},
     coordinator::RefreshCoordinator,
     metrics::RefreshCoordMetrics,
     sentinel::{SentinelDecision, SentinelTrigger},
@@ -67,10 +64,12 @@ impl ReclaimSweepHandle {
     /// validated config (review feedback I3).
     ///
     /// The task wakes every `coord.config().reclaim_sweep_interval`,
-    /// calls `repo.reclaim_stuck()`, routes any `RefreshInFlight`
-    /// claims to `sentinel.on_sentinel_detected`, and emits
-    /// `CredentialEvent::ReauthRequired` on the supplied event bus
-    /// when the threshold is exceeded.
+    /// calls `repo.reclaim_stuck()`, routes newly-accounted
+    /// `RefreshInFlight` poison to
+    /// `sentinel.decision_for_accounted_event`, and emits
+    /// a lossy `CredentialEvent::ReauthRequired` observation on the
+    /// supplied event bus when the threshold is exceeded. It does not
+    /// mutate the durable credential aggregate.
     ///
     /// `event_bus` is optional: in tests / desktop mode without an
     /// event bus the threshold-exceed path still records the event in
@@ -151,7 +150,7 @@ async fn sweep_loop(
     }
 }
 
-async fn run_one_sweep(
+pub(super) async fn run_one_sweep(
     repo: &Arc<dyn RefreshClaimRepo>,
     sentinel: &Arc<SentinelTrigger>,
     event_bus: Option<&Arc<EventBus<CredentialEvent>>>,
@@ -164,15 +163,28 @@ async fn run_one_sweep(
     // for healthy systems; `reclaimed` rising is a crashed-runner signal.
     if stuck.is_empty() {
         metrics.reclaim_no_work.inc();
+    } else if stuck
+        .iter()
+        .any(|claim| matches!(claim, ExpiredClaim::OutcomeUnknownAccounted { .. }))
+    {
+        // A mixed sweep is classified by its highest-severity result so every
+        // sweep increments exactly one outcome and poison never masquerades as
+        // an ordinary reclaim.
+        metrics.reclaim_outcome_unknown_accounted.inc();
     } else {
         metrics.reclaim_reclaimed.inc();
     }
     for reclaimed in stuck {
-        if reclaimed.sentinel != SentinelState::RefreshInFlight {
-            // Normal-path expiry -- claim was reclaimed, nothing more to
-            // do (no mid-refresh crash to record).
+        let ExpiredClaim::OutcomeUnknownAccounted {
+            credential_id,
+            previous_holder,
+            previous_generation,
+        } = reclaimed
+        else {
+            // Normal-path expiry was safely deleted; no provider-side effect
+            // or sentinel observation exists.
             continue;
-        }
+        };
         // Sub-spec -- per-row span; an operator can grep
         // `credential.refresh.sentinel.detected` for crashed-mid-refresh
         // events without wading through normal-expiry rows. Use
@@ -180,64 +192,56 @@ async fn run_one_sweep(
         // boundary respects `Send` for the spawned sweep task.
         let detect_span = tracing::info_span!(
             "credential.refresh.sentinel.detected",
-            credential_id = %reclaimed.credential_id,
-            crashed_holder = %reclaimed.previous_holder,
-            generation = reclaimed.previous_generation,
+            credential_id = %credential_id,
+            crashed_holder = %previous_holder,
+            generation = previous_generation,
         );
-        let decision = match async {
-            sentinel
-                .on_sentinel_detected(
-                    &reclaimed.credential_id,
-                    &reclaimed.previous_holder,
-                    reclaimed.previous_generation,
-                )
-                .await
-        }
-        .instrument(detect_span)
-        .await
+        let decision = match async { sentinel.decision_for_accounted_event(&credential_id).await }
+            .instrument(detect_span)
+            .await
         {
             Ok(d) => d,
             Err(e) => {
                 tracing::warn!(
-                    cred = %reclaimed.credential_id,
+                    cred = %credential_id,
                     ?e,
-                    "sentinel decision failed; reclaim sweep continues"
+                    "accounted sentinel decision failed; poison remains fail-closed"
                 );
                 continue;
             },
         };
 
         match decision {
-            SentinelDecision::Recoverable { event_count } => {
+            SentinelDecision::BelowThreshold { event_count } => {
                 tracing::info!(
-                    cred = %reclaimed.credential_id,
+                    cred = %credential_id,
                     event_count,
-                    "sentinel recoverable -- credential refresh will retry"
+                    "sentinel recorded; credential remains poisoned pending reconciliation"
                 );
-                // Sub-spec -- record the event (below threshold).
+                // The event was already recorded atomically by reclaim_stuck.
                 metrics.sentinel_recorded.inc();
-                emit_sentinel_triggered(audit_sink, &reclaimed.credential_id, event_count);
+                emit_sentinel_triggered(audit_sink, &credential_id, event_count);
             },
             SentinelDecision::EscalateToReauth {
                 event_count,
                 window_secs,
             } => {
                 tracing::warn!(
-                    cred = %reclaimed.credential_id,
+                    cred = %credential_id,
                     event_count,
                     window_secs,
-                    "sentinel threshold exceeded -- escalating to ReauthRequired"
+                    "sentinel threshold exceeded -- emitting reauth-required observation"
                 );
                 // Sub-spec -- bump both the recorded counter (every
                 // detection counts) and the reauth_triggered counter
-                // (the escalation transition itself).
+                // (the threshold-crossing observation itself).
                 metrics.sentinel_recorded.inc();
                 metrics.sentinel_reauth_triggered.inc();
-                emit_sentinel_triggered(audit_sink, &reclaimed.credential_id, event_count);
-                emit_reauth_flagged(audit_sink, &reclaimed.credential_id, "sentinel_repeated");
+                emit_sentinel_triggered(audit_sink, &credential_id, event_count);
+                emit_reauth_threshold_reached(audit_sink, &credential_id, "sentinel_repeated");
                 if let Some(bus) = event_bus {
                     let event = CredentialEvent::ReauthRequired {
-                        credential_id: reclaimed.credential_id,
+                        credential_id,
                         reason: ReauthReason::SentinelRepeated {
                             event_count,
                             window_secs,
@@ -246,7 +250,7 @@ async fn run_one_sweep(
                     let outcome = bus.emit(event);
                     if !matches!(outcome, nebula_eventbus::PublishOutcome::Sent) {
                         tracing::warn!(
-                            cred = %reclaimed.credential_id,
+                            cred = %credential_id,
                             ?outcome,
                             "CredentialEvent::ReauthRequired publish dropped"
                         );

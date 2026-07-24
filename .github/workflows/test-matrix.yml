@@ -3,29 +3,11 @@ name: Test Matrix
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - "LICENSE*"
-      - ".gitignore"
-      - ".gitattributes"
-      - ".editorconfig"
-      - ".vscode/**"
-      - ".idea/**"
-      - ".claude/**"
-      - ".github/ISSUE_TEMPLATE/**"
-      - ".github/PULL_REQUEST_TEMPLATE.md"
-      - ".github/labeler.yml"
-      - ".github/dependabot.yml"
-      - "CODEOWNERS"
-      - "assets/**"
-      - "**.png"
-      - "**.jpg"
-      - "**.svg"
-  # No `paths-ignore` on `pull_request`: `Tests` is a required check and
-  # would stick in "waiting" on doc-only PRs if the workflow never fires.
-  # Diff-scope already shrinks matrix to SMOKE when no crates changed — cost
-  # is bounded (~3 crates × 1 runner). `push:` keeps paths-ignore.
+  # Pull requests always run because `Tests` is a required check. Pushes also
+  # always reach this workflow: event-level path filters must not bypass the
+  # sole package selector. The selector emits an empty matrix only for
+  # repository-level, unowned docs/assets diffs; package-local docs/assets
+  # still select their owner and reverse dependents.
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
@@ -51,12 +33,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      packages: ${{ steps.select.outputs.packages }}
+      matrix: ${{ steps.select.outputs.matrix }}
+      count: ${{ steps.select.outputs.count }}
+      storage_selected: ${{ steps.select.outputs.storage_selected }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: 1.96.1
 
       - name: Select packages to test
         id: select
@@ -70,75 +60,81 @@ jobs:
         run: |
           set -euo pipefail
 
-          FULL='["nebula-action","nebula-api","nebula-core","nebula-credential","nebula-engine","nebula-error","nebula-eventbus","nebula-execution","nebula-expression","nebula-log","nebula-metrics","nebula-plugin","nebula-resilience","nebula-resource","nebula-schema","nebula-sdk","nebula-storage","nebula-telemetry","nebula-validator","nebula-workflow"]'
-          SMOKE='["nebula-core","nebula-engine"]'
-
-          if [[ "$EVENT" == "push" || "$EVENT" == "workflow_dispatch" ]]; then
-            echo "packages=$FULL" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          BASE_SHA=""
-          HEAD_SHA=""
+          plan_args=(ci-plan full)
           if [[ "$EVENT" == "pull_request" ]]; then
-            BASE_SHA="$PR_BASE_SHA"
-            HEAD_SHA="$PR_HEAD_SHA"
+            plan_args=(
+              ci-plan diff
+              --base "$PR_BASE_SHA"
+              --head "$PR_HEAD_SHA"
+              --comparison merge-base
+            )
           elif [[ "$EVENT" == "merge_group" ]]; then
-            BASE_SHA="$MG_BASE_SHA"
-            HEAD_SHA="$MG_HEAD_SHA"
+            plan_args=(
+              ci-plan diff
+              --base "$MG_BASE_SHA"
+              --head "$MG_HEAD_SHA"
+              --comparison direct
+            )
           fi
 
-          # Fail-safe: if event payload does not provide diff SHAs, run full set
-          # rather than silently downgrading to smoke coverage.
-          if [[ -z "$BASE_SHA" || -z "$HEAD_SHA" ]]; then
-            echo "packages=$FULL" >> "$GITHUB_OUTPUT"
-            exit 0
+          plan_file="$RUNNER_TEMP/nebula-ci-plan.json"
+          cargo xtask "${plan_args[@]}" > "$plan_file"
+
+          bytes=$(wc -c < "$plan_file")
+          if (( bytes > 460800 )); then
+            echo "::error::CI plan exceeds the conservative 450 KiB output limit"
+            exit 1
           fi
 
-          CHANGED_FILES=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" || true)
+          jq -e '
+            ((keys | sort) == ["count", "include", "reason", "schema_version", "scope"]) and
+            (.schema_version == 1) and
+            (.scope == "full" or .scope == "diff") and
+            ((.reason | type) == "string") and
+            ((.count | type) == "number") and
+            (.count >= 0 and .count <= 256 and .count == (.count | floor)) and
+            ((.include | type) == "array") and
+            (.count == (.include | length)) and
+            ([.include[].package] == ([.include[].package] | sort | unique)) and
+            all(.include[];
+              ((keys | sort) == ["package", "test_features"]) and
+              ((.package | type) == "string") and
+              (.package | length) > 0 and
+              ((.test_features | type) == "array") and
+              (.test_features == (.test_features | sort | unique)) and
+              all(.test_features[]; type == "string")
+            )
+          ' "$plan_file" > /dev/null
 
-          if [[ -z "$CHANGED_FILES" ]]; then
-            echo "packages=$SMOKE" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          mapfile -t PACKAGES < <(
-            echo "$CHANGED_FILES" \
-              | sed -n 's#^crates/\([^/]*\)/.*#\1#p' \
-              | sort -u \
-              | while IFS= read -r crate; do
-                  if [[ -d "crates/$crate" ]]; then
-                    echo "nebula-$crate"
-                  fi
-                done
-          )
-
-          if [[ ${#PACKAGES[@]} -eq 0 ]]; then
-            echo "packages=$SMOKE" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          JSON=$(printf '%s\n' "${PACKAGES[@]}" | jq -R . | jq -s -c .)
-          echo "packages=$JSON" >> "$GITHUB_OUTPUT"
+          matrix=$(jq -c '{include: .include}' "$plan_file")
+          count=$(jq -r '.count' "$plan_file")
+          storage_selected=$(jq -r 'any(.include[]; .package == "nebula-storage")' "$plan_file")
+          {
+            echo "matrix=$matrix"
+            echo "count=$count"
+            echo "storage_selected=$storage_selected"
+          } >> "$GITHUB_OUTPUT"
 
   test-crates:
     name: Test ${{ matrix.package }}
     needs: [select-matrix]
+    if: needs.select-matrix.outputs.count != '0'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
       fail-fast: false
       max-parallel: 8
-      matrix:
-        package: ${{ fromJson(needs.select-matrix.outputs.packages) }}
+      matrix: ${{ fromJSON(needs.select-matrix.outputs.matrix) }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
-      - name: Install Rust toolchain
+      - name: Install pinned Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: stable
+          toolchain: 1.96.1
 
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
@@ -152,31 +148,19 @@ jobs:
         with:
           tool: cargo-nextest
 
-      # - `nebula-engine`: OAuth2 rotation tests live behind `rotation`; parser
-      #   integration tests use `test-util` to avoid weakening endpoint validation.
-      #   We enable explicit features rather than `--all-features` because the
-      #   latter also turns on `chaos-full`, which defeats the
-      #   `cfg_attr(not(feature = "chaos-full"), ignore)` gate on
-      #   `refresh_coordinator_chaos::three_replicas_zero_double_idp_calls` and
-      #   makes that ~6s + watchdog test run on every PR (it has its own
-      #   `nightly-chaos.yml` job).
-      # - `nebula-storage`: `EncryptionLayer` + `KeyProvider` unit tests (incl. OAuth at-rest)
-      #   run via the `#[cfg(test)]` `StaticKeyProvider`; the nebula `test-util` feature was
-      #   removed in ADR-0092 (the test-only key provider is now compiled only under `cfg(test)`).
-      # Note: `nebula-api`'s `credential-oauth` feature was deleted 2026-04-24 —
-      # OAuth ceremony now ships unconditionally per ADR-0031 §6.
       - name: Run tests for ${{ matrix.package }}
+        shell: bash
         env:
           PKG: ${{ matrix.package }}
+          TEST_FEATURES: ${{ join(matrix.test_features, ',') }}
         run: |
           set -euo pipefail
-          if [[ "$PKG" == "nebula-engine" ]]; then
-            cargo nextest run -p nebula-engine --features "rotation" --profile ci --no-tests=pass
-          elif [[ "$PKG" == "nebula-storage" ]]; then
-            cargo nextest run -p nebula-storage --features "credential-in-memory" --profile ci --no-tests=pass
-          else
-            cargo nextest run -p "$PKG" --profile ci --no-tests=pass
+          command=(cargo nextest run -p "$PKG")
+          if [[ -n "$TEST_FEATURES" ]]; then
+            command+=(--features "$TEST_FEATURES")
           fi
+          command+=(--profile ci --no-tests=pass)
+          "${command[@]}"
 
       - name: Test summary
         if: always()
@@ -195,29 +179,153 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
-  # Aggregator that branch protection's required `Tests` check points at.
+  postgres-conformance:
+    name: PostgreSQL storage conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/nebula_test?sslmode=disable
+      NEBULA_REQUIRE_POSTGRES: "1"
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: nebula_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d nebula_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: 1.96.1
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
+        with:
+          key: nebula-storage-postgres-conformance
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@481c34c1cf3a84c68b5e46f4eccfc82af798415a # v2.75.23
+        with:
+          tool: cargo-nextest
+
+      - name: Run PostgreSQL storage conformance
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          common=(
+            -p nebula-storage
+            --no-default-features
+            --features postgres
+            --profile ci
+            --no-tests=fail
+          )
+
+          # Keep lifecycle selection limited to fixtures that own isolated
+          # PostgreSQL schemas. Broad storage selection would also run
+          # unrelated legacy integration tests against `public`; the
+          # pre-existing authority set is preserved explicitly below.
+          cargo nextest run "${common[@]}" \
+            --lib post_commit_ack_loss_is_unknown_and_is_not_retried
+          cargo nextest run "${common[@]}" \
+            --lib commit_sqlstate_classification_preserves_unknown_outcomes
+          cargo nextest run "${common[@]}" \
+            --lib observation_fetch_errors_distinguish_schema_evidence_from_unavailability
+          cargo nextest run "${common[@]}" --lib semantic_oracle
+
+          # Preserve the pre-K2 live PostgreSQL authority gate. These tests
+          # predate the credential lifecycle suites and remain part of the
+          # required storage contract.
+          cargo nextest run "${common[@]}" \
+            -E 'package(=nebula-storage) & binary(=nebula_storage) & test(/pg::(oauth_state::tests|identity_secret::postgres_tests|session::tests|mfa_enrollment::tests)::/)'
+
+          for suite in \
+            credential_lifecycle_postgres \
+            credential_migration_postgres \
+            credential_schema_admission_postgres \
+            refresh_claim_pg_integration
+          do
+            cargo nextest run "${common[@]}" --test "$suite"
+          done
+
+      - name: Test summary
+        if: always()
+        uses: test-summary/action@31493c76ec9e7aa675f1585d3ed6f1da69269a86 # v2
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+        with:
+          paths: target/nextest/ci/junit.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: test-results-nebula-storage-postgres-conformance
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: ignore
+          retention-days: 3
+
+  # Branch protection points at this stable required check.
   tests:
     name: Tests
-    needs: [select-matrix, test-crates]
+    needs: [select-matrix, test-crates, postgres-conformance]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Aggregate matrix results
+        shell: bash
+        env:
+          SELECT_RESULT: ${{ needs.select-matrix.result }}
+          TEST_RESULT: ${{ needs.test-crates.result }}
+          SELECTED_COUNT: ${{ needs.select-matrix.outputs.count }}
+          STORAGE_SELECTED: ${{ needs.select-matrix.outputs.storage_selected }}
+          POSTGRES_CONFORMANCE_RESULT: ${{ needs.postgres-conformance.result }}
         run: |
           set -euo pipefail
-          fail=0
-          for job in select-matrix test-crates; do
-            case "$job" in
-              select-matrix) result="${{ needs.select-matrix.result }}" ;;
-              test-crates)   result="${{ needs.test-crates.result }}" ;;
-            esac
-            if [[ "$result" != "success" ]]; then
-              echo "::error::$job result: $result"
-              fail=1
-            fi
-          done
-          if [[ "$fail" -eq 1 ]]; then
+
+          if [[ "$SELECT_RESULT" != "success" ]]; then
+            echo "::error::select-matrix result: $SELECT_RESULT"
             exit 1
           fi
-          echo "All upstream jobs passed."
+          if [[ ! "$SELECTED_COUNT" =~ ^[0-9]+$ ]]; then
+            echo "::error::select-matrix emitted invalid count: $SELECTED_COUNT"
+            exit 1
+          fi
+          if [[ "$STORAGE_SELECTED" != "true" && "$STORAGE_SELECTED" != "false" ]]; then
+            echo "::error::select-matrix emitted invalid storage-selected: $STORAGE_SELECTED"
+            exit 1
+          fi
+          if [[ "$POSTGRES_CONFORMANCE_RESULT" == "success" ]]; then
+            echo "PostgreSQL storage conformance passed."
+          else
+            echo "::error::postgres-conformance result: $POSTGRES_CONFORMANCE_RESULT"
+            exit 1
+          fi
+          if [[ "$SELECTED_COUNT" == "0" ]]; then
+            if [[ "$TEST_RESULT" != "skipped" ]]; then
+              echo "::error::test-crates must be skipped for an empty matrix; got $TEST_RESULT"
+              exit 1
+            fi
+            echo "No package tests were required for this diff."
+          elif [[ "$TEST_RESULT" != "success" ]]; then
+            echo "::error::test-crates result: $TEST_RESULT"
+            exit 1
+          else
+            echo "All selected package tests passed."
+          fi

@@ -1,19 +1,20 @@
 //! Tower [`Layer`] + [`Service`] implementing idempotent-replay middleware.
 //!
-//! [`IdempotencyLayer`] wraps any inner service with the full idempotency backend
-//! idempotency contract: request-body buffering, SHA-256 fingerprinting,
-//! cache lookup, 422 on body mismatch, 5xx pass-through (not cached),
-//! response-header filtering, `Idempotent-Replay: true` on replay, and
-//! metrics emission via [`MetricsRegistry`].
+//! [`IdempotencyLayer`] wraps any inner service with a completed-response
+//! replay contract: request-body buffering, SHA-256 fingerprinting, cache
+//! lookup, 422 on body mismatch, 5xx pass-through (not cached), response-header
+//! filtering, `Idempotent-Replay: true` on replay, and metrics emission via
+//! [`MetricsRegistry`]. It does not claim or deduplicate in-flight requests.
 
 use std::{
+    collections::HashSet,
     sync::Arc,
     task::{Context, Poll},
 };
 
 use axum::{
     body::Body,
-    extract::Request,
+    extract::{MatchedPath, Request},
     http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     response::{IntoResponse, Response},
 };
@@ -44,6 +45,7 @@ pub struct IdempotencyLayer {
     store: Arc<dyn IdempotencyStore>,
     config: IdempotencyConfig,
     metrics: Option<Arc<MetricsRegistry>>,
+    replay_safe_routes: Arc<HashSet<String>>,
 }
 
 impl IdempotencyLayer {
@@ -54,7 +56,23 @@ impl IdempotencyLayer {
             store,
             config: IdempotencyConfig::default(),
             metrics: None,
+            replay_safe_routes: Arc::new(HashSet::new()),
         }
+    }
+
+    /// Explicitly opt matched POST route templates into response replay.
+    ///
+    /// The default set is empty. This fail-closed posture prevents a new
+    /// endpoint from persisting one-time credentials, session cookies, or
+    /// other authority merely because it accepts `Idempotency-Key`.
+    #[must_use]
+    pub fn with_replay_safe_routes<I, P>(mut self, routes: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: Into<String>,
+    {
+        self.replay_safe_routes = Arc::new(routes.into_iter().map(Into::into).collect());
+        self
     }
 
     /// Override the layer configuration.
@@ -89,6 +107,7 @@ impl<S> Layer<S> for IdempotencyLayer {
             store: Arc::clone(&self.store),
             config: self.config.clone(),
             metrics: self.metrics.clone(),
+            replay_safe_routes: Arc::clone(&self.replay_safe_routes),
         }
     }
 }
@@ -102,6 +121,7 @@ pub struct IdempotencyService<S> {
     store: Arc<dyn IdempotencyStore>,
     config: IdempotencyConfig,
     metrics: Option<Arc<MetricsRegistry>>,
+    replay_safe_routes: Arc<HashSet<String>>,
 }
 
 impl<S> Service<Request> for IdempotencyService<S>
@@ -123,7 +143,10 @@ where
         let store = Arc::clone(&self.store);
         let config = self.config.clone();
         let metrics = self.metrics.clone();
-        Box::pin(async move { handle(inner, store, config, metrics, request).await })
+        let replay_safe_routes = Arc::clone(&self.replay_safe_routes);
+        Box::pin(
+            async move { handle(inner, store, config, metrics, replay_safe_routes, request).await },
+        )
     }
 }
 
@@ -239,7 +262,7 @@ impl CachedResponse {
 
 #[tracing::instrument(
     name = "idempotency",
-    skip(inner, store, config, metrics, request),
+    skip(inner, store, config, metrics, replay_safe_routes, request),
     fields(
         method = %request.method(),
         path = %request.uri().path(),
@@ -255,6 +278,7 @@ async fn handle<S>(
     store: Arc<dyn IdempotencyStore>,
     config: IdempotencyConfig,
     metrics: Option<Arc<MetricsRegistry>>,
+    replay_safe_routes: Arc<HashSet<String>>,
     request: Request,
 ) -> Result<Response, S::Error>
 where
@@ -270,6 +294,15 @@ where
     // their request handled normally.
     if request.method() != Method::POST {
         record_outcome(&metrics, "skip:non_post", MetricOutcome::None);
+        return inner.oneshot(request).await;
+    }
+
+    let matched_route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(MatchedPath::as_str);
+    if !matched_route.is_some_and(|route| replay_safe_routes.contains(route)) {
+        record_outcome(&metrics, "skip:route_not_replay_safe", MetricOutcome::None);
         return inner.oneshot(request).await;
     }
 
@@ -374,7 +407,7 @@ where
                 "idempotency-store get failed — failing the request closed (idempotency backend)"
             );
             return Ok(internal_error(
-                "idempotency store unavailable; request rejected to preserve replay protection",
+                "idempotency store unavailable; request rejected because cached replay cannot be evaluated",
             ));
         },
     };
@@ -399,6 +432,20 @@ where
     // inner handler.
     let request = Request::from_parts(parts, Body::from(body_vec));
     let response = inner.oneshot(request).await?;
+
+    // Defense in depth for an allow-listed route whose response contract
+    // evolves: cookie-bearing and explicitly non-storable responses must not
+    // be buffered, persisted, or replayed. The route allow-list is still the
+    // pre-handler authority, so a previously cached secret route cannot be
+    // reached merely by adding this response header later.
+    if response_forbids_replay(response.headers()) {
+        record_outcome(
+            &metrics,
+            "miss:response_forbids_replay",
+            MetricOutcome::Miss,
+        );
+        return Ok(response);
+    }
 
     let (resp_parts, resp_body) = response.into_parts();
 
@@ -486,6 +533,18 @@ fn should_cache(status: StatusCode) -> bool {
     // transient backend failure does not pin a permanent error for the TTL
     // window — the caller can safely retry the same key.
     status.is_success() || status.is_client_error()
+}
+
+fn response_forbids_replay(headers: &HeaderMap) -> bool {
+    if headers.contains_key(header::SET_COOKIE) {
+        return true;
+    }
+    headers
+        .get_all(header::CACHE_CONTROL)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .any(|directive| directive.trim().eq_ignore_ascii_case("no-store"))
 }
 
 fn filter_response_headers(headers: &HeaderMap) -> HeaderMap {
@@ -595,5 +654,25 @@ mod tests {
         assert!(!filtered.contains_key("set-cookie"));
         assert!(!filtered.contains_key("x-request-id"));
         assert!(!filtered.contains_key("connection"));
+    }
+
+    #[test]
+    fn response_replay_is_forbidden_by_cookie_or_no_store() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::SET_COOKIE,
+            HeaderValue::from_static("session=secret"),
+        );
+        assert!(response_forbids_replay(&headers));
+
+        headers.remove(header::SET_COOKIE);
+        headers.insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("private, NO-STORE, max-age=0"),
+        );
+        assert!(response_forbids_replay(&headers));
+
+        headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+        assert!(!response_forbids_replay(&headers));
     }
 }

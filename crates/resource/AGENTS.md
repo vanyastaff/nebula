@@ -25,7 +25,7 @@
 - This crate is NOT a connection driver, retry pipeline, secret holder, or expression evaluator — it owns the lifecycle wrapper only (see Non-goals).
 - Async release is best-effort on crash; never assume "release ran" without an explicit checkpoint (canon §11.4).
 - `#![forbid(unsafe_code)]` + `#![deny(missing_docs)]` + `#![warn(missing_debug_implementations)]` are active; lifecycle work emits a `ResourceEvent` variant (observability is DoD).
-- Cross-crate calls go through `nebula-eventbus`, not direct sibling imports.
+- Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
 - Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also

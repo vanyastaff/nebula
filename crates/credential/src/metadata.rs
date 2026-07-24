@@ -53,7 +53,7 @@ pub enum CredentialMetadataBuildError {
 /// description)` of the other two) for the config-driven / icon / doc-url
 /// path, where `pattern` and `schema` are supplied as setters.
 #[non_exhaustive]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CredentialMetadata {
     /// Shared catalog prefix.
     #[serde(flatten)]
@@ -103,7 +103,23 @@ impl CredentialMetadata {
         self
     }
 
+    /// Set the full interface version, including patch and pre-release data.
+    ///
+    /// Symmetric with `ActionMetadata::with_version_full` and
+    /// `ResourceMetadata::with_version_full`.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_version_full(mut self, version: Version) -> Self {
+        self.base.version = version;
+        self
+    }
+
     /// Start building credential metadata with the given required fields.
+    ///
+    /// Infallible because every required identity field is supplied by the
+    /// caller. Prefer this constructor (or
+    /// [`for_credential`](Self::for_credential)) over calling
+    /// `CredentialMetadata::builder().build()` for built-ins and generated
+    /// metadata.
     #[must_use]
     pub fn new(
         key: CredentialKey,
@@ -116,6 +132,20 @@ impl CredentialMetadata {
             base: BaseMetadata::new(key, name, description, schema),
             pattern,
         }
+    }
+
+    /// Attach an inline icon identifier.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
+        self.base.icon = nebula_metadata::Icon::inline(icon);
+        self
+    }
+
+    /// Attach a documentation URL.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_documentation_url(mut self, url: impl Into<String>) -> Self {
+        self.base.documentation_url = Some(url.into());
+        self
     }
 
     /// Builder entry point.
@@ -266,7 +296,7 @@ impl CredentialMetadata {
 #[cfg(test)]
 mod tests {
     use nebula_core::credential_key;
-    use nebula_metadata::BaseCompatError;
+    use nebula_metadata::{BaseCompatError, Icon, Metadata};
     use semver::Version;
 
     use super::{CredentialMetadata, MetadataCompatibilityError};
@@ -281,6 +311,71 @@ mod tests {
             CredentialMetadata::new(credential_key!("cred"), "C", "d", empty_schema(), pattern);
         m.base.version = Version::new(major, minor, 0);
         m
+    }
+
+    #[test]
+    fn fluent_fields_preserve_full_values_and_equality() {
+        let version = Version::parse("2.1.3-beta.1").unwrap();
+        let build = || {
+            CredentialMetadata::new(
+                credential_key!("cred"),
+                "C",
+                "d",
+                empty_schema(),
+                AuthPattern::SecretToken,
+            )
+            .with_version_full(version.clone())
+            .with_icon("sync")
+            .with_documentation_url("https://example.test/credentials/cred")
+        };
+
+        let metadata = build();
+        assert_eq!(metadata, build());
+        assert_eq!(metadata.version(), &version);
+        assert_eq!(metadata.icon(), &Icon::inline("sync"));
+        assert_eq!(
+            metadata.documentation_url(),
+            Some("https://example.test/credentials/cred")
+        );
+
+        let different_pattern = CredentialMetadata::new(
+            credential_key!("cred"),
+            "C",
+            "d",
+            empty_schema(),
+            AuthPattern::OAuth2,
+        )
+        .with_version_full(version);
+        assert_ne!(metadata, different_pattern);
+    }
+
+    #[test]
+    fn metadata_wire_shape_is_flat_and_round_trips() {
+        let metadata = CredentialMetadata::new(
+            credential_key!("cred"),
+            "C",
+            "d",
+            empty_schema(),
+            AuthPattern::SecretToken,
+        )
+        .with_version(2, 1)
+        .with_icon("sync");
+
+        let encoded = serde_json::to_string(&metadata).expect("metadata serializes");
+        let value: serde_json::Value =
+            serde_json::from_str(&encoded).expect("serialized metadata is valid JSON");
+        assert!(
+            value.get("base").is_none(),
+            "shared metadata must stay flattened on the wire"
+        );
+        assert_eq!(
+            value.get("key").and_then(serde_json::Value::as_str),
+            Some("cred")
+        );
+
+        let decoded: CredentialMetadata =
+            serde_json::from_str(&encoded).expect("metadata deserializes");
+        assert_eq!(decoded, metadata);
     }
 
     #[test]

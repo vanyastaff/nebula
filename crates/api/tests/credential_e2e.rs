@@ -32,18 +32,47 @@ use std::{
 
 use axum::{
     body::Body,
-    http::{Request, StatusCode},
+    http::{Request, StatusCode, header},
 };
 use common::{
     TEST_CSRF_COOKIE, TEST_CSRF_TOKEN, create_state_with_queue, create_test_jwt, ws_path,
 };
-use nebula_api::{ApiConfig, app};
+use nebula_api::{ApiConfig, app, error::ApiError, state::WorkspaceResolver};
+use nebula_core::{OrgId, WorkspaceId};
 use tower::ServiceExt;
 use tracing_subscriber::fmt::MakeWriter;
 
 /// A secret value that must never surface in any response, error, or log.
 const SECRET_TOKEN: &str = "sk-phase4-NEVER-LEAK-0xC0FFEE-abcdef0123456789";
 const OTHER_WS: &str = "ws_00000000000000000000000002";
+
+/// Directory fixture proving the IDOR case against two existing sibling
+/// workspaces, rather than accidentally probing a phantom workspace.
+struct TwoWorkspaceResolver;
+
+#[async_trait::async_trait]
+impl WorkspaceResolver for TwoWorkspaceResolver {
+    async fn resolve_by_slug(&self, _org_id: OrgId, _slug: &str) -> Result<WorkspaceId, ApiError> {
+        Ok(common::TEST_WS.parse().expect("valid test workspace ID"))
+    }
+
+    async fn resolve_by_id(
+        &self,
+        org_id: OrgId,
+        workspace_id: WorkspaceId,
+    ) -> Result<WorkspaceId, ApiError> {
+        let expected_org: OrgId = common::TEST_ORG.parse().expect("valid test org ID");
+        let primary: WorkspaceId = common::TEST_WS
+            .parse()
+            .expect("valid primary test workspace ID");
+        let sibling: WorkspaceId = OTHER_WS.parse().expect("valid sibling test workspace ID");
+        if org_id == expected_org && (workspace_id == primary || workspace_id == sibling) {
+            Ok(workspace_id)
+        } else {
+            Err(ApiError::NotFound("workspace not found".to_owned()))
+        }
+    }
+}
 
 // ── Log-capture helper (mirrors crates/credential/tests/redaction.rs) ─────────
 
@@ -404,6 +433,7 @@ async fn credential_stale_version_conflicts_409_without_secret() {
 #[tokio::test]
 async fn credential_created_in_one_workspace_is_404_from_another_workspace() {
     let (state, _q) = create_state_with_queue().await;
+    let state = state.with_workspace_resolver(Arc::new(TwoWorkspaceResolver));
     let config = ApiConfig::for_test();
     let token = create_test_jwt();
 
@@ -689,6 +719,13 @@ async fn credential_lifecycle_and_acquisition_answer_through_the_facade() {
         "resolve must reach the handler and complete for a static type — \
          NOT a pre-handler 404 (the tenancy route-shadow this guards against)"
     );
+    assert_eq!(
+        resp.headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("no-store"),
+        "resolve is preclassified as an authority response because an interactive composition can return a pending bearer token"
+    );
     let resolved = body_string(resp).await;
     assert!(
         !resolved.contains(SECRET_TOKEN),
@@ -725,6 +762,13 @@ async fn credential_lifecycle_and_acquisition_answer_through_the_facade() {
         StatusCode::BAD_REQUEST,
         "continue on a non-interactive type must fail the capability gate \
          with 400 — and must reach the handler, not 404 in tenancy"
+    );
+    assert_eq!(
+        resp.headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("no-store"),
+        "continue is preclassified as an authority response for pending-token rotation"
     );
     let problem = body_string(resp).await;
     assert!(

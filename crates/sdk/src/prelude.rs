@@ -10,13 +10,10 @@
 //!
 //! ## Authoring a pooled resource
 //!
-//! Types and traits for resource authoring live in the prelude. The derive
-//! macros (`#[derive(Resource)]`, `#[derive(ResourceConfig)]`,
-//! `#[derive(ClassifyError)]`) expand to `::nebula_resource::…` and
-//! `::nebula_core::…` paths, so list `nebula-resource`, `nebula-core`, and
-//! `async-trait` as direct dependencies alongside `nebula-sdk` (same versions
-//! the SDK pins). `#[derive(Resource)]` emits the credential-slot plumbing,
-//! [`Provider`] supplies the lifecycle, and `type Topology = Pooled<Self>` opts
+//! Types, traits, and procedural derives for resource authoring live in the
+//! prelude. Generated paths resolve through the SDK when the integration has no
+//! direct leaf-crate dependency. The manual [`Provider`] surface below is also
+//! curated; `type Topology = Pooled<Self>` opts
 //! into pool checkout/recycle (every [`PoolProvider`] hook has a default, so an
 //! empty impl suffices).
 //!
@@ -28,8 +25,9 @@
 //!     base_url: String,
 //! }
 //!
-//! #[derive(Resource, Clone)]
+//! #[derive(Clone)]
 //! struct HttpResource;
+//! no_credential_slots!(HttpResource);
 //!
 //! #[async_trait::async_trait]
 //! impl Provider for HttpResource {
@@ -55,9 +53,9 @@
 //! no_credential_slots!(Slotless);
 //! ```
 //!
-//! Engine-side registration ([`RegistrationSpec`]) and acquisition go through
-//! `nebula_sdk::nebula_resource::Manager`; action code receives a
-//! [`ResourceGuard`] that derefs to `Provider::Instance`.
+//! Engine-side registration uses deployment/runtime APIs rather than an SDK
+//! re-export of implementation crates; action code receives a [`ResourceGuard`]
+//! that derefs to `Provider::Instance`.
 
 // Core traits and types
 // DX trait families: stateful, trigger
@@ -82,9 +80,11 @@ pub use nebula_action::{
 // DX codegen macros — re-exported so authors can write `impl_paginated_action!(...)`
 // without reaching into `nebula_action::`.
 pub use nebula_action::{impl_batch_action, impl_paginated_action};
+pub use nebula_core::AuthScheme as AuthSchemeContract;
+pub use nebula_core::auth::NoAuthFamily;
 pub use nebula_core::{
-    ActionKey, ExecutionId, NodeKey, PluginKey, ResourceKey, ScopeLevel, WorkflowId, action_key,
-    resource_key,
+    ActionKey, AuthPattern, ExecutionId, NodeKey, PluginKey, ResourceKey, ScopeLevel, WorkflowId,
+    action_key, resource_key,
 };
 // Credential types (v2)
 pub use nebula_credential::{
@@ -108,6 +108,7 @@ pub use nebula_credential::{
     SecretToken,
     SnapshotError,
 };
+pub use nebula_credential::{AuthScheme, credential};
 pub use nebula_credential::{CredentialContext, CredentialId};
 // Shared catalog-metadata vocabulary — the `Metadata` trait plus the
 // `BaseMetadata` prefix and value types that `ActionMetadata`,
@@ -118,15 +119,13 @@ pub use nebula_metadata::{BaseMetadata, DeprecationNotice, Icon, MaturityLevel, 
 // Plugin types
 pub use nebula_plugin::{Plugin, PluginManifest};
 // Resource authoring surface — mirrors `nebula_resource::prelude` plus the
-// `Resource` / `ResourceConfig` / `ClassifyError` derive macros, so an
-// integration author never needs a direct `nebula-resource` dependency.
+// `Resource` / `ResourceConfig` / `ClassifyError` derive names.
 //
 // `Error` here is the resource error *type*; `thiserror::Error` below is a
 // derive *macro* — different namespaces, so both live in the glob.
 //
 // Engine-only types (`Manager`, `Registry`, `ReleaseQueue`,
-// `credential_fanout`) are deliberately absent — reach them through
-// `nebula_sdk::nebula_resource`.
+// `credential_fanout`) are deliberately absent from the supported SDK.
 pub use nebula_resource::{
     AcquireOptions, Bounded, BoundedMode, BoundedProvider, ClassifyError, Error, ErrorKind,
     HasCredentialSlots, PoolConfig, PoolProvider, Pooled, Provider, RegistrationSpec,
@@ -134,9 +133,9 @@ pub use nebula_resource::{
     ResourceContext, ResourceGuard, ResourceMetadata, SlotCell, SlotIdentity, TopologyTag,
     no_credential_slots,
 };
-// Derive macros (re-exported from their respective domain crates)
-// Action, Credential, and Plugin derive macros are already in scope from the
-// domain crate imports above (same names, macro namespace).
+// Derive names are re-exported from their respective domain crates. Generated
+// paths prefer a direct (including renamed) leaf dependency, then the SDK's
+// hidden macro namespace.
 // Schema types — Field/Schema/ValidSchema/field_key already re-exported via nebula_action
 // above.
 pub use nebula_schema::{

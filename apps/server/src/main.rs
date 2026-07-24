@@ -1,8 +1,13 @@
 //! Nebula server — single composition-root binary. One process, one entry
 //! point: `--transport` selects the ingress (api/webhook/realtime/all).
 mod compose;
+mod credential_adapters;
+mod credential_composition;
+mod credential_runtime;
 mod email;
+mod oauth_egress;
 mod transport;
+mod webhook_credential_resolver;
 
 use clap::Parser;
 use transport::{ApiTransport, RealtimeTransport, Transport, WebhookIngressTransport};

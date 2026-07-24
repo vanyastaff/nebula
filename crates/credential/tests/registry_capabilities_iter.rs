@@ -18,10 +18,8 @@ use nebula_core::auth::{
 };
 use nebula_credential::{
     Capabilities, Credential, CredentialContext, CredentialMetadata, CredentialRegistry,
-    CredentialState, Refreshable, Revocable, SecretString,
-    contract::plugin_capability_report,
-    error::CredentialError,
-    resolve::{RefreshOutcome, ResolveResult},
+    CredentialState, RefreshAttempt, RefreshReport, Refreshable, Revocable, SecretString,
+    contract::plugin_capability_report, error::CredentialError, resolve::ResolveResult,
     scheme::SecretToken,
 };
 use nebula_schema::FieldValues;
@@ -152,11 +150,11 @@ impl Credential for RefreshableProbe {
 }
 
 impl Refreshable for RefreshableProbe {
-    async fn refresh(
-        _state: &mut ProbeToken,
-        _ctx: &CredentialContext,
-    ) -> Result<RefreshOutcome, CredentialError> {
-        Ok(RefreshOutcome::Refreshed)
+    const REFRESH_EXECUTION_MODE: nebula_credential::RefreshExecutionMode =
+        nebula_credential::RefreshExecutionMode::Local;
+
+    async fn refresh(_state: &mut ProbeToken, attempt: RefreshAttempt<'_>) -> RefreshReport {
+        attempt.local_refresh_completed()
     }
 }
 

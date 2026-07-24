@@ -1,0 +1,16 @@
+[package]
+name = "nebula-sdk-renamed-derive-consumer"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+nebula-sdk = { version = "=0.1.0", default-features = false }
+action-leaf = { package = "nebula-action", version = "=0.1.0" }
+credential-leaf = { package = "nebula-credential", version = "=0.1.0" }
+plugin-leaf = { package = "nebula-plugin", version = "=0.1.0" }
+resource-leaf = { package = "nebula-resource", version = "=0.1.0" }
+schema-leaf = { package = "nebula-schema", version = "=0.1.0" }
+validator-leaf = { package = "nebula-validator", version = "=0.1.0" }
+
+[workspace]

@@ -29,7 +29,7 @@ pub(crate) const TEST_WS: &str = "ws_00000000000000000000000001";
 /// CSRF token value used by tests for state-changing requests.
 pub(crate) const TEST_CSRF_TOKEN: &str = "test-csrf-token";
 /// Pre-formatted cookie header value for CSRF.
-pub(crate) const TEST_CSRF_COOKIE: &str = "nebula_csrf=test-csrf-token";
+pub(crate) const TEST_CSRF_COOKIE: &str = "__Host-nebula-csrf=test-csrf-token";
 
 /// Helper to build a tenant-scoped workspace API path.
 /// Example: `ws_path("/workflows")` → `/api/v1/orgs/org_.../workspaces/ws_.../workflows`
@@ -60,6 +60,20 @@ pub(crate) struct TestWorkspaceResolver;
 impl WorkspaceResolver for TestWorkspaceResolver {
     async fn resolve_by_slug(&self, _org_id: OrgId, _slug: &str) -> Result<WorkspaceId, ApiError> {
         Ok(TEST_WS.parse().expect("valid test ws ID"))
+    }
+
+    async fn resolve_by_id(
+        &self,
+        org_id: OrgId,
+        workspace_id: WorkspaceId,
+    ) -> Result<WorkspaceId, ApiError> {
+        let expected_org: OrgId = TEST_ORG.parse().expect("valid test org ID");
+        let expected_workspace: WorkspaceId = TEST_WS.parse().expect("valid test ws ID");
+        if org_id == expected_org && workspace_id == expected_workspace {
+            Ok(workspace_id)
+        } else {
+            Err(ApiError::NotFound("workspace not found".to_owned()))
+        }
     }
 }
 
@@ -144,7 +158,7 @@ pub(crate) fn create_test_jwt() -> String {
     encode(
         &Header::default(),
         &Claims {
-            sub: "test-user".to_string(),
+            sub: nebula_core::UserId::new().to_string(),
             exp: now + 3600,
             iat: now,
         },
@@ -320,11 +334,10 @@ impl PortHandles {
 /// published via the workflow handlers is readable through the
 /// execution accessor.
 ///
-/// When `with_credential_port` is `true` a [`PermissiveCredentialSchemaPort`]
-/// is wired (the credential happy-path default); when `false` the
-/// credential-schema port is left unset so the credential-schema validation seam test can
-/// assert the unconfigured write path returns 503 (never persists
-/// unvalidated).
+/// When `with_credential_port` is `true`, the credential catalog/form
+/// read-model is wired; when `false`, type discovery remains unavailable.
+/// Mutation validation always belongs to the credential controller/service
+/// and is independent of this read-model capability.
 /// 32 `0x42` bytes, base64 — a valid AES-256 key fixture (mirrors the
 /// factory dev key). Not a secret: a fixed test constant.
 pub(crate) const TEST_CRED_KEY_B64: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=";
@@ -360,10 +373,9 @@ async fn build_port_state_with(with_credential_port: bool) -> (AppState, PortHan
     .with_workspace_resolver(Arc::new(TestWorkspaceResolver))
     .with_insecure_tenant_rbac_bypass_for_tests();
 
-    // A composed CredentialService is always wired (the production shape:
-    // encrypted-at-rest in-memory store with the first-party type set).
-    // The schema port is conditional so the write-path seam test can
-    // assert the no-port ⇒ 503 fail-closed gate with the service present.
+    // A composed CredentialService is always wired with the first-party type
+    // set. The schema port is conditional because catalog availability is an
+    // independent read-model capability, not mutation authority.
     let key = Arc::new(
         nebula_storage::credential::EnvKeyProvider::from_base64(TEST_CRED_KEY_B64)
             .expect("valid 32-byte AES key fixture"),
@@ -371,7 +383,9 @@ async fn build_port_state_with(with_credential_port: bool) -> (AppState, PortHan
     let svc = nebula_api::ports::credential_service_factory::with_memory_store(key)
         .await
         .expect("credential service composes");
-    let state = state.with_credential_service(svc);
+    let state = state.with_credential_gateway(
+        nebula_api::ports::credential_command::test_gateway_from_service(svc),
+    );
     let state = if with_credential_port {
         let port = nebula_api::ports::credential_schema_registry::try_default_registry_port()
             .expect("first-party registry composes");
@@ -392,8 +406,7 @@ async fn build_port_state_with(with_credential_port: bool) -> (AppState, PortHan
     )
 }
 
-/// Build a port-wired `AppState` with the permissive credential-schema
-/// port (the credential happy-path default).
+/// Build a port-wired `AppState` with the credential catalog read-model.
 async fn build_port_state() -> (AppState, PortHandles) {
     build_port_state_with(true).await
 }
@@ -467,11 +480,9 @@ pub(crate) async fn create_state_with_port_queue() -> (AppState, InMemoryControl
     create_state_with_queue().await
 }
 
-/// Same as [`create_state_with_queue`] but with **no** credential-schema
-/// port wired — for the credential-schema validation seam test that asserts the
-/// unconfigured write path returns 503 (never persists unvalidated).
-/// Port-wired exactly like [`build_port_state`], minus the
-/// `with_credential_schema` call.
+/// Same as [`create_state_with_queue`] but with **no** credential catalog
+/// port wired. Authenticated mutations remain available through their
+/// controller; catalog endpoints return an honest 503.
 pub(crate) async fn create_state_with_queue_no_credential_port() -> (AppState, InMemoryControlQueue)
 {
     let (state, handles) = build_port_state_with(false).await;

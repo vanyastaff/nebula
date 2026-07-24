@@ -36,6 +36,7 @@ thiserror = { workspace = true }
 # Utilities
 uuid = { workspace = true, optional = true }
 chrono = { workspace = true }
+semver = { workspace = true }
 
 [dev-dependencies]
 # doctests only: `impl Provider` in the prelude resource example.
@@ -44,6 +45,7 @@ tokio = { workspace = true, features = ["full"] }
 insta = { workspace = true }
 pretty_assertions = { workspace = true }
 rstest = { workspace = true }
+tempfile = { workspace = true }
 
 [features]
 default = ["derive", "testing"]
@@ -67,11 +69,13 @@ allowed_external_types = [
   # whole-crate re-exports (`pub use serde;` etc.) need the bare form
   "serde",
   "serde_json",
+  "semver",
   "thiserror",
   "tokio",
   "serde_core::*",
   "serde_derive::*",
   "serde_json::*",
   "chrono::*",
+  "semver::*",
   "thiserror_impl::*",
 ]

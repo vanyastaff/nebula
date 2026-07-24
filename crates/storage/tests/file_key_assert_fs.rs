@@ -20,10 +20,10 @@ fn file_key_loads_from_assert_fs_child_path() {
     }
 
     let provider = FileKeyProvider::from_path(keyfile.path()).expect("load from assert_fs path");
+    let snapshot = provider.current().expect("key snapshot");
     assert!(
-        provider.version().starts_with("file:nebula.key:"),
+        snapshot.key_id().starts_with("file:nebula.key:"),
         "expected file-scoped version prefix, got {}",
-        provider.version()
+        snapshot.key_id()
     );
-    provider.current_key().expect("key material");
 }

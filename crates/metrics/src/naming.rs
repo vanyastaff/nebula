@@ -220,14 +220,13 @@ pub const NEBULA_API_AUTH_MFA_ATTEMPTS_TOTAL: &str = "nebula_api_auth_mfa_attemp
 /// Counter: OAuth flow attempts (start + callback).
 ///
 /// Labeled by `outcome` (see [`auth_outcome`]) and `provider` (closed
-/// 3-value set — see [`auth_oauth_provider`] — bounded at compile time by
-/// `OAuthProvider::as_str()`). Operator-bounded cardinality ceiling:
-/// `outcome (<= 6) x provider (3) = 18` series.
-///
-/// `complete_oauth` currently returns `NotImplemented` on the PG backend
-/// (`pg.rs`); emission still fires (as `outcome=internal`) so the
-/// operator dashboard reflects the gap until a follow-up wires the real
-/// provider code-exchange.
+/// 2-value set — see [`auth_oauth_provider`] — bounded at compile time by
+/// `OAuthProvider::as_str()`). The registered-vocabulary ceiling is
+/// `12 auth outcomes x 2 providers = 24` series; each start, successful/error
+/// callback, and cancellation path emits only its relevant subset. Both Memory
+/// and PostgreSQL implement completion. A valid provider denial emits
+/// `oauth_failed`, invalid/replayed state emits `token_invalid`, and an email
+/// collision requiring explicit linking emits `conflict`.
 pub const NEBULA_API_AUTH_OAUTH_ATTEMPTS_TOTAL: &str = "nebula_api_auth_oauth_attempts_total";
 
 /// Histogram: auth backend method duration in seconds.
@@ -268,8 +267,10 @@ pub mod auth_outcome {
     pub const INVALID_INPUT: &str = "invalid_input";
     /// MFA TOTP code did not verify.
     pub const INVALID_MFA_CODE: &str = "invalid_mfa_code";
-    /// Authentication succeeded so far, but a TOTP code is required to
-    /// complete the login. Not a [`SUCCESS`] — the auth has not
+    /// Password or OAuth identity verification succeeded, but a TOTP code is
+    /// required to complete login. On OAuth, the finalizer atomically records
+    /// an opaque challenge and this outcome. The 202 response carries no
+    /// session/CSRF material. Not a [`SUCCESS`] — authentication has not
     /// completed.
     pub const MFA_REQUIRED: &str = "mfa_required";
     /// One-time token (verification / reset / mfa-challenge / oauth-state)
@@ -280,39 +281,41 @@ pub mod auth_outcome {
     /// (which is invisible to the auth backend without a storage API
     /// change).
     pub const LOCKOUT: &str = "lockout";
-    /// Email-verification flow has not completed for this account.
+    /// Email-verification flow has not completed for this account, or a valid
+    /// new OAuth identity supplied no policy-acceptable verified email. The
+    /// latter is a semantic 403, distinct from provider/transport failures.
     pub const EMAIL_UNVERIFIED: &str = "email_unverified";
-    /// Rate limit hit on a sensitive endpoint. Reserved for handler-layer
-    /// middleware rejections that surface through `AuthError::RateLimit`;
-    /// the PG/in-memory backends never produce this outcome today, but
-    /// the value stays in the closed set for forward-compat.
+    /// Rate limit hit on a sensitive endpoint. This includes handler-layer
+    /// admission and the bounded Plane-A OAuth-state stores: Memory emits it
+    /// at its process-local cap, while PostgreSQL emits it when the shared
+    /// admission gate is full or contended.
     pub const RATE_LIMIT: &str = "rate_limit";
-    /// OAuth provider returned an error or state-token verification
-    /// failed.
+    /// OAuth provider exchange failed or the provider returned a valid denial.
+    /// Invalid/replayed state is classified separately as [`TOKEN_INVALID`].
     pub const OAUTH_FAILED: &str = "oauth_failed";
-    /// Resource already exists (email already registered on signup).
+    /// Resource conflict: email already registered on signup, or a verified
+    /// OAuth email belongs to an existing account and explicit authenticated
+    /// linking is required. The latter never auto-links or creates a session.
     pub const CONFLICT: &str = "conflict";
     /// Internal backend error (storage failure, crypto failure, lock
-    /// poisoning, unexpected `From<EmailError>` collapse,
-    /// `NotImplemented` on a wired-but-incomplete provider path).
+    /// poisoning, unexpected `From<EmailError>` collapse, or an invariant
+    /// failure in a fully wired provider path).
     pub const INTERNAL: &str = "internal";
 }
 
 /// Provider labels for [`NEBULA_API_AUTH_OAUTH_ATTEMPTS_TOTAL`].
 ///
 /// Mirror of `OAuthProvider::as_str()` in
-/// `crates/api/src/domain/auth/backend/oauth.rs`. Closed 3-value set
+/// `crates/api/src/domain/auth/backend/oauth.rs`. Closed 2-value set
 /// bounded by the enum at compile time. A user-supplied unknown provider
 /// query param is rejected by `OAuthProvider::from_str` with
-/// `AuthError::OAuthFailed` *before* any metric arm runs, so this set
+/// `AuthError::InvalidInput` *before* any metric arm runs, so this set
 /// cannot leak.
 pub mod auth_oauth_provider {
     /// Sign-in via Google.
     pub const GOOGLE: &str = "google";
     /// Sign-in via GitHub.
     pub const GITHUB: &str = "github";
-    /// Sign-in via Microsoft.
-    pub const MICROSOFT: &str = "microsoft";
 }
 
 // ---------------------------------------------------------------------------
@@ -708,16 +711,18 @@ pub const NEBULA_CREDENTIAL_EXPIRED_TOTAL: &str = "nebula_credential_expired_tot
 
 /// Counter: L2 claim acquisition outcomes.
 ///
-/// Labeled by `outcome` (see [`refresh_coord_claim_outcome`]). Three
+/// Labeled by `outcome` (see [`refresh_coord_claim_outcome`]). Four
 /// closed labels:
 ///
 /// - `acquired` — `RefreshClaimRepo::try_claim` returned `Acquired`; the holder owns the L2 row and
 ///   may run the refresh closure.
 /// - `contended` — `try_claim` returned `Contended`; another replica held the row and the holder
 ///   slept on backoff (n8n #13088 mitigation lineage).
+/// - `outcome_unknown` — `try_claim` found an expired `RefreshInFlight` row. Provider dispatch was
+///   denied because the row remains durable fail-closed poison pending explicit reconciliation.
 /// - `exhausted` — backoff retries were exhausted before a claim could be obtained.
 ///
-/// `outcome="exhausted" > 0` is a real production signal; pair with the
+/// `outcome=~"exhausted|outcome_unknown" > 0` is a real production signal; pair with the
 /// `holder.contender` log lines to triage. `acquired` rises in lockstep
 /// with refresh load.
 pub const NEBULA_CREDENTIAL_REFRESH_COORD_CLAIMS_TOTAL: &str =
@@ -733,6 +738,9 @@ pub mod refresh_coord_claim_outcome {
     pub const ACQUIRED: &str = "acquired";
     /// `RefreshClaimRepo::try_claim` returned `Contended`.
     pub const CONTENDED: &str = "contended";
+    /// `try_claim` rejected replay because an expired provider-side-effect
+    /// claim remains fail-closed.
+    pub const OUTCOME_UNKNOWN: &str = "outcome_unknown";
     /// Backoff retries exhausted before a claim could be obtained.
     pub const EXHAUSTED: &str = "exhausted";
 }
@@ -767,11 +775,14 @@ pub mod refresh_coord_coalesced_tier {
 /// Labeled by `action` (see [`refresh_coord_sentinel_action`]). Two
 /// closed labels:
 ///
-/// - `recorded` — sweep observed an expired `RefreshInFlight` row, recorded the event in
-///   `credential_sentinel_events`, and returned `SentinelDecision::Recoverable`.
-/// - `reauth_triggered` — same as above, but the rolling-window count crossed `sentinel_threshold`
-///   so the sweep emitted `CredentialEvent::ReauthRequired`. Crossing zero is an immediate operator
-///   signal (a holder crashed mid-refresh repeatedly within `sentinel_window`).
+/// - `recorded` — sweep atomically accounted an expired `RefreshInFlight` row in
+///   `credential_sentinel_events`, retained it as poison, and returned
+///   `SentinelDecision::BelowThreshold`.
+/// - `reauth_triggered` — same as above, but the database-clock rolling-window count of distinct
+///   claim UUID incidents crossed `sentinel_threshold`, so the sweep emitted a lossy
+///   `CredentialEvent::ReauthRequired` observation. Repeated requests/sweeps of one poison row do
+///   not increase the count. The event does not prove that the credential aggregate was durably
+///   transitioned.
 pub const NEBULA_CREDENTIAL_REFRESH_COORD_SENTINEL_EVENTS_TOTAL: &str =
     "nebula_credential_refresh_coord_sentinel_events_total";
 
@@ -779,41 +790,46 @@ pub const NEBULA_CREDENTIAL_REFRESH_COORD_SENTINEL_EVENTS_TOTAL: &str =
 pub mod refresh_coord_sentinel_action {
     /// Sentinel event recorded; threshold not yet reached.
     pub const RECORDED: &str = "recorded";
-    /// Sentinel threshold crossed; `ReauthRequired` published.
+    /// Sentinel threshold crossed; a `ReauthRequired` observation was published.
     pub const REAUTH_TRIGGERED: &str = "reauth_triggered";
 }
 
 /// Counter: reclaim-sweep outcomes.
 ///
-/// Labeled by `outcome` (see [`refresh_coord_reclaim_outcome`]). Two
+/// Labeled by `outcome` (see [`refresh_coord_reclaim_outcome`]). Three
 /// closed labels:
 ///
 /// - `reclaimed` — sweep deleted at least one expired claim row from `credential_refresh_claims`.
+/// - `outcome_unknown_accounted` — sweep atomically recorded evidence for at least one expired
+///   `RefreshInFlight` row while retaining it as durable fail-closed poison. This outcome takes
+///   precedence when a sweep also reclaims normal rows.
 /// - `no_work` — sweep ran and found nothing to reclaim (the steady state for healthy systems).
 ///
-/// The ratio `reclaimed / (reclaimed + no_work)` is the sweep's hit-rate.
-/// Sustained high `reclaimed` rate signals a crashed-runner storm; pair
-/// with [`NEBULA_CREDENTIAL_REFRESH_COORD_SENTINEL_EVENTS_TOTAL`] to
-/// distinguish clean timeouts from mid-refresh crashes.
+/// `outcome_unknown_accounted > 0` is paging-class because provider replay is
+/// now blocked pending explicit reconciliation.
 pub const NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIM_SWEEPS_TOTAL: &str =
     "nebula_credential_refresh_coord_reclaim_sweeps_total";
 
 /// Outcome labels for [`NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIM_SWEEPS_TOTAL`].
 pub mod refresh_coord_reclaim_outcome {
-    /// At least one claim row was reclaimed in this sweep.
+    /// One or more expired normal claim rows were reclaimed, and no poison
+    /// claim was accounted in this sweep.
     pub const RECLAIMED: &str = "reclaimed";
+    /// At least one expired provider-side-effect claim was atomically
+    /// accounted and retained as poison.
+    pub const OUTCOME_UNKNOWN_ACCOUNTED: &str = "outcome_unknown_accounted";
     /// Sweep ran with no expired rows to reclaim.
     pub const NO_WORK: &str = "no_work";
 }
 
 /// Histogram: how long a holder owned the L2 claim row.
 ///
-/// Observed in seconds at the moment of release (success path) or
-/// reclaim (crash / timeout path). Includes the heartbeat ticks plus
-/// the user closure under `refresh_timeout`. P99 should sit below
-/// `claim_ttl` by construction (otherwise `validate()` would have
-/// rejected the config); P50 should sit near `refresh_timeout` for
-/// hot credentials.
+/// Observed in seconds when the coordinator finalizes or drops its lease.
+/// The owned provider/persistence section is not cancelled by
+/// `refresh_timeout`, and successful heartbeats renew `claim_ttl`, so this
+/// duration may legitimately exceed both values. A rising tail is an
+/// operational signal for slow or stuck integrations, not proof that the
+/// lease invariant was violated.
 pub const NEBULA_CREDENTIAL_REFRESH_COORD_HOLD_DURATION_SECONDS: &str =
     "nebula_credential_refresh_coord_hold_duration_seconds";
 
@@ -1175,10 +1191,11 @@ mod tests {
         let claim = [
             refresh_coord_claim_outcome::ACQUIRED,
             refresh_coord_claim_outcome::CONTENDED,
+            refresh_coord_claim_outcome::OUTCOME_UNKNOWN,
             refresh_coord_claim_outcome::EXHAUSTED,
         ];
         let claim_set: HashSet<&str> = claim.iter().copied().collect();
-        assert_eq!(claim_set.len(), 3, "claim outcome labels must be unique");
+        assert_eq!(claim_set.len(), 4, "claim outcome labels must be unique");
 
         let tier = [
             refresh_coord_coalesced_tier::L1,
@@ -1196,12 +1213,13 @@ mod tests {
 
         let reclaim = [
             refresh_coord_reclaim_outcome::RECLAIMED,
+            refresh_coord_reclaim_outcome::OUTCOME_UNKNOWN_ACCOUNTED,
             refresh_coord_reclaim_outcome::NO_WORK,
         ];
         let reclaim_set: HashSet<&str> = reclaim.iter().copied().collect();
         assert_eq!(
             reclaim_set.len(),
-            2,
+            3,
             "reclaim outcome labels must be unique"
         );
     }
@@ -1266,7 +1284,7 @@ mod tests {
     /// per the oracle locked spec: `attempts_total{outcome}` /
     /// `mfa_attempts_total{outcome}` against the 12-value closed
     /// [`auth_outcome`] set; `oauth_attempts_total{outcome, provider}`
-    /// adds the 3-value closed [`auth_oauth_provider`] dimension; the
+    /// adds the 2-value closed [`auth_oauth_provider`] dimension; the
     /// histogram uses default seconds-shaped buckets keyed by `outcome`.
     const API_AUTH_METRIC_NAMES: [&str; 4] = [
         NEBULA_API_AUTH_ATTEMPTS_TOTAL,
@@ -1343,16 +1361,12 @@ mod tests {
     #[test]
     fn auth_oauth_provider_labels_are_closed_set() {
         // Bounded at compile time by the `OAuthProvider` enum
-        // (`Google | GitHub | Microsoft`). A user-supplied unknown
-        // provider is rejected by `from_str` with `OAuthFailed` before
+        // (`Google | GitHub`). A user-supplied unknown
+        // provider is rejected by `from_str` with `InvalidInput` before
         // any metric arm runs, so the set cannot leak.
-        let labels = [
-            auth_oauth_provider::GOOGLE,
-            auth_oauth_provider::GITHUB,
-            auth_oauth_provider::MICROSOFT,
-        ];
+        let labels = [auth_oauth_provider::GOOGLE, auth_oauth_provider::GITHUB];
         let unique: HashSet<&str> = labels.iter().copied().collect();
-        assert_eq!(unique.len(), 3, "auth oauth provider labels must be unique");
+        assert_eq!(unique.len(), 2, "auth oauth provider labels must be unique");
         for label in labels {
             assert!(!label.is_empty());
             assert!(label.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'));

@@ -6,39 +6,35 @@
 //!
 //! # Design
 //!
-//! `AuditLayer` wraps any [`CredentialStore`] and delegates every operation
+//! `AuditLayer` wraps any [`CredentialPersistence`] and delegates every operation
 //! to the inner store, emitting an [`AuditEvent`] to the pluggable
 //! [`AuditSink`] for each call. Only metadata flows through the sink —
 //! credential data never does.
 //!
-//! # Fail-closed invariant (no discard-and-log)
+//! # Observation boundary
 //!
-//! Audit is **in-line durable**: if [`AuditSink::record`] returns an
-//! error, the credential operation as a whole returns
-//! [`StoreError::AuditFailure`]. There is no "log-and-continue" path.
-//! For mutating operations (`put`, `delete`), the layer additionally
-//! attempts a best-effort rollback of the inner write when possible
-//! (for `PutMode::CreateOnly` puts, it `delete`s the freshly-inserted
-//! record) so the store ends in the pre-call state.
-//!
-//! This is the non-negotiable §14 "no discard-and-log" rule. The
-//! [`credential_audit_durable`](../../../../tests/credential_audit_durable.rs)
-//! integration test is the CI gate for this invariant.
+//! The sink is non-authoritative telemetry and does not share a transaction
+//! with credential persistence. A sink failure is emitted as bounded telemetry
+//! but never changes the store result, triggers a retry, or compensates an
+//! already-confirmed mutation. K3 will replace this interim observation with a
+//! backend-owned durable audit/outbox protocol.
 
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
-use nebula_credential::{
-    AuditEvent, AuditOperation, AuditResult, AuditSink, CredentialStore, PutMode, StoreError,
-    StoredCredential,
+use async_trait::async_trait;
+use nebula_core::CredentialId;
+use nebula_credential::{AuditEvent, AuditOperation, AuditResult, AuditSink};
+use nebula_storage_port::{
+    CredentialCommit, CredentialCreate, CredentialOwner, CredentialPersistence,
+    CredentialPersistenceError, CredentialReplacement, CredentialSelector, CredentialTombstone,
+    RefreshRetrySnapshot, StoredCredential, StoredCredentialHead,
 };
 
-/// Audit logging layer wrapping a [`CredentialStore`].
+/// Audit logging layer wrapping a [`CredentialPersistence`].
 ///
 /// Delegates every operation to the inner store and records an
-/// [`AuditEvent`] via the configured [`AuditSink`]. When the sink
-/// errors the operation fails with [`StoreError::AuditFailure`]; for
-/// `put` / `delete` the layer also attempts a best-effort rollback of
-/// the inner write (see module docs).
+/// [`AuditEvent`] via the configured [`AuditSink`]. Sink errors are observable
+/// but never override the authoritative persistence result.
 ///
 /// # Examples
 ///
@@ -50,20 +46,21 @@ use nebula_credential::{
 /// # async fn doc() -> Result<(), Box<dyn std::error::Error>> {
 /// use std::sync::Arc;
 ///
-/// use nebula_credential::{AuditEvent, AuditSink, StoreError};
-/// use nebula_storage::credential::{AuditLayer, SqliteCredentialStore};
+/// use nebula_credential::{AuditEvent, AuditSink};
+/// use nebula_storage::credential::{AuditLayer, SqliteCredentialPersistence};
+/// use nebula_storage_port::CredentialPersistenceError;
 ///
 /// // A real sink ships each event to durable audit storage; here it is a stub.
 /// struct StdoutSink;
 /// impl AuditSink for StdoutSink {
-///     fn record(&self, event: &AuditEvent) -> Result<(), StoreError> {
+///     fn record(&self, event: &AuditEvent) -> Result<(), CredentialPersistenceError> {
 ///         println!("{} {:?}", event.credential_id, event.operation);
 ///         Ok(())
 ///     }
 /// }
 ///
 /// let sink: Arc<dyn AuditSink> = Arc::new(StdoutSink);
-/// let backend = SqliteCredentialStore::connect("sqlite://creds.db").await?;
+/// let backend = SqliteCredentialPersistence::connect("sqlite://creds.db").await?;
 /// let store = AuditLayer::new(backend, sink);
 /// # let _ = store;
 /// # Ok(())
@@ -79,84 +76,159 @@ impl<S> AuditLayer<S> {
     pub fn new(inner: S, sink: Arc<dyn AuditSink>) -> Self {
         Self { inner, sink }
     }
+
+    fn observe(&self, event: &AuditEvent) {
+        if self.sink.record(event).is_err() {
+            tracing::warn!(
+                target: "nebula_storage::credential_audit",
+                "credential audit observation was not accepted"
+            );
+        }
+    }
 }
 
-impl<S: CredentialStore> CredentialStore for AuditLayer<S> {
-    async fn get(&self, id: &str) -> Result<StoredCredential, StoreError> {
-        let result = self.inner.get(id).await;
-        self.sink.record(&AuditEvent {
+impl<S> fmt::Debug for AuditLayer<S> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_struct("AuditLayer").finish_non_exhaustive()
+    }
+}
+
+#[async_trait]
+impl<S: CredentialPersistence> CredentialPersistence for AuditLayer<S> {
+    async fn get(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<StoredCredential, CredentialPersistenceError> {
+        let result = self.inner.get(selector).await;
+        self.observe(&AuditEvent {
             timestamp: chrono::Utc::now(),
-            credential_id: id.to_string(),
+            credential_id: selector.credential_id().to_string(),
             operation: AuditOperation::Get,
             result: audit_result(&result),
-        })?;
+        });
         result
     }
 
-    async fn put(
+    async fn get_head(
         &self,
-        credential: StoredCredential,
-        mode: PutMode,
-    ) -> Result<StoredCredential, StoreError> {
-        let id = credential.id.clone();
-        let result = self.inner.put(credential, mode).await;
-
-        let event = AuditEvent {
+        selector: &CredentialSelector,
+    ) -> Result<StoredCredentialHead, CredentialPersistenceError> {
+        let result = self.inner.get_head(selector).await;
+        self.observe(&AuditEvent {
             timestamp: chrono::Utc::now(),
-            credential_id: id.clone(),
-            operation: AuditOperation::Put,
+            credential_id: selector.credential_id().to_string(),
+            operation: AuditOperation::Get,
             result: audit_result(&result),
-        };
+        });
+        result
+    }
 
-        if let Err(sink_err) = self.sink.record(&event) {
-            // Fail-closed: best-effort rollback of the
-            // inner write so the store ends in the pre-call state.
-            // Only attempted on CreateOnly (Overwrite/CAS have no
-            // recoverable prior state at this layer).
-            if matches!(mode, PutMode::CreateOnly) && result.is_ok() {
-                let _ = self.inner.delete(&id).await;
-            }
-            return Err(sink_err);
+    async fn refresh_retry_snapshot(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<RefreshRetrySnapshot, CredentialPersistenceError> {
+        let result = self.inner.refresh_retry_snapshot(selector).await;
+        self.observe(&AuditEvent {
+            timestamp: chrono::Utc::now(),
+            credential_id: selector.credential_id().to_string(),
+            operation: AuditOperation::Get,
+            result: audit_result(&result),
+        });
+        result
+    }
+
+    async fn create(
+        &self,
+        selector: &CredentialSelector,
+        create: CredentialCreate,
+    ) -> Result<CredentialCommit, CredentialPersistenceError> {
+        let result = self.inner.create(selector, create).await;
+        if result.is_ok() {
+            self.observe(&AuditEvent {
+                timestamp: chrono::Utc::now(),
+                credential_id: selector.credential_id().to_string(),
+                operation: AuditOperation::Create,
+                result: AuditResult::Success,
+            });
         }
-
         result
     }
 
-    async fn delete(&self, id: &str) -> Result<(), StoreError> {
-        let result = self.inner.delete(id).await;
-        self.sink.record(&AuditEvent {
-            timestamp: chrono::Utc::now(),
-            credential_id: id.to_string(),
-            operation: AuditOperation::Delete,
-            result: audit_result(&result),
-        })?;
-        // Delete is already destructive at the inner layer — there is
-        // no recoverable prior state at this layer to restore if the
-        // sink were to fail after a successful delete. Fail-closed
-        // still applies; the caller is expected to retry and the
-        // store surface remains consistent with `NotFound` semantics.
+    async fn replace(
+        &self,
+        selector: &CredentialSelector,
+        replacement: CredentialReplacement,
+    ) -> Result<CredentialCommit, CredentialPersistenceError> {
+        let result = self.inner.replace(selector, replacement).await;
+        if result.is_ok() {
+            self.observe(&AuditEvent {
+                timestamp: chrono::Utc::now(),
+                credential_id: selector.credential_id().to_string(),
+                operation: AuditOperation::Replace,
+                result: AuditResult::Success,
+            });
+        }
         result
     }
 
-    async fn list(&self, state_kind: Option<&str>) -> Result<Vec<String>, StoreError> {
-        let result = self.inner.list(state_kind).await;
-        self.sink.record(&AuditEvent {
+    async fn tombstone(
+        &self,
+        selector: &CredentialSelector,
+        tombstone: CredentialTombstone,
+    ) -> Result<CredentialCommit, CredentialPersistenceError> {
+        let result = self.inner.tombstone(selector, tombstone).await;
+        if result.is_ok() {
+            self.observe(&AuditEvent {
+                timestamp: chrono::Utc::now(),
+                credential_id: selector.credential_id().to_string(),
+                operation: AuditOperation::Tombstone,
+                result: AuditResult::Success,
+            });
+        }
+        result
+    }
+
+    async fn list(
+        &self,
+        owner: &CredentialOwner,
+        state_kind: Option<&str>,
+    ) -> Result<Vec<CredentialId>, CredentialPersistenceError> {
+        let result = self.inner.list(owner, state_kind).await;
+        self.observe(&AuditEvent {
             timestamp: chrono::Utc::now(),
             credential_id: "*".to_string(),
             operation: AuditOperation::List,
             result: audit_result(&result),
-        })?;
+        });
         result
     }
 
-    async fn exists(&self, id: &str) -> Result<bool, StoreError> {
-        let result = self.inner.exists(id).await;
-        self.sink.record(&AuditEvent {
+    async fn list_heads(
+        &self,
+        owner: &CredentialOwner,
+        state_kind: Option<&str>,
+    ) -> Result<Vec<StoredCredentialHead>, CredentialPersistenceError> {
+        let result = self.inner.list_heads(owner, state_kind).await;
+        self.observe(&AuditEvent {
             timestamp: chrono::Utc::now(),
-            credential_id: id.to_string(),
+            credential_id: "*".to_owned(),
+            operation: AuditOperation::List,
+            result: audit_result(&result),
+        });
+        result
+    }
+
+    async fn exists(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<bool, CredentialPersistenceError> {
+        let result = self.inner.exists(selector).await;
+        self.observe(&AuditEvent {
+            timestamp: chrono::Utc::now(),
+            credential_id: selector.credential_id().to_string(),
             operation: AuditOperation::Exists,
             result: audit_result(&result),
-        })?;
+        });
         result
     }
 }
@@ -164,14 +236,29 @@ impl<S: CredentialStore> CredentialStore for AuditLayer<S> {
 /// Map a store result to an [`AuditResult`] for logging.
 ///
 /// Only error classification is recorded — no credential data leaks.
-fn audit_result<T>(result: &Result<T, StoreError>) -> AuditResult {
+fn audit_result<T>(result: &Result<T, CredentialPersistenceError>) -> AuditResult {
     match result {
         Ok(_) => AuditResult::Success,
-        Err(StoreError::NotFound { .. }) => AuditResult::NotFound,
-        Err(StoreError::VersionConflict { .. } | StoreError::AlreadyExists { .. }) => {
-            AuditResult::Conflict
+        Err(CredentialPersistenceError::NotFound) => AuditResult::NotFound,
+        Err(
+            CredentialPersistenceError::VersionConflict { .. }
+            | CredentialPersistenceError::AlreadyExists { .. },
+        ) => AuditResult::Conflict,
+        Err(CredentialPersistenceError::VersionExhausted) => {
+            AuditResult::Error("version_exhausted".to_owned())
         },
-        Err(e) => AuditResult::Error(e.to_string()),
+        Err(CredentialPersistenceError::MaterialEpochExhausted) => {
+            AuditResult::Error("material_epoch_exhausted".to_owned())
+        },
+        Err(CredentialPersistenceError::CorruptRecord) => {
+            AuditResult::Error("corrupt_record".to_owned())
+        },
+        Err(CredentialPersistenceError::Unavailable) => {
+            AuditResult::Error("unavailable".to_owned())
+        },
+        Err(CredentialPersistenceError::OutcomeUnknown) => {
+            AuditResult::Error("outcome_unknown".to_owned())
+        },
     }
 }
 
@@ -179,9 +266,30 @@ fn audit_result<T>(result: &Result<T, StoreError>) -> AuditResult {
 mod tests {
     use std::sync::Mutex;
 
-    use nebula_credential::PutMode;
+    use nebula_core::CredentialId;
+    use nebula_storage_port::{
+        CredentialOwner, CredentialSelector, CredentialTombstone, RefreshRetryAdmission,
+        RefreshRetryBlock, RefreshRetryEvidence, RefreshRetryKind, RefreshRetryPhase,
+        RefreshRetryTransition, StoredCredential, StoredLiveCredential,
+    };
 
-    use super::{super::super::sqlite::SqliteCredentialStore, *};
+    use super::{super::super::sqlite::SqliteCredentialPersistence, *};
+    use crate::credential::test_support::{make_credential, make_replacement};
+
+    fn owner() -> CredentialOwner {
+        CredentialOwner::from_canonical("test-owner")
+    }
+
+    fn selector(id: CredentialId) -> CredentialSelector {
+        CredentialSelector::new(owner(), id)
+    }
+
+    fn into_live(record: StoredCredential) -> StoredLiveCredential {
+        let StoredCredential::Live(record) = record else {
+            panic!("test fixture must remain live");
+        };
+        record
+    }
 
     struct CollectingSink {
         events: Mutex<Vec<AuditEvent>>,
@@ -200,125 +308,161 @@ mod tests {
     }
 
     impl AuditSink for CollectingSink {
-        fn record(&self, event: &AuditEvent) -> Result<(), StoreError> {
+        fn record(&self, event: &AuditEvent) -> Result<(), CredentialPersistenceError> {
             self.events.lock().unwrap().push(event.clone());
             Ok(())
         }
     }
 
-    fn make_credential(id: &str) -> StoredCredential {
-        StoredCredential {
-            id: id.into(),
-            name: None,
-            credential_key: "test_credential".into(),
-            data: b"test-data".to_vec(),
-            state_kind: "test".into(),
-            state_version: 1,
-            version: 0,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-            expires_at: None,
-            reauth_required: false,
-            metadata: Default::default(),
-        }
-    }
-
     async fn make_store(
         sink: &Arc<CollectingSink>,
-    ) -> Result<AuditLayer<SqliteCredentialStore>, StoreError> {
+    ) -> Result<AuditLayer<SqliteCredentialPersistence>, CredentialPersistenceError> {
         Ok(AuditLayer::new(
-            SqliteCredentialStore::connect_memory().await?,
+            SqliteCredentialPersistence::connect_memory().await?,
             Arc::clone(sink) as Arc<dyn AuditSink>,
         ))
     }
 
     #[tokio::test]
-    async fn get_logs_audit_event() -> Result<(), StoreError> {
+    async fn get_logs_audit_event() -> Result<(), CredentialPersistenceError> {
         let sink = Arc::new(CollectingSink::new());
         let store = make_store(&sink).await?;
 
-        let cred = make_credential("audit-1");
-        store.put(cred, PutMode::CreateOnly).await.unwrap();
+        let credential_id = CredentialId::new();
+        let selector = selector(credential_id);
+        store
+            .create(&selector, make_credential(b"test-data"))
+            .await?;
 
-        store.get("audit-1").await.unwrap();
+        store.get(&selector).await?;
 
         let events = sink.events();
         let get_event = events
             .iter()
             .find(|e| e.operation == AuditOperation::Get)
             .unwrap();
-        assert_eq!(get_event.credential_id, "audit-1");
+        assert_eq!(get_event.credential_id, credential_id.to_string());
         assert_eq!(get_event.result, AuditResult::Success);
         Ok(())
     }
 
     #[tokio::test]
-    async fn put_logs_audit_event() -> Result<(), StoreError> {
+    async fn refresh_retry_snapshot_passes_through_and_is_audited()
+    -> Result<(), CredentialPersistenceError> {
+        let sink = Arc::new(CollectingSink::new());
+        let store = make_store(&sink).await?;
+        let selector = selector(CredentialId::new());
+        let created = store.create(&selector, make_credential(b"v1")).await?;
+        let evidence = RefreshRetryEvidence::new(
+            RefreshRetryPhase::ProviderConfirmedNotApplied,
+            RefreshRetryKind::ProviderUnavailable,
+            None,
+        );
+        store
+            .replace(
+                &selector,
+                make_replacement(
+                    created.version(),
+                    b"v2",
+                    RefreshRetryTransition::SetNever {
+                        evidence: evidence.clone(),
+                    },
+                ),
+            )
+            .await?;
+
+        let snapshot = store.refresh_retry_snapshot(&selector).await?;
+        assert_eq!(
+            snapshot.admission(),
+            &RefreshRetryAdmission::Blocked(RefreshRetryBlock::Never { evidence })
+        );
+        assert!(sink.events().iter().any(|event| {
+            event.operation == AuditOperation::Get && event.result == AuditResult::Success
+        }));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn create_logs_audit_event() -> Result<(), CredentialPersistenceError> {
         let sink = Arc::new(CollectingSink::new());
         let store = make_store(&sink).await?;
 
-        let cred = make_credential("audit-2");
-        store.put(cred, PutMode::CreateOnly).await.unwrap();
+        let credential_id = CredentialId::new();
+        store
+            .create(&selector(credential_id), make_credential(b"test-data"))
+            .await?;
 
         let events = sink.events();
-        let put_event = events
+        let create_event = events
             .iter()
-            .find(|e| e.operation == AuditOperation::Put)
+            .find(|e| e.operation == AuditOperation::Create)
             .unwrap();
-        assert_eq!(put_event.credential_id, "audit-2");
-        assert_eq!(put_event.result, AuditResult::Success);
+        assert_eq!(create_event.credential_id, credential_id.to_string());
+        assert_eq!(create_event.result, AuditResult::Success);
         Ok(())
     }
 
     #[tokio::test]
-    async fn delete_not_found_logs_not_found() -> Result<(), StoreError> {
+    async fn tombstone_not_found_emits_no_mutation_event() -> Result<(), CredentialPersistenceError>
+    {
         let sink = Arc::new(CollectingSink::new());
         let store = make_store(&sink).await?;
 
-        let result = store.delete("nonexistent").await;
-        assert!(result.is_err());
+        let result = store
+            .tombstone(
+                &selector(CredentialId::new()),
+                CredentialTombstone::new(
+                    nebula_storage_port::CredentialVersion::try_from(1_i64)
+                        .expect("test version must be valid"),
+                ),
+            )
+            .await;
+        assert_eq!(result, Err(CredentialPersistenceError::NotFound));
 
-        let events = sink.events();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].operation, AuditOperation::Delete);
-        assert_eq!(events[0].result, AuditResult::NotFound);
+        assert!(sink.events().is_empty());
         Ok(())
     }
 
     #[tokio::test]
-    async fn operations_pass_through_to_inner() -> Result<(), StoreError> {
+    async fn operations_pass_through_to_inner() -> Result<(), CredentialPersistenceError> {
         let sink = Arc::new(CollectingSink::new());
         let store = make_store(&sink).await?;
 
-        // Put a credential
-        let cred = make_credential("audit-3");
-        let stored = store.put(cred, PutMode::CreateOnly).await.unwrap();
-        assert_eq!(stored.id, "audit-3");
-        assert_eq!(stored.data, b"test-data");
+        let credential_id = CredentialId::new();
+        let selector = selector(credential_id);
+        let created = store
+            .create(&selector, make_credential(b"test-data"))
+            .await?;
+        assert_eq!(created.credential_id(), credential_id);
 
         // Get returns the same data
-        let fetched = store.get("audit-3").await.unwrap();
-        assert_eq!(fetched.data, b"test-data");
+        let fetched = into_live(store.get(&selector).await?);
+        assert_eq!(fetched.data().as_ref(), b"test-data");
 
         // Exists returns true
-        assert!(store.exists("audit-3").await.unwrap());
+        assert!(store.exists(&selector).await?);
 
         // List includes the credential
-        let ids = store.list(None).await.unwrap();
-        assert!(ids.contains(&"audit-3".to_string()));
+        let ids = store.list(&owner(), None).await?;
+        assert!(ids.contains(&credential_id));
 
-        // Delete succeeds
-        store.delete("audit-3").await.unwrap();
-        assert!(!store.exists("audit-3").await.unwrap());
+        store
+            .tombstone(&selector, CredentialTombstone::new(created.version()))
+            .await?;
+        assert!(!store.exists(&selector).await?);
+        assert!(matches!(
+            store.get(&selector).await?,
+            StoredCredential::Tombstoned(_)
+        ));
         Ok(())
     }
 
     #[tokio::test]
-    async fn list_uses_wildcard_credential_id() -> Result<(), StoreError> {
+    async fn list_uses_wildcard_credential_id() -> Result<(), CredentialPersistenceError> {
         let sink = Arc::new(CollectingSink::new());
         let store = make_store(&sink).await?;
 
-        store.list(None).await.unwrap();
+        store.list(&owner(), None).await.unwrap();
 
         let events = sink.events();
         assert_eq!(events.len(), 1);
@@ -328,23 +472,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn duplicate_put_logs_conflict() -> Result<(), StoreError> {
+    async fn duplicate_create_emits_only_the_acknowledged_mutation()
+    -> Result<(), CredentialPersistenceError> {
         let sink = Arc::new(CollectingSink::new());
         let store = make_store(&sink).await?;
 
-        let cred = make_credential("audit-dup");
-        store.put(cred, PutMode::CreateOnly).await.unwrap();
+        let credential_id = CredentialId::new();
+        let selector = selector(credential_id);
+        store.create(&selector, make_credential(b"first")).await?;
 
-        let cred2 = make_credential("audit-dup");
-        let result = store.put(cred2, PutMode::CreateOnly).await;
+        let result = store.create(&selector, make_credential(b"duplicate")).await;
         assert!(result.is_err());
 
         let events = sink.events();
-        let conflict_event = events
-            .iter()
-            .rfind(|e| e.operation == AuditOperation::Put)
-            .unwrap();
-        assert_eq!(conflict_event.result, AuditResult::Conflict);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].operation, AuditOperation::Create);
+        assert_eq!(events[0].result, AuditResult::Success);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn outcome_unknown_emits_no_mutation_event() -> Result<(), CredentialPersistenceError> {
+        let sink = Arc::new(CollectingSink::new());
+        let inner = SqliteCredentialPersistence::connect_memory().await?;
+        inner.arm_post_commit_outcome_unknown();
+        let store = AuditLayer::new(inner.clone(), Arc::clone(&sink) as Arc<dyn AuditSink>);
+        let selector = selector(CredentialId::new());
+
+        assert_eq!(
+            store
+                .create(&selector, make_credential(b"ambiguously-committed"))
+                .await,
+            Err(CredentialPersistenceError::OutcomeUnknown)
+        );
+        assert!(sink.events().is_empty());
+        assert!(matches!(
+            inner.get(&selector).await?,
+            StoredCredential::Live(_)
+        ));
         Ok(())
     }
 }

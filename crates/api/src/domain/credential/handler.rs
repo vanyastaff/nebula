@@ -1,32 +1,20 @@
-//! Credential handlers — workspace-scoped CRUD, lifecycle, acquisition,
-//! type discovery, and OAuth2 transport.
+//! Credential handlers — workspace-scoped CRUD, lifecycle, universal
+//! acquisition, and type discovery.
 //!
 //! Thin HTTP handlers that validate inputs, delegate to the credential
-//! service layer ([`crate::transport::credential`]) or OAuth infrastructure
-//! ([`crate::transport::oauth`]), and return responses.
+//! service layer ([`crate::transport::credential`]), and return responses.
 
 use axum::{
-    Extension, Form, Json,
+    Extension, Json,
     extract::{Path, Query, State},
 };
 use nebula_core::TenantContext;
 
-// Re-export the request/response types used by route wiring.
-pub use super::oauth::{
-    AuthorizationUriResponse as AuthUriResponse, OAuthCallbackResponse as CallbackResponse,
-};
-use super::{
-    dto::{
-        ContinueResolveRequest, ContinueResolveResponse, CreateCredentialRequest,
-        CredentialResponse, CredentialTypeInfo, ListCredentialTypesResponse, ListCredentialsQuery,
-        ListCredentialsResponse, RefreshCredentialResponse, ResolveCredentialRequest,
-        ResolveCredentialResponse, RevokeCredentialResponse, TestCredentialResponse,
-        UpdateCredentialRequest,
-    },
-    oauth::{
-        self as oauth_controller, AuthorizationUriResponse, OAuthCallbackBody, OAuthCallbackQuery,
-        OAuthCallbackResponse,
-    },
+use super::dto::{
+    ContinueResolveRequest, ContinueResolveResponse, CreateCredentialRequest, CredentialResponse,
+    CredentialTypeInfo, ListCredentialTypesResponse, ListCredentialsQuery, ListCredentialsResponse,
+    RefreshCredentialResponse, ResolveCredentialRequest, ResolveCredentialResponse,
+    RevokeCredentialResponse, TestCredentialResponse, UpdateCredentialRequest,
 };
 use crate::{
     domain::shared::AckResponse,
@@ -35,7 +23,7 @@ use crate::{
         validate_credential_id, validate_credential_key, validate_credential_name,
         validate_data_is_object,
     },
-    middleware::auth::AuthenticatedUser,
+    middleware::auth::AuthenticatedPrincipal,
     state::AppState,
 };
 
@@ -48,7 +36,7 @@ use crate::{
     get,
     path = "/orgs/{org}/workspaces/{ws}/credentials",
     tag = "workspaces.credentials",
-    security(("bearer" = []), ("api_key" = [])),
+    security(("bearer" = [])),
     params(
         ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
         ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
@@ -58,33 +46,32 @@ use crate::{
         (status = 200, description = "Page of credential summaries (no secret material).", body = ListCredentialsResponse),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
+        (status = 503, description = "Credential authority or persistence is temporarily unavailable.", body = ProblemDetails),
     ),
 )]
 pub async fn list_credentials(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthenticatedUser>,
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws)): Path<(String, String)>,
     Query(query): Query<ListCredentialsQuery>,
 ) -> ApiResult<Json<ListCredentialsResponse>> {
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
-    let response = crate::transport::credential::list_credentials(&state, &scope, query).await?;
+    let response =
+        crate::transport::credential::list_credentials(&state, &principal, &scope, query).await?;
     Ok(Json(response))
 }
 
 /// POST /orgs/{org}/workspaces/{ws}/credentials — Create a new credential.
 ///
-/// Validates the request body, then delegates to the credential store
-/// for persistence. When a credential-schema port is configured
-/// (credential-schema validation), `data` is validated against the credential type's
-/// resolved schema before encryption and storage; if no validator is
-/// configured the request is rejected with 503 — `data` is never
-/// persisted unvalidated.
+/// The authenticated command gateway authorizes first, then the
+/// credential-owned controller/service validates the type-specific data and
+/// persists it. The catalog/form read-model is not mutation authority.
 #[utoipa::path(
     post,
     path = "/orgs/{org}/workspaces/{ws}/credentials",
     tag = "workspaces.credentials",
-    security(("bearer" = []), ("api_key" = [])),
+    security(("bearer" = [])),
     params(
         ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
         ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
@@ -95,12 +82,13 @@ pub async fn list_credentials(
         (status = 400, description = "Validation error: `data` failed the credential type's schema, or key/name shape invalid.", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
-        (status = 503, description = "Credential-schema port not configured: `data` cannot be validated, so it is not persisted (credential-schema validation, honest capability fail-closed).", body = ProblemDetails),
+        (status = 409, description = "Credential id/name is already reserved, or the persistence outcome is unknown and must be reconciled.", body = ProblemDetails),
+        (status = 503, description = "Credential authority or persistence is temporarily unavailable.", body = ProblemDetails),
     ),
 )]
 pub async fn create_credential(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthenticatedUser>,
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws)): Path<(String, String)>,
     Json(body): Json<CreateCredentialRequest>,
@@ -111,7 +99,8 @@ pub async fn create_credential(
     validate_data_is_object(&body.data)?;
 
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
-    let response = crate::transport::credential::create_credential(&state, &scope, body).await?;
+    let response =
+        crate::transport::credential::create_credential(&state, &principal, &scope, body).await?;
     Ok(Json(response))
 }
 
@@ -122,7 +111,7 @@ pub async fn create_credential(
     get,
     path = "/orgs/{org}/workspaces/{ws}/credentials/{cred}",
     tag = "workspaces.credentials",
-    security(("bearer" = []), ("api_key" = [])),
+    security(("bearer" = [])),
     params(
         ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
         ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
@@ -134,11 +123,12 @@ pub async fn create_credential(
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Credential does not exist.", body = ProblemDetails),
+        (status = 503, description = "Credential authority or persistence is temporarily unavailable.", body = ProblemDetails),
     ),
 )]
 pub async fn get_credential(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthenticatedUser>,
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, cred)): Path<(String, String, String)>,
 ) -> ApiResult<Json<CredentialResponse>> {
@@ -146,7 +136,8 @@ pub async fn get_credential(
     validate_credential_id(&cred)?;
 
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
-    let response = crate::transport::credential::get_credential(&state, &scope, &cred).await?;
+    let response =
+        crate::transport::credential::get_credential(&state, &principal, &scope, &cred).await?;
     Ok(Json(response))
 }
 
@@ -158,7 +149,7 @@ pub async fn get_credential(
     put,
     path = "/orgs/{org}/workspaces/{ws}/credentials/{cred}",
     tag = "workspaces.credentials",
-    security(("bearer" = []), ("api_key" = [])),
+    security(("bearer" = [])),
     params(
         ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
         ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
@@ -171,13 +162,13 @@ pub async fn get_credential(
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Credential does not exist.", body = ProblemDetails),
-        (status = 409, description = "Optimistic-concurrency version mismatch.", body = ProblemDetails),
-        (status = 503, description = "Credential-schema port not configured: supplied `data` cannot be validated, so it is not persisted (credential-schema validation, honest capability fail-closed).", body = ProblemDetails),
+        (status = 409, description = "Version/name conflict, exhausted version, or unknown persistence outcome requiring reconciliation.", body = ProblemDetails),
+        (status = 503, description = "Credential authority or persistence is temporarily unavailable.", body = ProblemDetails),
     ),
 )]
 pub async fn update_credential(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthenticatedUser>,
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, cred)): Path<(String, String, String)>,
     Json(body): Json<UpdateCredentialRequest>,
@@ -209,35 +200,42 @@ pub async fn update_credential(
 
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     let response =
-        crate::transport::credential::update_credential(&state, &scope, &cred, body).await?;
+        crate::transport::credential::update_credential(&state, &principal, &scope, &cred, body)
+            .await?;
     Ok(Json(response))
 }
 
 /// DELETE /orgs/{org}/workspaces/{ws}/credentials/{cred} — Delete a credential.
 ///
-/// Permanently removes the credential and its encrypted state.
+/// Replaces the live row with a secret-free tombstone.
+///
+/// The identifier stays reserved and ordinary management reads treat it as
+/// absent. This endpoint does not claim physical erasure from WAL, snapshots,
+/// or backups.
 /// Returns a JSON acknowledgement on success.
 #[utoipa::path(
     delete,
     path = "/orgs/{org}/workspaces/{ws}/credentials/{cred}",
     tag = "workspaces.credentials",
-    security(("bearer" = []), ("api_key" = [])),
+    security(("bearer" = [])),
     params(
         ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
         ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
         ("cred" = String, Path, description = "Credential identifier (`cred_<ULID>`)."),
     ),
     responses(
-        (status = 200, description = "Credential deleted.", body = AckResponse),
+        (status = 200, description = "Credential tombstoned; live material is no longer available.", body = AckResponse),
         (status = 400, description = "Invalid credential identifier.", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Credential does not exist.", body = ProblemDetails),
+        (status = 409, description = "Concurrent/version conflict or unknown persistence outcome requiring reconciliation.", body = ProblemDetails),
+        (status = 503, description = "Credential authority or persistence is temporarily unavailable.", body = ProblemDetails),
     ),
 )]
 pub async fn delete_credential(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthenticatedUser>,
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, cred)): Path<(String, String, String)>,
 ) -> ApiResult<Json<AckResponse>> {
@@ -245,7 +243,7 @@ pub async fn delete_credential(
     validate_credential_id(&cred)?;
 
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
-    crate::transport::credential::delete_credential(&state, &scope, &cred).await?;
+    crate::transport::credential::delete_credential(&state, &principal, &scope, &cred).await?;
     Ok(Json(AckResponse::ok()))
 }
 
@@ -253,37 +251,39 @@ pub async fn delete_credential(
 
 /// POST /orgs/{org}/workspaces/{ws}/credentials/{cred}/test — Test credential connectivity.
 ///
-/// Delegates to `Credential::test()` to verify the credential can
-/// successfully authenticate against the external system. Returns 400
-/// if the credential type does not support testing (`TESTABLE = false`).
+/// Dispatches the registered `Testable::test` capability to verify the
+/// credential against the external system. Returns 400 when the credential
+/// type has no registered test capability.
 #[utoipa::path(
     post,
     path = "/orgs/{org}/workspaces/{ws}/credentials/{cred}/test",
     tag = "workspaces.credentials",
-    security(("bearer" = []), ("api_key" = [])),
+    security(("bearer" = [])),
     params(
         ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
         ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
         ("cred" = String, Path, description = "Credential identifier (`cred_<ULID>`)."),
     ),
     responses(
-        (status = 200, description = "Connectivity test result (success flag + message).", body = TestCredentialResponse),
+        (status = 200, description = "Tagged connectivity test result with platform-owned messages and a required frozen v1 code on failure.", body = TestCredentialResponse),
         (status = 400, description = "Invalid credential identifier or credential type does not support testing.", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Credential does not exist.", body = ProblemDetails),
+        (status = 503, description = "Credential authority, provider, or persistence is temporarily unavailable.", body = ProblemDetails),
     ),
 )]
 pub async fn test_credential(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthenticatedUser>,
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, cred)): Path<(String, String, String)>,
 ) -> ApiResult<Json<TestCredentialResponse>> {
     validate_credential_id(&cred)?;
 
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
-    let response = crate::transport::credential::test_credential(&state, &scope, &cred).await?;
+    let response =
+        crate::transport::credential::test_credential(&state, &principal, &scope, &cred).await?;
     Ok(Json(response))
 }
 
@@ -292,11 +292,17 @@ pub async fn test_credential(
 /// Delegates to `Credential::refresh()` to force a token refresh
 /// (e.g. OAuth2 `refresh_token` grant). Returns 400 if the credential
 /// type does not support refreshing (`REFRESHABLE = false`).
+///
+/// An exact pre-dispatch refusal or a complete provider response proving no
+/// effect returns 409. When `Retry-After` is present, callers wait for that
+/// delay before retrying. Without `Retry-After`, callers must not retry
+/// automatically; they reconcile or reconnect when durable local finalization
+/// failed.
 #[utoipa::path(
     post,
     path = "/orgs/{org}/workspaces/{ws}/credentials/{cred}/refresh",
     tag = "workspaces.credentials",
-    security(("bearer" = []), ("api_key" = [])),
+    security(("bearer" = [])),
     params(
         ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
         ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
@@ -308,18 +314,23 @@ pub async fn test_credential(
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Credential does not exist.", body = ProblemDetails),
+        (status = 409, description = "The integration credential requires reconnection, refresh was proven not applied (Retry-After gives the earliest retry time), durable local refresh finalization definitely failed and requires reconciliation, a concurrent version changed, or a mutation acknowledgement was lost and state must be reconciled.", body = ProblemDetails, content_type = "application/problem+json", headers(
+            ("Retry-After" = u64, description = "Optional non-zero whole-second delay before a proven no-effect refresh may be retried.")
+        )),
+        (status = 503, description = "Credential authority, pre-provider coordination, or persistence is temporarily unavailable.", body = ProblemDetails),
     ),
 )]
 pub async fn refresh_credential(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthenticatedUser>,
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, cred)): Path<(String, String, String)>,
 ) -> ApiResult<Json<RefreshCredentialResponse>> {
     validate_credential_id(&cred)?;
 
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
-    let response = crate::transport::credential::refresh_credential(&state, &scope, &cred).await?;
+    let response =
+        crate::transport::credential::refresh_credential(&state, &principal, &scope, &cred).await?;
     Ok(Json(response))
 }
 
@@ -329,11 +340,15 @@ pub async fn refresh_credential(
 /// Delegates to `Credential::revoke()` to explicitly revoke the
 /// credential at the provider. Returns 400 if the credential type
 /// does not support revocation (`REVOCABLE = false`).
+///
+/// When the revoke outcome is known but durable local finalization fails,
+/// callers receive 409 and must reconcile credential state instead of
+/// retrying automatically.
 #[utoipa::path(
     post,
     path = "/orgs/{org}/workspaces/{ws}/credentials/{cred}/revoke",
     tag = "workspaces.credentials",
-    security(("bearer" = []), ("api_key" = [])),
+    security(("bearer" = [])),
     params(
         ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
         ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
@@ -345,18 +360,21 @@ pub async fn refresh_credential(
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Credential does not exist.", body = ProblemDetails),
+        (status = 409, description = "Concurrent version changed; the revoke outcome is known but durable local finalization failed (do not retry automatically; reconcile credential state); or a mutation acknowledgement was lost and credential state must be reconciled.", body = ProblemDetails, content_type = "application/problem+json"),
+        (status = 503, description = "Credential authority, pre-provider coordination, or persistence is temporarily unavailable.", body = ProblemDetails),
     ),
 )]
 pub async fn revoke_credential(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthenticatedUser>,
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, cred)): Path<(String, String, String)>,
 ) -> ApiResult<Json<RevokeCredentialResponse>> {
     validate_credential_id(&cred)?;
 
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
-    let response = crate::transport::credential::revoke_credential(&state, &scope, &cred).await?;
+    let response =
+        crate::transport::credential::revoke_credential(&state, &principal, &scope, &cred).await?;
     Ok(Json(response))
 }
 
@@ -366,13 +384,15 @@ pub async fn revoke_credential(
 ///
 /// Accepts the credential type key and form field values, dispatches to
 /// the appropriate `Credential::resolve()` implementation. Returns either:
-/// - `Complete { credential_id }` for static credentials (api_key, basic_auth, client_credentials)
-/// - `Pending { pending_token, interaction }` for interactive flows (OAuth auth_code, device_code)
+/// - `Complete { credential_id }` for default static credentials (`api_key`, `basic_auth`,
+///   `signing_key`)
+/// - `Pending { pending_token, interaction }` for an explicitly composed interactive type (the
+///   default registry currently contains none)
 #[utoipa::path(
     post,
     path = "/orgs/{org}/workspaces/{ws}/credentials/resolve",
     tag = "workspaces.credentials",
-    security(("bearer" = []), ("api_key" = [])),
+    security(("bearer" = [])),
     params(
         ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
         ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
@@ -383,12 +403,13 @@ pub async fn revoke_credential(
         (status = 400, description = "Validation error (key or data shape).", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
-        (status = 503, description = "Credential service or credential-schema port not wired into this deployment (operational honesty: refuses rather than faking success).", body = ProblemDetails),
+        (status = 409, description = "Generated identity/name conflict or unknown persistence outcome requiring reconciliation.", body = ProblemDetails),
+        (status = 503, description = "Credential authority, provider, or persistence is temporarily unavailable.", body = ProblemDetails),
     ),
 )]
 pub async fn resolve_credential(
     State(state): State<AppState>,
-    Extension(user): Extension<AuthenticatedUser>,
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws)): Path<(String, String)>,
     Json(request): Json<ResolveCredentialRequest>,
@@ -399,7 +420,7 @@ pub async fn resolve_credential(
 
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     let response =
-        crate::transport::credential::resolve_credential(&state, &scope, &user.user_id, request)
+        crate::transport::credential::resolve_credential(&state, &principal, &scope, request)
             .await?;
     Ok(Json(response))
 }
@@ -414,7 +435,7 @@ pub async fn resolve_credential(
     post,
     path = "/orgs/{org}/workspaces/{ws}/credentials/resolve/continue",
     tag = "workspaces.credentials",
-    security(("bearer" = []), ("api_key" = [])),
+    security(("bearer" = [])),
     params(
         ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
         ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
@@ -425,12 +446,13 @@ pub async fn resolve_credential(
         (status = 400, description = "Validation error (e.g. empty `pending_token`).", body = ProblemDetails),
         (status = 401, description = "Authentication required or pending token expired/already-consumed.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
-        (status = 503, description = "Credential service not wired into this deployment (operational honesty: refuses rather than faking success).", body = ProblemDetails),
+        (status = 409, description = "Generated identity/name conflict or unknown persistence outcome requiring reconciliation.", body = ProblemDetails),
+        (status = 503, description = "Credential authority, provider, or persistence is temporarily unavailable.", body = ProblemDetails),
     ),
 )]
 pub async fn continue_resolve_credential(
     State(state): State<AppState>,
-    Extension(user): Extension<AuthenticatedUser>,
+    Extension(principal): Extension<AuthenticatedPrincipal>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws)): Path<(String, String)>,
     Json(request): Json<ContinueResolveRequest>,
@@ -446,8 +468,7 @@ pub async fn continue_resolve_credential(
 
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
     let response =
-        crate::transport::credential::continue_resolve(&state, &scope, &user.user_id, request)
-            .await?;
+        crate::transport::credential::continue_resolve(&state, &principal, &scope, request).await?;
     Ok(Json(response))
 }
 
@@ -466,7 +487,7 @@ pub async fn continue_resolve_credential(
     responses(
         (status = 200, description = "Registered credential types with capability flags and input schema.", body = ListCredentialTypesResponse),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
-        (status = 503, description = "Credential-schema port not configured (credential-schema validation, honest capability stub).", body = ProblemDetails),
+        (status = 503, description = "Credential catalog/form read-model is not configured.", body = ProblemDetails),
     ),
 )]
 pub async fn list_credential_types(
@@ -486,14 +507,14 @@ pub async fn list_credential_types(
     tag = "workspaces.credentials",
     security(("bearer" = []), ("api_key" = [])),
     params(
-        ("key" = String, Path, description = "Credential type key (e.g. `oauth2`, `api_key`)."),
+        ("key" = String, Path, description = "Credential type key (e.g. `api_key`, `basic_auth`)."),
     ),
     responses(
         (status = 200, description = "Credential type metadata with input schema.", body = CredentialTypeInfo),
         (status = 400, description = "Invalid credential type key.", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 404, description = "Credential type not registered.", body = ProblemDetails),
-        (status = 503, description = "Credential-schema port not configured (credential-schema validation, honest capability stub).", body = ProblemDetails),
+        (status = 503, description = "Credential catalog/form read-model is not configured.", body = ProblemDetails),
     ),
 )]
 pub async fn get_credential_type(
@@ -505,212 +526,4 @@ pub async fn get_credential_type(
 
     let response = crate::transport::credential::get_credential_type(&state, &key).await?;
     Ok(Json(response))
-}
-
-// --- OAuth2 handlers ---
-
-/// GET /credentials/{id}/oauth2/auth — Generate OAuth2 authorization URL.
-///
-/// System-level OAuth credential routes are intentionally disabled. OAuth
-/// state contains credential ownership and must be created through the
-/// workspace-scoped route below.
-#[utoipa::path(
-    get,
-    path = "/credentials/{id}/oauth2/auth",
-    tag = "workspaces.credentials",
-    security(("bearer" = []), ("api_key" = [])),
-    params(
-        ("id" = String, Path, description = "Credential identifier (`cred_<ULID>`)."),
-    ),
-    responses(
-        (status = 200, description = "Authorization URL plus signed opaque state.", body = AuthorizationUriResponse),
-        (status = 400, description = "Invalid OAuth configuration (e.g. malformed authorization URL).", body = ProblemDetails),
-        (status = 401, description = "Authentication required.", body = ProblemDetails),
-    ),
-)]
-pub async fn get_oauth2_authorize_url(
-    Path(_cred): Path<String>,
-    State(_state): State<AppState>,
-    Extension(_user): Extension<AuthenticatedUser>,
-    Query(_query): Query<crate::transport::oauth::flow::AuthorizationUriRequest>,
-) -> ApiResult<Json<AuthorizationUriResponse>> {
-    Err(ApiError::Gone(
-        "OAuth credential flow must use workspace-scoped routes".to_owned(),
-    ))
-}
-
-/// GET /credentials/{id}/oauth2/callback — Handle OAuth2 callback (query params).
-///
-/// System-level callback routes are intentionally disabled. The signed
-/// pending state is tenant-bound and must be consumed through the
-/// workspace-scoped callback route below.
-#[utoipa::path(
-    get,
-    path = "/credentials/{id}/oauth2/callback",
-    tag = "workspaces.credentials",
-    security(("bearer" = []), ("api_key" = [])),
-    params(
-        ("id" = String, Path, description = "Credential identifier (`cred_<ULID>`)."),
-        ("code" = String, Query, description = "Authorization code from the provider."),
-        ("state" = String, Query, description = "Signed opaque state from `oauth2/auth`."),
-    ),
-    responses(
-        (status = 200, description = "Tokens exchanged and persisted.", body = OAuthCallbackResponse),
-        (status = 401, description = "State validation failed or pending state expired/already-consumed.", body = ProblemDetails),
-    ),
-)]
-pub async fn get_oauth2_callback(
-    Path(_cred): Path<String>,
-    State(_state): State<AppState>,
-    Extension(_user): Extension<AuthenticatedUser>,
-    Query(_query): Query<OAuthCallbackQuery>,
-) -> ApiResult<Json<OAuthCallbackResponse>> {
-    Err(ApiError::Gone(
-        "OAuth credential flow must use workspace-scoped routes".to_owned(),
-    ))
-}
-
-/// POST /credentials/{id}/oauth2/callback — Handle OAuth2 callback (form_post).
-///
-/// System-level callback routes are intentionally disabled. The signed
-/// pending state is tenant-bound and must be consumed through the
-/// workspace-scoped callback route below.
-#[utoipa::path(
-    post,
-    path = "/credentials/{id}/oauth2/callback",
-    tag = "workspaces.credentials",
-    security(("bearer" = []), ("api_key" = [])),
-    params(
-        ("id" = String, Path, description = "Credential identifier (`cred_<ULID>`)."),
-    ),
-    request_body(content = OAuthCallbackBody, content_type = "application/x-www-form-urlencoded"),
-    responses(
-        (status = 200, description = "Tokens exchanged and persisted.", body = OAuthCallbackResponse),
-        (status = 401, description = "State validation failed or pending state expired/already-consumed.", body = ProblemDetails),
-    ),
-)]
-pub async fn post_oauth2_callback(
-    Path(_cred): Path<String>,
-    State(_state): State<AppState>,
-    Extension(_user): Extension<AuthenticatedUser>,
-    Form(_body): Form<OAuthCallbackBody>,
-) -> ApiResult<Json<OAuthCallbackResponse>> {
-    Err(ApiError::Gone(
-        "OAuth credential flow must use workspace-scoped routes".to_owned(),
-    ))
-}
-
-/// GET /orgs/{org}/workspaces/{ws}/credentials/{cred}/oauth2/auth — Generate OAuth2 authorization URL.
-///
-/// Builds the provider authorization URL with PKCE challenge and tenant-bound
-/// signed state. The frontend redirects the user to this URL to begin the
-/// OAuth2 authorization code flow.
-#[utoipa::path(
-    get,
-    path = "/orgs/{org}/workspaces/{ws}/credentials/{cred}/oauth2/auth",
-    tag = "workspaces.credentials",
-    security(("bearer" = []), ("api_key" = [])),
-    params(
-        ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
-        ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
-        ("cred" = String, Path, description = "Credential identifier (`cred_<ULID>`)."),
-    ),
-    responses(
-        (status = 200, description = "Authorization URL plus signed opaque state.", body = AuthorizationUriResponse),
-        (status = 400, description = "Invalid OAuth configuration (e.g. malformed authorization URL or unsafe token endpoint).", body = ProblemDetails),
-        (status = 401, description = "Authentication required.", body = ProblemDetails),
-        (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
-    ),
-)]
-pub async fn get_oauth2_authorize_url_scoped(
-    State(state): State<AppState>,
-    Extension(user): Extension<AuthenticatedUser>,
-    Extension(tenant): Extension<TenantContext>,
-    Path((_org, _ws, cred)): Path<(String, String, String)>,
-    Query(query): Query<crate::transport::oauth::flow::AuthorizationUriRequest>,
-) -> ApiResult<Json<AuthorizationUriResponse>> {
-    validate_credential_id(&cred)?;
-    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
-    let owner_id = crate::transport::credential::owner_id_from_scope(&scope);
-    oauth_controller::get_oauth2_authorize_url_for_owner(&cred, &state, &user, query, owner_id)
-        .await
-}
-
-/// GET /orgs/{org}/workspaces/{ws}/credentials/{cred}/oauth2/callback — Handle OAuth2 callback.
-#[utoipa::path(
-    get,
-    path = "/orgs/{org}/workspaces/{ws}/credentials/{cred}/oauth2/callback",
-    tag = "workspaces.credentials",
-    security(("bearer" = []), ("api_key" = [])),
-    params(
-        ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
-        ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
-        ("cred" = String, Path, description = "Credential identifier (`cred_<ULID>`)."),
-        ("code" = String, Query, description = "Authorization code from the provider."),
-        ("state" = String, Query, description = "Signed opaque state from `oauth2/auth`."),
-    ),
-    responses(
-        (status = 200, description = "Tokens exchanged and persisted.", body = OAuthCallbackResponse),
-        (status = 401, description = "State validation failed, tenant mismatch, or pending state expired/already-consumed.", body = ProblemDetails),
-    ),
-)]
-pub async fn get_oauth2_callback_scoped(
-    State(state): State<AppState>,
-    Extension(user): Extension<AuthenticatedUser>,
-    Extension(tenant): Extension<TenantContext>,
-    Path((_org, _ws, cred)): Path<(String, String, String)>,
-    Query(query): Query<OAuthCallbackQuery>,
-) -> ApiResult<Json<OAuthCallbackResponse>> {
-    validate_credential_id(&cred)?;
-    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
-    let owner_id = crate::transport::credential::owner_id_from_scope(&scope);
-    oauth_controller::handle_callback_for_owner(
-        &cred,
-        &state,
-        &user,
-        query.code,
-        query.state,
-        owner_id,
-        |req| async move { crate::transport::oauth::flow::exchange_code(&req).await },
-    )
-    .await
-}
-
-/// POST /orgs/{org}/workspaces/{ws}/credentials/{cred}/oauth2/callback — Handle OAuth2 form_post callback.
-#[utoipa::path(
-    post,
-    path = "/orgs/{org}/workspaces/{ws}/credentials/{cred}/oauth2/callback",
-    tag = "workspaces.credentials",
-    security(("bearer" = []), ("api_key" = [])),
-    params(
-        ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
-        ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
-        ("cred" = String, Path, description = "Credential identifier (`cred_<ULID>`)."),
-    ),
-    request_body(content = OAuthCallbackBody, content_type = "application/x-www-form-urlencoded"),
-    responses(
-        (status = 200, description = "Tokens exchanged and persisted.", body = OAuthCallbackResponse),
-        (status = 401, description = "State validation failed, tenant mismatch, or pending state expired/already-consumed.", body = ProblemDetails),
-    ),
-)]
-pub async fn post_oauth2_callback_scoped(
-    State(state): State<AppState>,
-    Extension(user): Extension<AuthenticatedUser>,
-    Extension(tenant): Extension<TenantContext>,
-    Path((_org, _ws, cred)): Path<(String, String, String)>,
-    Form(body): Form<OAuthCallbackBody>,
-) -> ApiResult<Json<OAuthCallbackResponse>> {
-    validate_credential_id(&cred)?;
-    let scope = crate::middleware::tenancy::request_scope(&tenant)?;
-    let owner_id = crate::transport::credential::owner_id_from_scope(&scope);
-    oauth_controller::handle_callback_for_owner(
-        &cred,
-        &state,
-        &user,
-        body.code,
-        body.state,
-        owner_id,
-        |req| async move { crate::transport::oauth::flow::exchange_code(&req).await },
-    )
-    .await
 }

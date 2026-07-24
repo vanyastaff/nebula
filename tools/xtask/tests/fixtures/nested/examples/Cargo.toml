@@ -1,0 +1,4 @@
+[package]
+name = "fixture-examples"
+version.workspace = true
+edition.workspace = true

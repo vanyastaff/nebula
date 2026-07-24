@@ -34,15 +34,14 @@ impl Credential for SharedKeyCredential {
     const KEY: &'static str = "shared_key";
 
     fn metadata() -> CredentialMetadata {
-        CredentialMetadata::builder()
-            .key(nebula_core::credential_key!("shared_key"))
-            .name("Pre-shared Key")
-            .description("Pre-shared symmetric key (TLS-PSK, WireGuard, IoT).")
-            .schema(nebula_schema::schema_of::<Self::Properties>())
-            .pattern(AuthPattern::SharedSecret)
-            .icon("key")
-            .build()
-            .expect("shared_key metadata is valid")
+        CredentialMetadata::new(
+            nebula_core::credential_key!("shared_key"),
+            "Pre-shared Key",
+            "Pre-shared symmetric key (TLS-PSK, WireGuard, IoT).",
+            nebula_schema::schema_of::<Self::Properties>(),
+            AuthPattern::SharedSecret,
+        )
+        .with_icon("key")
     }
 
     fn project(state: &SharedKey) -> SharedKey {

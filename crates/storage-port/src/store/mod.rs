@@ -8,6 +8,7 @@
 
 mod checkpoint;
 mod control_queue;
+mod credential;
 mod execution;
 mod idempotency;
 mod identity;
@@ -23,6 +24,9 @@ mod workflow;
 
 pub use checkpoint::CheckpointStore;
 pub use control_queue::{ControlQueue, ReclaimOutcome};
+pub use credential::{
+    CredentialAlreadyExistsKey, CredentialPersistence, CredentialPersistenceError,
+};
 pub use execution::ExecutionStore;
 pub use idempotency::{IdempotencyGuard, IdempotencyStore};
 pub use identity::{
@@ -33,7 +37,7 @@ pub use job_dispatch::JobDispatchQueue;
 pub use journal::ExecutionJournalReader;
 pub use node_result::NodeResultStore;
 pub use refresh_claim::{
-    ClaimAttempt, ClaimToken, HeartbeatError, ReclaimedClaim, RefreshClaim, RefreshClaimError,
+    ClaimAttempt, ClaimToken, ExpiredClaim, HeartbeatError, RefreshClaim, RefreshClaimError,
     RefreshClaimStore, ReplicaId, SentinelState,
 };
 pub use resume_producer::ResumeProducer;

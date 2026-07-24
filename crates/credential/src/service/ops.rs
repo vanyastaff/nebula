@@ -25,10 +25,11 @@ use crate::runtime::{
 };
 use crate::{
     Capabilities, Credential, CredentialContext, CredentialState, Interactive, PendingToken,
-    Refreshable, Revocable, Testable,
+    ReauthReason, RefreshAttempt, RefreshNotAppliedContext, Refreshable, Revocable, Testable,
+    contract::{RefreshReauthPhase, RefreshReportKind},
 };
 
-use super::error::CredentialServiceError;
+use super::error::{CredentialServiceError, CredentialValidationIssue, CredentialValidationReport};
 
 /// Registration-time failure for the operation-dispatch table
 /// ([`DispatchOps`]). Relocated here when the parallel `CredentialDispatch`
@@ -145,16 +146,17 @@ type TestFuture<'a> =
 /// invokes [`dispatch_test`] for the captured `C: Testable`.
 type TestFn = Arc<dyn for<'a> Fn(&'a [u8], &'a CredentialContext) -> TestFuture<'a> + Send + Sync>;
 
-/// Result of a `refresh` closure. Distinguishes "this replica refreshed
-/// — re-persist these bytes" from "another replica already refreshed —
-/// do **not** re-write, re-read from the store instead".
+/// Result of one erased refresh implementation.
 ///
-/// Re-writing the un-mutated local copy on the coalesced path either
-/// spuriously `VersionConflict`s or clobbers the fresher state another
-/// replica just wrote (concurrent-refresh contract): the upstream
-/// [`RefreshOutcome::CoalescedByOtherReplica`](crate::RefreshOutcome)
-/// contract says the caller must re-read, not re-write.
-pub(crate) enum RefreshOutcomeKind {
+/// Framework-only phases remain explicit here so the coordinator can release
+/// L2 only for proof-bearing no-effect outcomes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RefreshCommitPhase {
+    ProviderConfirmed,
+    LocalOnly,
+}
+
+pub(crate) enum RefreshExecutionResult {
     /// This caller refreshed; the service CAS-persists this freshly
     /// serialized state.
     Rewrote {
@@ -166,22 +168,34 @@ pub(crate) enum RefreshOutcomeKind {
         /// stale pre-refresh `expires_at` (otherwise a refreshed
         /// credential keeps its old — possibly already-elapsed — expiry).
         expires_at: Option<chrono::DateTime<chrono::Utc>>,
+        /// Side-effect phase that controls durable-finalization safety.
+        phase: RefreshCommitPhase,
     },
-    /// Another replica refreshed while this caller waited on the
-    /// cross-replica claim. The service must skip the write and re-read
-    /// the now-fresher state from the store.
-    CoalescedReRead,
+    /// The implementation requested a durable reauthentication transition.
+    ReauthRequired {
+        reason: ReauthReason,
+        phase: RefreshReauthPhase,
+    },
+    /// Linear evidence proved the provider transition was not applied.
+    NotApplied(Box<RefreshNotAppliedContext>),
+    /// Provider dispatch may have changed state.
+    OutcomeUnknown,
+    /// Provider work completed, but local state serialization failed.
+    PostProviderPersistence,
+    /// Providerless refresh state could not be serialized.
+    LocalFinalizationFailed,
+    /// State decoding failed before the implementation received its attempt.
+    PreparationFailed(CredentialServiceError),
 }
 
 /// Boxed future for the erased `refresh` closure. Yields a
-/// [`RefreshOutcomeKind`] so the service can distinguish the re-persist
-/// path from the re-read (coalesced) path.
-type RefreshFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<RefreshOutcomeKind, CredentialServiceError>> + Send + 'a>>;
+/// [`RefreshExecutionResult`] so the service can distinguish every refresh phase.
+type RefreshFuture<'a> = Pin<
+    Box<dyn Future<Output = Result<RefreshExecutionResult, CredentialServiceError>> + Send + 'a>,
+>;
 
 /// Erased `refresh`: deserializes stored state, runs
-/// `<C as Refreshable>::refresh`, and returns either the re-serialized
-/// state for the service to CAS-persist or the coalesced re-read signal.
+/// `<C as Refreshable>::refresh`, and returns an explicit phase disposition.
 /// Only registered for `C: Refreshable`.
 type RefreshFn =
     Arc<dyn for<'a> Fn(&'a [u8], &'a CredentialContext) -> RefreshFuture<'a> + Send + Sync>;
@@ -470,8 +484,8 @@ impl<PS: PendingStateStore> DispatchOps<PS> {
     }
 
     /// Refresh the stored state for the type at `key`. Returns a
-    /// [`RefreshOutcomeKind`] so the caller can re-persist on
-    /// `Rewrote` or re-read (skip the write) on `CoalescedReRead`.
+    /// [`RefreshExecutionResult`] so the caller can apply the matching durability
+    /// and L2-claim disposition.
     ///
     /// # Errors
     ///
@@ -483,7 +497,7 @@ impl<PS: PendingStateStore> DispatchOps<PS> {
         key: &str,
         data: &[u8],
         ctx: &CredentialContext,
-    ) -> Result<RefreshOutcomeKind, CredentialServiceError> {
+    ) -> Result<RefreshExecutionResult, CredentialServiceError> {
         let entry = self
             .entries
             .get(key)
@@ -589,11 +603,10 @@ where
                         // interactive kickoff or retry is not a stored
                         // credential. Interactive acquisition is a
                         // distinct operation.
-                        Err(CredentialServiceError::ValidationFailed {
-                            reason: "credential requires interactive acquisition; not creatable \
-                                     via the synchronous create path"
-                                .to_owned(),
-                        })
+                        Err(CredentialServiceError::validation(
+                            "",
+                            "credential.interactive_required",
+                        ))
                     },
                 }
             }) as ResolveFuture<'_>
@@ -621,18 +634,26 @@ where
         // schema validation but is refused by the typed deserialize below
         // (credential secrecy defense-in-depth #2).
         let schema = nebula_schema::schema_of::<C::Properties>();
-        let values = schema.values_from_wire(props.clone()).map_err(|e| {
-            CredentialServiceError::ValidationFailed {
-                reason: format!("[{}] {}", e.code, e.path),
-            }
+        let values = schema.values_from_wire(props.clone()).map_err(|error| {
+            CredentialServiceError::validation(
+                error.path.to_json_pointer(),
+                error.code.into_owned(),
+            )
         })?;
         let valid = schema.validate(&values).map_err(|report| {
+            let mut issues = report.errors().map(|error| {
+                CredentialValidationIssue::new(
+                    error.path.to_json_pointer(),
+                    error.code.as_ref().to_owned(),
+                )
+            });
+            let Some(first) = issues.next() else {
+                return CredentialServiceError::Internal(
+                    "schema validation returned an empty error report".to_owned(),
+                );
+            };
             CredentialServiceError::ValidationFailed {
-                reason: report
-                    .errors()
-                    .map(|e| format!("[{}] {}", e.code, e.path))
-                    .collect::<Vec<_>>()
-                    .join("; "),
+                report: CredentialValidationReport::from_issues(first, issues.collect()),
             }
         })?;
         // Deserialize the CANONICALIZED output — read-aliases already folded onto
@@ -649,11 +670,7 @@ where
             // The deserialize error text can echo the offending field value
             // (a secret); deliberately omitted — only the policy reason
             // is surfaced.
-            CredentialServiceError::ValidationFailed {
-                reason: "property payload rejected by typed schema (expression-bearing or \
-                         malformed credential properties are not accepted)"
-                    .to_owned(),
-            }
+            CredentialServiceError::validation("", "credential.properties_malformed")
         })?;
         Ok(())
     });
@@ -665,8 +682,11 @@ where
         // resolves through the same envelope `validate` / `resolve` consume.
         nebula_schema::schema_of::<C::Properties>()
             .values_from_wire(props.clone())
-            .map_err(|e| CredentialServiceError::ValidationFailed {
-                reason: format!("property ingest failed: [{}] {}", e.code, e.path),
+            .map_err(|error| {
+                CredentialServiceError::validation(
+                    error.path.to_json_pointer(),
+                    error.code.into_owned(),
+                )
             })
     });
 
@@ -775,11 +795,9 @@ fn executor_error_to_service_error(e: crate::runtime::ExecutorError) -> Credenti
         ExecutorError::Timeout { timeout } => CredentialServiceError::TransientProvider(format!(
             "credential resolution timed out after {timeout:?}"
         )),
-        ExecutorError::PendingStore(PendingStoreError::Backend(src)) => {
-            CredentialServiceError::Store(format!("pending store backend error: {src}"))
-        },
-        ExecutorError::PendingStore(PendingStoreError::ValidationFailed { reason }) => {
-            CredentialServiceError::ValidationFailed { reason }
+        ExecutorError::PendingStore(PendingStoreError::Backend(_)) => CredentialServiceError::Store,
+        ExecutorError::PendingStore(PendingStoreError::ValidationFailed { .. }) => {
+            CredentialServiceError::validation("", "credential.pending_invalid")
         },
         ExecutorError::PendingStore(
             PendingStoreError::NotFound
@@ -812,43 +830,10 @@ fn credential_error_to_service_error(e: crate::CredentialError) -> CredentialSer
     }
     match e.category() {
         ErrorCategory::Validation | ErrorCategory::NotFound => {
-            CredentialServiceError::ValidationFailed {
-                reason: e.to_string(),
-            }
+            CredentialServiceError::validation("", "credential.invalid")
         },
         ErrorCategory::External => CredentialServiceError::Provider(e.to_string()),
         _ => CredentialServiceError::Internal(e.to_string()),
-    }
-}
-
-/// Map a `CredentialError` from a `Refreshable::refresh` call to a
-/// `CredentialServiceError`, preserving transience information so the
-/// fallback-on-interrupt path in `CredentialService::refresh` can
-/// pattern-match without re-parsing error strings.
-///
-/// Transient kinds (`RefreshFailed(TransientNetwork | ProviderUnavailable)`
-/// and `Provider(Network | RateLimit | ServerError)`) → `TransientProvider`.
-/// All other failures → `Provider` (terminal / non-retryable).
-fn classify_refresh_error(e: crate::CredentialError) -> CredentialServiceError {
-    use crate::error::{ProviderErrorKind, RefreshErrorKind};
-    match &e {
-        crate::CredentialError::RefreshFailed(ctx) => match ctx.kind() {
-            RefreshErrorKind::TransientNetwork | RefreshErrorKind::ProviderUnavailable => {
-                CredentialServiceError::TransientProvider(format!(
-                    "credential refresh failed transiently: {e}"
-                ))
-            },
-            _ => CredentialServiceError::Provider(format!("credential refresh failed: {e}")),
-        },
-        crate::CredentialError::Provider(ctx) => match ctx.kind() {
-            ProviderErrorKind::Network
-            | ProviderErrorKind::RateLimit
-            | ProviderErrorKind::ServerError => CredentialServiceError::TransientProvider(format!(
-                "credential refresh failed transiently: {e}"
-            )),
-            _ => CredentialServiceError::Provider(format!("credential refresh failed: {e}")),
-        },
-        _ => CredentialServiceError::Provider(format!("credential refresh failed: {e}")),
     }
 }
 
@@ -876,16 +861,32 @@ where
             // makes — there is no public engine forced-`dispatch_refresh`;
             // `resolve_with_refresh` is early-window-gated). The service
             // re-persists the `Rewrote` bytes under compare-and-swap.
-            let mut state: C::State = serde_json::from_slice(data).map_err(|e| {
-                CredentialServiceError::Internal(format!(
-                    "stored state deserialization failed: {e}"
-                ))
-            })?;
-            let outcome = <C as Refreshable>::refresh(&mut state, ctx)
-                .await
-                .map_err(classify_refresh_error)?;
+            let mut state: C::State = match serde_json::from_slice(data) {
+                Ok(state) => state,
+                Err(_) => {
+                    return Ok(RefreshExecutionResult::PreparationFailed(
+                        CredentialServiceError::Internal(
+                            "stored credential state is invalid".to_owned(),
+                        ),
+                    ));
+                },
+            };
+            let outcome = <C as Refreshable>::refresh(
+                &mut state,
+                RefreshAttempt::new(ctx, C::REFRESH_EXECUTION_MODE),
+            )
+            .await
+            .into_kind();
             match outcome {
-                crate::RefreshOutcome::Refreshed => {
+                outcome @ (RefreshReportKind::ProviderRefreshed
+                | RefreshReportKind::LocallyRefreshed) => {
+                    let phase = match outcome {
+                        RefreshReportKind::ProviderRefreshed => {
+                            RefreshCommitPhase::ProviderConfirmed
+                        },
+                        RefreshReportKind::LocallyRefreshed => RefreshCommitPhase::LocalOnly,
+                        _ => return Ok(RefreshExecutionResult::OutcomeUnknown),
+                    };
                     // Read the expiry off the *refreshed* state — a token
                     // rotation typically sets a new TTL. Persisting the
                     // pre-refresh `expires_at` would leave a freshly
@@ -893,43 +894,36 @@ where
                     // already-elapsed) expiry.
                     let expires_at = state.expires_at();
                     // Cleartext serialization for the encrypted-at-rest store.
-                    let data = Zeroizing::new(
-                        crate::serde_secret::expose_for_serialization(|| {
-                            serde_json::to_vec(&state)
-                        })
-                        .map_err(|e| {
-                            CredentialServiceError::Internal(format!(
-                                "refreshed state serialization failed: {e}"
-                            ))
-                        })?,
-                    );
-                    Ok(RefreshOutcomeKind::Rewrote { data, expires_at })
-                },
-                // Another replica already refreshed while this caller
-                // waited on the cross-replica claim. The local `state` is
-                // the *un-mutated* pre-refresh copy: re-writing it would
-                // either spuriously `VersionConflict` or clobber the
-                // fresher state the other replica just persisted (the
-                // concurrent-refresh contract bug). Signal the service to skip the write
-                // and re-read instead.
-                crate::RefreshOutcome::CoalescedByOtherReplica => {
-                    Ok(RefreshOutcomeKind::CoalescedReRead)
-                },
-                crate::RefreshOutcome::ReauthRequired(reason) => {
-                    // Typed re-auth signal — non-retryable (category `validation`),
-                    // so the facade's retry layer does not re-POST a rejected
-                    // grant. `credential_id` is empty here (the erased closure
-                    // sees only bytes + ctx); `CredentialService::refresh` fills
-                    // it from the id it holds before returning.
-                    Err(CredentialServiceError::ReauthRequired {
-                        credential_id: String::new(),
-                        reason,
+                    let Ok(data) = crate::serde_secret::expose_for_serialization(|| {
+                        serde_json::to_vec(&state)
+                    }) else {
+                        tracing::warn!(
+                            refresh.commit_phase = ?phase,
+                            "credential refresh succeeded but state serialization failed"
+                        );
+                        return Ok(match phase {
+                            RefreshCommitPhase::ProviderConfirmed => {
+                                RefreshExecutionResult::PostProviderPersistence
+                            },
+                            RefreshCommitPhase::LocalOnly => {
+                                RefreshExecutionResult::LocalFinalizationFailed
+                            },
+                        });
+                    };
+                    let data = Zeroizing::new(data);
+                    Ok(RefreshExecutionResult::Rewrote {
+                        data,
+                        expires_at,
+                        phase,
                     })
                 },
-                // `RefreshOutcome` is exhaustively matched here (this crate
-                // defines it). Adding a variant is a compile error at this
-                // match, forcing a deliberate fail-closed decision rather
-                // than silently overwriting stored state.
+                RefreshReportKind::ReauthRequired { reason, phase } => {
+                    Ok(RefreshExecutionResult::ReauthRequired { reason, phase })
+                },
+                RefreshReportKind::NotApplied(context) => {
+                    Ok(RefreshExecutionResult::NotApplied(context))
+                },
+                RefreshReportKind::OutcomeUnknown => Ok(RefreshExecutionResult::OutcomeUnknown),
             }
         }) as RefreshFuture<'_>
     });
@@ -981,9 +975,19 @@ where
             // deleting it — so the id is non-resurrectable and slot bindings
             // still pointing at it surface a typed `CredentialTombstoned`
             // error. See this fn's doc comment and `CredentialService::revoke`.
-            dispatch_revoke::<C>(&mut state, ctx).await.map_err(|e| {
-                CredentialServiceError::Provider(format!("credential revoke failed: {e}"))
-            })
+            dispatch_revoke::<C>(&mut state, ctx)
+                .await
+                .map_err(|error| match error {
+                    // The integration may know that provider work completed
+                    // and only local finalization failed.
+                    crate::CredentialError::PostProviderPersistence => {
+                        CredentialServiceError::RevokePostProviderPersistence
+                    },
+                    // Once the erased revoke implementation is entered, any
+                    // other error is phase-ambiguous: the trait has no proof
+                    // that provider-side revocation did not occur.
+                    _ => CredentialServiceError::OutcomeUnknown,
+                })
         }) as RevokeFuture<'_>
     });
     entry.revoke_fn = Some(revoke_fn);

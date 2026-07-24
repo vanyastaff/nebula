@@ -1,195 +1,813 @@
-//! SQLite-backed `CredentialStore` impl.
+//! SQLite-backed `CredentialPersistence` impl.
 //!
-//! Persists [`StoredCredential`] rows in the `credentials` table created by
-//! migration `0030_credentials_store.sql`. The store is deliberately thin:
+//! Persists [`StoredCredential`] rows in the structural `credentials` table at
+//! migration `0040_credential_refresh_retry_gate.sql`.
 //!
 //! - `data` is an opaque `BLOB` — the [`EncryptionLayer`] above us serialises
 //!   the AES-256-GCM envelope; we never inspect or decrypt it.
-//! - `owner_id` is extracted from `metadata["owner_id"]` at write time and
-//!   stored in its own column so the partial-unique-name index is queryable.
+//! - `owner_id` comes only from the mandatory selector, is included in every
+//!   row predicate, and is never inferred from metadata.
+//! - Every mutation runs under a real `BEGIN IMMEDIATE` transaction, applies
+//!   the frozen collision/CAS precedence, and obtains its secret-free
+//!   [`CredentialCommit`] from the modifying statement's `RETURNING`
+//!   projection. Success is released only after `COMMIT` acknowledgement.
+//! - Tombstoning is structural: it clears all live-only values while retaining
+//!   the immutable credential/state identity needed by physical binding reads.
 //! - Timestamps are stored as `INTEGER` milliseconds-since-epoch (UTC), not
 //!   RFC-3339 text, for the same reasons documented in the `RefreshClaimRepo`
 //!   SQLite impl (`refresh_claim/sqlite.rs`): integer ordering is unambiguous
 //!   for expiry predicates across chrono versions.
-//! - CAS uses a conditional `UPDATE … WHERE version = :expected_version` and
-//!   inspects `rows_affected()` to discriminate between `NotFound` and
-//!   `VersionConflict`. The `u64 ↔ i64` boundary is guarded explicitly;
-//!   there are no silent `as` casts.
 //!
 //! # Caller contract
 //!
-//! The caller (a composition root) is responsible for running migration 0030
-//! before constructing a [`SqliteCredentialStore`].
+//! Composition roots use [`SqliteCredentialPersistence::connect`] so schema
+//! admission and migration complete before the adapter becomes reachable.
 //!
 //! [`EncryptionLayer`]: crate::credential::layer::EncryptionLayer
 
-// budget-justified: cohesive SQLite adapter for the credentials table +
-// migration 0030 schema; one file mirrors the established refresh_claim/sqlite.rs
-// adapter pattern (helpers + row mapping + trait impl + put dispatch).
+// budget-justified: cohesive SQLite adapter for one credential aggregate table;
+// readiness, structural row mapping, transaction precedence, and the port impl
+// intentionally remain adjacent so the lifecycle invariant is reviewable.
 
+use async_trait::async_trait;
 use chrono::{DateTime, TimeZone, Utc};
-use nebula_credential::{CredentialStore, PutMode, StoreError, StoredCredential};
+use nebula_core::CredentialId;
+use nebula_credential::CredentialDisplay;
+use nebula_storage_port::{
+    CredentialAlreadyExistsKey, CredentialCommit, CredentialCreate, CredentialMaterialEpoch,
+    CredentialOwner, CredentialPersistence, CredentialPersistenceError, CredentialReplacement,
+    CredentialSelector, CredentialTombstone, CredentialVersion, RefreshRetrySnapshot, SecretBytes,
+    StoredCredential, StoredCredentialHead, StoredLiveCredential, StoredTombstonedCredential,
+};
 use serde_json::Value;
-use sqlx::SqlitePool;
+use sqlx::{Connection, Sqlite, SqlitePool, Transaction};
 
-/// SQLite-backed [`CredentialStore`].
-///
-/// Wraps a `SqlitePool`. Cheap to clone (pool is `Arc`-backed).
-/// Caller must have applied migration `0030_credentials_store.sql` to the pool.
-#[derive(Clone, Debug)]
-pub struct SqliteCredentialStore {
-    pool: SqlitePool,
+#[cfg(test)]
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
+
+use super::{
+    CredentialStoreStartupError,
+    refresh_claim::SqliteRefreshClaimRepo,
+    retry_gate,
+    schema::{SQLITE_MIGRATOR, sqlite as schema},
+};
+
+static MEMORY_READINESS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[cfg(test)]
+#[derive(Debug)]
+struct ReadinessTestGate {
+    lock_acquired: tokio::sync::Barrier,
+    release: tokio::sync::Notify,
 }
 
-impl SqliteCredentialStore {
-    /// Wrap an existing pool. Caller is responsible for running migration 0030.
-    #[must_use]
-    pub fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+#[cfg(test)]
+impl ReadinessTestGate {
+    fn new() -> Self {
+        Self {
+            lock_acquired: tokio::sync::Barrier::new(2),
+            release: tokio::sync::Notify::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct TestCommitFault {
+    armed: AtomicBool,
+    injected: AtomicUsize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommitAcknowledgement {
+    Acknowledged,
+    AcknowledgementLost,
+}
+
+#[derive(Debug, Clone)]
+struct SqliteCommitDispatcher {
+    #[cfg(test)]
+    fault: Arc<TestCommitFault>,
+}
+
+impl SqliteCommitDispatcher {
+    fn new() -> Self {
+        Self {
+            #[cfg(test)]
+            fault: Arc::new(TestCommitFault::default()),
+        }
     }
 
-    /// Open (creating if absent) a SQLite database at `url` and apply migration
-    /// `0030_credentials_store.sql`, returning a ready store.
+    async fn dispatch(&self, transaction: Transaction<'static, Sqlite>) -> CommitAcknowledgement {
+        #[cfg(test)]
+        let conceal_acknowledgement = self.fault.armed.swap(false, Ordering::SeqCst);
+
+        let result = transaction.commit().await;
+
+        #[cfg(test)]
+        if conceal_acknowledgement {
+            self.fault.injected.fetch_add(1, Ordering::SeqCst);
+            return CommitAcknowledgement::AcknowledgementLost;
+        }
+
+        match result {
+            Ok(()) => CommitAcknowledgement::Acknowledged,
+            Err(_) => CommitAcknowledgement::AcknowledgementLost,
+        }
+    }
+
+    #[cfg(test)]
+    fn arm_acknowledgement_loss(&self) {
+        self.fault.armed.store(true, Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    fn injected_faults(&self) -> usize {
+        self.fault.injected.load(Ordering::SeqCst)
+    }
+}
+
+/// SQLite-backed [`CredentialPersistence`].
+///
+/// Wraps a `SqlitePool`. Cheap to clone (pool is `Arc`-backed).
+/// The pool must already satisfy the canonical migration-0040 schema.
+#[derive(Clone, Debug)]
+pub struct SqliteCredentialPersistence {
+    pool: SqlitePool,
+    commit_dispatcher: SqliteCommitDispatcher,
+    #[cfg(test)]
+    precommit_fault: Arc<AtomicBool>,
+}
+
+impl SqliteCredentialPersistence {
+    fn from_ready_pool(pool: SqlitePool) -> Self {
+        Self {
+            pool,
+            commit_dispatcher: SqliteCommitDispatcher::new(),
+            #[cfg(test)]
+            precommit_fault: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn arm_post_commit_outcome_unknown(&self) {
+        self.commit_dispatcher.arm_acknowledgement_loss();
+    }
+
+    #[cfg(test)]
+    fn injected_post_commit_faults(&self) -> usize {
+        self.commit_dispatcher.injected_faults()
+    }
+
+    #[cfg(test)]
+    fn arm_precommit_failure(&self) {
+        self.precommit_fault.store(true, Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    fn inject_precommit_failure(
+        &self,
+        result: Result<CredentialCommit, CredentialPersistenceError>,
+    ) -> Result<CredentialCommit, CredentialPersistenceError> {
+        if result.is_ok() && self.precommit_fault.swap(false, Ordering::SeqCst) {
+            Err(CredentialPersistenceError::Unavailable)
+        } else {
+            result
+        }
+    }
+
+    async fn finish_write(
+        &self,
+        transaction: Transaction<'static, Sqlite>,
+        result: Result<CredentialCommit, CredentialPersistenceError>,
+    ) -> Result<CredentialCommit, CredentialPersistenceError> {
+        match result {
+            Ok(commit) => match self.commit_dispatcher.dispatch(transaction).await {
+                CommitAcknowledgement::Acknowledged => Ok(commit),
+                CommitAcknowledgement::AcknowledgementLost => {
+                    Err(CredentialPersistenceError::OutcomeUnknown)
+                },
+            },
+            Err(error) => {
+                transaction.rollback().await.map_err(unavailable)?;
+                Err(error)
+            },
+        }
+    }
+
+    /// Open a supported SQLite database, admit its canonical schema, apply all
+    /// pending migrations, and return a ready store.
     ///
     /// `url` is a SQLite connection string — a file URL
     /// (`sqlite://path/to/credentials.db`), a bare path, or
-    /// `sqlite::memory:` for an ephemeral store. The database is expected to be
-    /// credential-dedicated: migration 0030 creates a self-contained
-    /// `credentials` table with no foreign keys, so the full migration chain is
-    /// not required.
+    /// `sqlite::memory:` for an ephemeral store. A local file is protected by a
+    /// bounded outer file lock while an
+    /// immutable read-only preflight, canonical SQLx migration, and postflight
+    /// run. The exact `sqlite::memory:` form is serialized process-wide and
+    /// uses one physical connection during readiness.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError::Backend`] if the URL is malformed, the database
-    /// cannot be opened/created, or the migration fails to apply.
-    pub async fn connect(url: &str) -> Result<Self, StoreError> {
+    /// Returns [`CredentialStoreStartupError::UnsupportedSchemaVersion`] for a
+    /// reachable but unsupported schema, or
+    /// [`CredentialStoreStartupError::Unavailable`] for connection, lock, or
+    /// migration failure. Neither error retains the URL or a driver message.
+    pub async fn connect(url: &str) -> Result<Self, CredentialStoreStartupError> {
         use std::str::FromStr;
 
         let options = sqlx::sqlite::SqliteConnectOptions::from_str(url)
-            .map_err(|e| StoreError::Backend(format!("invalid SQLite URL `{url}`: {e}").into()))?
+            .map_err(|_| CredentialStoreStartupError::Unavailable)?
             .create_if_missing(true);
-        let pool = sqlx::sqlite::SqlitePoolOptions::new()
-            .connect_with(options)
-            .await
-            .map_err(|e| StoreError::Backend(format!("open SQLite `{url}`: {e}").into()))?;
 
-        // Bootstrap is idempotent: migration 0030 begins with `DROP TABLE`
-        // (it removes the legacy Model-B schema), so re-running it on every
-        // connect would WIPE a populated store on each restart — defeating
-        // durability. Apply it only when the `credentials` table is absent
-        // (a fresh database); an already-provisioned store keeps its rows.
-        let provisioned: Option<(String,)> = sqlx::query_as(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'credentials'",
-        )
-        .fetch_optional(&pool)
-        .await
-        .map_err(|e| StoreError::Backend(format!("probe credentials table: {e}").into()))?;
-        if provisioned.is_none() {
-            sqlx::query(include_str!(
-                "../../migrations/sqlite/0030_credentials_store.sql"
-            ))
-            .execute(&pool)
-            .await
-            .map_err(|e| StoreError::Backend(format!("apply migration 0030: {e}").into()))?;
+        if url == "sqlite::memory:" {
+            return Self::connect_memory_options(options).await;
         }
-
-        Ok(Self { pool })
+        Self::connect_file_options(options).await
     }
 
-    /// Open a fresh, uniquely-named in-memory SQLite store with migration 0030
-    /// applied — the standard test backend for credential-store consumers.
+    /// Open the supported single-connection `sqlite::memory:` store with the
+    /// canonical migration history applied.
     ///
-    /// Each call gets an isolated `mode=memory&cache=shared` database keyed by a
-    /// random name, so concurrent tests in the same process never collide and a
-    /// pool with multiple connections all observe the same data (plain
-    /// `sqlite::memory:` gives each connection a private, invisible database).
-    /// A shared-cache in-memory database is destroyed when its **last**
-    /// connection closes, so the pool pins one live connection
-    /// (`min_connections(1)`) for its lifetime; the database survives idle gaps
-    /// between operations and dies only when the store (and its pool) is
-    /// dropped. Hold the returned store for the lifetime of the test.
-    ///
-    /// Creates a unique shared-cache in-memory SQLite store for testing.
-    ///
-    /// Available whenever the `sqlite` feature is enabled. Intended for unit and
-    /// integration tests; production composition roots use [`Self::connect`]
-    /// with a real URL instead.
+    /// Each call owns an isolated SQLite database. The pool is permanently
+    /// capped at one physical connection because separate connections to this
+    /// exact SQLite form would otherwise observe separate databases.
     ///
     /// # Errors
     ///
-    /// Returns [`StoreError::Backend`] if the pool cannot be opened or migration
-    /// 0030 fails to apply.
-    pub async fn connect_memory() -> Result<Self, StoreError> {
-        use std::str::FromStr;
+    /// Returns a closed, secret-free startup error if readiness fails.
+    pub async fn connect_memory() -> Result<Self, CredentialStoreStartupError> {
+        Self::connect("sqlite::memory:").await
+    }
 
-        let name = uuid::Uuid::new_v4();
-        let url = format!("sqlite:file:nebula-cred-mem-{name}?mode=memory&cache=shared");
-        let options = sqlx::sqlite::SqliteConnectOptions::from_str(&url)
-            .map_err(|e| StoreError::Backend(format!("invalid SQLite URL `{url}`: {e}").into()))?
-            .create_if_missing(true);
-        // `min_connections(1)` keeps one connection open for the pool's lifetime
-        // so the shared-cache in-memory database is not destroyed during idle
-        // gaps; `max_connections(4)` lets the concurrency tests exercise real
-        // SQL-layer contention.
+    /// Create the refresh-claim adapter on this store's admitted private pool.
+    ///
+    /// This is the supported composition seam for pairing owner-bound
+    /// credential persistence with durable cross-replica refresh
+    /// coordination. It clones the pool handle without exposing raw SQL
+    /// authority, so both adapters share one schema lifecycle and one SQLite
+    /// database.
+    #[must_use]
+    pub fn refresh_claim_repo(&self) -> SqliteRefreshClaimRepo {
+        SqliteRefreshClaimRepo::new(self.pool.clone())
+    }
+
+    async fn connect_memory_options(
+        options: sqlx::sqlite::SqliteConnectOptions,
+    ) -> Result<Self, CredentialStoreStartupError> {
+        let _readiness = MEMORY_READINESS.lock().await;
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .min_connections(1)
-            .max_connections(4)
+            .max_connections(1)
             .connect_with(options)
             .await
-            .map_err(|e| {
-                StoreError::Backend(format!("open in-memory SQLite `{url}`: {e}").into())
-            })?;
+            .map_err(|_| CredentialStoreStartupError::Unavailable)?;
+        let mut connection = pool
+            .acquire()
+            .await
+            .map_err(|_| CredentialStoreStartupError::Unavailable)?;
+        schema::admit(&mut connection).await?;
+        SQLITE_MIGRATOR
+            .run(&mut *connection)
+            .await
+            .map_err(|_| CredentialStoreStartupError::Unavailable)?;
+        schema::admit(&mut connection).await?;
+        drop(connection);
 
-        sqlx::query(include_str!(
-            "../../migrations/sqlite/0030_credentials_store.sql"
-        ))
-        .execute(&pool)
-        .await
-        .map_err(|e| StoreError::Backend(format!("apply migration 0030: {e}").into()))?;
-
-        Ok(Self { pool })
+        Ok(Self::from_ready_pool(pool))
     }
+
+    async fn connect_file_options(
+        options: sqlx::sqlite::SqliteConnectOptions,
+    ) -> Result<Self, CredentialStoreStartupError> {
+        #[cfg(test)]
+        return Self::connect_file_options_inner(options, None).await;
+        #[cfg(not(test))]
+        return Self::connect_file_options_inner(options).await;
+    }
+
+    #[cfg(test)]
+    async fn connect_file_options_with_gate(
+        options: sqlx::sqlite::SqliteConnectOptions,
+        gate: &ReadinessTestGate,
+    ) -> Result<Self, CredentialStoreStartupError> {
+        Self::connect_file_options_inner(options, Some(gate)).await
+    }
+
+    async fn connect_file_options_inner(
+        options: sqlx::sqlite::SqliteConnectOptions,
+        #[cfg(test)] gate: Option<&ReadinessTestGate>,
+    ) -> Result<Self, CredentialStoreStartupError> {
+        let path = options.get_filename().to_owned();
+        let lock = acquire_file_lock(&path).await?;
+        #[cfg(test)]
+        if let Some(gate) = gate {
+            gate.lock_acquired.wait().await;
+            gate.release.notified().await;
+        }
+        let metadata = lock
+            .metadata()
+            .map_err(|_| CredentialStoreStartupError::Unavailable)?;
+
+        if metadata.len() == 0 {
+            if sqlite_sidecars_exist(&path) {
+                return Err(CredentialStoreStartupError::Unavailable);
+            }
+        } else {
+            let probe_options = options
+                .clone()
+                .create_if_missing(false)
+                .read_only(true)
+                .immutable(true);
+            let mut probe = sqlx::SqliteConnection::connect_with(&probe_options)
+                .await
+                .map_err(|_| CredentialStoreStartupError::Unavailable)?;
+            schema::admit(&mut probe).await?;
+            probe
+                .close()
+                .await
+                .map_err(|_| CredentialStoreStartupError::Unavailable)?;
+        }
+
+        let writable_options = options
+            .create_if_missing(true)
+            .read_only(false)
+            .immutable(false);
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .min_connections(1)
+            .connect_with(writable_options)
+            .await
+            .map_err(|_| CredentialStoreStartupError::Unavailable)?;
+        let mut connection = pool
+            .acquire()
+            .await
+            .map_err(|_| CredentialStoreStartupError::Unavailable)?;
+        SQLITE_MIGRATOR
+            .run(&mut *connection)
+            .await
+            .map_err(|_| CredentialStoreStartupError::Unavailable)?;
+        schema::admit(&mut connection).await?;
+        drop(connection);
+        drop(lock);
+
+        Ok(Self::from_ready_pool(pool))
+    }
+}
+
+#[cfg(test)]
+#[async_trait]
+impl super::CredentialPersistenceConformance for SqliteCredentialPersistence {
+    async fn force_live_version_for_conformance(
+        &self,
+        selector: &CredentialSelector,
+        version: CredentialVersion,
+    ) -> Result<(), CredentialPersistenceError> {
+        if !version.is_live() {
+            return Err(CredentialPersistenceError::CorruptRecord);
+        }
+        let updated = sqlx::query(
+            "UPDATE credentials SET version = ?1
+             WHERE id = ?2 AND owner_id = ?3 AND record_state = 'live'",
+        )
+        .bind(version.get())
+        .bind(selector.credential_id().to_string())
+        .bind(selector.owner().as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(unavailable)?;
+        if updated.rows_affected() != 1 {
+            return Err(CredentialPersistenceError::NotFound);
+        }
+        Ok(())
+    }
+
+    async fn force_live_material_epoch_for_conformance(
+        &self,
+        selector: &CredentialSelector,
+        material_epoch: CredentialMaterialEpoch,
+    ) -> Result<(), CredentialPersistenceError> {
+        let updated = sqlx::query(
+            "UPDATE credentials SET material_epoch = ?1
+             WHERE id = ?2 AND owner_id = ?3 AND record_state = 'live'",
+        )
+        .bind(material_epoch.get())
+        .bind(selector.credential_id().to_string())
+        .bind(selector.owner().as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(unavailable)?;
+        if updated.rows_affected() != 1 {
+            return Err(CredentialPersistenceError::NotFound);
+        }
+        Ok(())
+    }
+
+    async fn corrupt_live_projection_for_conformance(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<(), CredentialPersistenceError> {
+        let updated = sqlx::query(
+            "UPDATE credentials
+             SET name = NULL, metadata = '{\"display\":\"not-an-object\"}'
+             WHERE id = ?1 AND owner_id = ?2 AND record_state = 'live'",
+        )
+        .bind(selector.credential_id().to_string())
+        .bind(selector.owner().as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(unavailable)?;
+        if updated.rows_affected() != 1 {
+            return Err(CredentialPersistenceError::NotFound);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{str::FromStr, sync::Arc, time::Duration};
+
+    use nebula_storage_port::{
+        CredentialOwner, CredentialPersistence, CredentialPersistenceError, CredentialSelector,
+        CredentialVersion, StoredCredential,
+        store::{ClaimAttempt, RefreshClaimStore, ReplicaId},
+    };
+
+    use crate::credential::test_support::{make_credential, make_replacement};
+
+    use super::{ReadinessTestGate, SQLITE_MIGRATOR, SqliteCredentialPersistence, schema};
+    use crate::credential::{CredentialSchemaAdmissionReason, CredentialStoreStartupError};
+
+    fn version(value: i64) -> CredentialVersion {
+        CredentialVersion::try_from(value).expect("test version must be valid")
+    }
+
+    #[test]
+    fn refresh_retry_snapshot_is_one_backend_clock_statement() {
+        let source = include_str!("sqlite.rs");
+        let body = source
+            .rsplit_once("impl CredentialPersistence for SqliteCredentialPersistence {")
+            .expect("credential persistence implementation must exist")
+            .1
+            .split_once("async fn refresh_retry_snapshot(")
+            .expect("snapshot method must exist")
+            .1
+            .split_once("\n    #[tracing::instrument")
+            .expect("the following port method must delimit the snapshot body")
+            .0;
+
+        assert_eq!(body.matches("sqlx::query_as(").count(), 1);
+        assert!(body.contains("SELECT version, material_epoch, reauth_required, record_state"));
+        assert!(body.contains("strftime('%f', 'now')"));
+        assert!(!body.contains("self.get("));
+    }
+
+    #[tokio::test]
+    async fn curated_refresh_claim_repositories_share_the_admitted_private_pool() {
+        let store = SqliteCredentialPersistence::connect_memory()
+            .await
+            .expect("ready in-memory credential store");
+        let first = store.refresh_claim_repo();
+        let second = store.refresh_claim_repo();
+        let credential_id = nebula_core::CredentialId::new();
+
+        let acquired = first
+            .try_claim(
+                &credential_id,
+                &ReplicaId::new("first"),
+                Duration::from_secs(30),
+            )
+            .await
+            .expect("first claim attempt");
+        assert!(matches!(acquired, ClaimAttempt::Acquired(_)));
+
+        let observed = second
+            .try_claim(
+                &credential_id,
+                &ReplicaId::new("second"),
+                Duration::from_secs(30),
+            )
+            .await
+            .expect("second claim attempt");
+        assert!(
+            matches!(observed, ClaimAttempt::Contended { .. }),
+            "separately-created adapters must observe the same durable claim row"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_commit_fault_is_outcome_unknown_without_automatic_retry()
+    -> Result<(), CredentialPersistenceError> {
+        let store = SqliteCredentialPersistence::connect_memory().await?;
+        let owner = CredentialOwner::from_canonical("post-commit-fault-owner");
+        let selector = CredentialSelector::new(owner.clone(), nebula_core::CredentialId::new());
+        store
+            .create(&selector, make_credential(b"version-one"))
+            .await?;
+
+        store.arm_post_commit_outcome_unknown();
+        let result = store
+            .replace(
+                &selector,
+                make_replacement(
+                    version(1),
+                    b"version-two",
+                    nebula_storage_port::RefreshRetryTransition::Clear,
+                ),
+            )
+            .await;
+        assert_eq!(result, Err(CredentialPersistenceError::OutcomeUnknown));
+        assert_eq!(
+            store.injected_post_commit_faults(),
+            1,
+            "one caller attempt must cross the post-commit fault exactly once"
+        );
+
+        let StoredCredential::Live(persisted) = store.get(&selector).await? else {
+            panic!("the acknowledged SQL transaction must have persisted a live replacement");
+        };
+        assert_eq!(persisted.version(), version(2));
+        assert_eq!(persisted.data().as_ref(), b"version-two");
+
+        let foreign = CredentialSelector::new(
+            CredentialOwner::from_canonical("post-commit-fault-foreign"),
+            selector.credential_id(),
+        );
+        assert_eq!(
+            store.get(&foreign).await,
+            Err(CredentialPersistenceError::NotFound),
+            "the verification read remains owner-qualified"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn confirmed_precommit_rollback_is_unavailable_and_preserves_prior_row()
+    -> Result<(), CredentialPersistenceError> {
+        let store = SqliteCredentialPersistence::connect_memory().await?;
+        let selector = CredentialSelector::new(
+            CredentialOwner::from_canonical("precommit-rollback-owner"),
+            nebula_core::CredentialId::new(),
+        );
+        store
+            .create(&selector, make_credential(b"version-one"))
+            .await?;
+
+        store.arm_precommit_failure();
+        assert_eq!(
+            store
+                .replace(
+                    &selector,
+                    make_replacement(
+                        version(1),
+                        b"rolled-back",
+                        nebula_storage_port::RefreshRetryTransition::Clear,
+                    ),
+                )
+                .await,
+            Err(CredentialPersistenceError::Unavailable)
+        );
+        let StoredCredential::Live(persisted) = store.get(&selector).await? else {
+            panic!("confirmed rollback must preserve the prior live row");
+        };
+        assert_eq!(persisted.version(), version(1));
+        assert_eq!(persisted.data().as_ref(), b"version-one");
+        assert_eq!(store.injected_post_commit_faults(), 0);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn second_starter_waits_while_first_holds_the_readiness_lock() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let directory = tempfile::tempdir().expect("temporary directory must be created");
+                let path = directory.path().join("contended-readiness.sqlite");
+                let url = format!("sqlite://{}?mode=rwc", path.display());
+                let options = sqlx::sqlite::SqliteConnectOptions::from_str(&url)
+                    .expect("temporary SQLite URL must parse")
+                    .create_if_missing(true);
+                let gate = Arc::new(ReadinessTestGate::new());
+
+                let first_gate = Arc::clone(&gate);
+                let first = tokio::task::spawn_local(async move {
+                    SqliteCredentialPersistence::connect_file_options_with_gate(
+                        options,
+                        &first_gate,
+                    )
+                    .await
+                });
+                gate.lock_acquired.wait().await;
+
+                let contender_started = Arc::new(tokio::sync::Barrier::new(2));
+                let contender_signal = Arc::clone(&contender_started);
+                let contender_url = url.clone();
+                let mut second = tokio::task::spawn_local(async move {
+                    contender_signal.wait().await;
+                    SqliteCredentialPersistence::connect(&contender_url).await
+                });
+                contender_started.wait().await;
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(75), &mut second)
+                        .await
+                        .is_err(),
+                    "the second starter must remain blocked while the first owns the file lock"
+                );
+
+                gate.release.notify_one();
+                let first = first
+                    .await
+                    .expect("first starter task must not panic")
+                    .expect("first starter must establish the ready schema");
+                let second = second
+                    .await
+                    .expect("second starter task must not panic")
+                    .expect("second starter must observe the ready schema");
+
+                let (head, successful): (i64, i64) = sqlx::query_as(
+                    "SELECT MAX(version), COUNT(*) FROM _sqlx_migrations WHERE success = 1",
+                )
+                .fetch_one(&second.pool)
+                .await
+                .expect("serialized readiness ledger must be readable");
+                assert_eq!(head, 40);
+                assert_eq!(
+                    successful,
+                    i64::try_from(SQLITE_MIGRATOR.iter().count())
+                        .expect("migration count must fit in i64")
+                );
+                drop((first, second));
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn rejected_memory_admission_preserves_logical_state() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .min_connections(1)
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory rejection fixture must connect");
+        sqlx::query("CREATE TABLE unrelated (value TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .expect("unledgered relation must seed");
+        sqlx::query("INSERT INTO unrelated (value) VALUES ('preserve')")
+            .execute(&pool)
+            .await
+            .expect("unledgered row must seed");
+
+        let schema_before: Vec<(String, String)> = sqlx::query_as(
+            "SELECT name, sql FROM sqlite_schema
+             WHERE type = 'table' ORDER BY name",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("fixture schema must snapshot");
+        let rows_before: Vec<String> =
+            sqlx::query_scalar("SELECT value FROM unrelated ORDER BY value")
+                .fetch_all(&pool)
+                .await
+                .expect("fixture rows must snapshot");
+
+        let mut connection = pool.acquire().await.expect("single memory connection");
+        let error = schema::admit(&mut connection)
+            .await
+            .expect_err("unledgered memory database must fail closed");
+        assert!(matches!(
+            error,
+            CredentialStoreStartupError::UnsupportedSchemaVersion(ref unsupported)
+                if unsupported.reason()
+                    == &CredentialSchemaAdmissionReason::UnledgeredDatabase
+        ));
+        drop(connection);
+
+        let schema_after: Vec<(String, String)> = sqlx::query_as(
+            "SELECT name, sql FROM sqlite_schema
+             WHERE type = 'table' ORDER BY name",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("rejected schema must remain readable");
+        let rows_after: Vec<String> =
+            sqlx::query_scalar("SELECT value FROM unrelated ORDER BY value")
+                .fetch_all(&pool)
+                .await
+                .expect("rejected rows must remain readable");
+        assert_eq!(schema_after, schema_before);
+        assert_eq!(rows_after, rows_before);
+        pool.close().await;
+    }
+}
+
+async fn acquire_file_lock(
+    path: &std::path::Path,
+) -> Result<std::fs::File, CredentialStoreStartupError> {
+    use std::fs::{OpenOptions, TryLockError};
+    use std::time::Duration;
+
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .map_err(|_| CredentialStoreStartupError::Unavailable)?;
+    for _ in 0..200 {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(TryLockError::WouldBlock) => {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            },
+            Err(TryLockError::Error(_)) => {
+                return Err(CredentialStoreStartupError::Unavailable);
+            },
+        }
+    }
+    Err(CredentialStoreStartupError::Unavailable)
+}
+
+fn sqlite_sidecars_exist(path: &std::path::Path) -> bool {
+    let base = path.as_os_str().to_string_lossy();
+    ["-journal", "-wal", "-shm"]
+        .iter()
+        .any(|suffix| std::path::Path::new(&format!("{base}{suffix}")).exists())
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
+fn unavailable(_: sqlx::Error) -> CredentialPersistenceError {
+    CredentialPersistenceError::Unavailable
+}
+
+fn read_error(error: sqlx::Error) -> CredentialPersistenceError {
+    match error {
+        sqlx::Error::ColumnDecode { .. }
+        | sqlx::Error::Decode(_)
+        | sqlx::Error::ColumnIndexOutOfBounds { .. }
+        | sqlx::Error::ColumnNotFound(_)
+        | sqlx::Error::RowNotFound => CredentialPersistenceError::CorruptRecord,
+        _ => CredentialPersistenceError::Unavailable,
+    }
+}
+
 /// Convert a millisecond-since-epoch `INTEGER` column back to `DateTime<Utc>`.
-///
-/// Mirrors the identical helper in `refresh_claim/sqlite.rs`. An out-of-range
-/// value indicates table corruption; surfaced as `StoreError::Backend`.
-fn millis_to_utc(ms: i64, col: &'static str) -> Result<DateTime<Utc>, StoreError> {
+fn millis_to_utc(ms: i64) -> Result<DateTime<Utc>, CredentialPersistenceError> {
     Utc.timestamp_millis_opt(ms)
         .single()
-        .ok_or_else(|| StoreError::Backend(format!("{col} millis out of range: {ms}").into()))
+        .ok_or(CredentialPersistenceError::CorruptRecord)
 }
 
-/// Guard a `u64` version counter against i64 overflow before writing to SQLite.
-fn version_to_i64(v: u64) -> Result<i64, StoreError> {
-    i64::try_from(v).map_err(|_| {
-        StoreError::Backend(format!("version {v} overflows i64 (SQLite INTEGER)").into())
-    })
+fn stored_version(value: i64) -> Result<CredentialVersion, CredentialPersistenceError> {
+    CredentialVersion::try_from(value).map_err(|_| CredentialPersistenceError::CorruptRecord)
 }
 
-/// Guard a `u64` state_version (u32 in the DTO but stored as INTEGER) cast.
-fn state_version_to_i64(v: u32) -> i64 {
-    i64::from(v)
+fn stored_material_epoch(
+    value: i64,
+) -> Result<CredentialMaterialEpoch, CredentialPersistenceError> {
+    CredentialMaterialEpoch::try_from(value).map_err(|_| CredentialPersistenceError::CorruptRecord)
 }
 
-/// Extract `owner_id` from the metadata map if present.
-fn owner_id_from_metadata(meta: &serde_json::Map<String, Value>) -> Option<&str> {
-    meta.get("owner_id").and_then(|v| v.as_str())
+fn stored_credential_id(value: &str) -> Result<CredentialId, CredentialPersistenceError> {
+    value
+        .parse()
+        .map_err(|_| CredentialPersistenceError::CorruptRecord)
 }
 
 /// Serialize the metadata map to a JSON string for the `TEXT` column.
-fn meta_to_json(meta: &serde_json::Map<String, Value>) -> Result<String, StoreError> {
-    serde_json::to_string(meta)
-        .map_err(|e| StoreError::Backend(format!("failed to serialize metadata: {e}").into()))
+fn meta_to_json(
+    meta: &serde_json::Map<String, Value>,
+) -> Result<String, CredentialPersistenceError> {
+    serde_json::to_string(meta).map_err(|_| CredentialPersistenceError::Unavailable)
 }
 
 /// Deserialize the `TEXT` metadata column back to a map.
-fn json_to_meta(s: &str) -> Result<serde_json::Map<String, Value>, StoreError> {
-    serde_json::from_str(s)
-        .map_err(|e| StoreError::Backend(format!("failed to deserialize metadata: {e}").into()))
+fn json_to_meta(s: &str) -> Result<serde_json::Map<String, Value>, CredentialPersistenceError> {
+    serde_json::from_str(s).map_err(|_| CredentialPersistenceError::CorruptRecord)
+}
+
+fn validate_name_projection(
+    name: Option<&str>,
+    metadata: &serde_json::Map<String, Value>,
+) -> Result<(), CredentialPersistenceError> {
+    let projected_name = match metadata.get("display") {
+        None => None,
+        Some(display @ Value::Object(_)) => {
+            let display: CredentialDisplay = serde_json::from_value(display.clone())
+                .map_err(|_| CredentialPersistenceError::CorruptRecord)?;
+            if name != display.display_name.as_deref() {
+                return Err(CredentialPersistenceError::CorruptRecord);
+            }
+            return Ok(());
+        },
+        Some(_) => return Err(CredentialPersistenceError::CorruptRecord),
+    };
+    if name != projected_name {
+        return Err(CredentialPersistenceError::CorruptRecord);
+    }
+    Ok(())
 }
 
 // ── raw row type returned by SELECT queries ───────────────────────────────────
@@ -207,6 +825,32 @@ struct CredentialRow {
     state_kind: String,
     state_version: i64,
     version: i64,
+    material_epoch: i64,
+    created_at: i64,
+    updated_at: i64,
+    expires_at: Option<i64>,
+    reauth_required: i64,
+    metadata: String,
+    record_state: String,
+    tombstoned_at: Option<i64>,
+    refresh_retry_mode: Option<String>,
+    refresh_retry_not_before: Option<i64>,
+    refresh_retry_phase: Option<String>,
+    refresh_retry_kind: Option<String>,
+    refresh_retry_diagnostic_code: Option<String>,
+}
+
+/// Projection used by management reads. Deliberately has no `data` field, so
+/// sqlx cannot fetch credential material on this path.
+#[derive(sqlx::FromRow)]
+struct CredentialHeadRow {
+    id: String,
+    name: Option<String>,
+    credential_key: String,
+    state_kind: String,
+    state_version: i64,
+    version: i64,
+    material_epoch: i64,
     created_at: i64,
     updated_at: i64,
     expires_at: Option<i64>,
@@ -214,356 +858,692 @@ struct CredentialRow {
     metadata: String,
 }
 
-impl CredentialRow {
-    fn into_stored(self) -> Result<StoredCredential, StoreError> {
-        let version = u64::try_from(self.version).map_err(|_| {
-            StoreError::Backend(
-                format!(
-                    "stored version {} is negative — table corruption",
-                    self.version
-                )
-                .into(),
-            )
-        })?;
-        let state_version = u32::try_from(self.state_version).map_err(|_| {
-            StoreError::Backend(
-                format!(
-                    "stored state_version {} out of u32 range — table corruption",
-                    self.state_version
-                )
-                .into(),
-            )
-        })?;
-        Ok(StoredCredential {
-            id: self.id,
-            name: self.name,
-            credential_key: self.credential_key,
-            data: self.data,
-            state_kind: self.state_kind,
-            state_version,
-            version,
-            created_at: millis_to_utc(self.created_at, "created_at")?,
-            updated_at: millis_to_utc(self.updated_at, "updated_at")?,
-            expires_at: self
-                .expires_at
-                .map(|ms| millis_to_utc(ms, "expires_at"))
-                .transpose()?,
-            reauth_required: self.reauth_required != 0,
-            metadata: json_to_meta(&self.metadata)?,
-        })
+impl CredentialHeadRow {
+    fn into_stored_head(self) -> Result<StoredCredentialHead, CredentialPersistenceError> {
+        let reauth_required = match self.reauth_required {
+            0 => false,
+            1 => true,
+            _ => return Err(CredentialPersistenceError::CorruptRecord),
+        };
+        let metadata = json_to_meta(&self.metadata)?;
+        validate_name_projection(self.name.as_deref(), &metadata)?;
+        StoredCredentialHead::new(
+            stored_credential_id(&self.id)?,
+            self.name,
+            self.credential_key,
+            self.state_kind,
+            u32::try_from(self.state_version)
+                .map_err(|_| CredentialPersistenceError::CorruptRecord)?,
+            stored_version(self.version)?,
+            stored_material_epoch(self.material_epoch)?,
+            millis_to_utc(self.created_at)?,
+            millis_to_utc(self.updated_at)?,
+            self.expires_at.map(millis_to_utc).transpose()?,
+            reauth_required,
+            metadata,
+        )
     }
 }
 
-// ── CredentialStore impl ──────────────────────────────────────────────────────
+impl CredentialRow {
+    fn into_stored(self) -> Result<StoredCredential, CredentialPersistenceError> {
+        let credential_id = stored_credential_id(&self.id)?;
+        let state_version = u32::try_from(self.state_version)
+            .map_err(|_| CredentialPersistenceError::CorruptRecord)?;
+        let version = stored_version(self.version)?;
+        let material_epoch = stored_material_epoch(self.material_epoch)?;
+        let created_at = millis_to_utc(self.created_at)?;
+        let updated_at = millis_to_utc(self.updated_at)?;
+        let refresh_retry_gate = retry_gate::decode_gate(
+            self.refresh_retry_mode,
+            self.refresh_retry_not_before
+                .map(millis_to_utc)
+                .transpose()?,
+            self.refresh_retry_phase,
+            self.refresh_retry_kind,
+            self.refresh_retry_diagnostic_code,
+        )?;
 
-impl CredentialStore for SqliteCredentialStore {
-    #[tracing::instrument(skip(self), fields(credential.id = id))]
-    async fn get(&self, id: &str) -> Result<StoredCredential, StoreError> {
+        match self.record_state.as_str() {
+            "live" => {
+                if self.tombstoned_at.is_some() {
+                    return Err(CredentialPersistenceError::CorruptRecord);
+                }
+                let reauth_required = match self.reauth_required {
+                    0 => false,
+                    1 => true,
+                    _ => return Err(CredentialPersistenceError::CorruptRecord),
+                };
+                let metadata = json_to_meta(&self.metadata)?;
+                validate_name_projection(self.name.as_deref(), &metadata)?;
+                StoredLiveCredential::new(
+                    credential_id,
+                    self.name,
+                    self.credential_key,
+                    SecretBytes::new(self.data),
+                    self.state_kind,
+                    state_version,
+                    version,
+                    material_epoch,
+                    created_at,
+                    updated_at,
+                    self.expires_at.map(millis_to_utc).transpose()?,
+                    reauth_required,
+                    metadata,
+                    refresh_retry_gate,
+                )
+                .map(StoredCredential::Live)
+            },
+            "tombstoned" => {
+                let Some(tombstoned_at) = self.tombstoned_at else {
+                    return Err(CredentialPersistenceError::CorruptRecord);
+                };
+                if self.name.is_some()
+                    || !self.data.is_empty()
+                    || self.expires_at.is_some()
+                    || self.reauth_required != 0
+                    || self.metadata != "{}"
+                    || refresh_retry_gate.is_some()
+                {
+                    return Err(CredentialPersistenceError::CorruptRecord);
+                }
+                Ok(StoredCredential::Tombstoned(
+                    StoredTombstonedCredential::new(
+                        credential_id,
+                        self.credential_key,
+                        self.state_kind,
+                        state_version,
+                        version,
+                        created_at,
+                        updated_at,
+                        millis_to_utc(tombstoned_at)?,
+                    ),
+                ))
+            },
+            _ => Err(CredentialPersistenceError::CorruptRecord),
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct CredentialCommitRow {
+    id: String,
+    version: i64,
+    record_state: String,
+    created_at: i64,
+    updated_at: i64,
+    tombstoned_at: Option<i64>,
+}
+
+impl CredentialCommitRow {
+    fn into_commit(self) -> Result<CredentialCommit, CredentialPersistenceError> {
+        let credential_id = stored_credential_id(&self.id)?;
+        let version = stored_version(self.version)?;
+        let created_at = millis_to_utc(self.created_at)?;
+        let updated_at = millis_to_utc(self.updated_at)?;
+        match self.record_state.as_str() {
+            "live" if self.tombstoned_at.is_none() => {
+                CredentialCommit::live(credential_id, version, created_at, updated_at)
+            },
+            "tombstoned" => {
+                let tombstoned_at = self
+                    .tombstoned_at
+                    .ok_or(CredentialPersistenceError::CorruptRecord)?;
+                Ok(CredentialCommit::tombstoned(
+                    credential_id,
+                    version,
+                    created_at,
+                    updated_at,
+                    millis_to_utc(tombstoned_at)?,
+                ))
+            },
+            _ => Err(CredentialPersistenceError::CorruptRecord),
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct CredentialLifecycleRow {
+    version: i64,
+    material_epoch: i64,
+    record_state: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct RefreshRetrySnapshotRow {
+    version: i64,
+    material_epoch: i64,
+    reauth_required: i64,
+    record_state: String,
+    refresh_retry_mode: Option<String>,
+    refresh_retry_not_before: Option<i64>,
+    refresh_retry_phase: Option<String>,
+    refresh_retry_kind: Option<String>,
+    refresh_retry_diagnostic_code: Option<String>,
+    backend_now: i64,
+}
+
+impl RefreshRetrySnapshotRow {
+    fn into_snapshot(self) -> Result<RefreshRetrySnapshot, CredentialPersistenceError> {
+        if self.record_state != "live" {
+            return if self.record_state == "tombstoned" {
+                Err(CredentialPersistenceError::NotFound)
+            } else {
+                Err(CredentialPersistenceError::CorruptRecord)
+            };
+        }
+        let version = CredentialVersion::try_from(self.version)
+            .map_err(|_| CredentialPersistenceError::CorruptRecord)?;
+        if !version.is_live() {
+            return Err(CredentialPersistenceError::CorruptRecord);
+        }
+        let material_epoch = stored_material_epoch(self.material_epoch)?;
+        let reauth_required = match self.reauth_required {
+            0 => false,
+            1 => true,
+            _ => return Err(CredentialPersistenceError::CorruptRecord),
+        };
+        let gate = retry_gate::decode_gate(
+            self.refresh_retry_mode,
+            self.refresh_retry_not_before
+                .map(millis_to_utc)
+                .transpose()?,
+            self.refresh_retry_phase,
+            self.refresh_retry_kind,
+            self.refresh_retry_diagnostic_code,
+        )?;
+        let admission = retry_gate::evaluate_gate(gate.as_ref(), millis_to_utc(self.backend_now)?)?;
+        Ok(RefreshRetrySnapshot::new(
+            version,
+            material_epoch,
+            reauth_required,
+            admission,
+        ))
+    }
+}
+
+// ── CredentialPersistence impl ──────────────────────────────────────────────────────
+
+#[async_trait]
+impl CredentialPersistence for SqliteCredentialPersistence {
+    #[tracing::instrument(skip_all, fields(credential.operation = "get"))]
+    async fn get(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<StoredCredential, CredentialPersistenceError> {
         let row: Option<CredentialRow> = sqlx::query_as(
-            "SELECT id, name, credential_key, data, state_kind, state_version, version, \
-             created_at, updated_at, expires_at, reauth_required, metadata \
-             FROM credentials WHERE id = ?1",
+            "SELECT id, name, credential_key, data, state_kind, state_version, version, material_epoch, \
+             created_at, updated_at, expires_at, reauth_required, metadata, \
+             record_state, tombstoned_at, refresh_retry_mode, \
+             refresh_retry_not_before, refresh_retry_phase, refresh_retry_kind, \
+             refresh_retry_diagnostic_code \
+             FROM credentials WHERE id = ?1 AND owner_id = ?2",
         )
-        .bind(id)
+        .bind(selector.credential_id().to_string())
+        .bind(selector.owner().as_str())
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| StoreError::Backend(e.into()))?;
+        .map_err(read_error)?;
 
         match row {
-            Some(r) => r.into_stored(),
-            None => Err(StoreError::NotFound { id: id.to_owned() }),
+            Some(row) => row.into_stored(),
+            None => Err(CredentialPersistenceError::NotFound),
         }
     }
 
-    #[tracing::instrument(skip(self), fields(credential.id = credential.id))]
-    async fn put(
+    #[tracing::instrument(skip_all, fields(credential.operation = "refresh_snapshot"))]
+    async fn refresh_retry_snapshot(
         &self,
-        credential: StoredCredential,
-        mode: PutMode,
-    ) -> Result<StoredCredential, StoreError> {
-        match mode {
-            PutMode::CreateOnly => self.put_create_only(credential).await,
-            PutMode::Overwrite => self.put_overwrite(credential).await,
-            PutMode::CompareAndSwap { expected_version } => {
-                self.put_cas(credential, expected_version).await
-            },
-            _ => Err(StoreError::Backend(
-                format!("sqlite store: unsupported PutMode variant `{mode:?}`").into(),
-            )),
+        selector: &CredentialSelector,
+    ) -> Result<RefreshRetrySnapshot, CredentialPersistenceError> {
+        let row: Option<RefreshRetrySnapshotRow> = sqlx::query_as(
+            "SELECT version, material_epoch, reauth_required, record_state, refresh_retry_mode, \
+                    refresh_retry_not_before, refresh_retry_phase, \
+                    refresh_retry_kind, refresh_retry_diagnostic_code, \
+                    (CAST(strftime('%s', 'now') AS INTEGER) * 1000 \
+                     + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER)) AS backend_now \
+             FROM credentials WHERE id = ?1 AND owner_id = ?2",
+        )
+        .bind(selector.credential_id().to_string())
+        .bind(selector.owner().as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(read_error)?;
+
+        row.ok_or(CredentialPersistenceError::NotFound)?
+            .into_snapshot()
+    }
+
+    #[tracing::instrument(skip_all, fields(credential.operation = "get_head"))]
+    async fn get_head(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<StoredCredentialHead, CredentialPersistenceError> {
+        let row: Option<CredentialHeadRow> = sqlx::query_as(
+            "SELECT id, name, credential_key, state_kind, state_version, version, material_epoch, \
+             created_at, updated_at, expires_at, reauth_required, metadata \
+             FROM credentials \
+             WHERE id = ?1 AND owner_id = ?2 AND record_state = 'live'",
+        )
+        .bind(selector.credential_id().to_string())
+        .bind(selector.owner().as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(read_error)?;
+
+        match row {
+            Some(row) => row.into_stored_head(),
+            None => Err(CredentialPersistenceError::NotFound),
         }
     }
 
-    #[tracing::instrument(skip(self), fields(credential.id = id))]
-    async fn delete(&self, id: &str) -> Result<(), StoreError> {
-        let result = sqlx::query("DELETE FROM credentials WHERE id = ?1")
-            .bind(id)
-            .execute(&self.pool)
+    #[tracing::instrument(skip_all, fields(credential.operation = "create"))]
+    async fn create(
+        &self,
+        selector: &CredentialSelector,
+        create: CredentialCreate,
+    ) -> Result<CredentialCommit, CredentialPersistenceError> {
+        validate_name_projection(create.name(), create.metadata())?;
+        let mut transaction = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
             .await
-            .map_err(|e| StoreError::Backend(e.into()))?;
-
-        if result.rows_affected() == 0 {
-            return Err(StoreError::NotFound { id: id.to_owned() });
-        }
-        Ok(())
+            .map_err(unavailable)?;
+        let result = Self::create_in_transaction(&mut transaction, selector, &create).await;
+        #[cfg(test)]
+        let result = self.inject_precommit_failure(result);
+        self.finish_write(transaction, result).await
     }
 
-    #[tracing::instrument(skip(self))]
-    async fn list(&self, state_kind: Option<&str>) -> Result<Vec<String>, StoreError> {
+    #[tracing::instrument(skip_all, fields(credential.operation = "replace"))]
+    async fn replace(
+        &self,
+        selector: &CredentialSelector,
+        replacement: CredentialReplacement,
+    ) -> Result<CredentialCommit, CredentialPersistenceError> {
+        validate_name_projection(replacement.name(), replacement.metadata())?;
+        let mut transaction = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(unavailable)?;
+        let result = Self::replace_in_transaction(&mut transaction, selector, &replacement).await;
+        #[cfg(test)]
+        let result = self.inject_precommit_failure(result);
+        self.finish_write(transaction, result).await
+    }
+
+    #[tracing::instrument(skip_all, fields(credential.operation = "tombstone"))]
+    async fn tombstone(
+        &self,
+        selector: &CredentialSelector,
+        tombstone: CredentialTombstone,
+    ) -> Result<CredentialCommit, CredentialPersistenceError> {
+        let mut transaction = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(unavailable)?;
+        let result = Self::tombstone_in_transaction(&mut transaction, selector, tombstone).await;
+        #[cfg(test)]
+        let result = self.inject_precommit_failure(result);
+        self.finish_write(transaction, result).await
+    }
+
+    #[tracing::instrument(skip_all, fields(credential.operation = "list"))]
+    async fn list(
+        &self,
+        owner: &CredentialOwner,
+        state_kind: Option<&str>,
+    ) -> Result<Vec<CredentialId>, CredentialPersistenceError> {
         let ids: Vec<(String,)> = match state_kind {
-            Some(kind) => sqlx::query_as("SELECT id FROM credentials WHERE state_kind = ?1")
-                .bind(kind)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| StoreError::Backend(e.into()))?,
-            None => sqlx::query_as("SELECT id FROM credentials")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| StoreError::Backend(e.into()))?,
+            Some(kind) => sqlx::query_as(
+                "SELECT id FROM credentials \
+                 WHERE owner_id = ?1 AND state_kind = ?2 AND record_state = 'live' \
+                 ORDER BY id",
+            )
+            .bind(owner.as_str())
+            .bind(kind)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(read_error)?,
+            None => sqlx::query_as(
+                "SELECT id FROM credentials \
+                 WHERE owner_id = ?1 AND record_state = 'live' ORDER BY id",
+            )
+            .bind(owner.as_str())
+            .fetch_all(&self.pool)
+            .await
+            .map_err(read_error)?,
         };
-        Ok(ids.into_iter().map(|(id,)| id).collect())
+        ids.into_iter()
+            .map(|(id,)| stored_credential_id(&id))
+            .collect()
     }
 
-    #[tracing::instrument(skip(self), fields(credential.id = id))]
-    async fn exists(&self, id: &str) -> Result<bool, StoreError> {
-        let row: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM credentials WHERE id = ?1 LIMIT 1")
-            .bind(id)
-            .fetch_optional(&self.pool)
+    #[tracing::instrument(skip_all, fields(credential.operation = "list_heads"))]
+    async fn list_heads(
+        &self,
+        owner: &CredentialOwner,
+        state_kind: Option<&str>,
+    ) -> Result<Vec<StoredCredentialHead>, CredentialPersistenceError> {
+        let rows: Vec<CredentialHeadRow> = match state_kind {
+            Some(kind) => sqlx::query_as(
+                "SELECT id, name, credential_key, state_kind, state_version, version, material_epoch, \
+                 created_at, updated_at, expires_at, reauth_required, metadata \
+                 FROM credentials \
+                 WHERE owner_id = ?1 AND state_kind = ?2 AND record_state = 'live' \
+                 ORDER BY id",
+            )
+            .bind(owner.as_str())
+            .bind(kind)
+            .fetch_all(&self.pool)
             .await
-            .map_err(|e| StoreError::Backend(e.into()))?;
+            .map_err(read_error)?,
+            None => sqlx::query_as(
+                "SELECT id, name, credential_key, state_kind, state_version, version, material_epoch, \
+                 created_at, updated_at, expires_at, reauth_required, metadata \
+                 FROM credentials \
+                 WHERE owner_id = ?1 AND record_state = 'live' ORDER BY id",
+            )
+            .bind(owner.as_str())
+            .fetch_all(&self.pool)
+            .await
+            .map_err(read_error)?,
+        };
+        rows.into_iter()
+            .map(CredentialHeadRow::into_stored_head)
+            .collect()
+    }
+
+    #[tracing::instrument(skip_all, fields(credential.operation = "exists"))]
+    async fn exists(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<bool, CredentialPersistenceError> {
+        let row: Option<(i64,)> = sqlx::query_as(
+            "SELECT 1 FROM credentials \
+             WHERE id = ?1 AND owner_id = ?2 AND record_state = 'live' LIMIT 1",
+        )
+        .bind(selector.credential_id().to_string())
+        .bind(selector.owner().as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(read_error)?;
         Ok(row.is_some())
     }
 }
 
-// ── put dispatch helpers ──────────────────────────────────────────────────────
+// ── transaction-scoped mutation helpers ───────────────────────────────────────
 
-impl SqliteCredentialStore {
-    /// `CreateOnly`: INSERT; fail with `AlreadyExists` on PRIMARY KEY conflict.
-    async fn put_create_only(
-        &self,
-        credential: StoredCredential,
-    ) -> Result<StoredCredential, StoreError> {
-        let id = credential.id.clone();
-        let now = Utc::now();
-        let created_ms = now.timestamp_millis();
-        let expires_ms: Option<i64> = credential.expires_at.map(|dt| dt.timestamp_millis());
-        let owner_id = owner_id_from_metadata(&credential.metadata).map(ToOwned::to_owned);
-        let meta_json = meta_to_json(&credential.metadata)?;
-        let version_i64: i64 = 1;
-        let state_version_i64 = state_version_to_i64(credential.state_version);
-        let reauth_i64: i64 = i64::from(credential.reauth_required);
-
-        let result = sqlx::query(
-            "INSERT INTO credentials \
-             (id, name, owner_id, credential_key, state_kind, state_version, \
-              data, version, created_at, updated_at, expires_at, \
-              reauth_required, metadata) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10, ?11, ?12)",
-        )
-        .bind(&credential.id)
-        .bind(&credential.name)
-        .bind(&owner_id)
-        .bind(&credential.credential_key)
-        .bind(&credential.state_kind)
-        .bind(state_version_i64)
-        .bind(&credential.data)
-        .bind(version_i64)
-        .bind(created_ms)
-        .bind(expires_ms)
-        .bind(reauth_i64)
-        .bind(&meta_json)
-        .execute(&self.pool)
-        .await;
-
-        match result {
-            Ok(_) => {
-                // Return a StoredCredential with store-assigned timestamps.
-                // We read back the row rather than reconstructing from locals
-                // to guarantee the caller sees exactly what was persisted
-                // (millis-truncated, canonical form).
-                self.get(&id).await
-            },
-            Err(sqlx::Error::Database(db_err))
-                if db_err.kind() == sqlx::error::ErrorKind::UniqueViolation =>
-            {
-                // Distinguish a primary-key (id) collision from the
-                // `(owner_id, name)` partial-unique-index collision: only the
-                // former means this id already exists. A name collision on a
-                // *new* id must NOT report `AlreadyExists { id }` (misleading).
-                let msg = db_err.message();
-                if msg.contains("credentials.id") {
-                    Err(StoreError::AlreadyExists { id })
-                } else {
-                    Err(StoreError::Backend(
-                        format!("credential unique-constraint violation (not id): {msg}").into(),
-                    ))
-                }
-            },
-            Err(e) => Err(StoreError::Backend(e.into())),
-        }
-    }
-
-    /// `Overwrite`: UPSERT; version = existing + 1 (or 1 for a new row).
-    ///
-    /// Uses a two-step approach: attempt an INSERT first; on PK conflict,
-    /// read the existing version and UPDATE with version+1. This avoids
-    /// a conditional RETURNING clause that behaves differently across SQLite
-    /// versions and simplifies the version-increment logic.
-    ///
-    /// The read-then-update is NOT atomic under concurrent writers — but
-    /// `Overwrite` semantics do not guarantee atomicity (last-writer-wins is
-    /// acceptable for this mode). Callers that need atomicity must use CAS.
-    async fn put_overwrite(
-        &self,
-        credential: StoredCredential,
-    ) -> Result<StoredCredential, StoreError> {
-        let id = credential.id.clone();
-
-        // Fetch the existing version if the row exists.
-        let existing_version: Option<i64> =
-            sqlx::query_as("SELECT version FROM credentials WHERE id = ?1")
-                .bind(&id)
-                .fetch_optional(&self.pool)
+impl SqliteCredentialPersistence {
+    async fn create_in_transaction(
+        transaction: &mut Transaction<'_, Sqlite>,
+        selector: &CredentialSelector,
+        create: &CredentialCreate,
+    ) -> Result<CredentialCommit, CredentialPersistenceError> {
+        let credential_id = selector.credential_id().to_string();
+        let existing_owner: Option<(String,)> =
+            sqlx::query_as("SELECT owner_id FROM credentials WHERE id = ?1")
+                .bind(&credential_id)
+                .fetch_optional(&mut **transaction)
                 .await
-                .map_err(|e| StoreError::Backend(e.into()))?
-                .map(|(v,): (i64,)| v);
-
-        let new_version: i64 = match existing_version {
-            Some(v) => {
-                let v_u64 = u64::try_from(v).map_err(|_| {
-                    StoreError::Backend(
-                        format!("stored version {v} is negative — table corruption").into(),
-                    )
-                })?;
-                version_to_i64(v_u64.saturating_add(1))?
-            },
-            None => 1,
-        };
-
-        let now_ms = Utc::now().timestamp_millis();
-        let expires_ms: Option<i64> = credential.expires_at.map(|dt| dt.timestamp_millis());
-        let owner_id = owner_id_from_metadata(&credential.metadata).map(ToOwned::to_owned);
-        let meta_json = meta_to_json(&credential.metadata)?;
-        let state_version_i64 = state_version_to_i64(credential.state_version);
-        let reauth_i64: i64 = i64::from(credential.reauth_required);
-
-        // UPSERT: INSERT or replace all mutable columns on PK conflict.
-        // `created_at` is preserved on conflict (only updated when it's a new row).
-        sqlx::query(
-            "INSERT INTO credentials \
-             (id, name, owner_id, credential_key, state_kind, state_version, \
-              data, version, created_at, updated_at, expires_at, \
-              reauth_required, metadata) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10, ?11, ?12) \
-             ON CONFLICT(id) DO UPDATE SET \
-               name            = excluded.name, \
-               owner_id        = excluded.owner_id, \
-               credential_key  = excluded.credential_key, \
-               state_kind      = excluded.state_kind, \
-               state_version   = excluded.state_version, \
-               data            = excluded.data, \
-               version         = ?8, \
-               updated_at      = ?9, \
-               expires_at      = excluded.expires_at, \
-               reauth_required = excluded.reauth_required, \
-               metadata        = excluded.metadata",
-        )
-        .bind(&credential.id)
-        .bind(&credential.name)
-        .bind(&owner_id)
-        .bind(&credential.credential_key)
-        .bind(&credential.state_kind)
-        .bind(state_version_i64)
-        .bind(&credential.data)
-        .bind(new_version)
-        .bind(now_ms)
-        .bind(expires_ms)
-        .bind(reauth_i64)
-        .bind(&meta_json)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| StoreError::Backend(e.into()))?;
-
-        self.get(&id).await
-    }
-
-    /// `CompareAndSwap`: UPDATE WHERE version = expected; distinguish
-    /// `VersionConflict` (row exists, wrong version) from `NotFound` (absent).
-    async fn put_cas(
-        &self,
-        credential: StoredCredential,
-        expected_version: u64,
-    ) -> Result<StoredCredential, StoreError> {
-        let id = credential.id.clone();
-        let expected_i64 = version_to_i64(expected_version)?;
-        let new_version = version_to_i64(expected_version.saturating_add(1))?;
-        let now_ms = Utc::now().timestamp_millis();
-        let expires_ms: Option<i64> = credential.expires_at.map(|dt| dt.timestamp_millis());
-        let owner_id = owner_id_from_metadata(&credential.metadata).map(ToOwned::to_owned);
-        let meta_json = meta_to_json(&credential.metadata)?;
-        let state_version_i64 = state_version_to_i64(credential.state_version);
-        let reauth_i64: i64 = i64::from(credential.reauth_required);
-
-        let result = sqlx::query(
-            "UPDATE credentials SET \
-               name            = ?2, \
-               owner_id        = ?3, \
-               credential_key  = ?4, \
-               state_kind      = ?5, \
-               state_version   = ?6, \
-               data            = ?7, \
-               version         = ?8, \
-               updated_at      = ?9, \
-               expires_at      = ?10, \
-               reauth_required = ?11, \
-               metadata        = ?12 \
-             WHERE id = ?1 AND version = ?13",
-        )
-        .bind(&credential.id)
-        .bind(&credential.name)
-        .bind(&owner_id)
-        .bind(&credential.credential_key)
-        .bind(&credential.state_kind)
-        .bind(state_version_i64)
-        .bind(&credential.data)
-        .bind(new_version)
-        .bind(now_ms)
-        .bind(expires_ms)
-        .bind(reauth_i64)
-        .bind(&meta_json)
-        .bind(expected_i64)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| StoreError::Backend(e.into()))?;
-
-        if result.rows_affected() == 0 {
-            // Either the row doesn't exist or the version didn't match.
-            // Fetch to distinguish the two cases.
-            let current: Option<(i64,)> =
-                sqlx::query_as("SELECT version FROM credentials WHERE id = ?1")
-                    .bind(&id)
-                    .fetch_optional(&self.pool)
-                    .await
-                    .map_err(|e| StoreError::Backend(e.into()))?;
-
-            return match current {
-                None => Err(StoreError::NotFound { id }),
-                // A negative stored version is table corruption, not a normal
-                // version mismatch; surface it as Backend rather than fabricating
-                // an `actual` (which would mask the corruption as VersionConflict).
-                Some((actual_i64,)) => match u64::try_from(actual_i64) {
-                    Ok(actual) => Err(StoreError::VersionConflict {
-                        id,
-                        expected: expected_version,
-                        actual,
-                    }),
-                    Err(_) => Err(StoreError::Backend(
-                        format!("stored version {actual_i64} is negative — table corruption")
-                            .into(),
-                    )),
-                },
+                .map_err(read_error)?;
+        if let Some((existing_owner,)) = existing_owner {
+            return if existing_owner == selector.owner().as_str() {
+                Err(CredentialPersistenceError::AlreadyExists {
+                    key: CredentialAlreadyExistsKey::Id,
+                })
+            } else {
+                Err(CredentialPersistenceError::NotFound)
             };
         }
 
-        self.get(&id).await
+        if let Some(name) = create.name() {
+            let name_exists: Option<(i64,)> = sqlx::query_as(
+                "SELECT 1 FROM credentials \
+                 WHERE owner_id = ?1 AND name = ?2 AND record_state = 'live' LIMIT 1",
+            )
+            .bind(selector.owner().as_str())
+            .bind(name)
+            .fetch_optional(&mut **transaction)
+            .await
+            .map_err(read_error)?;
+            if name_exists.is_some() {
+                return Err(CredentialPersistenceError::AlreadyExists {
+                    key: CredentialAlreadyExistsKey::Name,
+                });
+            }
+        }
+
+        let now_ms = Utc::now().timestamp_millis();
+        let row: CredentialCommitRow = sqlx::query_as(
+            "INSERT INTO credentials \
+             (id, name, owner_id, credential_key, state_kind, state_version, \
+              data, version, material_epoch, created_at, updated_at, expires_at, \
+              reauth_required, metadata, record_state, tombstoned_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, 1, ?8, ?8, ?9, ?10, ?11, 'live', NULL) \
+             RETURNING id, version, record_state, created_at, updated_at, tombstoned_at",
+        )
+        .bind(&credential_id)
+        .bind(create.name())
+        .bind(selector.owner().as_str())
+        .bind(create.credential_key())
+        .bind(create.state_kind())
+        .bind(i64::from(create.state_version()))
+        .bind(create.data().as_ref())
+        .bind(now_ms)
+        .bind(create.expires_at().map(|value| value.timestamp_millis()))
+        .bind(i64::from(create.reauth_required()))
+        .bind(meta_to_json(create.metadata())?)
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(read_error)?;
+
+        row.into_commit()
+    }
+
+    async fn replace_in_transaction(
+        transaction: &mut Transaction<'_, Sqlite>,
+        selector: &CredentialSelector,
+        replacement: &CredentialReplacement,
+    ) -> Result<CredentialCommit, CredentialPersistenceError> {
+        let credential_id = selector.credential_id().to_string();
+        let lifecycle: Option<CredentialLifecycleRow> = sqlx::query_as(
+            "SELECT version, material_epoch, record_state FROM credentials \
+             WHERE id = ?1 AND owner_id = ?2",
+        )
+        .bind(&credential_id)
+        .bind(selector.owner().as_str())
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(read_error)?;
+        let Some(lifecycle) = lifecycle else {
+            return Err(CredentialPersistenceError::NotFound);
+        };
+        if lifecycle.record_state != "live" {
+            return if lifecycle.record_state == "tombstoned" {
+                Err(CredentialPersistenceError::NotFound)
+            } else {
+                Err(CredentialPersistenceError::CorruptRecord)
+            };
+        }
+        let actual_version = stored_version(lifecycle.version)?;
+        if actual_version != replacement.expected_version() {
+            return Err(CredentialPersistenceError::VersionConflict {
+                expected: replacement.expected_version(),
+                actual: actual_version,
+            });
+        }
+        let next_version = actual_version.next_live()?;
+        let actual_material_epoch = stored_material_epoch(lifecycle.material_epoch)?;
+        let next_material_epoch = if replacement.material_transition().advances_epoch() {
+            actual_material_epoch.next()?
+        } else {
+            actual_material_epoch
+        };
+
+        if let Some(name) = replacement.name() {
+            let name_exists: Option<(i64,)> = sqlx::query_as(
+                "SELECT 1 FROM credentials \
+                 WHERE owner_id = ?1 AND name = ?2 AND id <> ?3 \
+                   AND record_state = 'live' LIMIT 1",
+            )
+            .bind(selector.owner().as_str())
+            .bind(name)
+            .bind(&credential_id)
+            .fetch_optional(&mut **transaction)
+            .await
+            .map_err(read_error)?;
+            if name_exists.is_some() {
+                return Err(CredentialPersistenceError::AlreadyExists {
+                    key: CredentialAlreadyExistsKey::Name,
+                });
+            }
+        }
+
+        let now_ms = Utc::now().timestamp_millis();
+        let retry_transition =
+            retry_gate::encode_material_transition(replacement.material_transition())?;
+        let row: Option<CredentialCommitRow> = sqlx::query_as(
+            "UPDATE credentials SET \
+               name            = ?3, \
+               data            = ?4, \
+               state_kind      = ?5, \
+               state_version   = ?6, \
+               version         = ?7, \
+               material_epoch  = ?8, \
+               updated_at      = ?9, \
+               expires_at      = ?10, \
+               reauth_required = ?11, \
+               metadata        = ?12, \
+               refresh_retry_mode = CASE ?13 \
+                   WHEN 0 THEN refresh_retry_mode \
+                   WHEN 1 THEN NULL \
+                   WHEN 2 THEN 'never' \
+                   WHEN 3 THEN 'not_before' \
+               END, \
+               refresh_retry_not_before = CASE ?13 \
+                   WHEN 0 THEN refresh_retry_not_before \
+                   WHEN 3 THEN (CAST(strftime('%s', 'now') AS INTEGER) * 1000 \
+                       + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER)) \
+                       + (?14 * 1000) \
+                   ELSE NULL \
+               END, \
+               refresh_retry_phase = CASE ?13 \
+                   WHEN 0 THEN refresh_retry_phase \
+                   WHEN 1 THEN NULL \
+                   ELSE ?15 \
+               END, \
+               refresh_retry_kind = CASE ?13 \
+                   WHEN 0 THEN refresh_retry_kind \
+                   WHEN 1 THEN NULL \
+                   ELSE ?16 \
+               END, \
+               refresh_retry_diagnostic_code = CASE ?13 \
+                   WHEN 0 THEN refresh_retry_diagnostic_code \
+                   WHEN 1 THEN NULL \
+                   ELSE ?17 \
+               END \
+             WHERE id = ?1 AND owner_id = ?2 \
+               AND record_state = 'live' AND version = ?18 \
+             RETURNING id, version, record_state, created_at, updated_at, tombstoned_at",
+        )
+        .bind(&credential_id)
+        .bind(selector.owner().as_str())
+        .bind(replacement.name())
+        .bind(replacement.data().as_ref())
+        .bind(replacement.state_kind())
+        .bind(i64::from(replacement.state_version()))
+        .bind(next_version.get())
+        .bind(next_material_epoch.get())
+        .bind(now_ms)
+        .bind(
+            replacement
+                .expires_at()
+                .map(|value| value.timestamp_millis()),
+        )
+        .bind(i64::from(replacement.reauth_required()))
+        .bind(meta_to_json(replacement.metadata())?)
+        .bind(retry_transition.code)
+        .bind(retry_transition.delay_seconds)
+        .bind(retry_transition.phase)
+        .bind(retry_transition.kind)
+        .bind(retry_transition.diagnostic_code)
+        .bind(replacement.expected_version().get())
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(read_error)?;
+
+        row.ok_or(CredentialPersistenceError::CorruptRecord)?
+            .into_commit()
+    }
+
+    async fn tombstone_in_transaction(
+        transaction: &mut Transaction<'_, Sqlite>,
+        selector: &CredentialSelector,
+        tombstone: CredentialTombstone,
+    ) -> Result<CredentialCommit, CredentialPersistenceError> {
+        let credential_id = selector.credential_id().to_string();
+        let lifecycle: Option<CredentialLifecycleRow> = sqlx::query_as(
+            "SELECT version, material_epoch, record_state FROM credentials \
+             WHERE id = ?1 AND owner_id = ?2",
+        )
+        .bind(&credential_id)
+        .bind(selector.owner().as_str())
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(read_error)?;
+        let Some(lifecycle) = lifecycle else {
+            return Err(CredentialPersistenceError::NotFound);
+        };
+        if lifecycle.record_state != "live" {
+            return if lifecycle.record_state == "tombstoned" {
+                Err(CredentialPersistenceError::NotFound)
+            } else {
+                Err(CredentialPersistenceError::CorruptRecord)
+            };
+        }
+        let actual_version = stored_version(lifecycle.version)?;
+        if actual_version != tombstone.expected_version() {
+            return Err(CredentialPersistenceError::VersionConflict {
+                expected: tombstone.expected_version(),
+                actual: actual_version,
+            });
+        }
+        let next_version = actual_version.next_tombstone()?;
+        let now_ms = Utc::now().timestamp_millis();
+
+        let row: Option<CredentialCommitRow> = sqlx::query_as(
+            "UPDATE credentials SET \
+               name            = NULL, \
+               data            = zeroblob(0), \
+               version         = ?3, \
+               updated_at      = ?4, \
+               expires_at      = NULL, \
+               reauth_required = 0, \
+               metadata        = '{}', \
+               record_state    = 'tombstoned', \
+               tombstoned_at   = ?4, \
+               refresh_retry_mode = NULL, \
+               refresh_retry_not_before = NULL, \
+               refresh_retry_phase = NULL, \
+               refresh_retry_kind = NULL, \
+               refresh_retry_diagnostic_code = NULL \
+             WHERE id = ?1 AND owner_id = ?2 \
+               AND record_state = 'live' AND version = ?5 \
+             RETURNING id, version, record_state, created_at, updated_at, tombstoned_at",
+        )
+        .bind(&credential_id)
+        .bind(selector.owner().as_str())
+        .bind(next_version.get())
+        .bind(now_ms)
+        .bind(tombstone.expected_version().get())
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(read_error)?;
+
+        row.ok_or(CredentialPersistenceError::CorruptRecord)?
+            .into_commit()
     }
 }

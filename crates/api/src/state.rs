@@ -3,16 +3,13 @@
 //! Shared state for all handlers via Arc.
 //! Contains only ports (traits) — independent of concrete implementations.
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use nebula_core::{OrgId, OrgRole, WorkspaceId, WorkspaceRole, id::ExecutionId, scope::Principal};
-use nebula_credential::CredentialService;
-use nebula_credential::PendingToken;
 use nebula_engine::ActionRegistry;
 use nebula_metrics::MetricsRegistry;
 use nebula_plugin::PluginRegistry;
-use nebula_storage::credential::InMemoryPendingStore;
 use nebula_storage_port::Scope;
 use nebula_storage_port::dto::WorkflowVersionRecord;
 use nebula_storage_port::store::{
@@ -44,6 +41,16 @@ pub trait OrgResolver: Send + Sync {
 pub trait WorkspaceResolver: Send + Sync {
     /// Look up a workspace by its slug within the given org.
     async fn resolve_by_slug(&self, org_id: OrgId, slug: &str) -> Result<WorkspaceId, ApiError>;
+
+    /// Verify that a typed workspace id exists and belongs to the requested
+    /// organization. Parsing an id is not existence or parentage proof. A
+    /// successful implementation must return the same `workspace_id`; callers
+    /// reject substitution as a failed lookup.
+    async fn resolve_by_id(
+        &self,
+        org_id: OrgId,
+        workspace_id: WorkspaceId,
+    ) -> Result<WorkspaceId, ApiError>;
 }
 
 /// One organisation membership row, as seen by the org/* handlers.
@@ -62,6 +69,20 @@ pub struct OrgMember {
     pub principal: Principal,
     /// The member's org-level role.
     pub role: OrgRole,
+}
+
+/// Consistent membership-role snapshot for one principal and tenant binding.
+///
+/// Implementations must obtain both roles from one logical snapshot (one lock
+/// guard or one database transaction/read snapshot). RBAC and bounded-context
+/// authorities use this method so a concurrent membership change cannot splice
+/// together roles observed at different instants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TenantMembershipSnapshot {
+    /// Organization role, or `None` when the principal is not a member.
+    pub org_role: Option<OrgRole>,
+    /// Explicit workspace role, or `None` when no explicit grant exists.
+    pub workspace_role: Option<WorkspaceRole>,
 }
 
 /// Outcome of [`MembershipStore::add_member_guarded`].
@@ -103,17 +124,29 @@ pub enum RemoveMemberOutcome {
 ///
 /// This is the single contract that [`crate::middleware::rbac`] consults to
 /// authorize every org/workspace request *and* that the
-/// `GET/POST/DELETE /orgs/{org}/members` handlers read/write. A production
-/// composition wires exactly one shared `Arc<dyn MembershipStore>` so a
+/// `GET/POST/DELETE /orgs/{org}/members` handlers read/write. A future supported
+/// production composition must wire exactly one shared `Arc<dyn MembershipStore>` so a
 /// membership added via [`Self::add_member_guarded`] is immediately visible
 /// to the next RBAC check on the same process (no eventual-consistency
 /// window — proven by
 /// `tests/org_e2e.rs::added_member_is_immediately_rbac_authorized`).
+/// The default server does not wire this port yet; K4 owns the durable bridge
+/// and operator configuration, so tenant routes currently return 503.
 ///
-/// Point lookups (`get_org_role` / `get_workspace_role`) stay on the hot
-/// auth path; the enumeration/mutation methods back the member endpoints.
+/// `get_tenant_membership` is the consistent hot-path authorization read;
+/// point lookups and enumeration/mutation methods back member-management
+/// endpoints and focused queries. An unwired or failed source is unavailable;
+/// a successful snapshot with no organization role is an authorization denial.
 #[async_trait]
 pub trait MembershipStore: Send + Sync {
+    /// Resolve org and optional workspace roles from one logical snapshot.
+    async fn get_tenant_membership(
+        &self,
+        org_id: OrgId,
+        workspace_id: Option<WorkspaceId>,
+        principal: &Principal,
+    ) -> Result<TenantMembershipSnapshot, ApiError>;
+
     /// Return the caller's org-level role, if they are an org member.
     async fn get_org_role(
         &self,
@@ -236,37 +269,27 @@ pub struct AppState {
     /// When `None`, the `GET /plugins` endpoints return 503.
     pub plugin_registry: Option<Arc<RwLock<PluginRegistry>>>,
 
-    /// Optional credential-schema port (credential-schema validation). When `None`, the
-    /// credential write path and credential-type catalog return 503
-    /// (honest capability stub, mirroring `action_registry`).
+    /// Optional credential catalog/form read-model port. When `None`, type
+    /// discovery returns 503; mutation validation remains available through
+    /// the authenticated command gateway.
     pub credential_schema: Option<Arc<dyn crate::ports::credential_schema::CredentialSchemaPort>>,
 
-    /// Optional `CredentialService` facade — the **single** credential
-    /// persistence path (ADR-0088 D7). All credential CRUD, lifecycle, and
-    /// acquisition operations route through it; the OAuth two-phase flow
-    /// writes through a `CredentialScopeLayer` over the service's
-    /// encryption+audit+cache store handle, so both planes share one store.
+    /// Optional authenticated credential command gateway. All credential CRUD,
+    /// lifecycle, and acquisition operations route through this API-owned port.
     ///
-    /// When `None`, every credential endpoint returns an honest 503 —
-    /// there is no raw-store fallback path.
+    /// When `None`, every credential management/acquisition endpoint returns
+    /// an honest 503 — there is no raw-store fallback path.
     ///
-    /// `CredentialService` is non-generic — its backend is erased behind
-    /// `DynCredentialStore` / `ErasedPendingStore` at construction (ADR-0088 D4),
-    /// so the api names it without a backend type parameter. The concrete
-    /// backend is chosen by the composition root (the server binary), not here.
-    pub credential_service: Option<Arc<CredentialService>>,
+    /// The concrete authority/controller adapter is chosen by the deployment
+    /// composition root; handlers cannot reach a raw service or store.
+    pub(crate) credential_gateway:
+        Option<Arc<dyn crate::ports::credential_command::CredentialCommandGateway>>,
 
     /// Optional webhook HTTP transport. When `None`, no `/webhooks/*`
     /// routes are mounted on the app; webhook-style `WebhookAction`
     /// triggers registered via `ActionRegistry::register_webhook`
     /// will never fire until the transport is attached.
     pub webhook_transport: Option<WebhookTransport>,
-
-    /// OAuth pending state store (API-owned OAuth flow §4.2 — TTL ≤ 10 min, single-use).
-    pub oauth_pending_store: Arc<InMemoryPendingStore>,
-
-    /// Maps signed state -> pending token so callback can consume pending data.
-    pub oauth_state_tokens: Arc<RwLock<HashMap<String, PendingToken>>>,
 
     /// Optional org-slug → [`OrgId`] resolver.
     pub org_resolver: Option<Arc<dyn OrgResolver>>,
@@ -317,10 +340,10 @@ pub struct AppState {
     /// Optional idempotency store backing [`crate::middleware::IdempotencyLayer`].
     ///
     /// When `Some`, `build_app` mounts the layer on `api_routes` (NOT on the
-    /// merged webhook transport) so every state-changing API endpoint is
-    /// replay-protected. When `None`, the layer is not mounted and POST
-    /// endpoints have no replay protection — acceptable for tests that build
-    /// minimal routers but a misconfiguration in production.
+    /// merged webhook transport). First-party composition currently allow-lists
+    /// only internal test fixtures: product mutations require a durable atomic
+    /// operation ledger before they may advertise retry safety. When `None`,
+    /// completed-response caching is disabled.
     ///
     /// See idempotency backend for the backend selection contract; the composition root
     /// chooses between [`crate::middleware::InMemoryIdempotencyStore`] and a
@@ -546,10 +569,8 @@ impl AppState {
             action_registry: None,
             plugin_registry: None,
             credential_schema: None,
-            credential_service: None,
+            credential_gateway: None,
             webhook_transport: None,
-            oauth_pending_store: Arc::new(InMemoryPendingStore::new()),
-            oauth_state_tokens: Arc::new(RwLock::new(HashMap::new())),
             org_resolver: None,
             workspace_resolver: None,
             auth_backend: None,
@@ -1152,9 +1173,9 @@ impl AppState {
         self
     }
 
-    /// Attach the credential-schema port (credential-schema validation) used to validate
-    /// credential `data` before persist and to populate the credential-type
-    /// catalog. When absent, those endpoints return an honest 503.
+    /// Attach the credential catalog/form read model. It never validates
+    /// mutation payloads; when absent, only type-discovery endpoints return
+    /// an honest 503.
     #[must_use = "builder methods must be chained or built"]
     pub fn with_credential_schema(
         mut self,
@@ -1164,13 +1185,16 @@ impl AppState {
         self
     }
 
-    /// Attach the `CredentialService` facade — the single credential
-    /// persistence path (CRUD, lifecycle, acquisition, and the OAuth
-    /// two-phase writes all route through it). Without it every
-    /// credential endpoint returns an honest 503.
+    /// Attach the authenticated credential command gateway. Without it every
+    /// credential management/acquisition endpoint returns an honest 503.
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_credential_service(mut self, service: Arc<CredentialService>) -> Self {
-        self.credential_service = Some(service);
+    #[cfg(any(test, feature = "test-util", feature = "first-party-composition"))]
+    #[doc(hidden)]
+    pub fn with_credential_gateway(
+        mut self,
+        gateway: Arc<dyn crate::ports::credential_command::CredentialCommandGateway>,
+    ) -> Self {
+        self.credential_gateway = Some(gateway);
         self
     }
 
@@ -1222,7 +1246,7 @@ impl AppState {
 
     /// Set the publicly-reachable base URL for this Nebula instance.
     /// Required for Plane-A OAuth `redirect_uri` derivation per
-    /// ADR-0085 D-3 (recon-4). Composition roots call this with
+    /// ADR-0085 D-3. Composition roots call this with
     /// `ApiConfig::public_url`. Tests can pass any absolute URL.
     #[must_use = "builder methods must be chained or built"]
     pub fn with_public_url(mut self, public_url: impl Into<Arc<str>>) -> Self {

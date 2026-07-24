@@ -21,7 +21,7 @@
 - `Icon` is the single valid representation (`None`/`Inline`/`Url`); never reintroduce the old `icon: Option<String>` + `icon_url` pair.
 - `PluginManifest` is a container, not a schematized leaf: it must NOT compose `BaseMetadata` or carry a canonical input schema (ADR-0018).
 - This crate owns only the *generic* base compat rules; each consumer layers entity-specific rules in a thin wrapper enum around `BaseCompatError<K>` — don't push entity rules down here.
-- Cross-crate calls go through `nebula-eventbus`, not direct sibling imports.
+- Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
 - Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also

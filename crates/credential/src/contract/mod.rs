@@ -15,6 +15,7 @@ mod credential;
 mod dynamic;
 mod interactive;
 mod pending;
+mod refresh_attempt;
 mod refreshable;
 /// KEY-keyed `CredentialRegistry` + `RegisterError` (Tech Spec §15.6 fatal duplicate-KEY).
 pub mod registry;
@@ -30,11 +31,15 @@ pub use credential::Credential;
 pub use dynamic::Dynamic;
 pub use interactive::Interactive;
 pub use pending::{NoPendingState, PendingState, PendingToken};
-pub use refreshable::Refreshable;
+pub use refresh_attempt::{
+    CompletedDispatch, CompletedResponseProof, RefreshAttempt, RefreshDispatchError, RefreshReport,
+};
+pub(crate) use refresh_attempt::{RefreshReauthPhase, RefreshReportKind};
+pub use refreshable::{RefreshExecutionMode, Refreshable};
 pub use registry::{CredentialRegistry, RegisterError};
 pub use resolve::{
-    DisplayData, InteractionRequest, ReauthReason, RefreshOutcome, RefreshPolicy, ResolveResult,
-    StaticResolveResult, TestResult, UserInput,
+    DisplayData, InteractionRequest, ReauthReason, RefreshPolicy, ResolveResult,
+    StaticResolveResult, TestFailureCode, TestResult, UserInput,
 };
 pub use revocable::Revocable;
 pub use state::CredentialState;

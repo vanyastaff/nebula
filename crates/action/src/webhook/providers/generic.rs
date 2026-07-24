@@ -21,8 +21,8 @@ use crate::{
     metadata::ActionMetadata,
     trigger::TriggerEventOutcome,
     webhook::{
-        BuiltWebhookHandler, FactoryError, PreHandleOutcome, RequiredPolicy, SignaturePolicy,
-        WebhookAction, WebhookActionFactory, WebhookActivationSpec, WebhookConfig,
+        BuiltWebhookHandler, ChallengeToken, FactoryError, PreHandleOutcome, RequiredPolicy,
+        SignaturePolicy, WebhookAction, WebhookActionFactory, WebhookActivationSpec, WebhookConfig,
         WebhookHttpResponse, WebhookProvider, WebhookRequest, WebhookResponse,
         WebhookTriggerAdapter,
     },
@@ -33,14 +33,13 @@ use crate::{
 /// Defaults: HMAC SHA-256 hex over the body, header
 /// `X-Nebula-Signature`, no timestamp/replay protection unless opted
 /// in via [`Self::with_timestamp_header`].
-#[derive(Clone)]
 pub struct GenericWebhookAction {
     secret: Arc<[u8]>,
     signature_header: HeaderName,
     timestamp_header: Option<HeaderName>,
     timestamp_format: super::super::TimestampFormat,
     replay_window: std::time::Duration,
-    challenge_token: Option<String>,
+    challenge_token: Option<ChallengeToken>,
 }
 
 impl GenericWebhookAction {
@@ -96,7 +95,7 @@ impl GenericWebhookAction {
     /// return 404 from `pre_handle`.
     #[must_use]
     pub fn with_challenge_token(mut self, token: impl Into<String>) -> Self {
-        self.challenge_token = Some(token.into());
+        self.challenge_token = Some(ChallengeToken::new(token));
         self
     }
 }
@@ -174,11 +173,11 @@ impl WebhookAction for GenericWebhookAction {
             .query()
             .and_then(|q| extract_query_param(q, "challenge"));
         match challenge_value {
-            Some(v) if v.as_bytes().ct_eq(token.as_bytes()).into() => {
+            Some(v) if v.as_bytes().ct_eq(token.expose().as_bytes()).into() => {
                 debug!(provider = "generic", "webhook challenge matched");
                 Ok(PreHandleOutcome::RespondNow(WebhookHttpResponse::new(
                     StatusCode::OK,
-                    Bytes::copy_from_slice(token.as_bytes()),
+                    Bytes::copy_from_slice(token.expose().as_bytes()),
                 )))
             },
             _ => {
@@ -287,7 +286,7 @@ impl WebhookActionFactory for GenericWebhookActionFactory {
             let parsed = HeaderName::from_bytes(header_str.as_bytes()).map_err(|_| {
                 FactoryError::InvalidSpec {
                     kind: "generic",
-                    reason: format!("invalid timestamp_header: {header_str:?}"),
+                    reason: "timestamp_header is not a valid HTTP header name",
                 }
             })?;
             action = action.with_timestamp_header(parsed);
@@ -296,10 +295,14 @@ impl WebhookActionFactory for GenericWebhookActionFactory {
             action = action.with_timestamp_format(format);
         }
         if let Some(serde_json::Value::Object(map)) = spec.provider_config.as_ref()
-            && let Some(serde_json::Value::String(token)) = map.get("challenge_token")
+            && map.contains_key("challenge_token")
         {
-            action = action.with_challenge_token(token.clone());
+            return Err(FactoryError::InvalidSpec {
+                kind: "generic",
+                reason: "inline challenge_token authority is not supported; configure it through a trusted composition root",
+            });
         }
+        self.validate_provider_config(spec.provider_config.as_ref())?;
         let config = action.config();
         Ok(BuiltWebhookHandler {
             handler: Arc::new(WebhookTriggerAdapter::new(action)),
@@ -311,6 +314,8 @@ impl WebhookActionFactory for GenericWebhookActionFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static_assertions::assert_not_impl_any!(GenericWebhookAction: Clone);
 
     #[test]
     fn extract_query_param_basic() {
@@ -335,5 +340,57 @@ mod tests {
             extract_query_param("challenge=a+b", "challenge").as_deref(),
             Some("a b"),
         );
+    }
+
+    #[test]
+    fn factory_rejects_legacy_inline_challenge_authority() {
+        let spec = WebhookActivationSpec::new("generic", b"signing-secret".to_vec())
+            .with_provider_config(serde_json::json!({
+                "challenge_token": "inline-authority"
+            }));
+
+        let result = GenericWebhookActionFactory::new().build(&spec);
+        assert!(matches!(
+            result,
+            Err(FactoryError::InvalidSpec {
+                kind: "generic",
+                reason,
+            }) if reason == "inline challenge_token authority is not supported; configure it through a trusted composition root"
+        ));
+    }
+
+    #[test]
+    fn factory_accepts_empty_provider_configuration() {
+        let spec = WebhookActivationSpec::new("generic", b"signing-secret".to_vec())
+            .with_provider_config(serde_json::json!({}));
+
+        assert!(GenericWebhookActionFactory::new().build(&spec).is_ok());
+    }
+
+    #[test]
+    fn factory_rejects_unknown_provider_configuration() {
+        let spec = WebhookActivationSpec::new("generic", b"signing-secret".to_vec())
+            .with_provider_config(serde_json::json!({ "region": "us-central-1" }));
+
+        assert!(matches!(
+            GenericWebhookActionFactory::new().build(&spec),
+            Err(FactoryError::InvalidSpec {
+                kind: "generic",
+                reason,
+            }) if reason == "provider_config is not supported by this built-in provider"
+        ));
+    }
+
+    #[test]
+    fn challenge_authority_debug_is_redacted() {
+        const CANARY: &str = "GENERIC_CHALLENGE_AUTHORITY_CANARY-42d7";
+        let token = ChallengeToken::new(CANARY);
+        let provider = WebhookProvider::Generic {
+            challenge_token: Some(token.clone()),
+        };
+
+        assert_eq!(token, token.clone());
+        assert!(!format!("{token:?}").contains(CANARY));
+        assert!(!format!("{provider:?}").contains(CANARY));
     }
 }

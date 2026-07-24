@@ -26,7 +26,21 @@ mod scope;
 pub mod store;
 
 pub use batch::{TransitionBatch, TransitionBatchBuilder, TransitionOutcome};
+pub use dto::credential::{
+    CredentialCommit, CredentialCreate, CredentialMaterialEpoch, CredentialMaterialEpochError,
+    CredentialMaterialTransition, CredentialOwner, CredentialRecordState, CredentialReplacement,
+    CredentialSelector, CredentialTombstone, CredentialVersion, CredentialVersionError,
+    SecretBytes, StoredCredential, StoredCredentialHead, StoredLiveCredential,
+    StoredTombstonedCredential,
+};
 pub use dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash, TokenHashLengthError};
+pub use dto::{
+    RefreshRetryAdmission, RefreshRetryBlock, RefreshRetryDelay, RefreshRetryDelayError,
+    RefreshRetryDiagnosticCode, RefreshRetryDiagnosticCodeError, RefreshRetryEvidence,
+    RefreshRetryGate, RefreshRetryKind, RefreshRetryPhase, RefreshRetrySnapshot,
+    RefreshRetryTransition,
+};
 pub use error::StorageError;
-pub use ids::FencingToken;
+pub use ids::{CredentialId, FencingToken};
 pub use scope::Scope;
+pub use store::{CredentialAlreadyExistsKey, CredentialPersistence, CredentialPersistenceError};

@@ -2,7 +2,7 @@
 name: nebula-storage
 role: Storage Port (Repository Implementations + CAS + Outbox)
 status: partial
-last-reviewed: 2026-04-17
+last-reviewed: 2026-07-22
 canon-invariants: [L2-11.1, L2-11.3, L2-11.5, L2-12.2, L2-12.3]
 related: [nebula-execution, nebula-engine, nebula-core, nebula-error]
 ---
@@ -17,8 +17,9 @@ transitions, journal appends, and outbox writes can share the same logical opera
 "two truths" anti-pattern (canon §14) forbids splitting those writes across separate
 transactions. `nebula-storage` is that seam: it implements the spec-16 storage port for
 execution state, workflow definitions and versions, the append-only journal, idempotency keys,
-checkpoints, leases, identity stores, and the durable control-queue outbox — all backed by
-InMemory, SQLite (dev / test), or PostgreSQL (production).
+checkpoints, leases, identity stores, owner-bound credential persistence, and the durable
+control-queue outbox. SQLite and PostgreSQL are deployment backends; InMemory implementations are
+internal test/reference/conformance adapters only.
 
 ## Role
 
@@ -34,11 +35,12 @@ The contract is the spec-16 storage **port** in `nebula-storage-port`
 `NodeResultStore`, `CheckpointStore`, `IdempotencyGuard` /
 `IdempotencyStore`, `WorkflowStore` / `WorkflowVersionStore`,
 `ControlQueue`, `WebhookActivationStore`, `RefreshClaimStore`, and the
-identity-zoo stores; `StorageError`; the plain-data `Scope`). This crate
+identity-zoo stores; owner-bound `CredentialPersistence`; `StorageError`;
+the plain-data `Scope`). This crate
 provides the adapters:
 
-- `inmem::*` — in-memory adapters (tests, local single-process, the loom
-  probe).
+- `inmem::*` — internal test/reference/conformance adapters and the loom probe;
+  not a supported deployment backend.
 - `sqlite::*` (feature `sqlite`) — single-writer-correct adapters over a
   port-scoped schema; `init_schema` installs it for `:memory:` / test
   pools.
@@ -49,8 +51,90 @@ provides the adapters:
   `pg::PgControlQueueRepo`), `IdempotencyStoreRepo`,
   `WebhookActivationRepo`, and the identity-row glue the Postgres
   backend implements.
-- `StorageError` (re-exported from the port), `StorageFormat`
+- `pg::PgOAuthLoginFinalizer` (feature `postgres`) plus the
+  `repos::OAuthLoginFinalize*` command/outcome types — the technical,
+  storage-owned Plane-A completion seam. Each call receives already-verified
+  identity inputs and performs no provider network I/O. An existing
+  `(provider, subject)` link is authoritative; same-subject races converge
+  internally. For a new subject, an unused verified email may create a new
+  OAuth-only user, while an email owned by another account rolls back with
+  `AccountLinkRequired` and never auto-links. The finalizer atomically records
+  either user/link/session or, for an MFA-enabled linked user, an opaque
+  challenge plus MFA-required outcome with no session. Provider codes and
+  tokens never enter this contract.
+- Plane-A OAuth-state admission has a hard bound of 10,000 live rows per shared
+  PostgreSQL deployment. Capacity check plus insert is one fail-closed admission
+  operation; a full or contended gate returns the capacity outcome used by the
+  API's 429 response and writes no state. The Memory backend enforces the same
+  numerical bound process-locally in `nebula-api`.
+- `repos::MfaEnrollmentRepo` and `pg::PgMfaEnrollmentRepo` own the Plane-A MFA
+  replacement boundary. One expiring candidate exists per user, separate from
+  the active factor. Start replaces only that candidate; confirmation consumes
+  the exact live candidate and installs it atomically, so replay/concurrent
+  losers cannot disable or overwrite active MFA. Secret bytes remain an opaque
+  envelope at this contract.
+- Browser-session repositories accept the one-time presented cookie separately
+  from `SessionDraft` and persist only
+  `SHA-256("nebula:plane-a:session-cookie:v1\\0" || token)`. Migration `0038`
+  intentionally truncates pre-digest sessions; raw cookies cannot be migrated
+  without preserving the bearer authority.
+- `identity_secret::IdentitySecretCodec` stores active and pending TOTP seeds
+  as `EncryptedData` v1 AES-256-GCM envelopes. AAD binds the exact 16-byte user
+  id plus a distinct active/pending purpose, so promotion must decrypt the
+  verified candidate and re-seal it; copying ciphertext between columns cannot
+  grant authority. The codec and credential encryption consume one atomic
+  `KeyProvider::current()` snapshot (`key_id` + key) so a live KMS rotation
+  cannot pair metadata from one generation with bytes from another.
+- `pg::PgIdentitySecretMigrator` is a startup data migrator, not a schema
+  migrator: all DDL stays in numbered migration `0038`. It uses a cancellation-
+  safe retired advisory-lock connection, bounded reads, equality-guarded CAS,
+  user-version fencing, explicit old-key rotation, and repeated verification;
+  the Postgres auth backend is not exposed until convergence succeeds.
+- crate-local `StorageError`, plus `StorageFormat`
   (serialization format abstraction).
+
+Applied migrations `0001..0038` are immutable SQLx-checksummed history.
+Credential lifecycle migration
+`0039_credentials_owner_and_record_state.sql` is paired across SQLite and
+PostgreSQL. It makes owner identity and structural live/tombstoned state
+database invariants, preserves valid live material exactly, and converts
+legacy rows carrying a top-level `revoked_at` key into secret-free terminal
+records without version inflation. The same migration adds nullable
+`claim_id` incident identity to historical sentinel evidence and a global
+partial unique index; newly accounted incidents always carry the UUID while
+pre-0039 rows remain `NULL`.
+
+Paired migration `0040_credential_refresh_retry_gate.sql` adds the closed
+structural refresh-retry gate and backend-authored material epoch. Creates and
+migrated rows start at `CredentialMaterialEpoch::MIN` with a clear gate. Every
+replacement carries an outer `CredentialMaterialTransition`:
+`Preserve { refresh_retry }` retains the epoch while applying an explicit
+preserve/clear/permanent/timed gate transition; `Advance` increments the epoch
+and unconditionally clears the old gate. Epoch overflow fails closed.
+Tombstones clear the gate. Timed deadlines and admission use the authoritative
+backend clock (`clock_timestamp()` after PostgreSQL lock waits; millisecond UTC
+samples in SQLite), and remaining delays are rounded up to bounded whole
+seconds. Unknown mode, phase, kind, or diagnostic encodings fail closed as
+corrupt records. A permanent (`Never`) gate is scoped to the current
+credential-material epoch, not the credential identity. Reauthentication
+and material replacement/reconnect both use `Advance`; reauthentication also
+blocks through its durable flag.
+`refresh_retry_snapshot` reads version, material epoch, reauthentication state,
+gate, and backend clock in one statement/snapshot so rechecks cannot combine
+observations from different aggregate versions. The gate and epoch never enter
+user metadata.
+
+Credential adapters are constructible only through their ready-store
+constructors. Those constructors hold a backend-appropriate bounded startup
+lock across read-only schema admission, canonical migration, and postflight;
+unsupported, forged, ownerless, or corrupt schemas fail unchanged. Raw pools
+cannot bypass admission. Runtime authority comes only from the mandatory typed
+selector and owner column; metadata never grants access.
+`SqliteCredentialPersistence::refresh_claim_repo()` and
+`PgCredentialPersistence::refresh_claim_repo()` are the curated composition
+seams for durable refresh coordination. Each clones its admitted private pool
+without exposing raw SQL authority, so credential rows, claim poison, and
+sentinel evidence share one backend-specific schema lifecycle and database.
 
 Execution / workflow persistence goes through the port adapters; the
 legacy `ExecutionRepo` / `WorkflowRepo` / `Pg*Repo` surface and the
@@ -62,21 +146,27 @@ Credential coordination — durable refresh claim (П2 / ADR-0041):
   two-tier `RefreshCoordinator` (L1 in-process coalescer + L2 durable claim). Provides
   CAS-based `try_claim` (one acquirer wins under contention), `heartbeat` (TTL extension
   validated against `ClaimToken` generation), idempotent `release`, and `reclaim_stuck`
-  (sweeps expired claims past TTL). `mark_sentinel` flags an in-flight IdP POST so a
-  reclaim sweep can detect mid-refresh crashes; `record_sentinel_event` +
-  `count_sentinel_events_in_window` back the engine's N=3-in-1h `ReauthRequired`
-  escalation per sub-spec
+  (deletes expired Normal rows, but atomically records and retains expired in-flight rows as
+  durable poison). `mark_sentinel` flags an in-flight IdP POST so the sweep can account a
+  mid-refresh crash exactly once by the globally unique claim UUID;
+  `count_sentinel_events_in_window` backs the engine's
+  N=3 distinct, explicitly reconciled incidents in 1h `ReauthRequired` observation. Repeated
+  requests and sweeps against one poisoned claim count once; N is an escalation signal, never a
+  provider retry budget. The count uses the
+  database clock rather than replica wall clocks, per sub-spec
   credential refresh coordination design (design records are maintained in the maintainers' private design vault, not in this public repository)
   §3.4-§3.6.
 - `RefreshClaim`, `ClaimAttempt`, `ClaimToken`, `RepoError`, `HeartbeatError`,
-  `ReclaimedClaim`, `SentinelState`, `ReplicaId` — DTO surface re-exported at
+  `ExpiredClaim`, `SentinelState`, `ReplicaId` — DTO surface re-exported at
   `nebula_storage::{RefreshClaim, ClaimAttempt, ClaimToken, …}`.
-- `InMemoryRefreshClaimRepo` — production-shaped reference impl for tests + single-replica
-  deploys.
+- `InMemoryRefreshClaimRepo` — internal reference implementation for tests and
+  conformance; not a supported single-replica deployment backend.
 - Feature `sqlite` adds `SqliteRefreshClaimRepo` (default local backend; `SQLITE` migrations
-  `0022_credential_refresh_claims` + `0023_credential_sentinel_events`).
+  `0022_credential_refresh_claims` + `0023_credential_sentinel_events` + the incident-key
+  extension in `0039_credentials_owner_and_record_state`).
 - Feature `postgres` adds `PgRefreshClaimRepo` (production multi-replica backend; `POSTGRES`
-  migrations `0022_credential_refresh_claims` + `0023_credential_sentinel_events`).
+  migrations `0022_credential_refresh_claims` + `0023_credential_sentinel_events` + the
+  incident-key extension in `0039_credentials_owner_and_record_state`).
 
 ## Contract
 
@@ -115,13 +205,15 @@ Credential coordination — durable refresh claim (П2 / ADR-0041):
 
 - **[ADR-0041 / sub-spec §3]** `RefreshClaimRepo::try_claim` MUST be atomic under
   contention — exactly one of N concurrent acquirers across N replicas wins. Implementations
-  achieve this via a CAS-shaped `INSERT … ON CONFLICT DO UPDATE WHERE expires_at < now()`
-  predicate (Postgres + SQLite) or a per-key `parking_lot::Mutex` guarded `HashMap` swap
-  (in-memory). `heartbeat` MUST validate the `ClaimToken.generation` so a stale holder
-  cannot extend a reclaimed claim (reclaim sweep bumps generation). `reclaim_stuck` MUST
-  return reclaimed credentials atomically — a partial reclaim that releases the row but
-  fails to surface it to the caller would leave the sentinel state un-observed and the
-  N=3-in-1h escalation count short. Seam: `crates/storage/src/credential/refresh_claim/`.
+  achieve this via a CAS-shaped `INSERT … ON CONFLICT DO UPDATE WHERE expires_at < now()
+  AND sentinel = Normal` predicate (Postgres + SQLite) or a per-key `parking_lot::Mutex`
+  guarded `HashMap` swap (in-memory). An expired `RefreshInFlight` row is a durable
+  `OutcomeUnknown`: `try_claim` must never reset it or start provider egress. `heartbeat` and
+  `mark_sentinel` MUST validate the unexpired `ClaimToken`. `reclaim_stuck` atomically records
+  the poisoned generation's sentinel event exactly once while retaining the row; only expired
+  Normal rows are deleted. Event deduplication is keyed by the claim UUID, never by a reusable
+  generation, holder, or timestamp. Explicit owner-qualified reconciliation is the sole future
+  path that may clear poison. Seam: `crates/storage/src/credential/refresh_claim/`.
 
 ## Non-goals
 
@@ -157,6 +249,13 @@ See `docs/MATURITY.md` row for `nebula-storage`.
   identical to the runtime-verified SQLite tree, but Postgres runtime
   coverage is `DATABASE_URL`-gated and skip-clean — not claimed as
   pg-verified (ADR-0072 "Verification status").
+- The PostgreSQL OAuth finalizer additionally has a real-Postgres concurrency
+  and rollback suite covering same-subject convergence, shared-email
+  `AccountLinkRequired`, different-email creation, existing/soft-deleted/
+  malformed links, MFA challenge-without-session, and session-insert rollback.
+  This verifies the narrow finalizer transaction; it does not merge the earlier
+  atomic state consume or provider egress into that transaction and does not
+  change the broader adapter verification claim.
 
 ## Database migrations
 
@@ -177,6 +276,24 @@ embedded schema — see the per-tree README).
 `task db:reset` **drops and recreates the database** then re-runs every
 migration — it destroys all local dev data.
 
+### Plane-A identity migration retention
+
+Migration `0038` encrypts the live TOTP column in place, but an `UPDATE` does
+not erase historical plaintext from PostgreSQL WAL, dead tuples, replicas,
+snapshots, or pre-migration backups. Likewise, backups containing old-key
+envelopes remain coupled to that key. Operators must quarantine and expire
+pre-migration backups/WAL according to their retention policy, retain every
+decrypt-only legacy key until all backups that require it have expired, and
+test restore before retiring a key. Restoring an old snapshot requires running
+the same startup convergence before serving authentication traffic.
+
+Strict environments that cannot accept that historical-retention window must
+invalidate affected MFA factors and require re-enrollment; live-row
+convergence must not be described as forensic erasure. The built-in server
+resolves only the current `NEBULA_CRED_MASTER_KEY`; old-key recovery requires
+an explicit composition using `IdentitySecretCodec::with_legacy_keys` until a
+reviewed first-party legacy-key configuration surface ships.
+
 ## Related
 
 - Canon: `docs/PRODUCT_CANON.md` §11.1, §11.3, §11.5, §12.2, §12.3.
@@ -184,7 +301,7 @@ migration — it destroys all local dev data.
   (port / adapter / tenancy decision, supersession, the three
   correctness bugs, the migration-gap history).
 - Siblings: `nebula-storage-port` (the port contract), `nebula-tenancy`
-  (scope-enforcing decorators), `nebula-execution` (state types),
+  (decorators for general Scope-taking ports), `nebula-execution` (state types),
   `nebula-engine` (transitions via the port `ExecutionStore` +
   `TransitionBatch`), `nebula-core` (ID types).
 
@@ -195,9 +312,14 @@ migration — it destroys all local dev data.
 There is one architecture: the spec-16 storage **port**
 (`nebula-storage-port`, Core tier — ISP-segregated object-safe traits,
 port-local DTO rows, `StorageError`, the atomic `TransitionBatch`, the
-plain-data `Scope`). This crate implements it for **InMemory + SQLite +
-Postgres**; `nebula-tenancy` wraps it with scope-enforcing decorators;
-`engine` / `api` consume only the port. The legacy
+plain-data `Scope`). This crate implements the general ports for **InMemory +
+SQLite + Postgres**. Credential persistence uses an explicitly test-only
+**Reference** adapter plus SQLite/Postgres; Reference is
+semantic/conformance-only and never a deployment backend.
+`nebula-tenancy` wraps the general Scope-taking ports with scope-enforcing
+decorators, while credential persistence is directly owner-bound by
+`CredentialOwner` / `CredentialSelector`. `engine` / `credential` / `api` /
+first-party apps consume the technical port. The legacy
 `ExecutionRepo` / `WorkflowRepo` dual layer and the never-implemented
 `repos::{execution,workflow,execution_node,journal}` placeholders were
 deleted.

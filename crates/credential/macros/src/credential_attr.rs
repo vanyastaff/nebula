@@ -44,7 +44,7 @@
 //! | `type Pending` | `Interactive` (required iff `continue_resolve` present) |
 //! | `fn metadata` | `Credential` (optional — synthesized from args if absent) |
 //! | `fn project` / `fn resolve` | `Credential` (both required) |
-//! | `fn refresh` (+ `const REFRESH_POLICY`) | `Refreshable` |
+//! | `fn refresh` (+ `const REFRESH_POLICY` / `REFRESH_EXECUTION_MODE`) | `Refreshable` |
 //! | `fn revoke` | `Revocable` |
 //! | `fn test` | `Testable` |
 //! | `fn continue_resolve` | `Interactive` |
@@ -80,6 +80,7 @@ struct Items {
     pending: Option<ImplItem>,
     // Consts.
     refresh_policy: Option<ImplItem>,
+    refresh_execution_mode: Option<ImplItem>,
     lease_ttl: Option<ImplItem>,
     // Methods.
     metadata: Option<ImplItem>,
@@ -174,6 +175,15 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
             "`const REFRESH_POLICY` is only valid alongside a `fn refresh` (Refreshable)",
         ));
     }
+    if let Some(mode) = &items.refresh_execution_mode
+        && items.refresh.is_none()
+    {
+        return Err(diag::error_spanned(
+            mode,
+            "`const REFRESH_EXECUTION_MODE` is only valid alongside a `fn refresh` \
+             (Refreshable)",
+        ));
+    }
     if let Some(ttl) = &items.lease_ttl
         && items.release.is_none()
     {
@@ -245,30 +255,29 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
                 }
             }
         } else {
-            // Icon / doc_url require the builder, whose `build()` is fallible;
-            // the `expect` here mirrors the hand-written built-ins and the
-            // legacy `#[derive(Credential)]` (the `metadata()` trait method is
-            // infallible, and the builder is the only icon/doc_url path).
-            let mut builder = quote! {
-                ::nebula_credential::CredentialMetadata::builder()
-                    .key(::nebula_credential::credential_key!(#key))
-                    .name(#name)
-                    .description(#description)
-                    .schema(::nebula_credential::schema_of::<Self::Properties>())
-                    .pattern(<#scheme_ty as ::nebula_credential::AuthScheme>::pattern())
+            // Every required field is known at expansion time, so start with
+            // the infallible constructor and add optional catalog fields.
+            let mut metadata = quote! {
+                ::nebula_credential::CredentialMetadata::new(
+                    ::nebula_credential::credential_key!(#key),
+                    #name,
+                    #description,
+                    ::nebula_credential::schema_of::<Self::Properties>(),
+                    <#scheme_ty as ::nebula_credential::AuthScheme>::pattern(),
+                )
             };
             if let Some(icon) = &icon {
-                builder = quote! { #builder .icon(#icon) };
+                metadata = quote! { #metadata.with_icon(#icon) };
             }
             if let Some(url) = &doc_url {
-                builder = quote! { #builder .documentation_url(#url) };
+                metadata = quote! { #metadata.with_documentation_url(#url) };
             }
             quote! {
                 fn metadata() -> ::nebula_credential::CredentialMetadata
                 where
                     Self: Sized,
                 {
-                    #builder .build().expect("credential metadata is valid")
+                    #metadata
                 }
             }
         }
@@ -298,10 +307,12 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
     // ── capability sub-trait impls (presence-gated) ───────────────────────
     let refreshable_impl = items.refresh.as_ref().map(|refresh| {
         let refresh_policy = items.refresh_policy.clone().map(trait_item);
+        let refresh_execution_mode = items.refresh_execution_mode.clone().map(trait_item);
         let refresh = trait_item(refresh.clone());
         quote! {
             #fwd
             impl #impl_generics ::nebula_credential::Refreshable for #self_ty #where_clause {
+                #refresh_execution_mode
                 #refresh_policy
                 #refresh
             }
@@ -475,6 +486,7 @@ fn classify_items(item: &ItemImpl) -> syn::Result<Items> {
             ImplItem::Const(c) => {
                 let slot = match c.ident.to_string().as_str() {
                     "REFRESH_POLICY" => &mut out.refresh_policy,
+                    "REFRESH_EXECUTION_MODE" => &mut out.refresh_execution_mode,
                     "LEASE_TTL" => &mut out.lease_ttl,
                     "KEY" => {
                         return Err(diag::error_spanned(

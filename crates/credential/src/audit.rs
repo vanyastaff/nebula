@@ -10,18 +10,20 @@
 //!
 //! # Contract
 //!
-//! `AuditLayer` wraps any [`crate::CredentialStore`] and delegates every
+//! `AuditLayer` wraps any [`crate::CredentialPersistence`] and delegates every
 //! operation to the inner store, emitting an [`AuditEvent`] to the pluggable
 //! [`AuditSink`] for each call. Only metadata flows through the sink —
 //! credential data never does.
 //!
-//! # Fail-closed invariant (no discard-and-log)
+//! # Observation boundary
 //!
-//! Audit is **in-line durable**: if [`AuditSink::record`] returns an error,
-//! the credential operation as a whole returns
-//! [`crate::StoreError::AuditFailure`]. There is no "log-and-continue" path.
+//! This interim sink is a non-authoritative observation. It does not share a
+//! transaction with credential persistence, so a recording failure must never
+//! turn a confirmed store mutation into an error, trigger a retry, or attempt
+//! compensation. Atomic mutation-plus-audit evidence requires the K3
+//! backend-owned outbox/operation ledger.
 
-use crate::StoreError;
+use crate::CredentialPersistenceError;
 
 /// Receives audit events for logging or persistence.
 ///
@@ -32,18 +34,20 @@ use crate::StoreError;
 ///
 /// - `record` must not block the calling task for extended periods.
 /// - Implementations must never inspect or log credential data.
-/// - Returning `Err(StoreError)` causes the wrapping `AuditLayer` to fail the
-///   whole credential operation with [`crate::StoreError::AuditFailure`]
-///   (fail-closed audit contract).
+/// - Returning `Err(CredentialPersistenceError)` asks the wrapping `AuditLayer`
+///   to emit bounded failure telemetry. It never changes the persistence
+///   result.
 pub trait AuditSink: Send + Sync {
     /// Record an audit event.
     ///
     /// # Errors
     ///
-    /// Return an error when the event cannot be durably persisted.
-    /// The wrapping `AuditLayer` will surface this as
-    /// [`crate::StoreError::AuditFailure`] — no silent discard.
-    fn record(&self, event: &AuditEvent) -> Result<(), StoreError>;
+    /// Return an error when the event cannot be accepted by this sink. The
+    /// sink's own contract determines whether acceptance means durable
+    /// persistence, an outbox append, or structured-log delivery.
+    /// The wrapping `AuditLayer` observes the error through bounded telemetry
+    /// and preserves the authoritative persistence result.
+    fn record(&self, event: &AuditEvent) -> Result<(), CredentialPersistenceError>;
 }
 
 /// A credential store operation recorded for audit purposes.
@@ -63,7 +67,7 @@ pub struct AuditEvent {
 
 /// Type of credential store operation.
 ///
-/// Variants without payloads describe `CredentialStore` operations
+/// Variants without payloads describe `CredentialPersistence` operations
 /// flowing through `AuditLayer`. Variants prefixed `RefreshCoord*`
 /// describe events emitted by the engine's two-tier refresh coordinator
 /// (sub-spec `docs/INTEGRATION_MODEL.md` (credential refresh coordinator)
@@ -75,10 +79,12 @@ pub struct AuditEvent {
 pub enum AuditOperation {
     /// A credential was retrieved.
     Get,
-    /// A credential was stored or updated.
-    Put,
-    /// A credential was deleted.
-    Delete,
+    /// A new live credential was created.
+    Create,
+    /// Mutable state of a live credential was replaced.
+    Replace,
+    /// A live credential transitioned to a terminal tombstone.
+    Tombstone,
     /// Credential IDs were listed.
     List,
     /// A credential existence check was performed.
@@ -100,11 +106,11 @@ pub enum AuditOperation {
         /// detection (includes the new event).
         recent_count: u32,
     },
-    /// Credential transitioned to `ReauthRequired` after the sentinel
-    /// threshold was crossed. `reason` is the textual form of the
-    /// `ReauthReason` published on the event bus. Sub-spec §6 audit
-    /// event.
-    RefreshCoordReauthFlagged {
+    /// The sentinel threshold was crossed and the reclaim sweep emitted
+    /// its reauthentication-required observation. This audit operation
+    /// does not claim that the credential row was durably mutated.
+    /// `reason` is the textual form of the `ReauthReason` observation.
+    RefreshCoordReauthThresholdReached {
         /// Sanitized reason string. For sentinel-driven escalations:
         /// `"sentinel_repeated"` (the `ReauthReason::SentinelRepeated`
         /// arm's stable identifier).

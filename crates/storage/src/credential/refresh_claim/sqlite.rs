@@ -24,9 +24,18 @@ use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use super::{
-    ClaimAttempt, ClaimToken, HeartbeatError, ReclaimedClaim, RefreshClaim, RefreshClaimRepo,
-    ReplicaId, RepoError, SentinelState, SqlxClaimResultExt,
+    ClaimAttempt, ClaimToken, ExpiredClaim, HeartbeatError, RefreshClaim, RefreshClaimRepo,
+    ReplicaId, RepoError, SqlxClaimResultExt,
 };
+
+const COUNT_SENTINEL_EVENTS_SQL: &str = "SELECT COUNT(*) \
+     FROM credential_sentinel_events \
+     WHERE credential_id = ?1 \
+       AND detected_at > ( \
+           unixepoch('now') * 1000 \
+           + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER) \
+           - ?2 \
+       )";
 
 /// SQLite-backed `RefreshClaimRepo`.
 #[derive(Clone, Debug)]
@@ -36,7 +45,7 @@ pub struct SqliteRefreshClaimRepo {
 
 impl SqliteRefreshClaimRepo {
     /// Wrap an existing pool. Caller is responsible for running migrations
-    /// 0022/0023.
+    /// through 0039.
     #[must_use]
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
@@ -45,7 +54,7 @@ impl SqliteRefreshClaimRepo {
 
 fn parse_credential_id(s: &str) -> Result<CredentialId, RepoError> {
     s.parse::<CredentialId>()
-        .map_err(|e| RepoError::InvalidState(format!("bad credential_id `{s}`: {e}")))
+        .map_err(|_| RepoError::InvalidState)
 }
 
 /// Convert a millisecond-since-epoch column back to a `DateTime<Utc>`.
@@ -56,7 +65,7 @@ fn parse_credential_id(s: &str) -> Result<CredentialId, RepoError> {
 fn millis_to_utc(ms: i64) -> Result<DateTime<Utc>, RepoError> {
     Utc.timestamp_millis_opt(ms)
         .single()
-        .ok_or_else(|| RepoError::InvalidState(format!("timestamp millis out of range: {ms}")))
+        .ok_or(RepoError::InvalidState)
 }
 
 #[async_trait::async_trait]
@@ -69,9 +78,8 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
     ) -> Result<ClaimAttempt, RepoError> {
         let now = Utc::now();
         let new_claim_id = Uuid::new_v4();
-        let new_expires = now
-            + chrono::Duration::from_std(ttl)
-                .map_err(|e| RepoError::InvalidState(format!("invalid ttl: {e}")))?;
+        let new_expires =
+            now + chrono::Duration::from_std(ttl).map_err(|_| RepoError::InvalidState)?;
         let cid_str = credential_id.to_string();
         let holder_str = holder.as_str();
         let now_ms = now.timestamp_millis();
@@ -79,9 +87,10 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
         let claim_id_str = new_claim_id.to_string();
 
         // Atomic CAS via UPSERT with conditional UPDATE clause. Mirrors the
-        // Postgres `INSERT ... ON CONFLICT DO UPDATE WHERE expires_at < ...`
-        // pattern (control-queue + refresh-claim CAS). Requires SQLite 3.35+ for
-        // `RETURNING`.
+        // Postgres `INSERT ... ON CONFLICT DO UPDATE WHERE expires_at < ...
+        // AND sentinel = 0` pattern (control-queue + refresh-claim CAS).
+        // Expired in-flight rows remain intact until `reclaim_stuck` returns
+        // their evidence to one sweeper. Requires SQLite 3.35+ for `RETURNING`.
         //
         // Win path: the row we wrote (or overwrote in place) comes back via
         // RETURNING. Lose path: the WHERE clause filtered the UPDATE, no
@@ -100,6 +109,7 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
                  expires_at = excluded.expires_at, \
                  sentinel = 0 \
              WHERE credential_refresh_claims.expires_at < ?4 \
+               AND credential_refresh_claims.sentinel = 0 \
              RETURNING claim_id, generation, acquired_at, expires_at",
         )
         .bind(&cid_str)
@@ -116,12 +126,13 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
             let expires_at = millis_to_utc(expires_ms)?;
             let claim_id = claim_id_str
                 .parse::<Uuid>()
-                .map_err(|e| RepoError::InvalidState(format!("bad claim_id: {e}")))?;
+                .map_err(|_| RepoError::InvalidState)?;
+            let generation = u64::try_from(generation).map_err(|_| RepoError::InvalidState)?;
             return Ok(ClaimAttempt::Acquired(RefreshClaim {
                 credential_id: *credential_id,
                 token: ClaimToken {
                     claim_id,
-                    generation: generation as u64,
+                    generation,
                 },
                 acquired_at,
                 expires_at,
@@ -134,8 +145,10 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
         // `Contended { existing_expires_at: now }`: the caller backs off the
         // standard jitter delay and retries. Returning `InvalidState` here
         // would surface a transient race as a hard error.
-        let existing: Option<(i64,)> = sqlx::query_as(
-            "SELECT expires_at FROM credential_refresh_claims WHERE credential_id = ?1",
+        let existing: Option<(i64, i64)> = sqlx::query_as(
+            "SELECT expires_at, sentinel \
+             FROM credential_refresh_claims \
+             WHERE credential_id = ?1",
         )
         .bind(&cid_str)
         .fetch_optional(&self.pool)
@@ -143,9 +156,13 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
         .store_err()?;
 
         match existing {
-            Some((exp_ms,)) => Ok(ClaimAttempt::Contended {
+            Some((exp_ms, 1)) if exp_ms < now_ms => Ok(ClaimAttempt::OutcomeUnknown {
+                expired_at: millis_to_utc(exp_ms)?,
+            }),
+            Some((exp_ms, 0 | 1)) => Ok(ClaimAttempt::Contended {
                 existing_expires_at: millis_to_utc(exp_ms)?,
             }),
+            Some((_, _)) => Err(RepoError::InvalidState),
             None => Ok(ClaimAttempt::Contended {
                 existing_expires_at: now,
             }),
@@ -156,11 +173,12 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
         let now = Utc::now();
         let now_ms = now.timestamp_millis();
         let extension_ms = (now
-            + chrono::Duration::from_std(ttl).map_err(|e| {
-                HeartbeatError::Repo(RepoError::InvalidState(format!("invalid ttl: {e}")))
-            })?)
+            + chrono::Duration::from_std(ttl)
+                .map_err(|_| HeartbeatError::Repo(RepoError::InvalidState))?)
         .timestamp_millis();
         let claim_id_str = token.claim_id.to_string();
+        let generation = i64::try_from(token.generation)
+            .map_err(|_| HeartbeatError::Repo(RepoError::InvalidState))?;
 
         let rows = sqlx::query(
             "UPDATE credential_refresh_claims \
@@ -169,7 +187,7 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
         )
         .bind(extension_ms)
         .bind(&claim_id_str)
-        .bind(token.generation as i64)
+        .bind(generation)
         .bind(now_ms)
         .execute(&self.pool)
         .await
@@ -184,12 +202,13 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
 
     async fn release(&self, token: ClaimToken) -> Result<(), RepoError> {
         let claim_id_str = token.claim_id.to_string();
+        let generation = i64::try_from(token.generation).map_err(|_| RepoError::InvalidState)?;
         sqlx::query(
             "DELETE FROM credential_refresh_claims \
              WHERE claim_id = ?1 AND generation = ?2",
         )
         .bind(&claim_id_str)
-        .bind(token.generation as i64)
+        .bind(generation)
         .execute(&self.pool)
         .await
         .store_err()?;
@@ -198,123 +217,150 @@ impl RefreshClaimRepo for SqliteRefreshClaimRepo {
 
     async fn mark_sentinel(&self, token: &ClaimToken) -> Result<(), RepoError> {
         let claim_id_str = token.claim_id.to_string();
-        // Mirrors heartbeat's claim-loss check: zero rows affected means
-        // the claim row was reclaimed (different generation or deleted)
-        // and another replica owns the credential. Returning Ok here would
-        // let the holder proceed to the IdP POST while another replica
-        // already owns the row.
+        let generation = i64::try_from(token.generation).map_err(|_| RepoError::InvalidState)?;
+        // Mirrors heartbeat's claim-validity check: zero rows affected means
+        // the claim is absent, superseded, or expired. Returning Ok here
+        // would authorize provider egress after the holder's TTL elapsed.
+        // The expiry comparison uses SQLite's clock inside the UPDATE so
+        // connection-pool wait time cannot stale a caller-bound timestamp.
         let rows = sqlx::query(
             "UPDATE credential_refresh_claims \
              SET sentinel = 1 \
-             WHERE claim_id = ?1 AND generation = ?2",
+             WHERE claim_id = ?1 \
+               AND generation = ?2 \
+               AND expires_at > ( \
+                   unixepoch('now') * 1000 \
+                   + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER) \
+               )",
         )
         .bind(&claim_id_str)
-        .bind(token.generation as i64)
+        .bind(generation)
         .execute(&self.pool)
         .await
         .store_err()?
         .rows_affected();
 
         if rows == 0 {
-            return Err(RepoError::InvalidState(
-                "mark_sentinel: claim lost — token no longer owns the row".to_string(),
-            ));
+            return Err(RepoError::InvalidState);
         }
         Ok(())
     }
 
-    async fn reclaim_stuck(&self) -> Result<Vec<ReclaimedClaim>, RepoError> {
+    async fn reclaim_stuck(&self) -> Result<Vec<ExpiredClaim>, RepoError> {
         let now = Utc::now();
         let now_ms = now.timestamp_millis();
-
-        // Atomic reclaim via `DELETE ... RETURNING` (SQLite 3.35+, same
-        // version that enables UPSERT RETURNING in `try_claim`). Two
-        // sweepers running concurrently each get a disjoint subset of the
-        // expired rows — no row is observed by both, which preserves the
-        // §3.4 sentinel-event invariant (one event per stuck refresh,
-        // never double-counted toward the N=3 ReauthRequired threshold).
-        let rows: Vec<(String, String, i64, i64)> = sqlx::query_as(
-            "DELETE FROM credential_refresh_claims \
+        // `BEGIN IMMEDIATE` takes SQLite's write lock before reading expired
+        // rows. That serializes existence-check + event insert for poisoned
+        // rows and delete for Normal rows into one atomic boundary.
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await.store_err()?;
+        let rows: Vec<(String, String, String, i64, i64)> = sqlx::query_as(
+            "SELECT credential_id, claim_id, holder_replica_id, generation, sentinel \
+             FROM credential_refresh_claims AS claim \
              WHERE expires_at < ?1 \
-             RETURNING credential_id, holder_replica_id, generation, sentinel",
+               AND ( \
+                   sentinel = 0 \
+                   OR ( \
+                       sentinel = 1 \
+                       AND NOT EXISTS ( \
+                           SELECT 1 FROM credential_sentinel_events AS event \
+                           WHERE event.credential_id = claim.credential_id \
+                             AND event.claim_id = claim.claim_id \
+                       ) \
+                   ) \
+               )",
         )
         .bind(now_ms)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *transaction)
         .await
         .store_err()?;
 
-        // The DELETE has already committed; short-circuiting on the first
-        // bad row would silently abandon every other already-deleted row,
-        // including ones with `sentinel = 1` that the engine reclaim sweep
-        // must turn into `credential_sentinel_events` inserts. Skip the bad
-        // row with a `warn!` and continue draining survivors.
         let mut out = Vec::with_capacity(rows.len());
-        for (cid, holder, generation, sentinel_raw) in rows {
-            match parse_credential_id(&cid) {
-                Ok(credential_id) => {
-                    out.push(ReclaimedClaim {
+        for (cid, claim_id, holder, generation, sentinel_raw) in rows {
+            let credential_id = parse_credential_id(&cid)?;
+            let previous_generation =
+                u64::try_from(generation).map_err(|_| RepoError::InvalidState)?;
+            match sentinel_raw {
+                0 => {
+                    let deleted = sqlx::query(
+                        "DELETE FROM credential_refresh_claims \
+                         WHERE credential_id = ?1 AND claim_id = ?2 AND generation = ?3",
+                    )
+                    .bind(&cid)
+                    .bind(&claim_id)
+                    .bind(generation)
+                    .execute(&mut *transaction)
+                    .await
+                    .store_err()?
+                    .rows_affected();
+                    if deleted != 1 {
+                        return Err(RepoError::InvalidState);
+                    }
+                    out.push(ExpiredClaim::ReclaimedNormal {
                         credential_id,
                         previous_holder: ReplicaId::new(holder),
-                        previous_generation: generation as u64,
-                        sentinel: if sentinel_raw == 1 {
-                            SentinelState::RefreshInFlight
-                        } else {
-                            SentinelState::Normal
-                        },
+                        previous_generation,
                     });
                 },
-                Err(error) => {
-                    tracing::warn!(
-                        cid,
-                        %error,
-                        "reclaim_stuck: skipping deleted row with unparsable credential_id"
-                    );
+                1 => {
+                    sqlx::query(
+                        "INSERT INTO credential_sentinel_events \
+                         (credential_id, claim_id, detected_at, crashed_holder, generation) \
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                    )
+                    .bind(&cid)
+                    .bind(&claim_id)
+                    .bind(now_ms)
+                    .bind(&holder)
+                    .bind(generation)
+                    .execute(&mut *transaction)
+                    .await
+                    .store_err()?;
+                    out.push(ExpiredClaim::OutcomeUnknownAccounted {
+                        credential_id,
+                        previous_holder: ReplicaId::new(holder),
+                        previous_generation,
+                    });
+                },
+                _ => {
+                    return Err(RepoError::InvalidState);
                 },
             }
         }
 
+        transaction.commit().await.store_err()?;
         Ok(out)
-    }
-
-    async fn record_sentinel_event(
-        &self,
-        credential_id: &CredentialId,
-        crashed_holder: &ReplicaId,
-        generation: u64,
-    ) -> Result<(), RepoError> {
-        let cid_str = credential_id.to_string();
-        let now_ms = Utc::now().timestamp_millis();
-        sqlx::query(
-            "INSERT INTO credential_sentinel_events \
-             (credential_id, detected_at, crashed_holder, generation) \
-             VALUES (?1, ?2, ?3, ?4)",
-        )
-        .bind(&cid_str)
-        .bind(now_ms)
-        .bind(crashed_holder.as_str())
-        .bind(generation as i64)
-        .execute(&self.pool)
-        .await
-        .store_err()?;
-        Ok(())
     }
 
     async fn count_sentinel_events_in_window(
         &self,
         credential_id: &CredentialId,
-        window_start: DateTime<Utc>,
+        window: Duration,
     ) -> Result<u32, RepoError> {
         let cid_str = credential_id.to_string();
-        let window_ms = window_start.timestamp_millis();
-        let (count,): (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM credential_sentinel_events \
-             WHERE credential_id = ?1 AND detected_at > ?2",
-        )
-        .bind(&cid_str)
-        .bind(window_ms)
-        .fetch_one(&self.pool)
-        .await
-        .store_err()?;
+        let window_ms = i64::try_from(window.as_millis()).map_err(|_| RepoError::InvalidState)?;
+        let (count,): (i64,) = sqlx::query_as(COUNT_SENTINEL_EVENTS_SQL)
+            .bind(&cid_str)
+            .bind(window_ms)
+            .fetch_one(&self.pool)
+            .await
+            .store_err()?;
         Ok(u32::try_from(count).unwrap_or(u32::MAX))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::COUNT_SENTINEL_EVENTS_SQL;
+
+    #[test]
+    fn sentinel_window_uses_the_sqlite_clock() {
+        assert!(
+            COUNT_SENTINEL_EVENTS_SQL.contains("unixepoch('now') * 1000"),
+            "sentinel windows must be derived from SQLite's clock"
+        );
+        assert!(
+            COUNT_SENTINEL_EVENTS_SQL.contains("- ?2"),
+            "the caller may provide only a duration"
+        );
     }
 }

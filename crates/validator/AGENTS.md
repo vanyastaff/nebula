@@ -24,7 +24,7 @@
 - Each `Rule` inner kind exposes only the method valid for it; do NOT reintroduce a flat enum or cross-kind silent-pass — typed narrowing replaced it (ADR-0052/0080).
 - This is NOT a schema system (`nebula-schema`), expression evaluator (`nebula-expression`), resilience pipeline, or API error formatter — keep those concerns out.
 - `Rule` wire format is externally-tagged tuple-compact; changing serialization breaks stored rules — keep error codes stable (`tests/fixtures/compat/error_registry_v1.json`).
-- Cross-crate calls go through `nebula-eventbus`, not direct sibling imports.
+- Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
 - Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also

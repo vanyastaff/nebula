@@ -1,6 +1,8 @@
-//! `CredentialService` facade — the sole public entry to the credential
-//! management bounded context (ADR-0092 step 6b, relocated from
-//! `nebula-credential-runtime`).
+//! `CredentialService` facade plus the authority-bound `CredentialController`
+//! (ADR-0092 step 6b, relocated from `nebula-credential-runtime`). Supported
+//! authenticated HTTP management enters through the controller; selected
+//! technical runtime/service paths remain direct until K3 closes the sole
+//! semantic writer and operation-ledger boundary.
 //!
 //! All invariant-bearing composition is crate-private so the secure
 //! construction path is the only path; the composition root
@@ -15,6 +17,8 @@ pub(crate) mod binding;
 /// `CredentialService` (split from `facade` for size; behaviour-preserving
 /// `impl` block).
 mod capabilities;
+/// Authority-bound command controller for management-plane credential writes.
+mod controller;
 /// CRUD (create/read/list/update/delete) methods of `CredentialService`
 /// (split from `facade` for size; behaviour-preserving `impl` block).
 mod crud;
@@ -33,9 +37,14 @@ mod slot;
 pub(crate) mod state_source;
 
 pub use binding::{TenantFingerprint, ValidatedCredentialBinding, ValidatedCredentialBindingError};
-pub use error::CredentialServiceError;
+pub use controller::{
+    AuthorizationDecision, CredentialActor, CredentialAuthorizationError, CredentialCommand,
+    CredentialCommandResult, CredentialController, CredentialControllerError,
+    CredentialDisplayPatch, CredentialOperation, CredentialTenantAuthority,
+};
+pub use error::{CredentialServiceError, CredentialValidationIssue, CredentialValidationReport};
 pub use facade::{
-    Acquisition, CredentialService, CredentialTypeInfo, RefreshReport, TestReport, TypeCapabilities,
+    Acquisition, CredentialService, CredentialTypeInfo, ManagementRefreshReport, TypeCapabilities,
 };
 pub use head::CredentialHead;
 pub use observer::{CredentialObserver, EventMetricObserver, NoopObserver};
@@ -43,5 +52,7 @@ pub use ops::{
     DispatchError, DispatchOps, register_all_builtin_ops, register_interactive_ops,
     register_refreshable_ops, register_revocable_ops, register_runtime_ops, register_testable_ops,
 };
-pub use scope::{FixedScopeResolver, TenantScope};
+pub use scope::{
+    CredentialAuthenticationBinding, CredentialAuthenticationBindingError, TenantScope,
+};
 pub use state_source::StateSource;

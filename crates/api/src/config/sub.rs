@@ -22,30 +22,6 @@ pub struct TlsConfig {
     pub acme_email: Option<String>,
 }
 
-/// Cookie configuration for session handling.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CookieConfig {
-    /// Domain scope for session cookies.
-    pub domain: String,
-    /// Whether to set the `Secure` flag (HTTPS-only).
-    pub secure: bool,
-    /// `SameSite` attribute: `"lax"`, `"strict"`, or `"none"`.
-    pub same_site: String,
-    /// Maximum session age in seconds (default: 604 800 = 7 days).
-    pub session_max_age_secs: u64,
-}
-
-impl Default for CookieConfig {
-    fn default() -> Self {
-        Self {
-            domain: ".localhost".to_string(),
-            secure: false,
-            same_site: "lax".to_string(),
-            session_max_age_secs: 604_800,
-        }
-    }
-}
-
 /// CORS configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CorsConfig {
@@ -196,7 +172,7 @@ pub enum AuthBackendKind {
 /// MFA enforcement) extend this struct without changing the env-binding
 /// shape (`API_AUTH_*` prefix, matching the existing `API_IDEMPOTENCY_*`
 /// convention).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct AuthApiConfig {
     /// Selected identity backend. Defaults to [`AuthBackendKind::Memory`]
     /// so a missing `API_AUTH_BACKEND` keeps current dev behaviour; the
@@ -207,7 +183,7 @@ pub struct AuthApiConfig {
     /// Operator-supplied OAuth identity-provider configuration (Plane A).
     ///
     /// Empty by default — no OAuth providers declared, the
-    /// `/auth/oauth/{provider}/start` endpoints return
+    /// `GET /api/v1/auth/oauth/{provider}` endpoints return
     /// `AuthError::ProviderNotConfigured` per ADR-0085 D-6. When
     /// non-empty, every entry is validated synchronously at boot per
     /// REQ-compose-001 (PR-2 T2.8).
@@ -299,7 +275,7 @@ impl SmtpTlsMode {
 /// rejected-address path, and the SMTP transport mapping mirrors that
 /// discipline so no credential ever reaches a `tracing::error!` line or
 /// a `problem-details` body.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SmtpEmailConfig {
     /// SMTP server host (e.g. `"smtp.example.com"`).
     pub host: String,
@@ -412,6 +388,9 @@ mod tests {
     use super::*;
     use crate::config::ApiConfig;
     use crate::config::env::tests::env_guard;
+
+    static_assertions::assert_not_impl_any!(AuthApiConfig: Clone);
+    static_assertions::assert_not_impl_any!(SmtpEmailConfig: Clone);
 
     #[test]
     fn from_env_idempotency_defaults_to_memory() {

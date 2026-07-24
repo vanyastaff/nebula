@@ -56,15 +56,14 @@ impl BasicAuthCredential {
     type State = IdentityPassword;
 
     fn metadata() -> CredentialMetadata {
-        CredentialMetadata::builder()
-            .key(nebula_core::credential_key!("basic_auth"))
-            .name("Basic Auth")
-            .description("HTTP Basic authentication (username + password).")
-            .schema(nebula_schema::schema_of::<Self::Properties>())
-            .pattern(crate::AuthPattern::IdentityPassword)
-            .icon("lock")
-            .build()
-            .expect("basic_auth metadata is valid")
+        CredentialMetadata::new(
+            nebula_core::credential_key!("basic_auth"),
+            "Basic Auth",
+            "HTTP Basic authentication (username + password).",
+            nebula_schema::schema_of::<Self::Properties>(),
+            crate::AuthPattern::IdentityPassword,
+        )
+        .with_icon("lock")
     }
 
     fn project(state: &IdentityPassword) -> IdentityPassword {

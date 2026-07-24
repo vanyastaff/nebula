@@ -1,11 +1,11 @@
 //! `Principal` → `Scope` resolution.
 //!
-//! Generalised from the credential-specific `ScopeLayer`/`ScopeResolver`
-//! (`current_owner() -> Option<&str>`): instead of an owner-id string this
-//! resolves the *authenticated tenant identity* to the port's plain-data
-//! [`Scope`]. The result feeds the scoping decorators (`src/decorator/`)
-//! which inject it into every storage call so the engine/api can never
-//! pass an arbitrary scope.
+//! Resolves the *authenticated tenant identity* to the port's plain-data
+//! [`Scope`]. The result feeds the scoping decorators (`src/decorator/`),
+//! which inject it into every general storage call so engine/API consumers do
+//! not choose arbitrary scopes. Credential commands use a separate
+//! authority/controller and mandatory owner selector rather than the removed
+//! metadata-keyed credential scope model.
 //!
 //! `nebula-tenancy` owns this **policy** — it does not own [`Scope`] (that
 //! is port/Core-level, spec §3 tension resolution).

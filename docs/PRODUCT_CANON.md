@@ -42,7 +42,7 @@ operational honesty (§4.5) more than explicitly revising it.
 
 ## 1. One-line definition
 
-**[L1]** **Nebula is a high-throughput workflow orchestration engine with a first-class integration SDK** — the typed integration surface (`nebula-schema`, `nebula-resource`, `nebula-credential`, `nebula-action`, plus the plugin registry — see `docs/INTEGRATION_MODEL.md`) — **Rust-native, self-hosted, owned by you.**
+**[L1]** **Nebula is a high-throughput workflow orchestration engine with `nebula-sdk` as its sole supported and branded Rust surface** — required internal crates are unsupported technical packages that may be published only as exact-version, lockstep dependencies of `nebula-sdk` — **Rust-native, self-hosted, owned by you.**
 
 ---
 
@@ -54,7 +54,7 @@ operational honesty (§4.5) more than explicitly revising it.
 
 **[L1]** Competitive dimension: reliability and clarity of execution as a system, plus DX for integration authors.
 
-**[L1]** **Go-to-market shape:** library-first — `nebula-sdk` is the headline surface; a production composition root (`apps/server`) is downstream of it, constrained to a thin wiring shape over the same library primitives. See ADR-0020 (library-first GTM) for the binding decision — design records are maintained in the maintainers' private design vault, not in this public repository.
+**[L1]** **Go-to-market shape:** library-first — `nebula-sdk` is the sole supported and branded Rust surface for workflow authors, integration authors, remote clients, embedders, and testing. Every first-party deployment composition root in this workspace lives under `apps/`; reusable library assemblies such as `nebula-worker` are not composition roots. A downstream host becomes a supported composition root only through the curated `nebula_sdk::embedded::RuntimeBuilder`, which cannot replace or bypass aggregate ownership, admission, or tenant authority. Until that façade ships, embedding is not a supported deployment surface. See ADR-0020 (library-first GTM) and private ADR-0117, *Support one Rust SDK surface with lockstep dependency packages*, for the binding decisions. Design records are maintained in the maintainers' private design vault, not in this public repository.
 
 For peer analysis, this canon weighs our explicit bets against n8n / Temporal / Windmill / Make / Zapier, and what we borrow from each. This canon stays normative.
 
@@ -80,7 +80,7 @@ For peer analysis, this canon weighs our explicit bets against n8n / Temporal / 
 - **Resource** — long-lived managed object (connection pool, SDK client). Engine owns lifecycle.
 - **Credential** — who you are and how authentication is maintained. The **`nebula-credential` crate owns the resolver / refresh / lease / rotation-state runtime** (consolidated there by ADR-0092, which superseded the historical ADR-0030 "engine owns orchestration" split); the engine keeps only the credential/resource accessor bridges, and the per-slot rotation **fan-out** to live resources lives in `nebula-resource`. The `Credential` trait seals implementation via crate-level supertrait. Actions receive only projected auth material via `Credential::project()`. `ExternalProvider` abstraction supports Vault / AWS Secrets Manager / GCP Secret Manager / Azure Key Vault delegation. `DYNAMIC` credential kind supports ephemeral per-execution secrets.
 - **Action** — what a step does. Dispatch via action trait family (`StatelessAction`, `StatefulAction`, `TriggerAction`, `ResourceAction`). Adding a trait requires canon revision (§0.2).
-- **Plugin** — distribution and registration unit. Plugin is the unit of registration, not the unit of size — full plugins and micro-plugins use the same contract.
+- **Plugin** — distribution and startup-registration unit for statically linked, trusted in-process adapters. Plugin is the unit of registration, not the unit of size — full plugins and micro-plugins use the same contract.
 - **Schema** — the cross-cutting typed configuration system (`nebula-schema`: `Field`, `Schema`, `ValidValues`, `ResolvedValues` with proof-token pipeline). Shared across Actions, Credentials, Resources.
 
 **[L1]** Structural contract: every integration concept is `*Metadata + Schema` — UI-facing identity plus typed, validated configuration.
@@ -128,13 +128,13 @@ Directional goals; binding engineering rules live in §12–§14. The **integrat
 
 ### 4.4 DX
 
-**[L1]** **Integration authoring is the product surface for contributors:** fast scaffolding, test harnesses (`nebula-testing` and friends), actionable errors at API boundaries, integration tests as the reference for how to ship a node. Trait-driven contracts should make missing pieces a **compile-time** story where possible.
+**[L1]** **The SDK experience is a product surface:** one coherent `nebula-sdk` entry point serves workflow and integration authoring, testing, remote-client, and embedded personas. Integration contributors get fast scaffolding, test harnesses, actionable errors, and reference integration tests. Trait-driven contracts should make missing implementation pieces a **compile-time** story where possible; activation validation proves dynamic graph references, schemas, compatibility, and capabilities that compilation cannot know.
 
 ### 4.5 Operational honesty — no false capabilities
 
 **[L1]** **Public surface exists iff the engine honors it end-to-end.** A type, variant, or endpoint that can be called but the engine rejects at runtime is a **false capability** — per canon, such types must not ship publicly. Options:
 
-1. **Implement end-to-end** — wire the behavior through `ExecutionRepo`, resilience pipeline, persistence, observability.
+1. **Implement end-to-end** — wire the behavior through its owning runtime capability, persistence, resilience policy, and observability. Execution transitions use `nebula_storage_port::ExecutionStore::commit(TransitionBatch)` rather than an invented repository seam.
 2. **Make the surface private or feature-gated** — `pub(crate)` or gated under `unstable-*` feature so consumers cannot bind to what the engine does not yet deliver.
 3. **Remove the surface entirely.**
 
@@ -142,7 +142,7 @@ Directional goals; binding engineering rules live in §12–§14. The **integrat
 
 - **Misconfiguration moves left.** Validation / activation-time checks over runtime rejection, wherever feasible for workflow shape.
 - **JSON at edges is fine; JSON instead of validated boundaries is not.** Schemas and compatibility rules at workflow / action boundaries win over unstructured blobs.
-- **In-process channels decouple components but are not a durable backbone.** Anything requiring reliable delivery — including cancel and dispatch signals — must share the persistence transaction with the owning state transition, or live in an explicit durable outbox with documented at-least-once semantics (see §12.2). A channel whose consumer logs and discards is not a contract.
+- **In-process channels decouple components but are not a durable backbone.** Anything requiring reliable delivery — including cancel, dispatch, and business facts — must share the persistence transaction with the owning state transition, or live in an explicit durable outbox/inbox with documented delivery semantics (see §12.2). `nebula-eventbus` is limited to ephemeral observations such as telemetry, cache/UI invalidation, and wake hints; its consumers must tolerate loss, duplication, and reordering and recover from durable truth. A channel whose consumer logs and discards is not a contract.
 
 The Rust patterns that make this invariant easy to uphold: sealed traits, typestate, `#[non_exhaustive]`, `#[unstable]` feature gates.
 
@@ -163,15 +163,15 @@ The Rust patterns that make this invariant easy to uphold: sealed traits, typest
 | ------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
 | Engine + storage + API + runtime as **composable crates** with one-way layers                                       | A single “god binary” that hides all structure                        |
 | **Local-first:** core flows runnable with **SQLite** (file or `sqlite::memory:`), no mandatory Docker/Redis for dev | Default path that requires Redis/Kafka “just to start”                |
-| **Rust-first** integration model (FFI/plugin evolution is additive, not a second-class hack)                        | A low-code platform where the primary author is non-developer glue    |
+| **Rust-native** integration model with trusted plugins statically linked into the worker / host                   | A low-code platform where the primary author is non-developer glue    |
 | Honest docs: in-process execution = **capability / correctness aid**, not attacker-grade isolation | Claims of untrusted-code isolation the engine does not provide — process isolation, OS-hardened child process, microVM, and WASM are all non-goals (§12.6) |
 | **Self-hosted identity** first; cloud-style deployment is “Nebula on infra,” not a different product                | Hosted-service-first product with different core guarantees           |
 | Breaking **wrong** internal APIs when the cost of shims exceeds clarity                                             | Compatibility shims that preserve bad shapes “for now”                |
 
 
-> **Local storage truth:** v1-era wording suggested two backends (“SQLite or in-memory”). There is **one** local storage path — **SQLite** — usable against a file or `sqlite::memory:`. In-process tests use **`nebula_storage::test_support`** (`sqlite_memory_*` helpers), not a separate HashMap “memory backend.” README / onboarding that still advertise a distinct in-memory backend must be updated to match.
+> **Local storage truth:** the supported local deployment path is **SQLite**, usable against a file or `sqlite::memory:`. `nebula-storage` also contains an InMemory implementation, but it is an internal test/reference/conformance adapter and is not a supported deployment backend. Product onboarding must not present it as an operator choice equivalent to SQLite or Postgres.
 
-> **Supported production path:** the deployment configuration Nebula claims operators can rely on **today** is **SQLite local** and **Postgres self-hosted**. Anything outside this set (e.g. Redis dependencies, FFI isolation, cloud multi-tenant modes) is additive and must be explicitly marked **experimental** or **planned** until this canon says otherwise.
+> **Intended deployment path:** Nebula is not production-ready yet. Once the release and conformance gates pass, **SQLite local/edge** and **Postgres self-hosted** are the only intended supported deployment paths. Additional storage backends or cloud multi-tenant modes are additive and must be explicitly marked **experimental** or **planned** until this canon says otherwise. Alternative plugin execution models are governed by §12.6 and are not additive roadmap items.
 
 ---
 
@@ -191,14 +191,42 @@ Major choices should map to a pillar; if a feature maps to none, it is probably 
 | `ExecutionControlQueue` / durable outbox          | Keep-alive + honesty (§12.2) |
 | Execution journal, metrics, structured API errors | Observability (§4.6)         |
 
+### 6.1 Platform planes
+
+**[L1]** Private ADR-0116, *Adopt platform planes and profiled execution*, defines the binding architecture direction. The planes have distinct ownership and may depend only toward contracts and capabilities, never back toward a product surface:
+
+1. **Versioned contract plane** — immutable workflow, integration, worker-flavor, execution-profile, and capability revisions. It emits an authority-free `ExecutablePlanRevision`; it does not bind tenant authority or admit execution. “Use whatever is latest on resume” is not a compatibility policy.
+2. **Transition kernel** — deterministic, I/O-free state-transition logic. It receives validated state plus an explicit command/event and returns decisions/effects; it does not read storage, call integrations, publish events, or choose deployment policy.
+3. **Runtime control plane** — combines an `ExecutablePlanRevision` with opaque authenticated scope and an immutable registry snapshot, then admits and persists the tenant-bound `ExecutionContractBundle`. It alone owns durable execution mutation, the execution journal and queues, execution outbox/inbox, the operation ledger, fencing, effect application, recovery, and bounded runtime turns. Storage adapters implement its ports; API handlers and integrations do not bypass it.
+4. **Trusted integration adapters** — statically linked action, resource-provider, credential-provider, and trigger implementations invoked through versioned SDK contracts. Author code owns external-system semantics; framework credential and resource runtimes retain their aggregate write authority and durable lifecycle.
+5. **Product surfaces** — `nebula-sdk`, HTTP API, CLI, and any future Studio compose, validate, submit, and observe work through the same contracts. They do not define parallel execution semantics or become sources of durable truth.
+
+**[L1]** Durable authority is aggregate-scoped. Credential runtime is the sole writer of credential/refresh/lease state. Resource lifecycle is the sole writer of resource/binding/fan-out state. Cross-aggregate commands and facts move through persisted state or explicit outbox/inbox ports; `nebula-eventbus` is only an observation or wake hint.
+
+**[L1]** Every first-party deployment composition root in this workspace lives under `apps/`. Library crates may provide reusable assemblies, but a reusable assembly is not a composition root. A downstream embedded host becomes supported only through `nebula_sdk::embedded::RuntimeBuilder` and cannot replace the owning aggregate runtime or manufacture admission/tenant authority. Until that façade ships, downstream embedding is planned rather than supported.
+
+### 6.2 Profiled execution
+
+**[L1]** Universal platform guarantees do not imply one universal execution loop. Identity, tenancy, version pinning, durable acceptance, fencing, persistence, errors, and observability are shared; scheduling and turn semantics belong to bounded execution profiles.
+
+- **Graph** is Nebula's flagship and current generally described profile: an activation-validated dynamic DAG executed against typed integration contracts.
+- **Interactive**, **Agent**, and **Stream** are future profiles. Each requires its own bounded runtime semantics, persisted state model, admission policy, recovery tests, and capability negotiation before it may appear in the stable SDK or API.
+- A capability-gated profile must be rejected at activation when the selected worker/runtime cannot honor it. Hidden, unstable, or planned profiles are not silently downgraded to Graph behavior.
+- MCP or another protocol bridge may be an edge adapter to a supported profile; it is never the durability, identity, or execution authority.
+
+This section records architecture, not a claim that every named profile is implemented. Public status remains governed by §4.5 and §11.6.
+
 
 ---
 
 ## 7. Open source contract
 
-- **[L1]** **Public integration / plugin SDK surface:** stability matters; breaking changes deserve an RFC-style decision, not drive-by commits.
+- **[L1]** **One supported Rust surface:** `nebula-sdk` is the sole supported and branded Rust API for every supported persona. Stability applies to its documented exports and contracts; breaking changes deserve an RFC-style decision, not drive-by commits.
+- **[L1]** **Persona-scoped, not crate-scoped:** the SDK surface is organized around workflow/authoring, integration, schema, testing, client, embedded, and a small prelude. Availability is feature- and maturity-documented; naming a persona here does not claim every module is implemented today.
+- **[L1]** **Safe client and embedded façades:** the curated client consumes the versioned transport contract, and the curated embedded surface submits typed runtime commands. Neither exposes raw stores, transition/journal writers, registries, durable mutation or admission capabilities, claim tokens, or tenant-proof constructors.
+- **[L2]** **Technical boundaries stay technical:** the API-contract boundary and internal client, embedded, macro, and implementation packages may be published lockstep when Cargo requires it, but they are not separately supported Rust products.
 - **[L2]** **Workspace internals:** may break when wrong — but **not** silently: canon + migration note + tests (see §17).
-- **[L2]** **Publication scope:** the `publish = true` perimeter (workspace crates with a crates.io contract) is governed by ADR-0021 (historical); default is `publish = false`, opt-in requires ≥ 3 documented external consumers **or** a dedicated ADR. Internal crates stay invisible to the ecosystem even while the workspace grows.
+- **[L2]** **Publication mechanics are not API promotion:** internal packages required by `nebula-sdk` may be published to crates.io as doc-hidden technical dependencies, with exact-version pins and lockstep releases. Direct use of those packages is unsupported and receives no independent compatibility promise; consumers must depend on `nebula-sdk`. Internal packages outside the SDK dependency closure remain `publish = false` by default. This supersedes the physical “only one published package” interpretation of ADR-0021; private ADR-0117 is authoritative.
 - **[L1]** **Ecosystem quality over node count:** one solid canonical integration per external service beats many half-finished duplicates.
 - **[L1]** **Third-party nodes** are first-class in intent: same capabilities as first-party where the plugin model allows; **document** what is shipped vs planned.
 
@@ -215,7 +243,7 @@ Major choices should map to a pillar; if a feature maps to none, it is probably 
 
 **[L2]** Cross-plugin types come in via `Cargo.toml` `[dependencies]` on the provider plugin crate. Engine loads providers before dependents (acyclic graph). Referencing a type outside the declared dependency closure is a misconfiguration caught at activation.
 
-**[L4]** Full packaging mechanics — `[nebula]` / `[plugin]` / `[signing]` table shapes, signing rationale, layout examples, FFI-path notes — live in `docs/INTEGRATION_MODEL.md`.
+**[L4]** Full packaging mechanics — `[nebula]` / `[plugin]` / `[signing]` table shapes, signing rationale, layout examples, and native build / linkage notes — live in `docs/INTEGRATION_MODEL.md`.
 
 ### 7.2 Engine upgrade and workflow compatibility
 
@@ -223,7 +251,7 @@ Major choices should map to a pillar; if a feature maps to none, it is probably 
 
 - **[L2]** **Persisted workflow definitions** and **plugins** (binaries / SDK linkage) are **two compatibility surfaces**; breaking either belongs in **release notes** and migration guidance.
 - **[L2]** **Patch and minor** releases **must** keep **forward-compatible** workflow JSON and documented **plugin SDK** boundaries unless the release **explicitly** announces a break.
-- **[L3]** **Plugin binary compatibility:** Rust plugin crates are compiled artifacts tied to SDK/engine versions; upgrades may require recompilation against the target `nebula-api` / SDK version. Binary-stable ABI is an **FFI path** concern (e.g. stabby), not an implicit guarantee for native Rust plugin binaries.
+- **[L3]** **Plugin build compatibility:** Rust plugin crates are trusted code statically linked into a worker / host. Plugin changes and SDK / engine upgrades require recompiling and redeploying that worker / host; there is no independent binary plugin compatibility surface.
 - **[L2]** **Breaking** workflow schema, execution semantics, or public SDK types require **documented migration**, tests, and upgrade notes — not an assumption that existing installs “should work.”
 - **[L1]** Do **not** claim “all v1 workflows run unchanged on v2” without a **published compatibility matrix** or equivalent — platform trust requires **honest** upgrade paths.
 
@@ -231,7 +259,7 @@ Major choices should map to a pillar; if a feature maps to none, it is probably 
 
 ## 8. What Nebula is not
 
-- **[L1]** **Not a low-code tool** — operators may compose graphs; **authors** target Rust (and future FFI), not replacement of typed integration work.
+- **[L1]** **Not a low-code tool** — operators may compose graphs; **authors** target Rust through `nebula-sdk` and native statically linked plugins, not replacement of typed integration work.
 - **[L1]** **Not optimized for one-shot 50 ms scripts** — value shows up at **scale, duration, and integration depth**.
 - **[L1]** **Not “most nodes wins”** — the metric is **SDK quality and reliability**, not inventory size.
 - **[L1]** **Not a generic framework playground** or **trait zoo** optimized for elegance over usability and engine truth.
@@ -266,7 +294,7 @@ Nebula must **protect one coherent path** before multiplying half-supported opti
 2. **[L2]** **Activate** the workflow where the product supports activation. Activation runs `nebula_workflow::validate_workflow` (or equivalent) and **rejects** invalid definitions with structured **RFC 9457** errors — it does not silently flip a flag. A standalone `/validate` endpoint is a **tool**, not a substitute: activation that enables a workflow **without** validation is a **§10 violation**.
 3. **[L1]** Trigger or API starts execution.
 4. **[L2]** Engine schedules **executable step semantics** only — triggers, resources, and steps remain **distinct concepts** in validation, not only in dispatch errors.
-5. **[L2]** Execution state transitions are **visible and attributable** through `ExecutionRepo` with **version-checked CAS**; no handler invents an out-of-band lifecycle.
+5. **[L2]** Execution state transitions are **visible and attributable** through runtime control; its current atomic storage seam is `nebula_storage_port::ExecutionStore::commit(TransitionBatch)`, guarded by version CAS and lease fencing. No handler invents an out-of-band lifecycle.
 6. **[L2]** Failure, cancellation, retry, and timeout behavior match **documented** contracts — not folklore in traits. **Cancel** requests must be **durable and engine-consumable** (see §12.2), not “only the DB row changed.”
 7. **[L1]** **Persistence story is explicit:** what is durable vs best-effort; what resume/replay may assume; what happens on checkpoint failure.
 8. **[L1]** Operator can **inspect** what happened and what is trustworthy.
@@ -281,9 +309,9 @@ These must stay **explicit in code and operator-facing docs**, not split across 
 
 ### 11.1 Execution authority
 
-**[L2]** `nebula-execution` + `ExecutionRepo` are the **single source of truth** for execution state. Transitions use **optimistic CAS** against persisted `version`. There is no ephemeral “usually DB wins” mode: if persistence is unavailable, the operation **fails** — it does not silently mutate in-memory state.
+**[L2]** `nebula-execution` defines execution-state semantics and the persisted execution record is the **single source of truth**. Runtime control is the execution-aggregate writer: it owns execution state, journal, execution queues, execution outbox/inbox, and the operation ledger. Its current physical transition port is `nebula_storage_port::ExecutionStore::commit(TransitionBatch)`, which uses optimistic CAS against persisted `version` plus a lease fencing token. There is no ephemeral “usually DB wins” mode: if persistence is unavailable, the operation **fails** — it does not silently mutate in-memory state. Direct calls from product-surface handlers are a migration gap toward the runtime command boundary, not a pattern to copy or extend.
 
-Seam: `crates/storage/src/execution_repo.rs` — `ExecutionRepo::transition`. Test coverage: see `docs/MATURITY.md`.
+Current seam: `crates/storage-port/src/store/execution.rs` (`ExecutionStore`) and `crates/storage-port/src/batch.rs` (`TransitionBatch`). Backend implementations live in `crates/storage/src/inmem/execution.rs`, `crates/storage/src/sqlite/execution.rs`, and `crates/storage/src/postgres/execution.rs`; InMemory is test/reference-only. The future `ExecutionPersistence` / `BoundExecution` capability described in private design records is not an implemented replacement yet. Test coverage: see `docs/MATURITY.md`.
 
 ### 11.2 Retry
 
@@ -302,7 +330,7 @@ Seam: `crates/storage/src/execution_repo.rs` — `ExecutionRepo::transition`. Te
 
 ### 11.3 Idempotency
 
-**[L2]** **One** idempotency story: deterministic per-attempt key, persisted in `idempotency_keys`, checked and marked through `ExecutionRepo` before the side effect. **Engine guarantee:** it will not double-dispatch a **marked** attempt. Whether the **external** system de-duplicates is the integration author’s contract with that system — document per node. Exact key format: see `crates/execution/README.md`. Seam: `crates/execution/src/idempotency.rs`.
+**[L2]** **One** idempotency story: deterministic per-attempt identity, checked and durably marked through `nebula_storage_port::store::IdempotencyGuard::check_and_mark` before the side effect. **Engine guarantee:** it will not double-dispatch a **marked** attempt. Whether the **external** system de-duplicates is the integration author’s contract with that system — document per node. Contract seam: `crates/storage-port/src/store/idempotency.rs`; exact key semantics are documented there and in `crates/execution/README.md`.
 
 **[L2]** For **non-idempotent or risky side effects** (payments, writes without natural upsert, external one-shot operations), action handlers must guard execution with this idempotency path (or an equivalent documented key contract) before calling the remote system.
 
@@ -323,17 +351,17 @@ Seam: `crates/resource/src/release_queue.rs` — `ReleaseQueue`. Test coverage: 
 **[L2]** Authors should place checkpoint boundaries before irreversible or expensive side effects; the engine does not guess those boundaries for you.
 
 
-| Artifact                           | Status                                                                | Operator-visible truth                                                                                                                                                           |
-| ---------------------------------- | --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `executions` row + state JSON      | **Durable** (CAS via `ExecutionRepo`)                                 | Source of truth                                                                                                                                                                  |
-| `execution_journal` (append-only)  | **Durable**                                                           | Replayable history                                                                                                                                                               |
-| `execution_control_queue` (outbox) | **Durable**                                                           | At-least-once dispatch + cancel signals (§12.2)                                                                                                                                  |
-| `stateful_checkpoints`             | **Durable at checkpoint boundaries**; failure mode is **best-effort** | Checkpoint write failure may **log** and **not** abort execution; resume falls back to last successful checkpoint or journal; work since last checkpoint may be replayed or lost |
-| `execution_leases` (schema)        | **Schema may exist before full enforcement**                          | If the engine does not consume leases yet, **say so** — do not imply lease safety                                                                                                |
-| In-process `mpsc` / channels       | **Ephemeral**                                                         | Never authoritative truth                                                                                                                                                        |
+| Artifact                           | Status                                                               | Operator-visible truth                                                                                                                                                           |
+| ---------------------------------- | -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `executions` row + state JSON      | **Durable** (CAS + fencing via `ExecutionStore::commit`)             | Source of truth                                                                                                                                                                  |
+| `execution_journal` (append-only)  | **Durable when appended in the same `TransitionBatch`**              | Replayable history coupled to the state it describes                                                                                                                            |
+| `execution_control_queue` (outbox) | **Durable when appended in the same `TransitionBatch`**              | At-least-once dispatch + cancel signals (§12.2); a separately enqueued start is a migration gap until reconciled                                                                 |
+| stateful-action checkpoint         | **Best-effort optimization; backend support must be stated**         | A missing/failed checkpoint falls back to committed execution state; the current standalone `CheckpointStore` has only an internal InMemory implementation and is not a deployment durability claim |
+| execution lease                    | **Port methods exist; enforcement status must be demonstrated**      | Do not imply lease safety unless runtime acquisition, renewal, release, and fencing tests are green                                                                              |
+| `nebula-eventbus`, in-process `mpsc` / channels | **Ephemeral**                                             | Observations and wake hints only; never authoritative truth; consumers tolerate loss, duplication, and reordering                                                              |
 
 
-Seams: `crates/storage/src/execution_repo.rs` — `ExecutionRepo::save_stateful_checkpoint` (checkpoint write) + `ExecutionRepo::append_journal` (journal append). Test coverage: see `docs/MATURITY.md`.
+Seams: execution state, outbox rows, and journal appends enter atomically through `ExecutionStore::commit(TransitionBatch)` in `crates/storage-port/src/store/execution.rs` and `crates/storage-port/src/batch.rs`; journal reads use `crates/storage-port/src/store/journal.rs`. The separate best-effort stateful-action checkpoint contract is `crates/storage-port/src/store/checkpoint.rs`. Backend adapter paths are `crates/storage/src/{inmem,sqlite,postgres}/execution.rs`; do not infer a SQL checkpoint implementation from the execution adapter. Test coverage: see `docs/MATURITY.md`.
 
 **[L2]** If an operator cannot answer durability questions from this section plus code/docstrings, the product is not yet operationally honest.
 
@@ -361,24 +389,28 @@ Seams: `crates/storage/src/execution_repo.rs` — `ExecutionRepo::save_stateful_
 ### 12.1 Layering and dependencies
 
 - **[L2]** Follow `AGENTS.md` dependency direction. **No upward dependencies** between layers.
+- **[L2]** Direct downward dependencies on domain types and declared ports are normal. Durable commands and business facts use persisted state or explicit outbox/inbox seams. `nebula-eventbus` is observation-only and must never be used to evade the layer map or as a source of truth.
 - **[L2]** `crates/api` does not embed SQL drivers or storage schema knowledge beyond declared ports; **storage and orchestration details live in their crates**.
+- **[L2]** Every first-party deployment composition root in this workspace lives under `apps/`. Reusable assemblies such as `nebula-worker` do not select deployment policy or own process lifecycle. A downstream embedded host becomes supported only through `nebula_sdk::embedded::RuntimeBuilder` and cannot replace aggregate writers or admission/tenant authority; until that façade ships, embedding is planned.
 
 ### 12.2 Execution: single semantic core, durable control plane
 
-- **[L2]** **Authoritative execution state** lives in `nebula-execution` + `ExecutionRepo`. Handlers and API DTOs **do not invent a parallel lifecycle**, do not mutate state without going through **`ExecutionRepo::transition`** (CAS on `version`), and do not return **synthesized** timestamps or fake defaults for missing fields.
+- **[L2]** **Authoritative execution semantics** live in the transition kernel and durable state lives behind runtime control's persistence capability. Handlers and API DTOs **do not invent a parallel lifecycle**, bypass runtime mutation authority, or return **synthesized** timestamps or fake defaults for missing fields. Existing direct handler calls to `ExecutionStore::create` or `ExecutionStore::commit` are migration surfaces, not permission to spread persistence ownership into product surfaces.
+- **[L2]** **Write authority is aggregate-scoped:** runtime control alone writes the execution aggregate/journal/queues/outbox/inbox/operation ledger; credential runtime alone writes credential/refresh/lease state; resource lifecycle alone writes resource/binding/fan-out state. Cross-aggregate changes use durable commands and persisted outbox/inbox seams. EventBus delivery is never required for correctness.
 - **[L2]** **Every “run this” / “cancel this” signal must be durable and engine-consumable.** The contract is:
   1. The signal is written to **`execution_control_queue`** (outbox) **in the same logical operation** as the corresponding state transition. A handler that flips state to `cancelling` **without** enqueueing — or enqueues **without** transitioning — is broken.
   2. A dispatch worker drains the queue and forwards commands to a consumer that **the engine actually listens to**. Removing rows **before** the engine has acted is broken.
   3. There is **one** consumer wiring story per deployment mode, **documented in code**.
 - **[L2]** **A demo handler that logs the command and discards it does not satisfy this invariant.** Examples and `simple_server.rs` must either wire a **real** engine consumer or be marked `// DEMO ONLY — does not honor cancel` so nothing mistakes them for the contract.
 - **[L2]** **Batching outbox writes for throughput is valid only if per-transition atomicity is preserved.** Never batch as a workaround that breaks “state transition + control signal” integrity.
-- **[L2]** Any second control channel (HTTP webhook, in-memory event) is **forbidden** unless this canon is updated with a **reconciliation** story.
+- **[L2]** Any second **authoritative** control channel is forbidden unless this canon is updated with a reconciliation story. An HTTP ingress or ephemeral EventBus wake hint may notify the owner, but correctness must survive its loss, duplication, and reordering by recovering from persisted state/outbox/inbox truth.
 
 ### 12.3 Local path
 
-- **[L3]** The **default developer experience** must allow: build, run tests, run core flows **without** Docker, Redis, or external brokers. **SQLite** is the default local storage; `sqlite::memory:` via `nebula_storage::test_support` is the reference in-process path.
-- **[L3]** **SQLite is for dev and edge.** While SQLite is the default local storage, it has write-lock contention limits under high concurrency. For true high-throughput production (Pillar 4.1), **Postgres** (with `FOR UPDATE SKIP LOCKED`) is the required path.
-- **[L3]** Optional production paths (**Postgres**, later Redis, etc.) are **additive**, not prerequisites for “hello world” or CI sanity. `examples/simple_server.rs` (and similar) must continue to start **without** external services unless explicitly documented as integration-only.
+- **[L3]** The **default developer experience** must allow build, fast unit checks, and core local flows **without** Docker, Redis, or external brokers. **SQLite** is the supported local storage; `sqlite::memory:` is the in-process SQLite path. The distinct InMemory adapter is internal test/reference/conformance infrastructure, not a deployment backend.
+- **[L3]** **SQLite is for local and edge deployments.** It has write-lock contention limits under high concurrency. Once production-readiness gates pass, **Postgres** (with `FOR UPDATE SKIP LOCKED`) is the required high-throughput self-hosted path.
+- **[L2]** “No external service for hello world” does not make Postgres conformance optional. The required pre-PR/release/CI conformance gate must exercise a real Postgres instance and may not be skipped or substituted with SQLite/InMemory. Fast local checks need not start Postgres; `examples/simple_server.rs` (and similar) must continue to start without external services unless explicitly documented as integration-only.
+- **[L3]** Later storage or broker paths are additive and remain experimental/planned until separately gated; they do not weaken SQLite and Postgres conformance.
 
 ### 12.4 Errors and contracts
 
@@ -395,8 +427,8 @@ Seams: `crates/storage/src/execution_repo.rs` — `ExecutionRepo::save_stateful_
 
 ### 12.6 Plugin trust model — in-process, no isolation
 
-- **[L1]** **Plugins and actions run in-process as trusted code** linked into the host (ADR-0091). There is no process, memory, or capability boundary between a plugin and the engine. `PluginCapabilities` / capability checks are **correctness and least-privilege aids against accidental misuse**, not a security boundary against malicious native code. Keep `lib.rs` / README doc comments and `docs/` threat models aligned with this — never describe in-process dispatch as sandboxed execution of untrusted code.
-- **[L1]** **Process isolation, out-of-process plugin execution, and WASM / WASI are abandoned non-goals** (ADR-0091) — not a roadmap, not a deferred phase, not a guarantee any author may assume. The native crates integration authors actually need (`sqlx`, `rdkafka`, `tonic` with native TLS, any `*-sys` crate) do not fit a WASM target, and an out-of-process / child-process "sandbox" narrative would be a §4.5 false capability. Do not reintroduce isolation language the engine does not provide.
+- **[L1]** **Plugins and actions are statically linked into the host and run in-process as trusted code** (ADR-0091). Startup registration is discovery, not dynamic isolation. There is no process, memory, or capability boundary between a plugin and the engine. `PluginCapabilities` / capability checks are **correctness and least-privilege aids against accidental misuse**, not a security boundary against malicious native code. Keep `lib.rs` / README doc comments and `docs/` threat models aligned with this — never describe in-process dispatch as sandboxed execution of untrusted code.
+- **[L1]** **Remote plugin execution, dynamically loaded / FFI plugin ABIs, process isolation, out-of-process plugin execution, and WASM / WASI are abandoned non-goals** (ADR-0091) — not a roadmap, not a deferred phase, not a guarantee any author may assume. The native crates integration authors actually need (`sqlx`, `rdkafka`, `tonic` with native TLS, any `*-sys` crate) do not fit a WASM target, and an out-of-process / child-process "sandbox" narrative would be a §4.5 false capability. Do not reintroduce isolation language the engine does not provide. Reconsidering any of these non-goals requires an explicit revision to this canon followed by an accepted ADR and threat model; an ADR alone is insufficient.
 
 ### 12.7 No god files, no orphan modules
 
@@ -412,18 +444,18 @@ This is the **minimum bar** for “we did not break the product direction.” Ex
 **Scenario (current bar):**
 
 1. **[L2]** **Define and persist** a workflow through the API — definition **round-trips**.
-   Seam: `crates/api/src/handlers/workflow.rs` — `create_workflow`. Test coverage: see `docs/MATURITY.md`.
+   Seam: `crates/api/src/domain/workflow/handler.rs` — `create_workflow`. Test coverage: see `docs/MATURITY.md`.
 2. **[L2]** **Activate** the workflow. Activation runs validation and **rejects** invalid definitions with structured RFC 9457 errors — it does **not** silently flip a flag.
-   Seam: `crates/api/src/handlers/workflow.rs` — `activate_workflow`. Test coverage: see `docs/MATURITY.md`.
-3. **[L2]** **Start an execution** (API or equivalent). The execution row exists with consistent `status`, monotonic `version`, and a real `started_at` (no synthetic zero, no placeholder `now()` where the field should be `None`).
-   Seam: `crates/api/src/handlers/execution.rs` — `start_execution` + `crates/storage/src/execution_repo.rs` — `ExecutionRepo::transition`. Test coverage: see `docs/MATURITY.md`.
+   Seam: `crates/api/src/domain/workflow/handler.rs` — `activate_workflow`. Test coverage: see `docs/MATURITY.md`.
+3. **[L2]** **Start an execution** (API or equivalent). The persisted row has consistent `status`, monotonic `version`, a real `created_at`, and no `started_at` until runtime control actually starts it. A response that substitutes `created_at` for `started_at` is a wire-contract migration gap, not release-grade semantics. Durable acceptance must also leave recoverable work if the request process dies; the current split `ExecutionStore::create` then `ControlQueue::enqueue` path is a migration gap, not atomic acceptance.
+   Current seam: `crates/api/src/domain/execution/handler.rs` — `start_execution`; storage contracts: `crates/storage-port/src/store/execution.rs` and `crates/storage-port/src/store/control_queue.rs`. Test coverage: see `docs/MATURITY.md`.
 4. **[L2]** **Observe** via GET — `finished_at` is `None` (not `0`) until terminal; `status` reflects the latest persisted value.
 5. **[L2]** **Request cancellation** on a non-terminal execution:
-  - the handler transitions through **`ExecutionRepo`** (CAS),
+  - the request reaches runtime control; the physical transition uses **`ExecutionStore::commit(TransitionBatch)`** (CAS + fencing),
   - the **same logical operation** enqueues **`Cancel`** in `execution_control_queue`,
   - a dispatch consumer wired to the **real engine** observes the command and the engine’s cancel path runs,
   - the execution reaches a **terminal** `Cancelled` state without hand-waved stubs.
-   Seam: `crates/api/src/handlers/execution.rs` — `cancel_execution` + `crates/storage/src/execution_repo.rs` — `ExecutionRepo::transition`. Test coverage: see `docs/MATURITY.md`.
+   Current implementation seam: `crates/api/src/domain/execution/handler.rs` — `cancel_execution` / `AppState::cas_transition_with_control_scoped`; atomic contract: `crates/storage-port/src/store/execution.rs` + `crates/storage-port/src/batch.rs`. The direct handler-to-store call is a migration gap toward runtime-control command submission. Test coverage: see `docs/MATURITY.md`.
 6. **[L2]** Under test configuration where orchestration is intentionally absent: control endpoints return **503** — never fake success and never an unparsable 500.
 
 **Integration bar (same spirit as execution — must stay green as these paths exist):**
@@ -439,7 +471,7 @@ This is the **minimum bar** for “we did not break the product direction.” Ex
 The canonical bar for credential rotation and refresh discipline (referenced as `§13.2` from credential-system ADRs and sub-specs). Restates the contract behind Integration bar item 2 above and ties it to the credential-owned rotation/refresh seam (relocated into `nebula-credential::runtime` by ADR-0092, superseding ADR-0030 §3) and cross-replica refresh coordination (ADR-0041).
 
 - **[L2]** **No silent strand:** an in-flight execution holding valid auth material survives a concurrent rotation or refresh of that credential — the engine completes the in-flight work against the material it observed at acquire time and does **not** mid-call swap to a fresher value that the action did not consent to.
-- **[L2]** **Explicit failure on irreconcilable state:** when reconciliation cannot succeed (e.g. provider rejected the refresh token, sentinel threshold tripped on repeated mid-refresh crashes per ADR-0041), the credential transitions to an explicit `ReauthRequired` state surfaced in `CredentialStatus` — never a silent stuck credential and never a synthetic success.
+- **[L2]** **Explicit failure on irreconcilable state:** a definitive provider rejection or missing refresh material transitions the credential to explicit `ReauthRequired`, surfaced in credential status and typed API errors. An ambiguous post-provider outcome is never mislabeled as reauthentication or success: its expired `RefreshInFlight` claim remains durable fail-closed poison and provider replay stays forbidden until authorized reconciliation. The ADR-0041 sentinel threshold currently emits a lossy escalation observation only; the owner-qualified durable transition is an explicit K3 gap, not an implied mutation.
 - **[L2]** **Cross-replica coordination is durable, not folklore:** when running multi-replica, only one replica refreshes a credential per expiry window. The L2 claim repository (ADR-0041) is the ground truth; in-process L1 coalescing is an optimization on top, not a substitute.
 
 Tied seams: ADR-0028 cross-crate invariants (rotation/refresh boundaries between credential / storage / engine), ADR-0030 §3 (historical — engine-owned orchestration; **superseded by ADR-0092**: refresh coordinator + rotation-state now live in `nebula-credential::runtime`), ADR-0033 integration-credentials Plane B, ADR-0041 durable refresh claim repository. The credential Tech Spec §15.7 `SchemeGuard` (handed to resources at refresh time) prevents retention past the call site so a rotated credential does not bleed into the next request through a stale handle.

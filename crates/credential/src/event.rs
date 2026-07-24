@@ -44,8 +44,9 @@ pub enum CredentialEvent {
         credential_id: CredentialId,
     },
 
-    /// Credential needs full re-authentication. Per sub-spec §3.4
-    /// ([credential-refresh-coordination]) the engine emits this when:
+    /// Observation that a credential needs full re-authentication. Per
+    /// sub-spec §3.4 ([credential-refresh-coordination]) the runtime may emit
+    /// this when:
     ///
     /// - The IdP rejects the refresh (`ReauthReason::ProviderRejected`).
     /// - The sentinel threshold (default N=3 within 1h) is exceeded for mid-refresh crashes
@@ -53,9 +54,11 @@ pub enum CredentialEvent {
     /// - A locally detected lack of refresh material — e.g. an OAuth2 state with no `refresh_token`
     ///   (`ReauthReason::MissingRefreshMaterial`); the IdP was never contacted.
     ///
-    /// Consumers (UI, monitoring) surface a re-auth prompt. Pools and
-    /// connections using this credential must be invalidated until the
-    /// user re-authenticates.
+    /// Consumers tolerate loss, duplication, and reordering. UI and monitoring
+    /// may surface a re-auth prompt, but this event is not aggregate write
+    /// authority and does not prove that `reauth_required` was persisted.
+    /// Provider rejection persists that flag before emitting; the
+    /// owner-qualified sentinel command remains K3 work.
     ///
     /// [credential-refresh-coordination]: https://github.com/nebula-engine/nebula/blob/main/docs/INTEGRATION_MODEL.md (credential refresh)
     ReauthRequired {
@@ -93,7 +96,8 @@ impl fmt::Display for CredentialEvent {
             } => {
                 write!(
                     f,
-                    "credential reauth required: {credential_id} ({reason:?})"
+                    "credential reauth required: {credential_id} ({})",
+                    reason.code()
                 )
             },
         }
@@ -164,5 +168,25 @@ mod tests {
             display.starts_with("credential reauth required: cred_"),
             "display: {display}"
         );
+        assert!(display.ends_with("(sentinel_repeated)"));
+    }
+
+    #[test]
+    fn reauth_event_formatting_uses_only_closed_reason_codes() {
+        let id = CredentialId::new();
+        for reason in [
+            ReauthReason::ProviderRejected,
+            ReauthReason::MissingRefreshMaterial,
+        ] {
+            let event = CredentialEvent::ReauthRequired {
+                credential_id: id,
+                reason,
+            };
+            let display = event.to_string();
+            let debug = format!("{event:?}");
+            assert!(display.contains("reauth required"));
+            assert!(!display.contains("detail"));
+            assert!(!debug.contains("detail"));
+        }
     }
 }

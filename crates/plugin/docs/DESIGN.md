@@ -162,7 +162,7 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
   action/resource, но это происходит **ниже** plugin — он лишь поставляет типы в каталог
   (values-only persistence, schema из зарегистрированных типов через `HasSchema` →
   `nebula-metadata` → API-каталог). Façade-уровня credential (policy(&State)-routing,
-  OwnerScopedKey, RefreshTransport, lease) plugin не видит и видеть не должен.
+  CredentialSelector, RefreshTransport, lease) plugin не видит и видеть не должен.
 
 ## 8. Forward design / открытые вопросы
 

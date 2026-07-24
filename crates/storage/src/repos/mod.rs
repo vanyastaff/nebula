@@ -32,6 +32,8 @@ mod audit;
 mod blob;
 mod control_queue;
 mod idempotency;
+mod mfa_enrollment;
+mod oauth_login;
 mod org;
 mod quota;
 mod resource;
@@ -45,11 +47,17 @@ pub use control_queue::{
     ControlCommand, ControlQueueEntry, ControlQueueRepo, InMemoryControlQueueRepo, ReclaimOutcome,
 };
 pub use idempotency::{CachedRecord, IdempotencyStoreRepo, InMemoryIdempotencyStoreRepo};
+pub use mfa_enrollment::{MfaEnrollmentCandidate, MfaEnrollmentInstallOutcome, MfaEnrollmentRepo};
+pub use oauth_login::{
+    OAuthLoginFinalizeCommand, OAuthLoginFinalizeOutcome, OAuthLoginFinalized,
+    OAuthLoginMfaChallengeDraft, OAuthLoginSessionDraft, OAuthLoginUserDraft,
+};
 pub use org::OrgRepo;
 pub use quota::QuotaRepo;
 pub use resource::{ResourceEntry, ResourceRepo};
 pub use trigger::TriggerRepo;
 pub use user::{
-    ExternalIdentityRepo, OAuthStateRepo, PatRepo, SessionRepo, UserRepo, VerificationTokenRepo,
+    ExternalIdentityRepo, OAUTH_STATE_CAPACITY, OAuthStateAdmission, OAuthStateRepo, PatRepo,
+    SessionRepo, UserRepo, VerificationTokenRepo,
 };
 pub use workspace::WorkspaceRepo;

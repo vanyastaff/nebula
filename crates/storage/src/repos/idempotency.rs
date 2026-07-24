@@ -28,7 +28,7 @@ use crate::error::StorageError;
 ///
 /// Pure storage-layer shape — no `http` types. The bridge in
 /// `nebula-api` reconstructs `HeaderMap` / `StatusCode` on read.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct CachedRecord {
     /// HTTP status code returned by the original handler.
     pub status: u16,
@@ -41,6 +41,21 @@ pub struct CachedRecord {
     /// SHA-256 fingerprint of the original request body — used to
     /// detect "same key, different body" reuse and reject it with 422.
     pub fingerprint: [u8; 32],
+}
+
+impl std::fmt::Debug for CachedRecord {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CachedRecord")
+            .field("status", &self.status)
+            .field("headers", &"[redacted]")
+            .field(
+                "body",
+                &format_args!("[redacted; {} bytes]", self.body.len()),
+            )
+            .field("fingerprint", &"[redacted]")
+            .finish()
+    }
 }
 
 /// Storage backend for cached idempotent responses.
@@ -205,6 +220,21 @@ impl IdempotencyStoreRepo for InMemoryIdempotencyStoreRepo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_record_debug_redacts_headers_body_and_fingerprint() {
+        const CANARY: &str = "IDEMPOTENCY_SECRET_CANARY-8c4d";
+        let record = CachedRecord {
+            status: 200,
+            headers: vec![("x-secret-canary".to_owned(), CANARY.as_bytes().to_vec())],
+            body: CANARY.as_bytes().to_vec(),
+            fingerprint: [0x8c; 32],
+        };
+
+        let debug = format!("{record:?}");
+        assert!(debug.contains("CachedRecord"));
+        assert!(!debug.contains(CANARY));
+    }
 
     fn record(body: &[u8]) -> CachedRecord {
         CachedRecord {

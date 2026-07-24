@@ -34,15 +34,14 @@ impl Credential for BearerTokenCredential {
     const KEY: &'static str = "bearer_token";
 
     fn metadata() -> CredentialMetadata {
-        CredentialMetadata::builder()
-            .key(nebula_core::credential_key!("bearer_token"))
-            .name("Bearer Token")
-            .description("Opaque bearer token (API key, PAT, session token).")
-            .schema(nebula_schema::schema_of::<Self::Properties>())
-            .pattern(AuthPattern::SecretToken)
-            .icon("key")
-            .build()
-            .expect("bearer_token metadata is valid")
+        CredentialMetadata::new(
+            nebula_core::credential_key!("bearer_token"),
+            "Bearer Token",
+            "Opaque bearer token (API key, PAT, session token).",
+            nebula_schema::schema_of::<Self::Properties>(),
+            AuthPattern::SecretToken,
+        )
+        .with_icon("key")
     }
 
     fn project(state: &SecretToken) -> SecretToken {

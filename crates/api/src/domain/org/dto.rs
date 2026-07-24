@@ -27,6 +27,7 @@
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+use zeroize::Zeroize;
 
 use crate::domain::shared::OrgRoleDto;
 
@@ -133,14 +134,57 @@ pub struct CreateServiceAccountRequest {
 
 /// `POST /api/v1/orgs/{org}/service-accounts` response.
 ///
-/// The bearer key is exposed **exactly once** — flagged `write_only = true`
-/// so OpenAPI consumers don't expect it on subsequent reads.
-#[derive(Debug, Clone, Serialize, ToSchema)]
+/// The bearer key is exposed **exactly once** — flagged `read_only = true`
+/// because the server generates it for this creation response and clients
+/// cannot submit or retrieve it through later operations.
+#[derive(Serialize, ToSchema)]
 pub struct CreateServiceAccountResponse {
     /// Service-account metadata.
     pub account: ServiceAccountSummary,
     /// Plaintext bearer key, prefixed `nbl_sa_…`. Shown once; treat as a
     /// secret credential. Cannot be retrieved later.
-    #[schema(format = "password", write_only = true)]
+    #[schema(format = "password", read_only = true)]
     pub key: String,
+}
+
+impl std::fmt::Debug for CreateServiceAccountResponse {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CreateServiceAccountResponse")
+            .field("account", &self.account)
+            .field("key", &"[redacted]")
+            .finish()
+    }
+}
+
+impl Drop for CreateServiceAccountResponse {
+    fn drop(&mut self) {
+        self.key.zeroize();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CreateServiceAccountResponse, ServiceAccountSummary};
+
+    static_assertions::assert_not_impl_any!(CreateServiceAccountResponse: Clone);
+
+    #[test]
+    fn create_service_account_response_debug_redacts_bearer_key() {
+        const CANARY: &str = "nbl_sa_SERVICE_ACCOUNT_AUTHORITY_CANARY";
+        let response = CreateServiceAccountResponse {
+            account: ServiceAccountSummary {
+                id: "svc_test".to_owned(),
+                name: "automation".to_owned(),
+                scopes: vec!["workflows:run".to_owned()],
+                created_at: "2026-07-21T00:00:00Z".to_owned(),
+            },
+            key: CANARY.to_owned(),
+        };
+
+        let debug = format!("{response:?}");
+        assert!(debug.contains("CreateServiceAccountResponse"));
+        assert!(debug.contains("[redacted]"));
+        assert!(!debug.contains(CANARY));
+    }
 }

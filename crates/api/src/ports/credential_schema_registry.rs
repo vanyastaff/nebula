@@ -1,70 +1,20 @@
-//! Concrete [`CredentialSchemaPort`] over a
-//! `nebula_credential::CredentialRegistry` (credential-schema validation).
+//! Test-only credential catalog/form read model over a
+//! `nebula_credential::CredentialRegistry`.
 //!
-//! Per the user's adjudication of the deny.toml-vs-#671 conflict, the
-//! concrete impl lives in `nebula-api` (already an allow-listed
-//! `nebula-credential` consumer; `nebula-schema` is Core — **no**
-//! `deny.toml` change) rather than in the `nebula-server` composition
-//! crate (which would have required a wrapper-allowlist edit). `nebula-api`
-//! takes a `nebula-schema` production dep + `schemars`, but **no
-//! `ValidSchema` type enters any DTO** — the port returns only
-//! `serde_json::Value` / api-owned structs, so stub-endpoint policy's DTO-purity rule
-//! is intact (only the informal "api never imports nebula-schema" prose is
-//! relaxed; recorded in the credential-schema validation / stub-endpoint policy amendments).
-//!
-//! Authority sits with the validator: `ValidSchema::validate` is invoked
-//! here; credential `data` is **never** `.resolve()`-d (credential secrecy —
-//! secrets must not depend on workflow state). Errors are secret-safe by
-//! construction (RFC-6901 path + validator code + static message; never a
-//! submitted value — credential redaction).
+//! Production selection and its concrete adapter live in `apps/server`; this
+//! module is compiled only with unsupported `test-util`. Mutation validation
+//! is intentionally absent from this port and remains canonical inside
+//! `CredentialService` after the command authority decision.
 
 use std::sync::Arc;
 
-use nebula_credential::{
-    AnyCredential, ApiKeyCredential, BasicAuthCredential, Capabilities, CredentialRegistry,
-    OAuth2Credential, SigningKeyCredential,
-};
-use nebula_schema::FieldValues;
-
 use crate::ports::credential_schema::{
-    CredentialCapabilityFlags, CredentialFieldError, CredentialSchemaPort, CredentialTypeDescriptor,
+    CredentialCapabilityFlags, CredentialSchemaPort, CredentialTypeDescriptor,
 };
-
-/// Map a validator/schema vocabulary `code` to a **static, value-free**
-/// message. The seam NEVER forwards a lower-layer `ValidationError.message`
-/// (some validators embed the submitted input — e.g. `'{input}' is not a
-/// valid IPv4 address` — and `validate_json_keys` embeds the raw object
-/// key). Deriving the message from the code makes the credential redaction "never the
-/// submitted value" invariant hold *by construction* at this seam,
-/// independent of any upstream validator's message hygiene.
-fn safe_field_message(code: &str) -> &'static str {
-    match code {
-        "required" => "value is required",
-        "min_length" => "value is too short",
-        "max_length" => "value is too long",
-        "min" => "value is below the allowed minimum",
-        "max" => "value is above the allowed maximum",
-        "invalid_format" => "value does not match the required format",
-        "type_mismatch" => "value has the wrong type",
-        "invalid_key" => "object contains an invalid field key",
-        "recursion_limit" => "value is nested too deeply",
-        "unknown_credential_type" => "no such credential type",
-        // Vocabulary codes are value-free tokens; echoing the code (not
-        // the submitted value) is safe and stays informative.
-        _ => "field failed schema validation",
-    }
-}
-
-/// Build a secret-safe field error. `path` is the schema/RFC-6901
-/// structural location (declared-field/parent path — value-free);
-/// `message` is derived from `code`, never from the submitted value.
-fn field_error(path: String, code: &str) -> CredentialFieldError {
-    CredentialFieldError {
-        path,
-        code: code.to_owned(),
-        message: safe_field_message(code).to_owned(),
-    }
-}
+use nebula_credential::{AnyCredential, Capabilities, CredentialRegistry};
+#[cfg(any(test, feature = "test-util"))]
+use nebula_credential::{ApiKeyCredential, BasicAuthCredential, SigningKeyCredential};
+use nebula_schema::ValidSchema;
 
 /// `CredentialSchemaPort` backed by a registered credential set.
 pub struct RegistryCredentialSchema {
@@ -93,13 +43,7 @@ impl RegistryCredentialSchema {
         // Structural JSON-Schema export. On failure, an empty object
         // schema (never a panic); the api-owned public projection still
         // strips predicate operands at the wire (#6).
-        let schema_json = meta
-            .base
-            .schema
-            .json_schema()
-            .ok()
-            .and_then(|s| serde_json::to_value(&s).ok())
-            .unwrap_or_else(|| serde_json::json!({ "type": "object" }));
+        let schema_json = export_schema(&meta.base.schema);
         let caps = self
             .registry
             .capabilities_of(&key)
@@ -117,48 +61,15 @@ impl RegistryCredentialSchema {
     }
 }
 
-impl CredentialSchemaPort for RegistryCredentialSchema {
-    #[tracing::instrument(
-        skip_all,
-        fields(cred.key = %credential_key, outcome = tracing::field::Empty)
-    )]
-    fn validate_data(
-        &self,
-        credential_key: &str,
-        data: &serde_json::Value,
-    ) -> Result<(), Vec<CredentialFieldError>> {
-        let Some(any) = self.registry.resolve_any(credential_key) else {
-            tracing::Span::current().record("outcome", "unknown_type");
-            return Err(vec![field_error(
-                "/credential_key".to_owned(),
-                "unknown_credential_type",
-            )]);
-        };
-        let schema = any.metadata().base.schema;
-        // Ingest only (NEVER `.resolve()` — credential secrecy: credential data
-        // must not be expression-resolved against workflow state).
-        let values = FieldValues::from_json(data.clone())
-            .map_err(|e| vec![field_error(e.path.to_string(), e.code.as_ref())])?;
-        match schema.validate(&values) {
-            Ok(_valid) => {
-                tracing::Span::current().record("outcome", "ok");
-                Ok(())
-            },
-            Err(report) => {
-                let errors: Vec<CredentialFieldError> = report
-                    .errors()
-                    .map(|e| field_error(e.path.to_string(), e.code.as_ref()))
-                    .collect();
-                tracing::Span::current().record("outcome", "rejected");
-                debug_assert!(
-                    !errors.is_empty(),
-                    "validate() Err must yield at least one hard error"
-                );
-                Err(errors)
-            },
-        }
-    }
+fn export_schema(schema: &ValidSchema) -> serde_json::Value {
+    schema
+        .json_schema()
+        .ok()
+        .and_then(|exported| serde_json::to_value(&exported).ok())
+        .unwrap_or_else(|| serde_json::json!({ "type": "object" }))
+}
 
+impl CredentialSchemaPort for RegistryCredentialSchema {
     fn list_types(&self) -> Vec<CredentialTypeDescriptor> {
         // `iter_compatible(empty)` enumerates every registered type
         // (registry.rs:212 — empty is a subset of any capability set).
@@ -175,13 +86,9 @@ impl CredentialSchemaPort for RegistryCredentialSchema {
     }
 }
 
-/// Build the shared first-party credential registry — the single type set
-/// behind both the schema port ([`try_default_registry_port`]) and the
-/// runtime facade
-/// ([`super::credential_service_factory::try_default_credential_service`]).
-/// Extracting it keeps schema validation and dispatch on **one** registered
-/// set, so the registry's advertised capabilities and the facade's ops table
-/// cannot drift apart.
+/// Build the first-party catalog registry for API reference/test composition.
+/// Production creates one shared registry for runtime and catalog inside its
+/// apps-owned composition root.
 ///
 /// # Errors
 ///
@@ -190,20 +97,18 @@ impl CredentialSchemaPort for RegistryCredentialSchema {
 /// KEYs make this unreachable in practice, but the library returns the
 /// typed error rather than panicking; the caller decides how to surface
 /// it — AGENTS.md "no `expect()` in library code").
+#[cfg(any(test, feature = "test-util"))]
 pub(crate) fn default_registry() -> Result<CredentialRegistry, nebula_credential::RegisterError> {
     let mut registry = CredentialRegistry::new();
     registry.register(ApiKeyCredential, "nebula-credential")?;
     registry.register(BasicAuthCredential, "nebula-credential")?;
-    registry.register(OAuth2Credential, "nebula-credential")?;
     // signing_key: static non-interactive credential used for webhook HMAC
     // secrets (Standard Webhooks `whsec_` format).
     registry.register(SigningKeyCredential, "nebula-credential")?;
     Ok(registry)
 }
 
-/// Build the default port with the first-party credential types
-/// registered (credential-schema validation). Used by the composition root so
-/// `apps/server` needs no `nebula-credential`/`nebula-schema` dep.
+/// Build the default test catalog with the first-party credential types.
 ///
 /// # Errors
 ///
@@ -212,6 +117,7 @@ pub(crate) fn default_registry() -> Result<CredentialRegistry, nebula_credential
 /// KEYs make this unreachable in practice, but the library returns the
 /// typed error rather than panicking; the caller decides how to surface
 /// it — AGENTS.md "no `expect()` in library code").
+#[cfg(any(test, feature = "test-util"))]
 pub fn try_default_registry_port()
 -> Result<Arc<dyn CredentialSchemaPort>, nebula_credential::RegisterError> {
     Ok(Arc::new(RegistryCredentialSchema::new(Arc::new(
@@ -231,41 +137,6 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_missing_required_field_secret_safe() {
-        let p = port();
-        let data = serde_json::json!({ "server": "https://x", "leak": "NEVER-ECHO-9f" });
-        let err = p
-            .validate_data("api_key", &data)
-            .expect_err("missing required api_key must reject");
-        assert!(
-            err.iter().any(|e| e.code == "required"),
-            "expected a `required` code, got {err:?}"
-        );
-        assert!(
-            !format!("{err:?}").contains("NEVER-ECHO-9f"),
-            "field errors must not echo submitted values"
-        );
-    }
-
-    #[test]
-    fn validate_accepts_well_formed_data() {
-        assert!(
-            port()
-                .validate_data("api_key", &serde_json::json!({ "api_key": "k-123" }))
-                .is_ok()
-        );
-    }
-
-    #[test]
-    fn unknown_type_is_a_field_error_not_panic() {
-        let err = port()
-            .validate_data("does-not-exist", &serde_json::json!({}))
-            .expect_err("unknown type rejects");
-        assert_eq!(err[0].code, "unknown_credential_type");
-        assert_eq!(err[0].path, "/credential_key");
-    }
-
-    #[test]
     fn get_type_exports_capable_descriptor_and_default_port_lists_first_party() {
         let p = port();
         let d = p.get_type("api_key").expect("api_key present");
@@ -277,15 +148,20 @@ mod tests {
         );
         assert!(p.get_type("nope").is_none());
 
-        // The composition default registers all first-party types.
+        // The composition default registers the curated first-party static
+        // set; parked implementations are deliberately absent.
         let default = try_default_registry_port().expect("first-party set registers (unique KEYs)");
         let listed = default.list_types();
-        for k in ["api_key", "basic_auth", "oauth2", "signing_key"] {
+        for k in ["api_key", "basic_auth", "signing_key"] {
             assert!(
                 listed.iter().any(|t| t.key == k),
                 "default port must register {k}; got {:?}",
                 listed.iter().map(|t| &t.key).collect::<Vec<_>>()
             );
         }
+        assert!(
+            listed.iter().all(|t| t.key != "oauth2"),
+            "oauth2 remains implemented in nebula-credential but must stay out of the default API catalog until universal pending acquisition is wired"
+        );
     }
 }

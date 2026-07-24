@@ -1,193 +1,178 @@
-# nebula-storage-port — design
+# nebula-storage-port — current design
 
 | Field | Value |
-|-------|-------|
-| **Status** | Stable — pure contract crate (Core tier), no backend code |
-| **Layer** | Core (contract); зависит только от `nebula-core` + serde/async-trait. Адаптеры в `nebula-storage`, scope-политика в `nebula-tenancy` |
-| **Redesign role** | **Косвенно затронут, но существенно.** Не переписывается; владеет двумя швами, на которые опирается post-0092 модель: `Scope::credential_owner_id` (каноническая деривация owner_id, ADR-0088 D7) и `RefreshClaimStore` (persistence-шов refresh-CAS, ADR-0041). DTO/трейты не трогаются. |
-| **Related** | ADR-0072, ADR-0088 D7, ADR-0041 (durable refresh-claim store), ADR-0092, PRODUCT_CANON §12.2 |
+|---|---|
+| Status | Current K2 port contract; pre-1.0 |
+| Reviewed | 2026-07-22 |
+| Layer | Core contract; no backend code |
+| Related | ADR-0072, ADR-0041, ADR-0088, ADR-0092, product canon §11–§12 |
 
----
+## Purpose
 
-## 1. Назначение и границы
+`nebula-storage-port` owns the object-safe persistence contracts and port-local data that product
+crates use without importing SQL drivers, migrations, pools, or backend implementations. It is a
+technical workspace boundary, not a supported integration product; `nebula-sdk` remains the sole
+supported and branded Rust surface.
 
-`nebula-storage-port` — это **контракт хранилища**: он декларирует, *что* должно
-уметь персистентное хранилище, и не реализует ни одного backend. Он существует,
-чтобы engine/api/credential потребляли storage как `Arc<dyn …>`, не таща за собой
-sqlx, миграции и пул соединений.
+The crate owns:
 
-**Владеет:**
-- object-safe `#[async_trait]` repository-трейтами (ISP-сегрегированными по ролям);
-- port-локальными DTO-строками, зависящими только от `serde_json::Value`;
-- plain-data `Scope { workspace_id, org_id }` (значение без политики);
-- единым `StorageError` (`#[non_exhaustive]`, fail-closed);
-- атомарным unit-of-work `TransitionBatch` (state + outbox + journal под CAS+fencing);
-- id-швом (`FencingToken` + re-export типизированных ULID из `nebula-core`).
+- object-safe `#[async_trait]` repository traits segregated by role;
+- port-local DTO rows with no dependency on higher-tier domain types;
+- plain-data `Scope { workspace_id, org_id }` with no policy;
+- `StorageError`, `FencingToken`, and the builder-only `TransitionBatch` atomic unit of work; and
+- the K2 lifecycle-safe `CredentialPersistence` contract plus owner/selector/row/error DTOs.
 
-**ЯВНО НЕ делает:**
-- **никакого sqlx** — нет драйвера БД, миграций, пула (намеренно, комментарий в
-  `Cargo.toml:22`); адаптеры (InMemory/SQLite/Postgres) живут в `nebula-storage`;
-- **не резолвит и не энфорсит scope** — деривация `Scope` из principal и запрет
-  кросс-тенантного доступа — работа `nebula-tenancy` (декораторы-обёртки);
-- **не делает шифрование/кэш/аудит** — это decorator-стек в `nebula-storage`
-  (`EncryptionLayer`/Cache/Audit + `KeyProvider`);
-- **не зависит от higher-tier типов** — DTO никогда не ссылаются на `ActionResult`
-  и т.п. (защита от инверсии зависимостей в Core).
+It deliberately owns no SQL, migrations, connection pools, encryption implementation, cache,
+audit sink, tenant-policy resolution, API authentication, or deployment configuration.
 
-## 2. Публичная поверхность
+## Dependency direction
 
-| Item | Where |
-|------|-------|
-| `Scope { workspace_id, org_id }` (plain-data, без политики) | `src/scope.rs:11` |
-| `Scope::credential_owner_id()` (length-prefixed, collision-safe, ADR-0088 D7) | `src/scope.rs:50` |
-| `StorageError` (`#[non_exhaustive]`: NotFound/Conflict/Duplicate/LeaseUnavailable/FencedOut/Timeout/UnknownSchemaVersion/ScopeViolation/Serialization…) | `src/error.rs:11` |
-| `FencingToken(u64)` — монотонный lease-токен против zombie-runner | `src/ids.rs:17` |
-| `ids::*` — re-export типизированных ULID (`ExecutionId`, `OrgId`, `WorkflowId`…) | `src/ids.rs:7` |
-| `TransitionBatch` (приватные поля, builder-only; scope+CAS+fencing обязательны структурно) | `src/batch.rs:19` |
-| `TransitionBatchBuilder` / `TransitionOutcome` | `src/batch.rs:86 / 177` |
-| `ExecutionStore` — §12.2 агрегат: create/get/`commit(TransitionBatch)`/acquire_lease/renew_lease/release_lease | `src/store/execution.rs:17` |
-| `ControlQueue` + `ReclaimOutcome` | `src/store/control_queue.rs:25,9` |
-| `WorkflowStore` / `WorkflowVersionStore` | `src/store/workflow.rs:8,86` |
-| `NodeResultStore` / `ExecutionJournalReader` / `CheckpointStore` | `src/store/node_result.rs:12`, `src/store/journal.rs:10`, `src/store/checkpoint.rs:12` |
-| `IdempotencyGuard` / `IdempotencyStore` | `src/store/idempotency.rs:15,41` |
-| Identity-семейство (9 трейтов): `UserStore`/`OrgStore`/`WorkspaceStore`/`MembershipStore`/`ResourceStore`/`TriggerStore`/`QuotaStore`/`AuditStore`/`BlobStore` | `src/store/identity.rs:17–157` |
-| `WebhookActivationStore` | `src/store/webhook.rs:10` |
-| `RefreshClaimStore` + `ReplicaId`/`ClaimToken`/`RefreshClaim`/`ClaimAttempt`/`HeartbeatError`/`RefreshClaimError`/`SentinelState`/`ReclaimedClaim` (re-homed shape-unchanged, loom-verified, ADR-0041) | `src/store/refresh_claim.rs:144,21–130` |
-| DTO: `ExecutionRecord`, `WorkflowRecord`/`WorkflowVersionRecord`, `ControlMsg`/`ControlCommand`, `JournalEntry`, `NodeResultRecord` (+`MAX_SUPPORTED_RESULT_SCHEMA_VERSION`), `CachedRecord`, `WebhookActivationRecord`, identity-rows (`UserRow`…`BlobRow`, `ScopeKind`, `PrincipalKind`) | `src/dto/` |
+```text
+engine / credential / api / apps
+                 │
+                 ▼
+       nebula-storage-port       (contracts and DTOs)
+                 ▲
+                 │ implements
+          nebula-storage         (SQLite/PostgreSQL; internal reference adapters)
 
-## 3. Зависимости и зависимые
+nebula-tenancy wraps the Scope-taking non-credential ports.
+Credential persistence is owner-bound directly and is not wrapped by tenancy.
+```
 
-- **Deps:** `nebula-core` (path) + `async-trait`, `thiserror`, `serde`,
-  `serde_json`, `chrono`, `uuid`. Dev: `tokio`. **Без sqlx** (намеренно,
-  `Cargo.toml:22`).
-- **Зависимые:** `nebula-api`, `nebula-credential`, `nebula-engine`,
-  `nebula-tenancy` (декораторы), `nebula-storage` (адаптер-имплементор).
-  `apps/server` **явно НЕ** зависит напрямую (комментарий `apps/server/Cargo.toml:18`)
-  — concrete-adapter и tenancy-декоратор сшиваются только в композиционных корнях
-  (api `AppState`, knife-тест).
+Direct downward imports of these technical contracts are expected inside the workspace. They do
+not promote storage-port into a supported downstream API. `apps/server` depends on the port
+directly because first-party composition roots select concrete adapters and object-safe handles.
 
-## 4. Внутренняя архитектура
+## Public contract map
 
-- `lib.rs` — корень, re-export `Scope`/`StorageError`/`FencingToken`/
-  `TransitionBatch{,Builder,Outcome}`.
-- `batch.rs` — `TransitionBatch`: одна транзакция (state + outbox + journal) под
-  CAS+fencing; поля приватны, конструкция только через builder.
-- `error.rs` — единый `StorageError`, fail-closed (`#[non_exhaustive]`).
-- `ids.rs` — id-шов: re-export core-ULID + `FencingToken`.
-- `scope.rs` — plain-data `Scope` без политики + `credential_owner_id`.
-- `store/` — 10 файлов ISP-сегрегированных ролевых трейтов (execution,
-  control_queue, workflow, node_result, journal, checkpoint, idempotency,
-  identity, webhook, refresh_claim).
-- `dto/` — 8 файлов port-локальных строк, только `serde_json::Value` (никаких
-  higher-tier типов).
-- `tests/` — batch, conformance_contract, dto, error, object_safe, scope.
+### Shared persistence primitives
 
-Поток данных: потребитель держит `Arc<dyn …Store>` → собирает `TransitionBatch`
-билдером (scope/CAS/fencing обязательны) → `ExecutionStore::commit` атомарно
-применяет state+outbox+journal; адаптер из `nebula-storage` материализует это в
-конкретный backend, а decorator-стек (encryption/cache/audit/tenancy) оборачивает
-тот же object-safe трейт.
+- `Scope` is data only. `BindingScopeResolver` and request tenant policy live in
+  `nebula-tenancy`.
+- `TransitionBatch` structurally requires execution scope, CAS precondition, and fencing before
+  `ExecutionStore::commit` can atomically apply state, outbox, and journal changes.
+- `FencingToken` prevents a stale lease holder from committing after ownership changes.
+- `StorageError` is the general storage-port error. Credential persistence has a deliberately
+  separate, secret-safe `CredentialPersistenceError` contract.
 
-## 5. Инварианты и контракты
+### Repository families
 
-- **§12.2 атомарность.** `TransitionBatch` — единственный путь мутации
-  execution-агрегата: state + outbox + journal коммитятся одной транзакцией;
-  scope, CAS-предусловие и `FencingToken` **обязательны структурно** (приватные
-  поля + builder-only), их нельзя забыть — `commit` нельзя вызвать с неполным
-  batch (`src/batch.rs:19`).
-- **Fencing против zombie-runner.** `FencingToken(u64)` монотонен; устаревший
-  владелец lease получает `StorageError::FencedOut` (`src/ids.rs:17`,
-  `src/error.rs:11`).
-- **Owner-isolation by-construction.** `Scope::credential_owner_id()` —
-  length-prefixed, collision-safe деривация (ADR-0088 D7): два разных
-  `(workspace_id, org_id)` не могут схлопнуться в один owner_id. Это единственная
-  каноническая деривация для всех credential-производителей (`src/scope.rs:50`).
-- **Scope = значение, не политика.** Порт хранит `Scope` как данные; энфорсмент
-  кросс-тенантного запрета вынесен в `nebula-tenancy` — порт не может «забыть»
-  проверку, потому что проверка вообще не его ответственность.
-- **Fail-closed ошибки.** `StorageError` `#[non_exhaustive]`; неизвестная
-  schema-версия → `UnknownSchemaVersion` (forward-compat), нарушение scope →
-  `ScopeViolation` (`src/error.rs:11`).
-- **Object-safety.** Все store-трейты `dyn`-совместимы (тест `object_safe`);
-  per-call boxed-future — шум на фоне сетевого/дискового I/O.
-- **refresh-CAS корректность.** `RefreshClaimStore` re-homed shape-unchanged и
-  loom-verified (ADR-0041): claim/heartbeat/reclaim — атомарный CAS против
-  двойного refresh между репликами.
+`src/store/` contains the execution/workflow/control-queue/journal/checkpoint/node-result,
+idempotency, identity, webhook, trigger-dedup, dispatch/resume, refresh-claim, and credential role
+traits. `src/dto/` contains their port-local rows. Exact exports are defined by `src/lib.rs` and
+`src/store/mod.rs`; this document describes ownership rather than duplicating a symbol inventory.
 
-## 6. Известные напряжения / долг
+All repository traits remain directly dyn-compatible and are consumed as `Arc<dyn …>`. Adding a
+generic/RPITIT-only method without an object-safe alternative is an architectural break.
 
-1. **`RefreshClaimStore` — credential-домен внутри storage-порта.**
-   `src/store/refresh_claim.rs:1-10` помечен «re-homed shape-unchanged»; backend-
-   ошибка деградирована до `String` вместо typed-варианта. Это **одна из двух
-   копий refresh-CAS**, отмеченных в аудите credential-rewrite — кандидат на
-   переезд при коллапсе credential-крейтов (см. §7).
-2. **Несоответствие id-шва.** `ids.rs` re-export'ит типизированные ULID, но
-   сигнатуры трейтов берут `&str`/`String`: `ExecutionStore::create(scope, id:
-   &str, workflow_id: &str, …)` (`src/store/execution.rs:19-25`),
-   `TransitionBatch.execution_id: String` (`src/batch.rs:21`). Типизация теряется
-   на границе порта — id-newtype не доходят до сигнатур.
-3. **Исторические заметки о снятом legacy-кодировании id** в доках
-   (`src/store/control_queue.rs:21`, `src/dto/control.rs:37`) — кода нет, чисто
-   комментарии; кандидаты на вычистку.
-4. **Мелкая неполнота карты.** `store/checkpoint.rs` и `store/webhook.rs` не
-   упомянуты в AGENTS.md «Key files».
-5. TODO/FIXME/deprecated — отсутствуют; README ↔ код противоречий не найдено.
+## K2 credential persistence
 
-## 7. Роль в пост-0092 credential/resource модели
+`CredentialPersistence` is the one object-safe credential persistence contract. The retired
+credential-local store/RPITIT bridge and tenancy metadata decorator have no compatibility aliases.
+The port exposes:
 
-Крейт **не переписывается**, но держит два шва, без которых post-0092 модель не
-сходится:
+- `CredentialOwner` — one mandatory canonical owner partition;
+- `CredentialSelector` — mandatory owner plus typed, globally unique `CredentialId`;
+- private-field `CredentialCreate`, `CredentialReplacement`, and `CredentialTombstone` intents;
+- bounded `CredentialVersion`, reserving `i64::MAX` for terminal state, and
+  positive backend-authored `CredentialMaterialEpoch`;
+- structural `StoredCredential::{Live, Tombstoned}` and live-only `StoredCredentialHead`;
+- structural `RefreshRetryGate::{Never, NotBefore}` with closed replay-safety
+  evidence, plus the outer `CredentialMaterialTransition::{Preserve {
+  refresh_retry }, Advance}`. The nested retry transition is the closed
+  `Preserve`/`Clear`/`SetNever`/`SetAfter` choice;
+- closed, secret-free `CredentialPersistenceError` outcomes; and
+- `CredentialPersistence` — physical `get`, live-only reads/lists, and explicit
+  `create`/`replace`/`tombstone` mutations, plus backend-clock
+  `refresh_retry_snapshot` returning version, material epoch,
+  reauthentication state, and admission from one linearizable backend read.
 
-- **`Scope::credential_owner_id` — основа owner-isolation.** В post-0092
-  `nebula-credential` (единый крейт: контракт + runtime + `CredentialService`
-  facade + builtin-типы) facade-уровневая tenant-изоляция строится на owner_id; а
-  единственная каноническая, collision-safe деривация owner_id живёт **здесь**
-  (`src/scope.rs:50`, ADR-0088 D7 — закрытие split-brain). Conference-correction
-  «OwnerScopedKey owner isolation» опирается ровно на этот примитив. Шов
-  стабилен; меняться не должен.
+Owner and selector values are data, not authorization proofs. Their constructors are public because
+trusted technical runtime/storage code must carry them across crate boundaries. They are absent
+from `nebula-sdk` and must never be accepted from an HTTP request or treated as evidence that an
+actor may access a tenant.
 
-- **`RefreshClaimStore` — persistence-шов refresh-CAS, чьё место жительства под
-  вопросом.** Credential full-rewrite (carry-forward 2026-06-01) числит refresh-
-  CAS как **дубль ×2**. После merge `nebula-credential-runtime → nebula-credential`
-  и появления узкого typed `RefreshTransport`-шва (conference-correction)
-  встаёт вопрос: остаётся ли claim-store контрактом в storage-порте, или
-  переезжает к credential как доменный шов. Текущее состояние — re-homed
-  shape-unchanged + деградация ошибки до `String` (§6.1) — это явный долг,
-  ожидающий решения; **не закрыт** этим документом.
+The supported authenticated HTTP management path obtains one
+`CredentialTenantAuthority` decision in `CredentialController` before deriving its owner-bound
+command. That policy belongs to `nebula-credential` plus the apps-owned trust bridge, not this port.
+Technical service/runtime paths still exist below that boundary; K3 will make the controller and
+operation ledger the sole semantic management writer.
 
-- **Зависимость credential → порт прямая.** `nebula-credential` зависит от
-  `nebula-storage-port` напрямую; storage-адаптер реализует `RefreshClaimRepo`
-  и держит `KeyProvider`/`Encryption` decorator-стек — то есть durable-сторона
-  credential lifecycle бьётся об этот контракт. lease как first-class
-  (conference-correction) на стороне execution отражён в lease-методах
-  `ExecutionStore`; для credential lease-семантика остаётся за facade, не за
-  портом.
+Every credential adapter must obey these laws:
 
-- **Resource-redesign (ADR-0093/topology) крейт НЕ трогает.** `ResourceStore`
-  здесь — это identity-CRUD строка `ResourceRow`
-  (`src/store/identity.rs`), а **не** `nebula-resource`. Per-slot rotation fan-out,
-  SlotCell, Manager, topology живут в `nebula-resource` и порт не задевают. Это
-  важно не перепутать: имя `ResourceStore` коллизирует по смыслу, но домены
-  разные.
+1. every row read and mutation includes owner plus typed credential ID;
+2. list operations require exactly one owner;
+3. wrong-owner access is indistinguishable from absence;
+4. owner, id, credential key, and creation time cannot change during replacement;
+5. the only lifecycle transition is live to tombstoned, and terminal records cannot carry
+   secret/name/expiry/reauth/metadata/retry-gate fields;
+6. refresh-retry state and material epoch are aggregate structure, never user
+   metadata or refresh-claim TTL. Backends initialize create/migration at
+   `CredentialMaterialEpoch::MIN`; `Preserve { refresh_retry }` retains the
+   epoch and applies its explicit gate transition; `Advance` increments the
+   epoch and unconditionally clears the old gate; overflow fails closed;
+7. timed admission and `SetAfter` use the backend clock; version, material
+   epoch, reauthentication, and admission are observed only through one atomic
+   snapshot; unknown persisted codes fail closed; and
+8. driver-controlled diagnostic text never enters the closed port error.
 
-## 8. Forward design / открытые вопросы
+`nebula-storage` is the sole implementation owner: SQLite, PostgreSQL, internal in-memory
+reference/conformance adapters, and audit/encryption/cache decorators implement this contract.
+`nebula-tenancy` intentionally does not implement a credential decorator.
 
-1. **Решить место жительства refresh-CAS.** До или одновременно с финализацией
-   коллапса credential-крейтов: оставить `RefreshClaimStore` контрактом в порте
-   ИЛИ перенести в `nebula-credential` как доменный шов. При любом исходе —
-   поднять backend-ошибку из `String` обратно в typed-вариант `StorageError`
-   (закрыть §6.1). Не дублировать вторую копию CAS.
-2. **Закрыть id-шов (§6.2).** Протащить типизированные ULID в сигнатуры
-   store-трейтов и поля DTO (`execution_id: ExecutionId` вместо `String`) —
-   восстановить типизацию на границе порта. Breaking для всех имплементоров
-   (`nebula-storage`) и потребителей; делать одной волной expand→contract.
-3. **Вычистить исторические заметки** о снятом legacy-кодировании id
-   (`control_queue.rs:21`, `dto/control.rs:37`) и дополнить AGENTS.md «Key files»
-   пропущенными `checkpoint.rs`/`webhook.rs` (§6.3–6.4).
-4. **Не путать `ResourceStore` (identity-row) с `nebula-resource`** при будущих
-   правках — рассмотреть переименование строки/трейта, если коллизия имён начнёт
-   вводить в заблуждение при resource-работах.
-5. **Риск:** порт — Core-tier контракт с пятью прямыми потребителями; любое
-   изменение сигнатур (особенно id-шов) — синхронная волна по api/credential/
-   engine/tenancy/storage. Планировать как breaking-refactor (expand-contract,
-   green-per-commit), не как точечную правку.
+## General tenant isolation
+
+For ordinary `Scope`-taking stores, `nebula-tenancy` resolves an authenticated binding and exposes
+scope-substituting decorators. Callers receive a handle already bound to a tenant and cannot swap a
+different request scope. Backends still include workspace and organization columns in predicates so
+wrong-scope and missing rows share one observable result.
+
+This rule must not be generalized to credential persistence: its mandatory `CredentialOwner` and
+`CredentialSelector` contract is a separate owner-isolation mechanism, with authorization decided
+above the port.
+
+## Backend and composition ownership
+
+- `nebula-storage` owns all backend code, schema migrations, credential encryption/cache/audit
+  decorators, and deployment-backed SQLite/PostgreSQL implementations.
+- In-memory adapters are internal test/reference/conformance implementations, not supported
+  deployment backends.
+- `nebula-tenancy` owns principal-to-`Scope` policy and decorators for the enumerated general
+  Scope-taking stores.
+- `apps/*` are the first-party deployment composition roots. `nebula-api` is a technical HTTP
+  boundary, not a supported downstream composition product.
+
+## Verification
+
+- Object-safety probes ensure the role traits can be held behind `Arc<dyn …>`.
+- `TransitionBatch` tests protect builder-only scope/CAS/fencing construction.
+- Credential persistence contract tests cover typed owner-bound selectors, explicit lifecycle
+  intents, terminal version headroom, structural tombstones, constant-shape secret `Debug`,
+  closed diagnostics, typed lists, and direct object safety.
+- SQLite and internal reference tests are local evidence only. Live PostgreSQL execution remains a
+  release gate and skip-clean tests are not that proof.
+
+## Explicit remaining work
+
+- **K2 — backend adoption.** Apply the frozen port across reference/SQLite/PostgreSQL adapters,
+  land the new shared migration without editing immutable history, gate ready-store construction,
+  and prove statement-owned commit outcomes plus live PostgreSQL conformance.
+- **K3 — semantic writer closure.** Make the authority-bound controller plus semantic
+  idempotency/operation ledger the sole credential management writer and add durable convergence
+  contracts without moving authority into this port.
+- **K4 — supported composition.** Provide the apps-owned durable membership bridge/operator
+  configuration, and expose only curated client and embedded SDK façades. Production credential
+  adapters already live in `apps/server`; API-side construction helpers are test-only.
+- Independently, typed IDs in several older store signatures and the refresh-claim ownership/error
+  shape remain pre-1.0 design debt; changes require a coordinated breaking wave across consumers and
+  adapters.
+
+## Invariants
+
+- No backend or policy implementation enters this Core-tier crate.
+- No port DTO depends on credential/action/API domain types.
+- Object safety is preserved for every repository role.
+- Durable execution transitions retain atomic state/outbox/journal plus CAS/fencing.
+- Credential selectors are mandatory but never treated as actor authority.
+- Lossy event-bus observations never replace persisted commands or business facts.

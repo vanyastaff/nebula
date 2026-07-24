@@ -192,7 +192,13 @@ The framework resolves declared `#[credential]` slots **before** invoking `Provi
 - Feature `rotation`: `ResourceFanoutDriver`, `ResourceFanoutIndex`, `Bind`, `RotationOutcome`.
 - `#[derive(Resource)]`, `#[derive(ResourceConfig)]`, `#[derive(ClassifyError)]` — proc-macro derivations.
 - `resource_key!` — re-exported from `nebula_core` for declaring resource keys at compile time.
-- `prelude` — `use nebula_resource::prelude::*` for the common author surface (`Provider`, `Manager`, topologies, errors). Note the per-topology hook traits (`PoolProvider` / `ResidentProvider` / `BoundedProvider`) are **not** in this prelude; import them from `nebula_resource::topology`. Integration authors normally consume the same surface through `nebula_sdk::prelude` — which does re-export `PoolProvider` / `ResidentProvider` / `BoundedProvider` (plus `BoundedMode`) and the three derives, and deliberately omits engine-only types (`Manager`, `Registry`, `ReleaseQueue`, `credential_fanout`); reach those via `nebula_sdk::nebula_resource`.
+- `prelude` — `use nebula_resource::prelude::*` for internal/direct crate consumers. Integration
+  authors use the curated `nebula_sdk::prelude`, which includes the topology hook traits and omits
+  engine-owned managers, registries, release queues, and rotation fan-out. If a required authoring
+  contract is missing from the SDK, treat it as an SDK gap; there is no supported
+  `nebula_sdk::nebula_resource` escape hatch. The SDK re-exports the resource derive names, but
+  their generated code still names implementation crates directly; derive-based resource
+  authoring is therefore not yet inside the verified one-Nebula-dependency perimeter.
 
 ## Migration recipe (pre-v4 → v4)
 

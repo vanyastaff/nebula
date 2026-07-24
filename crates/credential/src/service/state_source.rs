@@ -1,5 +1,5 @@
 //! Polymorphic credential state source. Replaces the resolver's
-//! hardcoded "state always from `CredentialStore`" (spec §8 — no
+//! hardcoded "state always from `CredentialPersistence`" (spec §8 — no
 //! adapter/bridge). `External` fulfils external provider's deferred Phase-D
 //! non-goal: resolved secrets carrying a lease are tracked via
 //! `LeaseLifecycle`.

@@ -6,6 +6,11 @@
 //! validated handles, closing the confused-deputy non-goal left open
 //! by the ADR-0052 cascade.
 
+use std::fmt;
+
+use nebula_core::CredentialId;
+use nebula_storage_port::{CredentialOwner, CredentialSelector};
+
 use super::scope::TenantScope;
 
 /// Tenant-scope-checked credential binding.
@@ -19,7 +24,7 @@ use super::scope::TenantScope;
 /// `ValidatedCredentialBinding`.
 #[derive(Debug, Clone)]
 pub struct ValidatedCredentialBinding {
-    credential_id: String,
+    credential_id: CredentialId,
     tenant_fingerprint: TenantFingerprint,
 }
 
@@ -28,25 +33,31 @@ pub struct ValidatedCredentialBinding {
 /// Constructed only from a [`TenantScope`] inside this crate. Equality
 /// is intentionally crate-private so downstream consumers cannot forge
 /// a fingerprint value.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TenantFingerprint(pub(crate) String);
+#[derive(Clone, PartialEq, Eq)]
+pub struct TenantFingerprint(pub(crate) CredentialOwner);
+
+impl fmt::Debug for TenantFingerprint {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("TenantFingerprint([redacted])")
+    }
+}
 
 impl ValidatedCredentialBinding {
     /// Crate-private constructor — the only call site is
     /// [`CredentialService::validate_credential_binding`].
     ///
     /// [`CredentialService::validate_credential_binding`]: crate::CredentialService::validate_credential_binding
-    pub(crate) fn new(credential_id: String, tenant_fingerprint: TenantFingerprint) -> Self {
+    pub(crate) fn new(credential_id: CredentialId, tenant_fingerprint: TenantFingerprint) -> Self {
         Self {
             credential_id,
             tenant_fingerprint,
         }
     }
 
-    /// The validated credential's string identifier.
+    /// The validated credential's typed identifier.
     #[must_use]
-    pub fn credential_id(&self) -> &str {
-        &self.credential_id
+    pub fn credential_id(&self) -> CredentialId {
+        self.credential_id
     }
 
     /// The owner-scoped lookup key for this binding — the credential id paired
@@ -56,12 +67,8 @@ impl ValidatedCredentialBinding {
     /// The runtime resolver consumes this to re-verify the stored row's owner
     /// at load, so a validated binding is backed by a load-time owner check
     /// rather than authorizing an unscoped load on its provenance alone.
-    #[must_use]
-    pub fn owner_scoped_key(&self) -> crate::store::OwnerScopedKey {
-        crate::store::OwnerScopedKey::new(
-            self.tenant_fingerprint.0.clone(),
-            self.credential_id.clone(),
-        )
+    pub(crate) fn selector(&self) -> CredentialSelector {
+        CredentialSelector::new(self.tenant_fingerprint.0.clone(), self.credential_id)
     }
 
     /// Crate-private access to the scope fingerprint. Consumed by the
@@ -78,7 +85,7 @@ impl TenantFingerprint {
     /// the `owner_id` string — sufficient to detect cross-tenant misuse
     /// without embedding any secret material.
     pub(crate) fn from_scope(scope: &TenantScope) -> Self {
-        Self(scope.owner_id().to_owned())
+        Self(scope.owner().clone())
     }
 }
 
@@ -117,8 +124,8 @@ pub enum ValidatedCredentialBindingError {
         actual: String,
     },
 
-    /// The credential exists and is owned by the caller but has been revoked
-    /// (carries a tombstone epoch).
+    /// The credential exists and is owned by the caller but is in the
+    /// structural terminal tombstone state.
     ///
     /// Distinct from [`NotFound`] on purpose: a binding pointing at a revoked
     /// credential is a *clear* error ("this credential was revoked"), not a
@@ -132,8 +139,7 @@ pub enum ValidatedCredentialBindingError {
     CredentialTombstoned {
         /// The revoked credential id.
         id: String,
-        /// When the credential was revoked, when the tombstone epoch is
-        /// well-formed (`None` for a tombstone whose stamp did not parse).
+        /// Physical persistence timestamp of the terminal transition.
         revoked_at: Option<chrono::DateTime<chrono::Utc>>,
     },
 

@@ -12,11 +12,6 @@ repository.workspace = true
 [features]
 default = []
 rotation = ["nebula-credential/rotation", "nebula-resource/rotation"]
-# Run the full 10-min refresh-coordinator chaos test (sub-spec §5.4) in
-# `crates/engine/tests/refresh_coordinator_chaos.rs`. Default CI runs the
-# scaled-down 30s version; this feature is enabled in the nightly chaos
-# CI job to widen the test plane to 100 credentials × 10 minutes.
-chaos-full = []
 # Exposes `RefreshCoordMetrics::for_tests()` and other test-only helpers
 # that need to construct private MetricsRegistry instances without
 # routing through the engine-shared registry. Must NOT be enabled in a
@@ -70,7 +65,7 @@ zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
 # Schema fixtures for unit tests (impl_empty_has_schema! in cfg(test) mods).
 nebula-schema = { path = "../schema" }
 # Dev-only: the credential moat tests build a real durable store backed by a
-# unique in-memory SQLite database (`SqliteCredentialStore::connect_memory`),
+# unique in-memory SQLite database (`SqliteCredentialPersistence::connect_memory`),
 # so the resolver exercises the same CAS path as production. `sqlite` is enough;
 # the nebula test-util feature was removed from nebula-storage (ADR-0092 step 8).
 nebula-storage = { path = "../storage", features = ["sqlite"] }
@@ -97,6 +92,9 @@ doctest = false
 [package.metadata.docs.rs]
 # Render feature-gated items on docs.rs (build with every feature).
 all-features = true
+
+[package.metadata.nebula.ci]
+test-features = ["rotation"]
 
 [lints]
 workspace = true

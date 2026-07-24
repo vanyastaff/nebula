@@ -18,7 +18,8 @@
 //!
 //! - `UserRow.id` (BYTEA, 16 bytes) is the raw ULID payload via
 //!   `UserId::as_bytes` / `UserId::from_bytes`.
-//! - `SessionRow.id` / `PersonalAccessTokenRow.id` / OAuth `state`
+//! - Presented session cookies are stored only as domain-separated SHA-256
+//!   digests. `PersonalAccessTokenRow.id` / OAuth `state`
 //!   are stored as the existing helper string outputs cast to
 //!   `as_bytes().to_vec()`. The migration docstrings call these
 //!   columns "`sess_` ULID" / "`pat_` ULID" — today we keep the
@@ -26,16 +27,12 @@
 //!   diverging from the in-memory backend or breaking the existing
 //!   `me_e2e.rs` test surface. Refactoring the primitives to mint
 //!   real ULIDs is a separate change.
-//! - `users.mfa_secret` (BYTEA) holds the base32-encoded TOTP secret
-//!   as raw UTF-8 bytes; on read we `String::from_utf8` back into the
-//!   base32 form [`mfa::verify_code`] consumes. Encryption-at-rest
-//!   is deferred to a follow-up that wires the credential service's
-//!   master-key envelope into the identity surface.
-//! - `OAuthStateRow.redirect_uri` is always `None` today —
-//!   the [`AuthBackend::start_oauth`] trait signature does not yet
-//!   accept a `redirect_uri` parameter. The column stays correctly
-//!   nullable so a future trait-signature change picks it up without
-//!   a migration.
+//! - `users.mfa_secret_envelope` holds a versioned AES-256-GCM envelope
+//!   authenticated for the exact user and active-TOTP purpose. Pending
+//!   enrollment uses a distinct AAD purpose and is decrypted/re-sealed when
+//!   promoted, so ciphertext cannot be copied across lifecycle authorities.
+//! - `OAuthStateRow.redirect_uri` persists the exact handler-derived
+//!   callback URL and is rechecked before provider egress.
 //!
 //! ## Transactional flows
 //!
@@ -49,11 +46,9 @@
 //!
 //! ## Background sweepers
 //!
-//! `cleanup_expired` exists on `SessionRepo`,
-//! `VerificationTokenRepo`, and `OAuthStateRepo` but is not invoked
-//! here. Wiring a sweeper task is deferred to a follow-up; production
-//! deployments should run a periodic cleanup job against the three
-//! TTL-bearing tables.
+//! OAuth start performs activity-driven cleanup of expired OAuth state.
+//! Session and verification-token cleanup still require the deployment's
+//! periodic maintenance job.
 //!
 //! [`register_user`]: AuthBackend::register_user
 //! [`verify_email`]: AuthBackend::verify_email
@@ -71,16 +66,23 @@ use nebula_metrics::{
         NEBULA_API_AUTH_OAUTH_ATTEMPTS_TOTAL, auth_outcome,
     },
 };
+use rand::Rng;
 use sha2::{Digest, Sha256};
 use sqlx::{Pool, Postgres};
 
 use nebula_storage::{
+    identity_secret::{IdentitySecretCodec, TotpSecretPurpose},
     pg::{
-        PgExternalIdentityRepo, PgOAuthStateRepo, PgPatRepo, PgSessionRepo, PgUserRepo,
-        PgVerificationTokenRepo,
+        PgMfaEnrollmentRepo, PgOAuthLoginFinalizer, PgOAuthStateRepo, PgPatRepo, PgSessionRepo,
+        PgUserRepo, PgVerificationTokenRepo,
     },
-    repos::{OAuthStateRepo, PatRepo, SessionRepo, UserRepo, VerificationTokenRepo},
-    rows::{OAuthStateRow, PersonalAccessTokenRow, SessionRow, UserRow, VerificationTokenRow},
+    repos::{
+        MfaEnrollmentCandidate, MfaEnrollmentInstallOutcome, MfaEnrollmentRepo,
+        OAuthLoginFinalizeCommand, OAuthLoginFinalizeOutcome, OAuthLoginFinalized,
+        OAuthLoginMfaChallengeDraft, OAuthLoginSessionDraft, OAuthLoginUserDraft,
+        OAuthStateAdmission, OAuthStateRepo, PatRepo, SessionRepo, UserRepo, VerificationTokenRepo,
+    },
+    rows::{OAuthStateRow, PersonalAccessTokenRow, SessionDraft, UserRow, VerificationTokenRow},
 };
 
 use super::{
@@ -91,8 +93,8 @@ use super::{
     password,
     pat::{self, MintedPat, PatRecord, compute_pat_expires_at},
     provider::{
-        AuthBackend, CreatePatParams, MfaEnrollment, OAuthCompletion, OAuthStart, PasswordOutcome,
-        ProfilePatch, metrics_emit,
+        AuthBackend, AuthenticatedSession, CreatePatParams, MFA_ENROLLMENT_TTL, MfaEnrollment,
+        OAuthCompletion, OAuthStart, PasswordOutcome, ProfilePatch, metrics_emit,
     },
     session::{self, SESSION_TTL, SessionRecord, expires_at},
 };
@@ -137,6 +139,7 @@ pub struct PgAuthBackend {
     session_repo: Arc<PgSessionRepo>,
     pat_repo: Arc<PgPatRepo>,
     verification_token_repo: Arc<PgVerificationTokenRepo>,
+    mfa_enrollment_repo: Arc<PgMfaEnrollmentRepo>,
     oauth_state_repo: Arc<PgOAuthStateRepo>,
     /// Held alongside the repos because the multi-step flows
     /// ([`register_user`], [`verify_email`],
@@ -162,27 +165,15 @@ pub struct PgAuthBackend {
     /// from operator dashboards; tests that don't exercise the emission
     /// seam pass `None`.
     metrics: Option<Arc<MetricsRegistry>>,
-    /// Operator-supplied OAuth providers config (Plane A). Defaults
-    /// to empty per `OAuthProvidersConfig::default()` so backends
-    /// constructed without an explicit `with_oauth_providers` call
-    /// behave as if no provider is declared (start_oauth returns
-    /// `ProviderNotConfigured`, matching the boot fail-closed
-    /// posture of REQ-compose-001 Invariant 1). Production
-    /// composition root wires it from `api_config.auth.oauth`.
-    ///
-    /// Wrapped in `Arc` because the backend itself is wrapped in an
-    /// `Arc<dyn AuthBackend>` and the config is read-only at runtime
-    /// — sharing one allocation across the backend's clones avoids
-    /// repeated deep-copies of the secrets map.
-    oauth_providers: Arc<crate::config::OAuthProvidersConfig>,
-    /// Repository for the `external_identities` table (Plane-A OAuth
-    /// provider ↔ Nebula user linkage). Per ADR-0085 D-8 +
-    /// REQ-oauth-005 / REQ-oauth-006. PR-4 consumes this on the
-    /// `complete_oauth` path: REQ-oauth-006 short-circuit checks
-    /// `find_user_by_external` first (repeat-login → mint session
-    /// directly); first-login + cross-link branches call
-    /// `link_external` after the user row is created or located.
-    external_identity_repo: Arc<PgExternalIdentityRepo>,
+    /// Opaque Plane-A runtime. `None` means OAuth is disabled safely.
+    oauth_runtime: Option<Arc<crate::transport::oauth::OAuthIdentityRuntime>>,
+    /// Transaction owner for OAuth user/link/session convergence. Keeping
+    /// this behind one storage-owned boundary prevents partial identities
+    /// and duplicate users under concurrent callbacks.
+    oauth_login_finalizer: Arc<PgOAuthLoginFinalizer>,
+    /// Shared credential/identity key authority, snapshotted by the identity
+    /// codec and injected by the first-party composition root.
+    identity_secrets: Arc<IdentitySecretCodec>,
 }
 
 impl PgAuthBackend {
@@ -200,33 +191,38 @@ impl PgAuthBackend {
         pool: Pool<Postgres>,
         email_port: Arc<dyn EmailPort>,
         metrics: Option<Arc<MetricsRegistry>>,
+        identity_secrets: Arc<IdentitySecretCodec>,
     ) -> Self {
         Self {
             user_repo: Arc::new(PgUserRepo::new(pool.clone())),
             session_repo: Arc::new(PgSessionRepo::new(pool.clone())),
             pat_repo: Arc::new(PgPatRepo::new(pool.clone())),
             verification_token_repo: Arc::new(PgVerificationTokenRepo::new(pool.clone())),
+            mfa_enrollment_repo: Arc::new(PgMfaEnrollmentRepo::new(
+                pool.clone(),
+                Arc::clone(&identity_secrets),
+            )),
             oauth_state_repo: Arc::new(PgOAuthStateRepo::new(pool.clone())),
-            external_identity_repo: Arc::new(PgExternalIdentityRepo::new(pool.clone())),
+            oauth_login_finalizer: Arc::new(PgOAuthLoginFinalizer::new(pool.clone())),
             pool,
             email_port,
             metrics,
-            oauth_providers: Arc::new(crate::config::OAuthProvidersConfig::default()),
+            oauth_runtime: None,
+            identity_secrets,
         }
     }
 
-    /// Attach the operator OAuth providers config. Composition root
-    /// calls this with `Arc::new(api_config.auth.oauth.clone())` so
-    /// the backend can serve real authorize URLs (PR-3) and complete
-    /// OAuth flows (PR-4). Tests skip this when they don't exercise
-    /// OAuth — the default empty config makes start_oauth return
-    /// `ProviderNotConfigured` for any provider.
+    /// Attach the single opaque Plane-A OAuth runtime.
+    ///
+    /// First-party composition only; this technical seam is not a supported
+    /// `nebula-sdk` surface.
+    #[doc(hidden)]
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_oauth_providers(
+    pub fn with_oauth_runtime(
         mut self,
-        providers: Arc<crate::config::OAuthProvidersConfig>,
+        runtime: Arc<crate::transport::oauth::OAuthIdentityRuntime>,
     ) -> Self {
-        self.oauth_providers = providers;
+        self.oauth_runtime = Some(runtime);
         self
     }
 
@@ -234,6 +230,46 @@ impl PgAuthBackend {
     #[must_use]
     pub fn into_arc(self) -> Arc<dyn AuthBackend> {
         Arc::new(self)
+    }
+
+    async fn consume_oauth_state(
+        &self,
+        provider: OAuthProvider,
+        state: &str,
+        redirect_uri: &str,
+    ) -> Result<OAuthStateRow, AuthError> {
+        let row = self
+            .oauth_state_repo
+            .consume_by_state_and_provider(state, provider.as_str())
+            .await
+            .map_err(oauth_state_repo_error)?
+            .ok_or(AuthError::InvalidToken)?;
+        match row.redirect_uri.as_deref() {
+            Some(stored) if stored == redirect_uri => Ok(row),
+            _ => Err(AuthError::from_oauth_failure(
+                crate::transport::oauth::OAuthFailureCode::RedirectUriMismatch,
+            )),
+        }
+    }
+
+    async fn verify_active_mfa_code(&self, user: &UserRow, code: &str) -> Result<bool, AuthError> {
+        let envelope = user
+            .mfa_secret_envelope
+            .as_deref()
+            .ok_or(AuthError::InvalidMfaCode)?;
+        let opened = self
+            .identity_secrets
+            .open_totp_seed(TotpSecretPurpose::Active, &user.id, envelope)
+            .map_err(identity_secret_auth_error)?;
+        let secret = std::str::from_utf8(&opened.plaintext)
+            .map_err(|_| AuthError::Internal("MFA secret encoding is invalid".to_owned()))?;
+        let valid = mfa::verify_code(secret, code)?;
+        if let Some(replacement) = opened.replacement_envelope.as_deref() {
+            self.user_repo
+                .rotate_mfa_secret_envelope(&user.id, envelope, replacement)
+                .await?;
+        }
+        Ok(valid)
     }
 }
 
@@ -244,6 +280,127 @@ fn sha256_token(plaintext: &str) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(plaintext.as_bytes());
     hasher.finalize().into()
+}
+
+/// Plane-A state values and PKCE verifiers are secrets. Repository errors can
+/// contain PostgreSQL constraint detail with bound values, so this boundary
+/// deliberately discards every underlying detail before auth logging.
+fn oauth_state_repo_error(_: nebula_storage::StorageError) -> AuthError {
+    AuthError::Internal("OAuth state storage operation failed".to_owned())
+}
+
+/// Pending enrollment rows carry opaque identity-secret envelopes and
+/// candidate identifiers. Database constraint details must not cross the
+/// Plane-A auth boundary.
+fn mfa_enrollment_repo_error(_: nebula_storage::StorageError) -> AuthError {
+    AuthError::Internal("MFA enrollment storage operation failed".to_owned())
+}
+
+fn identity_secret_auth_error(
+    _: nebula_storage::identity_secret::IdentitySecretError,
+) -> AuthError {
+    AuthError::Internal("MFA secret envelope operation failed".to_owned())
+}
+
+fn require_oauth_state_admitted(admission: OAuthStateAdmission) -> Result<(), AuthError> {
+    match admission {
+        OAuthStateAdmission::Created => Ok(()),
+        OAuthStateAdmission::AtCapacity | OAuthStateAdmission::Contended => {
+            Err(AuthError::RateLimit)
+        },
+        _ => Err(AuthError::Internal(
+            "OAuth state storage returned an unsupported admission outcome".to_owned(),
+        )),
+    }
+}
+
+fn oauth_start_outcome<T>(result: &Result<T, AuthError>) -> &'static str {
+    match result {
+        Ok(_) => auth_outcome::SUCCESS,
+        Err(AuthError::OAuthFailed | AuthError::ProviderNotConfigured) => {
+            auth_outcome::OAUTH_FAILED
+        },
+        Err(AuthError::RateLimit) => auth_outcome::RATE_LIMIT,
+        Err(_) => auth_outcome::INTERNAL,
+    }
+}
+
+/// OAuth finalization errors may contain constraint details and bound
+/// identity values. Keep the auth boundary secret-free and stable.
+fn oauth_login_finalize_error(_: nebula_storage::StorageError) -> AuthError {
+    AuthError::Internal("OAuth login storage operation failed".to_owned())
+}
+
+struct PreparedOAuthFinalize {
+    command: OAuthLoginFinalizeCommand,
+    csrf_token: String,
+    challenge_token: String,
+}
+
+fn build_oauth_finalize_command(
+    provider: OAuthProvider,
+    subject: &str,
+    verified_email: Option<String>,
+) -> Result<PreparedOAuthFinalize, AuthError> {
+    let session_id = session::random_token(32)?;
+    let csrf_token = session::random_token(24)?;
+    let challenge_token = session::random_token(24)?;
+    let now = Utc::now();
+    let expires_at = now + chrono_duration(SESSION_TTL)?;
+    let challenge_expires_at = now + chrono_duration(MFA_CHALLENGE_TTL)?;
+    let display_name = verified_email.as_deref().unwrap_or("OAuth user").to_owned();
+    Ok(PreparedOAuthFinalize {
+        command: OAuthLoginFinalizeCommand {
+            provider: provider.as_str().to_owned(),
+            subject: subject.to_owned(),
+            verified_email,
+            candidate_user: OAuthLoginUserDraft {
+                id: UserId::new().as_bytes().to_vec(),
+                display_name,
+                avatar_url: None,
+                created_at: now,
+            },
+            session: OAuthLoginSessionDraft {
+                token: session_id.into_bytes(),
+                created_at: now,
+                last_active_at: now,
+                expires_at,
+                ip_address: None,
+                user_agent: None,
+            },
+            mfa_challenge: OAuthLoginMfaChallengeDraft {
+                token_hash: sha256_token(&challenge_token),
+                created_at: now,
+                expires_at: challenge_expires_at,
+            },
+        },
+        csrf_token,
+        challenge_token,
+    })
+}
+
+fn finalized_oauth_completion(
+    finalized: OAuthLoginFinalized,
+    csrf_token: String,
+) -> Result<OAuthCompletion, AuthError> {
+    let OAuthLoginFinalized {
+        user,
+        session_token,
+        session_expires_at,
+    } = finalized;
+    let user_id = user_id_from_bytes(&user.id)?;
+    let session_id = String::from_utf8(session_token)
+        .map_err(|_| AuthError::Internal("OAuth session id is not valid UTF-8".to_owned()))?;
+    let session_record = SessionRecord {
+        id: session_id,
+        principal: Principal::User(user_id),
+        csrf_token,
+        expires_at: session_expires_at,
+    };
+    Ok(OAuthCompletion::SessionCreated {
+        user: row_to_profile(&user)?,
+        session: session_record,
+    })
 }
 
 /// Parse a `usr_<ULID>`-prefixed string into the raw 16-byte ULID
@@ -318,7 +475,7 @@ impl AuthBackend for PgAuthBackend {
     async fn get_principal_by_session(
         &self,
         session_id: &str,
-    ) -> Result<Option<Principal>, crate::ApiError> {
+    ) -> Result<Option<AuthenticatedSession>, crate::ApiError> {
         let row = self
             .session_repo
             .get(session_id.as_bytes())
@@ -327,7 +484,10 @@ impl AuthBackend for PgAuthBackend {
         match row {
             Some(row) => {
                 let user_id = user_id_from_bytes(&row.user_id).map_err(crate::ApiError::from)?;
-                Ok(Some(Principal::User(user_id)))
+                Ok(Some(AuthenticatedSession {
+                    principal: Principal::User(user_id),
+                    authenticated_at: row.created_at,
+                }))
             },
             None => Ok(None),
         }
@@ -377,7 +537,7 @@ impl AuthBackend for PgAuthBackend {
                     "INSERT INTO users \
              (id, email, email_verified_at, display_name, avatar_url, password_hash, \
               created_at, last_login_at, locked_until, failed_login_count, mfa_enabled, \
-              mfa_secret, version, deleted_at) \
+              mfa_secret_envelope, version, deleted_at) \
              VALUES ($1, $2, NULL, $3, NULL, $4, $5, NULL, NULL, 0, FALSE, NULL, 0, NULL)",
                 )
                 .bind(user_bytes.as_slice())
@@ -504,9 +664,8 @@ impl AuthBackend for PgAuthBackend {
                 self.user_repo.record_login_success(&user.id).await?;
 
                 if user.mfa_enabled {
-                    let secret = decode_mfa_secret(&user)?;
                     if let Some(code) = totp {
-                        if !mfa::verify_code(&secret, code)? {
+                        if !self.verify_active_mfa_code(&user, code).await? {
                             return Err(AuthError::InvalidMfaCode);
                         }
                         Ok(PasswordOutcome::Authenticated(row_to_profile(&user)?))
@@ -572,8 +731,7 @@ impl AuthBackend for PgAuthBackend {
                     .get(&token_row.user_id)
                     .await?
                     .ok_or(AuthError::UserNotFound)?;
-                let secret = decode_mfa_secret(&user)?;
-                if !mfa::verify_code(&secret, code)? {
+                if !self.verify_active_mfa_code(&user, code).await? {
                     return Err(AuthError::InvalidMfaCode);
                 }
                 row_to_profile(&user)
@@ -601,16 +759,18 @@ impl AuthBackend for PgAuthBackend {
         let now = Utc::now();
         let exp = now + chrono_duration(SESSION_TTL)?;
         self.session_repo
-            .create(&SessionRow {
-                id: session_id.as_bytes().to_vec(),
-                user_id: user_bytes.to_vec(),
-                created_at: now,
-                last_active_at: now,
-                expires_at: exp,
-                ip_address: None,
-                user_agent: None,
-                revoked_at: None,
-            })
+            .create(
+                session_id.as_bytes(),
+                &SessionDraft {
+                    user_id: user_bytes.to_vec(),
+                    created_at: now,
+                    last_active_at: now,
+                    expires_at: exp,
+                    ip_address: None,
+                    user_agent: None,
+                    revoked_at: None,
+                },
+            )
             .await?;
         Ok(SessionRecord {
             id: session_id,
@@ -1014,16 +1174,31 @@ impl AuthBackend for PgAuthBackend {
             NEBULA_API_AUTH_MFA_ATTEMPTS_TOTAL,
             None,
             async move {
-                let mut row = fetch_user_by_id(&self.user_repo, user_id).await?;
+                let row = fetch_user_by_id(&self.user_repo, user_id).await?;
                 let (secret, uri) = mfa::mint_secret(&row.email)?;
-                // Save secret but DO NOT flip mfa_enabled until
-                // confirm_mfa_enrollment. Encryption-at-rest of the MFA secret
-                // is deferred to a follow-up that wires the credential
-                // service's master-key envelope into the identity surface.
-                row.mfa_secret = Some(secret.as_bytes().to_vec());
-                row.mfa_enabled = false;
-                let expected_version = row.version;
-                self.user_repo.update(&row, expected_version).await?;
+                let secret_envelope = self
+                    .identity_secrets
+                    .seal_totp_seed(
+                        TotpSecretPurpose::EnrollmentCandidate,
+                        &row.id,
+                        secret.as_bytes(),
+                    )
+                    .map_err(identity_secret_auth_error)?;
+                let mut enrollment_id = [0_u8; 32];
+                rand::rng().fill_bytes(&mut enrollment_id);
+                let now = Utc::now();
+                let candidate = MfaEnrollmentCandidate::new(
+                    enrollment_id,
+                    row.id,
+                    secret_envelope,
+                    now,
+                    now + chrono_duration(MFA_ENROLLMENT_TTL)?,
+                )
+                .map_err(mfa_enrollment_repo_error)?;
+                self.mfa_enrollment_repo
+                    .replace_candidate(&candidate)
+                    .await
+                    .map_err(mfa_enrollment_repo_error)?;
                 Ok(MfaEnrollment {
                     otpauth_uri: uri,
                     secret_base32: secret,
@@ -1044,17 +1219,42 @@ impl AuthBackend for PgAuthBackend {
             NEBULA_API_AUTH_MFA_ATTEMPTS_TOTAL,
             None,
             async move {
-                let mut row = fetch_user_by_id(&self.user_repo, user_id).await?;
-                let secret = decode_mfa_secret(&row).map_err(|_| AuthError::InvalidMfaCode)?;
-                if !mfa::verify_code(&secret, code)? {
+                let user_bytes = user_id_bytes(user_id)?;
+                let candidate = self
+                    .mfa_enrollment_repo
+                    .get_live_candidate(&user_bytes)
+                    .await
+                    .map_err(mfa_enrollment_repo_error)?
+                    .ok_or(AuthError::InvalidMfaCode)?;
+                let opened = self
+                    .identity_secrets
+                    .open_totp_seed(
+                        TotpSecretPurpose::EnrollmentCandidate,
+                        &user_bytes,
+                        candidate.secret_envelope(),
+                    )
+                    .map_err(identity_secret_auth_error)?;
+                let secret = std::str::from_utf8(&opened.plaintext).map_err(|_| {
+                    AuthError::Internal("MFA secret encoding is invalid".to_owned())
+                })?;
+                if !mfa::verify_code(secret, code)? {
                     return Err(AuthError::InvalidMfaCode);
                 }
-                if !row.mfa_enabled {
-                    row.mfa_enabled = true;
-                    let expected_version = row.version;
-                    self.user_repo.update(&row, expected_version).await?;
+                let enrollment_id = *candidate.enrollment_id();
+                match self
+                    .mfa_enrollment_repo
+                    .install_candidate(&user_bytes, &enrollment_id)
+                    .await
+                    .map_err(mfa_enrollment_repo_error)?
+                {
+                    MfaEnrollmentInstallOutcome::Installed => Ok(()),
+                    MfaEnrollmentInstallOutcome::CandidateUnavailable => {
+                        Err(AuthError::InvalidMfaCode)
+                    },
+                    _ => Err(AuthError::Internal(
+                        "unsupported MFA enrollment installation outcome".to_owned(),
+                    )),
                 }
-                Ok(())
             },
             |result| match result {
                 Ok(()) => auth_outcome::SUCCESS,
@@ -1066,82 +1266,39 @@ impl AuthBackend for PgAuthBackend {
     }
 
     #[tracing::instrument(level = "info", skip(self, redirect_uri), fields(provider = %provider.as_str()))]
-    // PR-3 T3.8 GREEN: rewrite to emit a REAL authorize URL via
-    // `flow::build_authorization_uri` after resolving the provider's
-    // endpoints (Oidc → discovery doc cache; Manual → operator
-    // config). Replaces the synthetic `https://nebula.local/...`
-    // placeholder from before PR-3.
+    // Resolve provider endpoints under the fixed runtime policy and persist
+    // the PKCE state plus exact callback URL durably.
     async fn start_oauth(
         &self,
         provider: OAuthProvider,
         redirect_uri: &str,
     ) -> Result<OAuthStart, AuthError> {
-        use secrecy::ExposeSecret;
-
-        use crate::transport::oauth::{
-            discovery::resolve_provider_endpoints,
-            flow::{AuthorizationUriRequest, build_authorization_uri},
-        };
-
         let provider_label = metrics_emit::oauth_provider_label(provider);
         let redirect_uri = redirect_uri.to_owned();
-        let oauth_providers = Arc::clone(&self.oauth_providers);
+        let runtime = self.oauth_runtime.as_ref().map(Arc::clone);
         metrics_emit::run_with_metrics(
             &self.metrics,
             NEBULA_API_AUTH_OAUTH_ATTEMPTS_TOTAL,
             Some(provider_label),
             async move {
-                // Step 1: lookup the operator config for `provider`;
-                // 503 ProviderNotConfigured per ADR-0085 D-6 if absent.
-                let provider_cfg = oauth_providers.providers.get(&provider).ok_or_else(|| {
-                    AuthError::ProviderNotConfigured {
-                        provider: provider.as_str().to_owned(),
-                    }
-                })?;
-
-                // Step 2: resolve endpoints (Oidc → discovery cache;
-                // Manual → operator config). Any SSRF / fetch failure
-                // bubbles up as AuthError::OAuthFailed with the
-                // typed DiscoveryError formatted.
-                let endpoints = resolve_provider_endpoints(
-                    provider_cfg,
-                    oauth_providers.oauth_allow_insecure_localhost,
-                )
-                .await
-                .map_err(|e| AuthError::OAuthFailed(e.to_string()))?;
-
-                // Step 3: mint PKCE pair.
+                let runtime = runtime.ok_or(AuthError::ProviderNotConfigured)?;
                 let pkce = mint_pkce()?;
-
-                // Step 4: build the authorize URL with PKCE S256
-                // params. `build_authorization_uri` is the same
-                // helper Plane-B uses, ensuring uniform query-string
-                // construction across the two planes.
-                let auth_req = AuthorizationUriRequest {
-                    auth_url: endpoints.authorize_url.clone(),
-                    token_url: endpoints.token_url.clone(),
-                    client_id: provider_cfg.client_id.expose_secret().to_owned(),
-                    client_secret: provider_cfg.client_secret.expose_secret().to_owned(),
-                    redirect_uri: redirect_uri.clone(),
-                    scopes: Some(endpoints.scopes.clone()),
-                    auth_style: None,
-                };
-                let authorize_url =
-                    build_authorization_uri(&auth_req, &pkce.state, &pkce.code_challenge)
-                        .map_err(|e| {
-                            AuthError::OAuthFailed(format!(
-                                "authorize URL construction failed: {e}"
-                            ))
-                        })?
-                        .to_string();
-
-                // Step 5: persist the OAuth state row with the
-                // handler-derived redirect_uri so complete_oauth can
-                // re-verify it (Scenario 3.10 public_url_changed_mid_flow).
+                let deadline = runtime.begin_deadline();
+                let authorize_url = runtime
+                    .build_authorization_url(
+                        &deadline,
+                        provider,
+                        &redirect_uri,
+                        &pkce.state,
+                        &pkce.code_challenge,
+                    )
+                    .await
+                    .map_err(AuthError::from_oauth_failure)?;
                 let now = Utc::now();
                 let expires_at = now + chrono_duration(OAUTH_STATE_TTL)?;
-                self.oauth_state_repo
-                    .create(&OAuthStateRow {
+                let admission = self
+                    .oauth_state_repo
+                    .admit(&OAuthStateRow {
                         state: pkce.state.clone(),
                         provider: provider.as_str().to_owned(),
                         code_verifier: pkce.code_verifier,
@@ -1150,35 +1307,52 @@ impl AuthBackend for PgAuthBackend {
                         expires_at,
                         consumed_at: None,
                     })
-                    .await?;
+                    .await
+                    .map_err(oauth_state_repo_error)?;
+                require_oauth_state_admitted(admission)?;
                 Ok(OAuthStart {
                     authorize_url,
                     state: pkce.state,
                 })
             },
+            oauth_start_outcome,
+        )
+        .await
+    }
+
+    #[tracing::instrument(
+        level = "info",
+        skip(self, state, redirect_uri),
+        fields(provider = %provider.as_str(), state_len = state.len())
+    )]
+    async fn cancel_oauth(
+        &self,
+        provider: OAuthProvider,
+        state: &str,
+        redirect_uri: &str,
+    ) -> Result<(), AuthError> {
+        let provider_label = metrics_emit::oauth_provider_label(provider);
+        metrics_emit::run_with_metrics(
+            &self.metrics,
+            NEBULA_API_AUTH_OAUTH_ATTEMPTS_TOTAL,
+            Some(provider_label),
+            async move {
+                self.consume_oauth_state(provider, state, redirect_uri)
+                    .await?;
+                Ok(())
+            },
             |result| match result {
-                Ok(_) => auth_outcome::SUCCESS,
-                // PR-3 wave-2 (CodeRabbit G.5): classify the new
-                // fail-closed `ProviderNotConfigured` variant as
-                // OAUTH_FAILED in the inline closure too, mirroring
-                // the `default_outcome_for` table in error.rs. Without
-                // this, an unconfigured-provider error gets the
-                // `internal` label and looks like a server bug in
-                // dashboards instead of a deployment-state issue.
-                Err(AuthError::OAuthFailed(_) | AuthError::ProviderNotConfigured { .. }) => {
-                    auth_outcome::OAUTH_FAILED
-                },
+                Ok(()) => auth_outcome::OAUTH_FAILED,
+                Err(AuthError::InvalidToken) => auth_outcome::TOKEN_INVALID,
+                Err(AuthError::OAuthFailed) => auth_outcome::OAUTH_FAILED,
                 Err(_) => auth_outcome::INTERNAL,
             },
         )
         .await
     }
 
-    // PR-4 T4.17 GREEN: real complete_oauth via token POST + userinfo
-    // GET + REQ-oauth-006 short-circuit + email truth-table. See
-    // crates/api/src/domain/auth/backend/in_memory.rs for the matching
-    // InMemory impl. The two share the same shape; PG differs in
-    // using repo / sqlx access instead of DashMap.
+    // Token exchange, userinfo, verified-email policy and identity linking
+    // mirror the in-memory implementation; persistence is durable PG.
     #[tracing::instrument(level = "info", skip(self, state, code, redirect_uri), fields(provider = %provider.as_str(), state_len = state.len()))]
     async fn complete_oauth(
         &self,
@@ -1187,235 +1361,126 @@ impl AuthBackend for PgAuthBackend {
         code: &str,
         redirect_uri: &str,
     ) -> Result<OAuthCompletion, AuthError> {
-        use nebula_storage::repos::{ExternalIdentityRepo, UserRepo};
-        use nebula_storage::rows::UserRow;
-        use secrecy::ExposeSecret;
-
-        use crate::transport::oauth::{
-            discovery::resolve_provider_endpoints,
-            flow::{TokenExchangeRequest, exchange_code},
-            userinfo::{UserinfoClaims, fetch_primary_verified_email, fetch_userinfo},
-        };
-
         let provider_label = metrics_emit::oauth_provider_label(provider);
         let redirect_uri = redirect_uri.to_owned();
         let code = code.to_owned();
         let state = state.to_owned();
-        let oauth_providers = Arc::clone(&self.oauth_providers);
+        let runtime = self.oauth_runtime.as_ref().map(Arc::clone);
         metrics_emit::run_with_metrics(
             &self.metrics,
             NEBULA_API_AUTH_OAUTH_ATTEMPTS_TOTAL,
             Some(provider_label),
             async move {
-                // Step 1: atomically consume the state row
-                // (consume_by_state_and_provider filters on provider
-                // inside the UPDATE — cross-provider replay rejected).
+                let runtime = runtime.ok_or(AuthError::ProviderNotConfigured)?;
                 let row = self
-                    .oauth_state_repo
-                    .consume_by_state_and_provider(&state, provider.as_str())
-                    .await?
-                    .ok_or(AuthError::InvalidToken)?;
-
-                // Step 2: verify the row's redirect_uri matches the
-                // handler-derived value (Scenario 3.10
-                // public_url_changed_mid_flow defense).
-                match row.redirect_uri.as_deref() {
-                    Some(stored) if stored == redirect_uri => {},
-                    _ => {
-                        return Err(AuthError::OAuthFailed(
-                            "public_url_changed_mid_flow".to_owned(),
-                        ));
-                    },
-                }
-
-                // Step 3: lookup provider config.
-                let provider_cfg = oauth_providers.providers.get(&provider).ok_or_else(|| {
-                    AuthError::ProviderNotConfigured {
-                        provider: provider.as_str().to_owned(),
-                    }
-                })?;
-
-                // Step 4: resolve endpoints.
-                let endpoints = resolve_provider_endpoints(
-                    provider_cfg,
-                    oauth_providers.oauth_allow_insecure_localhost,
-                )
-                .await
-                .map_err(|e| AuthError::OAuthFailed(e.to_string()))?;
-
-                // Step 5: exchange code for token.
-                let token_req = TokenExchangeRequest {
-                    token_url: endpoints.token_url.clone(),
-                    client_id: provider_cfg.client_id.expose_secret().to_owned(),
-                    client_secret: provider_cfg.client_secret.expose_secret().to_owned(),
-                    code: code.clone(),
-                    redirect_uri: redirect_uri.clone(),
-                    code_verifier: row.code_verifier.clone(),
-                    auth_style: nebula_credential::AuthStyle::Header,
-                };
-                let token_response = exchange_code(&token_req)
+                    .consume_oauth_state(provider, &state, &redirect_uri)
+                    .await?;
+                let deadline = runtime.begin_deadline();
+                let pending = runtime
+                    .begin_identity_completion(
+                        deadline,
+                        provider,
+                        &state,
+                        &code,
+                        &redirect_uri,
+                        &row.code_verifier,
+                    )
                     .await
-                    .map_err(AuthError::OAuthFailed)?;
-                let access_token = token_response
-                    .get("access_token")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        AuthError::OAuthFailed("token response missing access_token".to_owned())
-                    })?
-                    .to_owned();
-                let id_token_present = token_response
-                    .get("id_token")
-                    .map(|v| !v.is_null())
-                    .unwrap_or(false);
-                tracing::debug!(
-                    provider = %provider.as_str(),
-                    id_token_present,
-                    "OAuth complete: token exchange succeeded"
-                );
+                    .map_err(AuthError::from_oauth_failure)?;
+                let sub = pending.subject().to_owned();
 
-                // Step 6: GET userinfo.
-                let UserinfoClaims {
-                    sub,
-                    email,
-                    email_verified,
-                } = fetch_userinfo(&endpoints.userinfo_url, &access_token)
+                // First ask storage to resolve an existing stable subject
+                // link. This path atomically creates exactly one local auth
+                // artifact and avoids an unnecessary verified-email request
+                // on repeat login.
+                let PreparedOAuthFinalize {
+                    command,
+                    csrf_token,
+                    challenge_token,
+                } = build_oauth_finalize_command(provider, &sub, None)?;
+                match self
+                    .oauth_login_finalizer
+                    .finalize(command)
                     .await
-                    .map_err(|e| AuthError::OAuthFailed(e.to_string()))?;
-
-                // Step 7: REQ-oauth-006 short-circuit BEFORE the
-                // verified-emails fallback fetch (mirrors InMemory).
-                if let Some(user_id_bytes) = self
-                    .external_identity_repo
-                    .find_user_by_external(provider.as_str(), &sub)
-                    .await?
+                    .map_err(oauth_login_finalize_error)?
                 {
-                    drop(access_token);
-                    let user_row = self.user_repo.get(&user_id_bytes).await?.ok_or_else(|| {
-                        AuthError::Internal(
-                            "external_identities link references missing user (CASCADE skipped?)"
-                                .to_owned(),
-                        )
-                    })?;
-                    let user_id_str = user_id_from_bytes(&user_row.id)?.to_string();
-                    let session = self.create_session(&user_id_str).await?;
-                    tracing::info!(
-                        provider = %provider.as_str(),
-                        cause = "existing_external_identity_linked",
-                        "OAuth complete: REQ-oauth-006 short-circuit"
-                    );
-                    return Ok(OAuthCompletion {
-                        user: row_to_profile(&user_row)?,
-                        session,
-                    });
-                }
-
-                // Step 8: GitHub-style verified_emails fallback (per
-                // ADR-0085 D-5 wave-6).
-                let (resolved_email, resolved_verified) = match (email_verified, email) {
-                    (Some(true), Some(e)) => (e, true),
-                    (Some(false), Some(e)) => (e, false),
-                    (Some(_), None) => {
-                        return Err(AuthError::OAuthFailed(
-                            "IdP userinfo missing email".to_owned(),
+                    OAuthLoginFinalizeOutcome::Finalized(finalized) => {
+                        drop(pending);
+                        drop(challenge_token);
+                        return finalized_oauth_completion(*finalized, csrf_token);
+                    },
+                    OAuthLoginFinalizeOutcome::MfaRequired => {
+                        drop(pending);
+                        drop(csrf_token);
+                        return Ok(OAuthCompletion::MfaRequired { challenge_token });
+                    },
+                    OAuthLoginFinalizeOutcome::VerifiedEmailRequired => {
+                        drop(csrf_token);
+                        drop(challenge_token);
+                    },
+                    OAuthLoginFinalizeOutcome::AccountLinkRequired => {
+                        return Err(AuthError::AccountLinkRequired);
+                    },
+                    OAuthLoginFinalizeOutcome::LinkedUserUnavailable => {
+                        return Err(AuthError::Internal(
+                            "OAuth identity link is unavailable".to_owned(),
                         ));
                     },
-                    (None, fallback_email) => match endpoints.verified_emails_url.as_deref() {
-                        Some(url) => {
-                            let e = fetch_primary_verified_email(url, &access_token)
-                                .await
-                                .map_err(|e| AuthError::OAuthFailed(e.to_string()))?;
-                            (e, true)
-                        },
-                        None => (fallback_email.unwrap_or_default(), false),
+                    _ => {
+                        return Err(AuthError::Internal(
+                            "OAuth login finalizer returned an unsupported outcome".to_owned(),
+                        ));
                     },
-                };
-                drop(access_token);
+                }
 
-                // Step 9: email truth-table (REQ-oauth-004 + -005).
-                if !resolved_verified || resolved_email.is_empty() {
+                // No subject link exists. Acquire provider-attested email
+                // before asking the same transaction boundary to converge
+                // user + link + session under all concurrent races.
+                let resolved_email = runtime
+                    .resolve_verified_identity(pending)
+                    .await
+                    .map_err(AuthError::from_oauth_failure)?
+                    .into_string();
+                if resolved_email.is_empty() {
                     return Err(AuthError::EmailNotVerified);
                 }
-                let normalized_email = resolved_email.trim().to_lowercase();
-                let existing = self.user_repo.get_by_email(&normalized_email).await?;
-                let user_row = match existing {
-                    None => {
-                        // REQ-oauth-004 first login: create user with
-                        // email_verified_at = NOW(), no password.
-                        let new_id = UserId::new();
-                        let now = Utc::now();
-                        let row = UserRow {
-                            id: new_id.as_bytes().to_vec(),
-                            email: normalized_email.clone(),
-                            email_verified_at: Some(now),
-                            display_name: normalized_email.clone(),
-                            avatar_url: None,
-                            password_hash: None,
-                            created_at: now,
-                            last_login_at: None,
-                            locked_until: None,
-                            failed_login_count: 0,
-                            mfa_enabled: false,
-                            mfa_secret: None,
-                            version: 0,
-                            deleted_at: None,
-                        };
-                        self.user_repo.create(&row).await?;
-                        row
+                let PreparedOAuthFinalize {
+                    command,
+                    csrf_token,
+                    challenge_token,
+                } = build_oauth_finalize_command(provider, &sub, Some(resolved_email))?;
+                match self
+                    .oauth_login_finalizer
+                    .finalize(command)
+                    .await
+                    .map_err(oauth_login_finalize_error)?
+                {
+                    OAuthLoginFinalizeOutcome::Finalized(finalized) => {
+                        drop(challenge_token);
+                        finalized_oauth_completion(*finalized, csrf_token)
                     },
-                    Some(existing_row) => {
-                        // REQ-oauth-005 account-takeover defense:
-                        // reject when Nebula's email is unverified.
-                        if existing_row.email_verified_at.is_none() {
-                            return Err(AuthError::EmailNotVerified);
-                        }
-                        existing_row
+                    OAuthLoginFinalizeOutcome::MfaRequired => {
+                        drop(csrf_token);
+                        Ok(OAuthCompletion::MfaRequired { challenge_token })
                     },
-                };
-
-                // Step 10: link (provider, sub) -> user_id.
-                self.external_identity_repo
-                    .link_external(
-                        &user_row.id,
-                        provider.as_str(),
-                        &sub,
-                        Some(normalized_email.as_str()),
-                    )
-                    .await?;
-
-                // Step 11: mint session.
-                let user_id_str = user_id_from_bytes(&user_row.id)?.to_string();
-                let session = self.create_session(&user_id_str).await?;
-                Ok(OAuthCompletion {
-                    user: row_to_profile(&user_row)?,
-                    session,
-                })
+                    OAuthLoginFinalizeOutcome::VerifiedEmailRequired => {
+                        Err(AuthError::EmailNotVerified)
+                    },
+                    OAuthLoginFinalizeOutcome::AccountLinkRequired => {
+                        Err(AuthError::AccountLinkRequired)
+                    },
+                    OAuthLoginFinalizeOutcome::LinkedUserUnavailable => Err(AuthError::Internal(
+                        "OAuth identity link is unavailable".to_owned(),
+                    )),
+                    _ => Err(AuthError::Internal(
+                        "OAuth login finalizer returned an unsupported outcome".to_owned(),
+                    )),
+                }
             },
-            |result| match result {
-                Ok(_) => auth_outcome::SUCCESS,
-                Err(AuthError::InvalidToken) => auth_outcome::TOKEN_INVALID,
-                Err(AuthError::EmailNotVerified) => auth_outcome::EMAIL_UNVERIFIED,
-                Err(AuthError::OAuthFailed(_) | AuthError::ProviderNotConfigured { .. }) => {
-                    auth_outcome::OAUTH_FAILED
-                },
-                // Per oracle per-method map: `complete_oauth` collapses
-                // `NotImplemented` to `internal` because the PG path is
-                // wired-but-incomplete until PR-C lands the real
-                // provider code-exchange.
-                Err(_) => auth_outcome::INTERNAL,
-            },
+            metrics_emit::oauth_completion_outcome,
         )
         .await
     }
-}
-
-/// Decode the `users.mfa_secret` BYTEA back to the base32 string
-/// [`mfa::verify_code`] expects. The BYTEA column holds the base32
-/// secret as raw UTF-8 bytes — see the file-level module docs for the
-/// "TODO: encrypt with master key" caveat.
-fn decode_mfa_secret(row: &UserRow) -> Result<String, AuthError> {
-    let bytes = row.mfa_secret.as_deref().ok_or(AuthError::InvalidMfaCode)?;
-    String::from_utf8(bytes.to_vec())
-        .map_err(|_| AuthError::Internal("mfa secret not valid utf-8".to_owned()))
 }
 
 /// Convert a `std::time::Duration` into a `chrono::Duration` for use
@@ -1440,4 +1505,55 @@ fn is_unique_violation(err: &sqlx::Error) -> bool {
         return db_err.code().as_deref() == Some("23505");
     }
     false
+}
+
+#[cfg(test)]
+mod oauth_state_error_tests {
+    use axum::http::StatusCode;
+
+    use super::*;
+
+    #[test]
+    fn admission_pressure_maps_to_http_429_and_rate_limit_metric() {
+        for admission in [
+            OAuthStateAdmission::AtCapacity,
+            OAuthStateAdmission::Contended,
+        ] {
+            let error = require_oauth_state_admitted(admission)
+                .expect_err("admission pressure must fail closed");
+            assert!(matches!(error, AuthError::RateLimit));
+            assert_eq!(
+                oauth_start_outcome(&Err::<(), _>(AuthError::RateLimit)),
+                auth_outcome::RATE_LIMIT
+            );
+            let api_error: crate::ApiError = error.into();
+            assert_eq!(
+                api_error.to_problem_details().0,
+                StatusCode::TOO_MANY_REQUESTS
+            );
+        }
+    }
+
+    #[test]
+    fn created_admission_is_the_only_success_outcome() {
+        assert!(require_oauth_state_admitted(OAuthStateAdmission::Created).is_ok());
+    }
+
+    #[test]
+    fn oauth_state_repository_errors_discard_secret_bearing_detail() {
+        const STATE_CANARY: &str = "STATE_REPO_ERROR_CANARY_DO_NOT_LOG";
+        let error = oauth_state_repo_error(nebula_storage::StorageError::Duplicate {
+            entity: "plane_a_oauth_state",
+            detail: format!("Key (state)=({STATE_CANARY}) already exists"),
+        });
+
+        assert_eq!(
+            error.to_string(),
+            "internal: OAuth state storage operation failed"
+        );
+        assert!(!format!("{error:?}").contains(STATE_CANARY));
+        let api_error: crate::ApiError = error.into();
+        assert!(!api_error.to_string().contains(STATE_CANARY));
+        assert!(!format!("{api_error:?}").contains(STATE_CANARY));
+    }
 }

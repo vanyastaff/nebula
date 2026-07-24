@@ -10,6 +10,7 @@
 
 use base64::Engine;
 use nebula_env::testing::EnvGuard;
+use nebula_storage::credential::KeyProvider;
 use nebula_storage::credential::{EnvKeyProvider, ProviderError};
 
 #[test]
@@ -52,7 +53,8 @@ fn from_env_valid_key_round_trips() {
     env.set(EnvKeyProvider::ENV_VAR, &valid);
 
     let provider = EnvKeyProvider::from_env().expect("valid key must succeed");
-    let version = nebula_storage::credential::KeyProvider::version(&provider);
+    let snapshot = provider.current().expect("current key snapshot");
+    let version = snapshot.key_id();
     // Version is "env:<sha256 prefix fingerprint>" (16 hex chars).
     assert!(
         version.starts_with("env:"),

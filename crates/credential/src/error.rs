@@ -4,7 +4,10 @@
 //! - [`CredentialError`]: Top-level error wrapping Crypto/Validation
 //! - [`CryptoError`]: Encryption, decryption, key derivation
 //! - [`ValidationError`]: Invalid credential IDs, malformed data
-//! - [`StoreError`](crate::StoreError): Storage-layer errors (not found, conflict)
+//!
+//! Persistence failures belong to the technical `nebula-storage-port`
+//! contract. They are deliberately not re-exported through the
+//! `nebula-credential` product surface.
 //!
 //! # Error Conversion Examples
 //!
@@ -23,19 +26,22 @@
 //! assert!(cred_err.to_string().contains("bad id"));
 //! ```
 //!
-//! [`StoreError`](crate::StoreError) is used directly by the storage layer:
-//!
-//! ```
-//! use nebula_credential::StoreError;
-//!
-//! let err = StoreError::NotFound {
-//!     id: "missing_cred".to_string(),
-//! };
-//! assert!(err.to_string().contains("missing_cred"));
-//! ```
 
 use compact_str::CompactString;
 use thiserror::Error;
+
+/// Branded credential-surface name for the canonical storage-port retry delay.
+pub use nebula_storage_port::RefreshRetryDelay as RetryDelay;
+/// Error returned when the canonical retry delay is invalid.
+pub use nebula_storage_port::RefreshRetryDelayError as RetryDelayError;
+/// Branded credential-surface name for the canonical storage-port diagnostic code.
+pub use nebula_storage_port::RefreshRetryDiagnosticCode as RefreshDiagnosticCode;
+/// Error returned when the canonical diagnostic code is invalid.
+pub use nebula_storage_port::RefreshRetryDiagnosticCodeError as RefreshDiagnosticCodeError;
+/// Branded credential-surface name for the canonical storage-port retry kind.
+pub use nebula_storage_port::RefreshRetryKind as RefreshErrorKind;
+/// Branded credential-surface name for the canonical storage-port retry phase.
+pub use nebula_storage_port::RefreshRetryPhase as RefreshNotAppliedPhase;
 
 // ── Secret-free message wrapper ─────────────────────────────────────────────
 
@@ -211,88 +217,146 @@ impl std::fmt::Display for ProviderErrorContext {
 
 // ── Refresh failure ──────────────────────────────────────────────────────────
 
-/// What kind of refresh failure occurred.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum RefreshErrorKind {
-    /// Refresh token itself has expired -- needs re-authentication.
-    TokenExpired,
-    /// Credential was explicitly revoked at the provider.
-    TokenRevoked,
-    /// Transient network error -- retry may succeed.
-    TransientNetwork,
-    /// Provider is temporarily unavailable.
-    ProviderUnavailable,
-    /// Protocol-level error (invalid grant, bad response format).
-    ProtocolError,
-}
-
 /// Retry guidance from credential to framework.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum RetryAdvice {
-    /// Never retry -- permanent failure.
+    /// Do not automatically retry the current credential material epoch.
+    ///
+    /// When persisted as a durable retry gate, this advice is scoped to the
+    /// current material epoch. An explicit authority transition may replace
+    /// that material and clear the gate; this is not a permanent ban on the
+    /// credential identity.
     Never,
-    /// Retry immediately.
-    Immediate,
-    /// Retry after the given duration.
-    After(std::time::Duration),
+    /// Retry after a validated non-zero duration.
+    After(RetryDelay),
 }
 
-/// Context struct for [`CredentialError::RefreshFailed`].
-///
-/// Each field is accessible only via the provided accessor methods — the
-/// struct is `#[non_exhaustive]` so future fields do not break callers.
-#[derive(Debug, Clone)]
-#[non_exhaustive]
-pub struct RefreshFailedContext {
+/// Replay-safe failure detail supplied before a linear proof is consumed.
+#[derive(Clone)]
+pub struct RefreshFailureSpec {
     kind: RefreshErrorKind,
     retry: RetryAdvice,
-    cause: SecretFreeMessage,
-    provider_code: Option<CompactString>,
+    diagnostic_code: Option<RefreshDiagnosticCode>,
 }
 
-impl RefreshFailedContext {
-    /// Construct with kind, retry advice, and a secret-free cause message.
-    pub fn new(kind: RefreshErrorKind, retry: RetryAdvice, cause: SecretFreeMessage) -> Self {
+impl RefreshFailureSpec {
+    /// Construct typed failure detail. This value is not proof by itself; only
+    /// a [`crate::RefreshAttempt`] or [`crate::CompletedResponseProof`] can
+    /// turn it into a refresh report.
+    #[must_use]
+    pub const fn new(kind: RefreshErrorKind, retry: RetryAdvice) -> Self {
         Self {
             kind,
             retry,
-            cause,
-            provider_code: None,
+            diagnostic_code: None,
         }
     }
 
-    /// Attach an optional provider-specific error code string.
-    pub fn with_code(mut self, code: impl Into<CompactString>) -> Self {
-        self.provider_code = Some(code.into());
+    /// Attach an already-validated low-cardinality diagnostic code.
+    #[must_use = "builder methods must be chained"]
+    pub fn with_diagnostic_code(mut self, code: RefreshDiagnosticCode) -> Self {
+        self.diagnostic_code = Some(code);
         self
     }
 
+    /// Failure category.
+    #[must_use]
+    pub const fn kind(&self) -> RefreshErrorKind {
+        self.kind
+    }
+
+    /// Retry guidance.
+    #[must_use]
+    pub const fn retry(&self) -> RetryAdvice {
+        self.retry
+    }
+
+    /// Optional validated code, exposed only by explicit accessor.
+    #[must_use]
+    pub fn diagnostic_code(&self) -> Option<&RefreshDiagnosticCode> {
+        self.diagnostic_code.as_ref()
+    }
+}
+
+impl std::fmt::Debug for RefreshFailureSpec {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RefreshFailureSpec")
+            .field("kind", &self.kind)
+            .field("retry", &self.retry)
+            .field("diagnostic_code_present", &self.diagnostic_code.is_some())
+            .finish()
+    }
+}
+
+/// Proof-bearing context for [`CredentialError::RefreshNotApplied`].
+///
+/// Each field is accessible only via the provided accessor methods — the
+/// constructor is crate-private and is reachable only through the linear
+/// refresh witness.
+#[non_exhaustive]
+pub struct RefreshNotAppliedContext {
+    phase: RefreshNotAppliedPhase,
+    kind: RefreshErrorKind,
+    retry: RetryAdvice,
+    diagnostic_code: Option<RefreshDiagnosticCode>,
+}
+
+impl RefreshNotAppliedContext {
+    pub(crate) fn from_spec(phase: RefreshNotAppliedPhase, spec: RefreshFailureSpec) -> Self {
+        Self {
+            phase,
+            kind: spec.kind,
+            retry: spec.retry,
+            diagnostic_code: spec.diagnostic_code,
+        }
+    }
+
+    /// Proof phase that authorized this exact failure.
+    #[must_use]
+    pub const fn phase(&self) -> RefreshNotAppliedPhase {
+        self.phase
+    }
+
     /// The kind of refresh failure.
-    pub fn kind(&self) -> RefreshErrorKind {
+    #[must_use]
+    pub const fn kind(&self) -> RefreshErrorKind {
         self.kind
     }
 
     /// Retry guidance for the framework.
-    pub fn retry(&self) -> RetryAdvice {
+    #[must_use]
+    pub const fn retry(&self) -> RetryAdvice {
         self.retry
     }
 
-    /// The secret-free cause message.
-    pub fn cause(&self) -> &SecretFreeMessage {
-        &self.cause
-    }
-
-    /// An optional provider-specific error code.
-    pub fn provider_code(&self) -> Option<&str> {
-        self.provider_code.as_deref()
+    /// Optional validated diagnostic code.
+    #[must_use]
+    pub fn diagnostic_code(&self) -> Option<&RefreshDiagnosticCode> {
+        self.diagnostic_code.as_ref()
     }
 }
 
-impl std::fmt::Display for RefreshFailedContext {
+impl std::fmt::Debug for RefreshNotAppliedContext {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RefreshNotAppliedContext")
+            .field("phase", &self.phase)
+            .field("kind", &self.kind)
+            .field("retry", &self.retry)
+            .field("diagnostic_code_present", &self.diagnostic_code.is_some())
+            .finish()
+    }
+}
+
+impl std::fmt::Display for RefreshNotAppliedContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}: {}", self.kind, self.cause)
+        write!(
+            f,
+            "{:?}/{:?} (retry: {:?}; diagnostic code redacted)",
+            self.phase, self.kind, self.retry
+        )
     }
 }
 
@@ -351,10 +415,18 @@ pub enum CredentialAccessError {
 /// - `Crypto` / `Validation` — transparent wrappers around typed sub-errors.
 /// - `Provider(Box<ProviderErrorContext>)` — boxed context; use
 ///   [`ProviderErrorContext::new`] + accessors.
-/// - `RefreshFailed(Box<RefreshFailedContext>)` — boxed context; use
-///   [`RefreshFailedContext::new`] + accessors.
+/// - `RefreshNotApplied(Box<RefreshNotAppliedContext>)` — proof-bearing
+///   replay-safe refresh failure.
 /// - `SchemeMismatch(Box<SchemeMismatch>)` — boxed; carries two scheme-name strings.
 /// - `NotInteractive` — unit variant.
+/// - `OutcomeUnknown` — unit variant; a provider side effect or durable
+///   mutation may have completed without exact acknowledgement, so callers
+///   must reconcile instead of replaying it blindly.
+/// - `RefreshFinalization` — unit variant; the refresh outcome is known, but
+///   its required retry-gate or reauthentication transition is not durable.
+/// - `PostProviderPersistence` — unit variant; a provider operation has already
+///   completed, so replaying it is unsafe even when the following persistence
+///   failure was definite.
 /// - `InvalidInput(String)` — 24-byte string payload (ptr+len+cap); fits.
 /// - `Crypto(Box<CryptoError>)` — boxed so the largest CryptoError variant
 ///   does not push the enum past 32 bytes.
@@ -377,14 +449,42 @@ pub enum CredentialError {
     #[error("provider error: {0}")]
     Provider(Box<ProviderErrorContext>),
 
-    /// Refresh failed with structured error info.
-    #[error("refresh failed: {0}")]
-    RefreshFailed(Box<RefreshFailedContext>),
+    /// Refresh was proven not to have changed provider state.
+    #[error("credential refresh was not applied: {0}")]
+    RefreshNotApplied(Box<RefreshNotAppliedContext>),
 
     /// Operation requires an interactive credential, but this credential
     /// is non-interactive.
     #[error("credential does not support interactive flows")]
     NotInteractive,
+
+    /// A provider side effect or durable credential mutation may have
+    /// completed without exact acknowledgement. This is deliberately
+    /// non-retryable because replaying either operation can duplicate work or
+    /// race the committed state.
+    #[error("credential mutation outcome is unknown; reconcile before retrying")]
+    OutcomeUnknown,
+
+    /// The refresh outcome is known, but the framework definitely could not
+    /// finalize the corresponding durable retry gate or reauthentication
+    /// decision.
+    ///
+    /// The refresh claim remains retained so another replica cannot
+    /// immediately replay the provider request. Callers must reconcile the
+    /// credential aggregate or reconnect the integration.
+    #[error("credential refresh decision could not be finalized; reconcile before retrying")]
+    RefreshFinalization,
+
+    /// A credential provider operation completed, but preparing or committing
+    /// its following durable credential update definitely failed.
+    ///
+    /// This is deliberately distinct from a pre-provider storage outage. The
+    /// provider may already have rotated or invalidated the old grant, so a
+    /// generic retry loop must not issue the provider operation again.
+    #[error(
+        "provider operation succeeded but durable credential finalization failed; reconcile before retrying"
+    )]
+    PostProviderPersistence,
 
     /// Scheme type mismatch between credential and resource. Boxed because
     /// the inner `SchemeMismatch` carries two [`CompactString`] scheme names —
@@ -426,8 +526,11 @@ impl nebula_error::Classify for CredentialError {
             Self::Crypto(s) => nebula_error::Classify::category(s.as_ref()),
             Self::Validation(s) => nebula_error::Classify::category(s.as_ref()),
             Self::NotInteractive => nebula_error::ErrorCategory::Unsupported,
+            Self::OutcomeUnknown => nebula_error::ErrorCategory::Internal,
+            Self::RefreshFinalization => nebula_error::ErrorCategory::Internal,
+            Self::PostProviderPersistence => nebula_error::ErrorCategory::Internal,
             Self::Provider(_) => nebula_error::ErrorCategory::External,
-            Self::RefreshFailed(_) => nebula_error::ErrorCategory::External,
+            Self::RefreshNotApplied(_) => nebula_error::ErrorCategory::External,
             Self::SchemeMismatch(_) => nebula_error::ErrorCategory::Validation,
             Self::InvalidInput(_) => nebula_error::ErrorCategory::Validation,
             Self::Resolution(s) => nebula_error::Classify::category(s.as_ref()),
@@ -439,8 +542,17 @@ impl nebula_error::Classify for CredentialError {
             Self::Crypto(s) => nebula_error::Classify::code(s.as_ref()),
             Self::Validation(s) => nebula_error::Classify::code(s.as_ref()),
             Self::NotInteractive => nebula_error::ErrorCode::new("CREDENTIAL:NOT_INTERACTIVE"),
+            Self::OutcomeUnknown => nebula_error::ErrorCode::new("CREDENTIAL:OUTCOME_UNKNOWN"),
+            Self::RefreshFinalization => {
+                nebula_error::ErrorCode::new("CREDENTIAL:REFRESH_FINALIZATION")
+            },
+            Self::PostProviderPersistence => {
+                nebula_error::ErrorCode::new("CREDENTIAL:POST_PROVIDER_PERSISTENCE")
+            },
             Self::Provider(_) => nebula_error::ErrorCode::new("CREDENTIAL:PROVIDER"),
-            Self::RefreshFailed(_) => nebula_error::ErrorCode::new("CREDENTIAL:REFRESH_FAILED"),
+            Self::RefreshNotApplied(_) => {
+                nebula_error::ErrorCode::new("CREDENTIAL:REFRESH_NOT_APPLIED")
+            },
             Self::SchemeMismatch(_) => nebula_error::ErrorCode::new("CREDENTIAL:SCHEME_MISMATCH"),
             Self::InvalidInput(_) => nebula_error::ErrorCode::new("CREDENTIAL:INVALID_INPUT"),
             Self::Resolution(_) => nebula_error::ErrorCode::new("CREDENTIAL:RESOLUTION_FAILED"),
@@ -449,10 +561,9 @@ impl nebula_error::Classify for CredentialError {
 
     fn is_retryable(&self) -> bool {
         match self {
-            Self::RefreshFailed(ctx) => matches!(
-                ctx.kind(),
-                RefreshErrorKind::TransientNetwork | RefreshErrorKind::ProviderUnavailable
-            ),
+            // Positive matching is deliberate: adding a future advice variant
+            // must fail closed until its replay semantics are reviewed.
+            Self::RefreshNotApplied(ctx) => matches!(ctx.retry(), RetryAdvice::After(_)),
             Self::Provider(ctx) => matches!(
                 ctx.kind(),
                 ProviderErrorKind::Network
@@ -460,6 +571,16 @@ impl nebula_error::Classify for CredentialError {
                     | ProviderErrorKind::ServerError
             ),
             _ => false,
+        }
+    }
+
+    fn retry_hint(&self) -> Option<nebula_error::RetryHint> {
+        match self {
+            Self::RefreshNotApplied(ctx) => match ctx.retry() {
+                RetryAdvice::Never => None,
+                RetryAdvice::After(delay) => Some(nebula_error::RetryHint::after(delay.get())),
+            },
+            _ => None,
         }
     }
 }
@@ -533,7 +654,7 @@ pub type Result<T> = std::result::Result<T, CredentialError>;
 //   Crypto(Box<CryptoError>)         — 8B pointer
 //   Validation(Box<ValidationError>) — 8B pointer
 //   Provider(Box<ProviderErrorContext>) — 8B pointer
-//   RefreshFailed(Box<RefreshFailedContext>) — 8B pointer
+//   RefreshNotApplied(Box<RefreshNotAppliedContext>) — 8B pointer
 //   NotInteractive                   — 0B payload
 //   SchemeMismatch(Box<SchemeMismatch>) — 8B pointer
 //      (boxed: `SchemeMismatch` carries two `CompactString` scheme names,
@@ -601,16 +722,17 @@ mod tests {
 
     #[test]
     fn refresh_error_context() {
-        let err = CredentialError::RefreshFailed(Box::new(RefreshFailedContext::new(
-            RefreshErrorKind::TokenExpired,
-            RetryAdvice::Never,
-            SecretFreeMessage::new("refresh token expired"),
-        )));
+        let context = RefreshNotAppliedContext::from_spec(
+            RefreshNotAppliedPhase::BeforeDispatch,
+            RefreshFailureSpec::new(RefreshErrorKind::ProtocolError, RetryAdvice::Never),
+        );
+        let err = CredentialError::RefreshNotApplied(Box::new(context));
         assert!(matches!(
             &err,
-            CredentialError::RefreshFailed(ctx) if ctx.kind() == RefreshErrorKind::TokenExpired
+            CredentialError::RefreshNotApplied(ctx)
+                if ctx.kind() == RefreshErrorKind::ProtocolError
         ));
-        assert!(err.to_string().contains("refresh failed"));
+        assert!(err.to_string().contains("not applied"));
     }
 
     #[test]
@@ -624,22 +746,74 @@ mod tests {
     }
 
     #[test]
-    fn refresh_transient_is_retryable() {
+    fn refresh_retryability_and_hint_follow_typed_advice() {
         use nebula_error::Classify;
 
-        let err = CredentialError::RefreshFailed(Box::new(RefreshFailedContext::new(
-            RefreshErrorKind::TransientNetwork,
-            RetryAdvice::Immediate,
-            SecretFreeMessage::new("connection reset"),
-        )));
-        assert!(err.is_retryable());
+        let delay = std::time::Duration::from_secs(17);
+        let retry_delay = RetryDelay::new(delay).expect("non-zero test delay");
+        let after =
+            CredentialError::RefreshNotApplied(Box::new(RefreshNotAppliedContext::from_spec(
+                RefreshNotAppliedPhase::ProviderConfirmedNotApplied,
+                RefreshFailureSpec::new(
+                    RefreshErrorKind::ProtocolError,
+                    RetryAdvice::After(retry_delay),
+                ),
+            )));
+        assert!(after.is_retryable());
+        assert_eq!(
+            after.retry_hint(),
+            Some(nebula_error::RetryHint::after(delay))
+        );
 
-        let err = CredentialError::RefreshFailed(Box::new(RefreshFailedContext::new(
-            RefreshErrorKind::TokenExpired,
-            RetryAdvice::Never,
-            SecretFreeMessage::new("expired"),
-        )));
-        assert!(!err.is_retryable());
+        let never =
+            CredentialError::RefreshNotApplied(Box::new(RefreshNotAppliedContext::from_spec(
+                RefreshNotAppliedPhase::BeforeDispatch,
+                RefreshFailureSpec::new(RefreshErrorKind::ProviderUnavailable, RetryAdvice::Never),
+            )));
+        assert!(!never.is_retryable());
+        assert_eq!(never.retry_hint(), None);
+    }
+
+    #[test]
+    fn refresh_retry_delay_is_ceil_second_bounded() {
+        assert_eq!(
+            RetryDelay::new(std::time::Duration::ZERO),
+            Err(RetryDelayError::Zero)
+        );
+        assert_eq!(
+            RetryDelay::new(std::time::Duration::from_nanos(1))
+                .expect("a positive subsecond delay rounds up")
+                .get(),
+            std::time::Duration::from_secs(1)
+        );
+        assert_eq!(
+            RetryDelay::new(std::time::Duration::from_secs(RetryDelay::MAX_SECS + 1)),
+            Err(RetryDelayError::TooLong)
+        );
+    }
+
+    #[test]
+    fn refresh_failure_diagnostics_redact_integration_text_and_code() {
+        const CANARY: &str = "integration-secret-canary";
+        let code = RefreshDiagnosticCode::parse(CANARY).expect("valid diagnostic code");
+        let context = RefreshNotAppliedContext::from_spec(
+            RefreshNotAppliedPhase::ProviderConfirmedNotApplied,
+            RefreshFailureSpec::new(RefreshErrorKind::ProtocolError, RetryAdvice::Never)
+                .with_diagnostic_code(code),
+        );
+
+        assert_eq!(
+            context.diagnostic_code().map(RefreshDiagnosticCode::as_str),
+            Some(CANARY)
+        );
+
+        let error = CredentialError::RefreshNotApplied(Box::new(context));
+        let display = format!("{error}");
+        let debug = format!("{error:?}");
+        assert!(!display.contains(CANARY));
+        assert!(!debug.contains(CANARY));
+        assert!(display.contains("redacted"));
+        assert!(debug.contains("diagnostic_code_present"));
     }
 
     #[test]

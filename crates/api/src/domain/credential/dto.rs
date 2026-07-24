@@ -1,14 +1,37 @@
 //! Credential management request/response DTOs — **Plane B** (auth plane separation).
 //!
 //! These types form the HTTP API contract for credential lifecycle management.
-//! Response types **never** include secret material (encrypted state, tokens, keys).
-//! Request types carry user-provided configuration that will be validated against
-//! the credential type's `ValidSchema` before persistence.
+//! Management projections never include persisted credential material. Acquisition
+//! responses intentionally carry short-lived pending tokens, redirect URLs, form
+//! fields, and device/user instructions; treat that transit data as sensitive and
+//! never log or casually persist it. Request types carry user-provided configuration
+//! that will be validated against the credential type's `ValidSchema` before
+//! persistence.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt};
 
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
+
+fn write_only_object_schema() -> utoipa::openapi::schema::Object {
+    utoipa::openapi::schema::ObjectBuilder::new()
+        .schema_type(utoipa::openapi::schema::Type::Object)
+        .write_only(Some(true))
+        .description(Some(
+            "Sensitive caller-supplied credential material; accepted only as input.",
+        ))
+        .build()
+}
+
+fn read_only_object_schema() -> utoipa::openapi::schema::Object {
+    utoipa::openapi::schema::ObjectBuilder::new()
+        .schema_type(utoipa::openapi::schema::Type::Object)
+        .read_only(Some(true))
+        .description(Some(
+            "Server-generated, short-lived interaction authority; returned only as output.",
+        ))
+        .build()
+}
 
 // --- Capabilities ---
 
@@ -28,9 +51,9 @@ pub struct CredentialCapabilities {
 // --- CRUD ---
 
 /// Request body for creating a new credential.
-#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[derive(Deserialize, ToSchema)]
 pub struct CreateCredentialRequest {
-    /// Credential type key (e.g. "oauth2", "api_key", "basic_auth").
+    /// Credential type key (e.g. "api_key", "basic_auth", "signing_key").
     pub credential_key: String,
     /// Human-readable display name.
     pub name: String,
@@ -38,14 +61,28 @@ pub struct CreateCredentialRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// Type-specific input data matching the credential's schema.
+    #[schema(schema_with = write_only_object_schema)]
     pub data: serde_json::Value,
     /// Optional user-defined tags.
     #[serde(default)]
     pub tags: Option<HashMap<String, String>>,
 }
 
+impl fmt::Debug for CreateCredentialRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CreateCredentialRequest")
+            .field("credential_key", &self.credential_key)
+            .field("name", &REDACTED)
+            .field("description_present", &self.description.is_some())
+            .field("data", &REDACTED)
+            .field("tags_present", &self.tags.is_some())
+            .finish()
+    }
+}
+
 /// Request body for updating an existing credential.
-#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[derive(Deserialize, ToSchema)]
 pub struct UpdateCredentialRequest {
     /// Updated display name.
     #[serde(default)]
@@ -55,6 +92,7 @@ pub struct UpdateCredentialRequest {
     pub description: Option<String>,
     /// Updated type-specific data.
     #[serde(default)]
+    #[schema(schema_with = write_only_object_schema)]
     pub data: Option<serde_json::Value>,
     /// Updated tags (replaces all tags if provided).
     #[serde(default)]
@@ -64,6 +102,19 @@ pub struct UpdateCredentialRequest {
     /// stored version doesn't match.
     #[serde(default)]
     pub version: Option<u64>,
+}
+
+impl fmt::Debug for UpdateCredentialRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("UpdateCredentialRequest")
+            .field("name_present", &self.name.is_some())
+            .field("description_present", &self.description.is_some())
+            .field("data_present", &self.data.is_some())
+            .field("tags_present", &self.tags.is_some())
+            .field("version", &self.version)
+            .finish()
+    }
 }
 
 /// Full credential metadata response — **never includes secrets**.
@@ -153,38 +204,57 @@ pub struct ListCredentialsQuery {
 
 // --- Acquisition (resolve / continue) ---
 
+const REDACTED: &str = "[REDACTED]";
+
 /// Request body for initiating credential acquisition/resolution.
-#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[derive(Deserialize, ToSchema)]
 pub struct ResolveCredentialRequest {
     /// Credential type key to resolve.
     pub credential_key: String,
     /// Type-specific form field values matching the credential's input schema.
+    #[schema(schema_with = write_only_object_schema)]
     pub data: serde_json::Value,
 }
 
+impl fmt::Debug for ResolveCredentialRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ResolveCredentialRequest")
+            .field("credential_key", &self.credential_key)
+            .field("data", &REDACTED)
+            .finish()
+    }
+}
+
 /// One form field of a `form_post` interaction.
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Serialize, ToSchema)]
 pub struct FormPostField {
-    /// Form field name.
+    /// Form field name. Names may reveal protocol-specific state and are
+    /// sensitive transit data.
     pub name: String,
-    /// Form field value (never secret material — interaction payloads
-    /// are UI instructions, not credential state).
+    /// Sensitive form value sent to the provider. This may contain a SAML
+    /// assertion, RelayState, authorization response, or other bearer material.
+    #[schema(read_only = true)]
     pub value: String,
 }
 
 /// Interaction type required to continue a pending credential
 /// acquisition. Mirrors the credential contract's `InteractionRequest`.
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Serialize, ToSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AcquisitionInteraction {
     /// User must be redirected to this URL (e.g. OAuth2 authorization_code).
     Redirect {
-        /// URL to redirect the user to.
+        /// Sensitive, short-lived redirect URL; query parameters may contain
+        /// anti-CSRF state or other bearer-adjacent protocol data.
+        #[schema(format = "uri", read_only = true)]
         url: String,
     },
     /// Client must auto-submit a POST form to the IdP (e.g. SAML POST binding).
     FormPost {
-        /// IdP endpoint URL.
+        /// IdP endpoint URL. Treat the complete interaction as sensitive
+        /// transit data together with its form fields.
+        #[schema(format = "uri", read_only = true)]
         url: String,
         /// Form fields to submit.
         fields: Vec<FormPostField>,
@@ -195,8 +265,9 @@ pub enum AcquisitionInteraction {
         title: String,
         /// Instructional message.
         message: String,
-        /// Structured display payload (e.g. `UserCode` with the
-        /// verification URI, or plain `Text`).
+        /// Sensitive structured display payload (e.g. a device `UserCode`
+        /// with its verification URI, or protocol instructions).
+        #[schema(schema_with = read_only_object_schema)]
         data: serde_json::Value,
         /// Seconds until this information expires.
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -204,8 +275,29 @@ pub enum AcquisitionInteraction {
     },
 }
 
+impl fmt::Debug for AcquisitionInteraction {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Redirect { .. } => formatter
+                .debug_struct("Redirect")
+                .field("url", &REDACTED)
+                .finish(),
+            Self::FormPost { fields, .. } => formatter
+                .debug_struct("FormPost")
+                .field("url", &REDACTED)
+                .field("field_count", &fields.len())
+                .finish(),
+            Self::DisplayInfo { expires_in, .. } => formatter
+                .debug_struct("DisplayInfo")
+                .field("payload", &REDACTED)
+                .field("expires_in", expires_in)
+                .finish(),
+        }
+    }
+}
+
 /// Result of a resolve or continue_resolve operation.
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Serialize, ToSchema)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum ResolveCredentialResponse {
     /// Acquisition completed — credential is persisted.
@@ -215,7 +307,9 @@ pub enum ResolveCredentialResponse {
     },
     /// Acquisition requires further interaction.
     Pending {
-        /// Opaque token to continue the acquisition flow.
+        /// Sensitive opaque bearer token used to continue the acquisition
+        /// flow. It is short-lived and must not be logged or casually persisted.
+        #[schema(format = "password", read_only = true)]
         pending_token: String,
         /// Interaction the client must perform next.
         interaction: AcquisitionInteraction,
@@ -227,17 +321,50 @@ pub enum ResolveCredentialResponse {
     },
 }
 
+impl fmt::Debug for ResolveCredentialResponse {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Complete { credential_id } => formatter
+                .debug_struct("Complete")
+                .field("credential_id", credential_id)
+                .finish(),
+            Self::Pending { interaction, .. } => formatter
+                .debug_struct("Pending")
+                .field("pending_token", &REDACTED)
+                .field("interaction", interaction)
+                .finish(),
+            Self::Retry { retry_after_secs } => formatter
+                .debug_struct("Retry")
+                .field("retry_after_secs", retry_after_secs)
+                .finish(),
+        }
+    }
+}
+
 /// Request body for continuing a pending credential acquisition.
-#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[derive(Deserialize, ToSchema)]
 pub struct ContinueResolveRequest {
     /// Credential type key the pending acquisition was started for.
     pub credential_key: String,
     /// Token from a previous `Pending` response.
+    #[schema(format = "password", write_only = true)]
     pub pending_token: String,
     /// Typed continuation payload — the serialized `UserInput` shape:
     /// `"Poll"`, `{"Code":{"code":".."}}`, `{"Callback":{"params":{..}}}`,
     /// or `{"FormData":{"params":{..}}}`.
+    #[schema(schema_with = write_only_object_schema)]
     pub user_input: serde_json::Value,
+}
+
+impl fmt::Debug for ContinueResolveRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ContinueResolveRequest")
+            .field("credential_key", &self.credential_key)
+            .field("pending_token", &REDACTED)
+            .field("user_input", &REDACTED)
+            .finish()
+    }
 }
 
 /// Alias — continue has the same response shape as initial resolve.
@@ -245,15 +372,73 @@ pub type ContinueResolveResponse = ResolveCredentialResponse;
 
 // --- Lifecycle (test / refresh / revoke) ---
 
+/// Version 1 wire classification for a failed credential connectivity test.
+///
+/// The core credential adapter maps untrusted provider text to a payload-free
+/// classification before it reaches this transport contract. This v1 wire set
+/// is intentionally exhaustive and frozen: newer core classifications map to
+/// `other` until a new transport version deliberately exposes them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialTestFailureCodeV1 {
+    /// The provider rejected the presented authentication material.
+    AuthenticationRejected,
+    /// Authentication succeeded but required permission is missing.
+    PermissionDenied,
+    /// The provider account is disabled, locked, suspended, or restricted.
+    AccountRestricted,
+    /// Credential or provider-specific setup is invalid.
+    InvalidConfiguration,
+    /// Another safely classified provider rejection.
+    Other,
+}
+
 /// Response from testing a credential's connectivity.
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct TestCredentialResponse {
-    /// Whether the connectivity test succeeded.
-    pub success: bool,
-    /// Human-readable result message.
-    pub message: String,
-    /// ISO 8601 timestamp of when the test was performed.
-    pub tested_at: String,
+///
+/// The tagged shape makes contradictory states unrepresentable: success has
+/// no failure code, while every failure carries exactly one frozen v1 code.
+/// The two status variants are intentionally exhaustive; adding another v1
+/// status would be a breaking wire change.
+#[derive(Clone, Serialize, ToSchema)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum TestCredentialResponse {
+    /// The provider accepted the credential.
+    Success {
+        /// Fixed, platform-owned human-readable message.
+        message: String,
+        /// ISO 8601 timestamp of when the test was performed.
+        tested_at: String,
+    },
+    /// The provider rejected the credential.
+    Failed {
+        /// Stable v1 failure classification.
+        code: CredentialTestFailureCodeV1,
+        /// Fixed, platform-owned human-readable message. Provider text is
+        /// never copied into this field.
+        message: String,
+        /// ISO 8601 timestamp of when the test was performed.
+        tested_at: String,
+    },
+}
+
+impl fmt::Debug for TestCredentialResponse {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Success { tested_at, .. } => formatter
+                .debug_struct("Success")
+                .field("message", &"[PLATFORM MESSAGE]")
+                .field("tested_at", tested_at)
+                .finish(),
+            Self::Failed {
+                code, tested_at, ..
+            } => formatter
+                .debug_struct("Failed")
+                .field("code", code)
+                .field("message", &"[PLATFORM MESSAGE]")
+                .field("tested_at", tested_at)
+                .finish(),
+        }
+    }
 }
 
 /// Response from refreshing a credential's tokens.
@@ -282,7 +467,7 @@ pub struct RevokeCredentialResponse {
 /// Metadata and schema for a registered credential type.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct CredentialTypeInfo {
-    /// Unique type key (e.g. "oauth2", "api_key", "basic_auth").
+    /// Unique type key (e.g. "api_key", "basic_auth", "signing_key").
     pub key: String,
     /// Human-readable name.
     pub name: String,
@@ -328,5 +513,128 @@ impl ListCredentialsQuery {
     /// Clamped page size (max 100).
     pub fn limit(&self) -> usize {
         self.page_size.min(100)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SECRET_CANARY: &str = "credential-dto-secret-NEVER-DEBUG-c41f";
+
+    #[test]
+    fn create_request_debug_redacts_free_form_fields() {
+        let request = CreateCredentialRequest {
+            credential_key: "api_key".to_owned(),
+            name: SECRET_CANARY.to_owned(),
+            description: Some(SECRET_CANARY.to_owned()),
+            data: serde_json::json!({ "api_key": SECRET_CANARY }),
+            tags: Some(HashMap::from([(
+                SECRET_CANARY.to_owned(),
+                SECRET_CANARY.to_owned(),
+            )])),
+        };
+
+        let debug = format!("{request:?}");
+        assert!(
+            !debug.contains(SECRET_CANARY),
+            "create request Debug must not expose free-form input: {debug}"
+        );
+    }
+
+    #[test]
+    fn update_request_debug_redacts_free_form_fields() {
+        let request = UpdateCredentialRequest {
+            name: Some(SECRET_CANARY.to_owned()),
+            description: Some(SECRET_CANARY.to_owned()),
+            data: Some(serde_json::json!({ "api_key": SECRET_CANARY })),
+            tags: Some(HashMap::from([(
+                SECRET_CANARY.to_owned(),
+                SECRET_CANARY.to_owned(),
+            )])),
+            version: Some(42),
+        };
+
+        let debug = format!("{request:?}");
+        assert!(
+            !debug.contains(SECRET_CANARY),
+            "update request Debug must not expose free-form input: {debug}"
+        );
+        assert!(
+            debug.contains("42"),
+            "safe CAS version should remain visible"
+        );
+    }
+
+    #[test]
+    fn resolve_request_debug_redacts_input_data() {
+        let request = ResolveCredentialRequest {
+            credential_key: "probe".to_owned(),
+            data: serde_json::json!({ "client_secret": SECRET_CANARY }),
+        };
+
+        let debug = format!("{request:?}");
+        assert!(
+            !debug.contains(SECRET_CANARY),
+            "resolve request Debug must not expose input data: {debug}"
+        );
+    }
+
+    #[test]
+    fn continue_request_debug_redacts_token_and_user_input() {
+        let request = ContinueResolveRequest {
+            credential_key: "probe".to_owned(),
+            pending_token: SECRET_CANARY.to_owned(),
+            user_input: serde_json::json!({ "code": SECRET_CANARY }),
+        };
+
+        let debug = format!("{request:?}");
+        assert!(
+            !debug.contains(SECRET_CANARY),
+            "continue request Debug must not expose token or user input: {debug}"
+        );
+    }
+
+    #[test]
+    fn pending_response_debug_redacts_token_and_interaction_payload() {
+        let response = ResolveCredentialResponse::Pending {
+            pending_token: SECRET_CANARY.to_owned(),
+            interaction: AcquisitionInteraction::FormPost {
+                url: format!("https://provider.example/submit?state={SECRET_CANARY}"),
+                fields: vec![FormPostField {
+                    name: SECRET_CANARY.to_owned(),
+                    value: SECRET_CANARY.to_owned(),
+                }],
+            },
+        };
+
+        let debug = format!("{response:?}");
+        assert!(
+            !debug.contains(SECRET_CANARY),
+            "pending response Debug must not expose its token or interaction payload: {debug}"
+        );
+    }
+
+    #[test]
+    fn test_response_debug_redacts_message_payload() {
+        let responses = [
+            TestCredentialResponse::Success {
+                message: SECRET_CANARY.to_owned(),
+                tested_at: "2026-07-21T12:34:56Z".to_owned(),
+            },
+            TestCredentialResponse::Failed {
+                code: CredentialTestFailureCodeV1::Other,
+                message: SECRET_CANARY.to_owned(),
+                tested_at: "2026-07-21T12:34:56Z".to_owned(),
+            },
+        ];
+
+        for response in responses {
+            let debug = format!("{response:?}");
+            assert!(
+                !debug.contains(SECRET_CANARY),
+                "test response Debug must not expose its platform message: {debug}"
+            );
+        }
     }
 }

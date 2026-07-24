@@ -83,8 +83,9 @@ use crate::{
 /// #     }
 /// # }
 /// impl Interactive for OAuth2Cred {
-///     // Typed pending state persisted (encrypted, single-use) between
-///     // `resolve()` and `continue_resolve()`.
+///     // Typed pending state retained with TTL/single-use semantics between
+///     // `resolve()` and `continue_resolve()`. The current first-party adapter
+///     // is ephemeral memory; a durable adapter must encrypt at rest.
 ///     type Pending = OAuth2Pending;
 ///
 ///     async fn continue_resolve(

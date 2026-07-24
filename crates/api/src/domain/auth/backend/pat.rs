@@ -23,7 +23,6 @@ pub const PAT_BYTES: usize = 32;
 const PAT_BODY_CHARS: usize = 43;
 
 /// A freshly-minted PAT: returned to the caller **once**, never logged.
-#[derive(Debug, Clone)]
 pub struct MintedPat {
     /// Plaintext token to display to the user — `pat_<...>`.
     pub plaintext: String,
@@ -31,10 +30,20 @@ pub struct MintedPat {
     pub record: PatRecord,
 }
 
+impl std::fmt::Debug for MintedPat {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MintedPat")
+            .field("plaintext", &"[redacted]")
+            .field("record", &"[redacted]")
+            .finish()
+    }
+}
+
 /// Server-side PAT record (everything *except* the plaintext).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PatRecord {
-    /// Opaque PAT identifier — `pat_<ULID>` (NOT the secret).
+    /// Opaque `pat_<base64url>` record identifier (not a ULID and not the secret).
     pub id: String,
     /// Owning user.
     pub user_id: UserId,
@@ -55,6 +64,24 @@ pub struct PatRecord {
     pub last_used_at: Option<DateTime<Utc>>,
     /// When the PAT was revoked, if applicable.
     pub revoked_at: Option<DateTime<Utc>>,
+}
+
+impl std::fmt::Debug for PatRecord {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PatRecord")
+            .field("id", &"[redacted]")
+            .field("user_id", &"[redacted]")
+            .field("name", &"[redacted]")
+            .field("prefix", &"[redacted]")
+            .field("hash", &"[redacted]")
+            .field("scope_count", &self.scopes.len())
+            .field("created_at", &self.created_at)
+            .field("expires_at", &self.expires_at)
+            .field("last_used_at", &self.last_used_at)
+            .field("revoked_at", &self.revoked_at)
+            .finish()
+    }
 }
 
 impl PatRecord {
@@ -181,6 +208,8 @@ fn sha256(s: &str) -> [u8; 32] {
 mod tests {
     use super::*;
 
+    static_assertions::assert_not_impl_any!(MintedPat: Clone);
+
     fn user() -> UserId {
         UserId::new()
     }
@@ -201,6 +230,31 @@ mod tests {
         let b = mint_pat(user(), "b".to_owned(), vec![], None).unwrap();
         assert_ne!(a.plaintext, b.plaintext);
         assert_ne!(a.record.hash, b.record.hash);
+    }
+
+    #[test]
+    fn minted_pat_and_record_debug_redact_all_authority_material() {
+        const NAME_CANARY: &str = "PAT_NAME_CANARY-1f74";
+        let minted = mint_pat(
+            user(),
+            NAME_CANARY.to_owned(),
+            vec!["scope-canary".to_owned()],
+            None,
+        )
+        .expect("mint");
+        let plaintext = minted.plaintext.clone();
+        let prefix = minted.record.prefix.clone();
+        let hash_debug = format!("{:?}", minted.record.hash);
+
+        let minted_debug = format!("{minted:?}");
+        let record_debug = format!("{:?}", minted.record);
+        for debug in [&minted_debug, &record_debug] {
+            assert!(!debug.contains(&plaintext));
+            assert!(!debug.contains(&prefix));
+            assert!(!debug.contains(&hash_debug));
+            assert!(!debug.contains(NAME_CANARY));
+            assert!(!debug.contains("scope-canary"));
+        }
     }
 
     #[test]

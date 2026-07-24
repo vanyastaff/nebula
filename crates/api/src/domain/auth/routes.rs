@@ -7,10 +7,11 @@
 //! `/auth/*` surface stays on the flat unauthenticated path — including
 //! the cookie-less second-factor login completion at `/auth/login/mfa`.
 
+use axum::middleware;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
 use super::handler;
-use crate::state::AppState;
+use crate::{middleware::no_store_authority_response, state::AppState};
 
 /// Flat `/auth/*` routes — mounted without `auth_middleware` or
 /// `csrf_middleware`.
@@ -23,7 +24,7 @@ use crate::state::AppState;
 ///    `oauth_callback`. None of them require a pre-existing session,
 ///    so neither layer applies.
 ///
-/// 2. `logout` — *is* session-bearing (it revokes `nebula_session`
+/// 2. `logout` — *is* session-bearing (it revokes `__Host-nebula-session`
 ///    when present) but is intentionally kept CSRF-exempt. A CSRF
 ///    attack on logout can only force a sign-out (annoying, not a
 ///    confidentiality / integrity breach), and keeping the endpoint
@@ -40,6 +41,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(handler::mfa_complete_login))
         .routes(routes!(handler::oauth_start))
         .routes(routes!(handler::oauth_callback))
+        .layer(middleware::from_fn(no_store_authority_response))
 }
 
 /// Session-bearing `/auth/mfa/*` routes.
@@ -53,4 +55,5 @@ pub fn mfa_session_router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(handler::mfa_enroll))
         .routes(routes!(handler::mfa_verify))
+        .layer(middleware::from_fn(no_store_authority_response))
 }

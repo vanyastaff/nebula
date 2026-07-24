@@ -16,6 +16,8 @@
 //! moved ⇒ `Conflict`). JSON columns are `JSONB` mapped through
 //! [`sqlx::types::Json`]; binary columns are `BYTEA`.
 
+use std::sync::Arc;
+
 use nebula_storage_port::dto::{
     AuditLogRow, BlobRow, MembershipRow, OrgRow, PrincipalKind, QuotaRow, ResourceRow, ScopeKind,
     TriggerRow, UserRow, WorkspaceRow,
@@ -47,8 +49,8 @@ impl PgUserStore {
     }
 }
 
-fn user_from_row(r: &sqlx::postgres::PgRow) -> Result<UserRow, StorageError> {
-    Ok(UserRow {
+fn user_from_row(r: &sqlx::postgres::PgRow) -> Result<Arc<UserRow>, StorageError> {
+    Ok(Arc::new(UserRow {
         id: r.try_get("id").map_err(conn_err)?,
         email: r.try_get("email").map_err(conn_err)?,
         email_verified_at: r.try_get("email_verified_at").ok(),
@@ -62,10 +64,10 @@ fn user_from_row(r: &sqlx::postgres::PgRow) -> Result<UserRow, StorageError> {
             .try_get::<i64, _>("failed_login_count")
             .map_err(conn_err)? as i32,
         mfa_enabled: r.try_get("mfa_enabled").map_err(conn_err)?,
-        mfa_secret: r.try_get("mfa_secret").ok(),
+        mfa_secret_envelope: r.try_get("mfa_secret_envelope").ok(),
         version: r.try_get::<i64, _>("version").map_err(conn_err)? as u64,
         deleted_at: r.try_get("deleted_at").ok(),
-    })
+    }))
 }
 
 #[async_trait::async_trait]
@@ -74,7 +76,7 @@ impl UserStore for PgUserStore {
         let res = sqlx::query(
             "INSERT INTO port_users (id, email, email_verified_at, display_name, \
              avatar_url, password_hash, created_at, last_login_at, locked_until, \
-             failed_login_count, mfa_enabled, mfa_secret, version, deleted_at) \
+             failed_login_count, mfa_enabled, mfa_secret_envelope, version, deleted_at) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
         )
         .bind(&row.id)
@@ -88,7 +90,7 @@ impl UserStore for PgUserStore {
         .bind(&row.locked_until)
         .bind(i64::from(row.failed_login_count))
         .bind(row.mfa_enabled)
-        .bind(&row.mfa_secret)
+        .bind(&row.mfa_secret_envelope)
         .bind(row.version as i64)
         .bind(&row.deleted_at)
         .execute(&self.pool)
@@ -105,7 +107,7 @@ impl UserStore for PgUserStore {
         }
     }
 
-    async fn get(&self, id: &str) -> Result<Option<UserRow>, StorageError> {
+    async fn get(&self, id: &str) -> Result<Option<Arc<UserRow>>, StorageError> {
         let row = sqlx::query("SELECT * FROM port_users WHERE id = $1 AND deleted_at IS NULL")
             .bind(id)
             .fetch_optional(&self.pool)
@@ -114,7 +116,7 @@ impl UserStore for PgUserStore {
         row.as_ref().map(user_from_row).transpose()
     }
 
-    async fn get_by_email(&self, email: &str) -> Result<Option<UserRow>, StorageError> {
+    async fn get_by_email(&self, email: &str) -> Result<Option<Arc<UserRow>>, StorageError> {
         let row = sqlx::query(
             "SELECT * FROM port_users \
              WHERE lower(email) = lower($1) AND deleted_at IS NULL",
@@ -131,7 +133,7 @@ impl UserStore for PgUserStore {
             "UPDATE port_users SET email = $1, email_verified_at = $2, \
              display_name = $3, avatar_url = $4, password_hash = $5, \
              last_login_at = $6, locked_until = $7, failed_login_count = $8, \
-             mfa_enabled = $9, mfa_secret = $10, version = $11 \
+             mfa_enabled = $9, mfa_secret_envelope = $10, version = $11 \
              WHERE id = $12 AND deleted_at IS NULL AND version = $13",
         )
         .bind(&row.email)
@@ -143,7 +145,7 @@ impl UserStore for PgUserStore {
         .bind(&row.locked_until)
         .bind(i64::from(row.failed_login_count))
         .bind(row.mfa_enabled)
-        .bind(&row.mfa_secret)
+        .bind(&row.mfa_secret_envelope)
         .bind(row.version as i64)
         .bind(&row.id)
         .bind(expected_version as i64)

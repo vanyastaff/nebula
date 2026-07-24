@@ -45,7 +45,7 @@ pub fn test_user(email: &str) -> UserRow {
         locked_until: None,
         failed_login_count: 0,
         mfa_enabled: false,
-        mfa_secret: None,
+        mfa_secret_envelope: None,
         version: 0,
         deleted_at: None,
     }

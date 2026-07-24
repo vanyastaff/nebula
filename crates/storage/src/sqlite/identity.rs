@@ -17,6 +17,8 @@
 //! opaque TEXT round-tripped through `serde_json`; binary columns are
 //! `BLOB`.
 
+use std::sync::Arc;
+
 use nebula_storage_port::dto::{
     AuditLogRow, BlobRow, MembershipRow, OrgRow, PrincipalKind, QuotaRow, ResourceRow, ScopeKind,
     TriggerRow, UserRow, WorkspaceRow,
@@ -87,8 +89,8 @@ impl SqliteUserStore {
     }
 }
 
-fn user_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<UserRow, StorageError> {
-    Ok(UserRow {
+fn user_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<Arc<UserRow>, StorageError> {
+    Ok(Arc::new(UserRow {
         // NOT NULL columns — `required` decodes via Option<T> and rejects NULL;
         // a bare `try_get::<String>` silently yields "" for NULL in SQLite.
         id: required(r, "id")?,
@@ -106,9 +108,9 @@ fn user_from_row(r: &sqlx::sqlite::SqliteRow) -> Result<UserRow, StorageError> {
         password_hash: r.try_get("password_hash").ok(),
         last_login_at: r.try_get("last_login_at").ok(),
         locked_until: r.try_get("locked_until").ok(),
-        mfa_secret: r.try_get("mfa_secret").ok(),
+        mfa_secret_envelope: r.try_get("mfa_secret").ok(),
         deleted_at: r.try_get("deleted_at").ok(),
-    })
+    }))
 }
 
 #[async_trait::async_trait]
@@ -131,7 +133,7 @@ impl UserStore for SqliteUserStore {
         .bind(&row.locked_until)
         .bind(i64::from(row.failed_login_count))
         .bind(i64::from(row.mfa_enabled))
-        .bind(&row.mfa_secret)
+        .bind(&row.mfa_secret_envelope)
         .bind(row.version as i64)
         .bind(&row.deleted_at)
         .execute(&self.pool)
@@ -148,7 +150,7 @@ impl UserStore for SqliteUserStore {
         }
     }
 
-    async fn get(&self, id: &str) -> Result<Option<UserRow>, StorageError> {
+    async fn get(&self, id: &str) -> Result<Option<Arc<UserRow>>, StorageError> {
         let row = sqlx::query("SELECT * FROM port_users WHERE id = ? AND deleted_at IS NULL")
             .bind(id)
             .fetch_optional(&self.pool)
@@ -157,7 +159,7 @@ impl UserStore for SqliteUserStore {
         row.as_ref().map(user_from_row).transpose()
     }
 
-    async fn get_by_email(&self, email: &str) -> Result<Option<UserRow>, StorageError> {
+    async fn get_by_email(&self, email: &str) -> Result<Option<Arc<UserRow>>, StorageError> {
         let row = sqlx::query(
             "SELECT * FROM port_users \
              WHERE lower(email) = lower(?) AND deleted_at IS NULL",
@@ -186,7 +188,7 @@ impl UserStore for SqliteUserStore {
         .bind(&row.locked_until)
         .bind(i64::from(row.failed_login_count))
         .bind(i64::from(row.mfa_enabled))
-        .bind(&row.mfa_secret)
+        .bind(&row.mfa_secret_envelope)
         .bind(row.version as i64)
         .bind(&row.id)
         .bind(expected_version as i64)

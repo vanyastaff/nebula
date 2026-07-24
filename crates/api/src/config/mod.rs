@@ -25,11 +25,11 @@ mod sub;
 
 pub use errors::ApiConfigError;
 pub use jwt::JwtSecret;
-pub use oauth::{OAuthEndpoints, OAuthProviderConfig, OAuthProvidersConfig, OIDC_HARDCODED_SCOPES};
+pub use oauth::{OAuthProviderConfig, OAuthProvidersConfig};
 pub use sub::{
-    AuthApiConfig, AuthBackendKind, CookieConfig, CorsConfig, ExecutionBackendKind,
-    ExecutionStoreConfig, IdempotencyApiConfig, IdempotencyBackend, PaginationConfig,
-    SmtpEmailConfig, SmtpTlsMode, TlsConfig, VersioningConfig, WebhookApiConfig,
+    AuthApiConfig, AuthBackendKind, CorsConfig, ExecutionBackendKind, ExecutionStoreConfig,
+    IdempotencyApiConfig, IdempotencyBackend, PaginationConfig, SmtpEmailConfig, SmtpTlsMode,
+    TlsConfig, VersioningConfig, WebhookApiConfig,
 };
 
 use std::{net::SocketAddr, sync::OnceLock, time::Duration};
@@ -62,7 +62,7 @@ use crate::middleware::idempotency::{
 pub const REST_BODY_LIMIT_BYTES: usize = 1024 * 1024;
 
 /// API Server Configuration
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct ApiConfig {
     /// Host and port to bind (e.g. "0.0.0.0:8080")
     pub bind_address: SocketAddr,
@@ -101,7 +101,7 @@ pub struct ApiConfig {
     ///
     /// Each key must have the `nbl_sk_` prefix. Keys are compared in constant
     /// time to prevent timing attacks. An empty list disables API key auth.
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub api_keys: Vec<String>,
 
     /// Externally-reachable base URL of this API server.
@@ -115,9 +115,6 @@ pub struct ApiConfig {
 
     /// TLS termination settings.
     pub tls: TlsConfig,
-
-    /// Session-cookie settings.
-    pub cookies: CookieConfig,
 
     /// Structured CORS configuration.
     ///
@@ -185,7 +182,6 @@ impl std::fmt::Debug for ApiConfig {
             .field("request_timeout_secs", &self.request_timeout_secs)
             .field("request_id_header", &self.request_id_header)
             .field("tls", &self.tls)
-            .field("cookies", &self.cookies)
             .field("cors_config", &self.cors_config)
             .field("versioning", &self.versioning)
             .field("pagination", &self.pagination)
@@ -350,7 +346,6 @@ impl ApiConfig {
             request_timeout_secs,
             request_id_header,
             tls: TlsConfig::default(),
-            cookies: CookieConfig::default(),
             cors_config: CorsConfig {
                 allowed_origins: cors_allowed_origins,
                 ..CorsConfig::default()
@@ -587,7 +582,6 @@ impl ApiConfig {
             request_timeout_secs: 30,
             request_id_header: "x-request-id".to_string(),
             tls: TlsConfig::default(),
-            cookies: CookieConfig::default(),
             cors_config: CorsConfig::default(),
             versioning: VersioningConfig::default(),
             pagination: PaginationConfig::default(),
@@ -604,6 +598,19 @@ impl ApiConfig {
 mod tests {
     use super::*;
     use crate::config::env::tests::env_guard;
+
+    static_assertions::assert_not_impl_any!(ApiConfig: Clone);
+
+    #[test]
+    fn serialized_config_omits_static_api_keys() {
+        const CANARY: &str = "nbl_sk_STATIC_API_KEY_CANARY-5ed9";
+        let mut config = ApiConfig::for_test();
+        config.api_keys.push(CANARY.to_owned());
+
+        let serialized = serde_json::to_value(&config).expect("configuration serializes");
+        assert!(serialized.get("api_keys").is_none());
+        assert!(!serialized.to_string().contains(CANARY));
+    }
 
     #[test]
     fn from_env_rejects_missing_secret_in_production() {

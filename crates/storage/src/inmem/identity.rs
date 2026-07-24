@@ -13,7 +13,7 @@
 //! (email / slug among *active* rows) and optimistic CAS (`version`) match
 //! the relational contract the conformance matrix asserts.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use nebula_storage_port::dto::{
@@ -33,7 +33,13 @@ use parking_lot::Mutex;
 /// unique among active rows (case-insensitive).
 #[derive(Debug, Default, Clone)]
 pub struct InMemoryUserStore {
-    inner: Arc<Mutex<HashMap<String, UserRow>>>,
+    inner: Arc<Mutex<InMemoryUserState>>,
+}
+
+#[derive(Debug, Default)]
+struct InMemoryUserState {
+    rows: HashMap<String, Arc<UserRow>>,
+    deleted_ids: HashSet<String>,
 }
 
 impl InMemoryUserStore {
@@ -47,49 +53,61 @@ impl InMemoryUserStore {
 #[async_trait::async_trait]
 impl UserStore for InMemoryUserStore {
     async fn create(&self, row: UserRow) -> Result<(), StorageError> {
-        let mut map = self.inner.lock();
-        if map.contains_key(&row.id) {
+        let mut state = self.inner.lock();
+        if state.rows.contains_key(&row.id) {
             return Err(StorageError::Duplicate {
                 entity: "user",
                 detail: format!("user {} already exists", row.id),
             });
         }
         let email = row.email.to_ascii_lowercase();
-        if map
-            .values()
-            .any(|u| u.deleted_at.is_none() && u.email.to_ascii_lowercase() == email)
-        {
+        if state.rows.iter().any(|(id, user)| {
+            !state.deleted_ids.contains(id)
+                && user.deleted_at.is_none()
+                && user.email.to_ascii_lowercase() == email
+        }) {
             return Err(StorageError::Duplicate {
                 entity: "user",
                 detail: format!("active user with email {} already exists", row.email),
             });
         }
-        map.insert(row.id.clone(), row);
+        state.rows.insert(row.id.clone(), Arc::new(row));
         Ok(())
     }
 
-    async fn get(&self, id: &str) -> Result<Option<UserRow>, StorageError> {
-        Ok(self
-            .inner
-            .lock()
+    async fn get(&self, id: &str) -> Result<Option<Arc<UserRow>>, StorageError> {
+        let state = self.inner.lock();
+        if state.deleted_ids.contains(id) {
+            return Ok(None);
+        }
+        Ok(state
+            .rows
             .get(id)
-            .filter(|u| u.deleted_at.is_none())
+            .filter(|user| user.deleted_at.is_none())
             .cloned())
     }
 
-    async fn get_by_email(&self, email: &str) -> Result<Option<UserRow>, StorageError> {
+    async fn get_by_email(&self, email: &str) -> Result<Option<Arc<UserRow>>, StorageError> {
         let needle = email.to_ascii_lowercase();
-        Ok(self
-            .inner
-            .lock()
-            .values()
-            .find(|u| u.deleted_at.is_none() && u.email.to_ascii_lowercase() == needle)
-            .cloned())
+        let state = self.inner.lock();
+        Ok(state
+            .rows
+            .iter()
+            .find(|(id, user)| {
+                !state.deleted_ids.contains(*id)
+                    && user.deleted_at.is_none()
+                    && user.email.to_ascii_lowercase() == needle
+            })
+            .map(|(_, user)| Arc::clone(user)))
     }
 
     async fn update(&self, row: UserRow, expected_version: u64) -> Result<(), StorageError> {
-        let mut map = self.inner.lock();
-        let Some(cur) = map.get(&row.id).filter(|u| u.deleted_at.is_none()) else {
+        let mut state = self.inner.lock();
+        let Some(cur) = state
+            .rows
+            .get(&row.id)
+            .filter(|user| !state.deleted_ids.contains(&row.id) && user.deleted_at.is_none())
+        else {
             return Err(StorageError::not_found("user", row.id));
         };
         if cur.version != expected_version {
@@ -105,24 +123,32 @@ impl UserStore for InMemoryUserStore {
         // user. Without this an `update` could silently introduce a
         // duplicate the `create` path forbids (first-writer-wins).
         let email = row.email.to_ascii_lowercase();
-        if map.values().any(|u| {
-            u.id != row.id && u.deleted_at.is_none() && u.email.to_ascii_lowercase() == email
+        if state.rows.iter().any(|(id, user)| {
+            *id != row.id
+                && !state.deleted_ids.contains(id)
+                && user.deleted_at.is_none()
+                && user.email.to_ascii_lowercase() == email
         }) {
             return Err(StorageError::Duplicate {
                 entity: "user",
                 detail: format!("active user with email {} already exists", row.email),
             });
         }
-        map.insert(row.id.clone(), row);
+        state.rows.insert(row.id.clone(), Arc::new(row));
         Ok(())
     }
 
     async fn soft_delete(&self, id: &str) -> Result<(), StorageError> {
-        let mut map = self.inner.lock();
-        let Some(row) = map.get_mut(id).filter(|u| u.deleted_at.is_none()) else {
+        let mut state = self.inner.lock();
+        let Some(row) = state
+            .rows
+            .get(id)
+            .filter(|user| !state.deleted_ids.contains(id) && user.deleted_at.is_none())
+        else {
             return Err(StorageError::not_found("user", id));
         };
-        row.deleted_at = Some(now_rfc3339());
+        let _ = row;
+        state.deleted_ids.insert(id.to_owned());
         Ok(())
     }
 }

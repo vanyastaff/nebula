@@ -13,7 +13,8 @@
 //! Callers invoke `refresh_coalesced(credential_id, do_refresh)`. The
 //! coordinator acquires L1 first (fast in-process coalesce), then a
 //! durable L2 claim with contention backoff, runs the user's refresh
-//! closure under both locks, and releases both on the way out.
+//! closure under both locks, then finalizes L1 synchronously and L2 according
+//! to the returned replay-safety disposition.
 
 use std::{
     fmt,
@@ -30,11 +31,12 @@ use nebula_storage_port::store::{
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
+use crate::RefreshNotAppliedContext;
 use crate::audit::AuditSink;
 
 use super::{
     audit::emit_claim_acquired,
-    l1::{L1RefreshCoalescer, RefreshAttempt as L1Attempt},
+    l1::{L1Completion, L1RefreshCoalescer},
     metrics::RefreshCoordMetrics,
 };
 
@@ -49,10 +51,12 @@ use super::{
 ///
 /// - `heartbeat_interval × 3 <= claim_ttl` -- three heartbeat ticks must fit inside one claim TTL
 ///   so two consecutive missed heartbeats still leave the claim valid until the next tick.
-/// - `refresh_timeout + 2 × heartbeat_interval <= claim_ttl` -- the holder must finish (or time
-///   out) before its claim can expire.
+/// - `refresh_timeout + 2 × heartbeat_interval <= claim_ttl` -- the caller-wait budget expires
+///   while at least two heartbeat opportunities remain inside the original TTL. The owned
+///   provider/persistence task is not cancelled at this point.
 /// - `reclaim_sweep_interval <= claim_ttl` -- sweeps must run at least as often as a claim's TTL
-///   so a crashed holder is reclaimed within one TTL window.
+///   so a crashed holder is accounted within one TTL window. Expired normal claims are reclaimed;
+///   expired provider-side-effect claims are retained as poison.
 ///
 /// The boundary case `heartbeat_interval × 3 == claim_ttl` is allowed
 /// (mirrors the execution-lease shape: `ttl / 3 ==
@@ -65,12 +69,20 @@ pub struct RefreshCoordConfig {
     pub claim_ttl: Duration,
     /// Cadence of background heartbeat ticks while a claim is held.
     pub heartbeat_interval: Duration,
-    /// Maximum duration the user's refresh closure may run.
+    /// Per-phase wait budget for an L1 waiter, L2 contention, and the owned
+    /// refresh task.
+    ///
+    /// Each phase consumes at most one such budget; this is not a single
+    /// end-to-end deadline. Expiry never cancels provider/persistence work
+    /// after the sentinel boundary.
     pub refresh_timeout: Duration,
     /// Cadence of the background reclaim sweep (Stage 3.3).
     pub reclaim_sweep_interval: Duration,
-    /// Sentinel events allowed inside `sentinel_window` before the
-    /// credential is escalated to `ReauthRequired` (Stage 3.2).
+    /// Distinct accounted incidents inside `sentinel_window` required before
+    /// emitting the `ReauthRequired` escalation decision/observation.
+    ///
+    /// The threshold does not mutate the credential aggregate; the
+    /// owner-qualified durable command is K3 work.
     pub sentinel_threshold: u32,
     /// Rolling window for sentinel-event counting (Stage 3.2).
     pub sentinel_window: Duration,
@@ -93,12 +105,24 @@ impl Default for RefreshCoordConfig {
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ConfigError {
+    /// A duration used as a lease or Tokio interval was zero.
+    #[error("config field {field} must be greater than zero")]
+    ZeroDuration {
+        /// Field whose zero value would make lease semantics invalid or panic
+        /// `tokio::time::interval`.
+        field: &'static str,
+    },
+    /// A zero sentinel threshold would escalate every accounted event and is
+    /// almost certainly a deployment mistake.
+    #[error("sentinel_threshold must be greater than zero")]
+    ZeroSentinelThreshold,
     /// `heartbeat_interval × 3` exceeds `claim_ttl` -- three heartbeat
     /// ticks would not fit inside one TTL window.
     #[error("heartbeat_interval \u{d7} 3 must be \u{2264} claim_ttl")]
     HeartbeatTooSlow,
     /// `refresh_timeout + 2 × heartbeat_interval` exceeds `claim_ttl` --
-    /// the holder cannot finish before its claim can expire.
+    /// a caller could stop waiting without two heartbeat opportunities left
+    /// inside the original claim TTL.
     #[error("refresh_timeout + 2 \u{d7} heartbeat_interval must be \u{2264} claim_ttl")]
     RefreshTimeoutTooLong,
     /// `reclaim_sweep_interval` exceeds `claim_ttl`.
@@ -133,6 +157,33 @@ impl RefreshCoordConfig {
     /// `refresh_timeout + 2 × heartbeat_interval`) overflows `Duration::MAX`
     /// -- the canonical fix is to lower the offending knob.
     pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.claim_ttl.is_zero() {
+            return Err(ConfigError::ZeroDuration { field: "claim_ttl" });
+        }
+        if self.heartbeat_interval.is_zero() {
+            return Err(ConfigError::ZeroDuration {
+                field: "heartbeat_interval",
+            });
+        }
+        if self.refresh_timeout.is_zero() {
+            return Err(ConfigError::ZeroDuration {
+                field: "refresh_timeout",
+            });
+        }
+        if self.reclaim_sweep_interval.is_zero() {
+            return Err(ConfigError::ZeroDuration {
+                field: "reclaim_sweep_interval",
+            });
+        }
+        if self.sentinel_window.is_zero() {
+            return Err(ConfigError::ZeroDuration {
+                field: "sentinel_window",
+            });
+        }
+        if self.sentinel_threshold == 0 {
+            return Err(ConfigError::ZeroSentinelThreshold);
+        }
+
         // `Duration::checked_mul` and `checked_add` return `None` on
         // overflow rather than panicking -- surface that as a typed
         // `ConfigError::Overflow` so a user-supplied
@@ -183,42 +234,353 @@ impl RefreshCoordConfig {
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum RefreshError {
-    /// Backoff retries exhausted before an L2 claim could be acquired.
-    /// Surfaced when the contender's claim keeps being heartbeat-extended.
-    #[error("contention exhausted after retries")]
+    /// The caller's configured contention budget elapsed before an L2 claim
+    /// could be acquired.
+    ///
+    /// This remains pre-provider and replay-safe. It is surfaced when the
+    /// contender's claim keeps being heartbeat-extended while adaptive polls
+    /// consume `refresh_timeout`.
+    #[error("contention budget exhausted before claim acquisition")]
     ContentionExhausted,
     /// Another replica's refresh succeeded while we were waiting on L2;
     /// caller treats as success and re-reads state.
     #[error("refresh coalesced by another replica (success \u{2014} re-read state)")]
     CoalescedByOtherReplica,
-    /// User closure exceeded `RefreshCoordConfig::refresh_timeout`.
-    /// Distinct from `ContentionExhausted` so caller-side metrics and
-    /// retry policy can differentiate "no claim could be acquired"
-    /// from "we held the claim but the IdP call timed out".
-    #[error("refresh timeout: closure exceeded {0:?}")]
-    Timeout(Duration),
     /// Storage repo error (e.g. DB connectivity loss).
     #[error("storage repo error: {0}")]
     Repo(#[from] RepoError),
-    /// Heartbeat task failure -- claim lost or repo error.
-    #[error("heartbeat error: {0}")]
-    Heartbeat(#[from] HeartbeatError),
-    /// Background heartbeat task failed mid-refresh and could not extend
-    /// the L2 claim. The user closure was aborted before issuing the IdP
-    /// POST so a stale `refresh_token_v1` cannot be sent against an
-    /// already-rotated row. Caller routes through `record_failure` and
-    /// retries with a fresh L2 acquire.
+    /// Background heartbeat ownership was lost before the provider boundary.
     ///
-    /// Distinct from `Heartbeat(...)`: that variant is the surface for
-    /// the heartbeat error at construction; this variant signals the
-    /// claim was lost while a refresh closure was already running.
-    #[error(
-        "L2 claim lost during refresh \u{2014} heartbeat task failed before the IdP POST could complete"
-    )]
-    ClaimLostMidRefresh,
-    /// Configuration invariant violated at construction time.
-    #[error("config invalid: {0}")]
-    Config(#[from] ConfigError),
+    /// The provider closure was never started. Once the sentinel transition
+    /// confirms entry into the provider/persistence critical section,
+    /// heartbeat loss can no longer cancel that section.
+    #[error("L2 claim lost before provider dispatch \u{2014} refresh was not started")]
+    ClaimLostBeforeProvider,
+    /// The caller stopped waiting after the provider boundary, or the owned
+    /// task terminated without returning an exact disposition.
+    ///
+    /// This is deliberately non-retryable at the resolver boundary. The owned
+    /// task continues after an ordinary timeout. Panic/runtime cancellation
+    /// retains the sentinel claim; once its lease expires, storage exposes it
+    /// as durable fail-closed poison until explicit reconciliation.
+    #[error("provider/persistence refresh outcome is pending or unknown; do not retry")]
+    CriticalOutcomePending,
+    /// Another in-process attempt reached an exact finalization failure that
+    /// cannot safely be replayed.
+    ///
+    /// The winner retained the durable claim as poison. Unlike
+    /// [`Self::CriticalOutcomePending`], the operation outcome is known; the
+    /// command owner must surface its operation-specific reconciliation
+    /// contract.
+    #[error("a concurrent refresh operation requires reconciliation before retrying")]
+    ReconciliationRequired,
+    /// Another in-process attempt reached an exact, replay-safe outcome but
+    /// did not advance authoritative state.
+    ///
+    /// No provider or persistence operation remains pending, but the
+    /// coordinator deliberately does not turn every waiter into an immediate
+    /// retry. The caller may retry later under its normal backoff and circuit
+    /// policy.
+    #[error("a concurrent refresh attempt completed without advancing credential state")]
+    PriorAttemptNoProgress,
+    /// A backend-authoritative retry gate forbids provider dispatch for the
+    /// current credential epoch.
+    ///
+    /// The caller must re-read the typed gate evidence rather than treating
+    /// this as successful coalescing or a generic retryable failure.
+    #[error("credential refresh retry is suppressed by durable aggregate state: {0}")]
+    RetrySuppressed(Box<RefreshNotAppliedContext>),
+    /// The authoritative credential state could not be rechecked after
+    /// contention, so provider dispatch was denied.
+    ///
+    /// This failure occurs before the provider boundary and is therefore safe
+    /// for the command owner to retry after the state source recovers.
+    #[error(transparent)]
+    StateRecheck(#[from] RefreshRecheckError),
+}
+
+/// Closed failure taxonomy for the pre-provider state recheck.
+///
+/// A recheck is mandatory after L1/L2 contention because the refresh closure
+/// captures state loaded before waiting. Neither storage failure nor corrupt
+/// state may be flattened into `true`: doing so would authorize provider
+/// egress with a stale rotating grant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum RefreshRecheckError {
+    /// The authoritative state source could not be read.
+    #[error("credential state recheck is unavailable")]
+    Unavailable,
+    /// The current persisted state could not be validated for the operation.
+    #[error("credential state recheck found invalid state")]
+    InvalidState,
+}
+
+/// Authoritative result of rechecking a refresh contender's captured epoch.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum RefreshRecheck {
+    /// The same credential epoch still needs provider/local refresh work.
+    Needed,
+    /// Authoritative state advanced or no longer needs this operation.
+    Satisfied,
+    /// A durable retry gate forbids dispatch for the current epoch.
+    Suppressed(Box<RefreshNotAppliedContext>),
+}
+
+/// Exact disposition of an owned provider/persistence refresh section.
+///
+/// The coordinator needs this distinction to finalize the durable L2 claim
+/// safely and tell L1 waiters what the completion proves. A durable state
+/// advance may release immediately and permits a later refresh epoch. An exact
+/// replay-safe outcome without a state advance also releases, but waiters do
+/// not automatically retry it. An exact finalization failure after either a
+/// provider or local refresh, or an unknown provider/commit outcome, stops
+/// heartbeats but deliberately leaves the sentinel claim in place. Once its
+/// lease expires, storage keeps it as durable fail-closed poison so refresh
+/// work cannot replay before explicit reconciliation.
+#[derive(Debug)]
+#[must_use = "the refresh disposition controls whether the durable claim may be released"]
+#[non_exhaustive]
+pub enum RefreshDisposition<T> {
+    /// The operation durably advanced the authoritative state consulted by
+    /// `needs_refresh_after_backoff`.
+    ///
+    /// A waiter still observing work after this completion is handling a later
+    /// logical epoch and may enter a new winner election. Callers must use this
+    /// variant only after an acknowledged state transition (including a
+    /// durable `reauth_required` transition).
+    StateAdvanced(T),
+    /// The operation reached an exact, replay-safe outcome without advancing
+    /// authoritative state.
+    ///
+    /// L2 is released, but L1 waiters receive
+    /// [`RefreshError::PriorAttemptNoProgress`] instead of immediately
+    /// replaying the operation as a herd.
+    NoStateChange(T),
+    /// Refresh work completed, but its new state was definitely not persisted.
+    ///
+    /// The enclosed error is exact, yet another replica must not immediately
+    /// repeat the refresh against stale authoritative state. Like an unknown
+    /// acknowledgement, this retains the sentinel claim. Expiry converts it
+    /// into durable poison; explicit reconcile authority is K3 work.
+    RetryUnsafe(T),
+    /// Provider dispatch or persistence commit completed without an exact
+    /// acknowledgement.
+    ///
+    /// The enclosed value is still returned to the waiting caller (normally a
+    /// typed `OutcomeUnknown` error), while the claim remains retained as
+    /// durable poison after expiry.
+    OutcomeUnknown(T),
+}
+
+impl<T> RefreshDisposition<T> {
+    /// Construct a disposition backed by an acknowledged authoritative state
+    /// transition.
+    pub fn state_advanced(value: T) -> Self {
+        Self::StateAdvanced(value)
+    }
+
+    /// Construct an exact, replay-safe disposition that did not change
+    /// authoritative state.
+    pub fn no_state_change(value: T) -> Self {
+        Self::NoStateChange(value)
+    }
+
+    /// Construct a definite finalization failure that is unsafe to replay.
+    pub fn retry_unsafe(value: T) -> Self {
+        Self::RetryUnsafe(value)
+    }
+
+    /// Construct an unknown provider-or-commit disposition.
+    pub fn outcome_unknown(value: T) -> Self {
+        Self::OutcomeUnknown(value)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ClaimFinalization {
+    Release,
+    RetainAsPoison,
+}
+
+struct L1RefreshLease {
+    l1: Arc<L1RefreshCoalescer>,
+    credential_id: Option<String>,
+    completion: L1Completion,
+    _permit: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
+impl L1RefreshLease {
+    fn new(l1: Arc<L1RefreshCoalescer>, credential_id: String) -> Self {
+        Self {
+            l1,
+            credential_id: Some(credential_id),
+            completion: L1Completion::NoStateChange,
+            _permit: None,
+        }
+    }
+
+    fn attach_permit(&mut self, permit: tokio::sync::OwnedSemaphorePermit) {
+        self._permit = Some(permit);
+    }
+
+    fn set_completion(&mut self, completion: L1Completion) {
+        self.completion = completion;
+    }
+}
+
+impl Drop for L1RefreshLease {
+    fn drop(&mut self) {
+        if let Some(credential_id) = self.credential_id.take() {
+            self.l1.complete(&credential_id, self.completion);
+        }
+    }
+}
+
+/// Owned L2 lease transferred atomically into the provider/persistence task.
+///
+/// Before transfer, dropping the outer coordination future stops heartbeat and
+/// best-effort releases the claim because no provider request has started.
+/// After transfer, the detached task owns this guard, so caller cancellation or
+/// timeout cannot release the claim before the critical section reports an
+/// exact disposition.
+struct RefreshLease {
+    repo: Arc<dyn RefreshClaimRepo>,
+    token: Option<ClaimToken>,
+    heartbeat_stop: CancellationToken,
+    heartbeat_task: Option<tokio::task::JoinHandle<()>>,
+    metrics: RefreshCoordMetrics,
+    hold_start: Instant,
+    release_on_drop: bool,
+    _l1: Option<L1RefreshLease>,
+}
+
+impl RefreshLease {
+    fn new(
+        repo: Arc<dyn RefreshClaimRepo>,
+        token: ClaimToken,
+        heartbeat_stop: CancellationToken,
+        heartbeat_task: tokio::task::JoinHandle<()>,
+        metrics: RefreshCoordMetrics,
+        hold_start: Instant,
+        l1: L1RefreshLease,
+    ) -> Self {
+        Self {
+            repo,
+            token: Some(token),
+            heartbeat_stop,
+            heartbeat_task: Some(heartbeat_task),
+            metrics,
+            hold_start,
+            release_on_drop: true,
+            _l1: Some(l1),
+        }
+    }
+
+    fn enter_provider_critical_section(&mut self) {
+        self.release_on_drop = false;
+        if let Some(l1) = &mut self._l1 {
+            // From the sentinel acknowledgement until an exact disposition,
+            // any panic/runtime teardown must wake waiters as genuinely
+            // outcome-unknown.
+            l1.set_completion(L1Completion::OutcomeUnknown);
+        }
+    }
+
+    async fn finish(mut self, finalization: ClaimFinalization, l1_completion: L1Completion) {
+        if let Some(l1) = &mut self._l1 {
+            l1.set_completion(l1_completion);
+        }
+        self.heartbeat_stop.cancel();
+        if let Some(task) = self.heartbeat_task.take() {
+            task.abort();
+            let _ = task.await;
+        }
+        self.metrics
+            .hold_duration
+            .observe(self.hold_start.elapsed().as_secs_f64());
+
+        // The provider/persistence section has an exact disposition. Wake L1
+        // waiters and return the global permit *before* touching the L2 release
+        // path: a wedged database/pool must not permanently poison the local
+        // single-flight entry or consume one global refresh slot.
+        drop(self._l1.take());
+
+        let Some(token) = self.token.take() else {
+            return;
+        };
+        if finalization == ClaimFinalization::Release {
+            let repo = Arc::clone(&self.repo);
+            // Release is best-effort and deliberately detached. The L2 row
+            // continues to coalesce other replicas until this completes. If
+            // it remains through expiry, storage fails closed instead of
+            // treating the stale sentinel as replay authorization, while the exact
+            // provider/persistence result can return without a hung release
+            // wedging local progress.
+            tokio::spawn(async move {
+                if let Err(error) = repo.release(token).await {
+                    // A release failure never changes an already-confirmed
+                    // outcome. Replaying provider work would be less safe than
+                    // waiting for claim expiry.
+                    tracing::warn!(
+                        ?error,
+                        "L2 claim release after exact refresh disposition failed"
+                    );
+                }
+            });
+        } else {
+            tracing::warn!("refresh disposition forbids replay; retaining claim as durable poison");
+        }
+    }
+}
+
+impl Drop for RefreshLease {
+    fn drop(&mut self) {
+        let Some(token) = self.token.take() else {
+            return;
+        };
+        self.heartbeat_stop.cancel();
+        if let Some(task) = self.heartbeat_task.take() {
+            task.abort();
+        }
+        self.metrics
+            .hold_duration
+            .observe(self.hold_start.elapsed().as_secs_f64());
+
+        if !self.release_on_drop {
+            // Panic/runtime cancellation after the sentinel boundary has no
+            // trustworthy commit disposition. Releasing here would allow an
+            // immediate blind replay, so retain the row exactly like an
+            tracing::warn!(
+                "provider/persistence task dropped without an exact disposition; \
+                 retaining refresh claim as durable poison"
+            );
+            return;
+        }
+
+        let repo = Arc::clone(&self.repo);
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(async move {
+                    if let Err(error) = repo.release(token).await {
+                        tracing::warn!(
+                            ?error,
+                            "L2 claim release after pre-provider cancellation or task failure failed"
+                        );
+                    }
+                });
+            },
+            Err(error) => {
+                // There is no executor on which an async release can run. The
+                // stopped heartbeat guarantees the row expires naturally.
+                tracing::warn!(
+                    ?error,
+                    "no Tokio runtime available for L2 claim release; claim will expire by TTL"
+                );
+            },
+        }
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -227,7 +589,7 @@ pub enum RefreshError {
 
 /// Two-tier credential refresh coordinator (L1 in-process + L2 cross-replica).
 pub struct RefreshCoordinator {
-    l1: L1RefreshCoalescer,
+    l1: Arc<L1RefreshCoalescer>,
     repo: Arc<dyn RefreshClaimRepo>,
     replica_id: ReplicaId,
     config: RefreshCoordConfig,
@@ -246,47 +608,10 @@ impl fmt::Debug for RefreshCoordinator {
     }
 }
 
-/// Result of attempting to begin a refresh for a credential -- *legacy
-/// L1-only API*.
-///
-/// Re-exported for the existing `CredentialResolver` call sites until
-/// Stage 2.3 migrates them to the closure-based
-/// [`RefreshCoordinator::refresh_coalesced`] surface. Once that migration
-/// lands, this enum (and the L1-delegate methods on `RefreshCoordinator`)
-/// can be removed.
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum RefreshAttempt {
-    /// This caller won the race; perform the refresh, then call
-    /// `RefreshCoordinator::complete()` to wake waiters.
-    Winner,
-    /// Another caller is already refreshing. Await the receiver; it
-    /// resolves once the winner completes.
-    Waiter(tokio::sync::oneshot::Receiver<()>),
-}
-
-impl From<L1Attempt> for RefreshAttempt {
-    fn from(attempt: L1Attempt) -> Self {
-        match attempt {
-            L1Attempt::Winner => RefreshAttempt::Winner,
-            L1Attempt::Waiter(rx) => RefreshAttempt::Waiter(rx),
-        }
-    }
-}
-
-/// Configuration errors for the legacy concurrency knob.
-#[derive(Debug, thiserror::Error)]
-#[non_exhaustive]
-pub enum RefreshConfigError {
-    /// `max_concurrent` must be at least `1`.
-    #[error("RefreshCoordinator::max_concurrent must be >= 1, got 0")]
-    ZeroConcurrency,
-}
-
 impl RefreshCoordinator {
-    /// Maximum number of consecutive non-`ClaimLost` heartbeat
-    /// failures tolerated before the heartbeat task gives up and
-    /// cancels the in-flight refresh (sub-spec wave-4 fix).
+    /// Maximum number of consecutive non-`ClaimLost` heartbeat failures
+    /// tolerated before the heartbeat task signals claim loss (sub-spec
+    /// wave-4 fix).
     ///
     /// At three failures the worst-case latency before cancellation
     /// is `3 × heartbeat_interval`, which is bounded by the
@@ -319,7 +644,7 @@ impl RefreshCoordinator {
         // observes the series -- see `with_metrics` rustdoc.
         let metrics = RefreshCoordMetrics::with_registry(&nebula_metrics::MetricsRegistry::new())?;
         Ok(Self {
-            l1: L1RefreshCoalescer::new(),
+            l1: Arc::new(L1RefreshCoalescer::new()),
             repo,
             replica_id,
             config,
@@ -337,10 +662,15 @@ impl RefreshCoordinator {
         self
     }
 
-    /// Attach an [`AuditSink`] to receive sub-spec audit events
-    /// (`RefreshCoordClaimAcquired`, `SentinelTriggered`,
-    /// `ReauthFlagged`). Without a sink, audit emission is a no-op (the
-    /// metric / tracing surfaces still observe).
+    /// Attach an [`AuditSink`] to receive refresh-coordination observations
+    /// (`RefreshCoordClaimAcquired`, `RefreshCoordSentinelTriggered`, and
+    /// `RefreshCoordReauthThresholdReached`).
+    ///
+    /// These events are non-authoritative: the sentinel threshold path
+    /// publishes a lossy observation and does not itself durably set the
+    /// credential reauth bit. That durable consumer/command seam is K3 work.
+    /// Without a sink, audit emission is a no-op (the metric / tracing surfaces
+    /// still observe).
     #[must_use = "builder methods must be chained or used"]
     pub fn with_audit_sink(mut self, sink: Arc<dyn AuditSink>) -> Self {
         self.audit_sink = Some(sink);
@@ -350,36 +680,32 @@ impl RefreshCoordinator {
     /// Borrow the pre-bound metric handles. Used by reclaim-sweep
     /// wiring so the sweep emits the same series.
     #[must_use]
-    pub fn metrics(&self) -> &RefreshCoordMetrics {
+    pub(crate) fn metrics(&self) -> &RefreshCoordMetrics {
         &self.metrics
     }
 
     /// Borrow the audit sink (`None` if not configured). Used by the
-    /// reclaim sweep to emit `RefreshCoordSentinelTriggered` /
-    /// `RefreshCoordReauthFlagged` events.
+    /// reclaim sweep to emit sentinel/threshold observations. The
+    /// `RefreshCoordReauthThresholdReached` is not proof of a durable
+    /// credential-state transition.
     #[must_use]
-    pub fn audit_sink(&self) -> Option<&Arc<dyn AuditSink>> {
+    pub(crate) fn audit_sink(&self) -> Option<&Arc<dyn AuditSink>> {
         self.audit_sink.as_ref()
-    }
-
-    /// Borrow the replica identifier this coordinator was constructed
-    /// with.
-    #[must_use]
-    pub fn replica_id(&self) -> &ReplicaId {
-        &self.replica_id
     }
 
     /// Borrow the validated config this coordinator was constructed
     /// with.
     #[must_use]
-    pub fn config(&self) -> &RefreshCoordConfig {
+    pub(crate) fn config(&self) -> &RefreshCoordConfig {
         &self.config
     }
 
-    /// Borrow the underlying claim repo. Used by call sites that need
-    /// to mark the sentinel before performing the IdP POST (Stage 2.4)
-    /// and by the reclaim sweep landing in Stage 3.3.
-    pub fn repo(&self) -> &Arc<dyn RefreshClaimRepo> {
+    /// Borrow the underlying claim repo for maintenance wiring such as the
+    /// reclaim sweep (Stage 3.3).
+    ///
+    /// Normal provider work must enter through [`Self::refresh_coalesced`],
+    /// which owns sentinel marking; callers must not reproduce that boundary.
+    pub(crate) fn repo(&self) -> &Arc<dyn RefreshClaimRepo> {
         &self.repo
     }
 
@@ -392,18 +718,32 @@ impl RefreshCoordinator {
     /// 2. L2 durable claim with backoff.
     /// 3. Background heartbeat task -- passes `self.config.claim_ttl` to each `repo.heartbeat(token,
     ///    ttl)` call (Stage 1 fix C2).
-    /// 4. User-supplied `do_refresh(claim)` closure.
-    /// 5. Stop heartbeat + release the claim row.
+    /// 4. Recheck authoritative state after every successful L2 acquisition, including an
+    ///    immediate acquisition.
+    /// 5. Confirm the sentinel transition that marks the irreversible provider boundary.
+    /// 6. Transfer the heartbeat and claim into an owned provider/persistence task.
+    /// 7. Release after `StateAdvanced`/`NoStateChange`, or retain as durable poison after
+    ///    `RetryUnsafe`/`OutcomeUnknown`.
     ///
-    /// `needs_refresh_after_backoff` is consulted by the L2 backoff loop
-    /// per sub-spec after the post-`Contended` sleep: if the
-    /// predicate returns `false` the credential was refreshed by another
-    /// replica while this caller was waiting and we short-circuit with
-    /// [`RefreshError::CoalescedByOtherReplica`]. Callers that don't
-    /// have a state-check available pass `|_| async { true }` -- that
-    /// preserves the legacy "always retry" behavior at the cost of
-    /// occasionally running the refresh closure on a freshly-refreshed
-    /// credential.
+    /// The provider closure receives no claim or token. Durable claim authority
+    /// is coordinator-private and cannot be released, heartbeated, or reused by
+    /// integration code.
+    ///
+    /// `needs_refresh_after_backoff` is consulted after L1 completion, by the
+    /// L2 backoff loop after a post-`Contended` sleep, and once more after any
+    /// successful L2 acquisition before the sentinel transition.
+    /// [`RefreshRecheck::Satisfied`] means authoritative state changed or no
+    /// longer needs this operation, so the caller re-reads it through
+    /// [`RefreshError::CoalescedByOtherReplica`].
+    /// [`RefreshRecheck::Needed`] authorizes another claim attempt, while
+    /// [`RefreshRecheck::Suppressed`] reports a durable retry gate without
+    /// flattening it into coalesced success. `Err` denies provider dispatch with a typed,
+    /// pre-provider [`RefreshError::StateRecheck`].
+    ///
+    /// Callers without an external state source may pass
+    /// `|_| async { Ok(RefreshRecheck::Needed) }`. Persistence-backed callers must perform a
+    /// real version/state recheck; an unconditional predicate is not a safe
+    /// substitute after contention.
     ///
     /// # Errors
     ///
@@ -413,26 +753,36 @@ impl RefreshCoordinator {
     ///
     /// # Cancel-safety
     ///
-    /// The `do_refresh` future MUST be cancel-safe: dropping it mid-`await`
-    /// must not leak resources or leave external state in an inconsistent
-    /// shape. The coordinator drops the future without notice if a heartbeat
-    /// failure mid-refresh requires aborting before the IdP POST issues
-    /// (returning [`RefreshError::ClaimLostMidRefresh`]).
+    /// The sentinel acknowledgement is the explicit point of no cancellation.
+    /// Before it, caller cancellation or heartbeat loss releases the claim and
+    /// the provider closure is never started. Immediately after it, the closure
+    /// and the internal `RefreshLease` move into an owned Tokio task with no intervening
+    /// await. Dropping this method's future, an outer timeout, or heartbeat loss
+    /// after that boundary cannot cancel provider work, persistence commit, or
+    /// release L2 early.
     ///
-    /// Standard async HTTP clients (`reqwest`, `hyper`) satisfy this. Closures
-    /// that await a `tokio::task::JoinHandle` from `spawn_blocking` without a
-    /// cleanup path do not -- the blocking task continues running after the
-    /// `JoinHandle` is dropped, and any state it produces is silently
-    /// discarded.
+    /// `refresh_timeout` bounds each L1-wait, L2-contention, and owned-task
+    /// wait phase; it does not abort an already-started critical section. After
+    /// a critical-task timeout, that section remains protected by heartbeat
+    /// and L2 until its exact disposition. A state-advanced or exact
+    /// no-state-change outcome first wakes L1/returns the global permit, then
+    /// dispatches a best-effort L2 release; the L2 row continues coalescing
+    /// until that release completes. If an exact finalization's release is
+    /// delayed beyond TTL, a matching token may still clear that row; no other
+    /// holder may acquire it in the interim. An
+    /// [`RefreshDisposition::OutcomeUnknown`] stops heartbeat and deliberately
+    /// leaves the claim row in place. After TTL, the repository returns
+    /// [`ClaimAttempt::OutcomeUnknown`] for that row rather than authorizing a
+    /// blind replay of a commit whose acknowledgement was lost.
     ///
-    /// The coordinator itself is cancel-safe: dropping the
-    /// `refresh_coalesced` future at any await point (`tokio::time::timeout`,
-    /// `tokio::select!`, `JoinHandle::abort`) cancels the heartbeat
-    /// task and best-effort releases the L2 claim row (spawned, fire-and-
-    /// forget; release errors are logged at WARN). The synchronous-release
-    /// contract on the success path is preserved -- when `refresh_coalesced`
-    /// returns `Ok(...)`, the L2 row has been awaited-released before the
-    /// function returns.
+    /// There is intentionally no cancelling deadline on the owned critical
+    /// task: after provider dispatch, cancellation cannot establish that the
+    /// grant was not consumed. A genuinely non-terminating integration keeps
+    /// its heartbeat and claim fail-closed until the process stops or an
+    /// operator reconciles it; expiring that live lease and permitting another
+    /// provider call would trade an operational stall for credential
+    /// corruption. Provider transports should still use their own
+    /// protocol-aware deadlines and return an exact or unknown disposition.
     #[tracing::instrument(
         name = "credential.refresh.coordinate",
         skip(self, needs_refresh_after_backoff, do_refresh),
@@ -449,61 +799,185 @@ impl RefreshCoordinator {
         do_refresh: F,
     ) -> Result<T, RefreshError>
     where
-        // Explicit `Send` bounds (review I2): the inner futures cross
-        // task boundaries because `do_refresh` runs under
-        // `tokio::time::timeout` and the predicate is awaited from the
-        // spawn'd backoff loop. Without these bounds a `!Send` body
+        // Explicit `Send` bounds (review I2): `do_refresh` moves into an
+        // owned task and the predicate is awaited from the backoff loop.
+        // Without these bounds a `!Send` body
         // (e.g. one that captures an `Rc<...>`) compiles cleanly here
         // and surfaces an obscure auto-trait error at the call site.
         // Locking the contract on the trait bound moves the diagnostic
         // back to the user closure.
-        F: FnOnce(RefreshClaim) -> Fut + Send,
-        Fut: Future<Output = Result<T, RefreshError>> + Send,
-        T: Send,
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = RefreshDisposition<T>> + Send + 'static,
+        T: Send + 'static,
         P: Fn(&CredentialId) -> PFut + Sync,
-        PFut: Future<Output = bool> + Send,
+        PFut: Future<Output = Result<RefreshRecheck, RefreshRecheckError>> + Send,
     {
         // L1: in-process coalescing.
         //
         // The L1 layer is keyed by string, so we hash on the typed id's
         // canonical form. `try_refresh` returns Winner for the first
         // caller and Waiter (with a oneshot::Receiver) for every other
-        // concurrent caller in the same process. Waiters await the
-        // Winner's `complete()` call, then surface
-        // `CoalescedByOtherReplica` so the caller re-reads state -- by
-        // construction the Winner has already released the L2 claim and
-        // committed the refreshed state to storage.
+        // concurrent caller in the same process. Waiters await the Winner's
+        // typed, payload-free completion policy for at most `refresh_timeout`,
+        // then always recheck authoritative state. A proven state advance
+        // coalesces this epoch; if the predicate is still true after that
+        // advance, it represents newer work and the waiter re-enters election.
+        // Exact no-progress, retry-unsafe, and outcome-unknown completions
+        // remain distinct, so a provider failure cannot turn a waiting herd
+        // into automatic retries or erase exact reconciliation evidence.
+        // Timeout or abnormal sender closure is `CriticalOutcomePending`.
         let cred_str = credential_id.to_string();
-        match self.l1.try_refresh(&cred_str) {
-            super::l1::RefreshAttempt::Winner => {
-                // NOTE: do NOT record `tier="l2"` here -- the L2 path can
-                // still produce `CoalescedByOtherReplica` via the
-                // post-backoff recheck in
-                // `try_acquire_l2_with_backoff`. Recording the tier
-                // prematurely makes operators see "l2 acquired" when the
-                // actual outcome was "l2 coalesced" (review I1).
-                // The closed set `{l1, l2_acquired, l2_coalesced}` is
-                // recorded at the actual outcome sites below.
-                // (Fall through to acquire L2 + run the user closure.)
-            },
-            super::l1::RefreshAttempt::Waiter(rx) => {
-                tracing::Span::current().record("tier", "l1");
-                self.metrics.coalesced_l1.inc();
-                // Wait for the Winner to finish. If the receiver errors
-                // (Winner panicked / dropped without complete()) we still
-                // re-read state -- pessimistic safety.
-                let _ = rx.await;
-                return Err(RefreshError::CoalescedByOtherReplica);
-            },
+        loop {
+            match self.l1.try_refresh(&cred_str) {
+                super::l1::RefreshAttempt::Winner => {
+                    // NOTE: do NOT record `tier="l2"` here -- the L2 path can
+                    // still produce `CoalescedByOtherReplica` via the
+                    // post-backoff recheck in
+                    // `try_acquire_l2_with_backoff`. Recording the tier
+                    // prematurely makes operators see "l2 acquired" when the
+                    // actual outcome was "l2 coalesced" (review I1).
+                    // The closed set
+                    // `{l1, l1_no_progress, l1_reconciliation_required,
+                    // l1_outcome_unknown, l2_acquired, l2_coalesced,
+                    // l2_outcome_unknown}` is recorded at the actual outcome
+                    // sites below.
+                    break;
+                },
+                super::l1::RefreshAttempt::Waiter(rx) => {
+                    let completion =
+                        match tokio::time::timeout(self.config.refresh_timeout, rx).await {
+                            Ok(Ok(completion)) => completion,
+                            Ok(Err(error)) => {
+                                self.l1.prune_closed_waiters(&cred_str);
+                                tracing::Span::current().record("tier", "l1_outcome_unknown");
+                                tracing::error!(
+                                    event = "credential.refresh.l1.wait.outcome_unknown",
+                                    reason = "sender_closed",
+                                    ?error,
+                                    credential_id = %credential_id,
+                                    "L1 winner ended without an exact completion signal"
+                                );
+                                return Err(RefreshError::CriticalOutcomePending);
+                            },
+                            Err(error) => {
+                                self.l1.prune_closed_waiters(&cred_str);
+                                tracing::Span::current().record("tier", "l1_outcome_unknown");
+                                tracing::warn!(
+                                    event = "credential.refresh.l1.wait.outcome_unknown",
+                                    reason = "timeout",
+                                    timeout_ms = self.config.refresh_timeout.as_millis(),
+                                    ?error,
+                                    credential_id = %credential_id,
+                                    "L1 waiter stopped waiting for an unresolved owned refresh"
+                                );
+                                return Err(RefreshError::CriticalOutcomePending);
+                            },
+                        };
+
+                    // A typed completion signal still cannot replace the
+                    // authoritative row. In particular, an unknown provider
+                    // acknowledgement may have committed successfully, while
+                    // a nominal state advance can be followed by a later
+                    // refresh epoch before this waiter runs.
+                    let still_needs_refresh = match tokio::time::timeout(
+                        self.config.refresh_timeout,
+                        needs_refresh_after_backoff(credential_id),
+                    )
+                    .await
+                    {
+                        Ok(Ok(still_needs_refresh)) => still_needs_refresh,
+                        Ok(Err(error)) => {
+                            tracing::Span::current().record("tier", "l1_outcome_unknown");
+                            tracing::warn!(
+                                event = "credential.refresh.l1.wait.recheck_failed",
+                                reason = %error,
+                                credential_id = %credential_id,
+                                "L1 completion could not be verified from authoritative state"
+                            );
+                            return Err(RefreshError::StateRecheck(error));
+                        },
+                        Err(error) => {
+                            tracing::Span::current().record("tier", "l1_outcome_unknown");
+                            tracing::warn!(
+                                event = "credential.refresh.l1.wait.outcome_unknown",
+                                reason = "state_recheck_timeout",
+                                timeout_ms = self.config.refresh_timeout.as_millis(),
+                                ?error,
+                                credential_id = %credential_id,
+                                "L1 completion state recheck did not finish"
+                            );
+                            return Err(RefreshError::CriticalOutcomePending);
+                        },
+                    };
+
+                    match still_needs_refresh {
+                        RefreshRecheck::Satisfied => {
+                            tracing::Span::current().record("tier", "l1");
+                            self.metrics.coalesced_l1.inc();
+                            return Err(RefreshError::CoalescedByOtherReplica);
+                        },
+                        RefreshRecheck::Suppressed(context) => {
+                            tracing::Span::current().record("tier", "l1_no_progress");
+                            return Err(RefreshError::RetrySuppressed(context));
+                        },
+                        RefreshRecheck::Needed => {},
+                    }
+
+                    match completion {
+                        L1Completion::StateAdvanced => {
+                            // The caller contract promises that this signal
+                            // follows an acknowledged authoritative transition.
+                            // A still-true fresh predicate therefore denotes a
+                            // later logical epoch. Re-entering election admits
+                            // exactly one local winner for that newer work.
+                            tracing::debug!(
+                                event = "credential.refresh.l1.wait.new_epoch",
+                                credential_id = %credential_id,
+                                "authoritative state requires a newer refresh epoch after \
+                                 confirmed L1 progress"
+                            );
+                        },
+                        L1Completion::NoStateChange => {
+                            tracing::Span::current().record("tier", "l1_no_progress");
+                            tracing::debug!(
+                                event = "credential.refresh.l1.wait.no_progress",
+                                credential_id = %credential_id,
+                                "exact L1 winner made no authoritative progress; automatic \
+                                 waiter replay denied"
+                            );
+                            return Err(RefreshError::PriorAttemptNoProgress);
+                        },
+                        L1Completion::RetryUnsafe => {
+                            tracing::Span::current().record("tier", "l1_reconciliation_required");
+                            tracing::warn!(
+                                event = "credential.refresh.l1.wait.reconciliation_required",
+                                completion = "retry_unsafe",
+                                credential_id = %credential_id,
+                                "exact L1 winner outcome requires reconciliation before replay"
+                            );
+                            return Err(RefreshError::ReconciliationRequired);
+                        },
+                        L1Completion::OutcomeUnknown => {
+                            tracing::Span::current().record("tier", "l1_outcome_unknown");
+                            tracing::warn!(
+                                event = "credential.refresh.l1.wait.outcome_unknown",
+                                reason = "authoritative_state_unchanged_after_unknown_completion",
+                                credential_id = %credential_id,
+                                "L1 winner outcome is unknown and cannot be replayed safely"
+                            );
+                            return Err(RefreshError::CriticalOutcomePending);
+                        },
+                    }
+                },
+            }
         }
 
-        // Make sure `complete()` runs even on early return / panic so
-        // future callers can re-acquire the L1 slot.
-        let credential_id_for_guard = cred_str.clone();
-        let l1 = &self.l1;
-        let _l1_complete = scopeguard::guard((), move |()| {
-            l1.complete(&credential_id_for_guard);
-        });
+        // The L1 completion and global permit are owned together. Before the
+        // provider boundary this local guard completes on every early return.
+        // At the boundary it moves into `RefreshLease`, so caller
+        // timeout/cancellation cannot wake local waiters while the detached
+        // provider/persistence section is still running.
+        let mut l1_lease = L1RefreshLease::new(Arc::clone(&self.l1), cred_str);
 
         // Global rate-limit gate (audit B6 / wave-2 regression).
         //
@@ -522,17 +996,16 @@ impl RefreshCoordinator {
         // Acquired AFTER `try_refresh` (Winner-only -- Waiters already
         // park on the oneshot above and do not need a permit) and BEFORE
         // L2 backoff so the bound covers the entire IdP POST window.
-        // The order also keeps `_l1_complete` declared first so its
-        // guard fires on every cancel/Drop path even if `acquire_permit`
-        // itself is cancelled (its `await` is cancel-safe per
+        // `l1_lease` was constructed first, so it completes on every
+        // cancel/Drop path even if `acquire_permit` itself is cancelled
+        // (its `await` is cancel-safe per
         // `L1RefreshCoalescer::acquire_permit` rustdoc -- dropping the
         // future does not consume a permit).
         //
-        // RAII: `_permit` holds an `OwnedSemaphorePermit` until end of
-        // function (after explicit synchronous release on the success
-        // path; after `l2_teardown` fires on every other path), so the
-        // permit is released on every exit including Drop and panic.
-        let _permit = self.l1.acquire_permit().await;
+        // RAII: attaching the permit to `l1_lease` keeps the global cap
+        // occupied for the owned critical task as well as the outer wait.
+        let permit = self.l1.acquire_permit().await;
+        l1_lease.attach_permit(permit);
 
         // L2: durable claim with backoff.
         let claim = self
@@ -558,139 +1031,150 @@ impl RefreshCoordinator {
         );
         let hold_start = Instant::now();
 
-        // Cancellation token shared between heartbeat task and the user
-        // closure. The heartbeat task fires `cancel()` on Err so
-        // `do_refresh` can abort before the IdP POST runs against an
-        // already-rotated row (n8n #13088 lineage).
-        let cancel = CancellationToken::new();
-        let hb_cancel = cancel.clone();
-
-        // Heartbeat task in background.
-        let hb_task = self.spawn_heartbeat(claim.token.clone(), hb_cancel, *credential_id);
-
-        // Cancel-safety guard (review C1 + wave-5, sub-spec). Fires
-        // on EVERY exit path that does NOT explicitly defuse it: panic
-        // unwind, error early-return, AND Drop (caller cancels the
-        // outer future via `tokio::time::timeout`, `tokio::select!`, or
-        // `JoinHandle::abort`). Without Drop coverage, a caller that
-        // wraps `refresh_coalesced` in its own timeout / select! /
-        // spawn-and-drop would leak the heartbeat task (extending L2
-        // expiry forever) and skip `release()` -- the same "stuck claim"
-        // failure mode the panic-only guard was designed to prevent,
-        // just triggered by `Drop` instead of unwind.
+        // Heartbeat has two independent signals:
         //
-        // The success path defuses this guard with
-        // `scopeguard::ScopeGuard::into_inner(...)` BEFORE running its
-        // synchronous release -- that preserves the synchronous-release
-        // contract on `Ok(...)` while making every other exit do
-        // best-effort spawned cleanup. `release()` is idempotent and
-        // the spawned task is detached because Drop is synchronous; we
-        // cannot `.await` here.
-        //
-        // Heartbeat shutdown order mirrors the success path (below):
-        // `cancel.cancel()` first so the heartbeat exits through its
-        // `cancelled()` arm cleanly, then `abort()` as a belt-and-suspenders
-        // guarantee. `CancellationToken` is reference-counted so dropping
-        // it does NOT auto-cancel -- both paths must call `.cancel()`
-        // explicitly to keep release semantics symmetric.
-        let token_teardown = claim.token.clone();
-        let repo_teardown = Arc::clone(&self.repo);
-        let hb_cancel_teardown = cancel.clone();
-        let hb_task_teardown = hb_task.abort_handle();
-        let hold_duration_teardown = self.metrics.hold_duration.clone();
-        let l2_teardown = scopeguard::guard((), move |()| {
-            hb_cancel_teardown.cancel();
-            hb_task_teardown.abort();
-            // Hold-time histogram is recorded on every exit path --
-            // observe it before the spawn so the histogram never drops
-            // a sample regardless of which path triggered teardown.
-            hold_duration_teardown.observe(hold_start.elapsed().as_secs_f64());
-            tokio::spawn(async move {
-                if let Err(e) = repo_teardown.release(token_teardown).await {
-                    tracing::warn!(?e, "L2 claim release on drop/unwind failed");
-                }
-            });
-        });
+        // - `heartbeat_stop` belongs to the lease owner and terminates the task
+        //   only after an exact critical-section disposition;
+        // - `claim_lost` is emitted by heartbeat failures. It may prevent entry
+        //   before the provider boundary, but cannot cancel work afterwards.
+        let heartbeat_stop = CancellationToken::new();
+        let claim_lost = CancellationToken::new();
+        let heartbeat_task = self.spawn_heartbeat(
+            claim.token.clone(),
+            heartbeat_stop.clone(),
+            claim_lost.clone(),
+            *credential_id,
+        );
+        let mut lease = RefreshLease::new(
+            Arc::clone(&self.repo),
+            claim.token.clone(),
+            heartbeat_stop,
+            heartbeat_task,
+            self.metrics.clone(),
+            hold_start,
+            l1_lease,
+        );
 
-        // Keep the token for the normal-exit release; `do_refresh`
-        // takes the full `RefreshClaim` (which it may inspect for
-        // `expires_at`), so we hand it a clone and retain `token` here.
-        let token_for_release = claim.token.clone();
-
-        // Run user's refresh closure under `refresh_timeout`.
-        // The timeout is shorter than the claim TTL by construction, so
-        // the heartbeat keeps the L2 row alive while the closure runs.
-        // Wrap in `select!` over `cancel.cancelled()` so a heartbeat
-        // failure mid-refresh aborts the closure BEFORE it issues the
-        // IdP POST -- sub-spec invariant.
-        //
-        // Bias order MUST poll `do_refresh_fut` first: if the future
-        // resolves `Ok(...)` and the heartbeat task fires
-        // `cancel.cancel()` in the same wake-cycle, biased-cancel-first
-        // would silently drop the successful result and route through
-        // `record_failure`, which would reissue an IdP POST against a
-        // stale `refresh_token_v1` -- re-introducing the n8n #13088
-        // refresh-storm pattern P2 was designed to prevent. With
-        // `do_refresh_fut` polled first, a ready future deterministically
-        // wins; cancel only fires while the refresh future is still
-        // suspended. The `select!` is wrapped INSIDE `timeout(...)` so
-        // the timeout still bounds the overall wait.
-        let timeout = self.config.refresh_timeout;
-        let do_refresh_fut = do_refresh(claim);
-        let result = tokio::time::timeout(timeout, async {
-            tokio::select! {
-                biased;
-                r = do_refresh_fut => r,
-                () = cancel.cancelled() => Err(RefreshError::ClaimLostMidRefresh),
-            }
-        })
-        .await
-        .map_err(|_elapsed| RefreshError::Timeout(timeout))
-        .and_then(std::convert::identity);
-
-        // Normal-exit release (review I1 + wave-5, sub-spec). We
-        // DO NOT propagate release errors -- propagating them with `?`
-        // would mask a successful refresh: caller would observe
-        // `RefreshError::Repo(...)`, route to `record_failure`, then
-        // retry -> ANOTHER IdP POST -> invalidates the just-issued
-        // refresh token (n8n #13088 spec lineage). Log at warn level
-        // instead.
-        //
-        // `into_inner` defuses the teardown guard BEFORE the explicit
-        // cleanup runs. Without this, the guard would also fire when
-        // `l2_teardown` goes out of scope at end of function, racing
-        // the synchronous release below (double-release; second one
-        // sees a missing row -> spurious WARN log). Defusing first
-        // preserves the synchronous-release contract: when
-        // `refresh_coalesced` returns `Ok(...)`, the L2 row has been
-        // awaited-released before the function returns.
-        scopeguard::ScopeGuard::into_inner(l2_teardown);
-        // Cancel the heartbeat token before aborting so the task exits
-        // through its `cancelled()` arm rather than racing the abort.
-        cancel.cancel();
-        hb_task.abort();
-        // Sub-spec -- observe the hold duration on the normal-exit
-        // release path. Symmetric with the teardown guard above.
-        self.metrics
-            .hold_duration
-            .observe(hold_start.elapsed().as_secs_f64());
-        if let Err(e) = self.repo.release(token_for_release).await {
-            tracing::warn!(?e, "L2 claim release after successful refresh failed");
+        // Close the stale-preflight window after claim acquisition. A caller
+        // can observe `Open`, pause, then acquire immediately after another
+        // replica durably installs a retry gate and releases L2. Rechecking
+        // only after `Contended` would let that stale caller cross the
+        // sentinel/provider boundary without ever observing the gate.
+        let post_claim_recheck = tokio::time::timeout(
+            self.config.refresh_timeout,
+            needs_refresh_after_backoff(credential_id),
+        )
+        .await;
+        match post_claim_recheck {
+            Ok(Ok(RefreshRecheck::Needed)) => {},
+            Ok(Ok(RefreshRecheck::Satisfied)) => {
+                lease
+                    .finish(ClaimFinalization::Release, L1Completion::StateAdvanced)
+                    .await;
+                self.metrics.coalesced_l2.inc();
+                return Err(RefreshError::CoalescedByOtherReplica);
+            },
+            Ok(Ok(RefreshRecheck::Suppressed(context))) => {
+                lease
+                    .finish(ClaimFinalization::Release, L1Completion::StateAdvanced)
+                    .await;
+                self.metrics.coalesced_l2.inc();
+                return Err(RefreshError::RetrySuppressed(context));
+            },
+            Ok(Err(error)) => {
+                lease
+                    .finish(ClaimFinalization::Release, L1Completion::NoStateChange)
+                    .await;
+                return Err(RefreshError::StateRecheck(error));
+            },
+            Err(error) => {
+                tracing::warn!(
+                    event = "credential.refresh.l2.post_claim_recheck_timeout",
+                    timeout_ms = self.config.refresh_timeout.as_millis(),
+                    ?error,
+                    credential_id = %credential_id,
+                    "post-claim authoritative recheck timed out; provider dispatch denied"
+                );
+                lease
+                    .finish(ClaimFinalization::Release, L1Completion::NoStateChange)
+                    .await;
+                return Err(RefreshError::StateRecheck(RefreshRecheckError::Unavailable));
+            },
         }
 
-        result
+        // This durable sentinel acknowledgement is the point of no
+        // cancellation. Bias toward a claim-loss signal if both branches are
+        // ready: in that case the provider closure has not started, so stopping
+        // is the only safe outcome. Dropping the outer future while this await
+        // is pending drops `lease`, which releases L2 and still starts no
+        // provider work.
+        let sentinel_result = tokio::select! {
+            biased;
+            () = claim_lost.cancelled() => Err(RefreshError::ClaimLostBeforeProvider),
+            result = self.repo.mark_sentinel(&claim.token) => result.map_err(RefreshError::Repo),
+        };
+        if let Err(error) = sentinel_result {
+            lease
+                .finish(ClaimFinalization::Release, L1Completion::NoStateChange)
+                .await;
+            return Err(error);
+        }
+
+        // No await may appear between the confirmed sentinel and this spawn.
+        // Moving both closure and lease into the task is the atomic ownership
+        // transfer that makes caller Drop/timeout harmless to the irreversible
+        // provider -> persistence section.
+        lease.enter_provider_critical_section();
+        let mut critical_task = tokio::spawn(async move {
+            let disposition = do_refresh().await;
+            let (finalization, l1_completion, result) = match disposition {
+                RefreshDisposition::StateAdvanced(result) => (
+                    ClaimFinalization::Release,
+                    L1Completion::StateAdvanced,
+                    result,
+                ),
+                RefreshDisposition::NoStateChange(result) => (
+                    ClaimFinalization::Release,
+                    L1Completion::NoStateChange,
+                    result,
+                ),
+                RefreshDisposition::RetryUnsafe(result) => (
+                    ClaimFinalization::RetainAsPoison,
+                    L1Completion::RetryUnsafe,
+                    result,
+                ),
+                RefreshDisposition::OutcomeUnknown(result) => (
+                    ClaimFinalization::RetainAsPoison,
+                    L1Completion::OutcomeUnknown,
+                    result,
+                ),
+            };
+            lease.finish(finalization, l1_completion).await;
+            result
+        });
+
+        // The timeout controls caller latency only. Dropping a Tokio
+        // `JoinHandle` detaches rather than aborts, so both this timeout path and
+        // arbitrary cancellation of the outer future leave the owned task
+        // running with its heartbeat and L2 lease.
+        let timeout = self.config.refresh_timeout;
+        match tokio::time::timeout(timeout, &mut critical_task).await {
+            Ok(Ok(result)) => Ok(result),
+            Ok(Err(_)) | Err(_) => Err(RefreshError::CriticalOutcomePending),
+        }
     }
 
     /// L2 acquisition retry loop per sub-spec.
     ///
-    /// On `Contended` we sleep until the contender's claim is expected
-    /// to expire (capped + jitter) then consult
+    /// On `Contended` we use an adaptive 25 → 50 → 100 → 200 ms poll cadence
+    /// (plus bounded jitter), capped by both the observed claim expiry and this
+    /// call's `refresh_timeout` budget, then consult
     /// `needs_refresh_after_backoff(credential_id)`. If the predicate
     /// returns `false` we surface
     /// [`RefreshError::CoalescedByOtherReplica`] -- another replica
     /// completed the refresh while we were waiting, and the caller
     /// should re-read state from storage. Otherwise we retry
-    /// `try_claim` until we win the claim or exhaust attempts.
+    /// `try_claim` until we win the claim or exhaust the contention budget.
     async fn try_acquire_l2_with_backoff<P, PFut>(
         &self,
         credential_id: &CredentialId,
@@ -701,10 +1185,19 @@ impl RefreshCoordinator {
         // helper's auto-trait inference does not silently relax the
         // public contract.
         P: Fn(&CredentialId) -> PFut + Sync,
-        PFut: Future<Output = bool> + Send,
+        PFut: Future<Output = Result<RefreshRecheck, RefreshRecheckError>> + Send,
     {
-        const MAX_ATTEMPTS: usize = 5;
-        for attempt in 0..MAX_ATTEMPTS {
+        const POLL_CADENCE: [Duration; 4] = [
+            Duration::from_millis(25),
+            Duration::from_millis(50),
+            Duration::from_millis(100),
+            Duration::from_millis(200),
+        ];
+        const MAX_JITTER_MS: u64 = 10;
+
+        let contention_deadline = tokio::time::Instant::now() + self.config.refresh_timeout;
+        let mut attempt = 0usize;
+        loop {
             // Sub-spec per-attempt tracing span: `attempt` and
             // `credential_id` so operators correlate contention storms
             // across replicas.
@@ -723,6 +1216,24 @@ impl RefreshCoordinator {
             .await?;
             match outcome {
                 ClaimAttempt::Acquired(claim) => return Ok(claim),
+                ClaimAttempt::OutcomeUnknown { expired_at } => {
+                    tracing::Span::current().record("tier", "l2_outcome_unknown");
+                    self.metrics.claims_outcome_unknown.inc();
+                    tracing::error!(
+                        event = "credential.refresh.claim.outcome_unknown",
+                        claim_outcome = "outcome_unknown",
+                        credential_id = %credential_id,
+                        replica_id = %self.replica_id,
+                        %expired_at,
+                        "expired RefreshInFlight claim is durable outcome-unknown poison; \
+                         provider dispatch denied pending explicit reconciliation"
+                    );
+                    // The retained periodic ReclaimSweepHandle is the sole
+                    // owner of evidence accounting and threshold observation.
+                    // Request-path one-shots must not consume an idempotent
+                    // accounting row without the configured event bus.
+                    return Err(RefreshError::CriticalOutcomePending);
+                },
                 ClaimAttempt::Contended {
                     existing_expires_at,
                 } => {
@@ -731,17 +1242,31 @@ impl RefreshCoordinator {
                     // whether the post-backoff recheck eventually
                     // short-circuits.
                     self.metrics.claims_contended.inc();
-                    // Sleep until the contender's claim expires (capped
-                    // at 5s so we don't sleep forever if their TTL is
-                    // somehow much longer than ours), plus a jitter to
-                    // de-correlate retries across replicas.
-                    let now = chrono::Utc::now();
-                    let cap = now + chrono::Duration::seconds(5);
-                    let wait_until = existing_expires_at.min(cap);
-                    let delay = (wait_until - now)
+                    // Poll well before the full claim TTL. A healthy winner
+                    // usually releases in milliseconds; sleeping until its
+                    // advertised expiry made same-process waiters time out
+                    // behind a claim that was already gone. The cadence backs
+                    // off to cap database pressure for genuinely long-running
+                    // owners, while the caller budget prevents unbounded
+                    // pre-provider latency.
+                    let remaining_budget =
+                        contention_deadline.saturating_duration_since(tokio::time::Instant::now());
+                    let until_expiry = (existing_expires_at - chrono::Utc::now())
                         .to_std()
+                        .unwrap_or(Duration::ZERO);
+                    let cadence = POLL_CADENCE
+                        .get(attempt.min(POLL_CADENCE.len() - 1))
+                        .copied()
                         .unwrap_or(Duration::from_millis(200));
-                    tokio::time::sleep(delay + jitter_ms(100)).await;
+                    let poll_delay = if until_expiry.is_zero() {
+                        POLL_CADENCE[0]
+                    } else {
+                        cadence.min(until_expiry)
+                    }
+                    .min(remaining_budget);
+                    let jitter =
+                        jitter_ms(MAX_JITTER_MS).min(remaining_budget.saturating_sub(poll_delay));
+                    tokio::time::sleep(poll_delay + jitter).await;
                     // CRITICAL: post-backoff state recheck per sub-spec. If
                     // the contender finished the refresh while we slept,
                     // the credential is now fresh -- short-circuit with
@@ -752,29 +1277,53 @@ impl RefreshCoordinator {
                     // contender's row is gone), invalidating any
                     // refresh_token rotation the contender just
                     // committed (n8n #13088 lineage).
-                    if !needs_refresh_after_backoff(credential_id).await {
-                        // Sub-spec -- L2 coalesce: another replica
-                        // refreshed while we waited.
-                        //
-                        // Span tier (review I1) -- record `l2_coalesced`
-                        // at the outcome site. We are now outside the
-                        // per-attempt `instrument(span)` block (which
-                        // wrapped only the `try_claim` future), so
-                        // `Span::current()` resolves to the parent
-                        // `credential.refresh.coordinate` span -- the
-                        // intended target. The closed set
-                        // `{l1, l2_acquired, l2_coalesced}` is
-                        // documented in OBSERVABILITY.md.
-                        tracing::Span::current().record("tier", "l2_coalesced");
-                        self.metrics.coalesced_l2.inc();
-                        return Err(RefreshError::CoalescedByOtherReplica);
+                    match needs_refresh_after_backoff(credential_id).await {
+                        Ok(RefreshRecheck::Needed) => {
+                            if tokio::time::Instant::now() >= contention_deadline {
+                                break;
+                            }
+                            attempt = attempt.saturating_add(1);
+                        },
+                        Ok(RefreshRecheck::Satisfied) => {
+                            // Sub-spec -- L2 coalesce: another replica
+                            // refreshed while we waited.
+                            //
+                            // Span tier (review I1) -- record `l2_coalesced`
+                            // at the outcome site. We are now outside the
+                            // per-attempt `instrument(span)` block (which
+                            // wrapped only the `try_claim` future), so
+                            // `Span::current()` resolves to the parent
+                            // `credential.refresh.coordinate` span -- the
+                            // intended target. The closed set
+                            // `{l1, l1_no_progress, l1_outcome_unknown,
+                            // l2_acquired, l2_coalesced, l2_outcome_unknown}` is
+                            // documented in OBSERVABILITY.md.
+                            tracing::Span::current().record("tier", "l2_coalesced");
+                            self.metrics.coalesced_l2.inc();
+                            return Err(RefreshError::CoalescedByOtherReplica);
+                        },
+                        Ok(RefreshRecheck::Suppressed(context)) => {
+                            tracing::Span::current().record("tier", "l2_coalesced");
+                            self.metrics.coalesced_l2.inc();
+                            return Err(RefreshError::RetrySuppressed(context));
+                        },
+                        Err(error) => {
+                            tracing::warn!(
+                                event = "credential.refresh.l2.recheck_failed",
+                                reason = %error,
+                                credential_id = %credential_id,
+                                replica_id = %self.replica_id,
+                                "post-contention state could not be verified; provider dispatch denied"
+                            );
+                            return Err(RefreshError::StateRecheck(error));
+                        },
                     }
                 },
             }
         }
-        // Sub-spec -- every retry exhausted without acquiring the L2
-        // row. `claims_total{outcome=exhausted} > 0` is a real production
-        // signal worth alerting on.
+        // Sub-spec -- the time budget elapsed without acquiring the L2 row.
+        // `claims_total{outcome=exhausted} > 0` is a real production signal
+        // worth alerting on.
         self.metrics.claims_exhausted.inc();
         Err(RefreshError::ContentionExhausted)
     }
@@ -786,13 +1335,13 @@ impl RefreshCoordinator {
     /// (`heartbeat_interval × 3 < claim_ttl`,
     /// `reclaim_sweep_interval <= claim_ttl`) hold across heartbeats.
     ///
-    /// Exits and signals cancellation via the supplied
+    /// Exits and signals claim loss via the supplied `claim_lost`
     /// [`CancellationToken`] in two cases:
     ///
     /// 1. **Claim lost** (`HeartbeatError::ClaimLost`): a different replica reclaimed the row
-    ///    (generation bumped or row deleted). Cancellation fires immediately so the in-flight
-    ///    refresh aborts BEFORE the IdP POST. Without this signal the closure would press on with a
-    ///    stale `refresh_token_v1` and invalidate the just-rotated row (n8n #13088 lineage).
+    ///    (generation bumped or row deleted). Before the sentinel boundary this prevents provider
+    ///    dispatch. After that boundary it is observation-only: the owned provider/persistence task
+    ///    must run to an exact disposition.
     ///
     /// 2. **Transient errors past budget**: any non-`ClaimLost` heartbeat error (e.g. transient
     ///    backend hiccup wrapped in `HeartbeatError::Repo`) retries up to
@@ -802,7 +1351,8 @@ impl RefreshCoordinator {
     fn spawn_heartbeat(
         &self,
         token: ClaimToken,
-        cancel: CancellationToken,
+        heartbeat_stop: CancellationToken,
+        claim_lost: CancellationToken,
         credential_id: CredentialId,
     ) -> tokio::task::JoinHandle<()> {
         let repo = Arc::clone(&self.repo);
@@ -828,9 +1378,9 @@ impl RefreshCoordinator {
             loop {
                 tokio::select! {
                     biased;
-                    () = cancel.cancelled() => {
-                        // Caller wound up its refresh -- heartbeat exits
-                        // cleanly, no signal to fire.
+                    () = heartbeat_stop.cancelled() => {
+                        // The lease owner reached an exact disposition (or its
+                        // guard is tearing down) -- heartbeat exits cleanly.
                         break;
                     }
                     _ = ticker.tick() => {
@@ -851,13 +1401,13 @@ impl RefreshCoordinator {
                                 tracing::error!(
                                     %credential_id,
                                     replica_id = %replica_id,
-                                    "credential refresh heartbeat lost claim; cancelling concurrent \
-                                     do_refresh before it issues the IdP POST"
+                                    "credential refresh heartbeat lost claim; signaling coordinator"
                                 );
-                                // Fire cancel BEFORE breaking so the user
-                                // closure sees `cancelled()` and aborts
-                                // the IdP call.
-                                cancel.cancel();
+                                // The coordinator consumes this signal only
+                                // before the sentinel boundary. Once the owned
+                                // task starts, loss cannot cancel the
+                                // provider/persistence critical section.
+                                claim_lost.cancel();
                                 break;
                             }
                             Err(HeartbeatError::Repo(repo_err)) => {
@@ -880,10 +1430,9 @@ impl RefreshCoordinator {
                                         attempts = transient_failures,
                                         max_attempts = Self::MAX_TRANSIENT_HEARTBEAT_FAILURES,
                                         "credential refresh heartbeat exceeded transient-failure \
-                                         budget; cancelling concurrent do_refresh before it issues \
-                                         the IdP POST"
+                                         budget; signaling coordinator"
                                     );
-                                    cancel.cancel();
+                                    claim_lost.cancel();
                                     break;
                                 }
                                 // Log at WARN -- single hiccups are
@@ -908,92 +1457,18 @@ impl RefreshCoordinator {
         })
     }
 
-    // ──────────────────────────────────────────────────────────────────
-    // Legacy L1 surface -- kept until Stage 2.3 migrates the resolver
-    // to `refresh_coalesced`. Each method delegates to the inner
-    // L1 coalescer.
-    // ──────────────────────────────────────────────────────────────────
-
-    /// **Legacy.** Begin a refresh attempt against the L1 coalescer.
-    /// Stage 2.3 deletes this in favour of [`Self::refresh_coalesced`].
-    #[deprecated(
-        since = "0.1.0",
-        note = "use refresh_coalesced; remove when typed CredentialId migration completes"
-    )]
-    pub fn try_refresh(&self, credential_id: &str) -> RefreshAttempt {
-        self.l1.try_refresh(credential_id).into()
-    }
-
-    /// **Legacy.** Mark the L1 in-flight slot complete. Stage 2.3
-    /// deletes this in favour of [`Self::refresh_coalesced`].
-    #[deprecated(
-        since = "0.1.0",
-        note = "use refresh_coalesced; remove when typed CredentialId migration completes"
-    )]
-    pub fn complete(&self, credential_id: &str) {
-        self.l1.complete(credential_id);
-    }
-
-    /// **Legacy.** Number of credentials currently being refreshed in
-    /// the L1 layer.
-    #[deprecated(
-        since = "0.1.0",
-        note = "use refresh_coalesced; remove when typed CredentialId migration completes"
-    )]
-    pub fn in_flight_count(&self) -> usize {
-        self.l1.in_flight_count()
-    }
-
-    /// **Legacy.** Acquire a permit from the L1 concurrency limiter.
-    ///
-    /// Only the standalone permit-grab API is deprecated; the underlying
-    /// global concurrency semaphore is **not** going away. The typed-path
-    /// `Self::refresh_coalesced` acquires from the same semaphore
-    /// internally (Winner-only, RAII-scoped), so callers migrating off
-    /// the legacy `String`-id surface inherit the rate-limit defense
-    /// without any explicit wiring. See audit B6 / wave-2 regression.
-    #[deprecated(
-        since = "0.1.0",
-        note = "use refresh_coalesced; remove when typed CredentialId migration completes"
-    )]
-    pub async fn acquire_permit(&self) -> tokio::sync::OwnedSemaphorePermit {
-        self.l1.acquire_permit().await
-    }
-
-    /// **Legacy.** Available permits in the L1 concurrency limiter.
-    #[deprecated(
-        since = "0.1.0",
-        note = "use refresh_coalesced; remove when typed CredentialId migration completes"
-    )]
-    pub fn available_permits(&self) -> usize {
-        self.l1.available_permits()
-    }
-
-    /// **Legacy.** Record a refresh failure for the L1 circuit breaker.
-    #[deprecated(
-        since = "0.1.0",
-        note = "use refresh_coalesced; remove when typed CredentialId migration completes"
-    )]
-    pub fn record_failure(&self, credential_id: &str) {
+    /// Record a refresh failure for the resolver-owned L1 circuit breaker.
+    pub(crate) fn record_failure(&self, credential_id: &str) {
         self.l1.record_failure(credential_id);
     }
 
-    /// **Legacy.** Record a refresh success for the L1 circuit breaker.
-    #[deprecated(
-        since = "0.1.0",
-        note = "use refresh_coalesced; remove when typed CredentialId migration completes"
-    )]
-    pub fn record_success(&self, credential_id: &str) {
+    /// Record a refresh success for the resolver-owned L1 circuit breaker.
+    pub(crate) fn record_success(&self, credential_id: &str) {
         self.l1.record_success(credential_id);
     }
 
-    /// **Legacy.** Whether the L1 per-credential circuit breaker is
-    /// open.
-    #[deprecated(
-        since = "0.1.0",
-        note = "use refresh_coalesced; remove when typed CredentialId migration completes"
-    )]
-    pub fn is_circuit_open(&self, credential_id: &str) -> bool {
+    /// Report whether the resolver-owned per-credential circuit is open.
+    pub(crate) fn is_circuit_open(&self, credential_id: &str) -> bool {
         self.l1.is_circuit_open(credential_id)
     }
 }
@@ -1013,4 +1488,1459 @@ fn jitter_ms(max_ms: u64) -> Duration {
     }
     let amount = rand::random_range(0..max_ms);
     Duration::from_millis(amount)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+
+    use chrono::Utc;
+    use nebula_storage_port::store::ExpiredClaim;
+    use tokio::sync::Notify;
+
+    use super::*;
+
+    const HEARTBEAT_OK: u8 = 0;
+    const HEARTBEAT_LOST: u8 = 1;
+
+    struct ScriptedClaimRepo {
+        active: AtomicBool,
+        try_claim_count: AtomicUsize,
+        release_count: AtomicUsize,
+        heartbeat_count: AtomicUsize,
+        heartbeat_mode: AtomicU8,
+        block_try_claim: AtomicBool,
+        block_sentinel: AtomicBool,
+        block_release: AtomicBool,
+        try_claim_entered: Notify,
+        try_claim_continue: Notify,
+        sentinel_entered: Notify,
+        sentinel_continue: Notify,
+        release_entered: Notify,
+        release_continue: Notify,
+        release_completed: Notify,
+    }
+
+    struct PoisonClaimRepo {
+        credential_id: CredentialId,
+        try_claim_count: AtomicUsize,
+        release_count: AtomicUsize,
+        reclaim_count: AtomicUsize,
+        evidence_count: AtomicUsize,
+        evidence_recorded: AtomicBool,
+    }
+
+    impl PoisonClaimRepo {
+        fn new(credential_id: CredentialId) -> Self {
+            Self {
+                credential_id,
+                try_claim_count: AtomicUsize::new(0),
+                release_count: AtomicUsize::new(0),
+                reclaim_count: AtomicUsize::new(0),
+                evidence_count: AtomicUsize::new(0),
+                evidence_recorded: AtomicBool::new(false),
+            }
+        }
+    }
+
+    impl ScriptedClaimRepo {
+        fn new() -> Self {
+            Self {
+                active: AtomicBool::new(false),
+                try_claim_count: AtomicUsize::new(0),
+                release_count: AtomicUsize::new(0),
+                heartbeat_count: AtomicUsize::new(0),
+                heartbeat_mode: AtomicU8::new(HEARTBEAT_OK),
+                block_try_claim: AtomicBool::new(false),
+                block_sentinel: AtomicBool::new(false),
+                block_release: AtomicBool::new(false),
+                try_claim_entered: Notify::new(),
+                try_claim_continue: Notify::new(),
+                sentinel_entered: Notify::new(),
+                sentinel_continue: Notify::new(),
+                release_entered: Notify::new(),
+                release_continue: Notify::new(),
+                release_completed: Notify::new(),
+            }
+        }
+
+        async fn wait_for_release(&self) {
+            if self.release_count.load(Ordering::SeqCst) == 0 {
+                self.release_completed.notified().await;
+            }
+        }
+
+        async fn wait_for_try_claim_count(&self, target: usize) {
+            while self.try_claim_count.load(Ordering::SeqCst) < target {
+                self.try_claim_entered.notified().await;
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RefreshClaimRepo for ScriptedClaimRepo {
+        async fn try_claim(
+            &self,
+            credential_id: &CredentialId,
+            _holder: &ReplicaId,
+            ttl: Duration,
+        ) -> Result<ClaimAttempt, RepoError> {
+            self.try_claim_count.fetch_add(1, Ordering::SeqCst);
+            self.try_claim_entered.notify_one();
+            if self.block_try_claim.load(Ordering::SeqCst) {
+                self.try_claim_continue.notified().await;
+            }
+            let now = Utc::now();
+            let ttl = chrono::Duration::from_std(ttl).map_err(|_| RepoError::InvalidState)?;
+            if self.active.swap(true, Ordering::SeqCst) {
+                return Ok(ClaimAttempt::Contended {
+                    existing_expires_at: now + ttl,
+                });
+            }
+            Ok(ClaimAttempt::Acquired(RefreshClaim {
+                credential_id: *credential_id,
+                token: ClaimToken {
+                    claim_id: "00000000-0000-0000-0000-000000000001"
+                        .parse()
+                        .expect("test claim id is a UUID"),
+                    generation: 1,
+                },
+                acquired_at: now,
+                expires_at: now + ttl,
+            }))
+        }
+
+        async fn heartbeat(
+            &self,
+            _token: &ClaimToken,
+            _ttl: Duration,
+        ) -> Result<(), HeartbeatError> {
+            self.heartbeat_count.fetch_add(1, Ordering::SeqCst);
+            if self.heartbeat_mode.load(Ordering::SeqCst) == HEARTBEAT_LOST {
+                Err(HeartbeatError::ClaimLost)
+            } else {
+                Ok(())
+            }
+        }
+
+        async fn release(&self, _token: ClaimToken) -> Result<(), RepoError> {
+            self.release_entered.notify_one();
+            if self.block_release.load(Ordering::SeqCst) {
+                self.release_continue.notified().await;
+            }
+            self.active.store(false, Ordering::SeqCst);
+            self.release_count.fetch_add(1, Ordering::SeqCst);
+            self.release_completed.notify_one();
+            Ok(())
+        }
+
+        async fn mark_sentinel(&self, _token: &ClaimToken) -> Result<(), RepoError> {
+            self.sentinel_entered.notify_one();
+            if self.block_sentinel.load(Ordering::SeqCst) {
+                self.sentinel_continue.notified().await;
+            }
+            Ok(())
+        }
+
+        async fn reclaim_stuck(&self) -> Result<Vec<ExpiredClaim>, RepoError> {
+            Ok(Vec::new())
+        }
+
+        async fn count_sentinel_events_in_window(
+            &self,
+            _credential_id: &CredentialId,
+            _window: Duration,
+        ) -> Result<u32, RepoError> {
+            Ok(0)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RefreshClaimRepo for PoisonClaimRepo {
+        async fn try_claim(
+            &self,
+            credential_id: &CredentialId,
+            _holder: &ReplicaId,
+            _ttl: Duration,
+        ) -> Result<ClaimAttempt, RepoError> {
+            assert_eq!(*credential_id, self.credential_id);
+            self.try_claim_count.fetch_add(1, Ordering::SeqCst);
+            Ok(ClaimAttempt::OutcomeUnknown {
+                expired_at: Utc::now() - chrono::Duration::seconds(1),
+            })
+        }
+
+        async fn heartbeat(
+            &self,
+            _token: &ClaimToken,
+            _ttl: Duration,
+        ) -> Result<(), HeartbeatError> {
+            Err(HeartbeatError::ClaimLost)
+        }
+
+        async fn release(&self, _token: ClaimToken) -> Result<(), RepoError> {
+            self.release_count.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn mark_sentinel(&self, _token: &ClaimToken) -> Result<(), RepoError> {
+            Err(RepoError::InvalidState)
+        }
+
+        async fn reclaim_stuck(&self) -> Result<Vec<ExpiredClaim>, RepoError> {
+            self.reclaim_count.fetch_add(1, Ordering::SeqCst);
+            let newly_accounted = !self.evidence_recorded.swap(true, Ordering::SeqCst);
+            let result = if newly_accounted {
+                self.evidence_count.fetch_add(1, Ordering::SeqCst);
+                vec![ExpiredClaim::OutcomeUnknownAccounted {
+                    credential_id: self.credential_id,
+                    previous_holder: ReplicaId::new("crashed-provider-holder"),
+                    previous_generation: 7,
+                }]
+            } else {
+                Vec::new()
+            };
+            Ok(result)
+        }
+
+        async fn count_sentinel_events_in_window(
+            &self,
+            credential_id: &CredentialId,
+            _window: Duration,
+        ) -> Result<u32, RepoError> {
+            assert_eq!(*credential_id, self.credential_id);
+            Ok(u32::try_from(self.evidence_count.load(Ordering::SeqCst)).unwrap_or(u32::MAX))
+        }
+    }
+
+    fn coordinator(
+        repo: Arc<ScriptedClaimRepo>,
+        config: RefreshCoordConfig,
+    ) -> Arc<RefreshCoordinator> {
+        Arc::new(
+            RefreshCoordinator::new_with(repo, ReplicaId::new("test-replica"), config)
+                .expect("test coordinator config is valid"),
+        )
+    }
+
+    fn paused_config() -> RefreshCoordConfig {
+        RefreshCoordConfig {
+            claim_ttl: Duration::from_millis(60),
+            heartbeat_interval: Duration::from_millis(10),
+            refresh_timeout: Duration::from_millis(30),
+            reclaim_sweep_interval: Duration::from_millis(60),
+            sentinel_threshold: 3,
+            sentinel_window: Duration::from_mins(1),
+        }
+    }
+
+    async fn advance_until_heartbeat(repo: &ScriptedClaimRepo, interval: Duration) {
+        for _ in 0..3 {
+            tokio::time::advance(interval).await;
+            tokio::task::yield_now().await;
+            if repo.heartbeat_count.load(Ordering::SeqCst) > 0 {
+                return;
+            }
+        }
+        panic!("heartbeat task did not reach the scripted repository");
+    }
+
+    async fn wait_until_l1_empty(coordinator: &RefreshCoordinator) {
+        for _ in 0..8 {
+            if coordinator.l1.in_flight_count() == 0 {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("L1 completion was not released after exact disposition");
+    }
+
+    #[test]
+    fn zero_durations_are_rejected_before_provider_work() {
+        for (field, config) in [
+            (
+                "claim_ttl",
+                RefreshCoordConfig {
+                    claim_ttl: Duration::ZERO,
+                    ..RefreshCoordConfig::default()
+                },
+            ),
+            (
+                "heartbeat_interval",
+                RefreshCoordConfig {
+                    heartbeat_interval: Duration::ZERO,
+                    ..RefreshCoordConfig::default()
+                },
+            ),
+            (
+                "refresh_timeout",
+                RefreshCoordConfig {
+                    refresh_timeout: Duration::ZERO,
+                    ..RefreshCoordConfig::default()
+                },
+            ),
+            (
+                "reclaim_sweep_interval",
+                RefreshCoordConfig {
+                    reclaim_sweep_interval: Duration::ZERO,
+                    ..RefreshCoordConfig::default()
+                },
+            ),
+            (
+                "sentinel_window",
+                RefreshCoordConfig {
+                    sentinel_window: Duration::ZERO,
+                    ..RefreshCoordConfig::default()
+                },
+            ),
+        ] {
+            let error = RefreshCoordinator::new_with(
+                Arc::new(ScriptedClaimRepo::new()),
+                ReplicaId::new("zero-config-test"),
+                config,
+            )
+            .expect_err("zero duration must fail at construction");
+            assert!(matches!(
+                error,
+                ConfigError::ZeroDuration {
+                    field: actual
+                } if actual == field
+            ));
+        }
+    }
+
+    #[test]
+    fn zero_sentinel_threshold_is_rejected_before_provider_work() {
+        let error = RefreshCoordinator::new_with(
+            Arc::new(ScriptedClaimRepo::new()),
+            ReplicaId::new("test-replica"),
+            RefreshCoordConfig {
+                sentinel_threshold: 0,
+                ..RefreshCoordConfig::default()
+            },
+        )
+        .expect_err("zero sentinel threshold must fail construction");
+
+        assert!(matches!(error, ConfigError::ZeroSentinelThreshold));
+    }
+
+    #[tokio::test]
+    async fn repeated_poison_denials_leave_threshold_observation_to_periodic_owner() {
+        use nebula_eventbus::EventBus;
+
+        use crate::{CredentialEvent, contract::resolve::ReauthReason};
+
+        use super::super::{
+            reclaim::run_one_sweep,
+            sentinel::{SentinelThresholdConfig, SentinelTrigger},
+        };
+
+        let credential_id = CredentialId::new();
+        let repo = Arc::new(PoisonClaimRepo::new(credential_id));
+        let repo_port: Arc<dyn RefreshClaimRepo> = repo.clone();
+        let coordinator = Arc::new(
+            RefreshCoordinator::new_with(
+                Arc::clone(&repo_port),
+                ReplicaId::new("test-replica"),
+                RefreshCoordConfig {
+                    sentinel_threshold: 1,
+                    ..RefreshCoordConfig::default()
+                },
+            )
+            .expect("test coordinator config is valid"),
+        );
+        let provider_calls = Arc::new(AtomicUsize::new(0));
+
+        for _ in 0..2 {
+            let calls = Arc::clone(&provider_calls);
+            let outcome = coordinator
+                .refresh_coalesced(
+                    &credential_id,
+                    |_| async { Ok(RefreshRecheck::Needed) },
+                    move || async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        RefreshDisposition::state_advanced(())
+                    },
+                )
+                .await;
+            assert!(matches!(outcome, Err(RefreshError::CriticalOutcomePending)));
+        }
+
+        assert_eq!(
+            repo.reclaim_count.load(Ordering::SeqCst),
+            0,
+            "request paths must not consume periodic accounting work"
+        );
+        assert_eq!(repo.evidence_count.load(Ordering::SeqCst), 0);
+
+        let event_bus = Arc::new(EventBus::new(8));
+        let mut events = event_bus.subscribe();
+        let sentinel = Arc::new(SentinelTrigger::new(
+            Arc::clone(&repo_port),
+            SentinelThresholdConfig {
+                threshold: coordinator.config.sentinel_threshold,
+                window: coordinator.config.sentinel_window,
+            },
+        ));
+        run_one_sweep(
+            &repo_port,
+            &sentinel,
+            Some(&event_bus),
+            coordinator.metrics(),
+            None,
+        )
+        .await
+        .expect("periodic owner should account poison");
+
+        let event = tokio::time::timeout(Duration::from_secs(1), events.recv())
+            .await
+            .expect("threshold observation should be emitted")
+            .expect("event bus should remain open");
+        assert!(matches!(
+            event,
+            CredentialEvent::ReauthRequired {
+                credential_id: observed,
+                reason: ReauthReason::SentinelRepeated {
+                    event_count: 1,
+                    ..
+                },
+            } if observed == credential_id
+        ));
+
+        run_one_sweep(
+            &repo_port,
+            &sentinel,
+            Some(&event_bus),
+            coordinator.metrics(),
+            None,
+        )
+        .await
+        .expect("repeated periodic sweep should be idempotent");
+
+        assert_eq!(provider_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(repo.try_claim_count.load(Ordering::SeqCst), 2);
+        assert_eq!(repo.release_count.load(Ordering::SeqCst), 0);
+        assert_eq!(repo.reclaim_count.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            repo.evidence_count.load(Ordering::SeqCst),
+            1,
+            "periodic reclaim must record one durable event per poisoned generation"
+        );
+        assert_eq!(coordinator.metrics.claims_outcome_unknown.get(), 2);
+        assert_eq!(
+            coordinator.metrics.reclaim_outcome_unknown_accounted.get(),
+            1
+        );
+        assert_eq!(coordinator.metrics.reclaim_reclaimed.get(), 0);
+        assert_eq!(coordinator.metrics.reclaim_no_work.get(), 1);
+        assert!(
+            events.try_recv().is_none(),
+            "already-accounted poison must not emit a duplicate threshold observation"
+        );
+    }
+
+    #[tokio::test]
+    async fn caller_drop_cannot_release_or_duplicate_owned_provider_commit() {
+        let repo = Arc::new(ScriptedClaimRepo::new());
+        let coordinator = coordinator(Arc::clone(&repo), RefreshCoordConfig::default());
+        let credential_id = CredentialId::new();
+        let provider_calls = Arc::new(AtomicUsize::new(0));
+        let writes = Arc::new(AtomicUsize::new(0));
+        let provider_entered = Arc::new(Notify::new());
+        let commit_continue = Arc::new(Notify::new());
+
+        let winner_coordinator = Arc::clone(&coordinator);
+        let winner_provider_calls = Arc::clone(&provider_calls);
+        let winner_writes = Arc::clone(&writes);
+        let winner_provider_entered = Arc::clone(&provider_entered);
+        let winner_commit_continue = Arc::clone(&commit_continue);
+        let winner = tokio::spawn(async move {
+            winner_coordinator
+                .refresh_coalesced(
+                    &credential_id,
+                    |_| async { Ok(RefreshRecheck::Needed) },
+                    move || async move {
+                        winner_provider_calls.fetch_add(1, Ordering::SeqCst);
+                        winner_provider_entered.notify_one();
+                        winner_commit_continue.notified().await;
+                        winner_writes.fetch_add(1, Ordering::SeqCst);
+                        RefreshDisposition::state_advanced(7_u8)
+                    },
+                )
+                .await
+        });
+
+        provider_entered.notified().await;
+        winner.abort();
+        assert!(winner.await.is_err(), "the outer waiter was cancelled");
+        assert_eq!(repo.release_count.load(Ordering::SeqCst), 0);
+        assert!(repo.active.load(Ordering::SeqCst));
+        assert_eq!(coordinator.l1.in_flight_count(), 1);
+        assert_eq!(writes.load(Ordering::SeqCst), 0);
+
+        let duplicate_calls = Arc::new(AtomicUsize::new(0));
+        let waiter_coordinator = Arc::clone(&coordinator);
+        let waiter_duplicate_calls = Arc::clone(&duplicate_calls);
+        let waiter_writes = Arc::clone(&writes);
+        let waiter = tokio::spawn(async move {
+            waiter_coordinator
+                .refresh_coalesced(
+                    &credential_id,
+                    move |_| {
+                        let writes = Arc::clone(&waiter_writes);
+                        async move {
+                            Ok(if writes.load(Ordering::SeqCst) == 0 {
+                                RefreshRecheck::Needed
+                            } else {
+                                RefreshRecheck::Satisfied
+                            })
+                        }
+                    },
+                    move || async move {
+                        waiter_duplicate_calls.fetch_add(1, Ordering::SeqCst);
+                        RefreshDisposition::state_advanced(9_u8)
+                    },
+                )
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !waiter.is_finished(),
+            "L1 waiter woke before commit disposition"
+        );
+
+        commit_continue.notify_one();
+        repo.wait_for_release().await;
+        let waiter_result = waiter.await.expect("waiter task joins");
+        assert!(matches!(
+            waiter_result,
+            Err(RefreshError::CoalescedByOtherReplica)
+        ));
+        wait_until_l1_empty(&coordinator).await;
+        assert_eq!(provider_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(writes.load(Ordering::SeqCst), 1);
+        assert_eq!(duplicate_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(repo.release_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn state_advanced_completion_can_elect_one_winner_for_a_newer_epoch() {
+        let repo = Arc::new(ScriptedClaimRepo::new());
+        let coordinator = coordinator(Arc::clone(&repo), RefreshCoordConfig::default());
+        let credential_id = CredentialId::new();
+        let first_entered = Arc::new(Notify::new());
+        let first_continue = Arc::new(Notify::new());
+
+        let winner_coordinator = Arc::clone(&coordinator);
+        let winner_entered = Arc::clone(&first_entered);
+        let winner_continue = Arc::clone(&first_continue);
+        let winner_id = credential_id;
+        let winner = tokio::spawn(async move {
+            winner_coordinator
+                .refresh_coalesced(
+                    &winner_id,
+                    |_| async { Ok(RefreshRecheck::Needed) },
+                    move || async move {
+                        winner_entered.notify_one();
+                        winner_continue.notified().await;
+                        RefreshDisposition::state_advanced(1_u8)
+                    },
+                )
+                .await
+        });
+        first_entered.notified().await;
+
+        let recheck_entered = Arc::new(Notify::new());
+        let recheck_continue = Arc::new(Notify::new());
+        let recheck_calls = Arc::new(AtomicUsize::new(0));
+        let second_provider_calls = Arc::new(AtomicUsize::new(0));
+        let waiter_coordinator = Arc::clone(&coordinator);
+        let waiter_recheck_entered = Arc::clone(&recheck_entered);
+        let waiter_recheck_continue = Arc::clone(&recheck_continue);
+        let waiter_recheck_calls = Arc::clone(&recheck_calls);
+        let waiter_provider_calls = Arc::clone(&second_provider_calls);
+        let waiter_id = credential_id;
+        let waiter = tokio::spawn(async move {
+            waiter_coordinator
+                .refresh_coalesced(
+                    &waiter_id,
+                    move |_| {
+                        let entered = Arc::clone(&waiter_recheck_entered);
+                        let continue_recheck = Arc::clone(&waiter_recheck_continue);
+                        let call = waiter_recheck_calls.fetch_add(1, Ordering::SeqCst);
+                        async move {
+                            if call == 0 {
+                                entered.notify_one();
+                                continue_recheck.notified().await;
+                            }
+                            // The first winner advanced its epoch, but newer
+                            // authoritative work arrived before this waiter
+                            // rechecked state. The post-acquire recheck must
+                            // observe that work as still needed.
+                            Ok(RefreshRecheck::Needed)
+                        }
+                    },
+                    move || async move {
+                        waiter_provider_calls.fetch_add(1, Ordering::SeqCst);
+                        RefreshDisposition::state_advanced(2_u8)
+                    },
+                )
+                .await
+        });
+
+        while coordinator
+            .l1
+            .waiter_count_for_test(&credential_id.to_string())
+            == 0
+        {
+            tokio::task::yield_now().await;
+        }
+        first_continue.notify_one();
+        recheck_entered.notified().await;
+        repo.wait_for_release().await;
+        recheck_continue.notify_one();
+
+        assert_eq!(
+            winner
+                .await
+                .expect("first winner task must join")
+                .expect("first epoch must complete"),
+            1
+        );
+        assert_eq!(
+            waiter
+                .await
+                .expect("new-epoch waiter task must join")
+                .expect("newer epoch must elect a winner"),
+            2
+        );
+        assert_eq!(second_provider_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(recheck_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(repo.try_claim_count.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn exact_no_progress_completion_does_not_turn_waiters_into_a_retry_herd() {
+        let repo = Arc::new(ScriptedClaimRepo::new());
+        let coordinator = coordinator(Arc::clone(&repo), RefreshCoordConfig::default());
+        let credential_id = CredentialId::new();
+        let first_entered = Arc::new(Notify::new());
+        let first_continue = Arc::new(Notify::new());
+
+        let winner_coordinator = Arc::clone(&coordinator);
+        let winner_entered = Arc::clone(&first_entered);
+        let winner_continue = Arc::clone(&first_continue);
+        let winner_id = credential_id;
+        let winner = tokio::spawn(async move {
+            winner_coordinator
+                .refresh_coalesced(
+                    &winner_id,
+                    |_| async { Ok(RefreshRecheck::Needed) },
+                    move || async move {
+                        winner_entered.notify_one();
+                        winner_continue.notified().await;
+                        RefreshDisposition::no_state_change(1_u8)
+                    },
+                )
+                .await
+        });
+        first_entered.notified().await;
+
+        let duplicate_provider_calls = Arc::new(AtomicUsize::new(0));
+        let waiter_coordinator = Arc::clone(&coordinator);
+        let waiter_provider_calls = Arc::clone(&duplicate_provider_calls);
+        let waiter_id = credential_id;
+        let waiter = tokio::spawn(async move {
+            waiter_coordinator
+                .refresh_coalesced(
+                    &waiter_id,
+                    |_| async { Ok(RefreshRecheck::Needed) },
+                    move || async move {
+                        waiter_provider_calls.fetch_add(1, Ordering::SeqCst);
+                        RefreshDisposition::state_advanced(2_u8)
+                    },
+                )
+                .await
+        });
+
+        while coordinator
+            .l1
+            .waiter_count_for_test(&credential_id.to_string())
+            == 0
+        {
+            tokio::task::yield_now().await;
+        }
+        first_continue.notify_one();
+
+        assert_eq!(
+            winner
+                .await
+                .expect("first winner task must join")
+                .expect("exact first outcome must be returned"),
+            1
+        );
+        assert!(matches!(
+            waiter.await.expect("waiter task must join"),
+            Err(RefreshError::PriorAttemptNoProgress)
+        ));
+        assert_eq!(duplicate_provider_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(repo.try_claim_count.load(Ordering::SeqCst), 1);
+        repo.wait_for_release().await;
+    }
+
+    #[tokio::test]
+    async fn exact_local_finalization_failure_requires_waiter_reconciliation() {
+        let repo = Arc::new(ScriptedClaimRepo::new());
+        let coordinator = coordinator(Arc::clone(&repo), RefreshCoordConfig::default());
+        let credential_id = CredentialId::new();
+        let first_entered = Arc::new(Notify::new());
+        let first_continue = Arc::new(Notify::new());
+
+        let winner_coordinator = Arc::clone(&coordinator);
+        let winner_entered = Arc::clone(&first_entered);
+        let winner_continue = Arc::clone(&first_continue);
+        let winner_id = credential_id;
+        let winner = tokio::spawn(async move {
+            winner_coordinator
+                .refresh_coalesced(
+                    &winner_id,
+                    |_| async { Ok(RefreshRecheck::Needed) },
+                    move || async move {
+                        winner_entered.notify_one();
+                        winner_continue.notified().await;
+                        // Exact local finalization failures use RetryUnsafe:
+                        // the winner keeps its concrete error while L1 remains
+                        // deliberately payload-free.
+                        RefreshDisposition::retry_unsafe(1_u8)
+                    },
+                )
+                .await
+        });
+        first_entered.notified().await;
+
+        let duplicate_provider_calls = Arc::new(AtomicUsize::new(0));
+        let waiter_coordinator = Arc::clone(&coordinator);
+        let waiter_provider_calls = Arc::clone(&duplicate_provider_calls);
+        let waiter_id = credential_id;
+        let waiter = tokio::spawn(async move {
+            waiter_coordinator
+                .refresh_coalesced(
+                    &waiter_id,
+                    |_| async { Ok(RefreshRecheck::Needed) },
+                    move || async move {
+                        waiter_provider_calls.fetch_add(1, Ordering::SeqCst);
+                        RefreshDisposition::state_advanced(2_u8)
+                    },
+                )
+                .await
+        });
+
+        while coordinator
+            .l1
+            .waiter_count_for_test(&credential_id.to_string())
+            == 0
+        {
+            tokio::task::yield_now().await;
+        }
+        first_continue.notify_one();
+
+        assert_eq!(
+            winner
+                .await
+                .expect("first winner task must join")
+                .expect("exact unsafe outcome must reach its owner"),
+            1
+        );
+        assert!(matches!(
+            waiter.await.expect("waiter task must join"),
+            Err(RefreshError::ReconciliationRequired)
+        ));
+        assert_eq!(duplicate_provider_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(repo.release_count.load(Ordering::SeqCst), 0);
+        assert!(
+            repo.active.load(Ordering::SeqCst),
+            "retry-unsafe completion must retain the sentinel claim"
+        );
+    }
+
+    #[tokio::test]
+    async fn outcome_unknown_completion_keeps_waiters_unknown_and_fail_closed() {
+        let repo = Arc::new(ScriptedClaimRepo::new());
+        let coordinator = coordinator(Arc::clone(&repo), RefreshCoordConfig::default());
+        let credential_id = CredentialId::new();
+        let first_entered = Arc::new(Notify::new());
+        let first_continue = Arc::new(Notify::new());
+
+        let winner_coordinator = Arc::clone(&coordinator);
+        let winner_entered = Arc::clone(&first_entered);
+        let winner_continue = Arc::clone(&first_continue);
+        let winner_id = credential_id;
+        let winner = tokio::spawn(async move {
+            winner_coordinator
+                .refresh_coalesced(
+                    &winner_id,
+                    |_| async { Ok(RefreshRecheck::Needed) },
+                    move || async move {
+                        winner_entered.notify_one();
+                        winner_continue.notified().await;
+                        RefreshDisposition::outcome_unknown(1_u8)
+                    },
+                )
+                .await
+        });
+        first_entered.notified().await;
+
+        let duplicate_provider_calls = Arc::new(AtomicUsize::new(0));
+        let waiter_coordinator = Arc::clone(&coordinator);
+        let waiter_provider_calls = Arc::clone(&duplicate_provider_calls);
+        let waiter_id = credential_id;
+        let waiter = tokio::spawn(async move {
+            waiter_coordinator
+                .refresh_coalesced(
+                    &waiter_id,
+                    |_| async { Ok(RefreshRecheck::Needed) },
+                    move || async move {
+                        waiter_provider_calls.fetch_add(1, Ordering::SeqCst);
+                        RefreshDisposition::state_advanced(2_u8)
+                    },
+                )
+                .await
+        });
+
+        while coordinator
+            .l1
+            .waiter_count_for_test(&credential_id.to_string())
+            == 0
+        {
+            tokio::task::yield_now().await;
+        }
+        first_continue.notify_one();
+
+        assert_eq!(
+            winner
+                .await
+                .expect("first winner task must join")
+                .expect("unknown outcome value must reach its owner"),
+            1
+        );
+        assert!(matches!(
+            waiter.await.expect("waiter task must join"),
+            Err(RefreshError::CriticalOutcomePending)
+        ));
+        assert_eq!(duplicate_provider_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(repo.release_count.load(Ordering::SeqCst), 0);
+        assert!(
+            repo.active.load(Ordering::SeqCst),
+            "outcome-unknown completion must retain the sentinel claim"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn released_contended_claim_is_polled_well_before_its_ttl() {
+        let repo = Arc::new(ScriptedClaimRepo::new());
+        repo.active.store(true, Ordering::SeqCst);
+        let config = RefreshCoordConfig {
+            claim_ttl: Duration::from_millis(300),
+            heartbeat_interval: Duration::from_millis(25),
+            refresh_timeout: Duration::from_millis(100),
+            reclaim_sweep_interval: Duration::from_millis(300),
+            sentinel_threshold: 3,
+            sentinel_window: Duration::from_mins(1),
+        };
+        let coordinator = coordinator(Arc::clone(&repo), config);
+        let credential_id = CredentialId::new();
+        let provider_calls = Arc::new(AtomicUsize::new(0));
+        let task_provider_calls = Arc::clone(&provider_calls);
+        let task_coordinator = Arc::clone(&coordinator);
+
+        let task = tokio::spawn(async move {
+            task_coordinator
+                .refresh_coalesced(
+                    &credential_id,
+                    |_| async { Ok(RefreshRecheck::Needed) },
+                    move || async move {
+                        task_provider_calls.fetch_add(1, Ordering::SeqCst);
+                        RefreshDisposition::state_advanced(())
+                    },
+                )
+                .await
+        });
+
+        repo.wait_for_try_claim_count(1).await;
+        repo.active.store(false, Ordering::SeqCst);
+        tokio::time::advance(Duration::from_millis(40)).await;
+        tokio::task::yield_now().await;
+
+        task.await
+            .expect("coordinator task must join")
+            .expect("released claim must be acquired on the next adaptive poll");
+        assert_eq!(provider_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            repo.try_claim_count.load(Ordering::SeqCst),
+            2,
+            "claim release must be observed without sleeping to the 300 ms TTL"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn post_contention_recheck_failure_denies_provider_dispatch() {
+        let repo = Arc::new(ScriptedClaimRepo::new());
+        repo.active.store(true, Ordering::SeqCst);
+        let coordinator = coordinator(Arc::clone(&repo), paused_config());
+        let credential_id = CredentialId::new();
+        let provider_calls = Arc::new(AtomicUsize::new(0));
+        let task_provider_calls = Arc::clone(&provider_calls);
+        let task_coordinator = Arc::clone(&coordinator);
+
+        let task = tokio::spawn(async move {
+            task_coordinator
+                .refresh_coalesced(
+                    &credential_id,
+                    |_| async { Err(RefreshRecheckError::Unavailable) },
+                    move || async move {
+                        task_provider_calls.fetch_add(1, Ordering::SeqCst);
+                        RefreshDisposition::state_advanced(())
+                    },
+                )
+                .await
+        });
+
+        repo.wait_for_try_claim_count(1).await;
+        tokio::time::advance(Duration::from_millis(200)).await;
+        let result = task.await.expect("coordinator task joins");
+
+        assert!(matches!(
+            result,
+            Err(RefreshError::StateRecheck(RefreshRecheckError::Unavailable))
+        ));
+        assert_eq!(
+            provider_calls.load(Ordering::SeqCst),
+            0,
+            "an unavailable authoritative recheck must never authorize provider egress"
+        );
+        assert_eq!(repo.try_claim_count.load(Ordering::SeqCst), 1);
+        assert_eq!(repo.release_count.load(Ordering::SeqCst), 0);
+        assert_eq!(coordinator.l1.in_flight_count(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn l1_waiter_timeout_is_bounded_without_false_coalesced_success() {
+        let repo = Arc::new(ScriptedClaimRepo::new());
+        let config = paused_config();
+        let coordinator = coordinator(Arc::clone(&repo), config.clone());
+        let credential_id = CredentialId::new();
+        let provider_calls = Arc::new(AtomicUsize::new(0));
+        let duplicate_calls = Arc::new(AtomicUsize::new(0));
+        let provider_entered = Arc::new(Notify::new());
+        let provider_continue = Arc::new(Notify::new());
+
+        let winner_coordinator = Arc::clone(&coordinator);
+        let winner_calls = Arc::clone(&provider_calls);
+        let winner_entered = Arc::clone(&provider_entered);
+        let winner_continue = Arc::clone(&provider_continue);
+        let winner_id = credential_id;
+        let winner = tokio::spawn(async move {
+            winner_coordinator
+                .refresh_coalesced(
+                    &winner_id,
+                    |_| async { Ok(RefreshRecheck::Needed) },
+                    move || async move {
+                        winner_calls.fetch_add(1, Ordering::SeqCst);
+                        winner_entered.notify_one();
+                        winner_continue.notified().await;
+                        RefreshDisposition::state_advanced(())
+                    },
+                )
+                .await
+        });
+
+        provider_entered.notified().await;
+        let waiter_coordinator = Arc::clone(&coordinator);
+        let waiter_duplicate_calls = Arc::clone(&duplicate_calls);
+        let waiter_id = credential_id;
+        let waiter = tokio::spawn(async move {
+            waiter_coordinator
+                .refresh_coalesced(
+                    &waiter_id,
+                    |_| async { Ok(RefreshRecheck::Needed) },
+                    move || async move {
+                        waiter_duplicate_calls.fetch_add(1, Ordering::SeqCst);
+                        RefreshDisposition::state_advanced(())
+                    },
+                )
+                .await
+        });
+
+        for _ in 0..8 {
+            if coordinator
+                .l1
+                .waiter_count_for_test(&credential_id.to_string())
+                == 1
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            coordinator
+                .l1
+                .waiter_count_for_test(&credential_id.to_string()),
+            1,
+            "the second caller must register as an L1 waiter"
+        );
+
+        tokio::time::advance(config.refresh_timeout).await;
+        let winner_outcome = winner.await.expect("winner caller joins");
+        let waiter_outcome = waiter.await.expect("L1 waiter joins");
+        assert!(matches!(
+            winner_outcome,
+            Err(RefreshError::CriticalOutcomePending)
+        ));
+        assert!(matches!(
+            waiter_outcome,
+            Err(RefreshError::CriticalOutcomePending)
+        ));
+        assert_eq!(provider_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(duplicate_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            coordinator
+                .l1
+                .waiter_count_for_test(&credential_id.to_string()),
+            0,
+            "timed-out waiters must not accumulate behind a stuck winner"
+        );
+        assert_eq!(
+            coordinator.metrics.coalesced_l1.get(),
+            0,
+            "an unresolved waiter timeout is not a coalesced success"
+        );
+        assert_eq!(
+            coordinator.l1.in_flight_count(),
+            1,
+            "the owned critical task must retain the L1 winner entry"
+        );
+
+        provider_continue.notify_one();
+        repo.wait_for_release().await;
+        wait_until_l1_empty(&coordinator).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn caller_timeout_detaches_and_heartbeat_keeps_lease_past_original_ttl() {
+        let repo = Arc::new(ScriptedClaimRepo::new());
+        let config = paused_config();
+        let coordinator = coordinator(Arc::clone(&repo), config.clone());
+        let credential_id = CredentialId::new();
+        let provider_entered = Arc::new(Notify::new());
+        let commit_continue = Arc::new(Notify::new());
+        let writes = Arc::new(AtomicUsize::new(0));
+
+        let task_coordinator = Arc::clone(&coordinator);
+        let task_entered = Arc::clone(&provider_entered);
+        let task_continue = Arc::clone(&commit_continue);
+        let task_writes = Arc::clone(&writes);
+        let waiter = tokio::spawn(async move {
+            task_coordinator
+                .refresh_coalesced(
+                    &credential_id,
+                    |_| async { Ok(RefreshRecheck::Needed) },
+                    move || async move {
+                        task_entered.notify_one();
+                        task_continue.notified().await;
+                        task_writes.fetch_add(1, Ordering::SeqCst);
+                        RefreshDisposition::state_advanced(())
+                    },
+                )
+                .await
+        });
+
+        provider_entered.notified().await;
+        tokio::time::advance(config.refresh_timeout).await;
+        let outcome = waiter.await.expect("timeout waiter joins");
+        assert!(matches!(outcome, Err(RefreshError::CriticalOutcomePending)));
+        assert_eq!(repo.release_count.load(Ordering::SeqCst), 0);
+        assert_eq!(coordinator.l1.in_flight_count(), 1);
+        assert_eq!(writes.load(Ordering::SeqCst), 0);
+
+        // The caller has already gone away, but the owned critical task still
+        // holds and heartbeats L2. Advancing past the acquisition's original
+        // TTL must not turn elapsed time into replay authority.
+        tokio::time::advance(config.claim_ttl).await;
+        tokio::task::yield_now().await;
+        assert!(
+            repo.heartbeat_count.load(Ordering::SeqCst) > 0,
+            "the detached exact-outcome task must renew its lease past the original TTL"
+        );
+        assert!(repo.active.load(Ordering::SeqCst));
+
+        commit_continue.notify_one();
+        repo.wait_for_release().await;
+        wait_until_l1_empty(&coordinator).await;
+        assert_eq!(writes.load(Ordering::SeqCst), 1);
+        assert_eq!(repo.release_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn heartbeat_loss_after_provider_boundary_cannot_cancel_commit() {
+        let repo = Arc::new(ScriptedClaimRepo::new());
+        let config = paused_config();
+        let coordinator = coordinator(Arc::clone(&repo), config.clone());
+        let credential_id = CredentialId::new();
+        let provider_calls = Arc::new(AtomicUsize::new(0));
+        let writes = Arc::new(AtomicUsize::new(0));
+        let provider_entered = Arc::new(Notify::new());
+        let commit_continue = Arc::new(Notify::new());
+
+        let task_coordinator = Arc::clone(&coordinator);
+        let task_provider_calls = Arc::clone(&provider_calls);
+        let task_writes = Arc::clone(&writes);
+        let task_entered = Arc::clone(&provider_entered);
+        let task_continue = Arc::clone(&commit_continue);
+        let waiter = tokio::spawn(async move {
+            task_coordinator
+                .refresh_coalesced(
+                    &credential_id,
+                    |_| async { Ok(RefreshRecheck::Needed) },
+                    move || async move {
+                        task_provider_calls.fetch_add(1, Ordering::SeqCst);
+                        task_entered.notify_one();
+                        task_continue.notified().await;
+                        task_writes.fetch_add(1, Ordering::SeqCst);
+                        RefreshDisposition::state_advanced(13_u8)
+                    },
+                )
+                .await
+        });
+
+        provider_entered.notified().await;
+        repo.heartbeat_mode.store(HEARTBEAT_LOST, Ordering::SeqCst);
+        advance_until_heartbeat(&repo, config.heartbeat_interval).await;
+        assert!(!waiter.is_finished());
+        assert_eq!(repo.release_count.load(Ordering::SeqCst), 0);
+        assert_eq!(writes.load(Ordering::SeqCst), 0);
+
+        commit_continue.notify_one();
+        assert_eq!(waiter.await.expect("waiter joins").expect("confirmed"), 13);
+        repo.wait_for_release().await;
+        assert_eq!(provider_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(writes.load(Ordering::SeqCst), 1);
+        assert_eq!(repo.release_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn heartbeat_loss_before_provider_boundary_starts_no_provider_work() {
+        let repo = Arc::new(ScriptedClaimRepo::new());
+        repo.block_sentinel.store(true, Ordering::SeqCst);
+        repo.heartbeat_mode.store(HEARTBEAT_LOST, Ordering::SeqCst);
+        let config = paused_config();
+        let coordinator = coordinator(Arc::clone(&repo), config.clone());
+        let credential_id = CredentialId::new();
+        let provider_calls = Arc::new(AtomicUsize::new(0));
+
+        let task_coordinator = Arc::clone(&coordinator);
+        let task_provider_calls = Arc::clone(&provider_calls);
+        let waiter = tokio::spawn(async move {
+            task_coordinator
+                .refresh_coalesced(
+                    &credential_id,
+                    |_| async { Ok(RefreshRecheck::Needed) },
+                    move || async move {
+                        task_provider_calls.fetch_add(1, Ordering::SeqCst);
+                        RefreshDisposition::state_advanced(())
+                    },
+                )
+                .await
+        });
+
+        repo.sentinel_entered.notified().await;
+        advance_until_heartbeat(&repo, config.heartbeat_interval).await;
+        let outcome = waiter.await.expect("waiter joins");
+        assert!(matches!(
+            outcome,
+            Err(RefreshError::ClaimLostBeforeProvider)
+        ));
+        repo.wait_for_release().await;
+        assert_eq!(provider_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(repo.release_count.load(Ordering::SeqCst), 1);
+        assert!(!repo.active.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn post_acquire_recheck_closes_stale_open_preflight_window() {
+        let repo = Arc::new(ScriptedClaimRepo::new());
+        repo.block_try_claim.store(true, Ordering::SeqCst);
+        let coordinator = coordinator(Arc::clone(&repo), RefreshCoordConfig::default());
+        let credential_id = CredentialId::new();
+        let gate_installed = Arc::new(AtomicBool::new(false));
+        let provider_calls = Arc::new(AtomicUsize::new(0));
+
+        let task = tokio::spawn({
+            let coordinator = Arc::clone(&coordinator);
+            let gate_installed = Arc::clone(&gate_installed);
+            let provider_calls = Arc::clone(&provider_calls);
+            async move {
+                coordinator
+                    .refresh_coalesced(
+                        &credential_id,
+                        move |_| {
+                            let gate_installed = Arc::clone(&gate_installed);
+                            async move {
+                                if gate_installed.load(Ordering::SeqCst) {
+                                    let context = RefreshNotAppliedContext::from_spec(
+                                        crate::RefreshNotAppliedPhase::BeforeDispatch,
+                                        crate::RefreshFailureSpec::new(
+                                            crate::RefreshErrorKind::ProtocolError,
+                                            crate::RetryAdvice::Never,
+                                        ),
+                                    );
+                                    Ok(RefreshRecheck::Suppressed(Box::new(context)))
+                                } else {
+                                    Ok(RefreshRecheck::Needed)
+                                }
+                            }
+                        },
+                        move || async move {
+                            provider_calls.fetch_add(1, Ordering::SeqCst);
+                            RefreshDisposition::state_advanced(())
+                        },
+                    )
+                    .await
+            }
+        });
+
+        repo.wait_for_try_claim_count(1).await;
+        // Another replica installs the gate and releases its claim after this
+        // caller's stale outer preflight but before immediate L2 acquisition
+        // completes.
+        gate_installed.store(true, Ordering::SeqCst);
+        repo.try_claim_continue.notify_one();
+
+        let outcome = task.await.expect("contender task joins");
+        let Err(RefreshError::RetrySuppressed(context)) = outcome else {
+            panic!("post-acquire recheck must return the typed durable block");
+        };
+        assert_eq!(context.retry(), crate::RetryAdvice::Never);
+        assert_eq!(
+            provider_calls.load(Ordering::SeqCst),
+            0,
+            "a stale Open observation must never cross the provider boundary"
+        );
+        repo.wait_for_release().await;
+        assert!(!repo.active.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn l1_waiter_receives_typed_gate_written_by_winner() {
+        let repo = Arc::new(ScriptedClaimRepo::new());
+        let coordinator = coordinator(Arc::clone(&repo), RefreshCoordConfig::default());
+        let credential_id = CredentialId::new();
+        let gate_installed = Arc::new(AtomicBool::new(false));
+        let provider_calls = Arc::new(AtomicUsize::new(0));
+        let provider_entered = Arc::new(Notify::new());
+        let provider_continue = Arc::new(Notify::new());
+
+        let winner = tokio::spawn({
+            let coordinator = Arc::clone(&coordinator);
+            let gate_for_recheck = Arc::clone(&gate_installed);
+            let gate_for_commit = Arc::clone(&gate_installed);
+            let provider_calls = Arc::clone(&provider_calls);
+            let provider_entered = Arc::clone(&provider_entered);
+            let provider_continue = Arc::clone(&provider_continue);
+            async move {
+                coordinator
+                    .refresh_coalesced(
+                        &credential_id,
+                        move |_| {
+                            let gate = Arc::clone(&gate_for_recheck);
+                            async move {
+                                if gate.load(Ordering::SeqCst) {
+                                    Ok(RefreshRecheck::Suppressed(Box::new(
+                                        RefreshNotAppliedContext::from_spec(
+                                            crate::RefreshNotAppliedPhase::BeforeDispatch,
+                                            crate::RefreshFailureSpec::new(
+                                                crate::RefreshErrorKind::ProtocolError,
+                                                crate::RetryAdvice::Never,
+                                            ),
+                                        ),
+                                    )))
+                                } else {
+                                    Ok(RefreshRecheck::Needed)
+                                }
+                            }
+                        },
+                        move || async move {
+                            provider_calls.fetch_add(1, Ordering::SeqCst);
+                            provider_entered.notify_one();
+                            provider_continue.notified().await;
+                            gate_for_commit.store(true, Ordering::SeqCst);
+                            RefreshDisposition::state_advanced(())
+                        },
+                    )
+                    .await
+            }
+        });
+
+        provider_entered.notified().await;
+        let duplicate_calls = Arc::new(AtomicUsize::new(0));
+        let waiter = tokio::spawn({
+            let coordinator = Arc::clone(&coordinator);
+            let gate_installed = Arc::clone(&gate_installed);
+            let duplicate_calls = Arc::clone(&duplicate_calls);
+            async move {
+                coordinator
+                    .refresh_coalesced(
+                        &credential_id,
+                        move |_| {
+                            let gate = Arc::clone(&gate_installed);
+                            async move {
+                                if gate.load(Ordering::SeqCst) {
+                                    Ok(RefreshRecheck::Suppressed(Box::new(
+                                        RefreshNotAppliedContext::from_spec(
+                                            crate::RefreshNotAppliedPhase::BeforeDispatch,
+                                            crate::RefreshFailureSpec::new(
+                                                crate::RefreshErrorKind::ProtocolError,
+                                                crate::RetryAdvice::Never,
+                                            ),
+                                        ),
+                                    )))
+                                } else {
+                                    Ok(RefreshRecheck::Needed)
+                                }
+                            }
+                        },
+                        move || async move {
+                            duplicate_calls.fetch_add(1, Ordering::SeqCst);
+                            RefreshDisposition::state_advanced(())
+                        },
+                    )
+                    .await
+            }
+        });
+        while coordinator
+            .l1
+            .waiter_count_for_test(&credential_id.to_string())
+            == 0
+        {
+            tokio::task::yield_now().await;
+        }
+
+        provider_continue.notify_one();
+        winner
+            .await
+            .expect("winner task joins")
+            .expect("winner writes the gate");
+        let waiter_outcome = waiter.await.expect("waiter task joins");
+        let Err(RefreshError::RetrySuppressed(context)) = waiter_outcome else {
+            panic!("L1 waiter must receive the exact durable retry block");
+        };
+        assert_eq!(context.retry(), crate::RetryAdvice::Never);
+        assert_eq!(provider_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(duplicate_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn hung_l2_release_cannot_wedge_l1_or_global_permit() {
+        let repo = Arc::new(ScriptedClaimRepo::new());
+        repo.block_release.store(true, Ordering::SeqCst);
+        let coordinator = coordinator(Arc::clone(&repo), RefreshCoordConfig::default());
+        let credential_id = CredentialId::new();
+        let baseline_permits = coordinator.l1.available_permits();
+
+        let result = coordinator
+            .refresh_coalesced(
+                &credential_id,
+                |_| async { Ok(RefreshRecheck::Needed) },
+                || async { RefreshDisposition::state_advanced(55_u8) },
+            )
+            .await
+            .expect("exact result must not wait on L2 release");
+        assert_eq!(result, 55);
+        assert_eq!(
+            coordinator.l1.in_flight_count(),
+            0,
+            "exact disposition must wake local waiters before L2 release"
+        );
+        assert_eq!(
+            coordinator.l1.available_permits(),
+            baseline_permits,
+            "exact disposition must return the global permit before L2 release"
+        );
+        repo.release_entered.notified().await;
+
+        let duplicate_calls = Arc::new(AtomicUsize::new(0));
+        let waiter_coordinator = Arc::clone(&coordinator);
+        let waiter_duplicate_calls = Arc::clone(&duplicate_calls);
+        let waiter = tokio::spawn(async move {
+            waiter_coordinator
+                .refresh_coalesced(
+                    &credential_id,
+                    |_| async { Ok(RefreshRecheck::Needed) },
+                    move || async move {
+                        waiter_duplicate_calls.fetch_add(1, Ordering::SeqCst);
+                        RefreshDisposition::state_advanced(())
+                    },
+                )
+                .await
+        });
+        repo.wait_for_try_claim_count(2).await;
+        assert_eq!(
+            duplicate_calls.load(Ordering::SeqCst),
+            0,
+            "the still-live L2 row must coalesce the local waiter"
+        );
+
+        waiter.abort();
+        assert!(waiter.await.is_err());
+        wait_until_l1_empty(&coordinator).await;
+        assert_eq!(coordinator.l1.available_permits(), baseline_permits);
+
+        repo.release_continue.notify_one();
+        repo.wait_for_release().await;
+        assert!(!repo.active.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn unknown_commit_ack_retains_claim_as_durable_poison() {
+        let repo = Arc::new(ScriptedClaimRepo::new());
+        let coordinator = coordinator(Arc::clone(&repo), RefreshCoordConfig::default());
+        let credential_id = CredentialId::new();
+
+        let result = coordinator
+            .refresh_coalesced(
+                &credential_id,
+                |_| async { Ok(RefreshRecheck::Needed) },
+                || async { RefreshDisposition::outcome_unknown(21_u8) },
+            )
+            .await
+            .expect("the enclosed typed outcome is returned");
+
+        assert_eq!(result, 21);
+        assert_eq!(repo.release_count.load(Ordering::SeqCst), 0);
+        assert!(repo.active.load(Ordering::SeqCst));
+        assert_eq!(coordinator.l1.in_flight_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn definite_post_provider_failure_also_blocks_immediate_replay() {
+        let repo = Arc::new(ScriptedClaimRepo::new());
+        let coordinator = coordinator(Arc::clone(&repo), RefreshCoordConfig::default());
+        let credential_id = CredentialId::new();
+
+        let result = coordinator
+            .refresh_coalesced(
+                &credential_id,
+                |_| async { Ok(RefreshRecheck::Needed) },
+                || async { RefreshDisposition::retry_unsafe(34_u8) },
+            )
+            .await
+            .expect("the exact enclosed failure is returned");
+
+        assert_eq!(result, 34);
+        assert_eq!(repo.release_count.load(Ordering::SeqCst), 0);
+        assert!(
+            repo.active.load(Ordering::SeqCst),
+            "another replica must not immediately re-POST the persisted stale grant"
+        );
+        assert_eq!(coordinator.l1.in_flight_count(), 0);
+    }
 }

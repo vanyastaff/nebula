@@ -2,9 +2,9 @@
 //!
 //! Per auth plane separation, **Plane A** (who may call this API: identity, sessions,
 //! MFA, PATs, user-facing OAuth sign-in) is kept disjoint from **Plane B**
-//! (integration credential OAuth — see [`crate::domain::credential`] and
-//! [`crate::transport::oauth`]). New auth-domain features land here, never
-//! in the credential tree.
+//! (integration credential acquisition — see [`crate::domain::credential`]).
+//! The private `crate::transport::oauth` module is infrastructure for this Plane-A
+//! domain; new auth-domain features land here, never in the credential tree.
 //!
 //! Self-contained per domain-module layout:
 //!

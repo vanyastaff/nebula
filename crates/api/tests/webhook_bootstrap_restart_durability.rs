@@ -96,8 +96,21 @@ impl WebhookSecretResolver for SingleSecretResolver {
         if secret_id == self.known_id {
             Ok(self.secret.to_vec())
         } else {
-            Err(format!("SingleSecretResolver: no entry for secret_id {secret_id:?}").into())
+            Err(SecretResolutionError::NotFound)
         }
+    }
+}
+
+struct EmptySecretResolver;
+
+#[async_trait]
+impl WebhookSecretResolver for EmptySecretResolver {
+    async fn resolve(
+        &self,
+        _scope: &Scope,
+        _secret_id: &str,
+    ) -> Result<Vec<u8>, SecretResolutionError> {
+        Ok(Vec::new())
     }
 }
 
@@ -229,6 +242,32 @@ async fn bootstrap_reads_spec_from_trigger_store_after_restart() {
         report.skipped, 0,
         "no activations must be skipped; {report:?}"
     );
+}
+
+/// The generic factory accepts an empty byte vector, so this test is
+/// RED-on-revert for the API-owned resolver postcondition: without that guard
+/// bootstrap would count the row as loaded.
+#[tokio::test]
+async fn bootstrap_skips_empty_resolved_secret_before_factory() {
+    let trigger_store = Arc::new(InMemoryTriggerStore::new());
+    let activation_store = Arc::new(InMemoryWebhookActivationStore::new());
+
+    seed_trigger_row(trigger_store.as_ref(), &scope_a(), "generic", SECRET_ID_B).await;
+    seed_activation_record(activation_store.as_ref(), &scope_a()).await;
+
+    let report = bootstrap_webhook_activations(
+        activation_store.as_ref(),
+        &build_action_registry(),
+        &EmptySecretResolver,
+        &NoopCtxFactory,
+        &TriggerStoreSpecLookup::new(Arc::clone(&trigger_store) as _),
+        None,
+    )
+    .await
+    .expect("per-row invalid material is isolated, not fatal");
+
+    assert_eq!(report.loaded, 0, "empty material must not be accepted");
+    assert_eq!(report.skipped, 1, "the invalid row is isolated and skipped");
 }
 
 /// Cross-tenant isolation — strengthened RED-on-revert guard.

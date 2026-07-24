@@ -15,6 +15,7 @@ use nebula_core::{
 use tokio_util::sync::CancellationToken;
 
 use crate::accessor::default_credential_accessor;
+use crate::runtime::refresh::transport::RefreshTransport;
 
 // ── Noop ResourceAccessor (core trait) ────────────────────────────────────
 
@@ -147,6 +148,14 @@ pub struct CredentialContext {
     /// no proxy methods on the context (avoids duplicating tokio-util's
     /// surface; ADR-0083 budget).
     cancel: CancellationToken,
+
+    /// Runtime-only provider transport stamped by the credential resolver.
+    ///
+    /// This deliberately has no public builder or accessor: integrations
+    /// receive the curated resolver/runtime surface and first-party
+    /// credential implementations can only borrow the narrow transport while
+    /// the framework drives refresh.
+    refresh_transport: Option<Arc<dyn RefreshTransport>>,
 }
 
 impl fmt::Debug for CredentialContext {
@@ -155,11 +164,18 @@ impl fmt::Debug for CredentialContext {
             .field("scope", self.base.scope())
             .field("principal", self.base.principal())
             .field("trace_id", &self.base.trace_id())
-            .field("callback_url", &self.callback_url)
-            .field("app_url", &self.app_url)
-            .field("session_id", &self.session_id)
-            .field("owner_id_override", &self.owner_id_override)
+            .field("callback_url_present", &self.callback_url.is_some())
+            .field("app_url_present", &self.app_url.is_some())
+            .field("session_id_present", &self.session_id.is_some())
+            .field(
+                "owner_id_override_present",
+                &self.owner_id_override.is_some(),
+            )
             .field("cancel", &self.cancel)
+            .field(
+                "refresh_transport_present",
+                &self.refresh_transport.is_some(),
+            )
             .finish()
     }
 }
@@ -280,7 +296,33 @@ impl CredentialContext {
             session_id: None,
             owner_id_override: Some(owner_id.into()),
             cancel,
+            refresh_transport: None,
         }
+    }
+
+    /// Borrow the runtime-stamped refresh transport.
+    ///
+    /// Crate-private by design: it is an implementation back-channel for
+    /// typed credential refresh, not an integration-facing capability.
+    pub(crate) fn refresh_transport(&self) -> Option<&dyn RefreshTransport> {
+        self.refresh_transport.as_deref()
+    }
+
+    /// Derive the provider/persistence critical-section context.
+    ///
+    /// Authority, accessors, trace identity, and pending-session bindings are
+    /// preserved. Request cancellation is deliberately replaced: after K2
+    /// grants provider dispatch, dropping or cancelling the waiter must not
+    /// abort the owned provider-to-persistence transition. The resolver is the
+    /// sole caller that supplies its transport.
+    pub(crate) fn for_refresh_critical_section(
+        &self,
+        transport: Arc<dyn RefreshTransport>,
+    ) -> Self {
+        let mut critical = self.clone();
+        critical.cancel = CancellationToken::new();
+        critical.refresh_transport = Some(transport);
+        critical
     }
 
     /// Set session ID (builder-style, consumes self).
@@ -406,6 +448,7 @@ impl CredentialContextBuilder {
             session_id: self.session_id,
             owner_id_override: self.owner_id,
             cancel,
+            refresh_transport: None,
         }
     }
 }
@@ -415,6 +458,24 @@ mod tests {
     use nebula_core::Context;
 
     use super::*;
+    use crate::runtime::refresh::transport::{
+        RefreshTransportError, TokenPostRequest, TokenPostResponse,
+    };
+
+    struct CanaryTransport {
+        _secret: String,
+    }
+
+    impl RefreshTransport for CanaryTransport {
+        fn post_token<'a>(
+            &'a self,
+            _request: TokenPostRequest,
+        ) -> std::pin::Pin<
+            Box<dyn Future<Output = Result<TokenPostResponse, RefreshTransportError>> + Send + 'a>,
+        > {
+            Box::pin(async { Err(RefreshTransportError::Send) })
+        }
+    }
 
     #[test]
     fn for_owner_creates_valid_context() {
@@ -486,9 +547,44 @@ mod tests {
     }
 
     #[test]
-    fn debug_output_does_not_panic() {
-        let ctx = CredentialContext::for_owner("user_123");
-        let debug = format!("{ctx:?}");
+    fn debug_output_redacts_interactive_and_owner_values() {
+        const CANARY: &str = "credential-context-debug-canary";
+        let ctx = CredentialContext::for_owner(CANARY)
+            .with_callback_url(CANARY)
+            .with_app_url(CANARY)
+            .with_session_id(CANARY);
+        let short_transport_debug = format!(
+            "{:?}",
+            ctx.for_refresh_critical_section(Arc::new(CanaryTransport {
+                _secret: "x".to_owned(),
+            }))
+        );
+        let debug = format!(
+            "{:?}",
+            ctx.for_refresh_critical_section(Arc::new(CanaryTransport {
+                _secret: CANARY.to_owned(),
+            }))
+        );
         assert!(debug.contains("CredentialContext"));
+        assert!(!debug.contains(CANARY));
+        assert_eq!(debug, short_transport_debug);
+        assert!(debug.contains("session_id_present: true"));
+        assert!(debug.contains("refresh_transport_present: true"));
+    }
+
+    #[test]
+    fn refresh_critical_section_detaches_request_cancellation() {
+        let request = CredentialContext::for_owner("owner");
+        let request_cancel = request.cancel_token().clone();
+        request_cancel.cancel();
+
+        let critical = request.for_refresh_critical_section(Arc::new(CanaryTransport {
+            _secret: "not-rendered".to_owned(),
+        }));
+
+        assert!(request.cancel_token().is_cancelled());
+        assert!(!critical.cancel_token().is_cancelled());
+        assert_eq!(critical.owner_id(), request.owner_id());
+        assert!(critical.refresh_transport().is_some());
     }
 }

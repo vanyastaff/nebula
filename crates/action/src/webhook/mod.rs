@@ -77,6 +77,7 @@ pub use source::WebhookSource;
 use subtle::ConstantTimeEq;
 use tokio::sync::{Notify, oneshot};
 use tracing::{debug, warn};
+use zeroize::Zeroizing;
 
 use crate::{
     action::Action,
@@ -887,10 +888,50 @@ pub enum WebhookProvider {
     Generic {
         /// Optional shared token compared in constant time against the
         /// inbound `?challenge=` query parameter. `None` disables the
-        /// GET challenge endpoint.
-        challenge_token: Option<String>,
+        /// GET challenge endpoint. The wrapper shares one zeroizing allocation
+        /// between the action and its cached config and redacts `Debug`.
+        challenge_token: Option<ChallengeToken>,
     },
 }
+
+/// Shared authority for a Generic webhook verification handshake.
+///
+/// Cloning this type clones only an [`Arc`], not the plaintext allocation.
+/// The allocation is zeroed when its final owner is dropped, and `Debug` never
+/// reveals either the token or its length.
+#[derive(Clone)]
+pub struct ChallengeToken(Arc<Zeroizing<String>>);
+
+impl ChallengeToken {
+    /// Wrap a challenge token in shared, zeroizing storage.
+    #[must_use]
+    pub fn new(token: impl Into<String>) -> Self {
+        Self(Arc::new(Zeroizing::new(token.into())))
+    }
+
+    /// Borrow the token only at a comparison or response-construction site.
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl fmt::Debug for ChallengeToken {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ChallengeToken([REDACTED])")
+    }
+}
+
+impl PartialEq for ChallengeToken {
+    fn eq(&self, other: &Self) -> bool {
+        self.expose()
+            .as_bytes()
+            .ct_eq(other.expose().as_bytes())
+            .into()
+    }
+}
+
+impl Eq for ChallengeToken {}
 
 // ── PreHandleOutcome ─────────────────────────────────────────────────────
 

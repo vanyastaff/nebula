@@ -27,9 +27,8 @@ impl Scope {
     /// The canonical credential `owner_id` key for this scope.
     ///
     /// This is the **single** derivation every credential producer routes
-    /// through (the API edge, the credential-runtime facade, and the tenancy
-    /// scope layer) so the persisted `StoredCredential.metadata["owner_id"]`
-    /// key is identical regardless of which plane wrote it (ADR-0088 D7).
+    /// through before constructing the mandatory owner-bound persistence
+    /// selector (ADR-0088 D7).
     /// Before this existed, the API edge keyed `"{org}:{workspace}"` while the
     /// runtime keyed `"{org}/{workspace}"`; once both planes share a backend
     /// that mismatch would silently partition a single tenant's credentials

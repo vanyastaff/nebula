@@ -1,9 +1,14 @@
 //! OAuth2 credential -- interactive, refreshable, multi-grant-type.
 //!
-//! Supports three OAuth2 grant types via the unified Credential trait:
+//! Models three OAuth2 grant types via the unified Credential trait:
 //! - **Authorization Code** -- user browser redirect (interactive)
 //! - **Client Credentials** -- server-to-server, resolves in one step
 //! - **Device Code** -- CLI/TV apps, polling flow (interactive)
+//!
+//! Interactive acquisition, revocation, and testing provider I/O remain
+//! parked, and this type is absent from the first-party API's default
+//! registry. Typed refresh uses the runtime-injected hardened transport; see
+//! [`OAuth2Credential`] for the exact enablement boundary.
 //!
 //! State/scheme separation: OAuth2State is stored (contains refresh
 //! internals), while OAuth2Token is the consumer-facing auth material produced by `project()`.
@@ -41,11 +46,18 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use super::oauth2_config;
 use crate::{
-    CredentialContext, CredentialPolicy, CredentialState, PendingState, RefreshStrategy,
-    RevokeStrategy, SecretString,
-    error::{CredentialError, ProviderErrorContext, ProviderErrorKind, SecretFreeMessage},
+    CredentialContext, CredentialPolicy, CredentialState, PendingState, RefreshAttempt,
+    RefreshReport, RefreshStrategy, RevokeStrategy, SecretString,
+    error::{
+        CredentialError, ProviderErrorContext, ProviderErrorKind, RefreshDiagnosticCode,
+        RefreshErrorKind, RefreshFailureSpec, RetryAdvice, SecretFreeMessage,
+    },
     metadata::CredentialMetadata,
-    resolve::{InteractionRequest, RefreshOutcome, ResolveResult, TestResult, UserInput},
+    resolve::{InteractionRequest, ResolveResult, TestResult, UserInput},
+    runtime::refresh::token_refresh::{
+        CompletedTokenRefresh, PrepareTokenRefreshError, interpret_oauth2_refresh_response,
+        prepare_oauth2_refresh,
+    },
     scheme::OAuth2Token,
 };
 
@@ -63,8 +75,9 @@ use crate::{
 /// Per Tech Spec §15.4 amendment — `Zeroize` + `ZeroizeOnDrop` derived
 /// so the decrypted plaintext (access/refresh tokens, client creds)
 /// is scrubbed deterministically when this state is dropped. Non-secret
-/// fields (token type, expiry, scopes, URL, auth-style enum) carry
-/// `#[zeroize(skip)]`.
+/// fields (token type, expiry, scopes, auth-style enum) carry
+/// `#[zeroize(skip)]`. `token_url` is scrubbed because provider-routing query
+/// parameters can contain tenant or credential-adjacent values.
 #[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 pub struct OAuth2State {
     /// Current access token.
@@ -88,8 +101,8 @@ pub struct OAuth2State {
     /// Stored for refresh operations (encrypted at rest via `EncryptionLayer`).
     #[serde(with = "crate::serde_secret")]
     pub client_secret: SecretString,
-    /// Token endpoint URL for refresh requests — non-secret endpoint URL.
-    #[zeroize(skip)]
+    /// Token endpoint URL for refresh requests. Query parameters are treated
+    /// as sensitive routing material and zeroized with the state.
     pub token_url: String,
     /// How client credentials are sent (preserved from initial token
     /// exchange) — non-secret enum discriminant.
@@ -111,7 +124,7 @@ impl fmt::Debug for OAuth2State {
             .field("scopes", &self.scopes)
             .field("client_id", &"[REDACTED]")
             .field("client_secret", &"[REDACTED]")
-            .field("token_url", &self.token_url)
+            .field("token_url", &"[REDACTED]")
             .field("auth_style", &self.auth_style)
             .finish()
     }
@@ -216,36 +229,18 @@ pub struct OAuth2Pending {
     pub redirect_uri: Option<String>,
 }
 
-// Manual `Debug` so that `tracing::debug!(?pending)` cannot leak the
-// `client_secret` (already redacted by `SecretString`'s own `Debug`),
-// the `device_code` (device-flow bearer), the `pkce_verifier` (one-shot
-// auth-code verifier), or the `state` (callback CSRF token). The
-// `redirect_uri` is not secret and is shown verbatim.
+// Constant `Debug` keeps URLs (including provider-routing query parameters),
+// client material, device bearer material, PKCE, state, and redirect values
+// out of diagnostics without leaking their presence or length.
 impl fmt::Debug for OAuth2Pending {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OAuth2Pending")
-            .field("config", &self.config)
-            .field("client_id", &"[REDACTED]")
-            .field("client_secret", &"[REDACTED]")
-            .field("grant_type", &self.grant_type)
-            .field("auth_style", &self.auth_style)
-            .field(
-                "device_code",
-                &self.device_code.as_ref().map(|_| "[REDACTED]"),
-            )
-            .field("interval", &self.interval)
-            .field(
-                "pkce_verifier",
-                &self.pkce_verifier.as_ref().map(|_| "[REDACTED]"),
-            )
-            .field("state", &self.state.as_ref().map(|_| "[REDACTED]"))
-            .field("redirect_uri", &self.redirect_uri)
-            .finish()
+        f.write_str("OAuth2Pending(<redacted>)")
     }
 }
 
 impl Zeroize for OAuth2Pending {
     fn zeroize(&mut self) {
+        self.config.zeroize();
         // Zeroize the existing SecretString in place before replacing it, so
         // the underlying heap buffer is scrubbed rather than relying solely
         // on Drop of the replacement.
@@ -306,15 +301,15 @@ impl PendingState for OAuth2Pending {
 /// [`Refreshable`](crate::Refreshable), [`Revocable`](crate::Revocable), and
 /// [`Testable`](crate::Testable) sub-traits per Tech Spec §15.4.
 ///
-/// `Revocable` and `Testable` currently surface
-/// `CredentialError::Provider("OAuth2 HTTP transport has moved …")`
-/// because the underlying HTTP calls (RFC 7009 revoke endpoint, token
-/// introspection / userinfo health probe) live in nebula-engine per
-/// API-owned OAuth flow. The trait impls exist so the engine's revoke / test
-/// dispatchers (which bind `where C: Revocable` / `where C: Testable`)
-/// can route to OAuth2 once the transport is wired — and so plugin
-/// callers see a typed transport-disabled classification instead of
-/// "credential type does not support revocation / testing."
+/// This implementation is deliberately parked: the first-party API's default
+/// registry, catalog, and dispatch table do not register or advertise
+/// `oauth2`. An explicitly curated composition may still register the type.
+/// Typed refresh uses the hardened transport injected by the credential
+/// resolver; interactive acquisition, revocation, and testing remain parked.
+/// First-party acquisition enablement must enter through the universal typed
+/// `resolve` / `resolve/continue` pending flow. It must not restore a
+/// provider-specific raw HTTP ceremony or move credential lifecycle logic into
+/// the engine or API layer.
 ///
 /// Configuration (auth URL, token URL, grant type, scopes) is provided
 /// via `nebula_schema::schema_of::<Self::Properties>()` (schema-of properties) and
@@ -324,23 +319,20 @@ impl PendingState for OAuth2Pending {
 ///
 /// Per §15.4 the base [`Credential::resolve`](crate::Credential::resolve)
 /// returns `ResolveResult<State, ()>` and cannot carry typed
-/// [`OAuth2Pending`]. The interactive entry point therefore lives on
-/// the OAuth2-specific kickoff path:
+/// [`OAuth2Pending`]. [`OAuth2Credential::initiate_authorization_code`] is a
+/// low-level typed building block for a future runtime adapter; it is not a
+/// supported HTTP kickoff surface:
 ///
-/// - **Authorization Code** — base `resolve` rejects with `Provider("OAuth2 authorization_code
-///   requires OAuth2-specific kickoff path")`. The API endpoint orchestrating the OAuth2 flow
-///   constructs an [`OAuth2Pending`] directly via [`OAuth2Credential::initiate_authorization_code`]
-///   and persists it to the [`PendingStateStore`](crate::pending_store::PendingStateStore). On
-///   callback, the framework loads the typed pending state and invokes
-///   [`Interactive::continue_resolve`](crate::Interactive::continue_resolve).
-/// - **Client Credentials** — base `resolve` returns `Complete(state)` once the engine wires the
-///   moved `nebula-engine` HTTP transport (API-owned OAuth flow). For now `resolve` returns `Provider("OAuth2
-///   HTTP transport has moved …")` so callers surface the migration explicitly rather than silently
-///   no-op'ing.
-/// - **Device Code** — base `resolve` errors as per Authorization Code; the device-code variant
-///   (`initiate_device_code`) is deferred to a later phase. RFC 8628 requires HTTP transport which
-///   is currently disabled in this crate per API-owned OAuth flow (see );
-///   the kickoff helper will land alongside the engine HTTP transport wiring.
+/// - **Authorization Code** — base `resolve` rejects because it cannot carry
+///   typed pending state. A future universal-acquisition adapter will create
+///   and persist [`OAuth2Pending`], return a typed redirect interaction, then
+///   resume through [`Interactive::continue_resolve`](crate::Interactive::continue_resolve).
+/// - **Client Credentials** — base `resolve` returns the typed
+///   transport-disabled error until the credential runtime receives an
+///   injected provider transport.
+/// - **Device Code** — base `resolve` is likewise parked; RFC 8628 polling
+///   must use the same universal pending-state path when its transport adapter
+///   lands.
 pub struct OAuth2Credential;
 
 /// Typed shape of the `oauth2` credential setup form (Phase 5 — replaces
@@ -406,8 +398,9 @@ pub struct OAuth2Properties {
 // The hand-written `policy()` is relocated verbatim because OAuth2's refresh
 // strategy is state-dependent (`RefreshToken` while a refresh token is held,
 // else `ReAcquire`) — the macro's synthesized policy cannot read live state.
-// The `initiate_authorization_code` kickoff helper stays in its own inherent
-// `impl` block below; it is not part of the credential contract.
+// The `initiate_authorization_code` building block stays in its own inherent
+// `impl` block below. It is not part of the credential contract and does not
+// imply a public provider-specific HTTP kickoff surface.
 #[nebula_credential::credential(key = "oauth2")]
 impl OAuth2Credential {
     type Properties = OAuth2Properties;
@@ -415,15 +408,14 @@ impl OAuth2Credential {
     type State = OAuth2State;
 
     fn metadata() -> CredentialMetadata {
-        CredentialMetadata::builder()
-            .key(nebula_core::credential_key!("oauth2"))
-            .name("OAuth2")
-            .description("OAuth2 authentication supporting Authorization Code, Client Credentials, and Device Code grant types.")
-            .schema(nebula_schema::schema_of::<Self::Properties>())
-            .pattern(crate::AuthPattern::OAuth2)
-            .icon("oauth2")
-            .build()
-            .expect("oauth2 metadata is valid")
+        CredentialMetadata::new(
+            nebula_core::credential_key!("oauth2"),
+            "OAuth2",
+            "OAuth2 authentication supporting Authorization Code, Client Credentials, and Device Code grant types.",
+            nebula_schema::schema_of::<Self::Properties>(),
+            crate::AuthPattern::OAuth2,
+        )
+        .with_icon("oauth2")
     }
 
     fn project(state: &OAuth2State) -> OAuth2Token {
@@ -444,11 +436,12 @@ impl OAuth2Credential {
         // Per Tech Spec §15.4, the base `Credential::resolve` returns
         // `ResolveResult<State, ()>` — typed `OAuth2Pending` cannot ride
         // along here. Validate the input shape, then route by grant type:
-        // * AuthorizationCode / DeviceCode: kick off via `OAuth2Credential::initiate_*` and persist
-        //   the typed `OAuth2Pending` through `PendingStateStore`. The continuation then routes
-        //   through `Interactive::continue_resolve`.
-        // * ClientCredentials: HTTP transport moved to nebula-engine (API-owned OAuth flow); surface the
-        //   migration explicitly.
+        // * AuthorizationCode / DeviceCode: a future universal-acquisition
+        //   adapter must persist typed pending state and resume through
+        //   `Interactive::continue_resolve`; the default API does not register
+        //   this parked type today.
+        // * ClientCredentials: no provider HTTP transport is wired into the
+        //   credential runtime yet, so fail explicitly.
         let _client_id = extract_required(values, "client_id")?;
         let _client_secret = extract_required(values, "client_secret")?;
         let _token_url = extract_required(values, "token_url")?;
@@ -528,9 +521,7 @@ impl OAuth2Credential {
                     .ct_eq(expected_state.as_bytes())
                     .into();
                 if !state_matches {
-                    return Err(CredentialError::InvalidInput(
-                        "OAuth2 state mismatch".into(),
-                    ));
+                    return Err(CredentialError::InvalidInput(FAILED.into()));
                 }
 
                 let verifier_secret = pending
@@ -542,8 +533,9 @@ impl OAuth2Credential {
                     .as_deref()
                     .ok_or_else(|| CredentialError::InvalidInput(FAILED.into()))?;
 
-                // Validation passed. HTTP code exchange has moved to nebula-api
-                // per API-owned OAuth flow; this crate no longer performs HTTP.
+                // Validation passed, but provider code exchange is not yet
+                // integrated through the credential runtime's injected
+                // hardened transport.
                 let _ = (verifier_secret, redirect_uri, code);
                 Err(oauth2_http_transport_disabled())
             },
@@ -553,7 +545,8 @@ impl OAuth2Credential {
                         "device_code flow expects UserInput::Poll".into(),
                     ));
                 }
-                // HTTP device code polling has moved to nebula-engine per API-owned OAuth flow.
+                // Provider device-code polling is not yet integrated through
+                // the credential runtime's injected hardened transport.
                 Err(oauth2_http_transport_disabled())
             },
             GrantType::ClientCredentials => Err(CredentialError::InvalidInput(
@@ -562,36 +555,76 @@ impl OAuth2Credential {
         }
     }
 
-    async fn refresh(
-        state: &mut OAuth2State,
-        _ctx: &CredentialContext,
-    ) -> Result<RefreshOutcome, CredentialError> {
-        if state.refresh_token.is_none() {
-            // Locally detected: we never spoke to the IdP, so this is
-            // *not* a provider rejection. Surface as
-            // `MissingRefreshMaterial` so operators can distinguish a
-            // misconfigured grant (no refresh_token issued) from a
-            // genuine provider invalidation.
-            return Ok(RefreshOutcome::ReauthRequired(
-                crate::resolve::ReauthReason::MissingRefreshMaterial {
-                    detail: "OAuth2 state has no refresh_token".to_string(),
-                },
-            ));
-        }
+    async fn refresh(state: &mut OAuth2State, attempt: RefreshAttempt<'_>) -> RefreshReport {
+        let prepared = match prepare_oauth2_refresh(state) {
+            Ok(prepared) => prepared,
+            Err(PrepareTokenRefreshError::MissingRefreshToken) => {
+                return attempt.missing_refresh_material();
+            },
+            Err(PrepareTokenRefreshError::InvalidRefreshToken) => {
+                return attempt.not_dispatched(refresh_failure_spec(
+                    RefreshErrorKind::ProtocolError,
+                    RetryAdvice::Never,
+                    "oauth.invalid_refresh_token",
+                ));
+            },
+            Err(PrepareTokenRefreshError::InvalidScopes) => {
+                return attempt.not_dispatched(refresh_failure_spec(
+                    RefreshErrorKind::ProtocolError,
+                    RetryAdvice::Never,
+                    "oauth.invalid_scopes",
+                ));
+            },
+            Err(PrepareTokenRefreshError::InvalidEndpoint(_)) => {
+                return attempt.not_dispatched(refresh_failure_spec(
+                    RefreshErrorKind::ProtocolError,
+                    RetryAdvice::Never,
+                    "oauth.invalid_endpoint",
+                ));
+            },
+        };
 
-        // Token refresh HTTP has moved to nebula-engine per API-owned OAuth flow;
-        // this crate no longer performs HTTP.
-        Err(oauth2_http_transport_disabled())
+        let Some(transport) = attempt.context().refresh_transport() else {
+            let retry = crate::RetryDelay::new(Duration::from_mins(1))
+                .map(RetryAdvice::After)
+                .unwrap_or(RetryAdvice::Never);
+            return attempt.not_dispatched(refresh_failure_spec(
+                RefreshErrorKind::ProviderUnavailable,
+                retry,
+                "oauth.transport_not_configured",
+            ));
+        };
+
+        let completed = match attempt
+            .dispatch(|| transport.post_token(prepared.into_request()))
+            .await
+        {
+            Ok(completed) => completed,
+            Err(unknown) => return unknown.into_report(),
+        };
+        let (response, proof) = completed.into_parts();
+        match interpret_oauth2_refresh_response(state, response) {
+            CompletedTokenRefresh::Refreshed => proof.refreshed(),
+            CompletedTokenRefresh::InvalidGrant { .. } => proof.provider_rejected(),
+            CompletedTokenRefresh::DefinitiveNoEffect { code, .. } => {
+                proof.confirmed_not_applied(refresh_failure_spec(
+                    RefreshErrorKind::ProtocolError,
+                    RetryAdvice::Never,
+                    code.as_str(),
+                ))
+            },
+            CompletedTokenRefresh::AmbiguousDenial { .. }
+            | CompletedTokenRefresh::MalformedSuccess { .. } => proof.outcome_unknown(),
+        }
     }
 
     async fn revoke(
         _state: &mut OAuth2State,
         _ctx: &CredentialContext,
     ) -> Result<(), CredentialError> {
-        // OAuth2 RFC 7009 token revocation requires HTTP — moved to
-        // nebula-engine per API-owned OAuth flow. Returning the typed transport-
-        // disabled error keeps the failure classification stable for
-        // callers (engine routes to the HTTP transport when wired); a
+        // OAuth2 RFC 7009 token revocation requires provider HTTP. Returning
+        // the typed transport-disabled error keeps the failure classification
+        // stable until the credential runtime's injected transport is wired; a
         // silent `Ok(())` would falsely signal "secret revoked at
         // provider" while the token remains live.
         Err(oauth2_http_transport_disabled())
@@ -602,9 +635,8 @@ impl OAuth2Credential {
         _ctx: &CredentialContext,
     ) -> Result<TestResult, CredentialError> {
         // OAuth2 health probe (token introspection / userinfo) requires
-        // HTTP — moved to nebula-engine per API-owned OAuth flow. Same routing
-        // rationale as `Refreshable::refresh` and `Revocable::revoke`
-        // above. Returning `Ok(TestResult::Failed { … })` would falsely
+        // provider HTTP that is not yet integrated through the credential
+        // runtime. Returning `Ok(TestResult::Failed { code: … })` would falsely
         // signal "credential tested and is bad"; the test simply did
         // not run, so the typed transport-disabled error is the correct
         // classification.
@@ -612,7 +644,7 @@ impl OAuth2Credential {
     }
 
     // OAuth2 is a refresh-pair credential (ADR-0088 D2). The policy is computed
-    // from live state: `RefreshToken` while a refresh token is held (the engine
+    // from live state: `RefreshToken` while a refresh token is held (the runtime
     // can renew non-interactively), otherwise `ReAcquire` (the refresh path
     // returns `ReauthRequired`). Revoke is handle-based (RFC 7009); expiry is
     // the access token's inline `expires_at`. The hand-written `policy` is kept
@@ -644,11 +676,11 @@ impl OAuth2Credential {
     /// state) and the typed [`OAuth2Pending`] state that the framework
     /// must persist before redirecting the user. Per Tech Spec §15.4
     /// the base [`Credential::resolve`](crate::Credential::resolve) cannot
-    /// carry the typed pending state; this kickoff method exists so the API
-    /// endpoint
-    /// orchestrating the OAuth2 flow can construct the pending state
-    /// directly and call
-    /// [`PendingStateStore::put`](crate::pending_store::PendingStateStore::put).
+    /// carry the typed pending state. This method is a low-level building block
+    /// for an explicitly curated runtime adapter; it is not a public HTTP
+    /// kickoff. Future first-party support must persist the result through
+    /// [`PendingStateStore::put`](crate::pending_store::PendingStateStore::put)
+    /// and expose it only via universal `resolve` / `resolve/continue`.
     pub fn initiate_authorization_code(
         values: &FieldValues,
     ) -> Result<(OAuth2Pending, InteractionRequest), CredentialError> {
@@ -709,8 +741,22 @@ impl OAuth2Credential {
 fn oauth2_http_transport_disabled() -> CredentialError {
     CredentialError::Provider(Box::new(ProviderErrorContext::new(
         ProviderErrorKind::Other,
-        SecretFreeMessage::new("OAuth2 HTTP transport moved: use nebula-api/nebula-engine"),
+        SecretFreeMessage::new("OAuth2 interactive acquisition is not wired in this composition"),
     )))
+}
+
+fn refresh_failure_spec(
+    kind: RefreshErrorKind,
+    retry: RetryAdvice,
+    diagnostic_code: &str,
+) -> RefreshFailureSpec {
+    let failure = RefreshFailureSpec::new(kind, retry);
+    match RefreshDiagnosticCode::parse(diagnostic_code) {
+        Ok(code) => failure.with_diagnostic_code(code),
+        // A future accidental invalid constant must lose diagnostics rather
+        // than turn a proven no-effect response into a less safe outcome.
+        Err(_) => failure,
+    }
 }
 
 /// Build the authorization URL for the Authorization Code grant.
@@ -718,7 +764,8 @@ fn oauth2_http_transport_disabled() -> CredentialError {
 /// Appends every query parameter required by RFC 6749 §4.1.1 plus the
 /// RFC 7636 PKCE extension and the anti-CSRF `state` parameter.
 ///
-/// Inlined from the former `oauth2_authorize_url` module (moved to nebula-api).
+/// Inlined from the former dedicated `oauth2_authorize_url` module so typed
+/// pending-state construction remains inside the credential subsystem.
 fn build_auth_url(
     config: &OAuth2Config,
     client_id: &str,
@@ -738,10 +785,10 @@ fn build_auth_url(
         )))
     })?;
 
-    let mut url = url::Url::parse(&config.auth_url).map_err(|e| {
+    let mut url = url::Url::parse(&config.auth_url).map_err(|_| {
         CredentialError::Provider(Box::new(ProviderErrorContext::new(
             ProviderErrorKind::Schema,
-            SecretFreeMessage::new(format!("invalid auth_url: {e}")),
+            SecretFreeMessage::new("invalid OAuth2 authorization endpoint URL"),
         )))
     })?;
 
@@ -853,7 +900,7 @@ mod tests {
             scopes: vec!["read".into(), "write".into()],
             client_id: SecretString::new("cid"),
             client_secret: SecretString::new("csecret"),
-            token_url: "https://example.com/token".into(),
+            token_url: "https://example.com/token?routing=state-url-canary".into(),
             auth_style: AuthStyle::default(),
         }
     }
@@ -865,7 +912,7 @@ mod tests {
 
     #[test]
     fn lifecycle_policy_reflects_refresh_token_presence() {
-        // With a refresh token the engine can renew non-interactively.
+        // With a refresh token the runtime can renew non-interactively.
         let with_token = make_state();
         let p = OAuth2Credential::policy(&with_token);
         assert_eq!(p.refresh, RefreshStrategy::RefreshToken);
@@ -892,10 +939,10 @@ mod tests {
     // implements `Interactive`, `Refreshable`, `Revocable`, and
     // `Testable` (and not `Dynamic`). Trait bound checks below stand in
     // for the previous const-bool assertions. The `Revocable` and
-    // `Testable` impls currently route through API-owned OAuth flow HTTP transport
-    // (returning `oauth2_http_transport_disabled()`); the trait
-    // membership is still required so the engine's revoke / test
-    // dispatchers can bind on it once the transport is wired.
+    // `Testable` impls currently return `oauth2_http_transport_disabled()`;
+    // trait membership remains part of the parked type's contract so an
+    // explicitly curated runtime can bind these operations once its injected
+    // provider transport is wired.
     #[expect(dead_code)]
     fn assert_oauth2_capabilities()
     where
@@ -1160,9 +1207,10 @@ mod tests {
 
     // ── initiate_authorization_code coverage (Tech Spec §15.4) ─────────
     //
-    // Per §15.4 the base `Credential::resolve` cannot carry typed
-    // pending state, so the AuthorizationCode kickoff lives on this
-    // OAuth2-specific helper. The tests below cover (a) success-path
+    // Per §15.4 the base `Credential::resolve` cannot carry typed pending
+    // state, so this low-level helper builds the future universal adapter's
+    // pending value. It is not a public HTTP kickoff. The tests below cover
+    // (a) success-path
     // URL construction with PKCE + anti-CSRF, (b) input rejection for
     // missing redirect_uri, (c) state-token unguessability across
     // independent kickoffs.
@@ -1320,18 +1368,46 @@ mod tests {
         };
 
         let ctx = CredentialContext::for_owner("test-user");
-        let outcome = OAuth2Credential::refresh(&mut state, &ctx).await.unwrap();
+        let outcome = OAuth2Credential::refresh(
+            &mut state,
+            RefreshAttempt::new(&ctx, crate::RefreshExecutionMode::Provider),
+        )
+        .await
+        .into_kind();
         // Locally detected: never spoke to the IdP. Distinct from
         // `ProviderRejected` per wave-2 review (see ReauthReason rustdoc).
-        assert!(
-            matches!(
-                outcome,
-                RefreshOutcome::ReauthRequired(
-                    crate::resolve::ReauthReason::MissingRefreshMaterial { .. }
-                )
-            ),
-            "expected ReauthRequired(MissingRefreshMaterial); got {outcome:?}"
+        assert!(matches!(
+            outcome,
+            crate::contract::RefreshReportKind::ReauthRequired {
+                reason: crate::resolve::ReauthReason::MissingRefreshMaterial,
+                phase: crate::contract::RefreshReauthPhase::BeforeDispatch,
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn refresh_without_runtime_transport_is_exact_and_bounded_retryable() {
+        let mut state = make_state();
+        let ctx = CredentialContext::for_owner("test-user");
+        let report = OAuth2Credential::refresh(
+            &mut state,
+            RefreshAttempt::new(&ctx, crate::RefreshExecutionMode::Provider),
+        )
+        .await
+        .into_kind();
+
+        let crate::contract::RefreshReportKind::NotApplied(context) = report else {
+            panic!("missing runtime transport must be a proven not-applied refresh");
+        };
+        assert_eq!(
+            context.phase(),
+            crate::RefreshNotAppliedPhase::BeforeDispatch
         );
+        assert_eq!(context.kind(), RefreshErrorKind::ProviderUnavailable);
+        let RetryAdvice::After(delay) = context.retry() else {
+            panic!("runtime composition can recover without a credential material update");
+        };
+        assert_eq!(delay.get(), Duration::from_mins(1));
     }
 
     #[test]
@@ -1388,6 +1464,10 @@ mod tests {
         };
 
         pending.zeroize();
+        assert!(pending.config.auth_url.is_empty());
+        assert!(pending.config.token_url.is_empty());
+        assert!(pending.config.scopes.is_empty());
+        assert!(pending.config.redirect_uri.is_none());
         assert!(pending.client_secret.expose_secret().is_empty());
         assert!(pending.device_code.is_none());
         assert!(pending.client_id.is_empty());
@@ -1398,11 +1478,11 @@ mod tests {
     }
 
     #[test]
-    fn pending_state_debug_redacts_pkce_verifier_and_state_but_shows_redirect_uri() {
-        let pending = OAuth2Pending {
+    fn pending_state_debug_is_constant_and_redacts_all_urls() {
+        let first = OAuth2Pending {
             config: OAuth2Config::authorization_code(TEST_CALLBACK)
-                .auth_url("https://a.com/auth")
-                .token_url("https://a.com/token")
+                .auth_url("https://a.com/auth?diagnostic=auth-url-canary")
+                .token_url("https://a.com/token?diagnostic=token-url-canary")
                 .build(),
             client_id: "cid".into(),
             client_secret: SecretString::new("cs"),
@@ -1414,11 +1494,33 @@ mod tests {
             state: Some("my_csrf_state_value".into()),
             redirect_uri: Some(TEST_CALLBACK.into()),
         };
-        let debug = format!("{pending:?}");
-        assert!(!debug.contains("my_pkce_verifier_value"));
-        assert!(!debug.contains("my_csrf_state_value"));
-        assert!(debug.contains(TEST_CALLBACK));
-        assert!(debug.contains("[REDACTED]"));
+        let second = OAuth2Pending {
+            config: OAuth2Config::device_code()
+                .auth_url("https://different.example/long/device/path")
+                .token_url("https://different.example/token")
+                .build(),
+            client_id: "different-client".into(),
+            client_secret: SecretString::new("different-secret"),
+            grant_type: GrantType::DeviceCode,
+            auth_style: AuthStyle::PostBody,
+            device_code: Some("different-device-code".into()),
+            interval: Some(42),
+            pkce_verifier: None,
+            state: None,
+            redirect_uri: None,
+        };
+        let debug = format!("{first:?}");
+        assert_eq!(debug, format!("{second:?}"));
+        assert_eq!(debug, "OAuth2Pending(<redacted>)");
+        for canary in [
+            "my_pkce_verifier_value",
+            "my_csrf_state_value",
+            "auth-url-canary",
+            "token-url-canary",
+            TEST_CALLBACK,
+        ] {
+            assert!(!debug.contains(canary));
+        }
     }
 
     #[test]
@@ -1468,9 +1570,35 @@ mod tests {
         assert!(!debug.contains("tok_abc"), "access_token leaked in Debug");
         assert!(!debug.contains("ref_xyz"), "refresh_token leaked in Debug");
         assert!(!debug.contains("csecret"), "client_secret leaked in Debug");
+        assert!(
+            !debug.contains("state-url-canary"),
+            "query-bearing token_url leaked in Debug"
+        );
+        assert!(!debug.contains("example.com"));
         assert!(debug.contains("[REDACTED]"));
         assert!(debug.contains("Bearer"));
-        assert!(debug.contains("https://example.com/token"));
+    }
+
+    #[test]
+    fn oauth2_state_zeroize_scrubs_token_url() {
+        let mut state = make_state();
+        state.zeroize();
+        assert!(state.token_url.is_empty());
+    }
+
+    #[test]
+    fn build_auth_url_parse_failure_is_fixed_and_input_free() {
+        let config = OAuth2Config::authorization_code(TEST_CALLBACK)
+            .auth_url("://auth-url-diagnostic-canary")
+            .token_url("https://provider.example/token")
+            .build();
+
+        let error = build_auth_url(&config, "client", "challenge", "state")
+            .expect_err("invalid authorization endpoint must fail");
+        let diagnostic = format!("{error:?} {error}");
+        assert!(!diagnostic.contains("auth-url-diagnostic-canary"));
+        assert!(!diagnostic.contains("://"));
+        assert!(diagnostic.contains("invalid OAuth2 authorization endpoint URL"));
     }
 
     #[test]

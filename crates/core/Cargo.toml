@@ -11,6 +11,10 @@ homepage.workspace = true
 documentation.workspace = true
 keywords.workspace = true
 
+[features]
+default = []
+unstable-worker-flavor = []
+
 [dependencies]
 chrono = { workspace = true, features = ["serde"] }
 domain-key = { workspace = true }

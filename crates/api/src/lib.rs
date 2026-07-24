@@ -31,7 +31,7 @@
 //!   `EndpointProviderImpl`, storage bootstrap, lifecycle subscriber.
 //! - `state` — `AppState` holds port trait references: `WorkflowRepo`, `ExecutionRepo`,
 //!   `ControlQueueRepo`, `OrgResolver`, `WorkspaceResolver`, `AuthBackend`, `MembershipStore`.
-//! - `config` — `ApiConfig` with sub-configs (`TlsConfig`, `CookieConfig`, `CorsConfig`,
+//! - `config` — `ApiConfig` with sub-configs (`TlsConfig`, `CorsConfig`,
 //!   `VersioningConfig`, `PaginationConfig`) / `JwtSecret`; startup fails hard on a missing or
 //!   short secret — no `Default` impl (honest capability operational honesty).
 //!
@@ -44,11 +44,11 @@
 //!   and the user-facing OAuth sign-in flow plus the cookie / JWT / `X-API-Key` middleware that
 //!   gates the Nebula API itself. The Plane-A backend subsystem lives under
 //!   [`domain::auth::backend`].
-//! - **[`domain::credential`]** — **Plane B infrastructure**: OAuth2 flow helpers (PKCE, signed
-//!   state, token exchange) and input validators for integration credentials. Flow helpers live
-//!   under [`transport::oauth`] with validators in [`extractors::credential`]. HTTP handlers live
-//!   in [`domain::credential::handler`]; route wiring in [`domain::workspace`] and
-//!   [`domain::credential::routes`]. All credential routes are **protected by Plane A** middleware.
+//! - **[`domain::credential`]** — **Plane B** CRUD, lifecycle, type discovery, and the universal
+//!   `resolve` / `resolve/continue` acquisition protocol. The former raw provider-specific
+//!   authorization/callback ceremony is parked and is not an HTTP surface. All credential routes
+//!   are protected by Plane-A middleware. The private `transport::oauth` module serves Plane-A identity sign-in
+//!   only.
 //!
 //! Do not merge these into one conceptual “auth” module — naming stays explicit per auth plane separation.
 //!
@@ -79,36 +79,6 @@ pub mod telemetry_init;
 mod trace_capture;
 pub mod transport;
 
-/// Test-only helpers for `nebula-api` integration tests against
-/// localhost wiremock IdPs. Gated by the custom cfg `nebula_test_util`
-/// (NOT a Cargo feature — features are additive and can transitively
-/// activate; custom cfg requires explicit `RUSTFLAGS="--cfg
-/// nebula_test_util"` opt-in per the tokio_unstable precedent).
-///
-/// Tests enable via:
-/// ```sh
-/// RUSTFLAGS="--cfg nebula_test_util" cargo nextest run -p nebula-api --test oauth_provider_e2e
-/// ```
-///
-/// See ADR-0085 D-14 and PR-2 tasks T2.11 / T2.12.
-#[cfg(nebula_test_util)]
-pub mod test_support;
-
-// Release-build guard per ADR-0085 D-14 + tasks T2.12: if the
-// `nebula_test_util` cfg is somehow set in a release build (operator
-// passes `RUSTFLAGS="--cfg nebula_test_util"` to `cargo build
-// --release`), refuse to compile. `not(debug_assertions)` is the
-// canonical release-profile detection cfg (set automatically by
-// `cargo build --release` and any `[profile.<name>] debug-assertions =
-// false`). The earlier proposal `cfg(feature = "release")` was
-// structurally wrong — release is a Cargo profile, NOT a feature.
-#[cfg(all(nebula_test_util, not(debug_assertions)))]
-compile_error!(
-    "nebula_test_util cfg must NOT be active in release builds; \
-     remove --cfg nebula_test_util from RUSTFLAGS. \
-     See ADR-0085 D-14 for the test-only bypass-helpers contract."
-);
-
 pub use app::build_app;
 pub use config::{ApiConfig, ApiConfigError, JwtSecret};
 pub use domain::resource::handler::{
@@ -118,3 +88,7 @@ pub use domain::shared::{CursorParams, PaginatedResponse};
 pub use error::{ApiError, ApiResult, ProblemDetails};
 pub use state::AppState;
 pub use telemetry_init::{TelemetryGuard, TelemetryInitError, init_api_telemetry};
+/// Technical first-party composition seams for Plane-A OAuth. These types are
+/// exported so the server composition root can wire the API crate; they are
+/// not part of the curated, supported `nebula-sdk` surface.
+pub use transport::oauth::{OAuthIdentityRuntime, OAuthRuntimeBuildError};

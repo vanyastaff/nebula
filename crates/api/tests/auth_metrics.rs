@@ -349,7 +349,23 @@ mod pg_backend {
         let registry = Arc::new(MetricsRegistry::new());
         let sink = Arc::new(EchoSink::default());
         let port: Arc<dyn EmailPort> = Arc::clone(&sink) as _;
-        let backend = Arc::new(PgAuthBackend::new(pool, port, Some(Arc::clone(&registry))));
+        use nebula_storage::{
+            credential::{EnvKeyProvider, KeyProvider},
+            identity_secret::IdentitySecretCodec,
+        };
+
+        let provider = EnvKeyProvider::from_base64("REREREREREREREREREREREREREREREREREREREREREQ=")
+            .expect("valid test key");
+        let codec = Arc::new(
+            IdentitySecretCodec::new(Arc::new(provider) as Arc<dyn KeyProvider>)
+                .expect("valid identity codec"),
+        );
+        let backend = Arc::new(PgAuthBackend::new(
+            pool,
+            port,
+            Some(Arc::clone(&registry)),
+            codec,
+        ));
         (backend, registry)
     }
 

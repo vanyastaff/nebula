@@ -20,6 +20,8 @@ pub mod problem;
 
 pub use problem::{ProblemDetails, ValidationFieldError};
 
+use std::num::NonZeroU64;
+
 use axum::{
     Json,
     http::StatusCode,
@@ -62,6 +64,88 @@ pub enum ApiError {
     #[classify(category = "conflict", code = "API:CONFLICT")]
     #[error("Conflict: {0}")]
     Conflict(String),
+
+    /// A unique domain identity or name is already reserved (409).
+    #[classify(category = "conflict", code = "API:ALREADY_EXISTS")]
+    #[error("Already exists: {0}")]
+    AlreadyExists(String),
+
+    /// A bounded structural version can no longer advance (409).
+    #[classify(category = "conflict", code = "API:VERSION_EXHAUSTED")]
+    #[error("Version exhausted: {0}")]
+    VersionExhausted(String),
+
+    /// A mutation may have committed, but its acknowledgement was lost (409).
+    ///
+    /// This is non-retryable by default: the client must reconcile state before
+    /// deciding whether replay is safe.
+    #[classify(category = "conflict", code = "API:OUTCOME_UNKNOWN")]
+    #[error("Operation outcome unknown: {0}")]
+    OutcomeUnknown(String),
+
+    /// The external integration credential must be reconnected (409).
+    ///
+    /// This is deliberately distinct from [`Self::Unauthorized`]: the
+    /// caller's Nebula identity/session is still authenticated. Retrying the
+    /// same provider grant is unsafe or impossible until the integration is
+    /// re-authorized.
+    #[classify(category = "conflict", code = "API:CREDENTIAL_REAUTH_REQUIRED")]
+    #[error("Integration credential requires re-authentication")]
+    CredentialReauthRequired,
+
+    /// A refresh attempt was proven not to have changed provider state and
+    /// automatic retry is forbidden (409).
+    #[classify(
+        category = "conflict",
+        code = "API:CREDENTIAL_REFRESH_NOT_APPLIED_NEVER",
+        retryable = false
+    )]
+    #[error("Credential refresh was not applied and is not retryable")]
+    CredentialRefreshNotAppliedNever,
+
+    /// A refresh attempt was proven not to have changed provider state and may
+    /// be retried after a non-zero delay (409).
+    ///
+    /// `Classify::is_retryable` is true. The field-dependent delay is carried
+    /// by HTTP `Retry-After`; the derive macro intentionally emits no static
+    /// `RetryHint`.
+    #[classify(
+        category = "conflict",
+        code = "API:CREDENTIAL_REFRESH_NOT_APPLIED_AFTER",
+        retryable = true
+    )]
+    #[error("Credential refresh was not applied; retry after {retry_after_secs} seconds")]
+    CredentialRefreshNotAppliedAfter {
+        /// Validated non-zero whole-second delay.
+        retry_after_secs: NonZeroU64,
+    },
+
+    /// The refresh outcome is known, but durable local finalization
+    /// definitely failed (409).
+    ///
+    /// This is distinct from [`Self::OutcomeUnknown`]: the mutation outcome is
+    /// known, so automatic replay is unsafe and the integration credential
+    /// must be reconciled or reconnected.
+    #[classify(
+        category = "conflict",
+        code = "API:CREDENTIAL_REFRESH_RECONCILIATION_REQUIRED",
+        retryable = false
+    )]
+    #[error("Credential refresh requires reconciliation")]
+    CredentialRefreshReconciliationRequired,
+
+    /// The revoke outcome is known, but durable local finalization definitely
+    /// failed (409).
+    ///
+    /// Automatic replay is unsafe. The client must reconcile credential state
+    /// before deciding whether another revoke is appropriate.
+    #[classify(
+        category = "conflict",
+        code = "API:CREDENTIAL_REVOKE_RECONCILIATION_REQUIRED",
+        retryable = false
+    )]
+    #[error("Credential revoke requires reconciliation")]
+    CredentialRevokeReconciliationRequired,
 
     /// Rate limit exceeded (429)
     #[classify(category = "rate_limit", code = "API:RATE_LIMIT")]
@@ -328,6 +412,88 @@ impl ApiError {
                 )
                 .with_detail(msg),
             ),
+            ApiError::AlreadyExists(msg) => (
+                StatusCode::CONFLICT,
+                ProblemDetails::new(
+                    "https://nebula.dev/problems/already-exists",
+                    "Already Exists",
+                    StatusCode::CONFLICT,
+                )
+                .with_detail(msg),
+            ),
+            ApiError::VersionExhausted(msg) => (
+                StatusCode::CONFLICT,
+                ProblemDetails::new(
+                    "https://nebula.dev/problems/version-exhausted",
+                    "Version Exhausted",
+                    StatusCode::CONFLICT,
+                )
+                .with_detail(msg),
+            ),
+            ApiError::OutcomeUnknown(msg) => (
+                StatusCode::CONFLICT,
+                ProblemDetails::new(
+                    "https://nebula.dev/problems/outcome-unknown",
+                    "Operation Outcome Unknown",
+                    StatusCode::CONFLICT,
+                )
+                .with_detail(msg),
+            ),
+            ApiError::CredentialReauthRequired => (
+                StatusCode::CONFLICT,
+                ProblemDetails::new(
+                    "https://nebula.dev/problems/credential-reauth-required",
+                    "Credential Reauthentication Required",
+                    StatusCode::CONFLICT,
+                )
+                .with_detail(
+                    "Reconnect the integration credential before retrying this operation.",
+                ),
+            ),
+            ApiError::CredentialRefreshNotAppliedNever => (
+                StatusCode::CONFLICT,
+                ProblemDetails::new(
+                    "https://nebula.dev/problems/credential-refresh-not-applied",
+                    "Credential Refresh Not Applied",
+                    StatusCode::CONFLICT,
+                )
+                .with_detail(
+                    "The credential refresh was not applied for the current credential state.",
+                ),
+            ),
+            ApiError::CredentialRefreshNotAppliedAfter { .. } => (
+                StatusCode::CONFLICT,
+                ProblemDetails::new(
+                    "https://nebula.dev/problems/credential-refresh-not-applied",
+                    "Credential Refresh Not Applied",
+                    StatusCode::CONFLICT,
+                )
+                .with_detail(
+                    "The credential refresh was not applied. Retry only after the Retry-After delay."
+                ),
+            ),
+            ApiError::CredentialRefreshReconciliationRequired => (
+                StatusCode::CONFLICT,
+                ProblemDetails::new(
+                    "https://nebula.dev/problems/credential-refresh-reconciliation-required",
+                    "Credential Refresh Reconciliation Required",
+                    StatusCode::CONFLICT,
+                )
+                .with_detail(
+                    "The refresh outcome is known, but durable local finalization definitely failed. Do not retry automatically; reconcile or reconnect the integration credential."
+                ),
+            ),
+            ApiError::CredentialRevokeReconciliationRequired => (
+                StatusCode::CONFLICT,
+                ProblemDetails::new(
+                    "https://nebula.dev/problems/credential-revoke-reconciliation-required",
+                    "Credential Revoke Reconciliation Required",
+                    StatusCode::CONFLICT,
+                )
+                .with_detail(
+                    "The revoke outcome is known, but durable local finalization definitely failed. Do not retry automatically; reconcile credential state."
+                ),
+            ),
             ApiError::RateLimitExceeded => (
                 StatusCode::TOO_MANY_REQUESTS,
                 ProblemDetails::new(
@@ -491,6 +657,10 @@ impl ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, problem) = self.to_problem_details();
+        let retry_after_secs = match &self {
+            Self::CredentialRefreshNotAppliedAfter { retry_after_secs } => Some(*retry_after_secs),
+            _ => None,
+        };
 
         // Log error
         tracing::error!(
@@ -503,8 +673,15 @@ impl IntoResponse for ApiError {
         let mut response = (status, Json(problem)).into_response();
         response.headers_mut().insert(
             axum::http::header::CONTENT_TYPE,
-            "application/problem+json".parse().unwrap(),
+            axum::http::HeaderValue::from_static("application/problem+json"),
         );
+        if let Some(retry_after_secs) = retry_after_secs
+            && let Ok(value) = retry_after_secs.get().to_string().parse()
+        {
+            response
+                .headers_mut()
+                .insert(axum::http::header::RETRY_AFTER, value);
+        }
         response
     }
 }
@@ -514,7 +691,10 @@ pub type ApiResult<T> = Result<T, ApiError>;
 
 #[cfg(test)]
 mod tests {
-    use axum::http::StatusCode;
+    use axum::{
+        http::{StatusCode, header},
+        response::IntoResponse,
+    };
 
     use super::*;
     use nebula_validator::foundation::ValidationError;
@@ -619,5 +799,141 @@ mod tests {
             "DuplicateConnection must produce /connections/<from>/<to>, got: {:?}",
             errors[0].pointer
         );
+    }
+
+    #[test]
+    fn refresh_not_applied_never_is_a_fixed_409_without_retry_after() {
+        use nebula_error::Classify;
+
+        let error = ApiError::CredentialRefreshNotAppliedNever;
+        let (status, problem) = error.to_problem_details();
+
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(error.category(), nebula_error::ErrorCategory::Conflict);
+        assert_eq!(
+            error.code().as_str(),
+            "API:CREDENTIAL_REFRESH_NOT_APPLIED_NEVER"
+        );
+        assert!(!error.is_retryable());
+        assert_eq!(error.retry_hint(), None);
+        assert_eq!(
+            problem.type_uri,
+            "https://nebula.dev/problems/credential-refresh-not-applied"
+        );
+        assert_eq!(problem.title, "Credential Refresh Not Applied");
+        assert_eq!(
+            problem.detail.as_deref(),
+            Some("The credential refresh was not applied for the current credential state.")
+        );
+        assert!(
+            !problem
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.to_ascii_lowercase().contains("retry")),
+            "Never must not advise the client to retry"
+        );
+
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(!response.headers().contains_key(header::RETRY_AFTER));
+    }
+
+    #[test]
+    fn refresh_not_applied_after_is_a_fixed_409_with_retry_after() {
+        use nebula_error::Classify;
+
+        let error = ApiError::CredentialRefreshNotAppliedAfter {
+            retry_after_secs: NonZeroU64::new(17).expect("test delay is non-zero"),
+        };
+        let (status, problem) = error.to_problem_details();
+
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(error.category(), nebula_error::ErrorCategory::Conflict);
+        assert_eq!(
+            error.code().as_str(),
+            "API:CREDENTIAL_REFRESH_NOT_APPLIED_AFTER"
+        );
+        assert!(error.is_retryable());
+        assert_eq!(error.retry_hint(), None);
+        assert_eq!(
+            problem.type_uri,
+            "https://nebula.dev/problems/credential-refresh-not-applied"
+        );
+        assert_eq!(problem.title, "Credential Refresh Not Applied");
+        assert_eq!(
+            problem.detail.as_deref(),
+            Some("The credential refresh was not applied. Retry only after the Retry-After delay.")
+        );
+
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            response.headers().get(header::RETRY_AFTER),
+            Some(&axum::http::HeaderValue::from_static("17"))
+        );
+    }
+
+    #[test]
+    fn refresh_reconciliation_required_is_a_fixed_non_retryable_409() {
+        use nebula_error::Classify;
+
+        let error = ApiError::CredentialRefreshReconciliationRequired;
+        let (status, problem) = error.to_problem_details();
+
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(error.category(), nebula_error::ErrorCategory::Conflict);
+        assert_eq!(
+            error.code().as_str(),
+            "API:CREDENTIAL_REFRESH_RECONCILIATION_REQUIRED"
+        );
+        assert!(!error.is_retryable());
+        assert_eq!(error.retry_hint(), None);
+        assert_eq!(
+            problem.type_uri,
+            "https://nebula.dev/problems/credential-refresh-reconciliation-required"
+        );
+        assert_eq!(problem.title, "Credential Refresh Reconciliation Required");
+        assert_eq!(
+            problem.detail.as_deref(),
+            Some(
+                "The refresh outcome is known, but durable local finalization definitely failed. Do not retry automatically; reconcile or reconnect the integration credential."
+            )
+        );
+
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(!response.headers().contains_key(header::RETRY_AFTER));
+    }
+
+    #[test]
+    fn revoke_reconciliation_required_is_a_fixed_non_retryable_409() {
+        use nebula_error::Classify;
+
+        let error = ApiError::CredentialRevokeReconciliationRequired;
+        let (status, problem) = error.to_problem_details();
+
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(error.category(), nebula_error::ErrorCategory::Conflict);
+        assert_eq!(
+            error.code().as_str(),
+            "API:CREDENTIAL_REVOKE_RECONCILIATION_REQUIRED"
+        );
+        assert!(!error.is_retryable());
+        assert_eq!(error.retry_hint(), None);
+        assert_eq!(
+            problem.type_uri,
+            "https://nebula.dev/problems/credential-revoke-reconciliation-required"
+        );
+        assert_eq!(problem.title, "Credential Revoke Reconciliation Required");
+        assert_eq!(
+            problem.detail.as_deref(),
+            Some(
+                "The revoke outcome is known, but durable local finalization definitely failed. Do not retry automatically; reconcile credential state."
+            )
+        );
+
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(!response.headers().contains_key(header::RETRY_AFTER));
     }
 }
