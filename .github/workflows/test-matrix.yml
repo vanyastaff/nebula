@@ -38,7 +38,7 @@ jobs:
       storage_selected: ${{ steps.select.outputs.storage_selected }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -127,7 +127,7 @@ jobs:
       matrix: ${{ fromJSON(needs.select-matrix.outputs.matrix) }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -137,14 +137,14 @@ jobs:
           toolchain: 1.96.1
 
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
+        uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.9.1
         with:
           key: ${{ matrix.package }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@481c34c1cf3a84c68b5e46f4eccfc82af798415a # v2.75.23
+        uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7 # v2.85.0
         with:
           tool: cargo-nextest
 
@@ -164,7 +164,7 @@ jobs:
 
       - name: Test summary
         if: always()
-        uses: test-summary/action@31493c76ec9e7aa675f1585d3ed6f1da69269a86 # v2
+        uses: test-summary/action@37b508cfee6d4d080eedd00b5bb240a6a784a6a5 # v2
         env:
           FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
         with:
@@ -202,7 +202,7 @@ jobs:
           --health-retries 12
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -212,14 +212,14 @@ jobs:
           toolchain: 1.96.1
 
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
+        uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.9.1
         with:
           key: nebula-storage-postgres-conformance
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@481c34c1cf3a84c68b5e46f4eccfc82af798415a # v2.75.23
+        uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7 # v2.85.0
         with:
           tool: cargo-nextest
 
@@ -265,7 +265,7 @@ jobs:
 
       - name: Test summary
         if: always()
-        uses: test-summary/action@31493c76ec9e7aa675f1585d3ed6f1da69269a86 # v2
+        uses: test-summary/action@37b508cfee6d4d080eedd00b5bb240a6a784a6a5 # v2
         env:
           FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
         with:
