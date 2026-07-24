@@ -26,6 +26,9 @@ in parity with ADR-0017 (control-queue reclaim policy, ADR-0008 B1 follow-up).
 Migration `0026_execution_control_queue_w3c_trace_context.sql` adds nullable
 `w3c_trace_context` to `execution_control_queue` in both dialects (M3.5).
 
+Migration `0040_credential_refresh_retry_gate.sql` adds the structural
+credential refresh-retry admission gate in parity with PostgreSQL.
+
 ## Storage-port adapter schema (0027)
 
 `0027_port_adapter_schema.sql` is **byte-identical** to

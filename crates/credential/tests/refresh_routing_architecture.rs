@@ -46,7 +46,7 @@ fn refresh_transport_is_not_a_public_context_capability() {
         "CredentialContext must not expose the runtime transport publicly"
     );
     assert!(
-        !source.contains("pub fn with_refresh_transport("),
+        !source.contains("pub fn for_refresh_critical_section("),
         "public callers must not be able to stamp a runtime transport"
     );
     assert!(

@@ -1,9 +1,11 @@
-//! PostgreSQL acceptance coverage for the shared credential lifecycle migration.
+//! PostgreSQL acceptance coverage for the shared credential lifecycle
+//! migrations.
 //!
-//! The test owns a unique schema so it can exercise the real `0038 -> 0039`
-//! transition without disturbing a developer database or racing other storage
-//! integration tests. As with the rest of the PostgreSQL suite, an absent
-//! `DATABASE_URL` skips cleanly while a configured but unusable database fails.
+//! Each test owns a unique schema so it can exercise the real `0038 -> 0039`
+//! lifecycle transition and `0039 -> 0040` material-epoch/retry-gate transition
+//! without disturbing a developer database or racing other storage integration
+//! tests. As with the rest of the PostgreSQL suite, an absent `DATABASE_URL`
+//! skips cleanly while a configured but unusable database fails.
 
 #![cfg(feature = "postgres")]
 
@@ -74,6 +76,27 @@ struct MigrationEvidence {
     tombstone_payload_rejected: bool,
     tombstone_max_version_accepted: bool,
     staging_relation: Option<String>,
+}
+
+#[derive(Debug)]
+struct Migration0040Evidence {
+    migration: (i64, String, bool),
+    material_epoch_column: (String, String, Option<String>),
+    legacy_refresh_state: LegacyRefreshState,
+    constraints: Vec<(String, String)>,
+    zero_epoch_rejected: bool,
+    invalid_gate_rejected: bool,
+    valid_gate_accepted: bool,
+}
+
+#[derive(Debug, PartialEq, Eq, sqlx::FromRow)]
+struct LegacyRefreshState {
+    material_epoch: i64,
+    refresh_retry_mode: Option<String>,
+    refresh_retry_not_before: Option<DateTime<Utc>>,
+    refresh_retry_phase: Option<String>,
+    refresh_retry_kind: Option<String>,
+    refresh_retry_diagnostic_code: Option<String>,
 }
 
 struct IsolatedDatabase {
@@ -409,9 +432,9 @@ async fn exercise_migration(pool: &PgPool) -> TestResult<MigrationEvidence> {
     MIGRATOR.run(pool).await?;
 
     let post_migration_head = applied_head(pool).await?;
-    if post_migration_head != 39 {
+    if post_migration_head != 40 {
         return Err(std::io::Error::other(format!(
-            "expected shared credential migration 0039, catalog stopped at {post_migration_head:04}"
+            "expected credential migrations through 0040, catalog stopped at {post_migration_head:04}"
         ))
         .into());
     }
@@ -588,6 +611,171 @@ async fn exercise_migration(pool: &PgPool) -> TestResult<MigrationEvidence> {
         tombstone_max_version_accepted,
         staging_relation,
     })
+}
+
+async fn exercise_0040_migration(pool: &PgPool) -> TestResult<Migration0040Evidence> {
+    MIGRATOR.run_to(39, pool).await?;
+    let credential_id = CredentialId::new().to_string();
+    sqlx::query(
+        "INSERT INTO credentials (
+             id, name, owner_id, credential_key, state_kind, state_version,
+             data, version, created_at, updated_at, expires_at,
+             reauth_required, metadata, record_state, tombstoned_at
+         ) VALUES (
+             $1, NULL, 'epoch-owner', 'provider.epoch', 'ready', 1,
+             '\\x0102'::bytea, 7, now(), now(), NULL,
+             FALSE, '{}', 'live', NULL
+         )",
+    )
+    .bind(&credential_id)
+    .execute(pool)
+    .await?;
+
+    MIGRATOR.run_to(40, pool).await?;
+    let migration = sqlx::query_as::<_, (i64, String, bool)>(
+        "SELECT version, description, success
+         FROM _sqlx_migrations
+         WHERE version = 40",
+    )
+    .fetch_one(pool)
+    .await?;
+    let material_epoch_column = sqlx::query_as::<_, (String, String, Option<String>)>(
+        "SELECT data_type, is_nullable, column_default
+         FROM information_schema.columns
+         WHERE table_schema = current_schema()
+           AND table_name = 'credentials'
+           AND column_name = 'material_epoch'",
+    )
+    .fetch_one(pool)
+    .await?;
+    let legacy_refresh_state = sqlx::query_as::<_, LegacyRefreshState>(
+        "SELECT material_epoch, refresh_retry_mode, refresh_retry_not_before,
+                refresh_retry_phase, refresh_retry_kind,
+                refresh_retry_diagnostic_code
+         FROM credentials
+         WHERE id = $1",
+    )
+    .bind(&credential_id)
+    .fetch_one(pool)
+    .await?;
+    let constraints = sqlx::query_as::<_, (String, String)>(
+        "SELECT conname, pg_get_constraintdef(oid)
+         FROM pg_constraint
+         WHERE conrelid = 'credentials'::regclass
+           AND conname IN (
+               'credentials_material_epoch_range',
+               'credentials_refresh_retry_gate_shape',
+               'credentials_record_shape'
+           )
+         ORDER BY conname",
+    )
+    .fetch_all(pool)
+    .await?;
+    let zero_epoch_rejected = update_is_rejected(
+        pool,
+        "UPDATE credentials SET material_epoch = 0 WHERE id = $1",
+        &credential_id,
+    )
+    .await?;
+    let invalid_gate_rejected = update_is_rejected(
+        pool,
+        "UPDATE credentials
+         SET refresh_retry_mode = 'never',
+             refresh_retry_not_before = clock_timestamp(),
+             refresh_retry_phase = 'before_dispatch',
+             refresh_retry_kind = 'protocol_error'
+         WHERE id = $1",
+        &credential_id,
+    )
+    .await?;
+    let valid_gate_accepted = update_is_accepted(
+        pool,
+        "UPDATE credentials
+         SET refresh_retry_mode = 'never',
+             refresh_retry_not_before = NULL,
+             refresh_retry_phase = 'before_dispatch',
+             refresh_retry_kind = 'protocol_error',
+             refresh_retry_diagnostic_code = 'migration.contract'
+         WHERE id = $1",
+        &credential_id,
+    )
+    .await?;
+
+    Ok(Migration0040Evidence {
+        migration,
+        material_epoch_column,
+        legacy_refresh_state,
+        constraints,
+        zero_epoch_rejected,
+        invalid_gate_rejected,
+        valid_gate_accepted,
+    })
+}
+
+#[tokio::test]
+async fn postgres_0040_backfills_material_epoch_and_closes_retry_gate_shape() {
+    let Some(database) = IsolatedDatabase::connect().await else {
+        eprintln!("DATABASE_URL not set — skipping");
+        return;
+    };
+
+    let outcome = exercise_0040_migration(&database.pool).await;
+    database.cleanup().await;
+    let evidence = outcome.expect("exercise PostgreSQL credential migration 0040");
+
+    assert_eq!(
+        evidence.migration,
+        (40, "credential refresh retry gate".to_owned(), true)
+    );
+    assert_eq!(
+        evidence.material_epoch_column,
+        ("bigint".to_owned(), "NO".to_owned(), None),
+        "material epoch must be required without a write-time repair default"
+    );
+    assert_eq!(
+        evidence.legacy_refresh_state,
+        LegacyRefreshState {
+            material_epoch: 1,
+            refresh_retry_mode: None,
+            refresh_retry_not_before: None,
+            refresh_retry_phase: None,
+            refresh_retry_kind: None,
+            refresh_retry_diagnostic_code: None,
+        },
+        "every legacy row starts at epoch 1 with an open retry gate"
+    );
+    assert_eq!(
+        evidence
+            .constraints
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "credentials_material_epoch_range",
+            "credentials_record_shape",
+            "credentials_refresh_retry_gate_shape",
+        ]
+    );
+    assert!(
+        evidence
+            .constraints
+            .iter()
+            .find(|(name, _)| name == "credentials_material_epoch_range")
+            .is_some_and(|(_, definition)| {
+                definition.contains("material_epoch >= 1")
+                    && definition.contains("material_epoch <= 9223372036854775807")
+            }),
+        "material epoch constraint must encode the full positive i64 range"
+    );
+    assert!(evidence.zero_epoch_rejected);
+    assert!(
+        evidence.invalid_gate_rejected,
+        "`never` and a deadline must be structurally incompatible"
+    );
+    assert!(
+        evidence.valid_gate_accepted,
+        "a complete closed-code `never` gate must remain representable"
+    );
 }
 
 #[tokio::test]

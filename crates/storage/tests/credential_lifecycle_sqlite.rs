@@ -58,6 +58,7 @@ fn replacement(
         Some(instant(2_000_000_000)),
         false,
         name.map(metadata).unwrap_or_else(unnamed_metadata),
+        nebula_storage_port::CredentialMaterialTransition::advance(),
     )
 }
 
@@ -511,6 +512,7 @@ async fn malformed_or_mismatched_display_projection_is_rejected_before_write() {
         None,
         false,
         metadata("Different"),
+        nebula_storage_port::CredentialMaterialTransition::advance(),
     );
     assert_eq!(
         store

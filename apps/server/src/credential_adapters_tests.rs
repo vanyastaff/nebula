@@ -11,12 +11,21 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use nebula_core::CredentialId;
 use nebula_credential::{
-    AuthStyle, SecretString,
-    credentials::OAuth2State,
+    AuthStyle, Credential, CredentialContext, CredentialHandle, CredentialState, OAuth2Credential,
+    OAuth2State, OAuth2Token, RefreshNotAppliedPhase, SecretString,
     runtime::refresh::{
-        OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES, TokenRefreshError, refresh_oauth2_state,
+        OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES, RefreshCoordConfig, RefreshCoordinator,
+        RefreshTransport,
     },
+    runtime::{CredentialResolver, ResolveError},
+    serde_secret,
+};
+use nebula_storage::credential::SqliteCredentialPersistence;
+use nebula_storage_port::{
+    CredentialCreate, CredentialOwner, CredentialPersistence, CredentialSelector,
+    store::{RefreshClaimStore, ReplicaId},
 };
 use rcgen::{
     BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
@@ -257,10 +266,19 @@ async fn write_response(
             return stream.write_all(b"\r\n0\r\n\r\n").await;
         },
         ServerBehavior::ExactBodyLimit => {
-            let mut body = vec![b'x'; OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES];
-            body[..BODY_CANARY.len()].copy_from_slice(BODY_CANARY);
+            const PREFIX: &[u8] = br#"{"error":"invalid_request","padding":""#;
+            const SUFFIX: &[u8] = br#""}"#;
+            let mut body = Vec::with_capacity(OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES);
+            body.extend_from_slice(PREFIX);
+            body.extend_from_slice(BODY_CANARY);
+            body.resize(
+                OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES.saturating_sub(SUFFIX.len()),
+                b'x',
+            );
+            body.extend_from_slice(SUFFIX);
+            assert_eq!(body.len(), OAUTH_TOKEN_HTTP_MAX_RESPONSE_BYTES);
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                "HTTP/1.1 400 Bad Request\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 body.len()
             );
             stream.write_all(response.as_bytes()).await?;
@@ -304,7 +322,11 @@ fn oauth_state(endpoint: String) -> OAuth2State {
         access_token: SecretString::new("old-access"),
         token_type: "Bearer".to_owned(),
         refresh_token: Some(SecretString::new("refresh-secret")),
-        expires_at: None,
+        expires_at: Some(
+            "2000-01-01T00:00:00Z"
+                .parse()
+                .expect("fixed RFC 3339 timestamp"),
+        ),
         scopes: vec!["read".to_owned()],
         client_id: SecretString::new("client"),
         client_secret: SecretString::new("client-secret"),
@@ -313,24 +335,69 @@ fn oauth_state(endpoint: String) -> OAuth2State {
     }
 }
 
+async fn refresh_through_resolver(
+    state: OAuth2State,
+    transport: ReqwestRefreshTransport,
+) -> Result<CredentialHandle<OAuth2Token>, ResolveError> {
+    let expires_at = state.expires_at;
+    let data = serde_secret::expose_for_serialization(|| serde_json::to_vec(&state))
+        .expect("serialize OAuth2 test state into the trusted persistence fixture");
+    let store = Arc::new(
+        SqliteCredentialPersistence::connect_memory()
+            .await
+            .expect("open isolated credential store"),
+    );
+    let selector = CredentialSelector::new(
+        CredentialOwner::from_canonical("server-transport-test"),
+        CredentialId::new(),
+    );
+    store
+        .create(
+            &selector,
+            CredentialCreate::new(
+                OAuth2Credential::KEY.to_owned(),
+                data.into(),
+                OAuth2State::KIND.to_owned(),
+                OAuth2State::VERSION,
+                None,
+                expires_at,
+                false,
+                serde_json::Map::new(),
+            ),
+        )
+        .await
+        .expect("seed expired OAuth2 credential");
+
+    let claims: Arc<dyn RefreshClaimStore> = Arc::new(store.refresh_claim_repo());
+    let coordinator = RefreshCoordinator::new_with(
+        claims,
+        ReplicaId::new("server-transport-test"),
+        RefreshCoordConfig::default(),
+    )
+    .expect("default refresh coordinator configuration");
+    let transport: Arc<dyn RefreshTransport> = Arc::new(transport);
+    let resolver = CredentialResolver::with_dependencies(store, Arc::new(coordinator), transport);
+
+    resolver
+        .resolve_with_refresh::<OAuth2Credential>(
+            &selector,
+            &CredentialContext::for_owner("server-transport-test"),
+        )
+        .await
+}
+
 #[tokio::test]
 async fn redirect_307_and_308_never_issue_a_second_request() {
     for status in [307, 308] {
         let fixture = TlsFixture::spawn(ServerBehavior::Redirect(status)).await;
         let transport = fixture.transport(vec![PUBLIC_DNS_CONTROL]);
-        let mut state = oauth_state(fixture.endpoint());
+        let state = oauth_state(fixture.endpoint());
 
-        let error = refresh_oauth2_state(&mut state, &transport)
+        let error = refresh_through_resolver(state, transport)
             .await
             .expect_err("redirect response must fail refresh");
 
-        assert!(matches!(
-            error,
-            TokenRefreshError::TokenEndpoint {
-                status: actual,
-                ..
-            } if actual == status
-        ));
+        assert!(matches!(error, ResolveError::ProviderOutcomeUnknown { .. }));
         sleep(Duration::from_millis(50)).await;
         assert_eq!(
             fixture.requests.load(Ordering::SeqCst),
@@ -357,13 +424,13 @@ async fn private_and_mixed_dns_answers_fail_before_connect() {
     ] {
         let fixture = TlsFixture::spawn(ServerBehavior::Success).await;
         let transport = fixture.transport(answers);
-        let mut state = oauth_state(fixture.endpoint());
+        let state = oauth_state(fixture.endpoint());
 
-        let error = refresh_oauth2_state(&mut state, &transport)
+        let error = refresh_through_resolver(state, transport)
             .await
             .expect_err("non-global DNS set must fail");
 
-        assert!(matches!(error, TokenRefreshError::TransportOutcomeUnknown));
+        assert!(matches!(error, ResolveError::ProviderOutcomeUnknown { .. }));
         assert_eq!(fixture.connections.load(Ordering::SeqCst), 0);
         assert_eq!(fixture.requests.load(Ordering::SeqCst), 0);
     }
@@ -373,13 +440,13 @@ async fn private_and_mixed_dns_answers_fail_before_connect() {
 async fn aborted_provider_post_is_never_retried() {
     let fixture = TlsFixture::spawn(ServerBehavior::AbortAfterRequest).await;
     let transport = fixture.transport(vec![PUBLIC_DNS_CONTROL]);
-    let mut state = oauth_state(fixture.endpoint());
+    let state = oauth_state(fixture.endpoint());
 
-    let error = refresh_oauth2_state(&mut state, &transport)
+    let error = refresh_through_resolver(state, transport)
         .await
         .expect_err("aborted response must fail refresh");
 
-    assert!(matches!(error, TokenRefreshError::TransportOutcomeUnknown));
+    assert!(matches!(error, ResolveError::ProviderOutcomeUnknown { .. }));
     sleep(Duration::from_millis(100)).await;
     assert_eq!(
         fixture.requests.load(Ordering::SeqCst),
@@ -407,9 +474,13 @@ async fn header_auth_wire_uses_rfc6749_form_encoded_basic_components() {
     state.client_id = SecretString::new(RAW_CLIENT_ID);
     state.client_secret = SecretString::new(RAW_CLIENT_SECRET);
 
-    refresh_oauth2_state(&mut state, &transport)
+    let handle = refresh_through_resolver(state, transport)
         .await
         .expect("RFC 6749 Basic request receives valid response");
+    assert_eq!(
+        handle.snapshot().access_token().expose_secret(),
+        "new-access"
+    );
 
     let request = fixture.last_request();
     let header_end = request
@@ -441,35 +512,41 @@ async fn oversized_response_bodies_fail_with_closed_diagnostics() {
     ] {
         let fixture = TlsFixture::spawn(behavior).await;
         let transport = fixture.transport(vec![PUBLIC_DNS_CONTROL]);
-        let mut state = oauth_state(fixture.endpoint());
+        let state = oauth_state(fixture.endpoint());
 
-        let error = refresh_oauth2_state(&mut state, &transport)
+        let error = refresh_through_resolver(state, transport)
             .await
             .expect_err("response above the fixed cap must fail");
-        assert!(matches!(error, TokenRefreshError::TransportOutcomeUnknown));
+        assert!(matches!(error, ResolveError::ProviderOutcomeUnknown { .. }));
         let diagnostic = format!("{error:?} {error}");
         assert!(!diagnostic.contains("response-body-diagnostic-canary"));
-        assert_eq!(
-            error.to_string(),
-            "refresh token provider outcome is unknown after dispatch"
+        assert!(
+            error
+                .to_string()
+                .ends_with("provider refresh outcome is unknown after dispatch")
         );
     }
 }
 
 #[tokio::test]
-async fn exact_response_body_limit_crosses_transport_then_fails_closed_parse() {
+async fn exact_response_body_limit_crosses_transport_and_is_interpreted() {
     let fixture = TlsFixture::spawn(ServerBehavior::ExactBodyLimit).await;
     let transport = fixture.transport(vec![PUBLIC_DNS_CONTROL]);
-    let mut state = oauth_state(fixture.endpoint());
+    let state = oauth_state(fixture.endpoint());
 
-    let error = refresh_oauth2_state(&mut state, &transport)
+    let error = refresh_through_resolver(state, transport)
         .await
-        .expect_err("cap-sized non-JSON body must fail in credential parsing");
+        .expect_err("provider-confirmed invalid_request must not refresh");
 
-    assert!(matches!(error, TokenRefreshError::Parse));
+    let ResolveError::RefreshNotApplied { context, .. } = &error else {
+        panic!("exact cap response must be completely read and interpreted: {error:?}");
+    };
+    assert_eq!(
+        context.phase(),
+        RefreshNotAppliedPhase::ProviderConfirmedNotApplied
+    );
     let diagnostic = format!("{error:?} {error}");
     assert!(!diagnostic.contains("response-body-diagnostic-canary"));
-    assert_eq!(error.to_string(), "failed to parse token response");
 }
 
 #[test]
@@ -543,11 +620,14 @@ fn proxy_environment_child_uses_direct_connection() {
     runtime.block_on(async {
         let fixture = TlsFixture::spawn(ServerBehavior::Success).await;
         let transport = fixture.transport(vec![PUBLIC_DNS_CONTROL]);
-        let mut state = oauth_state(fixture.endpoint());
-        refresh_oauth2_state(&mut state, &transport)
+        let state = oauth_state(fixture.endpoint());
+        let handle = refresh_through_resolver(state, transport)
             .await
             .expect("no-proxy client connects directly");
-        assert_eq!(state.access_token.expose_secret(), "new-access");
+        assert_eq!(
+            handle.snapshot().access_token().expose_secret(),
+            "new-access"
+        );
         assert_eq!(fixture.requests.load(Ordering::SeqCst), 1);
     });
 }

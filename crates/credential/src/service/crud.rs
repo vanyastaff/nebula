@@ -271,6 +271,7 @@ impl CredentialService {
             None => None,
         };
 
+        let material_replaced = resolved.is_some();
         let mut metadata = existing.metadata().clone();
         metadata.insert(
             OWNER_ID_KEY.to_owned(),
@@ -326,6 +327,13 @@ impl CredentialService {
             expires_at,
             reauth_required,
             metadata,
+            if material_replaced {
+                crate::CredentialMaterialTransition::advance()
+            } else {
+                crate::CredentialMaterialTransition::preserve(
+                    crate::RefreshRetryTransition::Preserve,
+                )
+            },
         );
 
         let commit = self

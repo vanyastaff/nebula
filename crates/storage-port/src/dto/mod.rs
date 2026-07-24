@@ -7,6 +7,7 @@
 
 mod control;
 pub mod credential;
+mod credential_refresh_retry;
 mod execution;
 mod idempotency;
 mod identity;
@@ -20,10 +21,17 @@ mod workflow;
 
 pub use control::{ControlCommand, ControlMsg, ResumeTarget};
 pub use credential::{
-    CredentialCommit, CredentialCreate, CredentialOwner, CredentialRecordState,
-    CredentialReplacement, CredentialSelector, CredentialTombstone, CredentialVersion,
-    CredentialVersionError, SecretBytes, StoredCredential, StoredCredentialHead,
-    StoredLiveCredential, StoredTombstonedCredential,
+    CredentialCommit, CredentialCreate, CredentialMaterialEpoch, CredentialMaterialEpochError,
+    CredentialMaterialTransition, CredentialOwner, CredentialRecordState, CredentialReplacement,
+    CredentialSelector, CredentialTombstone, CredentialVersion, CredentialVersionError,
+    SecretBytes, StoredCredential, StoredCredentialHead, StoredLiveCredential,
+    StoredTombstonedCredential,
+};
+pub use credential_refresh_retry::{
+    RefreshRetryAdmission, RefreshRetryBlock, RefreshRetryDelay, RefreshRetryDelayError,
+    RefreshRetryDiagnosticCode, RefreshRetryDiagnosticCodeError, RefreshRetryEvidence,
+    RefreshRetryGate, RefreshRetryKind, RefreshRetryPhase, RefreshRetrySnapshot,
+    RefreshRetryTransition,
 };
 pub use execution::{ExecutionRecord, NewExecution};
 pub use idempotency::CachedRecord;

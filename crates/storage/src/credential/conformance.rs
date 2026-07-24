@@ -7,7 +7,8 @@
 
 use async_trait::async_trait;
 use nebula_storage_port::{
-    CredentialPersistence, CredentialPersistenceError, CredentialSelector, CredentialVersion,
+    CredentialMaterialEpoch, CredentialPersistence, CredentialPersistenceError, CredentialSelector,
+    CredentialVersion,
 };
 
 /// Physical fixture controls used only by credential backend conformance.
@@ -18,6 +19,13 @@ pub(crate) trait CredentialPersistenceConformance: CredentialPersistence {
         &self,
         selector: &CredentialSelector,
         version: CredentialVersion,
+    ) -> Result<(), CredentialPersistenceError>;
+
+    /// Move an existing live fixture to an exact valid material epoch.
+    async fn force_live_material_epoch_for_conformance(
+        &self,
+        selector: &CredentialSelector,
+        material_epoch: CredentialMaterialEpoch,
     ) -> Result<(), CredentialPersistenceError>;
 
     /// Corrupt an existing live row in a way the database can represent but

@@ -63,11 +63,17 @@ pub(crate) struct LegacyCredentialRecord {
     pub(crate) state_version: i64,
     pub(crate) data_len: usize,
     pub(crate) version: i64,
+    pub(crate) material_epoch: Option<i64>,
     pub(crate) metadata: String,
     pub(crate) record_state: Option<String>,
     pub(crate) tombstoned_at_present: bool,
     pub(crate) expires_at_present: bool,
     pub(crate) reauth_required: bool,
+    pub(crate) refresh_retry_mode: Option<String>,
+    pub(crate) refresh_retry_not_before_present: bool,
+    pub(crate) refresh_retry_phase: Option<String>,
+    pub(crate) refresh_retry_kind: Option<String>,
+    pub(crate) refresh_retry_diagnostic_code: Option<String>,
 }
 
 pub(crate) struct SchemaObservation {
@@ -151,10 +157,14 @@ pub enum AdmissionReason {
     InvalidCredentialVersion,
     /// A live row has consumed the version reserved for terminal transition.
     LiveVersionExhausted,
+    /// A current credential row has an absent or non-positive material epoch.
+    InvalidMaterialEpoch,
     /// A current row has an unknown or contradictory structural state.
     InvalidRecordState,
     /// A current tombstone still carries live-only fields or noncanonical metadata.
     InvalidTombstoneShape,
+    /// A structural refresh-retry gate has an unknown or contradictory tuple.
+    InvalidRefreshRetryGate,
     /// Credential metadata is not valid JSON.
     MalformedMetadata,
     /// Credential metadata is valid JSON but not an object.
@@ -228,9 +238,15 @@ impl fmt::Display for AdmissionReason {
             Self::LiveVersionExhausted => {
                 formatter.write_str("live credential exhausted terminal version headroom")
             },
+            Self::InvalidMaterialEpoch => {
+                formatter.write_str("credential material epoch is invalid")
+            },
             Self::InvalidRecordState => formatter.write_str("credential record state is invalid"),
             Self::InvalidTombstoneShape => {
                 formatter.write_str("credential tombstone shape is invalid")
+            },
+            Self::InvalidRefreshRetryGate => {
+                formatter.write_str("credential refresh retry gate is invalid")
             },
             Self::MalformedMetadata => formatter.write_str("credential metadata is malformed"),
             Self::MetadataNotObject => formatter.write_str("credential metadata is not an object"),
@@ -383,7 +399,7 @@ pub(crate) fn classify_schema(
         return rejected(AdmissionReason::MissingCredentialsRelation);
     }
 
-    validate_credentials(&observation.credentials, latest == policy.current_version)?;
+    validate_credentials(&observation.credentials, latest)?;
     Ok(SchemaAdmission::CanonicalPrefix { latest })
 }
 
@@ -459,7 +475,7 @@ fn validate_ledger(
 
 fn validate_credentials(
     records: &[LegacyCredentialRecord],
-    current_schema: bool,
+    latest: i64,
 ) -> Result<(), UnsupportedSchemaVersion> {
     let mut projected_names = HashSet::new();
 
@@ -476,13 +492,20 @@ fn validate_credentials(
         if record.version < 1 {
             return rejected(AdmissionReason::InvalidCredentialVersion);
         }
+        if latest >= 40 {
+            if record.material_epoch.is_none_or(|epoch| epoch < 1) {
+                return rejected(AdmissionReason::InvalidMaterialEpoch);
+            }
+        } else if record.material_epoch.is_some() {
+            return rejected(AdmissionReason::InvalidMaterialEpoch);
+        }
 
         let metadata = parse_unique_json(&record.metadata)?;
         let Value::Object(metadata) = metadata else {
             return rejected(AdmissionReason::MetadataNotObject);
         };
-        if current_schema {
-            validate_current_record(record, &metadata, &mut projected_names)?;
+        if latest >= 39 {
+            validate_current_record(record, &metadata, &mut projected_names, latest >= 40)?;
         } else {
             validate_legacy_record(record, &metadata, &mut projected_names)?;
         }
@@ -512,7 +535,13 @@ fn validate_current_record(
     record: &LegacyCredentialRecord,
     metadata: &Map<String, Value>,
     projected_names: &mut HashSet<(String, String)>,
+    has_refresh_retry_gate: bool,
 ) -> Result<(), UnsupportedSchemaVersion> {
+    if has_refresh_retry_gate {
+        validate_refresh_retry_gate(record)?;
+    } else if refresh_retry_tuple_is_present(record) {
+        return rejected(AdmissionReason::InvalidRefreshRetryGate);
+    }
     match record.record_state.as_deref() {
         Some("live") => {
             if record.tombstoned_at_present {
@@ -531,6 +560,7 @@ fn validate_current_record(
                 || record.reauth_required
                 || record.metadata != "{}"
                 || !metadata.is_empty()
+                || refresh_retry_tuple_is_present(record)
             {
                 return rejected(AdmissionReason::InvalidTombstoneShape);
             }
@@ -538,6 +568,55 @@ fn validate_current_record(
         },
         _ => rejected(AdmissionReason::InvalidRecordState),
     }
+}
+
+fn refresh_retry_tuple_is_present(record: &LegacyCredentialRecord) -> bool {
+    record.refresh_retry_mode.is_some()
+        || record.refresh_retry_not_before_present
+        || record.refresh_retry_phase.is_some()
+        || record.refresh_retry_kind.is_some()
+        || record.refresh_retry_diagnostic_code.is_some()
+}
+
+fn validate_refresh_retry_gate(
+    record: &LegacyCredentialRecord,
+) -> Result<(), UnsupportedSchemaVersion> {
+    let valid_phase = matches!(
+        record.refresh_retry_phase.as_deref(),
+        Some("before_dispatch" | "provider_confirmed_not_applied")
+    );
+    let valid_kind = matches!(
+        record.refresh_retry_kind.as_deref(),
+        Some("transient_network" | "provider_unavailable" | "protocol_error")
+    );
+    let valid_diagnostic = record
+        .refresh_retry_diagnostic_code
+        .as_deref()
+        .is_none_or(|code| {
+            !code.is_empty()
+                && code.len() <= 64
+                && code.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':')
+                })
+        });
+
+    let valid = match record.refresh_retry_mode.as_deref() {
+        None => !refresh_retry_tuple_is_present(record),
+        Some("never") => {
+            !record.refresh_retry_not_before_present
+                && valid_phase
+                && valid_kind
+                && valid_diagnostic
+        },
+        Some("not_before") => {
+            record.refresh_retry_not_before_present && valid_phase && valid_kind && valid_diagnostic
+        },
+        Some(_) => false,
+    };
+    if !valid {
+        return rejected(AdmissionReason::InvalidRefreshRetryGate);
+    }
+    Ok(())
 }
 
 fn validate_live_projection(
@@ -731,7 +810,7 @@ fn rejected<T>(reason: AdmissionReason) -> Result<T, UnsupportedSchemaVersion> {
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 const SUPPORTED_FLOOR: i64 = 30;
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
-const CURRENT_VERSION: i64 = 39;
+const CURRENT_VERSION: i64 = 40;
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 fn policy_from_migrator(

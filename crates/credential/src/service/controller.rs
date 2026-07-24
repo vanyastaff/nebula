@@ -17,8 +17,8 @@ use crate::resolve::{TestResult, UserInput};
 use crate::{CredentialDisplay, CredentialServiceError};
 
 use super::{
-    Acquisition, CredentialAuthenticationBinding, CredentialHead, CredentialService, RefreshReport,
-    TenantScope,
+    Acquisition, CredentialAuthenticationBinding, CredentialHead, CredentialService,
+    ManagementRefreshReport, TenantScope,
 };
 
 /// Kind of authenticated actor presenting a credential command.
@@ -307,7 +307,7 @@ pub enum CredentialCommandResult {
     /// Provider connectivity test result.
     Tested(TestResult),
     /// Provider refresh result.
-    Refreshed(RefreshReport),
+    Refreshed(ManagementRefreshReport),
     /// Provider material was revoked.
     Revoked,
     /// Acquisition result. Pending bearer material remains redacted by its

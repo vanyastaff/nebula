@@ -4,7 +4,7 @@
 
 use nebula_credential::{
     CredentialError, CryptoError, ProviderErrorContext, ProviderErrorKind, RefreshErrorKind,
-    RefreshFailedContext, RetryAdvice, SecretFreeMessage, ValidationError,
+    RefreshFailureSpec, RetryAdvice, RetryDelay, SecretFreeMessage, ValidationError,
 };
 
 /// Test: Crypto error messages don't leak secrets
@@ -94,12 +94,13 @@ fn test_classify_integration() {
     assert_eq!(err.category(), nebula_error::ErrorCategory::Validation);
     assert!(!err.is_retryable());
 
-    let err = CredentialError::RefreshFailed(Box::new(RefreshFailedContext::new(
+    let delay =
+        RetryDelay::new(std::time::Duration::from_secs(1)).expect("test retry delay is non-zero");
+    let spec = RefreshFailureSpec::new(
         RefreshErrorKind::TransientNetwork,
-        RetryAdvice::Immediate,
-        SecretFreeMessage::new("connection reset"),
-    )));
-    assert!(err.is_retryable());
+        RetryAdvice::After(delay),
+    );
+    assert_eq!(spec.retry(), RetryAdvice::After(delay));
 
     let err = CryptoError::DecryptionFailed;
     assert_eq!(err.category(), nebula_error::ErrorCategory::Internal);

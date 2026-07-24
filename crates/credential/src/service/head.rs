@@ -85,7 +85,7 @@ impl CredentialHead {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nebula_storage_port::{CredentialVersion, StoredCredentialHead};
+    use nebula_storage_port::{CredentialMaterialEpoch, CredentialVersion, StoredCredentialHead};
 
     fn stored(expires_at: Option<DateTime<Utc>>) -> StoredCredentialHead {
         let now = Utc::now();
@@ -96,6 +96,7 @@ mod tests {
             "api_key_state".to_owned(),
             1,
             CredentialVersion::try_from(4_i64).expect("fixture version is valid"),
+            CredentialMaterialEpoch::MIN,
             now,
             now,
             expires_at,

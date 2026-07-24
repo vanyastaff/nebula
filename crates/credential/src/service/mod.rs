@@ -45,7 +45,7 @@ pub use controller::{
 };
 pub use error::{CredentialServiceError, CredentialValidationIssue, CredentialValidationReport};
 pub use facade::{
-    Acquisition, CredentialService, CredentialTypeInfo, RefreshReport, TypeCapabilities,
+    Acquisition, CredentialService, CredentialTypeInfo, ManagementRefreshReport, TypeCapabilities,
 };
 pub use head::CredentialHead;
 pub use observer::{CredentialObserver, EventMetricObserver, NoopObserver};

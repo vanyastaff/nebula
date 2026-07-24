@@ -11,12 +11,12 @@ use super::{
 use super::{CredentialStoreStartupError, observation_fetch_error};
 
 const SUPPORTED_FLOOR: i64 = 30;
-const CURRENT_VERSION: i64 = 39;
+const CURRENT_VERSION: i64 = 40;
 
 fn backend_versions(backend: BackendKind) -> Vec<i64> {
     match backend {
-        BackendKind::Sqlite => (1..=28).chain(30..=35).chain([39]).collect(),
-        BackendKind::Postgres => (1..=39).collect(),
+        BackendKind::Sqlite => (1..=28).chain(30..=35).chain([39, 40]).collect(),
+        BackendKind::Postgres => (1..=40).collect(),
     }
 }
 
@@ -68,11 +68,17 @@ fn credential(metadata: &str) -> LegacyCredentialRecord {
         state_version: 0,
         data_len: 0,
         version: 1,
+        material_epoch: None,
         metadata: metadata.to_owned(),
         record_state: None,
         tombstoned_at_present: false,
         expires_at_present: false,
         reauth_required: false,
+        refresh_retry_mode: None,
+        refresh_retry_not_before_present: false,
+        refresh_retry_phase: None,
+        refresh_retry_kind: None,
+        refresh_retry_diagnostic_code: None,
     }
 }
 
@@ -120,8 +126,13 @@ fn observation_fetch_errors_distinguish_schema_evidence_from_unavailability() {
 fn migrated_observation(
     policy: &BackendMigrationPolicy,
     latest: i64,
-    credentials: Vec<LegacyCredentialRecord>,
+    mut credentials: Vec<LegacyCredentialRecord>,
 ) -> SchemaObservation {
+    if latest >= 40 {
+        for credential in &mut credentials {
+            credential.material_epoch.get_or_insert(1);
+        }
+    }
     SchemaObservation {
         migration_ledger: MigrationLedger::Present(canonical_ledger(policy, latest)),
         has_user_relations: true,
@@ -195,8 +206,8 @@ fn rejects_a_supported_ledger_without_the_credentials_relation() {
 #[test]
 fn accepts_exact_successful_backend_prefixes_at_or_above_the_floor() {
     for (backend, accepted_heads) in [
-        (BackendKind::Sqlite, &[30, 35, 39][..]),
-        (BackendKind::Postgres, &[30, 38, 39][..]),
+        (BackendKind::Sqlite, &[30, 35, 39, 40][..]),
+        (BackendKind::Postgres, &[30, 38, 39, 40][..]),
     ] {
         let policy = policy(backend);
         for latest in accepted_heads {
@@ -213,7 +224,7 @@ fn accepts_exact_successful_backend_prefixes_at_or_above_the_floor() {
 #[test]
 fn sqlite_prefix_is_logical_and_does_not_require_postgres_only_versions() {
     let policy = policy(BackendKind::Sqlite);
-    let observation = migrated_observation(&policy, 39, Vec::new());
+    let observation = migrated_observation(&policy, 40, Vec::new());
     let present_versions = match &observation.migration_ledger {
         MigrationLedger::Absent => panic!("fixture must contain a ledger"),
         MigrationLedger::Present(rows) => {
@@ -227,7 +238,7 @@ fn sqlite_prefix_is_logical_and_does_not_require_postgres_only_versions() {
     assert!(!present_versions.contains(&38));
     assert_eq!(
         classify_schema(&policy, &observation),
-        Ok(SchemaAdmission::CanonicalPrefix { latest: 39 })
+        Ok(SchemaAdmission::CanonicalPrefix { latest: 40 })
     );
 }
 
@@ -343,8 +354,8 @@ fn rejects_other_backend_reserved_unknown_and_future_versions() {
         );
     }
 
-    for migration in [40, 777] {
-        let mut rows = canonical_ledger(&sqlite_policy, 39);
+    for migration in [41, 777] {
+        let mut rows = canonical_ledger(&sqlite_policy, 40);
         rows.push(MigrationLedgerRow {
             version: migration,
             description: "not canonical".to_owned(),
@@ -451,6 +462,40 @@ fn rejects_ownerless_invalid_id_and_out_of_range_legacy_rows() {
         ),
         AdmissionReason::LiveVersionExhausted
     );
+}
+
+#[test]
+fn material_epoch_presence_and_range_match_the_0040_schema_boundary() {
+    for backend in [BackendKind::Sqlite, BackendKind::Postgres] {
+        let policy = policy(backend);
+
+        let mut missing_current = migrated_observation(&policy, 40, vec![credential("{}")]);
+        missing_current.credentials[0].material_epoch = None;
+        assert_eq!(
+            rejected_reason(&policy, &missing_current),
+            AdmissionReason::InvalidMaterialEpoch,
+            "{backend:?} current schema must carry an explicit epoch"
+        );
+
+        let mut zero_current = migrated_observation(&policy, 40, vec![credential("{}")]);
+        zero_current.credentials[0].material_epoch = Some(0);
+        assert_eq!(
+            rejected_reason(&policy, &zero_current),
+            AdmissionReason::InvalidMaterialEpoch,
+            "{backend:?} current schema must reject the zero sentinel"
+        );
+
+        let mut unexpected_legacy = credential("{}");
+        unexpected_legacy.material_epoch = Some(1);
+        assert_eq!(
+            rejected_reason(
+                &policy,
+                &migrated_observation(&policy, 35, vec![unexpected_legacy])
+            ),
+            AdmissionReason::InvalidMaterialEpoch,
+            "{backend:?} pre-0040 shapes must not smuggle future epoch state"
+        );
+    }
 }
 
 #[test]
@@ -631,9 +676,9 @@ fn validates_structural_live_and_tombstoned_rows_at_current_head() {
     assert_eq!(
         classify_schema(
             &policy,
-            &migrated_observation(&policy, 39, vec![live, tombstone])
+            &migrated_observation(&policy, 40, vec![live, tombstone])
         ),
-        Ok(SchemaAdmission::CanonicalPrefix { latest: 39 })
+        Ok(SchemaAdmission::CanonicalPrefix { latest: 40 })
     );
 }
 
@@ -645,8 +690,73 @@ fn current_live_revoked_at_key_is_opaque_metadata() {
     live.record_state = Some("live".to_owned());
 
     assert_eq!(
-        classify_schema(&policy, &migrated_observation(&policy, 39, vec![live])),
-        Ok(SchemaAdmission::CanonicalPrefix { latest: 39 })
+        classify_schema(&policy, &migrated_observation(&policy, 40, vec![live])),
+        Ok(SchemaAdmission::CanonicalPrefix { latest: 40 })
+    );
+}
+
+#[test]
+fn current_refresh_retry_gate_accepts_only_closed_complete_tuples() {
+    let policy = policy(BackendKind::Sqlite);
+
+    let mut never = credential("{}");
+    never.record_state = Some("live".to_owned());
+    never.refresh_retry_mode = Some("never".to_owned());
+    never.refresh_retry_phase = Some("before_dispatch".to_owned());
+    never.refresh_retry_kind = Some("transient_network".to_owned());
+    never.refresh_retry_diagnostic_code = Some("oauth.network".to_owned());
+
+    let mut not_before = credential("{}");
+    not_before.record_state = Some("live".to_owned());
+    not_before.refresh_retry_mode = Some("not_before".to_owned());
+    not_before.refresh_retry_not_before_present = true;
+    not_before.refresh_retry_phase = Some("provider_confirmed_not_applied".to_owned());
+    not_before.refresh_retry_kind = Some("provider_unavailable".to_owned());
+
+    assert_eq!(
+        classify_schema(
+            &policy,
+            &migrated_observation(&policy, 40, vec![never, not_before])
+        ),
+        Ok(SchemaAdmission::CanonicalPrefix { latest: 40 })
+    );
+
+    let mut malformed = credential("{}");
+    malformed.record_state = Some("live".to_owned());
+    malformed.refresh_retry_mode = Some("future_mode".to_owned());
+    malformed.refresh_retry_phase = Some("before_dispatch".to_owned());
+    malformed.refresh_retry_kind = Some("protocol_error".to_owned());
+    assert_eq!(
+        rejected_reason(&policy, &migrated_observation(&policy, 40, vec![malformed])),
+        AdmissionReason::InvalidRefreshRetryGate
+    );
+
+    let mut unbounded_code = credential("{}");
+    unbounded_code.record_state = Some("live".to_owned());
+    unbounded_code.refresh_retry_mode = Some("never".to_owned());
+    unbounded_code.refresh_retry_phase = Some("before_dispatch".to_owned());
+    unbounded_code.refresh_retry_kind = Some("protocol_error".to_owned());
+    unbounded_code.refresh_retry_diagnostic_code = Some("x".repeat(65));
+    assert_eq!(
+        rejected_reason(
+            &policy,
+            &migrated_observation(&policy, 40, vec![unbounded_code])
+        ),
+        AdmissionReason::InvalidRefreshRetryGate
+    );
+
+    let mut tombstone_with_gate = credential("{}");
+    tombstone_with_gate.record_state = Some("tombstoned".to_owned());
+    tombstone_with_gate.tombstoned_at_present = true;
+    tombstone_with_gate.refresh_retry_mode = Some("never".to_owned());
+    tombstone_with_gate.refresh_retry_phase = Some("before_dispatch".to_owned());
+    tombstone_with_gate.refresh_retry_kind = Some("protocol_error".to_owned());
+    assert_eq!(
+        rejected_reason(
+            &policy,
+            &migrated_observation(&policy, 40, vec![tombstone_with_gate])
+        ),
+        AdmissionReason::InvalidTombstoneShape
     );
 }
 
@@ -658,7 +768,7 @@ fn rejects_forged_or_malformed_current_record_shapes() {
     assert_eq!(
         rejected_reason(
             &policy,
-            &migrated_observation(&policy, 39, vec![missing_state])
+            &migrated_observation(&policy, 40, vec![missing_state])
         ),
         AdmissionReason::InvalidRecordState
     );
@@ -668,7 +778,7 @@ fn rejects_forged_or_malformed_current_record_shapes() {
     assert_eq!(
         rejected_reason(
             &policy,
-            &migrated_observation(&policy, 39, vec![unknown_state])
+            &migrated_observation(&policy, 40, vec![unknown_state])
         ),
         AdmissionReason::InvalidRecordState
     );
@@ -680,7 +790,7 @@ fn rejects_forged_or_malformed_current_record_shapes() {
     assert_eq!(
         rejected_reason(
             &policy,
-            &migrated_observation(&policy, 39, vec![malformed_tombstone])
+            &migrated_observation(&policy, 40, vec![malformed_tombstone])
         ),
         AdmissionReason::InvalidTombstoneShape
     );
@@ -691,7 +801,7 @@ fn rejects_forged_or_malformed_current_record_shapes() {
     assert_eq!(
         rejected_reason(
             &policy,
-            &migrated_observation(&policy, 39, vec![noncanonical_tombstone])
+            &migrated_observation(&policy, 40, vec![noncanonical_tombstone])
         ),
         AdmissionReason::InvalidTombstoneShape
     );
@@ -723,8 +833,10 @@ fn startup_schema_errors_are_closed_and_secret_free() {
             | AdmissionReason::InvalidStateVersion
             | AdmissionReason::InvalidCredentialVersion
             | AdmissionReason::LiveVersionExhausted
+            | AdmissionReason::InvalidMaterialEpoch
             | AdmissionReason::InvalidRecordState
             | AdmissionReason::InvalidTombstoneShape
+            | AdmissionReason::InvalidRefreshRetryGate
             | AdmissionReason::MalformedMetadata
             | AdmissionReason::MetadataNotObject
             | AdmissionReason::DuplicateMetadataKey

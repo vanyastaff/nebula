@@ -229,9 +229,52 @@ async fn assert_final_schema(pool: &sqlx::SqlitePool) {
     };
     assert_eq!(column("owner_id").get::<i64, _>("notnull"), 1);
     assert_eq!(column("record_state").get::<i64, _>("notnull"), 1);
+    assert_eq!(column("material_epoch").get::<i64, _>("notnull"), 1);
     assert_eq!(
         column("record_state").get::<Option<String>, _>("dflt_value"),
         None
+    );
+    assert_eq!(
+        column("material_epoch").get::<Option<String>, _>("dflt_value"),
+        None,
+        "runtime writes must choose material authority explicitly"
+    );
+    for gate_column in [
+        "refresh_retry_mode",
+        "refresh_retry_not_before",
+        "refresh_retry_phase",
+        "refresh_retry_kind",
+        "refresh_retry_diagnostic_code",
+    ] {
+        assert_eq!(column(gate_column).get::<i64, _>("notnull"), 0);
+        assert_eq!(
+            column(gate_column).get::<Option<String>, _>("dflt_value"),
+            None
+        );
+    }
+    let migrated_gate_values: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM credentials
+         WHERE refresh_retry_mode IS NOT NULL
+            OR refresh_retry_not_before IS NOT NULL
+            OR refresh_retry_phase IS NOT NULL
+            OR refresh_retry_kind IS NOT NULL
+            OR refresh_retry_diagnostic_code IS NOT NULL",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("migrated retry gates must be readable");
+    assert_eq!(
+        migrated_gate_values, 0,
+        "0040 must initialize every existing aggregate with a clear retry gate"
+    );
+    let invalid_migrated_epochs: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM credentials WHERE material_epoch <> 1")
+            .fetch_one(pool)
+            .await
+            .expect("migrated material epochs must be readable");
+    assert_eq!(
+        invalid_migrated_epochs, 0,
+        "0040 must initialize every existing aggregate at material epoch 1"
     );
 
     let indexes = sqlx::query("PRAGMA index_list('credentials')")
@@ -286,7 +329,8 @@ async fn assert_final_schema(pool: &sqlx::SqlitePool) {
     let staging_tables: i64 = sqlx::query_scalar(
         "SELECT COUNT(*)
          FROM sqlite_schema
-         WHERE type = 'table' AND name LIKE 'credentials_0039%'",
+         WHERE type = 'table'
+           AND (name LIKE 'credentials_0039%' OR name LIKE 'credentials_0040%')",
     )
     .fetch_one(pool)
     .await
@@ -364,9 +408,9 @@ async fn assert_constraints_reject_invalid_rows(pool: &sqlx::SqlitePool) {
     let invalid_tombstone = sqlx::query(
         "INSERT INTO credentials (
              id, name, owner_id, credential_key, state_kind, state_version,
-             data, version, created_at, updated_at, expires_at,
+             data, version, material_epoch, created_at, updated_at, expires_at,
              reauth_required, metadata, record_state, tombstoned_at
-         ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, '{}', 'tombstoned', NULL)",
+         ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, '{}', 'tombstoned', NULL)",
     )
     .bind("cred_invalid_tombstone")
     .bind("owner-invalid")
@@ -377,11 +421,21 @@ async fn assert_constraints_reject_invalid_rows(pool: &sqlx::SqlitePool) {
     .bind(1_i64)
     .bind(1_i64)
     .bind(1_i64)
+    .bind(1_i64)
     .execute(pool)
     .await;
     assert!(
         invalid_tombstone.is_err(),
         "a tombstone without tombstoned_at must violate the structural check"
+    );
+
+    let zero_material_epoch = sqlx::query("UPDATE credentials SET material_epoch = 0 WHERE id = ?")
+        .bind(NAMED_ID)
+        .execute(pool)
+        .await;
+    assert!(
+        zero_material_epoch.is_err(),
+        "material epoch zero must violate the positive range check"
     );
 
     let exhausted_live = sqlx::query(
@@ -604,7 +658,7 @@ async fn failed_migration_0039_rolls_back_and_can_be_retried() {
             .fetch_one(&pool)
             .await
             .expect("migration ledger head must remain readable");
-    assert_eq!(repaired_head, 39);
+    assert_eq!(repaired_head, 40);
     let repaired_claim_id_columns: i64 = sqlx::query_scalar(
         "SELECT COUNT(*)
          FROM pragma_table_info('credential_sentinel_events')
@@ -640,7 +694,10 @@ async fn migration_0039_rebuilds_credentials_without_live_data_loss() {
     .fetch_one(&pool)
     .await
     .expect("migration ledger head must be readable");
-    assert_eq!(head, 39, "K2 must install logical migration 0039");
+    assert_eq!(
+        head, 40,
+        "the full catalog must install structural retry migration 0040"
+    );
 
     assert_live_rows_are_preserved(&pool).await;
     assert_legacy_revocation_becomes_tombstone(&pool).await;

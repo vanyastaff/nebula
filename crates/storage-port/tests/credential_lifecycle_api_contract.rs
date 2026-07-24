@@ -4,10 +4,11 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use nebula_core::CredentialId;
 use nebula_storage_port::{
-    CredentialAlreadyExistsKey, CredentialCommit, CredentialCreate, CredentialOwner,
-    CredentialPersistence, CredentialPersistenceError, CredentialRecordState,
-    CredentialReplacement, CredentialSelector, CredentialTombstone, CredentialVersion, SecretBytes,
-    StoredCredential, StoredCredentialHead,
+    CredentialAlreadyExistsKey, CredentialCommit, CredentialCreate, CredentialMaterialEpoch,
+    CredentialMaterialTransition, CredentialOwner, CredentialPersistence,
+    CredentialPersistenceError, CredentialRecordState, CredentialReplacement, CredentialSelector,
+    CredentialTombstone, CredentialVersion, RefreshRetryAdmission, RefreshRetrySnapshot,
+    SecretBytes, StoredCredential, StoredCredentialHead,
 };
 use serde_json::{Map, Value};
 
@@ -45,6 +46,7 @@ fn replacement_with(secret: Vec<u8>) -> CredentialReplacement {
         Some(instant(1_900_000_000)),
         false,
         metadata(),
+        CredentialMaterialTransition::advance(),
     )
 }
 
@@ -80,9 +82,21 @@ fn command_accessors_expose_only_the_frozen_field_split() {
     assert_eq!(replacement.expires_at(), Some(instant(1_900_000_000)));
     assert!(!replacement.reauth_required());
     assert_eq!(replacement.metadata(), &metadata());
+    assert_eq!(
+        replacement.material_transition(),
+        &CredentialMaterialTransition::Advance
+    );
 
     let tombstone = CredentialTombstone::new(expected);
     assert_eq!(tombstone.expected_version(), expected);
+
+    let epoch = CredentialMaterialEpoch::MIN;
+    let snapshot = RefreshRetrySnapshot::new(expected, epoch, true, RefreshRetryAdmission::Open);
+    assert_eq!(snapshot.version(), expected);
+    assert_eq!(snapshot.material_epoch(), epoch);
+    assert!(snapshot.reauth_required());
+    assert_eq!(snapshot.admission(), &RefreshRetryAdmission::Open);
+    assert_eq!(snapshot.into_admission(), RefreshRetryAdmission::Open);
 }
 
 #[test]
@@ -183,6 +197,7 @@ fn closed_error_code(error: &CredentialPersistenceError) -> &'static str {
             key: CredentialAlreadyExistsKey::Name,
         } => "already_exists_name",
         CredentialPersistenceError::VersionExhausted => "version_exhausted",
+        CredentialPersistenceError::MaterialEpochExhausted => "material_epoch_exhausted",
         CredentialPersistenceError::CorruptRecord => "corrupt_record",
         CredentialPersistenceError::Unavailable => "unavailable",
         CredentialPersistenceError::OutcomeUnknown => "outcome_unknown",
@@ -290,6 +305,13 @@ impl CredentialPersistence for ContractPersistence {
         &self,
         _selector: &CredentialSelector,
     ) -> Result<StoredCredentialHead, CredentialPersistenceError> {
+        Err(CredentialPersistenceError::NotFound)
+    }
+
+    async fn refresh_retry_snapshot(
+        &self,
+        _selector: &CredentialSelector,
+    ) -> Result<RefreshRetrySnapshot, CredentialPersistenceError> {
         Err(CredentialPersistenceError::NotFound)
     }
 

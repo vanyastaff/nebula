@@ -65,6 +65,7 @@
   not modify active MFA state.
 - This crate is NOT the state machine (`nebula-execution`), orchestrator (`nebula-engine`), or tenant-scope policy owner. `nebula-tenancy` wraps the general Scope-taking adapters; credential persistence is the deliberate owner-bound exception. Do NOT re-add the deleted legacy `ExecutionRepo`/`WorkflowRepo` surface (ADR-0072).
 - Every credential predicate is owner-bound (`CredentialSelector` or `CredentialOwner`); wrong-owner and missing are indistinguishable. Owner metadata is compatibility/audit data only and never grants authority.
+- The credential refresh-retry gate and material epoch are structural row state, separate from metadata and refresh-claim TTL. Backends author epochs: create/migration starts at `CredentialMaterialEpoch::MIN`; `CredentialMaterialTransition::Preserve { refresh_retry }` retains the epoch and applies its explicit gate transition; `Advance` increments the epoch and unconditionally clears the old gate; overflow fails closed. SQLite/PostgreSQL compute `SetAfter` and admission from their own wall clock (PostgreSQL uses `clock_timestamp()` after lock waits); unknown codecs fail closed, and tombstones carry no gate.
 - Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
 - Library code uses typed `thiserror`/`StorageError`; no panicking unwrap/expect/panic in lib code.
 

@@ -1,5 +1,6 @@
 //! Schema parity check for refresh-claim migrations 0022, 0023, and the
-//! incident-identity extension in 0039.
+//! incident-identity extension in 0039, plus the structural retry gate in
+//! 0040.
 //!
 //! Both SQLite and Postgres dialects must define the same tables with the
 //! same logical column names. The driver-specific types differ
@@ -143,6 +144,69 @@ fn sentinel_incident_identity_is_paired_and_globally_unique() {
             "{backend} incident identity must be a partial single-column unique index"
         );
     }
+}
+
+#[test]
+fn credential_refresh_retry_gate_is_paired_and_closed() {
+    let sqlite = read("migrations/sqlite/0040_credential_refresh_retry_gate.sql");
+    let pg = read("migrations/postgres/0040_credential_refresh_retry_gate.sql");
+
+    for column in [
+        "material_epoch",
+        "refresh_retry_mode",
+        "refresh_retry_not_before",
+        "refresh_retry_phase",
+        "refresh_retry_kind",
+        "refresh_retry_diagnostic_code",
+    ] {
+        assert!(sqlite.contains(column), "SQLite 0040 misses `{column}`");
+        assert!(pg.contains(column), "Postgres 0040 misses `{column}`");
+    }
+    for closed_code in [
+        "never",
+        "not_before",
+        "before_dispatch",
+        "provider_confirmed_not_applied",
+        "transient_network",
+        "provider_unavailable",
+        "protocol_error",
+    ] {
+        assert!(
+            sqlite.contains(&format!("'{closed_code}'")),
+            "SQLite 0040 misses closed code `{closed_code}`"
+        );
+        assert!(
+            pg.contains(&format!("'{closed_code}'")),
+            "Postgres 0040 misses closed code `{closed_code}`"
+        );
+    }
+    for migration in [&sqlite, &pg] {
+        assert!(migration.contains("credentials_refresh_retry_gate_shape"));
+        assert!(migration.contains("credentials_material_epoch_range"));
+        assert!(migration.contains("credentials_record_shape"));
+        assert!(
+            !migration.contains("$.refresh_retry"),
+            "retry gate must not be encoded in user metadata"
+        );
+    }
+
+    assert!(
+        sqlite.contains("material_epoch                INTEGER NOT NULL")
+            && sqlite.contains("version,\n    material_epoch,")
+            && sqlite.contains("version,\n    1,"),
+        "SQLite 0040 must rebuild every legacy row at material epoch 1"
+    );
+    assert!(
+        pg.contains("ADD COLUMN material_epoch BIGINT NOT NULL DEFAULT 1")
+            && pg.contains("ALTER COLUMN material_epoch DROP DEFAULT")
+            && pg.contains("CHECK (material_epoch BETWEEN 1 AND 9223372036854775807)"),
+        "Postgres 0040 must backfill epoch 1, remove the write-time default, and close the range"
+    );
+    assert!(
+        sqlite.contains("refresh_retry_not_before      INTEGER")
+            && pg.contains("refresh_retry_not_before TIMESTAMPTZ"),
+        "retry deadlines must use each backend's canonical clock representation"
+    );
 }
 
 #[test]

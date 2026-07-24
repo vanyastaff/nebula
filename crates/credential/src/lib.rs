@@ -166,13 +166,14 @@ pub use context::{CredentialContext, CredentialContextBuilder};
 pub use contract::resolve;
 // Credential contract — Credential trait + associated types
 pub use contract::{
-    AnyCredential, Capabilities, Credential, CredentialRegistry, CredentialState, Dynamic,
-    Interactive, NoPendingState, PendingState, PendingToken, Refreshable, RegisterError, Revocable,
-    Testable, compute_capabilities,
+    AnyCredential, Capabilities, CompletedDispatch, CompletedResponseProof, Credential,
+    CredentialRegistry, CredentialState, Dynamic, Interactive, NoPendingState, PendingState,
+    PendingToken, RefreshAttempt, RefreshDispatchError, RefreshExecutionMode, RefreshReport,
+    Refreshable, RegisterError, Revocable, Testable, compute_capabilities,
 };
 // Resolve types
 pub use contract::{
-    DisplayData, InteractionRequest, ReauthReason, RefreshOutcome, RefreshPolicy, ResolveResult,
+    DisplayData, InteractionRequest, ReauthReason, RefreshPolicy, ResolveResult,
     StaticResolveResult, TestFailureCode, TestResult, UserInput,
 };
 // Built-in credential implementations
@@ -262,8 +263,10 @@ pub use crate::{
     display::CredentialDisplay,
     error::{
         CredentialAccessError, CredentialError, CryptoError, ProviderErrorContext,
-        ProviderErrorKind, RefreshErrorKind, RefreshFailedContext, ResolutionStage, RetryAdvice,
-        SchemeMismatch, SecretFreeMessage, ValidationError,
+        ProviderErrorKind, RefreshDiagnosticCode, RefreshDiagnosticCodeError, RefreshErrorKind,
+        RefreshFailureSpec, RefreshNotAppliedContext, RefreshNotAppliedPhase, ResolutionStage,
+        RetryAdvice, RetryDelay, RetryDelayError, SchemeMismatch, SecretFreeMessage,
+        ValidationError,
     },
     event::CredentialEvent,
     metadata::{
@@ -284,10 +287,10 @@ pub use service::{
     CredentialControllerError, CredentialDisplayPatch, CredentialHead, CredentialObserver,
     CredentialOperation, CredentialService, CredentialServiceError, CredentialTenantAuthority,
     CredentialTypeInfo, CredentialValidationIssue, CredentialValidationReport, DispatchError,
-    DispatchOps, EventMetricObserver, NoopObserver, RefreshReport, StateSource, TenantFingerprint,
-    TenantScope, TypeCapabilities, ValidatedCredentialBinding, ValidatedCredentialBindingError,
-    register_all_builtin_ops, register_interactive_ops, register_refreshable_ops,
-    register_revocable_ops, register_runtime_ops, register_testable_ops,
+    DispatchOps, EventMetricObserver, ManagementRefreshReport, NoopObserver, StateSource,
+    TenantFingerprint, TenantScope, TypeCapabilities, ValidatedCredentialBinding,
+    ValidatedCredentialBindingError, register_all_builtin_ops, register_interactive_ops,
+    register_refreshable_ops, register_revocable_ops, register_runtime_ops, register_testable_ops,
 };
 
 // ── Prelude ───────────────────────────────────────────────────────────────────
@@ -303,8 +306,8 @@ pub mod prelude {
         CredentialError, CredentialGuard, CredentialHandle, CredentialId, CredentialKey,
         CredentialMetadata, CredentialPolicy, CredentialRecord, CredentialRegistry,
         CredentialService, CredentialState, Dynamic, ExternalScheme, Interactive, PublicScheme,
-        Refreshable, Revocable, SecretString, SensitiveScheme, Testable, credential,
-        credential_key, schema_of,
+        RefreshAttempt, RefreshExecutionMode, RefreshReport, Refreshable, Revocable, SecretString,
+        SensitiveScheme, Testable, credential, credential_key, schema_of,
     };
 }
 
@@ -312,9 +315,10 @@ pub mod prelude {
 // re-exported from the credential product surface; adapters and composition
 // roots depend on `nebula-storage-port` directly.
 pub(crate) use nebula_storage_port::{
-    CredentialAlreadyExistsKey, CredentialCreate, CredentialPersistence,
-    CredentialPersistenceError, CredentialReplacement, CredentialSelector, CredentialTombstone,
-    CredentialVersion, StoredCredential, StoredCredentialHead, StoredLiveCredential,
+    CredentialAlreadyExistsKey, CredentialCreate, CredentialMaterialTransition,
+    CredentialPersistence, CredentialPersistenceError, CredentialReplacement, CredentialSelector,
+    CredentialTombstone, CredentialVersion, RefreshRetryAdmission, RefreshRetryTransition,
+    StoredCredential, StoredCredentialHead, StoredLiveCredential,
 };
 
 // Credential-owned metadata conventions. Persistence authority comes only

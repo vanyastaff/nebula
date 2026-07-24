@@ -29,7 +29,7 @@ use std::{
 
 use nebula_core::CredentialId;
 use nebula_credential::runtime::{
-    RefreshCoordConfig, RefreshCoordinator, RefreshDisposition, RefreshError,
+    RefreshCoordConfig, RefreshCoordinator, RefreshDisposition, RefreshError, RefreshRecheck,
 };
 use nebula_storage::credential::{InMemoryRefreshClaimRepo, RefreshClaimRepo, ReplicaId};
 use parking_lot::Mutex;
@@ -171,7 +171,13 @@ async fn three_replicas_never_double_dispatch_one_refresh_epoch() {
                             &credential.id,
                             move |_| {
                                 let probe = Arc::clone(&predicate_probe);
-                                async move { Ok(probe.needs_refresh()) }
+                                async move {
+                                    Ok(if probe.needs_refresh() {
+                                        RefreshRecheck::Needed
+                                    } else {
+                                        RefreshRecheck::Satisfied
+                                    })
+                                }
                             },
                             move || async move {
                                 let epoch = provider_probe.desired_epoch.load(Ordering::Acquire);

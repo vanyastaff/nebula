@@ -6,7 +6,7 @@
 //! live in `apps/` and translate this contract into the credential-owned
 //! authority/controller boundary.
 
-use std::{collections::BTreeMap, fmt};
+use std::{collections::BTreeMap, fmt, num::NonZeroU64};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -332,6 +332,22 @@ impl CredentialGatewayValidationReport {
     }
 }
 
+/// Closed retry policy for a refresh proven not to have changed provider state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CredentialGatewayRefreshRetry {
+    /// The current credential state must not be retried automatically.
+    Never,
+    /// Retry after a non-zero whole-second delay.
+    ///
+    /// The follow-up request uses a new `Idempotency-Key`; reusing the
+    /// original key intentionally replays the original response.
+    After {
+        /// Validated non-zero delay exposed through HTTP `Retry-After`.
+        seconds: NonZeroU64,
+    },
+}
+
 /// Stable failure taxonomy at the API/composition boundary.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -383,16 +399,39 @@ pub enum CredentialGatewayError {
     /// Credential must be connected again.
     #[error("credential requires re-authentication")]
     ReauthRequired,
+    /// Refresh was proven not to have changed provider state.
+    ///
+    /// Retry policy is closed and structurally excludes a zero-second delay.
+    #[error("credential refresh was not applied")]
+    RefreshNotApplied {
+        /// Exact retry policy retained from the credential integration.
+        retry: CredentialGatewayRefreshRetry,
+    },
+    /// The refresh outcome is known, but durable local refresh finalization
+    /// definitely failed.
+    ///
+    /// Automatic replay is unsafe. The caller must reconcile or reconnect the
+    /// integration credential before issuing another refresh.
+    #[error("credential refresh requires reconciliation")]
+    RefreshReconciliationRequired,
+    /// The revoke outcome is known, but durable local finalization definitely
+    /// failed.
+    ///
+    /// Automatic replay is unsafe. The caller must reconcile credential state
+    /// before issuing another revoke.
+    #[error("credential revoke requires reconciliation")]
+    RevokeReconciliationRequired,
     /// Authenticated actor is not authorized for the tenant operation.
     #[error("credential command forbidden")]
     Forbidden,
     /// A required provider, authority, or persistence service is unavailable.
     #[error("credential command service unavailable")]
     Unavailable,
-    /// Persistence may have committed, but acknowledgement was lost.
+    /// A provider side effect or durable mutation may have completed without
+    /// exact acknowledgement.
     ///
     /// The caller must reconcile the owner-qualified credential state before
-    /// deciding whether another mutation is safe.
+    /// deciding whether replaying either operation is safe.
     #[error("credential mutation outcome is unknown; reconcile before retrying")]
     OutcomeUnknown,
     /// Internal invariant or composition failure.
@@ -455,5 +494,37 @@ mod tests {
         let debug = format!("{record:?}");
         assert!(!debug.contains(CANARY));
         assert!(debug.contains("tag_count: 1"));
+    }
+
+    #[test]
+    fn refresh_not_applied_preserves_never_and_after_without_dynamic_text() {
+        let never = CredentialGatewayError::RefreshNotApplied {
+            retry: CredentialGatewayRefreshRetry::Never,
+        };
+        let after = CredentialGatewayError::RefreshNotApplied {
+            retry: CredentialGatewayRefreshRetry::After {
+                seconds: NonZeroU64::new(17).expect("test delay is non-zero"),
+            },
+        };
+
+        assert_eq!(never.clone(), never);
+        assert_eq!(after.clone(), after);
+        assert_ne!(never, after);
+    }
+
+    #[test]
+    fn operation_reconciliation_variants_are_distinct_from_each_other_and_lost_acknowledgement() {
+        assert_ne!(
+            CredentialGatewayError::RefreshReconciliationRequired,
+            CredentialGatewayError::OutcomeUnknown
+        );
+        assert_ne!(
+            CredentialGatewayError::RevokeReconciliationRequired,
+            CredentialGatewayError::OutcomeUnknown
+        );
+        assert_ne!(
+            CredentialGatewayError::RefreshReconciliationRequired,
+            CredentialGatewayError::RevokeReconciliationRequired
+        );
     }
 }

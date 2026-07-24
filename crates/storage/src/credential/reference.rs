@@ -8,9 +8,10 @@ use std::{collections::HashMap, fmt, sync::Arc};
 use async_trait::async_trait;
 use nebula_core::CredentialId;
 use nebula_storage_port::{
-    CredentialAlreadyExistsKey, CredentialCommit, CredentialCreate, CredentialOwner,
-    CredentialPersistence, CredentialPersistenceError, CredentialReplacement, CredentialSelector,
-    CredentialTombstone, CredentialVersion, StoredCredential, StoredCredentialHead,
+    CredentialAlreadyExistsKey, CredentialCommit, CredentialCreate, CredentialMaterialEpoch,
+    CredentialMaterialTransition, CredentialOwner, CredentialPersistence,
+    CredentialPersistenceError, CredentialReplacement, CredentialSelector, CredentialTombstone,
+    CredentialVersion, RefreshRetrySnapshot, StoredCredential, StoredCredentialHead,
     StoredLiveCredential, StoredTombstonedCredential,
 };
 use parking_lot::Mutex;
@@ -34,6 +35,14 @@ impl ReferenceCredentialPersistence {
     #[must_use]
     pub(crate) fn new() -> Self {
         Self::default()
+    }
+
+    /// Single clock authority for this in-process backend.
+    ///
+    /// Both `SetAfter` and admission sample this seam; callers never supply a
+    /// timestamp and therefore cannot shorten a durable gate.
+    fn backend_now(&self) -> chrono::DateTime<chrono::Utc> {
+        chrono::Utc::now()
     }
 
     fn validate_projection(
@@ -112,6 +121,7 @@ impl super::CredentialPersistenceConformance for ReferenceCredentialPersistence 
         let StoredCredential::Live(current) = &owned.record else {
             return Err(CredentialPersistenceError::NotFound);
         };
+        let refresh_retry_gate = current.refresh_retry_gate().cloned();
         owned.record = StoredLiveCredential::new(
             current.credential_id(),
             current.name().map(str::to_owned),
@@ -120,11 +130,48 @@ impl super::CredentialPersistenceConformance for ReferenceCredentialPersistence 
             current.state_kind().to_owned(),
             current.state_version(),
             version,
+            current.material_epoch(),
             current.created_at(),
             current.updated_at(),
             current.expires_at(),
             current.reauth_required(),
             current.metadata().clone(),
+            refresh_retry_gate,
+        )?
+        .into();
+        Ok(())
+    }
+
+    async fn force_live_material_epoch_for_conformance(
+        &self,
+        selector: &CredentialSelector,
+        material_epoch: CredentialMaterialEpoch,
+    ) -> Result<(), CredentialPersistenceError> {
+        let mut records = self.records.lock();
+        let owned = records
+            .get_mut(&selector.credential_id())
+            .ok_or(CredentialPersistenceError::NotFound)?;
+        if &owned.owner != selector.owner() {
+            return Err(CredentialPersistenceError::NotFound);
+        }
+        let StoredCredential::Live(current) = &owned.record else {
+            return Err(CredentialPersistenceError::NotFound);
+        };
+        owned.record = StoredLiveCredential::new(
+            current.credential_id(),
+            current.name().map(str::to_owned),
+            current.credential_key().to_owned(),
+            current.data().clone(),
+            current.state_kind().to_owned(),
+            current.state_version(),
+            current.version(),
+            material_epoch,
+            current.created_at(),
+            current.updated_at(),
+            current.expires_at(),
+            current.reauth_required(),
+            current.metadata().clone(),
+            current.refresh_retry_gate().cloned(),
         )?
         .into();
         Ok(())
@@ -148,6 +195,7 @@ impl super::CredentialPersistenceConformance for ReferenceCredentialPersistence 
             "display".to_owned(),
             Value::String("not-an-object".to_owned()),
         )]);
+        let refresh_retry_gate = current.refresh_retry_gate().cloned();
         owned.record = StoredLiveCredential::new(
             current.credential_id(),
             None,
@@ -156,11 +204,13 @@ impl super::CredentialPersistenceConformance for ReferenceCredentialPersistence 
             current.state_kind().to_owned(),
             current.state_version(),
             current.version(),
+            current.material_epoch(),
             current.created_at(),
             current.updated_at(),
             current.expires_at(),
             current.reauth_required(),
             metadata,
+            refresh_retry_gate,
         )?
         .into();
         Ok(())
@@ -197,6 +247,30 @@ impl CredentialPersistence for ReferenceCredentialPersistence {
         }
     }
 
+    async fn refresh_retry_snapshot(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<RefreshRetrySnapshot, CredentialPersistenceError> {
+        let records = self.records.lock();
+        let owned = records
+            .get(&selector.credential_id())
+            .ok_or(CredentialPersistenceError::NotFound)?;
+        if &owned.owner != selector.owner() {
+            return Err(CredentialPersistenceError::NotFound);
+        }
+        let StoredCredential::Live(live) = &owned.record else {
+            return Err(CredentialPersistenceError::NotFound);
+        };
+        let admission =
+            super::retry_gate::evaluate_gate(live.refresh_retry_gate(), self.backend_now())?;
+        Ok(RefreshRetrySnapshot::new(
+            live.version(),
+            live.material_epoch(),
+            live.reauth_required(),
+            admission,
+        ))
+    }
+
     async fn create(
         &self,
         selector: &CredentialSelector,
@@ -218,7 +292,7 @@ impl CredentialPersistence for ReferenceCredentialPersistence {
             });
         }
 
-        let now = chrono::Utc::now();
+        let now = self.backend_now();
         let version = CredentialVersion::MIN;
         let live = StoredLiveCredential::new(
             selector.credential_id(),
@@ -228,11 +302,13 @@ impl CredentialPersistence for ReferenceCredentialPersistence {
             create.state_kind().to_owned(),
             create.state_version(),
             version,
+            CredentialMaterialEpoch::MIN,
             now,
             now,
             create.expires_at(),
             create.reauth_required(),
             create.metadata().clone(),
+            None,
         )?;
         records.insert(
             selector.credential_id(),
@@ -280,7 +356,18 @@ impl CredentialPersistence for ReferenceCredentialPersistence {
 
         let credential_key = current.credential_key().to_owned();
         let created_at = current.created_at();
-        let now = chrono::Utc::now();
+        let now = self.backend_now();
+        let (material_epoch, refresh_retry_gate) = match replacement.material_transition() {
+            CredentialMaterialTransition::Preserve { refresh_retry } => (
+                current.material_epoch(),
+                super::retry_gate::apply_transition(
+                    current.refresh_retry_gate(),
+                    refresh_retry,
+                    now,
+                )?,
+            ),
+            CredentialMaterialTransition::Advance => (current.material_epoch().next()?, None),
+        };
         let live = StoredLiveCredential::new(
             selector.credential_id(),
             replacement.name().map(str::to_owned),
@@ -289,11 +376,13 @@ impl CredentialPersistence for ReferenceCredentialPersistence {
             replacement.state_kind().to_owned(),
             replacement.state_version(),
             next_version,
+            material_epoch,
             created_at,
             now,
             replacement.expires_at(),
             replacement.reauth_required(),
             replacement.metadata().clone(),
+            refresh_retry_gate,
         )?;
         records.insert(
             selector.credential_id(),
@@ -331,7 +420,7 @@ impl CredentialPersistence for ReferenceCredentialPersistence {
         let state_kind = current.state_kind().to_owned();
         let state_version = current.state_version();
         let created_at = current.created_at();
-        let now = chrono::Utc::now();
+        let now = self.backend_now();
         let terminal = StoredTombstonedCredential::new(
             selector.credential_id(),
             credential_key,
@@ -400,5 +489,26 @@ impl CredentialPersistence for ReferenceCredentialPersistence {
         Ok(records.get(&selector.credential_id()).is_some_and(|owned| {
             &owned.owner == selector.owner() && matches!(owned.record, StoredCredential::Live(_))
         }))
+    }
+}
+
+#[cfg(test)]
+mod atomic_snapshot_source_tests {
+    #[test]
+    fn refresh_retry_snapshot_holds_one_aggregate_lock() {
+        let source = include_str!("reference.rs");
+        let body = source
+            .split_once("async fn refresh_retry_snapshot(")
+            .expect("snapshot method must exist")
+            .1
+            .split_once("\n    async fn create(")
+            .expect("the following port method must delimit the snapshot body")
+            .0;
+
+        assert_eq!(body.matches("self.records.lock()").count(), 1);
+        assert!(body.contains("live.version()"));
+        assert!(body.contains("live.reauth_required()"));
+        assert!(body.contains("live.refresh_retry_gate()"));
+        assert!(!body.contains("self.get(selector).await"));
     }
 }

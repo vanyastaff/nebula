@@ -20,10 +20,11 @@ use std::time::Duration;
 
 use nebula_credential::{
     Capabilities, Credential, CredentialContext, CredentialLifecycle, CredentialPolicy,
-    CredentialRegistry, LeaseRef, PendingState, RefreshStrategy, RegisterError, RevokeStrategy,
-    SecretString, compute_capabilities,
+    CredentialRegistry, LeaseRef, PendingState, RefreshAttempt, RefreshExecutionMode,
+    RefreshReport, RefreshStrategy, RegisterError, RevokeStrategy, SecretString,
+    compute_capabilities,
     error::CredentialError,
-    resolve::{RefreshOutcome, ResolveResult, TestResult, UserInput},
+    resolve::{ResolveResult, TestResult, UserInput},
     scheme::SecretToken,
 };
 use nebula_metadata::Metadata;
@@ -50,6 +51,8 @@ impl RefreshOnly {
     type Scheme = SecretToken;
     type State = SecretToken;
 
+    const REFRESH_EXECUTION_MODE: RefreshExecutionMode = RefreshExecutionMode::Local;
+
     fn project(state: &SecretToken) -> SecretToken {
         state.clone()
     }
@@ -61,11 +64,8 @@ impl RefreshOnly {
         Ok(ResolveResult::Complete(token()))
     }
 
-    async fn refresh(
-        _state: &mut SecretToken,
-        _ctx: &CredentialContext,
-    ) -> Result<RefreshOutcome, CredentialError> {
-        Ok(RefreshOutcome::Refreshed)
+    async fn refresh(_state: &mut SecretToken, attempt: RefreshAttempt<'_>) -> RefreshReport {
+        attempt.local_refresh_completed()
     }
 }
 

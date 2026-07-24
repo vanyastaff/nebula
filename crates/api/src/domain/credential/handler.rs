@@ -292,6 +292,13 @@ pub async fn test_credential(
 /// Delegates to `Credential::refresh()` to force a token refresh
 /// (e.g. OAuth2 `refresh_token` grant). Returns 400 if the credential
 /// type does not support refreshing (`REFRESHABLE = false`).
+///
+/// An exact pre-dispatch refusal or a complete provider response proving no
+/// effect returns 409. When `Retry-After` is present, callers wait for that
+/// delay and submit the follow-up with a new `Idempotency-Key`; reusing the
+/// original key intentionally replays the original 409. Without
+/// `Retry-After`, callers must not retry automatically; they reconcile or
+/// reconnect when durable local finalization failed.
 #[utoipa::path(
     post,
     path = "/orgs/{org}/workspaces/{ws}/credentials/{cred}/refresh",
@@ -301,6 +308,7 @@ pub async fn test_credential(
         ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
         ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
         ("cred" = String, Path, description = "Credential identifier (`cred_<ULID>`)."),
+        ("Idempotency-Key" = Option<String>, Header, description = "Optional opaque replay key. Reusing a key replays its original response; a delayed retry after a proven no-effect refresh uses a new key."),
     ),
     responses(
         (status = 200, description = "Refresh result (success flag + new expiry, if changed).", body = RefreshCredentialResponse),
@@ -308,7 +316,9 @@ pub async fn test_credential(
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Credential does not exist.", body = ProblemDetails),
-        (status = 409, description = "The integration credential requires reconnection, a concurrent version changed, or the provider/persistence outcome is unknown and must be reconciled.", body = ProblemDetails, content_type = "application/problem+json"),
+        (status = 409, description = "The integration credential requires reconnection, refresh was proven not applied (Retry-After requires a new Idempotency-Key; the same key replays the original response), durable local refresh finalization definitely failed and requires reconciliation, a concurrent version changed, or a mutation acknowledgement was lost and state must be reconciled.", body = ProblemDetails, content_type = "application/problem+json", headers(
+            ("Retry-After" = u64, description = "Optional non-zero whole-second delay before a proven no-effect refresh may be retried with a new Idempotency-Key.")
+        )),
         (status = 503, description = "Credential authority, pre-provider coordination, or persistence is temporarily unavailable.", body = ProblemDetails),
     ),
 )]
@@ -332,6 +342,10 @@ pub async fn refresh_credential(
 /// Delegates to `Credential::revoke()` to explicitly revoke the
 /// credential at the provider. Returns 400 if the credential type
 /// does not support revocation (`REVOCABLE = false`).
+///
+/// When the revoke outcome is known but durable local finalization fails,
+/// callers receive 409 and must reconcile credential state instead of
+/// retrying automatically.
 #[utoipa::path(
     post,
     path = "/orgs/{org}/workspaces/{ws}/credentials/{cred}/revoke",
@@ -348,7 +362,7 @@ pub async fn refresh_credential(
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Credential does not exist.", body = ProblemDetails),
-        (status = 409, description = "Concurrent version changed or provider/persistence outcome is unknown and must be reconciled.", body = ProblemDetails),
+        (status = 409, description = "Concurrent version changed; the revoke outcome is known but durable local finalization failed (do not retry automatically; reconcile credential state); or a mutation acknowledgement was lost and credential state must be reconciled.", body = ProblemDetails, content_type = "application/problem+json"),
         (status = 503, description = "Credential authority, pre-provider coordination, or persistence is temporarily unavailable.", body = ProblemDetails),
     ),
 )]

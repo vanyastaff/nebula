@@ -4,13 +4,16 @@
 //! SQL-specific migration, restart, race, and transport-fault evidence lives in
 //! the dedicated backend tests; this file proves behavioural parity.
 
-use std::error::Error;
+use std::{error::Error, time::Duration};
 
 use nebula_core::CredentialId;
 use nebula_storage_port::{
-    CredentialAlreadyExistsKey, CredentialCreate, CredentialOwner, CredentialPersistenceError,
+    CredentialAlreadyExistsKey, CredentialCreate, CredentialMaterialEpoch,
+    CredentialMaterialTransition, CredentialOwner, CredentialPersistenceError,
     CredentialRecordState, CredentialReplacement, CredentialSelector, CredentialTombstone,
-    CredentialVersion, SecretBytes, StoredCredential,
+    CredentialVersion, RefreshRetryAdmission, RefreshRetryBlock, RefreshRetryDelay,
+    RefreshRetryDiagnosticCode, RefreshRetryEvidence, RefreshRetryKind, RefreshRetryPhase,
+    RefreshRetryTransition, SecretBytes, StoredCredential,
 };
 use serde_json::{Map, Value};
 
@@ -59,6 +62,7 @@ fn replacement(
     name: Option<&str>,
     secret: &[u8],
     marker: &str,
+    material_transition: CredentialMaterialTransition,
 ) -> CredentialReplacement {
     CredentialReplacement::new(
         expected,
@@ -69,6 +73,7 @@ fn replacement(
         None,
         true,
         metadata(name, marker),
+        material_transition,
     )
 }
 
@@ -80,6 +85,158 @@ where
     let owner_b = owner("oracle-owner-b");
     let credential_id = CredentialId::new();
     let key = selector(&owner_a, credential_id);
+
+    let gate_id = CredentialId::new();
+    let gate_key = selector(&owner_a, gate_id);
+    let gate_created = store
+        .create(&gate_key, create(None, b"gate-v1", "gate-create"))
+        .await?;
+    let created_snapshot = store.refresh_retry_snapshot(&gate_key).await?;
+    assert_eq!(created_snapshot.version(), gate_created.version());
+    assert_eq!(
+        created_snapshot.material_epoch(),
+        CredentialMaterialEpoch::MIN
+    );
+    assert!(!created_snapshot.reauth_required());
+    assert_eq!(created_snapshot.admission(), &RefreshRetryAdmission::Open);
+    let gate_live = store.get(&gate_key).await?;
+    assert!(
+        gate_live
+            .as_live()
+            .expect("created gate fixture is live")
+            .refresh_retry_gate()
+            .is_none(),
+        "create must start with a clear structural retry gate"
+    );
+
+    let evidence = RefreshRetryEvidence::new(
+        RefreshRetryPhase::BeforeDispatch,
+        RefreshRetryKind::TransientNetwork,
+        Some(RefreshRetryDiagnosticCode::parse("oauth.network")?),
+    );
+    let set_never = replacement(
+        gate_created.version(),
+        None,
+        b"gate-v2",
+        "gate-never",
+        CredentialMaterialTransition::preserve(RefreshRetryTransition::SetNever {
+            evidence: evidence.clone(),
+        }),
+    );
+    let gate_never = store.replace(&gate_key, set_never).await?;
+    let never_snapshot = store.refresh_retry_snapshot(&gate_key).await?;
+    assert_eq!(never_snapshot.version(), gate_never.version());
+    assert_eq!(
+        never_snapshot.material_epoch(),
+        created_snapshot.material_epoch(),
+        "retry-gate finalization must preserve refresh authority"
+    );
+    assert!(never_snapshot.reauth_required());
+    assert_eq!(
+        never_snapshot.admission(),
+        &RefreshRetryAdmission::Blocked(RefreshRetryBlock::Never {
+            evidence: evidence.clone(),
+        })
+    );
+    assert!(matches!(
+        store
+            .get(&gate_key)
+            .await?
+            .as_live()
+            .and_then(|live| live.refresh_retry_gate()),
+        Some(nebula_storage_port::RefreshRetryGate::Never { evidence: stored })
+            if stored == &evidence
+    ));
+
+    let preserve = replacement(
+        gate_never.version(),
+        None,
+        b"gate-v3",
+        "gate-preserve",
+        CredentialMaterialTransition::preserve(RefreshRetryTransition::Preserve),
+    );
+    let gate_preserved = store.replace(&gate_key, preserve).await?;
+    assert!(matches!(
+        store.refresh_retry_snapshot(&gate_key).await?.admission(),
+        RefreshRetryAdmission::Blocked(RefreshRetryBlock::Never { .. })
+    ));
+
+    let clear = replacement(
+        gate_preserved.version(),
+        None,
+        b"gate-v4",
+        "gate-clear",
+        CredentialMaterialTransition::preserve(RefreshRetryTransition::Clear),
+    );
+    let gate_cleared = store.replace(&gate_key, clear).await?;
+    assert_eq!(
+        store.refresh_retry_snapshot(&gate_key).await?.admission(),
+        &RefreshRetryAdmission::Open
+    );
+
+    let delay = RefreshRetryDelay::new(Duration::from_millis(1_001))?;
+    assert_eq!(delay.as_secs(), 2, "sub-second input must round upward");
+    let set_after = replacement(
+        gate_cleared.version(),
+        None,
+        b"gate-v5",
+        "gate-after",
+        CredentialMaterialTransition::preserve(RefreshRetryTransition::SetAfter {
+            delay,
+            evidence: evidence.clone(),
+        }),
+    );
+    let gate_after = store.replace(&gate_key, set_after).await?;
+    match store
+        .refresh_retry_snapshot(&gate_key)
+        .await?
+        .into_admission()
+    {
+        RefreshRetryAdmission::Blocked(RefreshRetryBlock::After {
+            remaining,
+            evidence: actual_evidence,
+        }) => {
+            assert!((1..=2).contains(&remaining.as_secs()));
+            assert_eq!(actual_evidence, evidence);
+        },
+        other => panic!("fresh timed gate must block, got {other:?}"),
+    }
+    let gated_epoch = store
+        .refresh_retry_snapshot(&gate_key)
+        .await?
+        .material_epoch();
+    let byte_identical_reconnect = replacement(
+        gate_after.version(),
+        None,
+        b"gate-v5",
+        "gate-after",
+        CredentialMaterialTransition::advance(),
+    );
+    let reconnected = store.replace(&gate_key, byte_identical_reconnect).await?;
+    let reconnected_snapshot = store.refresh_retry_snapshot(&gate_key).await?;
+    assert_eq!(reconnected_snapshot.material_epoch(), gated_epoch.next()?);
+    assert_eq!(
+        reconnected_snapshot.admission(),
+        &RefreshRetryAdmission::Open,
+        "new authority must never inherit the previous epoch's retry verdict"
+    );
+    assert_eq!(
+        store
+            .refresh_retry_snapshot(&selector(&owner_b, gate_id))
+            .await
+            .expect_err("wrong-owner gate reads are existence-hidden"),
+        CredentialPersistenceError::NotFound
+    );
+    store
+        .tombstone(&gate_key, CredentialTombstone::new(reconnected.version()))
+        .await?;
+    assert_eq!(
+        store
+            .refresh_retry_snapshot(&gate_key)
+            .await
+            .expect_err("tombstones are inert for refresh admission"),
+        CredentialPersistenceError::NotFound
+    );
 
     assert!(store.list(&owner_a, None).await?.is_empty());
     assert!(store.list_heads(&owner_a, None).await?.is_empty());
@@ -102,6 +259,7 @@ where
     assert_eq!(live.credential_key(), "provider.api-token");
     assert_eq!(live.data().as_ref(), b"\x00\xff-v1");
     assert_eq!(live.version(), created.version());
+    assert_eq!(live.material_epoch(), CredentialMaterialEpoch::MIN);
     assert_eq!(live.created_at(), created.created_at());
     assert_eq!(live.updated_at(), created.updated_at());
     assert!(store.exists(&key).await?);
@@ -109,6 +267,7 @@ where
     let head = store.get_head(&key).await?;
     assert_eq!(head.credential_id(), credential_id);
     assert_eq!(head.version(), CredentialVersion::MIN);
+    assert_eq!(head.material_epoch(), live.material_epoch());
     assert_eq!(head.name(), Some("Production"));
     assert_eq!(store.list(&owner_a, Some("active")).await?, [credential_id]);
     assert_eq!(store.list_heads(&owner_a, None).await?.len(), 1);
@@ -154,6 +313,7 @@ where
                 Some("Renamed"),
                 b"\x00\xff-v2",
                 "replace",
+                CredentialMaterialTransition::advance(),
             ),
         )
         .await?;
@@ -167,12 +327,19 @@ where
     assert_eq!(live.name(), Some("Renamed"));
     assert_eq!(live.data().as_ref(), b"\x00\xff-v2");
     assert_eq!(live.state_version(), 8);
+    assert_eq!(live.material_epoch(), CredentialMaterialEpoch::MIN.next()?);
     assert!(live.reauth_required());
     assert_eq!(
         store
             .replace(
                 &key,
-                replacement(CredentialVersion::MIN, Some("Stale"), b"stale", "stale",),
+                replacement(
+                    CredentialVersion::MIN,
+                    Some("Stale"),
+                    b"stale",
+                    "stale",
+                    CredentialMaterialTransition::advance(),
+                ),
             )
             .await
             .expect_err("stale replace must report both typed versions"),
@@ -190,6 +357,7 @@ where
                     Some("Foreign"),
                     b"foreign",
                     "foreign",
+                    CredentialMaterialTransition::advance(),
                 ),
             )
             .await
@@ -234,6 +402,7 @@ where
                     Some("Occupied"),
                     b"name-collision",
                     "name-collision",
+                    CredentialMaterialTransition::advance(),
                 ),
             )
             .await
@@ -284,6 +453,7 @@ where
                     Some("Resurrect"),
                     b"resurrect",
                     "resurrect",
+                    CredentialMaterialTransition::advance(),
                 ),
             )
             .await
@@ -323,7 +493,13 @@ where
         store
             .replace(
                 &missing,
-                replacement(CredentialVersion::MAX, None, b"missing", "missing",),
+                replacement(
+                    CredentialVersion::MAX,
+                    None,
+                    b"missing",
+                    "missing",
+                    CredentialMaterialTransition::advance(),
+                ),
             )
             .await
             .expect_err("missing row precedes version exhaustion"),
@@ -415,7 +591,13 @@ where
         store
             .replace(
                 &headroom_key,
-                replacement(CredentialVersion::MAX_LIVE, None, b"overflow", "overflow",),
+                replacement(
+                    CredentialVersion::MAX_LIVE,
+                    None,
+                    b"overflow",
+                    "overflow",
+                    CredentialMaterialTransition::advance(),
+                ),
             )
             .await
             .expect_err("replace must preserve terminal version headroom"),
@@ -428,6 +610,78 @@ where
         )
         .await?;
     assert_eq!(terminal.version(), CredentialVersion::MAX);
+
+    let epoch_headroom_id = CredentialId::new();
+    let epoch_headroom_key = selector(&owner_b, epoch_headroom_id);
+    let epoch_created = store
+        .create(
+            &epoch_headroom_key,
+            create(None, b"epoch-last", "epoch-headroom"),
+        )
+        .await?;
+    let epoch_gated = store
+        .replace(
+            &epoch_headroom_key,
+            replacement(
+                epoch_created.version(),
+                None,
+                b"epoch-last",
+                "epoch-headroom",
+                CredentialMaterialTransition::preserve(RefreshRetryTransition::SetNever {
+                    evidence: evidence.clone(),
+                }),
+            ),
+        )
+        .await?;
+    store
+        .force_live_material_epoch_for_conformance(
+            &epoch_headroom_key,
+            CredentialMaterialEpoch::MAX,
+        )
+        .await?;
+    let before_overflow = store.get(&epoch_headroom_key).await?;
+    let before_overflow = before_overflow
+        .as_live()
+        .expect("epoch headroom fixture remains live");
+    let before_version = before_overflow.version();
+    let before_epoch = before_overflow.material_epoch();
+    let before_gate = before_overflow.refresh_retry_gate().cloned();
+    let before_data = before_overflow.data().clone();
+    assert_eq!(before_version, epoch_gated.version());
+    assert_eq!(before_epoch, CredentialMaterialEpoch::MAX);
+
+    assert_eq!(
+        store
+            .replace(
+                &epoch_headroom_key,
+                replacement(
+                    before_version,
+                    None,
+                    b"must-not-commit",
+                    "epoch-overflow",
+                    CredentialMaterialTransition::advance(),
+                ),
+            )
+            .await
+            .expect_err("material authority cannot advance beyond its positive i64 range"),
+        CredentialPersistenceError::MaterialEpochExhausted
+    );
+    let after_overflow = store.get(&epoch_headroom_key).await?;
+    let after_overflow = after_overflow
+        .as_live()
+        .expect("failed epoch advance must leave the fixture live");
+    assert_eq!(
+        after_overflow.version(),
+        before_version,
+        "failed epoch advance must not consume the row CAS version"
+    );
+    assert_eq!(after_overflow.material_epoch(), before_epoch);
+    assert_eq!(after_overflow.refresh_retry_gate(), before_gate.as_ref());
+    assert_eq!(
+        after_overflow.data(),
+        &before_data,
+        "failed epoch advance must not mutate material"
+    );
 
     let corrupt_id = CredentialId::new();
     let corrupt_key = selector(&owner_b, corrupt_id);

@@ -48,6 +48,22 @@ Credential writes are explicit `create`, version-fenced `replace`, and
 version-fenced `tombstone` intents. The selector owns a typed global
 `CredentialId`; terminal state is structural and cannot carry live-only data.
 Generic overwrite and physical-delete operations are not part of the port.
+Refresh-retry admission is also structural aggregate state: it is never stored
+in user metadata or conflated with refresh-claim TTL. Replacements carry an
+outer `CredentialMaterialTransition`: `Preserve { refresh_retry }` retains the
+backend-owned material epoch while applying one explicit
+preserve/clear/permanent/timed gate transition; `Advance` increments the epoch
+and unconditionally clears the old gate. Backends initialize creates and
+migrated rows at `CredentialMaterialEpoch::MIN`, reject epoch overflow
+fail-closed, and evaluate timed gates against their authoritative clock.
+`refresh_retry_snapshot` returns credential version, material epoch,
+reauthentication state, and admission decision from one backend read; callers
+must not reconstruct it from separate reads.
+`Never` means “never retry this credential-material epoch”: an explicit
+material replacement/reconnect or durable reauthentication decision uses
+`Advance`, invalidates stale same-epoch finalizers, and clears the gate.
+Reauthentication additionally blocks resolution through its own flag. The ban
+is not global to the credential identity.
 
 ## Contract pointer
 

@@ -53,7 +53,7 @@ const LEGACY_COLUMNS: [ExpectedColumn; 13] = [
     column("metadata", "text", false, Some("'{}'::text")),
 ];
 
-const CURRENT_COLUMNS: [ExpectedColumn; 15] = [
+const LIFECYCLE_COLUMNS: [ExpectedColumn; 15] = [
     column("id", "text", false, None),
     column("name", "text", true, None),
     column("owner_id", "text", false, None),
@@ -69,6 +69,30 @@ const CURRENT_COLUMNS: [ExpectedColumn; 15] = [
     column("metadata", "text", false, Some("'{}'::text")),
     column("record_state", "text", false, None),
     column("tombstoned_at", "timestamptz", true, None),
+];
+
+const CURRENT_COLUMNS: [ExpectedColumn; 21] = [
+    column("id", "text", false, None),
+    column("name", "text", true, None),
+    column("owner_id", "text", false, None),
+    column("credential_key", "text", false, None),
+    column("state_kind", "text", false, None),
+    column("state_version", "int8", false, None),
+    column("data", "bytea", false, None),
+    column("version", "int8", false, None),
+    column("material_epoch", "int8", false, None),
+    column("created_at", "timestamptz", false, None),
+    column("updated_at", "timestamptz", false, None),
+    column("expires_at", "timestamptz", true, None),
+    column("reauth_required", "bool", false, Some("false")),
+    column("metadata", "text", false, Some("'{}'::text")),
+    column("record_state", "text", false, None),
+    column("tombstoned_at", "timestamptz", true, None),
+    column("refresh_retry_mode", "text", true, None),
+    column("refresh_retry_not_before", "timestamptz", true, None),
+    column("refresh_retry_phase", "text", true, None),
+    column("refresh_retry_kind", "text", true, None),
+    column("refresh_retry_diagnostic_code", "text", true, None),
 ];
 
 const LEGACY_SENTINEL_EVENT_COLUMNS: [ExpectedColumn; 5] = [
@@ -162,12 +186,14 @@ const fn index(
 pub(crate) async fn admit(
     connection: &mut PgConnection,
 ) -> Result<SchemaAdmission, CredentialStoreStartupError> {
-    let observation = observe(connection).await?;
-    classify_schema(&postgres_policy(), &observation).map_err(Into::into)
+    let policy = postgres_policy();
+    let observation = observe(connection, policy.current_version).await?;
+    classify_schema(&policy, &observation).map_err(Into::into)
 }
 
 async fn observe(
     connection: &mut PgConnection,
+    current_version: i64,
 ) -> Result<SchemaObservation, CredentialStoreStartupError> {
     let ledger_exists = relation_exists(connection, "_sqlx_migrations").await?;
     let credentials_exists = relation_exists(connection, "credentials").await?;
@@ -224,19 +250,23 @@ async fn observe(
     .collect::<Vec<_>>();
 
     let latest = ledger_rows.last().map(|row| row.version);
-    if latest.is_some_and(|version| version >= 30) {
+    let latest_is_supported = latest.is_some_and(|version| version <= current_version);
+    if latest_is_supported && latest.is_some_and(|version| version >= 30) {
         if !relation_exists(connection, "credential_sentinel_events").await? {
             return unsupported(AdmissionReason::InvalidSentinelEventsRelation);
         }
-        validate_sentinel_events_relation(connection, latest == Some(39)).await?;
+        validate_sentinel_events_relation(connection, latest.is_some_and(|version| version >= 39))
+            .await?;
     }
-    let credentials = if credentials_exists && latest.is_some_and(|version| version >= 30) {
-        let current = latest == Some(39);
-        validate_credentials_relation(connection, current).await?;
-        credential_rows(connection, current).await?
-    } else {
-        Vec::new()
-    };
+    let credentials =
+        if credentials_exists && latest_is_supported && latest.is_some_and(|version| version >= 30)
+        {
+            let latest = latest.ok_or(CredentialStoreStartupError::Unavailable)?;
+            validate_credentials_relation(connection, latest).await?;
+            credential_rows(connection, latest).await?
+        } else {
+            Vec::new()
+        };
 
     Ok(SchemaObservation {
         migration_ledger: MigrationLedger::Present(ledger_rows),
@@ -324,10 +354,12 @@ fn constraints_match(actual: &[ConstraintShape], expected: &[(&str, &str, &str)]
 
 async fn validate_credentials_relation(
     connection: &mut PgConnection,
-    current: bool,
+    latest: i64,
 ) -> Result<(), CredentialStoreStartupError> {
-    let expected = if current {
+    let expected = if latest >= 40 {
         &CURRENT_COLUMNS[..]
+    } else if latest >= 39 {
+        &LIFECYCLE_COLUMNS[..]
     } else {
         &LEGACY_COLUMNS[..]
     };
@@ -336,7 +368,46 @@ async fn validate_credentials_relation(
     }
 
     let constraints = constraint_shapes(connection, "credentials").await?;
-    let constraint_contract: &[(&str, &str, &str)] = if current {
+    let constraint_contract: &[(&str, &str, &str)] = if latest >= 40 {
+        &[
+            (
+                "credentials_live_name_projection",
+                "c",
+                "CHECK (record_state = 'tombstoned'::text OR record_state = 'live'::text AND (name IS NULL AND ((metadata::jsonb #> '{display,display_name}'::text[]) IS NULL OR jsonb_typeof(metadata::jsonb #> '{display,display_name}'::text[]) = 'null'::text) OR name IS NOT NULL AND jsonb_typeof(metadata::jsonb #> '{display,display_name}'::text[]) = 'string'::text AND name = (metadata::jsonb #>> '{display,display_name}'::text[])))",
+            ),
+            (
+                "credentials_material_epoch_range",
+                "c",
+                "CHECK (material_epoch >= 1 AND material_epoch <= '9223372036854775807'::bigint)",
+            ),
+            (
+                "credentials_metadata_object",
+                "c",
+                "CHECK (metadata IS JSON OBJECT WITH UNIQUE KEYS)",
+            ),
+            ("credentials_pkey", "p", "PRIMARY KEY (id)"),
+            (
+                "credentials_record_shape",
+                "c",
+                "CHECK (record_state = 'live'::text AND tombstoned_at IS NULL AND version <= '9223372036854775806'::bigint OR record_state = 'tombstoned'::text AND tombstoned_at IS NOT NULL AND octet_length(data) = 0 AND name IS NULL AND expires_at IS NULL AND reauth_required = false AND metadata = '{}'::text AND refresh_retry_mode IS NULL AND refresh_retry_not_before IS NULL AND refresh_retry_phase IS NULL AND refresh_retry_kind IS NULL AND refresh_retry_diagnostic_code IS NULL)",
+            ),
+            (
+                "credentials_refresh_retry_gate_shape",
+                "c",
+                "CHECK (refresh_retry_mode IS NULL AND refresh_retry_not_before IS NULL AND refresh_retry_phase IS NULL AND refresh_retry_kind IS NULL AND refresh_retry_diagnostic_code IS NULL OR record_state = 'live'::text AND refresh_retry_mode IS NOT NULL AND refresh_retry_phase IS NOT NULL AND (refresh_retry_phase = ANY (ARRAY['before_dispatch'::text, 'provider_confirmed_not_applied'::text])) AND refresh_retry_kind IS NOT NULL AND (refresh_retry_kind = ANY (ARRAY['transient_network'::text, 'provider_unavailable'::text, 'protocol_error'::text])) AND (refresh_retry_diagnostic_code IS NULL OR (refresh_retry_diagnostic_code COLLATE \"C\") ~ '^[A-Za-z0-9_.:-]{1,64}$'::text) AND (refresh_retry_mode = 'never'::text AND refresh_retry_not_before IS NULL OR refresh_retry_mode = 'not_before'::text AND refresh_retry_not_before IS NOT NULL))",
+            ),
+            (
+                "credentials_state_version_range",
+                "c",
+                "CHECK (state_version >= 0 AND state_version <= '4294967295'::bigint)",
+            ),
+            (
+                "credentials_version_range",
+                "c",
+                "CHECK (version >= 1 AND version <= '9223372036854775807'::bigint)",
+            ),
+        ]
+    } else if latest >= 39 {
         &[
             (
                 "credentials_live_name_projection",
@@ -372,7 +443,7 @@ async fn validate_credentials_relation(
         return unsupported(AdmissionReason::InvalidCredentialsRelation);
     }
 
-    validate_indexes(connection, current).await
+    validate_indexes(connection, latest >= 39).await
 }
 
 async fn validate_sentinel_events_relation(
@@ -582,15 +653,34 @@ fn indexes_match(indexes: &[IndexShape], expected: &[ExpectedIndex]) -> bool {
 
 async fn credential_rows(
     connection: &mut PgConnection,
-    current: bool,
+    latest: i64,
 ) -> Result<Vec<LegacyCredentialRecord>, CredentialStoreStartupError> {
-    let rows = if current {
+    let rows = if latest >= 40 {
         sqlx::query(
             "SELECT id, owner_id, name, state_version, octet_length(data)::bigint AS data_len,
-                    version, metadata, record_state,
+                    version, material_epoch, metadata, record_state,
                     tombstoned_at IS NOT NULL AS tombstoned_at_present,
                     expires_at IS NOT NULL AS expires_at_present,
-                    reauth_required
+                    reauth_required, refresh_retry_mode,
+                    refresh_retry_not_before IS NOT NULL
+                        AS refresh_retry_not_before_present,
+                    refresh_retry_phase, refresh_retry_kind,
+                    refresh_retry_diagnostic_code
+             FROM credentials",
+        )
+        .fetch_all(connection)
+        .await
+    } else if latest >= 39 {
+        sqlx::query(
+            "SELECT id, owner_id, name, state_version, octet_length(data)::bigint AS data_len,
+                    version, NULL::bigint AS material_epoch, metadata, record_state,
+                    tombstoned_at IS NOT NULL AS tombstoned_at_present,
+                    expires_at IS NOT NULL AS expires_at_present,
+                    reauth_required, NULL::text AS refresh_retry_mode,
+                    FALSE AS refresh_retry_not_before_present,
+                    NULL::text AS refresh_retry_phase,
+                    NULL::text AS refresh_retry_kind,
+                    NULL::text AS refresh_retry_diagnostic_code
              FROM credentials",
         )
         .fetch_all(connection)
@@ -598,10 +688,14 @@ async fn credential_rows(
     } else {
         sqlx::query(
             "SELECT id, owner_id, name, state_version, octet_length(data)::bigint AS data_len,
-                    version, metadata, NULL::text AS record_state,
+                    version, NULL::bigint AS material_epoch, metadata, NULL::text AS record_state,
                     FALSE AS tombstoned_at_present,
                     expires_at IS NOT NULL AS expires_at_present,
-                    reauth_required
+                    reauth_required, NULL::text AS refresh_retry_mode,
+                    FALSE AS refresh_retry_not_before_present,
+                    NULL::text AS refresh_retry_phase,
+                    NULL::text AS refresh_retry_kind,
+                    NULL::text AS refresh_retry_diagnostic_code
              FROM credentials",
         )
         .fetch_all(connection)
@@ -633,6 +727,9 @@ async fn credential_rows(
                 version: row
                     .try_get("version")
                     .map_err(|_| unsupported_error(AdmissionReason::InvalidCredentialsRelation))?,
+                material_epoch: row
+                    .try_get("material_epoch")
+                    .map_err(|_| unsupported_error(AdmissionReason::InvalidCredentialsRelation))?,
                 metadata: row
                     .try_get("metadata")
                     .map_err(|_| unsupported_error(AdmissionReason::InvalidCredentialsRelation))?,
@@ -647,6 +744,23 @@ async fn credential_rows(
                     .map_err(|_| unsupported_error(AdmissionReason::InvalidCredentialsRelation))?,
                 reauth_required: row
                     .try_get("reauth_required")
+                    .map_err(|_| unsupported_error(AdmissionReason::InvalidCredentialsRelation))?,
+                refresh_retry_mode: row
+                    .try_get("refresh_retry_mode")
+                    .map_err(|_| unsupported_error(AdmissionReason::InvalidCredentialsRelation))?,
+                refresh_retry_not_before_present: row
+                    .try_get("refresh_retry_not_before_present")
+                    .map_err(|_| {
+                    unsupported_error(AdmissionReason::InvalidCredentialsRelation)
+                })?,
+                refresh_retry_phase: row
+                    .try_get("refresh_retry_phase")
+                    .map_err(|_| unsupported_error(AdmissionReason::InvalidCredentialsRelation))?,
+                refresh_retry_kind: row
+                    .try_get("refresh_retry_kind")
+                    .map_err(|_| unsupported_error(AdmissionReason::InvalidCredentialsRelation))?,
+                refresh_retry_diagnostic_code: row
+                    .try_get("refresh_retry_diagnostic_code")
                     .map_err(|_| unsupported_error(AdmissionReason::InvalidCredentialsRelation))?,
             })
         })

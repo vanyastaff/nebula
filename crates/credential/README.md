@@ -137,6 +137,21 @@ wired to a hardened injected transport.
   a tombstone cannot carry secret bytes or other live-only fields and its id cannot be resurrected.
 - Ready SQLite/PostgreSQL stores pass fail-closed schema admission and canonical migration before
   they can be constructed; unchecked raw pools are not a composition surface.
+- Each refresh implementation receives one move-only `RefreshAttempt`. Provider dispatch consumes
+  that witness; transport failure or an ambiguous/malformed response can produce only an
+  outcome-unknown report and retains the durable claim. Only a pre-dispatch witness or a complete
+  response proving no effect may release it. Coalescing and persistence outcomes remain
+  framework-owned.
+- Refresh authority is compared through the durable material epoch, never serialized-byte
+  equality or the general row version. Display-only writes preserve the epoch and are merged before
+  provider dispatch; explicit material/reconnect, durable reauthentication decisions, and
+  successful refresh transitions advance it even when bytes are identical, and clear any retry
+  gate.
+- A known refresh outcome whose required retry-gate or reauthentication transition definitely
+  failed is `RefreshFinalization`, distinct from an ambiguous `OutcomeUnknown`. Both retain the
+  claim and are non-retryable. Payload-free L1 completion preserves that distinction for concurrent
+  waiters: retry-unsafe completion becomes `RefreshReconciliationRequired`, while only an unknown
+  completion becomes `OutcomeUnknown`.
 - Credential properties never resolve workflow expressions.
 - Durable business state never relies on `nebula-eventbus`; events are observations/wake hints.
 - Provider-controlled strings never become public validation or HTTP error text.
@@ -166,10 +181,10 @@ wired to a hardened injected transport.
   by this workspace's DNS/redirect/proxy behavior tests. The first-party server binds claims to
   the admitted credential SQLite pool, uses a process-unique replica ID, and retains the sole
   periodic poison-accounting sweep for its complete serving lifecycle.
-- A lost database acknowledgement after commit is `OutcomeUnknown`; K2 deliberately does not
-  replay it. An expired provider-side-effect claim remains durable fail-closed poison; elapsed TTL
-  never grants replay authority. Explicit reconciliation and safe operation replay/idempotency
-  belong to K3.
+- A lost database acknowledgement after commit is `OutcomeUnknown`. K2 never replays it
+  automatically. An expired provider-side-effect claim remains durable fail-closed poison, and
+  elapsed TTL never grants replay authority. Explicit reconciliation and safe operation
+  replay/idempotency belong to K3.
 - Interim audit is non-authoritative observation. It cannot make a confirmed mutation fail;
   atomic audit/outbox evidence belongs to K3.
 - Tombstoning clears current live material but does not claim historical erasure from database

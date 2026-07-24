@@ -5,7 +5,7 @@
 //! exercise the same credential controller without creating a dependency cycle
 //! on the server binary.
 
-use std::{collections::BTreeMap, fmt, sync::Arc};
+use std::{collections::BTreeMap, fmt, num::NonZeroU64, sync::Arc};
 
 use async_trait::async_trait;
 use nebula_credential::{
@@ -19,9 +19,9 @@ use nebula_storage_port::Scope;
 
 use super::{
     CredentialCommandGateway, CredentialGatewayAcquisition, CredentialGatewayCommand,
-    CredentialGatewayError, CredentialGatewayRecord, CredentialGatewayResult,
-    CredentialGatewayTestFailure, CredentialGatewayTestResult, CredentialGatewayValidationIssue,
-    CredentialGatewayValidationReport,
+    CredentialGatewayError, CredentialGatewayRecord, CredentialGatewayRefreshRetry,
+    CredentialGatewayResult, CredentialGatewayTestFailure, CredentialGatewayTestResult,
+    CredentialGatewayValidationIssue, CredentialGatewayValidationReport,
 };
 use crate::{
     domain::credential::dto::{AcquisitionInteraction, FormPostField},
@@ -300,6 +300,20 @@ fn map_controller_error(error: CredentialControllerError) -> CredentialGatewayEr
     }
 }
 
+fn map_refresh_not_applied(advice: nebula_credential::RetryAdvice) -> CredentialGatewayError {
+    // A future retry mode remains fail-closed until the HTTP contract gives it
+    // an explicit representation.
+    let retry = if let nebula_credential::RetryAdvice::After(delay) = advice {
+        NonZeroU64::new(delay.get().as_secs())
+            .map_or(CredentialGatewayRefreshRetry::Never, |seconds| {
+                CredentialGatewayRefreshRetry::After { seconds }
+            })
+    } else {
+        CredentialGatewayRefreshRetry::Never
+    };
+    CredentialGatewayError::RefreshNotApplied { retry }
+}
+
 fn map_service_error(error: CredentialServiceError) -> CredentialGatewayError {
     match error {
         CredentialServiceError::NotFound { .. } => CredentialGatewayError::NotFound,
@@ -335,12 +349,23 @@ fn map_service_error(error: CredentialServiceError) -> CredentialGatewayError {
         },
         CredentialServiceError::PendingExpired => CredentialGatewayError::PendingExpired,
         CredentialServiceError::ReauthRequired { .. } => CredentialGatewayError::ReauthRequired,
+        CredentialServiceError::RefreshNotApplied(context) => {
+            map_refresh_not_applied(context.retry())
+        },
         CredentialServiceError::TransientProvider(_)
         | CredentialServiceError::Provider(_)
         | CredentialServiceError::ExternalSourceNotWired { .. }
         | CredentialServiceError::PersistenceUnavailable => CredentialGatewayError::Unavailable,
-        CredentialServiceError::OutcomeUnknown
-        | CredentialServiceError::PostProviderPersistence => CredentialGatewayError::OutcomeUnknown,
+        CredentialServiceError::OutcomeUnknown => CredentialGatewayError::OutcomeUnknown,
+        CredentialServiceError::RefreshPostProviderPersistence
+        | CredentialServiceError::RefreshRetryGateFinalization
+        | CredentialServiceError::ReauthDecisionFinalization
+        | CredentialServiceError::RefreshReconciliationRequired => {
+            CredentialGatewayError::RefreshReconciliationRequired
+        },
+        CredentialServiceError::RevokePostProviderPersistence => {
+            CredentialGatewayError::RevokeReconciliationRequired
+        },
         CredentialServiceError::Store
         | CredentialServiceError::SessionRequired { .. }
         | CredentialServiceError::CapabilityWithoutOps { .. }
@@ -348,5 +373,54 @@ fn map_service_error(error: CredentialServiceError) -> CredentialGatewayError {
         | CredentialServiceError::Cancelled
         | CredentialServiceError::ScopeViolation { .. } => CredentialGatewayError::Internal,
         _ => CredentialGatewayError::Internal,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_gateway_preserves_refresh_retry_advice() {
+        let delay = nebula_credential::RetryDelay::new(std::time::Duration::from_secs(17))
+            .expect("non-zero test retry delay");
+
+        assert_eq!(
+            map_refresh_not_applied(nebula_credential::RetryAdvice::Never),
+            CredentialGatewayError::RefreshNotApplied {
+                retry: CredentialGatewayRefreshRetry::Never,
+            }
+        );
+        assert_eq!(
+            map_refresh_not_applied(nebula_credential::RetryAdvice::After(delay)),
+            CredentialGatewayError::RefreshNotApplied {
+                retry: CredentialGatewayRefreshRetry::After {
+                    seconds: NonZeroU64::new(17).expect("test delay is non-zero"),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn test_gateway_distinguishes_unknown_refresh_and_revoke_outcomes() {
+        assert_eq!(
+            map_service_error(CredentialServiceError::OutcomeUnknown),
+            CredentialGatewayError::OutcomeUnknown,
+        );
+        for error in [
+            CredentialServiceError::RefreshPostProviderPersistence,
+            CredentialServiceError::RefreshRetryGateFinalization,
+            CredentialServiceError::ReauthDecisionFinalization,
+            CredentialServiceError::RefreshReconciliationRequired,
+        ] {
+            assert_eq!(
+                map_service_error(error),
+                CredentialGatewayError::RefreshReconciliationRequired,
+            );
+        }
+        assert_eq!(
+            map_service_error(CredentialServiceError::RevokePostProviderPersistence),
+            CredentialGatewayError::RevokeReconciliationRequired,
+        );
     }
 }

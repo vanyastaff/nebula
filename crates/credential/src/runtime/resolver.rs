@@ -9,20 +9,26 @@ use std::{
     sync::Arc,
 };
 
+#[cfg(test)]
 use crate::error::CredentialError;
 use crate::runtime::refresh::transport::RefreshTransport;
 use crate::runtime::refresh::{
-    RefreshCoordinator, RefreshDisposition, RefreshError, RefreshRecheckError,
+    ReauthWrite, RefreshCoordinator, RefreshDisposition, RefreshError, RefreshRecheck,
+    RefreshRecheckError, RetryGateWrite, context_from_block, persist_reauth_required,
+    persist_retry_gate,
 };
 use crate::runtime::resolve_error::{
     ResolveError, reject_tombstoned, resolve_error_to_credential_error,
 };
 use crate::{
     Credential, CredentialContext, CredentialEvent, CredentialHandle, CredentialId,
-    CredentialLifecycle, CredentialPersistence, CredentialPersistenceError, CredentialReplacement,
-    CredentialSelector, CredentialState, Decision, LAST_VALIDATED_AT_METADATA_KEY, Refreshable,
-    SchemeFactory, SchemeGuard, StoredCredential, StoredLiveCredential,
-    resolve::{ReauthReason, RefreshOutcome},
+    CredentialLifecycle, CredentialMaterialTransition, CredentialPersistence,
+    CredentialPersistenceError, CredentialReplacement, CredentialSelector, CredentialState,
+    Decision, LAST_VALIDATED_AT_METADATA_KEY, RefreshAttempt, RefreshNotAppliedContext,
+    RefreshRetryAdmission, Refreshable, SchemeFactory, SchemeGuard, StoredCredential,
+    StoredLiveCredential,
+    contract::{RefreshReauthPhase, RefreshReportKind},
+    resolve::ReauthReason,
 };
 
 /// Framework-imposed mandatory re-validation floor for a refreshable credential
@@ -83,23 +89,25 @@ enum CoordinatedResolve<S: AuthScheme> {
     Reevaluate,
 }
 
-/// Translate the only proof-bearing credential refresh failure into the
-/// coordinator's replay-safe class. All other implementation-defined errors
-/// fail closed because the generic resolver cannot infer whether provider
-/// dispatch crossed an irreversible boundary.
-fn classify_refresh_error(error: CredentialError, credential_id: &str) -> ResolveError {
-    match error {
-        CredentialError::RefreshFailed(context) => ResolveError::ExactRefreshFailure {
-            credential_id: credential_id.to_owned(),
-            context,
-        },
-        CredentialError::OutcomeUnknown => ResolveError::ProviderOutcomeUnknown {
-            credential_id: credential_id.to_owned(),
-        },
-        _ => ResolveError::ProviderOutcomeUnknown {
-            credential_id: credential_id.to_owned(),
+fn map_refresh_disposition<T, U>(
+    disposition: RefreshDisposition<T>,
+    map: impl FnOnce(T) -> U,
+) -> RefreshDisposition<U> {
+    match disposition {
+        RefreshDisposition::StateAdvanced(value) => RefreshDisposition::state_advanced(map(value)),
+        RefreshDisposition::NoStateChange(value) => RefreshDisposition::no_state_change(map(value)),
+        RefreshDisposition::ReplaySafe(value) => RefreshDisposition::replay_safe(map(value)),
+        RefreshDisposition::RetryUnsafe(value) => RefreshDisposition::retry_unsafe(map(value)),
+        RefreshDisposition::OutcomeUnknown(value) => {
+            RefreshDisposition::outcome_unknown(map(value))
         },
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RefreshCommitPhase {
+    ProviderConfirmed,
+    LocalOnly,
 }
 
 /// Runtime credential resolver with optional coordinated refresh.
@@ -413,6 +421,8 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
                 return Ok(self.materialize_handle::<C>(selector, scheme));
             }
 
+            self.ensure_refresh_admitted(selector).await?;
+
             if self
                 .refresh_coordinator
                 .is_circuit_open(&credential_id_text)
@@ -438,7 +448,7 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
             }
 
             match self
-                .refresh_via_coordinator::<C>(selector, &credential_id, state, stored, ctx)
+                .refresh_via_coordinator::<C>(selector, &credential_id, stored, ctx)
                 .await?
             {
                 CoordinatedResolve::Resolved(handle) => return Ok(handle),
@@ -462,7 +472,6 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
         &self,
         selector: &CredentialSelector,
         typed_id: &CredentialId,
-        state: C::State,
         stored: StoredLiveCredential,
         ctx: &CredentialContext,
     ) -> Result<CoordinatedResolve<C::Scheme>, ResolveError>
@@ -477,29 +486,19 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
         // disposition so `OutcomeUnknown` retains L2 to TTL.
         let coord = Arc::clone(&self.refresh_coordinator);
         let resolver = self.clone();
-        let resolver_state = state;
         let resolver_stored = stored;
-        let observed_version = resolver_stored.version();
+        let observed_material_epoch = resolver_stored.material_epoch();
         let selector_owned = selector.clone();
         let ctx_owned = ctx.clone();
 
-        // Sub-spec post-backoff state recheck. After the L2 backoff sleep the
-        // contender's claim may have been released because their refresh
-        // succeeded — in that case the credential is now fresh and we should
-        // short-circuit rather than running the closure on a freshly-rotated
-        // refresh_token (n8n #13088 lineage). We re-read the credential from
-        // the store and apply the same `needs_refresh` predicate the parent
-        // `resolve_with_refresh` used; if the credential is no longer expired,
-        // return `false` so the coordinator surfaces `CoalescedByOtherReplica`.
-        //
-        // Sub-spec ProviderRejected gap (review feedback I1): if the
-        // contender's refresh returned `ReauthRequired` it persisted
-        // `reauth_required = true` on the row before releasing the L2 claim.
-        // Re-running the IdP closure here would produce another
-        // `invalid_grant` rejection — `O(replicas)` rate-limit / IP-ban
-        // pressure on the IdP. Short-circuit to `false` so this caller also
-        // surfaces `CoalescedByOtherReplica` and the application layer routes
-        // the credential to interactive reauth instead.
+        // Every admission point (after L1 wake, L2 contention, and immediate
+        // L2 acquisition) consumes one backend-atomic snapshot. A blocked gate
+        // wins even when installing it advanced the row version. Display-only
+        // writes preserve the material epoch and therefore remain `Needed`;
+        // only a newer material epoch or durable reauth decision is
+        // `Satisfied` and forces parent-path re-evaluation.
+        // Combining a separate admission read with `get` would permit a gate
+        // write between them to masquerade as successful coalescing.
         let store_for_recheck = Arc::clone(&self.store);
         let recheck_selector = selector.clone();
         let needs_refresh_after_backoff = move |_id: &CredentialId| {
@@ -507,72 +506,44 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
             let selector = recheck_selector.clone();
             async move {
                 let credential_id = selector.credential_id();
-                let physical = match store.get(&selector).await {
-                    Ok(stored) => stored,
-                    Err(e) => {
-                        tracing::warn!(
-                            credential_id = %credential_id,
-                            ?e,
-                            "post-backoff state recheck: store read failed; provider dispatch denied"
-                        );
-                        return Err(RefreshRecheckError::Unavailable);
+                let snapshot = match store.refresh_retry_snapshot(&selector).await {
+                    Ok(snapshot) => snapshot,
+                    Err(CredentialPersistenceError::NotFound) => {
+                        return Ok(RefreshRecheck::Satisfied);
                     },
+                    Err(CredentialPersistenceError::CorruptRecord) => {
+                        return Err(RefreshRecheckError::InvalidState);
+                    },
+                    Err(_) => return Err(RefreshRecheckError::Unavailable),
                 };
-                let StoredCredential::Live(stored) = physical else {
-                    tracing::debug!(
-                        credential_id = %credential_id,
-                        "post-backoff state recheck: credential is tombstoned; \
-                         short-circuiting to CoalescedByOtherReplica"
-                    );
-                    return Ok(false);
-                };
-                if stored.version() != observed_version {
-                    tracing::debug!(
-                        credential_id = %credential_id,
-                        observed_version = %observed_version,
-                        current_version = %stored.version(),
-                        "post-backoff state recheck: captured row is stale; re-reading through the parent path"
-                    );
-                    return Ok(false);
+                if let RefreshRetryAdmission::Blocked(block) = snapshot.admission() {
+                    let context = context_from_block(block.clone())
+                        .map_err(|_| RefreshRecheckError::InvalidState)?;
+                    return Ok(RefreshRecheck::Suppressed(context));
                 }
-                if stored.reauth_required() {
+                if snapshot.material_epoch() != observed_material_epoch {
+                    tracing::debug!(
+                        credential_id = %credential_id,
+                        observed_material_epoch = %observed_material_epoch,
+                        current_material_epoch = %snapshot.material_epoch(),
+                        "post-backoff state recheck: captured material authority is stale; re-reading through the parent path"
+                    );
+                    return Ok(RefreshRecheck::Satisfied);
+                }
+                if snapshot.reauth_required() {
                     tracing::debug!(
                         credential_id = %credential_id,
                         "post-backoff state recheck: reauth_required=true on stored \
                          credential — short-circuiting to CoalescedByOtherReplica \
                          (sub-spec §3.6 / I1)"
                     );
-                    return Ok(false);
+                    return Ok(RefreshRecheck::Satisfied);
                 }
-                let state: C::State = match serde_json::from_slice(stored.data()) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        tracing::warn!(
-                            credential_id = %credential_id,
-                            ?e,
-                            "post-backoff state recheck: state decode failed; provider dispatch denied"
-                        );
-                        return Err(RefreshRecheckError::InvalidState);
-                    },
-                };
-                // Mirror the parent `resolve_with_refresh` routing: re-run the
-                // SAME `decide_refresh` (not an ad-hoc inline-expiry test) so a
-                // leased credential with no inline `expires_at`, or a static one
-                // past its re-validation floor, is still seen as needing work
-                // after the backoff — otherwise the contender would surface
-                // `CoalescedByOtherReplica` and the parent serves it stale. Jitter
-                // is deliberately omitted here (it belongs on the initial decision
-                // to de-correlate replicas at startup, not on the coalesce gate).
-                Ok(C::policy(&state).decide_refresh(
-                    last_validated_or_created(&stored),
-                    chrono::Utc::now(),
-                    <C as Refreshable>::REFRESH_POLICY.early_refresh,
-                    DEFAULT_REVALIDATION_FLOOR,
-                ) != Decision::Usable)
+                Ok(RefreshRecheck::Needed)
             }
         };
 
-        let outcome: Result<Result<CredentialHandle<C::Scheme>, ResolveError>, RefreshError> =
+        let outcome: Result<Result<CoordinatedResolve<C::Scheme>, ResolveError>, RefreshError> =
             coord
                 .refresh_coalesced(typed_id, needs_refresh_after_backoff, move || async move {
                     // The coordinator has durably marked RefreshInFlight and
@@ -580,41 +551,45 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
                     // before invoking us. From this point provider contact and
                     // its persistence transition cannot be cancelled by caller
                     // Drop, timeout, or heartbeat loss.
-                    let result = resolver
-                        .perform_refresh::<C>(
-                            &selector_owned,
-                            resolver_state,
-                            resolver_stored,
-                            &ctx_owned,
-                        )
-                        .await;
-                    match &result {
-                        Err(
-                            ResolveError::PostProviderPersistence {
-                                source: CredentialPersistenceError::OutcomeUnknown,
-                                ..
-                            }
-                            | ResolveError::ProviderOutcomeUnknown { .. },
-                        ) => RefreshDisposition::outcome_unknown(result),
-                        Err(
-                            ResolveError::PostProviderPersistence { .. }
-                            | ResolveError::PostProviderStateEncoding { .. },
-                        ) => RefreshDisposition::retry_unsafe(result),
-                        Ok(_) | Err(ResolveError::ReauthRequired { .. }) => {
-                            RefreshDisposition::state_advanced(result)
+                    //
+                    // Re-read once more after acquisition. A display-only write
+                    // may have advanced the CAS version while preserving the
+                    // refresh authority; dispatch must use that latest row so a
+                    // harmless rename cannot turn provider success into an
+                    // unsafe post-provider conflict. Conversely, a material
+                    // epoch advance after the atomic recheck supersedes this
+                    // attempt before provider contact.
+                    let latest = match resolver.load_and_verify::<C>(&selector_owned).await {
+                        Ok(latest) => latest,
+                        Err(error) => {
+                            return RefreshDisposition::no_state_change(Err(error));
                         },
-                        // Includes proof-bearing ExactRefreshFailure: provider
-                        // state is known not to have advanced, so L2 can be
-                        // released without poisoning subsequent attempts.
-                        Err(_) => RefreshDisposition::no_state_change(result),
+                    };
+                    if latest.material_epoch() != observed_material_epoch {
+                        return RefreshDisposition::state_advanced(Ok(
+                            CoordinatedResolve::Reevaluate,
+                        ));
                     }
+                    let latest_state =
+                        match resolver.deserialize::<C>(selector_owned.credential_id(), &latest) {
+                            Ok(state) => state,
+                            Err(error) => {
+                                return RefreshDisposition::no_state_change(Err(error));
+                            },
+                        };
+                    map_refresh_disposition(
+                        resolver
+                            .perform_refresh::<C>(&selector_owned, latest_state, latest, &ctx_owned)
+                            .await,
+                        |result| result.map(CoordinatedResolve::Resolved),
+                    )
                 })
                 .await;
 
         match outcome {
-            Ok(Ok(handle)) => {
+            Ok(Ok(result)) => {
                 self.refresh_coordinator.record_success(&credential_id_text);
-                Ok(CoordinatedResolve::Resolved(handle))
+                Ok(result)
             },
             Ok(Err(e)) => {
                 self.refresh_coordinator.record_failure(&credential_id_text);
@@ -636,6 +611,12 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
                     credential_id: credential_id_text,
                 })
             },
+            Err(RefreshError::ReconciliationRequired) => {
+                self.refresh_coordinator.record_failure(&credential_id_text);
+                Err(ResolveError::RefreshReconciliationRequired {
+                    credential_id: credential_id_text,
+                })
+            },
             Err(RefreshError::StateRecheck(RefreshRecheckError::Unavailable)) => {
                 self.refresh_coordinator.record_failure(&credential_id_text);
                 Err(ResolveError::Store(CredentialPersistenceError::Unavailable))
@@ -645,6 +626,13 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
                 Err(ResolveError::Store(
                     CredentialPersistenceError::CorruptRecord,
                 ))
+            },
+            Err(RefreshError::RetrySuppressed(context)) => {
+                self.refresh_coordinator.record_failure(&credential_id_text);
+                Err(ResolveError::RefreshNotApplied {
+                    credential_id: credential_id_text,
+                    context,
+                })
             },
             Err(e) => {
                 self.refresh_coordinator.record_failure(&credential_id_text);
@@ -661,6 +649,15 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
         &self.refresh_coordinator
     }
 
+    /// Derive the resolver-owned, non-request-cancellable refresh context.
+    ///
+    /// This crate-private seam is shared by execution-time refresh and the
+    /// management forced-refresh path. The resolver remains the sole owner of
+    /// the provider transport; callers cannot inject a parallel authority.
+    pub(crate) fn refresh_context(&self, request: &CredentialContext) -> CredentialContext {
+        request.for_refresh_critical_section(Arc::clone(&self.transport))
+    }
+
     fn emit_refreshed(&self, credential_id: CredentialId) {
         if let Some(bus) = &self.event_bus {
             let _ = bus.emit(CredentialEvent::Refreshed { credential_id });
@@ -674,6 +671,37 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
     fn ensure_source_wired(&self) -> Result<(), ResolveError> {
         if self.external_source_unwired {
             return Err(ResolveError::ExternalSourceNotWired);
+        }
+        Ok(())
+    }
+
+    async fn active_refresh_retry_gate(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<Option<Box<RefreshNotAppliedContext>>, ResolveError> {
+        match self.store.refresh_retry_snapshot(selector).await {
+            Ok(snapshot) if matches!(snapshot.admission(), RefreshRetryAdmission::Open) => Ok(None),
+            Ok(snapshot) => {
+                let RefreshRetryAdmission::Blocked(block) = snapshot.admission() else {
+                    return Ok(None);
+                };
+                context_from_block(block.clone())
+                    .map(Some)
+                    .map_err(|_| ResolveError::Store(CredentialPersistenceError::CorruptRecord))
+            },
+            Err(error) => Err(ResolveError::Store(error)),
+        }
+    }
+
+    async fn ensure_refresh_admitted(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<(), ResolveError> {
+        if let Some(context) = self.active_refresh_retry_gate(selector).await? {
+            return Err(ResolveError::RefreshNotApplied {
+                credential_id: selector.credential_id().to_string(),
+                context,
+            });
         }
         Ok(())
     }
@@ -737,167 +765,208 @@ impl<S: CredentialPersistence + ?Sized> CredentialResolver<S> {
         mut state: C::State,
         stored: StoredLiveCredential,
         ctx: &CredentialContext,
-    ) -> Result<CredentialHandle<C::Scheme>, ResolveError>
+    ) -> RefreshDisposition<Result<CredentialHandle<C::Scheme>, ResolveError>>
     where
         C: Refreshable,
     {
         let credential_id = selector.credential_id();
         let credential_id_text = credential_id.to_string();
-        let refresh_ctx = ctx
-            .clone()
-            .with_refresh_transport(Arc::clone(&self.transport));
+        let refresh_ctx = self.refresh_context(ctx);
         // This future already runs inside the coordinator's owned
         // provider/persistence task. Do not wrap it in a cancelling timeout:
         // dropping an HTTP future cannot prove the provider did not consume or
         // rotate the grant. The coordinator's caller-wait timeout instead
         // returns a non-retryable `RefreshOutcomePending` while this owned
         // future continues under heartbeat + L2 to an exact disposition.
-        let outcome = <C as Refreshable>::refresh(&mut state, &refresh_ctx)
-            .await
-            .map_err(|error| classify_refresh_error(error, &credential_id_text))?;
+        let outcome = <C as Refreshable>::refresh(
+            &mut state,
+            RefreshAttempt::new(&refresh_ctx, C::REFRESH_EXECUTION_MODE),
+        )
+        .await
+        .into_kind();
 
         match outcome {
-            RefreshOutcome::Refreshed => {
-                // Cleartext serialization for the encrypted-at-rest store.
-                let data =
-                    crate::serde_secret::expose_for_serialization(|| serde_json::to_vec(&state))
-                        .map_err(|e| ResolveError::PostProviderStateEncoding {
-                            credential_id: credential_id_text.clone(),
-                            reason: e.to_string(),
-                        })?;
-
-                // Refresh contacted the provider successfully → stamp the
-                // validation time so the mandatory re-validation floor measures
-                // from this real validation, not from a later display edit.
-                //
-                // The provider response was derived from exactly `stored`.
-                // Retrying it against a newer persistence version could overwrite
-                // a concurrent management replacement with stale provider state,
-                // so a CAS conflict is a reconciliation boundary, not a retry.
-                let now = chrono::Utc::now();
-                let mut validated_metadata = stored.metadata().clone();
-                validated_metadata.insert(
-                    LAST_VALIDATED_AT_METADATA_KEY.to_owned(),
-                    serde_json::Value::String(now.to_rfc3339()),
-                );
-                let expected_version = stored.version();
-                let replacement = CredentialReplacement::new(
-                    expected_version,
-                    data.into(),
-                    stored.state_kind().to_owned(),
-                    stored.state_version(),
-                    stored.name().map(str::to_owned),
-                    state.expires_at(),
-                    // Clear the reauth flag on success — idempotent when
-                    // already false, recovers from a stale `true` left
-                    // over by a previous ReauthRequired outcome that the
-                    // application has since re-authorized (sub-spec / I1).
-                    false,
-                    validated_metadata,
-                );
-                match self.store.replace(selector, replacement).await {
-                    Ok(_) => {
-                        self.emit_refreshed(credential_id);
-                        let scheme = C::project(&state);
-                        Ok(self.materialize_handle::<C>(selector, scheme))
-                    },
-                    Err(conflict @ CredentialPersistenceError::VersionConflict { actual, .. }) => {
-                        tracing::warn!(
-                            credential_id = %credential_id,
-                            expected = %expected_version,
-                            actual = %actual,
-                            "CAS conflict on refresh write; refusing to replay stale provider state"
-                        );
-                        Err(ResolveError::PostProviderPersistence {
+            RefreshReportKind::NotApplied(context) => {
+                match persist_retry_gate(self.store.as_ref(), selector, stored, context).await {
+                    RetryGateWrite::Applied(context) => {
+                        RefreshDisposition::state_advanced(Err(ResolveError::RefreshNotApplied {
                             credential_id: credential_id_text,
-                            source: conflict,
-                        })
+                            context,
+                        }))
                     },
-                    Err(error) => Err(ResolveError::PostProviderPersistence {
-                        credential_id: credential_id_text,
-                        source: error,
-                    }),
-                }
-            },
-            RefreshOutcome::ReauthRequired(reason) => {
-                // Persist `reauth_required = true` on the credential row
-                // BEFORE returning the typed error (sub-spec / I1).
-                // Cross-replica readers consult this flag in their
-                // post-backoff state-recheck predicate; without the
-                // persisted bit, every replica would re-run the IdP
-                // closure and produce another invalid_grant rejection.
-                //
-                // The provider rejection was derived from exactly `stored`.
-                // A conflict means a newer row may already contain a successful
-                // refresh or operator replacement. Replaying the stale rejection
-                // would incorrectly mark that newer state as requiring reauth.
-                let expected_version = stored.version();
-                let replacement = CredentialReplacement::new(
-                    expected_version,
-                    stored.data().clone(),
-                    stored.state_kind().to_owned(),
-                    stored.state_version(),
-                    stored.name().map(str::to_owned),
-                    stored.expires_at(),
-                    true,
-                    stored.metadata().clone(),
-                );
-                match self.store.replace(selector, replacement).await {
-                    Ok(_) => {},
-                    Err(conflict @ CredentialPersistenceError::VersionConflict { actual, .. }) => {
-                        tracing::warn!(
-                            credential_id = %credential_id,
-                            expected = %expected_version,
-                            actual = %actual,
-                            "CAS conflict while persisting reauth_required=true; refusing to replay stale provider state"
-                        );
-                        return Err(ResolveError::PostProviderPersistence {
-                            credential_id: credential_id_text,
-                            source: conflict,
-                        });
+                    RetryGateWrite::Superseded(error) => {
+                        RefreshDisposition::no_state_change(Err(ResolveError::Store(error)))
                     },
-                    Err(error) => {
-                        // The reauth decision is replica-visible only after an
-                        // acknowledged durable write. Surfacing the provider
-                        // result on any persistence failure would release the
-                        // refresh claim while leaving another replica free to
-                        // re-POST the same known-dead grant.
+                    RetryGateWrite::DefiniteFailure(error) => {
                         tracing::warn!(
                             credential_id = %credential_id,
                             ?error,
-                            "failed to persist reauth_required=true; failing closed"
+                            "durable refresh retry gate finalization failed; retaining claim"
                         );
-                        return Err(ResolveError::PostProviderPersistence {
-                            credential_id: credential_id_text,
-                            source: error,
-                        });
+                        RefreshDisposition::retry_unsafe(Err(
+                            ResolveError::RefreshRetryGateFinalization {
+                                credential_id: credential_id_text,
+                            },
+                        ))
                     },
+                    RetryGateWrite::OutcomeUnknown => RefreshDisposition::outcome_unknown(Err(
+                        ResolveError::Store(CredentialPersistenceError::OutcomeUnknown),
+                    )),
                 }
-                Err(ResolveError::ReauthRequired {
+            },
+            RefreshReportKind::OutcomeUnknown => {
+                RefreshDisposition::outcome_unknown(Err(ResolveError::ProviderOutcomeUnknown {
                     credential_id: credential_id_text,
-                    reason,
-                })
+                }))
             },
-            // CoalescedByOtherReplica is success — another replica refreshed
-            // while we were waiting on L2. Caller re-reads state from the
-            // store via the parent dispatch path. This arm reaches us from
-            // the inner `RefreshOutcome` only via a future resolver path;
-            // today the sub-spec coalesce is surfaced by the `RefreshError`
-            // layer in `RefreshCoordinator::refresh_coalesced` (handled in
-            // the outer match on `outcome` above). Keep the arm explicit so
-            // adding consumers does not silently fall through.
-            RefreshOutcome::CoalescedByOtherReplica => {
+            RefreshReportKind::ProviderRefreshed => {
+                self.persist_refreshed_state::<C>(
+                    selector,
+                    state,
+                    stored,
+                    RefreshCommitPhase::ProviderConfirmed,
+                )
+                .await
+            },
+            RefreshReportKind::LocallyRefreshed => {
+                self.persist_refreshed_state::<C>(
+                    selector,
+                    state,
+                    stored,
+                    RefreshCommitPhase::LocalOnly,
+                )
+                .await
+            },
+            RefreshReportKind::ReauthRequired { reason, phase } => {
+                let phase_name = match phase {
+                    RefreshReauthPhase::BeforeDispatch => "before_dispatch",
+                    RefreshReauthPhase::ProviderConfirmed => "provider_confirmed",
+                };
+                match persist_reauth_required(self.store.as_ref(), selector, stored).await {
+                    ReauthWrite::Applied => {
+                        RefreshDisposition::state_advanced(Err(ResolveError::ReauthRequired {
+                            credential_id: credential_id_text,
+                            reason,
+                        }))
+                    },
+                    ReauthWrite::Superseded(error) => {
+                        tracing::warn!(
+                            credential_id = %credential_id,
+                            refresh.reauth_phase = phase_name,
+                            ?error,
+                            "failed to persist an exact reauthentication decision"
+                        );
+                        RefreshDisposition::no_state_change(Err(ResolveError::Store(error)))
+                    },
+                    ReauthWrite::DefiniteFailure(error)
+                        if phase == RefreshReauthPhase::ProviderConfirmed =>
+                    {
+                        tracing::warn!(
+                            credential_id = %credential_id,
+                            ?error,
+                            "provider-confirmed reauthentication decision was not durable; retaining claim"
+                        );
+                        RefreshDisposition::retry_unsafe(Err(
+                            ResolveError::ReauthDecisionFinalization {
+                                credential_id: credential_id_text,
+                            },
+                        ))
+                    },
+                    ReauthWrite::DefiniteFailure(error) => {
+                        RefreshDisposition::no_state_change(Err(ResolveError::Store(error)))
+                    },
+                    ReauthWrite::OutcomeUnknown => RefreshDisposition::outcome_unknown(Err(
+                        ResolveError::Store(CredentialPersistenceError::OutcomeUnknown),
+                    )),
+                }
+            },
+        }
+    }
+
+    async fn persist_refreshed_state<C>(
+        &self,
+        selector: &CredentialSelector,
+        state: C::State,
+        stored: StoredLiveCredential,
+        phase: RefreshCommitPhase,
+    ) -> RefreshDisposition<Result<CredentialHandle<C::Scheme>, ResolveError>>
+    where
+        C: Refreshable,
+    {
+        let credential_id = selector.credential_id();
+        let credential_id_text = credential_id.to_string();
+        let data =
+            match crate::serde_secret::expose_for_serialization(|| serde_json::to_vec(&state)) {
+                Ok(data) => data,
+                Err(error) if phase == RefreshCommitPhase::ProviderConfirmed => {
+                    return RefreshDisposition::retry_unsafe(Err(
+                        ResolveError::PostProviderStateEncoding {
+                            credential_id: credential_id_text,
+                            reason: error.to_string(),
+                        },
+                    ));
+                },
+                Err(error) => {
+                    return RefreshDisposition::no_state_change(Err(ResolveError::Refresh {
+                        credential_id: credential_id_text,
+                        reason: format!("local refresh state encoding failed: {error}"),
+                    }));
+                },
+            };
+
+        let now = chrono::Utc::now();
+        let mut validated_metadata = stored.metadata().clone();
+        validated_metadata.insert(
+            LAST_VALIDATED_AT_METADATA_KEY.to_owned(),
+            serde_json::Value::String(now.to_rfc3339()),
+        );
+        let expected_version = stored.version();
+        let replacement = CredentialReplacement::new(
+            expected_version,
+            data.into(),
+            stored.state_kind().to_owned(),
+            stored.state_version(),
+            stored.name().map(str::to_owned),
+            state.expires_at(),
+            false,
+            validated_metadata,
+            CredentialMaterialTransition::advance(),
+        );
+
+        match self.store.replace(selector, replacement).await {
+            Ok(_) => {
+                self.emit_refreshed(credential_id);
                 let scheme = C::project(&state);
-                Ok(self.materialize_handle::<C>(selector, scheme))
+                RefreshDisposition::state_advanced(Ok(
+                    self.materialize_handle::<C>(selector, scheme)
+                ))
             },
-            // `RefreshOutcome` is `#[non_exhaustive]`; this arm is required for
-            // forward-compatibility with future variants. Clippy flags it
-            // unreachable against current variants — that is the intent.
-            #[expect(unreachable_patterns)]
-            _ => {
-                let scheme = C::project(&state);
-                Ok(self.materialize_handle::<C>(selector, scheme))
+            Err(error @ CredentialPersistenceError::OutcomeUnknown)
+                if phase == RefreshCommitPhase::ProviderConfirmed =>
+            {
+                RefreshDisposition::outcome_unknown(Err(ResolveError::PostProviderPersistence {
+                    credential_id: credential_id_text,
+                    source: error,
+                }))
             },
+            Err(error) if phase == RefreshCommitPhase::ProviderConfirmed => {
+                tracing::warn!(
+                    credential_id = %credential_id,
+                    expected = %expected_version,
+                    ?error,
+                    "provider refresh succeeded but its CAS finalization failed"
+                );
+                RefreshDisposition::retry_unsafe(Err(ResolveError::PostProviderPersistence {
+                    credential_id: credential_id_text,
+                    source: error,
+                }))
+            },
+            Err(CredentialPersistenceError::OutcomeUnknown) => {
+                RefreshDisposition::replay_safe(Err(ResolveError::Store(
+                    CredentialPersistenceError::OutcomeUnknown,
+                )))
+            },
+            Err(error) => RefreshDisposition::no_state_change(Err(ResolveError::Store(error))),
         }
     }
 }
@@ -924,27 +993,25 @@ mod refresh_revoke_race {
     use chrono::Utc;
     use nebula_core::auth::{AuthPattern, EgressShape, RefreshStrategyKind};
     use nebula_schema::FieldValues;
-    #[cfg(feature = "rotation")]
     use nebula_storage_port::SecretBytes;
     use nebula_storage_port::store::{
         ClaimAttempt, ClaimToken, ExpiredClaim, HeartbeatError, RefreshClaimError,
         RefreshClaimStore, ReplicaId,
     };
     use nebula_storage_port::{
-        CredentialAlreadyExistsKey, CredentialCommit, CredentialCreate, CredentialOwner,
-        CredentialTombstone, CredentialVersion, StoredCredentialHead, StoredTombstonedCredential,
+        CredentialAlreadyExistsKey, CredentialCommit, CredentialCreate, CredentialMaterialEpoch,
+        CredentialOwner, CredentialTombstone, CredentialVersion, RefreshRetryAdmission,
+        RefreshRetryBlock, RefreshRetryDelay, RefreshRetryGate, RefreshRetrySnapshot,
+        RefreshRetryTransition, StoredCredentialHead, StoredTombstonedCredential,
     };
     use serde::{Deserialize, Serialize};
-    use zeroize::{Zeroize, ZeroizeOnDrop};
+    use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
     use parking_lot::Mutex;
-    #[cfg(feature = "rotation")]
     use std::sync::atomic::AtomicBool;
-    #[cfg(feature = "rotation")]
     use tokio::sync::Notify;
 
     use super::*;
-    #[cfg(feature = "rotation")]
     use crate::credentials::{OAuth2Credential, OAuth2State};
     use crate::resolve::{RefreshPolicy, ResolveResult};
     use crate::runtime::refresh::RefreshCoordConfig;
@@ -1013,7 +1080,6 @@ mod refresh_revoke_race {
     /// [`StubClaimRepo`], it keeps an acquired claim active until an explicit
     /// release, so a retained sentinel claim can prove that a second request
     /// reaches L2 but cannot repeat provider work.
-    #[cfg(feature = "rotation")]
     #[derive(Default)]
     struct StatefulClaimRepo {
         active: AtomicBool,
@@ -1023,7 +1089,6 @@ mod refresh_revoke_race {
         release_seen: Notify,
     }
 
-    #[cfg(feature = "rotation")]
     impl StatefulClaimRepo {
         async fn wait_for_try_claim_count(&self, target: usize) {
             while self.try_claim_count.load(Ordering::SeqCst) < target {
@@ -1038,7 +1103,6 @@ mod refresh_revoke_race {
         }
     }
 
-    #[cfg(feature = "rotation")]
     #[async_trait::async_trait]
     impl RefreshClaimStore for StatefulClaimRepo {
         async fn try_claim(
@@ -1117,8 +1181,8 @@ mod refresh_revoke_race {
         }
     }
 
-    /// No-op transport: with the `rotation` feature off, `perform_refresh`
-    /// drives `Refreshable::refresh` directly and never performs a token POST.
+    /// No-op transport for typed credentials whose refresh performs no
+    /// provider I/O.
     struct StubTransport;
 
     impl RefreshTransport for StubTransport {
@@ -1134,25 +1198,98 @@ mod refresh_revoke_race {
         }
     }
 
-    #[cfg(feature = "rotation")]
+    struct UnusedPendingStore;
+
+    impl crate::DynPendingStateStore for UnusedPendingStore {
+        fn put_serialized<'a>(
+            &'a self,
+            _credential_kind: &'a str,
+            _owner_id: &'a str,
+            _session_id: &'a str,
+            _data: Zeroizing<Vec<u8>>,
+            _expires_in: Duration,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<crate::PendingToken, crate::PendingStoreError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { Err(crate::PendingStoreError::NotFound) })
+        }
+
+        fn get_serialized<'a>(
+            &'a self,
+            _token: &'a crate::PendingToken,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<Zeroizing<Vec<u8>>, crate::PendingStoreError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { Err(crate::PendingStoreError::NotFound) })
+        }
+
+        fn get_bound_serialized<'a>(
+            &'a self,
+            _credential_kind: &'a str,
+            _token: &'a crate::PendingToken,
+            _owner_id: &'a str,
+            _session_id: &'a str,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<Zeroizing<Vec<u8>>, crate::PendingStoreError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { Err(crate::PendingStoreError::NotFound) })
+        }
+
+        fn consume_serialized<'a>(
+            &'a self,
+            _credential_kind: &'a str,
+            _token: &'a crate::PendingToken,
+            _owner_id: &'a str,
+            _session_id: &'a str,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<Zeroizing<Vec<u8>>, crate::PendingStoreError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { Err(crate::PendingStoreError::NotFound) })
+        }
+
+        fn delete<'a>(
+            &'a self,
+            _token: &'a crate::PendingToken,
+        ) -> Pin<Box<dyn Future<Output = Result<(), crate::PendingStoreError>> + Send + 'a>>
+        {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
     #[derive(Clone, Copy)]
     enum OAuthTransportResult {
         AckLost,
         InvalidGrant,
-        EndpointUnavailable,
+        InvalidClient401,
+        Other429,
+        ServerError503,
         MalformedSuccess,
         Success,
     }
 
     /// Deterministic OAuth2 transport used to distinguish an ambiguous
     /// post-dispatch failure from an exact RFC 6749 provider rejection.
-    #[cfg(feature = "rotation")]
     struct ScriptedOAuthTransport {
         result: OAuthTransportResult,
         calls: AtomicUsize,
     }
 
-    #[cfg(feature = "rotation")]
     impl ScriptedOAuthTransport {
         fn new(result: OAuthTransportResult) -> Self {
             Self {
@@ -1166,7 +1303,6 @@ mod refresh_revoke_race {
         }
     }
 
-    #[cfg(feature = "rotation")]
     impl RefreshTransport for ScriptedOAuthTransport {
         fn post_token<'a>(
             &'a self,
@@ -1187,7 +1323,21 @@ mod refresh_revoke_race {
                         ),
                     )
                     .expect("scripted response is bounded")),
-                    OAuthTransportResult::EndpointUnavailable => Ok(
+                    OAuthTransportResult::InvalidClient401 => Ok(
+                        TokenPostResponse::try_new(
+                            401,
+                            SecretBytes::new(br#"{"error":"invalid_client"}"#.to_vec()),
+                        )
+                        .expect("scripted response is bounded"),
+                    ),
+                    OAuthTransportResult::Other429 => Ok(
+                        TokenPostResponse::try_new(
+                            429,
+                            SecretBytes::new(br#"{"error":"provider_extension"}"#.to_vec()),
+                        )
+                        .expect("scripted response is bounded"),
+                    ),
+                    OAuthTransportResult::ServerError503 => Ok(
                         TokenPostResponse::try_new(
                             503,
                             SecretBytes::new(br#"{"error":"server_error"}"#.to_vec()),
@@ -1224,6 +1374,10 @@ mod refresh_revoke_race {
         owner: CredentialOwner,
         row: Mutex<StoredCredential>,
         revoke_on_first_replace: bool,
+        display_on_first_replace: bool,
+        display_on_every_replace: bool,
+        display_on_second_get: bool,
+        material_on_second_get: bool,
         replace_error: Option<CredentialPersistenceError>,
         replacements: Mutex<u32>,
         gets: Mutex<u32>,
@@ -1231,10 +1385,22 @@ mod refresh_revoke_race {
 
     impl ScriptedStore {
         fn new(row: StoredCredential, revoke_on_first_replace: bool) -> Self {
+            Self::with_owner(row, revoke_on_first_replace, test_owner())
+        }
+
+        fn with_owner(
+            row: StoredCredential,
+            revoke_on_first_replace: bool,
+            owner: CredentialOwner,
+        ) -> Self {
             Self {
-                owner: test_owner(),
+                owner,
                 row: Mutex::new(row),
                 revoke_on_first_replace,
+                display_on_first_replace: false,
+                display_on_every_replace: false,
+                display_on_second_get: false,
+                material_on_second_get: false,
                 replace_error: None,
                 replacements: Mutex::new(0),
                 gets: Mutex::new(0),
@@ -1249,7 +1415,71 @@ mod refresh_revoke_race {
                 owner: test_owner(),
                 row: Mutex::new(row),
                 revoke_on_first_replace: false,
+                display_on_first_replace: false,
+                display_on_every_replace: false,
+                display_on_second_get: false,
+                material_on_second_get: false,
                 replace_error: Some(replace_error),
+                replacements: Mutex::new(0),
+                gets: Mutex::new(0),
+            }
+        }
+
+        fn racing_display_replace(row: StoredCredential) -> Self {
+            Self {
+                owner: test_owner(),
+                row: Mutex::new(row),
+                revoke_on_first_replace: false,
+                display_on_first_replace: true,
+                display_on_every_replace: false,
+                display_on_second_get: false,
+                material_on_second_get: false,
+                replace_error: None,
+                replacements: Mutex::new(0),
+                gets: Mutex::new(0),
+            }
+        }
+
+        fn racing_display_read(row: StoredCredential) -> Self {
+            Self {
+                owner: test_owner(),
+                row: Mutex::new(row),
+                revoke_on_first_replace: false,
+                display_on_first_replace: false,
+                display_on_every_replace: false,
+                display_on_second_get: true,
+                material_on_second_get: false,
+                replace_error: None,
+                replacements: Mutex::new(0),
+                gets: Mutex::new(0),
+            }
+        }
+
+        fn racing_identical_material_read(row: StoredCredential) -> Self {
+            Self {
+                owner: test_owner(),
+                row: Mutex::new(row),
+                revoke_on_first_replace: false,
+                display_on_first_replace: false,
+                display_on_every_replace: false,
+                display_on_second_get: false,
+                material_on_second_get: true,
+                replace_error: None,
+                replacements: Mutex::new(0),
+                gets: Mutex::new(0),
+            }
+        }
+
+        fn continuous_display_churn(row: StoredCredential) -> Self {
+            Self {
+                owner: test_owner(),
+                row: Mutex::new(row),
+                revoke_on_first_replace: false,
+                display_on_first_replace: false,
+                display_on_every_replace: true,
+                display_on_second_get: false,
+                material_on_second_get: false,
+                replace_error: None,
                 replacements: Mutex::new(0),
                 gets: Mutex::new(0),
             }
@@ -1265,6 +1495,40 @@ mod refresh_revoke_race {
 
         fn get_count(&self) -> u32 {
             *self.gets.lock()
+        }
+
+        fn evaluate_retry_admission(
+            live: &StoredLiveCredential,
+            now: chrono::DateTime<Utc>,
+        ) -> Result<RefreshRetryAdmission, CredentialPersistenceError> {
+            let Some(gate) = live.refresh_retry_gate() else {
+                return Ok(RefreshRetryAdmission::Open);
+            };
+            match gate {
+                RefreshRetryGate::Never { evidence } => {
+                    Ok(RefreshRetryAdmission::Blocked(RefreshRetryBlock::Never {
+                        evidence: evidence.clone(),
+                    }))
+                },
+                RefreshRetryGate::NotBefore {
+                    not_before,
+                    evidence,
+                } => {
+                    let remaining = *not_before - now;
+                    if remaining <= chrono::Duration::zero() {
+                        return Ok(RefreshRetryAdmission::Open);
+                    }
+                    let remaining = remaining
+                        .to_std()
+                        .map_err(|_| CredentialPersistenceError::CorruptRecord)?;
+                    let remaining = RefreshRetryDelay::new(remaining)
+                        .map_err(|_| CredentialPersistenceError::CorruptRecord)?;
+                    Ok(RefreshRetryAdmission::Blocked(RefreshRetryBlock::After {
+                        remaining,
+                        evidence: evidence.clone(),
+                    }))
+                },
+            }
         }
 
         // Synchronous core so the trait futures hold no lock across an `.await`.
@@ -1311,6 +1575,34 @@ mod refresh_revoke_race {
                 return Err(CredentialPersistenceError::VersionConflict { expected, actual });
             }
 
+            if (self.display_on_first_replace && first) || self.display_on_every_replace {
+                let actual = current.version().next_live()?;
+                let now = Utc::now();
+                let mut metadata = current.metadata().clone();
+                metadata.insert(
+                    "display".to_owned(),
+                    serde_json::json!({"description": "concurrent display edit"}),
+                );
+                let concurrent = StoredLiveCredential::new(
+                    current.credential_id(),
+                    Some("renamed-concurrently".to_owned()),
+                    current.credential_key().to_owned(),
+                    current.data().clone(),
+                    current.state_kind().to_owned(),
+                    current.state_version(),
+                    actual,
+                    current.material_epoch(),
+                    current.created_at(),
+                    now,
+                    current.expires_at(),
+                    current.reauth_required(),
+                    metadata,
+                    current.refresh_retry_gate().cloned(),
+                )?;
+                *row = concurrent.into();
+                return Err(CredentialPersistenceError::VersionConflict { expected, actual });
+            }
+
             if expected != current.version() {
                 return Err(CredentialPersistenceError::VersionConflict {
                     expected,
@@ -1320,6 +1612,29 @@ mod refresh_revoke_race {
 
             let version = current.version().next_live()?;
             let updated_at = Utc::now();
+            let (material_epoch, refresh_retry_gate) = match replacement.material_transition() {
+                CredentialMaterialTransition::Advance => (current.material_epoch().next()?, None),
+                CredentialMaterialTransition::Preserve { refresh_retry } => {
+                    let gate = match refresh_retry {
+                        RefreshRetryTransition::Preserve => current.refresh_retry_gate().cloned(),
+                        RefreshRetryTransition::Clear => None,
+                        RefreshRetryTransition::SetNever { evidence } => {
+                            Some(RefreshRetryGate::Never {
+                                evidence: evidence.clone(),
+                            })
+                        },
+                        RefreshRetryTransition::SetAfter { delay, evidence } => {
+                            let delay = chrono::Duration::from_std(delay.get())
+                                .map_err(|_| CredentialPersistenceError::CorruptRecord)?;
+                            Some(RefreshRetryGate::NotBefore {
+                                not_before: updated_at + delay,
+                                evidence: evidence.clone(),
+                            })
+                        },
+                    };
+                    (current.material_epoch(), gate)
+                },
+            };
             let committed = StoredLiveCredential::new(
                 current.credential_id(),
                 replacement.name().map(str::to_owned),
@@ -1328,11 +1643,13 @@ mod refresh_revoke_race {
                 replacement.state_kind().to_owned(),
                 replacement.state_version(),
                 version,
+                material_epoch,
                 current.created_at(),
                 updated_at,
                 replacement.expires_at(),
                 replacement.reauth_required(),
                 replacement.metadata().clone(),
+                refresh_retry_gate,
             )?;
             *row = committed.into();
             CredentialCommit::live(
@@ -1392,8 +1709,57 @@ mod refresh_revoke_race {
             &self,
             selector: &CredentialSelector,
         ) -> Result<StoredCredential, CredentialPersistenceError> {
-            *self.gets.lock() += 1;
-            let row = self.row.lock().clone();
+            let get_number = {
+                let mut gets = self.gets.lock();
+                *gets += 1;
+                *gets
+            };
+            let mut row = self.row.lock();
+            if get_number == 2 && (self.display_on_second_get || self.material_on_second_get) {
+                let StoredCredential::Live(current) = row.clone() else {
+                    return Err(CredentialPersistenceError::NotFound);
+                };
+                let version = current.version().next_live()?;
+                let material_epoch = if self.material_on_second_get {
+                    current.material_epoch().next()?
+                } else {
+                    current.material_epoch()
+                };
+                let mut metadata = current.metadata().clone();
+                let name = if self.display_on_second_get {
+                    metadata.insert(
+                        "display".to_owned(),
+                        serde_json::json!({"description": "pre-dispatch display edit"}),
+                    );
+                    Some("renamed-before-dispatch".to_owned())
+                } else {
+                    current.name().map(str::to_owned)
+                };
+                let raced = StoredLiveCredential::new(
+                    current.credential_id(),
+                    name,
+                    current.credential_key().to_owned(),
+                    // Intentionally byte-identical in the material-race case:
+                    // epoch, not byte comparison, establishes new authority.
+                    current.data().clone(),
+                    current.state_kind().to_owned(),
+                    current.state_version(),
+                    version,
+                    material_epoch,
+                    current.created_at(),
+                    Utc::now(),
+                    current.expires_at(),
+                    current.reauth_required(),
+                    metadata,
+                    if self.material_on_second_get {
+                        None
+                    } else {
+                        current.refresh_retry_gate().cloned()
+                    },
+                )?;
+                *row = raced.into();
+            }
+            let row = row.clone();
             if selector.owner() == &self.owner && row.credential_id() == selector.credential_id() {
                 Ok(row)
             } else {
@@ -1409,6 +1775,26 @@ mod refresh_revoke_race {
                 StoredCredential::Live(stored) => Ok(StoredCredentialHead::from(&stored)),
                 StoredCredential::Tombstoned(_) => Err(CredentialPersistenceError::NotFound),
             }
+        }
+
+        async fn refresh_retry_snapshot(
+            &self,
+            selector: &CredentialSelector,
+        ) -> Result<RefreshRetrySnapshot, CredentialPersistenceError> {
+            let row = self.row.lock();
+            if selector.owner() != &self.owner || row.credential_id() != selector.credential_id() {
+                return Err(CredentialPersistenceError::NotFound);
+            }
+            let StoredCredential::Live(live) = &*row else {
+                return Err(CredentialPersistenceError::NotFound);
+            };
+            let admission = Self::evaluate_retry_admission(live, Utc::now())?;
+            Ok(RefreshRetrySnapshot::new(
+                live.version(),
+                live.material_epoch(),
+                live.reauth_required(),
+                admission,
+            ))
         }
 
         async fn create(
@@ -1527,7 +1913,12 @@ mod refresh_revoke_race {
     static UNAVAILABLE_PROVIDER_CALLS: AtomicUsize = AtomicUsize::new(0);
     static UNKNOWN_PROVIDER_CALLS: AtomicUsize = AtomicUsize::new(0);
     static REAUTH_PROVIDER_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static AFTER_PROVIDER_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static MODE_MISMATCH_REFRESH_CALLS: AtomicUsize = AtomicUsize::new(0);
     static SAME_KEY_TYPED_REFRESH_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static CANCELLATION_REFRESH_STARTED: AtomicBool = AtomicBool::new(false);
+    static CANCELLATION_REFRESH_STARTED_NOTIFY: Notify = Notify::const_new();
+    static CANCELLATION_REFRESH_RELEASE: Notify = Notify::const_new();
 
     impl Credential for TestCred {
         type Properties = ();
@@ -1566,33 +1957,57 @@ mod refresh_revoke_race {
 
         async fn refresh(
             state: &mut TestState,
-            _ctx: &CredentialContext,
-        ) -> Result<RefreshOutcome, CredentialError> {
-            match state.token.as_str() {
-                "counted-cas" => {
-                    CAS_PROVIDER_CALLS.fetch_add(1, Ordering::SeqCst);
-                },
-                "counted-name" => {
-                    NAME_PROVIDER_CALLS.fetch_add(1, Ordering::SeqCst);
-                },
-                "counted-unavailable" => {
-                    UNAVAILABLE_PROVIDER_CALLS.fetch_add(1, Ordering::SeqCst);
-                },
-                "counted-unknown" => {
-                    UNKNOWN_PROVIDER_CALLS.fetch_add(1, Ordering::SeqCst);
-                },
-                "reject" => {
-                    REAUTH_PROVIDER_CALLS.fetch_add(1, Ordering::SeqCst);
+            attempt: RefreshAttempt<'_>,
+        ) -> crate::RefreshReport {
+            let original_token = state.token.clone();
+            let completed = attempt
+                .dispatch(|| async move {
+                    match original_token.as_str() {
+                        "counted-cas" => {
+                            CAS_PROVIDER_CALLS.fetch_add(1, Ordering::SeqCst);
+                        },
+                        "counted-name" => {
+                            NAME_PROVIDER_CALLS.fetch_add(1, Ordering::SeqCst);
+                        },
+                        "counted-unavailable" => {
+                            UNAVAILABLE_PROVIDER_CALLS.fetch_add(1, Ordering::SeqCst);
+                        },
+                        "counted-unknown" => {
+                            UNKNOWN_PROVIDER_CALLS.fetch_add(1, Ordering::SeqCst);
+                        },
+                        "reject" => {
+                            REAUTH_PROVIDER_CALLS.fetch_add(1, Ordering::SeqCst);
+                        },
+                        "after" => {
+                            AFTER_PROVIDER_CALLS.fetch_add(1, Ordering::SeqCst);
+                        },
+                        _ => {},
+                    }
+                    Ok::<u8, std::convert::Infallible>(match original_token.as_str() {
+                        "reject" => 1,
+                        "after" => 2,
+                        _ => 0,
+                    })
+                })
+                .await;
+            let Ok(completed) = completed else {
+                panic!("infallible test dispatch must complete");
+            };
+            let (response, proof) = completed.into_parts();
+            match response {
+                1 => return proof.provider_rejected(),
+                2 => {
+                    let delay = crate::RetryDelay::new(Duration::from_secs(1))
+                        .expect("one second is a valid retry delay");
+                    return proof.confirmed_not_applied(crate::RefreshFailureSpec::new(
+                        crate::RefreshErrorKind::ProviderUnavailable,
+                        crate::RetryAdvice::After(delay),
+                    ));
                 },
                 _ => {},
             }
-            if state.token == "reject" {
-                return Ok(RefreshOutcome::ReauthRequired(
-                    ReauthReason::ProviderRejected,
-                ));
-            }
             state.token = "refreshed".to_owned();
-            Ok(RefreshOutcome::Refreshed)
+            proof.refreshed()
         }
     }
 
@@ -1606,6 +2021,55 @@ mod refresh_revoke_race {
                 refresh: RefreshStrategy::RefreshToken,
                 revoke: RevokeStrategy::HandleBased,
             }
+        }
+    }
+
+    /// Deliberately invalid implementation: it declares the default provider
+    /// execution mode but attempts to complete through the providerless path.
+    /// The linear attempt must reject this before any transport call.
+    struct ProviderModeLocalCompletionCred;
+
+    impl Credential for ProviderModeLocalCompletionCred {
+        type Properties = ();
+        type Scheme = TestScheme;
+        type State = TestState;
+
+        const KEY: &'static str = TestCred::KEY;
+
+        fn metadata() -> CredentialMetadata {
+            TestCred::metadata()
+        }
+
+        fn project(_state: &TestState) -> TestScheme {
+            TestScheme
+        }
+
+        async fn resolve(
+            _values: &FieldValues,
+            _ctx: &CredentialContext,
+        ) -> Result<ResolveResult<TestState, ()>, CredentialError> {
+            Ok(ResolveResult::Complete(TestState {
+                token: "live".to_owned(),
+            }))
+        }
+    }
+
+    impl Refreshable for ProviderModeLocalCompletionCred {
+        const REFRESH_POLICY: RefreshPolicy = RefreshPolicy::DEFAULT;
+
+        async fn refresh(
+            state: &mut TestState,
+            attempt: RefreshAttempt<'_>,
+        ) -> crate::RefreshReport {
+            MODE_MISMATCH_REFRESH_CALLS.fetch_add(1, Ordering::SeqCst);
+            state.token = "must-not-commit".to_owned();
+            attempt.local_refresh_completed()
+        }
+    }
+
+    impl CredentialLifecycle for ProviderModeLocalCompletionCred {
+        fn policy(state: &TestState) -> CredentialPolicy {
+            TestCred::policy(state)
         }
     }
 
@@ -1648,16 +2112,23 @@ mod refresh_revoke_race {
     impl Refreshable for SameKeyNonOAuthCred {
         async fn refresh(
             state: &mut TestState,
-            ctx: &CredentialContext,
-        ) -> Result<RefreshOutcome, CredentialError> {
-            if ctx.refresh_transport().is_none() {
-                return Err(CredentialError::InvalidInput(
-                    "resolver did not stamp its internal refresh transport".to_owned(),
-                ));
+            attempt: RefreshAttempt<'_>,
+        ) -> crate::RefreshReport {
+            if attempt.context().refresh_transport().is_none() {
+                return attempt.outcome_unknown();
             }
-            SAME_KEY_TYPED_REFRESH_CALLS.fetch_add(1, Ordering::SeqCst);
+            let completed = attempt
+                .dispatch(|| async {
+                    SAME_KEY_TYPED_REFRESH_CALLS.fetch_add(1, Ordering::SeqCst);
+                    Ok::<(), std::convert::Infallible>(())
+                })
+                .await;
+            let Ok(completed) = completed else {
+                panic!("infallible test dispatch must complete");
+            };
+            let ((), proof) = completed.into_parts();
             state.token = "same-key-typed-refresh".to_owned();
-            Ok(RefreshOutcome::Refreshed)
+            proof.refreshed()
         }
     }
 
@@ -1672,13 +2143,89 @@ mod refresh_revoke_race {
         }
     }
 
-    #[cfg(feature = "rotation")]
+    /// Integration whose provider future explicitly observes the context
+    /// cancellation token. It catches accidental reuse of request
+    /// cancellation inside the owned K2 critical section.
+    struct CancellationAwareCred;
+
+    impl Credential for CancellationAwareCred {
+        type Properties = ();
+        type Scheme = TestScheme;
+        type State = TestState;
+
+        const KEY: &'static str = "test.cancellation_aware";
+
+        fn metadata() -> CredentialMetadata {
+            CredentialMetadata::new(
+                nebula_core::credential_key!("test.cancellation_aware"),
+                "Cancellation-aware test credential",
+                "proves K2 refresh is detached from request cancellation",
+                crate::schema_of::<Self::Properties>(),
+                AuthPattern::OAuth2,
+            )
+        }
+
+        fn project(_state: &TestState) -> TestScheme {
+            TestScheme
+        }
+
+        async fn resolve(
+            _values: &FieldValues,
+            _ctx: &CredentialContext,
+        ) -> Result<ResolveResult<TestState, ()>, CredentialError> {
+            Ok(ResolveResult::Complete(TestState {
+                token: "cancellation-aware-live".to_owned(),
+            }))
+        }
+    }
+
+    impl Refreshable for CancellationAwareCred {
+        async fn refresh(
+            state: &mut TestState,
+            attempt: RefreshAttempt<'_>,
+        ) -> crate::RefreshReport {
+            if attempt.context().refresh_transport().is_none() {
+                return attempt.outcome_unknown();
+            }
+            CANCELLATION_REFRESH_STARTED.store(true, Ordering::SeqCst);
+            CANCELLATION_REFRESH_STARTED_NOTIFY.notify_waiters();
+
+            let cancel = attempt.context().cancel_token().clone();
+            let completed = match attempt
+                .dispatch(|| async move {
+                    tokio::select! {
+                        biased;
+                        () = cancel.cancelled() => Err(()),
+                        () = CANCELLATION_REFRESH_RELEASE.notified() => Ok(()),
+                    }
+                })
+                .await
+            {
+                Ok(completed) => completed,
+                Err(unknown) => return unknown.into_report(),
+            };
+            let ((), proof) = completed.into_parts();
+            state.token = "cancellation-aware-refreshed".to_owned();
+            proof.refreshed()
+        }
+    }
+
+    impl CredentialLifecycle for CancellationAwareCred {
+        fn policy(_state: &TestState) -> CredentialPolicy {
+            CredentialPolicy {
+                expires_at: Some(Utc::now() - chrono::Duration::minutes(5)),
+                lease: None,
+                refresh: RefreshStrategy::RefreshToken,
+                revoke: RevokeStrategy::HandleBased,
+            }
+        }
+    }
+
     #[derive(Deserialize, Zeroize, ZeroizeOnDrop)]
     struct PostProviderEncodingState {
         fail_serialization: bool,
     }
 
-    #[cfg(feature = "rotation")]
     impl Serialize for PostProviderEncodingState {
         fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
         where
@@ -1698,19 +2245,15 @@ mod refresh_revoke_race {
         }
     }
 
-    #[cfg(feature = "rotation")]
     impl CredentialState for PostProviderEncodingState {
         const KIND: &'static str = "post_provider_encoding_test";
         const VERSION: u32 = 1;
     }
 
-    #[cfg(feature = "rotation")]
     struct PostProviderEncodingCred;
 
-    #[cfg(feature = "rotation")]
     static ENCODING_PROVIDER_CALLS: AtomicUsize = AtomicUsize::new(0);
 
-    #[cfg(feature = "rotation")]
     impl Credential for PostProviderEncodingCred {
         type Properties = ();
         type Scheme = TestScheme;
@@ -1742,19 +2285,24 @@ mod refresh_revoke_race {
         }
     }
 
-    #[cfg(feature = "rotation")]
     impl Refreshable for PostProviderEncodingCred {
         async fn refresh(
             state: &mut PostProviderEncodingState,
-            _ctx: &CredentialContext,
-        ) -> Result<RefreshOutcome, CredentialError> {
+            attempt: RefreshAttempt<'_>,
+        ) -> crate::RefreshReport {
             ENCODING_PROVIDER_CALLS.fetch_add(1, Ordering::SeqCst);
+            let completed = attempt
+                .dispatch(|| async { Ok::<(), std::convert::Infallible>(()) })
+                .await;
+            let Ok(completed) = completed else {
+                panic!("infallible test dispatch must complete");
+            };
+            let ((), proof) = completed.into_parts();
             state.fail_serialization = true;
-            Ok(RefreshOutcome::Refreshed)
+            proof.refreshed()
         }
     }
 
-    #[cfg(feature = "rotation")]
     impl CredentialLifecycle for PostProviderEncodingCred {
         fn policy(_state: &PostProviderEncodingState) -> CredentialPolicy {
             CredentialPolicy {
@@ -1807,11 +2355,13 @@ mod refresh_revoke_race {
             TestState::KIND.to_owned(),
             TestState::VERSION,
             CredentialVersion::MIN,
+            CredentialMaterialEpoch::MIN,
             now,
             now,
             None,
             false,
             serde_json::Map::new(),
+            None,
         )
         .expect("fixture is a valid live credential")
         .into()
@@ -1831,17 +2381,44 @@ mod refresh_revoke_race {
             TestState::KIND.to_owned(),
             TestState::VERSION,
             CredentialVersion::MIN,
+            CredentialMaterialEpoch::MIN,
             now,
             now,
             Some(now - chrono::Duration::minutes(5)),
             false,
             serde_json::Map::new(),
+            None,
         )
         .expect("fixture is a valid same-key credential")
         .into()
     }
 
-    #[cfg(feature = "rotation")]
+    fn cancellation_aware_row() -> StoredCredential {
+        let now = Utc::now();
+        let data = serde_json::to_vec(&TestState {
+            token: "cancellation-aware-live".to_owned(),
+        })
+        .expect("serialize cancellation-aware state");
+        StoredLiveCredential::new(
+            test_id(),
+            None,
+            CancellationAwareCred::KEY.to_owned(),
+            data.into(),
+            TestState::KIND.to_owned(),
+            TestState::VERSION,
+            CredentialVersion::MIN,
+            CredentialMaterialEpoch::MIN,
+            now,
+            now,
+            Some(now - chrono::Duration::minutes(5)),
+            false,
+            serde_json::Map::new(),
+            None,
+        )
+        .expect("fixture is a valid cancellation-aware credential")
+        .into()
+    }
+
     fn post_provider_encoding_row() -> StoredCredential {
         let now = Utc::now();
         let data = serde_json::to_vec(&PostProviderEncodingState {
@@ -1856,22 +2433,44 @@ mod refresh_revoke_race {
             PostProviderEncodingState::KIND.to_owned(),
             PostProviderEncodingState::VERSION,
             CredentialVersion::MIN,
+            CredentialMaterialEpoch::MIN,
             now,
             now,
             Some(now - chrono::Duration::minutes(5)),
             false,
             serde_json::Map::new(),
+            None,
         )
         .expect("fixture is a valid encoding-failure credential")
         .into()
     }
 
-    #[cfg(feature = "rotation")]
     fn oauth2_row(refresh_token: Option<&str>) -> StoredCredential {
         oauth2_row_with_token_url(refresh_token, "https://provider.example/token")
     }
 
-    #[cfg(feature = "rotation")]
+    fn corrupt_oauth2_row() -> StoredCredential {
+        let now = Utc::now();
+        StoredLiveCredential::new(
+            test_id(),
+            None,
+            OAuth2Credential::KEY.to_owned(),
+            b"not-json".to_vec().into(),
+            OAuth2State::KIND.to_owned(),
+            OAuth2State::VERSION,
+            CredentialVersion::MIN,
+            CredentialMaterialEpoch::MIN,
+            now,
+            now,
+            Some(now - chrono::Duration::minutes(5)),
+            false,
+            serde_json::Map::new(),
+            None,
+        )
+        .expect("fixture is a structurally valid row with corrupt state bytes")
+        .into()
+    }
+
     fn oauth2_row_with_token_url(refresh_token: Option<&str>, token_url: &str) -> StoredCredential {
         let now = Utc::now();
         let expires_at = now - chrono::Duration::minutes(5);
@@ -1896,11 +2495,13 @@ mod refresh_revoke_race {
             OAuth2State::KIND.to_owned(),
             OAuth2State::VERSION,
             CredentialVersion::MIN,
+            CredentialMaterialEpoch::MIN,
             now,
             now,
             Some(expires_at),
             false,
             serde_json::Map::new(),
+            None,
         )
         .expect("fixture is a valid OAuth2 credential")
         .into()
@@ -1916,11 +2517,13 @@ mod refresh_revoke_race {
             TestState::KIND.to_owned(),
             TestState::VERSION,
             CredentialVersion::MIN,
+            CredentialMaterialEpoch::MIN,
             now,
             now,
             None,
             true,
             serde_json::Map::new(),
+            None,
         )
         .expect("fixture is a valid reauth-required credential")
         .into()
@@ -1956,7 +2559,6 @@ mod refresh_revoke_race {
         CredentialResolver::with_dependencies(store, Arc::new(coord), Arc::new(StubTransport))
     }
 
-    #[cfg(feature = "rotation")]
     fn resolver_with_runtime(
         store: Arc<ScriptedStore>,
         claims: Arc<dyn RefreshClaimStore>,
@@ -1971,33 +2573,87 @@ mod refresh_revoke_race {
         CredentialResolver::with_dependencies(store, Arc::new(coord), transport)
     }
 
+    fn oauth_service_with_runtime(
+        store: Arc<ScriptedStore>,
+        claims: Arc<dyn RefreshClaimStore>,
+        transport: Arc<dyn RefreshTransport>,
+    ) -> (
+        crate::CredentialService,
+        tokio_util::sync::CancellationToken,
+    ) {
+        let store_port: Arc<dyn CredentialPersistence> = store;
+        let coord = RefreshCoordinator::new_with(
+            claims,
+            ReplicaId::new("service-test-replica"),
+            RefreshCoordConfig::default(),
+        )
+        .expect("default coordinator config is valid");
+        let observer: Arc<dyn crate::CredentialObserver> = Arc::new(crate::NoopObserver::new());
+        let resolver = CredentialResolver::with_dependencies(
+            Arc::clone(&store_port),
+            Arc::new(coord),
+            transport,
+        )
+        .with_event_bus(observer.event_bus());
+
+        let pending = crate::ErasedPendingStore::new(Arc::new(UnusedPendingStore));
+        let mut ops = crate::DispatchOps::new();
+        crate::register_runtime_ops::<OAuth2Credential, crate::ErasedPendingStore>(&mut ops)
+            .expect("OAuth2 base ops register");
+        crate::register_refreshable_ops::<OAuth2Credential, crate::ErasedPendingStore>(&mut ops)
+            .expect("OAuth2 refresh ops register");
+
+        let mut registry = crate::CredentialRegistry::new();
+        registry
+            .register(OAuth2Credential, "nebula-credential-test")
+            .expect("OAuth2 registry entry is unique");
+
+        let shutdown = tokio_util::sync::CancellationToken::new();
+        let lease = crate::runtime::LeaseLifecycle::spawn(
+            crate::runtime::LeaseLifecycleConfig::default(),
+            None,
+            None,
+            shutdown.clone(),
+        );
+        (
+            crate::CredentialService::from_secure_parts(
+                store_port,
+                resolver,
+                lease,
+                pending,
+                Arc::new(registry),
+                Arc::new(ops),
+                observer,
+                crate::StateSource::LocalEncrypted,
+            ),
+            shutdown,
+        )
+    }
+
     // ── Regressions ────────────────────────────────────────────────────
 
-    #[test]
-    fn generic_refresh_errors_fail_closed_unless_they_carry_exact_proof() {
-        let opaque = classify_refresh_error(
-            CredentialError::InvalidInput("custom credential failure".to_owned()),
-            "cred_x",
-        );
-        assert!(matches!(
-            opaque,
-            ResolveError::ProviderOutcomeUnknown { .. }
-        ));
-
-        let exact = classify_refresh_error(
-            CredentialError::RefreshFailed(Box::new(crate::error::RefreshFailedContext::new(
-                crate::error::RefreshErrorKind::ProtocolError,
-                crate::error::RetryAdvice::Never,
-                crate::error::SecretFreeMessage::new(
-                    "custom credential proved no provider state transition",
-                ),
-            ))),
-            "cred_x",
-        );
-        let ResolveError::ExactRefreshFailure { context, .. } = exact else {
-            panic!("proof-bearing refresh error must remain exact");
+    #[tokio::test]
+    async fn linear_refresh_evidence_separates_predispatch_from_unknown_dispatch() {
+        let ctx = CredentialContext::for_owner("test-owner");
+        let exact = RefreshAttempt::new(&ctx, crate::RefreshExecutionMode::Provider)
+            .not_dispatched(crate::RefreshFailureSpec::new(
+                crate::RefreshErrorKind::ProtocolError,
+                crate::RetryAdvice::Never,
+            ))
+            .into_kind();
+        let RefreshReportKind::NotApplied(context) = exact else {
+            panic!("pre-dispatch proof must remain exact");
         };
         assert_eq!(context.retry(), crate::error::RetryAdvice::Never);
+
+        let unknown = RefreshAttempt::new(&ctx, crate::RefreshExecutionMode::Provider)
+            .dispatch(|| async { Err::<(), ()>(()) })
+            .await;
+        let Err(unknown) = unknown else {
+            panic!("failed dispatch must not produce completed-response proof");
+        };
+        let unknown = unknown.into_report().into_kind();
+        assert!(matches!(unknown, RefreshReportKind::OutcomeUnknown));
     }
 
     #[tokio::test]
@@ -2027,7 +2683,49 @@ mod refresh_revoke_race {
         assert_eq!(persisted.token, "same-key-typed-refresh");
     }
 
-    #[cfg(feature = "rotation")]
+    #[tokio::test]
+    async fn request_cancellation_after_provider_start_does_not_abort_owned_refresh() {
+        CANCELLATION_REFRESH_STARTED.store(false, Ordering::SeqCst);
+        let store = Arc::new(ScriptedStore::new(cancellation_aware_row(), false));
+        let resolver = Arc::new(resolver_with(Arc::clone(&store)));
+        let request_context = CredentialContext::for_owner("test-owner");
+        let request_cancel = request_context.cancel_token().clone();
+
+        let task = tokio::spawn({
+            let resolver = Arc::clone(&resolver);
+            async move {
+                resolver
+                    .resolve_with_refresh::<CancellationAwareCred>(
+                        &test_selector(),
+                        &request_context,
+                    )
+                    .await
+            }
+        });
+
+        loop {
+            let started = CANCELLATION_REFRESH_STARTED_NOTIFY.notified();
+            if CANCELLATION_REFRESH_STARTED.load(Ordering::SeqCst) {
+                break;
+            }
+            started.await;
+        }
+        request_cancel.cancel();
+        CANCELLATION_REFRESH_RELEASE.notify_one();
+
+        task.await
+            .expect("refresh task must not panic")
+            .expect("request cancellation must not abort the owned K2 section");
+        assert_eq!(store.replacement_count(), 1);
+
+        let StoredCredential::Live(stored) = store.snapshot() else {
+            panic!("successful refresh must leave a live credential");
+        };
+        let state: TestState =
+            serde_json::from_slice(stored.data()).expect("stored refreshed state is valid");
+        assert_eq!(state.token, "cancellation-aware-refreshed");
+    }
+
     #[tokio::test]
     async fn post_provider_state_encoding_failure_is_replay_unsafe() {
         use nebula_error::Classify;
@@ -2068,6 +2766,79 @@ mod refresh_revoke_race {
     }
 
     #[tokio::test]
+    async fn pre_dispatch_display_write_is_merged_without_false_coalescing() {
+        CAS_PROVIDER_CALLS.store(0, Ordering::SeqCst);
+        let store = Arc::new(ScriptedStore::racing_display_read(live_row_with_token(
+            "counted-cas",
+        )));
+        let resolver = resolver_with(Arc::clone(&store));
+
+        resolver
+            .resolve_with_refresh::<TestCred>(
+                &test_selector(),
+                &CredentialContext::for_owner("test-owner"),
+            )
+            .await
+            .expect("a display-only write must not suppress the required refresh");
+
+        assert_eq!(
+            CAS_PROVIDER_CALLS.load(Ordering::SeqCst),
+            1,
+            "a row-version bump with the same epoch is not refresh success"
+        );
+        assert_eq!(store.replacement_count(), 1);
+        let StoredCredential::Live(row) = store.snapshot() else {
+            panic!("successful refresh keeps the row live");
+        };
+        assert_eq!(row.name(), Some("renamed-before-dispatch"));
+        assert_eq!(
+            row.material_epoch(),
+            CredentialMaterialEpoch::MIN
+                .next()
+                .expect("fixture has epoch headroom")
+        );
+        let state: TestState =
+            serde_json::from_slice(row.data()).expect("refreshed state remains valid");
+        assert_eq!(state.token, "refreshed");
+    }
+
+    #[tokio::test]
+    async fn byte_identical_material_replacement_forces_re_evaluation_by_epoch() {
+        CAS_PROVIDER_CALLS.store(0, Ordering::SeqCst);
+        let store = Arc::new(ScriptedStore::racing_identical_material_read(
+            live_row_with_token("counted-cas"),
+        ));
+        let resolver = resolver_with(Arc::clone(&store));
+
+        resolver
+            .resolve_with_refresh::<TestCred>(
+                &test_selector(),
+                &CredentialContext::for_owner("test-owner"),
+            )
+            .await
+            .expect("new material authority must be re-evaluated before refresh");
+
+        assert_eq!(
+            CAS_PROVIDER_CALLS.load(Ordering::SeqCst),
+            1,
+            "the superseded attempt must not dispatch; only the re-evaluated epoch may refresh"
+        );
+        assert_eq!(store.replacement_count(), 1);
+        let StoredCredential::Live(row) = store.snapshot() else {
+            panic!("successful re-evaluation keeps the row live");
+        };
+        let second_epoch = CredentialMaterialEpoch::MIN
+            .next()
+            .and_then(CredentialMaterialEpoch::next)
+            .expect("fixture has epoch headroom");
+        assert_eq!(
+            row.material_epoch(),
+            second_epoch,
+            "byte-identical replacement and later refresh each advance authority"
+        );
+    }
+
+    #[tokio::test]
     async fn refresh_racing_revoke_does_not_resurrect() {
         CAS_PROVIDER_CALLS.store(0, Ordering::SeqCst);
         let store = Arc::new(ScriptedStore::new(
@@ -2105,8 +2876,9 @@ mod refresh_revoke_race {
         );
         assert_eq!(
             store.get_count(),
-            1,
-            "a version conflict must not trigger a hidden retry or reconciliation read"
+            2,
+            "initial load plus the required pre-dispatch authority reload are exact; \
+             the post-provider conflict must not trigger a third reconciliation read"
         );
         assert_eq!(
             CAS_PROVIDER_CALLS.load(Ordering::SeqCst),
@@ -2150,8 +2922,9 @@ mod refresh_revoke_race {
         );
         assert_eq!(
             store.get_count(),
-            1,
-            "a confirmed replacement must not trigger a post-write read"
+            2,
+            "initial load plus the pre-dispatch authority reload are required; \
+             a confirmed replacement must not trigger a post-write read"
         );
     }
 
@@ -2242,13 +3015,107 @@ mod refresh_revoke_race {
     }
 
     #[tokio::test]
+    async fn provider_mode_local_completion_is_exact_before_dispatch_and_releases_claim() {
+        MODE_MISMATCH_REFRESH_CALLS.store(0, Ordering::SeqCst);
+        let store = Arc::new(ScriptedStore::new(live_row(), false));
+        let claims = Arc::new(StatefulClaimRepo::default());
+        let transport = Arc::new(ScriptedOAuthTransport::new(OAuthTransportResult::Success));
+        let resolver = resolver_with_runtime(
+            Arc::clone(&store),
+            Arc::clone(&claims) as Arc<dyn RefreshClaimStore>,
+            Arc::clone(&transport) as Arc<dyn RefreshTransport>,
+        );
+
+        let error = resolver
+            .resolve_with_refresh::<ProviderModeLocalCompletionCred>(
+                &test_selector(),
+                &CredentialContext::for_owner("test-owner"),
+            )
+            .await
+            .expect_err("provider mode must reject a providerless completion");
+
+        let ResolveError::RefreshNotApplied { context, .. } = error else {
+            panic!("mode mismatch must retain exact no-dispatch evidence");
+        };
+        assert_eq!(
+            context.phase(),
+            crate::RefreshNotAppliedPhase::BeforeDispatch
+        );
+        assert_eq!(context.kind(), crate::RefreshErrorKind::ProtocolError);
+        assert_eq!(context.retry(), crate::RetryAdvice::Never);
+        assert_eq!(
+            context
+                .diagnostic_code()
+                .map(crate::RefreshDiagnosticCode::as_str),
+            Some("refresh.execution_mode_mismatch")
+        );
+        assert_eq!(MODE_MISMATCH_REFRESH_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            transport.call_count(),
+            0,
+            "a declaration mismatch must be refused before provider transport"
+        );
+        assert_eq!(
+            claims.release_count.load(Ordering::SeqCst),
+            1,
+            "an exact before-dispatch result must release the refresh claim"
+        );
+        assert!(!claims.active.load(Ordering::SeqCst));
+
+        let StoredCredential::Live(row) = store.snapshot() else {
+            panic!("retry-gate finalization must keep the credential live");
+        };
+        assert_eq!(row.material_epoch(), CredentialMaterialEpoch::MIN);
+        assert!(matches!(
+            row.refresh_retry_gate(),
+            Some(RefreshRetryGate::Never { .. })
+        ));
+        let state: TestState =
+            serde_json::from_slice(row.data()).expect("stored state remains valid");
+        assert_eq!(
+            state.token, "live",
+            "the invalid locally-mutated state must never be committed"
+        );
+
+        let restarted_claims = Arc::new(StatefulClaimRepo::default());
+        let restarted = resolver_with_runtime(
+            Arc::clone(&store),
+            Arc::clone(&restarted_claims) as Arc<dyn RefreshClaimStore>,
+            Arc::clone(&transport) as Arc<dyn RefreshTransport>,
+        );
+        let restarted_error = restarted
+            .resolve_with_refresh::<ProviderModeLocalCompletionCred>(
+                &test_selector(),
+                &CredentialContext::for_owner("test-owner"),
+            )
+            .await
+            .expect_err("a second replica must honor the durable mismatch gate");
+        assert!(matches!(
+            restarted_error,
+            ResolveError::RefreshNotApplied { .. }
+        ));
+        assert_eq!(MODE_MISMATCH_REFRESH_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(transport.call_count(), 0);
+        assert_eq!(
+            restarted_claims.try_claim_count.load(Ordering::SeqCst),
+            0,
+            "durable admission must suppress the second replica before L2"
+        );
+    }
+
+    #[tokio::test]
     async fn provider_rejection_is_not_reported_without_durable_reauth_acknowledgement() {
         REAUTH_PROVIDER_CALLS.store(0, Ordering::SeqCst);
         let store = Arc::new(ScriptedStore::failing_replace(
             live_row_with_token("reject"),
             CredentialPersistenceError::Unavailable,
         ));
-        let resolver = resolver_with(Arc::clone(&store));
+        let claims = Arc::new(StatefulClaimRepo::default());
+        let resolver = resolver_with_runtime(
+            Arc::clone(&store),
+            Arc::clone(&claims) as Arc<dyn RefreshClaimStore>,
+            Arc::new(StubTransport),
+        );
 
         let error = resolver
             .resolve_with_refresh::<TestCred>(
@@ -2260,10 +3127,7 @@ mod refresh_revoke_race {
 
         assert!(matches!(
             &error,
-            ResolveError::PostProviderPersistence {
-                source: CredentialPersistenceError::Unavailable,
-                ..
-            }
+            ResolveError::ReauthDecisionFinalization { .. }
         ));
         assert_eq!(store.replacement_count(), 1);
         let StoredCredential::Live(row) = store.snapshot() else {
@@ -2274,12 +3138,218 @@ mod refresh_revoke_race {
             "failed persistence cannot pretend the replica-visible bit was committed"
         );
         assert_eq!(REAUTH_PROVIDER_CALLS.load(Ordering::SeqCst), 1);
+        assert!(claims.active.load(Ordering::SeqCst));
+        assert_eq!(
+            claims.release_count.load(Ordering::SeqCst),
+            0,
+            "a provider-confirmed decision without durable acknowledgement retains L2"
+        );
         use nebula_error::Classify;
         let mapped = resolve_error_to_credential_error(error);
+        assert!(matches!(&mapped, CredentialError::RefreshFinalization));
+        assert!(!matches!(&mapped, CredentialError::OutcomeUnknown));
         assert!(
             !mapped.is_retryable(),
             "an unpersisted provider rejection must not POST the dead grant again"
         );
+    }
+
+    #[tokio::test]
+    async fn definite_retry_gate_finalization_failure_is_exact_and_retry_unsafe() {
+        AFTER_PROVIDER_CALLS.store(0, Ordering::SeqCst);
+        let store = Arc::new(ScriptedStore::failing_replace(
+            live_row_with_token("after"),
+            CredentialPersistenceError::Unavailable,
+        ));
+        let claims = Arc::new(StatefulClaimRepo::default());
+        let resolver = resolver_with_runtime(
+            Arc::clone(&store),
+            Arc::clone(&claims) as Arc<dyn RefreshClaimStore>,
+            Arc::new(StubTransport),
+        );
+
+        let error = resolver
+            .resolve_with_refresh::<TestCred>(
+                &test_selector(),
+                &CredentialContext::for_owner("test-owner"),
+            )
+            .await
+            .expect_err("an exact provider refusal without a durable gate must fail closed");
+
+        assert!(matches!(
+            &error,
+            ResolveError::RefreshRetryGateFinalization { .. }
+        ));
+        assert_eq!(AFTER_PROVIDER_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(store.replacement_count(), 1);
+        assert!(
+            claims.active.load(Ordering::SeqCst),
+            "retry-unsafe exact finalization failure retains L2"
+        );
+        assert_eq!(claims.release_count.load(Ordering::SeqCst), 0);
+
+        let mapped = resolve_error_to_credential_error(error);
+        assert!(matches!(&mapped, CredentialError::RefreshFinalization));
+        assert!(
+            !matches!(&mapped, CredentialError::OutcomeUnknown),
+            "definite finalization failure must not collapse into ambiguous outcome"
+        );
+        use nebula_error::Classify;
+        assert!(!mapped.is_retryable());
+    }
+
+    #[tokio::test]
+    async fn predispatch_reauth_persistence_failure_releases_claim() {
+        let store = Arc::new(ScriptedStore::failing_replace(
+            oauth2_row(None),
+            CredentialPersistenceError::Unavailable,
+        ));
+        let claims = Arc::new(StatefulClaimRepo::default());
+        let transport = Arc::new(ScriptedOAuthTransport::new(
+            OAuthTransportResult::InvalidGrant,
+        ));
+        let resolver = resolver_with_runtime(
+            Arc::clone(&store),
+            Arc::clone(&claims) as Arc<dyn RefreshClaimStore>,
+            Arc::clone(&transport) as Arc<dyn RefreshTransport>,
+        );
+
+        let error = resolver
+            .resolve_with_refresh::<OAuth2Credential>(
+                &test_selector(),
+                &CredentialContext::for_owner("test-owner"),
+            )
+            .await
+            .expect_err("missing material cannot become durable during the outage");
+        assert!(matches!(
+            error,
+            ResolveError::Store(CredentialPersistenceError::Unavailable)
+        ));
+        assert_eq!(transport.call_count(), 0);
+        tokio::time::timeout(Duration::from_secs(1), claims.wait_for_release_count(1))
+            .await
+            .expect("definite predispatch persistence failure releases the claim");
+        assert!(!claims.active.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn reauth_cas_merges_display_race_without_redispatch() {
+        REAUTH_PROVIDER_CALLS.store(0, Ordering::SeqCst);
+        let store = Arc::new(ScriptedStore::racing_display_replace(live_row_with_token(
+            "reject",
+        )));
+        let resolver = resolver_with(Arc::clone(&store));
+
+        let error = resolver
+            .resolve_with_refresh::<TestCred>(
+                &test_selector(),
+                &CredentialContext::for_owner("test-owner"),
+            )
+            .await
+            .expect_err("provider rejection requires reauthentication");
+        assert!(matches!(error, ResolveError::ReauthRequired { .. }));
+        assert_eq!(REAUTH_PROVIDER_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(store.replacement_count(), 2);
+        let StoredCredential::Live(row) = store.snapshot() else {
+            panic!("reauth keeps a live management row");
+        };
+        assert_eq!(row.name(), Some("renamed-concurrently"));
+        assert!(row.reauth_required());
+        assert_eq!(
+            row.material_epoch(),
+            CredentialMaterialEpoch::MIN
+                .next()
+                .expect("fixture has epoch headroom"),
+            "a durable reauth decision invalidates stale refresh authority"
+        );
+
+        let second = resolver_with(store)
+            .resolve_with_refresh::<TestCred>(
+                &test_selector(),
+                &CredentialContext::for_owner("test-owner"),
+            )
+            .await
+            .expect_err("durable reauth blocks a second provider request");
+        assert!(matches!(second, ResolveError::ReauthRequired { .. }));
+        assert_eq!(REAUTH_PROVIDER_CALLS.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn stale_same_epoch_retry_gate_cannot_reattach_after_durable_reauth() {
+        let store = Arc::new(ScriptedStore::new(live_row(), false));
+        let selector = test_selector();
+        let StoredCredential::Live(observed) = store.snapshot() else {
+            panic!("fixture must start live");
+        };
+
+        assert!(matches!(
+            persist_reauth_required(store.as_ref(), &selector, observed.clone()).await,
+            ReauthWrite::Applied
+        ));
+        let context = Box::new(RefreshNotAppliedContext::from_spec(
+            crate::RefreshNotAppliedPhase::BeforeDispatch,
+            crate::RefreshFailureSpec::new(
+                crate::RefreshErrorKind::TransientNetwork,
+                crate::RetryAdvice::Never,
+            ),
+        ));
+        assert!(matches!(
+            persist_retry_gate(store.as_ref(), &selector, observed, context).await,
+            RetryGateWrite::Superseded(CredentialPersistenceError::VersionConflict { .. })
+        ));
+
+        let StoredCredential::Live(current) = store.snapshot() else {
+            panic!("reauth decision keeps a live management row");
+        };
+        assert!(current.reauth_required());
+        assert_eq!(
+            current.material_epoch(),
+            CredentialMaterialEpoch::MIN
+                .next()
+                .expect("fixture has epoch headroom")
+        );
+        assert!(
+            current.refresh_retry_gate().is_none(),
+            "old-epoch retry evidence must not attach to new reauth authority"
+        );
+    }
+
+    #[tokio::test]
+    async fn bounded_display_churn_is_definite_conflict_not_unknown_outcome() {
+        let selector = test_selector();
+        let gate_store = Arc::new(ScriptedStore::continuous_display_churn(live_row()));
+        let StoredCredential::Live(gate_observed) = gate_store.snapshot() else {
+            panic!("fixture must start live");
+        };
+        let context = Box::new(RefreshNotAppliedContext::from_spec(
+            crate::RefreshNotAppliedPhase::BeforeDispatch,
+            crate::RefreshFailureSpec::new(
+                crate::RefreshErrorKind::TransientNetwork,
+                crate::RetryAdvice::Never,
+            ),
+        ));
+        assert!(matches!(
+            persist_retry_gate(gate_store.as_ref(), &selector, gate_observed, context).await,
+            RetryGateWrite::DefiniteFailure(CredentialPersistenceError::VersionConflict { .. })
+        ));
+        assert!(
+            gate_store.replacement_count() > 1,
+            "fixture must exhaust the bounded display-merge loop"
+        );
+
+        let reauth_store = Arc::new(ScriptedStore::continuous_display_churn(live_row()));
+        let StoredCredential::Live(reauth_observed) = reauth_store.snapshot() else {
+            panic!("fixture must start live");
+        };
+        assert!(matches!(
+            persist_reauth_required(reauth_store.as_ref(), &selector, reauth_observed).await,
+            ReauthWrite::DefiniteFailure(CredentialPersistenceError::VersionConflict { .. })
+        ));
+        let StoredCredential::Live(current) = reauth_store.snapshot() else {
+            panic!("display churn keeps the row live");
+        };
+        assert!(!current.reauth_required());
+        assert_eq!(current.material_epoch(), CredentialMaterialEpoch::MIN);
     }
 
     #[tokio::test]
@@ -2370,7 +3440,6 @@ mod refresh_revoke_race {
         assert!(!mapped.is_retryable());
     }
 
-    #[cfg(feature = "rotation")]
     #[tokio::test]
     async fn oauth_ack_loss_is_outcome_unknown_and_retains_l2_against_immediate_replay() {
         use nebula_error::Classify;
@@ -2437,7 +3506,6 @@ mod refresh_revoke_race {
         let _ = second.await;
     }
 
-    #[cfg(feature = "rotation")]
     #[tokio::test]
     async fn oauth_invalid_grant_persists_reauth_and_releases_confirmed_claim() {
         use nebula_error::Classify;
@@ -2493,7 +3561,6 @@ mod refresh_revoke_race {
         assert!(!CredentialError::Provider(context).is_retryable());
     }
 
-    #[cfg(feature = "rotation")]
     #[tokio::test]
     async fn oauth_missing_refresh_material_is_exact_without_transport_dispatch() {
         let store = Arc::new(ScriptedStore::new(oauth2_row(None), false));
@@ -2531,9 +3598,8 @@ mod refresh_revoke_race {
             .expect("a locally exact reauth outcome should release L2");
     }
 
-    #[cfg(feature = "rotation")]
     #[tokio::test]
-    async fn oauth_pre_dispatch_rejection_is_exact_never_retry_and_releases_l2() {
+    async fn oauth_pre_dispatch_rejection_persists_never_gate_before_releasing_l2() {
         let store = Arc::new(ScriptedStore::new(
             oauth2_row_with_token_url(Some("refresh-grant"), "http://provider.example/token"),
             false,
@@ -2552,14 +3618,25 @@ mod refresh_revoke_race {
             .await
             .expect_err("invalid local endpoint must fail before dispatch");
 
-        assert!(matches!(&error, ResolveError::ExactRefreshFailure { .. }));
+        assert!(matches!(&error, ResolveError::RefreshNotApplied { .. }));
         assert_eq!(transport.call_count(), 0);
-        assert_eq!(store.replacement_count(), 0);
+        assert_eq!(
+            store.replacement_count(),
+            1,
+            "the exact failure must be made durable before L2 release"
+        );
+        let StoredCredential::Live(gated) = store.snapshot() else {
+            panic!("the credential remains live behind a retry gate");
+        };
+        assert!(matches!(
+            gated.refresh_retry_gate(),
+            Some(RefreshRetryGate::Never { .. })
+        ));
         tokio::time::timeout(Duration::from_secs(1), claims.wait_for_release_count(1))
             .await
-            .expect("a proven pre-dispatch failure should release L2");
+            .expect("a durably gated pre-dispatch failure should release L2");
 
-        let CredentialError::RefreshFailed(context) = resolve_error_to_credential_error(error)
+        let CredentialError::RefreshNotApplied(context) = resolve_error_to_credential_error(error)
         else {
             panic!("pre-dispatch failure must retain typed refresh context");
         };
@@ -2568,15 +3645,68 @@ mod refresh_revoke_race {
             crate::error::RefreshErrorKind::ProtocolError
         );
         assert_eq!(context.retry(), crate::error::RetryAdvice::Never);
+
+        let restarted_claims = Arc::new(StatefulClaimRepo::default());
+        let restarted_claim_port: Arc<dyn RefreshClaimStore> = restarted_claims.clone();
+        let restarted_transport: Arc<dyn RefreshTransport> = Arc::clone(&transport) as _;
+        let restarted = resolver_with_runtime(
+            Arc::clone(&store),
+            restarted_claim_port,
+            restarted_transport,
+        );
+        let restarted_error = restarted
+            .resolve_with_refresh::<OAuth2Credential>(
+                &test_selector(),
+                &CredentialContext::for_owner("test-owner"),
+            )
+            .await
+            .expect_err("restart must honor the backend retry gate before L2");
+        assert!(matches!(
+            restarted_error,
+            ResolveError::RefreshNotApplied { .. }
+        ));
+        assert_eq!(restarted_claims.try_claim_count.load(Ordering::SeqCst), 0);
+        assert_eq!(transport.call_count(), 0);
     }
 
-    #[cfg(feature = "rotation")]
     #[tokio::test]
-    async fn oauth_complete_endpoint_rejection_preserves_bounded_retry_advice() {
+    async fn oauth_transient_or_unknown_endpoint_response_retains_l2() {
+        for result in [
+            OAuthTransportResult::ServerError503,
+            OAuthTransportResult::Other429,
+        ] {
+            let store = Arc::new(ScriptedStore::new(oauth2_row(Some("refresh-grant")), false));
+            let claims = Arc::new(StatefulClaimRepo::default());
+            let transport = Arc::new(ScriptedOAuthTransport::new(result));
+            let claim_port: Arc<dyn RefreshClaimStore> = claims.clone();
+            let transport_port: Arc<dyn RefreshTransport> = transport.clone();
+            let resolver = resolver_with_runtime(Arc::clone(&store), claim_port, transport_port);
+
+            let error = resolver
+                .resolve_with_refresh::<OAuth2Credential>(
+                    &test_selector(),
+                    &CredentialContext::for_owner("test-owner"),
+                )
+                .await
+                .expect_err("transient or unknown endpoint response is replay-ambiguous");
+
+            assert!(matches!(
+                &error,
+                ResolveError::ProviderOutcomeUnknown { .. }
+            ));
+            assert_eq!(transport.call_count(), 1);
+            assert_eq!(store.replacement_count(), 0);
+            assert!(claims.active.load(Ordering::SeqCst));
+            assert_eq!(claims.release_count.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn oauth_definitive_endpoint_denial_is_exact_and_releases_l2() {
         let store = Arc::new(ScriptedStore::new(oauth2_row(Some("refresh-grant")), false));
         let claims = Arc::new(StatefulClaimRepo::default());
         let transport = Arc::new(ScriptedOAuthTransport::new(
-            OAuthTransportResult::EndpointUnavailable,
+            OAuthTransportResult::InvalidClient401,
         ));
         let claim_port: Arc<dyn RefreshClaimStore> = claims.clone();
         let transport_port: Arc<dyn RefreshTransport> = transport.clone();
@@ -2588,30 +3718,282 @@ mod refresh_revoke_race {
                 &CredentialContext::for_owner("test-owner"),
             )
             .await
-            .expect_err("complete 503 response must be an exact no-state-change failure");
+            .expect_err("definitive OAuth denial must be exact");
 
-        assert!(matches!(&error, ResolveError::ExactRefreshFailure { .. }));
+        assert!(matches!(&error, ResolveError::RefreshNotApplied { .. }));
         assert_eq!(transport.call_count(), 1);
-        assert_eq!(store.replacement_count(), 0);
+        assert_eq!(store.replacement_count(), 1);
         tokio::time::timeout(Duration::from_secs(1), claims.wait_for_release_count(1))
             .await
-            .expect("a complete provider rejection should release L2");
+            .expect("a definitive provider denial should release L2");
 
-        let CredentialError::RefreshFailed(context) = resolve_error_to_credential_error(error)
+        let CredentialError::RefreshNotApplied(context) = resolve_error_to_credential_error(error)
         else {
-            panic!("endpoint rejection must retain typed refresh context");
+            panic!("endpoint denial must retain typed refresh context");
         };
         assert_eq!(
             context.kind(),
-            crate::error::RefreshErrorKind::ProviderUnavailable
+            crate::error::RefreshErrorKind::ProtocolError
         );
+        assert_eq!(context.retry(), crate::error::RetryAdvice::Never);
         assert_eq!(
-            context.retry(),
-            crate::error::RetryAdvice::After(RefreshPolicy::DEFAULT.min_retry_backoff)
+            context
+                .diagnostic_code()
+                .map(crate::RefreshDiagnosticCode::as_str),
+            Some("invalid_client")
+        );
+
+        let second = resolver_with_runtime(
+            Arc::clone(&store),
+            Arc::clone(&claims) as Arc<dyn RefreshClaimStore>,
+            Arc::clone(&transport) as Arc<dyn RefreshTransport>,
+        )
+        .resolve_with_refresh::<OAuth2Credential>(
+            &test_selector(),
+            &CredentialContext::for_owner("test-owner"),
+        )
+        .await
+        .expect_err("a second coordinator must observe the durable Never gate");
+        assert!(matches!(second, ResolveError::RefreshNotApplied { .. }));
+        assert_eq!(
+            transport.call_count(),
+            1,
+            "two independent coordinators sharing one store dispatch exactly once"
         );
     }
 
-    #[cfg(feature = "rotation")]
+    #[tokio::test]
+    async fn retry_gate_cas_merges_display_race_without_redispatch() {
+        let store = Arc::new(ScriptedStore::racing_display_replace(oauth2_row(Some(
+            "refresh-grant",
+        ))));
+        let claims = Arc::new(StatefulClaimRepo::default());
+        let transport = Arc::new(ScriptedOAuthTransport::new(
+            OAuthTransportResult::InvalidClient401,
+        ));
+        let claim_port: Arc<dyn RefreshClaimStore> = claims.clone();
+        let transport_port: Arc<dyn RefreshTransport> = transport.clone();
+        let selector = test_selector();
+        let ctx = CredentialContext::for_owner("test-owner");
+
+        let first = resolver_with_runtime(
+            Arc::clone(&store),
+            Arc::clone(&claim_port),
+            Arc::clone(&transport_port),
+        )
+        .resolve_with_refresh::<OAuth2Credential>(&selector, &ctx)
+        .await
+        .expect_err("the exact provider denial remains an error");
+        assert!(matches!(first, ResolveError::RefreshNotApplied { .. }));
+        assert_eq!(transport.call_count(), 1);
+        assert_eq!(
+            store.replacement_count(),
+            2,
+            "the gate writer must re-read and CAS once after the display-only race"
+        );
+        let StoredCredential::Live(row) = store.snapshot() else {
+            panic!("display race keeps the credential live");
+        };
+        assert_eq!(row.name(), Some("renamed-concurrently"));
+        assert!(matches!(
+            row.refresh_retry_gate(),
+            Some(RefreshRetryGate::Never { .. })
+        ));
+        tokio::time::timeout(Duration::from_secs(1), claims.wait_for_release_count(1))
+            .await
+            .expect("the claim releases only after the merged gate is durable");
+
+        let second = resolver_with_runtime(store, claim_port, transport_port)
+            .resolve_with_refresh::<OAuth2Credential>(&selector, &ctx)
+            .await
+            .expect_err("the merged gate must block a new coordinator");
+        assert!(matches!(second, ResolveError::RefreshNotApplied { .. }));
+        assert_eq!(transport.call_count(), 1, "CAS retry must not redispatch");
+    }
+
+    #[tokio::test]
+    async fn timed_retry_gate_blocks_all_replicas_until_backend_expiry() {
+        AFTER_PROVIDER_CALLS.store(0, Ordering::SeqCst);
+        let store = Arc::new(ScriptedStore::new(live_row_with_token("after"), false));
+        let claims = Arc::new(StatefulClaimRepo::default());
+        let claim_port: Arc<dyn RefreshClaimStore> = claims.clone();
+        let transport: Arc<dyn RefreshTransport> = Arc::new(StubTransport);
+        let selector = test_selector();
+        let ctx = CredentialContext::for_owner("test-owner");
+
+        let first = resolver_with_runtime(
+            Arc::clone(&store),
+            Arc::clone(&claim_port),
+            Arc::clone(&transport),
+        )
+        .resolve_with_refresh::<TestCred>(&selector, &ctx)
+        .await
+        .expect_err("the first exact transient response installs a timed gate");
+        let ResolveError::RefreshNotApplied { context, .. } = first else {
+            panic!("timed exact failure must preserve its typed context");
+        };
+        assert!(matches!(context.retry(), crate::RetryAdvice::After(_)));
+        assert_eq!(AFTER_PROVIDER_CALLS.load(Ordering::SeqCst), 1);
+        tokio::time::timeout(Duration::from_secs(1), claims.wait_for_release_count(1))
+            .await
+            .expect("acknowledged timed gate permits claim release");
+
+        let immediate = resolver_with_runtime(
+            Arc::clone(&store),
+            Arc::clone(&claim_port),
+            Arc::clone(&transport),
+        )
+        .resolve_with_refresh::<TestCred>(&selector, &ctx)
+        .await
+        .expect_err("another replica must honor the unexpired backend gate");
+        assert!(matches!(immediate, ResolveError::RefreshNotApplied { .. }));
+        assert_eq!(AFTER_PROVIDER_CALLS.load(Ordering::SeqCst), 1);
+
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
+
+        let left = resolver_with_runtime(
+            Arc::clone(&store),
+            Arc::clone(&claim_port),
+            Arc::clone(&transport),
+        );
+        let right = resolver_with_runtime(
+            Arc::clone(&store),
+            Arc::clone(&claim_port),
+            Arc::clone(&transport),
+        );
+        let left_selector = selector.clone();
+        let left_ctx = ctx.clone();
+        let left_task = tokio::spawn(async move {
+            left.resolve_with_refresh::<TestCred>(&left_selector, &left_ctx)
+                .await
+        });
+        let right_task = tokio::spawn(async move {
+            right
+                .resolve_with_refresh::<TestCred>(&selector, &ctx)
+                .await
+        });
+        let (left_result, right_result) = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::join!(left_task, right_task)
+        })
+        .await
+        .expect("both replica attempts finish under the renewed gate");
+        assert!(matches!(
+            left_result.expect("left task joins"),
+            Err(ResolveError::RefreshNotApplied { .. })
+        ));
+        assert!(matches!(
+            right_result.expect("right task joins"),
+            Err(ResolveError::RefreshNotApplied { .. })
+        ));
+        assert_eq!(
+            AFTER_PROVIDER_CALLS.load(Ordering::SeqCst),
+            2,
+            "gate expiry admits exactly one new provider dispatch across replicas"
+        );
+    }
+
+    #[tokio::test]
+    async fn service_forced_oauth_refresh_uses_resolver_transport_and_exact_k2_disposition() {
+        let scope = crate::TenantScope::new("test-org", "test-workspace");
+        let store = Arc::new(ScriptedStore::with_owner(
+            oauth2_row(Some("refresh-grant")),
+            false,
+            CredentialOwner::from_canonical(scope.owner_id()),
+        ));
+        let claims = Arc::new(StatefulClaimRepo::default());
+        let transport = Arc::new(ScriptedOAuthTransport::new(
+            OAuthTransportResult::InvalidClient401,
+        ));
+        let claim_port: Arc<dyn RefreshClaimStore> = claims.clone();
+        let transport_port: Arc<dyn RefreshTransport> = transport.clone();
+        let (service, shutdown) =
+            oauth_service_with_runtime(Arc::clone(&store), claim_port, transport_port);
+
+        let error = service
+            .refresh(&scope, &test_id().to_string())
+            .await
+            .expect_err("definitive OAuth denial must remain exact through the service");
+        shutdown.cancel();
+
+        let crate::CredentialServiceError::RefreshNotApplied(context) = error else {
+            panic!("service must preserve the proof-bearing refresh context");
+        };
+        assert_eq!(transport.call_count(), 1);
+        assert_eq!(context.retry(), crate::error::RetryAdvice::Never);
+        assert_eq!(
+            context
+                .diagnostic_code()
+                .map(crate::RefreshDiagnosticCode::as_str),
+            Some("invalid_client")
+        );
+        assert_eq!(store.replacement_count(), 1);
+        tokio::time::timeout(Duration::from_secs(1), claims.wait_for_release_count(1))
+            .await
+            .expect("exact management refresh failure should release L2");
+    }
+
+    #[tokio::test]
+    async fn service_forced_oauth_transient_response_is_unknown_and_retains_l2() {
+        let scope = crate::TenantScope::new("test-org", "test-workspace");
+        let store = Arc::new(ScriptedStore::with_owner(
+            oauth2_row(Some("refresh-grant")),
+            false,
+            CredentialOwner::from_canonical(scope.owner_id()),
+        ));
+        let claims = Arc::new(StatefulClaimRepo::default());
+        let transport = Arc::new(ScriptedOAuthTransport::new(
+            OAuthTransportResult::ServerError503,
+        ));
+        let claim_port: Arc<dyn RefreshClaimStore> = claims.clone();
+        let transport_port: Arc<dyn RefreshTransport> = transport.clone();
+        let (service, shutdown) =
+            oauth_service_with_runtime(Arc::clone(&store), claim_port, transport_port);
+
+        let error = service
+            .refresh(&scope, &test_id().to_string())
+            .await
+            .expect_err("transient provider response must remain replay-ambiguous");
+        shutdown.cancel();
+
+        assert!(matches!(
+            error,
+            crate::CredentialServiceError::OutcomeUnknown
+        ));
+        assert_eq!(transport.call_count(), 1);
+        assert_eq!(store.replacement_count(), 0);
+        assert!(claims.active.load(Ordering::SeqCst));
+        assert_eq!(claims.release_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn service_pre_dispatch_deserialize_failure_releases_l2_without_transport() {
+        let scope = crate::TenantScope::new("test-org", "test-workspace");
+        let store = Arc::new(ScriptedStore::with_owner(
+            corrupt_oauth2_row(),
+            false,
+            CredentialOwner::from_canonical(scope.owner_id()),
+        ));
+        let claims = Arc::new(StatefulClaimRepo::default());
+        let transport = Arc::new(ScriptedOAuthTransport::new(OAuthTransportResult::Success));
+        let claim_port: Arc<dyn RefreshClaimStore> = claims.clone();
+        let transport_port: Arc<dyn RefreshTransport> = transport.clone();
+        let (service, shutdown) =
+            oauth_service_with_runtime(Arc::clone(&store), claim_port, transport_port);
+
+        let error = service
+            .refresh(&scope, &test_id().to_string())
+            .await
+            .expect_err("corrupt state must fail before provider dispatch");
+        shutdown.cancel();
+
+        assert!(matches!(error, crate::CredentialServiceError::Internal(_)));
+        assert_eq!(transport.call_count(), 0);
+        assert_eq!(store.replacement_count(), 0);
+        tokio::time::timeout(Duration::from_secs(1), claims.wait_for_release_count(1))
+            .await
+            .expect("pre-dispatch deserialize failure should release L2");
+    }
+
     #[tokio::test]
     async fn oauth_success_parse_failure_is_outcome_unknown_and_retains_l2() {
         let store = Arc::new(ScriptedStore::new(
@@ -2644,7 +4026,6 @@ mod refresh_revoke_race {
         assert_eq!(claims.release_count.load(Ordering::SeqCst), 0);
     }
 
-    #[cfg(feature = "rotation")]
     #[tokio::test]
     async fn oauth_post_provider_persistence_failure_is_replay_unsafe() {
         use nebula_error::Classify;
@@ -2769,14 +4150,16 @@ mod refresh_revoke_race {
     }
 
     impl Refreshable for MismatchedPolicyCred {
+        const REFRESH_EXECUTION_MODE: crate::RefreshExecutionMode =
+            crate::RefreshExecutionMode::Local;
         const REFRESH_POLICY: RefreshPolicy = RefreshPolicy::DEFAULT;
 
         async fn refresh(
             state: &mut TestState,
-            _ctx: &CredentialContext,
-        ) -> Result<RefreshOutcome, CredentialError> {
+            attempt: RefreshAttempt<'_>,
+        ) -> crate::RefreshReport {
             state.token = "refreshed".to_owned();
-            Ok(RefreshOutcome::Refreshed)
+            attempt.local_refresh_completed()
         }
     }
 
@@ -2808,11 +4191,13 @@ mod refresh_revoke_race {
             TestState::KIND.to_owned(),
             TestState::VERSION,
             CredentialVersion::MIN,
+            CredentialMaterialEpoch::MIN,
             now,
             now,
             None,
             false,
             serde_json::Map::new(),
+            None,
         )
         .expect("fixture is a valid live credential")
         .into()

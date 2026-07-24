@@ -57,6 +57,7 @@ fn replacement(expected_version: CredentialVersion, data: &[u8]) -> CredentialRe
         None,
         false,
         Default::default(),
+        nebula_storage_port::CredentialMaterialTransition::advance(),
     )
 }
 

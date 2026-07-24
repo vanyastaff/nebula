@@ -78,7 +78,7 @@ compatibility/audit data only; the selector plus physical owner column are the s
 authority.
 
 SQLite/PostgreSQL ready-store constructors hold a bounded backend-specific startup lock across
-read-only schema admission, canonical migration through paired `0039`, and postflight. Raw pools
+read-only schema admission, canonical migration through paired `0040`, and postflight. Raw pools
 cannot construct a ready credential store. Confirmed mutations return a secret-free
 `CredentialCommit` from statement `RETURNING` only after commit; a lost commit acknowledgement is
 the non-retryable `OutcomeUnknown`.
@@ -88,6 +88,11 @@ Coordinated refresh has an explicit irreversible boundary: the L2 claim is marke
 replacement run in an owned task. Caller cancellation, caller-wait timeout, and heartbeat loss do
 not cancel that task or release L1/L2 early. A lost commit acknowledgement, or a definite
 post-provider encoding/persistence failure, stops heartbeat but retains the sentinel claim.
+The credential implementation receives one move-only `RefreshAttempt`: consuming it through
+`dispatch` destroys the pre-dispatch witness, a failed dispatch yields only outcome-unknown
+evidence, and only a complete-response proof can classify a provider rejection or prove no effect.
+Providerless local completion is explicit. Coalescing, persistence, and claim disposition are
+framework-owned and cannot be synthesized by an integration.
 After TTL, storage keeps an expired `RefreshInFlight` row as durable fail-closed poison:
 `try_claim` returns `OutcomeUnknown`, provider dispatch remains forbidden, and the reclaim sweep
 atomically records evidence without deleting the row. Provider transport/read failure, a malformed
@@ -104,9 +109,18 @@ cancelling it cannot prove the provider did not consume the grant.
 The authenticated management `refresh` and `revoke` commands use the same owned L1/L2 boundary.
 Their erased integration closures are invoked at most once: an opaque error after entry is
 `OutcomeUnknown`, while a definite local encode/CAS/tombstone failure after provider success is
-`PostProviderPersistence`. Concurrent callers coalesce, re-check the observed credential version,
-and never repeat provider work merely because the first caller disconnected. Refresh fallback to
-still-valid material is permitted only for coordination failures proven to occur before provider
+operation-specific `RefreshPostProviderPersistence` or
+`RevokePostProviderPersistence` at the service boundary (the integration-facing
+`CredentialError::PostProviderPersistence` remains operation-generic).
+Concurrent callers coalesce, re-check the observed refresh-authority epoch or
+revoke CAS version as appropriate, and never repeat provider work merely
+because the first caller disconnected. The payload-free L1 signal preserves
+exactness: a definite retry-unsafe winner yields an operation-specific
+reconciliation error to waiters, while only a genuinely unknown or abnormal
+completion yields `OutcomeUnknown`. Durable reauthentication advances the
+material epoch and clears old retry evidence, so a stale gate finalizer cannot
+reattach to a rejected grant. Refresh fallback to still-valid material is
+permitted only for coordination failures proven to occur before provider
 dispatch.
 
 The resolver cache key includes `CredentialSelector` and output `TypeId`. Encryption retains the

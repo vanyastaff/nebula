@@ -35,7 +35,8 @@ use nebula_crypto::{EncryptedData, EncryptionKey, decrypt_with_aad, encrypt_with
 use nebula_storage_port::{
     CredentialCommit, CredentialCreate, CredentialOwner, CredentialPersistence,
     CredentialPersistenceError, CredentialReplacement, CredentialSelector, CredentialTombstone,
-    SecretBytes, StoredCredential, StoredCredentialHead, StoredLiveCredential,
+    RefreshRetrySnapshot, SecretBytes, StoredCredential, StoredCredentialHead,
+    StoredLiveCredential,
 };
 
 use super::super::key_provider::{KeyProvider, KeySnapshot};
@@ -173,6 +174,7 @@ impl<S: CredentialPersistence> CredentialPersistence for EncryptionLayer<S> {
             StoredCredential::Live(record) => {
                 let credential_id = record.credential_id();
                 let plaintext = self.decrypt_data(record.data(), credential_id)?;
+                let refresh_retry_gate = record.refresh_retry_gate().cloned();
                 StoredLiveCredential::new(
                     credential_id,
                     record.name().map(str::to_owned),
@@ -181,11 +183,13 @@ impl<S: CredentialPersistence> CredentialPersistence for EncryptionLayer<S> {
                     record.state_kind().to_owned(),
                     record.state_version(),
                     record.version(),
+                    record.material_epoch(),
                     record.created_at(),
                     record.updated_at(),
                     record.expires_at(),
                     record.reauth_required(),
                     record.metadata().clone(),
+                    refresh_retry_gate,
                 )
                 .map(StoredCredential::Live)
             },
@@ -200,6 +204,13 @@ impl<S: CredentialPersistence> CredentialPersistence for EncryptionLayer<S> {
         // The projection has no data field, so this path neither selects nor
         // decrypts credential material.
         self.inner.get_head(selector).await
+    }
+
+    async fn refresh_retry_snapshot(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<RefreshRetrySnapshot, CredentialPersistenceError> {
+        self.inner.refresh_retry_snapshot(selector).await
     }
 
     async fn create(
@@ -243,6 +254,7 @@ impl<S: CredentialPersistence> CredentialPersistence for EncryptionLayer<S> {
                     replacement.expires_at(),
                     replacement.reauth_required(),
                     replacement.metadata().clone(),
+                    replacement.material_transition().clone(),
                 ),
             )
             .await
@@ -331,7 +343,8 @@ mod tests {
     use nebula_credential::{AuthStyle, SecretString, credentials::oauth2::OAuth2State};
     use nebula_storage_port::{
         CredentialOwner, CredentialSelector, CredentialTombstone, CredentialVersion,
-        StoredCredential, StoredLiveCredential,
+        RefreshRetryAdmission, RefreshRetryBlock, RefreshRetryEvidence, RefreshRetryKind,
+        RefreshRetryPhase, RefreshRetryTransition, StoredCredential, StoredLiveCredential,
     };
 
     use crate::credential::test_support::{make_credential, make_replacement};
@@ -394,6 +407,58 @@ mod tests {
 
         let fetched = into_live(store.get(&selector).await?);
         assert_eq!(fetched.data().as_ref(), b"super-secret");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn refresh_retry_state_survives_encryption_rewrites_and_reads()
+    -> Result<(), CredentialPersistenceError> {
+        let store = EncryptionLayer::new(
+            SqliteCredentialPersistence::connect_memory().await?,
+            default_provider(),
+        );
+        let selector = selector(CredentialId::new());
+        let created = store.create(&selector, make_credential(b"v1")).await?;
+        let evidence = RefreshRetryEvidence::new(
+            RefreshRetryPhase::BeforeDispatch,
+            RefreshRetryKind::TransientNetwork,
+            None,
+        );
+        let replacement = make_replacement(
+            created.version(),
+            b"v2",
+            RefreshRetryTransition::SetNever {
+                evidence: evidence.clone(),
+            },
+        );
+        let replaced = store.replace(&selector, replacement).await?;
+
+        let live = into_live(store.get(&selector).await?);
+        assert!(matches!(
+            live.refresh_retry_gate(),
+            Some(nebula_storage_port::RefreshRetryGate::Never { evidence: stored })
+                if stored == &evidence
+        ));
+        let snapshot = store.refresh_retry_snapshot(&selector).await?;
+        assert_eq!(snapshot.version(), replaced.version());
+        assert_eq!(
+            snapshot.admission(),
+            &RefreshRetryAdmission::Blocked(RefreshRetryBlock::Never {
+                evidence: evidence.clone(),
+            })
+        );
+
+        store
+            .replace(
+                &selector,
+                make_replacement(replaced.version(), b"v3", RefreshRetryTransition::Preserve),
+            )
+            .await?;
+        assert!(matches!(
+            into_live(store.get(&selector).await?).refresh_retry_gate(),
+            Some(nebula_storage_port::RefreshRetryGate::Never { evidence: stored })
+                if stored == &evidence
+        ));
         Ok(())
     }
 
@@ -748,7 +813,11 @@ mod tests {
         let updated = store_new
             .replace(
                 &selector,
-                make_replacement(originally_stored.version(), b"rotated"),
+                make_replacement(
+                    originally_stored.version(),
+                    b"rotated",
+                    RefreshRetryTransition::Clear,
+                ),
             )
             .await?;
         assert_eq!(updated.version(), version(2));

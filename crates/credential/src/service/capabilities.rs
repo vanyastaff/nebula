@@ -10,20 +10,23 @@
 use serde_json::Value;
 
 use crate::resolve::TestResult;
-use crate::runtime::{RefreshDisposition, RefreshError, RefreshRecheckError};
+use crate::runtime::refresh::{
+    ReauthWrite, RetryGateWrite, context_from_block, persist_reauth_required, persist_retry_gate,
+};
+use crate::runtime::{RefreshDisposition, RefreshError, RefreshRecheck, RefreshRecheckError};
 use crate::{
-    CredentialPersistenceError, CredentialReplacement, CredentialTombstone,
-    LAST_VALIDATED_AT_METADATA_KEY, StoredCredential,
+    CredentialMaterialTransition, CredentialPersistenceError, CredentialReplacement,
+    CredentialTombstone, LAST_VALIDATED_AT_METADATA_KEY, RefreshRetryAdmission, StoredCredential,
 };
 
 use super::error::CredentialServiceError;
-use super::facade::{CredentialService, RefreshReport};
+use super::facade::{CredentialService, ManagementRefreshReport};
 use super::head::CredentialHead;
 use super::scope::TenantScope;
 
 enum CoordinatedRefreshResult {
     Committed(CredentialHead),
-    ReRead,
+    Reevaluate,
 }
 
 impl CredentialService {
@@ -76,11 +79,11 @@ impl CredentialService {
     /// If this caller performed the refresh, the resulting state is written
     /// back under compare-and-swap on the version observed at load. A
     /// concurrent refresh/update after provider success is surfaced as
-    /// [`CredentialServiceError::PostProviderPersistence`] and is never blindly
-    /// replayed. If another replica coalesced the refresh
-    /// (`RefreshOutcome::CoalescedByOtherReplica`) the write is **skipped
-    /// entirely** and the now-fresher state is re-read from the store
-    /// instead of clobbering it with the un-mutated local copy. On
+    /// [`CredentialServiceError::RefreshPostProviderPersistence`] and is never
+    /// blindly replayed. If the framework coordinator observes that another replica
+    /// completed the refresh, this caller skips the write entirely and
+    /// re-reads the now-fresher state instead of clobbering it with the
+    /// unmutated local copy. On
     /// success (either path) [`CredentialObserver::on_refresh`](super::observer::CredentialObserver::on_refresh) fires and
     /// the fresh secret-free [`CredentialHead`] is returned.
     ///
@@ -98,22 +101,28 @@ impl CredentialService {
     /// - [`CredentialServiceError::CapabilityUnsupported`] — type is not `Refreshable`.
     /// - [`CredentialServiceError::OutcomeUnknown`] — provider/persistence
     ///   acknowledgement is ambiguous; reconcile before any retry.
-    /// - [`CredentialServiceError::PostProviderPersistence`] — provider work
-    ///   completed but local finalization definitely failed.
+    /// - [`CredentialServiceError::RefreshReconciliationRequired`] — a
+    ///   concurrent winner produced an exact retry-unsafe result; its durable
+    ///   state must be reconciled before another refresh.
+    /// - [`CredentialServiceError::RefreshPostProviderPersistence`] — provider
+    ///   refresh completed but local finalization definitely failed.
+    /// - [`CredentialServiceError::RefreshNotApplied`] — linear evidence
+    ///   proved that provider state did not advance; typed retry advice is
+    ///   retained for an explicit caller policy.
     /// - [`CredentialServiceError::TransientProvider`] — coordination failed
     ///   before provider dispatch and stored material is expired.
     pub async fn refresh(
         &self,
         scope: &TenantScope,
         id: &str,
-    ) -> Result<RefreshReport, CredentialServiceError> {
+    ) -> Result<ManagementRefreshReport, CredentialServiceError> {
         // Read the current head before attempting refresh. A failure proven to
         // occur before provider dispatch may fall back to still-valid material.
         // The report's `refreshed: false` keeps that fallback honest.
         let cached = self.get(scope, id).await?;
 
         match self.refresh_inner(scope, id).await {
-            Ok(head) => Ok(RefreshReport {
+            Ok(head) => Ok(ManagementRefreshReport {
                 head,
                 refreshed: true,
             }),
@@ -123,7 +132,7 @@ impl CredentialService {
                     error = %e,
                     "credential refresh coordination failed before provider dispatch; stored material still non-expired"
                 );
-                Ok(RefreshReport {
+                Ok(ManagementRefreshReport {
                     head: cached,
                     refreshed: false,
                 })
@@ -149,29 +158,44 @@ impl CredentialService {
             });
         }
         let credential_id = stored.credential_id();
-        let observed_version = stored.version();
+        let observed_material_epoch = stored.material_epoch();
         let selector = scope.selector(credential_id);
+        if let Some(context) = self.active_refresh_retry_context(&selector, id).await? {
+            return Err(CredentialServiceError::RefreshNotApplied(context));
+        }
 
-        // A contender that slept behind another replica may proceed only if
-        // the exact row version we loaded is still current. Any version change
-        // means another writer established a newer state/reauth decision; the
-        // coordinator returns Coalesced and we re-read instead of POSTing the
-        // stale grant.
+        // A contender that slept behind another replica may proceed while the
+        // durable material epoch is still current. Display-only writes advance
+        // the row version but preserve that epoch, so they must not masquerade
+        // as a completed refresh. A newer epoch or durable reauth decision
+        // instead forces an authoritative re-read before provider dispatch.
         let store_for_recheck = self.store.clone();
         let selector_for_recheck = selector.clone();
         let needs_refresh_after_backoff = move |_id: &crate::CredentialId| {
             let store = store_for_recheck.clone();
             let selector = selector_for_recheck.clone();
             async move {
-                match store.get(&selector).await {
-                    Ok(StoredCredential::Live(current)) => {
-                        Ok(current.version() == observed_version && !current.reauth_required())
+                match store.refresh_retry_snapshot(&selector).await {
+                    Ok(snapshot) => {
+                        if let RefreshRetryAdmission::Blocked(block) = snapshot.admission() {
+                            let context = context_from_block(block.clone())
+                                .map_err(|_| RefreshRecheckError::InvalidState)?;
+                            return Ok(RefreshRecheck::Suppressed(context));
+                        }
+                        Ok(
+                            if snapshot.material_epoch() == observed_material_epoch
+                                && !snapshot.reauth_required()
+                            {
+                                RefreshRecheck::Needed
+                            } else {
+                                RefreshRecheck::Satisfied
+                            },
+                        )
                     },
-                    Ok(StoredCredential::Tombstoned(_)) => Ok(false),
-                    // A failed recheck cannot establish that the captured
-                    // version is still authoritative. Deny provider dispatch;
-                    // preserve that distinction instead of pretending another
-                    // replica completed the operation.
+                    Err(CredentialPersistenceError::NotFound) => Ok(RefreshRecheck::Satisfied),
+                    Err(CredentialPersistenceError::CorruptRecord) => {
+                        Err(RefreshRecheckError::InvalidState)
+                    },
                     Err(_) => Err(RefreshRecheckError::Unavailable),
                 }
             }
@@ -182,7 +206,7 @@ impl CredentialService {
         let observer = self.observer.clone();
         let id_owned = id.to_owned();
         let selector_for_task = selector.clone();
-        let ctx = Self::owner_context(scope);
+        let ctx = self.resolver.refresh_context(&Self::owner_context(scope));
         let result = self
             .resolver
             .refresh_coordinator()
@@ -190,66 +214,185 @@ impl CredentialService {
                 &credential_id,
                 needs_refresh_after_backoff,
                 move || async move {
+                    // Merge any display-only mutation that landed between the
+                    // caller's initial read and L2 acquisition. Provider
+                    // dispatch must use the latest CAS version for the same
+                    // material authority; a newer epoch supersedes this
+                    // attempt without contacting the provider.
+                    let stored = match store.get(&selector_for_task).await {
+                        Ok(StoredCredential::Live(stored)) => stored,
+                        Ok(StoredCredential::Tombstoned(_))
+                        | Err(CredentialPersistenceError::NotFound) => {
+                            return RefreshDisposition::no_state_change(Err(
+                                CredentialServiceError::NotFound {
+                                    id: id_owned.clone(),
+                                },
+                            ));
+                        },
+                        Err(error) => {
+                            return RefreshDisposition::no_state_change(Err(
+                                Self::map_store_err_for(&id_owned, error),
+                            ));
+                        },
+                    };
+                    if stored.material_epoch() != observed_material_epoch {
+                        return RefreshDisposition::state_advanced(Ok(
+                            CoordinatedRefreshResult::Reevaluate,
+                        ));
+                    }
+                    if stored.reauth_required() {
+                        return RefreshDisposition::state_advanced(Err(
+                            CredentialServiceError::ReauthRequired {
+                                credential_id: id_owned.clone(),
+                                reason: crate::ReauthReason::ProviderRejected,
+                            },
+                        ));
+                    }
+
                     let outcome = ops
                         .refresh(stored.credential_key(), stored.data(), &ctx)
                         .await;
 
-                    let outcome = match outcome {
-                        Ok(outcome) => outcome,
-                        Err(CredentialServiceError::ReauthRequired { reason, .. }) => {
-                            // Make the exact provider/local reauth decision
-                            // replica-visible before releasing the claim.
-                            let replacement = CredentialReplacement::new(
-                                stored.version(),
-                                stored.data().clone(),
-                                stored.state_kind().to_owned(),
-                                stored.state_version(),
-                                stored.name().map(str::to_owned),
-                                stored.expires_at(),
-                                true,
-                                stored.metadata().clone(),
-                            );
-                            return match store.replace(&selector_for_task, replacement).await {
-                                Ok(_) => RefreshDisposition::state_advanced(Err(
+                    let (refreshed, refreshed_expires_at, commit_phase) = match outcome {
+                        Ok(super::ops::RefreshExecutionResult::ReauthRequired {
+                            reason,
+                            phase,
+                        }) => {
+                            let phase_name = match phase {
+                                crate::contract::RefreshReauthPhase::BeforeDispatch => {
+                                    "before_dispatch"
+                                },
+                                crate::contract::RefreshReauthPhase::ProviderConfirmed => {
+                                    "provider_confirmed"
+                                },
+                            };
+                            return match persist_reauth_required(
+                                store.as_ref(),
+                                &selector_for_task,
+                                stored,
+                            )
+                            .await
+                            {
+                                ReauthWrite::Applied => RefreshDisposition::state_advanced(Err(
                                     CredentialServiceError::ReauthRequired {
                                         credential_id: id_owned,
                                         reason,
                                     },
                                 )),
-                                Err(CredentialPersistenceError::OutcomeUnknown) => {
+                                ReauthWrite::OutcomeUnknown => {
                                     RefreshDisposition::outcome_unknown(Err(
                                         CredentialServiceError::OutcomeUnknown,
                                     ))
                                 },
-                                Err(_) => RefreshDisposition::retry_unsafe(Err(
-                                    CredentialServiceError::PostProviderPersistence,
-                                )),
+                                ReauthWrite::Superseded(error) => {
+                                    tracing::warn!(
+                                        credential.id = %id_owned,
+                                        refresh.reauth_phase = phase_name,
+                                        ?error,
+                                        "failed to persist an exact reauthentication decision"
+                                    );
+                                    RefreshDisposition::no_state_change(Err(
+                                        Self::map_store_err_for(&id_owned, error),
+                                    ))
+                                },
+                                ReauthWrite::DefiniteFailure(error)
+                                    if phase
+                                        == crate::contract::RefreshReauthPhase::ProviderConfirmed =>
+                                {
+                                    tracing::warn!(
+                                        credential.id = %id_owned,
+                                        ?error,
+                                        "provider-confirmed reauthentication decision was not durable; retaining claim"
+                                    );
+                                    RefreshDisposition::retry_unsafe(Err(
+                                        CredentialServiceError::ReauthDecisionFinalization,
+                                    ))
+                                },
+                                ReauthWrite::DefiniteFailure(error) => {
+                                    RefreshDisposition::no_state_change(Err(
+                                        Self::map_store_err_for(&id_owned, error),
+                                    ))
+                                },
                             };
                         },
-                        Err(CredentialServiceError::OutcomeUnknown) => {
+                        Ok(super::ops::RefreshExecutionResult::OutcomeUnknown) => {
                             return RefreshDisposition::outcome_unknown(Err(
                                 CredentialServiceError::OutcomeUnknown,
                             ));
                         },
-                        Err(CredentialServiceError::PostProviderPersistence) => {
+                        Ok(super::ops::RefreshExecutionResult::PostProviderPersistence) => {
                             return RefreshDisposition::retry_unsafe(Err(
-                                CredentialServiceError::PostProviderPersistence,
+                                CredentialServiceError::RefreshPostProviderPersistence,
                             ));
                         },
-                        // Deserialization/type/capability errors occur before
-                        // the erased refresh implementation is entered and are
-                        // therefore exact and replay-safe.
-                        Err(error) => return RefreshDisposition::no_state_change(Err(error)),
-                    };
-
-                    let super::ops::RefreshOutcomeKind::Rewrote {
-                        data: refreshed,
-                        expires_at: refreshed_expires_at,
-                    } = outcome
-                    else {
-                        return RefreshDisposition::state_advanced(Ok(
-                            CoordinatedRefreshResult::ReRead,
-                        ));
+                        Ok(super::ops::RefreshExecutionResult::LocalFinalizationFailed) => {
+                            return RefreshDisposition::no_state_change(Err(
+                                CredentialServiceError::Internal(
+                                    "local credential refresh finalization failed".to_owned(),
+                                ),
+                            ));
+                        },
+                        Ok(super::ops::RefreshExecutionResult::NotApplied(context)) => {
+                            return match persist_retry_gate(
+                                store.as_ref(),
+                                &selector_for_task,
+                                stored,
+                                context,
+                            )
+                            .await
+                            {
+                                RetryGateWrite::Applied(context) => {
+                                    RefreshDisposition::state_advanced(Err(
+                                        CredentialServiceError::RefreshNotApplied(context),
+                                    ))
+                                },
+                                RetryGateWrite::OutcomeUnknown => {
+                                    RefreshDisposition::outcome_unknown(Err(
+                                        CredentialServiceError::OutcomeUnknown,
+                                    ))
+                                },
+                                RetryGateWrite::Superseded(error) => {
+                                    RefreshDisposition::no_state_change(Err(
+                                        Self::map_store_err_for(&id_owned, error),
+                                    ))
+                                },
+                                RetryGateWrite::DefiniteFailure(error) => {
+                                    tracing::warn!(
+                                        credential.id = %id_owned,
+                                        ?error,
+                                        "durable refresh retry gate finalization failed; retaining claim"
+                                    );
+                                    RefreshDisposition::retry_unsafe(Err(
+                                        CredentialServiceError::RefreshRetryGateFinalization,
+                                    ))
+                                },
+                            };
+                        },
+                        Ok(super::ops::RefreshExecutionResult::PreparationFailed(error)) => {
+                            return RefreshDisposition::no_state_change(Err(error));
+                        },
+                        Ok(super::ops::RefreshExecutionResult::Rewrote {
+                            data,
+                            expires_at,
+                            phase,
+                        }) => (data, expires_at, phase),
+                        // Dispatch lookup fails before the implementation
+                        // receives its linear attempt.
+                        Err(
+                            error @ (CredentialServiceError::TypeUnknown { .. }
+                            | CredentialServiceError::CapabilityUnsupported { .. }),
+                        ) => return RefreshDisposition::no_state_change(Err(error)),
+                        // A future erased-op error is phase-ambiguous. It must
+                        // retain L2 and surface only the conservative outcome.
+                        Err(error) => {
+                            tracing::warn!(
+                                ?error,
+                                "unexpected credential refresh error after entering coordinated task"
+                            );
+                            return RefreshDisposition::outcome_unknown(Err(
+                                CredentialServiceError::OutcomeUnknown,
+                            ));
+                        },
                     };
 
                     let now = chrono::Utc::now();
@@ -268,17 +411,35 @@ impl CredentialService {
                         refreshed_expires_at,
                         false,
                         metadata,
-                    );
+                        CredentialMaterialTransition::advance(),
+                    )
+                    ;
                     let commit = match store.replace(&selector_for_task, replacement).await {
                         Ok(commit) => commit,
-                        Err(CredentialPersistenceError::OutcomeUnknown) => {
+                        Err(CredentialPersistenceError::OutcomeUnknown)
+                            if commit_phase
+                                == super::ops::RefreshCommitPhase::ProviderConfirmed =>
+                        {
                             return RefreshDisposition::outcome_unknown(Err(
                                 CredentialServiceError::OutcomeUnknown,
                             ));
                         },
-                        Err(_) => {
+                        Err(_)
+                            if commit_phase
+                                == super::ops::RefreshCommitPhase::ProviderConfirmed =>
+                        {
                             return RefreshDisposition::retry_unsafe(Err(
-                                CredentialServiceError::PostProviderPersistence,
+                                CredentialServiceError::RefreshPostProviderPersistence,
+                            ));
+                        },
+                        Err(CredentialPersistenceError::OutcomeUnknown) => {
+                            return RefreshDisposition::replay_safe(Err(
+                                CredentialServiceError::OutcomeUnknown,
+                            ));
+                        },
+                        Err(error) => {
+                            return RefreshDisposition::no_state_change(Err(
+                                Self::map_store_err_for(&id_owned, error),
                             ));
                         },
                     };
@@ -304,8 +465,11 @@ impl CredentialService {
 
         match result {
             Ok(Ok(CoordinatedRefreshResult::Committed(head))) => Ok(head),
-            Ok(Ok(CoordinatedRefreshResult::ReRead))
-            | Err(RefreshError::CoalescedByOtherReplica) => {
+            Ok(Ok(CoordinatedRefreshResult::Reevaluate)) => self.get(scope, id).await,
+            Err(RefreshError::CoalescedByOtherReplica) => {
+                if let Some(context) = self.active_refresh_retry_context(&selector, id).await? {
+                    return Err(CredentialServiceError::RefreshNotApplied(context));
+                }
                 let current = self.load_owned(scope, id).await?;
                 if current.reauth_required() {
                     return Err(CredentialServiceError::ReauthRequired {
@@ -315,12 +479,12 @@ impl CredentialService {
                         reason: crate::ReauthReason::ProviderRejected,
                     });
                 }
-                if current.version() == observed_version {
+                if current.material_epoch() == observed_material_epoch {
                     // L1 waiters do not receive the Winner's disposition. If
-                    // the row did not advance, the Winner may have returned an
-                    // unknown/unsafe post-provider result while retaining L2;
-                    // reporting this as a successful coalesced refresh would
-                    // invite a blind follow-up.
+                    // material authority did not advance, the Winner may have
+                    // returned an unknown/unsafe post-provider result while
+                    // retaining L2. A display-only version bump is not proof
+                    // of refresh and must not be reported as success.
                     return Err(CredentialServiceError::OutcomeUnknown);
                 }
                 self.observer.on_refresh(&credential_id);
@@ -334,10 +498,16 @@ impl CredentialService {
             Err(RefreshError::CriticalOutcomePending) => {
                 Err(CredentialServiceError::OutcomeUnknown)
             },
+            Err(RefreshError::ReconciliationRequired) => {
+                Err(CredentialServiceError::RefreshReconciliationRequired)
+            },
             Err(RefreshError::PriorAttemptNoProgress) => Err(CredentialServiceError::Internal(
                 "concurrent credential refresh completed without changing authoritative state"
                     .to_owned(),
             )),
+            Err(RefreshError::RetrySuppressed(context)) => {
+                Err(CredentialServiceError::RefreshNotApplied(context))
+            },
             Err(
                 RefreshError::ContentionExhausted
                 | RefreshError::Repo(_)
@@ -351,13 +521,22 @@ impl CredentialService {
                     "credential refresh state recheck failed".to_owned(),
                 ))
             },
-            #[expect(
-                unreachable_patterns,
-                reason = "RefreshError is non-exhaustive; future variants fail closed"
-            )]
-            Err(_) => Err(CredentialServiceError::Internal(
-                "credential refresh coordination failed".to_owned(),
-            )),
+        }
+    }
+
+    async fn active_refresh_retry_context(
+        &self,
+        selector: &crate::CredentialSelector,
+        id: &str,
+    ) -> Result<Option<Box<crate::RefreshNotAppliedContext>>, CredentialServiceError> {
+        match self.store.refresh_retry_snapshot(selector).await {
+            Ok(snapshot) => match snapshot.admission() {
+                RefreshRetryAdmission::Open => Ok(None),
+                RefreshRetryAdmission::Blocked(block) => context_from_block(block.clone())
+                    .map(Some)
+                    .map_err(|_| CredentialServiceError::Store),
+            },
+            Err(error) => Err(Self::map_store_err_for(id, error)),
         }
     }
 
@@ -383,7 +562,8 @@ impl CredentialService {
     /// credential mutation coordinator. An erased integration error is
     /// outcome-unknown because the trait cannot prove provider-side revocation
     /// did not happen. A local finalization failure after provider success is
-    /// non-replayable [`CredentialServiceError::PostProviderPersistence`].
+    /// non-replayable
+    /// [`CredentialServiceError::RevokePostProviderPersistence`].
     /// Lease release remains best-effort; the stored row then transitions into
     /// the structural tombstone state, which contains no live-only secret or
     /// metadata fields.
@@ -409,9 +589,11 @@ impl CredentialService {
     ///
     /// - [`CredentialServiceError::NotFound`] — absent, cross-tenant, or already-revoked id.
     /// - [`CredentialServiceError::CapabilityUnsupported`] — type is not `Revocable`.
-    /// - [`CredentialServiceError::Provider`] — the provider revoke failed.
-    /// - [`CredentialServiceError::VersionConflict`] — a concurrent write raced the revoke.
-    /// - [`CredentialServiceError::Store`] — persisting the tombstone failed.
+    /// - [`CredentialServiceError::OutcomeUnknown`] — provider/persistence
+    ///   acknowledgement is ambiguous.
+    /// - [`CredentialServiceError::RevokePostProviderPersistence`] — provider
+    ///   revoke completed exactly, but durable tombstone finalization failed or
+    ///   a concurrent exact winner requires reconciliation.
     pub async fn revoke(
         &self,
         scope: &TenantScope,
@@ -435,9 +617,13 @@ impl CredentialService {
             async move {
                 match store.get(&selector).await {
                     Ok(StoredCredential::Live(current)) => {
-                        Ok(current.version() == observed_version)
+                        Ok(if current.version() == observed_version {
+                            RefreshRecheck::Needed
+                        } else {
+                            RefreshRecheck::Satisfied
+                        })
                     },
-                    Ok(StoredCredential::Tombstoned(_)) => Ok(false),
+                    Ok(StoredCredential::Tombstoned(_)) => Ok(RefreshRecheck::Satisfied),
                     // Never authorize provider revocation over an unverified
                     // captured row or flatten unavailability into success.
                     Err(_) => Err(RefreshRecheckError::Unavailable),
@@ -466,9 +652,9 @@ impl CredentialService {
                             CredentialServiceError::OutcomeUnknown,
                         ));
                     },
-                    Err(CredentialServiceError::PostProviderPersistence) => {
+                    Err(CredentialServiceError::RevokePostProviderPersistence) => {
                         return RefreshDisposition::retry_unsafe(Err(
-                            CredentialServiceError::PostProviderPersistence,
+                            CredentialServiceError::RevokePostProviderPersistence,
                         ));
                     },
                     // Deserialization/type/capability failures occur
@@ -505,7 +691,7 @@ impl CredentialService {
                         ))
                     },
                     Err(_) => RefreshDisposition::retry_unsafe(Err(
-                        CredentialServiceError::PostProviderPersistence,
+                        CredentialServiceError::RevokePostProviderPersistence,
                     )),
                 }
             })
@@ -530,6 +716,9 @@ impl CredentialService {
             Err(RefreshError::CriticalOutcomePending) => {
                 Err(CredentialServiceError::OutcomeUnknown)
             },
+            Err(RefreshError::ReconciliationRequired) => {
+                Err(CredentialServiceError::RevokePostProviderPersistence)
+            },
             Err(RefreshError::PriorAttemptNoProgress) => Err(CredentialServiceError::Internal(
                 "concurrent credential revoke completed without changing authoritative state"
                     .to_owned(),
@@ -547,12 +736,8 @@ impl CredentialService {
                     "credential revoke state recheck failed".to_owned(),
                 ))
             },
-            #[expect(
-                unreachable_patterns,
-                reason = "RefreshError is non-exhaustive; future variants fail closed"
-            )]
-            Err(_) => Err(CredentialServiceError::Internal(
-                "credential revoke coordination failed".to_owned(),
+            Err(RefreshError::RetrySuppressed(_)) => Err(CredentialServiceError::Internal(
+                "credential revoke received an invalid refresh-only retry gate signal".to_owned(),
             )),
         }
     }

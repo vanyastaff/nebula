@@ -27,7 +27,7 @@ use nebula_credential::{AuditEvent, AuditOperation, AuditResult, AuditSink};
 use nebula_storage_port::{
     CredentialCommit, CredentialCreate, CredentialOwner, CredentialPersistence,
     CredentialPersistenceError, CredentialReplacement, CredentialSelector, CredentialTombstone,
-    StoredCredential, StoredCredentialHead,
+    RefreshRetrySnapshot, StoredCredential, StoredCredentialHead,
 };
 
 /// Audit logging layer wrapping a [`CredentialPersistence`].
@@ -114,6 +114,20 @@ impl<S: CredentialPersistence> CredentialPersistence for AuditLayer<S> {
         selector: &CredentialSelector,
     ) -> Result<StoredCredentialHead, CredentialPersistenceError> {
         let result = self.inner.get_head(selector).await;
+        self.observe(&AuditEvent {
+            timestamp: chrono::Utc::now(),
+            credential_id: selector.credential_id().to_string(),
+            operation: AuditOperation::Get,
+            result: audit_result(&result),
+        });
+        result
+    }
+
+    async fn refresh_retry_snapshot(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<RefreshRetrySnapshot, CredentialPersistenceError> {
+        let result = self.inner.refresh_retry_snapshot(selector).await;
         self.observe(&AuditEvent {
             timestamp: chrono::Utc::now(),
             credential_id: selector.credential_id().to_string(),
@@ -233,6 +247,9 @@ fn audit_result<T>(result: &Result<T, CredentialPersistenceError>) -> AuditResul
         Err(CredentialPersistenceError::VersionExhausted) => {
             AuditResult::Error("version_exhausted".to_owned())
         },
+        Err(CredentialPersistenceError::MaterialEpochExhausted) => {
+            AuditResult::Error("material_epoch_exhausted".to_owned())
+        },
         Err(CredentialPersistenceError::CorruptRecord) => {
             AuditResult::Error("corrupt_record".to_owned())
         },
@@ -251,12 +268,13 @@ mod tests {
 
     use nebula_core::CredentialId;
     use nebula_storage_port::{
-        CredentialOwner, CredentialSelector, CredentialTombstone, StoredCredential,
-        StoredLiveCredential,
+        CredentialOwner, CredentialSelector, CredentialTombstone, RefreshRetryAdmission,
+        RefreshRetryBlock, RefreshRetryEvidence, RefreshRetryKind, RefreshRetryPhase,
+        RefreshRetryTransition, StoredCredential, StoredLiveCredential,
     };
 
     use super::{super::super::sqlite::SqliteCredentialPersistence, *};
-    use crate::credential::test_support::make_credential;
+    use crate::credential::test_support::{make_credential, make_replacement};
 
     fn owner() -> CredentialOwner {
         CredentialOwner::from_canonical("test-owner")
@@ -325,6 +343,42 @@ mod tests {
             .unwrap();
         assert_eq!(get_event.credential_id, credential_id.to_string());
         assert_eq!(get_event.result, AuditResult::Success);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn refresh_retry_snapshot_passes_through_and_is_audited()
+    -> Result<(), CredentialPersistenceError> {
+        let sink = Arc::new(CollectingSink::new());
+        let store = make_store(&sink).await?;
+        let selector = selector(CredentialId::new());
+        let created = store.create(&selector, make_credential(b"v1")).await?;
+        let evidence = RefreshRetryEvidence::new(
+            RefreshRetryPhase::ProviderConfirmedNotApplied,
+            RefreshRetryKind::ProviderUnavailable,
+            None,
+        );
+        store
+            .replace(
+                &selector,
+                make_replacement(
+                    created.version(),
+                    b"v2",
+                    RefreshRetryTransition::SetNever {
+                        evidence: evidence.clone(),
+                    },
+                ),
+            )
+            .await?;
+
+        let snapshot = store.refresh_retry_snapshot(&selector).await?;
+        assert_eq!(
+            snapshot.admission(),
+            &RefreshRetryAdmission::Blocked(RefreshRetryBlock::Never { evidence })
+        );
+        assert!(sink.events().iter().any(|event| {
+            event.operation == AuditOperation::Get && event.result == AuditResult::Success
+        }));
         Ok(())
     }
 

@@ -1,7 +1,7 @@
 //! Postgres-backed `CredentialPersistence` impl.
 //!
 //! Persists structural [`StoredCredential`] rows in the `credentials` table at
-//! schema floor `0039_credentials_owner_and_record_state.sql`. The store is
+//! schema floor `0040_credential_refresh_retry_gate.sql`. The store is
 //! deliberately linear:
 //!
 //! - `data` is opaque `BYTEA`; the encryption layer above this adapter owns its
@@ -27,10 +27,10 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use nebula_core::CredentialId;
 use nebula_storage_port::{
-    CredentialAlreadyExistsKey, CredentialCommit, CredentialCreate, CredentialOwner,
-    CredentialPersistence, CredentialPersistenceError, CredentialReplacement, CredentialSelector,
-    CredentialTombstone, CredentialVersion, SecretBytes, StoredCredential, StoredCredentialHead,
-    StoredLiveCredential, StoredTombstonedCredential,
+    CredentialAlreadyExistsKey, CredentialCommit, CredentialCreate, CredentialMaterialEpoch,
+    CredentialOwner, CredentialPersistence, CredentialPersistenceError, CredentialReplacement,
+    CredentialSelector, CredentialTombstone, CredentialVersion, RefreshRetrySnapshot, SecretBytes,
+    StoredCredential, StoredCredentialHead, StoredLiveCredential, StoredTombstonedCredential,
 };
 use serde_json::{Map, Value};
 use sqlx::{PgPool, Postgres, Transaction};
@@ -44,6 +44,7 @@ use std::sync::{
 use super::{
     CredentialStoreStartupError,
     refresh_claim::PgRefreshClaimRepo,
+    retry_gate,
     schema::{postgres as schema, unlocked_postgres_migrator},
 };
 
@@ -375,6 +376,10 @@ fn parse_version(value: i64) -> Result<CredentialVersion, CredentialPersistenceE
     CredentialVersion::try_from(value).map_err(|_| CredentialPersistenceError::CorruptRecord)
 }
 
+fn parse_material_epoch(value: i64) -> Result<CredentialMaterialEpoch, CredentialPersistenceError> {
+    CredentialMaterialEpoch::try_from(value).map_err(|_| CredentialPersistenceError::CorruptRecord)
+}
+
 fn parse_state_version(value: i64) -> Result<u32, CredentialPersistenceError> {
     u32::try_from(value).map_err(|_| CredentialPersistenceError::CorruptRecord)
 }
@@ -457,7 +462,7 @@ async fn lock_owner_credential(
     owner: &CredentialOwner,
 ) -> Result<Option<LockedCredentialRow>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT record_state, version
+        "SELECT record_state, version, material_epoch
          FROM credentials
          WHERE id = $1 AND owner_id = $2
          FOR UPDATE",
@@ -478,6 +483,7 @@ struct ExistingCredentialRow {
 struct LockedCredentialRow {
     record_state: String,
     version: i64,
+    material_epoch: i64,
 }
 
 #[derive(sqlx::FromRow)]
@@ -489,6 +495,7 @@ struct CredentialRow {
     state_kind: String,
     state_version: i64,
     version: i64,
+    material_epoch: i64,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     expires_at: Option<DateTime<Utc>>,
@@ -496,13 +503,26 @@ struct CredentialRow {
     metadata: String,
     record_state: String,
     tombstoned_at: Option<DateTime<Utc>>,
+    refresh_retry_mode: Option<String>,
+    refresh_retry_not_before: Option<DateTime<Utc>>,
+    refresh_retry_phase: Option<String>,
+    refresh_retry_kind: Option<String>,
+    refresh_retry_diagnostic_code: Option<String>,
 }
 
 impl CredentialRow {
     fn into_stored(self) -> Result<StoredCredential, CredentialPersistenceError> {
         let credential_id = parse_credential_id(&self.id)?;
         let version = parse_version(self.version)?;
+        let material_epoch = parse_material_epoch(self.material_epoch)?;
         let state_version = parse_state_version(self.state_version)?;
+        let refresh_retry_gate = retry_gate::decode_gate(
+            self.refresh_retry_mode,
+            self.refresh_retry_not_before,
+            self.refresh_retry_phase,
+            self.refresh_retry_kind,
+            self.refresh_retry_diagnostic_code,
+        )?;
 
         match self.record_state.as_str() {
             "live" => {
@@ -519,11 +539,13 @@ impl CredentialRow {
                     self.state_kind,
                     state_version,
                     version,
+                    material_epoch,
                     self.created_at,
                     self.updated_at,
                     self.expires_at,
                     self.reauth_required,
                     metadata,
+                    refresh_retry_gate,
                 )
                 .map(StoredCredential::Live)
             },
@@ -536,6 +558,7 @@ impl CredentialRow {
                     || self.expires_at.is_some()
                     || self.reauth_required
                     || self.metadata != "{}"
+                    || refresh_retry_gate.is_some()
                 {
                     return Err(CredentialPersistenceError::CorruptRecord);
                 }
@@ -565,6 +588,7 @@ struct CredentialHeadRow {
     state_kind: String,
     state_version: i64,
     version: i64,
+    material_epoch: i64,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     expires_at: Option<DateTime<Utc>>,
@@ -588,6 +612,7 @@ impl CredentialHeadRow {
             self.state_kind,
             parse_state_version(self.state_version)?,
             parse_version(self.version)?,
+            parse_material_epoch(self.material_epoch)?,
             self.created_at,
             self.updated_at,
             self.expires_at,
@@ -605,6 +630,52 @@ struct CredentialCommitRow {
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     tombstoned_at: Option<DateTime<Utc>>,
+}
+
+#[derive(sqlx::FromRow)]
+struct RefreshRetrySnapshotRow {
+    version: i64,
+    material_epoch: i64,
+    reauth_required: bool,
+    record_state: String,
+    refresh_retry_mode: Option<String>,
+    refresh_retry_not_before: Option<DateTime<Utc>>,
+    refresh_retry_phase: Option<String>,
+    refresh_retry_kind: Option<String>,
+    refresh_retry_diagnostic_code: Option<String>,
+    backend_now: DateTime<Utc>,
+}
+
+impl RefreshRetrySnapshotRow {
+    fn into_snapshot(self) -> Result<RefreshRetrySnapshot, CredentialPersistenceError> {
+        if self.record_state != "live" {
+            return if self.record_state == "tombstoned" {
+                Err(CredentialPersistenceError::NotFound)
+            } else {
+                Err(CredentialPersistenceError::CorruptRecord)
+            };
+        }
+        let version = CredentialVersion::try_from(self.version)
+            .map_err(|_| CredentialPersistenceError::CorruptRecord)?;
+        if !version.is_live() {
+            return Err(CredentialPersistenceError::CorruptRecord);
+        }
+        let material_epoch = parse_material_epoch(self.material_epoch)?;
+        let gate = retry_gate::decode_gate(
+            self.refresh_retry_mode,
+            self.refresh_retry_not_before,
+            self.refresh_retry_phase,
+            self.refresh_retry_kind,
+            self.refresh_retry_diagnostic_code,
+        )?;
+        let admission = retry_gate::evaluate_gate(gate.as_ref(), self.backend_now)?;
+        Ok(RefreshRetrySnapshot::new(
+            version,
+            material_epoch,
+            self.reauth_required,
+            admission,
+        ))
+    }
 }
 
 impl CredentialCommitRow {
@@ -662,6 +733,27 @@ impl super::CredentialPersistenceConformance for PgCredentialPersistence {
         Ok(())
     }
 
+    async fn force_live_material_epoch_for_conformance(
+        &self,
+        selector: &CredentialSelector,
+        material_epoch: CredentialMaterialEpoch,
+    ) -> Result<(), CredentialPersistenceError> {
+        let updated = sqlx::query(
+            "UPDATE credentials SET material_epoch = $1
+             WHERE id = $2 AND owner_id = $3 AND record_state = 'live'",
+        )
+        .bind(material_epoch.get())
+        .bind(selector.credential_id().to_string())
+        .bind(selector.owner().as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(read_error)?;
+        if updated.rows_affected() != 1 {
+            return Err(CredentialPersistenceError::NotFound);
+        }
+        Ok(())
+    }
+
     async fn corrupt_live_projection_for_conformance(
         &self,
         selector: &CredentialSelector,
@@ -692,8 +784,11 @@ impl CredentialPersistence for PgCredentialPersistence {
     ) -> Result<StoredCredential, CredentialPersistenceError> {
         let row: Option<CredentialRow> = sqlx::query_as(
             "SELECT id, name, credential_key, data, state_kind, state_version,
-                    version, created_at, updated_at, expires_at,
-                    reauth_required, metadata, record_state, tombstoned_at
+                    version, material_epoch, created_at, updated_at, expires_at,
+                    reauth_required, metadata, record_state, tombstoned_at,
+                    refresh_retry_mode, refresh_retry_not_before,
+                    refresh_retry_phase, refresh_retry_kind,
+                    refresh_retry_diagnostic_code
              FROM credentials
              WHERE id = $1 AND owner_id = $2",
         )
@@ -708,13 +803,38 @@ impl CredentialPersistence for PgCredentialPersistence {
     }
 
     #[tracing::instrument(skip_all)]
+    async fn refresh_retry_snapshot(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<RefreshRetrySnapshot, CredentialPersistenceError> {
+        let row: Option<RefreshRetrySnapshotRow> = sqlx::query_as(
+            "SELECT version, material_epoch, reauth_required, record_state, refresh_retry_mode,
+                    refresh_retry_not_before, refresh_retry_phase,
+                    refresh_retry_kind, refresh_retry_diagnostic_code,
+                    -- Sample the wall clock in the statement that observes
+                    -- version and reauthentication state.
+                    clock_timestamp() AS backend_now
+             FROM credentials
+             WHERE id = $1 AND owner_id = $2",
+        )
+        .bind(selector.credential_id().to_string())
+        .bind(selector.owner().as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(read_error)?;
+
+        row.ok_or(CredentialPersistenceError::NotFound)?
+            .into_snapshot()
+    }
+
+    #[tracing::instrument(skip_all)]
     async fn get_head(
         &self,
         selector: &CredentialSelector,
     ) -> Result<StoredCredentialHead, CredentialPersistenceError> {
         let row: Option<CredentialHeadRow> = sqlx::query_as(
             "SELECT id, name, credential_key, state_kind, state_version,
-                    version, created_at, updated_at, expires_at,
+                    version, material_epoch, created_at, updated_at, expires_at,
                     reauth_required, metadata, record_state, tombstoned_at
              FROM credentials
              WHERE id = $1 AND owner_id = $2 AND record_state = 'live'",
@@ -758,11 +878,11 @@ impl CredentialPersistence for PgCredentialPersistence {
         let inserted: Result<CredentialCommitRow, sqlx::Error> = sqlx::query_as(
             "INSERT INTO credentials (
                  id, name, owner_id, credential_key, state_kind, state_version,
-                 data, version, created_at, updated_at, expires_at,
+                 data, version, material_epoch, created_at, updated_at, expires_at,
                  reauth_required, metadata, record_state, tombstoned_at
              ) VALUES (
                  $1, $2, $3, $4, $5, $6,
-                 $7, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, $8,
+                 $7, 1, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, $8,
                  $9, $10, 'live', NULL
              )
              RETURNING id, version, record_state, created_at, updated_at, tombstoned_at",
@@ -841,6 +961,23 @@ impl CredentialPersistence for PgCredentialPersistence {
             Ok(next_version) => next_version,
             Err(error) => return rollback_as(transaction, error).await,
         };
+        let actual_material_epoch = match parse_material_epoch(locked.material_epoch) {
+            Ok(epoch) => epoch,
+            Err(error) => return rollback_as(transaction, error).await,
+        };
+        let next_material_epoch = if replacement.material_transition().advances_epoch() {
+            match actual_material_epoch.next() {
+                Ok(epoch) => epoch,
+                Err(error) => return rollback_as(transaction, error).await,
+            }
+        } else {
+            actual_material_epoch
+        };
+        let retry_transition =
+            match retry_gate::encode_material_transition(replacement.material_transition()) {
+                Ok(transition) => transition,
+                Err(error) => return rollback_as(transaction, error).await,
+            };
 
         let updated: Result<Option<CredentialCommitRow>, sqlx::Error> = sqlx::query_as(
             "UPDATE credentials
@@ -849,14 +986,43 @@ impl CredentialPersistence for PgCredentialPersistence {
                  state_kind = $5,
                  state_version = $6,
                  version = $7,
+                 material_epoch = $8,
                  updated_at = CURRENT_TIMESTAMP,
-                 expires_at = $8,
-                 reauth_required = $9,
-                 metadata = $10
+                 expires_at = $9,
+                 reauth_required = $10,
+                 metadata = $11,
+                 refresh_retry_mode = CASE $12::SMALLINT
+                     WHEN 0 THEN refresh_retry_mode
+                     WHEN 1 THEN NULL
+                     WHEN 2 THEN 'never'
+                     WHEN 3 THEN 'not_before'
+                 END,
+                 refresh_retry_not_before = CASE $12::SMALLINT
+                     WHEN 0 THEN refresh_retry_not_before
+                     -- The row lock may have waited. CURRENT_TIMESTAMP would
+                     -- backdate the requested delay to transaction start.
+                     WHEN 3 THEN clock_timestamp() + ($13::BIGINT * INTERVAL '1 second')
+                     ELSE NULL
+                 END,
+                 refresh_retry_phase = CASE $12::SMALLINT
+                     WHEN 0 THEN refresh_retry_phase
+                     WHEN 1 THEN NULL
+                     ELSE $14
+                 END,
+                 refresh_retry_kind = CASE $12::SMALLINT
+                     WHEN 0 THEN refresh_retry_kind
+                     WHEN 1 THEN NULL
+                     ELSE $15
+                 END,
+                 refresh_retry_diagnostic_code = CASE $12::SMALLINT
+                     WHEN 0 THEN refresh_retry_diagnostic_code
+                     WHEN 1 THEN NULL
+                     ELSE $16
+                 END
              WHERE id = $1
                AND owner_id = $2
                AND record_state = 'live'
-               AND version = $11
+               AND version = $17
              RETURNING id, version, record_state, created_at, updated_at, tombstoned_at",
         )
         .bind(&credential_id)
@@ -866,9 +1032,15 @@ impl CredentialPersistence for PgCredentialPersistence {
         .bind(replacement.state_kind())
         .bind(i64::from(replacement.state_version()))
         .bind(next_version.get())
+        .bind(next_material_epoch.get())
         .bind(replacement.expires_at())
         .bind(replacement.reauth_required())
         .bind(&metadata)
+        .bind(retry_transition.code)
+        .bind(retry_transition.delay_seconds)
+        .bind(retry_transition.phase)
+        .bind(retry_transition.kind)
+        .bind(retry_transition.diagnostic_code)
         .bind(expected.get())
         .fetch_optional(&mut *transaction)
         .await;
@@ -941,7 +1113,12 @@ impl CredentialPersistence for PgCredentialPersistence {
                  reauth_required = FALSE,
                  metadata = '{}',
                  record_state = 'tombstoned',
-                 tombstoned_at = CURRENT_TIMESTAMP
+                 tombstoned_at = CURRENT_TIMESTAMP,
+                 refresh_retry_mode = NULL,
+                 refresh_retry_not_before = NULL,
+                 refresh_retry_phase = NULL,
+                 refresh_retry_kind = NULL,
+                 refresh_retry_diagnostic_code = NULL
              WHERE id = $1
                AND owner_id = $2
                AND record_state = 'live'
@@ -1019,7 +1196,7 @@ impl CredentialPersistence for PgCredentialPersistence {
             Some(state_kind) => {
                 sqlx::query_as(
                     "SELECT id, name, credential_key, state_kind, state_version,
-                            version, created_at, updated_at, expires_at,
+                            version, material_epoch, created_at, updated_at, expires_at,
                             reauth_required, metadata, record_state, tombstoned_at
                      FROM credentials
                      WHERE owner_id = $1
@@ -1035,7 +1212,7 @@ impl CredentialPersistence for PgCredentialPersistence {
             None => {
                 sqlx::query_as(
                     "SELECT id, name, credential_key, state_kind, state_version,
-                            version, created_at, updated_at, expires_at,
+                            version, material_epoch, created_at, updated_at, expires_at,
                             reauth_required, metadata, record_state, tombstoned_at
                      FROM credentials
                      WHERE owner_id = $1 AND record_state = 'live'
@@ -1109,6 +1286,35 @@ mod tests {
             );
         }
         assert!(!is_unknown_commit_sqlstate(None));
+    }
+
+    #[test]
+    fn refresh_retry_sql_uses_wall_clock_after_lock_waits() {
+        let source = include_str!("postgres.rs");
+        let production_source = source
+            .split_once("\n#[cfg(test)]\nmod tests {")
+            .expect("the production adapter must precede its test module")
+            .0;
+        assert!(production_source.contains("clock_timestamp() AS backend_now"));
+        assert!(
+            production_source
+                .contains("WHEN 3 THEN clock_timestamp() + ($13::BIGINT * INTERVAL '1 second')")
+        );
+        assert!(
+            !production_source
+                .contains("WHEN 3 THEN CURRENT_TIMESTAMP + ($13::BIGINT * INTERVAL '1 second')")
+        );
+        let snapshot_body = production_source
+            .split_once("async fn refresh_retry_snapshot(")
+            .expect("snapshot method must exist")
+            .1
+            .split_once("\n    #[tracing::instrument")
+            .expect("the following port method must delimit the snapshot body")
+            .0;
+        assert_eq!(snapshot_body.matches("sqlx::query_as(").count(), 1);
+        assert!(snapshot_body.contains("SELECT version, reauth_required, record_state"));
+        assert!(snapshot_body.contains("clock_timestamp() AS backend_now"));
+        assert!(!snapshot_body.contains("self.get("));
     }
 
     #[tokio::test]
@@ -1203,6 +1409,7 @@ mod tests {
                     None,
                     false,
                     Map::new(),
+                    nebula_storage_port::CredentialMaterialTransition::advance(),
                 ),
             )
             .await;

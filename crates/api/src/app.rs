@@ -382,13 +382,14 @@ fn build_cors_layer(config: &ApiConfig) -> CorsLayer {
         header::HeaderName::from_static("traceparent"),
         header::HeaderName::from_static("tracestate"),
     ])
-    // `Idempotent-Replay` is exposed so JS clients can read it on the
-    // response and tell a cache-hit replay apart from a fresh handler
-    // run; non-exposed headers are stripped by the browser before
-    // `fetch().headers` sees them.
+    // `Idempotent-Replay` is exposed so JS clients can tell a cache-hit
+    // replay apart from a fresh handler run. `Retry-After` carries typed
+    // refresh backoff and rate-limit guidance. Non-exposed headers are
+    // stripped by the browser before `fetch().headers` sees them.
     .expose_headers([
         header::HeaderName::from_static(X_REQUEST_ID),
         IDEMPOTENT_REPLAY_HEADER,
+        header::RETRY_AFTER,
         header::HeaderName::from_static("traceparent"),
         header::HeaderName::from_static("tracestate"),
     ])

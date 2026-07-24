@@ -5,6 +5,7 @@ use std::{fmt, sync::Arc};
 use async_trait::async_trait;
 use nebula_core::CredentialId;
 
+use crate::dto::RefreshRetrySnapshot;
 use crate::dto::credential::{
     CredentialCommit, CredentialCreate, CredentialOwner, CredentialReplacement, CredentialSelector,
     CredentialTombstone, CredentialVersion, StoredCredential, StoredCredentialHead,
@@ -50,6 +51,10 @@ pub enum CredentialPersistenceError {
     #[error("credential version exhausted")]
     VersionExhausted,
 
+    /// The requested material-authority transition cannot advance its epoch.
+    #[error("credential material epoch exhausted")]
+    MaterialEpochExhausted,
+
     /// A persisted row violates the closed credential record contract.
     #[error("credential record is corrupt")]
     CorruptRecord,
@@ -83,6 +88,19 @@ pub trait CredentialPersistence: Send + Sync + fmt::Debug {
         &self,
         selector: &CredentialSelector,
     ) -> Result<StoredCredentialHead, CredentialPersistenceError>;
+
+    /// Atomically observe live version, material epoch, reauthentication, and
+    /// retry admission.
+    ///
+    /// The complete result comes from one backend snapshot and the admission
+    /// is evaluated against the clock sampled by that same read. Missing,
+    /// wrong-owner, and tombstoned rows return
+    /// [`CredentialPersistenceError::NotFound`]; malformed gates fail closed
+    /// as [`CredentialPersistenceError::CorruptRecord`].
+    async fn refresh_retry_snapshot(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<RefreshRetrySnapshot, CredentialPersistenceError>;
 
     /// Insert one new live credential.
     async fn create(
@@ -143,6 +161,13 @@ where
         selector: &CredentialSelector,
     ) -> Result<StoredCredentialHead, CredentialPersistenceError> {
         (**self).get_head(selector).await
+    }
+
+    async fn refresh_retry_snapshot(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<RefreshRetrySnapshot, CredentialPersistenceError> {
+        (**self).refresh_retry_snapshot(selector).await
     }
 
     async fn create(
@@ -215,6 +240,7 @@ mod tests {
                 key: CredentialAlreadyExistsKey::Name,
             },
             CredentialPersistenceError::VersionExhausted,
+            CredentialPersistenceError::MaterialEpochExhausted,
             CredentialPersistenceError::CorruptRecord,
             CredentialPersistenceError::Unavailable,
             CredentialPersistenceError::OutcomeUnknown,

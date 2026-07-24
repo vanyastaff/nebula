@@ -46,15 +46,18 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use super::oauth2_config;
 use crate::{
-    CredentialContext, CredentialPolicy, CredentialState, PendingState, RefreshStrategy,
-    RevokeStrategy, SecretString,
+    CredentialContext, CredentialPolicy, CredentialState, PendingState, RefreshAttempt,
+    RefreshReport, RefreshStrategy, RevokeStrategy, SecretString,
     error::{
-        CredentialError, ProviderErrorContext, ProviderErrorKind, RefreshErrorKind,
-        RefreshFailedContext, RetryAdvice, SecretFreeMessage,
+        CredentialError, ProviderErrorContext, ProviderErrorKind, RefreshDiagnosticCode,
+        RefreshErrorKind, RefreshFailureSpec, RetryAdvice, SecretFreeMessage,
     },
     metadata::CredentialMetadata,
-    resolve::{InteractionRequest, RefreshOutcome, ResolveResult, TestResult, UserInput},
-    runtime::refresh::{OAuthProviderErrorCode, TokenRefreshError, refresh_oauth2_state},
+    resolve::{InteractionRequest, ResolveResult, TestResult, UserInput},
+    runtime::refresh::token_refresh::{
+        CompletedTokenRefresh, PrepareTokenRefreshError, interpret_oauth2_refresh_response,
+        prepare_oauth2_refresh,
+    },
     scheme::OAuth2Token,
 };
 
@@ -552,63 +555,66 @@ impl OAuth2Credential {
         }
     }
 
-    async fn refresh(
-        state: &mut OAuth2State,
-        ctx: &CredentialContext,
-    ) -> Result<RefreshOutcome, CredentialError> {
-        if state.refresh_token.is_none() {
-            // Locally detected: we never spoke to the IdP, so this is
-            // *not* a provider rejection. Surface as
-            // `MissingRefreshMaterial` so operators can distinguish a
-            // misconfigured grant (no refresh_token issued) from a
-            // genuine provider invalidation.
-            return Ok(RefreshOutcome::ReauthRequired(
-                crate::resolve::ReauthReason::MissingRefreshMaterial,
+    async fn refresh(state: &mut OAuth2State, attempt: RefreshAttempt<'_>) -> RefreshReport {
+        let prepared = match prepare_oauth2_refresh(state) {
+            Ok(prepared) => prepared,
+            Err(PrepareTokenRefreshError::MissingRefreshToken) => {
+                return attempt.missing_refresh_material();
+            },
+            Err(PrepareTokenRefreshError::InvalidRefreshToken) => {
+                return attempt.not_dispatched(refresh_failure_spec(
+                    RefreshErrorKind::ProtocolError,
+                    RetryAdvice::Never,
+                    "oauth.invalid_refresh_token",
+                ));
+            },
+            Err(PrepareTokenRefreshError::InvalidScopes) => {
+                return attempt.not_dispatched(refresh_failure_spec(
+                    RefreshErrorKind::ProtocolError,
+                    RetryAdvice::Never,
+                    "oauth.invalid_scopes",
+                ));
+            },
+            Err(PrepareTokenRefreshError::InvalidEndpoint(_)) => {
+                return attempt.not_dispatched(refresh_failure_spec(
+                    RefreshErrorKind::ProtocolError,
+                    RetryAdvice::Never,
+                    "oauth.invalid_endpoint",
+                ));
+            },
+        };
+
+        let Some(transport) = attempt.context().refresh_transport() else {
+            let retry = crate::RetryDelay::new(Duration::from_mins(1))
+                .map(RetryAdvice::After)
+                .unwrap_or(RetryAdvice::Never);
+            return attempt.not_dispatched(refresh_failure_spec(
+                RefreshErrorKind::ProviderUnavailable,
+                retry,
+                "oauth.transport_not_configured",
             ));
-        }
+        };
 
-        let transport = ctx.refresh_transport().ok_or_else(|| {
-            exact_refresh_failure(
-                RefreshErrorKind::ProtocolError,
-                RetryAdvice::Never,
-                "OAuth2 refresh transport is not configured",
-            )
-        })?;
-
-        match refresh_oauth2_state(state, transport).await {
-            Ok(()) => Ok(RefreshOutcome::Refreshed),
-            Err(TokenRefreshError::MissingRefreshToken) => Ok(RefreshOutcome::ReauthRequired(
-                crate::resolve::ReauthReason::MissingRefreshMaterial,
-            )),
-            Err(TokenRefreshError::InvalidGrant { .. }) => Ok(RefreshOutcome::ReauthRequired(
-                crate::resolve::ReauthReason::ProviderRejected,
-            )),
-            Err(TokenRefreshError::PreDispatch(_)) => Err(exact_refresh_failure(
-                RefreshErrorKind::ProtocolError,
-                RetryAdvice::Never,
-                "OAuth2 refresh request was rejected before provider dispatch",
-            )),
-            Err(TokenRefreshError::TokenEndpoint { status, code }) => {
-                let (kind, retry) = endpoint_rejection_advice(status, code);
-                Err(CredentialError::RefreshFailed(Box::new(
-                    RefreshFailedContext::new(
-                        kind,
-                        retry,
-                        SecretFreeMessage::new(
-                            "OAuth2 token endpoint definitively rejected the refresh request",
-                        ),
-                    )
-                    .with_code(code.to_string()),
-                )))
+        let completed = match attempt
+            .dispatch(|| transport.post_token(prepared.into_request()))
+            .await
+        {
+            Ok(completed) => completed,
+            Err(unknown) => return unknown.into_report(),
+        };
+        let (response, proof) = completed.into_parts();
+        match interpret_oauth2_refresh_response(state, response) {
+            CompletedTokenRefresh::Refreshed => proof.refreshed(),
+            CompletedTokenRefresh::InvalidGrant { .. } => proof.provider_rejected(),
+            CompletedTokenRefresh::DefinitiveNoEffect { code, .. } => {
+                proof.confirmed_not_applied(refresh_failure_spec(
+                    RefreshErrorKind::ProtocolError,
+                    RetryAdvice::Never,
+                    code.as_str(),
+                ))
             },
-            Err(TokenRefreshError::TransportOutcomeUnknown | TokenRefreshError::Parse) => {
-                Err(CredentialError::OutcomeUnknown)
-            },
-            #[expect(
-                unreachable_patterns,
-                reason = "new token-refresh errors must default to replay-unsafe until classified"
-            )]
-            Err(_unknown) => Err(CredentialError::OutcomeUnknown),
+            CompletedTokenRefresh::AmbiguousDenial { .. }
+            | CompletedTokenRefresh::MalformedSuccess { .. } => proof.outcome_unknown(),
         }
     }
 
@@ -739,32 +745,17 @@ fn oauth2_http_transport_disabled() -> CredentialError {
     )))
 }
 
-fn exact_refresh_failure(
+fn refresh_failure_spec(
     kind: RefreshErrorKind,
     retry: RetryAdvice,
-    cause: &'static str,
-) -> CredentialError {
-    CredentialError::RefreshFailed(Box::new(RefreshFailedContext::new(
-        kind,
-        retry,
-        SecretFreeMessage::new(cause),
-    )))
-}
-
-fn endpoint_rejection_advice(
-    status: u16,
-    code: OAuthProviderErrorCode,
-) -> (RefreshErrorKind, RetryAdvice) {
-    match code {
-        OAuthProviderErrorCode::TemporarilyUnavailable | OAuthProviderErrorCode::ServerError => (
-            RefreshErrorKind::ProviderUnavailable,
-            RetryAdvice::After(crate::resolve::RefreshPolicy::DEFAULT.min_retry_backoff),
-        ),
-        _ if status == 408 || status == 429 || status >= 500 => (
-            RefreshErrorKind::ProviderUnavailable,
-            RetryAdvice::After(crate::resolve::RefreshPolicy::DEFAULT.min_retry_backoff),
-        ),
-        _ => (RefreshErrorKind::ProtocolError, RetryAdvice::Never),
+    diagnostic_code: &str,
+) -> RefreshFailureSpec {
+    let failure = RefreshFailureSpec::new(kind, retry);
+    match RefreshDiagnosticCode::parse(diagnostic_code) {
+        Ok(code) => failure.with_diagnostic_code(code),
+        // A future accidental invalid constant must lose diagnostics rather
+        // than turn a proven no-effect response into a less safe outcome.
+        Err(_) => failure,
     }
 }
 
@@ -917,27 +908,6 @@ mod tests {
     #[test]
     fn key_is_oauth2() {
         assert_eq!(OAuth2Credential::KEY, "oauth2");
-    }
-
-    #[test]
-    fn endpoint_rejection_advice_is_bounded_for_transient_responses() {
-        let after_default =
-            RetryAdvice::After(crate::resolve::RefreshPolicy::DEFAULT.min_retry_backoff);
-
-        for status in [408, 429, 500, 503] {
-            assert_eq!(
-                endpoint_rejection_advice(status, OAuthProviderErrorCode::Other),
-                (RefreshErrorKind::ProviderUnavailable, after_default)
-            );
-        }
-        assert_eq!(
-            endpoint_rejection_advice(400, OAuthProviderErrorCode::TemporarilyUnavailable),
-            (RefreshErrorKind::ProviderUnavailable, after_default)
-        );
-        assert_eq!(
-            endpoint_rejection_advice(401, OAuthProviderErrorCode::InvalidClient),
-            (RefreshErrorKind::ProtocolError, RetryAdvice::Never)
-        );
     }
 
     #[test]
@@ -1398,36 +1368,46 @@ mod tests {
         };
 
         let ctx = CredentialContext::for_owner("test-user");
-        let outcome = OAuth2Credential::refresh(&mut state, &ctx).await.unwrap();
+        let outcome = OAuth2Credential::refresh(
+            &mut state,
+            RefreshAttempt::new(&ctx, crate::RefreshExecutionMode::Provider),
+        )
+        .await
+        .into_kind();
         // Locally detected: never spoke to the IdP. Distinct from
         // `ProviderRejected` per wave-2 review (see ReauthReason rustdoc).
-        assert!(
-            matches!(
-                outcome,
-                RefreshOutcome::ReauthRequired(
-                    crate::resolve::ReauthReason::MissingRefreshMaterial
-                )
-            ),
-            "expected ReauthRequired(MissingRefreshMaterial); got {outcome:?}"
-        );
+        assert!(matches!(
+            outcome,
+            crate::contract::RefreshReportKind::ReauthRequired {
+                reason: crate::resolve::ReauthReason::MissingRefreshMaterial,
+                phase: crate::contract::RefreshReauthPhase::BeforeDispatch,
+            }
+        ));
     }
 
     #[tokio::test]
-    async fn refresh_without_runtime_transport_is_exact_and_never_retryable() {
-        use nebula_error::Classify;
-
+    async fn refresh_without_runtime_transport_is_exact_and_bounded_retryable() {
         let mut state = make_state();
-        let error =
-            OAuth2Credential::refresh(&mut state, &CredentialContext::for_owner("test-user"))
-                .await
-                .expect_err("direct refresh outside the resolver has no runtime transport");
+        let ctx = CredentialContext::for_owner("test-user");
+        let report = OAuth2Credential::refresh(
+            &mut state,
+            RefreshAttempt::new(&ctx, crate::RefreshExecutionMode::Provider),
+        )
+        .await
+        .into_kind();
 
-        assert!(!error.is_retryable());
-        let CredentialError::RefreshFailed(context) = error else {
-            panic!("missing runtime transport must be an exact refresh failure");
+        let crate::contract::RefreshReportKind::NotApplied(context) = report else {
+            panic!("missing runtime transport must be a proven not-applied refresh");
         };
-        assert_eq!(context.kind(), RefreshErrorKind::ProtocolError);
-        assert_eq!(context.retry(), RetryAdvice::Never);
+        assert_eq!(
+            context.phase(),
+            crate::RefreshNotAppliedPhase::BeforeDispatch
+        );
+        assert_eq!(context.kind(), RefreshErrorKind::ProviderUnavailable);
+        let RetryAdvice::After(delay) = context.retry() else {
+            panic!("runtime composition can recover without a credential material update");
+        };
+        assert_eq!(delay.get(), Duration::from_mins(1));
     }
 
     #[test]

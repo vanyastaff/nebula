@@ -198,54 +198,8 @@ impl fmt::Debug for UserInput {
     }
 }
 
-// ── RefreshOutcome ─────────────────────────────────────────────────────
-
-/// Represents **successful or expected** outcomes from
-/// [`Refreshable::refresh`](crate::Refreshable::refresh).
-///
-/// Per Tech Spec §15.4 the type-level `Refreshable` membership already
-/// encodes "this credential supports refresh," so the post-§15.4 enum
-/// only models the success/expected-protocol-outcome dichotomy:
-/// [`Refreshed`](Self::Refreshed) on a successful refresh and
-/// [`ReauthRequired`](Self::ReauthRequired) when the refresh path fails
-/// irrecoverably (refresh token revoked, scope changed). All other
-/// failures go through `Err(CredentialError::...)`.
-///
-/// Per sub-spec §3.6 ([credential-refresh-coordination]) a third
-/// successful outcome — [`CoalescedByOtherReplica`](Self::CoalescedByOtherReplica)
-/// — surfaces when another replica refreshed the credential while we
-/// were waiting on the cross-replica claim. Callers treat it as success
-/// and re-read the credential state from the store.
-///
-/// [credential-refresh-coordination]: https://github.com/nebula-engine/nebula/blob/main/docs/INTEGRATION_MODEL.md (credential refresh)
-#[derive(Debug, Clone)]
-#[non_exhaustive]
-pub enum RefreshOutcome {
-    /// Token was refreshed successfully.
-    Refreshed,
-    /// Refresh failed due to expected protocol behavior -- needs full
-    /// re-authentication. Framework triggers re-resolve with user
-    /// interaction.
-    ///
-    /// Per Tech Spec §15.4 the `NotSupported` variant from the
-    /// pre-§15.4 const-bool era was removed: a credential is
-    /// [`Refreshable`](crate::Refreshable) by trait membership, so
-    /// runtime "not supported" is impossible (compile error at the
-    /// dispatch site).
-    ///
-    /// Carries a typed [`ReauthReason`] so operators (and the credential
-    /// engine) can distinguish provider-rejected refresh-token rotation
-    /// from sentinel-threshold escalation per sub-spec §3.4.
-    ReauthRequired(ReauthReason),
-    /// Another replica refreshed the credential while this caller was
-    /// waiting on the cross-replica claim. Caller should treat as
-    /// success and re-read the credential state from the store. Per
-    /// sub-spec §3.6.
-    CoalescedByOtherReplica,
-}
-
 /// Why a credential transitioned to
-/// [`RefreshOutcome::ReauthRequired`].
+/// a refresh report requiring full authentication.
 ///
 /// Surfaces per sub-spec §3.4 (sentinel threshold) and the existing
 /// rotation-failure path (`refresh_token` invalidated by the IdP).

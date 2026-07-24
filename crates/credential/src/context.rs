@@ -308,14 +308,21 @@ impl CredentialContext {
         self.refresh_transport.as_deref()
     }
 
-    /// Stamp the resolver-owned refresh transport onto a cloned operation
-    /// context.
+    /// Derive the provider/persistence critical-section context.
     ///
-    /// Crate-private by design; public context builders cannot inject or
-    /// retrieve this capability.
-    pub(crate) fn with_refresh_transport(mut self, transport: Arc<dyn RefreshTransport>) -> Self {
-        self.refresh_transport = Some(transport);
-        self
+    /// Authority, accessors, trace identity, and pending-session bindings are
+    /// preserved. Request cancellation is deliberately replaced: after K2
+    /// grants provider dispatch, dropping or cancelling the waiter must not
+    /// abort the owned provider-to-persistence transition. The resolver is the
+    /// sole caller that supplies its transport.
+    pub(crate) fn for_refresh_critical_section(
+        &self,
+        transport: Arc<dyn RefreshTransport>,
+    ) -> Self {
+        let mut critical = self.clone();
+        critical.cancel = CancellationToken::new();
+        critical.refresh_transport = Some(transport);
+        critical
     }
 
     /// Set session ID (builder-style, consumes self).
@@ -548,14 +555,13 @@ mod tests {
             .with_session_id(CANARY);
         let short_transport_debug = format!(
             "{:?}",
-            ctx.clone()
-                .with_refresh_transport(Arc::new(CanaryTransport {
-                    _secret: "x".to_owned(),
-                }))
+            ctx.for_refresh_critical_section(Arc::new(CanaryTransport {
+                _secret: "x".to_owned(),
+            }))
         );
         let debug = format!(
             "{:?}",
-            ctx.with_refresh_transport(Arc::new(CanaryTransport {
+            ctx.for_refresh_critical_section(Arc::new(CanaryTransport {
                 _secret: CANARY.to_owned(),
             }))
         );
@@ -564,5 +570,21 @@ mod tests {
         assert_eq!(debug, short_transport_debug);
         assert!(debug.contains("session_id_present: true"));
         assert!(debug.contains("refresh_transport_present: true"));
+    }
+
+    #[test]
+    fn refresh_critical_section_detaches_request_cancellation() {
+        let request = CredentialContext::for_owner("owner");
+        let request_cancel = request.cancel_token().clone();
+        request_cancel.cancel();
+
+        let critical = request.for_refresh_critical_section(Arc::new(CanaryTransport {
+            _secret: "not-rendered".to_owned(),
+        }));
+
+        assert!(request.cancel_token().is_cancelled());
+        assert!(!critical.cancel_token().is_cancelled());
+        assert_eq!(critical.owner_id(), request.owner_id());
+        assert!(critical.refresh_transport().is_some());
     }
 }

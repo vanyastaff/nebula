@@ -61,11 +61,12 @@
 //!
 //! - **Error sharing:** `complete()` sends a payload-free [`L1Completion`],
 //!   never a provider error. The signal distinguishes authoritative state
-//!   progress, an exact replay-safe outcome without progress, and an
-//!   unsafe/unknown outcome. The outer coordinator always re-runs the caller's
-//!   authoritative state predicate after wakeup before deciding whether to
-//!   coalesce, admit a newer refresh epoch, or fail closed. This keeps error
-//!   details isolated without flattening materially different replay policies.
+//!   progress, an exact replay-safe outcome without progress, an exact
+//!   retry-unsafe outcome, and a genuinely unknown outcome. The outer
+//!   coordinator always re-runs the caller's authoritative state predicate
+//!   after wakeup before deciding whether to coalesce, admit a newer refresh
+//!   epoch, or fail closed. This keeps error details isolated without
+//!   flattening materially different reconciliation policies.
 //!
 //! - **Circuit breaker (bonus axis, not in task scoring grid):**
 //!   `L1RefreshCoalescer` holds a per-credential `nebula_resilience::CircuitBreaker`
@@ -131,11 +132,19 @@ pub(crate) enum L1Completion {
     /// Waiters must not form an immediate retry herd. They return a typed
     /// no-progress coordination error and leave retry policy to their caller.
     NoStateChange,
-    /// Provider dispatch or persistence may have changed external state, but
-    /// the outcome cannot safely be replayed.
+    /// The winner reached an exact post-provider outcome that cannot safely be
+    /// replayed without reconciliation.
     ///
-    /// A still-true authoritative predicate is fail-closed.
-    ReplayUnsafe,
+    /// A still-true authoritative predicate is fail-closed, but callers retain
+    /// the proof that the outcome itself is known.
+    RetryUnsafe,
+    /// Provider dispatch or persistence may have changed external state, but
+    /// no exact outcome is known.
+    ///
+    /// This is also the RAII fallback for abnormal winner termination after
+    /// the provider boundary. A still-true authoritative predicate is
+    /// fail-closed.
+    OutcomeUnknown,
 }
 
 /// Coalesces credential refresh attempts inside a single replica process.
@@ -486,13 +495,13 @@ mod tests {
 
         let waiter = tokio::spawn(waiter_rx);
 
-        coord.complete("cred-1", L1Completion::ReplayUnsafe);
+        coord.complete("cred-1", L1Completion::RetryUnsafe);
 
         let result = waiter
             .await
             .expect("waiter task must join")
             .expect("winner must send a completion policy");
-        assert_eq!(result, L1Completion::ReplayUnsafe);
+        assert_eq!(result, L1Completion::RetryUnsafe);
     }
 
     #[tokio::test]

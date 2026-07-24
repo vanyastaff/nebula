@@ -54,6 +54,8 @@ Spec-16 compliant schema for Nebula's PostgreSQL backend.
 | 0036 | `plane_a_oauth_state_cleanup_index` | Identity | complete expiry-cleanup index for consumed and live state |
 | 0037 | `mfa_enrollment_candidates` | Identity | expiring, single-use MFA replacement candidates, separate from the active user factor |
 | 0038 | `identity_secret_authority` | Identity | digest-only sessions and authenticated-encryption envelopes for active/pending TOTP |
+| 0039 | `credentials_owner_and_record_state` | Credentials | owner-bound structural live/tombstone lifecycle |
+| 0040 | `credential_refresh_retry_gate` | Credentials | durable structural refresh-retry admission gate |
 
 ## Storage-port adapter schema (0027)
 

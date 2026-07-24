@@ -104,6 +104,26 @@ records without version inflation. The same migration adds nullable
 partial unique index; newly accounted incidents always carry the UUID while
 pre-0039 rows remain `NULL`.
 
+Paired migration `0040_credential_refresh_retry_gate.sql` adds the closed
+structural refresh-retry gate and backend-authored material epoch. Creates and
+migrated rows start at `CredentialMaterialEpoch::MIN` with a clear gate. Every
+replacement carries an outer `CredentialMaterialTransition`:
+`Preserve { refresh_retry }` retains the epoch while applying an explicit
+preserve/clear/permanent/timed gate transition; `Advance` increments the epoch
+and unconditionally clears the old gate. Epoch overflow fails closed.
+Tombstones clear the gate. Timed deadlines and admission use the authoritative
+backend clock (`clock_timestamp()` after PostgreSQL lock waits; millisecond UTC
+samples in SQLite), and remaining delays are rounded up to bounded whole
+seconds. Unknown mode, phase, kind, or diagnostic encodings fail closed as
+corrupt records. A permanent (`Never`) gate is scoped to the current
+credential-material epoch, not the credential identity. Reauthentication
+and material replacement/reconnect both use `Advance`; reauthentication also
+blocks through its durable flag.
+`refresh_retry_snapshot` reads version, material epoch, reauthentication state,
+gate, and backend clock in one statement/snapshot so rechecks cannot combine
+observations from different aggregate versions. The gate and epoch never enter
+user metadata.
+
 Credential adapters are constructible only through their ready-store
 constructors. Those constructors hold a backend-appropriate bounded startup
 lock across read-only schema admission, canonical migration, and postflight;

@@ -9,7 +9,7 @@
 //! `runtime` module so `resolver.rs` reaches the `pub(crate)` gate fns.
 
 use crate::error::{
-    CredentialError, ProviderErrorContext, ProviderErrorKind, RefreshFailedContext,
+    CredentialError, ProviderErrorContext, ProviderErrorKind, RefreshNotAppliedContext,
     SecretFreeMessage,
 };
 use crate::resolve::ReauthReason;
@@ -22,7 +22,7 @@ use crate::{CredentialPersistenceError, StoredCredential};
 ///
 /// Replay-safe framework faults map to retryable `Provider{ServerError}`;
 /// proof-bearing credential failures preserve their structured
-/// `RefreshFailedContext` (including retry advice). Everything permanent or
+/// `RefreshNotAppliedContext` (including retry advice). Everything permanent or
 /// ambiguous — corrupt stored bytes, a state-kind mismatch, an unwired
 /// external source, a not-found/already-exists row, an unknown provider/commit
 /// outcome, and (critically) a rejected refresh grant that needs
@@ -30,18 +30,18 @@ use crate::{CredentialPersistenceError, StoredCredential};
 /// drives retries off `is_retryable` therefore cannot hammer the IdP or loop
 /// forever on a failure that will never succeed.
 pub(crate) fn resolve_error_to_credential_error(err: ResolveError) -> CredentialError {
-    match &err {
+    match err {
         // Preserve the credential's proof-bearing failure class and retry
         // advice end-to-end instead of flattening it into a generic provider
         // server error.
-        ResolveError::ExactRefreshFailure { context, .. } => {
-            CredentialError::RefreshFailed(context.clone())
+        ResolveError::RefreshNotApplied { context, .. } => {
+            CredentialError::RefreshNotApplied(context)
         },
         // Local policy/configuration defect — non-retryable, actionable.
         ResolveError::RefreshContainmentViolation {
-            credential_id,
-            refresh_kind,
-            family_pattern,
+            ref credential_id,
+            ref refresh_kind,
+            ref family_pattern,
         } => CredentialError::InvalidInput(format!(
             "credential {credential_id}: F3 containment violation — \
              refresh kind {refresh_kind:?} is not permitted by scheme family {family_pattern:?}; \
@@ -51,8 +51,8 @@ pub(crate) fn resolve_error_to_credential_error(err: ResolveError) -> Credential
         // user reconnects. `InvalidGrant` is non-retryable, so the resolve path
         // does not re-POST a dead grant.
         ResolveError::ReauthRequired {
-            credential_id,
-            reason,
+            ref credential_id,
+            ref reason,
         } => CredentialError::Provider(Box::new(ProviderErrorContext::new(
             ProviderErrorKind::InvalidGrant,
             SecretFreeMessage::new(format!(
@@ -61,17 +61,18 @@ pub(crate) fn resolve_error_to_credential_error(err: ResolveError) -> Credential
             )),
         ))),
         // Permanent data-integrity / configuration faults — no better on retry.
-        ResolveError::Deserialize { .. }
+        error @ (ResolveError::Deserialize { .. }
         | ResolveError::KindMismatch { .. }
-        | ResolveError::ExternalSourceNotWired => CredentialError::InvalidInput(err.to_string()),
+        | ResolveError::ExternalSourceNotWired) => CredentialError::InvalidInput(error.to_string()),
         // Permanent store faults for a specific row — missing or already
         // existing. Retrying will not change the outcome.
-        ResolveError::Store(
+        error @ ResolveError::Store(
             CredentialPersistenceError::NotFound
             | CredentialPersistenceError::AlreadyExists { .. }
             | CredentialPersistenceError::VersionExhausted
+            | CredentialPersistenceError::MaterialEpochExhausted
             | CredentialPersistenceError::CorruptRecord,
-        ) => CredentialError::InvalidInput(err.to_string()),
+        ) => CredentialError::InvalidInput(error.to_string()),
         // A post-provider commit with a lost acknowledgement is operational but
         // explicitly non-retryable: replay could duplicate or conflict with a
         // mutation that already committed.
@@ -82,6 +83,9 @@ pub(crate) fn resolve_error_to_credential_error(err: ResolveError) -> Credential
         | ResolveError::Store(CredentialPersistenceError::OutcomeUnknown)
         | ResolveError::RefreshOutcomePending { .. }
         | ResolveError::ProviderOutcomeUnknown { .. } => CredentialError::OutcomeUnknown,
+        ResolveError::RefreshReconciliationRequired { .. }
+        | ResolveError::RefreshRetryGateFinalization { .. }
+        | ResolveError::ReauthDecisionFinalization { .. } => CredentialError::RefreshFinalization,
         // Once the provider accepted a refresh, even a *definite* persistence
         // failure is no longer an ordinary retryable backend outage. Repeating
         // the whole resolution path could POST the already-consumed grant a
@@ -91,12 +95,13 @@ pub(crate) fn resolve_error_to_credential_error(err: ResolveError) -> Credential
             CredentialError::PostProviderPersistence
         },
         // Replay-safe: backend I/O/CAS before provider contact, local
-        // pre-dispatch rejection, or an exact provider response that did not
-        // accept the grant — retryable `ServerError`.
-        ResolveError::Store(_) | ResolveError::Refresh { .. } => {
+        // pre-dispatch rejection, or a replay-safe runtime failure. Exact
+        // provider no-effect responses are handled above as
+        // `RefreshNotApplied` or `RefreshFinalization`.
+        error @ (ResolveError::Store(_) | ResolveError::Refresh { .. }) => {
             CredentialError::Provider(Box::new(ProviderErrorContext::new(
                 ProviderErrorKind::ServerError,
-                SecretFreeMessage::new(err.to_string()),
+                SecretFreeMessage::new(error.to_string()),
             )))
         },
     }
@@ -171,12 +176,12 @@ pub enum ResolveError {
     /// Unlike [`Self::Refresh`], this carries the credential's structured
     /// retry advice intact across coordinator handling and back to the public
     /// [`CredentialError`] surface.
-    #[error("credential {credential_id}: exact refresh failure: {context}")]
-    ExactRefreshFailure {
+    #[error("credential {credential_id}: refresh was not applied: {context}")]
+    RefreshNotApplied {
         /// Credential identifier.
         credential_id: String,
         /// Proof-bearing typed failure context.
-        context: Box<RefreshFailedContext>,
+        context: Box<RefreshNotAppliedContext>,
     },
     /// The provider/persistence critical section crossed its irreversible
     /// boundary, but the caller stopped waiting before an exact disposition.
@@ -191,6 +196,18 @@ pub enum ResolveError {
         /// Credential identifier.
         credential_id: String,
     },
+    /// A concurrent refresh reached an exact post-provider result that cannot
+    /// safely be replayed without reconciling durable aggregate state.
+    ///
+    /// L1 completion signals are intentionally payload-free, so a waiter
+    /// cannot recover the winner's more specific finalization error. It still
+    /// retains the stronger proof that the outcome is exact rather than
+    /// unknown.
+    #[error("credential {credential_id}: refresh requires reconciliation before retrying")]
+    RefreshReconciliationRequired {
+        /// Credential identifier.
+        credential_id: String,
+    },
     /// Provider dispatch began, but no response proves whether the grant was
     /// consumed or rotated.
     ///
@@ -199,6 +216,29 @@ pub enum ResolveError {
     /// credential is reconciled.
     #[error("credential {credential_id}: provider refresh outcome is unknown after dispatch")]
     ProviderOutcomeUnknown {
+        /// Credential identifier.
+        credential_id: String,
+    },
+    /// An exact no-effect refresh result could not be made durable as a retry
+    /// gate for this credential epoch.
+    ///
+    /// The refresh outcome itself is known (including exact pre-dispatch
+    /// refusal), but releasing coordination would discard `Never`/`After`
+    /// suppression and permit an immediate duplicate request. The coordinator
+    /// therefore retains fail-closed poison until an operator or a new material
+    /// epoch reconciles the aggregate.
+    #[error("credential {credential_id}: refresh retry gate finalization could not be confirmed")]
+    RefreshRetryGateFinalization {
+        /// Credential identifier.
+        credential_id: String,
+    },
+    /// A provider-confirmed reauthentication decision could not be made
+    /// durable, so releasing coordination would allow another request to
+    /// replay the known-dead grant.
+    #[error(
+        "credential {credential_id}: provider-confirmed reauthentication decision could not be finalized"
+    )]
+    ReauthDecisionFinalization {
         /// Credential identifier.
         credential_id: String,
     },
@@ -266,7 +306,9 @@ pub(crate) fn reject_tombstoned(stored: &StoredCredential) -> Result<(), Resolve
 mod tests {
     use super::*;
     use crate::{CredentialId, StoredLiveCredential};
-    use nebula_storage_port::{CredentialVersion, StoredTombstonedCredential};
+    use nebula_storage_port::{
+        CredentialMaterialEpoch, CredentialVersion, StoredTombstonedCredential,
+    };
 
     fn live() -> StoredCredential {
         StoredLiveCredential::new(
@@ -277,11 +319,13 @@ mod tests {
             "oauth2_state".to_owned(),
             1,
             CredentialVersion::MIN,
+            CredentialMaterialEpoch::MIN,
             chrono::Utc::now(),
             chrono::Utc::now(),
             None,
             false,
             serde_json::Map::new(),
+            None,
         )
         .expect("fixture is a valid live record")
         .into()
@@ -379,32 +423,37 @@ mod tests {
     }
 
     #[test]
-    fn exact_refresh_failure_preserves_typed_retry_advice() {
-        use crate::error::{RefreshErrorKind, RetryAdvice};
+    fn not_applied_refresh_preserves_typed_retry_advice() {
+        use crate::error::{
+            RefreshDiagnosticCode, RefreshErrorKind, RefreshFailureSpec, RefreshNotAppliedContext,
+            RefreshNotAppliedPhase, RetryAdvice, RetryDelay,
+        };
 
         let backoff = std::time::Duration::from_secs(7);
-        let mapped = resolve_error_to_credential_error(ResolveError::ExactRefreshFailure {
+        let delay = RetryDelay::new(backoff).expect("non-zero test backoff");
+        let code =
+            RefreshDiagnosticCode::parse("server_error").expect("fixed diagnostic code is valid");
+        let mapped = resolve_error_to_credential_error(ResolveError::RefreshNotApplied {
             credential_id: "cred_x".to_owned(),
-            context: Box::new(
-                RefreshFailedContext::new(
+            context: Box::new(RefreshNotAppliedContext::from_spec(
+                RefreshNotAppliedPhase::ProviderConfirmedNotApplied,
+                RefreshFailureSpec::new(
                     RefreshErrorKind::ProviderUnavailable,
-                    RetryAdvice::After(backoff),
-                    SecretFreeMessage::new("provider returned a complete rejection"),
+                    RetryAdvice::After(delay),
                 )
-                .with_code("server_error"),
-            ),
+                .with_diagnostic_code(code),
+            )),
         });
 
-        let CredentialError::RefreshFailed(context) = mapped else {
-            panic!("exact refresh failure must retain its public typed context");
+        let CredentialError::RefreshNotApplied(context) = mapped else {
+            panic!("not-applied refresh must retain its public typed context");
         };
         assert_eq!(context.kind(), RefreshErrorKind::ProviderUnavailable);
-        assert_eq!(context.retry(), RetryAdvice::After(backoff));
+        assert_eq!(context.retry(), RetryAdvice::After(delay));
         assert_eq!(
-            context.cause().as_str(),
-            "provider returned a complete rejection"
+            context.diagnostic_code().map(RefreshDiagnosticCode::as_str),
+            Some("server_error")
         );
-        assert_eq!(context.provider_code(), Some("server_error"));
     }
 
     #[test]
@@ -436,6 +485,34 @@ mod tests {
             !mapped.is_retryable(),
             "a caller timeout after provider dispatch must not replay the grant"
         );
+    }
+
+    #[test]
+    fn exact_refresh_finalization_failures_do_not_collapse_into_unknown_outcome() {
+        use nebula_error::{Classify, ErrorCategory, ErrorCode};
+
+        let cases = [
+            ResolveError::RefreshReconciliationRequired {
+                credential_id: "cred_x".to_owned(),
+            },
+            ResolveError::RefreshRetryGateFinalization {
+                credential_id: "cred_x".to_owned(),
+            },
+            ResolveError::ReauthDecisionFinalization {
+                credential_id: "cred_x".to_owned(),
+            },
+        ];
+        for error in cases {
+            let mapped = resolve_error_to_credential_error(error);
+            assert!(matches!(mapped, CredentialError::RefreshFinalization));
+            assert_eq!(mapped.category(), ErrorCategory::Internal);
+            assert_eq!(
+                mapped.code(),
+                ErrorCode::new("CREDENTIAL:REFRESH_FINALIZATION")
+            );
+            assert!(!mapped.is_retryable());
+            assert!(mapped.retry_hint().is_none());
+        }
     }
 
     #[test]

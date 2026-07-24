@@ -209,12 +209,15 @@ fn repository_catalog_matches_k2_contract() {
     let postgres = Catalog::load("postgres").expect("Postgres catalog must be valid");
     let sqlite = Catalog::load("sqlite").expect("SQLite catalog must be valid");
 
-    let expected_postgres = (1_u16..=39).collect::<Vec<_>>();
-    let expected_sqlite = (1_u16..=28).chain(30..=35).chain([39]).collect::<Vec<_>>();
+    let expected_postgres = (1_u16..=40).collect::<Vec<_>>();
+    let expected_sqlite = (1_u16..=28)
+        .chain(30..=35)
+        .chain([39, 40])
+        .collect::<Vec<_>>();
     assert_eq!(
         postgres.versions(),
         expected_postgres,
-        "Postgres must reserve every logical migration through K2 version 0039"
+        "Postgres must reserve every logical migration through version 0040"
     );
     assert_eq!(
         sqlite.versions(),
@@ -231,14 +234,23 @@ fn repository_catalog_matches_k2_contract() {
     validate_shared_slugs(&postgres, &sqlite).expect("shared migration slugs must match");
 
     for catalog in [&postgres, &sqlite] {
-        let migration = catalog
+        let lifecycle = catalog
             .by_version()
             .get(&39)
             .copied()
             .expect("K2 migration 0039 must exist in both backends");
         assert_eq!(
-            migration.file_name, "0039_credentials_owner_and_record_state.sql",
+            lifecycle.file_name, "0039_credentials_owner_and_record_state.sql",
             "K2 migration filename is part of the catalog contract"
+        );
+        let retry_gate = catalog
+            .by_version()
+            .get(&40)
+            .copied()
+            .expect("refresh-retry migration 0040 must exist in both backends");
+        assert_eq!(
+            retry_gate.file_name, "0040_credential_refresh_retry_gate.sql",
+            "refresh-retry migration filename is part of the catalog contract"
         );
     }
 }

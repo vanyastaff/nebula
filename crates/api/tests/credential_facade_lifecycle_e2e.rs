@@ -35,12 +35,12 @@ use nebula_credential::error::CredentialError;
 use nebula_credential::provider::{
     ExternalProvider, ExternalReference, ProviderError, ProviderFuture,
 };
-use nebula_credential::resolve::{RefreshOutcome, ResolveResult};
+use nebula_credential::resolve::ResolveResult;
 use nebula_credential::{
     CredentialContext, CredentialDisplay, CredentialMetadata, CredentialRegistry,
-    CredentialService, CredentialServiceError, DispatchOps, ErasedPendingStore, TenantScope,
-    ValidatedCredentialBindingError, identity_state, register_refreshable_ops,
-    register_revocable_ops, register_runtime_ops, schema_of,
+    CredentialService, CredentialServiceError, DispatchOps, ErasedPendingStore, RefreshAttempt,
+    RefreshReport, TenantScope, ValidatedCredentialBindingError, identity_state,
+    register_refreshable_ops, register_revocable_ops, register_runtime_ops, schema_of,
 };
 use nebula_schema::{FieldValues, Schema};
 use nebula_storage::credential::EnvKeyProvider;
@@ -164,23 +164,31 @@ impl TestLifecycleCred {
         }))
     }
 
-    async fn refresh(
-        state: &mut TestScheme,
-        _ctx: &CredentialContext,
-    ) -> Result<RefreshOutcome, CredentialError> {
-        match state.token.as_str() {
-            "refresh-coalesce" => {
-                COALESCED_REFRESH_CALLS.fetch_add(1, Ordering::SeqCst);
-                signal(&COALESCED_REFRESH_ENTERED).notify_one();
-                signal(&COALESCED_REFRESH_CONTINUE).notified().await;
-            },
-            "refresh-drop" => {
-                DROPPED_REFRESH_CALLS.fetch_add(1, Ordering::SeqCst);
-                signal(&DROPPED_REFRESH_ENTERED).notify_one();
-                signal(&DROPPED_REFRESH_CONTINUE).notified().await;
-            },
-            _ => {},
-        }
+    async fn refresh(state: &mut TestScheme, attempt: RefreshAttempt<'_>) -> RefreshReport {
+        let original_token = state.token.clone();
+        let completed = match attempt
+            .dispatch(|| async move {
+                match original_token.as_str() {
+                    "refresh-coalesce" => {
+                        COALESCED_REFRESH_CALLS.fetch_add(1, Ordering::SeqCst);
+                        signal(&COALESCED_REFRESH_ENTERED).notify_one();
+                        signal(&COALESCED_REFRESH_CONTINUE).notified().await;
+                    },
+                    "refresh-drop" => {
+                        DROPPED_REFRESH_CALLS.fetch_add(1, Ordering::SeqCst);
+                        signal(&DROPPED_REFRESH_ENTERED).notify_one();
+                        signal(&DROPPED_REFRESH_CONTINUE).notified().await;
+                    },
+                    _ => {},
+                }
+                Ok::<(), std::convert::Infallible>(())
+            })
+            .await
+        {
+            Ok(completed) => completed,
+            Err(unknown) => return unknown.into_report(),
+        };
+        let ((), proof) = completed.into_parts();
         // Simulate a provider-contacting rotation: bump the material so the
         // facade takes the `Rewrote` success arm (which must stamp
         // `last_validated_at`).
@@ -188,7 +196,7 @@ impl TestLifecycleCred {
         if !matches!(state.token.as_str(), "refresh-coalesce" | "refresh-drop") {
             state.token = format!("v{}", state.generation);
         }
-        Ok(RefreshOutcome::Refreshed)
+        proof.refreshed()
     }
 
     async fn revoke(

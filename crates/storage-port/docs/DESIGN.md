@@ -75,11 +75,18 @@ The port exposes:
 - `CredentialOwner` — one mandatory canonical owner partition;
 - `CredentialSelector` — mandatory owner plus typed, globally unique `CredentialId`;
 - private-field `CredentialCreate`, `CredentialReplacement`, and `CredentialTombstone` intents;
-- bounded `CredentialVersion`, reserving `i64::MAX` for terminal state;
+- bounded `CredentialVersion`, reserving `i64::MAX` for terminal state, and
+  positive backend-authored `CredentialMaterialEpoch`;
 - structural `StoredCredential::{Live, Tombstoned}` and live-only `StoredCredentialHead`;
+- structural `RefreshRetryGate::{Never, NotBefore}` with closed replay-safety
+  evidence, plus the outer `CredentialMaterialTransition::{Preserve {
+  refresh_retry }, Advance}`. The nested retry transition is the closed
+  `Preserve`/`Clear`/`SetNever`/`SetAfter` choice;
 - closed, secret-free `CredentialPersistenceError` outcomes; and
 - `CredentialPersistence` — physical `get`, live-only reads/lists, and explicit
-  `create`/`replace`/`tombstone` mutations.
+  `create`/`replace`/`tombstone` mutations, plus backend-clock
+  `refresh_retry_snapshot` returning version, material epoch,
+  reauthentication state, and admission from one linearizable backend read.
 
 Owner and selector values are data, not authorization proofs. Their constructors are public because
 trusted technical runtime/storage code must carry them across crate boundaries. They are absent
@@ -99,8 +106,16 @@ Every credential adapter must obey these laws:
 3. wrong-owner access is indistinguishable from absence;
 4. owner, id, credential key, and creation time cannot change during replacement;
 5. the only lifecycle transition is live to tombstoned, and terminal records cannot carry
-   secret/name/expiry/reauth/metadata fields; and
-6. driver-controlled diagnostic text never enters the closed port error.
+   secret/name/expiry/reauth/metadata/retry-gate fields;
+6. refresh-retry state and material epoch are aggregate structure, never user
+   metadata or refresh-claim TTL. Backends initialize create/migration at
+   `CredentialMaterialEpoch::MIN`; `Preserve { refresh_retry }` retains the
+   epoch and applies its explicit gate transition; `Advance` increments the
+   epoch and unconditionally clears the old gate; overflow fails closed;
+7. timed admission and `SetAfter` use the backend clock; version, material
+   epoch, reauthentication, and admission are observed only through one atomic
+   snapshot; unknown persisted codes fail closed; and
+8. driver-controlled diagnostic text never enters the closed port error.
 
 `nebula-storage` is the sole implementation owner: SQLite, PostgreSQL, internal in-memory
 reference/conformance adapters, and audit/encryption/cache decorators implement this contract.

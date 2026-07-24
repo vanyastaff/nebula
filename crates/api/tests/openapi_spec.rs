@@ -144,25 +144,94 @@ async fn credential_oauth_ceremony_is_absent_while_identity_oauth_stays_public()
 }
 
 #[tokio::test]
-async fn credential_refresh_advertises_integration_reauth_as_conflict() {
+async fn credential_refresh_publishes_typed_retry_protocol() {
     let spec = fetch_spec_json().await;
-    let responses = spec
+    let operation = spec
         .pointer(
-            "/paths/~1api~1v1~1orgs~1{org}~1workspaces~1{ws}~1credentials~1{cred}~1refresh/post/responses",
+            "/paths/~1api~1v1~1orgs~1{org}~1workspaces~1{ws}~1credentials~1{cred}~1refresh/post",
         )
-        .and_then(Value::as_object)
-        .expect("credential refresh must publish typed responses");
+        .expect("credential refresh operation must be published");
 
-    let response = responses
+    let idempotency_key = operation
+        .get("parameters")
+        .and_then(Value::as_array)
+        .and_then(|parameters| {
+            parameters.iter().find(|parameter| {
+                parameter.get("name").and_then(Value::as_str) == Some("Idempotency-Key")
+            })
+        })
+        .expect("credential refresh must publish its optional Idempotency-Key request header");
+    assert_eq!(
+        idempotency_key.get("in").and_then(Value::as_str),
+        Some("header")
+    );
+    assert_eq!(
+        idempotency_key.get("required").and_then(Value::as_bool),
+        Some(false),
+        "Idempotency-Key remains optional: {idempotency_key}"
+    );
+
+    let response = operation
+        .get("responses")
+        .and_then(Value::as_object)
+        .expect("credential refresh must publish typed responses")
         .get("409")
-        .expect("credential refresh must advertise integration reauth as 409");
+        .expect("credential refresh conflicts must remain HTTP 409");
     let schema_ref = response
         .pointer("/content/application~1problem+json/schema/$ref")
         .and_then(Value::as_str)
-        .expect("credential reauth conflict must use the shared ProblemDetails schema");
+        .expect("credential refresh conflict must use the shared ProblemDetails schema");
     assert!(
         schema_ref.ends_with("/ProblemDetails"),
-        "credential reauth conflict must remain RFC 9457: {response}"
+        "credential refresh conflict must remain RFC 9457: {response}"
+    );
+
+    let retry_after = response
+        .pointer("/headers/Retry-After")
+        .expect("credential refresh 409 must publish its optional Retry-After response header");
+    assert_eq!(
+        retry_after.pointer("/schema/type").and_then(Value::as_str),
+        Some("integer"),
+        "Retry-After must remain a typed whole-second value: {retry_after}"
+    );
+}
+
+#[tokio::test]
+async fn credential_revoke_publishes_reconciliation_contract() {
+    let spec = fetch_spec_json().await;
+    let response = spec
+        .pointer(
+            "/paths/~1api~1v1~1orgs~1{org}~1workspaces~1{ws}~1credentials~1{cred}~1revoke/post/responses/409",
+        )
+        .expect("credential revoke must publish its reconciliation response");
+
+    let schema_ref = response
+        .pointer("/content/application~1problem+json/schema/$ref")
+        .and_then(Value::as_str)
+        .expect("credential revoke conflict must use the shared ProblemDetails schema");
+    assert!(
+        schema_ref.ends_with("/ProblemDetails"),
+        "credential revoke conflict must remain RFC 9457: {response}"
+    );
+    let description = response
+        .get("description")
+        .and_then(Value::as_str)
+        .expect("credential revoke conflict must describe its closed outcomes");
+    assert!(
+        description.contains("revoke outcome is known"),
+        "credential revoke must document exact finalization failure separately from lost acknowledgement: {response}"
+    );
+    assert!(
+        description.contains("do not retry automatically"),
+        "credential revoke reconciliation must remain non-retryable: {response}"
+    );
+    assert!(
+        description.contains("mutation acknowledgement was lost"),
+        "credential revoke must retain the distinct lost-acknowledgement outcome: {response}"
+    );
+    assert!(
+        response.pointer("/headers/Retry-After").is_none(),
+        "revoke reconciliation must not advertise automatic retry: {response}"
     );
 }
 

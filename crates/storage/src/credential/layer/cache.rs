@@ -21,7 +21,7 @@ use nebula_core::CredentialId;
 use nebula_storage_port::{
     CredentialCommit, CredentialCreate, CredentialOwner, CredentialPersistence,
     CredentialPersistenceError, CredentialRecordState, CredentialReplacement, CredentialSelector,
-    CredentialTombstone, StoredCredential, StoredCredentialHead,
+    CredentialTombstone, RefreshRetrySnapshot, StoredCredential, StoredCredentialHead,
 };
 use tokio::sync::Mutex;
 
@@ -224,6 +224,14 @@ impl<S: CredentialPersistence> CredentialPersistence for CacheLayer<S> {
         self.inner.get_head(selector).await
     }
 
+    async fn refresh_retry_snapshot(
+        &self,
+        selector: &CredentialSelector,
+    ) -> Result<RefreshRetrySnapshot, CredentialPersistenceError> {
+        let _guard = self.lock(selector).lock().await;
+        self.inner.refresh_retry_snapshot(selector).await
+    }
+
     async fn create(
         &self,
         selector: &CredentialSelector,
@@ -296,7 +304,9 @@ mod tests {
     use nebula_storage_port::{
         CredentialCommit, CredentialCreate, CredentialOwner, CredentialPersistence,
         CredentialPersistenceError, CredentialReplacement, CredentialSelector, CredentialTombstone,
-        CredentialVersion, StoredCredential, StoredCredentialHead, StoredLiveCredential,
+        CredentialVersion, RefreshRetryAdmission, RefreshRetryBlock, RefreshRetryEvidence,
+        RefreshRetryKind, RefreshRetryPhase, RefreshRetryTransition, StoredCredential,
+        StoredCredentialHead, StoredLiveCredential,
     };
     use tokio::sync::Notify;
 
@@ -359,6 +369,13 @@ mod tests {
             selector: &CredentialSelector,
         ) -> Result<StoredCredentialHead, CredentialPersistenceError> {
             self.inner.get_head(selector).await
+        }
+
+        async fn refresh_retry_snapshot(
+            &self,
+            selector: &CredentialSelector,
+        ) -> Result<RefreshRetrySnapshot, CredentialPersistenceError> {
+            self.inner.refresh_retry_snapshot(selector).await
         }
 
         async fn create(
@@ -430,6 +447,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refresh_retry_snapshot_bypasses_cached_record_state()
+    -> Result<(), CredentialPersistenceError> {
+        let inner = SqliteCredentialPersistence::connect_memory().await?;
+        let store = CacheLayer::new(inner.clone(), CacheConfig::default());
+        let selector = selector(CredentialId::new());
+        let created = store.create(&selector, make_credential(b"v1")).await?;
+
+        let _ = store.get(&selector).await?;
+        let evidence = RefreshRetryEvidence::new(
+            RefreshRetryPhase::BeforeDispatch,
+            RefreshRetryKind::TransientNetwork,
+            None,
+        );
+        inner
+            .replace(
+                &selector,
+                make_replacement(
+                    created.version(),
+                    b"v2",
+                    RefreshRetryTransition::SetNever {
+                        evidence: evidence.clone(),
+                    },
+                ),
+            )
+            .await?;
+
+        let snapshot = store.refresh_retry_snapshot(&selector).await?;
+        assert_eq!(
+            snapshot.admission(),
+            &RefreshRetryAdmission::Blocked(RefreshRetryBlock::Never { evidence })
+        );
+        assert_eq!(
+            snapshot.version(),
+            created.version().next_live()?,
+            "the snapshot must not reuse a cached record version"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn replace_invalidates_cached_value() -> Result<(), CredentialPersistenceError> {
         let store = CacheLayer::new(
             SqliteCredentialPersistence::connect_memory().await?,
@@ -443,7 +500,10 @@ mod tests {
 
         // Replace with new data.
         store
-            .replace(&selector, make_replacement(created.version(), b"v2"))
+            .replace(
+                &selector,
+                make_replacement(created.version(), b"v2", RefreshRetryTransition::Clear),
+            )
             .await?;
 
         // Should see the new data (not stale cache).
@@ -572,7 +632,10 @@ mod tests {
             .await;
         assert_eq!(foreign_tombstone, Err(CredentialPersistenceError::NotFound));
         let foreign_replace = store
-            .replace(&owner_b, make_replacement(version(1), b"owner-b-write"))
+            .replace(
+                &owner_b,
+                make_replacement(version(1), b"owner-b-write", RefreshRetryTransition::Clear),
+            )
             .await;
         assert_eq!(foreign_replace, Err(CredentialPersistenceError::NotFound));
 
@@ -616,7 +679,10 @@ mod tests {
         let writer = tokio::spawn(async move {
             writer_started_signal.notify_one();
             writer_store
-                .replace(&writer_selector, make_replacement(version(1), b"v2"))
+                .replace(
+                    &writer_selector,
+                    make_replacement(version(1), b"v2", RefreshRetryTransition::Clear),
+                )
                 .await
         });
         writer_started.notified().await;

@@ -31,6 +31,7 @@ use nebula_storage_port::store::{
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
+use crate::RefreshNotAppliedContext;
 use crate::audit::AuditSink;
 
 use super::{
@@ -264,6 +265,15 @@ pub enum RefreshError {
     /// as durable fail-closed poison until explicit reconciliation.
     #[error("provider/persistence refresh outcome is pending or unknown; do not retry")]
     CriticalOutcomePending,
+    /// Another in-process attempt reached an exact post-provider disposition
+    /// that cannot safely be replayed.
+    ///
+    /// The winner retained the durable claim as poison. Unlike
+    /// [`Self::CriticalOutcomePending`], the operation outcome is known; the
+    /// command owner must surface its operation-specific reconciliation
+    /// contract.
+    #[error("a concurrent provider operation requires reconciliation before retrying")]
+    ReconciliationRequired,
     /// Another in-process attempt reached an exact, replay-safe outcome but
     /// did not advance authoritative state.
     ///
@@ -273,6 +283,13 @@ pub enum RefreshError {
     /// policy.
     #[error("a concurrent refresh attempt completed without advancing credential state")]
     PriorAttemptNoProgress,
+    /// A backend-authoritative retry gate forbids provider dispatch for the
+    /// current credential epoch.
+    ///
+    /// The caller must re-read the typed gate evidence rather than treating
+    /// this as successful coalescing or a generic retryable failure.
+    #[error("credential refresh retry is suppressed by durable aggregate state: {0}")]
+    RetrySuppressed(Box<RefreshNotAppliedContext>),
     /// The authoritative credential state could not be rechecked after
     /// contention, so provider dispatch was denied.
     ///
@@ -297,6 +314,18 @@ pub enum RefreshRecheckError {
     /// The current persisted state could not be validated for the operation.
     #[error("credential state recheck found invalid state")]
     InvalidState,
+}
+
+/// Authoritative result of rechecking a refresh contender's captured epoch.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum RefreshRecheck {
+    /// The same credential epoch still needs provider/local refresh work.
+    Needed,
+    /// Authoritative state advanced or no longer needs this operation.
+    Satisfied,
+    /// A durable retry gate forbids dispatch for the current epoch.
+    Suppressed(Box<RefreshNotAppliedContext>),
 }
 
 /// Exact disposition of an owned provider/persistence refresh section.
@@ -329,6 +358,13 @@ pub enum RefreshDisposition<T> {
     /// [`RefreshError::PriorAttemptNoProgress`] instead of immediately
     /// replaying the operation as a herd.
     NoStateChange(T),
+    /// The operation has no provider-side effect and is therefore safe to
+    /// release even though the local commit acknowledgement is unknown.
+    ///
+    /// This is reserved for providerless refreshes. Waiters receive the same
+    /// no-progress signal as [`Self::NoStateChange`] and must re-read
+    /// authoritative state before deciding what to do next.
+    ReplaySafe(T),
     /// The provider accepted the refresh, but its new state was definitely not
     /// persisted.
     ///
@@ -357,6 +393,11 @@ impl<T> RefreshDisposition<T> {
     /// authoritative state.
     pub fn no_state_change(value: T) -> Self {
         Self::NoStateChange(value)
+    }
+
+    /// Construct an unacknowledged but providerless, replay-safe disposition.
+    pub fn replay_safe(value: T) -> Self {
+        Self::ReplaySafe(value)
     }
 
     /// Construct a definite but unsafe-to-replay post-provider disposition.
@@ -454,8 +495,9 @@ impl RefreshLease {
         self.release_on_drop = false;
         if let Some(l1) = &mut self._l1 {
             // From the sentinel acknowledgement until an exact disposition,
-            // any panic/runtime teardown must wake waiters fail-closed.
-            l1.set_completion(L1Completion::ReplayUnsafe);
+            // any panic/runtime teardown must wake waiters as genuinely
+            // outcome-unknown.
+            l1.set_completion(L1Completion::OutcomeUnknown);
         }
     }
 
@@ -689,25 +731,30 @@ impl RefreshCoordinator {
     /// 2. L2 durable claim with backoff.
     /// 3. Background heartbeat task -- passes `self.config.claim_ttl` to each `repo.heartbeat(token,
     ///    ttl)` call (Stage 1 fix C2).
-    /// 4. Confirm the sentinel transition that marks the irreversible provider boundary.
-    /// 5. Transfer the heartbeat and claim into an owned provider/persistence task.
-    /// 6. Release after `StateAdvanced`/`NoStateChange`, or retain as durable poison after
+    /// 4. Recheck authoritative state after every successful L2 acquisition, including an
+    ///    immediate acquisition.
+    /// 5. Confirm the sentinel transition that marks the irreversible provider boundary.
+    /// 6. Transfer the heartbeat and claim into an owned provider/persistence task.
+    /// 7. Release after `StateAdvanced`/`NoStateChange`, or retain as durable poison after
     ///    `RetryUnsafe`/`OutcomeUnknown`.
     ///
     /// The provider closure receives no claim or token. Durable claim authority
     /// is coordinator-private and cannot be released, heartbeated, or reused by
     /// integration code.
     ///
-    /// `needs_refresh_after_backoff` is consulted after L1 completion and by
-    /// the L2 backoff loop after a post-`Contended` sleep. `Ok(false)` means
-    /// authoritative state changed or no longer needs this operation, so the
-    /// caller re-reads it through
-    /// [`RefreshError::CoalescedByOtherReplica`]. `Ok(true)` authorizes another
-    /// claim attempt. `Err` denies provider dispatch with a typed,
+    /// `needs_refresh_after_backoff` is consulted after L1 completion, by the
+    /// L2 backoff loop after a post-`Contended` sleep, and once more after any
+    /// successful L2 acquisition before the sentinel transition.
+    /// [`RefreshRecheck::Satisfied`] means authoritative state changed or no
+    /// longer needs this operation, so the caller re-reads it through
+    /// [`RefreshError::CoalescedByOtherReplica`].
+    /// [`RefreshRecheck::Needed`] authorizes another claim attempt, while
+    /// [`RefreshRecheck::Suppressed`] reports a durable retry gate without
+    /// flattening it into coalesced success. `Err` denies provider dispatch with a typed,
     /// pre-provider [`RefreshError::StateRecheck`].
     ///
     /// Callers without an external state source may pass
-    /// `|_| async { Ok(true) }`. Persistence-backed callers must perform a
+    /// `|_| async { Ok(RefreshRecheck::Needed) }`. Persistence-backed callers must perform a
     /// real version/state recheck; an unconditional predicate is not a safe
     /// substitute after contention.
     ///
@@ -776,7 +823,7 @@ impl RefreshCoordinator {
         Fut: Future<Output = RefreshDisposition<T>> + Send + 'static,
         T: Send + 'static,
         P: Fn(&CredentialId) -> PFut + Sync,
-        PFut: Future<Output = Result<bool, RefreshRecheckError>> + Send,
+        PFut: Future<Output = Result<RefreshRecheck, RefreshRecheckError>> + Send,
     {
         // L1: in-process coalescing.
         //
@@ -788,8 +835,9 @@ impl RefreshCoordinator {
         // then always recheck authoritative state. A proven state advance
         // coalesces this epoch; if the predicate is still true after that
         // advance, it represents newer work and the waiter re-enters election.
-        // Exact no-progress and replay-unsafe outcomes remain distinct, so a
-        // provider failure cannot turn a waiting herd into automatic retries.
+        // Exact no-progress, retry-unsafe, and outcome-unknown completions
+        // remain distinct, so a provider failure cannot turn a waiting herd
+        // into automatic retries or erase exact reconciliation evidence.
         // Timeout or abnormal sender closure is `CriticalOutcomePending`.
         let cred_str = credential_id.to_string();
         loop {
@@ -802,9 +850,10 @@ impl RefreshCoordinator {
                     // prematurely makes operators see "l2 acquired" when the
                     // actual outcome was "l2 coalesced" (review I1).
                     // The closed set
-                    // `{l1, l1_no_progress, l1_outcome_unknown, l2_acquired,
-                    // l2_coalesced, l2_outcome_unknown}` is recorded at the
-                    // actual outcome sites below.
+                    // `{l1, l1_no_progress, l1_reconciliation_required,
+                    // l1_outcome_unknown, l2_acquired, l2_coalesced,
+                    // l2_outcome_unknown}` is recorded at the actual outcome
+                    // sites below.
                     break;
                 },
                 super::l1::RefreshAttempt::Waiter(rx) => {
@@ -874,10 +923,17 @@ impl RefreshCoordinator {
                         },
                     };
 
-                    if !still_needs_refresh {
-                        tracing::Span::current().record("tier", "l1");
-                        self.metrics.coalesced_l1.inc();
-                        return Err(RefreshError::CoalescedByOtherReplica);
+                    match still_needs_refresh {
+                        RefreshRecheck::Satisfied => {
+                            tracing::Span::current().record("tier", "l1");
+                            self.metrics.coalesced_l1.inc();
+                            return Err(RefreshError::CoalescedByOtherReplica);
+                        },
+                        RefreshRecheck::Suppressed(context) => {
+                            tracing::Span::current().record("tier", "l1_no_progress");
+                            return Err(RefreshError::RetrySuppressed(context));
+                        },
+                        RefreshRecheck::Needed => {},
                     }
 
                     match completion {
@@ -904,13 +960,23 @@ impl RefreshCoordinator {
                             );
                             return Err(RefreshError::PriorAttemptNoProgress);
                         },
-                        L1Completion::ReplayUnsafe => {
+                        L1Completion::RetryUnsafe => {
+                            tracing::Span::current().record("tier", "l1_reconciliation_required");
+                            tracing::warn!(
+                                event = "credential.refresh.l1.wait.reconciliation_required",
+                                completion = "retry_unsafe",
+                                credential_id = %credential_id,
+                                "exact L1 winner outcome requires reconciliation before replay"
+                            );
+                            return Err(RefreshError::ReconciliationRequired);
+                        },
+                        L1Completion::OutcomeUnknown => {
                             tracing::Span::current().record("tier", "l1_outcome_unknown");
                             tracing::warn!(
                                 event = "credential.refresh.l1.wait.outcome_unknown",
-                                reason = "authoritative_state_unchanged_after_unsafe_completion",
+                                reason = "authoritative_state_unchanged_after_unknown_completion",
                                 credential_id = %credential_id,
-                                "L1 winner outcome cannot be replayed safely"
+                                "L1 winner outcome is unknown and cannot be replayed safely"
                             );
                             return Err(RefreshError::CriticalOutcomePending);
                         },
@@ -1002,6 +1068,53 @@ impl RefreshCoordinator {
             l1_lease,
         );
 
+        // Close the stale-preflight window after claim acquisition. A caller
+        // can observe `Open`, pause, then acquire immediately after another
+        // replica durably installs a retry gate and releases L2. Rechecking
+        // only after `Contended` would let that stale caller cross the
+        // sentinel/provider boundary without ever observing the gate.
+        let post_claim_recheck = tokio::time::timeout(
+            self.config.refresh_timeout,
+            needs_refresh_after_backoff(credential_id),
+        )
+        .await;
+        match post_claim_recheck {
+            Ok(Ok(RefreshRecheck::Needed)) => {},
+            Ok(Ok(RefreshRecheck::Satisfied)) => {
+                lease
+                    .finish(ClaimFinalization::Release, L1Completion::StateAdvanced)
+                    .await;
+                self.metrics.coalesced_l2.inc();
+                return Err(RefreshError::CoalescedByOtherReplica);
+            },
+            Ok(Ok(RefreshRecheck::Suppressed(context))) => {
+                lease
+                    .finish(ClaimFinalization::Release, L1Completion::StateAdvanced)
+                    .await;
+                self.metrics.coalesced_l2.inc();
+                return Err(RefreshError::RetrySuppressed(context));
+            },
+            Ok(Err(error)) => {
+                lease
+                    .finish(ClaimFinalization::Release, L1Completion::NoStateChange)
+                    .await;
+                return Err(RefreshError::StateRecheck(error));
+            },
+            Err(error) => {
+                tracing::warn!(
+                    event = "credential.refresh.l2.post_claim_recheck_timeout",
+                    timeout_ms = self.config.refresh_timeout.as_millis(),
+                    ?error,
+                    credential_id = %credential_id,
+                    "post-claim authoritative recheck timed out; provider dispatch denied"
+                );
+                lease
+                    .finish(ClaimFinalization::Release, L1Completion::NoStateChange)
+                    .await;
+                return Err(RefreshError::StateRecheck(RefreshRecheckError::Unavailable));
+            },
+        }
+
         // This durable sentinel acknowledgement is the point of no
         // cancellation. Bias toward a claim-loss signal if both branches are
         // ready: in that case the provider closure has not started, so stopping
@@ -1038,14 +1151,19 @@ impl RefreshCoordinator {
                     L1Completion::NoStateChange,
                     result,
                 ),
+                RefreshDisposition::ReplaySafe(result) => (
+                    ClaimFinalization::Release,
+                    L1Completion::NoStateChange,
+                    result,
+                ),
                 RefreshDisposition::RetryUnsafe(result) => (
                     ClaimFinalization::RetainAsPoison,
-                    L1Completion::ReplayUnsafe,
+                    L1Completion::RetryUnsafe,
                     result,
                 ),
                 RefreshDisposition::OutcomeUnknown(result) => (
                     ClaimFinalization::RetainAsPoison,
-                    L1Completion::ReplayUnsafe,
+                    L1Completion::OutcomeUnknown,
                     result,
                 ),
             };
@@ -1085,7 +1203,7 @@ impl RefreshCoordinator {
         // helper's auto-trait inference does not silently relax the
         // public contract.
         P: Fn(&CredentialId) -> PFut + Sync,
-        PFut: Future<Output = Result<bool, RefreshRecheckError>> + Send,
+        PFut: Future<Output = Result<RefreshRecheck, RefreshRecheckError>> + Send,
     {
         const POLL_CADENCE: [Duration; 4] = [
             Duration::from_millis(25),
@@ -1178,13 +1296,13 @@ impl RefreshCoordinator {
                     // refresh_token rotation the contender just
                     // committed (n8n #13088 lineage).
                     match needs_refresh_after_backoff(credential_id).await {
-                        Ok(true) => {
+                        Ok(RefreshRecheck::Needed) => {
                             if tokio::time::Instant::now() >= contention_deadline {
                                 break;
                             }
                             attempt = attempt.saturating_add(1);
                         },
-                        Ok(false) => {
+                        Ok(RefreshRecheck::Satisfied) => {
                             // Sub-spec -- L2 coalesce: another replica
                             // refreshed while we waited.
                             //
@@ -1201,6 +1319,11 @@ impl RefreshCoordinator {
                             tracing::Span::current().record("tier", "l2_coalesced");
                             self.metrics.coalesced_l2.inc();
                             return Err(RefreshError::CoalescedByOtherReplica);
+                        },
+                        Ok(RefreshRecheck::Suppressed(context)) => {
+                            tracing::Span::current().record("tier", "l2_coalesced");
+                            self.metrics.coalesced_l2.inc();
+                            return Err(RefreshError::RetrySuppressed(context));
                         },
                         Err(error) => {
                             tracing::warn!(
@@ -1404,9 +1527,11 @@ mod tests {
         release_count: AtomicUsize,
         heartbeat_count: AtomicUsize,
         heartbeat_mode: AtomicU8,
+        block_try_claim: AtomicBool,
         block_sentinel: AtomicBool,
         block_release: AtomicBool,
         try_claim_entered: Notify,
+        try_claim_continue: Notify,
         sentinel_entered: Notify,
         sentinel_continue: Notify,
         release_entered: Notify,
@@ -1444,9 +1569,11 @@ mod tests {
                 release_count: AtomicUsize::new(0),
                 heartbeat_count: AtomicUsize::new(0),
                 heartbeat_mode: AtomicU8::new(HEARTBEAT_OK),
+                block_try_claim: AtomicBool::new(false),
                 block_sentinel: AtomicBool::new(false),
                 block_release: AtomicBool::new(false),
                 try_claim_entered: Notify::new(),
+                try_claim_continue: Notify::new(),
                 sentinel_entered: Notify::new(),
                 sentinel_continue: Notify::new(),
                 release_entered: Notify::new(),
@@ -1478,6 +1605,9 @@ mod tests {
         ) -> Result<ClaimAttempt, RepoError> {
             self.try_claim_count.fetch_add(1, Ordering::SeqCst);
             self.try_claim_entered.notify_one();
+            if self.block_try_claim.load(Ordering::SeqCst) {
+                self.try_claim_continue.notified().await;
+            }
             let now = Utc::now();
             let ttl = chrono::Duration::from_std(ttl).map_err(|_| RepoError::InvalidState)?;
             if self.active.swap(true, Ordering::SeqCst) {
@@ -1744,7 +1874,7 @@ mod tests {
             let outcome = coordinator
                 .refresh_coalesced(
                     &credential_id,
-                    |_| async { Ok(true) },
+                    |_| async { Ok(RefreshRecheck::Needed) },
                     move || async move {
                         calls.fetch_add(1, Ordering::SeqCst);
                         RefreshDisposition::state_advanced(())
@@ -1846,7 +1976,7 @@ mod tests {
             winner_coordinator
                 .refresh_coalesced(
                     &credential_id,
-                    |_| async { Ok(true) },
+                    |_| async { Ok(RefreshRecheck::Needed) },
                     move || async move {
                         winner_provider_calls.fetch_add(1, Ordering::SeqCst);
                         winner_provider_entered.notify_one();
@@ -1876,7 +2006,13 @@ mod tests {
                     &credential_id,
                     move |_| {
                         let writes = Arc::clone(&waiter_writes);
-                        async move { Ok(writes.load(Ordering::SeqCst) == 0) }
+                        async move {
+                            Ok(if writes.load(Ordering::SeqCst) == 0 {
+                                RefreshRecheck::Needed
+                            } else {
+                                RefreshRecheck::Satisfied
+                            })
+                        }
                     },
                     move || async move {
                         waiter_duplicate_calls.fetch_add(1, Ordering::SeqCst);
@@ -1921,7 +2057,7 @@ mod tests {
             winner_coordinator
                 .refresh_coalesced(
                     &winner_id,
-                    |_| async { Ok(true) },
+                    |_| async { Ok(RefreshRecheck::Needed) },
                     move || async move {
                         winner_entered.notify_one();
                         winner_continue.notified().await;
@@ -1934,10 +2070,12 @@ mod tests {
 
         let recheck_entered = Arc::new(Notify::new());
         let recheck_continue = Arc::new(Notify::new());
+        let recheck_calls = Arc::new(AtomicUsize::new(0));
         let second_provider_calls = Arc::new(AtomicUsize::new(0));
         let waiter_coordinator = Arc::clone(&coordinator);
         let waiter_recheck_entered = Arc::clone(&recheck_entered);
         let waiter_recheck_continue = Arc::clone(&recheck_continue);
+        let waiter_recheck_calls = Arc::clone(&recheck_calls);
         let waiter_provider_calls = Arc::clone(&second_provider_calls);
         let waiter_id = credential_id;
         let waiter = tokio::spawn(async move {
@@ -1947,13 +2085,17 @@ mod tests {
                     move |_| {
                         let entered = Arc::clone(&waiter_recheck_entered);
                         let continue_recheck = Arc::clone(&waiter_recheck_continue);
+                        let call = waiter_recheck_calls.fetch_add(1, Ordering::SeqCst);
                         async move {
-                            entered.notify_one();
-                            continue_recheck.notified().await;
+                            if call == 0 {
+                                entered.notify_one();
+                                continue_recheck.notified().await;
+                            }
                             // The first winner advanced its epoch, but newer
                             // authoritative work arrived before this waiter
-                            // rechecked state.
-                            Ok(true)
+                            // rechecked state. The post-acquire recheck must
+                            // observe that work as still needed.
+                            Ok(RefreshRecheck::Needed)
                         }
                     },
                     move || async move {
@@ -1991,6 +2133,7 @@ mod tests {
             2
         );
         assert_eq!(second_provider_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(recheck_calls.load(Ordering::SeqCst), 2);
         assert_eq!(repo.try_claim_count.load(Ordering::SeqCst), 2);
     }
 
@@ -2010,7 +2153,7 @@ mod tests {
             winner_coordinator
                 .refresh_coalesced(
                     &winner_id,
-                    |_| async { Ok(true) },
+                    |_| async { Ok(RefreshRecheck::Needed) },
                     move || async move {
                         winner_entered.notify_one();
                         winner_continue.notified().await;
@@ -2029,7 +2172,7 @@ mod tests {
             waiter_coordinator
                 .refresh_coalesced(
                     &waiter_id,
-                    |_| async { Ok(true) },
+                    |_| async { Ok(RefreshRecheck::Needed) },
                     move || async move {
                         waiter_provider_calls.fetch_add(1, Ordering::SeqCst);
                         RefreshDisposition::state_advanced(2_u8)
@@ -2064,7 +2207,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn replay_unsafe_completion_keeps_waiters_fail_closed() {
+    async fn retry_unsafe_completion_requires_exact_waiter_reconciliation() {
         let repo = Arc::new(ScriptedClaimRepo::new());
         let coordinator = coordinator(Arc::clone(&repo), RefreshCoordConfig::default());
         let credential_id = CredentialId::new();
@@ -2079,7 +2222,7 @@ mod tests {
             winner_coordinator
                 .refresh_coalesced(
                     &winner_id,
-                    |_| async { Ok(true) },
+                    |_| async { Ok(RefreshRecheck::Needed) },
                     move || async move {
                         winner_entered.notify_one();
                         winner_continue.notified().await;
@@ -2098,7 +2241,7 @@ mod tests {
             waiter_coordinator
                 .refresh_coalesced(
                     &waiter_id,
-                    |_| async { Ok(true) },
+                    |_| async { Ok(RefreshRecheck::Needed) },
                     move || async move {
                         waiter_provider_calls.fetch_add(1, Ordering::SeqCst);
                         RefreshDisposition::state_advanced(2_u8)
@@ -2125,13 +2268,85 @@ mod tests {
         );
         assert!(matches!(
             waiter.await.expect("waiter task must join"),
-            Err(RefreshError::CriticalOutcomePending)
+            Err(RefreshError::ReconciliationRequired)
         ));
         assert_eq!(duplicate_provider_calls.load(Ordering::SeqCst), 0);
         assert_eq!(repo.release_count.load(Ordering::SeqCst), 0);
         assert!(
             repo.active.load(Ordering::SeqCst),
             "retry-unsafe completion must retain the sentinel claim"
+        );
+    }
+
+    #[tokio::test]
+    async fn outcome_unknown_completion_keeps_waiters_unknown_and_fail_closed() {
+        let repo = Arc::new(ScriptedClaimRepo::new());
+        let coordinator = coordinator(Arc::clone(&repo), RefreshCoordConfig::default());
+        let credential_id = CredentialId::new();
+        let first_entered = Arc::new(Notify::new());
+        let first_continue = Arc::new(Notify::new());
+
+        let winner_coordinator = Arc::clone(&coordinator);
+        let winner_entered = Arc::clone(&first_entered);
+        let winner_continue = Arc::clone(&first_continue);
+        let winner_id = credential_id;
+        let winner = tokio::spawn(async move {
+            winner_coordinator
+                .refresh_coalesced(
+                    &winner_id,
+                    |_| async { Ok(RefreshRecheck::Needed) },
+                    move || async move {
+                        winner_entered.notify_one();
+                        winner_continue.notified().await;
+                        RefreshDisposition::outcome_unknown(1_u8)
+                    },
+                )
+                .await
+        });
+        first_entered.notified().await;
+
+        let duplicate_provider_calls = Arc::new(AtomicUsize::new(0));
+        let waiter_coordinator = Arc::clone(&coordinator);
+        let waiter_provider_calls = Arc::clone(&duplicate_provider_calls);
+        let waiter_id = credential_id;
+        let waiter = tokio::spawn(async move {
+            waiter_coordinator
+                .refresh_coalesced(
+                    &waiter_id,
+                    |_| async { Ok(RefreshRecheck::Needed) },
+                    move || async move {
+                        waiter_provider_calls.fetch_add(1, Ordering::SeqCst);
+                        RefreshDisposition::state_advanced(2_u8)
+                    },
+                )
+                .await
+        });
+
+        while coordinator
+            .l1
+            .waiter_count_for_test(&credential_id.to_string())
+            == 0
+        {
+            tokio::task::yield_now().await;
+        }
+        first_continue.notify_one();
+
+        assert_eq!(
+            winner
+                .await
+                .expect("first winner task must join")
+                .expect("unknown outcome value must reach its owner"),
+            1
+        );
+        assert!(matches!(
+            waiter.await.expect("waiter task must join"),
+            Err(RefreshError::CriticalOutcomePending)
+        ));
+        assert_eq!(duplicate_provider_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(repo.release_count.load(Ordering::SeqCst), 0);
+        assert!(
+            repo.active.load(Ordering::SeqCst),
+            "outcome-unknown completion must retain the sentinel claim"
         );
     }
 
@@ -2157,7 +2372,7 @@ mod tests {
             task_coordinator
                 .refresh_coalesced(
                     &credential_id,
-                    |_| async { Ok(true) },
+                    |_| async { Ok(RefreshRecheck::Needed) },
                     move || async move {
                         task_provider_calls.fetch_add(1, Ordering::SeqCst);
                         RefreshDisposition::state_advanced(())
@@ -2243,7 +2458,7 @@ mod tests {
             winner_coordinator
                 .refresh_coalesced(
                     &winner_id,
-                    |_| async { Ok(true) },
+                    |_| async { Ok(RefreshRecheck::Needed) },
                     move || async move {
                         winner_calls.fetch_add(1, Ordering::SeqCst);
                         winner_entered.notify_one();
@@ -2262,7 +2477,7 @@ mod tests {
             waiter_coordinator
                 .refresh_coalesced(
                     &waiter_id,
-                    |_| async { Ok(true) },
+                    |_| async { Ok(RefreshRecheck::Needed) },
                     move || async move {
                         waiter_duplicate_calls.fetch_add(1, Ordering::SeqCst);
                         RefreshDisposition::state_advanced(())
@@ -2343,7 +2558,7 @@ mod tests {
             task_coordinator
                 .refresh_coalesced(
                     &credential_id,
-                    |_| async { Ok(true) },
+                    |_| async { Ok(RefreshRecheck::Needed) },
                     move || async move {
                         task_entered.notify_one();
                         task_continue.notified().await;
@@ -2400,7 +2615,7 @@ mod tests {
             task_coordinator
                 .refresh_coalesced(
                     &credential_id,
-                    |_| async { Ok(true) },
+                    |_| async { Ok(RefreshRecheck::Needed) },
                     move || async move {
                         task_provider_calls.fetch_add(1, Ordering::SeqCst);
                         task_entered.notify_one();
@@ -2443,7 +2658,7 @@ mod tests {
             task_coordinator
                 .refresh_coalesced(
                     &credential_id,
-                    |_| async { Ok(true) },
+                    |_| async { Ok(RefreshRecheck::Needed) },
                     move || async move {
                         task_provider_calls.fetch_add(1, Ordering::SeqCst);
                         RefreshDisposition::state_advanced(())
@@ -2466,6 +2681,179 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn post_acquire_recheck_closes_stale_open_preflight_window() {
+        let repo = Arc::new(ScriptedClaimRepo::new());
+        repo.block_try_claim.store(true, Ordering::SeqCst);
+        let coordinator = coordinator(Arc::clone(&repo), RefreshCoordConfig::default());
+        let credential_id = CredentialId::new();
+        let gate_installed = Arc::new(AtomicBool::new(false));
+        let provider_calls = Arc::new(AtomicUsize::new(0));
+
+        let task = tokio::spawn({
+            let coordinator = Arc::clone(&coordinator);
+            let gate_installed = Arc::clone(&gate_installed);
+            let provider_calls = Arc::clone(&provider_calls);
+            async move {
+                coordinator
+                    .refresh_coalesced(
+                        &credential_id,
+                        move |_| {
+                            let gate_installed = Arc::clone(&gate_installed);
+                            async move {
+                                if gate_installed.load(Ordering::SeqCst) {
+                                    let context = RefreshNotAppliedContext::from_spec(
+                                        crate::RefreshNotAppliedPhase::BeforeDispatch,
+                                        crate::RefreshFailureSpec::new(
+                                            crate::RefreshErrorKind::ProtocolError,
+                                            crate::RetryAdvice::Never,
+                                        ),
+                                    );
+                                    Ok(RefreshRecheck::Suppressed(Box::new(context)))
+                                } else {
+                                    Ok(RefreshRecheck::Needed)
+                                }
+                            }
+                        },
+                        move || async move {
+                            provider_calls.fetch_add(1, Ordering::SeqCst);
+                            RefreshDisposition::state_advanced(())
+                        },
+                    )
+                    .await
+            }
+        });
+
+        repo.wait_for_try_claim_count(1).await;
+        // Another replica installs the gate and releases its claim after this
+        // caller's stale outer preflight but before immediate L2 acquisition
+        // completes.
+        gate_installed.store(true, Ordering::SeqCst);
+        repo.try_claim_continue.notify_one();
+
+        let outcome = task.await.expect("contender task joins");
+        let Err(RefreshError::RetrySuppressed(context)) = outcome else {
+            panic!("post-acquire recheck must return the typed durable block");
+        };
+        assert_eq!(context.retry(), crate::RetryAdvice::Never);
+        assert_eq!(
+            provider_calls.load(Ordering::SeqCst),
+            0,
+            "a stale Open observation must never cross the provider boundary"
+        );
+        repo.wait_for_release().await;
+        assert!(!repo.active.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn l1_waiter_receives_typed_gate_written_by_winner() {
+        let repo = Arc::new(ScriptedClaimRepo::new());
+        let coordinator = coordinator(Arc::clone(&repo), RefreshCoordConfig::default());
+        let credential_id = CredentialId::new();
+        let gate_installed = Arc::new(AtomicBool::new(false));
+        let provider_calls = Arc::new(AtomicUsize::new(0));
+        let provider_entered = Arc::new(Notify::new());
+        let provider_continue = Arc::new(Notify::new());
+
+        let winner = tokio::spawn({
+            let coordinator = Arc::clone(&coordinator);
+            let gate_for_recheck = Arc::clone(&gate_installed);
+            let gate_for_commit = Arc::clone(&gate_installed);
+            let provider_calls = Arc::clone(&provider_calls);
+            let provider_entered = Arc::clone(&provider_entered);
+            let provider_continue = Arc::clone(&provider_continue);
+            async move {
+                coordinator
+                    .refresh_coalesced(
+                        &credential_id,
+                        move |_| {
+                            let gate = Arc::clone(&gate_for_recheck);
+                            async move {
+                                if gate.load(Ordering::SeqCst) {
+                                    Ok(RefreshRecheck::Suppressed(Box::new(
+                                        RefreshNotAppliedContext::from_spec(
+                                            crate::RefreshNotAppliedPhase::BeforeDispatch,
+                                            crate::RefreshFailureSpec::new(
+                                                crate::RefreshErrorKind::ProtocolError,
+                                                crate::RetryAdvice::Never,
+                                            ),
+                                        ),
+                                    )))
+                                } else {
+                                    Ok(RefreshRecheck::Needed)
+                                }
+                            }
+                        },
+                        move || async move {
+                            provider_calls.fetch_add(1, Ordering::SeqCst);
+                            provider_entered.notify_one();
+                            provider_continue.notified().await;
+                            gate_for_commit.store(true, Ordering::SeqCst);
+                            RefreshDisposition::state_advanced(())
+                        },
+                    )
+                    .await
+            }
+        });
+
+        provider_entered.notified().await;
+        let duplicate_calls = Arc::new(AtomicUsize::new(0));
+        let waiter = tokio::spawn({
+            let coordinator = Arc::clone(&coordinator);
+            let gate_installed = Arc::clone(&gate_installed);
+            let duplicate_calls = Arc::clone(&duplicate_calls);
+            async move {
+                coordinator
+                    .refresh_coalesced(
+                        &credential_id,
+                        move |_| {
+                            let gate = Arc::clone(&gate_installed);
+                            async move {
+                                if gate.load(Ordering::SeqCst) {
+                                    Ok(RefreshRecheck::Suppressed(Box::new(
+                                        RefreshNotAppliedContext::from_spec(
+                                            crate::RefreshNotAppliedPhase::BeforeDispatch,
+                                            crate::RefreshFailureSpec::new(
+                                                crate::RefreshErrorKind::ProtocolError,
+                                                crate::RetryAdvice::Never,
+                                            ),
+                                        ),
+                                    )))
+                                } else {
+                                    Ok(RefreshRecheck::Needed)
+                                }
+                            }
+                        },
+                        move || async move {
+                            duplicate_calls.fetch_add(1, Ordering::SeqCst);
+                            RefreshDisposition::state_advanced(())
+                        },
+                    )
+                    .await
+            }
+        });
+        while coordinator
+            .l1
+            .waiter_count_for_test(&credential_id.to_string())
+            == 0
+        {
+            tokio::task::yield_now().await;
+        }
+
+        provider_continue.notify_one();
+        winner
+            .await
+            .expect("winner task joins")
+            .expect("winner writes the gate");
+        let waiter_outcome = waiter.await.expect("waiter task joins");
+        let Err(RefreshError::RetrySuppressed(context)) = waiter_outcome else {
+            panic!("L1 waiter must receive the exact durable retry block");
+        };
+        assert_eq!(context.retry(), crate::RetryAdvice::Never);
+        assert_eq!(provider_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(duplicate_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
     async fn hung_l2_release_cannot_wedge_l1_or_global_permit() {
         let repo = Arc::new(ScriptedClaimRepo::new());
         repo.block_release.store(true, Ordering::SeqCst);
@@ -2476,7 +2864,7 @@ mod tests {
         let result = coordinator
             .refresh_coalesced(
                 &credential_id,
-                |_| async { Ok(true) },
+                |_| async { Ok(RefreshRecheck::Needed) },
                 || async { RefreshDisposition::state_advanced(55_u8) },
             )
             .await
@@ -2501,7 +2889,7 @@ mod tests {
             waiter_coordinator
                 .refresh_coalesced(
                     &credential_id,
-                    |_| async { Ok(true) },
+                    |_| async { Ok(RefreshRecheck::Needed) },
                     move || async move {
                         waiter_duplicate_calls.fetch_add(1, Ordering::SeqCst);
                         RefreshDisposition::state_advanced(())
@@ -2535,7 +2923,7 @@ mod tests {
         let result = coordinator
             .refresh_coalesced(
                 &credential_id,
-                |_| async { Ok(true) },
+                |_| async { Ok(RefreshRecheck::Needed) },
                 || async { RefreshDisposition::outcome_unknown(21_u8) },
             )
             .await
@@ -2556,7 +2944,7 @@ mod tests {
         let result = coordinator
             .refresh_coalesced(
                 &credential_id,
-                |_| async { Ok(true) },
+                |_| async { Ok(RefreshRecheck::Needed) },
                 || async { RefreshDisposition::retry_unsafe(34_u8) },
             )
             .await

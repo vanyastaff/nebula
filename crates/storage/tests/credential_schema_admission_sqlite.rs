@@ -156,7 +156,7 @@ async fn insert_legacy_record(
 }
 
 #[tokio::test]
-async fn fresh_file_and_memory_are_admitted_and_file_reopens_at_0039() {
+async fn fresh_file_and_memory_are_admitted_and_file_reopens_at_0040() {
     let directory = tempfile::tempdir().expect("temporary directory must be created");
     let path = directory.path().join("fresh.sqlite");
     let url = file_url(&path);
@@ -172,7 +172,7 @@ async fn fresh_file_and_memory_are_admitted_and_file_reopens_at_0039() {
             .fetch_one(&pool)
             .await
             .expect("migration ledger must be readable");
-    assert_eq!(head, 39);
+    assert_eq!(head, 40);
     pool.close().await;
 
     let second = SqliteCredentialPersistence::connect(&url)
@@ -205,7 +205,7 @@ async fn two_fresh_file_starters_serialize_readiness_without_partial_schema() {
             .fetch_one(&pool)
             .await
             .expect("the contended migration ledger must be readable");
-    assert_eq!(head, 39);
+    assert_eq!(head, 40);
     assert_eq!(
         successful,
         i64::try_from(MIGRATOR.iter().count()).expect("migration count must fit in i64"),
@@ -945,13 +945,13 @@ async fn wrong_current_column_type_and_default_are_rejected() {
     for (file_name, needle, replacement) in [
         (
             "wrong-type.sqlite",
-            "owner_id        TEXT    NOT NULL",
-            "owner_id        BLOB    NOT NULL",
+            "owner_id                      TEXT    NOT NULL",
+            "owner_id                      BLOB    NOT NULL",
         ),
         (
             "wrong-default.sqlite",
-            "metadata        TEXT    NOT NULL,",
-            "metadata        TEXT    NOT NULL DEFAULT '{}',",
+            "metadata                      TEXT    NOT NULL,",
+            "metadata                      TEXT    NOT NULL DEFAULT '{}',",
         ),
     ] {
         let directory = tempfile::tempdir().expect("temporary directory must be created");
@@ -966,6 +966,73 @@ async fn wrong_current_column_type_and_default_are_rejected() {
 
         assert_invalid_current_shape(&path).await;
     }
+}
+
+#[tokio::test]
+async fn refresh_retry_check_and_admission_reject_unknown_codes() {
+    let directory = tempfile::tempdir().expect("temporary directory must be created");
+    let path = directory.path().join("unknown-refresh-retry-code.sqlite");
+    let pool = raw_pool(&path).await;
+    MIGRATOR
+        .run(&pool)
+        .await
+        .expect("canonical current schema must install");
+    let credential_id = CredentialId::new().to_string();
+    sqlx::query(
+        "INSERT INTO credentials (
+             id, name, owner_id, credential_key, state_kind, state_version,
+             data, version, material_epoch, created_at, updated_at, expires_at,
+             reauth_required, metadata, record_state, tombstoned_at
+         ) VALUES (?1, NULL, 'owner-a', 'provider.token', 'active', 1,
+                   zeroblob(0), 1, 1, 1700000000000, 1700000000000, NULL,
+                   0, '{}', 'live', NULL)",
+    )
+    .bind(&credential_id)
+    .execute(&pool)
+    .await
+    .expect("valid live fixture must seed");
+
+    let rejected = sqlx::query(
+        "UPDATE credentials
+         SET refresh_retry_mode = 'never',
+             refresh_retry_phase = 'future_phase',
+             refresh_retry_kind = 'protocol_error'
+         WHERE id = ?1",
+    )
+    .bind(&credential_id)
+    .execute(&pool)
+    .await;
+    assert!(
+        rejected.is_err(),
+        "the physical CHECK must reject an unknown phase"
+    );
+
+    sqlx::query("PRAGMA ignore_check_constraints = ON")
+        .execute(&pool)
+        .await
+        .expect("test fixture must bypass checks deliberately");
+    sqlx::query(
+        "UPDATE credentials
+         SET refresh_retry_mode = 'never',
+             refresh_retry_phase = 'future_phase',
+             refresh_retry_kind = 'protocol_error'
+         WHERE id = ?1",
+    )
+    .bind(&credential_id)
+    .execute(&pool)
+    .await
+    .expect("corrupt fixture must be representable with checks bypassed");
+    pool.close().await;
+
+    let error = SqliteCredentialPersistence::connect(&file_url(&path))
+        .await
+        .expect_err("unknown persisted retry evidence must fail readiness");
+    assert!(matches!(
+        error,
+        CredentialStoreStartupError::UnsupportedSchemaVersion(ref unsupported)
+            if unsupported.reason()
+                == &CredentialSchemaAdmissionReason::InvalidRefreshRetryGate
+    ));
 }
 
 #[tokio::test]

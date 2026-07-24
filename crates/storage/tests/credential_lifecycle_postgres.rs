@@ -145,6 +145,7 @@ fn replacement(
         None,
         true,
         metadata(name),
+        nebula_storage_port::CredentialMaterialTransition::advance(),
     )
 }
 
@@ -201,6 +202,7 @@ async fn postgres_lifecycle_enforces_precedence_cas_and_terminal_visibility() ->
         None,
         true,
         Map::from_iter([("display".to_owned(), Value::Bool(true))]),
+        nebula_storage_port::CredentialMaterialTransition::advance(),
     );
     assert_eq!(
         store

@@ -51,8 +51,8 @@ use crate::{
     middleware::auth::AuthenticatedPrincipal,
     ports::credential_command::{
         CredentialCommandGateway, CredentialGatewayAcquisition, CredentialGatewayCommand,
-        CredentialGatewayError, CredentialGatewayRecord, CredentialGatewayResult,
-        CredentialGatewayTestFailure, CredentialGatewayTestResult,
+        CredentialGatewayError, CredentialGatewayRecord, CredentialGatewayRefreshRetry,
+        CredentialGatewayResult, CredentialGatewayTestFailure, CredentialGatewayTestResult,
     },
     state::AppState,
 };
@@ -144,6 +144,20 @@ fn map_gateway_err(err: CredentialGatewayError, cred: &str) -> ApiError {
             "pending acquisition token expired or already consumed".to_owned(),
         ),
         CredentialGatewayError::ReauthRequired => ApiError::CredentialReauthRequired,
+        CredentialGatewayError::RefreshNotApplied {
+            retry: CredentialGatewayRefreshRetry::Never,
+        } => ApiError::CredentialRefreshNotAppliedNever,
+        CredentialGatewayError::RefreshNotApplied {
+            retry: CredentialGatewayRefreshRetry::After { seconds },
+        } => ApiError::CredentialRefreshNotAppliedAfter {
+            retry_after_secs: seconds,
+        },
+        CredentialGatewayError::RefreshReconciliationRequired => {
+            ApiError::CredentialRefreshReconciliationRequired
+        },
+        CredentialGatewayError::RevokeReconciliationRequired => {
+            ApiError::CredentialRevokeReconciliationRequired
+        },
         CredentialGatewayError::Forbidden => {
             ApiError::Forbidden("credential command is not authorized".to_owned())
         },
@@ -1145,12 +1159,48 @@ mod tests {
             ApiError::CredentialReauthRequired
         ));
         assert!(matches!(
+            map_gateway_err(
+                CredentialGatewayError::RefreshNotApplied {
+                    retry: CredentialGatewayRefreshRetry::Never,
+                },
+                "cred_x"
+            ),
+            ApiError::CredentialRefreshNotAppliedNever
+        ));
+        assert!(matches!(
+            map_gateway_err(
+                CredentialGatewayError::RefreshNotApplied {
+                    retry: CredentialGatewayRefreshRetry::After {
+                        seconds: std::num::NonZeroU64::new(17)
+                            .expect("test delay is non-zero"),
+                    },
+                },
+                "cred_x"
+            ),
+            ApiError::CredentialRefreshNotAppliedAfter { retry_after_secs }
+                if retry_after_secs.get() == 17
+        ));
+        assert!(matches!(
             map_gateway_err(CredentialGatewayError::Unavailable, "cred_x"),
             ApiError::ServiceUnavailable(_)
         ));
         assert!(matches!(
             map_gateway_err(CredentialGatewayError::OutcomeUnknown, "cred_x"),
             ApiError::OutcomeUnknown(_)
+        ));
+        assert!(matches!(
+            map_gateway_err(
+                CredentialGatewayError::RefreshReconciliationRequired,
+                "cred_x"
+            ),
+            ApiError::CredentialRefreshReconciliationRequired
+        ));
+        assert!(matches!(
+            map_gateway_err(
+                CredentialGatewayError::RevokeReconciliationRequired,
+                "cred_x"
+            ),
+            ApiError::CredentialRevokeReconciliationRequired
         ));
         assert!(matches!(
             map_gateway_err(CredentialGatewayError::Internal, "cred_x"),
@@ -1172,8 +1222,18 @@ mod tests {
                     Vec::new(),
                 ),
             },
+            CredentialGatewayError::RefreshNotApplied {
+                retry: CredentialGatewayRefreshRetry::Never,
+            },
+            CredentialGatewayError::RefreshNotApplied {
+                retry: CredentialGatewayRefreshRetry::After {
+                    seconds: std::num::NonZeroU64::new(17).expect("test delay is non-zero"),
+                },
+            },
             CredentialGatewayError::Unavailable,
             CredentialGatewayError::OutcomeUnknown,
+            CredentialGatewayError::RefreshReconciliationRequired,
+            CredentialGatewayError::RevokeReconciliationRequired,
             CredentialGatewayError::Internal,
         ] {
             let api_error = map_gateway_err(gateway_error, "cred_safe");

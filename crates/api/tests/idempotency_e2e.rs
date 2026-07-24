@@ -325,7 +325,7 @@ async fn cors_allows_idempotency_key_in_preflight() {
 }
 
 #[tokio::test]
-async fn cors_exposes_idempotent_replay_header() {
+async fn cors_exposes_idempotency_and_retry_headers() {
     // Per the CORS spec, `Access-Control-Expose-Headers` is set on the
     // **actual** cross-origin response (not the preflight); browsers strip
     // any non-listed response header before `fetch().headers` sees it. So
@@ -356,5 +356,9 @@ async fn cors_exposes_idempotent_replay_header() {
     assert!(
         expose_headers.contains("idempotent-replay"),
         "Access-Control-Expose-Headers must list `idempotent-replay` on actual cross-origin responses: got {expose_headers:?}",
+    );
+    assert!(
+        expose_headers.contains("retry-after"),
+        "Access-Control-Expose-Headers must list `retry-after` on actual cross-origin responses: got {expose_headers:?}",
     );
 }

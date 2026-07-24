@@ -31,6 +31,7 @@ mod schema;
 pub mod pending;
 #[cfg(test)]
 mod reference;
+mod retry_gate;
 
 /// Cross-replica refresh claim repository (CAS + heartbeat).
 pub mod refresh_claim;
@@ -95,7 +96,14 @@ pub(crate) mod test_support {
     pub(crate) fn make_replacement(
         expected_version: CredentialVersion,
         data: &[u8],
+        refresh_retry_transition: nebula_storage_port::RefreshRetryTransition,
     ) -> CredentialReplacement {
+        let material_transition = match refresh_retry_transition {
+            nebula_storage_port::RefreshRetryTransition::Clear => {
+                nebula_storage_port::CredentialMaterialTransition::advance()
+            },
+            transition => nebula_storage_port::CredentialMaterialTransition::preserve(transition),
+        };
         CredentialReplacement::new(
             expected_version,
             SecretBytes::new(data.to_vec()),
@@ -105,6 +113,7 @@ pub(crate) mod test_support {
             None,
             false,
             Default::default(),
+            material_transition,
         )
     }
 }

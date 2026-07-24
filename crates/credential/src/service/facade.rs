@@ -59,7 +59,7 @@ const DISPLAY_KEY: &str = "display";
 /// and never take this fallback.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub struct RefreshReport {
+pub struct ManagementRefreshReport {
     /// Secret-free head of the row after the call (post-refresh on the
     /// success path; the pre-call head on the fallback path).
     pub head: CredentialHead,
@@ -369,7 +369,8 @@ impl CredentialService {
             CredentialPersistenceError::AlreadyExists {
                 key: CredentialAlreadyExistsKey::Name,
             } => CredentialServiceError::NameAlreadyExists,
-            CredentialPersistenceError::VersionExhausted => {
+            CredentialPersistenceError::VersionExhausted
+            | CredentialPersistenceError::MaterialEpochExhausted => {
                 CredentialServiceError::VersionExhausted
             },
             CredentialPersistenceError::OutcomeUnknown => CredentialServiceError::OutcomeUnknown,

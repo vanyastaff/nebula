@@ -215,7 +215,7 @@ async fn fresh_and_canonical_0038_schemas_are_admitted() -> TestResult<()> {
     let head: i64 = sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations WHERE success")
         .fetch_one(&pool)
         .await?;
-    assert_eq!(head, 39);
+    assert_eq!(head, 40);
     pool.close().await;
     fresh.cleanup().await;
 
@@ -675,8 +675,8 @@ async fn concurrent_fresh_starters_serialize_the_schema_transition() -> TestResu
     let head: i64 = sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations WHERE success")
         .fetch_one(&pool)
         .await?;
-    assert_eq!(successful, 39);
-    assert_eq!(head, 39);
+    assert_eq!(successful, 40);
+    assert_eq!(head, 40);
     pool.close().await;
     database.cleanup().await;
     Ok(())

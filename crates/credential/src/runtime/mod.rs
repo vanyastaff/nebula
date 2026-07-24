@@ -26,10 +26,10 @@ pub use oauth_egress::{
     OAuthServerEndpoint, oauth_egress_ip_is_globally_routable, validate_oauth_dns_answers,
 };
 pub use refresh::{
-    ConfigError, OAuthProviderErrorCode, ReclaimSweepHandle, RefreshCoordConfig,
-    RefreshCoordMetrics, RefreshCoordinator, RefreshDisposition, RefreshError, RefreshRecheckError,
-    RefreshTransport, RefreshTransportError, SentinelThresholdConfig, SentinelTrigger,
-    TokenPostRequest, TokenPostResponse, TokenPostResponseError,
+    ConfigError, ReclaimSweepHandle, RefreshCoordConfig, RefreshCoordMetrics, RefreshCoordinator,
+    RefreshDisposition, RefreshError, RefreshRecheck, RefreshRecheckError, RefreshTransport,
+    RefreshTransportError, SentinelThresholdConfig, SentinelTrigger, TokenPostRequest,
+    TokenPostResponse, TokenPostResponseError,
 };
 pub use resolve_error::ResolveError;
 pub use resolver::CredentialResolver;
