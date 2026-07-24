@@ -1,17 +1,24 @@
 use chrono::{DateTime, Utc};
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+use nebula_storage_port::CredentialMaterialTransition;
 use nebula_storage_port::{
-    CredentialMaterialTransition, CredentialPersistenceError, RefreshRetryAdmission,
-    RefreshRetryBlock, RefreshRetryDelay, RefreshRetryDiagnosticCode, RefreshRetryEvidence,
-    RefreshRetryGate, RefreshRetryKind, RefreshRetryPhase, RefreshRetryTransition,
+    CredentialPersistenceError, RefreshRetryAdmission, RefreshRetryBlock, RefreshRetryDelay,
+    RefreshRetryDiagnosticCode, RefreshRetryEvidence, RefreshRetryGate, RefreshRetryKind,
+    RefreshRetryPhase, RefreshRetryTransition,
 };
 
 pub(crate) const MODE_NEVER: &str = "never";
 pub(crate) const MODE_NOT_BEFORE: &str = "not_before";
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) const TRANSITION_PRESERVE: i16 = 0;
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) const TRANSITION_CLEAR: i16 = 1;
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) const TRANSITION_SET_NEVER: i16 = 2;
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) const TRANSITION_SET_AFTER: i16 = 3;
 
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) struct EncodedTransition<'a> {
     pub(crate) code: i16,
     pub(crate) delay_seconds: Option<i64>,
@@ -20,6 +27,7 @@ pub(crate) struct EncodedTransition<'a> {
     pub(crate) diagnostic_code: Option<&'a str>,
 }
 
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) fn encode_transition(
     transition: &RefreshRetryTransition,
 ) -> Result<EncodedTransition<'_>, CredentialPersistenceError> {
@@ -67,6 +75,7 @@ pub(crate) fn encode_transition(
 ///
 /// Advancing material always encodes `Clear`; callers cannot attach an
 /// old-epoch gate because that combination is absent from the port type.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) fn encode_material_transition(
     transition: &CredentialMaterialTransition,
 ) -> Result<EncodedTransition<'_>, CredentialPersistenceError> {
@@ -84,6 +93,7 @@ pub(crate) fn encode_material_transition(
     }
 }
 
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) fn phase_code(phase: RefreshRetryPhase) -> &'static str {
     match phase {
         RefreshRetryPhase::BeforeDispatch => "before_dispatch",
@@ -91,6 +101,7 @@ pub(crate) fn phase_code(phase: RefreshRetryPhase) -> &'static str {
     }
 }
 
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) fn kind_code(kind: RefreshRetryKind) -> &'static str {
     match kind {
         RefreshRetryKind::TransientNetwork => "transient_network",

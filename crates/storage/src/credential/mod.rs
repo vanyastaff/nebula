@@ -31,6 +31,7 @@ mod schema;
 pub mod pending;
 #[cfg(test)]
 mod reference;
+#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
 mod retry_gate;
 
 /// Cross-replica refresh claim repository (CAS + heartbeat).
