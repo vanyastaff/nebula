@@ -659,7 +659,7 @@ async fn exercise_0040_migration(pool: &PgPool) -> TestResult<Migration0040Evide
     .fetch_one(pool)
     .await?;
     let constraints = sqlx::query_as::<_, (String, String)>(
-        "SELECT conname, pg_get_constraintdef(oid)
+        "SELECT conname, pg_get_constraintdef(oid, true)
          FROM pg_constraint
          WHERE conrelid = 'credentials'::regclass
            AND conname IN (
@@ -756,15 +756,13 @@ async fn postgres_0040_backfills_material_epoch_and_closes_retry_gate_shape() {
             "credentials_refresh_retry_gate_shape",
         ]
     );
-    assert!(
+    assert_eq!(
         evidence
             .constraints
             .iter()
             .find(|(name, _)| name == "credentials_material_epoch_range")
-            .is_some_and(|(_, definition)| {
-                definition.contains("material_epoch >= 1")
-                    && definition.contains("material_epoch <= 9223372036854775807")
-            }),
+            .map(|(_, definition)| definition.as_str()),
+        Some("CHECK (material_epoch >= 1 AND material_epoch <= '9223372036854775807'::bigint)"),
         "material epoch constraint must encode the full positive i64 range"
     );
     assert!(evidence.zero_epoch_rejected);
