@@ -184,10 +184,7 @@ pretty_assertions = "1.4.1"
 rstest = "0.24.0"
 wiremock = "0.6"
 rcgen = { version = "0.14.8", default-features = false, features = ["aws_lc_rs"] }
-tokio-rustls = { version = "0.26.4", default-features = false, features = [
-  "aws_lc_rs",
-  "tls12",
-] }
+tokio-rustls = { version = "0.26.4", default-features = false, features = ["aws_lc_rs", "tls12"] }
 
 # Semantic versioning
 semver = { version = "1", features = ["serde"] }
@@ -200,6 +197,15 @@ compact_str = { version = "0.9", features = ["serde"] }
 
 # Compile-time layout assertions
 static_assertions = "1"
+
+# Proc-macro toolchain — pinned here so the eight derive crates
+# (action, credential, error, plugin, resource, schema, sdk/macros-support,
+# validator) can never resolve onto different `syn` majors. A split here
+# means two copies of the parser in every macro build and, worse, two
+# incompatible `syn::Error` types across the shared macro-support helpers.
+syn = { version = "3", features = ["full", "extra-traits"] }
+quote = "1"
+proc-macro2 = "1"
 
 # Nebula internal
 nebula-env = { path = "crates/env" }
