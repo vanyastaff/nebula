@@ -31,8 +31,14 @@ pub struct Config {
     /// Enable runtime reload capability
     pub reloadable: bool,
 
-    /// Telemetry configuration
+    /// Telemetry configuration.
+    ///
+    /// Skipped when unset so the serialized shape of a `schema_version: 1`
+    /// config is identical whether or not the `telemetry` feature is
+    /// compiled in — a cargo feature must not change the wire form of a
+    /// versioned schema.
     #[cfg(feature = "telemetry")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub telemetry: Option<TelemetryConfig>,
 }
 
