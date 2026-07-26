@@ -1312,7 +1312,17 @@ mod tests {
             .expect("the following port method must delimit the snapshot body")
             .0;
         assert_eq!(snapshot_body.matches("sqlx::query_as(").count(), 1);
-        assert!(snapshot_body.contains("SELECT version, reauth_required, record_state"));
+        // The clock sample is only meaningful if the same statement also reads
+        // the version / reauthentication / record state it is compared against.
+        // Assert each column is selected here rather than pinning the column
+        // list verbatim — the order and any additional projected column
+        // (`material_epoch`, …) are not part of that guarantee.
+        for column in ["version", "reauth_required", "record_state"] {
+            assert!(
+                snapshot_body.contains(column),
+                "the snapshot statement must read `{column}` alongside its clock sample"
+            );
+        }
         assert!(snapshot_body.contains("clock_timestamp() AS backend_now"));
         assert!(!snapshot_body.contains("self.get("));
     }
