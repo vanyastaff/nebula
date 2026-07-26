@@ -124,7 +124,7 @@ clap = { version = "4", features = ["derive"] }
 http = "1.4"
 reqwest = { version = "0.13", features = ["json"], default-features = false }
 axum = { version = "0.8", features = ["json"] }
-tower-http = { version = "0.6", features = ["trace", "cors", "compression-gzip"] }
+tower-http = { version = "0.7", features = ["trace", "cors", "compression-gzip"] }
 
 # Database — optional storage backends. The version is pinned here so the
 # three consumers (the `nebula-storage` adapter, `nebula-api`'s
@@ -166,10 +166,10 @@ rand = "0.10"
 
 
 # Observability (optional)
-opentelemetry = "0.31.0"
-opentelemetry-otlp = { version = "0.31.1", features = ["grpc-tonic", "trace", "metrics"] }
-opentelemetry_sdk = { version = "0.31.0", features = ["rt-tokio", "metrics"] }
-tracing-opentelemetry = "0.32.1"
+opentelemetry = "0.32.0"
+opentelemetry-otlp = { version = "0.32.0", features = ["grpc-tonic", "trace", "metrics"] }
+opentelemetry_sdk = { version = "0.32.1", features = ["rt-tokio", "metrics"] }
+tracing-opentelemetry = "0.33.0"
 tempfile = "3.27.0"
 proptest = "1.11"
 criterion = { package = "codspeed-criterion-compat", version = "4" }

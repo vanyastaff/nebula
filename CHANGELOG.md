@@ -279,6 +279,22 @@ changes are expected between minor releases — call them out here.
 
 ### Changed
 
+- **tower-http 0.7 and the OpenTelemetry family 0.32 / 0.33.** These are
+  semver-major bumps, so the previous `cargo update` pass could not take them
+  and — importantly — `cargo outdated` does not report them either: every
+  dependency here is declared through `[workspace.dependencies]` and inherited
+  with `workspace = true`, which that tool does not resolve, so it answers "all
+  dependencies are up to date" while majors are outstanding. Treat dependabot,
+  not `cargo outdated`, as the authority for this workspace.
+  The four OpenTelemetry crates (`opentelemetry` 0.32, `opentelemetry-otlp`
+  0.32, `opentelemetry_sdk` 0.32.1, `tracing-opentelemetry` 0.33) move together
+  on purpose: bumping only `tracing-opentelemetry`, as the standalone dependabot
+  PR proposed, would link two incompatible `opentelemetry` versions at once.
+  Moving the set also collapsed a `reqwest` duplicate — `opentelemetry-http`
+  0.31 pinned its own reqwest 0.12 alongside the workspace's 0.13. No source
+  changes were needed; the API → control-queue → engine → action trace chain,
+  W3C propagation and OTLP metric export are verified by the existing
+  `OTEL_E2E_TEST` suite on the new versions.
 - **(breaking) Rust 1.97.1 is the pinned toolchain and the MSRV.** `rust-version`
   moves `1.96` → `1.97` across the workspace, together with
   `rust-toolchain.toml`, `clippy.toml` `msrv`, every CI/nightly workflow pin, and
