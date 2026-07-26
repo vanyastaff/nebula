@@ -30,7 +30,7 @@ use nebula_storage_port::dto::JobDispatchMsg;
 /// ## Dyn-dispatch
 ///
 /// `async-trait` is required because `async fn` in traits is not yet
-/// dyn-compatible in stable Rust 1.96 (native AFIT/RPITIT is not dyn-safe).
+/// dyn-compatible in stable Rust 1.97 (native AFIT/RPITIT is not dyn-safe).
 /// The orchestrator holds an `Arc<dyn ExecutionSink>`, so object safety is
 /// load-bearing here — the same rationale as `JobDispatchQueue` and
 /// `ControlDispatch`.

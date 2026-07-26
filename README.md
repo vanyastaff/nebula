@@ -1,7 +1,7 @@
 # Nebula
 
 [![CI](https://github.com/vanyastaff/nebula/actions/workflows/ci.yml/badge.svg)](https://github.com/vanyastaff/nebula/actions/workflows/ci.yml)
-[![Rust](https://img.shields.io/badge/rust-1.96%2B-orange)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.97%2B-orange)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](LICENSE)
 
 **Modular, type-safe workflow automation engine written in Rust.**
@@ -112,7 +112,7 @@ cargo build
 cargo nextest run --workspace
 ```
 
-Requires **Rust 1.96+** (edition 2024). Uses [cargo-nextest](https://nexte.st/) for test runs.
+Requires **Rust 1.97+** (edition 2024). Uses [cargo-nextest](https://nexte.st/) for test runs.
 
 ### Local Infrastructure
 

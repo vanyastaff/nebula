@@ -26,7 +26,7 @@ project studied. Divergence from these needs a written reason.
 | C1 | `[workspace.lints]` in root Cargo.toml; every crate `[lints] workspace = true`; **every allow/deny decision listed with a comment, never silent** | all five | ✅ done |
 | C2 | Restriction lints promoted: `print_stdout`, `print_stderr`, `dbg_macro` warn/deny — all output flows through one sink (`tracing` / a `Printer`) | uv, rust-analyzer, iroh | ✅ done (2026-07-06) |
 | C3 | `#[expect(..., reason)]` over `#[allow]`; stale suppressions fail the gate | uv (AGENTS.md), Nebula | ✅ done (2026-07-06) |
-| C4 | **Lint the feature matrix, not just `--all-features`**: clippy on default + `--no-default-features` + all-features, or `cargo hack` | iroh (3 configs), reth (hack, sharded), omicron (`xtask check-features`) | ✅ done (2026-07-07): workspace clippy on default + no-default in `check`, cargo-hack each-feature |
+| C4 | **Lint the feature matrix, not just `--all-features`**: clippy on default + `--no-default-features` + all-features, or `cargo hack` | iroh (3 configs), reth (hack, sharded), omicron (`xtask check-features`) | ✅ done (2026-07-07): workspace clippy on default + no-default in `check`, cargo-hack each-feature. Extended 2026-07-25: the cargo-hack and MSRV jobs run under `CARGO_BUILD_WARNINGS=deny` (Cargo 1.97 `build.warnings`), so the 108 per-feature configs are gated on rustc lints, not just type errors |
 | C5 | Rustdoc is a hard gate: `RUSTDOCFLAGS="-D warnings"` on the workspace | reth, omicron, iroh | ✅ already in place (`doc` job runs `RUSTDOCFLAGS=-D warnings`) |
 | C6 | Unused-dependency control is mechanized: `unused_crate_dependencies` warn per crate + udeps/machete/shear in CI | reth (all three layers), uv (shear) | ✅ done (2026-07-07): per-crate `unused_crate_dependencies` + udeps weekly + machete; 15 dead deps purged on adoption |
 | C7 | Generated artifacts are committed and CI re-generates + `git diff --exit-code` | rust-analyzer (`codegen --check`), uv (`check-generated-files`), omicron (openapi), reth (CLI docs) | ❌ not yet needed at scale; adopt with schema export |
@@ -242,7 +242,10 @@ The blueprint for making durable execution deterministically testable:
 1. ✅ **Feature-matrix clippy** (C4): `check` job now runs workspace clippy on
    default and `--no-default-features` after the all-features pass;
    `feature-hygiene` (cargo-hack `--each-feature`, 108 configs) was already
-   in place for type errors.
+   in place for type errors. Since the 1.97 toolchain bump it also carries
+   `CARGO_BUILD_WARNINGS=deny`, which promotes a rustc lint warning in any
+   single-feature config to a build error — previously only a type error in
+   one of those 108 configs could fail the job.
 2. ✅ **Rustdoc gate** (C5): was already in place (`doc` job,
    `RUSTDOCFLAGS=-D warnings`, `--document-private-items`).
 3. ✅ **Dep hygiene** (C6): `#![cfg_attr(not(test), warn(unused_crate_dependencies))]`

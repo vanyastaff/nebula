@@ -1,5 +1,5 @@
 # Keep lint interpretation aligned with workspace toolchain.
-msrv = "1.96"
+msrv = "1.97"
 
 # ── Complexity thresholds (balanced for a heavily generic Rust workspace) ──
 cognitive-complexity-threshold = 25
@@ -57,7 +57,7 @@ allow-dbg-in-tests = true
 allow-print-in-tests = true
 allow-indexing-slicing-in-tests = true
 allow-useless-vec-in-tests = true
-# Enforce MSRV checks in test code as well (no `1.96` APIs sneaking in).
+# Enforce MSRV checks in test code as well (no `1.97` APIs sneaking in).
 check-incompatible-msrv-in-tests = true
 
 # ── Const-context ergonomics ───────────────────────────────────────────────

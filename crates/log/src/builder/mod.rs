@@ -145,7 +145,7 @@ impl LoggerBuilder {
         // Create the filter
         let filter = EnvFilter::try_new(&self.config.level).map_err(|e| {
             use crate::core::LogError;
-            LogError::Filter(format!("{}: {}", &self.config.level, e))
+            LogError::Filter(format!("{}: {e}", self.config.level))
         })?;
 
         // Get writer for the format layer

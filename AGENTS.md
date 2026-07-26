@@ -100,7 +100,7 @@ Use these instead of standard Unix equivalents — they're installed and better.
 
 ## Tech Stack
 
-- **Language:** Rust 1.96+ (edition 2024, resolver 3)
+- **Language:** Rust 1.97+ (edition 2024, resolver 3)
 - **Async:** Tokio
 - **Errors:** `thiserror` (libs) / `anyhow` (bins)
 - **Storage:** PostgreSQL, SQLite (`crates/storage/migrations/`)
@@ -161,7 +161,7 @@ nebula/
 ├── deny.toml           # cargo-deny: layer wrappers (CI gate)
 ├── lefthook.yml        # local pre-commit / pre-push (mirrors CI)
 ├── rustfmt.toml        # rustfmt config (stable-only)
-├── clippy.toml         # lint thresholds (msrv 1.96)
+├── clippy.toml         # lint thresholds (msrv 1.97)
 ├── crates/             # workspace members
 ├── tools/xtask/        # repository automation; outside the product layer graph
 ├── scripts/            # worktree.sh + lefthook helpers
@@ -359,7 +359,7 @@ Slash commands: `.claude/commands/` (project-specific, load on demand).
 |------|---------|
 | `Cargo.toml` | Workspace members, pinned deps, `[workspace.lints]` |
 | `deny.toml` | Layer wrappers, licenses, advisories — CI gate |
-| `clippy.toml` | Lint thresholds (msrv 1.96) |
+| `clippy.toml` | Lint thresholds (msrv 1.97) |
 | `rustfmt.toml` | rustfmt config (stable-only, pinned toolchain) |
 | `Taskfile.yml` | `task dev:check` = full pre-PR gate |
 | `.mcp.json` | MCP server config (Serena, rust-analyzer, cratesio, etc.) |
