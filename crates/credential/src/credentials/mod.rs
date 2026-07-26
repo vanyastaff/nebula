@@ -29,13 +29,8 @@ pub use oauth2_config::{
 pub use shared_key::{SharedKeyCredential, SharedKeyProperties};
 pub use signing_key::{SigningKeyCredential, SigningKeyProperties};
 
-// AuthStyle lives in scheme::oauth2 as of Task 8 (M12.3 carve-out prep).
-// Re-exported here so `credentials::AuthStyle` still resolves; deprecated.
-#[deprecated(
-    since = "0.1.0",
-    note = "use `nebula_credential::scheme::oauth2::AuthStyle` or the crate-root re-export `nebula_credential::AuthStyle`"
-)]
-pub use crate::scheme::oauth2::AuthStyle;
+// `AuthStyle` is owned by the scheme contract layer — import it from
+// `crate::scheme::oauth2` (or the crate root re-export), not from here.
 
 /// Register the first-party **reference** credentials — `bearer_token`,
 /// `shared_key`, and `signing_key` — into `registry`.

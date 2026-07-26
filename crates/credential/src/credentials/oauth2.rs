@@ -17,25 +17,10 @@ use std::{fmt, fmt::Formatter, time::Duration};
 
 use chrono::{DateTime, Utc};
 use nebula_schema::{FieldValues, Schema};
-// Re-exports for backward compatibility with `credentials::oauth2::` paths.
-// `AuthStyle` now lives in `scheme::oauth2`; re-exported here under the
-// deprecated shim so the old import path still resolves during migration.
-// Other config types remain in `oauth2_config`.
-// guard-justified: suppress deprecated warning on the deprecated re-export within the same crate's migration shim
-/// OAuth2 client authentication style.
-///
-/// Moved to [`crate::scheme::oauth2::AuthStyle`]. This re-export keeps the
-/// `credentials::oauth2::AuthStyle` path alive during migration (deprecated).
-#[deprecated(
-    since = "0.1.0",
-    note = "use `nebula_credential::scheme::oauth2::AuthStyle` or the crate-root re-export `nebula_credential::AuthStyle`"
-)]
-pub use crate::scheme::oauth2::AuthStyle;
-// guard-justified: re-export block intentionally bridges deprecated
-// `oauth2_config` paths for downstream API consumers still importing
-// from this submodule; the inner items themselves are NOT deprecated,
-// only the legacy `AuthStyle` constant on `oauth2_config` is, and the
-// deprecation surfaces at the caller's import site, not here.
+// The grant/config types stay reachable from this module because the
+// credential and its configuration are one API surface for consumers;
+// `AuthStyle` is imported privately from the scheme contract layer that
+// owns it.
 pub use oauth2_config::{
     AuthCodeBuilder, ClientCredentialsBuilder, DeviceCodeBuilder, GrantType, OAuth2Config,
     PkceMethod,
@@ -58,7 +43,7 @@ use crate::{
         CompletedTokenRefresh, PrepareTokenRefreshError, interpret_oauth2_refresh_response,
         prepare_oauth2_refresh,
     },
-    scheme::OAuth2Token,
+    scheme::{AuthStyle, OAuth2Token},
 };
 
 // ── OAuth2State ────────────────────────────────────────────────────────

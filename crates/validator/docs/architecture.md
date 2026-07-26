@@ -184,7 +184,7 @@ nebula-validator/src/
 ├── engine.rs          validate_rules(), ExecutionMode (StaticOnly / Deferred / Full).
 ├── proof.rs           Validated<T> proof token.
 ├── error.rs           ValidatorError, ValidatorResult<T>.
-├── macros.rs          validator!, compose!, any_of! (private; expanded at call site).
+├── macros.rs          validator! (private; expanded at call site).
 └── prelude.rs         Single-import convenience re-export.
 ```
 

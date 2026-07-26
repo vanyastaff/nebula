@@ -82,7 +82,7 @@
   голого `bool`.
 - `proof.rs` — `Validated<T>` proof-token (canon §4.5).
 - `error.rs` — `ValidatorError` (операционная), отделённая от `ValidationError`-на-вход.
-- `macros.rs` (приватный) — `validator!` + deprecated `compose!`/`any_of!`.
+- `macros.rs` (приватный) — `validator!`; композиция — методы `.and()`/`.or()` из `ValidateExt`.
 - `macros/` — subcrate `nebula-validator-macros`: `parse/` → `model.rs` → `emit/` для
   `#[derive(Validator)]`.
 
@@ -115,17 +115,14 @@
    дублирует канонический `nebula-error::ValidationError`. Унификация **сделана** на ветке
    `refactor/error-unify-validation`, но **не смёржена** — в `main` крейт всё ещё определяет
    собственный тип, а `nebula-error` нужен только ради `Classify` (`src/error.rs:28`).
-2. **Deprecated макросы живы.** `compose!` (`src/macros.rs:684`) и `any_of!`
-   (`src/macros.rs:715`) ещё существуют; тесты явно глушат deprecation-warning
-   (`macros.rs:868-884`) — кандидаты на удаление.
-3. **Док-ложь про `Cached`.** `combinators/mod.rs:14,57` описывает комбинатор
+2. **Док-ложь про `Cached`.** `combinators/mod.rs:14,57` описывает комбинатор
    `Cached`/`cached()`, которого нет в exports (`mod.rs:93-110`).
-4. **Три prelude.** `crate::prelude`, `foundation::prelude` (:84) и `combinators::prelude`
+3. **Три prelude.** `crate::prelude`, `foundation::prelude` (:84) и `combinators::prelude`
    (:127) — расползание поверхности импорта.
-5. **Wire/коды как обязательство совместимости.** Externally-tagged tuple-compact + замороженный
+4. **Wire/коды как обязательство совместимости.** Externally-tagged tuple-compact + замороженный
    `error_registry_v1.json` означают, что любая правка сериализации/кодов — breaking для
    сохранённых правил.
-6. **`#![allow(clippy::result_large_err)]` на весь крейт** (`src/lib.rs:50`) — осознанно,
+5. **`#![allow(clippy::result_large_err)]` на весь крейт** (`src/lib.rs:50`) — осознанно,
    из-за 80-байтовой ошибки по значению.
 
 ## 7. Роль в пост-0092 credential/resource модели
@@ -162,9 +159,6 @@
   единственную причину тянуть `nebula-error` (сейчас только ради `Classify`) и закрывает
   напряжение №1. Риск: затрагивает RFC 6901 пути и contract-fixtures — нужна сверка
   `error_registry_v1.json`.
-- **Удалить deprecated `compose!`/`any_of!`.** Под прикрытием «validator = приватная
-  impl-деталь за sdk» это уже не breaking для внешних — выпилить вместе с глушением
-  warning'ов в тестах (`macros.rs:868-884`).
 - **Починить док-ложь про `Cached`.** Либо реализовать `cached()` комбинатор, либо вычистить
   упоминания из `combinators/mod.rs:14,57`. Сейчас это прямое расхождение doc vs exports.
 - **Сократить prelude'ы до одного.** Свести `foundation::prelude`/`combinators::prelude` к

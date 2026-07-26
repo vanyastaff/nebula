@@ -17,17 +17,9 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-/// OAuth2 client authentication style (RFC 6749 §2.3.1).
-///
-/// Moved to [`crate::scheme::oauth2::AuthStyle`] — the scheme contract layer,
-/// not the credential implementation.
-/// This re-export is deprecated; migrate to
-/// `nebula_credential::AuthStyle` or `nebula_credential::scheme::oauth2::AuthStyle`.
-#[deprecated(
-    since = "0.1.0",
-    note = "use `nebula_credential::scheme::oauth2::AuthStyle` or the crate-root re-export `nebula_credential::AuthStyle`"
-)]
-pub use crate::scheme::oauth2::AuthStyle;
+// `AuthStyle` (RFC 6749 §2.3.1) is owned by the scheme contract layer, not by
+// this credential-configuration module — imported, never re-exported.
+use crate::scheme::oauth2::AuthStyle;
 
 /// OAuth2 grant type (RFC 6749 / RFC 8628).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
