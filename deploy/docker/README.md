@@ -1,3 +1,39 @@
+# Local dev stacks
+
+Two independent compose files live here:
+
+| File | Brings up | Taskfile entry |
+|------|-----------|----------------|
+| `docker-compose.yml` | Postgres (+ Redis under the `cache` profile) | `task db:up` / `db:down` |
+| `docker-compose.observability.yml` | OTEL collector + Jaeger | `task obs:up` / `obs:down` |
+
+## Database stack
+
+```bash
+task db:up                       # or: docker compose -f deploy/docker/docker-compose.yml up -d
+export DATABASE_URL=postgresql://nebula:nebula@localhost:5432/nebula
+task db:migrate                  # apply pending migrations
+task db:reset                    # drop + create + migrate (destroys local dev data)
+```
+
+Credentials, database name and port come from `POSTGRES_USER` / `POSTGRES_PASSWORD` /
+`POSTGRES_DB` / `POSTGRES_PORT`, defaulting to `nebula` / `nebula` / `nebula` / `5432`.
+The image tracks the PostgreSQL major that `test-matrix.yml` runs against, so a
+migration that passes locally is running on the same major as CI.
+
+### Podman instead of Docker
+
+The Taskfile invokes `docker compose`, which works unmodified on a podman host with
+two pieces in place:
+
+- a compose provider — `docker-compose-v2` (podman finds it via
+  `~/.docker/cli-plugins/docker-compose`, `/usr/libexec/docker/cli-plugins/`, or
+  `docker-compose` on `$PATH`; `podman compose version` lists every path it probes);
+- a `docker` → `podman` shim — the `podman-docker` package, or a two-line
+  `exec podman "$@"` script on `$PATH`.
+
+`sudo apt install -y podman-docker docker-compose-v2` covers both on Ubuntu.
+
 # Observability stack (local dev)
 
 `docker-compose.observability.yml` brings up the minimal collector + Jaeger

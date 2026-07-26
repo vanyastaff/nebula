@@ -31,17 +31,30 @@ credential refresh-retry admission gate in parity with PostgreSQL.
 
 ## Storage-port adapter schema (0027)
 
-`0027_port_adapter_schema.sql` is **byte-identical** to
-`crates/storage/src/sqlite/schema.sql`, which the spec-16 SQLite adapters
-apply via `nebula_storage::sqlite::init_schema` for `:memory:` and test
-pools. It is the canonical source for a rebuilt file-backed SQLite
-database — the spec-16 port (execution + the atomic `TransitionBatch`,
-control-queue outbox, idempotency, webhook activations,
-workflows/versions, and the identity stores) persists through these
-`port_*` tables. Keep this file and `schema.sql` in lockstep —
-regenerate with `cp crates/storage/src/sqlite/schema.sql \
-crates/storage/migrations/sqlite/0027_port_adapter_schema.sql` whenever
-the port schema changes.
+`crates/storage/src/sqlite/schema.sql` is the **cumulative** `port_*` schema,
+applied in one shot by `nebula_storage::sqlite::init_schema` for `:memory:`
+and test pools. The spec-16 port (execution + the atomic `TransitionBatch`,
+control-queue outbox, idempotency, webhook activations, workflows/versions,
+and the identity stores) persists through those `port_*` tables.
+
+`0027_port_adapter_schema.sql` was that schema *at the time it was written*.
+It is now a historical migration and **must not be regenerated from
+`schema.sql`** — the two have legitimately diverged because later port
+changes landed as their own migrations (0032 webhook activation fields,
+0033 spec link, 0034 control-queue resume target, 0035 resume tokens).
+Copying the cumulative schema over 0027 would rewrite an already-applied
+migration and duplicate what those later ones already do.
+
+When the port schema changes, do both:
+
+1. add a **new** numbered migration for the delta, and
+2. edit `schema.sql` so the one-shot install stays current.
+
+The invariant to hold is *end-state equality*, not file equality: replaying
+`0001..NNNN` into a file-backed database must produce the same tables,
+columns, types and constraints as `init_schema` builds in one shot. Verify
+by diffing `pragma table_info(...)` for every `port_*` table across a
+migrated database and a freshly `init_schema`-built one.
 
 ## Rebuilding the local dev database
 
@@ -51,5 +64,22 @@ run via `init_schema`, so tests need no migration step.
 
 ## Schema parity
 
-This directory and `../postgres/` must define logically identical tables.
-Types differ by dialect; table/column names and constraints must match.
+Where both dialects define a table, they must define it *logically
+identically*: types differ by dialect, but table/column names and
+constraints must match.
+
+Parity is **not** total, and the gaps are deliberate — these tables are
+PostgreSQL-only because their adapters are (`crates/storage/src/pg/`, with
+no SQLite counterpart):
+
+| PostgreSQL migration | Why it has no SQLite counterpart |
+|----------------------|----------------------------------|
+| `0029_external_identities` | `external_identities` — OAuth identity linking, `pg/external_identity.rs` only |
+| `0036_plane_a_oauth_state_cleanup_index` | partial index over `NOW()`; SQLite requires constant expressions (see *Dialect notes*) |
+| `0037_mfa_enrollment_candidates` | `mfa_enrollment_candidates` — `pg/mfa_enrollment.rs` only |
+| `0038_identity_secret_authority` | `pg/identity_secret.rs` only |
+
+A fresh SQLite database therefore has two fewer tables than a fresh
+PostgreSQL one (`external_identities`, `mfa_enrollment_candidates`). Adding
+a SQLite adapter for any of those features means adding its migration here
+at the same time.
