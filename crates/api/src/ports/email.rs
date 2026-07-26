@@ -37,8 +37,8 @@ pub enum EmailKind {
 }
 
 impl EmailKind {
-    /// Stable string label. Used in tracing fields and by the legacy
-    /// `EmailEnvelope.kind` back-compat shim on the in-memory backend.
+    /// Stable string label — used in tracing fields, where the variant
+    /// name itself must not be the wire contract.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -270,9 +270,9 @@ mod tests {
 
     #[test]
     fn email_kind_as_str_matches_legacy_labels() {
-        // The legacy `EmailEnvelope.kind` strings — keep stable across
-        // the trait refactor so the `InMemoryAuthBackend::emails()`
-        // back-compat shim and downstream test assertions still match.
+        // Operator-visible category labels: they appear in logs and in
+        // downstream assertions, so the strings are a stable contract
+        // independent of the enum variant names.
         assert_eq!(EmailKind::Verification.as_str(), "EmailVerify");
         assert_eq!(EmailKind::PasswordReset.as_str(), "PasswordReset");
         assert_eq!(EmailKind::Generic.as_str(), "Generic");

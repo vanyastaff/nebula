@@ -3,8 +3,9 @@
 //! # Available Macros
 //!
 //! - `validator!` — Create a complete validator (struct + Validate impl + factory fn)
-//! - `compose!` — AND-chain multiple validators
-//! - `any_of!` — OR-chain multiple validators
+//!
+//! Composition is method chaining, not a macro: `v1.and(v2)` / `v1.or(v2)`
+//! from [`ValidateExt`](crate::foundation::ValidateExt).
 //!
 //! # Examples
 //!
@@ -712,78 +713,6 @@ macro_rules! validator {
 }
 
 // ============================================================================
-// COMPOSE MACRO
-// ============================================================================
-
-/// Composes multiple validators using AND logic.
-///
-/// **Deprecated** — prefer `.and(...)` method chaining, which produces
-/// identical code with clearer semantics:
-///
-/// ```rust
-/// # #![allow(deprecated)]
-/// # use nebula_validator::prelude::*;
-/// # use nebula_validator::compose;
-/// // Old:
-/// let with_macro = compose![min_length(5), max_length(20), alphanumeric()];
-/// // New:
-/// let with_chain = min_length(5).and(max_length(20)).and(alphanumeric());
-/// # assert!(with_macro.validate("hello1").is_ok());
-/// # assert!(with_chain.validate("hello1").is_ok());
-/// ```
-#[macro_export]
-#[deprecated(
-    since = "0.1.0",
-    note = "use `.and(...)` method chaining instead: \
-            `v1.and(v2).and(v3)` replaces `compose![v1, v2, v3]`"
-)]
-macro_rules! compose {
-    () => {
-        compile_error!("compose! requires at least one validator expression");
-    };
-    ($first:expr) => { $first };
-    ($first:expr, $($rest:expr),+ $(,)?) => {
-        $first$(.and($rest))+
-    };
-}
-
-// ============================================================================
-// ANY_OF MACRO
-// ============================================================================
-
-/// Composes multiple validators using OR logic.
-///
-/// **Deprecated** — prefer `.or(...)` method chaining, which produces
-/// identical code with clearer semantics:
-///
-/// ```rust
-/// # #![allow(deprecated)]
-/// # use nebula_validator::prelude::*;
-/// # use nebula_validator::any_of;
-/// // Old:
-/// let with_macro = any_of![exact_length(5), exact_length(10)];
-/// // New:
-/// let with_chain = exact_length(5).or(exact_length(10));
-/// # assert!(with_macro.validate("hello").is_ok());
-/// # assert!(with_chain.validate("world12345").is_ok());
-/// ```
-#[macro_export]
-#[deprecated(
-    since = "0.1.0",
-    note = "use `.or(...)` method chaining instead: \
-            `v1.or(v2).or(v3)` replaces `any_of![v1, v2, v3]`"
-)]
-macro_rules! any_of {
-    () => {
-        compile_error!("any_of! requires at least one validator expression");
-    };
-    ($first:expr) => { $first };
-    ($first:expr, $($rest:expr),+ $(,)?) => {
-        $first$(.or($rest))+
-    };
-}
-
-// ============================================================================
 // TESTS
 // ============================================================================
 
@@ -921,29 +850,20 @@ mod tests {
         assert!(v.validate(&11).is_err());
     }
 
-    // Test 7: compose! and any_of! still work (deprecated, but kept for
-    // compatibility until removed)
-    #[expect(
-        deprecated,
-        reason = "verifying compose! still works while it lives; macro is deprecated but not yet removed"
-    )]
+    // Test 7: macro-generated validators compose through `ValidateExt`
     #[test]
-    fn test_compose_still_works() {
+    fn test_and_chaining_composes_generated_validators() {
         use crate::foundation::ValidateExt;
-        let v = compose![TestMinLen { min: 3 }, TestMinLen { min: 1 }];
-        assert!(v.validate("abc").is_ok());
-        assert!(v.validate("ab").is_err());
+        let chained = TestMinLen { min: 3 }.and(TestMinLen { min: 1 });
+        assert!(chained.validate("abc").is_ok());
+        assert!(chained.validate("ab").is_err());
     }
 
-    #[expect(
-        deprecated,
-        reason = "verifying any_of! still works while it lives; macro is deprecated but not yet removed"
-    )]
     #[test]
-    fn test_any_of_still_works() {
+    fn test_or_chaining_composes_generated_validators() {
         use crate::foundation::ValidateExt;
-        let v = any_of![TestMinLen { min: 100 }, TestMinLen { min: 1 }];
-        assert!(v.validate("x").is_ok());
+        let chained = TestMinLen { min: 100 }.or(TestMinLen { min: 1 });
+        assert!(chained.validate("x").is_ok());
     }
 
     // Test 8: Error messages are correct

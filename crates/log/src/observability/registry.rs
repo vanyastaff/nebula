@@ -81,31 +81,6 @@ fn emit_to_hooks_bounded(hooks: &HookList, event: &dyn ObservabilityEvent, timeo
     }
 }
 
-/// Emit an event to a hook list (legacy, kept for compatibility).
-///
-/// Calls `on_event()` on each registered hook with the provided event.
-/// If a hook panics, the panic is caught and logged, and other hooks
-/// continue to receive events.
-///
-/// # Panic Safety
-///
-/// Hooks **must** be internally panic-safe. If a hook panics while holding
-/// internal locks (e.g., a `Mutex`), those locks will be poisoned. The
-/// registry catches the panic and continues dispatching to remaining hooks,
-/// but the panicked hook's internal state may be corrupted. Consider wrapping
-/// fallible hook internals in `catch_unwind` or using lock-free data structures.
-#[deprecated(note = "use emit_to_hooks_inline or emit_to_hooks_bounded directly")]
-#[expect(
-    dead_code,
-    reason = "deprecated function retained for semver compatibility; callers should migrate to emit_to_hooks_inline or emit_to_hooks_bounded"
-)]
-fn emit_to_hooks(hooks: &HookList, event: &dyn ObservabilityEvent, policy: HookPolicy) {
-    match policy {
-        HookPolicy::Inline => emit_to_hooks_inline(hooks, event),
-        HookPolicy::Bounded { timeout_ms, .. } => emit_to_hooks_bounded(hooks, event, timeout_ms),
-    }
-}
-
 /// Initialize a hook, catching panics.
 ///
 /// Returns `true` if initialization succeeded, `false` if the hook panicked.

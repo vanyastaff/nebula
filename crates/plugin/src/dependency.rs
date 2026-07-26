@@ -187,6 +187,14 @@ pub(crate) fn resolve(reg: &PluginRegistry) -> Result<Vec<PluginKey>, PluginDepe
             }
             edges.push(dep_index);
         }
+        // Canonicalize the edge list. Indices were assigned in ascending key
+        // order, so sorting by index sorts by dependency key — without this the
+        // DFS emits dependencies in *manifest declaration* order and the load
+        // order of two registries describing the same graph differs. Dedup
+        // collapses a key declared more than once (each occurrence is still
+        // version-checked above) so it is not re-walked.
+        edges.sort_unstable();
+        edges.dedup();
         adjacency.push(edges);
     }
 

@@ -97,7 +97,7 @@ struct Items {
 fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStream2> {
     let item: ItemImpl = syn::parse(input)?;
 
-    if let Some((_, path, _)) = &item.trait_ {
+    if let Some((path, _)) = &item.trait_ {
         return Err(diag::error_spanned(
             path,
             "#[credential] applies to an inherent `impl Type { … }`, not a trait impl — \

@@ -22,10 +22,6 @@ pub mod field {
     pub const TRACE_ID: &str = "trace_id";
     /// Node key (author-defined workflow node identifier).
     pub const NODE_KEY: &str = "node_key";
-
-    /// Deprecated alias -- use [`NODE_KEY`] instead.
-    #[deprecated(since = "0.1.0", note = "renamed to NODE_KEY")]
-    pub const NODE_ID: &str = NODE_KEY;
     /// Action type ID (e.g., "http.request")
     pub const ACTION_ID: &str = "action_id";
     /// Retry attempt count

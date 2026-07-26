@@ -15,9 +15,9 @@ proc-macro = true
 
 [dependencies]
 nebula-macro-support = { path = "../../sdk/macros-support" }
-syn = { version = "2", features = ["full", "extra-traits"] }
-quote = "1"
-proc-macro2 = "1"
+syn = { workspace = true }
+quote = { workspace = true }
+proc-macro2 = { workspace = true }
 # Case conversion for `#[derive(EnumSelect)]` option values — `heck` splits
 # acronym runs correctly (`HTTPProxy` → `http_proxy`) where a hand-rolled pass
 # does not. Small, maintained, the de-facto standard (used by serde/clap).

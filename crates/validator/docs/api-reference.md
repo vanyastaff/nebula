@@ -10,7 +10,7 @@ see [`architecture.md`](architecture.md). For combinator-specific usage patterns
 
 | Tier | Items |
 |------|-------|
-| **Stable** | `Validate<T>`, `ValidateExt<T>`, `Validatable`, `ValidationError`, `ValidationErrors`, `AnyValidator<T>`, `ErrorSeverity`, `Validated<T>`, `ValidatorError`, all built-in validators, core combinators, `validator!` / `compose!` / `any_of!` macros |
+| **Stable** | `Validate<T>`, `ValidateExt<T>`, `Validatable`, `ValidationError`, `ValidationErrors`, `AnyValidator<T>`, `ErrorSeverity`, `Validated<T>`, `ValidatorError`, all built-in validators, core combinators, the `validator!` macro |
 | **Experimental** | `MultiField` internals, `CollectionNested`, advanced `NestedValidate` helpers — treat as non-contract |
 | **Internal** | `ErasedValidator` trait, `AsValidatable` bridge, macro `@`-arms |
 

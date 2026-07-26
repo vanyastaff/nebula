@@ -83,7 +83,10 @@ pub(crate) fn classify(ty: &Type) -> FieldKind {
 /// Handles both bare idents (`String`, `bool`) and fully-qualified paths
 /// (`std::string::String`).
 fn last_segment_ident(ty: &Type) -> Option<String> {
-    if let Type::Path(TypePath { qself: None, path }) = ty {
+    if let Type::Path(TypePath {
+        qself: None, path, ..
+    }) = ty
+    {
         path.segments.last().map(|s| s.ident.to_string())
     } else {
         None
@@ -92,7 +95,9 @@ fn last_segment_ident(ty: &Type) -> Option<String> {
 
 /// If `ty` is `Wrapper<Inner>`, return the inner type.
 fn unwrap_single_generic<'t>(ty: &'t Type, wrapper: &str) -> Option<&'t Type> {
-    if let Type::Path(TypePath { qself: None, path }) = ty
+    if let Type::Path(TypePath {
+        qself: None, path, ..
+    }) = ty
         && let Some(seg) = path.segments.last()
         && seg.ident == wrapper
         && let PathArguments::AngleBracketed(args) = &seg.arguments

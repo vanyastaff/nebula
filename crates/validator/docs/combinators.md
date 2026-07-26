@@ -298,18 +298,6 @@ fn password_rules() -> impl Validate<str> {
 }
 ```
 
-### The `compose!` and `any_of!` macros
-
-Shorthand for `And` and `Or` chains:
-
-```rust
-// AND-chain: equivalent to a.and(b).and(c)
-let v = compose![min_length(3), max_length(20), alphanumeric()];
-
-// OR-chain: equivalent to a.or(b).or(c)
-let v = any_of![exact_length(8), exact_length(16), exact_length(32)];
-```
-
 ### Type erasure for plugin/SDK consumers
 
 When validator types cross crate boundaries (e.g., a plugin registers validators against a

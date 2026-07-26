@@ -198,57 +198,6 @@ impl Default for InMemoryAuthBackend {
     }
 }
 
-/// Legacy snapshot shape of an outbound email.
-///
-/// Kept for backward compatibility with tests that still assert on
-/// `EmailEnvelope.token` + `EmailEnvelope.kind` via
-/// [`InMemoryAuthBackend::emails`]. New code SHOULD use
-/// [`crate::ports::email::EmailMessage`] directly through an
-/// [`EchoSink::peek`] call.
-#[derive(Clone)]
-#[deprecated(
-    since = "0.2.0",
-    note = "Use crate::ports::email::EmailMessage and EchoSink::peek for new code"
-)]
-pub struct EmailEnvelope {
-    /// Recipient address.
-    pub to: String,
-    /// Token included in the email link. Mirrors the dev `EchoSink`
-    /// convention of putting the raw token in [`EmailMessage::body`].
-    pub token: String,
-    /// Email category label — [`EmailKind::as_str`] output
-    /// (`"EmailVerify"` / `"PasswordReset"`).
-    pub kind: &'static str,
-}
-
-#[expect(
-    deprecated,
-    reason = "redaction is part of the deprecated shim's safety contract"
-)]
-impl std::fmt::Debug for EmailEnvelope {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("EmailEnvelope")
-            .field("to", &"[redacted]")
-            .field("token", &"[redacted]")
-            .field("kind", &self.kind)
-            .finish()
-    }
-}
-
-// guard-justified: the `From` impl exists exclusively to feed the
-// deprecated `EmailEnvelope` type and cannot itself avoid touching it.
-#[expect(deprecated, reason = "shim feeds the deprecated public type")]
-impl From<EmailMessage> for EmailEnvelope {
-    fn from(m: EmailMessage) -> Self {
-        Self {
-            to: m.to,
-            token: m.body,
-            kind: m.kind.as_str(),
-        }
-    }
-}
-
 impl InMemoryAuthBackend {
     /// Construct an empty backend with the default in-process
     /// [`EchoSink`] email port.
@@ -307,18 +256,15 @@ impl InMemoryAuthBackend {
     /// Returns an empty vector when [`Self::with_email_port`] has
     /// swapped the default [`EchoSink`] for a custom transport; the
     /// in-process inbox is only meaningful for the default port.
-    // guard-justified: this accessor IS the back-compat shim and must
-    // return the deprecated `EmailEnvelope` type by contract.
+    ///
+    /// The dev [`EchoSink`] puts the verification / reset token straight
+    /// into [`EmailMessage::body`], so a test reads the token from there.
     #[must_use]
-    #[expect(deprecated, reason = "deliberate back-compat shim over EmailEnvelope")]
-    pub fn emails(&self) -> Vec<EmailEnvelope> {
+    pub fn emails(&self) -> Vec<EmailMessage> {
         self.default_echo
             .as_ref()
-            .map(|s| s.peek())
+            .map(|sink| sink.peek())
             .unwrap_or_default()
-            .into_iter()
-            .map(EmailEnvelope::from)
-            .collect()
     }
 
     fn now_secs() -> u64 {
@@ -1300,13 +1246,7 @@ impl AuthBackend for InMemoryAuthBackend {
     }
 }
 
-// guard-justified: the tests below intentionally exercise the
-// deprecated `EmailEnvelope` shim and `emails()` accessor.
 #[cfg(test)]
-#[expect(
-    deprecated,
-    reason = "tests still assert on the deprecated `EmailEnvelope` back-compat shim"
-)]
 mod tests {
     use super::*;
     use crate::domain::auth::backend::dto::SecretString;
@@ -1388,22 +1328,8 @@ mod tests {
         b.register_user(signup_req("a@b.c")).await.unwrap();
         let emails = b.emails();
         assert_eq!(emails.len(), 1);
-        assert_eq!(emails[0].kind, "EmailVerify");
+        assert_eq!(emails[0].kind, EmailKind::Verification);
         assert_eq!(emails[0].to, "a@b.c");
-    }
-
-    #[test]
-    fn legacy_email_envelope_debug_redacts_token_and_recipient() {
-        const CANARY: &str = "LEGACY_EMAIL_AUTHORITY_CANARY-e9b2";
-        let envelope = EmailEnvelope {
-            to: format!("{CANARY}@example.test"),
-            token: CANARY.to_owned(),
-            kind: "PasswordReset",
-        };
-
-        let debug = format!("{envelope:?}");
-        assert!(!debug.contains(CANARY));
-        assert!(debug.contains("PasswordReset"));
     }
 
     #[tokio::test]
@@ -1467,7 +1393,7 @@ mod tests {
     async fn email_verification_flips_flag() {
         let b = InMemoryAuthBackend::new();
         b.register_user(signup_req("v@e.f")).await.unwrap();
-        let token = b.emails()[0].token.clone();
+        let token = b.emails()[0].body.clone();
         b.verify_email(&token).await.unwrap();
         let user = b.lookup_user_by_email("v@e.f").unwrap();
         assert!(user.email_verified);
@@ -1486,7 +1412,7 @@ mod tests {
             .expect("default echo sink is wired when no custom port is injected")
             .drain();
         b.request_password_reset("p@e.f").await.unwrap();
-        let token = b.emails()[0].token.clone();
+        let token = b.emails()[0].body.clone();
         b.complete_password_reset(&token, "newpass1").await.unwrap();
         let outcome = b
             .authenticate_password("p@e.f", "newpass1", None)

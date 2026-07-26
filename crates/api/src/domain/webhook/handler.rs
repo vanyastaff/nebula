@@ -231,7 +231,7 @@ pub async fn register_webhook(
         &scope,
         CredentialGatewayCommand::Create(CreateCredentialRequest {
             credential_key: "signing_key".to_owned(),
-            name: format!("webhook-signing-key-{}", &body.trigger_id),
+            name: format!("webhook-signing-key-{}", body.trigger_id),
             description: None,
             data: json!({
                 "key": whsec,
@@ -289,7 +289,7 @@ pub async fn register_webhook(
         workspace_id: scope.workspace_id.clone(),
         workflow_id: body.workflow_id.clone(),
         slug: body.trigger_id.clone(),
-        display_name: format!("webhook-{}", &body.trigger_id),
+        display_name: format!("webhook-{}", body.trigger_id),
         kind: "webhook".to_string(),
         config: trigger_config,
         state: "active".to_string(),

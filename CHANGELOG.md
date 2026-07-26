@@ -11,6 +11,46 @@ changes are expected between minor releases — call them out here.
 
 ### Fixed
 
+- **`task db:up` / `db:down` / `db:up:cache` were broken.** `Taskfile.yml`
+  points `COMPOSE_LOCAL` at `deploy/docker/docker-compose.yml`, which commit
+  `b1138dff` ("chore: remove stale docs") deleted as collateral alongside the
+  genuinely stale blueprints. The local Postgres (+ optional Redis `cache`
+  profile) stack is restored, on `postgres:17-alpine` to match the major that
+  `test-matrix.yml` runs against instead of the 16 it was deleted on.
+- **SQLite migration README documented a destructive, wrong procedure.** It
+  claimed `0027_port_adapter_schema.sql` is byte-identical to
+  `crates/storage/src/sqlite/schema.sql` and told the reader to regenerate it
+  with `cp` on every port-schema change. The two have legitimately diverged —
+  later port changes landed as migrations 0032–0035 — so following the
+  instruction would rewrite an already-applied migration and duplicate them.
+  The README now states the real invariant (replaying the migration chain must
+  end in the same schema `init_schema` builds in one shot, verified by
+  `pragma table_info`) and its "schema parity" section documents the four
+  deliberately PostgreSQL-only migrations instead of claiming total parity.
+
+- **Plugin load order was not deterministic across registries describing the
+  same graph.** `dependency::resolve` sorted the *nodes* by key but left each
+  node's edge list in manifest declaration order, so the DFS emitted
+  dependencies in the order they happened to be declared. Two registries with
+  the same plugins and the same dependency relationships could freeze to
+  different `load_order`s — and therefore different `PluginSet` identities.
+  Edge lists are now sorted (indices are assigned in ascending key order, so
+  this sorts by dependency key) and deduplicated; a key declared more than once
+  is still version-checked per occurrence but walked once.
+- **A cargo feature changed the wire shape of a versioned config.**
+  `nebula_log::Config::telemetry` is `#[cfg(feature = "telemetry")]`, so a
+  `schema_version: 1` config serialized to `{"telemetry": null, …}` from a
+  telemetry-enabled build and omitted the key otherwise. The field is now
+  `skip_serializing_if = "Option::is_none"`, so v1 output is identical in both
+  builds. The schema snapshot tests now hold as a cross-feature contract.
+- **Stale source-text assertion in the Postgres refresh-retry test.** The
+  snapshot statement gained a `material_epoch` column, which broke a verbatim
+  `SELECT version, reauth_required, record_state` match. The test now asserts
+  each required column is read in that one statement, which is the actual
+  guarantee (the clock sample must come from the statement that observes
+  version / reauth / record state); column order and extra projections are not
+  part of it.
+
 - **Library-first: doc-output collision** — the `nebula-worker` binary target
   and the `nebula-worker` library both emitted `doc/nebula_worker/index.html`,
   so one silently clobbered the other's published documentation. The binary now
@@ -239,6 +279,29 @@ changes are expected between minor releases — call them out here.
 
 ### Changed
 
+- **(breaking) Rust 1.97.1 is the pinned toolchain and the MSRV.** `rust-version`
+  moves `1.96` → `1.97` across the workspace, together with
+  `rust-toolchain.toml`, `clippy.toml` `msrv`, every CI/nightly workflow pin, and
+  the documented requirement in `README.md` / `AGENTS.md` / `CONTRIBUTING.md`.
+  Consumers building on 1.96 must upgrade. Note that 1.97 enables the v0 symbol
+  mangling scheme by default, so profiler and debugger symbol output changes
+  shape (`rustc -C symbol-mangling-version=legacy` restores the old form).
+- **Dependencies refreshed to latest, and `syn` upgraded to 3.0.** The
+  proc-macro toolchain (`syn` / `quote` / `proc-macro2`) moved into
+  `[workspace.dependencies]`; the eight derive crates now take it with
+  `workspace = true` instead of eight independent pins that had already drifted
+  between `"2.0"` and `"2"`. syn 3 migration was two call sites: `TypePath`
+  gained an `attrs` field (all `Type` variants now carry attributes), and
+  `ItemImpl::trait_` dropped its `Option<Bang>` element — negative-impl
+  detection moved to `ImplModifiers`, which this workspace does not inspect
+  (any trait impl is rejected by `#[credential]` regardless of polarity).
+  `cargo update` picked up the remaining compatible bumps.
+- **Feature-hygiene and MSRV CI jobs now deny rustc warnings** via Cargo 1.97's
+  `build.warnings` (`CARGO_BUILD_WARNINGS: deny`). The clippy job only sees the
+  workspace-level all / default / no-default configurations; a warning that
+  fires solely under one isolated feature previously passed unnoticed through
+  `cargo hack check --each-feature`, which is exactly the blind spot that job
+  exists to cover.
 - **(breaking) `nebula-sdk` is curated by persona, not workspace topology.**
   Broad `nebula_sdk::nebula_{action,core,credential,plugin,resource,schema,
   validator,workflow}` re-exports are gone. The currently verified one-dependency
@@ -438,6 +501,25 @@ changes are expected between minor releases — call them out here.
 
 ### Removed
 
+- **(breaking) Migration fossils retired ahead of the first release.** The
+  workspace kept several `#[deprecated]` shims whose only job was to keep a
+  pre-carve-out import path alive; each one is now gone rather than shipping
+  into 0.1.0:
+  - `nebula-credential`: the deprecated `AuthStyle` re-exports on
+    `credentials`, `credentials::oauth2`, and `credentials::oauth2_config`.
+    `AuthStyle` is owned by the scheme contract layer — import
+    `nebula_credential::AuthStyle` or `scheme::oauth2::AuthStyle`.
+  - `nebula-log`: the `field::NODE_ID` alias (use `field::NODE_KEY`) and the
+    dead private `emit_to_hooks` dispatcher (`emit_to_hooks_inline` /
+    `emit_to_hooks_bounded` are the real entry points).
+  - `nebula-validator`: the `compose!` and `any_of!` macros. Composition is
+    `ValidateExt` method chaining — `v1.and(v2)` / `v1.or(v2)` — which is what
+    the macros expanded to anyway. This closes the removal already planned in
+    the crate's `docs/DESIGN.md`.
+  - `nebula-api`: the `EmailEnvelope` snapshot shim.
+    `InMemoryAuthBackend::emails()` now returns the port's own
+    `Vec<EmailMessage>`, so tests read the token from `body` and compare
+    `kind` against the typed `EmailKind` instead of a stringly label.
 - **(breaking, security) Legacy credential authority/store surfaces.** Removed
   the credential-local `CredentialStore`/erased dyn bridge, tenancy's
   metadata-keyed credential scope layer/resolver, public optional-owner
