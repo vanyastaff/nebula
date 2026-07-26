@@ -82,7 +82,9 @@
   голого `bool`.
 - `proof.rs` — `Validated<T>` proof-token (canon §4.5).
 - `error.rs` — `ValidatorError` (операционная), отделённая от `ValidationError`-на-вход.
-- `macros.rs` (приватный) — `validator!`; композиция — методы `.and()`/`.or()` из `ValidateExt`.
+- `macros.rs` — `validator!`. Модуль приватный, но сам макрос под `#[macro_export]`,
+  т.е. виден downstream-крейтам из корня. Композиция — методы `.and()`/`.or()`
+  из `ValidateExt`.
 - `macros/` — subcrate `nebula-validator-macros`: `parse/` → `model.rs` → `emit/` для
   `#[derive(Validator)]`.
 

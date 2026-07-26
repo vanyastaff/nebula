@@ -307,8 +307,18 @@ jobs:
   # only expose third-party types from their explicit allowlists
   # (`[package.metadata.cargo_check_external_types]` in each Cargo.toml).
   # The nightly toolchain is pinned to the rustdoc JSON format the tool's
-  # version understands (0.5.x ↔ format 57 ↔ nightly-2026-03-20); bump the
-  # two together.
+  # version understands (0.5.x ↔ format 57); bump the two together.
+  #
+  # The pin is squeezed from both sides, so it is not free to move:
+  #   * below the workspace `rust-version`, cargo refuses to build at all
+  #     ("rustc X is not supported by the following packages") — this is why
+  #     the 1.97 MSRV bump retired the previous nightly-2026-03-20 pin, which
+  #     is 1.96.0-nightly;
+  #   * above format 57, the tool rejects the JSON (current nightly emits 60,
+  #     and 0.5.0 is the latest release, so there is no newer tool to move to).
+  # nightly-2026-04-20 (1.97.0-nightly) is inside that window. When the MSRV
+  # next moves, find a nightly at or above it that still emits the format the
+  # installed tool requires, or bump the tool first if one exists.
   external-types:
     name: Public API surface (sdk, api)
     runs-on: ubuntu-latest
@@ -319,7 +329,7 @@ jobs:
       - name: Install pinned nightly (rustdoc JSON format 57)
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: nightly-2026-03-20
+          toolchain: nightly-2026-04-20
       - name: Install cargo-check-external-types
         uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
         with:
@@ -332,10 +342,10 @@ jobs:
           cache-on-failure: true
       - name: Check sdk public surface
         working-directory: crates/sdk
-        run: cargo +nightly-2026-03-20 check-external-types --all-features
+        run: cargo +nightly-2026-04-20 check-external-types --all-features
       - name: Check api public surface
         working-directory: crates/api
-        run: cargo +nightly-2026-03-20 check-external-types --all-features
+        run: cargo +nightly-2026-04-20 check-external-types --all-features
 
   # ── Required aggregator ───────────────────────────────────────────────────
   # Single required check for branch protection. Treats `skipped` (draft-gated

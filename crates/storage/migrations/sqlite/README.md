@@ -52,9 +52,23 @@ When the port schema changes, do both:
 
 The invariant to hold is *end-state equality*, not file equality: replaying
 `0001..NNNN` into a file-backed database must produce the same tables,
-columns, types and constraints as `init_schema` builds in one shot. Verify
-by diffing `pragma table_info(...)` for every `port_*` table across a
-migrated database and a freshly `init_schema`-built one.
+columns, types and constraints as `init_schema` builds in one shot.
+
+Verify across a migrated database and a freshly `init_schema`-built one:
+
+1. the `port_%` object sets in `sqlite_master` match (tables **and** indexes
+   and triggers — a migration that forgets an index still passes a
+   column-only comparison);
+2. `pragma table_info(<table>)` matches per table (names, declared types,
+   `NOT NULL`, defaults, primary-key position);
+3. `pragma index_list` / `index_info` and `pragma foreign_key_list` match per
+   table, which is what covers uniqueness and referential constraints.
+
+`CHECK` constraints live only in the stored `CREATE TABLE` text, so compare
+the `sqlite_master.sql` bodies too — but normalize whitespace and strip `--`
+comments first: `ALTER TABLE` rewrites that text, so a migrated table and an
+`init_schema` one legitimately differ in comments and column order while
+being semantically identical.
 
 ## Rebuilding the local dev database
 

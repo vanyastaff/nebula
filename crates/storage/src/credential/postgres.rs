@@ -1312,18 +1312,37 @@ mod tests {
             .expect("the following port method must delimit the snapshot body")
             .0;
         assert_eq!(snapshot_body.matches("sqlx::query_as(").count(), 1);
+
         // The clock sample is only meaningful if the same statement also reads
         // the version / reauthentication / record state it is compared against.
-        // Assert each column is selected here rather than pinning the column
-        // list verbatim — the order and any additional projected column
-        // (`material_epoch`, …) are not part of that guarantee.
+        // Assert those are *projected*, rather than pinning the column list
+        // verbatim — order and extra projections (`material_epoch`, …) are not
+        // part of the guarantee. Narrowing to the projection and stripping `--`
+        // comments matters: the body carries a comment mentioning "version",
+        // so a substring search over the whole statement would hold even if the
+        // column itself were dropped.
+        let projection = snapshot_body
+            .split_once("SELECT ")
+            .expect("the snapshot statement must open with a SELECT projection")
+            .1
+            .split_once("FROM credentials")
+            .expect("the snapshot statement must read from `credentials`")
+            .0;
+        let projected: Vec<&str> = projection
+            .lines()
+            .map(|line| line.split_once("--").map_or(line, |(code, _comment)| code))
+            .flat_map(|line| line.split(','))
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .collect();
         for column in ["version", "reauth_required", "record_state"] {
             assert!(
-                snapshot_body.contains(column),
-                "the snapshot statement must read `{column}` alongside its clock sample"
+                projected.contains(&column),
+                "the snapshot statement must project `{column}` alongside its \
+                 clock sample; projected: {projected:?}"
             );
         }
-        assert!(snapshot_body.contains("clock_timestamp() AS backend_now"));
+        assert!(projected.contains(&"clock_timestamp() AS backend_now"));
         assert!(!snapshot_body.contains("self.get("));
     }
 

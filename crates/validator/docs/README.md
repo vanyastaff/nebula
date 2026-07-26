@@ -147,7 +147,7 @@ nebula-validator/
 │   ├── engine.rs              validate_rules, ExecutionMode
 │   ├── error.rs               ValidatorError, ValidatorResult
 │   ├── proof.rs               Validated<T> proof token
-│   ├── macros.rs              validator! macro (private)
+│   ├── macros.rs              validator! macro (`#[macro_export]`; module private)
 │   ├── foundation/
 │   │   ├── traits.rs          Validate<T>, ValidateExt<T>, Validatable
 │   │   ├── any.rs             AnyValidator<T>
