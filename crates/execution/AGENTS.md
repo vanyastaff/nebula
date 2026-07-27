@@ -16,16 +16,21 @@
 - `src/state.rs` — `ExecutionState` / `NodeExecutionState`, serialized into the `executions` row (largest module).
 - `src/journal.rs` — `JournalEntry`, backs the append-only `execution_journal` table.
 - `src/idempotency.rs` — `IdempotencyKey` shape `{execution_id}:{node_id}:{attempt}` (format only; dedup lives in storage).
-- `src/revision.rs` — experimental workflow-version and worker-flavor revision-pin aggregate,
-  available only under `unstable-revisions`; it is not a supported surface before end-to-end
-  runtime/storage/admission adoption.
+- `src/revision.rs` — default-public workflow-version and worker-flavor revision-pin aggregate.
+- `src/bundle.rs` — immutable Graph-v1 execution-contract bundle, canonical structural
+  fingerprint, recorded wire input, and typed structural-integrity errors.
 - `src/plan.rs` / `src/replay.rs` — `ExecutionPlan` (parallel schedule) and `ReplayPlan` (checkpoint resume).
 
 ## Conventions & never-do
 - This crate defines *types + transition legality only*. It must NOT own a repository interface, persist state, or enforce CAS — the spec-16 storage port (`nebula-storage-port::ExecutionStore` + `TransitionBatch`, implemented by `nebula-storage`) is the single source of truth for persisted state (canon §11.1; ADR-0072).
-- Do not enable or advertise `unstable-revisions` as a supported contract until durable state,
-  admission, and runtime all consume the pins. `WorkflowVersionId` remains the stable workflow
-  revision identity.
+- Revision and bundle vocabulary is default-public but operationally partial. Do not claim
+  end-to-end support until compiler, admission, persisted routing, and exact-flavor dispatch all
+  consume the complete contract. `WorkflowVersionId` remains the workflow revision identity.
+- A Graph-v1 bundle's exact loaded plan must contain slot-to-selected-`CredentialId` mappings and
+  credential contract revisions. Admission compares the unique selected IDs exactly with the
+  bundle set; abstract credential requirements alone are insufficient.
+- `PluginSetId` is an independent plugin-set pin, not proof of schemas, runtime behavior,
+  artifact authenticity, authorization, or a complete frozen registry.
 - This crate defines retry state shapes only: legal `Failed → WaitingRetry → Ready` node transitions, `next_attempt_at`, `total_retries`, `ExecutionBudget.max_total_retries`, `NodeAttempt`, and idempotency-key shape. The engine owns operator-declared node retry (`retry_policy`) and re-dispatch; `nebula-resilience` remains the in-action outbound-call retry surface. Do not add an `ActionResult::Retry` scheduler here.
 - `IdempotencyKey` here is only the deterministic per-attempt local replay/dedup shape (§11.3);
   storage owns `check_and_mark`. It changes across retries and is not the future stable remote

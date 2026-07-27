@@ -4,6 +4,17 @@
 //! 32 opaque bytes encoded as exactly 64 lowercase hexadecimal characters.
 //! Canonicalization, hashing, manifest construction, and capability interpretation
 //! remain the responsibility of the crates that derive and consume these values.
+//!
+//! # Example
+//!
+//! ```
+//! use nebula_core::ExecutablePlanRevisionId;
+//!
+//! let revision = ExecutablePlanRevisionId::from_bytes([0xab; 32]);
+//! let encoded = revision.to_string();
+//! assert_eq!(encoded.len(), 64);
+//! assert_eq!(encoded.parse::<ExecutablePlanRevisionId>(), Ok(revision));
+//! ```
 
 use std::{borrow::Cow, fmt, str::FromStr};
 
@@ -122,7 +133,7 @@ macro_rules! transport_digest {
 
 transport_digest!(
     PluginSetId,
-    "Identity of a canonical registered plugin set. It is not a capability proof."
+    "Independent identity pin for a canonical registered plugin set. The ID alone does not prove schemas, runtime behavior, artifact authenticity, authorization, or a complete frozen registry."
 );
 transport_digest!(
     WorkerFlavorRevisionId,
@@ -131,4 +142,12 @@ transport_digest!(
 transport_digest!(
     ArtifactSetDigest,
     "Digest of the logical artifact-set provenance used to derive a worker flavor."
+);
+transport_digest!(
+    ExecutablePlanRevisionId,
+    "Exact fixed-width identity of an immutable executable plan revision."
+);
+transport_digest!(
+    ExecutionContractBundleFingerprint,
+    "Structural fixed-width fingerprint of an immutable execution contract bundle."
 );

@@ -18,8 +18,9 @@
 //! - `ResolvedPlugin` — per-plugin wrapper with eager component caches; enforces namespace
 //!   invariant at construction.
 //! - `PluginRegistry` — in-memory `PluginKey → Arc<ResolvedPlugin>` registry.
-//! - `FrozenPluginRegistry`, `PluginSet`, and `WorkerFlavorRevision` — experimental activation
-//!   vocabulary available only with `unstable-worker-flavor`.
+//! - `FrozenPluginRegistry`, `PluginSet`, and `WorkerFlavorRevision` — immutable activation
+//!   vocabulary. Operational exact-flavor routing remains partial until compiler, admission,
+//!   persisted routing, and dispatch consume the pins end to end.
 //! - `PluginError` — typed error for plugin operations.
 //! - `ComponentKind` — discriminant for namespace and duplicate errors.
 //! - `#[derive(Plugin)]` — proc-macro derivation.
@@ -30,12 +31,13 @@
 //! Do not duplicate `fn actions()` / `fn resources()` / `fn credentials()` in
 //! `plugin.toml` — that is spec theater. See `crates/plugin/README.md`.
 //!
-//! ## Staged activation boundary
+//! ## Immutable activation boundary
 //!
-//! The `unstable-worker-flavor` feature exposes the ADR-0115 identity and
-//! immutability experiment. It is not part of the supported default surface:
-//! engine dispatch, API transport, and persisted routing have not migrated to
-//! it end to end.
+//! ADR-0115 identity and immutability vocabulary is default-public. Engine dispatch, API
+//! transport, persisted routing, compiler output, and admission have not migrated to it end to
+//! end, so this remains a partial closed epoch with zero production consumer rather than an
+//! operational capability. A `PluginSetId` is an independent pin, not proof of schemas, runtime
+//! behavior, artifact authenticity, authorization, or a complete frozen registry.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -43,9 +45,7 @@
 
 mod dependency;
 mod error;
-#[cfg(feature = "unstable-worker-flavor")]
 mod flavor;
-#[cfg(feature = "unstable-worker-flavor")]
 mod flavor_context;
 mod manifest;
 mod plugin;
@@ -57,12 +57,10 @@ mod resolved_plugin;
 
 pub use dependency::PluginDependencyError;
 pub use error::{ComponentKind, PluginError};
-#[cfg(feature = "unstable-worker-flavor")]
 pub use flavor::{
     PluginContractDescriptor, PluginSet, RuntimeContractVersion, RuntimeContractVersionError,
     WorkerFlavorRevision,
 };
-#[cfg(feature = "unstable-worker-flavor")]
 pub use flavor_context::WorkerFlavorContext;
 pub use manifest::{ManifestError, PluginManifest, PluginManifestBuilder};
 // Re-export PluginKey from core for convenience.
@@ -71,6 +69,5 @@ pub use nebula_metadata::PluginDependency;
 pub use nebula_plugin_macros::Plugin;
 pub use plugin::Plugin;
 pub use registry::PluginRegistry;
-#[cfg(feature = "unstable-worker-flavor")]
 pub use registry::{FrozenPluginRegistry, RegistryFreezeError};
 pub use resolved_plugin::ResolvedPlugin;

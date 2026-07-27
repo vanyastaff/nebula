@@ -28,8 +28,12 @@
 //!   engine retry advances the attempt number on re-dispatch.
 //! - [`IdempotencyKey`] — deterministic key `{execution_id}:{node_id}:{attempt}`; dedup enforcement
 //!   lives behind the storage port's idempotency guard.
-//! - `ExecutionRevisions` — experimental revision-pin vocabulary, available only with the
-//!   explicitly unstable `unstable-revisions` feature.
+//! - [`ExecutionRevisions`] — immutable workflow and worker-flavor revision pins. Operational
+//!   consumption remains partial until the admission/runtime path adopts the complete contract.
+//! - [`ExecutionContractBundle`] — immutable Graph-v1 plan/plugin/revision/credential contract
+//!   with canonical structural fingerprint validation. Its vocabulary is default-public, while
+//!   production consumption remains partial until compiler, admission, persisted routing, and
+//!   exact-flavor dispatch adopt it end to end.
 //! - [`ExecutionError`] — typed error for state machine violations.
 //!
 //! ## Non-goals
@@ -39,6 +43,7 @@
 //! in-action outbound calls).
 
 pub mod attempt;
+pub mod bundle;
 pub mod context;
 pub mod error;
 pub mod idempotency;
@@ -47,13 +52,16 @@ pub mod output;
 pub mod plan;
 pub mod replay;
 pub mod result;
-#[cfg(feature = "unstable-revisions")]
 pub mod revision;
 pub mod state;
 pub mod status;
 pub mod transition;
 
 pub use attempt::NodeAttempt;
+pub use bundle::{
+    ExecutionContractBundle, ExecutionContractBundleIntegrityError, ExecutionProfile,
+    RecordedExecutionContractBundleV1,
+};
 pub use context::{ExecutionBudget, ExecutionContext};
 pub use error::ExecutionError;
 pub use idempotency::IdempotencyKey;
@@ -65,7 +73,6 @@ pub use output::{ExecutionOutput, NodeOutput};
 pub use plan::ExecutionPlan;
 pub use replay::ReplayPlan;
 pub use result::ExecutionResult;
-#[cfg(feature = "unstable-revisions")]
 pub use revision::ExecutionRevisions;
 pub use state::{ExecutionState, NodeExecutionState};
 pub use status::ExecutionStatus;

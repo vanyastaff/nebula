@@ -1,9 +1,8 @@
-#![cfg(feature = "unstable-worker-flavor")]
-
 use std::{fmt::Debug, str::FromStr};
 
 use nebula_core::{
-    ArtifactSetDigest, PluginSetId, TransportDigestParseError, WorkerFlavorRevisionId,
+    ArtifactSetDigest, ExecutablePlanRevisionId, ExecutionContractBundleFingerprint, PluginSetId,
+    TransportDigestParseError, WorkerFlavorRevisionId,
 };
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -31,14 +30,20 @@ fn every_transport_digest_uses_the_same_canonical_wire_contract() {
     let plugin_set = PluginSetId::from_bytes(bytes);
     let worker_flavor = WorkerFlavorRevisionId::from_bytes(bytes);
     let artifact_set = ArtifactSetDigest::from_bytes(bytes);
+    let executable_plan = ExecutablePlanRevisionId::from_bytes(bytes);
+    let bundle_fingerprint = ExecutionContractBundleFingerprint::from_bytes(bytes);
 
     assert_eq!(plugin_set.as_bytes(), &bytes);
     assert_eq!(worker_flavor.as_bytes(), &bytes);
     assert_eq!(artifact_set.as_bytes(), &bytes);
+    assert_eq!(executable_plan.as_bytes(), &bytes);
+    assert_eq!(bundle_fingerprint.as_bytes(), &bytes);
 
     assert_wire_round_trip(plugin_set, &expected);
     assert_wire_round_trip(worker_flavor, &expected);
     assert_wire_round_trip(artifact_set, &expected);
+    assert_wire_round_trip(executable_plan, &expected);
+    assert_wire_round_trip(bundle_fingerprint, &expected);
 
     assert_eq!(
         format!("{plugin_set:?}"),
@@ -71,6 +76,15 @@ fn parser_rejects_non_canonical_hex_with_precise_errors() {
         invalid.parse::<PluginSetId>(),
         Err(TransportDigestParseError::InvalidHex { index: 17 })
     ));
+
+    assert!(matches!(
+        uppercase.parse::<ExecutablePlanRevisionId>(),
+        Err(TransportDigestParseError::InvalidHex { index: 0 })
+    ));
+    assert!(matches!(
+        too_short.parse::<ExecutionContractBundleFingerprint>(),
+        Err(TransportDigestParseError::InvalidLength { actual: 62 })
+    ));
 }
 
 #[test]
@@ -87,4 +101,12 @@ fn serde_rejects_uppercase_invalid_length_and_non_string_values() {
     ] {
         assert!(serde_json::from_value::<ArtifactSetDigest>(invalid).is_err());
     }
+
+    let uppercase_plan = serde_json::json!("AB".repeat(32));
+    assert!(serde_json::from_value::<ExecutablePlanRevisionId>(uppercase_plan).is_err());
+
+    let short_fingerprint = serde_json::json!("ab".repeat(31));
+    assert!(
+        serde_json::from_value::<ExecutionContractBundleFingerprint>(short_fingerprint).is_err()
+    );
 }

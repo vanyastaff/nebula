@@ -206,7 +206,8 @@ impl PluginContractDescriptor {
 /// schemas and runtime behavior are not fingerprinted. Consequently a
 /// [`PluginSetId`] identifies this registered logical surface; it is not a
 /// capability-compatibility proof, an artifact authenticity proof, or
-/// authorization to execute it.
+/// authorization to execute it. The ID alone does not prove that a complete
+/// matching [`crate::FrozenPluginRegistry`] was loaded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginSet {
     id: PluginSetId,

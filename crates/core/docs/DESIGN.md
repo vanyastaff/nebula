@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | Stable — workspace vocabulary leaf (depends on nothing in-workspace except `nebula-error`) |
+| **Status** | Frontier public vocabulary; stable workspace-leaf layering (depends on nothing in-workspace except `nebula-error`) |
 | **Layer** | Foundation / vocabulary (bottom of the stack; 15 reverse-deps) |
 | **Redesign role** | **Partially touched** — `auth.rs` (`AuthScheme`/`AuthPattern`/Sensitive-Public) and `dependencies.rs` (`SlotField`/slot decls) and the `guard.rs` + `accessor.rs` seam are load-bearing for the credential/resource rewrite; the rest (IDs, keys, scope, tenancy, obs, slug) is untouched stable foundation. |
 | **Related** | ADR-0088/0092 (credential rewrite — consume `auth.rs`/`accessor.rs`), ADR-0093 (topology/hot-swap — `RefreshCoordinator`), PRODUCT_CANON §15.5 (Sensitive/Public), spec 23 (`dependencies.rs`) |
@@ -21,7 +21,8 @@
 
 | Группа | Ключевые типы | Где |
 |--------|---------------|-----|
-| IDs (`define_ulid`) | `OrgId`, `WorkspaceId`, `WorkflowId`, `WorkflowVersionId`, `ExecutionId`, `AttemptId`, `InstanceId`, `TriggerId`, `TriggerEventId`, `UserId`, `ServiceAccountId`, `ResourceId`, `CredentialId`, `SessionId` | `src/id/types.rs:8-22` |
+| IDs (`define_ulid`) | `OrgId`, `WorkspaceId`, `WorkflowId`, `WorkflowVersionId`, `ExecutionId`, `ExecutionContractBundleId`, `AttemptId`, `InstanceId`, `TriggerId`, `TriggerEventId`, `UserId`, `ServiceAccountId`, `ResourceId`, `CredentialId`, `SessionId` | `src/id/types.rs` |
+| Transport digest vocabulary | `ExecutablePlanRevisionId`, `ExecutionContractBundleFingerprint`, `PluginSetId`, `WorkerFlavorRevisionId`, `ArtifactSetDigest` — strict lowercase 64-hex representation only | `src/transport_digest.rs` |
 | ID migration alias | `OrganizationId = OrgId` (`#[deprecated]`) | `src/id/types.rs:24-25` |
 | Keys (`define_domain`) | `ParameterKey`, `CredentialKey`, `ActionKey`, `ResourceKey`, `PluginKey`, `NodeKey` + макросы `resource_key!`/`action_key!`/… | `src/keys.rs:28-44,55+` |
 | Scope | `ScopeLevel` (Global/Organization/Workspace/Workflow/Execution), `Scope`, `Principal`, `ScopeResolver` | `src/scope.rs:24,191,229,166` |
@@ -48,6 +49,8 @@
 Плоский набор leaf-модулей без внутреннего runtime-потока — крейт пассивен, это словарь:
 
 - `id/` — prefixed-ULID типы через `domain_key::define_ulid` + re-export `UlidParseError`.
+- `transport_digest.rs` — разделённые по типам 32-byte transport identity с canonical lowercase
+  64-hex wire form; hashing/admission/capability policy остаётся в owning crates.
 - `keys.rs` (private mod, `pub use *`) — domain-keys + compile-time макросы.
 - `scope.rs` — `ScopeLevel`/`Scope`/`Principal`/`ScopeResolver`.
 - `context/` — `Context` трейт + `BaseContext(Builder)`; `capability.rs` — `Has*` трейты.
@@ -63,6 +66,9 @@
 ## 5. Инварианты и контракты
 
 - **Типизированные ID by-construction.** Каждый ID — отдельный prefixed-ULID-тип через `domain-key`; перепутать `ExecutionId` с `WorkflowId` невозможно на уровне типов (`src/id/types.rs:8-22`).
+- **Transport IDs — только vocabulary.** Digest-типы не доказывают существование, совместимость,
+  авторизацию или capability; `PluginSetId` сам по себе не доказывает schema/runtime behavior или
+  полный frozen registry.
 - **Sensitive/Public дихотомия (§15.5).** `SensitiveScheme` требует `ZeroizeOnDrop`; redacted `Debug` (`debug_redacted`) гарантирует, что секреты не утекают в логи by-construction для типов, идущих через guard-хелперы (`src/auth.rs:118`, `src/guard.rs`).
 - **Capability-инъекция через трейты.** `Context` несёт возможности (`HasCredentials`/`HasResources`/…) как трейт-границы, а не конкретные типы — нижний слой не знает о реализациях выше (`src/context/capability.rs`).
 - **W3C trace-context корректность.** `parse_traceparent` валидирует traceparent по спецификации, отбраковывая некорректные → `W3cTraceContextError` (`src/obs.rs:172`).

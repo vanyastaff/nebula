@@ -23,8 +23,8 @@ Actions, Resources, and Credentials need a versioned distribution unit — one t
 - `PluginManifest` — re-exported from `nebula-metadata` (canonical home after ADR-0018 follow-up in slice B of the plugin load-path stabilization). Bundle descriptor with builder API: key, human name, semver version, group, `Icon`, maturity, deprecation, author/license/homepage/repository metadata. Does **not** compose `BaseMetadata<K>` — a plugin is a container, not a schematized leaf. New code should prefer importing from `nebula_metadata`.
 - `ResolvedPlugin` — per-plugin wrapper with eager component caches. Constructed via `ResolvedPlugin::from(impl Plugin)`, which calls `actions()` / `credentials()` / `resources()` exactly once, validates the namespace invariant (every component key starts with `{plugin.key()}.`), and catches within-plugin duplicate keys; O(1) `action()` / `credential()` / `resource()` lookups thereafter. See ADR-0027.
 - `PluginRegistry` — in-memory `PluginKey → Arc<ResolvedPlugin>` registry. Accessors: `all_actions()` / `all_credentials()` / `all_resources()` flat iterators across every registered plugin; `resolve_action()` / `resolve_credential()` / `resolve_resource()` lookups by full key.
-- `PluginRegistry::freeze` — experimental activation boundary available only with
-  `unstable-worker-flavor`; it is not part of the supported default API.
+- `PluginRegistry::freeze` — default-public activation boundary that consumes mutable assembly,
+  re-validates dependencies, and returns an immutable `FrozenPluginRegistry`.
 - `PluginSet` / `PluginContractDescriptor` — normalized registered-surface descriptor. Identity includes sorted plugin keys, component keys, dependency keys and normalized semver requirements; prerelease is logical identity while build metadata is excluded.
 - `WorkerFlavorRevision` — combines the logical plugin-set identity with trusted artifact-set provenance and the logical runtime contract version.
 - `WorkerFlavorContext::from_registry` — derives a canonically ordered execution-facing view from a successfully frozen registry.
@@ -40,10 +40,10 @@ Actions, Resources, and Credentials need a versioned distribution unit — one t
 - **[L2-§13.1]** Plugin load → registry: a plugin loads; Actions / Resources / Credentials from `impl Plugin` appear in the catalog without a second manifest that duplicates `fn actions()` / `fn resources()` / `fn credentials()`. Seam: `PluginRegistry::register(Arc<ResolvedPlugin>)` — construction of `ResolvedPlugin` enforces the `{plugin.key()}.` namespace invariant and rejects within-plugin duplicate keys before the entry reaches the registry. Test: unit tests in `crates/plugin/`.
 - **Cross-plugin dependency rule** — types from another plugin come in only via `Cargo.toml [dependencies]` on the provider plugin crate. In the in-process model the Rust compiler enforces this at link time: a type not in the declared dependency closure does not resolve.
 
-## Immutable activation experiment
+## Immutable activation boundary
 
-The explicitly unstable `unstable-worker-flavor` feature contains an ADR-0115 experiment for immutable worker-flavor
-identity. `PluginRegistry::freeze` consumes the mutable assembly registry,
+The default-public immutable worker-flavor vocabulary defines a closed activation epoch.
+`PluginRegistry::freeze` consumes the mutable assembly registry,
 re-validates its dependency graph, and derives:
 
 1. a canonical `PluginSetId` from logical plugin versions, registered component
@@ -60,17 +60,16 @@ dependency crate's display formatting. Semver prerelease data remains part of
 logical identity; build metadata is artifact provenance and is excluded from
 logical versions.
 
-This is deliberately excluded from the default supported surface. It does **not** claim that engine
-dispatch, API transport, queue persistence, or exact-flavor routing have
-already migrated to `FrozenPluginRegistry`; those consumers move in later
-ADR-0115 slices. Until then, the mutable registry remains available to existing
-composition code.
+This boundary remains operationally `partial`: it has zero production consumer until compiler,
+admission, persisted routing, and exact-flavor dispatch consume the closed epoch end to end.
+Until then, the mutable registry remains available to existing composition code.
 
 The composition root must supply `ArtifactSetDigest` and
 `RuntimeContractVersion` from trusted activation state. Hash derivation does
-not authenticate caller-provided bytes. Likewise, `PluginSetId` is registered
-surface identity and audit metadata—not proof of schema compatibility,
-capability possession, artifact authenticity, or execution authorization.
+not authenticate caller-provided bytes. Likewise, `PluginSetId` is an independent
+registered-surface pin and audit identity. The ID alone is not proof of schemas, runtime
+behavior, a complete frozen registry, capability possession, artifact authenticity,
+compatibility, or execution authorization.
 
 ## Non-goals
 
@@ -83,8 +82,9 @@ capability possession, artifact authenticity, or execution authorization.
 See `docs/MATURITY.md` row for `nebula-plugin`.
 
 - API stability: `partial`. `Plugin`, `ResolvedPlugin`, and the mutable registry are implemented.
-  Frozen worker-flavor types require `unstable-worker-flavor` and are unsupported until
-  engine/API/persistence adoption is complete. `PluginManifest` is canonical in
+  Frozen worker-flavor primitives are default-public and define a closed epoch, but remain
+  operationally partial with zero production consumer until compiler, admission, persisted
+  routing, and exact-flavor dispatch adopt them end to end. `PluginManifest` is canonical in
   `nebula-metadata` and re-exported here. Cross-plugin type resolution remains the Rust compiler's
   job (in-process link-time closure, ADR-0091).
 - `#![forbid(unsafe_code)]`, `#![warn(missing_docs)]` enforced.

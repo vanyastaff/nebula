@@ -41,9 +41,16 @@ Patterns:
   the `transition` module.
 - `ExecutionState`, `NodeExecutionState` — persistent state tracking per execution and per
   node; serialized into the `executions` table row.
-- `ExecutionRevisions` — experimental revision-pin aggregate behind `unstable-revisions`. It uses
-  the canonical `WorkflowVersionId` directly and is not part of the stable contract until durable
-  state, admission, and runtime consume both pins end to end.
+- `ExecutionRevisions` — default-public aggregate that pins the canonical `WorkflowVersionId` and
+  exact `WorkerFlavorRevisionId` together.
+- `ExecutionProfile` — non-exhaustive execution model selector. Graph-v1 records `"graph"`.
+- `ExecutionContractBundle` — immutable Graph-v1 semantic contract with private fields, exact
+  plan/plugin/workflow/flavor/credential pins, internally stamped protocol versions, and a
+  structural SHA-256 fingerprint. `ExecutionContractBundleId` is a random record identity and is
+  intentionally excluded from that fingerprint.
+- `RecordedExecutionContractBundleV1` and `ExecutionContractBundleIntegrityError` — untrusted
+  durable/wire input plus typed validation failures for unsupported versions/profile,
+  noncanonical credentials, unknown fields, and forged fingerprints.
 - `ExecutionPlan` — pre-computed parallel execution schedule derived from `DependencyGraph`.
   Feeds the engine scheduler.
 - `ReplayPlan` — resume plan for restarting from a checkpoint.
@@ -104,6 +111,18 @@ Patterns:
   are legal. The `transition` module enforces legality. Persistence and CAS are in
   `nebula-storage`. No handler invents a parallel lifecycle.
 
+- **Immutable execution contract.** Bundle reconstruction validates canonical wire structure and
+  the claimed semantic fingerprint only. It does not prove existence, retention, tenant
+  authority, compatibility, or admission, and it must never fall back to a latest revision.
+  `PluginSetId` is an independent plugin-set pin; the ID alone does not prove schemas, runtime
+  behavior, artifact authenticity, authorization, or a complete frozen registry.
+
+- **Credential closure.** The exact loaded executable plan must carry
+  slot-to-selected-`CredentialId` mappings and the corresponding credential contract revisions.
+  Admission must compare the plan's unique selected credential IDs exactly with the bundle's
+  sorted, deduplicated set. If the plan contains only abstract credential requirements, the v1
+  bundle shape is insufficient to establish this closure.
+
 ## Non-goals
 
 - Not the engine orchestrator — see `nebula-engine` (drives these types).
@@ -120,13 +139,18 @@ Patterns:
 
 See `docs/MATURITY.md` row for `nebula-execution`.
 
-- API stability: `stable` — state machine, journal, idempotency key, and plan types are
-  in active use by `nebula-engine` and `nebula-storage`; no known planned breaking changes.
-- Revision-pin vocabulary is opt-in and explicitly unstable; the default stable feature set does
-  not expose a partial contract.
+- Existing state-machine, journal, idempotency-key, and plan types are stable for workspace
+  consumers and are in active use by `nebula-engine` and `nebula-storage`. This pre-1.0 internal
+  crate does not itself provide the supported Rust product surface: direct implementation-crate
+  use is unsupported, and the curated `nebula-sdk` façade is the supported future surface. The
+  removal of the former opt-in feature names is therefore an intentional breaking cleanup for
+  direct users.
+- Revision, frozen-flavor, and bundle primitives are default-public but remain `partial`: they
+  define a closed immutable epoch with zero production consumer until compiler, admission,
+  persisted routing, and exact-flavor dispatch consume the contract end to end.
 - Layer 1 lease enforcement (`lease_holder`/`lease_expires_at`) shipped via M2.2 — heartbeat-driven via `acquire_and_heartbeat_lease` (see `DEFAULT_EXECUTION_LEASE_TTL` / `DEFAULT_EXECUTION_LEASE_HEARTBEAT_INTERVAL`), verified by `crates/engine/tests/lease_takeover.rs`, `crates/storage/tests/execution_lease_pg_integration.rs`, and the loom probe at `crates/storage-loom-probe/src/lease_handoff.rs`. Layer 2 (`claimed_by`/`claimed_until` from `migrations/postgres/0011_executions.sql`) remains Sprint E (1.1) scaffolding — see the durability matrix below.
-- Integration tests: 0 in `tests/`; state machine and plan coverage via unit tests +
-  engine-level integration tests.
+- Integration tests include the Graph-v1 bundle wire/fingerprint contract; state machine and plan
+  coverage also comes from unit tests and engine-level integration tests.
 - 5 `panic!` sites in `transition` and `status` modules serve as state-machine invariant
   guards; these are technical debt (candidates for `#[must_use]` or typed errors).
 

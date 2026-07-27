@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | Active — README `status: partial` устарел (forward-notice 2026-04-20 пора снять; slice B влит) |
+| **Status** | Partial — mutable registry active; default-public frozen identity is a closed epoch with zero production consumer |
 | **Layer** | Composition / registration unit (in-process; над `nebula-action`/`nebula-credential`/`nebula-resource`) |
 | **Redesign role** | **Затронут косвенно** — чистый потребитель/индексатор credential- и resource-фасадов; собственной credential/resource-логики не содержит, но dyn-поверхность обоих каскадирует сюда. |
 | **Related** | ADR-0091 (out-of-process retired, in-process Plugin Distribution Unit), ADR-0027 (`ResolvedPlugin`, namespace-инвариант, registry-аксессоры), ADR-0092 (credential consolidation), PRODUCT_CANON §3.5 / §7.1 / §13.1 |
@@ -20,7 +20,8 @@ per-integration регистрации. Плагин — это единица *
 **Владеет:** трейтом `Plugin` (object-safe контейнер runnable trait-объектов);
 `ResolvedPlugin` (eager-кэш компонентов с инвариантом неймспейса `{plugin.key()}.`);
 in-memory `PluginRegistry` (`PluginKey -> Arc<ResolvedPlugin>`); таксономией
-`PluginError` / `ComponentKind`; derive-макросом `#[derive(Plugin)]`
+`PluginError` / `ComponentKind`; immutable `FrozenPluginRegistry`, `PluginSet` и
+`WorkerFlavorRevision`; derive-макросом `#[derive(Plugin)]`
 (подкрейт `nebula-plugin-macros`); парсером `plugin.toml`.
 
 **Явно НЕ делает:** не исполняет компоненты и не содержит credential/resource-логики
@@ -45,6 +46,9 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
 | `ResolvedPlugin::actions()/credentials()/resources()` — итераторы | `src/resolved_plugin.rs:109..121` |
 | `PluginRegistry` + `register` (fail при дубле key) | `src/registry.rs:35 / 46` |
 | `PluginRegistry::get/contains/remove/clear/iter/len` | `src/registry.rs:56..83` |
+| `PluginRegistry::freeze` / `FrozenPluginRegistry` | `src/registry.rs` |
+| `PluginSet` / `PluginContractDescriptor` / `WorkerFlavorRevision` | `src/flavor.rs` |
+| `WorkerFlavorContext` | `src/flavor_context.rs` |
 | `all_actions/all_credentials/all_resources` (плоские, для bulk-регистрации движком на старте) | `src/registry.rs:95..119` |
 | `resolve_action/credential/resource` по полному ключу (O(plugins); интроспекция/каталог) | `src/registry.rs:126..153` |
 | `PluginError` (`derive(Classify)`, коды `PLUGIN:*`) + `ComponentKind` | `src/error.rs:28 / 7` |
@@ -63,7 +67,7 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
 - **Deps (workspace):** `nebula-plugin-macros` (path=macros), `nebula-core`,
   `nebula-error` (derive), `nebula-metadata`, `nebula-action`, `nebula-credential`,
   `nebula-resource`. **Внешние:** `semver`, `serde`, `thiserror`, `toml="1"`.
-  **Dev:** `nebula-schema`, `nebula-workflow`, `insta`, `rstest`, `tempfile`.
+  `sha2`. **Dev:** `nebula-schema`, `nebula-workflow`, `insta`, `rstest`, `tempfile`.
 - **Зависимые:** `nebula-engine` (engine/Cargo.toml:30), `nebula-api` (api/Cargo.toml:30),
   `nebula-sdk` (sdk/Cargo.toml:22). Движок — главный потребитель `all_*`
   (bulk-регистрация на старте); api — `resolve_*` (интроспекция/каталог).
@@ -77,6 +81,8 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
   eager-карт для O(1) lookup).
 - `src/registry.rs` — `PluginRegistry` (карта `PluginKey -> Arc<ResolvedPlugin>`);
   плоские `all_*` фолдят по всем плагинам, `resolve_*` ищут по полному ключу.
+- `src/flavor.rs` / `src/flavor_context.rs` — canonical plugin-set/flavor identity и
+  execution-facing view; `PluginRegistry::freeze` закрывает mutable assembly epoch.
 - `src/error.rs` — `PluginError` / `ComponentKind` + ручной `PartialEq`.
 - `src/manifest.rs` — чистый re-export shim из `nebula-metadata`.
 - `src/plugin_toml.rs` — единственный `pub mod` (НЕ re-export в корень); парсер `plugin.toml`.
@@ -105,6 +111,9 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
   обеспечивает компилятор на этапе линковки.
 - **Thread-safety — НЕ инвариант крейта.** `PluginRegistry` без внутреннего лока;
   синхронизация — на вызывающем.
+- **Frozen identity — Partial.** API default-public, но zero production consumer до end-to-end
+  adoption compiler/admission/persisted routing/exact-flavor dispatch. `PluginSetId` — independent
+  pin, не proof schema/runtime behavior, authorization или полного frozen registry.
 
 ## 6. Известные напряжения / долг
 
@@ -114,9 +123,9 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
    этом заявляет «Not responsible for `plugin.toml` parsing… belongs to pre-compile
    tooling (`cargo-nebula`)» — прямое противоречие с наличием `pub mod plugin_toml`
    в этом же крейте. Нужно решение: либо парсер уезжает в tooling, либо doc/README выправляются.
-2. **README устарел (forward-notice 2026-04-20).** README:13-15 утверждает, что код
-   «still exports `PluginType`/`PluginVersions` and defines `PluginManifest` locally»;
-   slice B влит, `manifest.rs` давно re-export. Notice пора снять, `status: partial` → пересмотреть.
+2. **Frozen epoch ещё не operational.** Identity/immutability vocabulary default-public, но
+   compiler, admission, persisted routing и exact-flavor dispatch пока не потребляют его end to
+   end; поэтому общий статус остаётся `partial`.
 3. **README vs сигнатуры.** README:32 пишет `actions() -> Vec<Arc<dyn Action>>` и
    `resources() -> Vec<Arc<dyn AnyResource>>`; в коде — `ActionFactory`
    (`src/plugin.rs:40`) и `ResourceDescriptor` (`src/plugin.rs:56`). Документация
@@ -166,10 +175,8 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
 
 ## 8. Forward design / открытые вопросы
 
-1. **Снять forward-notice и поднять статус.** README forward-notice (2026-04-20) и
-   `status: partial` отражают пред-slice-B состояние; код уже на целевой поверхности.
-   Выправить README:13-15 / :32 под фактические `ActionFactory`/`ResourceDescriptor` и
-   re-export `PluginManifest`, затем `partial → stable`.
+1. **Довести frozen epoch до production consumption.** Статус может уйти из `partial` только
+   после end-to-end adoption compiler, admission, persisted routing и exact-flavor dispatch.
 2. **Судьба `plugin_toml`.** Решить противоречие §6.1: либо парсер `plugin.toml`
    переезжает в pre-compile tooling (`cargo-nebula`) согласно README/canon §7.1, либо
    doc-комментарий с IPC/wire-наследием переписывается под in-process реальность.

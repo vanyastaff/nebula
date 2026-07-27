@@ -1,5 +1,3 @@
-#![cfg(feature = "unstable-worker-flavor")]
-
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use nebula_action::{ActionContext, ActionError, ActionFactory, ActionHandle, ActionMetadata};

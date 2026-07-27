@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | Stable — Core-слой, типовой фундамент execution-времени |
+| **Status** | Stable existing state-machine surface; Partial default-public revision/bundle vocabulary |
 | **Layer** | Core (зависит только вниз: `nebula-core` / `nebula-error` / `nebula-workflow`) |
 | **Redesign role** | **Не затронут** post-0092 credential/resource редизайном — нет зависимостей на `nebula-credential` / `nebula-resource`; стабильный фундамент под движком |
 | **Related** | PRODUCT_CANON §11.2 (retry-модель), ROADMAP §M0.3, regression #273 (out-of-band failure при rotation) |
@@ -18,7 +18,8 @@
 включая retry-рёбра); `JournalEntry` (WAL за таблицей `execution_journal`); детерминированным
 `IdempotencyKey` формата `{execution_id}:{node_id}:{attempt}`; `ExecutionPlan` (параллельное расписание);
 персистентным `ExecutionState` / `NodeExecutionState` + retry-механикой; `ExecutionContext` / `ExecutionBudget`,
-`ReplayPlan`, `ExecutionResult`, `ExecutionOutput`, `ExecutionError`.
+`ReplayPlan`, `ExecutionResult`, `ExecutionOutput`, `ExecutionError`; default-public
+`ExecutionRevisions` и immutable Graph-v1 `ExecutionContractBundle` с recorded-wire validation.
 
 **Явно НЕ делает:** не выполняет узлы и не оркеструет (это `nebula-engine`); не персистит и не делает CAS —
 типы описывают *что* такое легальный переход, а enforcement идемпотентности и атомарная запись — в
@@ -42,17 +43,23 @@
 | `ExecutionPlan` / `ReplayPlan` | `src/plan.rs:12` / `src/replay.rs:35` |
 | `ExecutionResult` / `ExecutionOutput` (есть `BlobRef`) / `NodeOutput` | `src/result.rs:26` / `src/output.rs:35,90` |
 | `ExecutionError` — typed `thiserror` | `src/error.rs:11` |
+| `ExecutionRevisions` — workflow + worker-flavor revision pins | `src/revision.rs` |
+| `ExecutionProfile`, `ExecutionContractBundle` | `src/bundle.rs` |
+| `RecordedExecutionContractBundleV1`, `ExecutionContractBundleIntegrityError` | `src/bundle.rs` |
 | re-export `W3cTraceContext` из `nebula-core` | `src/lib.rs:55` |
 
 ## 3. Зависимости и зависимые
 
 - **Deps:** `nebula-core` (path), `nebula-error` (workspace, feature `derive`), `nebula-workflow` (path);
-  `serde`, `serde_json`, `thiserror`, `tracing`, `chrono`. Dev: `insta`, `rstest`, `pretty_assertions`.
+  `serde`, `serde_json`, `sha2`, `thiserror`, `tracing`, `chrono`. Dev: `insta`, `rstest`,
+  `pretty_assertions`.
 - **Dependents:** `nebula-engine` (`crates/engine/Cargo.toml:32`), `nebula-api` (`crates/api/Cargo.toml:24`).
 
 ## 4. Внутренняя архитектура
 
-13 модулей, ~4.1k строк (≈половина `state.rs` — тесты). `lib.rs` (60) — корни модулей + re-exports.
+К существующей модульной модели добавлены `revision.rs` (revision pins) и `bundle.rs`
+(Graph-v1 bundle, canonical fingerprint, recorded-wire validation). `lib.rs` — корни модулей +
+re-exports.
 `status.rs` (317) — статусы + причины/коды терминации. `transition.rs` (321) — `matches!`-таблицы легальности
 переходов на двух уровнях. `state.rs` (1520) — крупнейший: `ExecutionState` / `NodeExecutionState` +
 retry-механика. `journal.rs` (262) — WAL-события. `idempotency.rs` (148), `context.rs` (261),
@@ -70,6 +77,10 @@ retry-механика. `journal.rs` (262) — WAL-события. `idempotency.
 - **Retry-бюджет.** `has_exhausted_retry_budget` (`state.rs:311`) + `ExecutionBudget::max_total_retries`
   (`context.rs:63`) — движок сверяется с обоими на каждом отказе; `Some(0)` отключает engine-level retry.
 - **`#[non_exhaustive]` на причинах терминации** + `forbid(unsafe_code)` — расширяемость и отсутствие unsafe.
+- **Bundle structural integrity, не authority.** Recorded-v1 принимает только supported
+  versions/profile, canonical unique credential IDs и совпадающий fingerprint. Admission отдельно
+  проверяет tenant authority, exact revisions и credential closure; `PluginSetId` остаётся
+  независимым pin, а не proof полного registry/schema/runtime behavior.
 
 ## 6. Известные напряжения / долг (честно)
 

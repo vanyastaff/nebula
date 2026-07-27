@@ -10,6 +10,10 @@ define_ulid!(pub WorkspaceIdDomain => WorkspaceId, prefix = "ws");
 define_ulid!(pub WorkflowIdDomain => WorkflowId, prefix = "wf");
 define_ulid!(pub WorkflowVersionIdDomain => WorkflowVersionId, prefix = "wfv");
 define_ulid!(pub ExecutionIdDomain => ExecutionId, prefix = "exe");
+define_ulid!(
+    pub ExecutionContractBundleIdDomain => ExecutionContractBundleId,
+    prefix = "ecb"
+);
 
 define_ulid!(pub AttemptIdDomain => AttemptId, prefix = "att");
 define_ulid!(pub InstanceIdDomain => InstanceId, prefix = "nbl");
@@ -37,6 +41,27 @@ mod tests {
         let id = ExecutionId::new();
         let s = id.to_string();
         assert!(s.starts_with("exe_"), "expected 'exe_' prefix, got: {s}");
+    }
+
+    #[test]
+    fn execution_contract_bundle_id_uses_strict_prefixed_ulid_wire_shape() {
+        let id = ExecutionContractBundleId::new();
+        let encoded = id.to_string();
+        assert!(
+            encoded.starts_with("ecb_"),
+            "expected 'ecb_' prefix, got: {encoded}"
+        );
+        assert_eq!(encoded.parse::<ExecutionContractBundleId>(), Ok(id));
+
+        let json = serde_json::to_string(&id).expect("bundle ID must serialize");
+        let decoded =
+            serde_json::from_str::<ExecutionContractBundleId>(&json).expect("bundle ID must parse");
+        assert_eq!(decoded, id);
+        assert!(
+            "exe_01J9ABCDEFGHJKMNPQRSTVWXYZ"
+                .parse::<ExecutionContractBundleId>()
+                .is_err()
+        );
     }
 
     #[test]
@@ -111,6 +136,7 @@ mod tests {
         let _ = WorkflowId::new();
         let _ = WorkflowVersionId::new();
         let _ = ExecutionId::new();
+        let _ = ExecutionContractBundleId::new();
         let _ = AttemptId::new();
         let _ = InstanceId::new();
         let _ = TriggerId::new();
