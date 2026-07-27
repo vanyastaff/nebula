@@ -1,8 +1,18 @@
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::{
+    any::TypeId,
+    future::Future,
+    pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use nebula_action::{ActionContext, ActionError, ActionFactory, ActionHandle, ActionMetadata};
-use nebula_core::{ActionKey, ArtifactSetDigest, CredentialKey, PluginKey, ResourceKey};
-use nebula_credential::{AnyCredential, AuthPattern, CredentialMetadata};
+use nebula_core::{
+    ActionKey, ArtifactSetDigest, CredentialKey, Dependencies, PluginKey, ResourceKey,
+};
+use nebula_credential::{AnyCredential, AuthPattern, Capabilities, CredentialMetadata};
 use nebula_error::Classify;
 use nebula_metadata::{PluginDependency, PluginManifest};
 use nebula_plugin::{
@@ -17,8 +27,24 @@ use nebula_schema::ValidSchema;
 use nebula_workflow::NodeDefinition;
 use semver::{Version, VersionReq};
 
+#[derive(Default)]
+struct ProjectionReads {
+    action_metadata: AtomicUsize,
+    action_dependencies: AtomicUsize,
+    credential_key: AtomicUsize,
+    credential_metadata: AtomicUsize,
+    credential_capabilities: AtomicUsize,
+    credential_type_id: AtomicUsize,
+    resource_key: AtomicUsize,
+    resource_metadata: AtomicUsize,
+    resource_dependencies: AtomicUsize,
+    resource_type_id: AtomicUsize,
+}
+
 struct TestAction {
     metadata: ActionMetadata,
+    dependencies: Dependencies,
+    projection_reads: Option<Arc<ProjectionReads>>,
 }
 
 impl TestAction {
@@ -29,7 +55,15 @@ impl TestAction {
                 key,
                 "test action",
             ),
+            dependencies: Dependencies::new(),
+            projection_reads: None,
         }
+    }
+
+    fn with_projection_reads(key: &str, projection_reads: Arc<ProjectionReads>) -> Self {
+        let mut action = Self::new(key);
+        action.projection_reads = Some(projection_reads);
+        action
     }
 }
 
@@ -44,7 +78,21 @@ impl std::fmt::Debug for TestAction {
 
 impl ActionFactory for TestAction {
     fn metadata(&self) -> &ActionMetadata {
+        if let Some(projection_reads) = &self.projection_reads {
+            projection_reads
+                .action_metadata
+                .fetch_add(1, Ordering::Relaxed);
+        }
         &self.metadata
+    }
+
+    fn dependencies(&self) -> &Dependencies {
+        if let Some(projection_reads) = &self.projection_reads {
+            projection_reads
+                .action_dependencies
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        &self.dependencies
     }
 
     fn instantiate<'a>(
@@ -62,13 +110,21 @@ impl ActionFactory for TestAction {
 
 struct TestCredential {
     key: CredentialKey,
+    projection_reads: Option<Arc<ProjectionReads>>,
 }
 
 impl TestCredential {
     fn new(key: &str) -> Self {
         Self {
             key: CredentialKey::new(key).expect("test credential key must be valid"),
+            projection_reads: None,
         }
+    }
+
+    fn with_projection_reads(key: &str, projection_reads: Arc<ProjectionReads>) -> Self {
+        let mut credential = Self::new(key);
+        credential.projection_reads = Some(projection_reads);
+        credential
     }
 }
 
@@ -83,10 +139,20 @@ impl std::fmt::Debug for TestCredential {
 
 impl AnyCredential for TestCredential {
     fn credential_key(&self) -> &str {
+        if let Some(projection_reads) = &self.projection_reads {
+            projection_reads
+                .credential_key
+                .fetch_add(1, Ordering::Relaxed);
+        }
         self.key.as_str()
     }
 
     fn metadata(&self) -> CredentialMetadata {
+        if let Some(projection_reads) = &self.projection_reads {
+            projection_reads
+                .credential_metadata
+                .fetch_add(1, Ordering::Relaxed);
+        }
         CredentialMetadata::new(
             self.key.clone(),
             "Test credential",
@@ -96,20 +162,44 @@ impl AnyCredential for TestCredential {
         )
     }
 
+    fn capabilities(&self) -> Capabilities {
+        if let Some(projection_reads) = &self.projection_reads {
+            projection_reads
+                .credential_capabilities
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        Capabilities::empty()
+    }
+
     fn as_any(&self) -> &dyn std::any::Any {
+        if let Some(projection_reads) = &self.projection_reads {
+            projection_reads
+                .credential_type_id
+                .fetch_add(1, Ordering::Relaxed);
+        }
         self
     }
 }
 
 struct TestResource {
     key: ResourceKey,
+    dependencies: Dependencies,
+    projection_reads: Option<Arc<ProjectionReads>>,
 }
 
 impl TestResource {
     fn new(key: &str) -> Self {
         Self {
             key: ResourceKey::new(key).expect("test resource key must be valid"),
+            dependencies: Dependencies::new(),
+            projection_reads: None,
         }
+    }
+
+    fn with_projection_reads(key: &str, projection_reads: Arc<ProjectionReads>) -> Self {
+        let mut resource = Self::new(key);
+        resource.projection_reads = Some(projection_reads);
+        resource
     }
 }
 
@@ -124,10 +214,38 @@ impl std::fmt::Debug for TestResource {
 
 impl ResourceFactory for TestResource {
     fn key(&self) -> ResourceKey {
+        if let Some(projection_reads) = &self.projection_reads {
+            projection_reads
+                .resource_key
+                .fetch_add(1, Ordering::Relaxed);
+        }
         self.key.clone()
     }
 
+    fn dependencies(&self) -> &Dependencies {
+        if let Some(projection_reads) = &self.projection_reads {
+            projection_reads
+                .resource_dependencies
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        &self.dependencies
+    }
+
+    fn resource_type_id(&self) -> TypeId {
+        if let Some(projection_reads) = &self.projection_reads {
+            projection_reads
+                .resource_type_id
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        TypeId::of::<Self>()
+    }
+
     fn metadata(&self) -> ResourceMetadata {
+        if let Some(projection_reads) = &self.projection_reads {
+            projection_reads
+                .resource_metadata
+                .fetch_add(1, Ordering::Relaxed);
+        }
         ResourceMetadata::from_key(&self.key)
     }
 
@@ -256,6 +374,80 @@ fn freeze(
                 .expect("test runtime version must be valid"),
         )
         .expect("test registry must freeze")
+}
+
+fn assert_each_projection_read_once(projection_reads: &ProjectionReads) {
+    assert_eq!(projection_reads.action_metadata.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        projection_reads.action_dependencies.load(Ordering::Relaxed),
+        1
+    );
+    assert_eq!(projection_reads.credential_key.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        projection_reads.credential_metadata.load(Ordering::Relaxed),
+        1
+    );
+    assert_eq!(
+        projection_reads
+            .credential_capabilities
+            .load(Ordering::Relaxed),
+        1
+    );
+    assert_eq!(
+        projection_reads.credential_type_id.load(Ordering::Relaxed),
+        1
+    );
+    assert_eq!(projection_reads.resource_key.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        projection_reads.resource_metadata.load(Ordering::Relaxed),
+        1
+    );
+    assert_eq!(
+        projection_reads
+            .resource_dependencies
+            .load(Ordering::Relaxed),
+        1
+    );
+    assert_eq!(projection_reads.resource_type_id.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn resolved_plugin_snapshots_each_erased_contract_once() {
+    let projection_reads = Arc::new(ProjectionReads::default());
+    let plugin = TestPlugin {
+        manifest: PluginManifest::builder("alpha", "alpha")
+            .build()
+            .expect("test manifest must be valid"),
+        actions: vec![Arc::new(TestAction::with_projection_reads(
+            "alpha.run",
+            Arc::clone(&projection_reads),
+        ))],
+        credentials: vec![Arc::new(TestCredential::with_projection_reads(
+            "alpha.auth",
+            Arc::clone(&projection_reads),
+        ))],
+        resources: vec![Arc::new(TestResource::with_projection_reads(
+            "alpha.db",
+            Arc::clone(&projection_reads),
+        ))],
+    };
+    let resolved = Arc::new(ResolvedPlugin::from(plugin).expect("test plugin must resolve"));
+
+    assert_each_projection_read_once(&projection_reads);
+
+    assert_eq!(resolved.actions().count(), 1);
+    assert_eq!(resolved.credentials().count(), 1);
+    assert_eq!(resolved.resources().count(), 1);
+    let mut registry = PluginRegistry::new();
+    registry
+        .register(resolved)
+        .expect("test plugin registration must succeed");
+    let frozen = freeze(registry, 0x33, "1.0.0");
+    assert_eq!(frozen.all_actions().count(), 1);
+    assert_eq!(frozen.all_credentials().count(), 1);
+    assert_eq!(frozen.all_resources().count(), 1);
+
+    assert_each_projection_read_once(&projection_reads);
 }
 
 #[test]

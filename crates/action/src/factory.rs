@@ -24,6 +24,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use nebula_core::Dependencies;
 use nebula_workflow::NodeDefinition;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -89,6 +90,9 @@ pub trait ActionFactory: Send + Sync + 'static {
     /// Static metadata describing the action this factory produces.
     fn metadata(&self) -> &ActionMetadata;
 
+    /// Declared resource and credential dependencies for the produced action.
+    fn dependencies(&self) -> &Dependencies;
+
     /// Build an [`ActionHandle`] for the given workflow node + context.
     #[must_use = "the instantiated action handle must be dispatched, not discarded"]
     fn instantiate<'a>(
@@ -130,6 +134,10 @@ where
     <A as Action>::Input: DeserializeOwned + Send + Sync,
     <A as Action>::Output: Serialize + Send + Sync,
 {
+    fn dependencies(&self) -> &Dependencies {
+        <A as Action>::dependencies()
+    }
+
     fn metadata(&self) -> &ActionMetadata {
         self.meta.get_or_init(|| {
             <A as Action>::metadata()
@@ -255,6 +263,10 @@ where
     <A as Action>::Input: DeserializeOwned + Send + Sync,
     <A as Action>::Output: Serialize + Send + Sync,
 {
+    fn dependencies(&self) -> &Dependencies {
+        <A as Action>::dependencies()
+    }
+
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
     }
@@ -343,6 +355,10 @@ where
     <A as Action>::Output: Serialize + Send + Sync,
     A::State: Serialize + DeserializeOwned + Clone + Send + Sync,
 {
+    fn dependencies(&self) -> &Dependencies {
+        <A as Action>::dependencies()
+    }
+
     fn metadata(&self) -> &ActionMetadata {
         self.meta.get_or_init(|| {
             <A as Action>::metadata()
@@ -483,6 +499,10 @@ where
     A: TriggerAction + FromWorkflowNode<Error = ActionError> + Send + Sync + 'static,
     <A as TriggerAction>::Error: Into<ActionError>,
 {
+    fn dependencies(&self) -> &Dependencies {
+        <A as Action>::dependencies()
+    }
+
     fn metadata(&self) -> &ActionMetadata {
         self.meta.get_or_init(|| {
             <A as Action>::metadata()
@@ -591,6 +611,10 @@ impl<A> ActionFactory for GenericResourceFactory<A>
 where
     A: ResourceAction + FromWorkflowNode<Error = ActionError> + Send + Sync + 'static,
 {
+    fn dependencies(&self) -> &Dependencies {
+        <A as Action>::dependencies()
+    }
+
     fn metadata(&self) -> &ActionMetadata {
         self.meta.get_or_init(|| {
             <A as Action>::metadata()
@@ -689,6 +713,10 @@ impl<A> ActionFactory for GenericControlFactory<A>
 where
     A: ControlAction + FromWorkflowNode<Error = ActionError> + Send + Sync + 'static,
 {
+    fn dependencies(&self) -> &Dependencies {
+        <A as Action>::dependencies()
+    }
+
     fn metadata(&self) -> &ActionMetadata {
         self.meta.get_or_init(|| {
             <A as Action>::metadata()
@@ -782,6 +810,10 @@ where
     <A as Action>::Input: DeserializeOwned + Send + Sync,
     <A as Action>::Output: Serialize + Send + Sync,
 {
+    fn dependencies(&self) -> &Dependencies {
+        <A as Action>::dependencies()
+    }
+
     fn metadata(&self) -> &ActionMetadata {
         self.meta.get_or_init(|| {
             <A as Action>::metadata()
@@ -903,6 +935,10 @@ where
     <A as Action>::Output: Serialize + Send + Sync,
     A::Turn: Serialize + DeserializeOwned + Clone + Send + Sync,
 {
+    fn dependencies(&self) -> &Dependencies {
+        <A as Action>::dependencies()
+    }
+
     fn metadata(&self) -> &ActionMetadata {
         self.meta.get_or_init(|| {
             <A as Action>::metadata()
@@ -930,9 +966,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::sync::OnceLock;
+    use std::{any::TypeId, sync::OnceLock};
 
-    use nebula_core::{Dependencies, action_key, node_key};
+    use nebula_core::{Dependencies, ResourceRequirement, action_key, node_key, resource_key};
     use nebula_workflow::NodeDefinition;
     use serde_json::Value;
 
@@ -1040,6 +1076,7 @@ mod tests {
     // that `check_metadata_or_fatal` does NOT reject valid metadata — the
     // positive counterpart to the two fatal-path tests above.
 
+    struct FactoryDependency;
     struct ValidMetadataAction;
 
     impl Action for ValidMetadataAction {
@@ -1056,7 +1093,13 @@ mod tests {
 
         fn dependencies() -> &'static Dependencies {
             static DEPS: OnceLock<Dependencies> = OnceLock::new();
-            DEPS.get_or_init(Dependencies::new)
+            DEPS.get_or_init(|| {
+                Dependencies::new().resource(ResourceRequirement::new(
+                    resource_key!("factory_dependency"),
+                    TypeId::of::<FactoryDependency>(),
+                    std::any::type_name::<FactoryDependency>(),
+                ))
+            })
         }
     }
 
@@ -1079,6 +1122,32 @@ mod tests {
         ) -> Result<Self, Self::Error> {
             Ok(Self)
         }
+    }
+
+    #[test]
+    fn factory_exposes_exact_action_dependencies() {
+        let factory = GenericStatelessFactory::<ValidMetadataAction>::new();
+        let projected_dependencies = factory.dependencies();
+        let [resource_requirement] = projected_dependencies.resources() else {
+            panic!("factory must expose the action's one declared resource dependency");
+        };
+
+        assert_eq!(
+            resource_requirement.key,
+            resource_key!("factory_dependency")
+        );
+        assert_eq!(
+            resource_requirement.type_id,
+            TypeId::of::<FactoryDependency>()
+        );
+        assert_eq!(
+            resource_requirement.type_name,
+            std::any::type_name::<FactoryDependency>()
+        );
+        assert!(resource_requirement.required);
+        assert_eq!(resource_requirement.purpose, None);
+        assert!(projected_dependencies.credentials().is_empty());
+        assert!(projected_dependencies.slot_fields().is_empty());
     }
 
     /// A factory with valid metadata (non-empty name, description, default

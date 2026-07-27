@@ -119,16 +119,16 @@ impl PluginContractDescriptor {
         let mut version = plugin.version().clone();
         version.build = BuildMetadata::EMPTY;
         let mut action_keys = plugin
-            .actions()
-            .map(|(key, _)| key.clone())
+            .action_contracts()
+            .map(|contract| contract.metadata().base.key.clone())
             .collect::<Vec<_>>();
         let mut resource_keys = plugin
-            .resources()
-            .map(|(key, _)| key.clone())
+            .resource_contracts()
+            .map(|contract| contract.metadata().base.key.clone())
             .collect::<Vec<_>>();
         let mut credential_keys = plugin
-            .credentials()
-            .map(|(key, _)| key.clone())
+            .credential_contracts()
+            .map(|contract| contract.projected_key().clone())
             .collect::<Vec<_>>();
         action_keys.sort_unstable();
         resource_keys.sort_unstable();

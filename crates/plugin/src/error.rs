@@ -57,6 +57,49 @@ pub enum PluginError {
         kind: ComponentKind,
     },
 
+    /// A contribution's erased key projection disagrees with the key carried
+    /// by its metadata snapshot.
+    #[classify(category = "validation", code = "PLUGIN:COMPONENT_KEY_MISMATCH")]
+    #[error(
+        "plugin '{plugin}' declared {kind} key '{projected_key}' but its metadata key is '{metadata_key}'"
+    )]
+    ComponentKeyMismatch {
+        /// The plugin that declared the incoherent component.
+        plugin: PluginKey,
+        /// Which kind of component triggered the violation.
+        kind: ComponentKind,
+        /// Key returned by the erased credential or resource factory.
+        projected_key: String,
+        /// Key captured from the component metadata.
+        metadata_key: String,
+    },
+
+    /// A contribution returned a key projection that is not valid for its
+    /// component kind.
+    #[classify(category = "validation", code = "PLUGIN:INVALID_COMPONENT_KEY")]
+    #[error("plugin '{plugin}' declared invalid {kind} key '{projected_key}'")]
+    InvalidComponentKey {
+        /// The plugin that declared the invalid component key.
+        plugin: PluginKey,
+        /// Which kind of component triggered the violation.
+        kind: ComponentKind,
+        /// Invalid key returned by the erased contribution.
+        projected_key: String,
+    },
+
+    /// A contribution's erased concrete type differs from the type returned
+    /// by its downcast projection.
+    #[classify(category = "validation", code = "PLUGIN:COMPONENT_TYPE_MISMATCH")]
+    #[error("plugin '{plugin}' declared incoherent type projections for {kind} '{key}'")]
+    ComponentTypeMismatch {
+        /// The plugin that declared the incoherent component.
+        plugin: PluginKey,
+        /// Which kind of component triggered the violation.
+        kind: ComponentKind,
+        /// The component key whose local type projections disagreed.
+        key: String,
+    },
+
     /// Plugin declared two components of the same kind with identical full keys.
     #[classify(category = "conflict", code = "PLUGIN:DUPLICATE_COMPONENT")]
     #[error("plugin '{plugin}' declared duplicate {kind} key '{key}'")]
@@ -88,6 +131,44 @@ impl PartialEq for PluginError {
                     kind: ki2,
                 },
             ) => p1 == p2 && k1 == k2 && ki1 == ki2,
+            (
+                Self::ComponentKeyMismatch {
+                    plugin: p1,
+                    kind: ki1,
+                    projected_key: pk1,
+                    metadata_key: mk1,
+                },
+                Self::ComponentKeyMismatch {
+                    plugin: p2,
+                    kind: ki2,
+                    projected_key: pk2,
+                    metadata_key: mk2,
+                },
+            ) => p1 == p2 && ki1 == ki2 && pk1 == pk2 && mk1 == mk2,
+            (
+                Self::InvalidComponentKey {
+                    plugin: p1,
+                    kind: ki1,
+                    projected_key: k1,
+                },
+                Self::InvalidComponentKey {
+                    plugin: p2,
+                    kind: ki2,
+                    projected_key: k2,
+                },
+            ) => p1 == p2 && ki1 == ki2 && k1 == k2,
+            (
+                Self::ComponentTypeMismatch {
+                    plugin: p1,
+                    kind: ki1,
+                    key: k1,
+                },
+                Self::ComponentTypeMismatch {
+                    plugin: p2,
+                    kind: ki2,
+                    key: k2,
+                },
+            ) => p1 == p2 && ki1 == ki2 && k1 == k2,
             (
                 Self::DuplicateComponent {
                     plugin: p1,
