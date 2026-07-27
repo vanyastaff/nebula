@@ -1498,7 +1498,7 @@ dependencies = [
  "serde",
  "smartstring",
  "thiserror",
- "ulid",
+ "ulid 1.2.1",
  "uuid",
 ]
 
@@ -3148,7 +3148,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
- "ulid",
+ "ulid 3.0.0",
  "uuid",
  "zeroize",
 ]
@@ -6533,6 +6533,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "470dbf6591da1b39d43c14523b2b469c86879a53e8b758c8e090a470fe7b1fbe"
 dependencies = [
  "rand 0.9.5",
+ "web-time",
+]
+
+[[package]]
+name = "ulid"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "947dde63b6d514cc5e044edad4e0ca7261afd1099d16c83d942cb2b2f348689c"
+dependencies = [
+ "rand 0.10.2",
  "web-time",
 ]
 
