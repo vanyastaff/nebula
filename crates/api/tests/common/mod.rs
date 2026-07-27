@@ -827,18 +827,20 @@ pub(crate) async fn create_state_with_failing_queue() -> (AppState, InMemoryExec
     (state, exec_store)
 }
 
-// ── Engine seam harness (integration seam step 5 / control-queue terminate dispatch / cooperative cancel) ──────────
+// ── Engine seam harness for a control request racing a running handler ───────
 //
-// Shared real-engine-consumer wiring for the durable-control-plane seam
+// Shared manually composed engine-consumer wiring for the durable-control-plane seam
 // tests. The producer half (API enqueues `Cancel` / `Terminate`) is
-// asserted per-test; this harness owns the CONSUMER half: a long-running
-// cooperatively-cancellable node + the real `WorkflowEngine` +
-// `ControlConsumer` + `EngineControlDispatch` over the same in-memory
-// repos the API writes to.
+// asserted per-test. This harness starts a long-running, cooperatively
+// cancellable node through a real `WorkflowEngine` + `ControlConsumer` +
+// `EngineControlDispatch` over the same in-memory repos the API writes to.
+// It exposes a handler-start signal only. It deliberately has no handler-exit
+// oracle, so a terminal row written by the API cannot prove downstream
+// interruption.
 //
-// `knife.rs::knife_step5_engine_cancels_running_execution_end_to_end`
-// (the integration seam seam) and
-// `execution_terminate_e2e.rs::terminate_engine_drives_running_execution_to_terminal_end_to_end`
+// `knife.rs::knife_step5_api_persists_terminal_cancel_control_intent_while_handler_runs`
+// and
+// `execution_terminate_e2e.rs::terminate_persists_terminal_state_and_control_intent_while_handler_runs`
 // both source the wiring here so they differ ONLY in the final HTTP call
 // (DELETE-cancel vs POST-terminate) and the command/terminal assertion.
 // The wiring (action key `"slow"`, the `ActionExecutor` closure,
@@ -867,11 +869,11 @@ pub(crate) mod engine_seam {
     use tokio::task::JoinHandle;
     use tokio_util::sync::CancellationToken;
 
-    /// A cooperatively-cancellable `slow` action: it would otherwise sleep
-    /// 30s, but exits immediately when `ctx.cancellation()` is tripped.
-    /// Asserting an execution reaches a terminal state well inside the 30s
-    /// window proves a `Cancel` / `Terminate` signal reached the engine's
-    /// *live* frontier loop — not merely that the API CAS-flipped the row.
+    /// A `slow` action with a cooperative cancellation branch.
+    ///
+    /// The shared harness exposes only the `started` notification. Its API
+    /// tests do not observe which branch exits, so their terminal-row
+    /// assertions prove producer persistence rather than handler interruption.
     pub(crate) struct SlowAction {
         pub(crate) started: Arc<tokio::sync::Notify>,
     }
@@ -977,30 +979,33 @@ pub(crate) mod engine_seam {
         workflow_id
     }
 
-    /// Handle to the spawned engine-consumer harness. Drop-safe: call
-    /// [`EngineSeam::shutdown`] at the end of the test so the spawned
-    /// consumer task does not leak across tests.
+    /// Handle to the spawned engine-consumer harness.
+    ///
+    /// Call [`EngineSeam::abort_unobserved_consumer`] after the producer
+    /// assertions so the unobserved consumer task cannot leak across tests.
     pub(crate) struct EngineSeam {
         /// Notified the moment the `slow` node enters its `select {}` —
-        /// i.e. the consumer drained `Start` and the engine dispatched the
-        /// node so the frontier loop is live.
+        /// proof that the consumer drained `Start` and the handler began, but
+        /// not that a later control command interrupted it.
         pub(crate) slow_started: Arc<tokio::sync::Notify>,
         shutdown: CancellationToken,
         consumer_handle: JoinHandle<()>,
     }
 
     impl EngineSeam {
-        /// Graceful shutdown so the spawned consumer task doesn't leak.
-        pub(crate) async fn shutdown(self) {
+        /// Stop the test-only consumer without treating handler exit as evidence.
+        pub(crate) async fn abort_unobserved_consumer(self) {
             self.shutdown.cancel();
+            self.consumer_handle.abort();
             let _ = self.consumer_handle.await;
         }
     }
 
     /// Build the real `WorkflowEngine` + `ControlConsumer` +
-    /// `EngineControlDispatch` over the shared in-memory repos and spawn
-    /// the consumer so both `Start` and the later `Cancel` / `Terminate`
-    /// are drained continuously.
+    /// `EngineControlDispatch` over the shared in-memory repos and spawn the
+    /// consumer so the slow handler can be observed as started before the
+    /// control request. No completion signal is exposed for the later
+    /// `Cancel` / `Terminate` command.
     ///
     /// Byte-behaviorally identical to the original inline knife step-5
     /// wiring: same action key (`"slow"`), same `ActionExecutor` closure,

@@ -1,6 +1,6 @@
 ---
 name: nebula-execution
-role: Execution State Machine + Journal + Idempotency Types (WAL, Idempotent Receiver)
+role: Execution State Machine + Journal + Local Replay Identity
 status: stable
 last-reviewed: 2026-04-17
 canon-invariants: [L2-11.1, L2-11.2, L2-11.3, L2-11.5, L2-12.2]
@@ -12,8 +12,8 @@ related: [nebula-storage, nebula-engine, nebula-workflow, nebula-resilience, neb
 ## Purpose
 
 A durable workflow engine needs an authoritative model of what a run *is*: its state machine,
-its append-only event history, its pre-computed parallel schedule, and the key that makes
-individual action invocations idempotent. Without a shared model, the engine orchestrator and
+its append-only event history, its pre-computed parallel schedule, and the key used for local
+attempt replay/dedup. Without a shared model, the engine orchestrator and
 the storage layer each invent their own state representation, producing the "two truths"
 anti-pattern canon §14 forbids. `nebula-execution` is that shared model. It defines the
 8-state `ExecutionStatus` machine with validated transitions, the `JournalEntry` type that
@@ -23,13 +23,14 @@ repository interface — persistence is `nebula-storage::ExecutionRepo`'s job.
 
 ## Role
 
-**Execution State Machine + Journal + Idempotency Types.**
+**Execution State Machine + Journal + Local Replay Identity.**
 
 Patterns:
 - *Write-Ahead Log* (DDIA ch 3, 11) — `JournalEntry` backs the `execution_journal`
   append-only durable timeline.
-- *Idempotent Receiver* (EIP) — `IdempotencyKey` shape `{execution_id}:{node_id}:{attempt}`
-  is the deterministic per-attempt key checked through `ExecutionRepo` before side effects.
+- *Local replay/dedup identity* — `IdempotencyKey` shape
+  `{execution_id}:{node_id}:{attempt}` is deterministic for one attempt. It is not a remote
+  operation identity and does not make a provider effect atomic with Nebula persistence.
 - *Optimistic Concurrency Control* (DDIA ch 7) — `ExecutionStatus` transitions are guarded
   by CAS on `version` in `nebula-storage::ExecutionRepo::transition`.
 
@@ -55,8 +56,9 @@ Patterns:
 - `NodeAttempt` — individual attempt tracking (attempt number, started/finished timestamps,
   node status). Used as the shape of attempt-keyed output rows by
   `nebula-storage::ExecutionRepo::save_node_output`.
-- `IdempotencyKey` — deterministic key `{execution_id}:{node_id}:{attempt}`. The actual
-  dedup enforcement (check-and-mark) lives in `nebula-storage::ExecutionRepo`.
+- `IdempotencyKey` — deterministic local replay key
+  `{execution_id}:{node_id}:{attempt}`. The local check-and-mark enforcement lives in storage;
+  the key changes across retries and is distinct from the future stable remote `OperationId`.
 - `ExecutionError` — typed error for state machine violations and execution failures.
 
 ## Contract
@@ -78,9 +80,20 @@ Patterns:
   result-driven `ActionResult::Retry` is not a current public capability.
 
 - **[L2-§11.3]** `IdempotencyKey` shape is `{execution_id}:{node_id}:{attempt}`. Seam:
-  `crates/execution/src/idempotency.rs`. Enforcement (check before side effect, mark after)
-  lives in `nebula-storage::ExecutionRepo`. For non-idempotent actions (payments, writes
-  without upsert) the idempotency guard must be applied before calling the remote system.
+  `crates/execution/src/idempotency.rs`. Storage's `check_and_mark` is a local replay/dedup
+  oracle only; it is not atomic with a remote provider and cannot determine whether an effect
+  committed. Current remote invocation semantics are at-least-once with a possible duplicate.
+  The planned effect protocol binds each intended occurrence to a storage-minted
+  `EffectSlotId` and a separate runtime-minted `OperationId`, durably prepared before invocation
+  and retained across retries. Same-slot fingerprint mismatch is `OperationMismatch` with no
+  durable delta; distinct slots remain distinct even for identical payloads. Ambiguous provider
+  acceptance permits bounded effect-call re-invocation only for the same `Prepared` operation and
+  `OperationId` under a still-valid pinned stable-key contract. Reconciliation is read-only and
+  never repeats the effecting call. Exhaustion or expiry becomes `OutcomeUnknown`, after which no
+  effecting call may repeat. `AcknowledgementUnknown` applies separately to prepare and outcome
+  database commits: prepare uncertainty forbids provider invocation until database-only
+  reconciliation confirms the exact durable prepared record and ID; outcome uncertainty permits
+  only ledger reads and exact frozen-evidence recommit.
 
 - **[L2-§11.5]** `JournalEntry` type backs the durable `execution_journal` (append-only,
   replayable). Seam: `crates/storage/src/execution_repo.rs` — `ExecutionRepo::append_journal`.
@@ -129,8 +142,10 @@ See `docs/MATURITY.md` row for `nebula-execution`.
 
 The deterministic key shape is `{execution_id}:{node_id}:{attempt}`, persisted in
 `idempotency_keys`. The format string is an implementation detail (L4) — changing it
-requires updating this README and the corresponding code; no canon revision. The invariant
-("deterministic per-attempt, checked before side-effect") is canonical (L2-§11.3).
+requires updating this README and the corresponding code; no canon revision. Its contract is
+limited to deterministic, tenant-scoped local replay/dedup. It is not the stable remote
+effect-slot/operation identity described by canon §11.3 and cannot establish effectively-once
+behavior by itself.
 
 ### Persistence durability matrix (reference from §11.5)
 

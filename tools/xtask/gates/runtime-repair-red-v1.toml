@@ -1,0 +1,48 @@
+# Versioned expected-failure policy for genuine first-party runtime-repair
+# scenarios. Every listed case must fail for exactly the reason recorded here;
+# setup failures, passes, skips, retries, timeouts, and extra cases fail closed.
+manifest_version = 1
+profile = "runtime-repair-red"
+package = "nebula-server"
+feature = "runtime-repair-red"
+test_binary = "runtime_repair_red_scenarios"
+
+[[expected_failures]]
+test_name = "c0_file_sqlite_park_restart_resume"
+reason_code = "c0-drive-not-connected"
+
+[[expected_failures]]
+test_name = "c0_live_postgresql_park_restart_resume"
+reason_code = "c0-drive-not-connected"
+
+[[expected_failures]]
+test_name = "c1_file_sqlite_cancel_before_handler_completion"
+reason_code = "c1-cancel-terminalized-by-api"
+
+[[expected_failures]]
+test_name = "c1_live_postgresql_cancel_before_handler_completion"
+reason_code = "c1-cancel-terminalized-by-api"
+
+[[expected_failures]]
+test_name = "component_c7::same_processor_id_aba_file_sqlite"
+reason_code = "c7-same-processor-aba-accepted"
+
+[[expected_failures]]
+test_name = "component_c7::same_processor_id_aba_in_memory"
+reason_code = "c7-same-processor-aba-accepted"
+
+[[expected_failures]]
+test_name = "component_c7::same_processor_id_aba_live_postgres"
+reason_code = "c7-same-processor-aba-accepted"
+
+[[expected_failures]]
+test_name = "startkey_file_sqlite"
+reason_code = "startkey-same-fingerprint-duplicated"
+
+[[expected_failures]]
+test_name = "startkey_in_memory"
+reason_code = "startkey-same-fingerprint-duplicated"
+
+[[expected_failures]]
+test_name = "startkey_live_postgresql"
+reason_code = "startkey-same-fingerprint-duplicated"

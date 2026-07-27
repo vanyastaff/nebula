@@ -1,0 +1,130 @@
+name: Runtime Repair RED
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
+  RUST_BACKTRACE: short
+  DATABASE_URL: postgres://postgres:postgres@localhost:5432/nebula_test?sslmode=disable
+  NEBULA_REQUIRE_POSTGRES: "1"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  runtime-repair-red:
+    name: Runtime repair expected RED
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: nebula_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d nebula_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: 1.96.1
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@8cbdedb5103daa674dcf46d3590fe06a76645684 # v2.9.1
+        with:
+          key: runtime-repair-red
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: true
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@481c34c1cf3a84c68b5e46f4eccfc82af798415a # v2.75.23
+        with:
+          tool: cargo-nextest
+
+      - name: Prove verifier infrastructure
+        run: >-
+          cargo nextest run
+          -p nebula-xtask
+          --profile ci
+          runtime_repair_red::tests
+
+      - name: Prove RED profile integrity controls
+        run: >-
+          cargo nextest run
+          -p nebula-server
+          --features runtime-repair-red,postgres
+          --lib
+          --profile ci
+          runtime_repair_red::
+
+      - name: Validate expected-case manifest
+        id: manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest_json="$RUNNER_TEMP/runtime-repair-red-manifest.json"
+          cargo xtask runtime-repair-red validate-manifest > "$manifest_json"
+          jq -e '
+            ((keys | sort) == ["expected_failure_count", "manifest_version", "profile", "status"]) and
+            (.manifest_version == 1) and
+            (.profile == "runtime-repair-red") and
+            (.status == "valid") and
+            ((.expected_failure_count | type) == "number") and
+            (.expected_failure_count > 0) and
+            (.expected_failure_count == (.expected_failure_count | floor))
+          ' "$manifest_json" > /dev/null
+          active_count=$(jq -r '.expected_failure_count' "$manifest_json")
+          echo "active_count=$active_count" >> "$GITHUB_OUTPUT"
+
+      # The manifest names only genuine behavioral failures. Infrastructure,
+      # setup, skipped, passing, retry, timeout, and fabricated-marker outcomes
+      # are rejected by the verifier rather than accepted as product RED.
+      - name: Run and verify genuine expected failures
+        id: verify_red
+        shell: bash
+        run: |
+          set -euo pipefail
+          junit_path="$GITHUB_WORKSPACE/target/nextest/runtime-repair-red/runtime-repair-red.junit.xml"
+          nextest_status=0
+          cargo nextest run \
+            -p nebula-server \
+            --features runtime-repair-red,postgres \
+            --test runtime_repair_red_scenarios \
+            --profile runtime-repair-red \
+            --no-tests=fail || nextest_status=$?
+          cargo xtask runtime-repair-red verify \
+            --nextest-exit-code "$nextest_status" \
+            --junit "$junit_path"
+
+      - name: Upload verified RED JUnit
+        if: always() && steps.verify_red.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: runtime-repair-red-junit
+          path: target/nextest/runtime-repair-red/runtime-repair-red.junit.xml
+          if-no-files-found: error
+          retention-days: 14

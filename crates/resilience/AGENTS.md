@@ -9,7 +9,7 @@
 | Task | Steps |
 |------|-------|
 | Add resilience to an outbound call | Compose patterns via `ResiliencePipeline<E>` / `PipelineBuilder` in `src/pipeline.rs`. See `docs/composition.md`. |
-| Understand retry semantics | Retry/transient-vs-permanent decided by `nebula-error::Classify::retry_hint()`, never by per-call folklore. This is the ONLY retry surface in the workflow stack (canon §11.2). |
+| Understand retry semantics | ADR-0068 defines two layers: this crate retries transient outbound calls inside one action attempt; the engine separately owns operator-declared node re-execution. `nebula-error::Classify::retry_hint()` classifies failures, but does not authorize retry across an ambiguous remote-effect boundary (canon §11.2–§11.3). |
 | Add a new resilience pattern | Add standalone module, integrate into `PipelineBuilder`, add to `src/lib.rs` re-exports. Add criterion bench in `benches/`. |
 | Run loom model checks | `RUSTFLAGS="--cfg loom" cargo test -p nebula-resilience --features loom --lib loom` |
 | Run benchmarks | `cargo bench -p nebula-resilience` (14 criterion benches) |
@@ -30,7 +30,10 @@
 - `src/gate.rs` — cooperative-shutdown barrier; `src/sink.rs` — `MetricsSink` observability hooks
 
 ## Conventions & never-do
-- **Canon §11.2: this is the ONLY retry surface in the workflow stack** — the engine does NOT re-execute nodes; never add engine-level retry expecting this crate to defer to it.
+- **ADR-0068 / canon §11.2 define two retry layers.** This crate owns
+  in-action outbound-call retry; the engine owns operator-declared node retry
+  with persisted attempt accounting. Keep the trigger boundary explicit and
+  obey canon §11.3 after an ambiguous remote effect.
 - Retry/transient-vs-permanent is decided by `nebula-error::Classify::retry_hint()`, never by per-call folklore in action bodies.
 - NOT a durable control plane (in-process only — durable cancel/dispatch lives in `execution_control_queue`) and NOT a metrics exporter (events feed `nebula-metrics` via sinks, not the reverse).
 - `CallError<E>` keeps the caller's `E` — no forced mapping, no `Box<dyn Error>` erasure; keep variants additive (`#[non_exhaustive]`).

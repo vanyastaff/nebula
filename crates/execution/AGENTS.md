@@ -27,7 +27,16 @@
   admission, and runtime all consume the pins. `WorkflowVersionId` remains the stable workflow
   revision identity.
 - This crate defines retry state shapes only: legal `Failed → WaitingRetry → Ready` node transitions, `next_attempt_at`, `total_retries`, `ExecutionBudget.max_total_retries`, `NodeAttempt`, and idempotency-key shape. The engine owns operator-declared node retry (`retry_policy`) and re-dispatch; `nebula-resilience` remains the in-action outbound-call retry surface. Do not add an `ActionResult::Retry` scheduler here.
-- `IdempotencyKey` here is just the deterministic key shape (§11.3); check-before-side-effect / mark-after enforcement is in storage. The control-queue / outbox also live in storage, not here.
+- `IdempotencyKey` here is only the deterministic per-attempt local replay/dedup shape (§11.3);
+  storage owns `check_and_mark`. It changes across retries and is not the future stable remote
+  `OperationId` or storage-minted `EffectSlotId`; neither primitive makes a provider effect
+  atomic with Nebula persistence. Only a pinned stable-key destination may make bounded
+  same-`OperationId` effect-call re-invocations while its guarantee remains valid;
+  reconciliation is read-only. Exhaustion or expiry becomes `OutcomeUnknown`, after which no
+  effecting call may repeat. `AcknowledgementUnknown` applies to prepare and outcome DB commits:
+  prepare uncertainty forbids provider invocation until the exact durable prepared record is
+  confirmed; outcome uncertainty permits only ledger reads and exact frozen-evidence recommit.
+  The control-queue / outbox also live in storage, not here.
 - 5 `panic!` sites in `transition`/`status` are state-machine invariant guards (flagged debt); do not add new ones — use typed `ExecutionError`.
 - Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
 - Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code.

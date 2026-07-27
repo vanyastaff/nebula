@@ -92,11 +92,10 @@ pub struct ControlMsg {
     /// persisted `WaitSignal` matches by kind + identity.
     ///
     /// `#[serde(default)]` so legacy queue payloads that predate the field
-    /// deserialize as `None`. W-S3a threads this in-memory from the control
-    /// consumer to `dispatch_resume`; the durable backends do not yet persist a
-    /// column for it (no producer exists), so the SQL-backed `claim_pending`
-    /// paths reconstruct it as `None`. Durable carry is W-S3c (with the real
-    /// schema work).
+    /// deserialize as `None`. Webhook Resume producers can populate a target,
+    /// and the in-memory, SQLite, and PostgreSQL control queues persist and
+    /// reconstruct it for `dispatch_resume`. `None` remains the explicit
+    /// untargeted/back-compat form.
     #[serde(default)]
     pub resume_target: Option<ResumeTarget>,
 }

@@ -178,7 +178,19 @@ Credential coordination — durable refresh claim (П2 / ADR-0041):
 - **[L2-§11.3]** Idempotency enforcement lives here via the port `IdempotencyGuard` /
   `IdempotencyStore`. Key shape `{execution_id}:{node_id}:{attempt}` is defined in
   `nebula-execution`; the adapter folds scope into storage so callers cannot share keys across
-  tenants. Seam: `crates/storage-port/src/store/idempotency.rs`.
+  tenants. This is a local replay/dedup oracle only: it is not atomic with a remote provider,
+  cannot tell whether an external effect committed, and does not establish single-effect or
+  exactly-once semantics. The future effect ledger is a separate runtime-control contract:
+  storage mints an `EffectSlotId` per intended occurrence and binds its fingerprint to a stable
+  runtime-minted `OperationId`; same-slot mismatch is `OperationMismatch` with no durable delta,
+  while distinct slots remain distinct. Only a pinned stable-key destination may make bounded
+  effect-call re-invocations of that same `Prepared` operation and `OperationId` while its
+  guarantee remains valid; reconciliation is read-only. Exhaustion or expiry records
+  `OutcomeUnknown`, after which no effecting call may repeat. `AcknowledgementUnknown` applies to
+  prepare and outcome database commits: prepare uncertainty forbids provider invocation until
+  database-only reconciliation confirms the exact durable prepared record and ID; outcome
+  uncertainty permits only ledger reads and exact frozen-evidence recommit. Seam:
+  `crates/storage-port/src/store/idempotency.rs`.
 
 - **[L2-§11.5]** `TransitionBatch::journal` backs the durable `port_execution_journal`
   (append-only, replayable) and is committed with the state transition. `CheckpointStore`
@@ -339,7 +351,7 @@ model — they keep live consumers (the API idempotency middleware, the
 | `port_control_queue` (outbox) | **Durable** | At-least-once cancel/dispatch; written in the same `TransitionBatch` (§12.2) |
 | stateful checkpoints | **Best-effort** | Write failure logs, does not abort; may replay |
 | lease holder / expiry + `fencing_generation` | **Durable + enforced** (ADR-0072) | `acquire_lease` → `FencingToken`; a superseded holder is rejected even on a matching CAS version. Verified by `crates/engine/tests/lease_takeover.rs`, the loom probe at `crates/storage-loom-probe/src/lease_handoff.rs`, and the conformance lease cases |
-| idempotency dedup | **Durable** | First-writer-wins via the port `IdempotencyGuard` / `IdempotencyStore`; sweep drives `evict_expired`. Verified by the conformance matrix + `crates/storage/tests/pg_idempotency.rs` (`DATABASE_URL`-gated) |
+| local idempotency dedup | **Durable** | First-writer-wins via the port `IdempotencyGuard` / `IdempotencyStore`; sweep drives `evict_expired`. This is not a remote-effect ledger or atomicity guarantee. Verified by the conformance matrix + `crates/storage/tests/pg_idempotency.rs` (`DATABASE_URL`-gated) |
 | In-process `mpsc` / channels | **Ephemeral** | Never authoritative |
 
 ### Supported backends

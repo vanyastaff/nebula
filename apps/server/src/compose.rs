@@ -4,13 +4,16 @@
 //! logic in one place while allowing different ingress transports (REST API,
 //! webhook-only, realtime placeholder) to boot as separate binaries.
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{future::Future, net::SocketAddr, sync::Arc, time::Duration};
 
+use axum::Router;
 use thiserror::Error;
+use tokio::net::TcpListener;
+use tokio_util::sync::CancellationToken;
 
 use nebula_api::{
     ApiConfig, ApiConfigError, AppState, OAuthIdentityRuntime, OAuthRuntimeBuildError,
-    TelemetryGuard, TelemetryInitError, app,
+    TelemetryGuard, TelemetryInitError,
     config::{
         AuthBackendKind, ExecutionBackendKind, IdempotencyBackend, OAuthProvidersConfig,
         SmtpTlsMode,
@@ -239,6 +242,50 @@ pub(crate) struct ExecutionStoreBundle {
     /// the burn and the enqueue across two backends — exactly the durability gap
     /// this seam closes.
     resume_producer: Arc<dyn nebula_storage_port::store::ResumeProducer>,
+    #[cfg(feature = "runtime-repair-red")]
+    worker_projection: WorkerStoreProjection,
+    #[cfg(feature = "runtime-repair-red")]
+    backend_lifecycle: ProfileBackendLifecycle,
+}
+
+#[cfg(feature = "runtime-repair-red")]
+#[derive(Clone)]
+pub(crate) struct WorkerStoreProjection {
+    pub(crate) execution_stores: nebula_engine::ExecutionStores,
+    pub(crate) workflow_stores: nebula_engine::WorkflowStores,
+    pub(crate) job_dispatch_queue: Arc<dyn nebula_storage_port::store::JobDispatchQueue>,
+}
+
+#[cfg(feature = "runtime-repair-red")]
+#[derive(Clone)]
+pub(crate) enum ProfileBackendLifecycle {
+    Memory,
+    Sqlite(sqlx::SqlitePool),
+    #[cfg(feature = "postgres")]
+    Postgres(sqlx::PgPool),
+}
+
+#[cfg(feature = "runtime-repair-red")]
+impl ProfileBackendLifecycle {
+    pub(crate) async fn close(&self) {
+        match self {
+            Self::Memory => {},
+            Self::Sqlite(pool) => pool.close().await,
+            #[cfg(feature = "postgres")]
+            Self::Postgres(pool) => pool.close().await,
+        }
+    }
+}
+
+#[cfg(feature = "runtime-repair-red")]
+impl ExecutionStoreBundle {
+    pub(crate) fn worker_projection(&self) -> WorkerStoreProjection {
+        self.worker_projection.clone()
+    }
+
+    pub(crate) fn backend_lifecycle(&self) -> ProfileBackendLifecycle {
+        self.backend_lifecycle.clone()
+    }
 }
 
 /// Build the execution-store bundle for the configured backend.
@@ -256,8 +303,9 @@ pub(crate) struct ExecutionStoreBundle {
 /// state machine's single JSON blob, not by these auxiliary stores. On a crash the
 /// reclaim sweep re-delivers the job and the engine re-executes from the last
 /// persisted state.
-async fn build_execution_stores(
+pub(crate) async fn build_execution_stores(
     api_config: &ApiConfig,
+    explicit_postgres_dsn: Option<&str>,
 ) -> Result<ExecutionStoreBundle, TransportInitError> {
     match api_config.execution.backend {
         ExecutionBackendKind::Memory => {
@@ -265,7 +313,9 @@ async fn build_execution_stores(
             build_memory_execution_stores()
         },
         ExecutionBackendKind::Sqlite => build_sqlite_execution_stores(api_config).await,
-        ExecutionBackendKind::Postgres => build_pg_execution_stores(api_config).await,
+        ExecutionBackendKind::Postgres => {
+            build_pg_execution_stores(api_config, explicit_postgres_dsn).await
+        },
         // `ExecutionBackendKind` is `#[non_exhaustive]` so a wildcard arm is required
         // by the compiler even though all three current variants are handled above.
         // A new variant added to the enum must be explicitly handled here — the panic
@@ -282,6 +332,10 @@ async fn build_execution_stores(
 /// of backend. `AppState::in_memory` itself is NOT called here to avoid
 /// duplicating the trigger-dedup-inbox wiring in the Memory path.
 fn build_memory_execution_stores() -> Result<ExecutionStoreBundle, TransportInitError> {
+    #[cfg(feature = "runtime-repair-red")]
+    use nebula_storage::inmem::{
+        InMemoryCheckpointStore, InMemoryIdempotencyGuard, InMemoryJobDispatchQueue,
+    };
     use nebula_storage::inmem::{
         InMemoryControlQueue, InMemoryExecutionStore, InMemoryJournalReader,
         InMemoryNodeResultStore, InMemoryTriggerDedupInbox, InMemoryWorkflowStore,
@@ -304,6 +358,36 @@ fn build_memory_execution_stores() -> Result<ExecutionStoreBundle, TransportInit
     let node_results = InMemoryNodeResultStore::new();
     let workflow_versions = InMemoryWorkflowVersionStore::new();
     let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
+    #[cfg(feature = "runtime-repair-red")]
+    let worker_projection = {
+        let execution_store: Arc<dyn nebula_storage_port::store::ExecutionStore> =
+            Arc::new(exec_store.clone());
+        let journal_reader: Arc<dyn nebula_storage_port::store::ExecutionJournalReader> =
+            Arc::new(journal.clone());
+        let node_result_store: Arc<dyn nebula_storage_port::store::NodeResultStore> =
+            Arc::new(node_results.clone());
+        let resume_token_store: Arc<dyn nebula_storage_port::store::ResumeTokenStore> =
+            Arc::new(resume_token_store.clone());
+        WorkerStoreProjection {
+            execution_stores: nebula_engine::ExecutionStores {
+                execution: execution_store,
+                journal: journal_reader,
+                node_results: node_result_store,
+                checkpoints: Arc::new(InMemoryCheckpointStore::new()),
+                // The current in-memory idempotency guard is intentionally an
+                // independent local guard; it does not share execution-store
+                // durable state. The RED profile preserves that product gap
+                // as evidence rather than implying atomicity.
+                idempotency: Arc::new(InMemoryIdempotencyGuard::new()),
+                resume_tokens: resume_token_store,
+            },
+            workflow_stores: nebula_engine::WorkflowStores {
+                workflow: Arc::new(workflow_store.clone()),
+                versions: Arc::new(workflow_versions.clone()),
+            },
+            job_dispatch_queue: Arc::new(InMemoryJobDispatchQueue::new(&exec_store)),
+        }
+    };
 
     tracing::info!(
         backend = "memory",
@@ -319,6 +403,10 @@ fn build_memory_execution_stores() -> Result<ExecutionStoreBundle, TransportInit
         trigger_dedup_inbox: Some(Arc::new(trigger_dedup_inbox)),
         resume_token_store: Arc::new(resume_token_store),
         resume_producer: Arc::new(resume_producer),
+        #[cfg(feature = "runtime-repair-red")]
+        worker_projection,
+        #[cfg(feature = "runtime-repair-red")]
+        backend_lifecycle: ProfileBackendLifecycle::Memory,
     })
 }
 
@@ -338,6 +426,8 @@ async fn build_sqlite_execution_stores(
         SqliteResumeTokenStore, SqliteTriggerDedupInbox, SqliteWorkflowStore,
         SqliteWorkflowVersionStore, init_schema,
     };
+    #[cfg(feature = "runtime-repair-red")]
+    use nebula_storage::sqlite::{SqliteIdempotencyGuard, SqliteJobDispatchQueue};
     use sqlx::sqlite::{
         SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
     };
@@ -380,12 +470,41 @@ async fn build_sqlite_execution_stores(
          crash-recovery re-executes affected nodes via the reclaim sweep — \
          authoritative execution state is the SQLite execution row"
     );
+    let workflow_store: Arc<dyn nebula_storage_port::store::WorkflowStore> =
+        Arc::new(SqliteWorkflowStore::new(pool.clone()));
+    let workflow_version_store: Arc<dyn nebula_storage_port::store::WorkflowVersionStore> =
+        Arc::new(SqliteWorkflowVersionStore::new(pool.clone()));
+    let execution_store: Arc<dyn nebula_storage_port::store::ExecutionStore> =
+        Arc::new(SqliteExecutionStore::new(pool.clone()));
+    let journal_reader: Arc<dyn nebula_storage_port::store::ExecutionJournalReader> =
+        Arc::new(SqliteJournalReader::new(pool.clone()));
+    let resume_token_store: Arc<dyn nebula_storage_port::store::ResumeTokenStore> =
+        Arc::new(SqliteResumeTokenStore::new(pool.clone()));
+    #[cfg(feature = "runtime-repair-red")]
+    let worker_projection = WorkerStoreProjection {
+        execution_stores: nebula_engine::ExecutionStores {
+            execution: Arc::clone(&execution_store),
+            journal: Arc::clone(&journal_reader),
+            node_results: Arc::clone(&node_results)
+                as Arc<dyn nebula_storage_port::store::NodeResultStore>,
+            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
+            idempotency: Arc::new(SqliteIdempotencyGuard::new(pool.clone())),
+            resume_tokens: Arc::clone(&resume_token_store),
+        },
+        workflow_stores: nebula_engine::WorkflowStores {
+            workflow: Arc::clone(&workflow_store),
+            versions: Arc::clone(&workflow_version_store),
+        },
+        job_dispatch_queue: Arc::new(SqliteJobDispatchQueue::new(pool.clone())),
+    };
+    #[cfg(feature = "runtime-repair-red")]
+    let backend_lifecycle = ProfileBackendLifecycle::Sqlite(pool.clone());
     Ok(ExecutionStoreBundle {
-        workflow_store: Arc::new(SqliteWorkflowStore::new(pool.clone())),
-        workflow_version_store: Arc::new(SqliteWorkflowVersionStore::new(pool.clone())),
-        execution_store: Arc::new(SqliteExecutionStore::new(pool.clone())),
+        workflow_store,
+        workflow_version_store,
+        execution_store,
         node_result_store: node_results,
-        journal_reader: Arc::new(SqliteJournalReader::new(pool.clone())),
+        journal_reader,
         control_queue: Arc::new(SqliteControlQueue::new(pool.clone())),
         // Durable backends wire the storage-backed TriggerDedupInbox so
         // `WebhookIngressTransport::prepare_state` can install `with_durable_dispatch`.
@@ -395,10 +514,14 @@ async fn build_sqlite_execution_stores(
         trigger_dedup_inbox: Some(Arc::new(SqliteTriggerDedupInbox::new(pool.clone()))),
         // Same pool as the execution store: tokens minted by TransitionBatch must be
         // readable by the POST /resume handler's consume call on the same pool.
-        resume_token_store: Arc::new(SqliteResumeTokenStore::new(pool.clone())),
+        resume_token_store,
         // Same pool again: the producer's token DELETE and control-queue INSERT
         // must commit in one transaction against the execution-store backend.
         resume_producer: Arc::new(SqliteResumeProducer::new(pool)),
+        #[cfg(feature = "runtime-repair-red")]
+        worker_projection,
+        #[cfg(feature = "runtime-repair-red")]
+        backend_lifecycle,
     })
 }
 
@@ -407,6 +530,7 @@ async fn build_sqlite_execution_stores(
 #[cfg(feature = "postgres")]
 async fn build_pg_execution_stores(
     _api_config: &ApiConfig,
+    explicit_postgres_dsn: Option<&str>,
 ) -> Result<ExecutionStoreBundle, TransportInitError> {
     use nebula_storage::InMemoryNodeResultStore;
     use nebula_storage::postgres::{
@@ -414,18 +538,26 @@ async fn build_pg_execution_stores(
         PgTriggerDedupInbox, PgWorkflowStore, PgWorkflowVersionStore,
         init_schema as pg_init_schema,
     };
+    #[cfg(feature = "runtime-repair-red")]
+    use nebula_storage::postgres::{PgIdempotencyGuard, PgJobDispatchQueue};
     use sqlx::postgres::PgPoolOptions;
 
-    let url = std::env::var("DATABASE_URL").map_err(|_| {
-        TransportInitError::ExecutionBackendUnavailable {
-            requested: "postgres",
-            requirement: "DATABASE_URL must be set when API_EXECUTION_BACKEND=postgres",
-        }
-    })?;
+    let environment_dsn;
+    let database_dsn = if let Some(explicit_postgres_dsn) = explicit_postgres_dsn {
+        explicit_postgres_dsn
+    } else {
+        environment_dsn = std::env::var("DATABASE_URL").map_err(|_| {
+            TransportInitError::ExecutionBackendUnavailable {
+                requested: "postgres",
+                requirement: "DATABASE_URL must be set when API_EXECUTION_BACKEND=postgres",
+            }
+        })?;
+        &environment_dsn
+    };
 
     let pool = PgPoolOptions::new()
         .max_connections(8)
-        .connect(&url)
+        .connect(database_dsn)
         .await
         .map_err(|err| {
             TransportInitError::ExecutionDatabase(format!(
@@ -448,21 +580,55 @@ async fn build_pg_execution_stores(
          crash-recovery re-executes affected nodes via the reclaim sweep — \
          authoritative execution state is the Postgres execution row"
     );
+    let workflow_store: Arc<dyn nebula_storage_port::store::WorkflowStore> =
+        Arc::new(PgWorkflowStore::new(pool.clone()));
+    let workflow_version_store: Arc<dyn nebula_storage_port::store::WorkflowVersionStore> =
+        Arc::new(PgWorkflowVersionStore::new(pool.clone()));
+    let execution_store: Arc<dyn nebula_storage_port::store::ExecutionStore> =
+        Arc::new(PgExecutionStore::new(pool.clone()));
+    let node_result_store: Arc<dyn nebula_storage_port::store::NodeResultStore> =
+        Arc::new(InMemoryNodeResultStore::new());
+    let journal_reader: Arc<dyn nebula_storage_port::store::ExecutionJournalReader> =
+        Arc::new(PgJournalReader::new(pool.clone()));
+    let resume_token_store: Arc<dyn nebula_storage_port::store::ResumeTokenStore> =
+        Arc::new(PgResumeTokenStore::new(pool.clone()));
+    #[cfg(feature = "runtime-repair-red")]
+    let worker_projection = WorkerStoreProjection {
+        execution_stores: nebula_engine::ExecutionStores {
+            execution: Arc::clone(&execution_store),
+            journal: Arc::clone(&journal_reader),
+            node_results: Arc::clone(&node_result_store),
+            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
+            idempotency: Arc::new(PgIdempotencyGuard::new(pool.clone())),
+            resume_tokens: Arc::clone(&resume_token_store),
+        },
+        workflow_stores: nebula_engine::WorkflowStores {
+            workflow: Arc::clone(&workflow_store),
+            versions: Arc::clone(&workflow_version_store),
+        },
+        job_dispatch_queue: Arc::new(PgJobDispatchQueue::new(pool.clone())),
+    };
+    #[cfg(feature = "runtime-repair-red")]
+    let backend_lifecycle = ProfileBackendLifecycle::Postgres(pool.clone());
     Ok(ExecutionStoreBundle {
-        workflow_store: Arc::new(PgWorkflowStore::new(pool.clone())),
-        workflow_version_store: Arc::new(PgWorkflowVersionStore::new(pool.clone())),
-        execution_store: Arc::new(PgExecutionStore::new(pool.clone())),
-        node_result_store: Arc::new(InMemoryNodeResultStore::new()),
-        journal_reader: Arc::new(PgJournalReader::new(pool.clone())),
+        workflow_store,
+        workflow_version_store,
+        execution_store,
+        node_result_store,
+        journal_reader,
         control_queue: Arc::new(PgControlQueue::new(pool.clone())),
         // Same rationale as the SQLite arm: durable dispatch in
         // `WebhookIngressTransport::prepare_state` is only installed when `Some`.
         trigger_dedup_inbox: Some(Arc::new(PgTriggerDedupInbox::new(pool.clone()))),
         // Same pool as the execution store — see SQLite arm for rationale.
-        resume_token_store: Arc::new(PgResumeTokenStore::new(pool.clone())),
+        resume_token_store,
         // Same pool again: the producer's DELETE + control-queue INSERT commit
         // in one transaction against the execution-store backend.
         resume_producer: Arc::new(PgResumeProducer::new(pool)),
+        #[cfg(feature = "runtime-repair-red")]
+        worker_projection,
+        #[cfg(feature = "runtime-repair-red")]
+        backend_lifecycle,
     })
 }
 
@@ -470,6 +636,7 @@ async fn build_pg_execution_stores(
 #[cfg(not(feature = "postgres"))]
 async fn build_pg_execution_stores(
     _api_config: &ApiConfig,
+    _explicit_postgres_dsn: Option<&str>,
 ) -> Result<ExecutionStoreBundle, TransportInitError> {
     Err(TransportInitError::ExecutionBackendUnavailable {
         requested: "postgres",
@@ -533,7 +700,7 @@ impl ServerRuntime {
             .map_err(ServerRunError::MetricsExporter)?;
         // Build the execution-store bundle inside the async context so the SQLite and
         // Postgres paths can `await` pool construction.
-        let execution_bundle = build_execution_stores(&api_config).await?;
+        let execution_bundle = build_execution_stores(&api_config, None).await?;
         let mut state =
             default_state(&api_config, Arc::clone(&metrics_registry), execution_bundle)?;
         let bind_address =
@@ -611,13 +778,64 @@ impl ServerRuntime {
             .with_email_port(email_port);
         let app = transport.build_router(state, &api_config)?;
 
-        tracing::info!(transport = transport.name(), %bind_address, "starting transport");
-        let serve_result = app::serve(app, bind_address).await;
+        let listener = TcpListener::bind(bind_address).await?;
+        let local_address = listener.local_addr()?;
+        tracing::info!(transport = transport.name(), %local_address, "starting transport");
+        let shutdown = CancellationToken::new();
+        let serve_future = serve_prebound(app, listener, shutdown.clone().cancelled_owned());
+        tokio::pin!(serve_future);
+        let serve_result = tokio::select! {
+            result = &mut serve_future => result,
+            signal_result = wait_for_shutdown_signal() => {
+                shutdown.cancel();
+                let serve_result = serve_future.await;
+                signal_result?;
+                serve_result
+            },
+        };
         // Keep credential background ownership (notably the reclaim sweep)
         // alive for the entire serving lifecycle, then abort it by Drop.
         drop(credential_runtime);
         serve_result?;
         Ok(())
+    }
+}
+
+/// Serve a router on a listener already bound by the composition root.
+///
+/// Both the ordinary binary and the evidence-only runtime-repair profile use
+/// this launch seam. Binding before the call makes the published address
+/// authoritative and lets the profile use port zero without a readiness race.
+pub(crate) async fn serve_prebound<F>(
+    app: Router,
+    listener: TcpListener,
+    shutdown: F,
+) -> Result<(), std::io::Error>
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown)
+    .await
+}
+
+async fn wait_for_shutdown_signal() -> Result<(), std::io::Error> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        let mut terminate = signal(SignalKind::terminate())?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result,
+            _ = terminate.recv() => Ok(()),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await
     }
 }
 
@@ -724,6 +942,7 @@ pub(crate) fn default_state(
         trigger_dedup_inbox,
         resume_token_store,
         resume_producer,
+        ..
     } = execution_bundle;
 
     let mut state = AppState::new(
@@ -1058,7 +1277,7 @@ mod tests {
             db_path: db_path.to_string_lossy().into_owned(),
         };
 
-        let bundle = build_execution_stores(&cfg)
+        let bundle = build_execution_stores(&cfg, None)
             .await
             .expect("sqlite bundle must build");
 

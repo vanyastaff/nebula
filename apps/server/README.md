@@ -21,6 +21,68 @@ canonical registry is `crates/api/src/config/env.rs`. The composition
 root in `apps/server/src/compose.rs` is the only place those values
 turn into concrete `Arc<dyn …>` ports.
 
+## Runtime-repair RED profile
+
+The non-default `runtime-repair-red` feature opens the app-owned
+**first-party RED conformance profile (evidence-only; non-deployment; non-SDK)**.
+It is an internal evidence fixture in the existing `nebula-server` package,
+not a supported deployment root or SDK/embedding surface. Ordinary server
+launch remains environment-driven; the profile uses only its closed explicit
+preset and never mutates process-global environment, installs telemetry, or
+handles OS signals.
+
+The profile pre-binds loopback port zero, composes API and the core-flavor
+worker from views over the exact same in-memory core, SQLite pool, or
+PostgreSQL pool, and supervises the HTTP and worker pull-loop siblings under
+one cancellation token. A third supervised, authority-free observer maps only
+typed execution/node lifecycle facts into a state-carrying registry. Scenario
+code can await `NodeStarted`, durable `NodeParked`, `NodeWaitCompleted`, and
+terminal success/failure with a bounded timeout and no polling or sleeps. The
+registry has a fixed distinct-fact ceiling; a new fact beyond it fails the
+observer and cancels the supervised profile instead of growing without bound.
+The same `ManualClock` exposed through evidence controls is injected into the
+sealed workflow engine. Its opaque lifecycle still exposes only address,
+readiness, shutdown, and join; observation waits remain on the retained
+harness controls. Current product behavior is deliberately preserved: REST
+start writes the `ControlQueue`, while the worker pulls `JobDispatchQueue`. The
+profile does not bridge that gap or invent a failing sentinel. Genuine
+first-party C0 scenarios therefore reach a bounded lifecycle observation and
+fail with `c0-drive-not-connected`; STARTKEY independently exposes duplicate
+same-fingerprint starts, while cancellation reachability exposes immediate API
+terminalization. The C7 same-processor-ID ABA fixture is deliberately labeled
+component/storage evidence rather than product-root proof.
+
+File-SQLite configuration retains one opaque path across repeated
+`harness.launch()` calls. A recovery scenario must shut down and join the first
+handle before launching the same retained harness again. Join drains every
+supervised component and explicitly closes the actual shared SQLite pool (or
+selected PostgreSQL pool) before it completes. The real integrity test performs
+launch → shutdown/join → relaunch on one retained file-SQLite harness. The
+standalone marker method remains only a low-level file/pool persistence check;
+it does not claim worker crash recovery. InMemory is intentionally reconstructed
+per launch and is not a restart-durability lane. Selecting PostgreSQL first
+requires a live connection/version probe and fails instead of skipping or
+substituting another backend.
+
+Evidence artifacts accept only a closed enum of structured references, counts,
+and fixed-width digests. Secret-bearing and raw-business-payload
+classifications are rejected before an artifact entry can be constructed; no
+caller-provided text or arbitrary payload is retained or printed by `Debug`.
+
+The worker runtime currently spawns its durable timer scanner internally and
+drops that nested `JoinHandle`. Profile cancellation and pool close stop its
+work, but a scanner-only panic is not yet join-visible to the app supervisor.
+HTTP, the worker pull loop, and lifecycle observer are owned and joined. This
+residual must be closed in the worker runtime before the profile can claim
+complete nested structured-concurrency evidence.
+
+Run the passing infrastructure-integrity slice independently:
+
+```bash
+cargo nextest run -p nebula-server --features runtime-repair-red \
+  -E 'test(/integrity_tests/)'
+```
+
 ## Tenant membership and credential authority
 
 The default server has no operator-configurable `MembershipStore`. Every

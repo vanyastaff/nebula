@@ -1,37 +1,38 @@
-//! integration seam knife scenario — end-to-end integration test.
+//! Integration-seam knife tests over explicitly composed in-memory ports.
 //!
-//! This file covers integration seam steps 1–6 as specified in
-//! `docs/PRODUCT_CANON.md integration seam` and the workspace health audit
-//! (archived in the maintainers' private design vault — Sprint A1 item #3).
+//! This file exercises selected integration-seam contracts specified in
+//! `docs/PRODUCT_CANON.md` through API producer boundaries and explicitly
+//! composed in-memory consumers.
 //!
 //! Each step is asserted through the real axum `Router` via oneshot
 //! requests. The workflow / execution / control-queue surface is the
-//! spec-16 scoped storage port: the in-memory adapters wrapped in the
-//! `nebula-tenancy` scoping decorators, wired exactly as the production
-//! composition root does. No handler logic is bypassed.
+//! spec-16 scoped storage port: in-memory adapters wrapped in the
+//! `nebula-tenancy` scoping decorators. The Start/Cancel consumer tests
+//! manually install `ControlConsumer` + `EngineControlDispatch`; current
+//! first-party binaries do not install that pair. No handler logic is bypassed,
+//! but these tests are component integration rather than production-root boot
+//! evidence.
 //!
-//! ## Step coverage
+//! ## API producer-boundary coverage
 //!
 //! | Step | What is asserted | Test |
 //! |------|-----------------|------|
-//! | 1 | `POST /workflows` round-trips through `GET /workflows/:id` | `knife_scenario_end_to_end_via_port` |
-//! | 2a | `POST /workflows/:id/activate` valid → 200 | `knife_scenario_end_to_end_via_port` |
-//! | 3 | `POST /workflows/:id/executions` → 202, `status=created`, `started_at > 0`, `finished_at` absent | `knife_scenario_end_to_end_via_port` |
-//! | 4 | `GET /executions/:id` → `finished_at` is null/absent, `status` = latest persisted value | `knife_scenario_end_to_end_via_port` |
-//! | 5 | `POST /executions/:id/cancel` → row = `cancelled`, outbox holds exactly Start + Cancel (both `Pending`) | `knife_scenario_end_to_end_via_port` |
+//! | 1 | API create/get handlers round-trip a workflow through the scoped port | `knife_api_producer_boundary_via_scoped_port` |
+//! | 2a | API activation handler accepts a valid workflow | `knife_api_producer_boundary_via_scoped_port` |
+//! | 3 | API start handler returns `created` state and persists a pending `Start` row | `knife_api_producer_boundary_via_scoped_port` |
+//! | 5 | API cancel handler returns `cancelled` state and persists a pending `Cancel` row | `knife_api_producer_boundary_via_scoped_port` |
 //! | 6 | Cancel state + control signal commit atomically even if the legacy queue handle fails | `knife_step6_cancel_control_signal_is_atomic_with_state` |
 //!
-//! ## Consumer-side integration seam (engine dispatch end-to-end)
+//! ## Manual composition boundaries
 //!
-//! The producer side above asserts the API writes the execution row and
-//! enqueues the control command. The consumer side — the engine-owned
-//! `EngineControlDispatch` draining the durable queue and driving the
-//! workflow to a terminal state (Created → Completed on `Start`, Running
-//! → Cancelled on `Cancel` via the live frontier loop, plus the durable control queue
-//! §5 redelivery-idempotency contract) — is asserted on the same spec-16
-//! port by `crates/engine/tests/control_dispatch.rs`. That is the
-//! canonical home for the dispatch loop now that the engine consumes the
-//! port directly; this file owns only the HTTP-surface producer path.
+//! The Start test proves an explicitly installed `ControlConsumer` and
+//! `EngineControlDispatch` can drain `Start` and drive the workflow from
+//! `Created` to `Completed`. The cancellation test has a narrower oracle: it
+//! observes that the slow handler started, then proves the API persisted the
+//! terminal `Cancelled` row and durable `Cancel` intent. The API writes that
+//! row itself, and the harness exposes no handler-exit signal, so this test
+//! explicitly does not prove Cancel consumption or live-handler interruption.
+//! That requires the separate `CANCELFX` fault gate.
 
 mod common;
 use std::sync::Arc;
@@ -54,8 +55,8 @@ use common::port_scope as knife_scope;
 
 // ── tests ─────────────────────────────────────────────────────────────────────
 
-/// integration seam steps 1–5 end-to-end: define → activate → start → observe
-/// → cancel, through the scoped storage port.
+/// API producer-boundary coverage for workflow definition, activation,
+/// execution start, and cancellation through the scoped storage port.
 ///
 /// The workflow / execution / control-queue surface is the spec-16 port
 /// (in-memory adapters behind the `nebula-tenancy` decorators, wired via
@@ -65,10 +66,8 @@ use common::port_scope as knife_scope;
 /// drives the row to `cancelled`, and the durable outbox holds exactly
 /// the `Start` (step 3) and `Cancel` (step 5) rows, both still
 /// `Pending`.
-///
-/// Audit ref: workspace-health audit §8, Sprint A1 item #3 (archived).
 #[tokio::test]
-async fn knife_scenario_end_to_end_via_port() {
+async fn knife_api_producer_boundary_via_scoped_port() {
     use nebula_storage_port::dto::ControlCommand as PortControlCommand;
 
     let (state, control_queue) = create_state_with_port_queue().await;
@@ -86,7 +85,7 @@ async fn knife_scenario_end_to_end_via_port() {
     let wf_id = nebula_core::WorkflowId::new();
     let create_request = serde_json::json!({
         "name": "Port Knife Workflow",
-        "description": "End-to-end knife test via the scoped port",
+        "description": "API producer-boundary knife test via the scoped port",
         "definition": make_valid_workflow_definition(&wf_id),
     });
 
@@ -108,7 +107,7 @@ async fn knife_scenario_end_to_end_via_port() {
     assert_eq!(
         response.status(),
         StatusCode::CREATED,
-        "port step 1: POST /workflows must return 201"
+        "API producer boundary, step 1: POST /workflows must return 201"
     );
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
@@ -136,7 +135,7 @@ async fn knife_scenario_end_to_end_via_port() {
     assert_eq!(
         response.status(),
         StatusCode::OK,
-        "port step 1: GET /workflows/:id must round-trip (200)"
+        "API producer boundary, step 1: GET /workflows/:id must round-trip (200)"
     );
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
@@ -145,7 +144,7 @@ async fn knife_scenario_end_to_end_via_port() {
     assert_eq!(
         fetched["id"].as_str(),
         Some(workflow_id.as_str()),
-        "port step 1: round-trip id must match"
+        "API producer boundary, step 1: round-trip id must match"
     );
 
     // ── Step 2: activate the valid workflow → 200 ────────────────────────────
@@ -166,7 +165,7 @@ async fn knife_scenario_end_to_end_via_port() {
     assert_eq!(
         response.status(),
         StatusCode::OK,
-        "port step 2: activate valid workflow must return 200"
+        "API producer boundary, step 2: activate valid workflow must return 200"
     );
 
     // ── Step 3: start an execution → 202, created, started_at>0 ──────────────
@@ -188,7 +187,7 @@ async fn knife_scenario_end_to_end_via_port() {
     assert_eq!(
         response.status(),
         StatusCode::ACCEPTED,
-        "port step 3: start execution must return 202"
+        "API producer boundary, step 3: start execution must return 202"
     );
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
@@ -201,31 +200,32 @@ async fn knife_scenario_end_to_end_via_port() {
     assert_eq!(
         started["status"].as_str(),
         Some("created"),
-        "port step 3: status must be the canonical `created`"
+        "API producer boundary, step 3: status must be the canonical `created`"
     );
     assert!(
         started["started_at"].as_i64().is_some_and(|t| t > 0),
-        "port step 3: started_at must be a real timestamp"
+        "API producer boundary, step 3: started_at must be a real timestamp"
     );
     assert!(
         started
             .get("finished_at")
             .is_none_or(serde_json::Value::is_null),
-        "port step 3: finished_at must be absent/null"
+        "API producer boundary, step 3: finished_at must be absent/null"
     );
 
     // Pre-cancel: the durable outbox holds exactly one `Start` row
-    // (#332), observed via the port's non-consuming snapshot.
+    // observed via the port's non-consuming snapshot.
     let pre = control_queue.snapshot();
     assert_eq!(
         pre.len(),
         1,
-        "port step 5 pre-condition: outbox must hold the step-3 Start, got {pre:?}"
+        "API producer boundary, step 5 precondition: outbox must hold the \
+         step-3 Start, got {pre:?}"
     );
     assert_eq!(
         pre[0].0.command,
         PortControlCommand::Start,
-        "port step 5 pre-condition: step-3 row must be Start"
+        "API producer boundary, step 5 precondition: step-3 row must be Start"
     );
 
     // ── Step 5: cancel → row=cancelled + Cancel enqueued ─────────────────────
@@ -246,7 +246,7 @@ async fn knife_scenario_end_to_end_via_port() {
     assert_eq!(
         response.status(),
         StatusCode::OK,
-        "port step 5: cancel must return 200"
+        "API producer boundary, step 5: cancel must return 200"
     );
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
@@ -255,11 +255,11 @@ async fn knife_scenario_end_to_end_via_port() {
     assert_eq!(
         cancelled["status"].as_str(),
         Some("cancelled"),
-        "port step 5: execution row must show 'cancelled'"
+        "API producer boundary, step 5: execution row must show 'cancelled'"
     );
     assert!(
         cancelled["finished_at"].as_i64().is_some_and(|t| t > 0),
-        "port step 5: finished_at must be a real timestamp after cancel"
+        "API producer boundary, step 5: finished_at must be a real timestamp after cancel"
     );
 
     // Outbox now holds the Start (step 3) + Cancel (step 5), both
@@ -270,19 +270,19 @@ async fn knife_scenario_end_to_end_via_port() {
     assert_eq!(
         queued.len(),
         2,
-        "port step 5: outbox must hold Start + Cancel, got {queued:?}"
+        "API producer boundary, step 5: outbox must hold Start + Cancel, got {queued:?}"
     );
     let (cancel_msg, cancel_status) = queued
         .iter()
         .find(|(m, _)| m.command == PortControlCommand::Cancel)
-        .expect("port step 5: Cancel row must be present");
+        .expect("API producer boundary, step 5: Cancel row must be present");
     assert_eq!(
         cancel_status, "Pending",
-        "port step 5: Cancel row must be Pending (not yet consumed)"
+        "API producer boundary, step 5: Cancel row must be Pending (not yet consumed)"
     );
     assert_eq!(
         cancel_msg.execution_id, execution_id,
-        "port step 5: Cancel row must reference the cancelled execution"
+        "API producer boundary, step 5: Cancel row must reference the cancelled execution"
     );
 }
 
@@ -355,19 +355,20 @@ async fn knife_step6_cancel_control_signal_is_atomic_with_state() {
     );
 }
 
-// ── Step 3 end-to-end (control-queue start dispatch) ───────────────────────────────────────────
+// ── Step 3 manual Start producer/consumer composition ─────────────────────────────────────────
 //
-// The `knife_scenario_end_to_end` test above asserts the PRODUCER side of integration seam
-// step 3 — the API writes the execution row and enqueues `Start` onto the
-// durable control queue (#332). This separate test asserts the CONSUMER side:
-// the engine-owned `EngineControlDispatch` (control-queue start dispatch) drains the queue and
-// actually drives the workflow to `Completed`, closing the honest capability gap that was
-// still open after #332 landed.
+// The `knife_api_producer_boundary_via_scoped_port` test above asserts the
+// producer side of integration seam step 3: the API writes the execution row
+// and enqueues `Start` onto the durable control queue. This separate test
+// explicitly assembles the consumer side: `EngineControlDispatch` drains the
+// queue and drives the workflow to `Completed`. It proves those in-memory
+// components interoperate when manually composed; it does not boot a
+// first-party composition root or prove deployed integration-seam coverage.
 //
 // The two tests intentionally stand up separate `AppState`s — the producer
 // test pins a pre-consumer snapshot of the queue (Start still Pending when
 // step 5 runs), while this test spawns the consumer so the Start row is
-// drained end-to-end.
+// drained by the test-installed composition.
 
 /// A hand-built echo `Action` (Variant A) that the engine can dispatch.
 /// Mirrors the workflow definition saved below (`action_key = "echo"`).
@@ -402,12 +403,14 @@ impl nebula_action::stateless::StatelessAction for KnifeEcho {
     }
 }
 
-/// integration seam step 3 end-to-end (control-queue start dispatch).
+/// Manually composed Start producer/consumer integration over shared
+/// in-memory ports.
 ///
 /// Wires API producer + `ControlConsumer` + `EngineControlDispatch` + engine
 /// over shared in-memory repos, POSTs `/workflows/:id/executions`, and polls
-/// the repo until the execution transitions all the way to `Completed`. This
-/// exercises the full durable control queue loop that durable control queue promised:
+/// the repo until the execution transitions to `Completed`. This proves the
+/// components interoperate when explicitly assembled; it does not boot the
+/// first-party server and worker composition roots:
 ///
 /// ```text
 /// POST /executions
@@ -420,7 +423,7 @@ impl nebula_action::stateless::StatelessAction for KnifeEcho {
 ///   → mark_completed on the queue row
 /// ```
 #[tokio::test]
-async fn knife_step3_engine_dispatches_start_end_to_end() {
+async fn knife_step3_manually_composed_consumer_dispatches_start() {
     use std::time::Duration;
 
     use nebula_core::action_key;
@@ -588,7 +591,7 @@ async fn knife_step3_engine_dispatches_start_end_to_end() {
     let shutdown = CancellationToken::new();
     let consumer_handle = consumer.spawn(shutdown.clone());
 
-    // ── POST /executions — the A1 producer path ──────────────────────────────
+    // ── POST /executions — the API producer path ────────────────────────────
     let start_request = serde_json::json!({
         "input": { "knife_e2e": "a2" }
     });
@@ -611,7 +614,7 @@ async fn knife_step3_engine_dispatches_start_end_to_end() {
     assert_eq!(
         response.status(),
         StatusCode::ACCEPTED,
-        "step 3 end-to-end: start execution must return 202"
+        "manual Start composition: API producer must return 202"
     );
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
@@ -626,8 +629,9 @@ async fn knife_step3_engine_dispatches_start_end_to_end() {
     // ── Wait for the consumer + engine to drive the execution to Completed ───
     //
     // Poll the repo because the consumer loop is cross-task; a small timeout
-    // tolerates scheduler jitter on slow test hosts. A fail here means the
-    // honest capability gap #332 was only half-closed — producer works, consumer does not.
+    // tolerates scheduler jitter on slow test hosts. Failure means this
+    // explicitly assembled consumer did not complete the Start command; it
+    // says nothing about a first-party composition root.
     let final_status = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             // Read through the same scoped port handle the engine was
@@ -649,13 +653,13 @@ async fn knife_step3_engine_dispatches_start_end_to_end() {
         }
     })
     .await
-    .expect("engine drove execution to terminal within 5s (A2 consumer + engine wired)");
+    .expect("test-installed consumer drove execution to terminal within 5s");
 
     assert_eq!(
         final_status,
         ExecutionStatus::Completed,
-        "step 3 end-to-end: the A2 engine dispatch must transition the execution to \
-         Completed — the §4.5 gap named in #332 is now closed on both halves"
+        "manual Start composition: the test-installed consumer must transition \
+         the execution to Completed; this is not first-party-root evidence"
     );
 
     // Graceful shutdown so the spawned task doesn't leak across tests.
@@ -663,59 +667,51 @@ async fn knife_step3_engine_dispatches_start_end_to_end() {
     let _ = consumer_handle.await;
 }
 
-// ── Knife step 5 end-to-end (control-queue terminate dispatch) ──────────────────────────────────
+// ── Knife step 5 cancellation producer boundary with active work ────────────
 //
-// Symmetric to `knife_step3_engine_dispatches_start_end_to_end`. The producer
+// Symmetric to `knife_step3_manually_composed_consumer_dispatches_start`. The producer
 // half — `POST /cancel` writes the `Cancelled` row and enqueues `Cancel` — is
-// already asserted by `knife_scenario_end_to_end` above. This test asserts the
-// CONSUMER half: the `EngineControlDispatch::dispatch_cancel` signals the
-// engine's live frontier loop so a long-running workflow is actually aborted
-// end-to-end, not left sleeping until its natural completion.
-//
-// The wiring mirrors step 3:
+// already asserted by `knife_api_producer_boundary_via_scoped_port` above.
+// This test adds a race condition: a manually composed consumer starts a slow
+// handler before the API receives the cancellation request. The asserted path is:
 //   POST /cancel
 //     → execution_repo.transition (Cancelled)
 //     → execution_control_queue.enqueue(Cancel)
-//     → ControlConsumer.claim_pending
-//     → EngineControlDispatch::dispatch_cancel
-//     → WorkflowEngine::cancel_execution
-//     → frontier loop observes `ctx.cancellation()` → node exits
 //
-// The workflow uses a cooperatively-cancellable `slow` handler that would
-// otherwise wait 30s; asserting that the execution reaches a terminal state
-// within a few seconds proves the signal reached the engine's live loop.
-// The action + real-engine-consumer wiring is the shared
-// `common::engine_seam` harness (byte-behaviorally identical to the
-// original inline wiring — the move is mechanical).
+// The workflow's `slow` handler has a cooperative cancellation branch, but
+// `common::engine_seam` exposes only its start notification. Because the API
+// transition makes the row terminal before returning, the terminal-state
+// assertion below is not a handler-exit oracle and makes no interruption
+// claim.
 
-/// integration seam step 5 end-to-end (control-queue terminate dispatch).
+/// API cancellation persistence while a manually composed handler is running.
 ///
-/// Wires API producer + `ControlConsumer` + `EngineControlDispatch` + engine
-/// over shared in-memory repos, starts a long-running execution, POSTs
-/// `/executions/:id/cancel`, and asserts the execution reaches a terminal
-/// state well inside the slow handler's 30-second sleep window. Closes #330.
+/// Starts a slow handler through an explicitly installed consumer, submits
+/// `/executions/:id/cancel`, and asserts the API persists terminal
+/// cancellation/control intent. It does not observe consumer delivery or
+/// handler exit.
 #[tokio::test]
-async fn knife_step5_engine_cancels_running_execution_end_to_end() {
+async fn knife_step5_api_persists_terminal_cancel_control_intent_while_handler_runs() {
     use std::time::Duration;
 
     use nebula_execution::ExecutionStatus;
+    use nebula_storage_port::dto::ControlCommand;
 
-    let (state, _control_queue) = create_state_with_queue().await;
+    let (state, control_queue) = create_state_with_queue().await;
     let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
     // ── Persist a single-`slow`-node workflow (shared harness) ───────────────
     let workflow_id = engine_seam::persist_slow_workflow(&state).await;
 
-    // ── Build + spawn the real engine consumer (shared harness) ──────────────
+    // ── Start a handler through the manually composed engine harness ────────
     //
-    // Byte-behaviorally identical to the original inline knife step-5
-    // wiring: same action key (`"slow"`), `ActionExecutor` closure,
-    // `InProcessRunner`, `ActionRuntime`, 10ms poll interval, and the
-    // `b"knife-a3"` processor id — see `common::engine_seam`.
+    // The shared harness exposes `slow_started` but deliberately no exit
+    // signal; this test uses it only to establish that cancellation races with
+    // active work.
     let seam = engine_seam::spawn_engine_consumer(&state);
 
-    // ── Start the execution via the A1/A2 producer path ──────────────────────
+    // ── Start the execution via the API producer path ───────────────────────
     let start_request = serde_json::json!({ "input": { "knife_e2e": "a3" } });
     let app = app::build_app(state.clone(), &api_config);
     let response = app
@@ -735,7 +731,7 @@ async fn knife_step5_engine_cancels_running_execution_end_to_end() {
     assert_eq!(
         response.status(),
         StatusCode::ACCEPTED,
-        "step 5 end-to-end: start execution must return 202"
+        "API producer boundary, step 5 setup: start execution must return 202"
     );
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
@@ -746,13 +742,10 @@ async fn knife_step5_engine_cancels_running_execution_end_to_end() {
         .expect("start response carries an id")
         .to_string();
 
-    // ── Wait until the slow handler enters its select{} — frontier is live ──
+    // ── Wait until the slow handler is active ───────────────────────────────
     tokio::time::timeout(Duration::from_secs(10), seam.slow_started.notified())
         .await
-        .expect(
-            "slow handler started within 10s (A2 consumer drained Start and the engine \
-             dispatched the node)",
-        );
+        .expect("slow handler started within 10s after the test-installed consumer drained Start");
 
     // ── Cancel via the API — step 5 producer path ──────────────────────────
     let cancel_app = app::build_app(state.clone(), &api_config);
@@ -772,14 +765,24 @@ async fn knife_step5_engine_cancels_running_execution_end_to_end() {
     assert_eq!(
         cancel_response.status(),
         StatusCode::OK,
-        "step 5 end-to-end: cancel must return 200"
+        "API producer boundary, step 5: cancel must return 200"
     );
 
-    // ── The execution must reach a terminal state well inside the slow
-    //    handler's 30s sleep — proving the Cancel reached the engine's live
-    //    cancel token and the handler exited cooperatively. Without A3 the
-    //    row would be `Cancelled` via the API's CAS but the slow handler
-    //    would still be sleeping in-process for up to 30s.
+    let queued = control_queue.snapshot();
+    let cancel_message = queued
+        .iter()
+        .map(|(message, _status)| message)
+        .find(|message| message.command == ControlCommand::Cancel)
+        .expect("API cancellation must persist a durable Cancel control row");
+    assert_eq!(
+        cancel_message.execution_id, execution_id_str,
+        "durable Cancel control row must reference the cancelled execution"
+    );
+
+    // Preserve the terminal-state assertion on the persisted producer result.
+    // The API CAS-transitioned this row before responding, so observing it
+    // within the timeout does not prove the consumer drained `Cancel` or that
+    // the slow handler exited.
     let execution_id = nebula_core::ExecutionId::parse(&execution_id_str).unwrap();
     let final_status = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
@@ -802,17 +805,15 @@ async fn knife_step5_engine_cancels_running_execution_end_to_end() {
         }
     })
     .await
-    .expect(
-        "engine reached a terminal state within 10s (A3 cancel dispatch signalled the \
-         live frontier loop) — the 30s slow handler was aborted cooperatively",
-    );
+    .expect("the API-persisted execution state became terminal within 10s");
 
     assert!(
         final_status.is_terminal(),
-        "step 5 end-to-end: execution reached a terminal state after Cancel — A3 closed \
-         the §4.5 gap on the cancel half (#330). got: {final_status:?}"
+        "step 5 producer contract: API cancellation persisted a terminal state. \
+         got: {final_status:?}"
     );
 
-    // Graceful shutdown so the spawned consumer task doesn't leak.
-    seam.shutdown().await;
+    // Handler exit is outside this test's oracle; abort and join the
+    // unobserved consumer so cleanup cannot masquerade as evidence.
+    seam.abort_unobserved_consumer().await;
 }

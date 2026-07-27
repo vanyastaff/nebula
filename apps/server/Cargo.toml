@@ -11,6 +11,14 @@ publish = false
 name = "nebula-server"
 path = "src/main.rs"
 
+[lib]
+name = "nebula_server"
+path = "src/lib.rs"
+
+[[test]]
+name = "runtime_repair_red_scenarios"
+path = "tests/runtime_repair_red_scenarios.rs"
+
 [dependencies]
 nebula-api = { path = "../../crates/api", features = ["first-party-composition"] }
 # In-memory adapters and the SQLite/Postgres execution-store paths live in
@@ -30,6 +38,12 @@ nebula-engine = { path = "../../crates/engine" }
 nebula-tenancy = { path = "../../crates/tenancy" }
 nebula-core = { path = "../../crates/core" }
 nebula-schema = { path = "../../crates/schema", features = ["schemars"] }
+# Reused only by the evidence-only runtime-repair profile. The ordinary server
+# does not link the worker composition root.
+nebula-worker-bin = { path = "../worker", optional = true }
+# Ephemeral execution observations used only by the runtime-repair evidence
+# profile. Durable state remains authoritative.
+nebula-eventbus = { path = "../../crates/eventbus", optional = true }
 # Composition root wires a process-wide `MetricsRegistry` and attaches the OTLP push
 # pipeline via `TelemetryGuard::attach_metrics_exporter`. Direct dep so the surface stays
 # stable across api re-export refactors.
@@ -45,6 +59,7 @@ thiserror = { workspace = true }
 async-trait = { workspace = true }
 base64 = { workspace = true }
 secrecy = { workspace = true }
+chrono = { workspace = true, optional = true }
 zeroize = { workspace = true }
 futures = { workspace = true }
 uuid = { workspace = true }
@@ -68,12 +83,21 @@ sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
 postgres = [
   "nebula-api/postgres",
   "nebula-storage/postgres",
+  "nebula-worker-bin?/postgres",
   "sqlx/postgres",
   "sqlx/tls-rustls-ring-native-roots",
+]
+runtime-repair-red = [
+  "dep:nebula-worker-bin",
+  "nebula-worker-bin/runtime-repair-red",
+  "dep:nebula-eventbus",
+  "dep:chrono",
+  "nebula-api/test-util",
 ]
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 nebula-action = { path = "../../crates/action" }
 # Activate the `test-util` feature of nebula-api for tests — exposes
 # `ApiConfig::for_test()`. Cargo unions features from [dependencies] and

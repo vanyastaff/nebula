@@ -1,8 +1,8 @@
 ---
 name: nebula-engine
-role: Composition Root (Orchestrator)
+role: Runtime Control (Graph Execution)
 status: partial
-last-reviewed: 2026-04-17
+last-reviewed: 2026-07-26
 canon-invariants: [L2-10, L2-11.1, L2-12.2]
 related: [nebula-execution, nebula-storage, nebula-runtime, nebula-workflow, nebula-resilience, nebula-plugin, nebula-credential, nebula-resource]
 ---
@@ -11,26 +11,28 @@ related: [nebula-execution, nebula-storage, nebula-runtime, nebula-workflow, neb
 
 ## Purpose
 
-A workflow engine needs one component that assembles all the other crates and drives an execution
-from "activated workflow" to "terminal state." Without a composition root, callers must wire
-`nebula-runtime`, `nebula-storage`, `nebula-execution`, and the plugin registry themselves and
-risk diverging from the canon §12.2 control-plane contract. `nebula-engine` is that root: it
-builds an `ExecutionPlan` from the workflow DAG, resolves node inputs from predecessor outputs,
-transitions execution state through `ExecutionRepo` (CAS on `version`), and delegates action
-dispatch to `nebula-runtime`. Canon §12.2 names this crate as the location of the
-`execution_control_queue` consumer (`ControlConsumer`). The consumer skeleton — polling,
-claim/ack, graceful shutdown — ships today; the engine-side `Start` / `Resume` / `Restart`
-dispatch lives in `EngineControlDispatch` (A2, closes #332 / #327); the `Cancel` / `Terminate`
-dispatch (A3, closes #330) signals the live frontier loop via `WorkflowEngine::cancel_execution`
-and `Terminate` shares the cooperative-cancel body until a distinct forced-shutdown path is
-wired (ADR-0016). A demo handler that logs and discards commands does not satisfy the canon.
+`nebula-engine` is reusable runtime control for graph execution. It builds an
+`ExecutionPlan` from the workflow DAG, resolves node inputs from predecessor
+outputs, transitions execution state through the storage ports, and delegates
+action dispatch to the runtime. First-party deployment composition roots live
+under `apps/`; this crate does not select adapters or own process lifecycle.
+
+Canon §12.2 places the durable control-queue consumer implementation here.
+`ControlConsumer` provides polling, claim/ack, and graceful shutdown, while
+`EngineControlDispatch` implements `Start` / `Resume` / `Restart` and
+`Cancel` / `Terminate`. Those five command paths are manually composed in
+integration tests. No non-test first-party composition root currently
+constructs `ControlConsumer` with `EngineControlDispatch`, so the deployed
+server/worker path is not yet an end-to-end control consumer. `Terminate`
+also shares the cooperative-cancel body until a distinct forced-shutdown path
+is wired (ADR-0016).
 
 ## Role
 
-*Composition Root.* Wires the exec layer (`nebula-runtime`, `nebula-storage`, plugin registry,
-credential/resource accessors) into a single `WorkflowEngine` entry point. Drives the §10
-golden path — activate → schedule → transition → observe — using DAG-level parallelism and
-bounded concurrency.
+*Runtime control.* `WorkflowEngine` drives a supplied workflow and supplied
+ports using DAG-level parallelism and bounded concurrency. Deployment roots
+under `apps/` remain responsible for adapter selection, plugin catalogs,
+configuration, and process lifecycle.
 
 ## Public API
 
@@ -38,8 +40,10 @@ bounded concurrency.
   Exposes `cancel_execution(id) -> bool` so control-queue `Cancel` signals reach the live
   frontier loop (ADR-0008 A3; ADR-0016).
 - `ControlConsumer` — durable control-queue consumer drained via `ControlQueueRepo`
-  (canon §12.2, ADR-0008). All five commands — `Start` / `Resume` / `Restart` / `Cancel` /
-  `Terminate` — are wired via `EngineControlDispatch` (A2 + A3). Optional
+  (canon §12.2, ADR-0008). Its dispatch implementation supports all five
+  commands — `Start` / `Resume` / `Restart` / `Cancel` / `Terminate` — via
+  `EngineControlDispatch` (A2 + A3), but current first-party app roots do not
+  install that pairing. Optional
   `ControlQueueEntry::w3c_trace_context` restores an OpenTelemetry parent on the
   dispatch span (`control_trace`, ADR-0050).
 - `ControlDispatch` — engine-owned trait implementors provide to deliver typed commands
@@ -86,17 +90,20 @@ action/credential/resource caches enforcing the namespace invariant at construct
   parallel lifecycle. Seam: `crates/storage/src/execution_repo.rs — ExecutionRepo::transition`.
 
 - **[L2-§12.2]** The engine owns the `execution_control_queue` consumer
-  (`ControlConsumer`; wiring decisions in ADR-0008). Cancel signals are written to the outbox in
-  the same logical operation as the state transition and the engine's `ControlConsumer` drains
-  the queue. All five commands — `Start` / `Resume` / `Restart` / `Cancel` / `Terminate` — are
-  wired end-to-end via `EngineControlDispatch` (A2 + A3). `Cancel` reaches the live frontier
-  loop through the per-instance cancel registry (`WorkflowEngine::cancel_execution`; ADR-0016);
-  `Terminate` shares the cooperative-cancel body until a distinct forced-shutdown path is
-  wired. A handler that only logs and discards control-queue rows violates this invariant.
+  implementation (`ControlConsumer`; wiring decisions in ADR-0008).
+  `EngineControlDispatch` implements all five commands — `Start` / `Resume` /
+  `Restart` / `Cancel` / `Terminate` — and manually composed integration tests
+  exercise them. Current first-party deployment roots do not construct this
+  consumer, so those tests are component integration evidence rather than a
+  deployed end-to-end claim. When installed, `Cancel` reaches the live frontier
+  loop through the per-instance cancel registry
+  (`WorkflowEngine::cancel_execution`; ADR-0016); `Terminate` currently shares
+  the cooperative-cancel body.
 
-- **[L2-§10]** The golden-path knife scenario (canon §13) — define, activate, start, observe,
-  cancel — exercises this crate's integration with `ExecutionRepo` end-to-end. Integration
-  tests in `tests/` cover the control-queue cancel path.
+- **[L2-§10]** Engine and API knife tests manually compose in-memory ports,
+  `ControlConsumer`, and `EngineControlDispatch` to exercise Start/Cancel
+  dispatch. They do not boot the first-party server and worker roots together
+  and therefore do not prove the deployed golden path end-to-end.
 
 ## Non-goals
 
@@ -186,5 +193,6 @@ ROADMAP "Out of scope for 1.0" entry — M2.2 closes Layer 1 only.
   layer traits into engine concrete types. Architecturally these belong to `nebula-credential`
   / `nebula-resource` as extension points; the move is a candidate refactor when the gaps above
   are fixed.
-- **14 intra-workspace dependencies** — intentional for a composition root, but every new dep
-  must be justified against the layer rules in `AGENTS.md`.
+- **14 intra-workspace dependencies** — runtime control spans several lower
+  layers, but every new dependency must still be justified against the layer
+  rules in `AGENTS.md`.

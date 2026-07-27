@@ -1,20 +1,26 @@
-//! Smoke test: core-flavor boot → with_plugin → claim → drive → complete.
+//! Smoke test for a manually assembled core-flavor runtime over in-memory
+//! stores.
 //!
-//! Proves the full path:
+//! Proves this explicit test assembly:
 //!   `compose::build_core_flavor_runtime` (wires CorePlugin + in-memory stores)
 //!   → `WorkerRuntime::spawn` → orchestrator claims a `Start` job
 //!   → `EngineExecutionSink::dispatch` → `WorkflowEngine::resume_execution`
 //!   → execution reaches `Completed`.
 //!
-//! The test uses in-memory adapters so no SQLite file is created.
+//! The test uses seeded in-memory adapters, so it does not boot the worker
+//! binary or exercise its default SQLite composition.
 //!
 //! Red-ability: without `with_plugin` the engine cannot dispatch `core.set_fields`
 //! and the execution never reaches `Completed`. The assertion on `completed` will
 //! fire, producing a distinct failure message naming the missing plugin wire.
 
+#[cfg(feature = "runtime-repair-red")]
+use std::time::Instant;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use chrono::Utc;
+#[cfg(feature = "runtime-repair-red")]
+use nebula_core::accessor::Clock;
 use nebula_core::{WorkflowId, id::ExecutionId, node_key};
 use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_storage::{
@@ -33,6 +39,26 @@ use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
 use nebula_worker_bin::compose::build_core_flavor_runtime;
+#[cfg(feature = "runtime-repair-red")]
+use nebula_worker_bin::compose::build_core_flavor_runtime_for_runtime_repair_red;
+
+#[cfg(feature = "runtime-repair-red")]
+#[derive(Debug)]
+struct FixedEvidenceClock {
+    wall_time: chrono::DateTime<Utc>,
+    monotonic: Instant,
+}
+
+#[cfg(feature = "runtime-repair-red")]
+impl Clock for FixedEvidenceClock {
+    fn now(&self) -> chrono::DateTime<Utc> {
+        self.wall_time
+    }
+
+    fn monotonic(&self) -> Instant {
+        self.monotonic
+    }
+}
 
 // ── Scope used across these tests ─────────────────────────────────────────────
 
@@ -182,8 +208,8 @@ async fn read_status(stores: &TestStores, execution_id: ExecutionId) -> Option<E
 
 // ── End-to-end smoke test ─────────────────────────────────────────────────────
 
-/// End-to-end proof that `build_core_flavor_runtime` wires the CorePlugin into
-/// the engine and the claim-loop drives `core.set_fields` to `Completed`.
+/// Proves that the in-memory runtime built by `build_core_flavor_runtime`
+/// wires the CorePlugin and processes a seeded Start job to `Completed`.
 ///
 /// # Red-ability
 ///
@@ -196,7 +222,7 @@ async fn read_status(stores: &TestStores, execution_id: ExecutionId) -> Option<E
 /// "core-flavor worker did not drive the execution to Completed within the poll
 /// budget; ensure build_core_flavor_runtime calls engine.with_plugin(core_plugin)".
 #[tokio::test(start_paused = true)]
-async fn core_flavor_boot_and_drive_to_completed() {
+async fn core_flavor_runtime_processes_seeded_start_job() {
     let stores = TestStores::new();
 
     // A single shared queue: both the runtime and the seed enqueue share the
@@ -330,5 +356,54 @@ async fn core_flavor_runtime_advertises_core_plugin_key() {
         key.as_str(),
         "core",
         "the core-flavor plugin key must be `core`; got `{key}`"
+    );
+}
+
+/// The evidence-only builder must retain the exact supplied clock and event
+/// bus inside the sealed engine while delegating ordinary composition.
+#[cfg(feature = "runtime-repair-red")]
+#[test]
+fn runtime_repair_builder_seals_exact_clock_and_event_bus() {
+    let stores = TestStores::new();
+    let queue: Arc<dyn JobDispatchQueue> =
+        Arc::new(InMemoryJobDispatchQueue::new(&stores.execution));
+    let clock = Arc::new(FixedEvidenceClock {
+        wall_time: Utc::now(),
+        monotonic: Instant::now(),
+    });
+    let clock_lifecycle = Arc::downgrade(&clock);
+    let clock: Arc<dyn Clock> = clock;
+    let event_bus = nebula_eventbus::EventBus::<nebula_engine::ExecutionEvent>::new(8);
+    let event_subscriber = event_bus.subscribe();
+
+    let (builder, _, _) = build_core_flavor_runtime_for_runtime_repair_red(
+        stores.execution_stores(),
+        stores.workflow_stores(),
+        queue,
+        [0xEEu8; 16],
+        clock,
+        event_bus,
+    )
+    .expect("evidence-specific core flavor builds");
+    assert!(
+        clock_lifecycle.upgrade().is_some(),
+        "sealed engine must retain the exact supplied clock"
+    );
+    assert!(
+        !event_subscriber.is_closed(),
+        "sealed engine must retain the supplied event bus"
+    );
+
+    let runtime = builder
+        .build()
+        .expect("evidence-specific worker builder materializes");
+    drop(runtime);
+    assert!(
+        clock_lifecycle.upgrade().is_none(),
+        "clock ownership must end with the sealed runtime"
+    );
+    assert!(
+        event_subscriber.is_closed(),
+        "event bus ownership must end with the sealed runtime"
     );
 }

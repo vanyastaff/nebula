@@ -48,6 +48,9 @@ jobs:
         with:
           toolchain: 1.97.1
 
+      - name: Validate North Star gate policy
+        run: cargo xtask north-star-gates validate
+
       - name: Select packages to test
         id: select
         shell: bash

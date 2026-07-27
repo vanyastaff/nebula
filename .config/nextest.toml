@@ -22,6 +22,10 @@ postgres-authority = { max-threads = 1 }
 test-threads = "num-cpus"
 # Run all tests even if some fail (report full picture)
 fail-fast = false
+# The runtime-repair scenario binary intentionally fails until the repair
+# tasks make each named case green. Ordinary/default and all-feature runs must
+# never absorb that evidence-only binary.
+default-filter = 'not binary(=runtime_repair_red_scenarios)'
 
 # Assign the trybuild binaries to the serialized group for EVERY profile
 # (default / ci / agent inherit default-profile overrides). Filter mirrors the
@@ -44,6 +48,7 @@ status-level = "skip"
 final-status-level = "flaky"
 # Fail fast on first failure in CI
 fail-fast = true
+default-filter = 'not binary(=runtime_repair_red_scenarios)'
 # JUnit output for CI integration (GitHub annotations, Codecov, etc.)
 [profile.ci.junit]
 path = "junit.xml"
@@ -56,6 +61,7 @@ failure-output = "immediate"
 success-output = "never"
 fail-fast = true
 slow-timeout = { period = "30s", terminate-after = 2 }
+default-filter = 'not binary(=runtime_repair_red_scenarios)'
 
 # trybuild UI tests (the `*compile_fail*` binaries across the workspace,
 # the action seam trybuild binary, plus the validator `ui` binary) shell
@@ -83,5 +89,25 @@ final-status-level = "fail"
 # second 30-min interval. Generous so an oversubscribed runner does not
 # kill the chaos run mid-assertion.
 slow-timeout = { period = "30m", terminate-after = 2 }
+default-filter = 'not binary(=runtime_repair_red_scenarios)'
 [profile.chaos.junit]
 path = "junit.xml"
+
+# Dedicated expected-failure evidence profile. This profile selects only the
+# authorized runtime-repair scenario target and never retries or hides failures.
+[profile.runtime-repair-red]
+default-filter = 'binary(=runtime_repair_red_scenarios)'
+test-threads = 1
+retries = 0
+fail-fast = false
+status-level = "fail"
+final-status-level = "fail"
+failure-output = "immediate-final"
+success-output = "never"
+slow-timeout = { period = "60s", terminate-after = 2 }
+
+[profile.runtime-repair-red.junit]
+path = "runtime-repair-red.junit.xml"
+report-name = "runtime-repair-red"
+store-success-output = false
+store-failure-output = true

@@ -1,0 +1,255 @@
+{
+  "gate_id": "NS07",
+  "gate_version": 1,
+  "registry_version": 1,
+  "evidence_schema_version": 1,
+  "input": {
+    "fixture_revision": "north-star-fixture@v1",
+    "workload_revision": "mixed-backend-workload@v3",
+    "configuration_revision": "north-star-config@v2"
+  },
+  "runs": [
+    {
+      "measurement_run_id": "sqlite-001",
+      "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "environment": {
+        "hardware": {
+          "provider": "GitHub Actions",
+          "machine_model": "standard-x64",
+          "cpu_architecture": "x86_64",
+          "cpu_model": "virtual-cpu",
+          "logical_cpu_count": 4,
+          "memory_bytes": 17179869184
+        },
+        "operating_system": {
+          "name": "ubuntu",
+          "version": "24.04",
+          "kernel_version": "6.11"
+        },
+        "rust": {
+          "toolchain": "1.96.1",
+          "rustc_version": "1.96.1",
+          "target": "x86_64-unknown-linux-gnu"
+        },
+        "runtime": {
+          "name": "tokio",
+          "version": "1.51.1",
+          "settings": {
+            "path": "artifacts/north-star/v1/runtime-settings.json",
+            "sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        },
+        "database": {
+          "applicable": true,
+          "engine": "sqlite",
+          "version": "3.50.4",
+          "settings": {
+            "path": "artifacts/north-star/v1/sqlite-settings.json",
+            "sha256": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "topology": "one local database file"
+        },
+        "topology": {
+          "processes": 1,
+          "workers": 4,
+          "regions": 1,
+          "description": "single-process SQLite conformance run"
+        }
+      },
+      "sampling": {
+        "minimum_sample_size": 100,
+        "sample_count": 100,
+        "run_count": 5,
+        "invalid_sample_count": 0,
+        "retry_count": 0,
+        "invalid_sample_policy": "fail-run",
+        "retry_policy": "no-retry"
+      },
+      "cache_policy": {
+        "mode": "mixed",
+        "cold_definition": "The process and database page cache start empty.",
+        "warm_definition": "One untimed workload iteration primes the cache.",
+        "cache_reset_procedure": "Restart the process and recreate the fixture database."
+      },
+      "interval": {
+        "start_event": "Immediately before the first workload command is admitted.",
+        "stop_event": "After the final durable result is observed."
+      },
+      "fairness": {
+        "applicable": false,
+        "non_applicability_reason": "This gate evaluates backend result parity, not scheduler fairness."
+      },
+      "raw_observations": [
+        {
+          "path": "artifacts/north-star/v1/sqlite-observations.jsonl",
+          "sha256": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+          "format": "jsonl",
+          "observation_count": 100,
+          "contains_secrets": false,
+          "contains_raw_payloads": false
+        }
+      ],
+      "query_plans": {
+        "applicable": true,
+        "artifacts": [
+          {
+            "path": "artifacts/north-star/v1/sqlite-query-plan.txt",
+            "sha256": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+          }
+        ]
+      },
+      "ci": {
+        "workflow_path": ".github/workflows/test-matrix.yml",
+        "job_id": "tests",
+        "run_id": 1001,
+        "run_attempt": 1,
+        "run_url": "https://github.com/vanyastaff/nebula/actions/runs/1001",
+        "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "measurement_run_id": "postgresql-001",
+      "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "environment": {
+        "hardware": {
+          "provider": "GitHub Actions",
+          "machine_model": "standard-x64",
+          "cpu_architecture": "x86_64",
+          "cpu_model": "virtual-cpu",
+          "logical_cpu_count": 4,
+          "memory_bytes": 17179869184
+        },
+        "operating_system": {
+          "name": "ubuntu",
+          "version": "24.04",
+          "kernel_version": "6.11"
+        },
+        "rust": {
+          "toolchain": "1.96.1",
+          "rustc_version": "1.96.1",
+          "target": "x86_64-unknown-linux-gnu"
+        },
+        "runtime": {
+          "name": "tokio",
+          "version": "1.51.1",
+          "settings": {
+            "path": "artifacts/north-star/v1/runtime-settings.json",
+            "sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        },
+        "database": {
+          "applicable": true,
+          "engine": "postgresql",
+          "version": "18.1",
+          "settings": {
+            "path": "artifacts/north-star/v1/postgresql-settings.json",
+            "sha256": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+          },
+          "topology": "one PostgreSQL service with one primary"
+        },
+        "topology": {
+          "processes": 2,
+          "workers": 4,
+          "regions": 1,
+          "description": "one application process and one PostgreSQL service"
+        }
+      },
+      "sampling": {
+        "minimum_sample_size": 100,
+        "sample_count": 100,
+        "run_count": 5,
+        "invalid_sample_count": 0,
+        "retry_count": 0,
+        "invalid_sample_policy": "fail-run",
+        "retry_policy": "no-retry"
+      },
+      "cache_policy": {
+        "mode": "mixed",
+        "cold_definition": "The application and database start from a fresh fixture.",
+        "warm_definition": "One untimed workload iteration primes shared caches.",
+        "cache_reset_procedure": "Restart both services and restore the fixture."
+      },
+      "interval": {
+        "start_event": "Immediately before the first workload command is admitted.",
+        "stop_event": "After the final durable result is observed."
+      },
+      "fairness": {
+        "applicable": true,
+        "metric": "tenant-service-ratio",
+        "configured_target_ratio": 0.95,
+        "allowed_deviation_ratio": 0.02,
+        "configuration_revision": "north-star-config@v2"
+      },
+      "raw_observations": [
+        {
+          "path": "artifacts/north-star/v1/postgresql-observations.jsonl",
+          "sha256": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+          "format": "jsonl",
+          "observation_count": 100,
+          "contains_secrets": false,
+          "contains_raw_payloads": false
+        }
+      ],
+      "query_plans": {
+        "applicable": true,
+        "artifacts": [
+          {
+            "path": "artifacts/north-star/v1/postgresql-query-plan.txt",
+            "sha256": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+          }
+        ]
+      },
+      "ci": {
+        "workflow_path": ".github/workflows/test-matrix.yml",
+        "job_id": "postgres-conformance",
+        "run_id": 1002,
+        "run_attempt": 1,
+        "run_url": "https://github.com/vanyastaff/nebula/actions/runs/1002",
+        "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    }
+  ],
+  "aggregation": {
+    "code_repository": "https://github.com/vanyastaff/nebula",
+    "code_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "entrypoint": "cargo xtask north-star-gates aggregate NS07",
+    "artifact_digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+  },
+  "denominator": {
+    "eligible_count": 200,
+    "included_count": 196,
+    "excluded_count": 2,
+    "skipped_count": 2,
+    "exclusion_reasons": [
+      {
+        "reason": "unsupported-workload-shape",
+        "count": 2
+      }
+    ],
+    "skip_reasons": [
+      {
+        "reason": "fixture-capacity-bound",
+        "count": 2
+      }
+    ]
+  },
+  "threshold_evaluation": {
+    "threshold_kind": "all",
+    "metric_results": [
+      {
+        "metric": "included-observation-count",
+        "observed": 196,
+        "expected": 200,
+        "passed": false
+      },
+      {
+        "metric": "backend-parity-ratio",
+        "observed": 0.99,
+        "expected": 0.95,
+        "passed": true
+      }
+    ],
+    "passed": false
+  },
+  "result_status": "failed"
+}

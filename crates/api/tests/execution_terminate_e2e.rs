@@ -1,15 +1,16 @@
-//! `POST /executions/:id/terminate` end-to-end + parity coverage.
+//! `POST /executions/:id/terminate` producer durability and running-handler
+//! race coverage.
 //!
 //! `terminate_execution` graduated stub→implemented as a real durable control queue
-//! durable-control-plane endpoint (control-queue terminate dispatch / cooperative cancel). It mirrors
-//! `cancel_execution` exactly except it enqueues
-//! `ControlCommand::Terminate`. Per cooperative cancel the engine has no distinct
-//! forced-shutdown path: `Terminate` is wired end-to-end
-//! (`ControlConsumer` → `EngineControlDispatch::dispatch_terminate` →
-//! `dispatch_cancel` → the engine cancel registry's live
-//! `CancellationToken`) and the operator-visible terminal state is
-//! `ExecutionStatus::Cancelled` (no `Terminated` variant exists —
-//! `crates/execution/src/status.rs`).
+//! endpoint. It mirrors `cancel_execution` except that it enqueues
+//! `ControlCommand::Terminate`; the operator-visible terminal state is
+//! `ExecutionStatus::Cancelled` because no `Terminated` variant exists
+//! (`crates/execution/src/status.rs`). The running-handler fixture manually
+//! installs a consumer over shared in-memory ports so the request can race
+//! with active work, but it exposes no handler-exit signal. Its terminal row
+//! is written by the API and is not evidence of consumer delivery or handler
+//! interruption. Current first-party composition roots do not install that
+//! consumer. The separate `CANCELFX` gate owns interruption evidence.
 //!
 //! The engine-seam harness (`common::engine_seam`) and the legacy failing
 //! control queue (`common::create_state_with_failing_queue`) are shared with
@@ -19,7 +20,7 @@
 //!
 //! | Scenario | What is asserted | Test |
 //! |----------|------------------|------|
-//! | Engine-visible seam (integration seam bar) | Running exec + POST terminate → control_queue gets a `Terminate` entry → the wired real engine consumer drives the execution to terminal `Cancelled`, well inside the 30s slow-handler window | `terminate_engine_drives_running_execution_to_terminal_end_to_end` |
+//! | Running-handler producer boundary | Slow handler starts → POST terminate persists terminal `Cancelled` + a `Terminate` entry for that execution; the terminal row is explicitly not a handler-exit oracle | `terminate_persists_terminal_state_and_control_intent_while_handler_runs` |
 //! | Producer durability | POST terminate persists `cancelled` + enqueues exactly one `Terminate` entry referencing the execution | `terminate_enqueues_durable_control_signal` |
 //! | Atomic outbox | legacy control-queue handle down → POST terminate still commits state + `Terminate` outbox together via `TransitionBatch` | `terminate_control_signal_is_atomic_with_state` |
 //! | 404 | unknown execution → 404 | `terminate_unknown_execution_returns_404` |
@@ -36,36 +37,28 @@ use common::*;
 use nebula_api::{ApiConfig, app};
 use tower::ServiceExt;
 
-// ── Engine-visible seam (integration seam integration bar) ──────────────────────────
+// ── Running-handler producer boundary (not an interruption oracle) ──────────
 //
-// Symmetric to `knife.rs::knife_step5_engine_cancels_running_execution_end_to_end`,
+// Symmetric to
+// `knife.rs::knife_step5_api_persists_terminal_cancel_control_intent_while_handler_runs`,
 // but exercises the `Terminate` command instead of `Cancel`. The wiring:
 //
 //   POST /executions/:id/terminate
-//     → execution_store CAS-transition (Cancelled)    [API handler, durable control queue order]
-//     → control_queue.enqueue(Terminate)              [API handler, durable control queue order]
-//     → ControlConsumer.claim_pending
-//     → EngineControlDispatch::dispatch_terminate     (control-queue terminate dispatch / cooperative cancel)
-//     → EngineControlDispatch::dispatch_cancel        (Terminate == cooperative
-//                                                      cancel synonym today)
-//     → WorkflowEngine::cancel_execution              (live cancel registry)
-//     → frontier loop observes `ctx.cancellation()` → slow node exits
+//     → execution_store CAS-transition (Cancelled)    [API producer]
+//     → control_queue.enqueue(Terminate)              [API producer]
 //
-// The engine + consumer + cancellable `slow` node wiring is the shared
-// `common::engine_seam` harness — byte-behaviorally identical to the
-// inline knife step-5 wiring. This test differs from `knife_step5` ONLY
-// in the final HTTP call (POST-terminate vs DELETE-cancel) and the
-// command/terminal assertion. Asserting the execution reaches a terminal
-// state inside the 30s slow window proves the `Terminate` signal reached
-// the engine's *live* loop — not merely that the API CAS-flipped the row
-// (the two-truth gap two-truth gap calls out).
+// The shared `common::engine_seam` starts the cancellable `slow` node before
+// the request. It exposes only `slow_started`, not completion of the
+// `Terminate` command or handler exit. The terminal assertion therefore
+// verifies the API producer result only; live interruption remains outside
+// this test's evidence.
 
-/// Engine-visible seam: a Running execution + `POST .../terminate` drives
-/// the execution all the way to a terminal state via the real engine
-/// consumer — proving the durable `Terminate` signal reaches the live
-/// frontier loop (control-queue terminate dispatch / cooperative cancel), not just the DB row.
+/// Persist terminal `Terminate` control intent while a handler is running.
+///
+/// The manually composed harness establishes active work. This test does not
+/// observe downstream command delivery or handler exit.
 #[tokio::test]
-async fn terminate_engine_drives_running_execution_to_terminal_end_to_end() {
+async fn terminate_persists_terminal_state_and_control_intent_while_handler_runs() {
     use std::time::Duration;
 
     use nebula_execution::ExecutionStatus;
@@ -81,7 +74,7 @@ async fn terminate_engine_drives_running_execution_to_terminal_end_to_end() {
     // ── Persist a single-`slow`-node workflow (shared harness) ───────────────
     let workflow_id = engine_seam::persist_slow_workflow(&state).await;
 
-    // ── Build + spawn the real engine consumer (shared harness) ──────────────
+    // ── Start a handler through the manually composed engine harness ────────
     let seam = engine_seam::spawn_engine_consumer(&state);
 
     // ── Start the execution via the producer path ───────────────────────────
@@ -115,13 +108,10 @@ async fn terminate_engine_drives_running_execution_to_terminal_end_to_end() {
         .expect("start response carries an id")
         .to_string();
 
-    // ── Wait until the slow handler enters its select{} — frontier is live ──
+    // ── Wait until the slow handler is active ───────────────────────────────
     tokio::time::timeout(Duration::from_secs(10), seam.slow_started.notified())
         .await
-        .expect(
-            "slow handler started within 10s (consumer drained Start and the engine \
-             dispatched the node)",
-        );
+        .expect("slow handler started within 10s after the test-installed consumer drained Start");
 
     // ── Terminate via the API — the endpoint under test ─────────────────────
     let terminate_app = app::build_app(state.clone(), &api_config);
@@ -152,13 +142,12 @@ async fn terminate_engine_drives_running_execution_to_terminal_end_to_end() {
     assert_eq!(
         terminated["status"].as_str(),
         Some("cancelled"),
-        "terminate response must show terminal `cancelled` status (cooperative cancel: \
-         Terminate is a cooperative-cancel synonym, no `Terminated` variant)"
+        "terminate response must show the API-persisted terminal `cancelled` status"
     );
 
     // The control queue must hold the `Start` from the producer path AND a
-    // fresh `Terminate` from the endpoint under test — proving the durable control queue
-    // same-logical-operation enqueue happened, engine-visible.
+    // fresh `Terminate` from the endpoint under test, proving the durable
+    // producer enqueue happened in the same logical operation.
     let queued = handles.control_queue.snapshot();
     let (terminate_msg, _status) = queued
         .iter()
@@ -169,9 +158,10 @@ async fn terminate_engine_drives_running_execution_to_terminal_end_to_end() {
         "Terminate entry must reference the terminated execution"
     );
 
-    // ── The execution must reach a terminal state well inside the slow
-    //    handler's 30s sleep — proving the Terminate reached the engine's
-    //    live cancel token and the handler exited cooperatively.
+    // Preserve the terminal-state assertion on the persisted producer result.
+    // The API CAS-transitioned this row before responding, so observing it
+    // within the timeout does not prove the consumer drained `Terminate` or
+    // that the slow handler exited.
     let execution_id = nebula_core::ExecutionId::parse(&execution_id_str).unwrap();
     let final_status = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
@@ -188,20 +178,17 @@ async fn terminate_engine_drives_running_execution_to_terminal_end_to_end() {
         }
     })
     .await
-    .expect(
-        "engine reached a terminal state within 10s (Terminate dispatch signalled the \
-         live frontier loop via the cooperative-cancel registry) — the 30s slow handler \
-         was aborted cooperatively, not left sleeping",
-    );
+    .expect("the API-persisted execution state became terminal within 10s");
 
     assert!(
         final_status.is_terminal(),
-        "execution reached a terminal state after Terminate — the engine honors \
-         ControlCommand::Terminate end-to-end (control-queue terminate / cooperative cancel). got: {final_status:?}"
+        "terminate producer contract: API persisted terminal state and durable control intent. \
+         got: {final_status:?}"
     );
 
-    // Graceful shutdown so the spawned consumer task doesn't leak.
-    seam.shutdown().await;
+    // Handler exit is outside this test's oracle; abort and join the
+    // unobserved consumer so cleanup cannot masquerade as evidence.
+    seam.abort_unobserved_consumer().await;
 }
 
 // ── Producer durability + parity coverage (mirrors cancel) ───────────────────
