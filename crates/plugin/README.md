@@ -27,6 +27,10 @@ Actions, Resources, and Credentials need a versioned distribution unit — one t
   re-validates dependencies, and returns an immutable `FrozenPluginRegistry`.
 - `PluginSet` / `PluginContractDescriptor` — normalized registered-surface descriptor. Identity includes sorted plugin keys, component keys, dependency keys and normalized semver requirements; prerelease is logical identity while build metadata is excluded.
 - `WorkerFlavorRevision` — combines the logical plugin-set identity with trusted artifact-set provenance and the logical runtime contract version.
+- `RecordedWorkerFlavorRevisionV1` / `WorkerFlavorIntegrityError` — closed persisted flavor
+  envelope and its checked-loading failure boundary. Deserialization creates only the untrusted
+  envelope; reconstruction rejects unknown format/hash versions and a forged identity before a
+  `WorkerFlavorRevision` is returned.
 - `WorkerFlavorContext::from_registry` — derives a canonically ordered execution-facing view from a successfully frozen registry.
 - `FrozenPluginRegistry::compile_graph_v1` — pure, deterministic compilation of one exact
   `WorkflowVersionId` and `WorkflowDefinition` into an opaque
@@ -81,10 +85,10 @@ credential/resource-ID binding, no persistence, and no runtime mutation. The pla
 requirements remain untrusted author selectors for the authenticated runtime-control plane to
 resolve later.
 
-This boundary remains operationally `partial`: compilation and checked recorded loading exist, but
-there is still zero production consumer until retained exact loading, atomic admission, persisted
-routing, and exact-flavor dispatch consume the closed epoch end to end. Until then, the mutable
-registry remains available to existing composition code.
+This boundary remains operationally `partial`: compilation plus checked plan and worker-flavor
+recorded loading exist, but there is still zero production consumer until retained exact loading,
+atomic admission, persisted routing, and exact-flavor dispatch consume the closed epoch end to end.
+Until then, the mutable registry remains available to existing composition code.
 
 The composition root must supply `ArtifactSetDigest` and
 `RuntimeContractVersion` from trusted activation state. Hash derivation does
@@ -118,10 +122,11 @@ consume only that immutable snapshot.
 See `docs/MATURITY.md` row for `nebula-plugin`.
 
 - API stability: `partial`. `Plugin`, `ResolvedPlugin`, and the mutable registry are implemented.
-  Frozen worker-flavor primitives, the pure Graph-v1 compiler, checked recorded form, and registry
-  compatibility check define a closed contract epoch, but remain operationally partial with zero
-  production consumer until retention, admission, persisted routing, and exact-flavor dispatch
-  adopt them end to end. `PluginManifest` is canonical in `nebula-metadata` and re-exported here.
+  Frozen worker-flavor primitives, checked plan/flavor recorded forms, the pure Graph-v1 compiler,
+  and registry compatibility check define a closed contract epoch, but remain operationally
+  partial with zero production consumer until retention, admission, persisted routing, and
+  exact-flavor dispatch adopt them end to end. `PluginManifest` is canonical in
+  `nebula-metadata` and re-exported here.
 - `#![forbid(unsafe_code)]`, `#![warn(missing_docs)]` enforced.
 - Signing / trust boundary (`[signing]` in `plugin.toml`): `planned` — not enforced at runtime yet. See canon §7.1 and `docs/INTEGRATION_MODEL.md` signing section.
 

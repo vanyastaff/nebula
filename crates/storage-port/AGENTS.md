@@ -1,7 +1,7 @@
 # nebula-storage-port — Agent orientation
 > Agent quick-map for `crates/storage-port/`. Full design: `README.md`. Repo-wide rules: root `AGENTS.md`.
 
-**Purpose:** Pure storage contract — object-safe `#[async_trait]` repository traits, port-local DTO rows, plain-data `Scope`, `StorageError`, and the `TransitionBatch` atomic unit-of-work. No backend code.
+**Purpose:** Pure storage contract — object-safe `#[async_trait]` repository traits, port-local DTO rows, plain-data `Scope`, `StorageError`, the exact plan/flavor catalog roles, and the `TransitionBatch` atomic unit-of-work. No backend code.
 **Layer:** Core — depends only downward (root AGENTS.md -> Layered Dependency Map). Deps: `nebula-core`, async-trait, serde, chrono, uuid. **No sqlx.**
 
 ## Commands
@@ -12,7 +12,7 @@
 - `src/lib.rs` — crate root; re-exports `Scope`, `StorageError`, `FencingToken`, `TransitionBatch{,Builder,Outcome}`
 - `src/batch.rs` — `TransitionBatch`: private fields, builder-only construction; `commit` writes state+outbox+journal in one CAS+fencing-gated transaction
 - `src/store/mod.rs` — ISP-segregated object-safe role traits, including `CredentialPersistence`
-- `src/dto/` — private-field lifecycle DTOs, typed `CredentialSelector`, bounded `CredentialVersion`, and structural live/tombstoned records
+- `src/dto/` — private-field lifecycle DTOs, typed `CredentialSelector`, bounded `CredentialVersion`, structural live/tombstoned records, and opaque exact plan/flavor records
 - `src/scope.rs` — plain-data `Scope { workspace_id, org_id }`; `src/ids.rs` — re-exported core ULIDs + lease `FencingToken`
 
 ## Conventions & never-do
@@ -21,6 +21,7 @@
 - `Scope` is a value type with **no policy**; resolving it from a principal and general cross-tenant denial belong to `nebula-tenancy`, not here. `CredentialOwner`/`CredentialSelector` are also data, not actor authority; their public technical constructors must not be exposed through HTTP or `nebula-sdk`.
 - Credential persistence exposes only explicit `create`, version-fenced `replace`, and version-fenced `tombstone`; never restore generic overwrite or physical delete. Its refresh-retry gate and material epoch are structural aggregate state (never metadata or claim TTL). The backend authors epochs: create/migration starts at `CredentialMaterialEpoch::MIN`; `CredentialMaterialTransition::Preserve { refresh_retry }` retains the epoch and applies the explicit gate transition; `Advance` increments the epoch and unconditionally clears the gate; overflow fails closed. Admission is evaluated against the backend clock.
 - Every repository trait stays `#[async_trait]` + `dyn`-compatible (consumed as `Arc<dyn …>`); keep `TransitionBatch` fields private and builder-only so a transition can't skip scope/CAS/fencing.
+- `PlanFlavorCatalog` loads only an exact typed pair; `PlanFlavorCatalogWriter` inserts only; `PlanFlavorCatalogAdmin` owns drain/delete only. Never merge installer and destructive lifecycle authority, and never add public retain/release/reference mutation: execution-owned references must compose inside their owning backend transaction.
 - Library code uses typed `thiserror`/`StorageError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also

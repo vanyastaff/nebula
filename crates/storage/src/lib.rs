@@ -13,7 +13,7 @@
 //!   `InMemoryCheckpointStore`, `InMemoryJournalReader`,
 //!   `InMemoryNodeResultStore`, `InMemoryIdempotencyGuard`,
 //!   `InMemoryIdempotencyStore`, `InMemoryControlQueue`,
-//!   `InMemoryWebhookActivationStore`.
+//!   `InMemoryWebhookActivationStore`, `InMemoryPlanFlavorCatalog`.
 //! - `sqlite` — SQLite adapter behind the `sqlite` feature
 //!   (dev / edge single-writer; spec §5 SQLite parity boundary).
 //! - `postgres` — PostgreSQL adapter behind the `postgres` feature
@@ -109,6 +109,7 @@ pub use format::StorageFormat;
 pub use inmem::{
     InMemoryCheckpointStore, InMemoryControlQueue, InMemoryExecutionStore,
     InMemoryIdempotencyGuard, InMemoryIdempotencyStore, InMemoryJournalReader,
-    InMemoryNodeResultStore, InMemoryResumeProducer, InMemoryResumeTokenStore,
-    InMemoryWebhookActivationStore, InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
+    InMemoryNodeResultStore, InMemoryPlanFlavorCatalog, InMemoryResumeProducer,
+    InMemoryResumeTokenStore, InMemoryWebhookActivationStore, InMemoryWorkflowStore,
+    InMemoryWorkflowVersionStore,
 };

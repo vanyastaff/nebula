@@ -20,6 +20,8 @@
 //! - `PluginRegistry` — in-memory `PluginKey → Arc<ResolvedPlugin>` registry.
 //! - `FrozenPluginRegistry`, `PluginSet`, and `WorkerFlavorRevision` — immutable activation
 //!   vocabulary.
+//! - `RecordedWorkerFlavorRevisionV1` — untrusted persisted flavor envelope that becomes a
+//!   `WorkerFlavorRevision` only after version and identity validation.
 //! - `ExecutablePlanRevision` — opaque, authority-free Graph-v1 output compiled only from a
 //!   frozen registry and an exact workflow revision.
 //! - `PluginError` — typed error for plugin operations.
@@ -63,8 +65,8 @@ mod resolved_plugin;
 pub use dependency::PluginDependencyError;
 pub use error::{ComponentKind, PluginError};
 pub use flavor::{
-    PluginContractDescriptor, PluginSet, RuntimeContractVersion, RuntimeContractVersionError,
-    WorkerFlavorRevision,
+    PluginContractDescriptor, PluginSet, RecordedWorkerFlavorRevisionV1, RuntimeContractVersion,
+    RuntimeContractVersionError, WorkerFlavorIntegrityError, WorkerFlavorRevision,
 };
 pub use flavor_context::WorkerFlavorContext;
 pub use manifest::{ManifestError, PluginManifest, PluginManifestBuilder};

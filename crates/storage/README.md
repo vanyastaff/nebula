@@ -2,7 +2,7 @@
 name: nebula-storage
 role: Storage Port (Repository Implementations + CAS + Outbox)
 status: partial
-last-reviewed: 2026-07-22
+last-reviewed: 2026-07-27
 canon-invariants: [L2-11.1, L2-11.3, L2-11.5, L2-12.2, L2-12.3]
 related: [nebula-execution, nebula-engine, nebula-core, nebula-error]
 ---
@@ -18,8 +18,9 @@ transitions, journal appends, and outbox writes can share the same logical opera
 transactions. `nebula-storage` is that seam: it implements the spec-16 storage port for
 execution state, workflow definitions and versions, the append-only journal, idempotency keys,
 checkpoints, leases, identity stores, owner-bound credential persistence, and the durable
-control-queue outbox. SQLite and PostgreSQL are deployment backends; InMemory implementations are
-internal test/reference/conformance adapters only.
+control-queue outbox. Task 13A also provides an InMemory exact plan/worker-flavor catalog and
+reference-state model. SQLite and PostgreSQL are deployment backends; InMemory implementations
+are internal test/reference/conformance adapters only.
 
 ## Role
 
@@ -41,6 +42,10 @@ provides the adapters:
 
 - `inmem::*` — internal test/reference/conformance adapters and the loom probe;
   not a supported deployment backend.
+- `InMemoryPlanFlavorCatalog` — Task 13A component/reference adapter over the
+  execution store's shared lock. Exact immutable load, drain, guarded delete,
+  and row-derived blockers are implemented; SQL durability, production
+  reference mutation, and three-backend conformance remain Tasks 14A/13B/20.
 - `sqlite::*` (feature `sqlite`) — single-writer-correct adapters over a
   port-scoped schema; `init_schema` installs it for `:memory:` / test
   pools.
@@ -244,6 +249,9 @@ See `docs/MATURITY.md` row for `nebula-storage`.
   InMemory + SQLite + Postgres and rewired through `engine` / `api`
   (ADR-0072). The legacy `ExecutionRepo` / `WorkflowRepo` dual layer was
   deleted.
+- Exact plan/flavor retention: `partial` — the Task 13A InMemory model is
+  component evidence only. SQLite/PostgreSQL tables and adapters do not exist
+  yet, and no production start/terminal transaction mutates reference rows.
 - Lease fencing is **enforced**: `acquire_lease` returns a monotone
   `FencingToken` that gates every committed `TransitionBatch`, so a
   superseded holder is rejected even on a matching CAS version (the

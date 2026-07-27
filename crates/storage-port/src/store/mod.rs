@@ -18,10 +18,12 @@ mod node_result;
 mod refresh_claim;
 mod resume_producer;
 mod resume_token;
+mod revision_catalog;
 mod trigger_dedup;
 mod webhook;
 mod workflow;
 
+pub use crate::dto::RevisionCatalogError;
 pub use checkpoint::CheckpointStore;
 pub use control_queue::{ControlQueue, ReclaimOutcome};
 pub use credential::{
@@ -42,6 +44,7 @@ pub use refresh_claim::{
 };
 pub use resume_producer::ResumeProducer;
 pub use resume_token::ResumeTokenStore;
+pub use revision_catalog::{PlanFlavorCatalog, PlanFlavorCatalogAdmin, PlanFlavorCatalogWriter};
 pub use trigger_dedup::TriggerDedupInbox;
 pub use webhook::WebhookActivationStore;
 pub use workflow::{WorkflowStore, WorkflowVersionStore};

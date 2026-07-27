@@ -18,6 +18,8 @@ use crate::ResolvedPlugin;
 
 const PLUGIN_SET_DOMAIN: &[u8] = b"nebula.plugin-set.v1";
 const WORKER_FLAVOR_DOMAIN: &[u8] = b"nebula.worker-flavor-revision.v1";
+const WORKER_FLAVOR_RECORD_VERSION_V1: u16 = 1;
+const WORKER_FLAVOR_CANONICAL_HASH_VERSION_V1: u16 = 1;
 
 /// Version of the runtime contract expected by a worker flavor.
 ///
@@ -263,6 +265,74 @@ pub struct WorkerFlavorRevision {
     artifact_set_digest: ArtifactSetDigest,
 }
 
+/// Version-one persisted projection of an immutable worker-flavor revision.
+///
+/// Deserialization creates only this untrusted record. Fields are private so
+/// callers must use [`WorkerFlavorRevision::try_from_recorded_v1`] before the
+/// value can participate in exact execution routing.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordedWorkerFlavorRevisionV1 {
+    record_version: u16,
+    canonical_hash_version: u16,
+    claimed_id: WorkerFlavorRevisionId,
+    plugin_set_id: PluginSetId,
+    runtime_contract_version: RuntimeContractVersion,
+    artifact_set_digest: ArtifactSetDigest,
+}
+
+impl fmt::Debug for RecordedWorkerFlavorRevisionV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RecordedWorkerFlavorRevisionV1")
+            .field("record_version", &self.record_version)
+            .field("canonical_hash_version", &self.canonical_hash_version)
+            .field("claimed_id", &self.claimed_id)
+            .field("plugin_set_id", &self.plugin_set_id)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Integrity failures while loading a recorded worker-flavor revision.
+#[derive(Debug, thiserror::Error, nebula_error::Classify)]
+#[non_exhaustive]
+pub enum WorkerFlavorIntegrityError {
+    /// The envelope version is not the version-one format.
+    #[classify(
+        category = "validation",
+        code = "PLUGIN_FLAVOR_INTEGRITY:UNSUPPORTED_RECORD_VERSION"
+    )]
+    #[error("unsupported worker-flavor record version {found}")]
+    UnsupportedRecordVersion {
+        /// Unsupported version read from the persisted envelope.
+        found: u16,
+    },
+
+    /// The identity derivation version is not supported by this runtime.
+    #[classify(
+        category = "validation",
+        code = "PLUGIN_FLAVOR_INTEGRITY:UNSUPPORTED_CANONICAL_HASH_VERSION"
+    )]
+    #[error("unsupported worker-flavor canonical hash version {found}")]
+    UnsupportedCanonicalHashVersion {
+        /// Unsupported canonical hash version read from the persisted envelope.
+        found: u16,
+    },
+
+    /// The claimed revision identity differs from canonical record content.
+    #[classify(
+        category = "validation",
+        code = "PLUGIN_FLAVOR_INTEGRITY:REVISION_ID_MISMATCH"
+    )]
+    #[error("worker-flavor revision identity does not match its canonical content")]
+    RevisionIdMismatch {
+        /// Identity claimed by the persisted envelope.
+        claimed: WorkerFlavorRevisionId,
+        /// Identity recomputed from the canonical flavor inputs.
+        computed: WorkerFlavorRevisionId,
+    },
+}
+
 impl WorkerFlavorRevision {
     pub(crate) fn derive(
         plugin_set_id: PluginSetId,
@@ -279,6 +349,47 @@ impl WorkerFlavorRevision {
             runtime_contract_version,
             artifact_set_digest,
         }
+    }
+
+    /// Validate a recorded v1 envelope and reconstruct the immutable revision.
+    ///
+    /// This check proves the existing flavor fingerprint only. It does not
+    /// authenticate the artifact set, prove that a compatible registry is
+    /// loaded, retain the revision, or authorize execution.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkerFlavorIntegrityError`] when the record or canonical
+    /// hash version is unsupported, or when the claimed identity differs from
+    /// the identity derived from the recorded flavor inputs.
+    pub fn try_from_recorded_v1(
+        record: RecordedWorkerFlavorRevisionV1,
+    ) -> Result<Self, WorkerFlavorIntegrityError> {
+        if record.record_version != WORKER_FLAVOR_RECORD_VERSION_V1 {
+            return Err(WorkerFlavorIntegrityError::UnsupportedRecordVersion {
+                found: record.record_version,
+            });
+        }
+        if record.canonical_hash_version != WORKER_FLAVOR_CANONICAL_HASH_VERSION_V1 {
+            return Err(
+                WorkerFlavorIntegrityError::UnsupportedCanonicalHashVersion {
+                    found: record.canonical_hash_version,
+                },
+            );
+        }
+
+        let computed = Self::derive(
+            record.plugin_set_id,
+            record.runtime_contract_version,
+            record.artifact_set_digest,
+        );
+        if record.claimed_id != computed.id {
+            return Err(WorkerFlavorIntegrityError::RevisionIdMismatch {
+                claimed: record.claimed_id,
+                computed: computed.id,
+            });
+        }
+        Ok(computed)
     }
 
     /// Derived worker-flavor revision identity.
@@ -303,6 +414,27 @@ impl WorkerFlavorRevision {
     #[must_use]
     pub const fn artifact_set_digest(&self) -> ArtifactSetDigest {
         self.artifact_set_digest
+    }
+}
+
+impl TryFrom<RecordedWorkerFlavorRevisionV1> for WorkerFlavorRevision {
+    type Error = WorkerFlavorIntegrityError;
+
+    fn try_from(record: RecordedWorkerFlavorRevisionV1) -> Result<Self, Self::Error> {
+        Self::try_from_recorded_v1(record)
+    }
+}
+
+impl From<&WorkerFlavorRevision> for RecordedWorkerFlavorRevisionV1 {
+    fn from(revision: &WorkerFlavorRevision) -> Self {
+        Self {
+            record_version: WORKER_FLAVOR_RECORD_VERSION_V1,
+            canonical_hash_version: WORKER_FLAVOR_CANONICAL_HASH_VERSION_V1,
+            claimed_id: revision.id,
+            plugin_set_id: revision.plugin_set_id,
+            runtime_contract_version: revision.runtime_contract_version.clone(),
+            artifact_set_digest: revision.artifact_set_digest,
+        }
     }
 }
 

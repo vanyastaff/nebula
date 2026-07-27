@@ -83,6 +83,11 @@ pub(super) struct State {
     /// Held in the same `State` so `commit` can INSERT token rows
     /// atomically with the state snapshot under one lock.
     pub(super) resume_tokens: HashMap<Vec<u8>, ResumeTokenRow>,
+    /// Exact plan/flavor records and authoritative execution references.
+    ///
+    /// This shares the execution aggregate lock so future start and terminal
+    /// transitions can compose reference mutations without a split boundary.
+    pub(super) revision_catalog: super::plan_flavor_catalog::RevisionCatalogState,
 }
 
 /// Shared mutable core. One mutex guards the whole store so a `commit`
@@ -108,6 +113,13 @@ impl InMemoryExecutionStore {
     #[must_use]
     pub(super) fn shared(&self) -> SharedState {
         Arc::clone(&self.inner)
+    }
+
+    /// Build an exact plan/flavor catalog over this execution store's shared
+    /// atomicity boundary.
+    #[must_use]
+    pub fn plan_flavor_catalog(&self) -> super::InMemoryPlanFlavorCatalog {
+        super::InMemoryPlanFlavorCatalog::new(self)
     }
 
     /// Build a [`super::resume_token::InMemoryResumeTokenStore`] backed by

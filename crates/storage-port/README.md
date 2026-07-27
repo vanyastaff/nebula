@@ -4,7 +4,8 @@ The **storage port** for Nebula: object-safe repository traits, port-local
 DTO rows, the plain-data `Scope` value type, `StorageError`, and the
 `TransitionBatch` atomic unit-of-work. It also owns the object-safe,
 owner-bound `CredentialPersistence` technical contract and its port-local
-owner/selector/row/error values.
+owner/selector/row/error values, plus the technical exact plan/worker-flavor
+catalog contract.
 
 ## What this crate is
 
@@ -20,6 +21,12 @@ does **not** implement any backend.
 - **Port-local DTOs.** Row/record types are defined here and depend only on
   `serde_json::Value` — never on `ActionResult` or any higher-tier type
   (prevents a Core-tier dependency inversion).
+- **Exact plan/flavor catalog.** `PlanFlavorCatalog` loads only a caller-pinned
+  typed plan/flavor pair. `PlanFlavorCatalogWriter` owns immutable insertion
+  only; `PlanFlavorCatalogAdmin` owns drain and guarded deletion. Runtime
+  readers and contract installers receive no destructive lifecycle capability.
+  The port stores non-empty opaque recorded-form bytes and never decodes
+  plugin-owned descriptors.
 - **Plain-data `Scope`.** `Scope { workspace_id, org_id }` is a value type
   with no policy. Resolving a `Scope` from a principal and enforcing
   cross-tenant denial for general Scope-taking stores is the job of
@@ -43,6 +50,15 @@ First-party deployment composition belongs under `apps/`. `nebula-api` is a
 technical HTTP boundary, while tests may assemble reference adapters directly.
 Credential persistence is not wrapped by tenancy; its selectors are mandatory
 data but do not confer authority.
+
+Revision-reference mutation is deliberately absent from the public catalog
+roles. Live execution and rollback-window references belong to runtime
+control and must be changed inside the same backend transaction as their
+owning execution transition. Exposing standalone retain/release calls here
+would make that atomicity optional. A Draining revision remains exactly
+loadable by already-retained executions while rejecting new references;
+guarded deletion is implemented by storage adapters from authoritative
+reference rows, never mutable counters.
 
 Credential writes are explicit `create`, version-fenced `replace`, and
 version-fenced `tombstone` intents. The selector owns a typed global
