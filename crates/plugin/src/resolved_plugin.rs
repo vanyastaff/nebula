@@ -30,7 +30,6 @@ impl ActionContractSnapshot {
         &self.metadata
     }
 
-    #[expect(dead_code, reason = "reserved for the approved compiler phase")]
     pub(crate) const fn dependencies(&self) -> &Dependencies {
         &self.dependencies
     }
@@ -53,17 +52,14 @@ impl CredentialContractSnapshot {
         &self.projected_key
     }
 
-    #[expect(dead_code, reason = "reserved for the approved compiler phase")]
     pub(crate) const fn metadata(&self) -> &CredentialMetadata {
         &self.metadata
     }
 
-    #[expect(dead_code, reason = "reserved for the approved compiler phase")]
     pub(crate) const fn capabilities(&self) -> Capabilities {
         self.capabilities
     }
 
-    #[expect(dead_code, reason = "reserved for the approved compiler phase")]
     pub(crate) const fn type_id(&self) -> TypeId {
         self.type_id
     }
@@ -94,12 +90,10 @@ impl ResourceContractSnapshot {
         &self.metadata
     }
 
-    #[expect(dead_code, reason = "reserved for the approved compiler phase")]
     pub(crate) const fn dependencies(&self) -> &Dependencies {
         &self.dependencies
     }
 
-    #[expect(dead_code, reason = "reserved for the approved compiler phase")]
     pub(crate) const fn type_id(&self) -> TypeId {
         self.type_id
     }
@@ -238,6 +232,21 @@ impl ResolvedPlugin {
 
     pub(crate) fn resource_contracts(&self) -> impl Iterator<Item = &ResourceContractSnapshot> {
         self.resources.values().map(|entry| &entry.contract)
+    }
+
+    pub(crate) fn action_contract(&self, key: &ActionKey) -> Option<&ActionContractSnapshot> {
+        self.actions.get(key).map(|entry| &entry.contract)
+    }
+
+    pub(crate) fn credential_contract(
+        &self,
+        key: &CredentialKey,
+    ) -> Option<&CredentialContractSnapshot> {
+        self.credentials.get(key).map(|entry| &entry.contract)
+    }
+
+    pub(crate) fn resource_contract(&self, key: &ResourceKey) -> Option<&ResourceContractSnapshot> {
+        self.resources.get(key).map(|entry| &entry.contract)
     }
 
     fn build_action_index(

@@ -3482,6 +3482,7 @@ dependencies = [
 name = "nebula-plugin"
 version = "0.1.0"
 dependencies = [
+ "indexmap",
  "insta",
  "nebula-action",
  "nebula-core",

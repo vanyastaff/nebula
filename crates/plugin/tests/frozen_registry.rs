@@ -10,7 +10,8 @@ use std::{
 
 use nebula_action::{ActionContext, ActionError, ActionFactory, ActionHandle, ActionMetadata};
 use nebula_core::{
-    ActionKey, ArtifactSetDigest, CredentialKey, Dependencies, PluginKey, ResourceKey,
+    ActionKey, ArtifactSetDigest, CredentialKey, Dependencies, PluginKey, ResourceKey, WorkflowId,
+    WorkflowVersionId, node_key,
 };
 use nebula_credential::{AnyCredential, AuthPattern, Capabilities, CredentialMetadata};
 use nebula_error::Classify;
@@ -24,7 +25,7 @@ use nebula_resource::{
     factory::{BoxFut, RegisterRequest},
 };
 use nebula_schema::ValidSchema;
-use nebula_workflow::NodeDefinition;
+use nebula_workflow::{NodeDefinition, WorkflowBuilder};
 use semver::{Version, VersionReq};
 
 #[derive(Default)]
@@ -446,6 +447,20 @@ fn resolved_plugin_snapshots_each_erased_contract_once() {
     assert_eq!(frozen.all_actions().count(), 1);
     assert_eq!(frozen.all_credentials().count(), 1);
     assert_eq!(frozen.all_resources().count(), 1);
+
+    let workflow = WorkflowBuilder::new("snapshot proof")
+        .id(WorkflowId::from_bytes([0x34; 16]))
+        .add_node(
+            NodeDefinition::new(node_key!("run"), "Run", "alpha", "run")
+                .expect("test node is valid"),
+        )
+        .build()
+        .expect("test workflow is valid");
+    let plan = frozen
+        .compile_graph_v1(WorkflowVersionId::from_bytes([0x35; 16]), &workflow)
+        .expect("the snapshot-backed workflow compiles");
+    plan.validate_against(&frozen)
+        .expect("compatibility consumes the same snapshots");
 
     assert_each_projection_read_once(&projection_reads);
 }

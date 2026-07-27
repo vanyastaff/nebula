@@ -22,21 +22,19 @@ nebula-metadata = { path = "../metadata" }
 nebula-action = { path = "../action" }
 nebula-credential = { path = "../credential" }
 nebula-resource = { path = "../resource" }
+nebula-schema = { path = "../schema" }
+nebula-workflow = { path = "../workflow" }
 
+indexmap = { workspace = true }
 semver = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 toml = "1"
 tracing = { workspace = true }
 
 [dev-dependencies]
-nebula-schema = { path = "../schema" }
-serde_json = { workspace = true }
-# The resolved-plugin test mocks an `ActionFactory`, whose `create` takes a
-# `NodeDefinition`; the prod crate reaches it transitively through
-# `nebula-action`, the test names it directly.
-nebula-workflow = { path = "../workflow" }
 insta = { workspace = true }
 pretty_assertions = { workspace = true }
 proptest = { workspace = true }

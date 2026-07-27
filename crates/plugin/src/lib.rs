@@ -19,8 +19,9 @@
 //!   invariant at construction.
 //! - `PluginRegistry` — in-memory `PluginKey → Arc<ResolvedPlugin>` registry.
 //! - `FrozenPluginRegistry`, `PluginSet`, and `WorkerFlavorRevision` — immutable activation
-//!   vocabulary. Operational exact-flavor routing remains partial until compiler, admission,
-//!   persisted routing, and dispatch consume the pins end to end.
+//!   vocabulary.
+//! - `ExecutablePlanRevision` — opaque, authority-free Graph-v1 output compiled only from a
+//!   frozen registry and an exact workflow revision.
 //! - `PluginError` — typed error for plugin operations.
 //! - `ComponentKind` — discriminant for namespace and duplicate errors.
 //! - `#[derive(Plugin)]` — proc-macro derivation.
@@ -33,21 +34,25 @@
 //!
 //! ## Immutable activation boundary
 //!
-//! ADR-0115 identity and immutability vocabulary is default-public. Engine dispatch, API
-//! transport, persisted routing, compiler output, and admission have not migrated to it end to
-//! end, so this remains a partial closed epoch with zero production consumer rather than an
-//! operational capability. A `PluginSetId` is an independent pin, not proof of schemas, runtime
-//! behavior, artifact authenticity, authorization, or a complete frozen registry.
+//! ADR-0115 identity and immutability vocabulary and the pure Graph-v1 compiler are
+//! default-public. Retained exact loading, engine dispatch, API transport, persisted routing, and
+//! admission have not migrated to them end to end, so this remains a partial closed epoch with
+//! zero production consumer rather than an operational capability. A `PluginSetId` is an
+//! independent pin, not proof of schemas, runtime behavior, artifact authenticity, authorization,
+//! or a complete frozen registry.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
+mod compatibility;
+mod compiler;
 mod dependency;
 mod error;
 mod flavor;
 mod flavor_context;
 mod manifest;
+mod plan;
 mod plugin;
 pub mod plugin_toml;
 mod registry;
@@ -64,9 +69,15 @@ pub use flavor::{
 pub use flavor_context::WorkerFlavorContext;
 pub use manifest::{ManifestError, PluginManifest, PluginManifestBuilder};
 // Re-export PluginKey from core for convenience.
+pub use compatibility::PlanRegistryCompatibilityError;
 pub use nebula_core::PluginKey;
 pub use nebula_metadata::PluginDependency;
 pub use nebula_plugin_macros::Plugin;
+pub use plan::{
+    ActivationDiagnostic, ExecutablePlanIntegrityError, ExecutablePlanRevision,
+    PlanBindingContract, PlanBindingRequirement, PlanBindingSite, PlanCompilationError,
+    RecordedExecutablePlanRevisionV1,
+};
 pub use plugin::Plugin;
 pub use registry::PluginRegistry;
 pub use registry::{FrozenPluginRegistry, RegistryFreezeError};

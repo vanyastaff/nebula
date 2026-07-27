@@ -28,12 +28,12 @@ Legend:
 | nebula-engine        | partial  | stable  | stable | partial (`ControlConsumer` and all five `EngineControlDispatch` methods are implemented and manually composed in integration tests (ADR-0008 A2/A3; ADR-0016), but no non-test first-party composition root constructs that pair, so production control consumption is still a composition gap. ADR-0008 B1 reclaim sweep is implemented via `ControlQueueRepo::reclaim_stuck` + ADR-0017. Operator-declared retry is implemented via `retry_policy` → `WaitingRetry` / `next_attempt_at` / re-dispatch with `ExecutionBudget.max_total_retries`; result-driven `ActionResult::Retry` is not public. The `credential` module is bridge + test-harness only after ADR-0092) | n/a |
 | nebula-error         | stable   | stable  | stable | n/a | n/a |
 | nebula-eventbus      | stable   | stable  | stable | n/a | n/a |
-| nebula-execution     | stable existing state-machine/journal/plan path; partial default-public revision and Graph-v1 bundle vocabulary | stable  | stable | stable existing path; partial bundle path with zero production consumer until compiler, admission, persisted routing, and exact-flavor dispatch adopt it end to end | partial |
+| nebula-execution     | stable existing state-machine/journal/plan path; partial default-public revision and Graph-v1 bundle vocabulary | stable  | stable | stable existing path; partial bundle path with zero production consumer until admission, persisted routing, and exact-flavor dispatch adopt it end to end | partial |
 | nebula-expression    | stable   | stable  | stable | stable | n/a |
 | nebula-log           | stable   | stable  | stable | n/a | n/a |
 | nebula-metadata      | frontier | stable  | stable | n/a | n/a |
 | nebula-metrics       | stable   | stable  | stable | n/a | n/a |
-| nebula-plugin        | stable mutable registry path; partial default-public frozen plugin-set/flavor epoch | stable  | stable | stable mutable path; partial frozen-flavor path with zero production consumer until compiler, admission, persisted routing, and exact-flavor dispatch adopt it end to end | n/a |
+| nebula-plugin        | stable mutable registry path; partial default-public frozen plugin-set/flavor epoch and pure Graph-v1 compiler | stable  | stable | stable mutable path; pure authority-free compilation and checked registry compatibility exist, but the frozen epoch still has zero production consumer until retained exact loading, admission, persisted routing, and exact-flavor dispatch adopt it end to end | n/a |
 | nebula-resilience    | stable   | stable  | stable | n/a | n/a |
 | nebula-storage-port  | stable   | stable  | stable | stable (ADR-0072 — object-safe row-model seam; every storage consumer depends on this and not on `nebula-storage`) | n/a |
 | nebula-storage-loom-probe | partial | stable | partial | partial (`loom`-checked concurrency probes for storage critical sections; library, no SLI) | n/a |
@@ -70,12 +70,13 @@ Credential authority/persistence delivery is intentionally staged:
 This file is a living dashboard. Reviewers check truthfulness on every PR that touches a crate's public surface, test suite, or docs. Canon §17 DoD includes "MATURITY.md row updated if the PR changes crate state."
 
 Last full sweep: 2026-04-17 (Pass 4 of docs architecture redesign).
-Last targeted revision: 2026-07-27 — **immutable execution-contract vocabulary activation.**
-Removed the former opt-in feature names and made revision, frozen-registry, and Graph-v1 bundle
-primitives default-public. Added canonical bundle identity/fingerprint vocabulary and structural
-wire validation. Existing state-machine and mutable-registry paths remain stable, while bundle
-and exact-flavor production consumption remains explicitly `partial` with no engine integration
-claim.
+Last targeted revision: 2026-07-27 — **immutable execution-contract vocabulary and pure plan
+compilation.** Removed the former opt-in feature names and made revision, frozen-registry, and
+Graph-v1 bundle primitives default-public. Added canonical bundle identity/fingerprint vocabulary,
+structural wire validation, frozen component snapshots, and the authority-free Graph-v1 compiler
+with a checked recorded form. Existing state-machine and mutable-registry paths remain stable,
+while retention, admission, bundle materialization, and exact-flavor production consumption remain
+explicitly `partial` with no engine integration claim.
 Prior targeted revision: 2026-07-22 — **K1 credential authority/persistence and SDK perimeter truth pass.**
 Removed the raw credential OAuth authorization/callback routes and their API-owned
 pending authority. The supported Plane-B HTTP acquisition contract is now only
