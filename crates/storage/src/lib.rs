@@ -115,4 +115,7 @@ pub use inmem::{
     InMemoryResumeTokenStore, InMemoryWebhookActivationStore, InMemoryWorkflowStore,
     InMemoryWorkflowVersionStore,
 };
+// Mirrors the gating on `mod migration`: with no backend feature there is no
+// migration catalog to adopt a database into.
+#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
 pub use migration::adopt::{LedgerAdoptionError, LedgerAdoptionOutcome};
