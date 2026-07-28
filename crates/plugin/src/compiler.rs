@@ -589,6 +589,25 @@ fn project_auth_pattern(
 /// noncanonical. Collapsing it to `None` would silently invert a deny-all
 /// filter into allow-all and admit every source node onto the port, so an
 /// empty filter is refused at projection instead.
+/// Choose the candidate with the lowest key, independent of iteration order.
+///
+/// Provider lookups walk `FrozenPluginRegistry::iter`, whose order is
+/// documented as unspecified because it is a `HashMap` with a per-process
+/// `RandomState` seed. Two plugins can legitimately namespace-own one
+/// component key, and the winner's `plugin_key` is recorded into the canonical
+/// bytes hashed into `ExecutablePlanRevisionId` — so "first one the iterator
+/// yields" made a single registry and workflow compile to different revision
+/// IDs on different replicas, and an exact-revision load then reported a plan
+/// missing that had just been installed. A total order over the keys removes
+/// the process dependence entirely.
+fn lowest_keyed_provider<Key: Ord, Value>(
+    candidates: impl Iterator<Item = (Key, Value)>,
+) -> Option<Value> {
+    candidates
+        .min_by(|(left, _), (right, _)| left.cmp(right))
+        .map(|(_, value)| value)
+}
+
 fn canonical_optional_strings(
     values: Option<&[String]>,
 ) -> Result<Option<Box<[String]>>, ContractProjectionError> {
@@ -2058,26 +2077,42 @@ impl<'a> GraphCompiler<'a> {
             .find_map(|(candidate, plugin)| (candidate == key).then_some(plugin.as_ref()))
     }
 
+    /// Locate the plugin providing `key`, choosing the provider deterministically.
+    ///
+    /// `FrozenPluginRegistry::iter` documents its order as unspecified — it is
+    /// a `HashMap` whose `RandomState` is seeded per process. Two plugins can
+    /// legitimately namespace-own one component key (`PluginKey` permits `.`,
+    /// so `acme` and `acme.storage` both prefix `acme.storage.bucket`), and the
+    /// chosen provider's key is recorded into the canonical bytes hashed into
+    /// `ExecutablePlanRevisionId`. Taking whichever provider the iterator
+    /// happened to yield first therefore let one registry and one workflow
+    /// compile to *different* revision IDs on two replicas, after which an
+    /// exact-revision load reports a plan missing that was just installed.
+    /// Lowest plugin key wins: a total order that is stable across processes.
     fn find_resource(
         &self,
         key: &ResourceKey,
     ) -> Option<(&ResolvedPlugin, &ResourceContractSnapshot)> {
-        self.registry.iter().find_map(|(_, plugin)| {
+        lowest_keyed_provider(self.registry.iter().filter_map(|(plugin_key, plugin)| {
             plugin
                 .resource_contract(key)
-                .map(|snapshot| (plugin.as_ref(), snapshot))
-        })
+                .map(|snapshot| (plugin_key.as_str(), (plugin.as_ref(), snapshot)))
+        }))
     }
 
+    /// Locate the plugin providing `key`, choosing deterministically.
+    ///
+    /// Same reasoning as [`Self::find_resource`]: the winner's key reaches the
+    /// content-addressed revision identity, so it must not depend on hash order.
     fn find_credential(
         &self,
         key: &CredentialKey,
     ) -> Option<(&ResolvedPlugin, &CredentialContractSnapshot)> {
-        self.registry.iter().find_map(|(_, plugin)| {
+        lowest_keyed_provider(self.registry.iter().filter_map(|(plugin_key, plugin)| {
             plugin
                 .credential_contract(key)
-                .map(|snapshot| (plugin.as_ref(), snapshot))
-        })
+                .map(|snapshot| (plugin_key.as_str(), (plugin.as_ref(), snapshot)))
+        }))
     }
 
     fn record_plugin(&mut self, plugin: &ResolvedPlugin) {
@@ -2311,6 +2346,36 @@ mod tests {
     use super::*;
 
     const SECRET_PAYLOAD: &str = "compiler-secret-that-must-not-leak";
+
+    /// Red→green proof that provider selection does not depend on hash order.
+    ///
+    /// `PluginKey` permits `.`, so `acme` and `acme.storage` can both
+    /// namespace-own `acme.storage.bucket`. The winner's key is hashed into the
+    /// content-addressed revision id, so picking whichever provider the
+    /// registry's `HashMap` yielded first made two replicas compile the same
+    /// registry and workflow to different `ExecutablePlanRevisionId`s.
+    #[test]
+    fn provider_selection_is_lowest_key_regardless_of_iteration_order() {
+        let forward =
+            lowest_keyed_provider([("acme.storage", "namespaced"), ("acme", "root")].into_iter());
+        let reverse =
+            lowest_keyed_provider([("acme", "root"), ("acme.storage", "namespaced")].into_iter());
+
+        assert_eq!(
+            forward, reverse,
+            "the same provider set must resolve identically whatever order it is walked in"
+        );
+        assert_eq!(
+            forward,
+            Some("root"),
+            "the lowest plugin key is the deterministic winner"
+        );
+        assert_eq!(
+            lowest_keyed_provider(std::iter::empty::<(&str, &str)>()),
+            None,
+            "no provider still means no provider"
+        );
+    }
 
     /// Red→green proof that a deny-all connection filter is never inverted.
     ///

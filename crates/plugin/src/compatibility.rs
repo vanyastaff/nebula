@@ -297,24 +297,41 @@ fn validate_plugin_edge(
     }
 }
 
+/// Locate the plugin providing `key`, choosing the provider deterministically.
+///
+/// `FrozenPluginRegistry::iter` order is unspecified, so an arbitrary winner
+/// among two plugins that both namespace-own a key made this compatibility
+/// verdict vary between processes over identical inputs. It must agree with
+/// the compiler's choice, which is the lowest plugin key.
 fn find_resource<'a>(
     registry: &'a FrozenPluginRegistry,
     key: &ResourceKey,
 ) -> Option<(&'a crate::ResolvedPlugin, &'a ResourceContractSnapshot)> {
-    registry.iter().find_map(|(_, plugin)| {
-        plugin
-            .resource_contract(key)
-            .map(|snapshot| (plugin.as_ref(), snapshot))
-    })
+    registry
+        .iter()
+        .filter_map(|(plugin_key, plugin)| {
+            plugin
+                .resource_contract(key)
+                .map(|snapshot| (plugin_key.as_str(), plugin.as_ref(), snapshot))
+        })
+        .min_by_key(|(plugin_key, _, _)| *plugin_key)
+        .map(|(_, plugin, snapshot)| (plugin, snapshot))
 }
 
+/// Locate the plugin providing `key`, choosing deterministically.
+///
+/// Same reasoning as [`find_resource`].
 fn find_credential<'a>(
     registry: &'a FrozenPluginRegistry,
     key: &CredentialKey,
 ) -> Option<(&'a crate::ResolvedPlugin, &'a CredentialContractSnapshot)> {
-    registry.iter().find_map(|(_, plugin)| {
-        plugin
-            .credential_contract(key)
-            .map(|snapshot| (plugin.as_ref(), snapshot))
-    })
+    registry
+        .iter()
+        .filter_map(|(plugin_key, plugin)| {
+            plugin
+                .credential_contract(key)
+                .map(|snapshot| (plugin_key.as_str(), plugin.as_ref(), snapshot))
+        })
+        .min_by_key(|(plugin_key, _, _)| *plugin_key)
+        .map(|(_, plugin, snapshot)| (plugin, snapshot))
 }
