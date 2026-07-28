@@ -386,6 +386,8 @@ pub(crate) enum ContractProjectionError {
     InputPort,
     OutputPort,
     AuthPattern,
+    /// A connection filter was present but empty, i.e. "accept nothing".
+    EmptyConnectionFilter,
 }
 
 /// Projects the exact snapshotted action contract used by compilation and
@@ -533,8 +535,8 @@ fn project_input_port(port: &InputPort) -> Result<RecordedInputPortV1, ContractP
             multi: support.multi,
             allowed_node_types: canonical_optional_strings(
                 support.filter.allowed_node_types.as_deref(),
-            ),
-            allowed_tags: canonical_optional_strings(support.filter.allowed_tags.as_deref()),
+            )?,
+            allowed_tags: canonical_optional_strings(support.filter.allowed_tags.as_deref())?,
         }),
         _ => Err(ContractProjectionError::InputPort),
     }
@@ -579,11 +581,27 @@ fn project_auth_pattern(
     }
 }
 
-fn canonical_optional_strings(values: Option<&[String]>) -> Option<Box<[String]>> {
-    let mut values = values?.to_vec();
+/// Canonicalize one optional connection-filter list.
+///
+/// `None` means "unfiltered"; a present list means "only these". An explicitly
+/// empty list therefore says "accept nothing" — a meaning the recorded wire
+/// format cannot carry, because the plan validator rejects `Some([])` as
+/// noncanonical. Collapsing it to `None` would silently invert a deny-all
+/// filter into allow-all and admit every source node onto the port, so an
+/// empty filter is refused at projection instead.
+fn canonical_optional_strings(
+    values: Option<&[String]>,
+) -> Result<Option<Box<[String]>>, ContractProjectionError> {
+    let Some(values) = values else {
+        return Ok(None);
+    };
+    if values.is_empty() {
+        return Err(ContractProjectionError::EmptyConnectionFilter);
+    }
+    let mut values = values.to_vec();
     values.sort();
     values.dedup();
-    (!values.is_empty()).then(|| values.into_boxed_slice())
+    Ok(Some(values.into_boxed_slice()))
 }
 
 fn input_port_key(port: &RecordedInputPortV1) -> &str {
@@ -2293,6 +2311,40 @@ mod tests {
     use super::*;
 
     const SECRET_PAYLOAD: &str = "compiler-secret-that-must-not-leak";
+
+    /// Red→green proof that a deny-all connection filter is never inverted.
+    ///
+    /// `None` is "unfiltered" and a present list is "only these", so an
+    /// explicitly empty list means "accept nothing". Canonicalizing it to
+    /// `None` admitted every source node onto the port — the exact opposite of
+    /// what the plugin declared — and produced a record the plan validator
+    /// rejects as noncanonical anyway.
+    #[test]
+    fn empty_connection_filter_is_refused_not_collapsed_to_unfiltered() {
+        let empty: &[String] = &[];
+        assert!(
+            matches!(
+                canonical_optional_strings(Some(empty)),
+                Err(ContractProjectionError::EmptyConnectionFilter)
+            ),
+            "an explicitly empty filter must be refused, never read as unfiltered"
+        );
+
+        assert!(
+            matches!(canonical_optional_strings(None), Ok(None)),
+            "an absent filter is genuinely unfiltered"
+        );
+
+        let projected =
+            canonical_optional_strings(Some(&["b".to_owned(), "a".to_owned(), "b".to_owned()]))
+                .expect("a non-empty filter must project")
+                .expect("a present filter must stay present");
+        assert_eq!(
+            &*projected,
+            ["a".to_owned(), "b".to_owned()],
+            "a present filter is sorted and deduplicated, and stays present"
+        );
+    }
 
     struct TestActionFactory {
         metadata: ActionMetadata,

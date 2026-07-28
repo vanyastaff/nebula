@@ -31,10 +31,32 @@ mod integrity_tests {
 
     use super::{
         ArtifactContentClassification, ArtifactDigest, ArtifactEntry, ArtifactRecorder,
-        ArtifactReference, EffectProbe, EvidenceIntegrityError, EvidencePoint,
+        ArtifactReference, EffectProbe, EvidenceControls, EvidenceIntegrityError, EvidencePoint,
         ExecutionObservationOutcome, LifecycleObservationRegistry, ManualClock, PROFILE_LABEL,
         RuntimeRepairProfileConfig,
     };
+
+    /// Red→green: the profile's engine clock must share an era with the
+    /// durable adapters composed beside it.
+    ///
+    /// Those adapters stamp `not_before`/`cutoff` with `Utc::now()`, so a clock
+    /// left at `DateTime::<Utc>::UNIX_EPOCH` left every engine-computed
+    /// deadline decades in the past and made lease reclaim, visibility
+    /// timeouts and retry gating fire immediately or never — turning harness
+    /// artifacts into what reads as product RED evidence.
+    #[test]
+    fn evidence_clock_shares_an_era_with_durable_timestamps() {
+        let controls = EvidenceControls::in_memory();
+        let observed = controls.clock().now();
+        let durable_stamp = chrono::Utc::now();
+
+        let skew_seconds = (durable_stamp - observed).num_seconds().abs();
+        assert!(
+            skew_seconds < 60,
+            "the injected clock reads {observed} while durable rows stamp {durable_stamp} \
+             ({skew_seconds}s apart); engine deadlines and persisted deadlines must be comparable"
+        );
+    }
 
     #[test]
     fn profile_label_matches_the_accepted_spec_exactly() {

@@ -93,6 +93,24 @@ impl ManualClock {
         Ok(Self::from_valid_initial(initial_millis, initial_wall_time))
     }
 
+    /// Start a manual clock anchored at the current wall time.
+    ///
+    /// The durable adapters composed into the same profile stamp rows with
+    /// `Utc::now()` (`control_queue.rs` on both backends), so a clock left at
+    /// the Unix epoch puts every engine-computed deadline decades behind every
+    /// persisted `not_before`/`cutoff`: lease reclaim, visibility timeouts and
+    /// retry gating then fire immediately or never, and the recorded failures
+    /// are harness artifacts rather than product defects. Anchoring here keeps
+    /// both sides in one era; advancement stays fully manual and deterministic.
+    #[must_use]
+    pub fn started_at_wall_clock() -> Self {
+        let wall_time = Utc::now();
+        u64::try_from(wall_time.timestamp_millis()).map_or_else(
+            |_| Self::from_valid_initial(0, DateTime::<Utc>::UNIX_EPOCH),
+            |millis| Self::from_valid_initial(millis, wall_time),
+        )
+    }
+
     fn from_valid_initial(initial_millis: u64, initial_wall_time: DateTime<Utc>) -> Self {
         let (changes, _) = watch::channel(initial_millis);
         Self {
@@ -1178,7 +1196,7 @@ impl EvidenceControls {
         postgres_probe: Option<LivePostgresIntegrityProbe>,
     ) -> Self {
         Self {
-            clock: Arc::new(ManualClock::default()),
+            clock: Arc::new(ManualClock::started_at_wall_clock()),
             observations: LifecycleObservationRegistry::new(),
             effect_probe: EffectProbe::default(),
             artifact_recorder: ArtifactRecorder {

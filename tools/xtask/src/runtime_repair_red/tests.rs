@@ -261,6 +261,39 @@ fn timeout_failure_marker_is_rejected() {
     assert_invalid_junit(&report);
 }
 
+/// Red→green: a real product failure whose panic text mentions a timeout is
+/// not a harness timeout.
+///
+/// The classifier used to scan the free-form `message` attribute as well as
+/// `type`. These scenarios assert on lifecycle waits, so a genuine defect
+/// routinely surfaces as "resume timed out waiting for ..." — indistinguishable
+/// from a nextest kill under the old rule, which rejected the entire run and
+/// reported an infrastructure fault for a real product gap.
+#[test]
+fn genuine_failure_whose_message_mentions_a_timeout_is_still_accepted() {
+    let report = junit_report(
+        Counts::new(2, 2, 0, 0),
+        Counts::new(2, 2, 0, 0),
+        &[
+            CaseFixture::new(
+                "c0::restart_resume",
+                "<failure type=\"test failure\" message=\"resume timed out waiting for \
+                 the control queue\">expected product gap</failure>\
+                 <system-err>EXPECTED_RED:c0-split-control-path</system-err>",
+            ),
+            failing_case(
+                "c1::same_key_cancel",
+                "EXPECTED_RED:c1-ambiguous-acceptance",
+            ),
+        ],
+    );
+
+    let summary = verify_documents(ACTIVE_TEST_MANIFEST, 100, &report)
+        .expect("a genuine failure must not be reclassified as a harness timeout");
+    assert_eq!(summary.expected_failure_count, 2);
+    assert_eq!(summary.verified_failure_count, 2);
+}
+
 #[test]
 fn failure_body_cannot_supply_the_expected_red_marker() {
     let report = junit_report(

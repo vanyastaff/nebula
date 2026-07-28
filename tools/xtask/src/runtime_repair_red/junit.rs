@@ -601,14 +601,20 @@ fn required_attribute<'a>(
         })
 }
 
+/// Decide whether a `failure`/`error` element reports a harness timeout.
+///
+/// Only `type` is consulted. It is the classifier the runner sets — nextest
+/// writes `type="test timeout"` for a kill and `type="test failure"` for a
+/// genuine assertion — whereas `message` carries free-form panic text. Scanning
+/// `message` meant a real product failure whose panic happened to say "timed
+/// out" was reclassified as an infrastructure fault, which rejects the whole
+/// run. These scenarios assert on lifecycle waits, so timeout-shaped panic text
+/// is expected, not exceptional.
 fn attributes_indicate_timeout(attributes: &BTreeMap<String, String>) -> bool {
-    attributes
-        .iter()
-        .filter(|(name, _)| matches!(name.as_str(), "type" | "message"))
-        .any(|(_, value)| {
-            let normalized = value.to_ascii_lowercase();
-            normalized.contains("timeout") || normalized.contains("timed out")
-        })
+    attributes.get("type").is_some_and(|value| {
+        let normalized = value.to_ascii_lowercase();
+        normalized.contains("timeout") || normalized.contains("timed out")
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
