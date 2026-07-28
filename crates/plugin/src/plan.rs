@@ -2773,38 +2773,38 @@ mod tests {
 
     #[test]
     fn json_object_order_is_invariant_but_array_order_and_included_fields_are_not() {
-        let mut object_ab = fixture_record();
-        object_ab.content.variables = vec![RecordedVariableV1 {
+        let mut object_a_then_b = fixture_record();
+        object_a_then_b.content.variables = vec![RecordedVariableV1 {
             name: "value".into(),
             value: serde_json::from_str(r#"{"a":1,"b":2}"#).expect("fixture JSON is valid"),
         }]
         .into_boxed_slice();
-        reseal(&mut object_ab);
+        reseal(&mut object_a_then_b);
 
-        let mut object_ba = fixture_record();
-        object_ba.content.variables = vec![RecordedVariableV1 {
+        let mut object_b_then_a = fixture_record();
+        object_b_then_a.content.variables = vec![RecordedVariableV1 {
             name: "value".into(),
             value: serde_json::from_str(r#"{"b":2,"a":1}"#).expect("fixture JSON is valid"),
         }]
         .into_boxed_slice();
-        reseal(&mut object_ba);
-        assert_eq!(object_ab.claimed_id, object_ba.claimed_id);
+        reseal(&mut object_b_then_a);
+        assert_eq!(object_a_then_b.claimed_id, object_b_then_a.claimed_id);
 
-        let mut array_ab = fixture_record();
-        array_ab.content.variables = vec![RecordedVariableV1 {
+        let mut array_a_then_b = fixture_record();
+        array_a_then_b.content.variables = vec![RecordedVariableV1 {
             name: "value".into(),
             value: json!(["a", "b"]),
         }]
         .into_boxed_slice();
-        reseal(&mut array_ab);
-        let mut array_ba = fixture_record();
-        array_ba.content.variables = vec![RecordedVariableV1 {
+        reseal(&mut array_a_then_b);
+        let mut array_b_then_a = fixture_record();
+        array_b_then_a.content.variables = vec![RecordedVariableV1 {
             name: "value".into(),
             value: json!(["b", "a"]),
         }]
         .into_boxed_slice();
-        reseal(&mut array_ba);
-        assert_ne!(array_ab.claimed_id, array_ba.claimed_id);
+        reseal(&mut array_b_then_a);
+        assert_ne!(array_a_then_b.claimed_id, array_b_then_a.claimed_id);
 
         let mut changed_schema_version = fixture_record();
         changed_schema_version
