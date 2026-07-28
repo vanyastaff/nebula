@@ -50,11 +50,12 @@
 //! — the bind-population producer that gives `register` a production caller
 //! is the named M12.4 follow-up.
 
-use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
+use std::{any::TypeId, collections::HashMap, future::Future, pin::Pin, sync::Arc};
 
 use crate::resource::ResourceMetadata;
 use crate::topology::Topology;
 use crate::{Manager, ScopeLevel, SlotIdentity, recovery::RecoveryGate, resource::Provider};
+use nebula_core::Dependencies;
 
 /// Boxed, `Send` future returned across the erased factory boundary.
 ///
@@ -231,6 +232,15 @@ pub trait ResourceFactory: Send + Sync + 'static {
     /// Pure and side-effect-free — a `const`-ish accessor, not I/O.
     fn key(&self) -> nebula_core::ResourceKey;
 
+    /// Declared resource and credential dependencies for this resource type.
+    fn dependencies(&self) -> &Dependencies;
+
+    /// Local process type identity of the concrete resource type.
+    ///
+    /// This value is used only for activation-time coherence checks. It is
+    /// never a durable or transport identity.
+    fn resource_type_id(&self) -> TypeId;
+
     /// Resource metadata for catalog display, schema introspection, and
     /// install-from-repo pre-install enumeration.
     ///
@@ -299,6 +309,7 @@ where
 {
     resource_factory: FRes,
     topology_factory: FTopo,
+    dependencies: Dependencies,
     // Zero-sized marker — `R` is not stored but bounds the `impl`.
     _marker: std::marker::PhantomData<fn() -> R>,
 }
@@ -339,6 +350,7 @@ where
         Self {
             resource_factory,
             topology_factory,
+            dependencies: R::dependencies(),
             _marker: std::marker::PhantomData,
         }
     }
@@ -355,6 +367,14 @@ where
 {
     fn key(&self) -> nebula_core::ResourceKey {
         <R as Provider>::key()
+    }
+
+    fn dependencies(&self) -> &Dependencies {
+        &self.dependencies
+    }
+
+    fn resource_type_id(&self) -> TypeId {
+        TypeId::of::<R>()
     }
 
     fn metadata(&self) -> ResourceMetadata {
@@ -624,12 +644,15 @@ impl ResourceActivatorRegistry {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
+    use std::{
+        any::TypeId,
+        sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        },
     };
 
-    use nebula_core::{ResourceKey, resource_key};
+    use nebula_core::{Dependencies, ResourceKey, ResourceRequirement, resource_key};
     use nebula_error::{Classify, ErrorCategory};
     use nebula_expression::ExpressionEngine;
 
@@ -689,6 +712,8 @@ mod tests {
         create_counter: Arc<AtomicU64>,
     }
 
+    struct TestResourceDependency;
+
     impl TestRes {
         fn new(create_counter: Arc<AtomicU64>) -> Self {
             Self { create_counter }
@@ -724,7 +749,15 @@ mod tests {
         }
     }
 
-    impl nebula_core::DeclaresDependencies for TestRes {}
+    impl nebula_core::DeclaresDependencies for TestRes {
+        fn dependencies() -> Dependencies {
+            Dependencies::new().resource(ResourceRequirement::new(
+                resource_key!("test-factory-dependency"),
+                TypeId::of::<TestResourceDependency>(),
+                std::any::type_name::<TestResourceDependency>(),
+            ))
+        }
+    }
 
     crate::no_credential_slots!(TestRes);
 
@@ -763,6 +796,32 @@ mod tests {
             TestRes::key(),
             "factory.key() must equal <R as Provider>::key() (key-coherence law)"
         );
+    }
+
+    #[test]
+    fn factory_exposes_exact_resource_contract() {
+        let factory = test_factory(Arc::new(AtomicU64::new(0)));
+        let [resource_requirement] = factory.dependencies().resources() else {
+            panic!("factory must expose the resource's one declared dependency");
+        };
+
+        assert_eq!(factory.resource_type_id(), TypeId::of::<TestRes>());
+        assert_eq!(
+            resource_requirement.key,
+            resource_key!("test-factory-dependency")
+        );
+        assert_eq!(
+            resource_requirement.type_id,
+            TypeId::of::<TestResourceDependency>()
+        );
+        assert_eq!(
+            resource_requirement.type_name,
+            std::any::type_name::<TestResourceDependency>()
+        );
+        assert!(resource_requirement.required);
+        assert_eq!(resource_requirement.purpose, None);
+        assert!(factory.dependencies().credentials().is_empty());
+        assert!(factory.dependencies().slot_fields().is_empty());
     }
 
     #[test]

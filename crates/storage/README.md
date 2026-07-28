@@ -2,7 +2,7 @@
 name: nebula-storage
 role: Storage Port (Repository Implementations + CAS + Outbox)
 status: partial
-last-reviewed: 2026-07-22
+last-reviewed: 2026-07-27
 canon-invariants: [L2-11.1, L2-11.3, L2-11.5, L2-12.2, L2-12.3]
 related: [nebula-execution, nebula-engine, nebula-core, nebula-error]
 ---
@@ -18,8 +18,9 @@ transitions, journal appends, and outbox writes can share the same logical opera
 transactions. `nebula-storage` is that seam: it implements the spec-16 storage port for
 execution state, workflow definitions and versions, the append-only journal, idempotency keys,
 checkpoints, leases, identity stores, owner-bound credential persistence, and the durable
-control-queue outbox. SQLite and PostgreSQL are deployment backends; InMemory implementations are
-internal test/reference/conformance adapters only.
+control-queue outbox. Task 13A also provides an InMemory exact plan/worker-flavor catalog and
+reference-state model. SQLite and PostgreSQL are deployment backends; InMemory implementations
+are internal test/reference/conformance adapters only.
 
 ## Role
 
@@ -41,11 +42,18 @@ provides the adapters:
 
 - `inmem::*` — internal test/reference/conformance adapters and the loom probe;
   not a supported deployment backend.
+- `InMemoryPlanFlavorCatalog` — Task 13A component/reference adapter over the
+  execution store's shared lock. Exact immutable load, drain, guarded delete,
+  and row-derived blockers are implemented. Paired dormant SQL layout now
+  exists; production SQL adapters, reference mutation, and three-backend
+  conformance remain Tasks 13B/20.
 - `sqlite::*` (feature `sqlite`) — single-writer-correct adapters over a
-  port-scoped schema; `init_schema` installs it for `:memory:` / test
-  pools.
+  canonical ordered catalog. `init_schema` performs catalog-only bootstrap and
+  admission for file, `:memory:`, and test pools; it does not inspect
+  credential semantics.
 - `postgres::*` (feature `postgres`) — production multi-process adapters
-  (real tx + `FOR UPDATE SKIP LOCKED`) over the same port-scoped schema.
+  (real tx + `FOR UPDATE SKIP LOCKED`) over the same canonical catalog;
+  `init_schema` is the catalog-only deployment/bootstrap seam.
 - `repos::*` — the non-port backend traits that still have live
   consumers: `ControlQueueRepo` (+ `InMemoryControlQueueRepo`,
   `pg::PgControlQueueRepo`), `IdempotencyStoreRepo`,
@@ -93,7 +101,7 @@ provides the adapters:
 - crate-local `StorageError`, plus `StorageFormat`
   (serialization format abstraction).
 
-Applied migrations `0001..0038` are immutable SQLx-checksummed history.
+Applied migrations `0001..0041` are immutable SQLx-checksummed history.
 Credential lifecycle migration
 `0039_credentials_owner_and_record_state.sql` is paired across SQLite and
 PostgreSQL. It makes owner identity and structural live/tombstoned state
@@ -124,9 +132,18 @@ gate, and backend clock in one statement/snapshot so rechecks cannot combine
 observations from different aggregate versions. The gate and epoch never enter
 user metadata.
 
+Paired migration `0041_port_plan_flavor_revision_catalog.sql` adds dormant
+SQLite/PostgreSQL tables for immutable worker-flavor and executable-plan
+records plus exact per-execution revision references. The database enforces
+closed lifecycle/format/reference-state shapes, exact byte lengths, canonical
+execution IDs, restrictive foreign keys, and row-derived blocker indexes.
+This is storage-layout evidence only: no SQL adapter or production activation
+path writes these tables yet, the database does not verify that IDs hash their
+payload bytes, and the migration does not claim exactly-once behavior.
+
 Credential adapters are constructible only through their ready-store
-constructors. Those constructors hold a backend-appropriate bounded startup
-lock across read-only schema admission, canonical migration, and postflight;
+constructors. Those constructors hold a backend-appropriate serialized setup
+guard across read-only schema admission, canonical migration, and postflight;
 unsupported, forged, ownerless, or corrupt schemas fail unchanged. Raw pools
 cannot bypass admission. Runtime authority comes only from the mandatory typed
 selector and owner column; metadata never grants access.
@@ -178,7 +195,19 @@ Credential coordination — durable refresh claim (П2 / ADR-0041):
 - **[L2-§11.3]** Idempotency enforcement lives here via the port `IdempotencyGuard` /
   `IdempotencyStore`. Key shape `{execution_id}:{node_id}:{attempt}` is defined in
   `nebula-execution`; the adapter folds scope into storage so callers cannot share keys across
-  tenants. Seam: `crates/storage-port/src/store/idempotency.rs`.
+  tenants. This is a local replay/dedup oracle only: it is not atomic with a remote provider,
+  cannot tell whether an external effect committed, and does not establish single-effect or
+  exactly-once semantics. The future effect ledger is a separate runtime-control contract:
+  storage mints an `EffectSlotId` per intended occurrence and binds its fingerprint to a stable
+  runtime-minted `OperationId`; same-slot mismatch is `OperationMismatch` with no durable delta,
+  while distinct slots remain distinct. Only a pinned stable-key destination may make bounded
+  effect-call re-invocations of that same `Prepared` operation and `OperationId` while its
+  guarantee remains valid; reconciliation is read-only. Exhaustion or expiry records
+  `OutcomeUnknown`, after which no effecting call may repeat. `AcknowledgementUnknown` applies to
+  prepare and outcome database commits: prepare uncertainty forbids provider invocation until
+  database-only reconciliation confirms the exact durable prepared record and ID; outcome
+  uncertainty permits only ledger reads and exact frozen-evidence recommit. Seam:
+  `crates/storage-port/src/store/idempotency.rs`.
 
 - **[L2-§11.5]** `TransitionBatch::journal` backs the durable `port_execution_journal`
   (append-only, replayable) and is committed with the state transition. `CheckpointStore`
@@ -232,6 +261,10 @@ See `docs/MATURITY.md` row for `nebula-storage`.
   InMemory + SQLite + Postgres and rewired through `engine` / `api`
   (ADR-0072). The legacy `ExecutionRepo` / `WorkflowRepo` dual layer was
   deleted.
+- Exact plan/flavor retention: `partial` — the Task 13A InMemory model and
+  dormant paired `0041` SQLite/PostgreSQL constraints are component evidence.
+  SQL catalog adapters do not exist, and no production start/terminal
+  transaction mutates reference rows.
 - Lease fencing is **enforced**: `acquire_lease` returns a monotone
   `FencingToken` that gates every committed `TransitionBatch`, so a
   superseded holder is rejected even on a matching CAS version (the
@@ -263,18 +296,55 @@ Migrations live in two per-backend trees: `migrations/postgres/` and
 `migrations/sqlite/` (logically identical tables; dialect types differ).
 There is no flat top-level migration tree.
 
-The spec-16 storage-port adapters persist through the `port_*` tables in
-`0027_port_adapter_schema.sql`, which is byte-identical to the embedded
-`src/{postgres,sqlite}/schema.sql` that `init_schema` applies for
-in-memory / test pools. The migration is the canonical source for a real
-database rebuild; the embedded schema is the test/`:memory:` path. Keep
-the pair in lockstep (regenerate the migration with `cp` from the
-embedded schema — see the per-tree README).
+Every setup path, including `init_schema`, credential readiness, test pools,
+and `:memory:` SQLite, embeds and runs the exact ordered migration tree for its
+backend. There is no independently maintained schema snapshot. General
+`init_schema` admits only catalog facts: a genuinely empty database or an exact
+SQLx-checksummed prefix at or above the catalog-only floor (`0040`), then
+applies pending migrations and verifies the resulting head. Earlier prefixes
+must upgrade through credential Ready construction, whose deep preflight owns
+the semantics required by destructive credential migrations. General setup
+never reads credential rows or makes
+unrelated runtime-control recovery depend on credential semantic health.
+Credential Ready constructors add their aggregate-specific relation and row
+preflight/postflight under the same setup guard and session. A non-empty alpha
+database created by the former snapshot path but lacking `_sqlx_migrations`
+fails closed before mutation; it requires a separately reviewed, backed-up
+operator conversion rather than fabricated ledger rows.
 
-`task db:migrate` applies pending Postgres migrations
-(`--source crates/storage/migrations/postgres`, `DATABASE_URL`-gated).
-`task db:reset` **drops and recreates the database** then re-runs every
-migration — it destroys all local dev data.
+`CatalogOnly` may automatically apply a pending migration only when review has
+proved that migration is aggregate-neutral. An aggregate-transforming or
+destructive migration requires owner-specific preflight and postflight under
+the same guard/session, or a higher general floor that rejects every prefix
+from which the transformation is not already known safe. The executable
+catalog-boundary test deliberately pins the current `head = 0041` and general
+`floor = 0040`; adding `0042` therefore fails a test until admission policy is
+reviewed. Advancing that pin is an architectural decision, not migration
+bookkeeping.
+
+PostgreSQL setup holds the established database/schema-scoped advisory lock
+through preflight, migration, and postflight on one retired session. SQLite
+uses the shared Nebula file lock or process-wide memory guard and verifies
+foreign-key enforcement. An empty-path multi-connection SQLite pool is accepted
+only when a held second connection proves the same migration head and
+foreign-key state (a named shared-cache database); otherwise setup rejects it.
+PostgreSQL advisory-lock acquisition and explicit release each have a five-second
+deadline. Migration duration is governed by the caller lifecycle and the
+operator's PostgreSQL `statement_timeout`; this crate does not impose a hidden
+whole-upgrade deadline that could repeatedly roll back a legitimate large
+migration.
+
+`task db:migrate` runs the server-owned `nebula-db-migrate` operator. It first
+uses general catalog admission; only a typed configuration rejection closes
+that pool and routes through credential-owner deep admission for supported
+pre-`0040` prefixes. Connectivity, unknown history, corrupt aggregate state,
+and every other failure remain closed and redacted. The non-destructive task
+never invokes raw `sqlx migrate run`.
+
+`task db:reset` **drops and recreates the database** then uses raw SQLx to run
+every migration against that proven-fresh database. It is prompt-protected and
+destroys all local dev data. Migration history is immutable and forward-only;
+there is no advertised revert task.
 
 ### Plane-A identity migration retention
 
@@ -339,7 +409,7 @@ model — they keep live consumers (the API idempotency middleware, the
 | `port_control_queue` (outbox) | **Durable** | At-least-once cancel/dispatch; written in the same `TransitionBatch` (§12.2) |
 | stateful checkpoints | **Best-effort** | Write failure logs, does not abort; may replay |
 | lease holder / expiry + `fencing_generation` | **Durable + enforced** (ADR-0072) | `acquire_lease` → `FencingToken`; a superseded holder is rejected even on a matching CAS version. Verified by `crates/engine/tests/lease_takeover.rs`, the loom probe at `crates/storage-loom-probe/src/lease_handoff.rs`, and the conformance lease cases |
-| idempotency dedup | **Durable** | First-writer-wins via the port `IdempotencyGuard` / `IdempotencyStore`; sweep drives `evict_expired`. Verified by the conformance matrix + `crates/storage/tests/pg_idempotency.rs` (`DATABASE_URL`-gated) |
+| local idempotency dedup | **Durable** | First-writer-wins via the port `IdempotencyGuard` / `IdempotencyStore`; sweep drives `evict_expired`. This is not a remote-effect ledger or atomicity guarantee. Verified by the conformance matrix + `crates/storage/tests/pg_idempotency.rs` (`DATABASE_URL`-gated) |
 | In-process `mpsc` / channels | **Ephemeral** | Never authoritative |
 
 ### Supported backends

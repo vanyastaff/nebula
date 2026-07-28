@@ -1,6 +1,6 @@
 ---
 name: nebula-execution
-role: Execution State Machine + Journal + Idempotency Types (WAL, Idempotent Receiver)
+role: Execution State Machine + Journal + Local Replay Identity
 status: stable
 last-reviewed: 2026-04-17
 canon-invariants: [L2-11.1, L2-11.2, L2-11.3, L2-11.5, L2-12.2]
@@ -12,8 +12,8 @@ related: [nebula-storage, nebula-engine, nebula-workflow, nebula-resilience, neb
 ## Purpose
 
 A durable workflow engine needs an authoritative model of what a run *is*: its state machine,
-its append-only event history, its pre-computed parallel schedule, and the key that makes
-individual action invocations idempotent. Without a shared model, the engine orchestrator and
+its append-only event history, its pre-computed parallel schedule, and the key used for local
+attempt replay/dedup. Without a shared model, the engine orchestrator and
 the storage layer each invent their own state representation, producing the "two truths"
 anti-pattern canon §14 forbids. `nebula-execution` is that shared model. It defines the
 8-state `ExecutionStatus` machine with validated transitions, the `JournalEntry` type that
@@ -23,13 +23,14 @@ repository interface — persistence is `nebula-storage::ExecutionRepo`'s job.
 
 ## Role
 
-**Execution State Machine + Journal + Idempotency Types.**
+**Execution State Machine + Journal + Local Replay Identity.**
 
 Patterns:
 - *Write-Ahead Log* (DDIA ch 3, 11) — `JournalEntry` backs the `execution_journal`
   append-only durable timeline.
-- *Idempotent Receiver* (EIP) — `IdempotencyKey` shape `{execution_id}:{node_id}:{attempt}`
-  is the deterministic per-attempt key checked through `ExecutionRepo` before side effects.
+- *Local replay/dedup identity* — `IdempotencyKey` shape
+  `{execution_id}:{node_id}:{attempt}` is deterministic for one attempt. It is not a remote
+  operation identity and does not make a provider effect atomic with Nebula persistence.
 - *Optimistic Concurrency Control* (DDIA ch 7) — `ExecutionStatus` transitions are guarded
   by CAS on `version` in `nebula-storage::ExecutionRepo::transition`.
 
@@ -40,9 +41,16 @@ Patterns:
   the `transition` module.
 - `ExecutionState`, `NodeExecutionState` — persistent state tracking per execution and per
   node; serialized into the `executions` table row.
-- `ExecutionRevisions` — experimental revision-pin aggregate behind `unstable-revisions`. It uses
-  the canonical `WorkflowVersionId` directly and is not part of the stable contract until durable
-  state, admission, and runtime consume both pins end to end.
+- `ExecutionRevisions` — default-public aggregate that pins the canonical `WorkflowVersionId` and
+  exact `WorkerFlavorRevisionId` together.
+- `ExecutionProfile` — non-exhaustive execution model selector. Graph-v1 records `"graph"`.
+- `ExecutionContractBundle` — immutable Graph-v1 semantic contract with private fields, exact
+  plan/plugin/workflow/flavor/credential pins, internally stamped protocol versions, and a
+  structural SHA-256 fingerprint. `ExecutionContractBundleId` is a random record identity and is
+  intentionally excluded from that fingerprint.
+- `RecordedExecutionContractBundleV1` and `ExecutionContractBundleIntegrityError` — untrusted
+  durable/wire input plus typed validation failures for unsupported versions/profile,
+  noncanonical credentials, unknown fields, and forged fingerprints.
 - `ExecutionPlan` — pre-computed parallel execution schedule derived from `DependencyGraph`.
   Feeds the engine scheduler.
 - `ReplayPlan` — resume plan for restarting from a checkpoint.
@@ -55,8 +63,9 @@ Patterns:
 - `NodeAttempt` — individual attempt tracking (attempt number, started/finished timestamps,
   node status). Used as the shape of attempt-keyed output rows by
   `nebula-storage::ExecutionRepo::save_node_output`.
-- `IdempotencyKey` — deterministic key `{execution_id}:{node_id}:{attempt}`. The actual
-  dedup enforcement (check-and-mark) lives in `nebula-storage::ExecutionRepo`.
+- `IdempotencyKey` — deterministic local replay key
+  `{execution_id}:{node_id}:{attempt}`. The local check-and-mark enforcement lives in storage;
+  the key changes across retries and is distinct from the future stable remote `OperationId`.
 - `ExecutionError` — typed error for state machine violations and execution failures.
 
 ## Contract
@@ -78,9 +87,20 @@ Patterns:
   result-driven `ActionResult::Retry` is not a current public capability.
 
 - **[L2-§11.3]** `IdempotencyKey` shape is `{execution_id}:{node_id}:{attempt}`. Seam:
-  `crates/execution/src/idempotency.rs`. Enforcement (check before side effect, mark after)
-  lives in `nebula-storage::ExecutionRepo`. For non-idempotent actions (payments, writes
-  without upsert) the idempotency guard must be applied before calling the remote system.
+  `crates/execution/src/idempotency.rs`. Storage's `check_and_mark` is a local replay/dedup
+  oracle only; it is not atomic with a remote provider and cannot determine whether an effect
+  committed. Current remote invocation semantics are at-least-once with a possible duplicate.
+  The planned effect protocol binds each intended occurrence to a storage-minted
+  `EffectSlotId` and a separate runtime-minted `OperationId`, durably prepared before invocation
+  and retained across retries. Same-slot fingerprint mismatch is `OperationMismatch` with no
+  durable delta; distinct slots remain distinct even for identical payloads. Ambiguous provider
+  acceptance permits bounded effect-call re-invocation only for the same `Prepared` operation and
+  `OperationId` under a still-valid pinned stable-key contract. Reconciliation is read-only and
+  never repeats the effecting call. Exhaustion or expiry becomes `OutcomeUnknown`, after which no
+  effecting call may repeat. `AcknowledgementUnknown` applies separately to prepare and outcome
+  database commits: prepare uncertainty forbids provider invocation until database-only
+  reconciliation confirms the exact durable prepared record and ID; outcome uncertainty permits
+  only ledger reads and exact frozen-evidence recommit.
 
 - **[L2-§11.5]** `JournalEntry` type backs the durable `execution_journal` (append-only,
   replayable). Seam: `crates/storage/src/execution_repo.rs` — `ExecutionRepo::append_journal`.
@@ -90,6 +110,18 @@ Patterns:
 - **[L2-§12.2]** `ExecutionStatus` machine defines what states exist and what transitions
   are legal. The `transition` module enforces legality. Persistence and CAS are in
   `nebula-storage`. No handler invents a parallel lifecycle.
+
+- **Immutable execution contract.** Bundle reconstruction validates canonical wire structure and
+  the claimed semantic fingerprint only. It does not prove existence, retention, tenant
+  authority, compatibility, or admission, and it must never fall back to a latest revision.
+  `PluginSetId` is an independent plugin-set pin; the ID alone does not prove schemas, runtime
+  behavior, artifact authenticity, authorization, or a complete frozen registry.
+
+- **Credential closure.** The exact loaded executable plan must carry
+  slot-to-selected-`CredentialId` mappings and the corresponding credential contract revisions.
+  Admission must compare the plan's unique selected credential IDs exactly with the bundle's
+  sorted, deduplicated set. If the plan contains only abstract credential requirements, the v1
+  bundle shape is insufficient to establish this closure.
 
 ## Non-goals
 
@@ -107,13 +139,18 @@ Patterns:
 
 See `docs/MATURITY.md` row for `nebula-execution`.
 
-- API stability: `stable` — state machine, journal, idempotency key, and plan types are
-  in active use by `nebula-engine` and `nebula-storage`; no known planned breaking changes.
-- Revision-pin vocabulary is opt-in and explicitly unstable; the default stable feature set does
-  not expose a partial contract.
+- Existing state-machine, journal, idempotency-key, and plan types are stable for workspace
+  consumers and are in active use by `nebula-engine` and `nebula-storage`. This pre-1.0 internal
+  crate does not itself provide the supported Rust product surface: direct implementation-crate
+  use is unsupported, and the curated `nebula-sdk` façade is the supported future surface. The
+  removal of the former opt-in feature names is therefore an intentional breaking cleanup for
+  direct users.
+- Revision, frozen-flavor, and bundle primitives are default-public but remain `partial`: they
+  define a closed immutable epoch with zero production consumer until compiler, admission,
+  persisted routing, and exact-flavor dispatch consume the contract end to end.
 - Layer 1 lease enforcement (`lease_holder`/`lease_expires_at`) shipped via M2.2 — heartbeat-driven via `acquire_and_heartbeat_lease` (see `DEFAULT_EXECUTION_LEASE_TTL` / `DEFAULT_EXECUTION_LEASE_HEARTBEAT_INTERVAL`), verified by `crates/engine/tests/lease_takeover.rs`, `crates/storage/tests/execution_lease_pg_integration.rs`, and the loom probe at `crates/storage-loom-probe/src/lease_handoff.rs`. Layer 2 (`claimed_by`/`claimed_until` from `migrations/postgres/0011_executions.sql`) remains Sprint E (1.1) scaffolding — see the durability matrix below.
-- Integration tests: 0 in `tests/`; state machine and plan coverage via unit tests +
-  engine-level integration tests.
+- Integration tests include the Graph-v1 bundle wire/fingerprint contract; state machine and plan
+  coverage also comes from unit tests and engine-level integration tests.
 - 5 `panic!` sites in `transition` and `status` modules serve as state-machine invariant
   guards; these are technical debt (candidates for `#[must_use]` or typed errors).
 
@@ -129,8 +166,10 @@ See `docs/MATURITY.md` row for `nebula-execution`.
 
 The deterministic key shape is `{execution_id}:{node_id}:{attempt}`, persisted in
 `idempotency_keys`. The format string is an implementation detail (L4) — changing it
-requires updating this README and the corresponding code; no canon revision. The invariant
-("deterministic per-attempt, checked before side-effect") is canonical (L2-§11.3).
+requires updating this README and the corresponding code; no canon revision. Its contract is
+limited to deterministic, tenant-scoped local replay/dedup. It is not the stable remote
+effect-slot/operation identity described by canon §11.3 and cannot establish effectively-once
+behavior by itself.
 
 ### Persistence durability matrix (reference from §11.5)
 

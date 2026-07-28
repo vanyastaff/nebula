@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 keywords.workspace = true
 authors.workspace = true
-description = "Plugin system with versioning, registry, and dynamic loading"
+description = "In-process plugin registration, immutable flavor identity, and registry"
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
@@ -13,7 +13,6 @@ documentation.workspace = true
 
 [features]
 default = []
-unstable-worker-flavor = ["dep:sha2", "nebula-core/unstable-worker-flavor"]
 
 [dependencies]
 nebula-plugin-macros = { path = "macros" }
@@ -23,30 +22,24 @@ nebula-metadata = { path = "../metadata" }
 nebula-action = { path = "../action" }
 nebula-credential = { path = "../credential" }
 nebula-resource = { path = "../resource" }
+nebula-schema = { path = "../schema" }
+nebula-workflow = { path = "../workflow" }
 
+indexmap = { workspace = true }
 semver = { workspace = true }
 serde = { workspace = true }
-sha2 = { workspace = true, optional = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 toml = "1"
 tracing = { workspace = true }
 
 [dev-dependencies]
-nebula-schema = { path = "../schema" }
-serde_json = { workspace = true }
-# The resolved-plugin test mocks an `ActionFactory`, whose `create` takes a
-# `NodeDefinition`; the prod crate reaches it transitively through
-# `nebula-action`, the test names it directly.
-nebula-workflow = { path = "../workflow" }
 insta = { workspace = true }
 pretty_assertions = { workspace = true }
 proptest = { workspace = true }
 rstest = { workspace = true }
 tempfile = { workspace = true }
-
-[package.metadata.docs.rs]
-# Render feature-gated items on docs.rs (build with every feature).
-all-features = true
 
 [lints]
 workspace = true

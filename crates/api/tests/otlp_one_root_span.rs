@@ -202,7 +202,9 @@ async fn otlp_one_root_span_across_api_control_queue_engine_action() {
         .await
         .expect("slow action must start within 5s — engine seam did not drain control queue");
 
-    // Terminate so the execution reaches a terminal state and the engine releases the node.
+    // Submit Terminate to exercise the traced producer/control path. This test
+    // exposes no handler-exit oracle, so it does not claim node release or
+    // interruption.
     let app_router = app::build_app(state.clone(), &api_config);
     let term_resp = app_router
         .oneshot(
@@ -225,16 +227,10 @@ async fn otlp_one_root_span_across_api_control_queue_engine_action() {
     );
 
     // Give the engine a moment to drain the terminate signal so the engine-side dispatch
-    // span lands in the trace pipeline. The cooperatively-cancellable `slow` action stays
-    // running in the background; rather than await the seam shutdown (which joins on the
-    // consumer handle and can wait out the action's full sleep when terminate does not
-    // propagate cancellation inside this minimal harness), we drop the seam in a detached
-    // task and proceed straight to the assertions. The seam owner's shutdown token still
-    // signals the consumer thread to wind down; we just avoid the join.
+    // span lands in the trace pipeline. Handler exit is not this test's oracle, so abort
+    // and join the unobserved consumer after the bounded observation window.
     tokio::time::sleep(Duration::from_millis(500)).await;
-    drop(tokio::spawn(async move {
-        engine_seam.shutdown().await;
-    }));
+    engine_seam.abort_unobserved_consumer().await;
 
     // Flush both pipelines so the in-memory exporters have everything.
     let _ = tracer_provider.force_flush();

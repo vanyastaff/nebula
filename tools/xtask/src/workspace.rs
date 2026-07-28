@@ -8,6 +8,32 @@ use serde::Deserialize;
 
 use crate::{XtaskError, model::PlanEntry};
 
+pub(crate) fn find_root(cwd: &Path) -> Result<PathBuf, XtaskError> {
+    for directory in cwd.ancestors() {
+        let manifest_path = directory.join("Cargo.toml");
+        let source = match std::fs::read_to_string(&manifest_path) {
+            Ok(source) => source,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(XtaskError::WorkspaceManifestRead {
+                    path: manifest_path,
+                    source: error,
+                });
+            },
+        };
+        let manifest = toml::from_str::<toml::Table>(&source).map_err(|source| {
+            XtaskError::WorkspaceManifestParse {
+                path: manifest_path,
+                source,
+            }
+        })?;
+        if manifest.contains_key("workspace") {
+            return Ok(directory.to_path_buf());
+        }
+    }
+    Err(XtaskError::WorkspaceRootNotFound(cwd.to_path_buf()))
+}
+
 #[derive(Debug)]
 pub(crate) struct Workspace {
     root: PathBuf,

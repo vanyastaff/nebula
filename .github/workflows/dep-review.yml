@@ -45,7 +45,13 @@ jobs:
           # fail `cargo deny` (or vice versa) and confuse contributors.
           # `0BSD` admits `quoted_printable` (transitive via `lettre` → nebula-server);
           # OSI-approved, strictly more permissive than MIT (no attribution clause).
-          allow-licenses: 0BSD, Apache-2.0, BSD-2-Clause, BSD-3-Clause, CC0-1.0, CDLA-Permissive-2.0, ISC, MIT, MPL-2.0, Unicode-3.0, Unicode-DFS-2016, Zlib
+          # `MIT-0` admits `borrow-or-share` (transitive via `jsonschema` →
+          # `referencing` → `fluent-uri`); same rationale, and already carried by
+          # `[licenses].allow` in `deny.toml`.
+          # `BSL-1.0` admits `xxhash-rust` (transitive via `redis` 1.x →
+          # nebula-storage); permissive, ok for vendoring. Also already carried
+          # by `deny.toml` — listed here so the alignment above actually holds.
+          allow-licenses: 0BSD, Apache-2.0, BSD-2-Clause, BSD-3-Clause, BSL-1.0, CC0-1.0, CDLA-Permissive-2.0, ISC, MIT, MIT-0, MPL-2.0, Unicode-3.0, Unicode-DFS-2016, Zlib
           # Per-package license exemptions for crates whose `license` field uses
           # the deprecated `/` SPDX conjunction (e.g. `MIT/Apache-2.0`,
           # `BSD-3-Clause/MIT`). GitHub's parser cannot normalise `/` and renders
@@ -53,9 +59,16 @@ jobs:
           # every disjunct IS allowed above. `cargo deny` (the authoritative gate)
           # parses `/` as OR and passes. Exemptions are version-agnostic so a
           # patch bump does not re-trip the check.
+          #
+          # `Swatinem/rust-cache` is LGPL-3.0 and is a CI-only action: it never
+          # links into a shipped artifact. It is already pinned by ci.yml,
+          # test-matrix.yml, codspeed.yml, cross-platform.yml and
+          # nightly-chaos.yml, so it is established policy — a workflow that
+          # newly references it only re-trips the added-dependency check.
           allow-dependencies-licenses: >-
             pkg:cargo/brotli-decompressor,
             pkg:cargo/futures-timer,
             pkg:cargo/generator,
-            pkg:cargo/rustc-demangle
+            pkg:cargo/rustc-demangle,
+            pkg:githubactions/Swatinem/rust-cache
           comment-summary-in-pr: on-failure

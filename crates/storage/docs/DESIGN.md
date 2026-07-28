@@ -83,8 +83,11 @@ owner-bound `CredentialPersistence`; `Scope`).
 
 - `inmem/` — in-memory порт-адаптеры (один `parking_lot::Mutex` на стор; tests /
   single-process / loom).
-- `sqlite/` (feature) — порт-адаптеры над `port_*`-схемой, single-writer; embedded
-  `schema.sql` + `init_schema` для `:memory:` / тест-пулов.
+- `sqlite/` (feature) — порт-адаптеры над `port_*`-схемой, single-writer;
+  `init_schema` выполняет catalog-only admission и запускает единый
+  упорядоченный SQLx migration catalog для файловых, `:memory:` и тестовых
+  пулов; credential-семантику проверяет только credential Ready constructor
+  под тем же guard/session; отдельного schema snapshot нет.
 - `postgres/` (feature) — production порт-адаптеры (real tx + `FOR UPDATE SKIP LOCKED`).
 - `pg/` (feature postgres) — Postgres-глю для **residual** `repos`-трейтов (identity rows,
   control-queue, oauth_state, pat, session…).
@@ -111,9 +114,21 @@ SQLite/Postgres, под Mutex в InMemory).
   `acquire_lease` возвращает монотонный `FencingToken`, и superseded-holder отвергается
   даже при совпадающем CAS-`version` (zombie-runner дыра закрыта; verify
   `crates/engine/tests/lease_takeover.rs`, loom-probe `lease_handoff.rs`, конформанс).
-- **[L2-§11.3] Idempotency.** Форма ключа `{execution_id}:{node_id}:{attempt}`; адаптер
-  складывает scope в storage — каллеры не могут шарить ключи между тенантами (first-writer-
-  wins).
+- **[L2-§11.3] Local idempotency.** Форма ключа
+  `{execution_id}:{node_id}:{attempt}`; адаптер складывает scope в storage — каллеры не
+  могут шарить ключи между тенантами (first-writer-wins). Это только локальный
+  replay/dedup oracle: он не атомарен с remote provider, не доказывает исход внешнего
+  эффекта и не даёт single-effect/exactly-once гарантию. Будущий effect ledger —
+  отдельный контракт runtime control: storage-minted `EffectSlotId` задаёт намеренную
+  multiplicity и связывает fingerprint со stable runtime-minted `OperationId`.
+  Same-slot mismatch — `OperationMismatch` без durable delta; разные slots остаются
+  разными. Только pinned stable-key destination может bounded повторить effecting call
+  для той же `Prepared` operation и того же `OperationId`, пока гарантия valid;
+  reconciliation всегда read-only. Exhaustion или expiry переводит operation в
+  `OutcomeUnknown`, после чего effecting call нельзя повторять. `AcknowledgementUnknown`
+  относится к prepare и outcome DB commits: prepare uncertainty запрещает provider
+  invocation, пока DB reconciliation не подтвердит exact durable prepared record и ID;
+  outcome uncertainty разрешает только ledger reads и exact frozen-evidence recommit.
 - **[L2-§11.5] Durable journal, best-effort checkpoint.** `TransitionBatch::journal`
   пишется в том же commit, что и переход (append-only, replayable). `CheckpointStore` —
   best-effort: сбой логируется, не абортит исполнение.

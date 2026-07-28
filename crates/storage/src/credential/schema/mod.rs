@@ -4,10 +4,7 @@
 //! classified here. Keeping the policy pure makes every rejection path testable
 //! without opening a database or leaking driver diagnostics.
 
-use std::{
-    collections::{BTreeSet, HashSet},
-    fmt,
-};
+use std::{collections::HashSet, fmt};
 
 use nebula_core::CredentialId;
 use serde::{
@@ -16,44 +13,20 @@ use serde::{
 };
 use serde_json::{Map, Number, Value};
 
+pub(crate) use crate::migration::catalog::CatalogAdmission as SchemaAdmission;
+use crate::migration::catalog::CatalogRejection;
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+use crate::migration::catalog::CatalogSetupError;
+#[cfg(test)]
+use crate::migration::catalog::{self, CatalogObservation};
+#[cfg(test)]
+pub(crate) use crate::migration::catalog::{BackendKind, MigrationLedgerRow, MigrationSpec};
+#[cfg(test)]
+pub(crate) use crate::migration::catalog::{
+    CatalogPolicy as BackendMigrationPolicy, MigrationLedger,
+};
+
 const DUPLICATE_KEY_MARKER: &str = "__nebula_duplicate_json_key__";
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum BackendKind {
-    #[cfg(any(test, feature = "sqlite"))]
-    Sqlite,
-    #[cfg(any(test, feature = "postgres"))]
-    Postgres,
-}
-
-#[derive(Clone, PartialEq, Eq)]
-pub(crate) struct MigrationSpec {
-    pub(crate) version: i64,
-    pub(crate) description: String,
-    pub(crate) checksum: Vec<u8>,
-}
-
-#[derive(Clone)]
-pub(crate) struct BackendMigrationPolicy {
-    pub(crate) supported_floor: i64,
-    pub(crate) current_version: i64,
-    pub(crate) canonical: Vec<MigrationSpec>,
-    pub(crate) reserved_other_backend_versions: BTreeSet<i64>,
-}
-
-#[derive(Clone)]
-pub(crate) struct MigrationLedgerRow {
-    pub(crate) version: i64,
-    pub(crate) description: String,
-    pub(crate) checksum: Vec<u8>,
-    pub(crate) success: bool,
-}
-
-#[derive(Clone)]
-pub(crate) enum MigrationLedger {
-    Absent,
-    Present(Vec<MigrationLedgerRow>),
-}
 
 #[derive(Clone)]
 pub(crate) struct LegacyCredentialRecord {
@@ -77,16 +50,12 @@ pub(crate) struct LegacyCredentialRecord {
 }
 
 pub(crate) struct SchemaObservation {
+    #[cfg(test)]
     pub(crate) migration_ledger: MigrationLedger,
+    #[cfg(test)]
     pub(crate) has_user_relations: bool,
     pub(crate) has_credentials_relation: bool,
     pub(crate) credentials: Vec<LegacyCredentialRecord>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SchemaAdmission {
-    Fresh,
-    CanonicalPrefix { latest: i64 },
 }
 
 /// Closed, secret-free reason why a reachable credential schema is unsupported.
@@ -267,6 +236,38 @@ impl fmt::Display for AdmissionReason {
     }
 }
 
+impl From<CatalogRejection> for AdmissionReason {
+    fn from(rejection: CatalogRejection) -> Self {
+        match rejection {
+            CatalogRejection::EmptyLedger => Self::EmptyLedger,
+            CatalogRejection::UnledgeredDatabase => Self::UnledgeredDatabase,
+            CatalogRejection::InvalidMigrationLedger => Self::InvalidMigrationLedger,
+            CatalogRejection::BelowSupportedFloor { latest } => {
+                Self::BelowSupportedFloor { latest }
+            },
+            CatalogRejection::FailedMigration { migration } => Self::FailedMigration { migration },
+            CatalogRejection::DuplicateMigration { migration } => {
+                Self::DuplicateMigration { migration }
+            },
+            CatalogRejection::NonCanonicalOrder { expected, actual } => {
+                Self::NonCanonicalOrder { expected, actual }
+            },
+            CatalogRejection::ReservedForOtherBackend { migration } => {
+                Self::ReservedForOtherBackend { migration }
+            },
+            CatalogRejection::UnknownMigration { migration } => {
+                Self::UnknownMigration { migration }
+            },
+            CatalogRejection::DescriptionMismatch { migration } => {
+                Self::DescriptionMismatch { migration }
+            },
+            CatalogRejection::ChecksumMismatch { migration } => {
+                Self::ChecksumMismatch { migration }
+            },
+        }
+    }
+}
+
 /// A reachable credential database whose schema cannot be safely migrated.
 #[derive(Clone, PartialEq, Eq)]
 pub struct UnsupportedSchemaVersion {
@@ -332,11 +333,40 @@ impl fmt::Debug for CredentialStoreStartupError {
     }
 }
 
-impl std::error::Error for CredentialStoreStartupError {}
+impl std::error::Error for CredentialStoreStartupError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::UnsupportedSchemaVersion(error) => Some(error),
+            Self::Unavailable => None,
+        }
+    }
+}
 
 impl From<UnsupportedSchemaVersion> for CredentialStoreStartupError {
     fn from(error: UnsupportedSchemaVersion) -> Self {
         Self::UnsupportedSchemaVersion(error)
+    }
+}
+
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+impl From<CatalogSetupError> for CredentialStoreStartupError {
+    fn from(error: CatalogSetupError) -> Self {
+        match error {
+            CatalogSetupError::Rejected(rejection) => {
+                UnsupportedSchemaVersion::new(rejection.into()).into()
+            },
+            CatalogSetupError::Unavailable => Self::Unavailable,
+        }
+    }
+}
+
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+impl crate::migration::SchemaSetupFailure for CredentialStoreStartupError {
+    fn failure_kind(&self) -> crate::migration::SetupFailureKind {
+        match self {
+            Self::UnsupportedSchemaVersion(_) => crate::migration::SetupFailureKind::Rejected,
+            Self::Unavailable => crate::migration::SetupFailureKind::Unavailable,
+        }
     }
 }
 
@@ -370,107 +400,33 @@ impl From<CredentialStoreStartupError> for nebula_storage_port::CredentialPersis
     }
 }
 
+#[cfg(test)]
 pub(crate) fn classify_schema(
     policy: &BackendMigrationPolicy,
     observation: &SchemaObservation,
 ) -> Result<SchemaAdmission, UnsupportedSchemaVersion> {
-    let rows = match &observation.migration_ledger {
-        MigrationLedger::Absent => {
-            if observation.has_user_relations || !observation.credentials.is_empty() {
-                return rejected(AdmissionReason::UnledgeredDatabase);
-            }
-            return Ok(SchemaAdmission::Fresh);
-        },
-        MigrationLedger::Present(rows) if rows.is_empty() => {
-            return rejected(AdmissionReason::EmptyLedger);
-        },
-        MigrationLedger::Present(rows) => rows,
+    let catalog_observation = CatalogObservation {
+        migration_ledger: observation.migration_ledger.clone(),
+        has_user_relations: observation.has_user_relations || !observation.credentials.is_empty(),
     };
+    let admission = catalog::classify(policy, &catalog_observation, SUPPORTED_FLOOR)
+        .map_err(|rejection| UnsupportedSchemaVersion::new(rejection.into()))?;
+    classify_admitted_schema(admission, observation)
+}
 
-    validate_ledger(policy, rows)?;
-    let latest = rows
-        .last()
-        .map(|row| row.version)
-        .ok_or_else(|| UnsupportedSchemaVersion::new(AdmissionReason::EmptyLedger))?;
-    if latest < policy.supported_floor {
-        return rejected(AdmissionReason::BelowSupportedFloor { latest });
-    }
+fn classify_admitted_schema(
+    admission: SchemaAdmission,
+    observation: &SchemaObservation,
+) -> Result<SchemaAdmission, UnsupportedSchemaVersion> {
+    let SchemaAdmission::CanonicalPrefix { latest } = admission else {
+        return Ok(SchemaAdmission::Fresh);
+    };
     if !observation.has_credentials_relation {
         return rejected(AdmissionReason::MissingCredentialsRelation);
     }
 
     validate_credentials(&observation.credentials, latest)?;
-    Ok(SchemaAdmission::CanonicalPrefix { latest })
-}
-
-fn validate_ledger(
-    policy: &BackendMigrationPolicy,
-    rows: &[MigrationLedgerRow],
-) -> Result<(), UnsupportedSchemaVersion> {
-    let mut observed_versions = HashSet::with_capacity(rows.len());
-    for row in rows {
-        if !observed_versions.insert(row.version) {
-            return rejected(AdmissionReason::DuplicateMigration {
-                migration: row.version,
-            });
-        }
-    }
-
-    for row in rows {
-        if !row.success {
-            return rejected(AdmissionReason::FailedMigration {
-                migration: row.version,
-            });
-        }
-        if policy
-            .reserved_other_backend_versions
-            .contains(&row.version)
-        {
-            return rejected(AdmissionReason::ReservedForOtherBackend {
-                migration: row.version,
-            });
-        }
-        if row.version > policy.current_version {
-            return rejected(AdmissionReason::UnknownMigration {
-                migration: row.version,
-            });
-        }
-        let Some(canonical) = policy
-            .canonical
-            .iter()
-            .find(|migration| migration.version == row.version)
-        else {
-            return rejected(AdmissionReason::UnknownMigration {
-                migration: row.version,
-            });
-        };
-        if row.description != canonical.description {
-            return rejected(AdmissionReason::DescriptionMismatch {
-                migration: row.version,
-            });
-        }
-        if row.checksum != canonical.checksum {
-            return rejected(AdmissionReason::ChecksumMismatch {
-                migration: row.version,
-            });
-        }
-    }
-
-    for (index, row) in rows.iter().enumerate() {
-        let Some(expected) = policy.canonical.get(index) else {
-            return rejected(AdmissionReason::UnknownMigration {
-                migration: row.version,
-            });
-        };
-        if row.version != expected.version {
-            return rejected(AdmissionReason::NonCanonicalOrder {
-                expected: expected.version,
-                actual: row.version,
-            });
-        }
-    }
-
-    Ok(())
+    Ok(admission)
 }
 
 fn validate_credentials(
@@ -807,67 +763,7 @@ fn rejected<T>(reason: AdmissionReason) -> Result<T, UnsupportedSchemaVersion> {
     Err(UnsupportedSchemaVersion::new(reason))
 }
 
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
 const SUPPORTED_FLOOR: i64 = 30;
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
-const CURRENT_VERSION: i64 = 40;
-
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
-fn policy_from_migrator(
-    backend: BackendKind,
-    migrator: &sqlx::migrate::Migrator,
-) -> BackendMigrationPolicy {
-    let canonical = migrator
-        .iter()
-        .map(|migration| MigrationSpec {
-            version: migration.version,
-            description: migration.description.to_string(),
-            checksum: migration.checksum.to_vec(),
-        })
-        .collect();
-    let reserved_other_backend_versions = match backend {
-        #[cfg(any(test, feature = "sqlite"))]
-        BackendKind::Sqlite => BTreeSet::from([29, 36, 37, 38]),
-        #[cfg(any(test, feature = "postgres"))]
-        BackendKind::Postgres => BTreeSet::new(),
-    };
-
-    BackendMigrationPolicy {
-        supported_floor: SUPPORTED_FLOOR,
-        current_version: CURRENT_VERSION,
-        canonical,
-        reserved_other_backend_versions,
-    }
-}
-
-#[cfg(feature = "sqlite")]
-pub(crate) static SQLITE_MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/sqlite");
-
-#[cfg(feature = "sqlite")]
-pub(crate) fn sqlite_policy() -> BackendMigrationPolicy {
-    policy_from_migrator(BackendKind::Sqlite, &SQLITE_MIGRATOR)
-}
-
-#[cfg(feature = "postgres")]
-pub(crate) static POSTGRES_MIGRATOR: sqlx::migrate::Migrator =
-    sqlx::migrate!("./migrations/postgres");
-
-#[cfg(feature = "postgres")]
-pub(crate) fn postgres_policy() -> BackendMigrationPolicy {
-    policy_from_migrator(BackendKind::Postgres, &POSTGRES_MIGRATOR)
-}
-
-#[cfg(feature = "postgres")]
-pub(crate) fn unlocked_postgres_migrator() -> sqlx::migrate::Migrator {
-    sqlx::migrate::Migrator {
-        migrations: POSTGRES_MIGRATOR.migrations.clone(),
-        ignore_missing: POSTGRES_MIGRATOR.ignore_missing,
-        locking: false,
-        no_tx: POSTGRES_MIGRATOR.no_tx,
-        table_name: POSTGRES_MIGRATOR.table_name.clone(),
-        create_schemas: POSTGRES_MIGRATOR.create_schemas.clone(),
-    }
-}
 
 #[cfg(feature = "sqlite")]
 pub(crate) mod sqlite;

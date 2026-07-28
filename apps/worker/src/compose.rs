@@ -89,6 +89,64 @@ pub fn build_core_flavor_runtime(
     queue: Arc<dyn JobDispatchQueue>,
     processor_id: [u8; 16],
 ) -> Result<(WorkerRuntimeBuilder, MetricsRegistry, PluginKey), ComposeError> {
+    build_core_flavor_runtime_impl(
+        execution_stores,
+        workflow_stores,
+        queue,
+        processor_id,
+        EngineEvidenceInputs::Ordinary,
+    )
+}
+
+/// Assemble the core-flavor worker for the server-owned runtime-repair profile.
+///
+/// This purpose-specific, feature-gated seam injects the deterministic clock
+/// and ephemeral execution-event bus before the engine is sealed in its
+/// internal `Arc`. It delegates every other composition step to the same
+/// implementation as [`build_core_flavor_runtime`]; ordinary worker behavior
+/// and defaults are unchanged.
+///
+/// The returned builder still exposes only worker tuning. Neither the engine
+/// nor its stores are returned to the server profile.
+///
+/// # Errors
+///
+/// Returns [`ComposeError`] under the same fail-closed conditions as the
+/// ordinary core-flavor builder.
+#[cfg(feature = "runtime-repair-red")]
+pub fn build_core_flavor_runtime_for_runtime_repair_red(
+    execution_stores: ExecutionStores,
+    workflow_stores: WorkflowStores,
+    queue: Arc<dyn JobDispatchQueue>,
+    processor_id: [u8; 16],
+    clock: Arc<dyn nebula_core::accessor::Clock>,
+    event_bus: nebula_eventbus::EventBus<nebula_engine::ExecutionEvent>,
+) -> Result<(WorkerRuntimeBuilder, MetricsRegistry, PluginKey), ComposeError> {
+    build_core_flavor_runtime_impl(
+        execution_stores,
+        workflow_stores,
+        queue,
+        processor_id,
+        EngineEvidenceInputs::RuntimeRepair { clock, event_bus },
+    )
+}
+
+enum EngineEvidenceInputs {
+    Ordinary,
+    #[cfg(feature = "runtime-repair-red")]
+    RuntimeRepair {
+        clock: Arc<dyn nebula_core::accessor::Clock>,
+        event_bus: nebula_eventbus::EventBus<nebula_engine::ExecutionEvent>,
+    },
+}
+
+fn build_core_flavor_runtime_impl(
+    execution_stores: ExecutionStores,
+    workflow_stores: WorkflowStores,
+    queue: Arc<dyn JobDispatchQueue>,
+    processor_id: [u8; 16],
+    evidence_inputs: EngineEvidenceInputs,
+) -> Result<(WorkerRuntimeBuilder, MetricsRegistry, PluginKey), ComposeError> {
     // Step 1 — boot and resolve the CorePlugin.
     let core_plugin = CorePlugin::try_new()?;
     let plugin_key = core_plugin.key().clone();
@@ -124,6 +182,13 @@ pub fn build_core_flavor_runtime(
     let engine = WorkflowEngine::new(action_runtime, metrics.clone())?
         .with_execution_stores(execution_stores.clone())
         .with_workflow_stores(workflow_stores);
+    let engine = match evidence_inputs {
+        EngineEvidenceInputs::Ordinary => engine,
+        #[cfg(feature = "runtime-repair-red")]
+        EngineEvidenceInputs::RuntimeRepair { clock, event_bus } => {
+            engine.with_clock(clock).with_event_bus(event_bus)
+        },
+    };
 
     // Step 3 — wire the CorePlugin into the engine.
     let engine = Arc::new(engine.with_plugin(Arc::clone(&resolved))?);

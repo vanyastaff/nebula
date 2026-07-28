@@ -1,9 +1,8 @@
 //! Immutable identities used to pin execution inputs.
 //!
-//! These types establish an experimental vocabulary and wire shape for revision pins.
-//! The module is available only through the explicitly unstable `unstable-revisions` feature;
-//! it is not part of the stable execution contract until runtime, persistence, and admission
-//! consume the pins end to end.
+//! These types establish the default-public vocabulary and wire shape for revision pins.
+//! Operational support remains partial until runtime, persistence, and admission consume the
+//! complete execution contract end to end.
 
 use nebula_core::{WorkerFlavorRevisionId, WorkflowVersionId};
 use serde::{Deserialize, Serialize};

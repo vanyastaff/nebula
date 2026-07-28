@@ -8,6 +8,7 @@ pub use nebula_core::id::{
     CredentialId, ExecutionId, OrgId, ResourceId, TriggerId, UserId, WorkflowId, WorkflowVersionId,
     WorkspaceId,
 };
+pub use nebula_core::{ExecutablePlanRevisionId, WorkerFlavorRevisionId};
 
 /// Monotone lease fencing token.
 ///

@@ -1,17 +1,26 @@
 //! Idempotency key generation.
 //!
-//! Deduplication itself is owned by the storage port's idempotency guard
-//! (`check_and_mark`). The engine constructs a key with
+//! Local replay/dedup is owned by the storage port's idempotency guard
+//! (`check_and_mark`). The engine constructs a per-attempt key with
 //! [`IdempotencyKey::for_attempt`] / [`IdempotencyKey::for_iteration`] and
 //! routes the dedup decision through that port so that durability and the
-//! key namespace stay in lock-step.
+//! key namespace stay in lock-step. This key is not a remote operation
+//! identity: it changes across retries, is not atomic with a provider, and
+//! cannot establish single-effect or exactly-once semantics.
+//! The planned remote-effect protocol instead binds each intended occurrence
+//! to a storage-minted `EffectSlotId` and stable runtime-minted `OperationId`.
 
 use std::fmt;
 
 use nebula_core::{ExecutionId, NodeKey};
 use serde::{Deserialize, Serialize};
 
-/// A deterministic key used to ensure exactly-once execution of a node attempt.
+/// A deterministic key for tenant-scoped local replay/dedup of a node attempt.
+///
+/// `IdempotencyKey` does not report whether a remote provider accepted an
+/// effect or whether Nebula acknowledged its own outcome commit. The future
+/// remote-effect protocol uses a separate storage-minted `EffectSlotId` and a
+/// stable runtime-minted `OperationId` retained across retries.
 ///
 /// Two composition modes:
 /// - **Stateless / one-shot:** an attempt-tagged frame of `execution_id`,
@@ -20,9 +29,11 @@ use serde::{Deserialize, Serialize};
 ///   the iteration counter — see [`for_iteration`](Self::for_iteration). Spec 28
 ///   §9.0 makes the iteration counter load-bearing so a resumed stateful action
 ///   reuses the same key for the same iteration boundary on retry.
-/// - **Business dedup:** callers may append a `StatefulAction::idempotency_key(state)`
-///   via [`with_business_key`](Self::with_business_key) — e.g. to key payments by
-///   invoice ID instead of attempt number.
+/// - **Business namespace:** callers may append a
+///   `StatefulAction::idempotency_key(state)` via
+///   [`with_business_key`](Self::with_business_key). The value is appended to
+///   the attempt/iteration frame; it does not replace the attempt counter or
+///   stabilize this local key across retries.
 ///
 /// # Injective encoding
 ///
@@ -58,7 +69,7 @@ impl IdempotencyKey {
     ///
     /// Used for `StatelessAction`, `ResourceAction`, and control-flow nodes
     /// that do not iterate. The `attempt` counter advances on retry; a single
-    /// attempt dispatches exactly once.
+    /// retrying the same local attempt reconstructs the same key.
     #[must_use]
     pub fn for_attempt(execution_id: ExecutionId, node_key: NodeKey, attempt: u32) -> Self {
         let mut key = String::new();
@@ -97,12 +108,21 @@ impl IdempotencyKey {
     /// Append an author-supplied business dedup suffix — the value returned by
     /// `StatefulAction::idempotency_key(&state)` — as one length-prefixed part.
     ///
-    /// Callers that want external systems (payment gateways, ticketing APIs)
-    /// to dedup on their own notion of identity (invoice ID, job ID, ...) pass
-    /// the business key through here. The length-prefixed framing means a
-    /// business key containing `:` (or chaining two business keys) is injective —
-    /// it cannot forge a different key. An empty business key leaves the base
-    /// key unchanged.
+    /// Callers can append their own local business namespace (invoice ID, job
+    /// ID, ...), but the attempt/iteration-scoped base remains part of the key.
+    /// The same business value on a later attempt therefore produces a
+    /// different local key. Forwarding this string to a provider grants no
+    /// remote invocation authority.
+    ///
+    /// In the planned remote-effect protocol, only a pinned stable-key
+    /// destination may authorize bounded effect-call re-invocation of the same
+    /// `Prepared` operation with the same `OperationId`, and only while its
+    /// complete guarantee remains valid. Authenticated reconciliation is
+    /// read-only and never repeats the effecting call.
+    ///
+    /// The length-prefixed framing means a business key containing `:` (or
+    /// chaining two business keys) is injective — it cannot forge a different
+    /// key. An empty business key leaves the base key unchanged.
     #[must_use]
     pub fn with_business_key(mut self, business: &str) -> Self {
         if !business.is_empty() {
@@ -179,6 +199,20 @@ mod tests {
         let again = IdempotencyKey::for_iteration(exec_id, node_key!("pay"), 0, 0)
             .with_business_key("invoice_42");
         assert_eq!(with_invoice, again);
+    }
+
+    #[test]
+    fn business_key_does_not_stabilize_across_attempts() {
+        let exec_id = ExecutionId::new();
+        let first_attempt = IdempotencyKey::for_attempt(exec_id, node_key!("pay"), 0)
+            .with_business_key("invoice_42");
+        let retry_attempt = IdempotencyKey::for_attempt(exec_id, node_key!("pay"), 1)
+            .with_business_key("invoice_42");
+
+        assert_ne!(
+            first_attempt, retry_attempt,
+            "the business namespace must not replace the attempt-scoped base"
+        );
     }
 
     #[test]

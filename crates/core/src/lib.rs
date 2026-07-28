@@ -17,9 +17,12 @@
 //!   (`wfv_…`), `OrgId` (`org_…`), `WorkspaceId` (`ws_…`), `UserId` (`usr_…`),
 //!   `ServiceAccountId` (`svc_…`), `ResourceId` (`res_…`), `CredentialId` (`cred_…`),
 //!   `TriggerId` (`trg_…`), `TriggerEventId` (`evt_…`), `AttemptId` (`att_…`),
-//!   `InstanceId` (`nbl_…`), `SessionId` (`sess_…`) — all defined in this crate.
-//! - **Experimental transport digest IDs** — available only with
-//!   `unstable-worker-flavor`; fixed-width representation only.
+//!   `InstanceId` (`nbl_…`), `SessionId` (`sess_…`), and `ExecutionContractBundleId`
+//!   (`ecb_…`) — all defined in this crate.
+//! - **Transport digest IDs** — `ExecutablePlanRevisionId`,
+//!   `ExecutionContractBundleFingerprint`, `PluginSetId`, `WorkerFlavorRevisionId`, and
+//!   `ArtifactSetDigest`: strict fixed-width representation types for immutable execution and
+//!   worker-flavor contract identities. They do not confer authority or prove referenced content.
 //! - **Keys** — `PluginKey`, `ActionKey`, `CredentialKey`, `ParameterKey`, `ResourceKey`, `NodeKey`
 //!   — normalized string keys with validation.
 //! - **Scope** — `ScopeLevel`, `Scope`, `Principal`, `ScopeResolver` (Global → Organization → Workspace → Workflow → Execution).
@@ -79,7 +82,6 @@ pub mod sync;
 /// Multi-tenant context and resolved IDs.
 pub mod tenancy;
 /// Fixed-width transport identifiers with canonical lowercase hexadecimal encoding.
-#[cfg(feature = "unstable-worker-flavor")]
 pub mod transport_digest;
 
 mod error;
@@ -111,9 +113,9 @@ pub use scope::*;
 pub use slug::{Slug, SlugError, SlugKind, is_prefixed_ulid};
 pub use sync::Lazy;
 pub use tenancy::{PermissionDenial, PermissionDenied, ResolvedIds, TenantContext, WorkspaceGrant};
-#[cfg(feature = "unstable-worker-flavor")]
 pub use transport_digest::{
-    ArtifactSetDigest, PluginSetId, TransportDigestParseError, WorkerFlavorRevisionId,
+    ArtifactSetDigest, ExecutablePlanRevisionId, ExecutionContractBundleFingerprint, PluginSetId,
+    TransportDigestParseError, WorkerFlavorRevisionId,
 };
 
 // ── Compile-time key macros ─────────────────────────────────────────────────
@@ -180,8 +182,9 @@ pub mod prelude {
     pub use crate::error::{CoreError, CoreResult};
     // Identifiers (ULID-backed)
     pub use crate::id::{
-        AttemptId, CredentialId, ExecutionId, InstanceId, OrgId, ResourceId, ServiceAccountId,
-        SessionId, TriggerEventId, TriggerId, UserId, WorkflowId, WorkflowVersionId, WorkspaceId,
+        AttemptId, CredentialId, ExecutionContractBundleId, ExecutionId, InstanceId, OrgId,
+        ResourceId, ServiceAccountId, SessionId, TriggerEventId, TriggerId, UserId, WorkflowId,
+        WorkflowVersionId, WorkspaceId,
     };
     // Domain keys (normalized string keys)
     pub use crate::keys::{

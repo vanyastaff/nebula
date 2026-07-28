@@ -13,7 +13,7 @@
 //!   `InMemoryCheckpointStore`, `InMemoryJournalReader`,
 //!   `InMemoryNodeResultStore`, `InMemoryIdempotencyGuard`,
 //!   `InMemoryIdempotencyStore`, `InMemoryControlQueue`,
-//!   `InMemoryWebhookActivationStore`.
+//!   `InMemoryWebhookActivationStore`, `InMemoryPlanFlavorCatalog`.
 //! - `sqlite` — SQLite adapter behind the `sqlite` feature
 //!   (dev / edge single-writer; spec §5 SQLite parity boundary).
 //! - `postgres` — PostgreSQL adapter behind the `postgres` feature
@@ -66,6 +66,8 @@ pub mod identity_secret;
 pub mod inmem;
 /// Row-to-domain type conversion utilities.
 pub mod mapping;
+#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
+mod migration;
 /// Postgres implementations of [`repos`] traits.
 #[cfg(feature = "postgres")]
 pub mod pg;
@@ -109,6 +111,11 @@ pub use format::StorageFormat;
 pub use inmem::{
     InMemoryCheckpointStore, InMemoryControlQueue, InMemoryExecutionStore,
     InMemoryIdempotencyGuard, InMemoryIdempotencyStore, InMemoryJournalReader,
-    InMemoryNodeResultStore, InMemoryResumeProducer, InMemoryResumeTokenStore,
-    InMemoryWebhookActivationStore, InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
+    InMemoryNodeResultStore, InMemoryPlanFlavorCatalog, InMemoryResumeProducer,
+    InMemoryResumeTokenStore, InMemoryWebhookActivationStore, InMemoryWorkflowStore,
+    InMemoryWorkflowVersionStore,
 };
+// Mirrors the gating on `mod migration`: with no backend feature there is no
+// migration catalog to adopt a database into.
+#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
+pub use migration::adopt::{LedgerAdoptionError, LedgerAdoptionOutcome};

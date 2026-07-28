@@ -26,7 +26,7 @@ use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 use nebula_action::{
     ActionContext, ActionError, ActionFactory, ActionHandle, ActionMetadata, ActionResult,
 };
-use nebula_core::port_key;
+use nebula_core::{Dependencies, port_key};
 use nebula_engine::ActionExecutor;
 use nebula_engine::{
     ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, PluginWiringError,
@@ -243,6 +243,7 @@ async fn with_plugin_duplicate_plugin_key_returns_typed_error() {
 #[derive(Debug)]
 struct StubFactory {
     meta: ActionMetadata,
+    dependencies: Dependencies,
 }
 
 impl StubFactory {
@@ -253,6 +254,7 @@ impl StubFactory {
                 "Noop",
                 "A stub action that is never dispatched",
             ),
+            dependencies: Dependencies::new(),
         }
     }
 }
@@ -260,6 +262,10 @@ impl StubFactory {
 impl ActionFactory for StubFactory {
     fn metadata(&self) -> &ActionMetadata {
         &self.meta
+    }
+
+    fn dependencies(&self) -> &Dependencies {
+        &self.dependencies
     }
 
     fn instantiate<'a>(

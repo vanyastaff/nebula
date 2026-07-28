@@ -432,9 +432,9 @@ async fn exercise_migration(pool: &PgPool) -> TestResult<MigrationEvidence> {
     MIGRATOR.run(pool).await?;
 
     let post_migration_head = applied_head(pool).await?;
-    if post_migration_head != 40 {
+    if post_migration_head != 41 {
         return Err(std::io::Error::other(format!(
-            "expected credential migrations through 0040, catalog stopped at {post_migration_head:04}"
+            "expected the full catalog through 0041, stopped at {post_migration_head:04}"
         ))
         .into());
     }

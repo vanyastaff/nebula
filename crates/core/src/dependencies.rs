@@ -5,7 +5,7 @@ use std::any::TypeId;
 use crate::{CredentialKey, ResourceKey};
 
 /// Container for declared dependencies.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Dependencies {
     credentials: Vec<CredentialRequirement>,
     resources: Vec<ResourceRequirement>,

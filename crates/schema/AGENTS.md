@@ -5,8 +5,6 @@
 **Layer:** Core — depends only downward (root AGENTS.md -> Layered Dependency Map). Siblings: `nebula-validator` (rules), `nebula-expression` (resolution context).
 
 ## Commands
-- `cargo check -p nebula-schema`
-- `cargo nextest run -p nebula-schema`  ·  doctests: `cargo test -p nebula-schema --doc`
 - `cargo test -p nebula-schema --features schemars` — JSON Schema export path (smoke test + `json_schema_export` example gated on this feature)
 - `task bench:crate CRATE=nebula-schema` — criterion benches (build/validate/serde/resolve/lookup/memory)
 
@@ -26,7 +24,6 @@
 - No KDF/hashing here (removed as a weaker dup of nebula-credential's Argon2id); do not re-add.
 - Public surface is strict: `Field::*::new` needs a pre-validated `FieldKey`; use `field_key!(...)` or `Field::try_*` — no panic-on-bad-key helpers (`set_raw` removed; use `try_set_raw`).
 - `#[deny(clippy::disallowed_macros)]` bans `#[async_trait]`; use the crate's `EvalFuture` (BoxFuture) alias for object-safe async.
-- Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also
 - `README.md` — full design (Purpose / Role / Public API / Contract / Non-goals); `CHANGELOG.md` for `set_raw` migration

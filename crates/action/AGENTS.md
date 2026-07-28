@@ -15,8 +15,6 @@
 | Run derive tests | `cargo nextest run -p nebula-action` + trybuild probes in `tests/probes/`. Trybuild can false-TIMEOUT under nextest `agent` profile — warm cache + plain `cargo test` to confirm. |
 
 ## Commands
-- `cargo check -p nebula-action`
-- `cargo nextest run -p nebula-action`  ·  doctests: `cargo test -p nebula-action --doc`
 - Derive/proc-macro tests: `crates/action/tests/derive_action.rs` + trybuild probes under `crates/action/tests/probes/` (trybuild can false-TIMEOUT under nextest `agent` profile on cold cache — warm + plain `cargo test` to confirm)
 
 ## Key files
@@ -35,8 +33,6 @@
 - `CheckpointPolicy` is a field on `ActionMetadata` (`checkpoint_policy`, default `Inherit`); engine enforcement of non-`Inherit` cadences is not yet wired — treat a non-default policy as declared intent, not a runtime guarantee.
 - This crate is NOT the execution driver (the engine dispatches in-process), execution state machine (`nebula-execution`), schema system (`nebula-schema`), or engine retry layer; process/WASM isolation is a canon §12.6 / ADR-0091 non-goal.
 - `WebhookAction::config()` defaults to `SignaturePolicy::Required` (fail-closed); secret material never flows through the dyn `TriggerHandler` surface.
-- Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
-- Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also
 - `README.md` — full design (v4 surface, migration recipe, contract/canon invariants)

@@ -210,9 +210,20 @@ fn emit_factory(
         #[doc = #kind_str]
         /// )]` is present.  Pass `Arc::new(<Name>Factory::new())` to
         /// `Plugin::resources()` or `ResourceActivatorRegistry::insert`.
-        #[derive(Debug, Clone)]
+        #[derive(Clone)]
         pub struct #factory_name {
             inner: ::std::sync::Arc<dyn ::nebula_resource::ResourceFactory>,
+        }
+
+        impl ::std::fmt::Debug for #factory_name {
+            fn fmt(
+                &self,
+                formatter: &mut ::std::fmt::Formatter<'_>,
+            ) -> ::std::fmt::Result {
+                formatter
+                    .debug_struct(::std::stringify!(#factory_name))
+                    .finish_non_exhaustive()
+            }
         }
 
         impl #factory_name {
@@ -239,6 +250,14 @@ fn emit_factory(
         impl ::nebula_resource::ResourceFactory for #factory_name {
             fn key(&self) -> ::nebula_core::ResourceKey {
                 self.inner.key()
+            }
+
+            fn dependencies(&self) -> &::nebula_core::Dependencies {
+                self.inner.dependencies()
+            }
+
+            fn resource_type_id(&self) -> ::std::any::TypeId {
+                self.inner.resource_type_id()
             }
 
             fn metadata(&self) -> ::nebula_resource::ResourceMetadata {

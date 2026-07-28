@@ -15,8 +15,6 @@
 | Test credential properties | Compile-fail tests in `compile_fail_*.rs` encode load-bearing invariants. Read these first when changes feel risky. |
 
 ## Commands
-- `cargo check -p nebula-credential`
-- `cargo nextest run -p nebula-credential`  ·  doctests: `cargo test -p nebula-credential --doc`
 - Feature flags: `rotation` (gated, evolving)
 - `compile_fail_*.rs` (trybuild) encode the load-bearing invariants — read these first when a change feels risky; may false-TIMEOUT on cold cache under nextest (warm + plain `cargo test`).
 
@@ -36,10 +34,9 @@
 - **Capabilities are sub-trait membership, never const flags** — duplicate-KEY `register` is fatal in debug AND release; a declared-but-unimplemented capability is a compile error. Don't reintroduce capability bools or per-trait `*_schema` (schema = `Properties: HasSchema`, read via `schema_of`).
 - `CredentialState` requires `ZeroizeOnDrop`; `Debug` redacts secrets; `SchemeGuard` is `!Clone` and drop-zeroizes.
 - Refresh authority is the backend-authored material epoch, not serialized-byte equality or the general row version. Display/gate transitions preserve it; explicit material/reconnect, every durable reauthentication decision, and every successful refresh advance it even for byte-identical data and clear the old gate. Exact local finalization failures remain distinct from `OutcomeUnknown` for both winners and payload-free L1 waiters, and both retain the claim fail-closed.
-- Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
 - First-party deployment wiring belongs in `apps/server`; `nebula-api::ports::credential_service_factory` is an unsupported `test-util` fixture and must never acquire production or provider policy.
 - Supported authenticated HTTP management calls enter through `CredentialController`: one injected `CredentialTenantAuthority` decision, then one privately minted owner-bound command. Port-local owner/selector constructors and `CredentialPersistence` are public technical data/contracts, not authority and not supported SDK/API surfaces. Never add `None == admin`, expose those handles to handlers/integrations, or describe K1 as the K3 sole-writer/ledger closure.
-- Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code (`#![forbid(unsafe_code)]`).
+- The crate is `#![forbid(unsafe_code)]` — keep it that way.
 
 ## See also
 - `docs/DESIGN.md` — current K1 authority and K2 persistence boundary plus explicit K3/K4

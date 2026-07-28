@@ -1513,7 +1513,7 @@ async fn resume_returns_error_for_terminal_execution() {
 }
 
 #[tokio::test]
-async fn resume_executes_remaining_nodes_after_crash() {
+async fn resume_continues_from_injected_partial_state() {
     // Simulate a 3-node linear workflow (n1 → n2 → n3) where n1 completed
     // before the crash. We manually inject the partially completed state into
     // the repos and verify that resume runs n2 and n3.
@@ -2470,10 +2470,10 @@ async fn on_error_payload_is_persisted_before_checkpoint_commits() {
 
 // -- Durable idempotency tests --
 
-/// Pre-marking a node's idempotency key causes the engine to skip execution
-/// and load the persisted output instead of re-running the action.
+/// A successful node run records its local idempotency mark and persisted
+/// output.
 #[tokio::test]
-async fn idempotency_check_prevents_double_execution() {
+async fn successful_execution_records_idempotency_mark_and_output() {
     use std::sync::atomic::{AtomicU32, Ordering as AOrdering};
 
     // Track how many times the handler is actually invoked.
@@ -4005,14 +4005,10 @@ async fn panicked_task_reports_real_node_id() {
     );
 }
 
-/// Issue #299 — idempotency replay must reconstruct the exact
-/// ActionResult variant so that Branch edges gate correctly.
-/// Regression: with the old code a persisted Branch result was
-/// replayed as a flat `Success`, and every branch edge fired
-/// regardless of `branch_key`, causing unintended downstream
-/// execution on replay.
+/// A first execution persists the exact `ActionResult::Branch` selector used
+/// to route the selected edge.
 #[tokio::test]
-async fn idempotency_replay_preserves_branch_routing() {
+async fn branch_result_persistence_preserves_selected_route() {
     let registry = Arc::new(ActionRegistry::new());
     registry.register_stateless_instance(
         // Declares the "true"/"false" branch ports it actually routes on —

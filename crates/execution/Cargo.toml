@@ -14,7 +14,6 @@ documentation.workspace = true
 
 [features]
 default = []
-unstable-revisions = ["nebula-core/unstable-worker-flavor"]
 
 [dependencies]
 nebula-core = { path = "../core" }
@@ -22,6 +21,7 @@ nebula-error = { workspace = true, features = ["derive"] }
 nebula-workflow = { path = "../workflow" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }

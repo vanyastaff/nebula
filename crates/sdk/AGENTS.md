@@ -5,8 +5,6 @@
 **Layer:** API/Public — depends only downward (root AGENTS.md → Layered Dependency Map).
 
 ## Commands
-- `cargo check -p nebula-sdk`
-- `cargo nextest run -p nebula-sdk`  ·  doctests: `cargo test -p nebula-sdk --doc`
 - Features: `default = ["derive", "testing"]`; `testing` gates `src/testing.rs` + `pub use tokio`.
 
 ## Key files
@@ -22,7 +20,6 @@
 - `prelude` / `WorkflowBuilder` / `ActionBuilder` are a public open-source contract (§4.4/§7): breaking changes need explicit announcement + migration, not drive-by edits.
 - Not the engine/runtime or an expression evaluator. `nebula-resilience` is not currently curated; author demand for it is an SDK gap, not permission to import a Nebula leaf directly. Plugins remain trusted in-process adapters (ADR-0091), while the supported author contract must come through this SDK.
 - `anyhow` ergonomics are allowed for author scripts, but first-party lib code uses typed `thiserror`/`NebulaError`; no unwrap/expect/panic in lib code.
-- Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
 
 ## See also
 - `README.md` — full re-export list + maturity notes · canon `docs/PRODUCT_CANON.md` §3.5/§4.4/§7, `docs/INTEGRATION_MODEL.md`, `docs/MATURITY.md`.

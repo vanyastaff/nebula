@@ -9,7 +9,7 @@ use std::{
 
 use sha2::{Digest, Sha384};
 
-const HISTORICAL_SHA384: &str = "bee7216c69554a52aad0479eee68d5e46fcb54e4b32fdcb6cd3d2888e7fd3b617f069090b17d856a9cba832b17ee7aef";
+const PRE_0042_SHA384: &str = "fdd6413d8d014c945d1facf0595f91aefa8b605359e6890476df239720a47463615f2afee6c0edbc04c047aa5cd35182";
 
 #[derive(Debug)]
 struct MigrationFile {
@@ -178,7 +178,7 @@ fn historical_digest(catalogs: &[&Catalog]) -> String {
             catalog
                 .migrations
                 .iter()
-                .filter(|migration| migration.version <= 38)
+                .filter(|migration| migration.version <= 41)
                 .map(move |migration| {
                     (
                         format!("{}/{}", catalog.backend, migration.file_name),
@@ -209,15 +209,15 @@ fn repository_catalog_matches_k2_contract() {
     let postgres = Catalog::load("postgres").expect("Postgres catalog must be valid");
     let sqlite = Catalog::load("sqlite").expect("SQLite catalog must be valid");
 
-    let expected_postgres = (1_u16..=40).collect::<Vec<_>>();
+    let expected_postgres = (1_u16..=41).collect::<Vec<_>>();
     let expected_sqlite = (1_u16..=28)
         .chain(30..=35)
-        .chain([39, 40])
+        .chain([39, 40, 41])
         .collect::<Vec<_>>();
     assert_eq!(
         postgres.versions(),
         expected_postgres,
-        "Postgres must reserve every logical migration through version 0040"
+        "Postgres must reserve every logical migration through version 0041"
     );
     assert_eq!(
         sqlite.versions(),
@@ -252,18 +252,27 @@ fn repository_catalog_matches_k2_contract() {
             retry_gate.file_name, "0040_credential_refresh_retry_gate.sql",
             "refresh-retry migration filename is part of the catalog contract"
         );
+        let plan_flavor_catalog = catalog
+            .by_version()
+            .get(&41)
+            .copied()
+            .expect("plan/flavor catalog migration 0041 must exist in both backends");
+        assert_eq!(
+            plan_flavor_catalog.file_name, "0041_port_plan_flavor_revision_catalog.sql",
+            "plan/flavor catalog migration filename is part of the catalog contract"
+        );
     }
 }
 
 #[test]
-fn historical_migration_bytes_are_immutable() {
+fn pre_0042_migration_bytes_are_immutable() {
     let postgres = Catalog::load("postgres").expect("Postgres catalog must be valid");
     let sqlite = Catalog::load("sqlite").expect("SQLite catalog must be valid");
 
     assert_eq!(
         historical_digest(&[&postgres, &sqlite]),
-        HISTORICAL_SHA384,
-        "migrations 0001..0038 are immutable; add a new migration instead of editing history"
+        PRE_0042_SHA384,
+        "migrations 0001..0041 are immutable; add a new migration instead of editing history"
     );
 }
 

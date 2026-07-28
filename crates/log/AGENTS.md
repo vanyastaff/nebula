@@ -5,8 +5,6 @@
 **Layer:** Cross-cutting — no upward deps; importable from any tier (root AGENTS.md -> Layered Dependency Map).
 
 ## Commands
-- `cargo check -p nebula-log`
-- `cargo nextest run -p nebula-log`  ·  doctests: `cargo test -p nebula-log --doc`
 - Feature-gated paths: `cargo check -p nebula-log --features full` (or `file` / `telemetry` / `sentry` / `log-compat`); bench: `task bench:crate CRATE=nebula-log` (`benches/log_hot_path.rs`)
 
 ## Key files
@@ -22,7 +20,6 @@
 - Not a metrics system (`nebula-metrics`) and not an event bus (`nebula-eventbus`) — don't add either here.
 - `LoggerGuard` is RAII; it must stay alive for the process lifetime. Duplicate init returns a no-op guard / `LogError::AlreadyInitialized` — keep init idempotent, never panic.
 - `#![forbid(unsafe_code)]` and `#![warn(missing_docs)]` — every public item needs docs; sentry uses `rustls` only (native-tls banned in `deny.toml`).
-- Library code uses typed `thiserror`/`LogError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also
 - `README.md` — full design · `docs/README.md` (extended internals) · canon `docs/PRODUCT_CANON.md` §4.6/§12.5, `docs/OBSERVABILITY.md` · sibling `nebula-metrics`

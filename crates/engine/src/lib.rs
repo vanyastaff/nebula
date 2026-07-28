@@ -76,6 +76,7 @@ pub mod resource;
 pub mod resource_accessor;
 pub mod resource_status;
 pub mod result;
+pub mod revision_catalog;
 pub mod runtime;
 pub mod scoped_resources;
 pub mod store_seam;
@@ -116,6 +117,10 @@ pub use resource_status::{
     EngineManagerResourceStatus, EngineResourceStatus, ResourceRuntimeStatus,
 };
 pub use result::ExecutionResult;
+pub use revision_catalog::{
+    LoadedPlanFlavorRevision, PlanFlavorRevisionBridgeError, PlanFlavorRevisionInstaller,
+    PlanFlavorRevisionLoader,
+};
 pub use runtime::{
     ActionExecutor, ActionRegistry, ActionRunContext, ActionRunner, ActionRuntime, BlobRef,
     BlobStorage, BoundedStreamBuffer, DataPassingPolicy, InProcessRunner, LargeDataStrategy,

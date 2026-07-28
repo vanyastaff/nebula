@@ -118,7 +118,7 @@ Requires **Rust 1.97+** (edition 2024). Uses [cargo-nextest](https://nexte.st/) 
 
 ```bash
 task db:up          # Start Postgres via Docker Compose
-task db:migrate     # Run pending migrations
+task db:migrate     # Run pending migrations through schema admission
 task obs:up         # Start Jaeger + OTEL collector
 ```
 

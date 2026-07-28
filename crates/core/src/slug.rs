@@ -240,6 +240,7 @@ const RESERVED_SLUGS: &[&str] = &[
     "wf",
     "www",
     "exe",
+    "ecb",
     "cred",
     "res",
     "usr",
@@ -258,11 +259,11 @@ const RESERVED_SLUGS: &[&str] = &[
 #[must_use]
 pub fn is_prefixed_ulid(segment: &str) -> bool {
     // Prefixed ULIDs have format: prefix_ULID where ULID is 26 chars of Crockford base32
-    // Known prefixes: org_, ws_, wf_, wfv_, exe_, att_, nbl_, trg_, evt_, usr_, svc_, res_,
-    // cred_, sess_, pat_
+    // Known prefixes: org_, ws_, wf_, wfv_, exe_, ecb_, att_, nbl_, trg_, evt_, usr_, svc_,
+    // res_, cred_, sess_, pat_
     const PREFIXES: &[&str] = &[
-        "org_", "ws_", "wf_", "wfv_", "exe_", "att_", "nbl_", "trg_", "evt_", "usr_", "svc_",
-        "res_", "cred_", "sess_", "pat_",
+        "org_", "ws_", "wf_", "wfv_", "exe_", "ecb_", "att_", "nbl_", "trg_", "evt_", "usr_",
+        "svc_", "res_", "cred_", "sess_", "pat_",
     ];
     PREFIXES.iter().any(|prefix| segment.starts_with(prefix))
 }
@@ -434,6 +435,7 @@ mod tests {
         assert!(is_reserved("admin"));
         assert!(is_reserved("api"));
         assert!(is_reserved("webhook"));
+        assert!(is_reserved("ecb"));
     }
 
     #[test]
@@ -454,6 +456,7 @@ mod tests {
             "wf_01ABC",
             "wfv_01ABC",
             "exe_01ABC",
+            "ecb_01ABC",
             "att_01ABC",
             "nbl_01ABC",
             "trg_01ABC",
@@ -485,9 +488,9 @@ mod tests {
     #[test]
     fn prefixed_ulid_recognizes_live_id_type_strings() {
         use crate::id::{
-            AttemptId, CredentialId, ExecutionId, InstanceId, OrgId, ResourceId, ServiceAccountId,
-            SessionId, TriggerEventId, TriggerId, UserId, WorkflowId, WorkflowVersionId,
-            WorkspaceId,
+            AttemptId, CredentialId, ExecutionContractBundleId, ExecutionId, InstanceId, OrgId,
+            ResourceId, ServiceAccountId, SessionId, TriggerEventId, TriggerId, UserId, WorkflowId,
+            WorkflowVersionId, WorkspaceId,
         };
 
         macro_rules! assert_recognized {
@@ -507,6 +510,7 @@ mod tests {
         assert_recognized!(WorkflowId);
         assert_recognized!(WorkflowVersionId);
         assert_recognized!(ExecutionId);
+        assert_recognized!(ExecutionContractBundleId);
         assert_recognized!(AttemptId);
         assert_recognized!(InstanceId);
         assert_recognized!(TriggerId);

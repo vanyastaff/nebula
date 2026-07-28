@@ -1,0 +1,520 @@
+registry_version = 1
+evidence_schema_version = 1
+evidence_schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
+
+[duration_definitions.focused_working_day]
+version = 1
+minutes = 480
+
+[[gates]]
+id = "NS01"
+statement = "Every non-terminal execution has an exact bundle, workflow, and flavor identity."
+owner = "api-design-lead"
+state = "red"
+state_reason = "Exact flavor identity is stored but does not yet govern every claim and dispatch path."
+activation_checkpoint = "CP2"
+backends = ["in-memory", "sqlite", "postgresql"]
+required_ci = [
+  ".github/workflows/test-matrix.yml#tests",
+  ".github/workflows/test-matrix.yml#postgres-conformance",
+]
+
+[gates.evidence]
+kind = "conformance-report"
+schema_version = 1
+schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
+artifact_path = "artifacts/north-star/v1/ns01.json"
+
+[gates.threshold]
+kind = "required-set"
+metric = "non_terminal_execution_identity_fields"
+required_values = ["bundle_revision", "workflow_revision", "flavor_revision"]
+
+[[gates]]
+id = "NS02"
+statement = "Missing revisions produce typed fail-closed results; latest fallback count is zero."
+owner = "api-design-lead"
+state = "red"
+state_reason = "The exact-load and drain contract is not complete and latest fallback remains reachable."
+activation_checkpoint = "CP2"
+backends = ["in-memory", "sqlite", "postgresql"]
+required_ci = [
+  ".github/workflows/test-matrix.yml#tests",
+  ".github/workflows/test-matrix.yml#postgres-conformance",
+]
+
+[gates.evidence]
+kind = "conformance-report"
+schema_version = 1
+schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
+artifact_path = "artifacts/north-star/v1/ns02.json"
+
+[gates.threshold]
+kind = "zero"
+metrics = [
+  "latest_revision_fallback_count",
+  "untyped_missing_revision_result_count",
+  "missing_revision_success_count",
+]
+
+[[gates]]
+id = "NS03"
+statement = "A stale claim generation cannot change a reclaimed row in any backend."
+owner = "async-systems-lead"
+state = "red"
+state_reason = "Claim ownership still admits same-identity generation ambiguity."
+activation_checkpoint = "CP2"
+backends = ["in-memory", "sqlite", "postgresql"]
+required_ci = [
+  ".github/workflows/test-matrix.yml#tests",
+  ".github/workflows/test-matrix.yml#postgres-conformance",
+]
+
+[gates.evidence]
+kind = "conformance-report"
+schema_version = 1
+schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
+artifact_path = "artifacts/north-star/v1/ns03.json"
+
+[gates.threshold]
+kind = "zero"
+metrics = ["stale_generation_mutation_count"]
+
+[[gates]]
+id = "NS04"
+statement = "Ambiguous acceptance retries create exactly one durable drive identity."
+owner = "async-systems-lead"
+state = "red"
+state_reason = "Acceptance and durable drive identity do not yet form one atomic protocol."
+activation_checkpoint = "CP2"
+backends = ["in-memory", "sqlite", "postgresql"]
+required_ci = [
+  ".github/workflows/test-matrix.yml#tests",
+  ".github/workflows/test-matrix.yml#postgres-conformance",
+]
+
+[gates.evidence]
+kind = "conformance-report"
+schema_version = 1
+schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
+artifact_path = "artifacts/north-star/v1/ns04.json"
+
+[gates.threshold]
+kind = "exact"
+metric = "durable_drive_identities_per_ambiguous_acceptance"
+expected = 1
+
+[[gates]]
+id = "NS05"
+statement = "Long action duration does not extend dispatch-claim ownership."
+owner = "async-systems-lead"
+state = "red"
+state_reason = "The current processor retains dispatch ownership across workflow execution."
+activation_checkpoint = "CP2"
+backends = ["in-memory", "sqlite", "postgresql"]
+required_ci = [
+  ".github/workflows/test-matrix.yml#tests",
+  ".github/workflows/test-matrix.yml#postgres-conformance",
+]
+
+[gates.evidence]
+kind = "conformance-report"
+schema_version = 1
+schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
+artifact_path = "artifacts/north-star/v1/ns05.json"
+
+[gates.threshold]
+kind = "exact"
+metric = "dispatch_claim_extended_by_action_duration"
+expected = false
+
+[[gates]]
+id = "NS06"
+statement = "Admission tests prove configured tenant fairness and bounded capacity under saturation."
+owner = "systems-perf-lead"
+state = "partial"
+state_reason = "Admission controls exist, but no versioned saturation artifact binds a configured target and deviation."
+activation_checkpoint = "CP6"
+backends = ["in-memory", "sqlite", "postgresql"]
+required_ci = [
+  ".github/workflows/test-matrix.yml#tests",
+  ".github/workflows/test-matrix.yml#postgres-conformance",
+]
+
+[gates.evidence]
+kind = "measurement-report"
+schema_version = 1
+schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
+artifact_path = "artifacts/north-star/v1/ns06.json"
+
+[gates.threshold]
+kind = "configured-fairness"
+fairness_target_source = "input.workload_revision"
+allowed_deviation_source = "input.configuration_revision"
+capacity_limit_source = "input.configuration_revision"
+maximum_capacity_overruns = 0
+
+[[gates]]
+id = "NS07"
+statement = "InMemory, SQLite, and PostgreSQL pass the same persistence conformance contract."
+owner = "qa-lead"
+state = "partial"
+state_reason = "Backend tests exist, but one shared C0-C10 semantic oracle is not yet complete."
+activation_checkpoint = "CP2"
+backends = ["in-memory", "sqlite", "postgresql"]
+required_ci = [
+  ".github/workflows/test-matrix.yml#tests",
+  ".github/workflows/test-matrix.yml#postgres-conformance",
+]
+
+[gates.evidence]
+kind = "conformance-report"
+schema_version = 1
+schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
+artifact_path = "artifacts/north-star/v1/ns07.json"
+
+[gates.threshold]
+kind = "all"
+metric = "persistence_conformance_case_pass"
+required_cases = ["C0", "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10"]
+
+[[gates]]
+id = "NS08"
+statement = "PostgreSQL absence fails required CI instead of skipping or substituting SQLite."
+owner = "tooling-lead"
+state = "partial"
+state_reason = "A required PostgreSQL job exists, but versioned gate evidence is not yet retained."
+activation_checkpoint = "CP2"
+backends = ["postgresql"]
+required_ci = [
+  ".github/workflows/test-matrix.yml#postgres-conformance",
+  ".github/workflows/test-matrix.yml#tests",
+]
+
+[gates.evidence]
+kind = "ci-contract-report"
+schema_version = 1
+schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
+artifact_path = "artifacts/north-star/v1/ns08.json"
+
+[gates.threshold]
+kind = "exact"
+metric = "required_ci_result_when_postgresql_is_absent"
+expected = "failure"
+
+[[gates]]
+id = "NS09"
+statement = "Clean and previous-supported-version migration fixtures pass from ordered migrations."
+owner = "tooling-lead"
+state = "partial"
+state_reason = "Ordered migrations exist, but the complete clean and previous-version evidence pair is not retained."
+activation_checkpoint = "CP2"
+backends = ["sqlite", "postgresql"]
+required_ci = [
+  ".github/workflows/test-matrix.yml#tests",
+  ".github/workflows/test-matrix.yml#postgres-conformance",
+]
+
+[gates.evidence]
+kind = "migration-report"
+schema_version = 1
+schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
+artifact_path = "artifacts/north-star/v1/ns09.json"
+
+[gates.threshold]
+kind = "all"
+metric = "ordered_migration_fixture_pass"
+required_cases = ["clean", "previous-supported-version"]
+
+[[gates]]
+id = "NS10"
+statement = "The resource lifecycle slice survives restart and loss of every corresponding EventBus message."
+owner = "async-systems-lead"
+state = "missing"
+state_reason = "No first-party restart and EventBus-loss convergence artifact covers the full lifecycle slice."
+activation_checkpoint = "CP3"
+backends = ["sqlite", "postgresql"]
+required_ci = [
+  ".github/workflows/test-matrix.yml#tests",
+  ".github/workflows/test-matrix.yml#postgres-conformance",
+]
+
+[gates.evidence]
+kind = "resilience-report"
+schema_version = 1
+schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
+artifact_path = "artifacts/north-star/v1/ns10.json"
+
+[gates.threshold]
+kind = "all"
+metric = "resource_lifecycle_convergence_case_pass"
+required_cases = ["restart", "each-corresponding-eventbus-message-lost"]
+
+[[gates]]
+id = "NS11"
+statement = "Cross-tenant negative tests produce no lookup, mutation, or secret disclosure."
+owner = "security-auditor"
+state = "partial"
+state_reason = "Tenant-negative tests exist, but no complete authority matrix artifact covers all three forbidden outcomes."
+activation_checkpoint = "CP3"
+backends = ["in-memory", "sqlite", "postgresql"]
+required_ci = [
+  ".github/workflows/test-matrix.yml#tests",
+  ".github/workflows/test-matrix.yml#postgres-conformance",
+]
+
+[gates.evidence]
+kind = "security-report"
+schema_version = 1
+schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
+artifact_path = "artifacts/north-star/v1/ns11.json"
+
+[gates.threshold]
+kind = "zero"
+metrics = [
+  "cross_tenant_lookup_count",
+  "cross_tenant_mutation_count",
+  "cross_tenant_secret_disclosure_count",
+]
+
+[[gates]]
+id = "NS12"
+statement = "Fresh-project time to first successful typed action meets the versioned NS12 duration threshold in `tools/xtask/gates/north-star-v1.toml`."
+owner = "product-steward"
+state = "missing"
+state_reason = "No versioned fresh-project timed fixture or measurement artifact exists."
+activation_checkpoint = "CP6"
+backends = ["sqlite"]
+required_ci = [".github/workflows/ci.yml#required"]
+
+[gates.evidence]
+kind = "measurement-report"
+schema_version = 1
+schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
+artifact_path = "artifacts/north-star/v1/ns12.json"
+
+[gates.threshold]
+kind = "percentile-duration"
+duration_definition = "typed-action-time-to-first-success-v1"
+p50_max_minutes = 20
+p90_max_minutes = 45
+
+[[gates]]
+id = "NS13"
+statement = "Fresh-project time to a credential-backed resource meets the versioned NS13 focused-working-day threshold in `tools/xtask/gates/north-star-v1.toml`."
+owner = "product-steward"
+state = "missing"
+state_reason = "No clean-room credential-resource timing artifact exists."
+activation_checkpoint = "CP6"
+backends = ["sqlite"]
+required_ci = [".github/workflows/ci.yml#required"]
+
+[gates.evidence]
+kind = "measurement-report"
+schema_version = 1
+schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
+artifact_path = "artifacts/north-star/v1/ns13.json"
+
+[gates.threshold]
+kind = "percentile-duration"
+duration_definition = "focused-working-day-v1"
+p90_max_minutes = 480
+
+[[gates]]
+id = "NS14"
+statement = "Every activation diagnostic contains code, path, expected, actual, and remediation fields."
+owner = "api-design-lead"
+state = "missing"
+state_reason = "The compiler diagnostic contract and complete field-shape artifact do not exist."
+activation_checkpoint = "CP2"
+backend_non_applicability = "Activation diagnostics are a backend-independent authoring contract."
+required_ci = [".github/workflows/test-matrix.yml#tests"]
+
+[gates.evidence]
+kind = "diagnostic-contract-report"
+schema_version = 1
+schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
+artifact_path = "artifacts/north-star/v1/ns14.json"
+
+[gates.threshold]
+kind = "required-set"
+metric = "activation_diagnostic_fields"
+required_values = ["code", "path", "expected", "actual", "remediation"]
+
+[[gates]]
+id = "NS15"
+statement = "OpenAPI-to-runtime contract drift findings remain zero in the required conformance gate."
+owner = "api-design-lead"
+state = "partial"
+state_reason = "OpenAPI coverage exists, but the required versioned server-client runtime conformance artifact is incomplete."
+activation_checkpoint = "CP3"
+backend_non_applicability = "OpenAPI-to-runtime compatibility is a transport contract independent of persistence backend."
+required_ci = [".github/workflows/ci.yml#required"]
+
+[gates.evidence]
+kind = "compatibility-report"
+schema_version = 1
+schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
+artifact_path = "artifacts/north-star/v1/ns15.json"
+
+[gates.threshold]
+kind = "zero"
+metrics = ["openapi_runtime_drift_finding_count"]
+
+[[gates]]
+id = "NS16"
+statement = "Operators explain a seeded production incident from supported evidence within the versioned NS16 duration threshold in `tools/xtask/gates/north-star-v1.toml`."
+owner = "observability-engineer"
+state = "missing"
+state_reason = "No versioned seeded-incident drill artifact exists."
+activation_checkpoint = "CP6"
+backends = ["postgresql"]
+required_ci = [".github/workflows/ci.yml#required"]
+
+[gates.evidence]
+kind = "measurement-report"
+schema_version = 1
+schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
+artifact_path = "artifacts/north-star/v1/ns16.json"
+
+[gates.threshold]
+kind = "percentile-duration"
+duration_definition = "seeded-production-incident-explanation-v1"
+p90_max_minutes = 2
+
+[[gates]]
+id = "NS17"
+statement = "Stale or duplicate committed effects remain zero across the supported crash/retry/fencing suite."
+owner = "qa-lead"
+state = "missing"
+state_reason = "The durable runtime operation ledger and OperationId injection path remain planned, so no executable crash/retry/fencing artifact exists."
+activation_checkpoint = "CP2"
+backends = ["in-memory", "sqlite", "postgresql"]
+required_ci = [
+  ".github/workflows/test-matrix.yml#tests",
+  ".github/workflows/test-matrix.yml#postgres-conformance",
+]
+
+[gates.evidence]
+kind = "conformance-report"
+schema_version = 1
+schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
+artifact_path = "artifacts/north-star/v1/ns17.json"
+
+[gates.threshold]
+kind = "zero"
+metrics = ["stale_committed_effect_count", "duplicate_committed_effect_count"]
+
+[[gates]]
+id = "NS18"
+statement = "A fresh project completes each supported path with only `nebula-sdk` as a direct Nebula dependency."
+owner = "api-design-lead"
+state = "missing"
+state_reason = "The curated SDK client and embedded façades and their packaged external fixtures are absent."
+activation_checkpoint = "CP3"
+backends = ["sqlite", "postgresql"]
+required_ci = [".github/workflows/ci.yml#required"]
+
+[gates.evidence]
+kind = "packaging-report"
+schema_version = 1
+schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
+artifact_path = "artifacts/north-star/v1/ns18.json"
+
+[gates.threshold]
+kind = "all"
+metric = "sdk_only_fresh_project_path_pass"
+required_cases = ["integration", "client", "embedded"]
+
+[[gates]]
+id = "NS19"
+statement = "Published manifests contain exact internal versions and no path-only dependency."
+owner = "release-lead"
+state = "missing"
+state_reason = "No packaged-manifest artifact exists for the unpublished SDK surface."
+activation_checkpoint = "CP3"
+backend_non_applicability = "Published manifest dependency precision is independent of runtime persistence."
+required_ci = [".github/workflows/ci.yml#required"]
+
+[gates.evidence]
+kind = "packaging-report"
+schema_version = 1
+schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
+artifact_path = "artifacts/north-star/v1/ns19.json"
+
+[gates.threshold]
+kind = "required-set"
+metric = "published_manifest_dependency_checks"
+required_values = ["all-internal-versions-exact", "path-only-dependency-count-zero"]
+
+[[gates]]
+id = "NS20"
+statement = "SDK API snapshots, semver classification, MSRV, rustdoc, and supported feature matrices pass."
+owner = "release-lead"
+state = "missing"
+state_reason = "The curated SDK release matrix is not yet executable."
+activation_checkpoint = "CP3"
+backend_non_applicability = "SDK surface-quality checks are backend-independent build and compatibility contracts."
+required_ci = [".github/workflows/ci.yml#required"]
+
+[gates.evidence]
+kind = "release-matrix-report"
+schema_version = 1
+schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
+artifact_path = "artifacts/north-star/v1/ns20.json"
+
+[gates.threshold]
+kind = "all"
+metric = "sdk_release_quality_check_pass"
+required_cases = [
+  "api-snapshots",
+  "semver-classification",
+  "msrv",
+  "rustdoc",
+  "supported-feature-matrices",
+]
+
+[[gates]]
+id = "NS21"
+statement = "Operators can identify accepted, fenced, deferred, throttled, recovered, and flavor-mismatch outcomes."
+owner = "observability-engineer"
+state = "partial"
+state_reason = "Outcome vocabulary exists in pieces, but one durable journal and telemetry contract does not cover the required set."
+activation_checkpoint = "CP2"
+backends = ["in-memory", "sqlite", "postgresql"]
+required_ci = [
+  ".github/workflows/test-matrix.yml#tests",
+  ".github/workflows/test-matrix.yml#postgres-conformance",
+]
+
+[gates.evidence]
+kind = "observability-report"
+schema_version = 1
+schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
+artifact_path = "artifacts/north-star/v1/ns21.json"
+
+[gates.threshold]
+kind = "required-set"
+metric = "operator_identifiable_outcomes"
+required_values = ["accepted", "fenced", "deferred", "throttled", "recovered", "flavor-mismatch"]
+
+[[gates]]
+id = "NS22"
+statement = "Hybrid persistence remains blocked until an approved benchmark proves the current model is the bottleneck."
+owner = "chief-architect"
+state = "partial"
+state_reason = "The architecture forbids hybrid persistence, but no versioned approval and reversal-check artifact enforces the exception."
+activation_checkpoint = "CP0"
+backends = ["sqlite", "postgresql"]
+required_ci = [".github/workflows/ci.yml#required"]
+
+[gates.evidence]
+kind = "governance-report"
+schema_version = 1
+schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
+artifact_path = "artifacts/north-star/v1/ns22.json"
+
+[gates.threshold]
+kind = "governance-block"
+blocked = true
+required_approvals = ["approved-benchmark", "current-model-proven-bottleneck"]

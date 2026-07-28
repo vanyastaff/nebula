@@ -27,7 +27,7 @@ workspace — extend `nebula-core` deliberately (canon §3.10).
 
 ## Public API
 
-- `ExecutionId`, `WorkflowId`, `WorkflowVersionId`, `OrgId`, `WorkspaceId`, `UserId`, `ServiceAccountId`, `ResourceId`, `CredentialId`, `TriggerId`, `TriggerEventId`, `AttemptId`, `InstanceId`, `SessionId` — prefixed ULID typed identifiers, all defined in this crate.
+- `ExecutionId`, `ExecutionContractBundleId`, `WorkflowId`, `WorkflowVersionId`, `OrgId`, `WorkspaceId`, `UserId`, `ServiceAccountId`, `ResourceId`, `CredentialId`, `TriggerId`, `TriggerEventId`, `AttemptId`, `InstanceId`, `SessionId` — prefixed ULID typed identifiers, all defined in this crate.
 - `PluginKey`, `ActionKey`, `CredentialKey`, `ParameterKey`, `ResourceKey`, `NodeKey` — normalized string keys with validation.
 - `ScopeLevel`, `Scope`, `Principal`, `ScopeResolver` — hierarchical scope system (Global → Organization → Workspace → Workflow → Execution).
 - `Context` trait, `BaseContext`, `BaseContextBuilder` — base context with capability traits (`HasCredentials`, `HasResources`, `HasMetrics`, `HasEventBus`, `HasLogger`).
@@ -41,10 +41,12 @@ workspace — extend `nebula-core` deliberately (canon §3.10).
 - `Permission` — granular permission definitions (module `permission`). `PermissionDenied` — access-control error type (module `tenancy`).
 - `TenantContext`, `WorkspaceGrant`, `ResolvedIds` — multi-tenant context, workspace-bound role grants, and resolved organization/workspace IDs (module `tenancy`).
 - `Slug`, `SlugKind`, `SlugError`, `is_prefixed_ulid()` — validated slug strings for human-readable identifiers (module `slug`).
-- `PluginSetId`, `WorkerFlavorRevisionId`, `ArtifactSetDigest` — experimental opaque 32-byte
-  transport identities behind `unstable-worker-flavor`, with strict lowercase 64-hex wire
-  encoding. This is not part of the supported default API;
-  derivation, hashing policy, and consumers belong to their owning crates.
+- `ExecutablePlanRevisionId`, `ExecutionContractBundleFingerprint`, `PluginSetId`,
+  `WorkerFlavorRevisionId`, `ArtifactSetDigest` — default-public opaque 32-byte transport
+  identities with strict lowercase 64-hex wire encoding. Derivation, hashing policy, and
+  operational interpretation belong to their owning crates. In particular, `PluginSetId` is an
+  independent plugin-set pin; the ID alone is not proof of schemas, runtime behavior, artifact
+  authenticity, authorization, or a complete frozen registry.
 
 Credential-specific vocabulary (`CredentialEvent`) lives in `nebula-credential`. `CredentialId` is defined in this crate (module `id`). The `AuthScheme` trait and `AuthPattern` enum are canonical in this crate (module `auth`); `nebula-credential` re-exports them for discoverability.
 
@@ -53,7 +55,8 @@ Credential-specific vocabulary (`CredentialEvent`) lives in `nebula-credential`.
 - **[L1-§3.10]** Identifiers and keys in this crate are the stable, opaque handles shared by every other crate. Changing their representation cascades across the workspace.
 - **[L2-§12.5]** No secret material may appear in log output or error strings. Credential material (`SecretString` and related wrappers) lives in `nebula-credential`, not here. Test coverage: see `docs/MATURITY.md`.
 - Transport digest types define type separation and canonical wire encoding only. They do not
-  select a hash algorithm, canonicalize manifests, or grant capabilities.
+  select a hash algorithm, canonicalize manifests, prove referenced content, or grant
+  capabilities.
 
 ## Non-goals
 
@@ -82,7 +85,8 @@ All ID types use prefixed ULIDs via the `domain-key` crate (no direct `uuid` dep
 All ID types are `Copy`, support `new()`, `nil()`, `parse(&str)`, serde, and re-export
 `UlidParseError` for parse error handling.
 
-Prefix examples: `ExecutionId` → `exe_01J9…`, `WorkflowId` → `wf_01J9…`.
+Prefix examples: `ExecutionId` → `exe_01J9…`, `ExecutionContractBundleId` → `ecb_01J9…`,
+`WorkflowId` → `wf_01J9…`.
 
 ### Prelude
 

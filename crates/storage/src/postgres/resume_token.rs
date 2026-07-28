@@ -30,7 +30,7 @@ fn deserialize_wait_kind(raw: &str) -> Result<ResumeTokenWaitKind, StorageError>
 /// PostgreSQL-backed resume-token store.
 ///
 /// Wrap a pool whose schema was installed via [`super::init_schema`]
-/// (which applies the embedded `schema.sql` containing `port_resume_tokens`).
+/// (which applies the ordered migration containing `port_resume_tokens`).
 #[derive(Clone, Debug)]
 pub struct PgResumeTokenStore {
     pool: PgPool,

@@ -5,8 +5,6 @@
 **Layer:** Core — depends only downward (root AGENTS.md -> Layered Dependency Map): `nebula-error` only, no sibling Core imports.
 
 ## Commands
-- `cargo check -p nebula-validator`
-- `cargo nextest run -p nebula-validator`  ·  doctests: `cargo test -p nebula-validator --doc`
 - `cargo test -p nebula-validator --all-features` — features: `derive` (proc-macro), `network`, `temporal` (all default-on)
 - `cargo nextest run -p nebula-validator --test integration` · benches: `string_validators`, `combinators`, `rule_engine`, `error_construction`, `derive_*`
 
@@ -24,8 +22,6 @@
 - Each `Rule` inner kind exposes only the method valid for it; do NOT reintroduce a flat enum or cross-kind silent-pass — typed narrowing replaced it (ADR-0052/0080).
 - This is NOT a schema system (`nebula-schema`), expression evaluator (`nebula-expression`), resilience pipeline, or API error formatter — keep those concerns out.
 - `Rule` wire format is externally-tagged tuple-compact; changing serialization breaks stored rules — keep error codes stable (`tests/fixtures/compat/error_registry_v1.json`).
-- Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
-- Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also
 - `README.md` — full design · `docs/` (architecture, api-reference, combinators, extending, migration)

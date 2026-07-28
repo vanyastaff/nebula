@@ -328,13 +328,64 @@ Current seam: `crates/storage-port/src/store/execution.rs` (`ExecutionStore`) an
 
 **[L2]** Invariant: docs and public APIs must name the retry trigger. **Operator-declared retry** is implemented engine behavior. **Result-driven retry** is not a current `ActionResult` capability. Any future `ActionResult::Retry`-style surface must ship with persisted attempt accounting, idempotency, restart recovery, and engine tests in the same change; otherwise it is a false capability under §4.5.
 
-### 11.3 Idempotency
+**[L2]** A retryable error classification is not permission to repeat an ambiguous remote
+effect. Engine-level retry and `nebula-resilience` may repeat an effecting call when the attempt
+is known not to have crossed the effect boundary. After an ambiguous boundary, only the pinned
+stable-key contract may authorize a bounded re-invocation of the same prepared operation with the
+same `OperationId`, and only while that complete guarantee remains valid. Reconciliation is
+read-only and never re-invokes the effecting call. The remote-effect rules in §11.3 govern both
+retry layers.
 
-**[L2]** **One** idempotency story: deterministic per-attempt identity, checked and durably marked through `nebula_storage_port::store::IdempotencyGuard::check_and_mark` before the side effect. **Engine guarantee:** it will not double-dispatch a **marked** attempt. Whether the **external** system de-duplicates is the integration author’s contract with that system — document per node. Contract seam: `crates/storage-port/src/store/idempotency.rs`; exact key semantics are documented there and in `crates/execution/README.md`.
+### 11.3 Remote effects, operation identity, and local dedup
 
-**[L2]** For **non-idempotent or risky side effects** (payments, writes without natural upsert, external one-shot operations), action handlers must guard execution with this idempotency path (or an equivalent documented key contract) before calling the remote system.
+**[L2]** A remote effect is not atomic with Nebula's database transaction. The current
+implementation baseline is **at-least-once invocation with a possible duplicate** after worker
+death, timeout, or response loss. Nebula does not claim exactly-once remote effects.
 
-**[L2]** For **TriggerAction** sources, each inbound event should carry or derive a stable event identity (provider event id / cursor offset / hash) so at-least-once delivery can be made safe via dedup/idempotent handling; “no duplicates” is not a claim unless the source + runtime can prove it end-to-end.
+**[L2]** `nebula_storage_port::store::IdempotencyGuard::check_and_mark` is a
+tenant-scoped, first-writer-wins **local replay/dedup oracle**. It can report that a local
+attempt key was already marked; it is not an operation ledger, is not atomic with a remote
+provider, and cannot prove whether the provider accepted an effect. The current
+`nebula_execution::IdempotencyKey` is per-attempt and changes across engine retries. Neither
+primitive establishes remote-effect atomicity or universal single-effect safety.
+
+**[L2]** The required remote-effect protocol is:
+
+1. Runtime control establishes one explicit effect slot for each intended occurrence. Durable
+   preparation storage-mints `EffectSlotId` and binds the originating attempt generation,
+   canonical request fingerprint, and runtime-minted `OperationId` **before** provider
+   invocation. Same slot plus same fingerprint reuses the `OperationId`; same slot plus a
+   different fingerprint returns typed `OperationMismatch` with no durable delta. Distinct slots
+   remain distinct even when their payload bytes are identical.
+2. The adapter receives the `OperationId` automatically. Every retry or recovery of that same
+   effect slot retains the ID; retaining the ID alone grants no invocation authority.
+3. A failure known not to have crossed the effect boundary may retry. After an ambiguous
+   boundary, only a pinned stable-key destination may re-invoke the effecting call, and then only
+   as a bounded recovery of the same `Prepared` operation with the same `OperationId` while the
+   complete pinned guarantee remains valid. A reconcilable destination may issue only its
+   authenticated read-only query; reconciliation never repeats the effecting call.
+4. When bounded same-key recovery is exhausted, its guarantee expires, or no stable-key
+   permission exists, runtime control records durable `OutcomeUnknown`. From
+   `OutcomeUnknown`, even a formerly stable-key destination cannot re-invoke the effect; only
+   authenticated read-only reconciliation or privileged audited adjudication may establish a
+   known outcome.
+5. Every prepare and outcome database commit has an independent persistence acknowledgement.
+   Lost acknowledgement is `AcknowledgementUnknown`, not a remote outcome. Prepare
+   acknowledgement uncertainty permits zero provider calls until database-only reconciliation
+   confirms the exact durable prepared binding and its recorded `OperationId`; a mismatch fails
+   closed. Outcome acknowledgement uncertainty permits only ledger reads and an exact frozen-
+   evidence recommit under the current fence. Neither path authorizes provider invocation.
+
+ADR-0120 accepts this operation protocol; its runtime implementation remains **planned** until
+the durable ledger, runtime injection, recovery, and fault evidence land. It may converge on one
+known effect only under the complete pinned stable-key or authoritative read-only reconciliation
+contract. Only the stable-key variant grants bounded effect-call re-invocation, and the result is
+never described as exactly-once.
+
+**[L2]** For **TriggerAction** sources, each inbound event should carry or derive a stable event
+identity (provider event id / cursor offset / hash) so at-least-once delivery can be deduplicated
+locally. This ingress identity does not become a remote-effect `OperationId`, and “no
+duplicates” is not a claim unless the source, runtime, and destination contract prove it.
 
 ### 11.4 Resource lifecycle
 
@@ -365,7 +416,13 @@ Seams: execution state, outbox rows, and journal appends enter atomically throug
 
 **[L2]** If an operator cannot answer durability questions from this section plus code/docstrings, the product is not yet operationally honest.
 
-**[L2]** Checkpoint / side-effect race is a real failure mode: if a side effect commits externally and the checkpoint write fails afterward, replay can re-enter that step. Protection is by design through idempotency keys (§11.3), not by pretending exactly-once.
+**[L2]** Checkpoint / side-effect race is a real failure mode: if a side effect commits
+externally and the checkpoint write fails afterward, replay can re-enter that step. The current
+local idempotency guard does not close that remote boundary. The required protection is the
+stable `OperationId` prepare/outcome protocol in §11.3 plus a pinned destination capability.
+Only a still-valid stable-key guarantee permits bounded same-operation re-invocation;
+reconciliation is read-only. Exhausted or unavailable same-key recovery leaves the honest
+durable result `OutcomeUnknown` with no further effecting call.
 
 ### 11.6 Documentation truth
 
@@ -464,7 +521,19 @@ This is the **minimum bar** for “we did not break the product direction.” Ex
 2. **[L2]** **Credential refresh / rotation:** where rotation or refresh is implemented, it does **not** silently strand or corrupt **in-flight** executions that hold valid material — failure is **explicit** in status or errors if the system cannot reconcile.
 3. **[L2]** **Resource lifecycle visibility:** acquire → use → **release** for Resource-backed steps is **attributable** in **durable journal** or an **operator-visible** trace (aligned with §11.4) — not only in ephemeral logs.
 4. **[L2]** **Trigger delivery semantics:** for TriggerAction-backed starts, tests cover the declared delivery contract (**at-least-once** unless explicitly stronger): no silent drop, and duplicate delivery is handled via stable event identity + dedup/idempotency (aligned with §9 and §11.3).
-5. **[L2]** **Non-idempotent side effects:** for ordinary Actions that can cause irreversible external effects (e.g. charge/refund/payout), integration tests prove **single-effect safety** under retry/restart/duplicate-dispatch pressure: idempotency key guard is applied before the side effect, and re-entry does **not** execute the external effect twice.
+5. **[L2]** **Remote side effects:** for ordinary Actions that can cause irreversible
+   external effects (e.g. charge/refund/payout), integration tests kill the worker after provider
+   acceptance and before durable outcome commit. Same-slot replay with the same fingerprint
+   retains one `OperationId`; a fingerprint mismatch is rejected without durable delta, and
+   different effect slots remain distinct. Stable-key fixtures prove every bounded effect-call
+   re-invocation uses that same prepared operation and ID while the pinned guarantee remains
+   valid; exhaustion or expiry records `OutcomeUnknown`, after which provider call count cannot
+   increase. Reconcilable-only fixtures perform authenticated read-only queries and never repeat
+   the effecting call. Prepare `AcknowledgementUnknown` makes zero provider calls until the exact
+   durable prepared record is confirmed; outcome `AcknowledgementUnknown` uses only ledger reads
+   and exact frozen-evidence recommit. Until that protocol and evidence exist, the current
+   guarantee remains at-least-once invocation with a possible duplicate—not single-effect or
+   exactly-once safety.
 
 ### 13.2 Rotation refresh seam
 

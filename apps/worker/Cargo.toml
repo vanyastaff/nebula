@@ -38,6 +38,10 @@ nebula-storage = { path = "../../crates/storage", features = ["sqlite"] }
 nebula-metrics = { path = "../../crates/metrics" }
 # JobDispatchQueue trait used in build_core_flavor_runtime signature.
 nebula-storage-port = { path = "../../crates/storage-port" }
+# Evidence-only engine inputs. These stay absent from the ordinary worker
+# feature graph and are enabled only by the app-owned runtime-repair profile.
+nebula-core = { path = "../../crates/core", optional = true }
+nebula-eventbus = { path = "../../crates/eventbus", optional = true }
 
 # sqlx for SqlitePool construction; features forwarded to match nebula-storage/sqlite.
 # The postgres driver features come transitively via nebula-storage/postgres (activated
@@ -61,6 +65,9 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "ansi"
 # Without this feature, setting `NEBULA_WORKER_DATABASE_URL` causes a
 # fail-closed startup error rather than a silent SQLite fallback.
 postgres = ["nebula-storage/postgres"]
+# Private app-to-app composition seam for the server-owned RED evidence
+# profile. This is not a deployment or SDK surface.
+runtime-repair-red = ["dep:nebula-core", "dep:nebula-eventbus"]
 
 [dev-dependencies]
 # In-memory adapters for the smoke test (avoids SQLite file I/O in tests).

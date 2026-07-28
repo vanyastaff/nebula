@@ -33,6 +33,7 @@ allow = [
   "CDLA-Permissive-2.0",
   "ISC",
   "MIT",
+  "MIT-0",               # borrow-or-share 0.2.4 (transitive via jsonschema → referencing → fluent-uri); OSI-approved and permissive with no attribution requirement.
   "MPL-2.0",
   "Unicode-3.0",
   "Unicode-DFS-2016",

@@ -105,8 +105,21 @@ Dev: `nebula-credential-macros`, `nebula-expression`, `trybuild`, `insta`, `rste
   на activation-time и форвардится в `WebhookTransport::activate` явным параметром.
 - **Trigger delivery — at-least-once** (canon §13.4). Нет тихого drop; дубль обрабатывается через
   stable event identity + dedup/idempotency. Seam: `TriggerAction::start`, `TriggerEvent`.
-- **Idempotency для рискованных эффектов** (canon §11.3 / §13.5). Не-идемпотентные side-effects обязаны
-  проходить через engine idempotency-key path до вызова remote-системы.
+- **Remote-effect semantics** (canon §11.3 / §13.5). Текущий
+  `IdempotencyKey` / `check_and_mark` — только локальный replay/dedup oracle, не атомарный
+  контракт с remote-системой. Базовая семантика вызова — at-least-once с возможным дублем.
+  После ambiguous boundary effecting call может повторить только destination с pinned
+  stable-key contract: bounded, для той же `Prepared` operation и того же `OperationId`,
+  пока полная гарантия остаётся valid. Reconciliation всегда read-only и никогда не
+  повторяет effecting call. Исчерпание bounded recovery или expiry гарантии переводит
+  operation в `OutcomeUnknown`, после чего effecting re-invocation запрещён. Будущий
+  runtime-протокол должен выделять storage-minted `EffectSlotId` для каждого намеренного
+  эффекта, заранее durable-prepare стабильный runtime-minted `OperationId` и сохранять его
+  при recovery. Same-slot с другим fingerprint даёт `OperationMismatch` без durable delta;
+  разные slots остаются разными даже при одинаковом payload. `AcknowledgementUnknown`
+  относится отдельно к prepare и outcome DB commits: prepare uncertainty запрещает provider
+  invocation, пока DB reconciliation не подтвердит exact prepared record и записанный ID;
+  outcome uncertainty разрешает только ledger read и exact frozen-evidence recommit.
 - **`RetryHintCode` различает retryable vs fatal** (`src/error.rs:31`) — типизированная классификация, не строки.
 
 ## 6. Известные напряжения / долг

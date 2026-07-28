@@ -7,9 +7,9 @@
 //! `FOR UPDATE SKIP LOCKED` (multi-consumer queue claim) — wired by the
 //! control-queue store in a later task.
 //!
-//! The adapter owns a port-scoped schema (`schema.sql`, `port_*` tables)
-//! that does not FK into the identity zoo, so the execution core works on
-//! a bare database with no identity seeding.
+//! The adapter schema is installed exclusively by the ordered PostgreSQL
+//! migration catalog. The `port_*` execution core remains independent of
+//! identity seeding.
 
 mod control_queue;
 mod execution;
@@ -32,35 +32,33 @@ pub use resume_producer::PgResumeProducer;
 pub use resume_token::PgResumeTokenStore;
 pub use workflow::{PgWorkflowStore, PgWorkflowVersionStore};
 
-/// Embedded port-scoped DDL applied by [`init_schema`].
-pub const SCHEMA_SQL: &str = include_str!("schema.sql");
-
-/// Apply the port-scoped schema to a pool. Idempotent (`CREATE TABLE IF
-/// NOT EXISTS`), safe to call on every adapter construction.
+/// Admit a canonical schema and apply every pending ordered migration under
+/// the PostgreSQL setup lock with bounded acquisition and release.
 ///
 /// # Errors
-/// Returns [`nebula_storage_port::StorageError::Connection`] if the DDL
-/// cannot be applied.
+/// Returns a closed, redacted connection or configuration error if setup
+/// cannot prove that the database has a canonical migration history at the
+/// catalog-only upgrade floor.
+/// Migration duration follows the caller lifecycle and the operator's database
+/// `statement_timeout`.
 pub async fn init_schema(pool: &sqlx::PgPool) -> Result<(), nebula_storage_port::StorageError> {
-    // Strip `--` line comments before splitting on `;` (a raw `;` split
-    // would otherwise yield fragments that begin mid-comment).
-    let stripped: String = SCHEMA_SQL
-        .lines()
-        .map(|line| match line.find("--") {
-            Some(idx) => &line[..idx],
-            None => line,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    for stmt in stripped.split(';') {
-        let trimmed = stmt.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        sqlx::query(sqlx::AssertSqlSafe(trimmed))
-            .execute(pool)
-            .await
-            .map_err(|e| nebula_storage_port::StorageError::Connection(e.to_string()))?;
-    }
-    Ok(())
+    crate::migration::setup_postgres_pool(pool.clone())
+        .await
+        .map_err(crate::migration::storage_setup_error)
+}
+
+/// Adopt a database provisioned before the ordered migration ledger existed.
+///
+/// See [`crate::sqlite::adopt_ledger`] for the full contract; this is the
+/// PostgreSQL entry point and behaves identically.
+///
+/// # Errors
+/// Returns [`crate::LedgerAdoptionError`] if the database cannot be read or written,
+/// if `through_version` names no canonical migration, or if the stamped ledger
+/// would still be rejected by schema setup.
+pub async fn adopt_ledger(
+    pool: &sqlx::PgPool,
+    through_version: i64,
+) -> Result<crate::LedgerAdoptionOutcome, crate::LedgerAdoptionError> {
+    crate::migration::adopt_postgres_ledger(pool, through_version).await
 }

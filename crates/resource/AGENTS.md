@@ -5,7 +5,6 @@
 **Layer:** Business — depends only downward (root AGENTS.md → Layered Dependency Map).
 
 ## Commands
-- `cargo check -p nebula-resource`
 - `cargo nextest run -p nebula-resource --all-features`  ·  doctests: `cargo test -p nebula-resource --doc --all-features`
 - `cargo nextest run -p nebula-resource --features rotation` — exercises the credential-rotation fan-out (`tests/resident_rotation_race.rs`, `tests/credential_slot_epoch_fold.rs`); no `test-util` feature exists on this crate or on `nebula-credential` (removed step 8 of ADR-0092)
 - Derive crate: `cargo check -p nebula-resource-macros` (companion in `macros/`); examples in root `nebula-examples` (`--example resource_*`)
@@ -25,8 +24,6 @@
 - This crate is NOT a connection driver, retry pipeline, secret holder, or expression evaluator — it owns the lifecycle wrapper only (see Non-goals).
 - Async release is best-effort on crash; never assume "release ran" without an explicit checkpoint (canon §11.4).
 - `#![forbid(unsafe_code)]` + `#![deny(missing_docs)]` + `#![warn(missing_debug_implementations)]` are active; lifecycle work emits a `ResourceEvent` variant (observability is DoD).
-- Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
-- Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also
 - `README.md` — full design, migration recipe (pre-v4 → v4), topology & shared-resource reference

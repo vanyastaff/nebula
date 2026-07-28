@@ -33,11 +33,11 @@
 //!
 //! ## Wiring honesty
 //!
-//! No prod trigger daemon installs this emitter today — all non-test
-//! `TriggerRuntimeContext::new` sites use the default `NoopExecutionEmitter`.
-//! Install via `ctx.with_emitter(Arc::new(DurableExecutionEmitter::new(...)))` in
-//! the harness or a future trigger daemon; the integration test is the sole
-//! current caller.
+//! Production webhook dispatch constructs this emitter directly in
+//! `nebula-api` Prod mode and materializes the durable Start job. The generic
+//! `TriggerRuntimeContext::new` path still defaults to
+//! `NoopExecutionEmitter`; a future trigger-daemon composition must install
+//! this emitter explicitly rather than inheriting that default.
 //!
 //! ## Tracing
 //!

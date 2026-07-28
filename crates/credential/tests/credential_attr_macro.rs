@@ -83,6 +83,13 @@ fn refresh_only_infers_refreshable_and_synthesizes_refresh_token_policy() {
 }
 
 #[test]
+fn erased_credential_exposes_exact_computed_capabilities() {
+    let credential: &dyn nebula_credential::AnyCredential = &RefreshOnly;
+
+    assert_eq!(credential.capabilities(), Capabilities::REFRESHABLE);
+}
+
+#[test]
 fn refresh_only_synthesizes_metadata_from_args() {
     let meta = RefreshOnly::metadata();
     assert_eq!(meta.name(), "Refresh Only");

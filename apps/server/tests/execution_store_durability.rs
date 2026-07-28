@@ -6,7 +6,7 @@
 //!   enqueue a control command via `SqliteControlQueue`, then `pool.close().await`
 //!   (not a bare drop — WAL must checkpoint before the file is re-opened).
 //! - Phase 2: re-open the same file with a fresh pool, apply `init_schema`
-//!   (idempotent — `CREATE TABLE IF NOT EXISTS`), then `claim_pending` and assert
+//!   (canonical migration setup is rerunnable), then `claim_pending` and assert
 //!   the command enqueued in Phase 1 is still present.
 //!
 //! The red-side companion (`in_memory_control_queue_does_not_survive_recreation`)
@@ -92,7 +92,7 @@ async fn enqueue_and_close(db_path: &str) -> String {
 /// Phase 2: reopen `db_path`, run `claim_pending`, assert the Cancel command survives.
 async fn claim_and_assert_recovered(db_path: &str, expected_execution_id: &str) {
     let pool = open_sqlite_pool_for_test(db_path).await;
-    // init_schema is idempotent (CREATE TABLE IF NOT EXISTS) — safe to call again.
+    // Canonical migration setup is rerunnable and verifies the existing ledger.
     init_schema(&pool)
         .await
         .expect("init_schema must succeed in Phase 2");

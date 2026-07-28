@@ -56,6 +56,75 @@ for the minimal no-default-feature surfaces of `nebula-resilience`,
 `nebula-storage`. Those policy names only add a gate to an already-selected
 package and never change matrix membership.
 
+## North Star gate registry
+
+The versioned post-selection registry is
+[`gates/north-star-v1.toml`](./gates/north-star-v1.toml), and its evidence
+contract is
+[`schemas/gate-evidence-v1.schema.json`](./schemas/gate-evidence-v1.schema.json).
+The canonical multi-run shape example is
+[`schemas/gate-evidence-v1.example.json`](./schemas/gate-evidence-v1.example.json).
+Validate all three, including every checked-in workflow/job binding, with:
+
+```bash
+cargo xtask north-star-gates validate
+```
+
+Success emits one compact deterministic JSON line. A validation failure emits
+no partial stdout. The validator requires exactly the ordered `NS01`–`NS22`
+set, one accountable lead, typed thresholds, backend applicability,
+version-matched evidence paths, an explicit current state with a bounded
+reason, activation checkpoints, and existing required-CI job IDs. The manifest
+itself is the sole repository authority for each gate's North Star wording and
+mutable policy.
+
+This registry is gate policy applied after package selection. It does not
+derive, add, or remove Cargo packages, and `cargo xtask ci-plan` remains the
+sole package selector. A required-CI binding names the stable job that owns the
+future or active proof; it does not turn `red`, `partial`, or `missing` into a
+passing claim. It validates checked-in workflow/job existence, not branch
+protection or status-check ownership.
+
+The command validates and compiles the schema with the official Draft 2020-12
+implementation, then validates the canonical bounded multi-run example.
+Schema v1 is a versioned policy/evidence shape: its CI identities are recorded
+strings rather than trusted attestations, and its threshold evaluation is not
+recomputed from raw observations. Registry v1 therefore rejects `state =
+"passed"`; all 22 entries must remain `red`, `partial`, or `missing`. Promotion
+requires a later evidence schema with trusted CI attestation and recomputable
+observations.
+
+## Runtime-repair expected-RED verifier
+
+The versioned expected-case policy is
+[`gates/runtime-repair-red-v1.toml`](./gates/runtime-repair-red-v1.toml).
+Validate its fixed profile/package/feature/binary identity, sorted canonical
+Rust test paths, and kebab-case reason codes with:
+
+```bash
+cargo xtask runtime-repair-red validate-manifest
+```
+
+The active manifest names ten reached failures: first-party
+C0/STARTKEY/cancellation reachability plus component-only C7 on their declared
+backend sets. Setup-blocked cases are not represented as failures. The
+path-unrestricted `.github/workflows/runtime-repair-red.yml` runs the serial,
+retry-free `runtime-repair-red` nextest profile and passes its raw exit status
+and JUnit path to:
+
+```bash
+cargo xtask runtime-repair-red verify \
+  --nextest-exit-code 100 \
+  --junit target/nextest/runtime-repair-red/runtime-repair-red.junit.xml
+```
+
+The bounded pull parser requires the exact manifest identities, one ordinary
+test failure each, and one standalone `EXPECTED_RED:<reason-code>` marker from
+captured stderr. Passes, skips, execution errors, timeouts, retries/reruns,
+flaky outcomes, failure-body-only markers, missing/extra/duplicate identities,
+malformed aggregate counts, an empty active set, or any exit other than
+nextest's raw test-failure status 100 are rejected.
+
 ## Conservative fallbacks
 
 Missing diff SHAs select the full workspace. Invalid nonempty revisions are an

@@ -3,7 +3,7 @@
 ## name: nebula-api
 role: API Gateway
 status: frontier
-last-reviewed: 2026-07-21
+last-reviewed: 2026-07-26
 canon-invariants: [L2-§4.5, L2-§12.3, L2-§12.4, L2-§13]
 related: [nebula-storage, nebula-runtime, nebula-engine, nebula-plugin, nebula-metrics, nebula-credential, nebula-core]
 
@@ -11,10 +11,11 @@ related: [nebula-storage, nebula-runtime, nebula-engine, nebula-plugin, nebula-m
 
 ## Purpose
 
-Provides the HTTP entry point for the Nebula workflow engine. Translates REST
+Provides the HTTP entry point for Nebula. Translates REST
 requests into calls against typed port traits (`WorkflowRepo`, `ExecutionRepo`,
 `ControlQueueRepo`, `OrgResolver`, `WorkspaceResolver`, `SessionStore`,
-`MembershipStore`), then delegates all business logic to the crates below it.
+`MembershipStore`). Some handlers currently own transition/enqueue orchestration
+through those ports; they do not call a production-installed engine consumer.
 The crate also hosts the `transport::webhook` subsystem, which handles inbound trigger
 delivery and per-endpoint lifecycle management.
 
@@ -28,9 +29,10 @@ in-memory repos work without Docker or Redis).
 
 ## Role
 
-API Gateway (EIP "Message Endpoint" at the system boundary). Thin HTTP shell
-with no business logic of its own; all decisions are delegated to the engine
-layer via port traits injected into `AppState`.
+API Gateway (EIP "Message Endpoint" at the system boundary). HTTP transport
+and application orchestration over port traits injected into `AppState`.
+`nebula-api` is a library; adapter and process-lifecycle choices live in
+`apps/server`.
 
 ## Public API
 
@@ -93,18 +95,34 @@ runs `nebula_workflow::validate_workflow` and rejects invalid definitions
 with structured RFC 9457 errors — it does not silently flip a flag. Seam:
 `crates/api/src/domain/workflow/handler.rs` — `activate_workflow`.
 - **[L2-§13 step 3]** Execution start (`POST /api/v1/workflows/:id/executions`)
-returns 202 Accepted and enqueues; it does not block on engine completion.
+returns 202 Accepted, creates the execution row, and enqueues a Start command;
+it does not block on engine completion. The current server root does not install
+the engine `ControlConsumer`, so 202 proves the durable producer write, not deployed
+consumption.
 Seam: `crates/api/src/domain/execution/handler.rs` — `start_execution`.
 - **[L2-§13 step 5]** Cancel (`POST /api/v1/executions/:id/cancel`) writes a
 durable signal to `ControlQueueRepo` in the same logical operation as the
-state transition — not only a DB-row flip. Seam:
+terminal cancellation state transition — not only a DB-row flip. The API
+returns after this producer commit; it does not wait for a consumer or prove
+that an in-flight handler stopped. Seam:
 `crates/api/src/domain/execution/handler.rs` — `cancel_execution`.
-- **[L2-§12.3]** Local-first: the server starts with in-memory repos (no
-Docker/Redis required). The `AppState::new` constructor accepts any
-`WorkflowRepo + ExecutionRepo + ControlQueueRepo` impl.
-- **[L2-§4.5]** No capability is advertised that the engine does not honor
-end-to-end. Planned features (JWT validation, rate limiting) are hidden
-until the engine side is wired.
+- **[L2-§12.3]** Local-first transport startup needs no Docker or Redis.
+  With `API_EXECUTION_BACKEND` unset, `apps/server` uses process-local memory.
+  Separately, `apps/worker` defaults to its own `nebula-worker.db` SQLite file.
+  Those defaults do not share execution/control state, and neither root installs
+  the engine `ControlConsumer`. A functional local execution path therefore
+  requires explicit shared-backend configuration and consumer composition;
+  today that full composition exists only in manually assembled tests.
+- **[L2-§4.5]** Producer behavior and consumer behavior are documented
+  separately. The manually composed Start knife test proves a test-installed
+  consumer can drive a started execution to completion over shared in-memory
+  adapters. The Cancel/Terminate running-handler tests prove only that the API
+  persists terminal cancellation/control intent after a handler has started.
+  Because the API writes the terminal row itself and the harness exposes no
+  handler-exit signal, that row is not evidence of consumer delivery or handler
+  interruption. The `CANCELFX` fault gate remains the required interruption
+  evidence. None of these tests prove the default server and worker binaries as
+  one end-to-end runtime.
 - **[L2-§12.2]** Cancel signals share the outbox transaction — the
 `control_queue_repo` field in `AppState` is the durable outbox (§12.2).
 A second in-memory control channel is forbidden (see §12.2 prohibition on
@@ -434,7 +452,13 @@ ADR-0047 §4. The remaining stubs are the 3 org-record endpoints
 service-account endpoints (no end-to-end `Principal::ServiceAccount`
 auth path), `resource/list`, and `execution/restart` (canon §4.5: a
 stub stays a 501 until its downstream genuinely honors it end-to-end).
-**Graduated** stub→implemented end-to-end: `execution::terminate`; all
+**Graduated** stub→implemented handler/dispatch surface:
+`execution::terminate`; its producer and atomic-outbox behavior are tested,
+including a request made while a manually composed slow handler is running.
+The persisted terminal row is producer-owned and does not prove that the
+consumer interrupted that handler; no current first-party root installs the
+consumer. Implemented
+end-to-end within the API/auth boundary: all
 six `me/*` endpoints (`get_me`, `update_me`, `list_my_tokens`,
 `create_token`, `delete_token`, and — Phase 3 — `list_my_orgs` via the
 shared `MembershipStore`); and the 3 org **member** endpoints

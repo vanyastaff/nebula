@@ -5,8 +5,6 @@
 **Layer:** Core — depends only downward (root AGENTS.md -> Layered Dependency Map).
 
 ## Commands
-- `cargo check -p nebula-expression`
-- `cargo nextest run -p nebula-expression`  ·  doctests: `cargo test -p nebula-expression --doc`
 - Features: `default = cache,regex,datetime,uuid` (`full` = all). `datetime` adds IANA tz args; `regex`/`cache` pull in `moka` for true LRU.
 - Bench: `cargo bench -p nebula-expression --bench baseline`. Examples: `cargo run -p nebula-examples --example expression_template_rendering`.
 
@@ -24,8 +22,6 @@
 - Higher-order combinators (`filter`/`map`/`reduce`/…) live in `eval.rs` and call `eval_with_frame` with the caller's `EvalFrame` so the step budget accumulates across iterations — never re-route them through the builtin registry.
 - `EvaluationPolicy` must bound every evaluation (recursion depth default 256 + step budget); exceeding either returns `ExpressionError`, never panics or loops.
 - NOT a validation engine (`nebula-validator`), schema system (`nebula-schema`), or HTML template engine — keep scope to `{{ }}` field resolution.
-- Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
-- Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also
 - `README.md` — full design · `docs/PRODUCT_CANON.md` §3.5 (expression context at resolve step) · `docs/pitfalls.md` (builtin-frame step-budget pitfall)

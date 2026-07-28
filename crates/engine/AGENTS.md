@@ -16,7 +16,6 @@
 | Run engine tests | `cargo nextest run -p nebula-engine` |
 
 ## Commands
-- `cargo check -p nebula-engine`
 - `cargo nextest run -p nebula-engine`  ·  doctests: none (`[lib] doctest = false`)
 - Features: `rotation`, `test-util` (never in prod build — ADR-0023). The refresh-coordinator
   chaos harness follows its concrete shared-L2 adapter and lives in `nebula-storage`.
@@ -37,8 +36,6 @@
 - **Credential accessor is deny-by-default**: empty allowlist denies all; populate via `with_action_credentials`. No fail-open. (Resources have no allowlist — scoping is the topology layer's job.)
 - Not a storage impl or expression evaluator — those are `nebula-storage` / `nebula-expression`. Action dispatch is in-process (`InProcessRunner`); plugins register in-process through `nebula-plugin` (ADR-0091).
 - Two disjoint retry surfaces (ADR-0042): in-action `nebula-resilience::retry_with` (Layer 1, opaque to engine) vs operator-declared `retry_policy` (Layer 2, engine parks node in `WaitingRetry`).
-- Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
-- Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also
 - `README.md` — full design, known open debts, architecture notes.

@@ -1,12 +1,27 @@
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, future::Future};
 
 use sqlx::{Row, SqliteConnection};
 
 use super::{
-    AdmissionReason, CredentialStoreStartupError, LegacyCredentialRecord, MigrationLedger,
-    MigrationLedgerRow, SchemaAdmission, SchemaObservation, UnsupportedSchemaVersion,
-    classify_schema, observation_fetch_error, sqlite_policy,
+    AdmissionReason, CredentialStoreStartupError, LegacyCredentialRecord, SUPPORTED_FLOOR,
+    SchemaAdmission, SchemaObservation, UnsupportedSchemaVersion, classify_admitted_schema,
+    observation_fetch_error,
 };
+use crate::migration::catalog::{self, CatalogAdmission, CatalogObservation, MigrationLedger};
+
+pub(crate) struct CredentialAdmission;
+
+impl crate::migration::AdmissionPolicy<SqliteConnection> for CredentialAdmission {
+    type Error = CredentialStoreStartupError;
+
+    const SCOPE: &'static str = "credential";
+
+    fn admit(
+        connection: &mut SqliteConnection,
+    ) -> impl Future<Output = Result<CatalogAdmission, Self::Error>> + Send + '_ {
+        admit(connection)
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 struct ColumnShape {
@@ -41,21 +56,6 @@ const fn column(
         primary_key_position,
     }
 }
-
-const LEDGER_SHAPE: [ExpectedColumnShape; 6] = [
-    column("version", "BIGINT", false, None, 1),
-    column("description", "TEXT", true, None, 0),
-    column(
-        "installed_on",
-        "TIMESTAMP",
-        true,
-        Some("CURRENT_TIMESTAMP"),
-        0,
-    ),
-    column("success", "BOOLEAN", true, None, 0),
-    column("checksum", "BLOB", true, None, 0),
-    column("execution_time", "BIGINT", true, None, 0),
-];
 
 const LEGACY_SHAPE: [ExpectedColumnShape; 13] = [
     column("id", "TEXT", true, None, 1),
@@ -135,63 +135,26 @@ const CURRENT_SENTINEL_EVENT_SHAPE: [ExpectedColumnShape; 6] = [
 pub(crate) async fn admit(
     connection: &mut SqliteConnection,
 ) -> Result<SchemaAdmission, CredentialStoreStartupError> {
-    let policy = sqlite_policy();
-    let observation = observe(connection, policy.current_version).await?;
-    classify_schema(&policy, &observation).map_err(Into::into)
+    let policy = catalog::sqlite_policy();
+    let catalog_observation = catalog::observe_sqlite(connection).await?;
+    let admission =
+        catalog::classify(&policy, &catalog_observation, SUPPORTED_FLOOR).map_err(|rejection| {
+            CredentialStoreStartupError::from(catalog::CatalogSetupError::Rejected(rejection))
+        })?;
+    let observation = observe(connection, policy.current_version, catalog_observation).await?;
+    classify_admitted_schema(admission, &observation).map_err(Into::into)
 }
 
 async fn observe(
     connection: &mut SqliteConnection,
     current_version: i64,
+    catalog: CatalogObservation,
 ) -> Result<SchemaObservation, CredentialStoreStartupError> {
-    let ledger_exists = relation_exists(connection, "_sqlx_migrations").await?;
     let credentials_exists = relation_exists(connection, "credentials").await?;
-    let has_user_relations: bool = sqlx::query_scalar(
-        "SELECT EXISTS (
-             SELECT 1
-             FROM sqlite_schema
-             WHERE type IN ('table', 'view')
-               AND name NOT LIKE 'sqlite_%'
-               AND name <> '_sqlx_migrations'
-         )",
-    )
-    .fetch_one(&mut *connection)
-    .await
-    .map_err(|_| CredentialStoreStartupError::Unavailable)?;
-
-    if !ledger_exists {
-        return Ok(SchemaObservation {
-            migration_ledger: MigrationLedger::Absent,
-            has_user_relations,
-            has_credentials_relation: credentials_exists,
-            credentials: Vec::new(),
-        });
-    }
-
-    let ledger_columns = table_shape(connection, "_sqlx_migrations").await?;
-    if !matches_shape(&ledger_columns, &LEDGER_SHAPE) {
-        return unsupported(AdmissionReason::InvalidMigrationLedger);
-    }
-    let ledger_rows = sqlx::query_as::<_, (i64, String, bool, Vec<u8>)>(
-        "SELECT version, description, success, checksum
-         FROM _sqlx_migrations
-         ORDER BY version",
-    )
-    .fetch_all(&mut *connection)
-    .await
-    .map_err(|error| observation_fetch_error(error, AdmissionReason::InvalidMigrationLedger))?
-    .into_iter()
-    .map(
-        |(version, description, success, checksum)| MigrationLedgerRow {
-            version,
-            description,
-            checksum,
-            success,
-        },
-    )
-    .collect::<Vec<_>>();
-
-    let latest = ledger_rows.last().map(|row| row.version);
+    let latest = match &catalog.migration_ledger {
+        MigrationLedger::Absent => None,
+        MigrationLedger::Present(rows) => rows.last().map(|row| row.version),
+    };
     let latest_is_supported = latest.is_some_and(|version| version <= current_version);
     if latest_is_supported && latest.is_some_and(|version| version >= 30) {
         if !relation_exists(connection, "credential_sentinel_events").await? {
@@ -211,8 +174,10 @@ async fn observe(
         };
 
     Ok(SchemaObservation {
-        migration_ledger: MigrationLedger::Present(ledger_rows),
-        has_user_relations,
+        #[cfg(test)]
+        migration_ledger: catalog.migration_ledger,
+        #[cfg(test)]
+        has_user_relations: catalog.has_user_relations,
         has_credentials_relation: credentials_exists,
         credentials,
     })
@@ -240,7 +205,6 @@ async fn table_shape(
     table: &'static str,
 ) -> Result<Vec<ColumnShape>, CredentialStoreStartupError> {
     let statement = match table {
-        "_sqlx_migrations" => "PRAGMA table_info('_sqlx_migrations')",
         "credentials" => "PRAGMA table_info('credentials')",
         "credential_sentinel_events" => "PRAGMA table_info('credential_sentinel_events')",
         _ => return unsupported(AdmissionReason::InvalidCredentialsRelation),

@@ -1174,11 +1174,12 @@ async fn open_sqlite_pool() -> sqlx::SqlitePool {
 ///
 /// A real `SqliteResumeProducer` consumes the token and enqueues the `Resume`
 /// in ONE transaction. We force the control-queue INSERT to fail INSIDE that
-/// transaction by dropping `port_control_queue` first, so the `DELETE` of the
-/// token is rolled back with it. The handler returns 503, and:
+/// transaction with a temporary aborting trigger on `port_control_queue`, so
+/// the `DELETE` of the token is rolled back with it. The handler returns 503,
+/// and:
 /// - (a) the token row STILL exists (peek-able) — it survived the rolled-back tx;
 /// - (b) NO `Resume` was enqueued;
-/// - (c) after the table is restored, a retry succeeds (202) and enqueues
+/// - (c) after the fault is cleared, a retry succeeds (202) and enqueues
 ///   EXACTLY ONE `Resume`.
 ///
 /// This FAILS on the prior burn-then-enqueue handler (the token would be gone
@@ -1186,7 +1187,7 @@ async fn open_sqlite_pool() -> sqlx::SqlitePool {
 /// park forever) and PASSES on the atomic seam.
 #[tokio::test]
 async fn burn_iff_enqueued_resume_survives_failed_enqueue() {
-    use nebula_storage::sqlite::{SqliteResumeProducer, init_schema};
+    use nebula_storage::sqlite::SqliteResumeProducer;
     use nebula_storage_port::store::ResumeProducer;
 
     let pool = open_sqlite_pool().await;
@@ -1195,12 +1196,19 @@ async fn burn_iff_enqueued_resume_survives_failed_enqueue() {
     let bearer = "resume-bearer-burn-iff-enqueued";
     seed_sqlite_webhook_token(&pool, bearer, "exe-burn-iff", "cb-burn-iff", &scope).await;
 
-    // Force the control-queue INSERT (inside the producer's tx) to fail by
-    // removing the target table. The token DELETE must roll back with it.
-    sqlx::query("DROP TABLE port_control_queue")
-        .execute(&pool)
-        .await
-        .expect("drop port_control_queue must succeed");
+    // Force the control-queue INSERT (inside the producer's tx) to fail without
+    // corrupting the canonical migration-owned schema. The token DELETE must
+    // roll back with it.
+    sqlx::query(
+        "CREATE TRIGGER fail_port_control_queue_insert
+         BEFORE INSERT ON port_control_queue
+         BEGIN
+             SELECT RAISE(ABORT, 'injected control enqueue failure');
+         END",
+    )
+    .execute(&pool)
+    .await
+    .expect("fault trigger must install");
 
     let clock = Arc::new(MockClock::at_now());
     let app = build_sqlite_resume_app(&pool, &api_config, clock);
@@ -1227,10 +1235,11 @@ async fn burn_iff_enqueued_resume_survives_failed_enqueue() {
          (a timeout-less webhook wait would park Paused forever)"
     );
 
-    // Restore the control-queue table so the retry can enqueue.
-    init_schema(&pool)
+    // Clear the fault so the retry can enqueue.
+    sqlx::query("DROP TRIGGER fail_port_control_queue_insert")
+        .execute(&pool)
         .await
-        .expect("re-applying schema must restore port_control_queue");
+        .expect("fault trigger must be removed");
 
     // (b) Before the retry, there is no Resume.
     assert_eq!(

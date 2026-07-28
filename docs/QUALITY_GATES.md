@@ -95,6 +95,95 @@ under `tools/xtask/**`, `.github/workflows/test-matrix.yml`, and
 `scripts/pre-push-crate-diff.sh`. Changing how selection works must therefore
 prove the complete workspace rather than trusting the changed selector.
 
+## Versioned North Star gate policy
+
+The North Star measurement and exit-gate contract is executable repository
+policy:
+
+- registry:
+  [`tools/xtask/gates/north-star-v1.toml`](../tools/xtask/gates/north-star-v1.toml);
+- evidence schema:
+  [`tools/xtask/schemas/gate-evidence-v1.schema.json`](../tools/xtask/schemas/gate-evidence-v1.schema.json);
+- canonical multi-run evidence:
+  [`tools/xtask/schemas/gate-evidence-v1.example.json`](../tools/xtask/schemas/gate-evidence-v1.example.json);
+- validator:
+
+  ```bash
+  cargo xtask north-star-gates validate
+  ```
+
+The registry is strictly **post-selection**. Its workflow/job bindings say
+where a selected gate's proof is or will be required; they never derive a
+package list, add a package to a plan, or remove one. `cargo xtask ci-plan`
+remains the sole package selector.
+
+Registry v1 contains exactly the ordered `NS01`–`NS22` set. Every entry has one
+accountable lead, a typed threshold, an explicit backend set or a bounded
+non-applicability reason, versioned evidence location, stable checked-in
+required-CI binding, activation checkpoint, and an explicit current state with
+a bounded reason.
+`red`, `partial`, and `missing` are not passing states. A job binding alone is
+not evidence and does not imply that branch protection currently requires that
+job.
+
+The v1 command validates the schema with the official Draft 2020-12
+meta-schema, compiles it, and validates the complete checked-in multi-run
+example. The required pull-request path runs the command in
+`.github/workflows/test-matrix.yml` before metadata-driven package selection;
+the validator never contributes a package name or changes the plan.
+
+Registry v1 rejects `state = "passed"` before treating any declared artifact as
+promotion evidence. Evidence schema v1 is a versioned policy/evidence shape,
+not a trustworthy promotion protocol: CI identities are recorded strings, not
+trusted attestations, and threshold evaluations are recorded values that the
+validator cannot recompute from the referenced raw observations. A later
+schema must add both properties before a gate can be promoted.
+
+The schema's bounded, nonempty `runs` array records each source revision,
+environment/topology with one database backend or explicit non-applicability,
+closed sampling policies (`fail-run` and `no-retry`), cache rules, interval
+boundaries, configured fairness, sanitized raw-observation references,
+query-plan applicability, and CI identity. Versioned inputs, aggregation
+identity, denominator, threshold evaluation, and result are common at the
+root. Objects and collections are closed and bounded; secrets and raw business
+payloads are prohibited. The canonical example is a failed aggregate because
+its denominator includes exclusions and skips.
+
+The versioned focused-working-day definition and its mutable duration live only
+in the gate registry. Gate NS06 takes its fairness target and allowed deviation from the versioned
+workload/configuration rather than assuming one universal percentage. All
+other mutable threshold values remain authoritative in the registry instead of
+being copied into this guide.
+
+## Runtime-repair expected-RED evidence
+
+The non-deployment runtime-repair harness has a dedicated serial, retry-free
+nextest profile and required workflow:
+
+- policy: `tools/xtask/gates/runtime-repair-red-v1.toml`;
+- profile: `.config/nextest.toml` → `profile.runtime-repair-red`;
+- workflow: `.github/workflows/runtime-repair-red.yml`;
+- verifier:
+
+  ```bash
+  cargo xtask runtime-repair-red validate-manifest
+  cargo xtask runtime-repair-red verify \
+    --nextest-exit-code 100 \
+    --junit target/nextest/runtime-repair-red/runtime-repair-red.junit.xml
+  ```
+
+The active v1 manifest names ten reached behavioral failures: first-party
+C0/STARTKEY/cancellation reachability on their applicable backends and
+component-only C7 on InMemory, file-SQLite, and required live PostgreSQL.
+Setup-blocked Task 8–10 oracles are not fabricated as RED cases. The workflow
+runs on every pull request and main-branch push so a repair outside the harness
+cannot bypass reconciliation. The verifier accepts only raw nextest exit 100,
+one exact failing JUnit case for every sorted manifest identity, no
+passes/skips/errors, timeouts, retries, reruns, flaky outcomes, or extra cases,
+and exactly one standalone `EXPECTED_RED:<reason-code>` marker captured from
+stderr per failure. Ignored, `should_panic`, sentinel, compile-fail, synthetic
+JUnit, and failure-body-only markers are not production RED evidence.
+
 ## Mechanized junior markers
 
 What is enforced today, observable in the repo (the `Cargo.toml`

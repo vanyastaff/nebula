@@ -29,6 +29,11 @@ Migration `0026_execution_control_queue_w3c_trace_context.sql` adds nullable
 Migration `0040_credential_refresh_retry_gate.sql` adds the structural
 credential refresh-retry admission gate in parity with PostgreSQL.
 
+Migration `0041_port_plan_flavor_revision_catalog.sql` adds dormant immutable
+plan/flavor records and exact execution revision references in parity with
+PostgreSQL. It is constrained storage layout, not a runtime adapter or
+activation claim.
+
 ## Storage-port adapter schema (0027)
 
 `crates/storage/src/sqlite/schema.sql` is the **cumulative** `port_*` schema,
@@ -70,11 +75,37 @@ comments first: `ALTER TABLE` rewrites that text, so a migrated table and an
 `init_schema` one legitimately differ in comments and column order while
 being semantically identical.
 
+## Adopting a database created before the ledger
+
+Ordered migrations are authoritative: `init_schema` admits a database only when
+its `_sqlx_migrations` ledger is a canonical prefix. A database provisioned by
+the *previous* idempotent `init_schema` has the `port_*` schema and **no
+ledger**, so it is rejected as `UnledgeredDatabase` and the owning process
+refuses to start.
+
+Adopt it once, stating the migration level its schema already satisfies:
+
+```
+# PostgreSQL
+DATABASE_URL=… task db:migrate:adopt THROUGH_VERSION=40
+
+# SQLite / embedded callers
+nebula_storage::sqlite::adopt_ledger(&pool, 40)
+```
+
+This stamps migrations `1..=THROUGH_VERSION` as applied using sqlx's own
+checksums, then ordinary setup applies everything above that level. It is
+deliberately **not** automatic: the stamp asserts the live schema is what those
+migrations produce, and only an operator can know that. Adoption runs in one
+transaction, re-admits the stamped ledger before committing, and refuses when a
+ledger already exists or the database is empty — so a database it cannot make
+admissible is left exactly as it was.
+
 ## Rebuilding the local dev database
 
 A file-backed SQLite rebuild that applies these migrations destroys all
-local dev data. `:memory:` test pools install the same schema fresh per
-run via `init_schema`, so tests need no migration step.
+local dev data. `:memory:` test pools run the same migration catalog fresh via
+`init_schema`, so they need no separate schema-install step.
 
 ## Schema parity
 

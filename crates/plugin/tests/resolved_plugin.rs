@@ -1,10 +1,10 @@
 //! Integration tests for `ResolvedPlugin` — namespace enforcement and lookup.
 
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::{any::TypeId, future::Future, pin::Pin, sync::Arc};
 
 use nebula_action::{ActionContext, ActionError, ActionFactory, ActionHandle, ActionMetadata};
-use nebula_core::{ActionKey, CredentialKey, ResourceKey};
-use nebula_credential::{AnyCredential, AuthPattern, CredentialMetadata};
+use nebula_core::{ActionKey, CredentialKey, Dependencies, ResourceKey};
+use nebula_credential::{AnyCredential, AuthPattern, Capabilities, CredentialMetadata};
 use nebula_metadata::PluginManifest;
 use nebula_plugin::{ComponentKind, Plugin, PluginError, ResolvedPlugin};
 use nebula_resource::{
@@ -23,6 +23,7 @@ use nebula_workflow::NodeDefinition;
 
 struct StubAction {
     metadata: ActionMetadata,
+    dependencies: Dependencies,
 }
 
 impl StubAction {
@@ -33,6 +34,7 @@ impl StubAction {
                 key,
                 "stub",
             ),
+            dependencies: Dependencies::new(),
         }
     }
 }
@@ -48,6 +50,10 @@ impl std::fmt::Debug for StubAction {
 impl ActionFactory for StubAction {
     fn metadata(&self) -> &ActionMetadata {
         &self.metadata
+    }
+
+    fn dependencies(&self) -> &Dependencies {
+        &self.dependencies
     }
 
     fn instantiate<'a>(
@@ -66,13 +72,40 @@ impl ActionFactory for StubAction {
 // ── Stub AnyCredential ───────────────────────────────────────────────────────
 
 struct StubCredential {
-    key: CredentialKey,
+    projected_key: String,
+    metadata_key: CredentialKey,
+    mismatched_downcast_projection: bool,
 }
 
 impl StubCredential {
     fn new(key: &str) -> Self {
+        let key = CredentialKey::new(key).expect("valid credential key");
         Self {
-            key: CredentialKey::new(key).expect("valid credential key"),
+            projected_key: key.as_str().to_owned(),
+            metadata_key: key,
+            mismatched_downcast_projection: false,
+        }
+    }
+
+    fn with_metadata_key(projected_key: &str, metadata_key: &str) -> Self {
+        Self {
+            projected_key: projected_key.to_owned(),
+            metadata_key: CredentialKey::new(metadata_key).expect("valid metadata credential key"),
+            mismatched_downcast_projection: false,
+        }
+    }
+
+    fn with_mismatched_downcast_projection(key: &str) -> Self {
+        let mut credential = Self::new(key);
+        credential.mismatched_downcast_projection = true;
+        credential
+    }
+
+    fn with_invalid_projected_key(projected_key: &str, metadata_key: &str) -> Self {
+        Self {
+            projected_key: projected_key.to_owned(),
+            metadata_key: CredentialKey::new(metadata_key).expect("valid metadata credential key"),
+            mismatched_downcast_projection: false,
         }
     }
 }
@@ -80,19 +113,20 @@ impl StubCredential {
 impl std::fmt::Debug for StubCredential {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StubCredential")
-            .field("key", &self.key)
+            .field("projected_key", &self.projected_key)
+            .field("metadata_key", &self.metadata_key)
             .finish()
     }
 }
 
 impl AnyCredential for StubCredential {
     fn credential_key(&self) -> &str {
-        self.key.as_str()
+        &self.projected_key
     }
 
     fn metadata(&self) -> CredentialMetadata {
         CredentialMetadata::new(
-            self.key.clone(),
+            self.metadata_key.clone(),
             "Stub",
             "stub credential",
             ValidSchema::empty(),
@@ -100,8 +134,18 @@ impl AnyCredential for StubCredential {
         )
     }
 
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::empty()
+    }
+
     fn as_any(&self) -> &dyn std::any::Any {
-        self
+        static DIFFERENT_CONCRETE_TYPE: u8 = 0;
+
+        if self.mismatched_downcast_projection {
+            &DIFFERENT_CONCRETE_TYPE
+        } else {
+            self
+        }
     }
 }
 
@@ -113,13 +157,26 @@ impl AnyCredential for StubCredential {
 // returns `SlotIdentity::Unbound` because these tests never call it.
 
 struct StubResource {
-    key: ResourceKey,
+    factory_key: ResourceKey,
+    metadata_key: ResourceKey,
+    dependencies: Dependencies,
 }
 
 impl StubResource {
     fn new(key: &str) -> Self {
+        let key = ResourceKey::new(key).expect("valid resource key");
         Self {
-            key: ResourceKey::new(key).expect("valid resource key"),
+            factory_key: key.clone(),
+            metadata_key: key,
+            dependencies: Dependencies::new(),
+        }
+    }
+
+    fn with_metadata_key(factory_key: &str, metadata_key: &str) -> Self {
+        Self {
+            factory_key: ResourceKey::new(factory_key).expect("valid factory resource key"),
+            metadata_key: ResourceKey::new(metadata_key).expect("valid metadata resource key"),
+            dependencies: Dependencies::new(),
         }
     }
 }
@@ -127,18 +184,27 @@ impl StubResource {
 impl std::fmt::Debug for StubResource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StubResource")
-            .field("key", &self.key)
+            .field("factory_key", &self.factory_key)
+            .field("metadata_key", &self.metadata_key)
             .finish()
     }
 }
 
 impl ResourceFactory for StubResource {
     fn key(&self) -> ResourceKey {
-        self.key.clone()
+        self.factory_key.clone()
+    }
+
+    fn dependencies(&self) -> &Dependencies {
+        &self.dependencies
+    }
+
+    fn resource_type_id(&self) -> TypeId {
+        TypeId::of::<Self>()
     }
 
     fn metadata(&self) -> ResourceMetadata {
-        ResourceMetadata::from_key(&self.key)
+        ResourceMetadata::from_key(&self.metadata_key)
     }
 
     fn validate(&self, _config_json: serde_json::Value) -> Result<(), nebula_resource::Error> {
@@ -193,8 +259,46 @@ impl StubPlugin {
         self
     }
 
+    fn with_mismatched_credential(mut self, projected_key: &str, metadata_key: &str) -> Self {
+        self.credentials
+            .push(Arc::new(StubCredential::with_metadata_key(
+                projected_key,
+                metadata_key,
+            )));
+        self
+    }
+
+    fn with_invalid_credential_projection(
+        mut self,
+        projected_key: &str,
+        metadata_key: &str,
+    ) -> Self {
+        self.credentials
+            .push(Arc::new(StubCredential::with_invalid_projected_key(
+                projected_key,
+                metadata_key,
+            )));
+        self
+    }
+
+    fn with_mismatched_credential_type(mut self, key: &str) -> Self {
+        self.credentials.push(Arc::new(
+            StubCredential::with_mismatched_downcast_projection(key),
+        ));
+        self
+    }
+
     fn with_resource(mut self, res_key: &'static str) -> Self {
         self.resources.push(Arc::new(StubResource::new(res_key)));
+        self
+    }
+
+    fn with_mismatched_resource(mut self, factory_key: &str, metadata_key: &str) -> Self {
+        self.resources
+            .push(Arc::new(StubResource::with_metadata_key(
+                factory_key,
+                metadata_key,
+            )));
         self
     }
 }
@@ -279,6 +383,83 @@ fn resolved_plugin_accepts_well_namespaced_credential() {
 }
 
 #[test]
+fn resolved_plugin_rejects_credential_key_metadata_mismatch() {
+    let plugin =
+        StubPlugin::new("slack").with_mismatched_credential("slack.oauth2", "slack.bot_token");
+    let error = ResolvedPlugin::from(plugin).expect_err("key mismatch must fail resolution");
+
+    assert!(matches!(
+        error,
+        PluginError::ComponentKeyMismatch {
+            plugin,
+            kind: ComponentKind::Credential,
+            projected_key,
+            metadata_key,
+        } if plugin.as_str() == "slack"
+            && projected_key == "slack.oauth2"
+            && metadata_key == "slack.bot_token"
+    ));
+}
+
+#[test]
+fn resolved_plugin_rejects_invalid_credential_key_projection() {
+    let plugin =
+        StubPlugin::new("slack").with_invalid_credential_projection("slack.bad!", "slack.oauth2");
+    let error = ResolvedPlugin::from(plugin).expect_err("invalid projected key must fail");
+
+    assert!(matches!(
+        error,
+        PluginError::InvalidComponentKey {
+            plugin,
+            kind: ComponentKind::Credential,
+            projected_key,
+        } if plugin.as_str() == "slack" && projected_key == "slack.bad!"
+    ));
+}
+
+#[test]
+fn resolved_plugin_rejects_mismatched_credential_downcast_type() {
+    let plugin = StubPlugin::new("slack").with_mismatched_credential_type("slack.oauth2");
+    let error = ResolvedPlugin::from(plugin).expect_err("mismatched type projection must fail");
+
+    assert!(matches!(
+        error,
+        PluginError::ComponentTypeMismatch {
+            plugin,
+            kind: ComponentKind::Credential,
+            key,
+        } if plugin.as_str() == "slack" && key == "slack.oauth2"
+    ));
+}
+
+#[test]
+fn credential_validation_error_is_deterministic_across_contribution_order() {
+    let forward = StubPlugin::new("slack")
+        .with_invalid_credential_projection("slack.low!", "slack.beta")
+        .with_invalid_credential_projection("slack.zzz!", "slack.alpha")
+        .with_invalid_credential_projection("slack.aaa!", "slack.alpha");
+    let reversed = StubPlugin::new("slack")
+        .with_invalid_credential_projection("slack.aaa!", "slack.alpha")
+        .with_invalid_credential_projection("slack.zzz!", "slack.alpha")
+        .with_invalid_credential_projection("slack.low!", "slack.beta");
+
+    let forward_error =
+        ResolvedPlugin::from(forward).expect_err("the invalid credential set must fail");
+    let reversed_error =
+        ResolvedPlugin::from(reversed).expect_err("the invalid credential set must fail");
+
+    assert_eq!(forward_error, reversed_error);
+    assert!(matches!(
+        forward_error,
+        PluginError::InvalidComponentKey {
+            plugin,
+            kind: ComponentKind::Credential,
+            projected_key,
+        } if plugin.as_str() == "slack" && projected_key == "slack.aaa!"
+    ));
+}
+
+#[test]
 fn resolved_plugin_rejects_out_of_namespace_credential() {
     let plugin = StubPlugin::new("slack").with_credential("github.oauth2");
     let err = ResolvedPlugin::from(plugin).expect_err("should reject");
@@ -315,6 +496,55 @@ fn resolved_plugin_accepts_well_namespaced_resource() {
 
     let key = ResourceKey::new("slack.http_client").unwrap();
     assert!(resolved.resource(&key).is_some());
+}
+
+#[test]
+fn resolved_plugin_rejects_resource_key_metadata_mismatch() {
+    let plugin = StubPlugin::new("slack")
+        .with_mismatched_resource("slack.http_client", "slack.audit_client");
+    let error = ResolvedPlugin::from(plugin).expect_err("key mismatch must fail resolution");
+
+    assert!(matches!(
+        error,
+        PluginError::ComponentKeyMismatch {
+            plugin,
+            kind: ComponentKind::Resource,
+            projected_key,
+            metadata_key,
+        } if plugin.as_str() == "slack"
+            && projected_key == "slack.http_client"
+            && metadata_key == "slack.audit_client"
+    ));
+}
+
+#[test]
+fn resource_validation_error_is_deterministic_across_contribution_order() {
+    let forward = StubPlugin::new("slack")
+        .with_mismatched_resource("slack.beta", "slack.aaa")
+        .with_mismatched_resource("slack.alpha", "slack.zzz")
+        .with_mismatched_resource("slack.alpha", "slack.aaa");
+    let reversed = StubPlugin::new("slack")
+        .with_mismatched_resource("slack.alpha", "slack.aaa")
+        .with_mismatched_resource("slack.alpha", "slack.zzz")
+        .with_mismatched_resource("slack.beta", "slack.aaa");
+
+    let forward_error =
+        ResolvedPlugin::from(forward).expect_err("the invalid resource set must fail");
+    let reversed_error =
+        ResolvedPlugin::from(reversed).expect_err("the invalid resource set must fail");
+
+    assert_eq!(forward_error, reversed_error);
+    assert!(matches!(
+        forward_error,
+        PluginError::ComponentKeyMismatch {
+            plugin,
+            kind: ComponentKind::Resource,
+            projected_key,
+            metadata_key,
+        } if plugin.as_str() == "slack"
+            && projected_key == "slack.alpha"
+            && metadata_key == "slack.aaa"
+    ));
 }
 
 #[test]

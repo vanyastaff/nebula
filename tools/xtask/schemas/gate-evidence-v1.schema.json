@@ -1,0 +1,873 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vanyastaff/nebula/tools/xtask/schemas/gate-evidence-v1.schema.json",
+  "title": "Nebula North Star gate evidence v1",
+  "description": "A bounded, versioned shape for recording reproducible gate runs. Schema v1 does not attest CI identity or recompute thresholds from raw observations, so it cannot promote a registry gate to passed. Secret material and raw business payloads are prohibited; raw_observations contains only sanitized measurement artifact references.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "gate_id",
+    "gate_version",
+    "registry_version",
+    "evidence_schema_version",
+    "input",
+    "runs",
+    "aggregation",
+    "denominator",
+    "threshold_evaluation",
+    "result_status"
+  ],
+  "properties": {
+    "gate_id": {
+      "type": "string",
+      "pattern": "^NS(0[1-9]|1[0-9]|2[0-2])$",
+      "minLength": 4,
+      "maxLength": 4
+    },
+    "gate_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "registry_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "evidence_schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fixture_revision",
+        "workload_revision",
+        "configuration_revision"
+      ],
+      "properties": {
+        "fixture_revision": {
+          "$ref": "#/$defs/revisionIdentity"
+        },
+        "workload_revision": {
+          "$ref": "#/$defs/revisionIdentity"
+        },
+        "configuration_revision": {
+          "$ref": "#/$defs/revisionIdentity"
+        }
+      }
+    },
+    "runs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "$ref": "#/$defs/runEvidence"
+      }
+    },
+    "aggregation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code_repository",
+        "code_revision",
+        "entrypoint",
+        "artifact_digest"
+      ],
+      "properties": {
+        "code_repository": {
+          "type": "string",
+          "format": "uri",
+          "minLength": 8,
+          "maxLength": 512
+        },
+        "code_revision": {
+          "$ref": "#/$defs/sourceRevision"
+        },
+        "entrypoint": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "artifact_digest": {
+          "$ref": "#/$defs/sha256Digest"
+        }
+      }
+    },
+    "denominator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "eligible_count",
+        "included_count",
+        "excluded_count",
+        "skipped_count",
+        "exclusion_reasons",
+        "skip_reasons"
+      ],
+      "properties": {
+        "eligible_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000000
+        },
+        "included_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000
+        },
+        "excluded_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000
+        },
+        "skipped_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000
+        },
+        "exclusion_reasons": {
+          "$ref": "#/$defs/reasonCounts"
+        },
+        "skip_reasons": {
+          "$ref": "#/$defs/reasonCounts"
+        }
+      }
+    },
+    "threshold_evaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "threshold_kind",
+        "metric_results",
+        "passed"
+      ],
+      "properties": {
+        "threshold_kind": {
+          "enum": [
+            "zero",
+            "exact",
+            "all",
+            "required-set",
+            "percentile-duration",
+            "configured-fairness",
+            "governance-block"
+          ]
+        },
+        "metric_results": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 128,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "metric",
+              "observed",
+              "expected",
+              "passed"
+            ],
+            "properties": {
+              "metric": {
+                "$ref": "#/$defs/shortIdentifier"
+              },
+              "observed": {
+                "$ref": "#/$defs/scalarValue"
+              },
+              "expected": {
+                "$ref": "#/$defs/scalarValue"
+              },
+              "passed": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "passed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "result_status": {
+      "enum": [
+        "passed",
+        "failed",
+        "invalid"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "result_status"
+        ],
+        "properties": {
+          "result_status": {
+            "const": "passed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "threshold_evaluation": {
+            "properties": {
+              "metric_results": {
+                "items": {
+                  "properties": {
+                    "passed": {
+                      "const": true
+                    }
+                  }
+                }
+              },
+              "passed": {
+                "const": true
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "threshold_evaluation": {
+            "properties": {
+              "passed": {
+                "const": false
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "policyString": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "shortIdentifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "revisionIdentity": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*@v?[A-Za-z0-9][A-Za-z0-9._+-]*$",
+      "minLength": 3,
+      "maxLength": 256
+    },
+    "sourceRevision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$",
+      "minLength": 40,
+      "maxLength": 64
+    },
+    "sha256Digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71
+    },
+    "artifactReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256Digest"
+        }
+      }
+    },
+    "observationArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "format",
+        "observation_count",
+        "contains_secrets",
+        "contains_raw_payloads"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256Digest"
+        },
+        "format": {
+          "enum": [
+            "jsonl",
+            "csv",
+            "parquet",
+            "text"
+          ]
+        },
+        "observation_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000000
+        },
+        "contains_secrets": {
+          "const": false
+        },
+        "contains_raw_payloads": {
+          "const": false
+        }
+      }
+    },
+    "reasonCounts": {
+      "type": "array",
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "reason",
+          "count"
+        ],
+        "properties": {
+          "reason": {
+            "$ref": "#/$defs/nonEmptyString"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000000
+          }
+        }
+      }
+    },
+    "scalarValue": {
+      "oneOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "number",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        }
+      ]
+    },
+    "hardware": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "machine_model",
+        "cpu_architecture",
+        "cpu_model",
+        "logical_cpu_count",
+        "memory_bytes"
+      ],
+      "properties": {
+        "provider": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "machine_model": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "cpu_architecture": {
+          "$ref": "#/$defs/shortIdentifier"
+        },
+        "cpu_model": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "logical_cpu_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65536
+        },
+        "memory_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "operatingSystem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version",
+        "kernel_version"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/shortIdentifier"
+        },
+        "version": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "kernel_version": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "rustEnvironment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "toolchain",
+        "rustc_version",
+        "target"
+      ],
+      "properties": {
+        "toolchain": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "rustc_version": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "target": {
+          "$ref": "#/$defs/shortIdentifier"
+        }
+      }
+    },
+    "runtimeEnvironment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version",
+        "settings"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/shortIdentifier"
+        },
+        "version": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "settings": {
+          "$ref": "#/$defs/artifactReference"
+        }
+      }
+    },
+    "databaseEnvironment": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "applicable",
+            "engine",
+            "version",
+            "settings",
+            "topology"
+          ],
+          "properties": {
+            "applicable": {
+              "const": true
+            },
+            "engine": {
+              "enum": [
+                "in-memory",
+                "sqlite",
+                "postgresql"
+              ]
+            },
+            "version": {
+              "$ref": "#/$defs/nonEmptyString"
+            },
+            "settings": {
+              "$ref": "#/$defs/artifactReference"
+            },
+            "topology": {
+              "$ref": "#/$defs/nonEmptyString"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "applicable",
+            "non_applicability_reason"
+          ],
+          "properties": {
+            "applicable": {
+              "const": false
+            },
+            "non_applicability_reason": {
+              "$ref": "#/$defs/nonEmptyString"
+            }
+          }
+        }
+      ]
+    },
+    "topology": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "processes",
+        "workers",
+        "regions",
+        "description"
+      ],
+      "properties": {
+        "processes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "workers": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "regions": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1024
+        },
+        "description": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hardware",
+        "operating_system",
+        "rust",
+        "runtime",
+        "database",
+        "topology"
+      ],
+      "properties": {
+        "hardware": {
+          "$ref": "#/$defs/hardware"
+        },
+        "operating_system": {
+          "$ref": "#/$defs/operatingSystem"
+        },
+        "rust": {
+          "$ref": "#/$defs/rustEnvironment"
+        },
+        "runtime": {
+          "$ref": "#/$defs/runtimeEnvironment"
+        },
+        "database": {
+          "$ref": "#/$defs/databaseEnvironment"
+        },
+        "topology": {
+          "$ref": "#/$defs/topology"
+        }
+      }
+    },
+    "sampling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "minimum_sample_size",
+        "sample_count",
+        "run_count",
+        "invalid_sample_count",
+        "retry_count",
+        "invalid_sample_policy",
+        "retry_policy"
+      ],
+      "properties": {
+        "minimum_sample_size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000000
+        },
+        "sample_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000000
+        },
+        "run_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "invalid_sample_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000
+        },
+        "retry_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000
+        },
+        "invalid_sample_policy": {
+          "enum": [
+            "fail-run"
+          ]
+        },
+        "retry_policy": {
+          "enum": [
+            "no-retry"
+          ]
+        }
+      }
+    },
+    "cachePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "cold_definition",
+        "warm_definition",
+        "cache_reset_procedure"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "cold",
+            "warm",
+            "mixed",
+            "not-applicable"
+          ]
+        },
+        "cold_definition": {
+          "$ref": "#/$defs/policyString"
+        },
+        "warm_definition": {
+          "$ref": "#/$defs/policyString"
+        },
+        "cache_reset_procedure": {
+          "$ref": "#/$defs/policyString"
+        }
+      }
+    },
+    "interval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start_event",
+        "stop_event"
+      ],
+      "properties": {
+        "start_event": {
+          "$ref": "#/$defs/policyString"
+        },
+        "stop_event": {
+          "$ref": "#/$defs/policyString"
+        }
+      }
+    },
+    "fairness": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "applicable",
+            "metric",
+            "configured_target_ratio",
+            "allowed_deviation_ratio",
+            "configuration_revision"
+          ],
+          "properties": {
+            "applicable": {
+              "const": true
+            },
+            "metric": {
+              "$ref": "#/$defs/shortIdentifier"
+            },
+            "configured_target_ratio": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "allowed_deviation_ratio": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "configuration_revision": {
+              "$ref": "#/$defs/revisionIdentity"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "applicable",
+            "non_applicability_reason"
+          ],
+          "properties": {
+            "applicable": {
+              "const": false
+            },
+            "non_applicability_reason": {
+              "$ref": "#/$defs/nonEmptyString"
+            }
+          }
+        }
+      ]
+    },
+    "queryPlans": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "applicable",
+            "artifacts"
+          ],
+          "properties": {
+            "applicable": {
+              "const": true
+            },
+            "artifacts": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 32,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/artifactReference"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "applicable",
+            "non_applicability_reason"
+          ],
+          "properties": {
+            "applicable": {
+              "const": false
+            },
+            "non_applicability_reason": {
+              "$ref": "#/$defs/nonEmptyString"
+            }
+          }
+        }
+      ]
+    },
+    "ciIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workflow_path",
+        "job_id",
+        "run_id",
+        "run_attempt",
+        "run_url",
+        "source_revision"
+      ],
+      "properties": {
+        "workflow_path": {
+          "type": "string",
+          "pattern": "^\\.github/workflows/[A-Za-z0-9._-]+\\.ya?ml$",
+          "minLength": 24,
+          "maxLength": 256
+        },
+        "job_id": {
+          "$ref": "#/$defs/shortIdentifier"
+        },
+        "run_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "run_attempt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "run_url": {
+          "type": "string",
+          "format": "uri",
+          "minLength": 8,
+          "maxLength": 512
+        },
+        "source_revision": {
+          "$ref": "#/$defs/sourceRevision"
+        }
+      }
+    },
+    "runEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "measurement_run_id",
+        "source_revision",
+        "environment",
+        "sampling",
+        "cache_policy",
+        "interval",
+        "fairness",
+        "raw_observations",
+        "query_plans",
+        "ci"
+      ],
+      "properties": {
+        "measurement_run_id": {
+          "$ref": "#/$defs/shortIdentifier"
+        },
+        "source_revision": {
+          "$ref": "#/$defs/sourceRevision"
+        },
+        "environment": {
+          "$ref": "#/$defs/environment"
+        },
+        "sampling": {
+          "$ref": "#/$defs/sampling"
+        },
+        "cache_policy": {
+          "$ref": "#/$defs/cachePolicy"
+        },
+        "interval": {
+          "$ref": "#/$defs/interval"
+        },
+        "fairness": {
+          "$ref": "#/$defs/fairness"
+        },
+        "raw_observations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/observationArtifact"
+          }
+        },
+        "query_plans": {
+          "$ref": "#/$defs/queryPlans"
+        },
+        "ci": {
+          "$ref": "#/$defs/ciIdentity"
+        }
+      }
+    }
+  }
+}
