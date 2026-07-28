@@ -48,7 +48,10 @@ jobs:
           # `MIT-0` admits `borrow-or-share` (transitive via `jsonschema` →
           # `referencing` → `fluent-uri`); same rationale, and already carried by
           # `[licenses].allow` in `deny.toml`.
-          allow-licenses: 0BSD, Apache-2.0, BSD-2-Clause, BSD-3-Clause, CC0-1.0, CDLA-Permissive-2.0, ISC, MIT, MIT-0, MPL-2.0, Unicode-3.0, Unicode-DFS-2016, Zlib
+          # `BSL-1.0` admits `xxhash-rust` (transitive via `redis` 1.x →
+          # nebula-storage); permissive, ok for vendoring. Also already carried
+          # by `deny.toml` — listed here so the alignment above actually holds.
+          allow-licenses: 0BSD, Apache-2.0, BSD-2-Clause, BSD-3-Clause, BSL-1.0, CC0-1.0, CDLA-Permissive-2.0, ISC, MIT, MIT-0, MPL-2.0, Unicode-3.0, Unicode-DFS-2016, Zlib
           # Per-package license exemptions for crates whose `license` field uses
           # the deprecated `/` SPDX conjunction (e.g. `MIT/Apache-2.0`,
           # `BSD-3-Clause/MIT`). GitHub's parser cannot normalise `/` and renders
