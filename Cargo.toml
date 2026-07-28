@@ -162,7 +162,7 @@ utoipa-swagger-ui = { version = "9", features = ["axum"] }
 oas3 = "0.21"
 
 # JSON Web Tokens
-jsonwebtoken = { version = "10", features = ["rust_crypto"] }
+jsonwebtoken = { version = "11", features = ["rust_crypto"] }
 
 # Random number generation
 rand = "0.10"
