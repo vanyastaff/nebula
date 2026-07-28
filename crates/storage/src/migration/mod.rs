@@ -209,12 +209,28 @@ pub(crate) async fn acquire_sqlite_memory_setup_guard()
 #[cfg(feature = "sqlite")]
 const SQLITE_SETUP_LOCK_SUFFIX: &str = "-setup-lock";
 
+/// How long to wait for another process to finish its schema setup.
+///
+/// This budget covers the winner's *entire* run — a cold catalog is 41
+/// migrations plus two admission passes — not just a lock handshake, because a
+/// loser holds the wait for exactly as long as the winner works. The previous
+/// five seconds was routinely shorter than that run, so a simultaneous
+/// multi-replica cold start turned every process but one into a crash-loop:
+/// each got `Unavailable`, exited, restarted, and contended again. It stays
+/// bounded so a genuinely stuck peer still surfaces rather than hanging.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+const SETUP_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(5);
+
+/// Poll interval while waiting for the file-backed setup lock.
+#[cfg(feature = "sqlite")]
+const SQLITE_SETUP_LOCK_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(25);
+
 #[cfg(feature = "sqlite")]
 pub(crate) async fn acquire_sqlite_file_setup_guard(
     path: std::path::PathBuf,
 ) -> Result<SqliteFileSetupGuard, CatalogSetupError> {
     use std::fs::{OpenOptions, TryLockError};
-    use std::time::Duration;
+    use std::time::Instant;
 
     tokio::task::spawn_blocking(move || {
         let base = path.as_os_str().to_string_lossy().into_owned();
@@ -233,7 +249,8 @@ pub(crate) async fn acquire_sqlite_file_setup_guard(
             .truncate(false)
             .open(format!("{base}{SQLITE_SETUP_LOCK_SUFFIX}"))
             .map_err(|_| CatalogSetupError::Unavailable)?;
-        for _ in 0..200 {
+        let deadline = Instant::now() + SETUP_LOCK_TIMEOUT;
+        loop {
             match file.try_lock() {
                 Ok(()) => {
                     // Measure the database under the lock without opening it.
@@ -254,12 +271,14 @@ pub(crate) async fn acquire_sqlite_file_setup_guard(
                     });
                 },
                 Err(TryLockError::WouldBlock) => {
-                    std::thread::sleep(Duration::from_millis(25));
+                    if Instant::now() >= deadline {
+                        return Err(CatalogSetupError::Unavailable);
+                    }
+                    std::thread::sleep(SQLITE_SETUP_LOCK_POLL_INTERVAL);
                 },
                 Err(TryLockError::Error(_)) => return Err(CatalogSetupError::Unavailable),
             }
         }
-        Err(CatalogSetupError::Unavailable)
     })
     .await
     .map_err(|_| CatalogSetupError::Unavailable)?
@@ -484,7 +503,8 @@ where
     use sqlx::postgres::{PgAdvisoryLock, PgAdvisoryLockKey};
     use std::time::Duration;
 
-    const LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+    // Releasing an already-held lock is a single round trip, so it keeps a
+    // short bound; acquiring waits out another replica's whole catalog run.
     const RELEASE_TIMEOUT: Duration = Duration::from_secs(5);
 
     let span = tracing::info_span!(
@@ -505,7 +525,7 @@ where
             connection.close_on_drop();
             let lock_key = postgres_lock_key::<P::Error>(&mut connection).await?;
             let lock = PgAdvisoryLock::with_key(PgAdvisoryLockKey::BigInt(lock_key));
-            let mut guard = tokio::time::timeout(LOCK_TIMEOUT, lock.acquire(connection))
+            let mut guard = tokio::time::timeout(SETUP_LOCK_TIMEOUT, lock.acquire(connection))
                 .await
                 .map_err(|_| P::Error::from(CatalogSetupError::Unavailable))?
                 .map_err(|_| P::Error::from(CatalogSetupError::Unavailable))?;

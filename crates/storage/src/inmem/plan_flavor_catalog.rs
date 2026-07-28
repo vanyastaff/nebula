@@ -320,15 +320,30 @@ fn insert_pair(
         });
     }
 
-    if !existing_plan_matches
-        && matches!(
-            catalog
-                .worker_flavors
-                .get(&ids.worker_flavor())
-                .map(|row| row.lifecycle),
-            Some(ArtifactLifecycle::Draining)
-        )
-    {
+    // Draining is a property of the stored artifact, not of whether this
+    // caller happens to have inserted this plan before. Gating the check on
+    // the new-plan path made an idempotent retry return `AlreadyPresent` for a
+    // revision that is being retired — so whether an installer learned the
+    // truth depended on its own history rather than on the catalog. The plan's
+    // own lifecycle was never consulted at all, leaving `Draining` on an
+    // executable plan unreportable through this entry point.
+    if matches!(
+        catalog
+            .executable_plans
+            .get(&ids.plan())
+            .map(|row| row.lifecycle),
+        Some(ArtifactLifecycle::Draining)
+    ) {
+        return Err(draining_for(plan_target));
+    }
+
+    if matches!(
+        catalog
+            .worker_flavors
+            .get(&ids.worker_flavor())
+            .map(|row| row.lifecycle),
+        Some(ArtifactLifecycle::Draining)
+    ) {
         return Err(draining_for(flavor_target));
     }
 
@@ -982,6 +997,69 @@ mod tests {
                 Ok(RevisionInsertOutcome::Inserted)
             );
         }
+    }
+
+    /// Red→green: a draining revision reports `Draining` to every installer,
+    /// not only to one that has never inserted this plan.
+    ///
+    /// The draining check used to be gated on the new-plan path, so a retrying
+    /// installer that had already stored the identical plan got
+    /// `AlreadyPresent` — reading as "installed and healthy" for a revision
+    /// being retired — while a caller arriving with a new plan against the same
+    /// flavor correctly got `Draining`. Whether the truth surfaced depended on
+    /// the caller's own history rather than on the catalog.
+    #[tokio::test]
+    async fn idempotent_reinsert_reports_draining_rather_than_already_present() {
+        let fixture = Fixture::new();
+        fixture.insert().await;
+        assert_eq!(
+            fixture.catalog.insert(&fixture.record).await,
+            Ok(RevisionInsertOutcome::AlreadyPresent),
+            "an ordinary retry against a live revision is still idempotent"
+        );
+
+        assert!(matches!(
+            fixture
+                .catalog
+                .begin_drain(PlanFlavorRevisionTarget::WorkerFlavor(
+                    fixture.ids.worker_flavor()
+                ))
+                .await,
+            Ok(BeginDrainOutcome::Started(_))
+        ));
+
+        assert_eq!(
+            fixture.catalog.insert(&fixture.record).await,
+            Err(RevisionCatalogError::Draining {
+                target: PlanFlavorRevisionTarget::WorkerFlavor(fixture.ids.worker_flavor()),
+            }),
+            "once the flavor is draining, the same retry must report Draining"
+        );
+    }
+
+    /// A draining executable plan is reportable through `insert` at all.
+    ///
+    /// The plan's own lifecycle was never consulted — only the flavor's — so
+    /// `Draining` on the plan could not surface from this entry point.
+    #[tokio::test]
+    async fn insert_reports_a_draining_executable_plan() {
+        let fixture = Fixture::new();
+        fixture.insert().await;
+        assert!(matches!(
+            fixture
+                .catalog
+                .begin_drain(PlanFlavorRevisionTarget::ExecutablePlan(fixture.ids.plan()))
+                .await,
+            Ok(BeginDrainOutcome::Started(_))
+        ));
+
+        assert_eq!(
+            fixture.catalog.insert(&fixture.record).await,
+            Err(RevisionCatalogError::Draining {
+                target: PlanFlavorRevisionTarget::ExecutablePlan(fixture.ids.plan()),
+            }),
+            "a draining plan must be reported, not silently accepted"
+        );
     }
 
     #[tokio::test]
