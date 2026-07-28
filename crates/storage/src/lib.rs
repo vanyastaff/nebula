@@ -115,3 +115,4 @@ pub use inmem::{
     InMemoryResumeTokenStore, InMemoryWebhookActivationStore, InMemoryWorkflowStore,
     InMemoryWorkflowVersionStore,
 };
+pub use migration::adopt::{LedgerAdoptionError, LedgerAdoptionOutcome};

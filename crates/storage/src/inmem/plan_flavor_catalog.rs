@@ -184,13 +184,38 @@ impl InMemoryPlanFlavorCatalog {
     }
 }
 
+/// Whether two JSON record bodies carry the same content.
+///
+/// Compares the *parsed* documents, never the raw bytes. Record bodies are
+/// ordinary `serde_json` output, so their exact bytes depend on struct field
+/// declaration order and on whether `serde_json` was built with
+/// `preserve_order` — a workspace-unified feature any crate in the graph can
+/// turn on. Byte equality therefore made two binaries that agree on a
+/// revision's content address nonetheless disagree on its record, so
+/// re-installing the same immutable revision failed permanently with
+/// `ContentConflict` instead of reporting `AlreadyPresent`.
+///
+/// Parsing normalises exactly the incidental differences (key order,
+/// whitespace) while still separating genuinely different documents, so
+/// conflict detection keeps its meaning. Bodies that do not parse fall back to
+/// byte equality rather than being treated as equal.
+fn json_bodies_match(stored: &[u8], candidate: &[u8]) -> bool {
+    match (
+        serde_json::from_slice::<serde_json::Value>(stored),
+        serde_json::from_slice::<serde_json::Value>(candidate),
+    ) {
+        (Ok(stored), Ok(candidate)) => stored == candidate,
+        _ => stored == candidate,
+    }
+}
+
 fn flavor_records_match(
     stored: &WorkerFlavorRevisionRecord,
     candidate: &WorkerFlavorRevisionRecord,
 ) -> bool {
     stored.id() == candidate.id()
         && stored.format() == candidate.format()
-        && stored.bytes() == candidate.bytes()
+        && json_bodies_match(stored.bytes(), candidate.bytes())
 }
 
 fn plan_records_match(
@@ -199,7 +224,7 @@ fn plan_records_match(
 ) -> bool {
     stored.ids() == candidate.ids()
         && stored.plan_format() == candidate.plan_format()
-        && stored.plan_bytes() == candidate.plan_bytes()
+        && json_bodies_match(stored.plan_bytes(), candidate.plan_bytes())
         && flavor_records_match(stored.worker_flavor(), candidate.worker_flavor())
 }
 
@@ -997,6 +1022,39 @@ mod tests {
                 Ok(RevisionInsertOutcome::Inserted)
             );
         }
+    }
+
+    /// Red→green: re-installing the same revision through a differently
+    /// configured encoder is idempotent, not a permanent conflict.
+    ///
+    /// Record bodies are plain `serde_json` output, so field order depends on
+    /// struct declaration order and on whether `serde_json` was built with
+    /// `preserve_order`. Comparing raw bytes turned that incidental difference
+    /// into `ContentConflict` for a revision both binaries agree on by content
+    /// address — an immutable plan that could never be installed again.
+    #[tokio::test]
+    async fn reencoded_identical_record_is_already_present_not_a_conflict() {
+        let fixture = Fixture::new();
+        fixture.insert().await;
+
+        // Same document, keys emitted in the opposite order and re-indented.
+        let reencoded = PlanFlavorRevisionRecord::graph_v1_json(
+            fixture.ids.plan(),
+            RevisionRecordBytes::try_from_vec(br#"{  "plan"  :  "v1"  }"#.to_vec())
+                .expect("re-encoded bytes are non-empty"),
+            fixture.record.worker_flavor().clone(),
+        );
+
+        assert_eq!(
+            fixture.catalog.insert(&reencoded).await,
+            Ok(RevisionInsertOutcome::AlreadyPresent),
+            "an encoding difference must not make an immutable revision uninstallable"
+        );
+        assert_eq!(
+            fixture.catalog.load_exact(fixture.ids).await,
+            Ok(fixture.record.clone()),
+            "the originally stored bytes stay authoritative"
+        );
     }
 
     /// Red→green: a draining revision reports `Draining` to every installer,

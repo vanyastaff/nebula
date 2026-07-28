@@ -68,6 +68,21 @@ fn db_migrate_uses_only_the_curated_admission_operator() {
         "immutable migration history must not advertise a revert task"
     );
 
+    // Setup fails closed on a database provisioned before ordered migrations,
+    // so the one supported way forward must stay advertised and must stay an
+    // explicit operator assertion rather than an implicit default.
+    let adopt = task_block(&taskfile, "db:migrate:adopt");
+    assert!(
+        adopt.contains(
+            "cargo run -p nebula-server --bin nebula-db-migrate --features postgres -- adopt"
+        ),
+        "adoption must go through the curated operator, not raw sqlx"
+    );
+    assert!(
+        adopt.contains("THROUGH_VERSION"),
+        "adoption must require the operator to state the baseline explicitly"
+    );
+
     let reset = task_block(&taskfile, "db:reset");
     assert!(
         reset.contains("prompt:") && reset.contains("sqlx database drop -y"),

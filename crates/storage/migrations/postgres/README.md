@@ -78,6 +78,25 @@ closed lifecycle/reference sums, restrictive foreign keys, and blocker
 indexes, but provides no SQL adapter, activation path, payload-hash proof, or
 exactly-once guarantee.
 
+## Adopting a database created before the ledger
+
+`init_schema` admits a database only when its `_sqlx_migrations` ledger is a
+canonical prefix, so a database provisioned by the *previous* idempotent
+`init_schema` — `port_*` tables, no ledger — is rejected as
+`UnledgeredDatabase` and its process refuses to start.
+
+Adopt it once, stating the migration level the live schema already satisfies:
+
+```
+DATABASE_URL=… task db:migrate:adopt THROUGH_VERSION=40
+```
+
+The stamp uses sqlx's own checksums, runs in one transaction, re-admits the
+result before committing, and refuses when a ledger already exists or the
+database is empty. It is deliberately not automatic: it asserts the live schema
+is what those migrations produce, which only an operator can confirm. See the
+SQLite README for the full contract.
+
 ## Rebuilding the local dev database
 
 `task db:reset` **drops and recreates the database** (then uses raw SQLx to run

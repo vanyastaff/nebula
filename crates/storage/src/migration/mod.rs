@@ -6,6 +6,7 @@ use std::future::Future;
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 use tracing::{Instrument as _, Span};
 
+pub(crate) mod adopt;
 pub(crate) mod catalog;
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
@@ -429,6 +430,126 @@ pub(crate) async fn setup_sqlite_pool(pool: sqlx::SqlitePool) -> Result<(), Cata
     }
     .instrument(span)
     .await
+}
+
+/// Adopt an unledgered SQLite database by stamping a canonical ledger.
+///
+/// Runs inside one transaction and re-admits the stamped ledger before
+/// committing, so a database that would still be rejected is left exactly as
+/// it was rather than carrying a half-written ledger.
+#[cfg(feature = "sqlite")]
+pub(crate) async fn adopt_sqlite_ledger(
+    pool: &sqlx::SqlitePool,
+    through_version: i64,
+) -> Result<adopt::LedgerAdoptionOutcome, adopt::LedgerAdoptionError> {
+    use adopt::{AdoptionPlan, LedgerAdoptionError};
+
+    let mut connection = pool
+        .acquire()
+        .await
+        .map_err(|_| LedgerAdoptionError::Unavailable)?;
+
+    let observation = catalog::sqlite::observe(&mut connection)
+        .await
+        .map_err(|_| LedgerAdoptionError::Unavailable)?;
+    let through_version =
+        match adopt::plan_adoption(&unlocked_sqlite_migrator(), &observation, through_version)? {
+            AdoptionPlan::Skip(outcome) => return Ok(outcome),
+            AdoptionPlan::Stamp { through_version } => through_version,
+        };
+
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *connection)
+        .await
+        .map_err(|_| LedgerAdoptionError::Unavailable)?;
+
+    let stamped = adopt::stamp_ledger(
+        &mut *connection,
+        &unlocked_sqlite_migrator(),
+        through_version,
+    )
+    .await;
+    let verified = match stamped {
+        Ok(()) => catalog::sqlite::admit(&mut connection, GENERAL_CATALOG_SUPPORTED_FLOOR)
+            .await
+            .map(|_| ())
+            .map_err(|_| LedgerAdoptionError::RejectedAfterStamp),
+        Err(error) => Err(error),
+    };
+
+    match verified {
+        Ok(()) => {
+            sqlx::query("COMMIT")
+                .execute(&mut *connection)
+                .await
+                .map_err(|_| LedgerAdoptionError::Unavailable)?;
+            Ok(adopt::LedgerAdoptionOutcome::Adopted { through_version })
+        },
+        Err(error) => {
+            // The caller already has a failure to report; a rollback that
+            // itself fails must not mask it.
+            let _ = sqlx::query("ROLLBACK").execute(&mut *connection).await;
+            Err(error)
+        },
+    }
+}
+
+/// Adopt an unledgered PostgreSQL database by stamping a canonical ledger.
+///
+/// Same contract as [`adopt_sqlite_ledger`].
+#[cfg(feature = "postgres")]
+pub(crate) async fn adopt_postgres_ledger(
+    pool: &sqlx::PgPool,
+    through_version: i64,
+) -> Result<adopt::LedgerAdoptionOutcome, adopt::LedgerAdoptionError> {
+    use adopt::{AdoptionPlan, LedgerAdoptionError};
+
+    let mut connection = pool
+        .acquire()
+        .await
+        .map_err(|_| LedgerAdoptionError::Unavailable)?;
+
+    let observation = catalog::postgres::observe(&mut connection)
+        .await
+        .map_err(|_| LedgerAdoptionError::Unavailable)?;
+    let through_version =
+        match adopt::plan_adoption(&unlocked_postgres_migrator(), &observation, through_version)? {
+            AdoptionPlan::Skip(outcome) => return Ok(outcome),
+            AdoptionPlan::Stamp { through_version } => through_version,
+        };
+
+    sqlx::query("BEGIN")
+        .execute(&mut *connection)
+        .await
+        .map_err(|_| LedgerAdoptionError::Unavailable)?;
+
+    let stamped = adopt::stamp_ledger(
+        &mut *connection,
+        &unlocked_postgres_migrator(),
+        through_version,
+    )
+    .await;
+    let verified = match stamped {
+        Ok(()) => catalog::postgres::admit(&mut connection, GENERAL_CATALOG_SUPPORTED_FLOOR)
+            .await
+            .map(|_| ())
+            .map_err(|_| LedgerAdoptionError::RejectedAfterStamp),
+        Err(error) => Err(error),
+    };
+
+    match verified {
+        Ok(()) => {
+            sqlx::query("COMMIT")
+                .execute(&mut *connection)
+                .await
+                .map_err(|_| LedgerAdoptionError::Unavailable)?;
+            Ok(adopt::LedgerAdoptionOutcome::Adopted { through_version })
+        },
+        Err(error) => {
+            let _ = sqlx::query("ROLLBACK").execute(&mut *connection).await;
+            Err(error)
+        },
+    }
 }
 
 #[cfg(feature = "postgres")]

@@ -200,3 +200,73 @@ async fn nonempty_unledgered_database_is_rejected_without_mutation() {
     assert_eq!(schema_after, schema_before);
     assert_eq!(rows_after, rows_before);
 }
+
+/// Red→green: an unledgered database has a supported way back to service.
+///
+/// Every database provisioned by the previous idempotent `init_schema` carries
+/// the `port_*` schema with no `_sqlx_migrations` ledger, so setup now fails
+/// closed on it and the owning process cannot start. Without an adoption path
+/// that is a permanent outage for any deployment holding real data. Adoption
+/// stamps the ledger the operator asserts is already satisfied, after which
+/// ordinary setup admits the database and brings it to head.
+#[tokio::test]
+async fn adopting_an_unledgered_database_lets_setup_admit_it() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("open adoption fixture");
+
+    // Stand in for a database the old init_schema provisioned: real relations,
+    // no ledger.
+    sqlx::query("CREATE TABLE port_legacy_marker (value TEXT NOT NULL)")
+        .execute(&pool)
+        .await
+        .expect("create pre-ledger relation");
+
+    let rejection = init_schema(&pool)
+        .await
+        .expect_err("an unledgered database must fail closed before adoption");
+    assert!(matches!(rejection, StorageError::Configuration(_)));
+
+    let outcome = nebula_storage::sqlite::adopt_ledger(&pool, 40)
+        .await
+        .expect("adoption must succeed for a pre-ledger database");
+    assert_eq!(
+        outcome,
+        nebula_storage::LedgerAdoptionOutcome::Adopted {
+            through_version: 40
+        }
+    );
+
+    init_schema(&pool)
+        .await
+        .expect("an adopted database must be admitted and migrated to head");
+    assert_eq!(migration_head(&pool).await, 41);
+
+    // Re-adoption is refused rather than duplicating ledger rows.
+    assert_eq!(
+        nebula_storage::sqlite::adopt_ledger(&pool, 40)
+            .await
+            .expect("re-adoption must not error"),
+        nebula_storage::LedgerAdoptionOutcome::AlreadyLedgered
+    );
+}
+
+/// Adoption never invents a ledger for a database that has no schema.
+#[tokio::test]
+async fn adoption_refuses_an_empty_database() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("open empty fixture");
+
+    assert_eq!(
+        nebula_storage::sqlite::adopt_ledger(&pool, 40)
+            .await
+            .expect("adoption must not error on an empty database"),
+        nebula_storage::LedgerAdoptionOutcome::FreshDatabase,
+        "an empty database is ordinary setup's job, not adoption's"
+    );
+}

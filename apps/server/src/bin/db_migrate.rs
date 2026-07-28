@@ -7,6 +7,7 @@
 )]
 
 use nebula_storage::{
+    LedgerAdoptionError, LedgerAdoptionOutcome,
     credential::{CredentialStoreStartupError, PgCredentialPersistence},
     postgres,
 };
@@ -31,6 +32,12 @@ enum MigrationOperatorError {
     GeneralAdmissionFailed,
     #[error("aggregate-owned schema admission failed: {0}")]
     AggregateAdmissionFailed(#[source] CredentialStoreStartupError),
+    #[error("usage: nebula-db-migrate [migrate | adopt <through-version>]")]
+    UnknownCommand,
+    #[error("adopt baseline `{argument}` is not a migration version")]
+    InvalidBaseline { argument: String },
+    #[error("ledger adoption failed: {0}")]
+    AdoptionFailed(#[source] LedgerAdoptionError),
 }
 
 fn migration_route(
@@ -43,7 +50,51 @@ fn migration_route(
     }
 }
 
+/// What the operator asked this invocation to do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Command {
+    /// Apply pending migrations through catalog and aggregate admission.
+    Migrate,
+    /// Stamp a ledger onto a database provisioned before ordered migrations.
+    Adopt { through_version: i64 },
+}
+
+fn parse_command(arguments: &[String]) -> Result<Command, MigrationOperatorError> {
+    match arguments {
+        [] => Ok(Command::Migrate),
+        [verb] if verb == "migrate" => Ok(Command::Migrate),
+        [verb, version] if verb == "adopt" => version
+            .parse()
+            .map(|through_version| Command::Adopt { through_version })
+            .map_err(|_| MigrationOperatorError::InvalidBaseline {
+                argument: version.clone(),
+            }),
+        _ => Err(MigrationOperatorError::UnknownCommand),
+    }
+}
+
+async fn adopt(pool: &sqlx::PgPool, through_version: i64) -> Result<(), MigrationOperatorError> {
+    match postgres::adopt_ledger(pool, through_version).await {
+        Ok(LedgerAdoptionOutcome::Adopted { through_version }) => {
+            eprintln!("adopted: ledger stamped through migration {through_version}");
+            Ok(())
+        },
+        Ok(LedgerAdoptionOutcome::AlreadyLedgered) => {
+            eprintln!("no change: database already has a migration ledger");
+            Ok(())
+        },
+        Ok(LedgerAdoptionOutcome::FreshDatabase) => {
+            eprintln!("no change: database is empty, run `migrate` instead");
+            Ok(())
+        },
+        Err(error) => Err(MigrationOperatorError::AdoptionFailed(error)),
+    }
+}
+
 async fn run() -> Result<(), MigrationOperatorError> {
+    let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+    let command = parse_command(&arguments)?;
+
     let database_url = std::env::var("DATABASE_URL")
         .map(SecretString::from)
         .map_err(|_| MigrationOperatorError::MissingDatabaseUrl)?;
@@ -51,6 +102,12 @@ async fn run() -> Result<(), MigrationOperatorError> {
         .connect(database_url.expose_secret())
         .await
         .map_err(|_| MigrationOperatorError::DatabaseUnavailable)?;
+
+    if let Command::Adopt { through_version } = command {
+        let result = adopt(&pool, through_version).await;
+        pool.close().await;
+        return result;
+    }
 
     match migration_route(postgres::init_schema(&pool).await)? {
         MigrationRoute::Complete => {
@@ -85,9 +142,53 @@ async fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{MigrationOperatorError, MigrationRoute, migration_route};
+    use super::{Command, MigrationOperatorError, MigrationRoute, migration_route, parse_command};
     use nebula_storage::credential::CredentialStoreStartupError;
     use nebula_storage_port::StorageError;
+
+    fn arguments(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[test]
+    fn no_arguments_still_means_migrate() {
+        assert_eq!(parse_command(&arguments(&[])), Ok(Command::Migrate));
+        assert_eq!(
+            parse_command(&arguments(&["migrate"])),
+            Ok(Command::Migrate)
+        );
+    }
+
+    #[test]
+    fn adopt_requires_an_explicit_numeric_baseline() {
+        assert_eq!(
+            parse_command(&arguments(&["adopt", "40"])),
+            Ok(Command::Adopt {
+                through_version: 40
+            }),
+            "the operator states which migration level the live schema is at"
+        );
+        assert_eq!(
+            parse_command(&arguments(&["adopt", "head"])),
+            Err(MigrationOperatorError::InvalidBaseline {
+                argument: "head".to_owned()
+            }),
+            "a non-numeric baseline must be refused rather than guessed"
+        );
+        assert_eq!(
+            parse_command(&arguments(&["adopt"])),
+            Err(MigrationOperatorError::UnknownCommand),
+            "adoption must never default to a baseline the operator did not state"
+        );
+    }
+
+    #[test]
+    fn unknown_verbs_are_refused() {
+        assert_eq!(
+            parse_command(&arguments(&["revert"])),
+            Err(MigrationOperatorError::UnknownCommand)
+        );
+    }
 
     #[test]
     fn successful_general_admission_completes_without_fallback() {

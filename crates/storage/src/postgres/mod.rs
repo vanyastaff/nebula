@@ -46,3 +46,19 @@ pub async fn init_schema(pool: &sqlx::PgPool) -> Result<(), nebula_storage_port:
         .await
         .map_err(crate::migration::storage_setup_error)
 }
+
+/// Adopt a database provisioned before the ordered migration ledger existed.
+///
+/// See [`crate::sqlite::adopt_ledger`] for the full contract; this is the
+/// PostgreSQL entry point and behaves identically.
+///
+/// # Errors
+/// Returns [`crate::LedgerAdoptionError`] if the database cannot be read or written,
+/// if `through_version` names no canonical migration, or if the stamped ledger
+/// would still be rejected by schema setup.
+pub async fn adopt_ledger(
+    pool: &sqlx::PgPool,
+    through_version: i64,
+) -> Result<crate::LedgerAdoptionOutcome, crate::LedgerAdoptionError> {
+    crate::migration::adopt_postgres_ledger(pool, through_version).await
+}

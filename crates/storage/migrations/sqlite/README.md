@@ -75,6 +75,32 @@ comments first: `ALTER TABLE` rewrites that text, so a migrated table and an
 `init_schema` one legitimately differ in comments and column order while
 being semantically identical.
 
+## Adopting a database created before the ledger
+
+Ordered migrations are authoritative: `init_schema` admits a database only when
+its `_sqlx_migrations` ledger is a canonical prefix. A database provisioned by
+the *previous* idempotent `init_schema` has the `port_*` schema and **no
+ledger**, so it is rejected as `UnledgeredDatabase` and the owning process
+refuses to start.
+
+Adopt it once, stating the migration level its schema already satisfies:
+
+```
+# PostgreSQL
+DATABASE_URL=… task db:migrate:adopt THROUGH_VERSION=40
+
+# SQLite / embedded callers
+nebula_storage::sqlite::adopt_ledger(&pool, 40)
+```
+
+This stamps migrations `1..=THROUGH_VERSION` as applied using sqlx's own
+checksums, then ordinary setup applies everything above that level. It is
+deliberately **not** automatic: the stamp asserts the live schema is what those
+migrations produce, and only an operator can know that. Adoption runs in one
+transaction, re-admits the stamped ledger before committing, and refuses when a
+ledger already exists or the database is empty — so a database it cannot make
+admissible is left exactly as it was.
+
 ## Rebuilding the local dev database
 
 A file-backed SQLite rebuild that applies these migrations destroys all

@@ -261,7 +261,7 @@ fn observation_fetch_error(error: sqlx::Error, rejection: CatalogRejection) -> C
 }
 
 #[cfg(feature = "sqlite")]
-mod sqlite {
+pub(crate) mod sqlite {
     use sqlx::{Row as _, SqliteConnection};
 
     use super::{
@@ -460,7 +460,7 @@ mod sqlite {
 pub(crate) use sqlite::{admit as admit_sqlite, observe as observe_sqlite};
 
 #[cfg(feature = "postgres")]
-mod postgres {
+pub(crate) mod postgres {
     use sqlx::PgConnection;
 
     use super::{

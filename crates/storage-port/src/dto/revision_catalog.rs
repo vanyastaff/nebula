@@ -300,6 +300,12 @@ pub enum RevisionCatalogError {
     },
 
     /// Live executions or rollback windows still retain the revision.
+    ///
+    /// Not yet reachable in a release build: reference rows can only be
+    /// created by the execution-owner transaction, which is unimplemented, so
+    /// the shipped backend's reference constructors are `#[cfg(test)]`. Do not
+    /// rely on its absence as evidence that a revision is unreferenced — see
+    /// [`PlanFlavorCatalogAdmin::delete_drained`](crate::PlanFlavorCatalogAdmin::delete_drained).
     #[error("revision remains referenced")]
     Referenced {
         /// Revision whose deletion was rejected.
