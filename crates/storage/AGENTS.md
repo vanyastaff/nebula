@@ -9,7 +9,7 @@
 | Task | Steps |
 |------|-------|
 | Add a new port method | 1. Define on the trait in `nebula-storage-port` (Core layer) 2. Implement in `src/inmem/`, `src/sqlite/`, `src/postgres/` 3. Add migration if SQL changes needed |
-| Add a SQL migration | Create `migrations/{postgres,sqlite}/NNNN_description.sql`. Must stay byte-identical to embedded `src/{postgres,sqlite}/schema.sql`. Run `task db:migrate`. |
+| Add a SQL migration | Create paired `migrations/{postgres,sqlite}/NNNN_description.sql` files when the logical schema is shared. Numbered SQLx migrations are the sole setup source; never add a `src/**/schema.sql` snapshot. Classify the migration as aggregate-neutral or aggregate-transforming before changing the executable catalog-boundary test. Run the curated `task db:migrate` operator; never run raw SQLx migration against a non-empty database. |
 | Test Postgres adapter | Needs `DATABASE_URL` env var. Tests are skip-clean without a live DB. |
 | Understand CAS transitions | `ExecutionStore::commit` uses CAS on `version` + lease `FencingToken`. If persistence is unavailable it FAILS — never silently mutate in-memory state. |
 | Understand outbox atomicity | Control-queue writes share the SAME `TransitionBatch` as state transition (§12.2). Never transition without enqueueing. |
@@ -19,7 +19,17 @@
 - `cargo check -p nebula-storage`  (backends are feature-gated: add `--features sqlite,postgres`)
 - `cargo nextest run -p nebula-storage`  ·  doctests: n/a (`doctest = false` in Cargo.toml)
 - Postgres runtime tests are `DATABASE_URL`-gated + skip-clean (e.g. `tests/pg_idempotency.rs`); not pg-verified without a live DB.
-- Migrations: per-backend trees `migrations/{postgres,sqlite}/`; `0027_port_adapter_schema.sql` must stay byte-identical to embedded `src/{postgres,sqlite}/schema.sql`. `task db:migrate` (Postgres), `task db:reset` (drops data).
+- Migrations: per-backend ordered trees `migrations/{postgres,sqlite}/`; both production startup
+  and test/`:memory:` setup run those exact catalogs. Existing numbered files are immutable.
+  `task db:migrate` uses the admitted server-owned operator. `task db:reset` is the only raw-run
+  path and is safe only because its prompt-protected sequence first drops and recreates the
+  database.
+- `CatalogOnly` may automatically cross a pending migration only after review proves that the
+  migration is aggregate-neutral. An aggregate-transforming or destructive migration needs its
+  owner's preflight and postflight under the same setup guard/session, or the general catalog
+  floor must move to a head at which that transformation is already known safe. The executable
+  head/floor pin intentionally fails when a new migration is added; never advance it as a
+  mechanical catalog update.
 
 ## Key files
 - `src/lib.rs` — adapter re-exports (`InMemory*`, `StorageError`, `StorageFormat`); module/feature map.

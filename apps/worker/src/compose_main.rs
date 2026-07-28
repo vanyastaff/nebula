@@ -69,8 +69,8 @@ pub(crate) enum WorkerRunError {
     )]
     PostgresFeatureNotEnabled,
 
-    /// Schema DDL (`CREATE TABLE IF NOT EXISTS`) failed.
-    #[error("schema init failed — the database file may be corrupt or read-only: {0}")]
+    /// Canonical schema admission or ordered migration failed.
+    #[error("schema setup failed — the database may be unsupported or unavailable: {0}")]
     Schema(#[from] nebula_storage_port::StorageError),
 
     /// Plugin wiring or worker runtime assembly failed.
@@ -128,10 +128,10 @@ async fn build_stores(
             .await
             .map_err(WorkerRunError::SqliteDatabase)?;
 
-        // Apply the port-scoped DDL — idempotent `CREATE TABLE IF NOT EXISTS`.
+        // Admit the canonical prefix and apply the ordered SQLite migrations.
         init_schema(&pool).await?;
 
-        tracing::info!(db_path = %config.db_path, "SQLite schema applied");
+        tracing::info!(db_path = %config.db_path, "SQLite migrations ready");
 
         // Every store clone holds the same `SqlitePool` `Arc`; single
         // max_connections serialises writes at the connection level.
@@ -211,10 +211,10 @@ async fn build_pg_stores(
         .await
         .map_err(WorkerRunError::PostgresDatabase)?;
 
-    // Apply the port-scoped DDL — idempotent (`CREATE TABLE IF NOT EXISTS`).
+    // Admit the canonical prefix and apply the ordered PostgreSQL migrations.
     pg_init_schema(&pool).await?;
 
-    tracing::info!("Postgres schema applied (ADR-0095 D3/D5 durable backend)");
+    tracing::info!("Postgres migrations ready (ADR-0095 D3/D5 durable backend)");
 
     // Every store clone shares the same `PgPool` `Arc`; the pool manages
     // connections internally (max_connections(8)).

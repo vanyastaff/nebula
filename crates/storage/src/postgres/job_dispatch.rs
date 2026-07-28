@@ -17,7 +17,8 @@
 //! not `<@` — so it runs as a filter over the rows the `(status,
 //! required_plugin_key)` B-tree returns.  Fine pre-fleet; a `<@`-indexable
 //! representation (text[] + `array_ops`, or a tag-membership table) is the
-//! tracked pre-production follow-up.  See `schema.sql` PERF NOTE.
+//! tracked pre-production follow-up. See migration
+//! `0031_job_dispatch_and_trigger_dedup.sql`.
 //!
 //! Ids are raw 16-byte ULID (`BYTEA`).  `required_plugins` is a `JSONB` array.
 

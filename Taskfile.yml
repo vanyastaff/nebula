@@ -224,14 +224,9 @@ tasks:
       - docker compose -f {{.COMPOSE_LOCAL}} down
 
   db:migrate:
-    desc: Run pending sqlx migrations (requires DATABASE_URL)
+    desc: Run pending migrations through catalog and aggregate admission (requires DATABASE_URL)
     cmds:
-      - sqlx migrate run --source crates/storage/migrations/postgres
-
-  db:migrate:revert:
-    desc: Revert the last applied migration
-    cmds:
-      - sqlx migrate revert --source crates/storage/migrations/postgres
+      - cargo run -p nebula-server --bin nebula-db-migrate --features postgres
 
   db:migrate:info:
     desc: Show migration status

@@ -66,6 +66,8 @@ pub mod identity_secret;
 pub mod inmem;
 /// Row-to-domain type conversion utilities.
 pub mod mapping;
+#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
+mod migration;
 /// Postgres implementations of [`repos`] traits.
 #[cfg(feature = "postgres")]
 pub mod pg;

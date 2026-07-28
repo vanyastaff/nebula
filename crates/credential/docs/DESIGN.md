@@ -77,8 +77,10 @@ remains permanently reserved while its owner-local name is released. Owner metad
 compatibility/audit data only; the selector plus physical owner column are the sole persistence
 authority.
 
-SQLite/PostgreSQL ready-store constructors hold a bounded backend-specific startup lock across
-read-only schema admission, canonical migration through paired `0040`, and postflight. Raw pools
+SQLite/PostgreSQL ready-store constructors hold backend-specific startup serialization across
+read-only schema admission, the full ordered migration catalog (currently through paired `0041`),
+and postflight. PostgreSQL lock acquisition/release and SQLite file-lock waiting are bounded;
+migration duration follows the caller lifecycle and the operator's database timeout. Raw pools
 cannot construct a ready credential store. Confirmed mutations return a secret-free
 `CredentialCommit` from statement `RETURNING` only after commit; a lost commit acknowledgement is
 the non-retryable `OutcomeUnknown`.

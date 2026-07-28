@@ -410,7 +410,7 @@ fn build_memory_execution_stores() -> Result<ExecutionStoreBundle, TransportInit
     })
 }
 
-/// SQLite bundle — WAL + single connection + `init_schema` (idempotent DDL).
+/// SQLite bundle — WAL + single connection + canonical ordered migrations.
 ///
 /// Single `max_connections(1)` serialises all writes: `BEGIN IMMEDIATE` CAS +
 /// claim-fencing in the store are only correct when one writer owns the WAL lock.
@@ -459,7 +459,7 @@ async fn build_sqlite_execution_stores(
     tracing::info!(
         backend = "sqlite",
         db_path = %db_path,
-        "execution-stores: SQLite schema applied"
+        "execution-stores: SQLite migrations ready"
     );
     // NodeResult and Checkpoint have no SQLite implementation — transient,
     // per-execution data that is re-derived from the authoritative execution row
@@ -573,7 +573,7 @@ async fn build_pg_execution_stores(
 
     tracing::info!(
         backend = "postgres",
-        "execution-stores: Postgres schema applied"
+        "execution-stores: Postgres migrations ready"
     );
     tracing::warn!(
         "node-result and checkpoint stores are in-memory (not persisted across restarts); \

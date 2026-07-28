@@ -49,13 +49,15 @@ use std::sync::{
 };
 
 use super::{
-    CredentialStoreStartupError,
-    refresh_claim::SqliteRefreshClaimRepo,
-    retry_gate,
-    schema::{SQLITE_MIGRATOR, sqlite as schema},
+    CredentialStoreStartupError, refresh_claim::SqliteRefreshClaimRepo, retry_gate,
+    schema::sqlite as schema,
 };
-
-static MEMORY_READINESS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+#[cfg(test)]
+use crate::migration::SQLITE_MIGRATOR;
+use crate::migration::{
+    acquire_sqlite_file_setup_guard, acquire_sqlite_memory_setup_guard,
+    setup_sqlite_connection_with,
+};
 
 #[cfg(test)]
 #[derive(Debug)]
@@ -203,8 +205,8 @@ impl SqliteCredentialPersistence {
     ///
     /// `url` is a SQLite connection string — a file URL
     /// (`sqlite://path/to/credentials.db`), a bare path, or
-    /// `sqlite::memory:` for an ephemeral store. A local file is protected by a
-    /// bounded outer file lock while an
+    /// `sqlite::memory:` for an ephemeral store. A local file is protected by
+    /// a serialized outer file lock while an
     /// immutable read-only preflight, canonical SQLx migration, and postflight
     /// run. The exact `sqlite::memory:` form is serialized process-wide and
     /// uses one physical connection during readiness.
@@ -257,7 +259,7 @@ impl SqliteCredentialPersistence {
     async fn connect_memory_options(
         options: sqlx::sqlite::SqliteConnectOptions,
     ) -> Result<Self, CredentialStoreStartupError> {
-        let _readiness = MEMORY_READINESS.lock().await;
+        let _readiness = acquire_sqlite_memory_setup_guard().await?;
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .min_connections(1)
             .max_connections(1)
@@ -268,12 +270,7 @@ impl SqliteCredentialPersistence {
             .acquire()
             .await
             .map_err(|_| CredentialStoreStartupError::Unavailable)?;
-        schema::admit(&mut connection).await?;
-        SQLITE_MIGRATOR
-            .run(&mut *connection)
-            .await
-            .map_err(|_| CredentialStoreStartupError::Unavailable)?;
-        schema::admit(&mut connection).await?;
+        setup_sqlite_connection_with::<schema::CredentialAdmission>(&mut connection).await?;
         drop(connection);
 
         Ok(Self::from_ready_pool(pool))
@@ -301,18 +298,16 @@ impl SqliteCredentialPersistence {
         #[cfg(test)] gate: Option<&ReadinessTestGate>,
     ) -> Result<Self, CredentialStoreStartupError> {
         let path = options.get_filename().to_owned();
-        let lock = acquire_file_lock(&path).await?;
+        let lock = acquire_sqlite_file_setup_guard(path.clone()).await?;
         #[cfg(test)]
         if let Some(gate) = gate {
             gate.lock_acquired.wait().await;
             gate.release.notified().await;
         }
-        let metadata = lock
-            .metadata()
-            .map_err(|_| CredentialStoreStartupError::Unavailable)?;
+        let (locked_file_len, has_sidecar) = lock.initial_file_state();
 
-        if metadata.len() == 0 {
-            if sqlite_sidecars_exist(&path) {
+        if locked_file_len == 0 {
+            if has_sidecar {
                 return Err(CredentialStoreStartupError::Unavailable);
             }
         } else {
@@ -344,11 +339,7 @@ impl SqliteCredentialPersistence {
             .acquire()
             .await
             .map_err(|_| CredentialStoreStartupError::Unavailable)?;
-        SQLITE_MIGRATOR
-            .run(&mut *connection)
-            .await
-            .map_err(|_| CredentialStoreStartupError::Unavailable)?;
-        schema::admit(&mut connection).await?;
+        setup_sqlite_connection_with::<schema::CredentialAdmission>(&mut connection).await?;
         drop(connection);
         drop(lock);
 
@@ -631,7 +622,10 @@ mod tests {
                 .fetch_one(&second.pool)
                 .await
                 .expect("serialized readiness ledger must be readable");
-                assert_eq!(head, 40);
+                assert_eq!(
+                    head,
+                    crate::migration::catalog::catalog_head(&SQLITE_MIGRATOR)
+                );
                 assert_eq!(
                     successful,
                     i64::try_from(SQLITE_MIGRATOR.iter().count())
@@ -700,40 +694,6 @@ mod tests {
         assert_eq!(rows_after, rows_before);
         pool.close().await;
     }
-}
-
-async fn acquire_file_lock(
-    path: &std::path::Path,
-) -> Result<std::fs::File, CredentialStoreStartupError> {
-    use std::fs::{OpenOptions, TryLockError};
-    use std::time::Duration;
-
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path)
-        .map_err(|_| CredentialStoreStartupError::Unavailable)?;
-    for _ in 0..200 {
-        match file.try_lock() {
-            Ok(()) => return Ok(file),
-            Err(TryLockError::WouldBlock) => {
-                tokio::time::sleep(Duration::from_millis(25)).await;
-            },
-            Err(TryLockError::Error(_)) => {
-                return Err(CredentialStoreStartupError::Unavailable);
-            },
-        }
-    }
-    Err(CredentialStoreStartupError::Unavailable)
-}
-
-fn sqlite_sidecars_exist(path: &std::path::Path) -> bool {
-    let base = path.as_os_str().to_string_lossy();
-    ["-journal", "-wal", "-shm"]
-        .iter()
-        .any(|suffix| std::path::Path::new(&format!("{base}{suffix}")).exists())
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────

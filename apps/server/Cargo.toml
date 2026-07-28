@@ -11,6 +11,11 @@ publish = false
 name = "nebula-server"
 path = "src/main.rs"
 
+[[bin]]
+name = "nebula-db-migrate"
+path = "src/bin/db_migrate.rs"
+required-features = ["postgres"]
+
 [lib]
 name = "nebula_server"
 path = "src/lib.rs"

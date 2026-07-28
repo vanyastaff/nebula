@@ -8,9 +8,9 @@
 //! control-queue claim is a single-consumer status flip (no
 //! `FOR UPDATE SKIP LOCKED` equivalent — documented, not hidden).
 //!
-//! The adapter owns a port-scoped schema (`schema.sql`) that does not FK
-//! into the identity zoo, so the execution core works on a bare `:memory:`
-//! database with no identity seeding.
+//! The adapter schema is installed exclusively by the ordered SQLite
+//! migration catalog. The `port_*` execution core remains independent of
+//! identity seeding.
 
 mod control_queue;
 mod execution;
@@ -33,35 +33,15 @@ pub use resume_producer::SqliteResumeProducer;
 pub use resume_token::SqliteResumeTokenStore;
 pub use workflow::{SqliteWorkflowStore, SqliteWorkflowVersionStore};
 
-/// Embedded port-scoped DDL applied by [`init_schema`].
-pub const SCHEMA_SQL: &str = include_str!("schema.sql");
-
-/// Apply the port-scoped schema to a pool. Idempotent (`CREATE TABLE IF
-/// NOT EXISTS`), so it is safe to call on every adapter construction.
+/// Admit a canonical schema and apply every pending ordered migration under
+/// the serialized Nebula SQLite setup guard.
 ///
 /// # Errors
-/// Returns [`nebula_storage_port::StorageError::Connection`] if the DDL
-/// cannot be applied (e.g. a closed pool).
+/// Returns a closed, redacted connection or configuration error if setup
+/// cannot prove that the database has a supported canonical migration history
+/// at the catalog-only upgrade floor and enabled foreign-key enforcement.
 pub async fn init_schema(pool: &sqlx::SqlitePool) -> Result<(), nebula_storage_port::StorageError> {
-    // Strip `--` line comments first: splitting raw text on `;` would
-    // otherwise yield fragments that begin mid-comment and fail to parse.
-    let stripped: String = SCHEMA_SQL
-        .lines()
-        .map(|line| match line.find("--") {
-            Some(idx) => &line[..idx],
-            None => line,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    for stmt in stripped.split(';') {
-        let trimmed = stmt.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        sqlx::query(sqlx::AssertSqlSafe(trimmed))
-            .execute(pool)
-            .await
-            .map_err(|e| nebula_storage_port::StorageError::Connection(e.to_string()))?;
-    }
-    Ok(())
+    crate::migration::setup_sqlite_pool(pool.clone())
+        .await
+        .map_err(crate::migration::storage_setup_error)
 }

@@ -42,11 +42,10 @@ use std::sync::{
 };
 
 use super::{
-    CredentialStoreStartupError,
-    refresh_claim::PgRefreshClaimRepo,
-    retry_gate,
-    schema::{postgres as schema, unlocked_postgres_migrator},
+    CredentialStoreStartupError, refresh_claim::PgRefreshClaimRepo, retry_gate,
+    schema::postgres as schema,
 };
+use crate::migration::setup_postgres_pool_with;
 
 /// PostgreSQL-backed [`CredentialPersistence`].
 ///
@@ -75,7 +74,8 @@ impl PgCredentialPersistence {
     }
 
     /// Connect, admit the canonical schema, and apply all pending migrations
-    /// under the bounded PostgreSQL readiness lock.
+    /// under the PostgreSQL readiness lock, whose acquisition and release are
+    /// bounded.
     ///
     /// # Errors
     ///
@@ -104,33 +104,7 @@ impl PgCredentialPersistence {
             .connect_with(options)
             .await
             .map_err(|_| CredentialStoreStartupError::Unavailable)?;
-        let mut connection = pool
-            .acquire()
-            .await
-            .map_err(|_| CredentialStoreStartupError::Unavailable)?;
-        let lock_key = postgres_lock_key(&mut connection).await?;
-        acquire_postgres_lock(&mut connection, lock_key).await?;
-
-        let readiness = async {
-            read_only_admission(&mut connection).await?;
-            unlocked_postgres_migrator()
-                .run(&mut *connection)
-                .await
-                .map_err(|_| CredentialStoreStartupError::Unavailable)?;
-            read_only_admission(&mut connection).await
-        }
-        .await;
-
-        let unlocked = sqlx::query_scalar::<_, bool>("SELECT pg_advisory_unlock($1)")
-            .bind(lock_key)
-            .fetch_one(&mut *connection)
-            .await
-            .unwrap_or(false);
-        if !unlocked {
-            return Err(CredentialStoreStartupError::Unavailable);
-        }
-        readiness?;
-        drop(connection);
+        setup_postgres_pool_with::<schema::CredentialAdmission>(pool.clone()).await?;
 
         Ok(Self::from_admitted_pool(pool))
     }
@@ -256,60 +230,6 @@ fn is_unknown_commit_sqlstate(code: Option<&str>) -> bool {
             // whether the server committed before the connection failed.
             code.starts_with("08")
         })
-}
-
-async fn postgres_lock_key(
-    connection: &mut sqlx::PgConnection,
-) -> Result<i64, CredentialStoreStartupError> {
-    sqlx::query_scalar(
-        "SELECT hashtextextended(
-             'nebula:credential-schema:' || current_database() || ':' || current_schema(),
-             0
-         )",
-    )
-    .fetch_one(connection)
-    .await
-    .map_err(|_| CredentialStoreStartupError::Unavailable)
-}
-
-async fn acquire_postgres_lock(
-    connection: &mut sqlx::PgConnection,
-    lock_key: i64,
-) -> Result<(), CredentialStoreStartupError> {
-    use std::time::Duration;
-
-    for _ in 0..200 {
-        let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
-            .bind(lock_key)
-            .fetch_one(&mut *connection)
-            .await
-            .map_err(|_| CredentialStoreStartupError::Unavailable)?;
-        if acquired {
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    Err(CredentialStoreStartupError::Unavailable)
-}
-
-async fn read_only_admission(
-    connection: &mut sqlx::PgConnection,
-) -> Result<(), CredentialStoreStartupError> {
-    sqlx::query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-        .execute(&mut *connection)
-        .await
-        .map_err(|_| CredentialStoreStartupError::Unavailable)?;
-    let admission = schema::admit(&mut *connection).await;
-    let finish = if admission.is_ok() {
-        "COMMIT"
-    } else {
-        "ROLLBACK"
-    };
-    sqlx::query(finish)
-        .execute(&mut *connection)
-        .await
-        .map_err(|_| CredentialStoreStartupError::Unavailable)?;
-    admission.map(|_| ())
 }
 
 fn encode_metadata(metadata: &Map<String, Value>) -> Result<String, CredentialPersistenceError> {

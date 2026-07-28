@@ -56,27 +56,36 @@ Spec-16 compliant schema for Nebula's PostgreSQL backend.
 | 0038 | `identity_secret_authority` | Identity | digest-only sessions and authenticated-encryption envelopes for active/pending TOTP |
 | 0039 | `credentials_owner_and_record_state` | Credentials | owner-bound structural live/tombstone lifecycle |
 | 0040 | `credential_refresh_retry_gate` | Credentials | durable structural refresh-retry admission gate |
+| 0041 | `port_plan_flavor_revision_catalog` | Runtime control | dormant immutable plan/flavor records and exact execution revision references |
 
 ## Storage-port adapter schema (0027)
 
-`0027_port_adapter_schema.sql` is **byte-identical** to
-`crates/storage/src/postgres/schema.sql`, which the spec-16 Postgres
-adapters apply via `nebula_storage::postgres::init_schema` for in-memory
-and test pools. This migration is the canonical source for a real
-database rebuild: the spec-16 port (`PgExecutionStore` + the atomic
+`0027_port_adapter_schema.sql` is the historical migration that introduced
+the spec-16 port tables. `nebula_storage::postgres::init_schema`, credential
+readiness, clean database setup, and upgrades all run this exact ordered
+migration tree; no separate embedded schema snapshot exists. General
+`init_schema` validates catalog facts only; credential readiness adds
+credential relation/row admission under the same advisory lock and session.
+The spec-16 port
+(`PgExecutionStore` + the atomic
 `TransitionBatch`, the durable control-queue outbox, idempotency,
 webhook activations, workflows/versions, and the identity stores)
-persists through these `port_*` tables. The two files are kept in
-lockstep — regenerate the migration from the embedded schema with
-`cp crates/storage/src/postgres/schema.sql \
-crates/storage/migrations/postgres/0027_port_adapter_schema.sql`
-whenever the port schema changes.
+persists through these `port_*` tables. Applied migration files are immutable;
+schema changes always append a new numbered migration.
+
+Migration `0041` is deliberately dormant DDL. It enforces byte lengths,
+closed lifecycle/reference sums, restrictive foreign keys, and blocker
+indexes, but provides no SQL adapter, activation path, payload-hash proof, or
+exactly-once guarantee.
 
 ## Rebuilding the local dev database
 
-`task db:reset` **drops and recreates the database** (then re-runs every
-migration in this directory, `0027` included). It destroys all local dev
-data. `task db:migrate` applies pending migrations non-destructively.
+`task db:reset` **drops and recreates the database** (then uses raw SQLx to run
+every migration in this directory, `0027` included). It destroys all local dev
+data. `task db:migrate` is the non-destructive path and uses the server-owned
+admitted operator: catalog-only setup first, credential-owner deep admission
+only after a typed configuration rejection. Numbered history is immutable and
+forward-only; no revert task is supported.
 
 ## Schema parity
 

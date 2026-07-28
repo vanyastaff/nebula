@@ -1,6 +1,6 @@
 //! Postgres identity-zoo stores over the port-scoped schema.
 //!
-//! Each aggregate is a `port_*` table in `schema.sql`. Every tenant- or
+//! Each aggregate is a `port_*` table in the ordered PostgreSQL migrations. Every tenant- or
 //! parent-scoped query carries its scope predicate (`WHERE org_id = $1`,
 //! `WHERE workspace_id = $1 AND org_id = $2`, …) and active-row reads add
 //! `AND deleted_at IS NULL`, so a cross-scope `get` yields `Ok(None)` and

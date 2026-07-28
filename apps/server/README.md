@@ -189,7 +189,11 @@ cutover; mixed old/new auth nodes are unsupported.
    sensitive material.
 2. Configure one stable base64 AES-256 `NEBULA_CRED_MASTER_KEY` (or explicitly
    opt into the insecure local-only `NEBULA_CRED_DEV_KEY=1` policy). Run
-   `task db:migrate`; all schema changes come from numbered migrations.
+   `task db:migrate`; the server-owned operator first attempts catalog-only
+   admission, then falls back only from a typed configuration rejection to
+   credential-owner deep admission. It closes the general pool before that
+   fallback, and every failure is closed and redacted. All schema changes come
+   from immutable numbered migrations.
 3. Start the new server. Before `PgAuthBackend` is exposed, the startup
    migrator serializes replicas with an advisory lock, converts canonical
    historical TOTP seeds in bounded CAS batches, authenticates active and

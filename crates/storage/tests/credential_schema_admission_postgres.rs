@@ -12,6 +12,8 @@ use nebula_core::CredentialId;
 use nebula_storage::credential::{
     CredentialSchemaAdmissionReason, CredentialStoreStartupError, PgCredentialPersistence,
 };
+use nebula_storage::postgres::init_schema;
+use nebula_storage_port::StorageError;
 use sqlx::{
     PgPool,
     postgres::{PgConnectOptions, PgPoolOptions},
@@ -204,6 +206,87 @@ async fn insert_legacy_record(
     Ok(())
 }
 
+async fn insert_semantically_invalid_current_record(pool: &PgPool) -> TestResult<()> {
+    sqlx::query(
+        "INSERT INTO credentials (
+             id, name, owner_id, credential_key, state_kind, state_version,
+             data, version, material_epoch, created_at, updated_at, expires_at,
+             reauth_required, metadata, record_state, tombstoned_at,
+             refresh_retry_mode, refresh_retry_not_before, refresh_retry_phase,
+             refresh_retry_kind, refresh_retry_diagnostic_code
+         ) VALUES (
+             'not-a-credential-id', NULL, 'owner-catalog-only',
+             'provider.catalog-only', 'ready', 0, $1, 1, 1,
+             now(), now(), NULL, FALSE, '{}', 'live', NULL,
+             NULL, NULL, NULL, NULL, NULL
+         )",
+    )
+    .bind(Vec::<u8>::new())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn catalog_setup_ignores_credential_semantics_but_ready_store_rejects_unchanged()
+-> TestResult<()> {
+    let Some(database) = IsolatedSchema::connect().await else {
+        return Ok(());
+    };
+    let pool = database.raw_pool().await;
+    init_schema(&pool).await?;
+    insert_semantically_invalid_current_record(&pool).await?;
+    let before = logical_snapshot(&pool).await?;
+
+    init_schema(&pool)
+        .await
+        .expect("general setup must inspect catalog facts only");
+    let after = logical_snapshot(&pool).await?;
+    assert_eq!(
+        after, before,
+        "general setup must leave credentials untouched"
+    );
+    pool.close().await;
+
+    let error = reject_logically_unchanged(&database).await?;
+    assert!(matches!(
+        error,
+        CredentialStoreStartupError::UnsupportedSchemaVersion(unsupported)
+            if unsupported.reason() == &CredentialSchemaAdmissionReason::InvalidCredentialId
+    ));
+    database.cleanup().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn catalog_setup_rejects_pre_0040_prefix_without_crossing_credential_boundary()
+-> TestResult<()> {
+    let Some(database) = IsolatedSchema::connect().await else {
+        return Ok(());
+    };
+    let pool = database.raw_pool().await;
+    MIGRATOR.run_to(38, &pool).await?;
+    insert_legacy_metadata(&pool, r#"{"duplicate":1,"duplicate":2}"#).await?;
+    let before = logical_snapshot(&pool).await?;
+
+    let error = init_schema(&pool)
+        .await
+        .expect_err("general catalog setup must not cross the credential-owned upgrade floor");
+    assert!(matches!(error, StorageError::Configuration(_)));
+    let after = logical_snapshot(&pool).await?;
+    assert_eq!(after, before, "rejected setup must be read-only");
+    pool.close().await;
+
+    let credential_error = reject_logically_unchanged(&database).await?;
+    assert!(matches!(
+        credential_error,
+        CredentialStoreStartupError::UnsupportedSchemaVersion(unsupported)
+            if unsupported.reason() == &CredentialSchemaAdmissionReason::DuplicateMetadataKey
+    ));
+    database.cleanup().await;
+    Ok(())
+}
+
 #[tokio::test]
 async fn fresh_and_canonical_0038_schemas_are_admitted() -> TestResult<()> {
     let Some(fresh) = IsolatedSchema::connect().await else {
@@ -215,7 +298,7 @@ async fn fresh_and_canonical_0038_schemas_are_admitted() -> TestResult<()> {
     let head: i64 = sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations WHERE success")
         .fetch_one(&pool)
         .await?;
-    assert_eq!(head, 40);
+    assert_eq!(head, 41);
     pool.close().await;
     fresh.cleanup().await;
 
@@ -675,8 +758,11 @@ async fn concurrent_fresh_starters_serialize_the_schema_transition() -> TestResu
     let head: i64 = sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations WHERE success")
         .fetch_one(&pool)
         .await?;
-    assert_eq!(successful, 40);
-    assert_eq!(head, 40);
+    assert_eq!(
+        successful,
+        i64::try_from(MIGRATOR.iter().count()).expect("migration count must fit in i64")
+    );
+    assert_eq!(head, 41);
     pool.close().await;
     database.cleanup().await;
     Ok(())

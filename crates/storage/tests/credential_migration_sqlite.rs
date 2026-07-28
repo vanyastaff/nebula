@@ -658,7 +658,10 @@ async fn failed_migration_0039_rolls_back_and_can_be_retried() {
             .fetch_one(&pool)
             .await
             .expect("migration ledger head must remain readable");
-    assert_eq!(repaired_head, 40);
+    assert_eq!(
+        repaired_head, 41,
+        "the repaired database must reach the full migration catalog"
+    );
     let repaired_claim_id_columns: i64 = sqlx::query_scalar(
         "SELECT COUNT(*)
          FROM pragma_table_info('credential_sentinel_events')
@@ -695,8 +698,8 @@ async fn migration_0039_rebuilds_credentials_without_live_data_loss() {
     .await
     .expect("migration ledger head must be readable");
     assert_eq!(
-        head, 40,
-        "the full catalog must install structural retry migration 0040"
+        head, 41,
+        "the full catalog must install the dormant plan/flavor catalog after credential migration 0040"
     );
 
     assert_live_rows_are_preserved(&pool).await;

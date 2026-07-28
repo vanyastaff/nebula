@@ -29,6 +29,11 @@ Migration `0026_execution_control_queue_w3c_trace_context.sql` adds nullable
 Migration `0040_credential_refresh_retry_gate.sql` adds the structural
 credential refresh-retry admission gate in parity with PostgreSQL.
 
+Migration `0041_port_plan_flavor_revision_catalog.sql` adds dormant immutable
+plan/flavor records and exact execution revision references in parity with
+PostgreSQL. It is constrained storage layout, not a runtime adapter or
+activation claim.
+
 ## Storage-port adapter schema (0027)
 
 `crates/storage/src/sqlite/schema.sql` is the **cumulative** `port_*` schema,
@@ -73,8 +78,8 @@ being semantically identical.
 ## Rebuilding the local dev database
 
 A file-backed SQLite rebuild that applies these migrations destroys all
-local dev data. `:memory:` test pools install the same schema fresh per
-run via `init_schema`, so tests need no migration step.
+local dev data. `:memory:` test pools run the same migration catalog fresh via
+`init_schema`, so they need no separate schema-install step.
 
 ## Schema parity
 

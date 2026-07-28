@@ -83,8 +83,11 @@ owner-bound `CredentialPersistence`; `Scope`).
 
 - `inmem/` — in-memory порт-адаптеры (один `parking_lot::Mutex` на стор; tests /
   single-process / loom).
-- `sqlite/` (feature) — порт-адаптеры над `port_*`-схемой, single-writer; embedded
-  `schema.sql` + `init_schema` для `:memory:` / тест-пулов.
+- `sqlite/` (feature) — порт-адаптеры над `port_*`-схемой, single-writer;
+  `init_schema` выполняет catalog-only admission и запускает единый
+  упорядоченный SQLx migration catalog для файловых, `:memory:` и тестовых
+  пулов; credential-семантику проверяет только credential Ready constructor
+  под тем же guard/session; отдельного schema snapshot нет.
 - `postgres/` (feature) — production порт-адаптеры (real tx + `FOR UPDATE SKIP LOCKED`).
 - `pg/` (feature postgres) — Postgres-глю для **residual** `repos`-трейтов (identity rows,
   control-queue, oauth_state, pat, session…).

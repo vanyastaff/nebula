@@ -8,6 +8,8 @@ use nebula_core::CredentialId;
 use nebula_storage::credential::{
     CredentialSchemaAdmissionReason, CredentialStoreStartupError, SqliteCredentialPersistence,
 };
+use nebula_storage::sqlite::init_schema;
+use nebula_storage_port::StorageError;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/sqlite");
@@ -155,8 +157,102 @@ async fn insert_legacy_record(
     .expect("legacy rejection fixture must seed");
 }
 
+async fn insert_semantically_invalid_current_record(pool: &sqlx::SqlitePool) {
+    sqlx::query(
+        "INSERT INTO credentials (
+             id, name, owner_id, credential_key, state_kind, state_version,
+             data, version, material_epoch, created_at, updated_at, expires_at,
+             reauth_required, metadata, record_state, tombstoned_at,
+             refresh_retry_mode, refresh_retry_not_before, refresh_retry_phase,
+             refresh_retry_kind, refresh_retry_diagnostic_code
+         ) VALUES (
+             'not-a-credential-id', NULL, 'owner-catalog-only',
+             'provider.catalog-only', 'ready', 0, zeroblob(0), 1, 1,
+             1700000000000, 1700000000001, NULL, 0, '{}', 'live', NULL,
+             NULL, NULL, NULL, NULL, NULL
+         )",
+    )
+    .execute(pool)
+    .await
+    .expect("physical schema must permit the semantic-corruption fixture");
+}
+
 #[tokio::test]
-async fn fresh_file_and_memory_are_admitted_and_file_reopens_at_0040() {
+async fn catalog_setup_ignores_credential_semantics_but_ready_store_rejects_unchanged() {
+    let directory = tempfile::tempdir().expect("temporary directory must be created");
+    let path = directory.path().join("catalog-only.sqlite");
+    let pool = raw_pool(&path).await;
+    init_schema(&pool)
+        .await
+        .expect("general setup must install the canonical catalog");
+    insert_semantically_invalid_current_record(&pool).await;
+    let row_before: (String, String, i64) = sqlx::query_as(
+        "SELECT id, owner_id, material_epoch
+         FROM credentials
+         WHERE id = 'not-a-credential-id'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("semantic-corruption fixture must be readable");
+
+    init_schema(&pool)
+        .await
+        .expect("general setup must inspect catalog facts only");
+    let row_after: (String, String, i64) = sqlx::query_as(
+        "SELECT id, owner_id, material_epoch
+         FROM credentials
+         WHERE id = 'not-a-credential-id'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("general setup must leave the credential row untouched");
+    assert_eq!(row_after, row_before);
+    pool.close().await;
+
+    let error = reject_file_unchanged(&path).await;
+    assert!(matches!(
+        error,
+        CredentialStoreStartupError::UnsupportedSchemaVersion(unsupported)
+            if unsupported.reason() == &CredentialSchemaAdmissionReason::InvalidCredentialId
+    ));
+}
+
+#[tokio::test]
+async fn catalog_setup_rejects_pre_0040_prefix_without_crossing_credential_boundary() {
+    let directory = tempfile::tempdir().expect("temporary directory must be created");
+    let path = directory.path().join("pre-0040.sqlite");
+    let pool = raw_pool(&path).await;
+    MIGRATOR
+        .run_to(35, &pool)
+        .await
+        .expect("install the latest SQLite prefix before credential lifecycle migration");
+    insert_legacy_metadata(&pool, r#"{"duplicate":1,"duplicate":2}"#).await;
+    let row_before: String =
+        sqlx::query_scalar("SELECT metadata FROM credentials ORDER BY id LIMIT 1")
+            .fetch_one(&pool)
+            .await
+            .expect("legacy semantic-corruption fixture must be readable");
+
+    let error = init_schema(&pool)
+        .await
+        .expect_err("general catalog setup must not cross the credential-owned upgrade floor");
+    assert!(matches!(error, StorageError::Configuration(_)));
+    let head_after: i64 =
+        sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations WHERE success = 1")
+            .fetch_one(&pool)
+            .await
+            .expect("migration head must remain readable");
+    let row_after: String =
+        sqlx::query_scalar("SELECT metadata FROM credentials ORDER BY id LIMIT 1")
+            .fetch_one(&pool)
+            .await
+            .expect("rejected setup must preserve the legacy row");
+    assert_eq!(head_after, 35);
+    assert_eq!(row_after, row_before);
+}
+
+#[tokio::test]
+async fn fresh_file_and_memory_are_admitted_and_file_reopens_at_0041() {
     let directory = tempfile::tempdir().expect("temporary directory must be created");
     let path = directory.path().join("fresh.sqlite");
     let url = file_url(&path);
@@ -172,7 +268,7 @@ async fn fresh_file_and_memory_are_admitted_and_file_reopens_at_0040() {
             .fetch_one(&pool)
             .await
             .expect("migration ledger must be readable");
-    assert_eq!(head, 40);
+    assert_eq!(head, 41);
     pool.close().await;
 
     let second = SqliteCredentialPersistence::connect(&url)
@@ -205,7 +301,7 @@ async fn two_fresh_file_starters_serialize_readiness_without_partial_schema() {
             .fetch_one(&pool)
             .await
             .expect("the contended migration ledger must be readable");
-    assert_eq!(head, 40);
+    assert_eq!(head, 41);
     assert_eq!(
         successful,
         i64::try_from(MIGRATOR.iter().count()).expect("migration count must fit in i64"),

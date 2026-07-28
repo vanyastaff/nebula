@@ -1,6 +1,6 @@
 //! SQLite identity-zoo stores over the port-scoped schema.
 //!
-//! Each aggregate is a `port_*` table in `schema.sql`. Every tenant- or
+//! Each aggregate is a `port_*` table in the ordered SQLite migrations. Every tenant- or
 //! parent-scoped query carries its scope predicate (`WHERE org_id = ?`,
 //! `WHERE workspace_id = ? AND org_id = ?`, …) and active-row reads add
 //! `AND deleted_at IS NULL`, so a cross-scope `get` yields `Ok(None)` and

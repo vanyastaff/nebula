@@ -146,7 +146,7 @@ Run via `task <name>`. See `task --list` for the full catalog.
 
 | Command | Purpose |
 |---------|---------|
-| `task db:up && task db:migrate` | Local Postgres + sqlx migrations |
+| `task db:up && task db:migrate` | Local Postgres + admitted migration operator |
 | `task db:reset` | Drop + recreate DB (prompts) |
 | `task obs:up` / `obs:down` | Jaeger + OTEL collector |
 

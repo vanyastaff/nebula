@@ -240,7 +240,8 @@ async fn sqlite_replay_returns_false_and_writes_nothing() {
 /// inside the producer's transaction, the token DELETE rolls back with it: the
 /// token survives and no Resume is written.
 ///
-/// We force the INSERT to fail by dropping `port_control_queue` before the call.
+/// We force the INSERT to fail with a temporary aborting trigger on
+/// `port_control_queue`.
 /// Falsifiability: a non-atomic `commit`-the-delete-then-insert producer would
 /// burn the token and return `Err` with the token gone → `peek` returns `None`
 /// → the `is_some()` assertion fails → this is exactly the P1 bug.
@@ -259,11 +260,18 @@ async fn sqlite_failed_enqueue_rolls_back_the_burn() {
     )
     .await;
 
-    // Make the in-tx control INSERT fail.
-    sqlx::query("DROP TABLE port_control_queue")
-        .execute(&pool)
-        .await
-        .expect("drop must succeed");
+    // Make the in-tx control INSERT fail without corrupting the canonical
+    // migration-owned schema.
+    sqlx::query(
+        "CREATE TRIGGER fail_port_control_queue_insert
+         BEFORE INSERT ON port_control_queue
+         BEGIN
+             SELECT RAISE(ABORT, 'injected control enqueue failure');
+         END",
+    )
+    .execute(&pool)
+    .await
+    .expect("fault trigger must install");
 
     let result = producer
         .consume_and_enqueue_resume(&hash, &resume_msg("exe-rollback", "cb-rollback"))
@@ -283,10 +291,11 @@ async fn sqlite_failed_enqueue_rolls_back_the_burn() {
         "the token MUST survive a rolled-back enqueue — burning it here is the P1 bug"
     );
 
-    // Restore the table and prove the retry now succeeds + writes exactly one Resume.
-    init_schema(&pool)
+    // Clear the fault and prove the retry now succeeds + writes exactly one Resume.
+    sqlx::query("DROP TRIGGER fail_port_control_queue_insert")
+        .execute(&pool)
         .await
-        .expect("re-init must restore the table");
+        .expect("fault trigger must be removed");
     let won = producer
         .consume_and_enqueue_resume(&hash, &resume_msg("exe-rollback", "cb-rollback"))
         .await
