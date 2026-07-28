@@ -786,11 +786,9 @@ impl ServerRuntime {
         tokio::pin!(serve_future);
         let serve_result = tokio::select! {
             result = &mut serve_future => result,
-            signal_result = wait_for_shutdown_signal() => {
+            () = wait_for_shutdown_signal() => {
                 shutdown.cancel();
-                let serve_result = serve_future.await;
-                signal_result?;
-                serve_result
+                serve_future.await
             },
         };
         // Keep credential background ownership (notably the reclaim sweep)
@@ -822,20 +820,63 @@ where
     .await
 }
 
-async fn wait_for_shutdown_signal() -> Result<(), std::io::Error> {
+/// Resolve only once a real shutdown signal arrives.
+///
+/// This future is raced against the serve future, so it must never become
+/// ready for any reason other than an actual signal. Returning a `Result` here
+/// made a handler-registration failure ready on the first poll, which won the
+/// `select!` and shut the server down before it served a request; degrading is
+/// the only safe response, so there is no error to return.
+async fn wait_for_shutdown_signal() {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
 
-        let mut terminate = signal(SignalKind::terminate())?;
-        tokio::select! {
-            result = tokio::signal::ctrl_c() => result,
-            _ = terminate.recv() => Ok(()),
-        }
+        wait_for_unix_shutdown_signal(signal(SignalKind::terminate())).await;
     }
     #[cfg(not(unix))]
     {
-        tokio::signal::ctrl_c().await
+        wait_for_ctrl_c().await;
+    }
+}
+
+/// Await ctrl-c, degrading to a never-ready future if it cannot be registered.
+///
+/// A registration failure leaves no in-process shutdown source, so the caller
+/// must keep serving until the supervisor terminates it — never exit as though
+/// shutdown had been requested.
+async fn wait_for_ctrl_c() {
+    if let Err(error) = tokio::signal::ctrl_c().await {
+        tracing::warn!(
+            %error,
+            "ctrl-c handler unavailable; no in-process shutdown signal remains"
+        );
+        std::future::pending::<()>().await;
+    }
+}
+
+/// Unix shutdown wait, split out so the degraded path is directly testable.
+#[cfg(unix)]
+async fn wait_for_unix_shutdown_signal(
+    terminate: Result<tokio::signal::unix::Signal, std::io::Error>,
+) {
+    match terminate {
+        Ok(mut terminate) => {
+            tokio::select! {
+                () = wait_for_ctrl_c() => {},
+                _ = terminate.recv() => {},
+            }
+        },
+        Err(error) => {
+            // Restricted seccomp profiles, exhausted handler slots and minimal
+            // PID-1 runtimes all land here. Ctrl-c alone is a lesser shutdown
+            // story than SIGTERM, but it is not a reason to refuse to serve.
+            tracing::warn!(
+                %error,
+                "SIGTERM handler unavailable; shutting down on ctrl-c only"
+            );
+            wait_for_ctrl_c().await;
+        },
     }
 }
 
@@ -1258,6 +1299,32 @@ mod tests {
     use std::net::SocketAddr;
 
     use super::{ServerRunError, build_execution_stores, parse_bind_address, resolve_bind_address};
+
+    /// Red→green proof that a SIGTERM handler that cannot be registered does
+    /// not read as "shutdown requested".
+    ///
+    /// `run_transport` races this future against the serve future. When the
+    /// wait propagated the registration error it was ready on its first poll,
+    /// so the `select!` always took the signal arm and the process exited at
+    /// boot having served nothing. The degraded path must stay pending.
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn unregistrable_sigterm_never_reports_shutdown() {
+        use std::time::Duration;
+
+        let registration = Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        let outcome = tokio::time::timeout(
+            Duration::from_hours(1),
+            super::wait_for_unix_shutdown_signal(registration),
+        )
+        .await;
+
+        assert!(
+            outcome.is_err(),
+            "a failed SIGTERM registration must degrade to ctrl-c and stay pending, \
+             not resolve and cancel the serve future at startup"
+        );
+    }
 
     /// Red→green proof that the SQLite backend wires `trigger_dedup_inbox: Some(...)`.
     ///

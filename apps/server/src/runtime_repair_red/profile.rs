@@ -396,6 +396,9 @@ enum ComponentExit {
     Http(Result<(), std::io::Error>),
     Worker,
     Observer(Result<(), EvidenceIntegrityError>),
+    /// Shutdown arrived before the supervisor opened the start gate, so this
+    /// component ended without ever entering its run phase.
+    NeverStarted,
 }
 
 struct ProfileSupervisorInputs<WorkerFuture> {
@@ -434,7 +437,9 @@ where
     let mut http_start = start.subscribe();
     components.spawn(async move {
         let _ = http_signals.send(ComponentSignal::Staged(Component::Http));
-        wait_for_start(&mut http_start).await;
+        if wait_for_start(&mut http_start, &http_shutdown).await == StartGate::Aborted {
+            return ComponentExit::NeverStarted;
+        }
         let _ = http_signals.send(ComponentSignal::Started(Component::Http));
         ComponentExit::Http(
             compose::serve_prebound(router, listener, http_shutdown.cancelled_owned()).await,
@@ -442,10 +447,13 @@ where
     });
 
     let worker_signals = component_signals.clone();
+    let worker_shutdown = shutdown.clone();
     let mut worker_start = start.subscribe();
     components.spawn(async move {
         let _ = worker_signals.send(ComponentSignal::Staged(Component::Worker));
-        wait_for_start(&mut worker_start).await;
+        if wait_for_start(&mut worker_start, &worker_shutdown).await == StartGate::Aborted {
+            return ComponentExit::NeverStarted;
+        }
         let _ = worker_signals.send(ComponentSignal::Started(Component::Worker));
         worker_future.await;
         ComponentExit::Worker
@@ -456,7 +464,9 @@ where
     let mut observer_start = start.subscribe();
     components.spawn(async move {
         let _ = observer_signals.send(ComponentSignal::Staged(Component::Observer));
-        wait_for_start(&mut observer_start).await;
+        if wait_for_start(&mut observer_start, &observer_shutdown).await == StartGate::Aborted {
+            return ComponentExit::NeverStarted;
+        }
         let _ = observer_signals.send(ComponentSignal::Started(Component::Observer));
         ComponentExit::Observer(
             observe_execution_lifecycle(execution_events, observations, observer_shutdown).await,
@@ -536,10 +546,40 @@ async fn observe_execution_lifecycle(
     }
 }
 
-async fn wait_for_start(start: &mut watch::Receiver<bool>) {
-    while !*start.borrow_and_update() {
-        if start.changed().await.is_err() {
-            return;
+/// Outcome of waiting on the supervisor's start gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartGate {
+    /// The supervisor released the components into their run phase.
+    Released,
+    /// Shutdown arrived first; the component must not enter its run phase.
+    Aborted,
+}
+
+/// Wait for the supervisor to open the start gate, or for shutdown.
+///
+/// Observing `shutdown` is what makes the staged-failure path finite. The
+/// supervisor cancels and then drains, but it only opens the gate *after* that
+/// drain — so a wait that watched the gate alone would park forever holding
+/// the drain open, and the sender it is waiting on is a live local in the
+/// supervisor's own frame, so it never closes either.
+async fn wait_for_start(
+    start: &mut watch::Receiver<bool>,
+    shutdown: &CancellationToken,
+) -> StartGate {
+    loop {
+        if *start.borrow_and_update() {
+            return StartGate::Released;
+        }
+        if shutdown.is_cancelled() {
+            return StartGate::Aborted;
+        }
+        tokio::select! {
+            () = shutdown.cancelled() => return StartGate::Aborted,
+            changed = start.changed() => {
+                if changed.is_err() {
+                    return StartGate::Aborted;
+                }
+            },
         }
     }
 }
@@ -599,10 +639,16 @@ fn classify_component_exit(
             Some(ProfileErrorKind::ObservationComponent(source).into())
         },
         Ok(
-            ComponentExit::Http(Ok(())) | ComponentExit::Worker | ComponentExit::Observer(Ok(())),
+            ComponentExit::Http(Ok(()))
+            | ComponentExit::Worker
+            | ComponentExit::Observer(Ok(()))
+            | ComponentExit::NeverStarted,
         ) if !is_shutting_down => Some(ProfileErrorKind::ComponentExited.into()),
         Ok(
-            ComponentExit::Http(Ok(())) | ComponentExit::Worker | ComponentExit::Observer(Ok(())),
+            ComponentExit::Http(Ok(()))
+            | ComponentExit::Worker
+            | ComponentExit::Observer(Ok(()))
+            | ComponentExit::NeverStarted,
         ) => None,
     }
 }
@@ -762,6 +808,36 @@ mod tests {
     use nebula_core::{NodeKey, id::ExecutionId};
 
     use super::*;
+
+    /// Red→green proof that the staged-failure path can actually drain.
+    ///
+    /// On that path the supervisor cancels, then drains, and only opens the
+    /// start gate afterwards — so a component parked on the gate alone would
+    /// hold the drain open forever. The gate's sender is a live local in the
+    /// supervisor's frame, so it never closes; this test keeps `start` alive
+    /// to reproduce exactly that, and the wait must still return.
+    #[tokio::test]
+    async fn start_gate_releases_on_shutdown_so_a_staged_failure_can_drain() {
+        let (start, mut subscriber) = watch::channel(false);
+        let shutdown = CancellationToken::new();
+        shutdown.cancel();
+
+        let gate = tokio::time::timeout(
+            Duration::from_secs(5),
+            wait_for_start(&mut subscriber, &shutdown),
+        )
+        .await
+        .expect("the start gate must not park once shutdown is requested");
+
+        assert_eq!(
+            gate,
+            StartGate::Aborted,
+            "a component must abort rather than enter its run phase after shutdown"
+        );
+        // Held to the end on purpose: the supervisor owns the sender for its
+        // whole frame, so `changed()` never errors and cannot free the wait.
+        drop(start);
+    }
 
     #[tokio::test]
     async fn shutdown_materializes_pending_eventbus_lag_before_success() {

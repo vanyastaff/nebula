@@ -202,6 +202,13 @@ pub(crate) async fn acquire_sqlite_memory_setup_guard()
     Ok(SqliteMemorySetupPermit { _permit: permit })
 }
 
+/// Suffix of the dedicated mutual-exclusion file for file-backed setup.
+///
+/// Deliberately not one of SQLite's own sidecar suffixes so that the sidecar
+/// probe below cannot observe this file.
+#[cfg(feature = "sqlite")]
+const SQLITE_SETUP_LOCK_SUFFIX: &str = "-setup-lock";
+
 #[cfg(feature = "sqlite")]
 pub(crate) async fn acquire_sqlite_file_setup_guard(
     path: std::path::PathBuf,
@@ -210,21 +217,33 @@ pub(crate) async fn acquire_sqlite_file_setup_guard(
     use std::time::Duration;
 
     tokio::task::spawn_blocking(move || {
+        let base = path.as_os_str().to_string_lossy().into_owned();
+        // Lock a dedicated sidecar, never the database file itself. POSIX
+        // removes *every* `fcntl` record lock a process holds on an inode as
+        // soon as that process closes *any* descriptor for it, and SQLite's
+        // unix VFS locks with `fcntl`. A second descriptor on the database
+        // would therefore silently strip the locks held by live pooled
+        // connections in this same process the moment this guard dropped —
+        // one of SQLite's documented corruption paths. Opening a different
+        // inode keeps the two lock domains disjoint.
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
-            .open(&path)
+            .open(format!("{base}{SQLITE_SETUP_LOCK_SUFFIX}"))
             .map_err(|_| CatalogSetupError::Unavailable)?;
         for _ in 0..200 {
             match file.try_lock() {
                 Ok(()) => {
-                    let initial_len = file
-                        .metadata()
-                        .map_err(|_| CatalogSetupError::Unavailable)?
-                        .len();
-                    let base = path.as_os_str().to_string_lossy();
+                    // Measure the database under the lock without opening it.
+                    // A missing database reads as empty, exactly as the old
+                    // `create(true)` path reported for a freshly created file.
+                    let initial_len = match std::fs::metadata(&path) {
+                        Ok(metadata) => metadata.len(),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+                        Err(_) => return Err(CatalogSetupError::Unavailable),
+                    };
                     let has_sidecar = ["-journal", "-wal", "-shm"]
                         .iter()
                         .any(|suffix| std::path::Path::new(&format!("{base}{suffix}")).exists());
@@ -517,5 +536,63 @@ mod tests {
         assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 41);
         #[cfg(feature = "postgres")]
         assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 41);
+    }
+
+    /// The setup guard must never hold a descriptor on the database file.
+    ///
+    /// POSIX drops every `fcntl` record lock a process holds on an inode when
+    /// that process closes any descriptor for it, and SQLite locks with
+    /// `fcntl` — so a guard descriptor on the database would strip the locks
+    /// of live pooled connections in this process when it dropped. Observing
+    /// that the database is never even created proves the guard opened a
+    /// different inode.
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn file_setup_guard_never_opens_the_database_file() {
+        let directory = tempfile::tempdir().expect("temp dir must be creatable");
+        let database = directory.path().join("nebula.db");
+
+        let guard = super::acquire_sqlite_file_setup_guard(database.clone())
+            .await
+            .expect("guard must be acquirable for a fresh database path");
+
+        assert!(
+            !database.exists(),
+            "the guard must not materialize the database file; a descriptor on it \
+             would release this process's SQLite locks when the guard dropped"
+        );
+        assert_eq!(
+            guard.initial_file_state(),
+            (0, false),
+            "a missing database must still read as empty with no sidecar"
+        );
+        assert!(
+            directory
+                .path()
+                .join(format!("nebula.db{}", super::SQLITE_SETUP_LOCK_SUFFIX))
+                .exists(),
+            "the guard must take its lock on a dedicated sidecar inode"
+        );
+    }
+
+    /// The lock file is not one of SQLite's sidecars, so it must not be
+    /// mistaken for a hot journal by the sidecar probe.
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn setup_lock_file_is_not_seen_as_a_sqlite_sidecar() {
+        let directory = tempfile::tempdir().expect("temp dir must be creatable");
+        let database = directory.path().join("nebula.db");
+        std::fs::write(&database, b"not empty").expect("database file must be writable");
+
+        let guard = super::acquire_sqlite_file_setup_guard(database.clone())
+            .await
+            .expect("guard must be acquirable");
+
+        let (initial_len, has_sidecar) = guard.initial_file_state();
+        assert_eq!(initial_len, 9, "the database's own length must be reported");
+        assert!(
+            !has_sidecar,
+            "the guard's own lock file must not register as a SQLite sidecar"
+        );
     }
 }
