@@ -1,6 +1,8 @@
 //! Source contract for the admitted PostgreSQL migration operator.
 
-use std::{fs, path::Path, process::Command};
+#[cfg(feature = "postgres")]
+use std::process::Command;
+use std::{fs, path::Path};
 
 fn task_block(taskfile: &str, task_name: &str) -> String {
     let header = format!("  {task_name}:");

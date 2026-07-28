@@ -688,7 +688,11 @@ impl Drop for RuntimeRepairProfileHandle {
 }
 
 /// Secret-free launch or lifecycle error for the RED profile.
-pub struct RuntimeRepairProfileError(ProfileErrorKind);
+///
+/// The kind is boxed so every `Result<_, RuntimeRepairProfileError>` on this
+/// module's hot launch path stays pointer-sized; the widest source variant is
+/// well over a hundred bytes.
+pub struct RuntimeRepairProfileError(Box<ProfileErrorKind>);
 
 impl std::fmt::Debug for RuntimeRepairProfileError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -713,7 +717,7 @@ impl std::error::Error for RuntimeRepairProfileError {
 
 impl From<ProfileErrorKind> for RuntimeRepairProfileError {
     fn from(error: ProfileErrorKind) -> Self {
-        Self(error)
+        Self(Box::new(error))
     }
 }
 
