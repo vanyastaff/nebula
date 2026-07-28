@@ -4,10 +4,6 @@
 **Purpose:** Leaf crypto primitives — AES-256-GCM authenticated encryption (mandatory AAD) + Argon2id key derivation, with the `EncryptedData` envelope and `CryptoError` taxonomy.
 **Layer:** Cross-cutting — depends only on `nebula-error` + the RustCrypto stack (root AGENTS.md -> Layered Dependency Map); importable from any layer.
 
-## Commands
-- `cargo check -p nebula-crypto`
-- `cargo nextest run -p nebula-crypto`  ·  doctests: `cargo test -p nebula-crypto --doc`
-
 ## Key files
 - `src/lib.rs` — the entire crate (single file): `EncryptionKey`, `EncryptedData`, encrypt/decrypt fns, `CryptoError`, private `fresh_nonce`.
 
@@ -17,8 +13,6 @@
 - `encrypt_with_key_id` rejects an empty `key_id` (`CryptoError::InvalidKeyId`) so rotation lookup can pick the decryption key — keep that invariant.
 - `CryptoError` `code` strings keep the `CREDENTIAL:CRYPTO_*` prefix (stable across the credential stack) — do not rename them on a move.
 - Keep this a leaf: no PKCE/OAuth-state helpers or `serde_base64` here — those stay in `nebula-credential` (travel with the OAuth protocol).
-- Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
-- Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also
 - `README.md` — full design · ADR-0088 (extracted from `nebula-credential`; design records are maintained in the maintainers' private design vault, not in this public repository)

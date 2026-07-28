@@ -5,7 +5,6 @@
 **Layer:** Business — depends only downward (`nebula-storage-port`, `nebula-core`; no credential, sqlx, adapter, or upward dependencies).
 
 ## Commands
-- `cargo check -p nebula-tenancy`
 - `cargo nextest run -p nebula-tenancy`  ·  doctests: disabled (`[lib] doctest = false` — none to run)
 
 ## Key files
@@ -19,8 +18,6 @@
 - **Fail-closed projection.** Absent workspace binding ⇒ `TenancyError::MissingWorkspace`; never silently widen to org-only. Credential command authority is a separate injected policy owned by `nebula-credential` and composed in `apps/server`; tenancy has no credential admin bypass.
 - This crate owns scoping **policy** only — it must NOT own the `Scope` type (that is Core-tier `nebula-storage-port` plain data) and must NOT add a backend/sqlx dependency.
 - Credential persistence is already owner-bound by `CredentialSelector`; do not reintroduce a metadata-keyed credential decorator here. Audit/encryption/cache/backend composition remains in `nebula-storage`.
-- Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
-- Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also
 - `README.md` — full design + threat-model table (spec §6.1) · ADR-0072 (storage port/adapter/tenancy split) · ADR-0029 (credential scope-layer fail-closed audit)

@@ -5,7 +5,6 @@
 **Layer:** Core — depends only downward (root AGENTS.md -> Layered Dependency Map). Deps: `nebula-core`, async-trait, serde, chrono, uuid. **No sqlx.**
 
 ## Commands
-- `cargo check -p nebula-storage-port`
 - `cargo nextest run -p nebula-storage-port`  ·  doctests: none (`doctest = false` in Cargo.toml `[lib]`)
 
 ## Key files
@@ -22,7 +21,6 @@
 - Credential persistence exposes only explicit `create`, version-fenced `replace`, and version-fenced `tombstone`; never restore generic overwrite or physical delete. Its refresh-retry gate and material epoch are structural aggregate state (never metadata or claim TTL). The backend authors epochs: create/migration starts at `CredentialMaterialEpoch::MIN`; `CredentialMaterialTransition::Preserve { refresh_retry }` retains the epoch and applies the explicit gate transition; `Advance` increments the epoch and unconditionally clears the gate; overflow fails closed. Admission is evaluated against the backend clock.
 - Every repository trait stays `#[async_trait]` + `dyn`-compatible (consumed as `Arc<dyn …>`); keep `TransitionBatch` fields private and builder-only so a transition can't skip scope/CAS/fencing.
 - `PlanFlavorCatalog` loads only an exact typed pair; `PlanFlavorCatalogWriter` inserts only; `PlanFlavorCatalogAdmin` owns drain/delete only. Never merge installer and destructive lifecycle authority, and never add public retain/release/reference mutation: execution-owned references must compose inside their owning backend transaction.
-- Library code uses typed `thiserror`/`StorageError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also
 - `README.md` — full design · ADR-0072 (port/adapter/tenancy contract) · ADR-0041 (RefreshClaimStore shape)

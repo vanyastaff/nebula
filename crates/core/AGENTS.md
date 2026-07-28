@@ -5,8 +5,6 @@
 **Layer:** Cross-cutting / Core (bottom of the stack) — nothing here depends upward; changing an identifier or key cascades workspace-wide.
 
 ## Commands
-- `cargo check -p nebula-core`
-- `cargo nextest run -p nebula-core`  ·  doctests: `cargo test -p nebula-core --doc`
 - `task bench:crate CRATE=nebula-core` — runs the `id_parse_serialize` criterion bench (`harness = false`)
 
 ## Key files
@@ -30,8 +28,6 @@
 - `SecretString` and credential-related key types must keep `Debug` redacted ([L2-§12.5]) — no secret material in logs or error strings. Use `debug_redacted`/`debug_typed` from `guard`.
 - ID types use `domain-key` (prefixed ULIDs) — never add a direct `uuid` dependency or invent a per-type newtype.
 - `CredentialId` is defined in this crate (`src/id/types.rs`); `CredentialEvent` vocabulary lives in `nebula-credential`. `AuthScheme`/`AuthPattern` are canonical *here* and re-exported there.
-- Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
-- Library code uses typed `thiserror`/`CoreError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also
 - `README.md` — full design, identifier conventions, prelude usage

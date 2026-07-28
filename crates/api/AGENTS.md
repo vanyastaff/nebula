@@ -16,8 +16,6 @@
 | Check if API compiles | `cargo check -p nebula-api` |
 
 ## Commands
-- `cargo check -p nebula-api`
-- `cargo nextest run -p nebula-api`  ·  doctests: `cargo test -p nebula-api --doc`
 - OpenAPI/spec guards: `cargo nextest run -p nebula-api --test openapi_spec` (regenerates spec from the router)
 - Feature flags: `postgres` (PG idempotency + `PgAuthBackend`), `test-util` (`ApiConfig::for_test`, bypasses JWT gate — never in prod)
 
@@ -40,8 +38,6 @@
 - All errors are RFC 9457 `application/problem+json` via a typed `ApiError` variant — never a new ad-hoc 500 for business failures.
 - §4.5 operational honesty: an unwired capability returns honest 501/503, never a faked success. Drift between router and OpenAPI spec is a compile error (`OpenApiRouter::routes(routes!(...))`).
 - Cancel/terminate signals share the durable `control_queue_repo` outbox (§12.2) — no second in-memory control channel.
-- Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
-- Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code.
 
 ## Invariants
 

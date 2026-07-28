@@ -16,7 +16,6 @@
 
 ## Commands
 - `cargo check -p nebula-resilience`  ·  all features: `cargo check -p nebula-resilience --all-features`
-- `cargo nextest run -p nebula-resilience`  ·  doctests: `cargo test -p nebula-resilience --doc`
 - loom model-check: `RUSTFLAGS="--cfg loom" cargo test -p nebula-resilience --features loom --lib loom`
 - benches: `cargo bench -p nebula-resilience` (14 criterion benches, e.g. `compose`, `retry`, `hedge`)
 - features: `serde` (default), `full` (= serde), `loom`
@@ -38,8 +37,6 @@
 - NOT a durable control plane (in-process only — durable cancel/dispatch lives in `execution_control_queue`) and NOT a metrics exporter (events feed `nebula-metrics` via sinks, not the reverse).
 - `CallError<E>` keeps the caller's `E` — no forced mapping, no `Box<dyn Error>` erasure; keep variants additive (`#[non_exhaustive]`).
 - `#![deny(unsafe_code)]`; loom-gated atomics behind `cfg(loom)` for model checks only.
-- Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
-- Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also
 - `README.md` — full design · crate-local guides in `docs/` (`composition.md`, `observability.md`, `gate.md`, `api-reference.md`, `architecture.md`)

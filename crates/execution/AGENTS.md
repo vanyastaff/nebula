@@ -5,8 +5,6 @@
 **Layer:** Core — depends only downward (`nebula-core`, `nebula-error`, `nebula-workflow`); no engine/storage/api/runtime imports.
 
 ## Commands
-- `cargo check -p nebula-execution`
-- `cargo nextest run -p nebula-execution`  ·  doctests: `cargo test -p nebula-execution --doc`
 - Snapshot tests use `insta` (state/plan serialization); review with `cargo insta review` after intentional shape changes.
 
 ## Key files
@@ -43,8 +41,6 @@
   confirmed; outcome uncertainty permits only ledger reads and exact frozen-evidence recommit.
   The control-queue / outbox also live in storage, not here.
 - 5 `panic!` sites in `transition`/`status` are state-machine invariant guards (flagged debt); do not add new ones — use typed `ExecutionError`.
-- Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
-- Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also
 - `README.md` — full design, durability matrix, lease-enforcement notes.

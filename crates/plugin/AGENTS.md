@@ -5,8 +5,6 @@
 **Layer:** Business — depends only downward (root AGENTS.md -> Layered Dependency Map).
 
 ## Commands
-- `cargo check -p nebula-plugin`
-- `cargo nextest run -p nebula-plugin`  ·  doctests: `cargo test -p nebula-plugin --doc`
 - Derive macro lives in the sibling crate `crates/plugin/macros/` (`nebula-plugin-macros`) — re-exported as `#[derive(Plugin)]`.
 
 ## Key files
@@ -31,8 +29,6 @@
   Artifact digest and runtime contract version are trusted composition-root inputs.
 - Flavor fingerprint domains are persisted protocol versions: never change v1 field order, structural semver tags, normalization, or framing in place. Introduce a new domain version and golden vectors.
 - Cross-plugin type references come via `Cargo.toml [dependencies]` — the Rust compiler enforces the dependency closure at link time (in-process model).
-- Direct downward domain/port dependencies follow the root layer map; durable cross-crate commands/facts use persisted state or explicit outbox/inbox ports; nebula-eventbus carries only lossy observation and wake hints.
-- Library code uses typed `thiserror`/`NebulaError`; no panicking unwrap/expect/panic in lib code.
 
 ## See also
 - `README.md` — full design · canon §3.5/§7.1/§13.1 · ADR-0018, ADR-0027 (in the ADR history) · `docs/INTEGRATION_MODEL.md` §7.
