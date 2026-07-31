@@ -64,8 +64,30 @@ impl StartAcceptanceStore for InMemoryStartAcceptanceStore {
             ));
         }
 
-        // Insert the execution row first: an id collision must leave the key
-        // unreserved, so a corrected retry can still take it.
+        // Validate *both* collisions before mutating anything.
+        //
+        // The mutex is not a transaction: there is no rollback, so any write
+        // made before a later check fails is permanent. Inserting the
+        // execution row first and only then rejecting a duplicate command id
+        // left the execution behind while reporting an error — the SQL
+        // backends roll the whole transaction back, so the in-memory adapter
+        // would have been the one backend where a failed acceptance still
+        // created an execution.
+        if state.rows.contains_key(start.execution_id) {
+            return Err(StorageError::Duplicate {
+                entity: "execution",
+                detail: format!("execution {} already exists", start.execution_id),
+            });
+        }
+        if state.queue.contains_key(&start.command.id) {
+            return Err(StorageError::Duplicate {
+                entity: "control_queue",
+                detail: format!("control command id {:?} already queued", start.command.id),
+            });
+        }
+
+        // Past this point every remaining step is infallible, so the three
+        // writes land together or not at all.
         insert_created_row(
             &mut state,
             start.scope,
@@ -73,16 +95,6 @@ impl StartAcceptanceStore for InMemoryStartAcceptanceStore {
             start.execution.workflow_id,
             start.execution.initial_state,
         )?;
-
-        // The SQL backends hit the control-queue primary key and roll the whole
-        // transaction back on a duplicate command id. Reject it here too rather
-        // than overwriting the queued row and still reporting Accepted.
-        if state.queue.contains_key(&start.command.id) {
-            return Err(StorageError::Duplicate {
-                entity: "control_queue",
-                detail: format!("control command id {:?} already queued", start.command.id),
-            });
-        }
         state.queue.insert(
             start.command.id,
             QueuedMsg {

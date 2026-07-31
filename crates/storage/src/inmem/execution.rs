@@ -32,9 +32,9 @@ pub(super) struct Row {
     pub(super) state: serde_json::Value,
     /// Current lease holder, if any (alive only until `lease_expires_at`).
     pub(super) lease_holder: Option<String>,
-    /// Deadline in the *caller's* clock era, not this process's monotonic
-    /// one: a lease is only meaningful against the clock its holder reasons
-    /// in (see `ExecutionStore::acquire_lease`).
+    /// Deadline in this adapter's clock era (see
+    /// [`InMemoryExecutionStore::with_clock`]), not this process's monotonic
+    /// one.
     pub(super) lease_expires_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Monotone fencing generation. Bumped every time the lease is
     /// (re)acquired by a different/expired holder, so a superseded
@@ -121,16 +121,55 @@ pub(super) struct StartKeyReservation {
 pub(super) type SharedState = Arc<Mutex<State>>;
 
 /// In-memory execution aggregate.
-#[derive(Debug, Default, Clone)]
+#[derive(Clone)]
 pub struct InMemoryExecutionStore {
     pub(super) inner: SharedState,
+    /// This adapter's clock, and the **only** place a test clock enters the
+    /// lease path.
+    ///
+    /// A lease is a claim about liveness, so whichever clock decides
+    /// live-vs-expired must be one every holder agrees on. The SQL backends
+    /// therefore decide in the database and accept no caller reading. This
+    /// adapter has no such shared authority to protect — it serves exactly one
+    /// process — so it is the correct place to hand time-travelling tests
+    /// (`tokio::time::pause`, injected clocks) a lever, without letting a
+    /// production worker's skewed clock fence out a healthy peer.
+    clock: Arc<dyn nebula_core::accessor::Clock>,
+}
+
+impl std::fmt::Debug for InMemoryExecutionStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InMemoryExecutionStore")
+            .field("inner", &self.inner)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for InMemoryExecutionStore {
+    fn default() -> Self {
+        Self {
+            inner: SharedState::default(),
+            clock: Arc::new(nebula_core::accessor::SystemClock),
+        }
+    }
 }
 
 impl InMemoryExecutionStore {
-    /// Create an empty store.
+    /// Create an empty store driven by the system clock.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Create an empty store driven by `clock`.
+    ///
+    /// For tests that need to make a lease expire without sleeping.
+    #[must_use]
+    pub fn with_clock(clock: Arc<dyn nebula_core::accessor::Clock>) -> Self {
+        Self {
+            inner: SharedState::default(),
+            clock,
+        }
     }
 
     /// Borrow the shared core so sibling stores (control queue, journal
@@ -360,9 +399,9 @@ impl ExecutionStore for InMemoryExecutionStore {
         id: &str,
         holder: &str,
         ttl: Duration,
-        now: chrono::DateTime<chrono::Utc>,
     ) -> Result<Option<FencingToken>, StorageError> {
         let ttl = normalized_ttl(ttl);
+        let now = self.clock.now();
         let mut st = self.inner.lock();
         let Some(row) = st.rows.get_mut(id) else {
             return Err(StorageError::not_found("execution", id));
@@ -412,9 +451,9 @@ impl ExecutionStore for InMemoryExecutionStore {
         id: &str,
         token: FencingToken,
         ttl: Duration,
-        now: chrono::DateTime<chrono::Utc>,
     ) -> Result<bool, StorageError> {
         let ttl = normalized_ttl(ttl);
+        let now = self.clock.now();
         let mut st = self.inner.lock();
         let Some(row) = st.rows.get_mut(id) else {
             return Ok(false);

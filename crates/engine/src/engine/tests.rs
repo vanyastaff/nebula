@@ -375,7 +375,7 @@ impl TestStores {
         let scope = crate::store_seam::single_tenant_scope();
         Ok(self
             .execution
-            .acquire_lease(&scope, &id.to_string(), holder, ttl, Utc::now())
+            .acquire_lease(&scope, &id.to_string(), holder, ttl)
             .await?
             .is_some())
     }
@@ -2075,9 +2075,8 @@ impl ExecutionStore for FailAtCommitN {
         id: &str,
         holder: &str,
         ttl: Duration,
-        now: DateTime<Utc>,
     ) -> Result<Option<nebula_storage_port::FencingToken>, StorageError> {
-        self.inner.acquire_lease(scope, id, holder, ttl, now).await
+        self.inner.acquire_lease(scope, id, holder, ttl).await
     }
 
     async fn renew_lease(
@@ -2086,9 +2085,8 @@ impl ExecutionStore for FailAtCommitN {
         id: &str,
         token: nebula_storage_port::FencingToken,
         ttl: Duration,
-        now: DateTime<Utc>,
     ) -> Result<bool, StorageError> {
-        self.inner.renew_lease(scope, id, token, ttl, now).await
+        self.inner.renew_lease(scope, id, token, ttl).await
     }
 
     async fn release_lease(
@@ -4195,9 +4193,8 @@ impl ExecutionStore for ExternalMutateBeforeN {
         id: &str,
         holder: &str,
         ttl: Duration,
-        now: DateTime<Utc>,
     ) -> Result<Option<nebula_storage_port::FencingToken>, StorageError> {
-        self.inner.acquire_lease(scope, id, holder, ttl, now).await
+        self.inner.acquire_lease(scope, id, holder, ttl).await
     }
 
     async fn renew_lease(
@@ -4206,9 +4203,8 @@ impl ExecutionStore for ExternalMutateBeforeN {
         id: &str,
         token: nebula_storage_port::FencingToken,
         ttl: Duration,
-        now: DateTime<Utc>,
     ) -> Result<bool, StorageError> {
-        self.inner.renew_lease(scope, id, token, ttl, now).await
+        self.inner.renew_lease(scope, id, token, ttl).await
     }
 
     async fn release_lease(

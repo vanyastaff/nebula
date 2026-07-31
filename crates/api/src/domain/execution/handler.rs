@@ -356,7 +356,7 @@ pub async fn start_execution(
     // caller's choice, not a defect.
     // Both the durable identity *and* the acceptance timestamp come from
     // whichever request actually created the execution — see the replay arm.
-    let (accepted_execution_id, accepted_at) = if let Some(start_key) = start_key(&headers)? {
+    let accepted_execution_id = if let Some(start_key) = start_key(&headers)? {
         let fingerprint = start_fingerprint(workflow_id_parsed, version.number, &payload);
         match state
             .accept_keyed_start_scoped(
@@ -376,14 +376,15 @@ pub async fn start_execution(
                     node_count = validated.definition().nodes.len(),
                     "execution: keyed start accepted (reservation + aggregate + Start committed)"
                 );
-                (execution_id, created_at)
+                execution_id
             },
             StartAcceptance::Replayed { execution_id } => {
-                // The original acceptance receipt — which means the original
-                // timestamp too, not this retry's. Reporting `created_at` from
-                // the state built above would date the execution to whenever
-                // the retry happened, contradicting the receipt it claims to
-                // be and skewing any latency measured from it.
+                // The *original* receipt, which means every field comes from
+                // the persisted execution — not just its id. Building the rest
+                // from the state constructed above would report `created` and
+                // this retry's timestamp for an execution that may already be
+                // running or finished: a receipt that describes a request that
+                // was never accepted.
                 let replayed = ExecutionId::parse(&execution_id).map_err(|e| {
                     ApiError::Internal(format!("replayed execution id is not parseable: {e}"))
                 })?;
@@ -392,18 +393,22 @@ pub async fn start_execution(
                     .await?
                     .ok_or_else(|| {
                         // The reservation names an execution that is not there:
-                        // report it rather than answer with a fabricated time.
+                        // report it rather than answer with a fabricated state.
                         ApiError::Internal(
                             "start key reserved for an execution that no longer exists".to_owned(),
                         )
                     })?;
-                let original_created_at =
-                    extract_timestamp(&persisted, "created_at").unwrap_or(created_at);
                 tracing::info!(
                     execution_id = %execution_id,
                     "execution: keyed start replayed; returning the original receipt"
                 );
-                (execution_id, original_created_at)
+                return Ok((
+                    StatusCode::ACCEPTED,
+                    Json(ExecutionResponse {
+                        workflow_id,
+                        ..execution_receipt(execution_id, &persisted)
+                    }),
+                ));
             },
             // Deliberately no execution id in the error: the caller proved
             // knowledge of a key, not of the execution behind it.
@@ -414,7 +419,7 @@ pub async fn start_execution(
             .create_execution_scoped(&scope, execution_id, workflow_id_parsed, state_json)
             .await?;
         enqueue_start_scoped(&state, &scope, execution_id, &validated).await?;
-        (execution_id.to_string(), created_at)
+        execution_id.to_string()
     };
 
     // Build response. `started_at` is omitted on a Created execution —
@@ -435,7 +440,7 @@ pub async fn start_execution(
         id: accepted_execution_id,
         workflow_id,
         status: exec_state.status.to_string(),
-        started_at: accepted_at,
+        started_at: created_at,
         finished_at: None,
         input: payload.input,
         output: None,
@@ -723,44 +728,33 @@ pub async fn cancel_execution(
     Ok(Json(cancellation_response(id, &execution_state)))
 }
 
-/// Build the cancellation response from the execution state as persisted.
+/// Build a response describing an execution exactly as it is persisted.
 ///
-/// Shared by the accepted and the already-cancelling paths so a duplicate
-/// request reports exactly what the first one did — an idempotent request that
-/// answered differently would be indistinguishable from a lost one.
-fn cancellation_response(id: String, execution_state: &serde_json::Value) -> ExecutionResponse {
+/// Used wherever the answer must describe durable state rather than something
+/// the handler just constructed — a replayed start receipt and a cancellation
+/// acknowledgement both have to report what is stored, not what this request
+/// would have created.
+fn execution_receipt(id: String, execution_state: &serde_json::Value) -> ExecutionResponse {
     let workflow_id = execution_state
         .get("workflow_id")
         .and_then(|value| value.as_str())
         .unwrap_or_default()
         .to_owned();
-    // Default to `cancelling`, never `cancelled`: the API records the request,
-    // and runtime control records the outcome.
     let status = execution_state
         .get("status")
         .and_then(|value| value.as_str())
-        .unwrap_or("cancelling")
+        .unwrap_or_default()
         .to_owned();
-
-    // Canonical `ExecutionState` exposes `started_at` (engine run start,
-    // `None` until the engine transitions to `Running`) and `created_at`
-    // (always set at construction). Fall back to `created_at` so the API
-    // response retains a meaningful timestamp for executions that have
-    // not yet been dispatched (#327).
+    // `started_at` is the engine run start and stays `None` until the engine
+    // reaches `Running`; `created_at` always exists, so it is the honest
+    // fallback for an execution that has not been dispatched yet.
     let started_at = extract_timestamp(execution_state, "started_at")
         .or_else(|| extract_timestamp(execution_state, "created_at"))
         .unwrap_or(0);
     // Canonical field is `completed_at`; legacy rows used `finished_at`. Both
-    // stay absent until the engine has actually finished — a cancellation
-    // *request* has no completion time.
+    // stay absent until the engine has actually finished.
     let finished_at = extract_timestamp(execution_state, "completed_at")
         .or_else(|| extract_timestamp(execution_state, "finished_at"));
-
-    // Canonical field is `workflow_input`; legacy rows used `input`.
-    let input = execution_state
-        .get("workflow_input")
-        .or_else(|| execution_state.get("input"))
-        .cloned();
 
     ExecutionResponse {
         id,
@@ -768,9 +762,28 @@ fn cancellation_response(id: String, execution_state: &serde_json::Value) -> Exe
         status,
         started_at,
         finished_at,
-        input,
+        // Canonical field is `workflow_input`; legacy rows used `input`.
+        input: execution_state
+            .get("workflow_input")
+            .or_else(|| execution_state.get("input"))
+            .cloned(),
         output: execution_state.get("output").cloned(),
     }
+}
+
+/// Build the cancellation response from the execution state as persisted.
+///
+/// Shared by the accepted and the already-cancelling paths so a duplicate
+/// request reports exactly what the first one did — an idempotent request that
+/// answered differently would be indistinguishable from a lost one.
+fn cancellation_response(id: String, execution_state: &serde_json::Value) -> ExecutionResponse {
+    let mut response = execution_receipt(id, execution_state);
+    if response.status.is_empty() {
+        // Default to `cancelling`, never `cancelled`: the API records the
+        // request, and runtime control records the outcome.
+        "cancelling".clone_into(&mut response.status);
+    }
+    response
 }
 
 /// Return journal (log) entries for an execution.

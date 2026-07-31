@@ -61,7 +61,6 @@ impl ExecutionStore for StubExecutionStore {
         _id: &str,
         _holder: &str,
         _ttl: Duration,
-        _now: chrono::DateTime<chrono::Utc>,
     ) -> Result<Option<FencingToken>, StorageError> {
         Ok(None)
     }
@@ -72,7 +71,6 @@ impl ExecutionStore for StubExecutionStore {
         _id: &str,
         _token: FencingToken,
         _ttl: Duration,
-        _now: chrono::DateTime<chrono::Utc>,
     ) -> Result<bool, StorageError> {
         Ok(false)
     }

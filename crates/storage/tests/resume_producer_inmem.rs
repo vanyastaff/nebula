@@ -78,13 +78,7 @@ async fn seed_token(
         .expect("execution row must not already exist");
 
     let fencing_token = exec_store
-        .acquire_lease(
-            scope,
-            execution_id,
-            "test-runner",
-            Duration::from_secs(30),
-            chrono::Utc::now(),
-        )
+        .acquire_lease(scope, execution_id, "test-runner", Duration::from_secs(30))
         .await
         .expect("acquire_lease must not error")
         .expect("fresh row must yield a fencing token");
@@ -315,5 +309,104 @@ async fn non_resume_command_rejected_without_burning_token() {
     assert!(
         control_queue.snapshot().is_empty(),
         "nothing may be enqueued when the command is rejected"
+    );
+}
+
+/// The in-memory adapter's clock is injectable, and it is the **only** place
+/// a caller can influence lease liveness.
+///
+/// The port takes no clock reading from callers, because a lease is a claim
+/// every replica must agree on: a worker whose clock ran fast would judge a
+/// healthy peer's lease expired and fence it out, and one running slow would
+/// mint a lease that was already dead. The SQL backends therefore decide in
+/// the database. This adapter serves a single process, so there is no shared
+/// authority to protect — which makes it the right place to let a test make a
+/// lease expire without sleeping through a real TTL.
+#[tokio::test]
+async fn in_memory_lease_expiry_follows_the_injected_clock() {
+    use std::sync::Arc;
+
+    use chrono::{DateTime, Duration as ChronoDuration, Utc};
+    use parking_lot::Mutex;
+
+    /// A clock a test can move.
+    struct TestClock(Mutex<DateTime<Utc>>);
+
+    impl TestClock {
+        fn advance(&self, by: ChronoDuration) {
+            let mut now = self.0.lock();
+            *now += by;
+        }
+    }
+
+    impl nebula_core::accessor::Clock for TestClock {
+        fn now(&self) -> DateTime<Utc> {
+            *self.0.lock()
+        }
+        fn monotonic(&self) -> std::time::Instant {
+            std::time::Instant::now()
+        }
+    }
+
+    let clock = Arc::new(TestClock(Mutex::new(
+        DateTime::from_timestamp(1_700_000_000, 0).expect("fixed epoch is a valid timestamp"),
+    )));
+    let store = InMemoryExecutionStore::with_clock(
+        Arc::clone(&clock) as Arc<dyn nebula_core::accessor::Clock>
+    );
+    let scope = Scope::new("nebula", "nebula");
+
+    store
+        .create(&scope, "exe_clock", "wf_clock", serde_json::json!({}))
+        .await
+        .expect("create");
+
+    let first = store
+        .acquire_lease(
+            &scope,
+            "exe_clock",
+            "holder-a",
+            std::time::Duration::from_secs(30),
+        )
+        .await
+        .expect("acquire_lease")
+        .expect("first acquire grants a token")
+        .generation();
+
+    // Still inside the TTL on the injected clock: a competing runner must lose,
+    // and no amount of real time passing changes that.
+    assert!(
+        store
+            .acquire_lease(
+                &scope,
+                "exe_clock",
+                "holder-b",
+                std::time::Duration::from_secs(30),
+            )
+            .await
+            .expect("acquire_lease")
+            .is_none(),
+        "a lease that is live on the adapter's clock must block a competing acquire"
+    );
+
+    // Move the adapter's clock past the deadline — no sleeping.
+    clock.advance(ChronoDuration::seconds(31));
+
+    let second = store
+        .acquire_lease(
+            &scope,
+            "exe_clock",
+            "holder-b",
+            std::time::Duration::from_secs(30),
+        )
+        .await
+        .expect("acquire_lease")
+        .expect("an expired lease must be acquirable")
+        .generation();
+
+    assert!(
+        second > first,
+        "taking over an expired lease must bump the fencing generation \
+         (first={first}, second={second}) so the previous holder's token is dead"
     );
 }

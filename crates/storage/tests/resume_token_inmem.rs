@@ -73,13 +73,7 @@ async fn seed_token(
     }
 
     let fencing_token = exec_store
-        .acquire_lease(
-            scope,
-            execution_id,
-            "test-runner",
-            Duration::from_secs(30),
-            chrono::Utc::now(),
-        )
+        .acquire_lease(scope, execution_id, "test-runner", Duration::from_secs(30))
         .await
         .expect("acquire_lease must not error")
         .expect("fresh or re-lockable row must yield a fencing token");

@@ -647,9 +647,8 @@ impl ExecutionStore for FenceArmStore {
         id: &str,
         holder: &str,
         ttl: Duration,
-        now: chrono::DateTime<chrono::Utc>,
     ) -> Result<Option<FencingToken>, StorageError> {
-        self.inner.acquire_lease(scope, id, holder, ttl, now).await
+        self.inner.acquire_lease(scope, id, holder, ttl).await
     }
 
     async fn renew_lease(
@@ -658,9 +657,8 @@ impl ExecutionStore for FenceArmStore {
         id: &str,
         token: FencingToken,
         ttl: Duration,
-        now: chrono::DateTime<chrono::Utc>,
     ) -> Result<bool, StorageError> {
-        self.inner.renew_lease(scope, id, token, ttl, now).await
+        self.inner.renew_lease(scope, id, token, ttl).await
     }
 
     async fn release_lease(
@@ -1165,13 +1163,7 @@ async fn arm_wait_for_completion(stores: &WtStores, execution_id: ExecutionId) {
     let id = execution_id.to_string();
     let token = stores
         .execution
-        .acquire_lease(
-            &scope,
-            &id,
-            "test-armer",
-            Duration::from_secs(30),
-            chrono::Utc::now(),
-        )
+        .acquire_lease(&scope, &id, "test-armer", Duration::from_secs(30))
         .await
         .unwrap()
         .expect("abandoned lease must be free after TTL");

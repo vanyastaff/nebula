@@ -179,26 +179,16 @@ pub(crate) struct LeaseBackend {
     /// Fencing generation proving this runner currently owns the lease;
     /// threaded into every committed transition batch.
     token: FencingToken,
-    /// The engine's clock. Lease renewal stamps its deadline from this and
-    /// not from a storage-side wall clock, so a runtime driven by an injected
-    /// clock reasons about its own lease in the era it actually observes.
-    clock: Arc<dyn nebula_core::accessor::Clock>,
 }
 
 impl LeaseBackend {
     /// Build a port-backed lease handle.
     #[must_use]
-    pub(crate) fn new(
-        store: Arc<dyn ExecutionStore>,
-        scope: Scope,
-        token: FencingToken,
-        clock: Arc<dyn nebula_core::accessor::Clock>,
-    ) -> Self {
+    pub(crate) fn new(store: Arc<dyn ExecutionStore>, scope: Scope, token: FencingToken) -> Self {
         Self {
             store,
             scope,
             token,
-            clock,
         }
     }
 
@@ -220,13 +210,7 @@ impl LeaseBackend {
     ) -> Result<bool, LeaseBackendError> {
         Ok(self
             .store
-            .renew_lease(
-                &self.scope,
-                &execution_id.to_string(),
-                self.token,
-                ttl,
-                self.clock.now(),
-            )
+            .renew_lease(&self.scope, &execution_id.to_string(), self.token, ttl)
             .await?)
     }
 

@@ -340,6 +340,15 @@ async fn startkey_scenario(backend: Backend) {
         Some(first_started_at),
         "a replayed receipt must carry the original acceptance timestamp"
     );
+    // The whole receipt describes the persisted execution, not the request
+    // that was refused. Reading `status` from the state this retry built would
+    // report `created` for an execution that has since started or finished.
+    let persisted = running.http.get_execution(&first_execution).await;
+    assert_eq!(
+        replay.get("status").and_then(Value::as_str),
+        persisted.get("status").and_then(Value::as_str),
+        "a replayed receipt must report the execution's persisted status"
+    );
 
     let before_mismatch = running.http.running_total(&workflow_id).await;
     assert_eq!(

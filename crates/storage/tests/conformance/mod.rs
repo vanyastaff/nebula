@@ -566,13 +566,7 @@ pub(crate) async fn assert_cas_conflict(backend: &dyn Backend) {
         .await
         .expect("create");
     let token = store
-        .acquire_lease(
-            &s,
-            "exe_cas",
-            "holder",
-            std::time::Duration::from_secs(30),
-            chrono::Utc::now(),
-        )
+        .acquire_lease(&s, "exe_cas", "holder", std::time::Duration::from_secs(30))
         .await
         .expect("acquire_lease")
         .unwrap_or_else(|| panic!("[{}] lease must be acquirable", backend.name()));
@@ -606,7 +600,6 @@ pub(crate) async fn assert_stale_fencing_is_fenced_out(backend: &dyn Backend) {
             "exe_fence",
             "holder-1",
             std::time::Duration::from_secs(30),
-            chrono::Utc::now(),
         )
         .await
         .expect("acquire_lease");
@@ -652,7 +645,6 @@ pub(crate) async fn assert_live_lease_blocks_acquire(backend: &dyn Backend) {
             "exe_lease",
             "holder",
             std::time::Duration::from_secs(30),
-            chrono::Utc::now(),
         )
         .await
         .expect("acquire_lease")
@@ -667,7 +659,6 @@ pub(crate) async fn assert_live_lease_blocks_acquire(backend: &dyn Backend) {
             "exe_lease",
             "holder",
             std::time::Duration::from_secs(30),
-            chrono::Utc::now(),
         )
         .await
         .expect("acquire_lease");
@@ -694,7 +685,6 @@ pub(crate) async fn assert_live_lease_blocks_acquire(backend: &dyn Backend) {
             "exe_lease_z",
             "holder",
             std::time::Duration::from_millis(1),
-            chrono::Utc::now(),
         )
         .await
         .expect("acquire_lease")
@@ -708,7 +698,6 @@ pub(crate) async fn assert_live_lease_blocks_acquire(backend: &dyn Backend) {
             "exe_lease_z",
             "holder",
             std::time::Duration::from_secs(30),
-            chrono::Utc::now(),
         )
         .await
         .expect("acquire_lease")
@@ -748,7 +737,6 @@ pub(crate) async fn assert_atomic_triple(backend: &dyn Backend) {
             "exe_triple",
             "holder",
             std::time::Duration::from_secs(30),
-            chrono::Utc::now(),
         )
         .await
         .expect("acquire_lease")
@@ -1271,13 +1259,7 @@ pub(crate) async fn assert_control_queue_outbox_and_fencing(backend: &dyn Backen
         .await
         .expect("create");
     let token = store
-        .acquire_lease(
-            &s,
-            "exe_cq",
-            "holder",
-            std::time::Duration::from_secs(30),
-            chrono::Utc::now(),
-        )
+        .acquire_lease(&s, "exe_cq", "holder", std::time::Duration::from_secs(30))
         .await
         .expect("acquire_lease")
         .unwrap_or_else(|| panic!("[{}] lease", backend.name()));
@@ -1377,13 +1359,7 @@ pub(crate) async fn assert_resume_target_survives_queue_round_trip(backend: &dyn
         .await
         .expect("create execution for resume-target round-trip");
     let token = store
-        .acquire_lease(
-            &s,
-            "exe_rt",
-            "holder",
-            std::time::Duration::from_secs(30),
-            chrono::Utc::now(),
-        )
+        .acquire_lease(&s, "exe_rt", "holder", std::time::Duration::from_secs(30))
         .await
         .expect("acquire_lease")
         .unwrap_or_else(|| panic!("[{}] lease for resume-target test", backend.name()));
@@ -1440,13 +1416,7 @@ pub(crate) async fn assert_resume_target_survives_queue_round_trip(backend: &dyn
         .await
         .expect("create second execution");
     let token2 = store
-        .acquire_lease(
-            &s,
-            "exe_rt2",
-            "holder",
-            std::time::Duration::from_secs(30),
-            chrono::Utc::now(),
-        )
+        .acquire_lease(&s, "exe_rt2", "holder", std::time::Duration::from_secs(30))
         .await
         .expect("acquire_lease 2")
         .unwrap_or_else(|| panic!("[{}] lease 2 for resume-target test", backend.name()));
@@ -1691,13 +1661,7 @@ pub(crate) async fn assert_journal_visibility_and_scope(backend: &dyn Backend) {
         .await
         .expect("create");
     let token = store
-        .acquire_lease(
-            &s,
-            "exe_j",
-            "holder",
-            std::time::Duration::from_secs(30),
-            chrono::Utc::now(),
-        )
+        .acquire_lease(&s, "exe_j", "holder", std::time::Duration::from_secs(30))
         .await
         .expect("acquire_lease")
         .unwrap_or_else(|| panic!("[{}] lease", backend.name()));
@@ -2408,6 +2372,63 @@ pub(crate) async fn assert_keyed_start_creates_one_execution(backend: &dyn Backe
             .count(),
         1,
         "[{}] acceptance must have enqueued exactly one Start command",
+        backend.name()
+    );
+}
+
+/// A keyed start that cannot complete leaves **nothing** behind.
+///
+/// The in-memory adapter has no rollback, so its ordering has to do what a
+/// transaction does for the SQL backends: validate every collision before the
+/// first mutation. It previously inserted the execution row and only then
+/// rejected a duplicate command id, so a failed acceptance still created an
+/// execution — on one backend only, which is exactly the divergence a shared
+/// oracle exists to catch.
+pub(crate) async fn assert_keyed_start_failure_writes_nothing(backend: &dyn Backend) {
+    let acceptance = backend.start_acceptance_store().await;
+    let executions = backend.execution_store().await;
+    let scope = scope_a();
+    let (workflow_id, initial_state) = make_new_execution();
+
+    // Occupy the command id the second acceptance will try to use.
+    let first_command = start_command(0x47, "exe_start_conflict_first");
+    acceptance
+        .accept_keyed_start(&KeyedStart {
+            scope: &scope,
+            start_key: "key-conflict-first",
+            fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [7u8; 32]),
+            execution_id: "exe_start_conflict_first",
+            execution: NewExecution::new(&workflow_id, &initial_state),
+            command: &first_command,
+        })
+        .await
+        .expect("seed the colliding command id");
+
+    // A fresh key and a fresh execution id, but the command id is taken.
+    let colliding_command = start_command(0x47, "exe_start_conflict_second");
+    let outcome = acceptance
+        .accept_keyed_start(&KeyedStart {
+            scope: &scope,
+            start_key: "key-conflict-second",
+            fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [8u8; 32]),
+            execution_id: "exe_start_conflict_second",
+            execution: NewExecution::new(&workflow_id, &initial_state),
+            command: &colliding_command,
+        })
+        .await;
+    assert!(
+        outcome.is_err(),
+        "[{}] a colliding command id must fail the acceptance, got {outcome:?}",
+        backend.name()
+    );
+
+    assert!(
+        executions
+            .get(&scope, "exe_start_conflict_second")
+            .await
+            .expect("read the failed candidate back")
+            .is_none(),
+        "[{}] a failed acceptance must not leave an execution behind",
         backend.name()
     );
 }

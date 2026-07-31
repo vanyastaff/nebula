@@ -24,9 +24,10 @@
 #     terminal transition.
 #   - C0 park/restart/resume (file SQLite, live PostgreSQL) — the worker drains
 #     the control queue the API writes to, a restart sweeps persisted state for
-#     overdue parked waits, and lease deadlines are stamped from the engine's
-#     own clock so a restarted runtime can take over its predecessor's work
-#     instead of waiting out a wall-clock TTL it cannot observe.
+#     overdue parked waits, and a runtime asked to stop releases the execution
+#     lease it holds instead of letting a bare drop strand it, so the successor
+#     takes the parked work over on the next sweep rather than waiting out the
+#     lease TTL. Handover costs a round trip and consults no clock.
 manifest_version = 1
 profile = "runtime-repair-red"
 package = "nebula-server"

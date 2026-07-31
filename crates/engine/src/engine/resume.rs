@@ -424,8 +424,16 @@ impl WorkflowEngine {
             );
             serde_json::Value::Null
         };
-        let failed_node = self
-            .run_frontier(
+        // Race the frontier against a graceful stop — see the identical guard
+        // in `execute_workflow`. This is the path a worker actually drives
+        // (`EngineExecutionSink` dispatches every queued job through
+        // `resume_execution`), so it is the one that decides whether a
+        // restarted runtime waits out a lease TTL.
+        //
+        // Scoped so the frontier future — which borrows `exec_state` mutably —
+        // is dropped before the final-status logic reads it back.
+        let landed = {
+            let frontier = self.run_frontier(
                 scope,
                 &graph,
                 &node_map,
@@ -446,8 +454,37 @@ impl WorkflowEngine {
                 seed_nodes,
                 activated_edges,
                 resolved_edges,
-            )
-            .await;
+            );
+            tokio::pin!(frontier);
+            tokio::select! {
+                biased;
+                failed_node = &mut frontier => Some(failed_node),
+                () = self.shutdown.cancelled() => {
+                    tokio::time::timeout(
+                        crate::engine::SHUTDOWN_FRONTIER_GRACE,
+                        &mut frontier,
+                    )
+                    .await
+                    .ok()
+                }
+            }
+        };
+        let Some(failed_node) = landed else {
+            tracing::warn!(
+                %execution_id,
+                grace_ms = crate::engine::SHUTDOWN_FRONTIER_GRACE.as_millis() as u64,
+                "runtime shutting down: abandoning the frontier and releasing the \
+                 execution lease so a successor can take over without waiting out the TTL"
+            );
+            self.runtime.clear_execution_output_totals(execution_id);
+            // Release before returning, and persist nothing. A successor that
+            // reclaims this row must find the execution exactly as the last
+            // committed transition left it.
+            if let Some(guard) = lease {
+                guard.shutdown().await;
+            }
+            return Err(EngineError::ShutdownInterrupted { execution_id });
+        };
 
         self.runtime.clear_execution_output_totals(execution_id);
 
@@ -626,7 +663,7 @@ impl WorkflowEngine {
 
         let lease_token = match stores
             .execution
-            .acquire_lease(scope, &id, &holder, self.lease_ttl, self.clock.now())
+            .acquire_lease(scope, &id, &holder, self.lease_ttl)
             .await
         {
             Ok(Some(token)) => token,
@@ -845,7 +882,7 @@ impl WorkflowEngine {
         // rather than racing the CAS and potentially dropping the signal.
         let lease_token = stores
             .execution
-            .acquire_lease(scope, &id, &holder, self.lease_ttl, self.clock.now())
+            .acquire_lease(scope, &id, &holder, self.lease_ttl)
             .await
             .map_err(|e| {
                 EngineError::PlanningFailed(format!(
@@ -969,7 +1006,7 @@ impl WorkflowEngine {
         // `None` ⇒ `Leased`, so the caller defers and lets the real owner drive.
         let lease_token = stores
             .execution
-            .acquire_lease(scope, &id, &holder, self.lease_ttl, self.clock.now())
+            .acquire_lease(scope, &id, &holder, self.lease_ttl)
             .await
             .map_err(|e| {
                 EngineError::PlanningFailed(format!(
@@ -1248,7 +1285,7 @@ impl WorkflowEngine {
 
         let lease_token = stores
             .execution
-            .acquire_lease(scope, &id, &holder, self.lease_ttl, self.clock.now())
+            .acquire_lease(scope, &id, &holder, self.lease_ttl)
             .await
             .map_err(|e| {
                 EngineError::PlanningFailed(format!(

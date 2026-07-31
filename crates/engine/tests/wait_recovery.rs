@@ -115,9 +115,8 @@ impl ExecutionStore for FaultInjectingExecutionStore {
         id: &str,
         holder: &str,
         ttl: Duration,
-        now: chrono::DateTime<chrono::Utc>,
     ) -> Result<Option<FencingToken>, StorageError> {
-        self.inner.acquire_lease(scope, id, holder, ttl, now).await
+        self.inner.acquire_lease(scope, id, holder, ttl).await
     }
 
     async fn renew_lease(
@@ -126,9 +125,8 @@ impl ExecutionStore for FaultInjectingExecutionStore {
         id: &str,
         token: FencingToken,
         ttl: Duration,
-        now: chrono::DateTime<chrono::Utc>,
     ) -> Result<bool, StorageError> {
-        self.inner.renew_lease(scope, id, token, ttl, now).await
+        self.inner.renew_lease(scope, id, token, ttl).await
     }
 
     async fn release_lease(

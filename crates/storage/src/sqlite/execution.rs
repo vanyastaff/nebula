@@ -311,72 +311,54 @@ impl ExecutionStore for SqliteExecutionStore {
         id: &str,
         holder: &str,
         ttl: Duration,
-        now: chrono::DateTime<chrono::Utc>,
     ) -> Result<Option<FencingToken>, StorageError> {
-        let ttl = normalized_ttl(ttl);
-        let mut tx = self.pool.begin().await.map_err(conn_err)?;
-        let row = sqlx::query(
-            "SELECT lease_holder, lease_expires_at_ms, fencing_generation \
-             FROM port_executions \
-             WHERE id = ? AND workspace_id = ? AND org_id = ?",
-        )
-        .bind(id)
-        .bind(&scope.workspace_id)
-        .bind(&scope.org_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(conn_err)?;
-        let Some(row) = row else {
-            tx.rollback().await.map_err(conn_err)?;
-            return Err(StorageError::not_found("execution", id));
-        };
-        let cur_exp: Option<i64> = row.try_get("lease_expires_at_ms").map_err(conn_err)?;
-        let cur_gen = row
-            .try_get::<i64, _>("fencing_generation")
-            .map_err(conn_err)? as u64;
-        let now_ms = now.timestamp_millis();
-        let live = matches!(cur_exp, Some(exp) if exp >= now_ms);
-        if live {
-            // A live lease blocks acquisition outright — including a
-            // second acquire by the *same* holder. Renewal is the
-            // dedicated `renew_lease` op (fencing-token gated); a
-            // second `acquire_lease` while the lease is live is
-            // contention, not a silent renew (zombie-runner closure —
-            // two concurrent runners must see exactly one winner).
-            tx.rollback().await.map_err(conn_err)?;
-            return Ok(None);
-        }
-        // Every successful acquire bumps the fencing generation, so
-        // every previously issued token is dead — including one held
-        // by the *same* holder string (a crashed-then-restarted runner
-        // reusing its `instance_id` is a zombie w.r.t. its pre-crash
-        // token). Generation 0 therefore universally means "no lease
-        // ever issued / stale".
-        let new_gen = cur_gen + 1;
-        let exp_ms = now_ms + ttl.as_millis() as i64;
-        sqlx::query(
+        let ttl_ms = i64::try_from(normalized_ttl(ttl).as_millis()).unwrap_or(i64::MAX);
+        // The database decides live-vs-expired and stamps the deadline, in one
+        // statement. SQLite serves one host, so this is not about skew between
+        // replicas — it is about there being exactly one rule for lease time
+        // across all three backends, so a lease cannot mean something different
+        // depending on which adapter is wired.
+        let new_generation: Option<i64> = sqlx::query_scalar(
             "UPDATE port_executions \
-             SET lease_holder = ?, lease_expires_at_ms = ?, fencing_generation = ? \
-             WHERE id = ? AND workspace_id = ? AND org_id = ?",
+             SET lease_holder = ?, \
+                 lease_expires_at_ms = \
+                     CAST((julianday('now') - 2440587.5) * 86400000.0 AS INTEGER) + ?, \
+                 fencing_generation = fencing_generation + 1 \
+             WHERE id = ? AND workspace_id = ? AND org_id = ? \
+               AND (lease_expires_at_ms IS NULL \
+                    OR lease_expires_at_ms \
+                       < CAST((julianday('now') - 2440587.5) * 86400000.0 AS INTEGER)) \
+             RETURNING fencing_generation",
         )
         .bind(holder)
-        .bind(exp_ms)
-        .bind(new_gen as i64)
+        .bind(ttl_ms)
         .bind(id)
         .bind(&scope.workspace_id)
         .bind(&scope.org_id)
-        .execute(&mut *tx)
+        .fetch_optional(&self.pool)
         .await
         .map_err(conn_err)?;
-        tx.commit().await.map_err(conn_err)?;
-        tracing::debug!(
-            target: "nebula_storage::sqlite",
-            execution_id = id,
-            holder,
-            generation = new_gen,
-            "lease acquired"
-        );
-        Ok(Some(FencingToken::from_generation(new_gen)))
+
+        if let Some(generation) = new_generation {
+            return Ok(Some(FencingToken::from_generation(generation as u64)));
+        }
+
+        // Zero rows means either a live lease or no such row; only a live lease
+        // is `Ok(None)`.
+        let exists: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM port_executions \
+             WHERE id = ? AND workspace_id = ? AND org_id = ?",
+        )
+        .bind(id)
+        .bind(&scope.workspace_id)
+        .bind(&scope.org_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(conn_err)?;
+        if exists.is_none() {
+            return Err(StorageError::not_found("execution", id));
+        }
+        Ok(None)
     }
 
     async fn renew_lease(
@@ -385,16 +367,16 @@ impl ExecutionStore for SqliteExecutionStore {
         id: &str,
         token: FencingToken,
         ttl: Duration,
-        now: chrono::DateTime<chrono::Utc>,
     ) -> Result<bool, StorageError> {
-        let ttl = normalized_ttl(ttl);
-        let exp_ms = now.timestamp_millis() + ttl.as_millis() as i64;
+        let ttl_ms = i64::try_from(normalized_ttl(ttl).as_millis()).unwrap_or(i64::MAX);
         let res = sqlx::query(
-            "UPDATE port_executions SET lease_expires_at_ms = ? \
+            "UPDATE port_executions \
+             SET lease_expires_at_ms = \
+                 CAST((julianday('now') - 2440587.5) * 86400000.0 AS INTEGER) + ? \
              WHERE id = ? AND workspace_id = ? AND org_id = ? \
                AND fencing_generation = ?",
         )
-        .bind(exp_ms)
+        .bind(ttl_ms)
         .bind(id)
         .bind(&scope.workspace_id)
         .bind(&scope.org_id)

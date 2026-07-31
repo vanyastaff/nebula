@@ -92,7 +92,14 @@ struct LeaseStores {
 
 impl LeaseStores {
     fn new() -> Self {
-        let execution = Arc::new(InMemoryExecutionStore::new());
+        // The store, not the engine, owns the clock that judges lease
+        // liveness — every replica has to agree on one reading, so a caller
+        // cannot hand one in. Both runners here share this single in-memory
+        // store, so wiring it to the same `TestClock` the engines use keeps
+        // the whole scenario in one era.
+        let execution = Arc::new(InMemoryExecutionStore::with_clock(Arc::new(
+            TestClock::shared(),
+        )));
         let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&execution));
         let versions = InMemoryWorkflowVersionStore::new();
         let workflow = nebula_storage::InMemoryWorkflowStore::new_with_versions(&versions);
@@ -158,13 +165,7 @@ impl LeaseStores {
     async fn lease_held(&self, id: nebula_core::id::ExecutionId, ttl: Duration) -> bool {
         let scope = nebula_engine::store_seam::single_tenant_scope();
         self.execution
-            .acquire_lease(
-                &scope,
-                &id.to_string(),
-                "lease-probe-stranger",
-                ttl,
-                chrono::Utc::now(),
-            )
+            .acquire_lease(&scope, &id.to_string(), "lease-probe-stranger", ttl)
             .await
             .unwrap()
             .is_none()
@@ -455,14 +456,14 @@ async fn engine_b_takes_over_after_engine_a_runner_dies() {
     task_a.abort();
     let _ = task_a.await;
 
-    // Advance the *engine's* clock past the lease TTL.
+    // Advance the clock the *store* judges leases by, past the TTL.
     //
-    // A lease deadline is stamped from the clock its holder reasons in, so
-    // that is the clock that has to move for the deadline to pass. Advancing
-    // tokio's timer instead would leave the persisted deadline untouched —
-    // which is exactly the defect that kept a restarted runtime from taking
-    // over its predecessor's work. Buffer = 200ms past TTL covers any
-    // heartbeat-induced expiry bump that landed before abort.
+    // Runner A was aborted, not stopped — a crash releases nothing, so TTL
+    // expiry is the only takeover path and something has to make the deadline
+    // pass. The in-memory adapter is the one backend that lets a test do that
+    // without sleeping; the SQL backends decide in the database precisely so
+    // no caller can. Buffer = 200ms past TTL covers any heartbeat-induced
+    // expiry bump that landed before abort.
     TestClock::advance(lease_ttl + Duration::from_millis(200));
     tokio::time::advance(lease_ttl + Duration::from_millis(200)).await;
 

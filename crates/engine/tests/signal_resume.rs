@@ -397,13 +397,7 @@ impl SignalHarness {
         let token = self
             .stores
             .execution
-            .acquire_lease(
-                &scope,
-                &id,
-                "test-api-cancel",
-                Duration::from_secs(30),
-                Utc::now(),
-            )
+            .acquire_lease(&scope, &id, "test-api-cancel", Duration::from_secs(30))
             .await
             .unwrap()
             .expect("lease must be free for the simulated API cancel write");
@@ -1113,7 +1107,6 @@ async fn dispatch_resume_defers_when_execution_lease_is_held() {
             &execution_id.to_string(),
             "foreign-runner",
             Duration::from_secs(30),
-            Utc::now(),
         )
         .await
         .expect("acquire_lease must not error")
@@ -1308,9 +1301,8 @@ impl ExecutionStore for CommitFenceInterceptor {
         id: &str,
         holder: &str,
         ttl: Duration,
-        now: chrono::DateTime<Utc>,
     ) -> Result<Option<FencingToken>, StorageError> {
-        self.inner.acquire_lease(scope, id, holder, ttl, now).await
+        self.inner.acquire_lease(scope, id, holder, ttl).await
     }
 
     async fn renew_lease(
@@ -1319,9 +1311,8 @@ impl ExecutionStore for CommitFenceInterceptor {
         id: &str,
         token: FencingToken,
         ttl: Duration,
-        now: chrono::DateTime<Utc>,
     ) -> Result<bool, StorageError> {
-        self.inner.renew_lease(scope, id, token, ttl, now).await
+        self.inner.renew_lease(scope, id, token, ttl).await
     }
 
     async fn release_lease(
@@ -1609,12 +1600,8 @@ impl ExecutionStore for CancelDuringSatisfyInterceptor {
         id: &str,
         holder: &str,
         ttl: Duration,
-        now: chrono::DateTime<Utc>,
     ) -> Result<Option<FencingToken>, StorageError> {
-        let token = self
-            .inner
-            .acquire_lease(scope, id, holder, ttl, now)
-            .await?;
+        let token = self.inner.acquire_lease(scope, id, holder, ttl).await?;
         self.lease_acquired.store(true, Ordering::SeqCst);
         Ok(token)
     }
@@ -1625,9 +1612,8 @@ impl ExecutionStore for CancelDuringSatisfyInterceptor {
         id: &str,
         token: FencingToken,
         ttl: Duration,
-        now: chrono::DateTime<Utc>,
     ) -> Result<bool, StorageError> {
-        self.inner.renew_lease(scope, id, token, ttl, now).await
+        self.inner.renew_lease(scope, id, token, ttl).await
     }
 
     async fn release_lease(
@@ -2085,7 +2071,6 @@ impl ExecutionStore for LeaseFailAfterArmInterceptor {
         id: &str,
         holder: &str,
         ttl: Duration,
-        now: chrono::DateTime<Utc>,
     ) -> Result<Option<FencingToken>, StorageError> {
         if self.armed.load(Ordering::SeqCst) {
             if self.successes_before_fail.load(Ordering::SeqCst) == 0 {
@@ -2095,7 +2080,7 @@ impl ExecutionStore for LeaseFailAfterArmInterceptor {
             }
             self.successes_before_fail.fetch_sub(1, Ordering::SeqCst);
         }
-        self.inner.acquire_lease(scope, id, holder, ttl, now).await
+        self.inner.acquire_lease(scope, id, holder, ttl).await
     }
 
     async fn renew_lease(
@@ -2104,9 +2089,8 @@ impl ExecutionStore for LeaseFailAfterArmInterceptor {
         id: &str,
         token: FencingToken,
         ttl: Duration,
-        now: chrono::DateTime<Utc>,
     ) -> Result<bool, StorageError> {
-        self.inner.renew_lease(scope, id, token, ttl, now).await
+        self.inner.renew_lease(scope, id, token, ttl).await
     }
 
     async fn release_lease(
@@ -2423,9 +2407,8 @@ impl ExecutionStore for CommitStatusRecorder {
         id: &str,
         holder: &str,
         ttl: Duration,
-        now: chrono::DateTime<Utc>,
     ) -> Result<Option<FencingToken>, StorageError> {
-        self.inner.acquire_lease(scope, id, holder, ttl, now).await
+        self.inner.acquire_lease(scope, id, holder, ttl).await
     }
 
     async fn renew_lease(
@@ -2434,9 +2417,8 @@ impl ExecutionStore for CommitStatusRecorder {
         id: &str,
         token: FencingToken,
         ttl: Duration,
-        now: chrono::DateTime<Utc>,
     ) -> Result<bool, StorageError> {
-        self.inner.renew_lease(scope, id, token, ttl, now).await
+        self.inner.renew_lease(scope, id, token, ttl).await
     }
 
     async fn release_lease(
@@ -2770,7 +2752,6 @@ async fn dispatch_cancel_acks_when_lease_held_then_terminalizes_once_free() {
             &execution_id.to_string(),
             "live-owner-runner",
             Duration::from_secs(30),
-            Utc::now(),
         )
         .await
         .unwrap()

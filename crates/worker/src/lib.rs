@@ -129,6 +129,7 @@ enum Component {
     Orchestrator,
     ControlConsumer,
     TimerScanner,
+    EngineShutdownRelay,
 }
 
 impl Component {
@@ -137,6 +138,7 @@ impl Component {
             Self::Orchestrator => "orchestrator",
             Self::ControlConsumer => "control-consumer",
             Self::TimerScanner => "timer-scanner",
+            Self::EngineShutdownRelay => "engine-shutdown-relay",
         }
     }
 }
@@ -232,6 +234,23 @@ impl WorkerRuntime {
         // the id map carries the label the payload no longer can.
         let mut components: JoinSet<ComponentOutcome> = JoinSet::new();
         let mut labels: HashMap<tokio::task::Id, Component> = HashMap::new();
+
+        // Relay this runtime's stop to the engine before anything else.
+        //
+        // The engine holds each in-flight execution's lease, and only the
+        // engine can release it: a dropped dispatch future runs
+        // `LeaseGuard::drop`, which cannot `await`. Without this relay a
+        // graceful restart leaves every parked execution's lease alive for its
+        // full TTL, so the successor that just started — the whole reason for
+        // the restart — is fenced out of work nobody is doing.
+        let engine_shutdown = self.engine.shutdown_token();
+        let relay_shutdown = shutdown.clone();
+        let handle = components.spawn(async move {
+            relay_shutdown.cancelled().await;
+            engine_shutdown.cancel();
+            Ok(Component::EngineShutdownRelay)
+        });
+        labels.insert(handle.id(), Component::EngineShutdownRelay);
 
         let orchestrator_shutdown = shutdown.clone();
         let orchestrator = self.orchestrator;
