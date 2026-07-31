@@ -52,10 +52,20 @@ fn positive_junit_fixture() -> String {
     )
 }
 
+/// Every manifest entry must name a test that actually exists.
+///
+/// The count is a lower bound rather than an exact number: entries are removed
+/// as their defect is repaired, so pinning the exact count would turn every
+/// repair into a failing gate. What must not drift is the other direction — a
+/// manifest naming a test that does not exist would silently excuse a case that
+/// never ran.
 #[test]
 fn active_profile_manifest_is_valid_and_names_all_genuine_cases() {
     let manifest = validate_manifest_source(ACTIVE_PROFILE_MANIFEST).expect("manifest is valid");
-    assert_eq!(manifest.expected_failures.len(), 10);
+    assert!(
+        !manifest.expected_failures.is_empty(),
+        "an empty manifest would make the verifier vacuous"
+    );
     for expected in &manifest.expected_failures {
         assert!(
             SCENARIO_TARGET.contains(&format!("async fn {}", expected.test_name))
@@ -132,11 +142,21 @@ fn active_target_contains_no_fake_or_suppressed_test() {
     }
 
     let manifest = validate_manifest_source(ACTIVE_PROFILE_MANIFEST).expect("manifest is valid");
-    assert_eq!(
-        SCENARIO_TARGET.matches("#[tokio::test]").count()
-            + COMPONENT_C7_TARGET.matches("#[tokio::test").count(),
-        manifest.expected_failures.len(),
-        "every selected test must have one manifest identity"
+    // The manifest is a *subset* of the tests in the target, not a mirror of
+    // it. A repaired scenario stays in the suite as ordinary conformance
+    // coverage and loses its manifest entry, so requiring equality here would
+    // make every repair fail this guard.
+    //
+    // The direction that still matters is that the manifest cannot name more
+    // cases than exist — that would mean an entry excusing a test that never
+    // ran. Each entry is separately checked to name a real test in
+    // `active_profile_manifest_is_valid_and_names_all_genuine_cases`.
+    let selected_tests = SCENARIO_TARGET.matches("#[tokio::test]").count()
+        + COMPONENT_C7_TARGET.matches("#[tokio::test").count();
+    assert!(
+        manifest.expected_failures.len() <= selected_tests,
+        "manifest names {} cases but the target defines {selected_tests} tests",
+        manifest.expected_failures.len()
     );
     assert_eq!(
         SCENARIO_TARGET.matches("EXPECTED_RED:").count(),
@@ -210,6 +230,60 @@ fn passing_case_is_rejected_even_when_counts_are_self_consistent() {
         ],
     );
     assert_invalid_junit(&report);
+}
+
+/// A repaired scenario that regresses must fail the gate.
+///
+/// Promotion removes a case's manifest entry, so the verifier no longer expects
+/// it to fail. The risk that introduces is the opposite of the original one: a
+/// case that is silently allowed to fail because nothing lists it. A repaired
+/// case is therefore required to have *passed*, not merely to be absent from
+/// the manifest.
+#[test]
+fn a_promoted_case_that_fails_again_is_rejected() {
+    let report = junit_report(
+        // Two failures where the manifest expects one: the promoted case
+        // regressed.
+        Counts::new(3, 2, 0, 0),
+        Counts::new(3, 2, 0, 0),
+        &[
+            failing_case("c0::restart_resume", "EXPECTED_RED:c0-split-control-path"),
+            failing_case(
+                "c1::same_key_cancel",
+                "EXPECTED_RED:c1-ambiguous-acceptance",
+            ),
+            failing_case("promoted::already_repaired", "EXPECTED_RED:some-reason"),
+        ],
+    );
+    assert_invalid_junit(&report);
+}
+
+/// A promoted scenario that passes alongside the expected failures is accepted.
+///
+/// This is the shape every repair produces, so it must reconcile cleanly —
+/// otherwise the only way to keep the gate green would be to delete the
+/// repaired scenario, which is the evidence deletion the verifier exists to
+/// prevent.
+#[test]
+fn a_promoted_passing_case_reconciles_with_the_expected_failures() {
+    let report = junit_report(
+        Counts::new(3, 2, 0, 0),
+        Counts::new(3, 2, 0, 0),
+        &[
+            failing_case("c0::restart_resume", "EXPECTED_RED:c0-split-control-path"),
+            failing_case(
+                "c1::same_key_cancel",
+                "EXPECTED_RED:c1-ambiguous-acceptance",
+            ),
+            CaseFixture::new("promoted::already_repaired", ""),
+        ],
+    );
+    let summary = verify_documents(ACTIVE_TEST_MANIFEST, 100, &report)
+        .expect("a repaired case that passes must reconcile");
+    assert_eq!(
+        summary.verified_failure_count, 2,
+        "only the manifested cases count as verified failures"
+    );
 }
 
 #[test]

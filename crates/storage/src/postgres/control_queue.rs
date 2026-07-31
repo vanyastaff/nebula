@@ -11,7 +11,10 @@ use std::time::Duration;
 
 use chrono::Utc;
 use nebula_storage_port::dto::{ControlMsg, JournalEntry, ResumeTarget};
-use nebula_storage_port::store::{ControlQueue, ExecutionJournalReader, ReclaimOutcome};
+use nebula_storage_port::store::{
+    ClaimGeneration, ControlClaim, ControlClaimToken, ControlQueue, ExecutionJournalReader,
+    ReclaimOutcome,
+};
 use nebula_storage_port::{Scope, StorageError};
 use sqlx::{PgPool, Row};
 
@@ -29,6 +32,73 @@ impl PgControlQueue {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
+
+    /// Explain why a fenced acknowledgement matched no row.
+    ///
+    /// The fenced `UPDATE` reports only "zero rows", which conflates "the row
+    /// is gone" with "this token is stale". An absent row is a lost write; a
+    /// superseded token is the fence doing its job. The follow-up read runs on
+    /// the failure path only.
+    async fn unacknowledgeable(
+        &self,
+        claim: &ControlClaimToken,
+    ) -> Result<StorageError, StorageError> {
+        let exists: Option<i32> =
+            sqlx::query_scalar("SELECT 1 FROM port_control_queue WHERE id = $1")
+                .bind(claim.row_id().as_slice())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(conn_err)?;
+        Ok(if exists.is_some() {
+            StorageError::FencedOut {
+                entity: "control_queue",
+                id: hex_id(claim.row_id()),
+            }
+        } else {
+            StorageError::NotFound {
+                entity: "control_queue",
+                id: hex_id(claim.row_id()),
+            }
+        })
+    }
+}
+
+/// Hex-encode a 16-byte ULID for `StorageError` ids.
+fn hex_id(id: &[u8; 16]) -> String {
+    id.iter().fold(String::with_capacity(32), |mut s, b| {
+        use std::fmt::Write as _;
+        let _ = write!(s, "{b:02x}");
+        s
+    })
+}
+
+/// Widen a persisted generation to the port's `u64`.
+///
+/// A negative value is persisted corruption, and treating it as `0` would make
+/// a stale token match. Fail closed instead.
+fn decode_generation(generation: i64, id: &[u8; 16]) -> Result<ClaimGeneration, StorageError> {
+    u64::try_from(generation)
+        .map(ClaimGeneration::new)
+        .map_err(|_| {
+            StorageError::Serialization(format!(
+                "invalid control_queue claim_generation {generation} (id={})",
+                hex_id(id)
+            ))
+        })
+}
+
+/// Narrow a token's generation for binding against the `BIGINT` column.
+///
+/// A generation beyond `i64::MAX` cannot name a persisted row, so binding a
+/// saturated value would fence against the wrong row. Fail closed instead.
+fn generation_bind(claim: &ControlClaimToken) -> Result<i64, StorageError> {
+    i64::try_from(claim.generation().get()).map_err(|_| {
+        StorageError::Serialization(format!(
+            "control_queue claim generation {} exceeds the persisted range (id={})",
+            claim.generation(),
+            hex_id(claim.row_id())
+        ))
+    })
 }
 
 fn decode_command(s: &str) -> Result<nebula_storage_port::dto::ControlCommand, StorageError> {
@@ -87,7 +157,7 @@ impl ControlQueue for PgControlQueue {
         &self,
         processor: &[u8; 16],
         batch_size: u32,
-    ) -> Result<Vec<ControlMsg>, StorageError> {
+    ) -> Result<Vec<ControlClaim>, StorageError> {
         // FOR UPDATE SKIP LOCKED: concurrent consumers each grab a
         // disjoint set of pending rows without blocking each other.
         // `processed_at_ms` is epoch-millis (`BIGINT`), the same
@@ -97,7 +167,8 @@ impl ControlQueue for PgControlQueue {
         let now_ms = Utc::now().timestamp_millis();
         let rows = sqlx::query(
             "UPDATE port_control_queue SET status = 'Processing', \
-                    processed_by = $1, processed_at_ms = $2 \
+                    processed_by = $1, processed_at_ms = $2, \
+                    claim_generation = claim_generation + 1 \
              WHERE id IN ( \
                  SELECT id FROM port_control_queue \
                  WHERE status = 'Pending' \
@@ -106,7 +177,8 @@ impl ControlQueue for PgControlQueue {
                  FOR UPDATE SKIP LOCKED \
              ) \
              RETURNING id, execution_id, workspace_id, org_id, command, \
-                       w3c_traceparent, reclaim_count, resume_target",
+                       w3c_traceparent, reclaim_count, resume_target, \
+                       claim_generation",
         )
         .bind(processor.as_slice())
         .bind(now_ms)
@@ -124,8 +196,10 @@ impl ControlQueue for PgControlQueue {
                     .map(serde_json::from_str)
                     .transpose()
                     .map_err(|e| StorageError::Serialization(e.to_string()))?;
-                Ok(ControlMsg {
-                    id: decode_id(&id_bytes)?,
+                let id = decode_id(&id_bytes)?;
+                let generation: i64 = row.try_get("claim_generation").map_err(conn_err)?;
+                let msg = ControlMsg {
+                    id,
                     execution_id: row.try_get("execution_id").map_err(conn_err)?,
                     command: decode_command(
                         &row.try_get::<String, _>("command").map_err(conn_err)?,
@@ -137,45 +211,52 @@ impl ControlQueue for PgControlQueue {
                     w3c_traceparent: row.try_get("w3c_traceparent").map_err(conn_err)?,
                     reclaim_count: row.try_get::<i32, _>("reclaim_count").map_err(conn_err)? as u32,
                     resume_target,
+                };
+                Ok(ControlClaim {
+                    msg,
+                    token: ControlClaimToken::new(id, decode_generation(generation, &id)?),
                 })
             })
             .collect()
     }
 
-    async fn mark_completed(
-        &self,
-        id: &[u8; 16],
-        processor: &[u8; 16],
-    ) -> Result<(), StorageError> {
-        sqlx::query(
+    async fn mark_completed(&self, claim: &ControlClaimToken) -> Result<(), StorageError> {
+        let rows_updated = sqlx::query(
             "UPDATE port_control_queue SET status = 'Completed' \
-             WHERE id = $1 AND status = 'Processing' AND processed_by = $2",
+             WHERE id = $1 AND status = 'Processing' AND claim_generation = $2",
         )
-        .bind(id.as_slice())
-        .bind(processor.as_slice())
+        .bind(claim.row_id().as_slice())
+        .bind(generation_bind(claim)?)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(conn_err)?
+        .rows_affected();
+        if rows_updated == 0 {
+            return Err(self.unacknowledgeable(claim).await?);
+        }
         Ok(())
     }
 
     async fn mark_failed(
         &self,
-        id: &[u8; 16],
-        processor: &[u8; 16],
+        claim: &ControlClaimToken,
         error: &str,
     ) -> Result<(), StorageError> {
-        sqlx::query(
+        let rows_updated = sqlx::query(
             "UPDATE port_control_queue \
              SET status = 'Failed', error_message = $1 \
-             WHERE id = $2 AND status = 'Processing' AND processed_by = $3",
+             WHERE id = $2 AND status = 'Processing' AND claim_generation = $3",
         )
         .bind(error)
-        .bind(id.as_slice())
-        .bind(processor.as_slice())
+        .bind(claim.row_id().as_slice())
+        .bind(generation_bind(claim)?)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(conn_err)?
+        .rows_affected();
+        if rows_updated == 0 {
+            return Err(self.unacknowledgeable(claim).await?);
+        }
         Ok(())
     }
 

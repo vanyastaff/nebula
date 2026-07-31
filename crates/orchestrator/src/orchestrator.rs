@@ -33,8 +33,7 @@ use nebula_metrics::{
         orchestrator_dispatch_outcome, orchestrator_reclaim_outcome,
     },
 };
-use nebula_storage_port::dto::JobDispatchMsg;
-use nebula_storage_port::store::{JobDispatchQueue, ReclaimOutcome};
+use nebula_storage_port::store::{JobClaim, JobClaimToken, JobDispatchQueue, ReclaimOutcome};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
@@ -54,6 +53,14 @@ pub const DEFAULT_BATCH_SIZE: u32 = 32;
 /// local path; the Postgres path may shorten further once `LISTEN/NOTIFY` is
 /// wired as an optimisation.
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// How long an in-flight dispatch may keep running after shutdown is
+/// requested.
+///
+/// Long enough that ordinary work finishes and is acknowledged (the graceful
+/// shutdown contract), short enough that a dispatch parked on a durable timer
+/// or an external wait cannot hold the process open indefinitely.
+const SHUTDOWN_DISPATCH_GRACE: Duration = Duration::from_secs(5);
 
 /// Maximum backoff between `claim_pending` retries after repeated storage
 /// errors. Prevents a high-frequency error-log flood when the backend is down.
@@ -277,7 +284,7 @@ impl Orchestrator {
                     // the backoff or idle poll delay.
                 }
                 () = &mut claim_sleep => {
-                    let next_delay = self.tick(&mut consecutive_errors).await;
+                    let next_delay = self.tick(&mut consecutive_errors, &shutdown).await;
                     claim_deadline = tokio::time::Instant::now()
                         + next_delay.unwrap_or(Duration::ZERO);
                 }
@@ -350,8 +357,12 @@ impl Orchestrator {
 
     /// Drain a single batch. Returns the duration to wait before the next
     /// claim attempt, or `None` for immediate re-claim.
-    async fn tick(&self, consecutive_errors: &mut u32) -> Option<Duration> {
-        let claimed: Result<Vec<JobDispatchMsg>, String> = self
+    async fn tick(
+        &self,
+        consecutive_errors: &mut u32,
+        shutdown: &CancellationToken,
+    ) -> Option<Duration> {
+        let claimed: Result<Vec<JobClaim>, String> = self
             .queue
             .claim_pending(&self.processor_id, self.batch_size, &self.available_plugins)
             .await
@@ -379,13 +390,14 @@ impl Orchestrator {
             return Some(self.poll_interval);
         }
 
-        for msg in claimed {
-            self.handle_entry(msg).await;
+        for claim in claimed {
+            self.handle_entry(claim, shutdown).await;
         }
         None
     }
 
-    async fn handle_entry(&self, msg: JobDispatchMsg) {
+    async fn handle_entry(&self, claim: JobClaim, shutdown: &CancellationToken) {
+        let JobClaim { msg, token } = claim;
         // The queue routing predicate (`required_plugins ⊆ available_plugins`)
         // is enforced at claim time. This assert checks the implied single-key
         // condition (`required_plugin_key ∈ available_plugins`, since
@@ -428,11 +440,48 @@ impl Orchestrator {
         }
 
         let sink = Arc::clone(&self.sink);
-        let dispatch_result = sink.dispatch(&msg).instrument(span).await;
+        // Bounded drain on shutdown.
+        //
+        // Graceful shutdown flushes the in-flight batch — a dispatch that is
+        // nearly done should finish rather than be redelivered. But `dispatch`
+        // drives a whole execution step, which can park on a durable timer or
+        // an external wait, so awaiting it unconditionally means the loop never
+        // returns to its `select!` and a process asked to stop hangs for as
+        // long as the workflow does.
+        //
+        // So: keep flushing after cancellation, but only within
+        // [`SHUTDOWN_DISPATCH_GRACE`]. Past that the row is abandoned to the
+        // documented recovery path — it stays `Processing` and the next
+        // runner's reclaim sweep redelivers it. Acknowledging it either way
+        // would be the unsafe choice: `mark_dispatched` would claim work that
+        // did not finish, and `mark_failed` would terminalise a row that was
+        // merely interrupted.
+        let dispatch = sink.dispatch(&msg).instrument(span);
+        tokio::pin!(dispatch);
+        let dispatch_result = tokio::select! {
+            biased;
+            result = &mut dispatch => result,
+            () = shutdown.cancelled() => {
+                let Ok(result) =
+                    tokio::time::timeout(SHUTDOWN_DISPATCH_GRACE, &mut dispatch).await
+                else {
+                    tracing::warn!(
+                        row_id = %hex_display(&row_id),
+                        execution_id = %msg.execution_id,
+                        claim_generation = %token.generation(),
+                        grace_ms = SHUTDOWN_DISPATCH_GRACE.as_millis() as u64,
+                        "orchestrator dispatch did not drain within the shutdown grace; \
+                         leaving the row Processing for reclaim"
+                    );
+                    return;
+                };
+                result
+            }
+        };
 
         match dispatch_result {
             Ok(()) => {
-                self.mark_dispatched(&row_id).await;
+                self.mark_dispatched(&token).await;
                 let labels = self
                     .metrics
                     .interner()
@@ -452,7 +501,7 @@ impl Orchestrator {
                     error = %e,
                     "orchestrator dispatch failed; marking row failed (ADR-0095)"
                 );
-                self.mark_failed(&row_id, &e.to_string()).await;
+                self.mark_failed(&token, &e.to_string()).await;
                 let labels = self
                     .metrics
                     .interner()
@@ -467,33 +516,39 @@ impl Orchestrator {
         }
     }
 
-    async fn mark_dispatched(&self, id: &[u8; 16]) {
+    async fn mark_dispatched(&self, token: &JobClaimToken) {
         // If `mark_dispatched` fails, the row stays in `Processing` and the
         // reclaim sweep redelivers. Correctness under redelivery requires the
         // `ExecutionSink` to be idempotent per `(execution_id, command)`.
+        //
+        // `FencedOut` is the one failure that is not a lost write: this claim
+        // was reclaimed and another attempt now owns the row, so leaving it
+        // alone is exactly right and the current owner will acknowledge it.
         if let Err(e) = self
             .queue
-            .mark_dispatched(id, &self.processor_id)
+            .mark_dispatched(token)
             .await
             .map_err(|e| e.to_string())
         {
             tracing::error!(
-                row_id = %hex_display(id),
+                row_id = %hex_display(token.row_id()),
+                claim_generation = %token.generation(),
                 error = %e,
                 "orchestrator mark_dispatched failed; row left in Processing for reclaim"
             );
         }
     }
 
-    async fn mark_failed(&self, id: &[u8; 16], reason: &str) {
+    async fn mark_failed(&self, token: &JobClaimToken, reason: &str) {
         if let Err(e) = self
             .queue
-            .mark_failed(id, &self.processor_id, reason)
+            .mark_failed(token, reason)
             .await
             .map_err(|e| e.to_string())
         {
             tracing::error!(
-                row_id = %hex_display(id),
+                row_id = %hex_display(token.row_id()),
+                claim_generation = %token.generation(),
                 error = %e,
                 "orchestrator mark_failed failed; row left in Processing for reclaim"
             );

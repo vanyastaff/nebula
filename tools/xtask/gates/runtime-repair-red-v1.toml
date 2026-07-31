@@ -1,48 +1,55 @@
 # Versioned expected-failure policy for genuine first-party runtime-repair
 # scenarios. Every listed case must fail for exactly the reason recorded here;
 # setup failures, passes, skips, retries, timeouts, and extra cases fail closed.
+#
+# Entries are removed as their defect is repaired, in the same change that
+# repairs it. A repaired scenario is not deleted — it stays in the suite as
+# ordinary conformance coverage, where a regression reads as a plain failure.
+# Leaving a repaired case listed here would invert that: the verifier rejects an
+# unexpected pass, so a fixed defect would report as a broken gate.
+#
+# Repaired and promoted to ordinary coverage:
+#   - C7 same-processor ABA (in-memory, file SQLite, live PostgreSQL) —
+#     acknowledgement is fenced on a storage-minted claim generation.
+#   - StartKey (in-memory, file SQLite, live PostgreSQL) — keyed start
+#     acceptance reserves the key, creates the aggregate, and enqueues the
+#     Start command in one commit.
+#   - C1 cancellation authority (file SQLite, live PostgreSQL) — the API
+#     submits non-terminal cancellation intent; runtime control owns the
+#     terminal transition.
 manifest_version = 1
 profile = "runtime-repair-red"
 package = "nebula-server"
 feature = "runtime-repair-red"
 test_binary = "runtime_repair_red_scenarios"
 
+# The Start command is consumed and the node parks durably, so these no longer
+# fail at "drive not connected". They fail one stage later, and the cause is
+# now precisely located.
+#
+# After the restart the recovery sweep runs, finds the execution, and sees the
+# parked wait as overdue — but `resume_execution` returns `Leased`, so the wake
+# is never driven. The lease belongs to the previous incarnation, which no
+# longer exists: `holder` is a per-engine-instance id, so a restarted engine
+# cannot recognise the lease as its own, and the only way out is expiry.
+#
+# Expiry never arrives, because `lease_expires_at_ms` is stamped from the
+# storage layer's wall clock while the engine reasons in its injected clock.
+# Advancing the injected clock past the delay moves the engine's `now` and the
+# node's `next_attempt_at` into agreement, but leaves the persisted lease
+# deadline untouched.
+#
+# The fix is a seam change, not a patch: durable lease arithmetic has to derive
+# its deadline from the same clock the engine uses, which means threading a
+# clock port into `nebula-storage` across all three backends and every lease
+# call site. Deliberately left RED rather than worked around — shortening the
+# lease TTL or special-casing the profile would make these two cases pass
+# while leaving a restarted deployment stalled for a full TTL, which is the
+# real defect.
 [[expected_failures]]
 test_name = "c0_file_sqlite_park_restart_resume"
-reason_code = "c0-drive-not-connected"
+reason_code = "c0-resume-not-connected"
 
 [[expected_failures]]
 test_name = "c0_live_postgresql_park_restart_resume"
-reason_code = "c0-drive-not-connected"
-
-[[expected_failures]]
-test_name = "c1_file_sqlite_cancel_before_handler_completion"
-reason_code = "c1-cancel-terminalized-by-api"
-
-[[expected_failures]]
-test_name = "c1_live_postgresql_cancel_before_handler_completion"
-reason_code = "c1-cancel-terminalized-by-api"
-
-[[expected_failures]]
-test_name = "component_c7::same_processor_id_aba_file_sqlite"
-reason_code = "c7-same-processor-aba-accepted"
-
-[[expected_failures]]
-test_name = "component_c7::same_processor_id_aba_in_memory"
-reason_code = "c7-same-processor-aba-accepted"
-
-[[expected_failures]]
-test_name = "component_c7::same_processor_id_aba_live_postgres"
-reason_code = "c7-same-processor-aba-accepted"
-
-[[expected_failures]]
-test_name = "startkey_file_sqlite"
-reason_code = "startkey-same-fingerprint-duplicated"
-
-[[expected_failures]]
-test_name = "startkey_in_memory"
-reason_code = "startkey-same-fingerprint-duplicated"
-
-[[expected_failures]]
-test_name = "startkey_live_postgresql"
-reason_code = "startkey-same-fingerprint-duplicated"
+reason_code = "c0-resume-not-connected"

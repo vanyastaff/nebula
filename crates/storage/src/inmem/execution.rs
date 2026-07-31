@@ -50,6 +50,10 @@ pub(super) struct QueuedMsg {
     pub(super) processed_at: Option<Instant>,
     pub(super) reclaim_count: u32,
     pub(super) error_message: Option<String>,
+    /// Monotonic claim attempt, mirroring the SQL backends' `claim_generation`
+    /// column: incremented on every claim, never decremented or reused, and
+    /// the sole authority for acknowledging the row.
+    pub(super) claim_generation: u64,
 }
 
 /// One queued job-dispatch row plus its processing bookkeeping.
@@ -64,6 +68,10 @@ pub(super) struct QueuedJob {
     pub(super) processed_at: Option<Instant>,
     pub(super) reclaim_count: u32,
     pub(super) error_message: Option<String>,
+    /// Monotonic claim attempt, mirroring the SQL backends' `claim_generation`
+    /// column: incremented on every claim, never decremented or reused, and
+    /// the sole authority for acknowledging the row.
+    pub(super) claim_generation: u64,
 }
 
 #[derive(Debug, Default)]
@@ -88,6 +96,20 @@ pub(super) struct State {
     /// This shares the execution aggregate lock so future start and terminal
     /// transitions can compose reference mutations without a split boundary.
     pub(super) revision_catalog: super::plan_flavor_catalog::RevisionCatalogState,
+    /// Accepted start keys: `(workspace_id, org_id, start_key)` -> the
+    /// reservation that key already owns. Shares the aggregate lock so a
+    /// reservation, its execution row, and its Start command are written in
+    /// one critical section, mirroring the SQL backends' single transaction.
+    pub(super) start_keys: HashMap<(String, String, String), StartKeyReservation>,
+}
+
+/// One accepted start key.
+#[derive(Clone, Debug)]
+pub(super) struct StartKeyReservation {
+    pub(super) fingerprint_version: u16,
+    pub(super) fingerprint: [u8; 32],
+    pub(super) execution_id: String,
+    pub(super) created_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// Shared mutable core. One mutex guards the whole store so a `commit`
@@ -296,6 +318,7 @@ impl ExecutionStore for InMemoryExecutionStore {
                     processed_at: None,
                     reclaim_count: 0,
                     error_message: None,
+                    claim_generation: 0,
                 },
             );
         }

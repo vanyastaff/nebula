@@ -8,8 +8,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nebula_storage::sqlite::{
-    SqliteExecutionStore, SqliteIdempotencyGuard, SqliteJobDispatchQueue, SqliteJournalReader,
-    SqliteResumeTokenStore, SqliteWorkflowStore, SqliteWorkflowVersionStore, init_schema,
+    SqliteControlQueue, SqliteExecutionStore, SqliteIdempotencyGuard, SqliteJobDispatchQueue,
+    SqliteJournalReader, SqliteResumeTokenStore, SqliteWorkflowStore, SqliteWorkflowVersionStore,
+    init_schema,
 };
 use nebula_storage::{InMemoryCheckpointStore, InMemoryNodeResultStore};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
@@ -18,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{EnvFilter, fmt};
 
 use nebula_engine::{ExecutionStores, WorkflowStores};
-use nebula_storage_port::store::JobDispatchQueue;
+use nebula_storage_port::store::{ControlQueue, JobDispatchQueue};
 use nebula_worker_bin::compose::{
     ComposeError, WorkerConfig, WorkerConfigError, build_core_flavor_runtime,
 };
@@ -34,6 +35,14 @@ pub(crate) enum WorkerRunError {
     /// Environment config is invalid (bad env var format).
     #[error("configuration error — check NEBULA_WORKER_* env vars: {0}")]
     Config(#[from] WorkerConfigError),
+
+    /// A supervised worker component ended abnormally.
+    ///
+    /// Surfaced as a non-zero exit rather than logged and swallowed: a worker
+    /// whose control consumer or claim loop died is no longer draining work,
+    /// and an orchestrator that sees a clean exit will not restart it.
+    #[error("worker runtime ended abnormally: {0}")]
+    RuntimeStopped(#[from] nebula_worker::WorkerRuntimeError),
 
     /// SQLite pool construction or `connect()` failed.
     ///
@@ -102,7 +111,15 @@ pub(crate) enum WorkerRunError {
 /// environment). SQLite is the default and the tested path.
 async fn build_stores(
     config: &WorkerConfig,
-) -> Result<(ExecutionStores, WorkflowStores, Arc<dyn JobDispatchQueue>), WorkerRunError> {
+) -> Result<
+    (
+        ExecutionStores,
+        WorkflowStores,
+        Arc<dyn JobDispatchQueue>,
+        Arc<dyn ControlQueue>,
+    ),
+    WorkerRunError,
+> {
     if config.database_url.is_none() {
         // ── SQLite path (default, CI-tested) ─────────────────────────────────
         //
@@ -155,7 +172,10 @@ async fn build_stores(
         let resume_tokens = Arc::new(SqliteResumeTokenStore::new(pool.clone()));
         let workflow_store = Arc::new(SqliteWorkflowStore::new(pool.clone()));
         let versions_store = Arc::new(SqliteWorkflowVersionStore::new(pool.clone()));
-        let queue = Arc::new(SqliteJobDispatchQueue::new(pool));
+        let queue = Arc::new(SqliteJobDispatchQueue::new(pool.clone()));
+        // Same pool as the execution store: the consumer must drain the
+        // queue the API writes to, not a second one.
+        let control_queue = Arc::new(SqliteControlQueue::new(pool));
 
         let execution_stores = ExecutionStores {
             execution: execution_store,
@@ -170,7 +190,7 @@ async fn build_stores(
             versions: versions_store,
         };
 
-        return Ok((execution_stores, workflow_stores, queue));
+        return Ok((execution_stores, workflow_stores, queue, control_queue));
     }
 
     // ── Postgres path (opt-in; compile-verified but not CI-integration-tested) ──
@@ -198,9 +218,17 @@ async fn build_stores(
 #[cfg(feature = "postgres")]
 async fn build_pg_stores(
     dsn: &str,
-) -> Result<(ExecutionStores, WorkflowStores, Arc<dyn JobDispatchQueue>), WorkerRunError> {
+) -> Result<
+    (
+        ExecutionStores,
+        WorkflowStores,
+        Arc<dyn JobDispatchQueue>,
+        Arc<dyn ControlQueue>,
+    ),
+    WorkerRunError,
+> {
     use nebula_storage::postgres::{
-        PgExecutionStore, PgIdempotencyGuard, PgJobDispatchQueue, PgJournalReader,
+        PgControlQueue, PgExecutionStore, PgIdempotencyGuard, PgJobDispatchQueue, PgJournalReader,
         PgResumeTokenStore, PgWorkflowStore, PgWorkflowVersionStore, init_schema as pg_init_schema,
     };
     use sqlx::postgres::PgPoolOptions;
@@ -234,7 +262,9 @@ async fn build_pg_stores(
     let resume_tokens = Arc::new(PgResumeTokenStore::new(pool.clone()));
     let workflow_store = Arc::new(PgWorkflowStore::new(pool.clone()));
     let versions_store = Arc::new(PgWorkflowVersionStore::new(pool.clone()));
-    let queue = Arc::new(PgJobDispatchQueue::new(pool));
+    let queue = Arc::new(PgJobDispatchQueue::new(pool.clone()));
+    // Same pool as the execution store — see the SQLite arm.
+    let control_queue = Arc::new(PgControlQueue::new(pool));
 
     let execution_stores = ExecutionStores {
         execution: execution_store,
@@ -249,7 +279,7 @@ async fn build_pg_stores(
         versions: versions_store,
     };
 
-    Ok((execution_stores, workflow_stores, queue))
+    Ok((execution_stores, workflow_stores, queue, control_queue))
 }
 
 /// Fail-closed twin compiled when the `postgres` feature is absent.
@@ -262,7 +292,15 @@ async fn build_pg_stores(
 #[cfg(not(feature = "postgres"))]
 async fn build_pg_stores(
     _dsn: &str,
-) -> Result<(ExecutionStores, WorkflowStores, Arc<dyn JobDispatchQueue>), WorkerRunError> {
+) -> Result<
+    (
+        ExecutionStores,
+        WorkflowStores,
+        Arc<dyn JobDispatchQueue>,
+        Arc<dyn ControlQueue>,
+    ),
+    WorkerRunError,
+> {
     Err(WorkerRunError::PostgresFeatureNotEnabled)
 }
 
@@ -305,7 +343,7 @@ pub(crate) async fn run() -> Result<(), WorkerRunError> {
     }
 
     // Build the store bundle — SQLite or Postgres depending on config.
-    let (execution_stores, workflow_stores, queue) = build_stores(&config).await?;
+    let (execution_stores, workflow_stores, queue, control_queue) = build_stores(&config).await?;
 
     // Assemble the core-flavor builder (boots CorePlugin + wires into engine).
     // The returned MetricsRegistry is the same instance the engine's ActionRuntime
@@ -320,7 +358,12 @@ pub(crate) async fn run() -> Result<(), WorkerRunError> {
     )?;
 
     // Apply optional env-driven tuning before materialising the runtime.
-    builder = builder.with_metrics(metrics);
+    // The same control queue the API enqueues accepted commands onto. A
+    // worker without it drains job-dispatch rows only, leaving every
+    // accepted execution parked with an unconsumed `Start`.
+    builder = builder
+        .with_control_queue(control_queue)
+        .with_metrics(metrics);
     if let Some(n) = config.batch_size {
         builder = builder.with_batch_size(n);
     }
@@ -347,7 +390,7 @@ pub(crate) async fn run() -> Result<(), WorkerRunError> {
     );
     handle.await.expect(
         "worker task must not panic: a panic here indicates a bug in the claim-loop implementation",
-    );
+    )?;
     tracing::info!("nebula-worker (core flavor) stopped cleanly");
 
     Ok(())

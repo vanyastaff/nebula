@@ -254,10 +254,27 @@ jobs:
           # Preserve the pre-K2 live PostgreSQL authority gate. These tests
           # predate the credential lifecycle suites and remain part of the
           # required storage contract.
+          #
+          # `pg::control_queue::tests` is required here because the claim
+          # statement is assembled at runtime (`AssertSqlSafe`) and is never
+          # type-checked at compile time: issue #756 shipped an ambiguous
+          # `RETURNING` projection that failed every claim, and no compile-only
+          # or SQLite test could observe it. Those tests hold a PostgreSQL
+          # advisory lock, so they serialise correctly against each other even
+          # though nextest runs each in its own process.
           cargo nextest run "${common[@]}" \
-            -E 'package(=nebula-storage) & binary(=nebula_storage) & test(/pg::(oauth_state::tests|identity_secret::postgres_tests|session::tests|mfa_enrollment::tests)::/)'
+            -E 'package(=nebula-storage) & binary(=nebula_storage) & test(/pg::(oauth_state::tests|identity_secret::postgres_tests|session::tests|mfa_enrollment::tests|control_queue::tests)::/)'
 
+          # `conformance` and `identity_conformance` are the shared semantic
+          # oracles: the same assertions run against InMemory, SQLite, and
+          # PostgreSQL. Their PostgreSQL arm skip-cleans without DATABASE_URL,
+          # so leaving them out of this job meant the "shared" oracle had never
+          # actually run against PostgreSQL — and did not, in fact, hold. Each
+          # backend instance now takes a private schema, so they are safe to
+          # run here and against each other.
           for suite in \
+            conformance \
+            identity_conformance \
             credential_lifecycle_postgres \
             credential_migration_postgres \
             credential_schema_admission_postgres \

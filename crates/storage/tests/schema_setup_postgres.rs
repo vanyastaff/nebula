@@ -12,6 +12,9 @@ use sqlx::{
     postgres::{PgConnectOptions, PgPoolOptions},
 };
 
+#[path = "support/canonical_head.rs"]
+mod canonical_head;
+
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/postgres");
 
 type TestResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -191,7 +194,7 @@ async fn abort_while_migration_blocked_releases_setup_lock_and_retry_succeeds() 
     let head: i64 = sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations WHERE success")
         .fetch_one(&database.pool)
         .await?;
-    assert_eq!(head, 41);
+    assert_eq!(head, canonical_head::of(&MIGRATOR));
 
     database.cleanup().await;
     Ok(())

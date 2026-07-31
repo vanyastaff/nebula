@@ -463,6 +463,8 @@ fn operation_error() -> StorageError {
 mod tests {
     use std::sync::Arc;
 
+    use std::future::Future;
+
     use chrono::{Duration, Utc};
     use sqlx::postgres::PgPoolOptions;
     use tokio::sync::Barrier;
@@ -489,8 +491,39 @@ mod tests {
             Err(std::env::VarError::NotPresent) => return None,
             Err(err) => panic!("DATABASE_URL is set but invalid: {err}"),
         };
+        // A private schema, not `public`. Two of these tests must seed a row
+        // that migration 0038's CHECK constraint forbids, which means dropping
+        // that constraint for the length of the seed — safe only when the
+        // schema is this module's own.
+        let schema = format!("nebula_oauth_login_{}", std::process::id());
+        let admin = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .expect("connect");
+        for statement in [
+            format!("DROP SCHEMA IF EXISTS {schema} CASCADE"),
+            format!("CREATE SCHEMA {schema}"),
+        ] {
+            sqlx::query(sqlx::AssertSqlSafe(statement))
+                .execute(&admin)
+                .await
+                .expect("create this module's private schema");
+        }
+        admin.close().await;
+
+        let search_path = format!("SET search_path TO {schema}");
         let pool = PgPoolOptions::new()
             .max_connections(8)
+            .after_connect(move |connection, _meta| {
+                let search_path = search_path.clone();
+                Box::pin(async move {
+                    sqlx::query(sqlx::AssertSqlSafe(search_path))
+                        .execute(connection)
+                        .await?;
+                    Ok(())
+                })
+            })
             .connect(&url)
             .await
             .expect("connect");
@@ -503,6 +536,45 @@ mod tests {
             })
             .await;
         Some(pool)
+    }
+
+    /// Drop a named `users` CHECK constraint for the duration of one seed.
+    ///
+    /// Migration 0038 added constraints that make malformed identity rows
+    /// unreachable through ordinary writes — and thereby unreachable for the
+    /// tests whose subject is what the finalizer does when it *encounters* one.
+    /// Those states are still reachable in the field: a database adopted from
+    /// before 0038 carries rows the constraints never validated, so the
+    /// finalizer's fail-closed behaviour is defence in depth that has to keep
+    /// working.
+    ///
+    /// These tests own a private schema, so the constraint they drop is their
+    /// own copy and no concurrent test can observe the window. It is restored
+    /// `NOT VALID` because the seeded row is exactly what it would reject —
+    /// the constraint must guard future writes without retroactively failing
+    /// the fixture it was suspended for.
+    async fn without_users_check<Seed, Fut>(
+        pool: &Pool<Postgres>,
+        constraint: &str,
+        definition: &str,
+        seed: Seed,
+    ) where
+        Seed: FnOnce() -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "ALTER TABLE users DROP CONSTRAINT {constraint}"
+        )))
+        .execute(pool)
+        .await
+        .expect("the 0038 constraint exists to be dropped");
+        seed().await;
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "ALTER TABLE users ADD CONSTRAINT {constraint} CHECK ({definition}) NOT VALID"
+        )))
+        .execute(pool)
+        .await
+        .expect("restore the constraint for the rest of the schema");
     }
 
     fn unique(prefix: &str) -> String {
@@ -879,10 +951,22 @@ mod tests {
             user.email_verified_at = Some(Utc::now());
             user.mfa_enabled = true;
             user.mfa_secret_envelope = secret;
-            PgUserRepo::new(pool.clone())
-                .create(&user)
-                .await
-                .expect("seed invalid MFA user");
+            // The `empty` case is a zero-byte envelope, which 0038's bounds
+            // check forbids — the very shape an adopted pre-0038 database can
+            // still hold, and the shape this test exists to prove the
+            // finalizer refuses.
+            without_users_check(
+                &pool,
+                "chk_users_mfa_secret_envelope_bounds",
+                "mfa_secret_envelope IS NULL OR octet_length(mfa_secret_envelope) BETWEEN 1 AND 4096",
+                || async {
+                    PgUserRepo::new(pool.clone())
+                        .create(&user)
+                        .await
+                        .expect("seed invalid MFA user");
+                },
+            )
+            .await;
             PgExternalIdentityRepo::new(pool.clone())
                 .link_external(&user.id, &provider, &subject, Some(&user.email))
                 .await
@@ -977,10 +1061,18 @@ mod tests {
         let mut user = test_user(&format!("{}@example.test", unique("malformed-link")));
         user.id.pop();
         user.email_verified_at = Some(Utc::now());
-        PgUserRepo::new(pool.clone())
-            .create(&user)
-            .await
-            .expect("seed malformed user");
+        without_users_check(
+            &pool,
+            "chk_users_identity_id_length",
+            "octet_length(id) = 16",
+            || async {
+                PgUserRepo::new(pool.clone())
+                    .create(&user)
+                    .await
+                    .expect("seed malformed user");
+            },
+        )
+        .await;
         PgExternalIdentityRepo::new(pool.clone())
             .link_external(&user.id, &provider, &subject, Some(&user.email))
             .await

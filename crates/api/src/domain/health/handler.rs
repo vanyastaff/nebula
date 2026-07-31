@@ -142,7 +142,8 @@ mod tests {
     use axum::http::StatusCode;
     use nebula_storage::inmem::{
         InMemoryControlQueue, InMemoryExecutionStore, InMemoryJournalReader,
-        InMemoryNodeResultStore, InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
+        InMemoryNodeResultStore, InMemoryStartAcceptanceStore, InMemoryWorkflowStore,
+        InMemoryWorkflowVersionStore,
     };
     use nebula_storage_port::{
         Scope, StorageError,
@@ -298,10 +299,11 @@ mod tests {
         AppState::new(
             workflow_store,
             Arc::new(InMemoryWorkflowVersionStore::new()),
-            Arc::new(exec_store),
+            Arc::new(exec_store.clone()),
             Arc::new(InMemoryNodeResultStore::new()),
             Arc::new(journal),
             Arc::new(control_queue),
+            Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
             config.jwt_secret,
         )
     }

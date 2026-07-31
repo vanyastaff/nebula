@@ -254,12 +254,14 @@ async fn knife_api_producer_boundary_via_scoped_port() {
     let cancelled: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(
         cancelled["status"].as_str(),
-        Some("cancelled"),
-        "API producer boundary, step 5: execution row must show 'cancelled'"
+        Some("cancelling"),
+        "API producer boundary, step 5: the API records the cancellation request; \
+         runtime control records the outcome"
     );
     assert!(
-        cancelled["finished_at"].as_i64().is_some_and(|t| t > 0),
-        "API producer boundary, step 5: finished_at must be a real timestamp after cancel"
+        cancelled["finished_at"].is_null(),
+        "API producer boundary, step 5: finished_at must stay unset until the engine \
+         honors the cancel"
     );
 
     // Outbox now holds the Start (step 3) + Cancel (step 5), both
@@ -691,7 +693,7 @@ async fn knife_step3_manually_composed_consumer_dispatches_start() {
 /// cancellation/control intent. It does not observe consumer delivery or
 /// handler exit.
 #[tokio::test]
-async fn knife_step5_api_persists_terminal_cancel_control_intent_while_handler_runs() {
+async fn knife_step5_api_persists_non_terminal_cancel_intent_while_handler_runs() {
     use std::time::Duration;
 
     use nebula_execution::ExecutionStatus;
@@ -779,39 +781,44 @@ async fn knife_step5_api_persists_terminal_cancel_control_intent_while_handler_r
         "durable Cancel control row must reference the cancelled execution"
     );
 
-    // Preserve the terminal-state assertion on the persisted producer result.
-    // The API CAS-transitioned this row before responding, so observing it
-    // within the timeout does not prove the consumer drained `Cancel` or that
-    // the slow handler exited.
+    // The API must persist a *non-terminal* cancellation state.
+    //
+    // This assertion used to require a terminal state here — and its own note
+    // conceded the observation proved nothing, because the API had
+    // CAS-transitioned the row before responding. That was the defect, not the
+    // contract: a terminal `Cancelled` written while the handler is still
+    // running reports stopped work that has not stopped.
+    //
+    // The oracle is now the honest one: while the slow handler runs and no
+    // engine has honored the command, the persisted state stays `Cancelling`.
+    // Polling for a whole window (rather than reading once) is what makes it
+    // non-vacuous — a regression that terminalizes early is caught whenever it
+    // happens inside the window, not only at the instant of the first read.
     let execution_id = nebula_core::ExecutionId::parse(&execution_id_str).unwrap();
-    let final_status = tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            // Read through the same scoped port handle the engine was
-            // wired with; the tenancy decorator substitutes its bound
-            // scope so the `knife_scope()` argument is immaterial.
-            let json = state
-                .execution_store
-                .get(&knife_scope(), &execution_id.to_string())
-                .await
-                .unwrap()
-                .expect("execution row present")
-                .state;
-            let status: ExecutionStatus =
-                serde_json::from_value(json.get("status").cloned().unwrap()).unwrap();
-            if status.is_terminal() {
-                return status;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("the API-persisted execution state became terminal within 10s");
-
-    assert!(
-        final_status.is_terminal(),
-        "step 5 producer contract: API cancellation persisted a terminal state. \
-         got: {final_status:?}"
-    );
+    let observation_window = Duration::from_secs(1);
+    let deadline = tokio::time::Instant::now() + observation_window;
+    while tokio::time::Instant::now() < deadline {
+        // Read through the same scoped port handle the engine was wired with;
+        // the tenancy decorator substitutes its bound scope so the
+        // `knife_scope()` argument is immaterial.
+        let json = state
+            .execution_store
+            .get(&knife_scope(), &execution_id.to_string())
+            .await
+            .unwrap()
+            .expect("execution row present")
+            .state;
+        let status: ExecutionStatus =
+            serde_json::from_value(json.get("status").cloned().unwrap()).unwrap();
+        assert_eq!(
+            status,
+            ExecutionStatus::Cancelling,
+            "step 5 producer contract: the API submits cancellation intent and must not \
+             terminalize it; runtime control owns the terminal transition once the engine \
+             has honored the command"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 
     // Handler exit is outside this test's oracle; abort and join the
     // unobserved consumer so cleanup cannot masquerade as evidence.

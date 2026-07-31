@@ -291,7 +291,10 @@ async fn core_flavor_runtime_processes_seeded_start_job() {
     }
 
     cancel.cancel();
-    handle.await.expect("worker task must not panic");
+    handle
+        .await
+        .expect("worker task must not panic")
+        .expect("every supervised worker component must stop cleanly");
 
     assert!(
         completed,

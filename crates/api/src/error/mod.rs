@@ -70,6 +70,16 @@ pub enum ApiError {
     #[error("Already exists: {0}")]
     AlreadyExists(String),
 
+    /// The start key is reserved for a different request (409).
+    ///
+    /// A start key identifies one accepted command. Reusing it for a request
+    /// that canonicalizes differently is refused rather than accepted, and
+    /// nothing durable changed. The response carries no execution id: the
+    /// caller proved knowledge of a key, not of the execution behind it.
+    #[classify(category = "conflict", code = "API:START_CONFLICT")]
+    #[error("Start key already reserved for a different request")]
+    StartConflict,
+
     /// A bounded structural version can no longer advance (409).
     #[classify(category = "conflict", code = "API:VERSION_EXHAUSTED")]
     #[error("Version exhausted: {0}")]
@@ -411,6 +421,21 @@ impl ApiError {
                     StatusCode::CONFLICT,
                 )
                 .with_detail(msg),
+            ),
+            ApiError::StartConflict => (
+                StatusCode::CONFLICT,
+                ProblemDetails::new(
+                    "https://nebula.dev/problems/start-conflict",
+                    "Start Key Conflict",
+                    StatusCode::CONFLICT,
+                )
+                .with_detail(
+                    "This start key was already accepted for a different request. \
+                     Retry with the original request body, or use a new key.",
+                )
+                // `code` is the machine-readable discriminator clients branch
+                // on; the type URI is for humans and the title is prose.
+                .with_extensions(serde_json::json!({"code": "operation_mismatch"})),
             ),
             ApiError::AlreadyExists(msg) => (
                 StatusCode::CONFLICT,

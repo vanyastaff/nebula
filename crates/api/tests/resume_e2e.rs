@@ -44,6 +44,7 @@ use nebula_api::{
     ApiConfig, AppState, app,
     transport::webhook::{ResumeHandlerComponents, ratelimit::WebhookRateLimiter},
 };
+use nebula_storage::inmem::InMemoryStartAcceptanceStore;
 use nebula_storage::{
     InMemoryResumeTokenStore,
     inmem::{InMemoryControlQueue, InMemoryExecutionStore},
@@ -202,8 +203,8 @@ struct ResumeHarness {
 /// `control_queue.snapshot()` reflects every `Resume` the producer enqueues.
 async fn build_resume_harness(components: ResumeHandlerComponents) -> ResumeHarness {
     use nebula_storage::inmem::{
-        InMemoryJournalReader, InMemoryNodeResultStore, InMemoryWorkflowStore,
-        InMemoryWorkflowVersionStore,
+        InMemoryJournalReader, InMemoryNodeResultStore, InMemoryStartAcceptanceStore,
+        InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
     };
 
     let exec_store = InMemoryExecutionStore::new();
@@ -221,10 +222,11 @@ async fn build_resume_harness(components: ResumeHandlerComponents) -> ResumeHarn
     let state = AppState::new(
         Arc::new(workflow_store),
         Arc::new(workflow_versions),
-        Arc::new(exec_store),
+        Arc::new(exec_store.clone()),
         Arc::new(node_results),
         Arc::new(journal),
         Arc::new(control_queue.clone()),
+        Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
         api_config.jwt_secret.clone(),
     )
     .with_org_resolver(Arc::new(common::TestOrgResolver))
@@ -292,10 +294,11 @@ async fn build_failing_store_harness(components: ResumeHandlerComponents) -> Res
     let state = AppState::new(
         Arc::new(workflow_store),
         Arc::new(workflow_versions),
-        Arc::new(exec_store),
+        Arc::new(exec_store.clone()),
         Arc::new(node_results),
         Arc::new(journal),
         Arc::new(control_queue.clone()),
+        Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
         api_config.jwt_secret.clone(),
     )
     .with_org_resolver(Arc::new(common::TestOrgResolver))
@@ -1140,10 +1143,11 @@ fn build_sqlite_resume_app(
     let state = AppState::new(
         Arc::new(workflow_store),
         Arc::new(workflow_versions),
-        Arc::new(exec_store),
+        Arc::new(exec_store.clone()),
         Arc::new(node_results),
         Arc::new(journal),
         Arc::new(control_queue),
+        Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
         api_config.jwt_secret.clone(),
     )
     .with_org_resolver(Arc::new(common::TestOrgResolver))

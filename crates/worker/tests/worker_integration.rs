@@ -38,7 +38,8 @@ use nebula_engine::{
 use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_metrics::MetricsRegistry;
 use nebula_storage::{
-    InMemoryExecutionStore, InMemoryWorkflowVersionStore, inmem::InMemoryJobDispatchQueue,
+    InMemoryControlQueue, InMemoryExecutionStore, InMemoryWorkflowVersionStore,
+    inmem::InMemoryJobDispatchQueue,
 };
 use nebula_storage_port::{
     Scope,
@@ -341,6 +342,7 @@ async fn worker_runtime_drives_execution_to_completed() {
         vec![plugin_key],
         proc16(0xBB),
     )
+    .with_control_queue(Arc::new(InMemoryControlQueue::new(&stores.execution)))
     // Use a fast poll interval so virtual-time advance is small.
     .with_poll_interval(Duration::from_millis(10))
     .build()
@@ -371,7 +373,10 @@ async fn worker_runtime_drives_execution_to_completed() {
 
     // Cancel the worker and wait for clean shutdown.
     cancel.cancel();
-    handle.await.expect("worker task must not panic");
+    handle
+        .await
+        .expect("worker task must not panic")
+        .expect("every supervised worker component must stop cleanly");
 
     // Echo handler must have been invoked exactly once.
     assert_eq!(
@@ -395,6 +400,7 @@ async fn builder_rejects_empty_plugins() {
         vec![], // intentionally empty — must be rejected
         proc16(0x00),
     )
+    .with_control_queue(Arc::new(InMemoryControlQueue::new(&stores.execution)))
     .build();
 
     assert!(
@@ -501,6 +507,7 @@ async fn reclaim_then_rerun_drives_exactly_once_via_real_sink() {
         vec![plugin_key],
         proc_b,
     )
+    .with_control_queue(Arc::new(InMemoryControlQueue::new(&stores.execution)))
     .with_poll_interval(Duration::from_millis(10))
     .build()
     .expect("WorkerRuntimeBuilder::build must succeed");
@@ -524,7 +531,10 @@ async fn reclaim_then_rerun_drives_exactly_once_via_real_sink() {
     );
 
     cancel.cancel();
-    handle.await.expect("worker task must not panic");
+    handle
+        .await
+        .expect("worker task must not panic")
+        .expect("every supervised worker component must stop cleanly");
 
     // Echo handler must have fired exactly once — confirms the real sink ran and
     // did not short-circuit on an idempotent no-op for an already-terminal status.

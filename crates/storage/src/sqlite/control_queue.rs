@@ -10,7 +10,10 @@
 use std::time::Duration;
 
 use nebula_storage_port::dto::{ControlMsg, JournalEntry, ResumeTarget};
-use nebula_storage_port::store::{ControlQueue, ExecutionJournalReader, ReclaimOutcome};
+use nebula_storage_port::store::{
+    ClaimGeneration, ControlClaim, ControlClaimToken, ControlQueue, ExecutionJournalReader,
+    ReclaimOutcome,
+};
 use nebula_storage_port::{Scope, StorageError};
 use sqlx::{Row, SqlitePool};
 
@@ -28,6 +31,73 @@ impl SqliteControlQueue {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
     }
+
+    /// Explain why a fenced acknowledgement matched no row.
+    ///
+    /// The fenced `UPDATE` reports only "zero rows", which conflates "the row
+    /// is gone" with "this token is stale". An absent row is a lost write; a
+    /// superseded token is the fence doing its job. The follow-up read runs on
+    /// the failure path only.
+    async fn unacknowledgeable(
+        &self,
+        claim: &ControlClaimToken,
+    ) -> Result<StorageError, StorageError> {
+        let exists: Option<i64> =
+            sqlx::query_scalar("SELECT 1 FROM port_control_queue WHERE id = ?")
+                .bind(claim.row_id().as_slice())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(conn_err)?;
+        Ok(if exists.is_some() {
+            StorageError::FencedOut {
+                entity: "control_queue",
+                id: ulid_hex(claim.row_id()),
+            }
+        } else {
+            StorageError::NotFound {
+                entity: "control_queue",
+                id: ulid_hex(claim.row_id()),
+            }
+        })
+    }
+}
+
+/// Hex-encode a 16-byte ULID without the optional `hex` crate.
+fn ulid_hex(id: &[u8; 16]) -> String {
+    id.iter().fold(String::with_capacity(32), |mut s, b| {
+        use std::fmt::Write as _;
+        let _ = write!(s, "{b:02x}");
+        s
+    })
+}
+
+/// Widen a persisted generation to the port's `u64`.
+///
+/// A negative value is persisted corruption, and treating it as `0` would make
+/// a stale token match. Fail closed instead.
+fn decode_generation(generation: i64, id: &[u8; 16]) -> Result<ClaimGeneration, StorageError> {
+    u64::try_from(generation)
+        .map(ClaimGeneration::new)
+        .map_err(|_| {
+            StorageError::Serialization(format!(
+                "invalid control_queue claim_generation {generation} (id={})",
+                ulid_hex(id)
+            ))
+        })
+}
+
+/// Narrow a token's generation for binding against the `INTEGER` column.
+///
+/// A generation beyond `i64::MAX` cannot name a persisted row, so binding a
+/// saturated value would fence against the wrong row. Fail closed instead.
+fn generation_bind(claim: &ControlClaimToken) -> Result<i64, StorageError> {
+    i64::try_from(claim.generation().get()).map_err(|_| {
+        StorageError::Serialization(format!(
+            "control_queue claim generation {} exceeds the persisted range (id={})",
+            claim.generation(),
+            ulid_hex(claim.row_id())
+        ))
+    })
 }
 
 fn decode_command(s: &str) -> Result<nebula_storage_port::dto::ControlCommand, StorageError> {
@@ -86,7 +156,7 @@ impl ControlQueue for SqliteControlQueue {
         &self,
         processor: &[u8; 16],
         batch_size: u32,
-    ) -> Result<Vec<ControlMsg>, StorageError> {
+    ) -> Result<Vec<ControlClaim>, StorageError> {
         let mut tx = self.pool.begin().await.map_err(conn_err)?;
         let rows = sqlx::query(
             "SELECT id, execution_id, workspace_id, org_id, command, \
@@ -110,23 +180,27 @@ impl ControlQueue for SqliteControlQueue {
             // yet the message would still be pushed — returning work this
             // worker does not actually own (a double-claim). Only push
             // when this UPDATE actually won the row (`rows_affected == 1`).
-            let won = sqlx::query(
+            // `claim_generation` is incremented by the same statement that
+            // makes the row `Processing`, and `RETURNING` hands back the value
+            // this claim minted — no separate read a concurrent claim could
+            // interleave with.
+            let minted: Option<i64> = sqlx::query_scalar(
                 "UPDATE port_control_queue \
                  SET status = 'Processing', processed_by = ?, \
-                     processed_at_ms = ? \
-                 WHERE id = ? AND status = 'Pending'",
+                     processed_at_ms = ?, \
+                     claim_generation = claim_generation + 1 \
+                 WHERE id = ? AND status = 'Pending' \
+                 RETURNING claim_generation",
             )
             .bind(processor.as_slice())
             .bind(chrono::Utc::now().timestamp_millis())
             .bind(id_bytes.as_slice())
-            .execute(&mut *tx)
+            .fetch_optional(&mut *tx)
             .await
-            .map_err(conn_err)?
-            .rows_affected()
-                == 1;
-            if !won {
+            .map_err(conn_err)?;
+            let Some(generation) = minted else {
                 continue;
-            }
+            };
             let resume_target: Option<ResumeTarget> = row
                 .try_get::<Option<String>, _>("resume_target")
                 .map_err(conn_err)?
@@ -134,7 +208,7 @@ impl ControlQueue for SqliteControlQueue {
                 .map(serde_json::from_str)
                 .transpose()
                 .map_err(|e| StorageError::Serialization(e.to_string()))?;
-            claimed.push(ControlMsg {
+            let msg = ControlMsg {
                 id,
                 execution_id: row.try_get("execution_id").map_err(conn_err)?,
                 command: decode_command(&row.try_get::<String, _>("command").map_err(conn_err)?)?,
@@ -145,48 +219,53 @@ impl ControlQueue for SqliteControlQueue {
                 w3c_traceparent: row.try_get("w3c_traceparent").map_err(conn_err)?,
                 reclaim_count: row.try_get::<i64, _>("reclaim_count").map_err(conn_err)? as u32,
                 resume_target,
+            };
+            claimed.push(ControlClaim {
+                msg,
+                token: ControlClaimToken::new(id, decode_generation(generation, &id)?),
             });
         }
         tx.commit().await.map_err(conn_err)?;
         Ok(claimed)
     }
 
-    async fn mark_completed(
-        &self,
-        id: &[u8; 16],
-        processor: &[u8; 16],
-    ) -> Result<(), StorageError> {
-        // Processor-fenced: only the current claimant may transition the
-        // row (a reclaimed-then-stale runner is a no-op).
-        sqlx::query(
+    async fn mark_completed(&self, claim: &ControlClaimToken) -> Result<(), StorageError> {
+        let rows_updated = sqlx::query(
             "UPDATE port_control_queue SET status = 'Completed' \
-             WHERE id = ? AND status = 'Processing' AND processed_by = ?",
+             WHERE id = ? AND status = 'Processing' AND claim_generation = ?",
         )
-        .bind(id.as_slice())
-        .bind(processor.as_slice())
+        .bind(claim.row_id().as_slice())
+        .bind(generation_bind(claim)?)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(conn_err)?
+        .rows_affected();
+        if rows_updated == 0 {
+            return Err(self.unacknowledgeable(claim).await?);
+        }
         Ok(())
     }
 
     async fn mark_failed(
         &self,
-        id: &[u8; 16],
-        processor: &[u8; 16],
+        claim: &ControlClaimToken,
         error: &str,
     ) -> Result<(), StorageError> {
-        sqlx::query(
+        let rows_updated = sqlx::query(
             "UPDATE port_control_queue \
              SET status = 'Failed', error_message = ? \
-             WHERE id = ? AND status = 'Processing' AND processed_by = ?",
+             WHERE id = ? AND status = 'Processing' AND claim_generation = ?",
         )
         .bind(error)
-        .bind(id.as_slice())
-        .bind(processor.as_slice())
+        .bind(claim.row_id().as_slice())
+        .bind(generation_bind(claim)?)
         .execute(&self.pool)
         .await
-        .map_err(conn_err)?;
+        .map_err(conn_err)?
+        .rows_affected();
+        if rows_updated == 0 {
+            return Err(self.unacknowledgeable(claim).await?);
+        }
         Ok(())
     }
 

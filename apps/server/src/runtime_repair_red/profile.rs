@@ -47,6 +47,17 @@ const PROFILE_EMAIL: &str = "runtime-repair@nebula.invalid";
 const PROFILE_PASSWORD: &str = "runtime-repair-evidence-password";
 const PROFILE_DISPLAY_NAME: &str = "Runtime Repair Evidence";
 const PROFILE_PROCESSOR_ID: [u8; 16] = *b"runtime-repair-1";
+
+/// How often the profile sweeps for overdue parked waits.
+///
+/// The product default is 30 s, which is the right cadence for a deployment
+/// but far longer than an evidence run should wait: this profile drives time
+/// with an injected clock, so a scenario advances a 60-second delay in an
+/// instant and then has to observe the wake. The scan cadence is wall-clock —
+/// it is not the behaviour under test, only how often the behaviour is
+/// polled — so the profile shortens it rather than making every scenario sit
+/// through a production interval.
+const PROFILE_TIMER_SCAN_INTERVAL: Duration = Duration::from_millis(25);
 const EXECUTION_EVENT_BUFFER: usize = 1_024;
 
 /// Explicit closed configuration for the app-owned RED profile.
@@ -250,7 +261,13 @@ impl RuntimeRepairHarness {
                 execution_event_bus,
             )
             .map_err(ProfileErrorKind::WorkerComposition)?;
+        // The same control queue `AppState` enqueues accepted commands onto.
+        // Without this the profile drains job-dispatch rows only, and an
+        // execution accepted over HTTP sits `Created` with a `Start` command no
+        // component consumes — the run never begins.
         let worker_runtime = worker_builder
+            .with_control_queue(worker_projection.control_queue)
+            .with_timer_scan_interval(PROFILE_TIMER_SCAN_INTERVAL)
             .with_metrics(worker_metrics)
             .build()
             .map_err(|_| ProfileErrorKind::WorkerBuild)?;
@@ -265,7 +282,12 @@ impl RuntimeRepairHarness {
         let worker_shutdown = shutdown.clone();
         let observations = self.evidence_controls.observation_registry();
         let worker_future = async move {
-            worker_runtime.run(worker_shutdown).await;
+            // A component death inside the worker is reported, not swallowed:
+            // a runtime whose control consumer stopped is no longer draining
+            // accepted commands and must not read as healthy.
+            if let Err(error) = worker_runtime.run(worker_shutdown).await {
+                tracing::error!(%error, "profile worker runtime ended abnormally");
+            }
         };
         let supervisor = tokio::spawn(async move {
             supervise_profile(ProfileSupervisorInputs {

@@ -6,6 +6,11 @@ use std::future::Future;
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 use tracing::{Instrument as _, Span};
 
+// Adoption is entirely `sqlx::migrate` ledger manipulation, so it exists only
+// where a backend does. Without this gate the module's `use sqlx::migrate::..`
+// fails to resolve under `--no-default-features`, which an `--all-features`
+// clippy pass cannot see.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) mod adopt;
 pub(crate) mod catalog;
 
@@ -670,13 +675,29 @@ where
 mod tests {
     use super::{GENERAL_CATALOG_SUPPORTED_FLOOR, catalog};
 
+    /// Deliberately spelled with literals: this is the tripwire that makes a
+    /// new catalog head a decision rather than a side effect. Deriving either
+    /// value from the migrator would make it pass automatically and prove
+    /// nothing.
+    ///
+    /// Head 0044 (`control_queue_claim_generation`) reviewed against the
+    /// floor: it adds one defaulted column to `port_control_queue` and performs
+    /// no destructive transform, so it needs no aggregate-owner validation and
+    /// the floor stays at 0040. The same review covered 0043
+    /// (`port_start_key_reservations`), which creates one new table:
+    /// it creates one new table and touches no existing relation, so it needs
+    /// no aggregate-owner validation and the floor stays at 0040. The same
+    /// review covered 0042 (`job_dispatch_claim_generation`), which adds one
+    /// defaulted column and performs no destructive transform. A database
+    /// admitted at 0040 or later still reaches this head by ordinary forward
+    /// migration.
     #[test]
     fn new_catalog_head_requires_explicit_admission_policy_review() {
         assert_eq!(GENERAL_CATALOG_SUPPORTED_FLOOR, 40);
         #[cfg(feature = "sqlite")]
-        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 41);
+        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 44);
         #[cfg(feature = "postgres")]
-        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 41);
+        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 44);
     }
 
     /// The setup guard must never hold a descriptor on the database file.

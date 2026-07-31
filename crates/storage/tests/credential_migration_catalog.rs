@@ -209,15 +209,15 @@ fn repository_catalog_matches_k2_contract() {
     let postgres = Catalog::load("postgres").expect("Postgres catalog must be valid");
     let sqlite = Catalog::load("sqlite").expect("SQLite catalog must be valid");
 
-    let expected_postgres = (1_u16..=41).collect::<Vec<_>>();
+    let expected_postgres = (1_u16..=44).collect::<Vec<_>>();
     let expected_sqlite = (1_u16..=28)
         .chain(30..=35)
-        .chain([39, 40, 41])
+        .chain([39, 40, 41, 42, 43, 44])
         .collect::<Vec<_>>();
     assert_eq!(
         postgres.versions(),
         expected_postgres,
-        "Postgres must reserve every logical migration through version 0041"
+        "Postgres must reserve every logical migration through version 0044"
     );
     assert_eq!(
         sqlite.versions(),
@@ -260,6 +260,32 @@ fn repository_catalog_matches_k2_contract() {
         assert_eq!(
             plan_flavor_catalog.file_name, "0041_port_plan_flavor_revision_catalog.sql",
             "plan/flavor catalog migration filename is part of the catalog contract"
+        );
+        let claim_generation = catalog
+            .by_version()
+            .get(&42)
+            .copied()
+            .expect("claim-generation migration 0042 must exist in both backends");
+        assert_eq!(
+            claim_generation.file_name, "0042_job_dispatch_claim_generation.sql",
+            "claim-generation migration filename is part of the catalog contract"
+        );
+        let start_reservations = catalog
+            .by_version()
+            .get(&43)
+            .copied()
+            .expect("start-key reservation migration 0043 must exist in both backends");
+        assert_eq!(
+            start_reservations.file_name, "0043_port_start_key_reservations.sql",
+            "start-key reservation migration filename is part of the catalog contract"
+        );
+        let control_generation =
+            catalog.by_version().get(&44).copied().expect(
+                "control-queue claim-generation migration 0044 must exist in both backends",
+            );
+        assert_eq!(
+            control_generation.file_name, "0044_control_queue_claim_generation.sql",
+            "control-queue claim-generation migration filename is part of the catalog contract"
         );
     }
 }

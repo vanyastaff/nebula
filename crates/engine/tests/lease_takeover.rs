@@ -660,7 +660,7 @@ async fn engine_b_cancels_execution_after_runner_a_death_via_reclaim_redeliver()
     let dead_processor = *b"engine-a-deadrnr";
     let claimed = queue.claim_pending(&dead_processor, 8).await.unwrap();
     assert!(
-        claimed.iter().any(|m| m.id == cancel_row_id),
+        claimed.iter().any(|c| c.msg.id == cancel_row_id),
         "the dead processor must have claimed the Cancel row (now orphaned Processing)"
     );
 

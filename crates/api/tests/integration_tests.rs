@@ -1373,8 +1373,15 @@ async fn test_execution_cancel() {
     let cancelled_execution: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     assert_eq!(cancelled_execution["id"], execution_id.to_string());
-    assert_eq!(cancelled_execution["status"], "cancelled");
-    assert!(cancelled_execution["finished_at"].is_number());
+    // The API records the cancellation *request*; runtime control records the
+    // outcome once the engine has honored it. A terminal `cancelled` here would
+    // report stopped work that is still running.
+    assert_eq!(cancelled_execution["status"], "cancelling");
+    assert!(
+        cancelled_execution["finished_at"].is_null(),
+        "a cancellation request has no completion time; got {:?}",
+        cancelled_execution["finished_at"]
+    );
 
     // Verify the execution was actually cancelled in the repo
     let app = app::build_app(state, &api_config);
@@ -1401,7 +1408,9 @@ async fn test_execution_cancel() {
         .unwrap();
     let execution: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    assert_eq!(execution["status"], "cancelled");
+    // Re-reading the execution shows the same non-terminal state: no engine has
+    // run in this test, so nothing has terminalized it.
+    assert_eq!(execution["status"], "cancelling");
 }
 
 #[tokio::test]
@@ -2318,14 +2327,16 @@ async fn cancel_enqueues_durable_control_signal() {
         .unwrap();
     let cancelled: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    // (1) Execution row must reflect the cancelled state.
+    // (1) Execution row must reflect the cancellation *request*, not a
+    // terminal outcome the engine has not reached.
     assert_eq!(
-        cancelled["status"], "cancelled",
-        "execution row must show `cancelled` status"
+        cancelled["status"], "cancelling",
+        "execution row must show the non-terminal `cancelling` status"
     );
     assert!(
-        cancelled["finished_at"].is_number(),
-        "finished_at must be set"
+        cancelled["finished_at"].is_null(),
+        "finished_at must stay unset until the engine honors the cancel; got {:?}",
+        cancelled["finished_at"]
     );
 
     // (2) A Cancel command must have been written to the control queue — this is

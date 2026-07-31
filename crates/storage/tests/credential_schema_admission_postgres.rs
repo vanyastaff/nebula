@@ -19,6 +19,9 @@ use sqlx::{
     postgres::{PgConnectOptions, PgPoolOptions},
 };
 
+#[path = "support/canonical_head.rs"]
+mod canonical_head;
+
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/postgres");
 
 type TestResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -298,7 +301,7 @@ async fn fresh_and_canonical_0038_schemas_are_admitted() -> TestResult<()> {
     let head: i64 = sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations WHERE success")
         .fetch_one(&pool)
         .await?;
-    assert_eq!(head, 41);
+    assert_eq!(head, canonical_head::of(&MIGRATOR));
     pool.close().await;
     fresh.cleanup().await;
 
@@ -762,7 +765,7 @@ async fn concurrent_fresh_starters_serialize_the_schema_transition() -> TestResu
         successful,
         i64::try_from(MIGRATOR.iter().count()).expect("migration count must fit in i64")
     );
-    assert_eq!(head, 41);
+    assert_eq!(head, canonical_head::of(&MIGRATOR));
     pool.close().await;
     database.cleanup().await;
     Ok(())

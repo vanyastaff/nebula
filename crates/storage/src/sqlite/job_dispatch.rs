@@ -19,7 +19,9 @@ use nebula_core::PluginKey;
 use nebula_storage_port::dto::{
     DispatchKind, DispatchOutcome, JobDispatchMsg, NewExecution, TriggerDedupRow,
 };
-use nebula_storage_port::store::{JobDispatchQueue, ReclaimOutcome, TriggerDedupInbox};
+use nebula_storage_port::store::{
+    ClaimGeneration, JobClaim, JobClaimToken, JobDispatchQueue, ReclaimOutcome, TriggerDedupInbox,
+};
 use nebula_storage_port::{Scope, StorageError};
 use sqlx::{Row, SqlitePool};
 
@@ -119,6 +121,63 @@ impl SqliteJobDispatchQueue {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
     }
+
+    /// Explain why a fenced acknowledgement matched no row.
+    ///
+    /// The fenced `UPDATE` reports only "zero rows", which conflates "the row
+    /// is gone" with "this token is stale". Callers need them apart: an absent
+    /// row is a lost write, a superseded token is the fence doing its job.
+    /// The follow-up read is on the failure path only, so the acknowledged
+    /// path stays a single statement.
+    async fn unacknowledgeable(&self, claim: &JobClaimToken) -> Result<StorageError, StorageError> {
+        let exists: Option<i64> =
+            sqlx::query_scalar("SELECT 1 FROM port_job_dispatch_queue WHERE id = ?")
+                .bind(claim.row_id().as_slice())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(conn_err)?;
+        Ok(if exists.is_some() {
+            StorageError::FencedOut {
+                entity: "job_dispatch",
+                id: ulid_hex(claim.row_id()),
+            }
+        } else {
+            StorageError::NotFound {
+                entity: "job_dispatch",
+                id: ulid_hex(claim.row_id()),
+            }
+        })
+    }
+}
+
+/// Widen a persisted generation to the port's `u64`.
+///
+/// `claim_generation` is a non-negative `INTEGER`; a negative value is
+/// persisted corruption, and treating it as `0` would make a stale token
+/// match. Fail closed instead.
+fn decode_generation(generation: i64, id: &[u8; 16]) -> Result<ClaimGeneration, StorageError> {
+    u64::try_from(generation)
+        .map(ClaimGeneration::new)
+        .map_err(|_| {
+            StorageError::Serialization(format!(
+                "invalid job_dispatch claim_generation {generation} (id={})",
+                ulid_hex(id)
+            ))
+        })
+}
+
+/// Narrow a token's generation for binding against the `INTEGER` column.
+///
+/// A generation beyond `i64::MAX` cannot name a persisted row, so binding a
+/// saturated value would fence against the wrong row. Fail closed instead.
+fn generation_bind(claim: &JobClaimToken) -> Result<i64, StorageError> {
+    i64::try_from(claim.generation().get()).map_err(|_| {
+        StorageError::Serialization(format!(
+            "job_dispatch claim generation {} exceeds the persisted range (id={})",
+            claim.generation(),
+            ulid_hex(claim.row_id())
+        ))
+    })
 }
 
 #[async_trait::async_trait]
@@ -160,7 +219,7 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
         processor: &[u8; 16],
         batch_size: u32,
         available_plugins: &[PluginKey],
-    ) -> Result<Vec<JobDispatchMsg>, StorageError> {
+    ) -> Result<Vec<JobClaim>, StorageError> {
         if available_plugins.is_empty() {
             return Ok(Vec::new());
         }
@@ -213,22 +272,31 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
             // Conditional claim — AND status = 'Pending' guard prevents
             // double-claim if a concurrent actor flipped the row between the
             // SELECT above and this UPDATE (single-consumer SQLite boundary).
-            let won = sqlx::query(
+            //
+            // `claim_generation` is incremented by the same statement that
+            // makes the row `Processing`, and `RETURNING` hands back the value
+            // this claim minted — no separate read that a concurrent claim
+            // could interleave with.
+            let minted: Option<i64> = sqlx::query_scalar(
                 "UPDATE port_job_dispatch_queue \
                  SET status = 'Processing', processed_by = ?, \
-                     processed_at_ms = ? \
-                 WHERE id = ? AND status = 'Pending'",
+                     processed_at_ms = ?, \
+                     claim_generation = claim_generation + 1 \
+                 WHERE id = ? AND status = 'Pending' \
+                 RETURNING claim_generation",
             )
             .bind(processor.as_slice())
             .bind(now_ms)
             .bind(id_bytes.as_slice())
-            .execute(&mut *tx)
+            .fetch_optional(&mut *tx)
             .await
-            .map_err(conn_err)?
-            .rows_affected()
-                == 1;
-            if won {
-                claimed.push(row_to_msg(row)?);
+            .map_err(conn_err)?;
+            if let Some(generation) = minted {
+                let id = decode_id(&id_bytes)?;
+                claimed.push(JobClaim {
+                    msg: row_to_msg(row)?,
+                    token: JobClaimToken::new(id, decode_generation(generation, &id)?),
+                });
             }
         }
         tx.commit().await.map_err(conn_err)?;
@@ -240,60 +308,38 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
         Ok(claimed)
     }
 
-    async fn mark_dispatched(
-        &self,
-        id: &[u8; 16],
-        processor: &[u8; 16],
-    ) -> Result<(), StorageError> {
-        // Zero rows_affected means this worker no longer owns the job (reclaimed
-        // by another worker or the job id does not exist). Fail-closed: treat
-        // lost ownership as NotFound — the caller must not assume success when
-        // the ownership predicate (`processed_by = ?`) was not satisfied.
+    async fn mark_dispatched(&self, claim: &JobClaimToken) -> Result<(), StorageError> {
         let rows_updated = sqlx::query(
             "UPDATE port_job_dispatch_queue SET status = 'Dispatched' \
-             WHERE id = ? AND status = 'Processing' AND processed_by = ?",
+             WHERE id = ? AND status = 'Processing' AND claim_generation = ?",
         )
-        .bind(id.as_slice())
-        .bind(processor.as_slice())
+        .bind(claim.row_id().as_slice())
+        .bind(generation_bind(claim)?)
         .execute(&self.pool)
         .await
         .map_err(conn_err)?
         .rows_affected();
         if rows_updated == 0 {
-            return Err(StorageError::NotFound {
-                entity: "job_dispatch",
-                id: ulid_hex(id),
-            });
+            return Err(self.unacknowledgeable(claim).await?);
         }
         Ok(())
     }
 
-    async fn mark_failed(
-        &self,
-        id: &[u8; 16],
-        processor: &[u8; 16],
-        error: &str,
-    ) -> Result<(), StorageError> {
-        // Zero rows_affected means this worker no longer owns the job (reclaimed
-        // by another worker or the job id does not exist). Fail-closed: same
-        // NotFound semantics as mark_dispatched.
+    async fn mark_failed(&self, claim: &JobClaimToken, error: &str) -> Result<(), StorageError> {
         let rows_updated = sqlx::query(
             "UPDATE port_job_dispatch_queue \
              SET status = 'Failed', error_message = ? \
-             WHERE id = ? AND status = 'Processing' AND processed_by = ?",
+             WHERE id = ? AND status = 'Processing' AND claim_generation = ?",
         )
         .bind(error)
-        .bind(id.as_slice())
-        .bind(processor.as_slice())
+        .bind(claim.row_id().as_slice())
+        .bind(generation_bind(claim)?)
         .execute(&self.pool)
         .await
         .map_err(conn_err)?
         .rows_affected();
         if rows_updated == 0 {
-            return Err(StorageError::NotFound {
-                entity: "job_dispatch",
-                id: ulid_hex(id),
-            });
+            return Err(self.unacknowledgeable(claim).await?);
         }
         Ok(())
     }
@@ -321,6 +367,10 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
         .await
         .map_err(conn_err)?
         .rows_affected();
+        // `claim_generation` is deliberately untouched here: ownership is
+        // cleared, but the counter only ever moves forward, so the next claim
+        // mints a value strictly greater than the token this reclaim just
+        // invalidated. Resetting it would let a stale token match again.
         let reclaimed = sqlx::query(
             "UPDATE port_job_dispatch_queue \
              SET status = 'Pending', reclaim_count = reclaim_count + 1, \

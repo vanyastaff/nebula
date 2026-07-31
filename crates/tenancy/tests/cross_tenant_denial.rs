@@ -261,22 +261,34 @@ impl ControlQueue for MockControlQueue {
         &self,
         _processor: &[u8; 16],
         _batch_size: u32,
-    ) -> Result<Vec<ControlMsg>, StorageError> {
-        Ok(self.enqueued.lock().expect("mock lock").clone())
+    ) -> Result<Vec<nebula_storage_port::store::ControlClaim>, StorageError> {
+        // The mock records enqueues; it never actually claims, so it mints a
+        // placeholder generation. Nothing in this suite acknowledges a claim.
+        Ok(self
+            .enqueued
+            .lock()
+            .expect("mock lock")
+            .iter()
+            .map(|msg| nebula_storage_port::store::ControlClaim {
+                token: nebula_storage_port::store::ControlClaimToken::new(
+                    msg.id,
+                    nebula_storage_port::store::ClaimGeneration::new(1),
+                ),
+                msg: msg.clone(),
+            })
+            .collect())
     }
 
     async fn mark_completed(
         &self,
-        _id: &[u8; 16],
-        _processor: &[u8; 16],
+        _claim: &nebula_storage_port::store::ControlClaimToken,
     ) -> Result<(), StorageError> {
         Ok(())
     }
 
     async fn mark_failed(
         &self,
-        _id: &[u8; 16],
-        _processor: &[u8; 16],
+        _claim: &nebula_storage_port::store::ControlClaimToken,
         _error: &str,
     ) -> Result<(), StorageError> {
         Ok(())

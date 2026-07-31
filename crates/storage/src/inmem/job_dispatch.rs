@@ -12,7 +12,9 @@ use nebula_core::PluginKey;
 use nebula_storage_port::dto::{
     DispatchKind, DispatchOutcome, JobDispatchMsg, NewExecution, TriggerDedupRow,
 };
-use nebula_storage_port::store::{JobDispatchQueue, ReclaimOutcome, TriggerDedupInbox};
+use nebula_storage_port::store::{
+    ClaimGeneration, JobClaim, JobClaimToken, JobDispatchQueue, ReclaimOutcome, TriggerDedupInbox,
+};
 use nebula_storage_port::{Scope, StorageError};
 use tokio::time::Instant;
 
@@ -27,6 +29,39 @@ fn ulid_hex(id: &[u8; 16]) -> String {
         let _ = write!(s, "{b:02x}");
         s
     })
+}
+
+/// Terminalise a claimed row, fenced on `(row id, Processing, generation)`.
+///
+/// Mirrors the SQL backends' single fenced `UPDATE` plus its zero-rows
+/// disambiguation: an absent row is [`StorageError::NotFound`], and a present
+/// row the token no longer owns is [`StorageError::FencedOut`] with **no state
+/// change**. Returning `Ok` for a superseded token would let a worker whose
+/// claim was reclaimed terminalise work the current owner is still doing.
+fn acknowledge(
+    state: &mut super::execution::State,
+    claim: &JobClaimToken,
+    terminal_status: &str,
+    error: Option<&str>,
+) -> Result<(), StorageError> {
+    let id = claim.row_id();
+    let Some(job) = state.jobs.get_mut(id) else {
+        return Err(StorageError::NotFound {
+            entity: "job_dispatch",
+            id: ulid_hex(id),
+        });
+    };
+    if job.status != "Processing" || job.claim_generation != claim.generation().get() {
+        return Err(StorageError::FencedOut {
+            entity: "job_dispatch",
+            id: ulid_hex(id),
+        });
+    }
+    terminal_status.clone_into(&mut job.status);
+    if let Some(error) = error {
+        job.error_message = Some(error.to_owned());
+    }
+    Ok(())
 }
 
 // ── JobDispatchQueue ─────────────────────────────────────────────────────────
@@ -65,6 +100,7 @@ impl JobDispatchQueue for InMemoryJobDispatchQueue {
                 processed_at: None,
                 reclaim_count: 0,
                 error_message: None,
+                claim_generation: 0,
             },
         );
         tracing::debug!(target: "nebula_storage::inmem", "job_dispatch: enqueued");
@@ -77,7 +113,7 @@ impl JobDispatchQueue for InMemoryJobDispatchQueue {
         processor: &[u8; 16],
         batch_size: u32,
         available_plugins: &[PluginKey],
-    ) -> Result<Vec<JobDispatchMsg>, StorageError> {
+    ) -> Result<Vec<JobClaim>, StorageError> {
         // Parity with SQLite + Postgres: an empty advertised set claims nothing.
         if available_plugins.is_empty() {
             return Ok(Vec::new());
@@ -109,11 +145,28 @@ impl JobDispatchQueue for InMemoryJobDispatchQueue {
         let mut claimed = Vec::new();
         for id in ids.into_iter().take(batch_size as usize) {
             if let Some(q) = st.jobs.get_mut(&id) {
+                // Mint the generation in the same critical section that flips
+                // Pending -> Processing, so no other claimer can observe the
+                // row as claimed under a generation that was not minted yet.
+                // The SQL backends do this inside the claiming UPDATE.
+                let Some(generation) = q.claim_generation.checked_add(1) else {
+                    // Fail closed: a wrapped generation would let a superseded
+                    // token match a future claim, which is exactly the fence
+                    // this counter exists to provide.
+                    return Err(StorageError::Internal(format!(
+                        "job_dispatch claim generation overflowed for row {}",
+                        ulid_hex(&id)
+                    )));
+                };
+                q.claim_generation = generation;
                 "Processing".clone_into(&mut q.status);
                 q.processed_by = Some(*processor);
                 q.processed_at = Some(now);
                 q.msg.reclaim_count = q.reclaim_count;
-                claimed.push(q.msg.clone());
+                claimed.push(JobClaim {
+                    msg: q.msg.clone(),
+                    token: JobClaimToken::new(id, ClaimGeneration::new(generation)),
+                });
             }
         }
         tracing::debug!(
@@ -124,49 +177,14 @@ impl JobDispatchQueue for InMemoryJobDispatchQueue {
         Ok(claimed)
     }
 
-    async fn mark_dispatched(
-        &self,
-        id: &[u8; 16],
-        processor: &[u8; 16],
-    ) -> Result<(), StorageError> {
-        // Fail-closed: if this worker no longer owns the job (reclaimed by
-        // another or the job id is absent), return NotFound — mirrors the SQL
-        // backends' `rows_affected == 0` check. A silent Ok would let a worker
-        // that lost ownership believe it successfully dispatched.
+    async fn mark_dispatched(&self, claim: &JobClaimToken) -> Result<(), StorageError> {
         let mut st = self.inner.lock();
-        if let Some(q) = st.jobs.get_mut(id)
-            && q.status == "Processing"
-            && q.processed_by.as_ref() == Some(processor)
-        {
-            "Dispatched".clone_into(&mut q.status);
-            return Ok(());
-        }
-        Err(StorageError::NotFound {
-            entity: "job_dispatch",
-            id: ulid_hex(id),
-        })
+        acknowledge(&mut st, claim, "Dispatched", None)
     }
 
-    async fn mark_failed(
-        &self,
-        id: &[u8; 16],
-        processor: &[u8; 16],
-        error: &str,
-    ) -> Result<(), StorageError> {
-        // Fail-closed: same NotFound semantics as mark_dispatched.
+    async fn mark_failed(&self, claim: &JobClaimToken, error: &str) -> Result<(), StorageError> {
         let mut st = self.inner.lock();
-        if let Some(q) = st.jobs.get_mut(id)
-            && q.status == "Processing"
-            && q.processed_by.as_ref() == Some(processor)
-        {
-            "Failed".clone_into(&mut q.status);
-            q.error_message = Some(error.to_owned());
-            return Ok(());
-        }
-        Err(StorageError::NotFound {
-            entity: "job_dispatch",
-            id: ulid_hex(id),
-        })
+        acknowledge(&mut st, claim, "Failed", Some(error))
     }
 
     async fn reclaim_stuck(
@@ -196,6 +214,9 @@ impl JobDispatchQueue for InMemoryJobDispatchQueue {
                 ));
                 outcome.exhausted += 1;
             } else {
+                // Ownership is cleared, but `claim_generation` is deliberately
+                // left alone: the next claim increments past it, so the token
+                // this reclaim just invalidated can never match again.
                 "Pending".clone_into(&mut q.status);
                 q.reclaim_count = q.reclaim_count.saturating_add(1);
                 q.processed_by = None;
@@ -327,6 +348,7 @@ impl TriggerDedupInbox for InMemoryTriggerDedupInbox {
                 processed_at: None,
                 reclaim_count: 0,
                 error_message: None,
+                claim_generation: 0,
             },
         );
         tracing::debug!(
@@ -365,13 +387,17 @@ impl TriggerDedupInbox for InMemoryTriggerDedupInbox {
 
 #[cfg(test)]
 mod job_ownership_tests {
-    //! FIX 3 regression: mark_dispatched / mark_failed must return Err (not Ok)
-    //! when the caller does not own the job (wrong processor id, reclaimed row,
-    //! or unknown job id). A silent Ok would let a worker believe it dispatched
-    //! a job it no longer holds.
+    //! Acknowledgement must fail closed whenever the caller does not hold the
+    //! row's current claim — an unknown row, or a token a reclaim superseded.
+    //! A silent `Ok` would let a worker believe it dispatched a job another
+    //! attempt now owns.
+    //!
+    //! A "wrong processor" case no longer exists by construction: authority is
+    //! the storage-minted token, and a processor cannot fabricate one. The
+    //! stronger ABA case (*same* processor, superseded generation) replaces it.
 
     use nebula_storage_port::dto::{ControlCommand, JobDispatchMsg};
-    use nebula_storage_port::store::JobDispatchQueue;
+    use nebula_storage_port::store::{ClaimGeneration, JobClaimToken, JobDispatchQueue};
     use nebula_storage_port::{Scope, StorageError as SE};
 
     use super::InMemoryJobDispatchQueue;
@@ -401,10 +427,9 @@ mod job_ownership_tests {
     #[tokio::test]
     async fn mark_dispatched_returns_not_found_for_unknown_job() {
         let queue = make_queue();
-        let worker_a: [u8; 16] = [1u8; 16];
-        let unknown_id: [u8; 16] = [0xABu8; 16];
+        let unknown = JobClaimToken::new([0xABu8; 16], ClaimGeneration::new(1));
 
-        let result = queue.mark_dispatched(&unknown_id, &worker_a).await;
+        let result = queue.mark_dispatched(&unknown).await;
         assert!(
             matches!(
                 result,
@@ -418,81 +443,102 @@ mod job_ownership_tests {
     }
 
     #[tokio::test]
-    async fn mark_dispatched_returns_not_found_when_owned_by_different_processor() {
+    async fn mark_dispatched_is_fenced_out_after_the_claim_is_reclaimed() {
         let queue = make_queue();
         let worker_a: [u8; 16] = [1u8; 16];
-        let worker_b: [u8; 16] = [2u8; 16];
         let job_id: [u8; 16] = [3u8; 16];
 
-        let msg = sample_msg(job_id);
-        queue.enqueue(&msg).await.unwrap();
-
-        // Worker A claims the job.
+        queue.enqueue(&sample_msg(job_id)).await.unwrap();
         let claimed = queue
             .claim_pending(&worker_a, 1, &["plugin-a".parse().unwrap()])
             .await
             .unwrap();
         assert_eq!(claimed.len(), 1);
+        let stale = claimed[0].token;
 
-        // Worker B tries to mark it dispatched — must fail.
-        let result = queue.mark_dispatched(&job_id, &worker_b).await;
-        assert!(
-            matches!(
-                result,
-                Err(SE::NotFound {
-                    entity: "job_dispatch",
-                    ..
-                })
-            ),
-            "mark_dispatched by a non-owner processor must return NotFound, got {result:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn mark_failed_returns_not_found_when_owned_by_different_processor() {
-        let queue = make_queue();
-        let worker_a: [u8; 16] = [1u8; 16];
-        let worker_b: [u8; 16] = [2u8; 16];
-        let job_id: [u8; 16] = [4u8; 16];
-
-        let msg = sample_msg(job_id);
-        queue.enqueue(&msg).await.unwrap();
-        queue
+        // The sweep hands the row back; the same worker claims it again. The
+        // processor id is identical across both attempts, so only the
+        // generation distinguishes them.
+        tokio::time::pause();
+        tokio::time::advance(std::time::Duration::from_secs(2)).await;
+        let outcome = queue
+            .reclaim_stuck(std::time::Duration::from_secs(1), 5)
+            .await
+            .unwrap();
+        assert_eq!(outcome.reclaimed, 1, "the stuck row must be reclaimed");
+        let reclaimed = queue
             .claim_pending(&worker_a, 1, &["plugin-a".parse().unwrap()])
             .await
             .unwrap();
+        assert_eq!(reclaimed.len(), 1);
+        assert!(
+            reclaimed[0].token.generation() > stale.generation(),
+            "a reclaimed row must mint a strictly greater generation"
+        );
 
-        // Worker B tries to mark it failed — must fail.
-        let result = queue.mark_failed(&job_id, &worker_b, "some error").await;
+        let result = queue.mark_dispatched(&stale).await;
         assert!(
             matches!(
                 result,
-                Err(SE::NotFound {
+                Err(SE::FencedOut {
                     entity: "job_dispatch",
                     ..
                 })
             ),
-            "mark_failed by a non-owner processor must return NotFound, got {result:?}"
+            "an acknowledgement from the superseded claim must be fenced out, got {result:?}"
+        );
+
+        // The fence must also be a no-op: the current claim still owns the row.
+        assert!(
+            queue.mark_dispatched(&reclaimed[0].token).await.is_ok(),
+            "the current claim must still be able to acknowledge the row"
         );
     }
 
     #[tokio::test]
-    async fn mark_dispatched_succeeds_for_owning_processor() {
+    async fn mark_failed_is_fenced_out_for_a_superseded_generation() {
+        let queue = make_queue();
+        let worker_a: [u8; 16] = [1u8; 16];
+        let job_id: [u8; 16] = [4u8; 16];
+
+        queue.enqueue(&sample_msg(job_id)).await.unwrap();
+        let claimed = queue
+            .claim_pending(&worker_a, 1, &["plugin-a".parse().unwrap()])
+            .await
+            .unwrap();
+        let current = claimed[0].token;
+        let superseded =
+            JobClaimToken::new(job_id, ClaimGeneration::new(current.generation().get() - 1));
+
+        let result = queue.mark_failed(&superseded, "some error").await;
+        assert!(
+            matches!(
+                result,
+                Err(SE::FencedOut {
+                    entity: "job_dispatch",
+                    ..
+                })
+            ),
+            "mark_failed with a superseded generation must be fenced out, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mark_dispatched_succeeds_for_the_current_claim() {
         let queue = make_queue();
         let worker_a: [u8; 16] = [1u8; 16];
         let job_id: [u8; 16] = [5u8; 16];
 
-        let msg = sample_msg(job_id);
-        queue.enqueue(&msg).await.unwrap();
-        queue
+        queue.enqueue(&sample_msg(job_id)).await.unwrap();
+        let claimed = queue
             .claim_pending(&worker_a, 1, &["plugin-a".parse().unwrap()])
             .await
             .unwrap();
 
-        let result = queue.mark_dispatched(&job_id, &worker_a).await;
+        let result = queue.mark_dispatched(&claimed[0].token).await;
         assert!(
             result.is_ok(),
-            "mark_dispatched by the owning processor must succeed, got {result:?}"
+            "the claim's own token must acknowledge the row, got {result:?}"
         );
     }
 }

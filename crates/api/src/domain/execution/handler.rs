@@ -3,11 +3,12 @@
 use axum::{
     Extension, Json,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
 };
 use nebula_core::{ExecutionId, TenantContext, WorkflowId};
 use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_storage_port::dto::ControlCommand;
+use nebula_storage_port::store::{StartAcceptance, StartFingerprint};
 
 use crate::{
     domain::{
@@ -288,6 +289,7 @@ pub async fn start_execution(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, workflow_id)): Path<(String, String, String)>,
+    headers: HeaderMap,
     Json(payload): Json<StartExecutionRequest>,
 ) -> ApiResult<(StatusCode, Json<ExecutionResponse>)> {
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
@@ -334,27 +336,55 @@ pub async fn start_execution(
     let state_json = serde_json::to_value(&exec_state)
         .map_err(|e| ApiError::Internal(format!("serialize execution state: {e}")))?;
 
-    // Create execution record. We must call `create` here — the previous
-    // implementation called `transition(id, expected_version = 0, ...)`,
-    // which is a CAS UPDATE that can never match a brand-new ID (no row
-    // exists yet), so every call returned `Ok(false)` and the handler
-    // surfaced an Internal error unconditionally.
-    state
-        .create_execution_scoped(&scope, execution_id, workflow_id_parsed, state_json)
-        .await?;
+    let created_at = exec_state.created_at.timestamp();
+    let w3c = w3c_trace_context_for_control_queue();
 
-    // Enqueue the Start signal onto the durable control queue (durable control queue,
-    // integration seam step 3, #332). Before this PR the API persisted the row but never
-    // dispatched it — the honest capability violation ("advertise capability engine
-    // doesn't deliver end-to-end"). The engine-side `ControlConsumer`
-    // (durable control queue) drains this queue and drives the actual workflow run.
-    //
-    // Order matches the `cancel_execution` contract: create the row first,
-    // then enqueue. If enqueue fails after a successful create, the row
-    // exists but the engine will not see the Start signal — the handler
-    // fails loudly so the caller can retry. The retry is idempotent
-    // at the consumer layer via CAS (control-queue CAS).
-    enqueue_start_scoped(&state, &scope, execution_id, &validated).await?;
+    // A start key makes this request one *accepted command* rather than one
+    // delivery of it. Without a key there is nothing to converge on, so an
+    // unkeyed request creates its own execution every time — that is the
+    // caller's choice, not a defect.
+    let accepted_execution_id = if let Some(start_key) = start_key(&headers)? {
+        let fingerprint = start_fingerprint(workflow_id_parsed, version.number, &payload);
+        match state
+            .accept_keyed_start_scoped(
+                &scope,
+                &start_key,
+                fingerprint,
+                execution_id,
+                workflow_id_parsed,
+                &state_json,
+                w3c,
+            )
+            .await?
+        {
+            StartAcceptance::Accepted { execution_id } => {
+                tracing::debug!(
+                    execution_id = %execution_id,
+                    node_count = validated.definition().nodes.len(),
+                    "execution: keyed start accepted (reservation + aggregate + Start committed)"
+                );
+                execution_id
+            },
+            StartAcceptance::Replayed { execution_id } => {
+                // The original acceptance receipt. Nothing was written, and
+                // the id is the first request's — not the one minted above.
+                tracing::info!(
+                    execution_id = %execution_id,
+                    "execution: keyed start replayed; returning the original receipt"
+                );
+                execution_id
+            },
+            // Deliberately no execution id in the error: the caller proved
+            // knowledge of a key, not of the execution behind it.
+            StartAcceptance::FingerprintMismatch => return Err(ApiError::StartConflict),
+        }
+    } else {
+        state
+            .create_execution_scoped(&scope, execution_id, workflow_id_parsed, state_json)
+            .await?;
+        enqueue_start_scoped(&state, &scope, execution_id, &validated).await?;
+        execution_id.to_string()
+    };
 
     // Build response. `started_at` is omitted on a Created execution —
     // integration seam step 3 forbids synthetic timestamps for fields the engine
@@ -370,9 +400,8 @@ pub async fn start_execution(
     // but we now return `created_at` as the observable timestamp so clients
     // still get a real time for "when did this execution exist?" — which
     // is what `started_at` was used for in practice pre-fix.
-    let created_at = exec_state.created_at.timestamp();
     let response = ExecutionResponse {
-        id: execution_id.to_string(),
+        id: accepted_execution_id,
         workflow_id,
         status: exec_state.status.to_string(),
         started_at: created_at,
@@ -382,6 +411,78 @@ pub async fn start_execution(
     };
 
     Ok((StatusCode::ACCEPTED, Json(response)))
+}
+
+/// Read the caller's start key from `Idempotency-Key`.
+///
+/// Bounded and charset-checked here rather than at the storage boundary: the
+/// key becomes a primary-key component, and an unbounded or non-ASCII value is
+/// a request defect, not a storage failure.
+fn start_key(headers: &HeaderMap) -> ApiResult<Option<String>> {
+    /// Long enough for a UUID, a ULID, or a caller's composite key; short
+    /// enough that the reservation index stays small.
+    const MAX_START_KEY_LEN: usize = 255;
+
+    let Some(raw) = headers.get("idempotency-key") else {
+        return Ok(None);
+    };
+    let key = raw.to_str().map_err(|_| {
+        ApiError::validation_message("Idempotency-Key must be printable ASCII".to_owned())
+    })?;
+    if key.is_empty() || key.len() > MAX_START_KEY_LEN {
+        return Err(ApiError::validation_message(format!(
+            "Idempotency-Key must be 1..={MAX_START_KEY_LEN} characters"
+        )));
+    }
+    if !key.bytes().all(|byte| byte.is_ascii_graphic()) {
+        return Err(ApiError::validation_message(
+            "Idempotency-Key must be printable ASCII without spaces".to_owned(),
+        ));
+    }
+    Ok(Some(key.to_owned()))
+}
+
+/// Canonicalization version for [`start_fingerprint`].
+///
+/// Bump this whenever the canonical form below changes. Two digests are only
+/// comparable when they were produced under the same version, so a bump reads
+/// as a mismatch rather than as a false match — the fail-closed direction.
+const START_FINGERPRINT_VERSION: u16 = 1;
+
+/// Fingerprint what makes two start requests "the same command".
+///
+/// Covers the workflow identity, the exact published version the request
+/// resolved to, and the caller's input. The version is inside the fingerprint
+/// on purpose: replaying a key after the workflow was republished is a
+/// *different* command, and silently returning the old receipt would hide that.
+///
+/// The digest is over `serde_json::to_vec` of a canonical array. `Value`
+/// serializes maps in sorted key order (`serde_json` uses a `BTreeMap` unless
+/// `preserve_order` is on, and this workspace does not enable it), so two
+/// requests whose JSON objects differ only in key order agree here.
+fn start_fingerprint(
+    workflow_id: WorkflowId,
+    version_number: u32,
+    payload: &StartExecutionRequest,
+) -> StartFingerprint {
+    use sha2::{Digest as _, Sha256};
+
+    let canonical = serde_json::json!([
+        "start",
+        workflow_id.to_string(),
+        version_number,
+        payload.input,
+    ]);
+    let mut digest = Sha256::new();
+    // `Value` is always serializable; a failure here would be a serde defect,
+    // not a request defect, so feed the debug form rather than fail the
+    // request on an impossible branch.
+    if let Ok(bytes) = serde_json::to_vec(&canonical) {
+        digest.update(&bytes);
+    } else {
+        digest.update(format!("{canonical:?}").as_bytes());
+    }
+    StartFingerprint::new(START_FINGERPRINT_VERSION, digest.finalize().into())
 }
 
 /// Enqueue a `ControlCommand::Start` onto the durable control queue for
@@ -530,33 +631,35 @@ pub async fn cancel_execution(
         )));
     }
 
-    // Update state to cancelled. Write the status as the canonical
-    // snake-case string that `ExecutionStatus::Cancelled` serializes to,
-    // so that engine-side reads via `ExecutionStatus::deserialize` round-
-    // trip cleanly (#327, honest capability contract). Persist `completed_at` (not the
-    // legacy `finished_at`) because that is the field `ExecutionState`
-    // actually declares — see `crates/execution/src/state.rs`.
+    // Duplicate Cancel is idempotent: the command is already in flight and
+    // runtime control owns the outcome, so re-requesting it must not write a
+    // second transition or a second command row. Report the state as it stands.
+    if current_status == ExecutionStatus::Cancelling.to_string() {
+        tracing::debug!(
+            execution_id = %execution_id,
+            "execution: cancellation already requested; returning the in-flight state"
+        );
+        return Ok(Json(cancellation_response(id, &execution_state)));
+    }
+
+    // Record the *intent*, not the outcome.
+    //
+    // The API authorizes cancellation and submits durable intent; it is not the
+    // execution aggregate's lifecycle owner. Writing `Cancelled` here — as this
+    // handler used to — reports a terminal state the engine has not reached:
+    // the handler is still running, its effects are still in flight, and a
+    // caller that reads `cancelled` concludes the work stopped when it has not.
+    // `Cancelling` is the state that is actually true at this point, and
+    // runtime control terminalizes it once the engine has honored the command.
+    //
+    // `completed_at` is deliberately not written for the same reason — a
+    // completion timestamp for work that has not completed is a fabricated
+    // fact, and it is the field clients use to decide the run is over.
     if let Some(state_obj) = execution_state.as_object_mut() {
         state_obj.insert(
             "status".to_string(),
-            serde_json::json!(ExecutionStatus::Cancelled.to_string()),
+            serde_json::json!(ExecutionStatus::Cancelling.to_string()),
         );
-
-        // Set completed_at timestamp. The canonical `ExecutionState`
-        // serializes `Option::None` as `null`, not as an absent field —
-        // so `contains_key` alone is not enough; we must also overwrite
-        // explicit nulls. RFC 3339 string matches what `DateTime<Utc>`
-        // serializes to via serde.
-        let needs_write = state_obj
-            .get("completed_at")
-            .is_none_or(serde_json::Value::is_null);
-        if needs_write {
-            let now = chrono::Utc::now();
-            state_obj.insert(
-                "completed_at".to_string(),
-                serde_json::json!(now.to_rfc3339()),
-            );
-        }
     }
 
     // Apply the state transition and append the Cancel outbox row in one
@@ -586,30 +689,41 @@ pub async fn cancel_execution(
         ));
     }
 
-    // Extract fields from updated execution state
+    Ok(Json(cancellation_response(id, &execution_state)))
+}
+
+/// Build the cancellation response from the execution state as persisted.
+///
+/// Shared by the accepted and the already-cancelling paths so a duplicate
+/// request reports exactly what the first one did — an idempotent request that
+/// answered differently would be indistinguishable from a lost one.
+fn cancellation_response(id: String, execution_state: &serde_json::Value) -> ExecutionResponse {
     let workflow_id = execution_state
         .get("workflow_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_owned();
+    // Default to `cancelling`, never `cancelled`: the API records the request,
+    // and runtime control records the outcome.
     let status = execution_state
         .get("status")
-        .and_then(|v| v.as_str())
-        .unwrap_or("cancelled")
-        .to_string();
+        .and_then(|value| value.as_str())
+        .unwrap_or("cancelling")
+        .to_owned();
 
     // Canonical `ExecutionState` exposes `started_at` (engine run start,
     // `None` until the engine transitions to `Running`) and `created_at`
     // (always set at construction). Fall back to `created_at` so the API
     // response retains a meaningful timestamp for executions that have
     // not yet been dispatched (#327).
-    let started_at = extract_timestamp(&execution_state, "started_at")
-        .or_else(|| extract_timestamp(&execution_state, "created_at"))
+    let started_at = extract_timestamp(execution_state, "started_at")
+        .or_else(|| extract_timestamp(execution_state, "created_at"))
         .unwrap_or(0);
-    // Canonical field is `completed_at`; legacy rows used `finished_at`.
-    let finished_at = extract_timestamp(&execution_state, "completed_at")
-        .or_else(|| extract_timestamp(&execution_state, "finished_at"));
+    // Canonical field is `completed_at`; legacy rows used `finished_at`. Both
+    // stay absent until the engine has actually finished — a cancellation
+    // *request* has no completion time.
+    let finished_at = extract_timestamp(execution_state, "completed_at")
+        .or_else(|| extract_timestamp(execution_state, "finished_at"));
 
     // Canonical field is `workflow_input`; legacy rows used `input`.
     let input = execution_state
@@ -617,17 +731,15 @@ pub async fn cancel_execution(
         .or_else(|| execution_state.get("input"))
         .cloned();
 
-    let output = execution_state.get("output").cloned();
-
-    Ok(Json(ExecutionResponse {
+    ExecutionResponse {
         id,
         workflow_id,
         status,
         started_at,
         finished_at,
         input,
-        output,
-    }))
+        output: execution_state.get("output").cloned(),
+    }
 }
 
 /// Return journal (log) entries for an execution.
@@ -799,48 +911,7 @@ pub async fn terminate_execution(
         ));
     }
 
-    // Extract fields from updated execution state
-    let workflow_id = execution_state
-        .get("workflow_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-
-    let status = execution_state
-        .get("status")
-        .and_then(|v| v.as_str())
-        .unwrap_or("cancelled")
-        .to_string();
-
-    // Canonical `ExecutionState` exposes `started_at` (engine run start,
-    // `None` until the engine transitions to `Running`) and `created_at`
-    // (always set at construction). Fall back to `created_at` so the API
-    // response retains a meaningful timestamp for executions that have
-    // not yet been dispatched (#327).
-    let started_at = extract_timestamp(&execution_state, "started_at")
-        .or_else(|| extract_timestamp(&execution_state, "created_at"))
-        .unwrap_or(0);
-    // Canonical field is `completed_at`; legacy rows used `finished_at`.
-    let finished_at = extract_timestamp(&execution_state, "completed_at")
-        .or_else(|| extract_timestamp(&execution_state, "finished_at"));
-
-    // Canonical field is `workflow_input`; legacy rows used `input`.
-    let input = execution_state
-        .get("workflow_input")
-        .or_else(|| execution_state.get("input"))
-        .cloned();
-
-    let output = execution_state.get("output").cloned();
-
-    Ok(Json(ExecutionResponse {
-        id,
-        workflow_id,
-        status,
-        started_at,
-        finished_at,
-        input,
-        output,
-    }))
+    Ok(Json(cancellation_response(id, &execution_state)))
 }
 
 /// Restart execution from the beginning.

@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Construct via [`NewExecution::new`]; struct literal syntax is
 /// unavailable from external crates (`#[non_exhaustive]`).
+#[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 pub struct NewExecution<'a> {
     /// Owning workflow id (opaque string form).

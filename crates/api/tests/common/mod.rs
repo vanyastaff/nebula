@@ -14,7 +14,9 @@ use nebula_api::{
     state::{OrgResolver, WorkspaceResolver},
 };
 use nebula_core::{OrgId, WorkspaceId};
-use nebula_storage::inmem::{InMemoryControlQueue, InMemoryExecutionStore};
+use nebula_storage::inmem::{
+    InMemoryControlQueue, InMemoryExecutionStore, InMemoryStartAcceptanceStore,
+};
 use nebula_storage_port::Scope;
 
 // ── Shared constants ─────────────────────────────────────────────────────────
@@ -367,6 +369,7 @@ async fn build_port_state_with(with_credential_port: bool) -> (AppState, PortHan
         Arc::new(node_results),
         Arc::new(journal.clone()),
         Arc::new(control_queue.clone()),
+        Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
         api_config.jwt_secret,
     )
     .with_org_resolver(Arc::new(TestOrgResolver))
@@ -441,10 +444,11 @@ pub(crate) fn build_me_state() -> AppState {
     AppState::new(
         Arc::new(workflow_store),
         Arc::new(workflow_versions),
-        Arc::new(exec_store),
+        Arc::new(exec_store.clone()),
         Arc::new(node_results),
         Arc::new(journal),
         Arc::new(control_queue),
+        Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
         api_config.jwt_secret,
     )
     .with_org_resolver(Arc::new(TestOrgResolver))
@@ -748,22 +752,21 @@ impl nebula_storage_port::store::ControlQueue for AlwaysFailControlQueue {
         &self,
         _processor: &[u8; 16],
         _batch_size: u32,
-    ) -> Result<Vec<nebula_storage_port::dto::ControlMsg>, nebula_storage_port::StorageError> {
+    ) -> Result<Vec<nebula_storage_port::store::ControlClaim>, nebula_storage_port::StorageError>
+    {
         Ok(vec![])
     }
 
     async fn mark_completed(
         &self,
-        _id: &[u8; 16],
-        _processor: &[u8; 16],
+        _claim: &nebula_storage_port::store::ControlClaimToken,
     ) -> Result<(), nebula_storage_port::StorageError> {
         Ok(())
     }
 
     async fn mark_failed(
         &self,
-        _id: &[u8; 16],
-        _processor: &[u8; 16],
+        _claim: &nebula_storage_port::store::ControlClaimToken,
         _error: &str,
     ) -> Result<(), nebula_storage_port::StorageError> {
         Ok(())
@@ -818,6 +821,7 @@ pub(crate) async fn create_state_with_failing_queue() -> (AppState, InMemoryExec
         Arc::new(node_results),
         Arc::new(journal),
         Arc::new(AlwaysFailControlQueue),
+        Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
         api_config.jwt_secret,
     )
     .with_org_resolver(Arc::new(TestOrgResolver))
