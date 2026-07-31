@@ -135,6 +135,7 @@ impl ExecutionStore for MockExecStore {
         _id: &str,
         _holder: &str,
         _ttl: Duration,
+        _now: chrono::DateTime<chrono::Utc>,
     ) -> Result<Option<FencingToken>, StorageError> {
         Ok(Some(FencingToken::from_generation(0)))
     }
@@ -145,6 +146,7 @@ impl ExecutionStore for MockExecStore {
         _id: &str,
         _token: FencingToken,
         _ttl: Duration,
+        _now: chrono::DateTime<chrono::Utc>,
     ) -> Result<bool, StorageError> {
         Ok(true)
     }
@@ -968,6 +970,7 @@ impl ExecutionStore for TokenCapturingExecStore {
         _id: &str,
         _holder: &str,
         _ttl: Duration,
+        _now: chrono::DateTime<chrono::Utc>,
     ) -> Result<Option<FencingToken>, StorageError> {
         Ok(Some(FencingToken::from_generation(1)))
     }
@@ -978,6 +981,7 @@ impl ExecutionStore for TokenCapturingExecStore {
         _id: &str,
         _token: FencingToken,
         _ttl: Duration,
+        _now: chrono::DateTime<chrono::Utc>,
     ) -> Result<bool, StorageError> {
         Ok(true)
     }

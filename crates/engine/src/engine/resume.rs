@@ -626,7 +626,7 @@ impl WorkflowEngine {
 
         let lease_token = match stores
             .execution
-            .acquire_lease(scope, &id, &holder, self.lease_ttl)
+            .acquire_lease(scope, &id, &holder, self.lease_ttl, self.clock.now())
             .await
         {
             Ok(Some(token)) => token,
@@ -845,7 +845,7 @@ impl WorkflowEngine {
         // rather than racing the CAS and potentially dropping the signal.
         let lease_token = stores
             .execution
-            .acquire_lease(scope, &id, &holder, self.lease_ttl)
+            .acquire_lease(scope, &id, &holder, self.lease_ttl, self.clock.now())
             .await
             .map_err(|e| {
                 EngineError::PlanningFailed(format!(
@@ -969,7 +969,7 @@ impl WorkflowEngine {
         // `None` ⇒ `Leased`, so the caller defers and lets the real owner drive.
         let lease_token = stores
             .execution
-            .acquire_lease(scope, &id, &holder, self.lease_ttl)
+            .acquire_lease(scope, &id, &holder, self.lease_ttl, self.clock.now())
             .await
             .map_err(|e| {
                 EngineError::PlanningFailed(format!(
@@ -1248,7 +1248,7 @@ impl WorkflowEngine {
 
         let lease_token = stores
             .execution
-            .acquire_lease(scope, &id, &holder, self.lease_ttl)
+            .acquire_lease(scope, &id, &holder, self.lease_ttl, self.clock.now())
             .await
             .map_err(|e| {
                 EngineError::PlanningFailed(format!(

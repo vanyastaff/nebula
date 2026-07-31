@@ -94,15 +94,21 @@ jobs:
             (.profile == "runtime-repair-red") and
             (.status == "valid") and
             ((.expected_failure_count | type) == "number") and
-            (.expected_failure_count > 0) and
+            (.expected_failure_count >= 0) and
             (.expected_failure_count == (.expected_failure_count | floor))
           ' "$manifest_json" > /dev/null
           active_count=$(jq -r '.expected_failure_count' "$manifest_json")
           echo "active_count=$active_count" >> "$GITHUB_OUTPUT"
 
       # The manifest names only genuine behavioral failures. Infrastructure,
-      # setup, skipped, passing, retry, timeout, and fabricated-marker outcomes
-      # are rejected by the verifier rather than accepted as product RED.
+      # setup, skipped, retry, timeout, and fabricated-marker outcomes are
+      # rejected by the verifier rather than accepted as product RED.
+      #
+      # The manifest is empty once every case is repaired. The verifier then
+      # requires the suite to pass instead of to fail, so this step keeps
+      # guarding the scenarios rather than becoming a no-op: `verify` decides
+      # which exit code is correct from the manifest, and this step just hands
+      # it the raw one.
       - name: Run and verify genuine expected failures
         id: verify_red
         shell: bash

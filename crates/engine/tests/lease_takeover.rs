@@ -158,7 +158,13 @@ impl LeaseStores {
     async fn lease_held(&self, id: nebula_core::id::ExecutionId, ttl: Duration) -> bool {
         let scope = nebula_engine::store_seam::single_tenant_scope();
         self.execution
-            .acquire_lease(&scope, &id.to_string(), "lease-probe-stranger", ttl)
+            .acquire_lease(
+                &scope,
+                &id.to_string(),
+                "lease-probe-stranger",
+                ttl,
+                chrono::Utc::now(),
+            )
             .await
             .unwrap()
             .is_none()
@@ -287,7 +293,9 @@ fn make_engine(registry: Arc<ActionRegistry>) -> WorkflowEngine {
         )
         .unwrap(),
     );
-    WorkflowEngine::new(runtime, metrics).unwrap()
+    WorkflowEngine::new(runtime, metrics)
+        .unwrap()
+        .with_clock(Arc::new(TestClock::shared()))
 }
 
 // ---------------------------------------------------------------------------
@@ -447,11 +455,15 @@ async fn engine_b_takes_over_after_engine_a_runner_dies() {
     task_a.abort();
     let _ = task_a.await;
 
-    // Advance tokio's paused clock past the lease TTL. The in-memory
-    // execution store's `acquire_lease` liveness predicate
-    // (`expires_at >= now`) then returns false for the stale holder, so a
-    // fresh holder can claim the row. Buffer = 200ms past TTL covers any
+    // Advance the *engine's* clock past the lease TTL.
+    //
+    // A lease deadline is stamped from the clock its holder reasons in, so
+    // that is the clock that has to move for the deadline to pass. Advancing
+    // tokio's timer instead would leave the persisted deadline untouched —
+    // which is exactly the defect that kept a restarted runtime from taking
+    // over its predecessor's work. Buffer = 200ms past TTL covers any
     // heartbeat-induced expiry bump that landed before abort.
+    TestClock::advance(lease_ttl + Duration::from_millis(200));
     tokio::time::advance(lease_ttl + Duration::from_millis(200)).await;
 
     // Runner B resumes. Should:
@@ -950,4 +962,39 @@ async fn replay_does_not_contend_for_held_lease() {
     // Tear down runner A so the test process exits cleanly.
     task_a.abort();
     let _ = task_a.await;
+}
+
+/// A process-wide clock the test can move forward.
+///
+/// Both engines share it, because both must agree on whether a lease deadline
+/// has passed — that agreement is the property under test. Offsets are added
+/// to the real clock rather than replacing it so persisted timestamps stay in
+/// a sane era alongside anything the storage layer stamps for itself.
+#[derive(Debug, Default)]
+struct TestClock;
+
+impl TestClock {
+    fn shared() -> Self {
+        Self
+    }
+
+    fn offset() -> &'static std::sync::atomic::AtomicI64 {
+        static OFFSET_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+        &OFFSET_MS
+    }
+
+    fn advance(by: Duration) {
+        let millis = i64::try_from(by.as_millis()).expect("test advance fits in i64");
+        Self::offset().fetch_add(millis, Ordering::SeqCst);
+    }
+}
+
+impl nebula_core::accessor::Clock for TestClock {
+    fn now(&self) -> chrono::DateTime<chrono::Utc> {
+        chrono::Utc::now() + chrono::Duration::milliseconds(Self::offset().load(Ordering::SeqCst))
+    }
+
+    fn monotonic(&self) -> std::time::Instant {
+        std::time::Instant::now()
+    }
 }

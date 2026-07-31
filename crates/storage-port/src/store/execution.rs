@@ -1,6 +1,8 @@
 //! The atomic execution aggregate trait.
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
+
 use crate::batch::{TransitionBatch, TransitionOutcome};
 use crate::dto::ExecutionRecord;
 use crate::error::StorageError;
@@ -35,21 +37,33 @@ pub trait ExecutionStore: Send + Sync + std::fmt::Debug {
     /// Acquire the execution lease for `holder`. Returns the fresh
     /// [`FencingToken`] on success, `None` if another holder owns a live
     /// lease.
+    ///
+    /// `now` is the caller's authoritative clock reading, and the adapter
+    /// **must not** substitute its own. A lease deadline is only meaningful
+    /// against the clock the lease holder reasons in: when storage stamped
+    /// `now + ttl` from its own wall clock, an engine driven by an injected
+    /// clock could never observe its leases expiring, so a restarted runtime
+    /// could not take over its predecessor's parked work and the execution
+    /// stalled for a full TTL with no component reporting a fault.
     async fn acquire_lease(
         &self,
         scope: &Scope,
         id: &str,
         holder: &str,
         ttl: Duration,
+        now: DateTime<Utc>,
     ) -> Result<Option<FencingToken>, StorageError>;
 
     /// Extend the lease TTL. Returns `false` if `token` was superseded.
+    ///
+    /// `now` carries the same contract as [`Self::acquire_lease`].
     async fn renew_lease(
         &self,
         scope: &Scope,
         id: &str,
         token: FencingToken,
         ttl: Duration,
+        now: DateTime<Utc>,
     ) -> Result<bool, StorageError>;
 
     /// Release the lease. Returns `false` if `token` no longer owns it

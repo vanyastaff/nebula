@@ -14,6 +14,7 @@ mod junit;
 const MANIFEST_PATH: &str = "tools/xtask/gates/runtime-repair-red-v1.toml";
 const MANIFEST_VERSION: u16 = 1;
 const NEXTEST_TEST_RUN_FAILED: u8 = 100;
+const NEXTEST_SUCCESS: u8 = 0;
 const EXPECTED_PROFILE: &str = "runtime-repair-red";
 const EXPECTED_PACKAGE: &str = "nebula-server";
 const EXPECTED_FEATURE: &str = "runtime-repair-red";
@@ -136,13 +137,22 @@ fn validate_verification_preconditions(
     manifest: &ValidatedManifest,
     nextest_exit_code: u8,
 ) -> Result<(), VerificationError> {
-    if nextest_exit_code != NEXTEST_TEST_RUN_FAILED {
+    // An empty manifest is the *repaired* state, not a misconfiguration: every
+    // scenario has been fixed and now runs as ordinary conformance coverage.
+    // The expected exit flips with it — demanding TEST_RUN_FAILED once nothing
+    // fails would leave the only way to a green gate being to delete the
+    // scenarios, which is the evidence destruction this verifier exists to
+    // prevent.
+    let expected_exit = if manifest.expected_failures.is_empty() {
+        NEXTEST_SUCCESS
+    } else {
+        NEXTEST_TEST_RUN_FAILED
+    };
+    if nextest_exit_code != expected_exit {
         return Err(VerificationError::UnexpectedNextestExit {
             actual: nextest_exit_code,
+            expected: expected_exit,
         });
-    }
-    if manifest.expected_failures.is_empty() {
-        return Err(VerificationError::EmptyExpectedFailureSet);
     }
     Ok(())
 }
@@ -313,11 +323,9 @@ pub(crate) enum VerificationError {
     #[error("runtime-repair expected-case manifest is invalid: {detail}")]
     InvalidManifest { detail: String },
     #[error(
-        "cargo-nextest exit code must be 100 (TEST_RUN_FAILED), found {actual}; build, setup, metadata, configuration, and successful exits are rejected"
+        "cargo-nextest exit code must be {expected} for this manifest, found {actual}; build, setup, metadata, and configuration exits are rejected"
     )]
-    UnexpectedNextestExit { actual: u8 },
-    #[error("runtime-repair JUnit verification requires at least one active expected failure")]
-    EmptyExpectedFailureSet,
+    UnexpectedNextestExit { actual: u8, expected: u8 },
     #[error("cannot read runtime-repair JUnit report `{path}`: {source}")]
     JunitRead {
         path: PathBuf,

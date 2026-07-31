@@ -13,6 +13,7 @@ homepage.workspace = true
 documentation.workspace = true
 
 [dependencies]
+chrono = { workspace = true }
 nebula-core = { path = "../core" }
 nebula-storage-port = { path = "../storage-port" }
 async-trait = { workspace = true }

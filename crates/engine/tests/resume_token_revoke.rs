@@ -230,8 +230,9 @@ impl ExecutionStore for ArmableConflictStore {
         id: &str,
         holder: &str,
         ttl: Duration,
+        now: chrono::DateTime<Utc>,
     ) -> Result<Option<FencingToken>, StorageError> {
-        self.inner.acquire_lease(scope, id, holder, ttl).await
+        self.inner.acquire_lease(scope, id, holder, ttl, now).await
     }
 
     async fn renew_lease(
@@ -240,8 +241,9 @@ impl ExecutionStore for ArmableConflictStore {
         id: &str,
         token: FencingToken,
         ttl: Duration,
+        now: chrono::DateTime<Utc>,
     ) -> Result<bool, StorageError> {
-        self.inner.renew_lease(scope, id, token, ttl).await
+        self.inner.renew_lease(scope, id, token, ttl, now).await
     }
 
     async fn release_lease(
@@ -638,7 +640,13 @@ impl RevokeHarness {
         let id = execution_id.to_string();
         let token = self
             .execution
-            .acquire_lease(&scope, &id, "test-api-cancel", Duration::from_secs(30))
+            .acquire_lease(
+                &scope,
+                &id,
+                "test-api-cancel",
+                Duration::from_secs(30),
+                Utc::now(),
+            )
             .await
             .unwrap()
             .expect("lease must be free for the simulated API cancel write");

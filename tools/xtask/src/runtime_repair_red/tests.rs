@@ -54,18 +54,13 @@ fn positive_junit_fixture() -> String {
 
 /// Every manifest entry must name a test that actually exists.
 ///
-/// The count is a lower bound rather than an exact number: entries are removed
-/// as their defect is repaired, so pinning the exact count would turn every
-/// repair into a failing gate. What must not drift is the other direction — a
-/// manifest naming a test that does not exist would silently excuse a case that
-/// never ran.
+/// The set may legitimately be empty — that is the repaired state, in which
+/// the verifier requires the whole suite to pass instead. What must not drift
+/// is the other direction: a manifest naming a test that does not exist would
+/// silently excuse a case that never ran.
 #[test]
 fn active_profile_manifest_is_valid_and_names_all_genuine_cases() {
     let manifest = validate_manifest_source(ACTIVE_PROFILE_MANIFEST).expect("manifest is valid");
-    assert!(
-        !manifest.expected_failures.is_empty(),
-        "an empty manifest would make the verifier vacuous"
-    );
     for expected in &manifest.expected_failures {
         assert!(
             SCENARIO_TARGET.contains(&format!("async fn {}", expected.test_name))
@@ -116,7 +111,9 @@ fn workflow_does_not_force_ignored_or_mask_infrastructure_failures() {
     );
     assert!(EXPECTED_RED_WORKFLOW.contains("nextest_status=0"));
     assert!(EXPECTED_RED_WORKFLOW.contains("--nextest-exit-code \"$nextest_status\""));
-    assert!(EXPECTED_RED_WORKFLOW.contains(".expected_failure_count > 0"));
+    // The count may legitimately be zero once every case is repaired; what
+    // must stay asserted is that the workflow validates the field at all.
+    assert!(EXPECTED_RED_WORKFLOW.contains(".expected_failure_count >= 0"));
     assert!(EXPECTED_RED_WORKFLOW.contains("--lib"));
     assert!(EXPECTED_RED_WORKFLOW.contains("runtime_repair_red::"));
     assert!(EXPECTED_RED_WORKFLOW.contains("steps.verify_red.outcome == 'success'"));
@@ -170,15 +167,38 @@ fn active_target_contains_no_fake_or_suppressed_test() {
     );
 }
 
+/// With every case repaired the manifest empties, and the expected exit
+/// flips: the suite must now *pass*, not fail.
 #[test]
-fn empty_active_set_cannot_verify_junit_red_evidence() {
+fn empty_active_set_requires_a_passing_run() {
     let error = verify_documents(
         EMPTY_TEST_MANIFEST,
         100,
+        r#"<testsuites tests="2" failures="2" errors="0"></testsuites>"#,
+    )
+    .expect_err("a failing run against an empty manifest must be rejected");
+    assert!(matches!(
+        error,
+        VerificationError::UnexpectedNextestExit {
+            actual: 100,
+            expected: 0
+        }
+    ));
+}
+
+/// A repaired suite still has to have *run*.
+///
+/// Emptying the manifest must not turn the gate into a no-op that a suite
+/// selecting zero tests would satisfy.
+#[test]
+fn empty_active_set_rejects_a_run_with_no_testcases() {
+    let error = verify_documents(
+        EMPTY_TEST_MANIFEST,
+        0,
         r#"<testsuites tests="0" failures="0" errors="0"></testsuites>"#,
     )
-    .expect_err("empty expected set must fail closed");
-    assert!(matches!(error, VerificationError::EmptyExpectedFailureSet));
+    .expect_err("a run with no testcases is not evidence");
+    assert!(matches!(error, VerificationError::InvalidJunit { .. }));
 }
 
 #[test]
@@ -196,7 +216,8 @@ fn only_raw_nextest_test_run_failed_exit_is_accepted() {
             .expect_err("non-test-failure exit must be rejected");
         assert!(matches!(
             error,
-            VerificationError::UnexpectedNextestExit { actual } if actual == exit_code
+            VerificationError::UnexpectedNextestExit { actual, expected: 100 }
+                if actual == exit_code
         ));
     }
 }

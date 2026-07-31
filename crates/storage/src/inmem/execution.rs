@@ -32,7 +32,10 @@ pub(super) struct Row {
     pub(super) state: serde_json::Value,
     /// Current lease holder, if any (alive only until `lease_expires_at`).
     pub(super) lease_holder: Option<String>,
-    pub(super) lease_expires_at: Option<Instant>,
+    /// Deadline in the *caller's* clock era, not this process's monotonic
+    /// one: a lease is only meaningful against the clock its holder reasons
+    /// in (see `ExecutionStore::acquire_lease`).
+    pub(super) lease_expires_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Monotone fencing generation. Bumped every time the lease is
     /// (re)acquired by a different/expired holder, so a superseded
     /// holder's token no longer matches.
@@ -357,6 +360,7 @@ impl ExecutionStore for InMemoryExecutionStore {
         id: &str,
         holder: &str,
         ttl: Duration,
+        now: chrono::DateTime<chrono::Utc>,
     ) -> Result<Option<FencingToken>, StorageError> {
         let ttl = normalized_ttl(ttl);
         let mut st = self.inner.lock();
@@ -366,7 +370,6 @@ impl ExecutionStore for InMemoryExecutionStore {
         if &row.scope != scope {
             return Err(StorageError::not_found("execution", id));
         }
-        let now = Instant::now();
         let live = matches!(row.lease_expires_at, Some(exp) if exp >= now);
         if live {
             // A live lease blocks acquisition outright — including a
@@ -386,7 +389,12 @@ impl ExecutionStore for InMemoryExecutionStore {
         // (zombie-runner closure).
         row.fencing_generation += 1;
         row.lease_holder = Some(holder.to_string());
-        row.lease_expires_at = Some(now.checked_add(ttl).unwrap_or(now));
+        row.lease_expires_at = Some(
+            chrono::Duration::from_std(ttl)
+                .ok()
+                .and_then(|ttl| now.checked_add_signed(ttl))
+                .unwrap_or(now),
+        );
         let token = FencingToken::from_generation(row.fencing_generation);
         tracing::debug!(
             target: "nebula_storage::inmem",
@@ -404,6 +412,7 @@ impl ExecutionStore for InMemoryExecutionStore {
         id: &str,
         token: FencingToken,
         ttl: Duration,
+        now: chrono::DateTime<chrono::Utc>,
     ) -> Result<bool, StorageError> {
         let ttl = normalized_ttl(ttl);
         let mut st = self.inner.lock();
@@ -413,8 +422,12 @@ impl ExecutionStore for InMemoryExecutionStore {
         if &row.scope != scope || token.generation() != row.fencing_generation {
             return Ok(false);
         }
-        let now = Instant::now();
-        row.lease_expires_at = Some(now.checked_add(ttl).unwrap_or(now));
+        row.lease_expires_at = Some(
+            chrono::Duration::from_std(ttl)
+                .ok()
+                .and_then(|ttl| now.checked_add_signed(ttl))
+                .unwrap_or(now),
+        );
         Ok(true)
     }
 

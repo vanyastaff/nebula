@@ -8,6 +8,11 @@
 # Leaving a repaired case listed here would invert that: the verifier rejects an
 # unexpected pass, so a fixed defect would report as a broken gate.
 #
+# Every named case is now repaired, so this set is empty. That is the profile
+# in its finished state, not a disabled gate: the scenarios still run on every
+# pull request, and with nothing listed here the verifier requires them all to
+# pass. A regression therefore fails the gate as a plain unexpected failure.
+#
 # Repaired and promoted to ordinary coverage:
 #   - C7 same-processor ABA (in-memory, file SQLite, live PostgreSQL) —
 #     acknowledgement is fenced on a storage-minted claim generation.
@@ -17,39 +22,15 @@
 #   - C1 cancellation authority (file SQLite, live PostgreSQL) — the API
 #     submits non-terminal cancellation intent; runtime control owns the
 #     terminal transition.
+#   - C0 park/restart/resume (file SQLite, live PostgreSQL) — the worker drains
+#     the control queue the API writes to, a restart sweeps persisted state for
+#     overdue parked waits, and lease deadlines are stamped from the engine's
+#     own clock so a restarted runtime can take over its predecessor's work
+#     instead of waiting out a wall-clock TTL it cannot observe.
 manifest_version = 1
 profile = "runtime-repair-red"
 package = "nebula-server"
 feature = "runtime-repair-red"
 test_binary = "runtime_repair_red_scenarios"
 
-# The Start command is consumed and the node parks durably, so these no longer
-# fail at "drive not connected". They fail one stage later, and the cause is
-# now precisely located.
-#
-# After the restart the recovery sweep runs, finds the execution, and sees the
-# parked wait as overdue — but `resume_execution` returns `Leased`, so the wake
-# is never driven. The lease belongs to the previous incarnation, which no
-# longer exists: `holder` is a per-engine-instance id, so a restarted engine
-# cannot recognise the lease as its own, and the only way out is expiry.
-#
-# Expiry never arrives, because `lease_expires_at_ms` is stamped from the
-# storage layer's wall clock while the engine reasons in its injected clock.
-# Advancing the injected clock past the delay moves the engine's `now` and the
-# node's `next_attempt_at` into agreement, but leaves the persisted lease
-# deadline untouched.
-#
-# The fix is a seam change, not a patch: durable lease arithmetic has to derive
-# its deadline from the same clock the engine uses, which means threading a
-# clock port into `nebula-storage` across all three backends and every lease
-# call site. Deliberately left RED rather than worked around — shortening the
-# lease TTL or special-casing the profile would make these two cases pass
-# while leaving a restarted deployment stalled for a full TTL, which is the
-# real defect.
-[[expected_failures]]
-test_name = "c0_file_sqlite_park_restart_resume"
-reason_code = "c0-resume-not-connected"
-
-[[expected_failures]]
-test_name = "c0_live_postgresql_park_restart_resume"
-reason_code = "c0-resume-not-connected"
+expected_failures = []

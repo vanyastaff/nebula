@@ -1715,7 +1715,13 @@ impl WorkflowEngine {
         let backend: crate::store_seam::LeaseBackend = if let Some(stores) = self.stores.clone() {
             let token = stores
                 .execution
-                .acquire_lease(scope, &execution_id.to_string(), &holder, ttl)
+                .acquire_lease(
+                    scope,
+                    &execution_id.to_string(),
+                    &holder,
+                    ttl,
+                    self.clock.now(),
+                )
                 .await
                 .map_err(|e| EngineError::PlanningFailed(format!("acquire lease: {e}")))?;
             let Some(token) = token else {
@@ -1736,7 +1742,12 @@ impl WorkflowEngine {
                     holder,
                 });
             };
-            crate::store_seam::LeaseBackend::new(stores.execution.clone(), scope.clone(), token)
+            crate::store_seam::LeaseBackend::new(
+                stores.execution.clone(),
+                scope.clone(),
+                token,
+                Arc::clone(&self.clock),
+            )
         } else {
             // No storage seam configured — single-process library mode,
             // proceed without a lease.

@@ -566,7 +566,13 @@ pub(crate) async fn assert_cas_conflict(backend: &dyn Backend) {
         .await
         .expect("create");
     let token = store
-        .acquire_lease(&s, "exe_cas", "holder", std::time::Duration::from_secs(30))
+        .acquire_lease(
+            &s,
+            "exe_cas",
+            "holder",
+            std::time::Duration::from_secs(30),
+            chrono::Utc::now(),
+        )
         .await
         .expect("acquire_lease")
         .unwrap_or_else(|| panic!("[{}] lease must be acquirable", backend.name()));
@@ -600,6 +606,7 @@ pub(crate) async fn assert_stale_fencing_is_fenced_out(backend: &dyn Backend) {
             "exe_fence",
             "holder-1",
             std::time::Duration::from_secs(30),
+            chrono::Utc::now(),
         )
         .await
         .expect("acquire_lease");
@@ -645,6 +652,7 @@ pub(crate) async fn assert_live_lease_blocks_acquire(backend: &dyn Backend) {
             "exe_lease",
             "holder",
             std::time::Duration::from_secs(30),
+            chrono::Utc::now(),
         )
         .await
         .expect("acquire_lease")
@@ -659,6 +667,7 @@ pub(crate) async fn assert_live_lease_blocks_acquire(backend: &dyn Backend) {
             "exe_lease",
             "holder",
             std::time::Duration::from_secs(30),
+            chrono::Utc::now(),
         )
         .await
         .expect("acquire_lease");
@@ -685,6 +694,7 @@ pub(crate) async fn assert_live_lease_blocks_acquire(backend: &dyn Backend) {
             "exe_lease_z",
             "holder",
             std::time::Duration::from_millis(1),
+            chrono::Utc::now(),
         )
         .await
         .expect("acquire_lease")
@@ -698,6 +708,7 @@ pub(crate) async fn assert_live_lease_blocks_acquire(backend: &dyn Backend) {
             "exe_lease_z",
             "holder",
             std::time::Duration::from_secs(30),
+            chrono::Utc::now(),
         )
         .await
         .expect("acquire_lease")
@@ -737,6 +748,7 @@ pub(crate) async fn assert_atomic_triple(backend: &dyn Backend) {
             "exe_triple",
             "holder",
             std::time::Duration::from_secs(30),
+            chrono::Utc::now(),
         )
         .await
         .expect("acquire_lease")
@@ -1259,7 +1271,13 @@ pub(crate) async fn assert_control_queue_outbox_and_fencing(backend: &dyn Backen
         .await
         .expect("create");
     let token = store
-        .acquire_lease(&s, "exe_cq", "holder", std::time::Duration::from_secs(30))
+        .acquire_lease(
+            &s,
+            "exe_cq",
+            "holder",
+            std::time::Duration::from_secs(30),
+            chrono::Utc::now(),
+        )
         .await
         .expect("acquire_lease")
         .unwrap_or_else(|| panic!("[{}] lease", backend.name()));
@@ -1359,7 +1377,13 @@ pub(crate) async fn assert_resume_target_survives_queue_round_trip(backend: &dyn
         .await
         .expect("create execution for resume-target round-trip");
     let token = store
-        .acquire_lease(&s, "exe_rt", "holder", std::time::Duration::from_secs(30))
+        .acquire_lease(
+            &s,
+            "exe_rt",
+            "holder",
+            std::time::Duration::from_secs(30),
+            chrono::Utc::now(),
+        )
         .await
         .expect("acquire_lease")
         .unwrap_or_else(|| panic!("[{}] lease for resume-target test", backend.name()));
@@ -1416,7 +1440,13 @@ pub(crate) async fn assert_resume_target_survives_queue_round_trip(backend: &dyn
         .await
         .expect("create second execution");
     let token2 = store
-        .acquire_lease(&s, "exe_rt2", "holder", std::time::Duration::from_secs(30))
+        .acquire_lease(
+            &s,
+            "exe_rt2",
+            "holder",
+            std::time::Duration::from_secs(30),
+            chrono::Utc::now(),
+        )
         .await
         .expect("acquire_lease 2")
         .unwrap_or_else(|| panic!("[{}] lease 2 for resume-target test", backend.name()));
@@ -1661,7 +1691,13 @@ pub(crate) async fn assert_journal_visibility_and_scope(backend: &dyn Backend) {
         .await
         .expect("create");
     let token = store
-        .acquire_lease(&s, "exe_j", "holder", std::time::Duration::from_secs(30))
+        .acquire_lease(
+            &s,
+            "exe_j",
+            "holder",
+            std::time::Duration::from_secs(30),
+            chrono::Utc::now(),
+        )
         .await
         .expect("acquire_lease")
         .unwrap_or_else(|| panic!("[{}] lease", backend.name()));

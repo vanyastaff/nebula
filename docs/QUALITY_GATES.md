@@ -173,25 +173,26 @@ nextest profile and required workflow:
   ```
 
 The active v1 manifest names the reached behavioral failures that remain
-unrepaired. It currently names two: first-party C0 park/restart/resume on file
-SQLite and required live PostgreSQL, which now reach the durable drive and park
-but do not re-arm the parked wait after a restart. Setup-blocked oracles are not
-fabricated as RED cases.
+unrepaired. It is currently **empty**: every named case has been fixed. That is
+the profile in its finished state, not a disabled gate — the scenarios still
+run on every pull request, and with nothing listed the verifier requires them
+all to pass, so a regression fails the gate as a plain unexpected failure.
+Setup-blocked oracles are not fabricated as RED cases.
 
 A repaired scenario **stays in the suite** and loses its manifest entry in the
-same change that repairs it. It then reconciles as ordinary conformance
-coverage, so a regression reads as a plain failure rather than as a gate that
-mysteriously went green. Deleting the scenario instead would destroy the very
-evidence the harness exists to hold. Promoted this way so far: C7
-same-processor ABA and StartKey acceptance on all three backends, and C1
-cancellation authority on file SQLite and live PostgreSQL.
+same change that repairs it. Deleting the scenario instead would destroy the
+very evidence the harness exists to hold. Repaired this way: C7 same-processor
+ABA and StartKey acceptance on all three backends, C1 cancellation authority,
+and C0 park/restart/resume on file SQLite and live PostgreSQL.
 
 The workflow runs on every pull request and main-branch push so a repair outside
-the harness cannot bypass reconciliation. The verifier accepts only raw nextest
-exit 100 and reconciles on *failures*, not on the total case count: exactly the
-manifested identities may fail, each with one failing JUnit case and exactly one
+the harness cannot bypass reconciliation. The verifier derives the expected nextest exit
+from the manifest — 100 while cases are listed, 0 once none are — and
+reconciles on *failures*, not on the total case count: exactly the manifested
+identities may fail, each with one failing JUnit case and exactly one
 standalone `EXPECTED_RED:<reason-code>` marker captured from stderr; every other
-selected test must have passed. No skips, errors, timeouts, retries, reruns,
+selected test must have passed, and a run containing no testcases at all is
+rejected. No skips, errors, timeouts, retries, reruns,
 flaky outcomes, or unmanifested failures are tolerated. Ignored,
 `should_panic`, sentinel, compile-fail, synthetic JUnit, and failure-body-only
 markers are not production RED evidence.

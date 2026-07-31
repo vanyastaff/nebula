@@ -33,6 +33,11 @@ pub(super) fn verify(
             report.root_counts.tests
         ));
     }
+    if report.root_counts.tests == 0 {
+        return invalid_junit(
+            "report contains no testcases; a suite that ran nothing is not evidence".to_owned(),
+        );
+    }
     if report.root_counts.failures != expected_count
         || report.root_counts.errors != 0
         || report.root_counts.disabled != 0

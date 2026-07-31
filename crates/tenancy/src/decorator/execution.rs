@@ -113,8 +113,11 @@ impl ExecutionStore for ScopedExecutionStore {
         id: &str,
         holder: &str,
         ttl: Duration,
+        now: chrono::DateTime<chrono::Utc>,
     ) -> Result<Option<FencingToken>, StorageError> {
-        self.inner.acquire_lease(&self.bound, id, holder, ttl).await
+        self.inner
+            .acquire_lease(&self.bound, id, holder, ttl, now)
+            .await
     }
 
     async fn renew_lease(
@@ -123,8 +126,11 @@ impl ExecutionStore for ScopedExecutionStore {
         id: &str,
         token: FencingToken,
         ttl: Duration,
+        now: chrono::DateTime<chrono::Utc>,
     ) -> Result<bool, StorageError> {
-        self.inner.renew_lease(&self.bound, id, token, ttl).await
+        self.inner
+            .renew_lease(&self.bound, id, token, ttl, now)
+            .await
     }
 
     async fn release_lease(

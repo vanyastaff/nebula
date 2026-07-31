@@ -44,10 +44,6 @@ fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
-fn now_ms() -> i64 {
-    chrono::Utc::now().timestamp_millis()
-}
-
 /// Insert a `Created` execution row inside an existing transaction.
 ///
 /// Called by both `ExecutionStore::create` (via a single-statement tx) and
@@ -315,6 +311,7 @@ impl ExecutionStore for SqliteExecutionStore {
         id: &str,
         holder: &str,
         ttl: Duration,
+        now: chrono::DateTime<chrono::Utc>,
     ) -> Result<Option<FencingToken>, StorageError> {
         let ttl = normalized_ttl(ttl);
         let mut tx = self.pool.begin().await.map_err(conn_err)?;
@@ -337,8 +334,8 @@ impl ExecutionStore for SqliteExecutionStore {
         let cur_gen = row
             .try_get::<i64, _>("fencing_generation")
             .map_err(conn_err)? as u64;
-        let now = now_ms();
-        let live = matches!(cur_exp, Some(exp) if exp >= now);
+        let now_ms = now.timestamp_millis();
+        let live = matches!(cur_exp, Some(exp) if exp >= now_ms);
         if live {
             // A live lease blocks acquisition outright — including a
             // second acquire by the *same* holder. Renewal is the
@@ -356,7 +353,7 @@ impl ExecutionStore for SqliteExecutionStore {
         // token). Generation 0 therefore universally means "no lease
         // ever issued / stale".
         let new_gen = cur_gen + 1;
-        let exp_ms = now + ttl.as_millis() as i64;
+        let exp_ms = now_ms + ttl.as_millis() as i64;
         sqlx::query(
             "UPDATE port_executions \
              SET lease_holder = ?, lease_expires_at_ms = ?, fencing_generation = ? \
@@ -388,9 +385,10 @@ impl ExecutionStore for SqliteExecutionStore {
         id: &str,
         token: FencingToken,
         ttl: Duration,
+        now: chrono::DateTime<chrono::Utc>,
     ) -> Result<bool, StorageError> {
         let ttl = normalized_ttl(ttl);
-        let exp_ms = now_ms() + ttl.as_millis() as i64;
+        let exp_ms = now.timestamp_millis() + ttl.as_millis() as i64;
         let res = sqlx::query(
             "UPDATE port_executions SET lease_expires_at_ms = ? \
              WHERE id = ? AND workspace_id = ? AND org_id = ? \

@@ -81,17 +81,14 @@ fn normalized_ttl(ttl: Duration) -> Duration {
     Duration::from_secs_f64(ttl.as_secs_f64().clamp(1.0, 86_400.0))
 }
 
-/// Current wall clock as epoch milliseconds — the lease / reclaim time
-/// representation shared with the SQLite backend (`*_ms BIGINT`), so the
-/// two dialects compare instants identically under the conformance
-/// matrix (no `TIMESTAMPTZ`-vs-`BIGINT` drift).
-fn now_ms() -> i64 {
-    Utc::now().timestamp_millis()
-}
-
-/// `now_ms()` plus a (24h-capped) TTL, as epoch milliseconds.
-fn expiry_ms(ttl: Duration) -> i64 {
-    now_ms().saturating_add(normalized_ttl(ttl).as_millis() as i64)
+/// The caller's `now` plus a (24h-capped) TTL, as epoch milliseconds.
+///
+/// Takes `now` rather than reading a clock: a lease deadline is only
+/// meaningful against the clock its holder reasons in — see
+/// [`ExecutionStore::acquire_lease`].
+fn expiry_ms(now: DateTime<Utc>, ttl: Duration) -> i64 {
+    now.timestamp_millis()
+        .saturating_add(normalized_ttl(ttl).as_millis() as i64)
 }
 
 #[async_trait::async_trait]
@@ -321,6 +318,7 @@ impl ExecutionStore for PgExecutionStore {
         id: &str,
         holder: &str,
         ttl: Duration,
+        now: DateTime<Utc>,
     ) -> Result<Option<FencingToken>, StorageError> {
         let mut tx = self.pool.begin().await.map_err(conn_err)?;
         let row = sqlx::query(
@@ -342,8 +340,8 @@ impl ExecutionStore for PgExecutionStore {
         let cur_gen = row
             .try_get::<i64, _>("fencing_generation")
             .map_err(conn_err)? as u64;
-        let now = now_ms();
-        let live = matches!(cur_exp_ms, Some(exp) if exp >= now);
+        let now_ms = now.timestamp_millis();
+        let live = matches!(cur_exp_ms, Some(exp) if exp >= now_ms);
         if live {
             // A live lease blocks acquisition outright — including a
             // second acquire by the *same* holder. Renewal is the
@@ -361,7 +359,7 @@ impl ExecutionStore for PgExecutionStore {
         // token). Generation 0 therefore universally means "no lease
         // ever issued / stale".
         let new_gen = cur_gen + 1;
-        let new_exp_ms = expiry_ms(ttl);
+        let new_exp_ms = expiry_ms(now, ttl);
         sqlx::query(
             "UPDATE port_executions \
              SET lease_holder = $1, lease_expires_at_ms = $2, fencing_generation = $3 \
@@ -393,8 +391,9 @@ impl ExecutionStore for PgExecutionStore {
         id: &str,
         token: FencingToken,
         ttl: Duration,
+        now: DateTime<Utc>,
     ) -> Result<bool, StorageError> {
-        let new_exp_ms = expiry_ms(ttl);
+        let new_exp_ms = expiry_ms(now, ttl);
         let res = sqlx::query(
             "UPDATE port_executions SET lease_expires_at_ms = $1 \
              WHERE id = $2 AND workspace_id = $3 AND org_id = $4 \

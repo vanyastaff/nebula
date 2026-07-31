@@ -1,7 +1,7 @@
 //! Database row types — 1:1 mappings to SQL table columns.
 //!
 //! These are raw storage shapes, not domain types. IDs are `Vec<u8>` (BYTEA/BLOB),
-//! enums are `String`, timestamps are `chrono::DateTime<Utc>`, JSON fields are
+//! enums are `String`, timestamps are `chrono::DateTime<chrono::Utc>`, JSON fields are
 //! `serde_json::Value`. The mapping layer converts between rows and domain types.
 
 // Row structs are plain data containers where field names mirror SQL columns.
