@@ -315,6 +315,10 @@ async fn startkey_scenario(backend: Backend) {
         .await;
     let first = expect_json_status(first, StatusCode::ACCEPTED, "first keyed start").await;
     let first_execution = required_text(&first, "id", "first execution id").to_owned();
+    let first_started_at = first
+        .get("started_at")
+        .and_then(Value::as_i64)
+        .expect("SETUP: acceptance receipt carries a timestamp");
 
     let replay = running
         .http
@@ -327,6 +331,15 @@ async fn startkey_scenario(backend: Backend) {
             .expected_red("startkey-same-fingerprint-duplicated")
             .await;
     }
+    // The receipt is the *original* one, so its timestamp must be the original
+    // too. Substituting only the id would date the execution to whenever the
+    // retry arrived — a fabricated fact, and one that silently skews any
+    // latency measured from this field.
+    assert_eq!(
+        replay.get("started_at").and_then(Value::as_i64),
+        Some(first_started_at),
+        "a replayed receipt must carry the original acceptance timestamp"
+    );
 
     let before_mismatch = running.http.running_total(&workflow_id).await;
     assert_eq!(

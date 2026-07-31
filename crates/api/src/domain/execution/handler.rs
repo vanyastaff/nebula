@@ -273,14 +273,25 @@ pub async fn get_execution(
         ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
         ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
         ("wf" = String, Path, description = "Workflow identifier (`wf_<ULID>`)."),
+        (
+            "Idempotency-Key" = Option<String>,
+            Header,
+            description = "Start key identifying one accepted command, 1..=255 printable ASCII \
+                           characters. Retrying with the same key and an identical request \
+                           returns the original acceptance receipt — same execution id, same \
+                           timestamp — and creates nothing new; reusing it for a request that \
+                           differs is refused with 409 and no durable change. Omitting it means \
+                           every request creates its own execution.",
+        ),
     ),
     request_body = StartExecutionRequest,
     responses(
-        (status = 202, description = "Execution accepted; engine dispatch in flight.", body = ExecutionResponse),
+        (status = 202, description = "Execution accepted; engine dispatch in flight. A replayed keyed start returns the original receipt with this same status.", body = ExecutionResponse),
         (status = 400, description = "Invalid workflow identifier, or the stored workflow definition cannot be parsed as a workflow.", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Workflow does not exist.", body = ProblemDetails),
+        (status = 409, description = "The `Idempotency-Key` is already reserved for a request that canonicalizes differently (`code: operation_mismatch`). Nothing was written.", body = ProblemDetails),
         (status = 422, description = "Workflow definition fails structural validation (shift-left gate).", body = ProblemDetails),
         (status = 503, description = "Control queue is unavailable; the engine cannot pick up the dispatch signal.", body = ProblemDetails),
     ),
@@ -343,7 +354,9 @@ pub async fn start_execution(
     // delivery of it. Without a key there is nothing to converge on, so an
     // unkeyed request creates its own execution every time — that is the
     // caller's choice, not a defect.
-    let accepted_execution_id = if let Some(start_key) = start_key(&headers)? {
+    // Both the durable identity *and* the acceptance timestamp come from
+    // whichever request actually created the execution — see the replay arm.
+    let (accepted_execution_id, accepted_at) = if let Some(start_key) = start_key(&headers)? {
         let fingerprint = start_fingerprint(workflow_id_parsed, version.number, &payload);
         match state
             .accept_keyed_start_scoped(
@@ -363,16 +376,34 @@ pub async fn start_execution(
                     node_count = validated.definition().nodes.len(),
                     "execution: keyed start accepted (reservation + aggregate + Start committed)"
                 );
-                execution_id
+                (execution_id, created_at)
             },
             StartAcceptance::Replayed { execution_id } => {
-                // The original acceptance receipt. Nothing was written, and
-                // the id is the first request's — not the one minted above.
+                // The original acceptance receipt — which means the original
+                // timestamp too, not this retry's. Reporting `created_at` from
+                // the state built above would date the execution to whenever
+                // the retry happened, contradicting the receipt it claims to
+                // be and skewing any latency measured from it.
+                let replayed = ExecutionId::parse(&execution_id).map_err(|e| {
+                    ApiError::Internal(format!("replayed execution id is not parseable: {e}"))
+                })?;
+                let (_, persisted) = state
+                    .execution_state_scoped(&scope, replayed, "load the replayed receipt")
+                    .await?
+                    .ok_or_else(|| {
+                        // The reservation names an execution that is not there:
+                        // report it rather than answer with a fabricated time.
+                        ApiError::Internal(
+                            "start key reserved for an execution that no longer exists".to_owned(),
+                        )
+                    })?;
+                let original_created_at =
+                    extract_timestamp(&persisted, "created_at").unwrap_or(created_at);
                 tracing::info!(
                     execution_id = %execution_id,
                     "execution: keyed start replayed; returning the original receipt"
                 );
-                execution_id
+                (execution_id, original_created_at)
             },
             // Deliberately no execution id in the error: the caller proved
             // knowledge of a key, not of the execution behind it.
@@ -383,7 +414,7 @@ pub async fn start_execution(
             .create_execution_scoped(&scope, execution_id, workflow_id_parsed, state_json)
             .await?;
         enqueue_start_scoped(&state, &scope, execution_id, &validated).await?;
-        execution_id.to_string()
+        (execution_id.to_string(), created_at)
     };
 
     // Build response. `started_at` is omitted on a Created execution —
@@ -404,7 +435,7 @@ pub async fn start_execution(
         id: accepted_execution_id,
         workflow_id,
         status: exec_state.status.to_string(),
-        started_at: created_at,
+        started_at: accepted_at,
         finished_at: None,
         input: payload.input,
         output: None,

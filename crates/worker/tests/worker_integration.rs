@@ -387,6 +387,39 @@ async fn worker_runtime_drives_execution_to_completed() {
 }
 
 /// `WorkerRuntimeBuilder::build` rejects an empty `available_plugins` vec.
+/// A zero timer-scan interval is rejected rather than deferred to a panic.
+///
+/// `tokio::time::interval` panics on a zero period, so accepting it would let a
+/// plausible-looking configuration kill the scanner the moment it starts —
+/// inside a supervised task, where the only symptom is that parked executions
+/// quietly stop waking.
+#[tokio::test]
+async fn builder_rejects_a_zero_timer_scan_interval() {
+    use nebula_worker::WorkerBuildError;
+    let stores = TestStores::new();
+    let (engine, _) = make_engine(&stores).await;
+    let queue = Arc::new(InMemoryJobDispatchQueue::new(&stores.execution));
+    let result = WorkerRuntimeBuilder::from_wired_engine(
+        engine,
+        stores.execution_stores(),
+        queue as Arc<dyn JobDispatchQueue>,
+        vec![
+            TEST_PLUGIN_KEY
+                .parse::<PluginKey>()
+                .expect("test plugin key is valid"),
+        ],
+        proc16(0x01),
+    )
+    .with_control_queue(Arc::new(InMemoryControlQueue::new(&stores.execution)))
+    .with_timer_scan_interval(Duration::ZERO)
+    .build();
+
+    assert!(
+        matches!(result, Err(WorkerBuildError::ZeroTimerScanInterval)),
+        "a zero timer scan interval must be rejected at build time; got {result:?}"
+    );
+}
+
 #[tokio::test]
 async fn builder_rejects_empty_plugins() {
     use nebula_worker::WorkerBuildError;

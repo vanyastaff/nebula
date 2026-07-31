@@ -52,6 +52,7 @@
 //! [`JobDispatchQueue`]: nebula_storage_port::store::JobDispatchQueue
 //! [`EngineExecutionSink`]: nebula_engine::EngineExecutionSink
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -88,6 +89,15 @@ pub enum WorkerBuildError {
     /// the queue makes that miswiring a build error instead of silence.
     #[error("no control queue wired — accepted Start commands would never be consumed")]
     NoControlQueue,
+
+    /// The timer-scan interval is zero.
+    ///
+    /// `tokio::time::interval` panics on a zero period, so a zero here does not
+    /// mean "scan continuously" — it means the scanner task dies the moment it
+    /// starts. Rejecting it at build time keeps a plausible-looking
+    /// configuration from turning into a panic inside a supervised task.
+    #[error("timer scan interval must be greater than zero")]
+    ZeroTimerScanInterval,
 }
 
 /// Why a supervised worker component stopped.
@@ -108,6 +118,10 @@ pub enum WorkerRuntimeError {
         source: tokio::task::JoinError,
     },
 }
+
+/// What one supervised task reports: which component it was, and — when the
+/// failure happened *inside* it — the join failure it carried out.
+type ComponentOutcome = Result<Component, (Component, tokio::task::JoinError)>;
 
 /// One supervised top-level worker task.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -213,53 +227,78 @@ impl WorkerRuntime {
         // reports it. Joining all three means a component death is an error the
         // app can act on, and cancelling the token stops the siblings rather
         // than leaving them running against a half-dead runtime.
-        let mut components: JoinSet<(Component, ())> = JoinSet::new();
+        // Each task reports which component it is, so a failure is attributed
+        // rather than guessed. A task that panics yields only a `JoinError`, so
+        // the id map carries the label the payload no longer can.
+        let mut components: JoinSet<ComponentOutcome> = JoinSet::new();
+        let mut labels: HashMap<tokio::task::Id, Component> = HashMap::new();
 
         let orchestrator_shutdown = shutdown.clone();
         let orchestrator = self.orchestrator;
-        components.spawn(async move {
+        let handle = components.spawn(async move {
             orchestrator.run(orchestrator_shutdown).await;
-            (Component::Orchestrator, ())
+            Ok(Component::Orchestrator)
         });
+        labels.insert(handle.id(), Component::Orchestrator);
 
         let consumer_shutdown = shutdown.clone();
         let control_consumer = self.control_consumer;
-        components.spawn(async move {
+        let handle = components.spawn(async move {
             control_consumer.run(consumer_shutdown).await;
-            (Component::ControlConsumer, ())
+            Ok(Component::ControlConsumer)
         });
+        labels.insert(handle.id(), Component::ControlConsumer);
 
         let scanner_shutdown = shutdown.clone();
         let scanner_engine = Arc::clone(&self.engine);
         let scan_interval = self.timer_scan_interval;
-        components.spawn(async move {
+        let handle = components.spawn(async move {
             let scanner = scanner_engine.spawn_timer_scanner(scan_interval, scanner_shutdown);
-            // The scanner owns its own task; awaiting its handle here keeps it
-            // inside this supervision tree rather than detached.
-            let _ = scanner.await;
-            (Component::TimerScanner, ())
+            // The scanner owns its own task, so its failure has to be carried
+            // out deliberately. Discarding the `JoinError` here would report a
+            // panicked scanner as a clean stop: the runtime would keep serving
+            // with nothing waking parked executions, and the supervision loop
+            // would neither record the error nor stop the siblings — the exact
+            // silence joining the task was meant to end.
+            match scanner.await {
+                Ok(()) => Ok(Component::TimerScanner),
+                Err(source) => Err((Component::TimerScanner, source)),
+            }
         });
+        labels.insert(handle.id(), Component::TimerScanner);
 
         let mut first_failure = None;
         while let Some(joined) = components.join_next().await {
-            match joined {
-                Ok((component, ())) => {
+            let failure = match joined {
+                Ok(Ok(component)) => {
                     tracing::debug!(component = component.label(), "worker component stopped");
+                    None
                 },
+                // A task this runtime supervises failed inside itself.
+                Ok(Err((component, source))) => Some((component, source)),
+                // The supervised task itself panicked or was cancelled; the id
+                // map says which one.
                 Err(source) => {
-                    let component = Component::Orchestrator;
-                    tracing::error!(
-                        error = %source,
-                        "worker component ended abnormally; stopping the runtime"
-                    );
-                    if first_failure.is_none() {
-                        first_failure = Some(WorkerRuntimeError::ComponentJoin {
-                            component: component.label(),
-                            source,
-                        });
-                    }
-                    shutdown.cancel();
+                    let component = labels
+                        .get(&source.id())
+                        .copied()
+                        .unwrap_or(Component::Orchestrator);
+                    Some((component, source))
                 },
+            };
+            if let Some((component, source)) = failure {
+                tracing::error!(
+                    component = component.label(),
+                    error = %source,
+                    "worker component ended abnormally; stopping the runtime"
+                );
+                if first_failure.is_none() {
+                    first_failure = Some(WorkerRuntimeError::ComponentJoin {
+                        component: component.label(),
+                        source,
+                    });
+                }
+                shutdown.cancel();
             }
         }
         first_failure.map_or(Ok(()), Err)
@@ -431,6 +470,12 @@ impl WorkerRuntimeBuilder {
             return Err(WorkerBuildError::NoPlugins);
         }
         let control_queue = self.control_queue.ok_or(WorkerBuildError::NoControlQueue)?;
+        let timer_scan_interval = self
+            .timer_scan_interval
+            .unwrap_or(DEFAULT_TIMER_SCAN_INTERVAL);
+        if timer_scan_interval.is_zero() {
+            return Err(WorkerBuildError::ZeroTimerScanInterval);
+        }
 
         let sink = Arc::new(EngineExecutionSink::new(
             Arc::clone(&self.engine),
@@ -478,9 +523,7 @@ impl WorkerRuntimeBuilder {
 
         Ok(WorkerRuntime {
             engine: Arc::clone(&self.engine),
-            timer_scan_interval: self
-                .timer_scan_interval
-                .unwrap_or(DEFAULT_TIMER_SCAN_INTERVAL),
+            timer_scan_interval,
             orchestrator,
             control_consumer,
             processor_id: self.processor_id,
