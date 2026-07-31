@@ -24,7 +24,8 @@ use nebula_core::accessor::Clock;
 use nebula_core::{WorkflowId, id::ExecutionId, node_key};
 use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_storage::{
-    InMemoryExecutionStore, InMemoryWorkflowVersionStore, inmem::InMemoryJobDispatchQueue,
+    InMemoryControlQueue, InMemoryExecutionStore, InMemoryWorkflowVersionStore,
+    inmem::InMemoryJobDispatchQueue,
 };
 use nebula_storage_port::{
     Scope,
@@ -242,6 +243,9 @@ async fn core_flavor_runtime_processes_seeded_start_job() {
     )
     .expect("build_core_flavor_runtime must succeed");
     let runtime = builder
+        // The same shared core the execution store uses, so the consumer drains
+        // the queue this test's API-side writes land in.
+        .with_control_queue(Arc::new(InMemoryControlQueue::new(&stores.execution)))
         .with_poll_interval(Duration::from_millis(10))
         .build()
         .expect("WorkerRuntimeBuilder::build must succeed with core plugin");
@@ -398,6 +402,7 @@ fn runtime_repair_builder_seals_exact_clock_and_event_bus() {
     );
 
     let runtime = builder
+        .with_control_queue(Arc::new(InMemoryControlQueue::new(&stores.execution)))
         .build()
         .expect("evidence-specific worker builder materializes");
     drop(runtime);
