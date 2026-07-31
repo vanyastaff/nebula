@@ -28,6 +28,10 @@ use nebula_resilience::{
     sink::CircuitState,
 };
 
+/// Generous enough that a correct drain always finishes, short enough that a
+/// regression fails the test instead of hanging it.
+const TEST_CLOSE_BUDGET: Duration = Duration::from_secs(5);
+
 // ── Test 1: Bulkhead under heavy contention ─────────────────────────────────
 
 /// Verifies that 10 000 tasks competing for 100 bulkhead permits all either
@@ -307,9 +311,10 @@ async fn stress_gate_shutdown_under_load() {
     tokio::time::sleep(Duration::from_millis(5)).await;
 
     // Close the gate — must resolve once all active guards are dropped.
-    tokio::time::timeout(Duration::from_secs(10), gate.close())
+    tokio::time::timeout(Duration::from_secs(10), gate.close(TEST_CLOSE_BUDGET))
         .await
-        .expect("Gate::close() should resolve within 10 s");
+        .expect("Gate::close() should resolve within 10 s")
+        .expect("guards drain within the test budget");
 
     // All spawned tasks must have finished.
     for h in handles {

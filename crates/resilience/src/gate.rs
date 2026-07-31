@@ -23,7 +23,7 @@
 //!
 //! // In the background, the owner closes the gate and waits for all guards
 //! // to be dropped.
-//! // gate.close().await;
+//! // gate.close(Duration::from_secs(30)).await?;
 //! # }
 //! ```
 
@@ -58,7 +58,7 @@ const MAX_PERMITS: u32 = u32::MAX / 2;
 #[error("gate is closed — new enter() calls are rejected")]
 pub struct GateClosed;
 
-/// Error returned by [`Gate::close_with_timeout`] when active guards do not drain
+/// Error returned by [`Gate::close`] when active guards do not drain
 /// within the caller's shutdown budget.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
@@ -138,7 +138,7 @@ impl Drop for GateGuard {
 /// drop(guard);
 ///
 /// // After close(), new entries are rejected.
-/// gate.close().await;
+/// gate.close(Duration::from_secs(30)).await?;
 /// assert!(matches!(gate.enter(), Err(GateClosed)));
 /// # }
 /// ```
@@ -224,17 +224,61 @@ impl Gate {
         })
     }
 
-    /// Close the gate and wait for all outstanding guards to exit.
+    /// Close the gate and wait — for at most `budget` — for all outstanding
+    /// guards to exit.
     ///
     /// After this call:
-    /// - All subsequent [`enter()`](Gate::enter) calls return [`Err(GateClosed)`](GateClosed).
-    /// - This future resolves only after every existing [`GateGuard`] has been dropped.
+    /// - All subsequent [`enter()`](Gate::enter) calls return [`Err(GateClosed)`](GateClosed),
+    ///   whether or not the drain completed.
+    /// - `Ok(())` means every [`GateGuard`] was dropped within `budget`.
+    /// - [`Err(GateCloseTimeout)`](GateCloseTimeout) means guards were still
+    ///   active when the budget elapsed. The gate stays closed, so the caller
+    ///   may grant more time with another `close` call rather than starting over.
     ///
-    /// Calling `close()` more than once is a no-op (idempotent).
-    pub async fn close(&self) {
-        // Mark as closing so new enter() calls fail fast.
+    /// `budget` is a required parameter, not an option with a default. Shutdown
+    /// waits on work the gate does not control, so "how long is too long" is a
+    /// caller's policy decision — a built-in default would silently impose one
+    /// process's answer on every other. `Duration::ZERO` is the "drain only if
+    /// already idle" probe.
+    ///
+    /// Calling `close` more than once is safe; each call re-arms the wait with a
+    /// fresh budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GateCloseTimeout`], carrying the budget and the number of
+    /// guards still active, if the drain does not finish in time.
+    pub async fn close(&self, budget: Duration) -> Result<(), GateCloseTimeout> {
+        // Mark as closing so new enter() calls fail fast. Done before the
+        // budget check so even a zero budget still latches the gate shut.
         self.inner.closing.store(true, Ordering::Release);
 
+        if self.active_count() == 0 {
+            self.inner.sem.close();
+            return Ok(());
+        }
+
+        if budget.is_zero() {
+            return Err(GateCloseTimeout {
+                timeout: budget,
+                active_guards: self.active_count(),
+            });
+        }
+
+        tokio::time::timeout(budget, self.drain())
+            .await
+            .map_err(|_elapsed| GateCloseTimeout {
+                timeout: budget,
+                active_guards: self.active_count(),
+            })
+    }
+
+    /// Wait, without bound, for every outstanding guard to drop.
+    ///
+    /// Deliberately private: an unbounded shutdown wait is only ever correct
+    /// underneath a caller-supplied budget, and a public version of this is an
+    /// invitation to hang a process on work that never finishes.
+    async fn drain(&self) {
         // Count how many permits are currently "out" (held by active guards).
         // We started with MAX_PERMITS and each guard holds one. The semaphore
         // currently has (MAX_PERMITS - active_count) available permits.
@@ -243,9 +287,8 @@ impl Gate {
         // permit back, eventually allowing us to acquire all permits, which
         // confirms zero active guards.
         //
-        // We use `acquire_many` in a loop with periodic progress logging to
-        // avoid silent stalls during shutdown.
-
+        // The inner 1-second timeout is a progress-logging tick, not a
+        // deadline: the caller's budget is what bounds this.
         loop {
             match tokio::time::timeout(
                 Duration::from_secs(1),
@@ -273,41 +316,6 @@ impl Gate {
                 },
             }
         }
-    }
-
-    /// Close the gate but return a typed timeout instead of waiting forever.
-    ///
-    /// This is useful for workflow/runtime shutdown paths that have a bounded
-    /// graceful-drain budget. If the timeout elapses, the gate remains in the
-    /// closing state: new [`enter()`](Gate::enter) calls are still rejected, and
-    /// the caller may retry [`close()`](Gate::close) later after outstanding
-    /// guards have had more time to drop.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`GateCloseTimeout`] if `timeout` elapses before all active guards
-    /// exit.
-    pub async fn close_with_timeout(&self, timeout: Duration) -> Result<(), GateCloseTimeout> {
-        self.inner.closing.store(true, Ordering::Release);
-
-        if self.active_count() == 0 {
-            self.inner.sem.close();
-            return Ok(());
-        }
-
-        if timeout.is_zero() {
-            return Err(GateCloseTimeout {
-                timeout,
-                active_guards: self.active_count(),
-            });
-        }
-
-        tokio::time::timeout(timeout, self.close())
-            .await
-            .map_err(|_elapsed| GateCloseTimeout {
-                timeout,
-                active_guards: self.active_count(),
-            })
     }
 
     /// Returns `true` if the gate has been closed (or is closing).
@@ -369,9 +377,10 @@ mod tests {
         });
 
         // close() should complete after the guard is dropped.
-        tokio::time::timeout(Duration::from_secs(2), gate2.close())
+        tokio::time::timeout(Duration::from_secs(2), gate2.close(TEST_CLOSE_BUDGET))
             .await
-            .expect("close() should complete quickly");
+            .expect("close() should complete quickly")
+            .expect("guards drain within the test budget");
 
         // New entries are now rejected.
         assert!(matches!(gate.enter(), Err(GateClosed)));
@@ -380,8 +389,12 @@ mod tests {
     #[tokio::test]
     async fn close_is_idempotent() {
         let gate = Gate::new();
-        gate.close().await;
-        gate.close().await; // second call must not panic or hang
+        gate.close(TEST_CLOSE_BUDGET)
+            .await
+            .expect("guards drain within the test budget");
+        gate.close(TEST_CLOSE_BUDGET)
+            .await
+            .expect("guards drain within the test budget"); // second call must not panic or hang
         assert_eq!(gate.active_count(), 0);
     }
 
@@ -394,7 +407,10 @@ mod tests {
 
         let gate2 = gate.clone();
         let close_task = tokio::spawn(async move {
-            gate2.close().await;
+            gate2
+                .close(TEST_CLOSE_BUDGET)
+                .await
+                .expect("guards drain within the test budget");
         });
 
         tokio::time::sleep(Duration::from_millis(5)).await;
@@ -415,15 +431,50 @@ mod tests {
         assert!(dbg.contains("closing: false"));
     }
 
+    /// Generous enough that a correct drain always finishes, short enough
+    /// that a regression fails the test instead of hanging it.
+    const TEST_CLOSE_BUDGET: Duration = Duration::from_secs(5);
+
+    /// The primary shutdown API is bounded by construction.
+    ///
+    /// Regression for #633: `close` used to wait forever and the bounded
+    /// behaviour lived in a separate opt-in method, so the obvious call was the
+    /// one that could hang a process on a guard that never drops. Holding a
+    /// guard for the whole test proves the budget — not the guard — decides
+    /// when `close` returns.
     #[tokio::test]
-    async fn close_with_timeout_returns_active_guard_count() {
+    async fn close_is_bounded_even_when_a_guard_never_drops() {
+        let gate = Gate::new();
+        let _held_forever = gate.enter().expect("gate starts open");
+
+        let started = tokio::time::Instant::now();
+        let outcome = gate.close(Duration::from_millis(50)).await;
+        let waited = started.elapsed();
+
+        assert!(
+            outcome.is_err(),
+            "a guard that never drops must produce a timeout, not a hang"
+        );
+        assert!(
+            waited < Duration::from_secs(1),
+            "close must return on its own budget; waited {waited:?}"
+        );
+        assert!(
+            gate.is_closed(),
+            "a timed-out close must still latch the gate shut"
+        );
+        assert!(
+            gate.enter().is_err(),
+            "a timed-out close must still reject new entrants"
+        );
+    }
+
+    #[tokio::test]
+    async fn close_returns_active_guard_count_when_budget_elapses() {
         let gate = Gate::new();
         let guard = gate.enter().expect("gate open");
 
-        let err = gate
-            .close_with_timeout(Duration::from_millis(5))
-            .await
-            .unwrap_err();
+        let err = gate.close(Duration::from_millis(5)).await.unwrap_err();
 
         assert_eq!(err.timeout, Duration::from_millis(5));
         assert_eq!(err.active_guards, 1);
@@ -431,7 +482,9 @@ mod tests {
         assert!(matches!(gate.enter(), Err(GateClosed)));
 
         drop(guard);
-        gate.close().await;
+        gate.close(TEST_CLOSE_BUDGET)
+            .await
+            .expect("guards drain within the test budget");
         assert_eq!(gate.active_count(), 0);
     }
 
@@ -439,7 +492,7 @@ mod tests {
     async fn close_with_zero_timeout_succeeds_when_already_drained() {
         let gate = Gate::new();
 
-        gate.close_with_timeout(Duration::ZERO)
+        gate.close(Duration::ZERO)
             .await
             .expect("drained gate closes immediately");
 
