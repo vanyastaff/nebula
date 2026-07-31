@@ -461,7 +461,7 @@ impl WorkflowEngine {
                 failed_node = &mut frontier => Some(failed_node),
                 () = self.shutdown.cancelled() => {
                     tokio::time::timeout(
-                        crate::engine::SHUTDOWN_FRONTIER_GRACE,
+                        SHUTDOWN_FRONTIER_GRACE,
                         &mut frontier,
                     )
                     .await
@@ -472,7 +472,7 @@ impl WorkflowEngine {
         let Some(failed_node) = landed else {
             tracing::warn!(
                 %execution_id,
-                grace_ms = crate::engine::SHUTDOWN_FRONTIER_GRACE.as_millis() as u64,
+                grace_ms = SHUTDOWN_FRONTIER_GRACE.as_millis() as u64,
                 "runtime shutting down: abandoning the frontier and releasing the \
                  execution lease so a successor can take over without waiting out the TTL"
             );
@@ -1361,63 +1361,63 @@ impl WorkflowEngine {
             ))
         })?;
 
-        // Nothing to clean: every node is already terminal — idempotent
-        // re-delivery, OR a `Created` cold-start execution (empty `node_states`,
-        // vacuously all-terminal) that a cross-runner / early Cancel reached
-        // before any node was parked. Ack; there are no dangling nodes to
-        // terminalize regardless of status.
-        if exec_state.all_nodes_terminal() {
+        // The run is already over — cancelled earlier (idempotent redelivery),
+        // or it reached `Completed` / `Failed` / `TimedOut` before the cancel
+        // landed. Either way there is nothing left to cancel; ack.
+        if exec_state.status.is_terminal() {
             return Ok(CancelDanglingOutcome::NothingToCancel);
         }
 
-        // Dangling non-terminal nodes exist. Act only in a genuine cancel
-        // context — three cases on the persisted status (read under the lease):
-        //   - `Cancelled` / `Cancelling`: the cancel is durably recorded —
-        //     proceed to terminalize the parked nodes (below).
-        //   - any OTHER terminal status (`Completed` / `Failed` / `TimedOut`):
-        //     the execution finished on a non-cancel path — anomalous with
-        //     dangling nodes, but the run is over; ack.
-        //   - a non-terminal, non-`Cancelling` status (`Paused` / `Running`):
-        //     the cancel is NOT yet durably recorded. The API writes `Cancelled`
-        //     before enqueuing `Cancel`, so a `Cancel` reaching here with parked
-        //     nodes but no recorded cancel is a transient producer-ordering
-        //     window — DEFER (not ack-and-silently-drop) so B1 reclaim
-        //     redelivers until the status reflects the cancel.
-        if !matches!(
+        // Past this point the cancel is genuine and unfinished, and **this**
+        // runner performs it — under the lease it holds, in one commit.
+        //
+        // It did not always work that way: the API used to write `Cancelled`
+        // before enqueuing the command, so this path only tidied up nodes and
+        // deferred whenever it arrived first. That made an HTTP handler the
+        // writer of a terminal state the engine had not reached, over a fencing
+        // token rebuilt from a read. The command row is the durable intent now,
+        // and arriving here *is* the authorization to act — there is no
+        // producer-ordering window left to defer for.
+        //
+        // `all_nodes_terminal` no longer short-circuits: a `Created` execution
+        // cancelled before any node was parked has vacuously terminal nodes and
+        // still needs its status moved to `Cancelled`.
+        let count = if exec_state.all_nodes_terminal() {
+            0
+        } else {
+            // `Waiting → Cancelled` (and every other non-terminal `→ Cancelled`)
+            // is in the node transition table; a transition error here is a
+            // table regression, surfaced not swallowed.
+            exec_state.cancel_nonterminal_nodes().map_err(|e| {
+                EngineError::PlanningFailed(format!(
+                    "cancel_dangling_nodes: terminalize nodes for {execution_id}: {e}"
+                ))
+            })?
+        };
+
+        // Drive the execution itself to the terminal `Cancelled`, bridging
+        // through `Cancelling` where the table requires it. `Created` goes
+        // straight to `Cancelled` — a pre-start cancel must not fabricate a
+        // `Running` phase it never had (issue #273).
+        if matches!(
             exec_state.status,
-            ExecutionStatus::Cancelled | ExecutionStatus::Cancelling
+            ExecutionStatus::Running | ExecutionStatus::Paused
         ) {
-            if exec_state.status.is_terminal() {
-                return Ok(CancelDanglingOutcome::NothingToCancel);
-            }
-            return Ok(CancelDanglingOutcome::StatusNotCancelled);
-        }
-
-        // `Waiting → Cancelled` (and every other non-terminal `→ Cancelled`) is
-        // in the node transition table; a transition error here is a table
-        // regression, surfaced not swallowed. `count > 0` (the all-terminal
-        // early-return above ruled out zero).
-        let count = exec_state.cancel_nonterminal_nodes().map_err(|e| {
-            EngineError::PlanningFailed(format!(
-                "cancel_dangling_nodes: terminalize nodes for {execution_id}: {e}"
-            ))
-        })?;
-
-        // If the execution was mid-cancel (`Cancelling`), finalize it to the
-        // terminal `Cancelled` in the SAME commit as the node cleanup —
-        // otherwise a no-live-runner repair would ack while the execution stayed
-        // non-terminal `Cancelling` forever (`Cancelling → Cancelled` is in the
-        // execution transition table).
-        if exec_state.status == ExecutionStatus::Cancelling {
             exec_state
-                .transition_status(ExecutionStatus::Cancelled)
+                .transition_status(ExecutionStatus::Cancelling)
                 .map_err(|e| {
                     EngineError::PlanningFailed(format!(
-                        "cancel_dangling_nodes: finalize Cancelling→Cancelled for \
-                         {execution_id}: {e}"
+                        "cancel_dangling_nodes: bridge to Cancelling for {execution_id}: {e}"
                     ))
                 })?;
         }
+        exec_state
+            .transition_status(ExecutionStatus::Cancelled)
+            .map_err(|e| {
+                EngineError::PlanningFailed(format!(
+                    "cancel_dangling_nodes: finalize Cancelled for {execution_id}: {e}"
+                ))
+            })?;
 
         let state_json =
             serde_json::to_value(&exec_state).map_err(|e| EngineError::CheckpointFailed {
@@ -1457,6 +1457,23 @@ impl WorkflowEngine {
                 // and no-op-resume (see `nebula_storage_port::store::resume_token`
                 // module docs), so a revoke failure must not fail the cancel.
                 revoke_resume_tokens_best_effort(stores, scope, id).await;
+                // An execution that reached a terminal state must say so,
+                // whichever path terminalized it. This one used to stay silent:
+                // it only tidied up nodes while the API's own write carried the
+                // terminal status, so nothing here looked like an execution
+                // finishing. Now that this *is* the cancel, a subscriber that
+                // missed the event would see a parked execution simply stop
+                // existing.
+                self.emit_event(crate::ExecutionEvent::ExecutionFinished {
+                    execution_id,
+                    success: false,
+                    // The engine never ran a frontier here — there is no
+                    // measured span to report, and inventing one would put a
+                    // fabricated duration into the same stream that carries
+                    // real ones.
+                    elapsed: std::time::Duration::ZERO,
+                    termination_reason: None,
+                });
                 Ok(CancelDanglingOutcome::Cancelled(count))
             },
             Ok(nebula_storage_port::TransitionOutcome::FencedOut) => {

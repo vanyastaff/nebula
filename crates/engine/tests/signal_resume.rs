@@ -2602,9 +2602,11 @@ async fn signal_park_persists_paused_atomically_no_running_waiting_window() {
 /// the `Cancelled` execution would keep a non-terminal `Waiting` node — a
 /// terminal-execution ⇒ all-nodes-terminal invariant violation.
 ///
-/// Test mechanics: park a signal node (`Paused`), simulate the API's `Cancelled`
-/// status write (`force_cancelled`), then drain `Cancel` via `dispatch_cancel`.
-/// Assert every node is terminal (`Cancelled`), not left `Waiting`.
+/// Test mechanics: park a signal node (`Paused`), then drain `Cancel` via
+/// `dispatch_cancel`. Nothing pre-writes a cancelled status — the command row
+/// *is* the cancel — so this also pins that the engine drives the execution
+/// itself from `Paused` to the terminal `Cancelled`. Assert both: the execution
+/// is `Cancelled` and every node is terminal, not left `Waiting`.
 ///
 /// **Falsifiability**: drop the `cancel_dangling_nodes` call from `dispatch_cancel`
 /// → the parked `Waiting` node stays non-terminal → the all-terminal assertion
@@ -2627,18 +2629,20 @@ async fn cancel_of_paused_signal_execution_terminalizes_parked_nodes() {
         ExecutionStatus::Paused
     );
 
-    // The API cancel path writes the terminal status (but not the node states).
-    harness
-        .force_status(execution_id, ExecutionStatus::Cancelled)
-        .await;
-
-    // Drain the Cancel command. No live runner → engine terminalizes the parked
-    // nodes under the lease.
+    // Drain the Cancel command. No live runner → the engine acquires the lease
+    // and performs the whole cancel there: status *and* node states.
     harness
         .dispatch
         .dispatch_cancel(&scope, execution_id)
         .await
-        .expect("dispatch_cancel must succeed (no live runner; durable node cleanup)");
+        .expect("dispatch_cancel must succeed (no live runner; durable cancel)");
+
+    // The engine — not the API — moved the execution to its terminal state.
+    assert_eq!(
+        harness.persisted_status(execution_id).await,
+        ExecutionStatus::Cancelled,
+        "the runtime must terminalize the execution itself; nothing writes it ahead of the engine"
+    );
 
     // Every node must be terminal — no dangling `Waiting` under a `Cancelled` execution.
     let record = harness
@@ -2669,20 +2673,22 @@ async fn cancel_of_paused_signal_execution_terminalizes_parked_nodes() {
     );
 }
 
-/// **C1 — `dispatch_cancel` DEFERS (does not silently ack) when the cancel is
-/// not yet durably recorded** (concurrency-hardening for the cancel-of-paused
-/// fix): the API writes `status = Cancelled` BEFORE enqueuing `Cancel`, so by
-/// drain time the status is `Cancelled`. If a producer-ordering regression ever
-/// delivered the `Cancel` while the execution were still `Paused`,
-/// `cancel_dangling_nodes` must return `StatusNotCancelled` and `dispatch_cancel`
-/// must `Deferred` (so B1 reclaim redelivers) rather than ack-and-drop the node
-/// cleanup.
+/// **A `Cancel` for a still-running execution is honored on arrival — nothing
+/// has to write the cancel down first.**
 ///
-/// **Falsifiability**: make `cancel_dangling_nodes` return `NothingToCancel`
-/// (ack) for a non-terminal non-cancel status → `dispatch_cancel` returns `Ok`
-/// → the `Deferred` assertion fails → RED.
+/// This used to assert the opposite: the API wrote `status = Cancelled` before
+/// enqueuing, so a `Cancel` that arrived against a `Paused` execution was
+/// treated as a producer-ordering anomaly and deferred for reclaim. That whole
+/// protocol existed to paper over an HTTP handler writing the execution
+/// aggregate. The command row is the durable intent now, so arriving here is
+/// the authorization to act, and deferring would strand a perfectly valid
+/// cancel until reclaim burned its budget.
+///
+/// **Falsifiability**: restore the `StatusNotCancelled` guard in
+/// `cancel_dangling_nodes` → `dispatch_cancel` returns `Err(Deferred)` and the
+/// execution stays `Paused` → both assertions fail → RED.
 #[tokio::test]
-async fn dispatch_cancel_defers_when_cancel_not_yet_recorded() {
+async fn dispatch_cancel_honors_a_cancel_that_no_one_pre_recorded() {
     let harness = SignalHarness::new().await;
     let workflow_id = harness.persist_signal_workflow().await;
     let execution_id = harness.persist_created_execution(workflow_id).await;
@@ -2698,36 +2704,50 @@ async fn dispatch_cancel_defers_when_cancel_not_yet_recorded() {
         ExecutionStatus::Paused
     );
 
-    // NOTE: deliberately do NOT call `force_cancelled` — the status is still
-    // `Paused` (the cancel has not been durably recorded).
-    let result = harness.dispatch.dispatch_cancel(&scope, execution_id).await;
-    assert!(
-        matches!(result, Err(ControlDispatchError::Deferred(_))),
-        "dispatch_cancel must Defer when the cancel is not yet durably recorded; got {result:?}"
-    );
-    // No node cleanup happened — the wait node is still Waiting, execution Paused.
+    // Nothing pre-writes a cancelled status: the execution is still `Paused`.
+    harness
+        .dispatch
+        .dispatch_cancel(&scope, execution_id)
+        .await
+        .expect("a Cancel must be honored on arrival, not deferred for a write that never comes");
+
     assert_eq!(
         harness.persisted_status(execution_id).await,
-        ExecutionStatus::Paused
+        ExecutionStatus::Cancelled,
+        "the engine must drive Paused → Cancelling → Cancelled under its own lease"
+    );
+    let record = harness
+        .stores
+        .execution
+        .get(&scope, &execution_id.to_string())
+        .await
+        .unwrap()
+        .expect("execution row must exist");
+    let state: ExecutionState =
+        serde_json::from_str(&serde_json::to_string(&record.state).unwrap()).unwrap();
+    assert!(
+        state.node_states.values().all(|ns| ns.state.is_terminal()),
+        "a cancelled execution must retain no non-terminal node"
     );
 }
 
-/// **Lease held by a live owner — `dispatch_cancel` ACKS (does not churn) and
-/// the owner cleans up; once the lease frees, a Cancel terminalizes the parked
-/// nodes.** A held lease (acquire fails ⇒ TTL not expired) means a live runner
-/// owns the execution: it observes the durable `Cancelled` status via its next
-/// checkpoint CAS and tears its own frontier down. `dispatch_cancel` must ACK
-/// rather than Defer — there is no targeted cross-runner cancel delivery, so
-/// deferring would only churn the row through budget-capped reclaim and mark it
-/// failed without reaching the owner. A genuinely no-live-runner Paused
-/// execution has a FREE lease, so `cancel_dangling_nodes` acquires it and
-/// terminalizes (proven by the second half + by
-/// `cancel_of_paused_signal_execution_terminalizes_parked_nodes`).
+/// **Lease held by a live owner on another runner — `dispatch_cancel` DEFERS
+/// rather than acking an undelivered cancel; once the lease frees, a
+/// redelivered Cancel terminalizes the execution.**
 ///
-/// **Falsifiability**: revert the `Leased` arm to `Deferred` → the held-lease
-/// `dispatch_cancel` returns `Err(Deferred)` → the `Ok` assertion fails → RED.
+/// Acking used to be right, because the API wrote `Cancelled` durably before
+/// enqueuing and the holder saw it on its next checkpoint CAS. Nothing writes
+/// that state ahead of the runtime any more, so this dispatcher cannot reach
+/// the holder *and* cannot leave a durable trace — acking would drop the
+/// cancel outright. Deferring keeps the row alive for redelivery, which is
+/// untargeted and so can land on the holder itself; and the holder's lease is
+/// short-lived by construction, so a later delivery finds it free.
+///
+/// **Falsifiability**: restore the `Ok(())` ack on the `Leased` arm → the
+/// held-lease `dispatch_cancel` returns `Ok` → the `Deferred` assertion fails
+/// → RED.
 #[tokio::test]
-async fn dispatch_cancel_acks_when_lease_held_then_terminalizes_once_free() {
+async fn dispatch_cancel_defers_when_another_runner_holds_the_lease() {
     let harness = SignalHarness::new().await;
     let workflow_id = harness.persist_signal_workflow().await;
     let execution_id = harness.persist_created_execution(workflow_id).await;
@@ -2738,12 +2758,7 @@ async fn dispatch_cancel_acks_when_lease_held_then_terminalizes_once_free() {
         .dispatch_start(&scope, execution_id)
         .await
         .expect("dispatch_start must park the signal node");
-    // The API cancel path records the terminal status.
-    harness
-        .force_status(execution_id, ExecutionStatus::Cancelled)
-        .await;
-
-    // A live owner holds the execution lease.
+    // A live owner on another runner holds the execution lease.
     let blocker = harness
         .stores
         .execution
@@ -2757,13 +2772,13 @@ async fn dispatch_cancel_acks_when_lease_held_then_terminalizes_once_free() {
         .unwrap()
         .expect("lease must be free before the contention test");
 
-    // dispatch_cancel must ACK (the live owner handles its own teardown), NOT
-    // churn the row through reclaim.
-    harness
-        .dispatch
-        .dispatch_cancel(&scope, execution_id)
-        .await
-        .expect("dispatch_cancel must ACK when a live owner holds the lease (no reclaim churn)");
+    // This dispatcher can neither signal the remote holder nor write under its
+    // fence, so it must not claim the cancel was delivered.
+    let result = harness.dispatch.dispatch_cancel(&scope, execution_id).await;
+    assert!(
+        matches!(result, Err(ControlDispatchError::Deferred(_))),
+        "dispatch_cancel must Defer an undeliverable cancel rather than ack it; got {result:?}"
+    );
 
     // This dispatcher did not touch node state (the owner owns cleanup) — the
     // wait node is still Waiting from its perspective.
@@ -2793,7 +2808,13 @@ async fn dispatch_cancel_acks_when_lease_held_then_terminalizes_once_free() {
         .dispatch
         .dispatch_cancel(&scope, execution_id)
         .await
-        .expect("dispatch_cancel must terminalize the parked nodes once the lease is free");
+        .expect("dispatch_cancel must terminalize the execution once the lease is free");
+
+    assert_eq!(
+        harness.persisted_status(execution_id).await,
+        ExecutionStatus::Cancelled,
+        "the redelivered cancel must terminalize the execution, not only its nodes"
+    );
 
     let record2 = harness
         .stores

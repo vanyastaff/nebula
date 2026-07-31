@@ -32,6 +32,22 @@ const CSRF_COOKIE: &str = "__Host-nebula-csrf";
 const DELAY_NODE: &str = "delay";
 const OBSERVATION_BOUND: Duration = Duration::from_millis(750);
 
+/// How long to wait for the runtime to act on a command it was handed through
+/// the durable control queue.
+///
+/// Deliberately larger than [`OBSERVATION_BOUND`], which bounds in-process
+/// lifecycle observations. This one waits on a full round trip — the producing
+/// request returns, a consumer polls the queue, claims the row, acquires the
+/// execution lease, and commits — so sizing it like an in-process signal would
+/// measure poll cadence rather than whether the runtime honored the command.
+///
+/// Generous on purpose. The failure this guards against is "the runtime never
+/// honors the command at all" — the shape a consumer that blocks on a parked
+/// dispatch produces, where nothing arrives however long you wait. A tighter
+/// bound would add cold-start flakiness without catching anything that this
+/// one misses.
+const RUNTIME_COMMAND_BOUND: Duration = Duration::from_secs(10);
+
 #[derive(Clone, Copy)]
 enum Backend {
     InMemory,
@@ -212,7 +228,7 @@ impl AuthenticatedClient {
             .send()
             .await
             .expect("SETUP: cancellation request reaches profile");
-        expect_json_status(response, StatusCode::OK, "cancel execution").await
+        expect_json_status(response, StatusCode::ACCEPTED, "cancel execution").await
     }
 }
 
@@ -487,8 +503,13 @@ async fn cancellation_scenario(backend: Backend) {
         .await;
     let started = expect_json_status(started, StatusCode::ACCEPTED, "cancellation start").await;
     let execution_id = required_text(&started, "id", "cancellation execution id");
-    let cancelled = running.http.cancel(execution_id).await;
+    let execution_text = execution_id.to_owned();
+    let cancelled = running.http.cancel(&execution_text).await;
 
+    // The response must not claim the run is over. The API submits the cancel
+    // through the control queue and writes nothing, so a terminal status or a
+    // completion timestamp here could only have been asserted by the handler
+    // on the runtime's behalf.
     if cancelled.get("status").and_then(Value::as_str) == Some("cancelled")
         || cancelled
             .get("finished_at")
@@ -496,11 +517,35 @@ async fn cancellation_scenario(backend: Backend) {
     {
         running.expected_red("c1-cancel-terminalized-by-api").await;
     }
-    assert_eq!(
-        cancelled.get("status").and_then(Value::as_str),
-        Some("cancelling"),
-        "SETUP: non-terminal cancellation contract has an exact state"
-    );
+
+    // …and the cancel must still actually happen. The worker drains the
+    // command, acquires the lease, and terminalizes the execution itself. This
+    // half is what keeps the assertion above from being satisfiable by simply
+    // dropping the cancel on the floor.
+    let execution_id =
+        ExecutionId::parse(&execution_text).expect("SETUP: API returned a valid execution id");
+    match harness
+        .evidence_controls()
+        .observations()
+        .await_execution_finished(execution_id, RUNTIME_COMMAND_BOUND)
+        .await
+    {
+        Ok(_) => {},
+        Err(EvidenceIntegrityError::ObservationTimedOut) => {
+            running
+                .expected_red("c1-cancel-not-honored-by-runtime")
+                .await;
+        },
+        Err(error) => {
+            running.shutdown().await;
+            panic!("SETUP: lifecycle observer failed awaiting the cancel: {error}");
+        },
+    }
+
+    let execution = running.http.get_execution(&execution_text).await;
+    if execution.get("status").and_then(Value::as_str) != Some("cancelled") {
+        running.expected_red("c1-cancel-wrong-terminal-state").await;
+    }
     running.shutdown().await;
 }
 

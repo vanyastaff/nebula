@@ -477,10 +477,34 @@ impl ControlConsumer {
         tokio::spawn(async move { self.run(shutdown).await })
     }
 
+    /// How many dispatches this consumer keeps in flight at once.
+    ///
+    /// More than one because a dispatch is not a short write: `Start` and
+    /// `Resume` drive a whole execution step, and a step that parks in-process
+    /// on a durable timer stays there until the wait resolves. Awaiting each
+    /// dispatch in the claim loop — as this consumer used to — meant one parked
+    /// execution starved every subsequent command on this worker, so a `Cancel`
+    /// for *that* execution could not be delivered until it finished on its
+    /// own. That is the one command it most needs to receive.
+    ///
+    /// Bounded rather than unbounded: each in-flight dispatch holds a claimed
+    /// row and an execution lease, and an unbounded consumer would claim work
+    /// faster than it can finish it.
+    const fn max_inflight(&self) -> usize {
+        // One batch's worth. The claim loop stops claiming at this ceiling and
+        // resumes as dispatches land.
+        self.batch_size as usize
+    }
+
     /// Run the polling loop on the current task. Exits when `shutdown` is
     /// cancelled. Prefer [`spawn`](Self::spawn) unless integrating into a
     /// custom task structure.
     pub async fn run(self, shutdown: CancellationToken) {
+        let consumer = Arc::new(self);
+        consumer.run_inner(shutdown).await;
+    }
+
+    async fn run_inner(self: Arc<Self>, shutdown: CancellationToken) {
         tracing::info!(
                    processor = %hex_display(&self.processor_id),
                    batch_size = self.batch_size,
@@ -492,6 +516,9 @@ impl ControlConsumer {
                );
 
         let mut consecutive_errors: u32 = 0;
+        // Dispatches run here rather than inline, so a long or parked one
+        // cannot stall the claim loop behind it.
+        let mut inflight: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
         let mut reclaim_ticker = tokio::time::interval(self.reclaim_interval);
         // Skip the immediate first tick — we just started, nothing is stuck
         // yet and the first `claim_pending` call has priority.
@@ -508,22 +535,37 @@ impl ControlConsumer {
             let claim_sleep = tokio::time::sleep_until(claim_deadline);
             tokio::pin!(claim_sleep);
 
+            // At the ceiling there is nothing useful to claim, so wait for a
+            // dispatch to land instead of spinning on a full set.
+            let at_capacity = inflight.len() >= self.max_inflight();
+
             tokio::select! {
                 biased;
                 () = shutdown.cancelled() => {
                     tracing::info!(
                         processor = %hex_display(&self.processor_id),
-                        "control-queue consumer shutting down"
+                        inflight = inflight.len(),
+                        "control-queue consumer shutting down; draining in-flight dispatches"
                     );
+                    // Each dispatch bounds its own drain against `shutdown`
+                    // (see `handle_entry`), so this join is bounded too.
+                    while inflight.join_next().await.is_some() {}
                     return;
+                }
+                Some(_) = inflight.join_next() => {
+                    // A dispatch finished; capacity freed. Nothing else to do —
+                    // it acked its own row.
                 }
                 _ = reclaim_ticker.tick() => {
                     self.sweep_reclaim().await;
                     // `claim_deadline` is preserved — reclaim does not
                     // short-circuit the backoff or the idle poll delay.
                 }
-                () = &mut claim_sleep => {
-                    let next_delay = self.tick(&mut consecutive_errors, &shutdown).await;
+                () = &mut claim_sleep, if !at_capacity => {
+                    let next_delay = self
+                        .clone()
+                        .tick(&mut consecutive_errors, &shutdown, &mut inflight)
+                        .await;
                     claim_deadline = tokio::time::Instant::now()
                         + next_delay.unwrap_or(Duration::ZERO);
                 }
@@ -616,9 +658,10 @@ impl ControlConsumer {
     /// The outer loop persists this delay as a deadline so that a reclaim
     /// interruption does not cancel the backoff — see `run`.
     async fn tick(
-        &self,
+        self: Arc<Self>,
         consecutive_errors: &mut u32,
         shutdown: &CancellationToken,
+        inflight: &mut tokio::task::JoinSet<()>,
     ) -> Option<Duration> {
         // Claim raw rows. A malformed `execution_id` must fail only
         // *that* row (mark it failed, continue) — not the whole batch —
@@ -653,7 +696,11 @@ impl ControlConsumer {
         }
 
         for row in claimed {
-            self.handle_entry(row, shutdown).await;
+            let consumer = Arc::clone(&self);
+            let shutdown = shutdown.clone();
+            inflight.spawn(async move {
+                consumer.handle_entry(row, &shutdown).await;
+            });
         }
         None
     }

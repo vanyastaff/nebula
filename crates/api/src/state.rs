@@ -1128,62 +1128,6 @@ impl AppState {
             .map_err(|e| ApiError::Internal(format!("Failed to create execution: {e}")))
     }
 
-    /// CAS-update an execution state and append one control message in the
-    /// same storage-port commit. This is the API-side path for control
-    /// commands that also pre-set execution state (`Cancel` / `Terminate`):
-    /// either the state transition and outbox row both land, or neither does.
-    pub(crate) async fn cas_transition_with_control_scoped(
-        &self,
-        scope: &Scope,
-        execution_id: ExecutionId,
-        expected_version: u64,
-        new_state: serde_json::Value,
-        command: nebula_storage_port::dto::ControlCommand,
-        w3c: Option<nebula_core::W3cTraceContext>,
-    ) -> Result<bool, ApiError> {
-        let store = ScopedExecutionStore::new(Arc::clone(&self.execution_store), scope.clone());
-        let id = execution_id.to_string();
-        let current = store.get(scope, &id).await.map_err(|e| {
-            ApiError::Internal(format!(
-                "Failed to read execution for control transition: {e}"
-            ))
-        })?;
-        let Some(record) = current else {
-            return Ok(false);
-        };
-        let fencing =
-            nebula_storage_port::FencingToken::from_generation(record.fencing.unwrap_or(0));
-        let msg = nebula_storage_port::dto::ControlMsg {
-            id: *uuid::Uuid::new_v4().as_bytes(),
-            execution_id: id.clone(),
-            command,
-            scope: scope.clone(),
-            w3c_traceparent: w3c.as_ref().map(|c| c.traceparent().to_owned()),
-            reclaim_count: 0,
-            // No targeted-Resume producer yet (W-S3d); enqueue untargeted.
-            resume_target: None,
-        };
-        let batch = nebula_storage_port::TransitionBatch::builder()
-            .scope(scope.clone())
-            .execution_id(&id)
-            .expected_version(expected_version)
-            .fencing(fencing)
-            .new_state(new_state)
-            .outbox(vec![msg])
-            .build()
-            .map_err(|e| ApiError::Internal(format!("Failed to build control transition: {e}")))?;
-        match store.commit(batch).await {
-            Ok(nebula_storage_port::TransitionOutcome::Applied { .. }) => Ok(true),
-            Ok(
-                nebula_storage_port::TransitionOutcome::VersionConflict { .. }
-                | nebula_storage_port::TransitionOutcome::FencedOut,
-            ) => Ok(false),
-            Err(e) => Err(ApiError::Internal(format!(
-                "Failed to apply control transition: {e}"
-            ))),
-        }
-    }
-
     /// Load all persisted per-node *outputs* for an execution within the
     /// caller's tenant — read through a freshly bound
     /// `ScopedNodeResultStore`, so a cross-tenant id yields nothing.

@@ -20,7 +20,7 @@
 //!   via `dispatch_start` (park) → `dispatch_resume` (drive to Completed).
 //! - **SINK 2** — `cancel_dangling_nodes_under_lease`: the no-live-runner
 //!   cancel-of-parked path. Driven here via `dispatch_start` (park) →
-//!   `force_status(Cancelled)` → `dispatch_cancel` with no live runner.
+//!   `dispatch_cancel` with no live runner.
 //!
 //! ## Falsifiability
 //!
@@ -756,18 +756,15 @@ async fn cancel_of_parked_execution_revokes_token() {
         "a token must be minted before the cancel"
     );
 
-    // The API cancel path records the terminal status BEFORE the Cancel drains.
-    harness
-        .force_status(execution_id, ExecutionStatus::Cancelled)
-        .await;
-
     // No live runner: `dispatch_cancel` reaches `cancel_dangling_nodes` (SINK 2),
-    // which terminalizes the parked node under a freshly-acquired lease.
+    // which terminalizes the execution and its parked node under a
+    // freshly-acquired lease. Nothing records the cancel ahead of it — the
+    // command row is the intent.
     harness
         .dispatch
         .dispatch_cancel(&scope, execution_id)
         .await
-        .expect("dispatch_cancel must terminalize the parked node (no live runner)");
+        .expect("dispatch_cancel must terminalize the parked execution (no live runner)");
 
     // The token is revoked by the cancel-of-parked cleanup.
     assert_eq!(

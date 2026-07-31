@@ -622,20 +622,20 @@ pub(crate) fn validate_for_dispatch(
         ("exec" = String, Path, description = "Execution identifier (`exe_<ULID>`)."),
     ),
     responses(
-        (status = 200, description = "Execution cancelled; cancel signal enqueued for the engine.", body = ExecutionResponse),
+        (status = 202, description = "Cancellation accepted and durably enqueued. The body reports the execution as it stands right now; the runtime performs the transition to `cancelled` under its own lease, so poll the execution to observe it.", body = ExecutionResponse),
         (status = 400, description = "Invalid execution identifier or already in a terminal state.", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Execution does not exist.", body = ProblemDetails),
         (status = 409, description = "Concurrent modification detected.", body = ProblemDetails),
-        (status = 500, description = "Execution aggregate transition failed before the state/control outbox commit completed.", body = ProblemDetails),
+        (status = 500, description = "Failed to enqueue the control command.", body = ProblemDetails),
     ),
 )]
 pub async fn cancel_execution(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, id)): Path<(String, String, String)>,
-) -> ApiResult<Json<ExecutionResponse>> {
+) -> ApiResult<(StatusCode, Json<ExecutionResponse>)> {
     use nebula_core::ExecutionId;
 
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
@@ -649,7 +649,7 @@ pub async fn cancel_execution(
         .await?;
 
     // Check if execution exists
-    let (version, mut execution_state) =
+    let (_version, execution_state) =
         state_result.ok_or_else(|| ApiError::NotFound(format!("Execution {id} not found")))?;
 
     // Check if execution is already in a terminal state
@@ -668,64 +668,56 @@ pub async fn cancel_execution(
     }
 
     // Duplicate Cancel is idempotent: the command is already in flight and
-    // runtime control owns the outcome, so re-requesting it must not write a
-    // second transition or a second command row. Report the state as it stands.
+    // runtime control owns the outcome, so re-requesting it must not enqueue a
+    // second command row. Report the state as it stands.
     if current_status == ExecutionStatus::Cancelling.to_string() {
         tracing::debug!(
             execution_id = %execution_id,
             "execution: cancellation already requested; returning the in-flight state"
         );
-        return Ok(Json(cancellation_response(id, &execution_state)));
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(execution_receipt(id, &execution_state)),
+        ));
     }
 
-    // Record the *intent*, not the outcome.
+    // Submit the intent; write nothing.
     //
-    // The API authorizes cancellation and submits durable intent; it is not the
-    // execution aggregate's lifecycle owner. Writing `Cancelled` here — as this
-    // handler used to — reports a terminal state the engine has not reached:
-    // the handler is still running, its effects are still in flight, and a
-    // caller that reads `cancelled` concludes the work stopped when it has not.
-    // `Cancelling` is the state that is actually true at this point, and
-    // runtime control terminalizes it once the engine has honored the command.
+    // The execution aggregate has exactly one writer — the runtime, holding
+    // the lease and the fencing token that proves it. This handler holds
+    // neither. It used to commit the status transition itself, reconstructing
+    // a fencing token out of the generation it had just *read*; a token
+    // rebuilt from a read is not proof of anything, and it let an API request
+    // land a write that a live runner's fence was supposed to exclude.
     //
-    // `completed_at` is deliberately not written for the same reason — a
-    // completion timestamp for work that has not completed is a fabricated
-    // fact, and it is the field clients use to decide the run is over.
-    if let Some(state_obj) = execution_state.as_object_mut() {
-        state_obj.insert(
-            "status".to_string(),
-            serde_json::json!(ExecutionStatus::Cancelling.to_string()),
-        );
-    }
-
-    // Apply the state transition and append the Cancel outbox row in one
-    // storage-port commit. This prevents a cancelled row without a matching
-    // engine-visible control signal.
+    // So the boundary is the control queue, exactly as it is for Resume: the
+    // API authorizes the cancel and records durable intent, and the runtime
+    // performs the `Running → Cancelling → Cancelled` transition under its own
+    // lease once it has actually honored the command.
     let w3c_trace_context = w3c_trace_context_for_control_queue();
     tracing::debug!(
         execution_id = %execution_id,
         command = ControlCommand::Cancel.as_str(),
         has_trace_context = w3c_trace_context.is_some(),
-        "execution: append Cancel control row with state transition"
+        "execution: enqueue Cancel control command"
     );
-    let transition_result = state
-        .cas_transition_with_control_scoped(
+    state
+        .enqueue_control_scoped(
             &scope,
-            execution_id,
-            version,
-            execution_state.clone(),
             ControlCommand::Cancel,
+            execution_id,
             w3c_trace_context,
         )
         .await?;
 
-    if !transition_result {
-        return Err(ApiError::Conflict(
-            "concurrent modification detected; refetch execution state and retry".to_string(),
-        ));
-    }
-
-    Ok(Json(cancellation_response(id, &execution_state)))
+    // 202 with the state as it stands: the cancel is accepted, not done. The
+    // reported `status` is whatever is durably true right now, so a client that
+    // polls it observes the runtime's own transition rather than a status this
+    // handler asserted on the runtime's behalf.
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(execution_receipt(id, &execution_state)),
+    ))
 }
 
 /// Build a response describing an execution exactly as it is persisted.
@@ -769,21 +761,6 @@ fn execution_receipt(id: String, execution_state: &serde_json::Value) -> Executi
             .cloned(),
         output: execution_state.get("output").cloned(),
     }
-}
-
-/// Build the cancellation response from the execution state as persisted.
-///
-/// Shared by the accepted and the already-cancelling paths so a duplicate
-/// request reports exactly what the first one did — an idempotent request that
-/// answered differently would be indistinguishable from a lost one.
-fn cancellation_response(id: String, execution_state: &serde_json::Value) -> ExecutionResponse {
-    let mut response = execution_receipt(id, execution_state);
-    if response.status.is_empty() {
-        // Default to `cancelling`, never `cancelled`: the API records the
-        // request, and runtime control records the outcome.
-        "cancelling".clone_into(&mut response.status);
-    }
-    response
 }
 
 /// Return journal (log) entries for an execution.
@@ -847,20 +824,20 @@ pub async fn get_execution_logs(
         ("exec" = String, Path, description = "Execution identifier (`exe_<ULID>`)."),
     ),
     responses(
-        (status = 200, description = "Execution terminated; terminate signal enqueued for the engine.", body = ExecutionResponse),
+        (status = 202, description = "Termination accepted and durably enqueued. `Terminate` is a cooperative-cancel synonym — the engine has no forced-shutdown path — so the run has not stopped yet; the body reports the execution as it stands and the runtime terminalizes it under its own lease.", body = ExecutionResponse),
         (status = 400, description = "Invalid execution identifier or already in a terminal state.", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Execution does not exist.", body = ProblemDetails),
         (status = 409, description = "Concurrent modification detected.", body = ProblemDetails),
-        (status = 500, description = "Execution aggregate transition failed before the state/control outbox commit completed.", body = ProblemDetails),
+        (status = 500, description = "Failed to enqueue the control command.", body = ProblemDetails),
     ),
 )]
 pub async fn terminate_execution(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, id)): Path<(String, String, String)>,
-) -> ApiResult<Json<ExecutionResponse>> {
+) -> ApiResult<(StatusCode, Json<ExecutionResponse>)> {
     use nebula_core::ExecutionId;
 
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
@@ -876,7 +853,7 @@ pub async fn terminate_execution(
         .await?;
 
     // Check if execution exists
-    let (version, mut execution_state) =
+    let (_version, execution_state) =
         state_result.ok_or_else(|| ApiError::NotFound(format!("Execution {id} not found")))?;
 
     // Check if execution is already in a terminal state
@@ -894,68 +871,39 @@ pub async fn terminate_execution(
         )));
     }
 
-    // Pre-set the terminal status. Forced-terminate lands in the same
-    // `Cancelled` terminal state as cooperative cancel: cooperative cancel documents
-    // that the engine has no distinct forced-shutdown path and treats
-    // `Terminate` as a cooperative-cancel synonym (the
-    // `Running → Cancelling → Cancelled` bridge in the engine tails), and
-    // `ExecutionStatus` carries no `Terminated` variant. Write the
-    // canonical snake-case string `ExecutionStatus::Cancelled` serializes
-    // to so engine-side reads via `ExecutionStatus::deserialize` round-trip
-    // cleanly (#327, honest capability contract). Persist `completed_at` (not the legacy
-    // `finished_at`) because that is the field `ExecutionState` declares —
-    // see `crates/execution/src/state.rs`.
-    if let Some(state_obj) = execution_state.as_object_mut() {
-        state_obj.insert(
-            "status".to_string(),
-            serde_json::json!(ExecutionStatus::Cancelled.to_string()),
-        );
-
-        // Set completed_at timestamp. The canonical `ExecutionState`
-        // serializes `Option::None` as `null`, not as an absent field —
-        // so `contains_key` alone is not enough; we must also overwrite
-        // explicit nulls. RFC 3339 string matches what `DateTime<Utc>`
-        // serializes to via serde.
-        let needs_write = state_obj
-            .get("completed_at")
-            .is_none_or(serde_json::Value::is_null);
-        if needs_write {
-            let now = chrono::Utc::now();
-            state_obj.insert(
-                "completed_at".to_string(),
-                serde_json::json!(now.to_rfc3339()),
-            );
-        }
-    }
-
-    // Apply the state transition and append the Terminate outbox row in one
-    // storage-port commit. This prevents a cancelled row without a matching
-    // engine-visible control signal.
+    // Submit the intent; write nothing — same boundary as cooperative cancel.
+    //
+    // This handler used to write `Cancelled` **and** a `completed_at` of its
+    // own making, then commit both under a fencing token rebuilt from the
+    // generation it had just read. Every part of that was a claim it was not
+    // entitled to make: the engine has no forced-shutdown path (`Terminate` is
+    // a cooperative-cancel synonym), so at this instant the run has not
+    // stopped, nothing has completed, and the runtime — not this request —
+    // holds the lease that authorizes the write.
+    //
+    // The runtime performs the transition to the terminal `Cancelled` under
+    // its own lease once it has honored the command, and stamps the completion
+    // time then.
     let w3c_trace_context = w3c_trace_context_for_control_queue();
     tracing::debug!(
         execution_id = %execution_id,
         command = ControlCommand::Terminate.as_str(),
         has_trace_context = w3c_trace_context.is_some(),
-        "execution: append Terminate control row with state transition"
+        "execution: enqueue Terminate control command"
     );
-    let transition_result = state
-        .cas_transition_with_control_scoped(
+    state
+        .enqueue_control_scoped(
             &scope,
-            execution_id,
-            version,
-            execution_state.clone(),
             ControlCommand::Terminate,
+            execution_id,
             w3c_trace_context,
         )
         .await?;
 
-    if !transition_result {
-        return Err(ApiError::Conflict(
-            "concurrent modification detected; refetch execution state and retry".to_string(),
-        ));
-    }
-
-    Ok(Json(cancellation_response(id, &execution_state)))
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(execution_receipt(id, &execution_state)),
+    ))
 }
 
 /// Restart execution from the beginning.

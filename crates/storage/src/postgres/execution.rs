@@ -83,14 +83,6 @@ fn normalized_ttl(ttl: Duration) -> Duration {
 
 /// The caller's `now` plus a (24h-capped) TTL, as epoch milliseconds.
 ///
-/// Takes `now` rather than reading a clock: a lease deadline is only
-/// meaningful against the clock its holder reasons in — see
-/// [`ExecutionStore::acquire_lease`].
-fn expiry_ms(now: DateTime<Utc>, ttl: Duration) -> i64 {
-    now.timestamp_millis()
-        .saturating_add(normalized_ttl(ttl).as_millis() as i64)
-}
-
 #[async_trait::async_trait]
 impl ExecutionStore for PgExecutionStore {
     async fn create(

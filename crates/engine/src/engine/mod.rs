@@ -123,12 +123,6 @@ pub(crate) enum CancelDanglingOutcome {
     /// or the execution reached a non-cancel terminal outcome before the cancel
     /// landed. The caller may ack.
     NothingToCancel,
-    /// The cancel is NOT yet durably recorded on the execution (status is still
-    /// non-terminal and not `Cancelling`). The API writes `Cancelled` before
-    /// enqueuing `Cancel`, so this is a producer-ordering anomaly — the caller
-    /// must DEFER (not ack), so B1 reclaim redelivers until the status reflects
-    /// the cancel and the node cleanup can run, rather than silently dropping it.
-    StatusNotCancelled,
 }
 
 /// Default execution-lease TTL.
@@ -707,13 +701,6 @@ impl WorkflowEngine {
         self.instance_id
     }
 
-    /// Override the execution-lease TTL.
-    ///
-    /// Primarily for tests that need to exercise expiry behavior under
-    /// `tokio::time::pause()`. Production callers should leave this at
-    /// [`DEFAULT_EXECUTION_LEASE_TTL`]; changing it alters redelivery
-    /// latency after a hard crash.
-    #[must_use = "builder methods must be chained or built"]
     /// The token this engine watches for a graceful stop.
     ///
     /// A host runtime cancels it when it begins shutting down; every
@@ -726,6 +713,13 @@ impl WorkflowEngine {
         self.shutdown.clone()
     }
 
+    /// Override the execution-lease TTL.
+    ///
+    /// Primarily for tests that need to exercise expiry behavior under
+    /// `tokio::time::pause()`. Production callers should leave this at
+    /// [`DEFAULT_EXECUTION_LEASE_TTL`]; changing it alters redelivery
+    /// latency after a hard crash.
+    #[must_use = "builder methods must be chained or built"]
     pub fn with_lease_ttl(mut self, ttl: Duration) -> Self {
         self.lease_ttl = ttl;
         self

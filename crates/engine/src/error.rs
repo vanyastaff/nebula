@@ -195,21 +195,6 @@ pub enum EngineError {
         observed_status: String,
     },
 
-    /// Another engine instance currently holds the execution lease.
-    ///
-    /// Surfaced by [`WorkflowEngine::execute_workflow`] and
-    /// [`WorkflowEngine::resume_execution`] when `acquire_lease` fails
-    /// because a live (non-expired) lease with a different holder is
-    /// already recorded in storage. Per ADR 0008 and
-    /// `docs/PRODUCT_CANON.md` , exactly one runner may dispatch
-    /// nodes for an execution at a time; the second caller must back off
-    /// rather than run in parallel.
-    ///
-    /// The caller (API handler, scheduler) is responsible for deciding
-    /// how to react — the engine does not sleep-and-retry.
-    ///
-    /// [`WorkflowEngine::execute_workflow`]: crate::WorkflowEngine::execute_workflow
-    /// [`WorkflowEngine::resume_execution`]: crate::WorkflowEngine::resume_execution
     /// The runtime was asked to stop while this execution was still
     /// running, and the frontier did not finish inside the shutdown grace.
     ///
@@ -227,6 +212,21 @@ pub enum EngineError {
         execution_id: ExecutionId,
     },
 
+    /// Another engine instance currently holds the execution lease.
+    ///
+    /// Surfaced by [`WorkflowEngine::execute_workflow`] and
+    /// [`WorkflowEngine::resume_execution`] when `acquire_lease` fails
+    /// because a live (non-expired) lease with a different holder is
+    /// already recorded in storage. Per ADR 0008 and
+    /// `docs/PRODUCT_CANON.md` , exactly one runner may dispatch
+    /// nodes for an execution at a time; the second caller must back off
+    /// rather than run in parallel.
+    ///
+    /// The caller (API handler, scheduler) is responsible for deciding
+    /// how to react — the engine does not sleep-and-retry.
+    ///
+    /// [`WorkflowEngine::execute_workflow`]: crate::WorkflowEngine::execute_workflow
+    /// [`WorkflowEngine::resume_execution`]: crate::WorkflowEngine::resume_execution
     #[error("execution {execution_id} is leased by another runner: {holder}")]
     Leased {
         /// The execution whose lease is already held.
