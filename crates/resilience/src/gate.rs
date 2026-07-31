@@ -127,6 +127,8 @@ impl Drop for GateGuard {
 /// # Examples
 ///
 /// ```rust
+/// use std::time::Duration;
+///
 /// use nebula_resilience::gate::{Gate, GateClosed};
 ///
 /// # #[tokio::main]
@@ -137,8 +139,11 @@ impl Drop for GateGuard {
 /// let guard = gate.enter().expect("gate is open");
 /// drop(guard);
 ///
-/// // After close(), new entries are rejected.
-/// gate.close(Duration::from_secs(30)).await?;
+/// // `close` takes the drain budget the caller is willing to wait; with no
+/// // guards outstanding it returns immediately.
+/// gate.close(Duration::from_secs(30))
+///     .await
+///     .expect("no guards outstanding");
 /// assert!(matches!(gate.enter(), Err(GateClosed)));
 /// # }
 /// ```
