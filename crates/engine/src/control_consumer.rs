@@ -817,17 +817,36 @@ impl ControlConsumer {
         match dispatch_result {
             Ok(()) => self.ack_completed(&token).await,
             Err(ControlDispatchError::Deferred(ref reason)) => {
-                // Transient contention: leave the row in `Processing` so the
-                // B1 reclaim sweep moves it back to `Pending` for redelivery.
-                // Calling `mark_failed` here would permanently record the row as
-                // failed — redelivery under B1 is only for `Processing` rows.
+                // Transient contention: hand the row straight back so the next
+                // poll retries it. `mark_failed` would permanently fail a
+                // command that is merely early.
+                //
+                // Leaving it in `Processing` for the reclaim sweep — as this
+                // used to — meant waiting `reclaim_after`, minutes by design,
+                // because that sweep exists to detect a runner that *died*
+                // mid-dispatch. A `Cancel` that lost a millisecond-wide race
+                // with the `Start` still acquiring its lease is not a dead
+                // runner, and making a user wait minutes for it is a defect the
+                // API's own aggregate write used to hide.
+                //
+                // Reclaim stays the backstop: if the release itself fails, the
+                // row is still `Processing` and the sweep recovers it.
+                if let Err(error) = self.queue.release_claim(&token).await {
+                    tracing::warn!(
+                        id = %hex_display(&row_id),
+                        %execution_id,
+                        %error,
+                        "control-queue: releasing a deferred claim failed; leaving the row \
+                         in Processing for B1 reclaim"
+                    );
+                }
                 tracing::warn!(
                     id = %hex_display(&row_id),
                     %execution_id,
                     command = command.as_str(),
                     reason = %reason,
                     "control-queue dispatch deferred (transient contention); \
-                     leaving row in Processing for B1 reclaim"
+                     row returned to Pending for prompt redelivery"
                 );
             },
             Err(e) => {

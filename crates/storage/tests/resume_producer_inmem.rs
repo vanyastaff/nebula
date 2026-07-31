@@ -362,12 +362,7 @@ async fn in_memory_lease_expiry_follows_the_injected_clock() {
         .expect("create");
 
     let first = store
-        .acquire_lease(
-            &scope,
-            "exe_clock",
-            "holder-a",
-            std::time::Duration::from_secs(30),
-        )
+        .acquire_lease(&scope, "exe_clock", "holder-a", Duration::from_secs(30))
         .await
         .expect("acquire_lease")
         .expect("first acquire grants a token")
@@ -377,12 +372,7 @@ async fn in_memory_lease_expiry_follows_the_injected_clock() {
     // and no amount of real time passing changes that.
     assert!(
         store
-            .acquire_lease(
-                &scope,
-                "exe_clock",
-                "holder-b",
-                std::time::Duration::from_secs(30),
-            )
+            .acquire_lease(&scope, "exe_clock", "holder-b", Duration::from_secs(30),)
             .await
             .expect("acquire_lease")
             .is_none(),
@@ -393,12 +383,7 @@ async fn in_memory_lease_expiry_follows_the_injected_clock() {
     clock.advance(ChronoDuration::seconds(31));
 
     let second = store
-        .acquire_lease(
-            &scope,
-            "exe_clock",
-            "holder-b",
-            std::time::Duration::from_secs(30),
-        )
+        .acquire_lease(&scope, "exe_clock", "holder-b", Duration::from_secs(30))
         .await
         .expect("acquire_lease")
         .expect("an expired lease must be acquirable")

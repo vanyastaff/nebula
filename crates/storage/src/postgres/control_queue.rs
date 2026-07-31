@@ -260,6 +260,29 @@ impl ControlQueue for PgControlQueue {
         Ok(())
     }
 
+    async fn release_claim(&self, claim: &ControlClaimToken) -> Result<(), StorageError> {
+        // Clear `processed_by` / `processed_at_ms` along with the status: a row
+        // returned to `Pending` must look unclaimed, or an immediate re-claim
+        // would carry stale bookkeeping into the reclaim sweep's staleness
+        // check. `reclaim_count` is deliberately untouched — this is a retry,
+        // not a symptom of a stuck row.
+        let rows_updated = sqlx::query(
+            "UPDATE port_control_queue \
+             SET status = 'Pending', processed_by = NULL, processed_at_ms = NULL \
+             WHERE id = $1 AND status = 'Processing' AND claim_generation = $2",
+        )
+        .bind(claim.row_id().as_slice())
+        .bind(generation_bind(claim)?)
+        .execute(&self.pool)
+        .await
+        .map_err(conn_err)?
+        .rows_affected();
+        if rows_updated == 0 {
+            return Err(self.unacknowledgeable(claim).await?);
+        }
+        Ok(())
+    }
+
     async fn reclaim_stuck(
         &self,
         reclaim_after: Duration,

@@ -244,6 +244,19 @@ impl ControlQueue for InMemoryControlQueue {
         acknowledge(&mut st, claim, "Failed", Some(error))
     }
 
+    async fn release_claim(&self, claim: &ControlClaimToken) -> Result<(), StorageError> {
+        let mut st = self.inner.lock();
+        acknowledge(&mut st, claim, "Pending", None)?;
+        // Clear the claim bookkeeping so the row looks untouched to the next
+        // claimer; leaving `processed_at` set would make an immediately
+        // re-claimed row look stale to the reclaim sweep.
+        if let Some(queued) = st.queue.get_mut(claim.row_id()) {
+            queued.processed_by = None;
+            queued.processed_at = None;
+        }
+        Ok(())
+    }
+
     async fn reclaim_stuck(
         &self,
         reclaim_after: Duration,

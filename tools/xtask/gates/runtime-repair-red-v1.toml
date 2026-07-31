@@ -20,8 +20,11 @@
 #     acceptance reserves the key, creates the aggregate, and enqueues the
 #     Start command in one commit.
 #   - C1 cancellation authority (file SQLite, live PostgreSQL) — the API
-#     submits non-terminal cancellation intent; runtime control owns the
-#     terminal transition.
+#     submits the cancellation through the control queue and writes no
+#     execution state at all; the runtime performs the terminal transition
+#     under its own lease. Both halves are asserted: the response must not
+#     report the run as stopped, and the runtime must actually stop it —
+#     without the second, dropping the cancel would satisfy the first.
 #   - C0 park/restart/resume (file SQLite, live PostgreSQL) — the worker drains
 #     the control queue the API writes to, a restart sweeps persisted state for
 #     overdue parked waits, and a runtime asked to stop releases the execution

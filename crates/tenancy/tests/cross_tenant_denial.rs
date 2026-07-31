@@ -294,6 +294,13 @@ impl ControlQueue for MockControlQueue {
         Ok(())
     }
 
+    async fn release_claim(
+        &self,
+        _claim: &nebula_storage_port::store::ControlClaimToken,
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
+
     async fn reclaim_stuck(
         &self,
         _reclaim_after: Duration,

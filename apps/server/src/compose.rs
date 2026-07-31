@@ -816,12 +816,37 @@ impl ServerRuntime {
         state = state
             .with_auth_backend(auth_backend)
             .with_email_port(email_port);
+        // Captured before `state` is consumed by the router: the sweep needs
+        // the same store the start path writes reservations through.
+        let start_acceptance_for_sweep = Arc::clone(&state.start_acceptance);
         let app = transport.build_router(state, &api_config)?;
 
         let listener = TcpListener::bind(bind_address).await?;
         let local_address = listener.local_addr()?;
         tracing::info!(transport = transport.name(), %local_address, "starting transport");
         let shutdown = CancellationToken::new();
+        // Expire keyed-start reservations on the same cadence, and with the
+        // same retention, as the idempotency cache: a start key is an
+        // `Idempotency-Key` for the start endpoint, and two different answers
+        // to "how long may this be replayed?" would be a discrepancy no
+        // operator could see. Owned here so it lives and dies with the
+        // process's serving lifecycle rather than running unsupervised.
+        let reservation_sweep = nebula_api::start_reservation_sweep::StartReservationSweeper::new(
+            Arc::clone(&start_acceptance_for_sweep),
+            Duration::from_secs(api_config.idempotency.ttl_secs),
+            Duration::from_secs(api_config.idempotency.sweep_interval_secs),
+        )
+        .map(|sweeper| {
+            let token = shutdown.clone();
+            tokio::spawn(async move { sweeper.run(token).await })
+        });
+        if reservation_sweep.is_none() {
+            tracing::warn!(
+                "start-key reservation sweep disabled (idempotency sweep interval is 0); \
+                 reservations will accumulate for the life of this deployment"
+            );
+        }
+
         let serve_future = serve_prebound(app, listener, shutdown.clone().cancelled_owned());
         tokio::pin!(serve_future);
         let serve_result = tokio::select! {
@@ -831,6 +856,14 @@ impl ServerRuntime {
                 serve_future.await
             },
         };
+        // The token is already cancelled on every path out of the select, so
+        // this join is bounded by one sweep iteration.
+        shutdown.cancel();
+        if let Some(handle) = reservation_sweep
+            && let Err(error) = handle.await
+        {
+            tracing::warn!(%error, "start-key reservation sweep did not stop cleanly");
+        }
         // Keep credential background ownership (notably the reclaim sweep)
         // alive for the entire serving lifecycle, then abort it by Drop.
         drop(credential_runtime);

@@ -1464,14 +1464,14 @@ impl WorkflowEngine {
                 // finishing. Now that this *is* the cancel, a subscriber that
                 // missed the event would see a parked execution simply stop
                 // existing.
-                self.emit_event(crate::ExecutionEvent::ExecutionFinished {
+                self.emit_event(ExecutionEvent::ExecutionFinished {
                     execution_id,
                     success: false,
                     // The engine never ran a frontier here — there is no
                     // measured span to report, and inventing one would put a
                     // fabricated duration into the same stream that carries
                     // real ones.
-                    elapsed: std::time::Duration::ZERO,
+                    elapsed: Duration::ZERO,
                     termination_reason: None,
                 });
                 Ok(CancelDanglingOutcome::Cancelled(count))

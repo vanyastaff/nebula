@@ -72,6 +72,10 @@ impl ControlQueue for ScopedControlQueue {
         self.inner.mark_failed(claim, error).await
     }
 
+    async fn release_claim(&self, claim: &ControlClaimToken) -> Result<(), StorageError> {
+        self.inner.release_claim(claim).await
+    }
+
     async fn reclaim_stuck(
         &self,
         reclaim_after: Duration,

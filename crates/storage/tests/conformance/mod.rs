@@ -3563,3 +3563,101 @@ pub(crate) async fn assert_dedup_duplicate_returns_winner_id(backend: &dyn Backe
         job2.execution_id
     );
 }
+
+/// A released claim is immediately re-claimable, is fenced against a
+/// superseded token, and does not consume the reclaim budget.
+///
+/// `release_claim` exists so a dispatch that hit momentary contention retries
+/// on the next poll rather than waiting out `reclaim_after`, which is sized in
+/// minutes to detect a runner that *died*. Every backend has to agree on all
+/// three properties, because a `Cancel` that lost a millisecond-wide race is
+/// the case this serves, and a per-backend difference would be a latency cliff
+/// no operator could attribute.
+pub(crate) async fn assert_control_queue_release_returns_row_for_redelivery(backend: &dyn Backend) {
+    let store = backend.execution_store().await;
+    let queue = backend.control_queue().await;
+    let scope = scope_a();
+    let processor = [21u8; 16];
+
+    let execution_id = "exe_control_release";
+    store
+        .create(
+            &scope,
+            execution_id,
+            "wf_control_release",
+            serde_json::json!({}),
+        )
+        .await
+        .expect("create the execution the command targets");
+    queue
+        .enqueue(&ControlMsg {
+            id: [0x5Bu8; 16],
+            execution_id: execution_id.to_owned(),
+            command: ControlCommand::Cancel,
+            scope: scope.clone(),
+            w3c_traceparent: None,
+            reclaim_count: 0,
+            resume_target: None,
+        })
+        .await
+        .expect("enqueue the control command");
+
+    let first = queue
+        .claim_pending(&processor, 16)
+        .await
+        .expect("first claim");
+    assert_eq!(
+        first.len(),
+        1,
+        "[{}] the command must claim",
+        backend.name()
+    );
+    let released = first[0].token;
+
+    queue
+        .release_claim(&released)
+        .await
+        .expect("releasing an owned claim must succeed");
+
+    // Re-claimable at once — no reclaim sweep, no waiting.
+    let second = queue
+        .claim_pending(&processor, 16)
+        .await
+        .expect("second claim");
+    assert_eq!(
+        second.len(),
+        1,
+        "[{}] a released claim must be re-claimable immediately, without a reclaim sweep",
+        backend.name()
+    );
+    assert_eq!(
+        second[0].msg.reclaim_count,
+        0,
+        "[{}] releasing must not spend the reclaim budget — a retry is not a stuck row",
+        backend.name()
+    );
+    assert!(
+        second[0].token.generation() > released.generation(),
+        "[{}] the re-claim must mint a fresh generation so the released token is dead",
+        backend.name()
+    );
+
+    // The superseded token cannot release the row out from under its new owner.
+    let stale = queue.release_claim(&released).await;
+    assert!(
+        matches!(stale, Err(StorageError::FencedOut { .. })),
+        "[{}] a superseded claim must not release a row another processor now owns; got {stale:?}",
+        backend.name()
+    );
+
+    // And the row is still owned by the second claim, not sitting Pending.
+    let third = queue
+        .claim_pending(&processor, 16)
+        .await
+        .expect("third claim");
+    assert!(
+        third.is_empty(),
+        "[{}] the fenced-out release must have changed nothing",
+        backend.name()
+    );
+}

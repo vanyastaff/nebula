@@ -629,42 +629,6 @@ impl RevokeHarness {
             .expect("execution row must exist");
         serde_json::from_value(record.state.get("status").cloned().unwrap()).unwrap()
     }
-
-    /// Force the persisted execution `status` under a fencing token — mirrors
-    /// how the API `cancel_execution` handler writes `Cancelled` before the
-    /// `Cancel` control command drains. Node states are left untouched.
-    async fn force_status(&self, execution_id: ExecutionId, status: ExecutionStatus) {
-        let scope = nebula_engine::store_seam::single_tenant_scope();
-        let id = execution_id.to_string();
-        let token = self
-            .execution
-            .acquire_lease(&scope, &id, "test-api-cancel", Duration::from_secs(30))
-            .await
-            .unwrap()
-            .expect("lease must be free for the simulated API cancel write");
-        let record = self.execution.get(&scope, &id).await.unwrap().unwrap();
-        let mut state = record.state;
-        state
-            .as_object_mut()
-            .unwrap()
-            .insert("status".to_owned(), serde_json::json!(status.to_string()));
-        let batch = TransitionBatch::builder()
-            .scope(scope.clone())
-            .execution_id(&id)
-            .expected_version(record.version)
-            .fencing(token)
-            .new_state(state)
-            .build()
-            .unwrap();
-        assert!(matches!(
-            self.execution.commit(batch).await.unwrap(),
-            TransitionOutcome::Applied { .. }
-        ));
-        self.execution
-            .release_lease(&scope, &id, token)
-            .await
-            .unwrap();
-    }
 }
 
 // ── SINK 1 — terminal completion revokes (decisive) ─────────────────────────────

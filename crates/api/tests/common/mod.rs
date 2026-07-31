@@ -772,6 +772,13 @@ impl nebula_storage_port::store::ControlQueue for AlwaysFailControlQueue {
         Ok(())
     }
 
+    async fn release_claim(
+        &self,
+        _claim: &nebula_storage_port::store::ControlClaimToken,
+    ) -> Result<(), nebula_storage_port::StorageError> {
+        Ok(())
+    }
+
     async fn reclaim_stuck(
         &self,
         _reclaim_after: std::time::Duration,

@@ -102,6 +102,22 @@ pub trait ControlQueue: Send + Sync + std::fmt::Debug {
     async fn mark_failed(&self, claim: &ControlClaimToken, error: &str)
     -> Result<(), StorageError>;
 
+    /// Return a claimed command to `Pending` so the next poll redelivers it.
+    ///
+    /// For a dispatch that could not be completed *now* but is expected to
+    /// succeed shortly — momentary lease contention, say. Without this the only
+    /// way back to `Pending` is the reclaim sweep, which by design waits
+    /// minutes: correct for detecting a runner that died mid-dispatch, far too
+    /// slow for a command that merely arrived a few milliseconds early. A user
+    /// waiting on a cancel would feel every second of it.
+    ///
+    /// Same generation fence as [`Self::mark_completed`], so a superseded claim
+    /// cannot release a row another processor now owns. The reclaim budget is
+    /// deliberately **not** consumed: this is an ordinary retry, not evidence of
+    /// a stuck row, and burning the budget here would eventually fail a command
+    /// that was never in trouble.
+    async fn release_claim(&self, claim: &ControlClaimToken) -> Result<(), StorageError>;
+
     /// Reclaim rows stuck in `Processing` past `reclaim_after`. Rows under
     /// the `max_reclaim_count` budget go back to `Pending`; rows past it go
     /// to `Failed`.

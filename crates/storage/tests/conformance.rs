@@ -25,6 +25,7 @@ mod harness;
 use harness::{
     Backend, InMemoryBackend, PostgresBackend, ScopedBackend, SqliteBackend, assert_atomic_triple,
     assert_cas_conflict, assert_control_queue_outbox_and_fencing,
+    assert_control_queue_release_returns_row_for_redelivery,
     assert_control_queue_same_processor_aba_is_fenced, assert_create_get_roundtrip,
     assert_cross_scope_commit_is_rejected, assert_cross_scope_get_is_none,
     assert_dedup_compose_is_atomic, assert_dedup_compose_rejects_duplicate_job_id,
@@ -176,6 +177,10 @@ matrix!(
 matrix!(
     control_queue_same_processor_aba_is_fenced,
     assert_control_queue_same_processor_aba_is_fenced
+);
+matrix!(
+    control_queue_release_returns_row_for_redelivery,
+    assert_control_queue_release_returns_row_for_redelivery
 );
 matrix!(
     trigger_dedup_first_writer,
