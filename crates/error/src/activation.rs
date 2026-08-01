@@ -282,3 +282,143 @@ mod tests {
         );
     }
 }
+
+/// Version of the NS14 diagnostic-contract report shape.
+///
+/// Bumped when the report gains or loses a field, so a consumer that stored an
+/// older bundle can tell it is reading a different shape rather than silently
+/// missing an entry.
+pub const DIAGNOSTIC_CONTRACT_REPORT_VERSION: u16 = 1;
+
+/// One rejection's compliance with the five-field contract.
+///
+/// Records the observed values rather than a bare boolean: a reviewer reading
+/// the bundle can see *what* each rejection reports, not merely that it
+/// reported something. That distinction is what makes the report evidence
+/// instead of a checkbox.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct DiagnosticContractEntry {
+    /// Rust path of the rejection variant this entry covers.
+    pub rejection: String,
+    /// Stable machine-readable code the rejection reports.
+    pub code: String,
+    /// Logical path the rejection points at.
+    pub path: String,
+    /// Whether the contract the rejection required is reported.
+    pub reports_expected: bool,
+    /// Whether what was found is reported.
+    pub reports_actual: bool,
+    /// Whether actionable guidance is reported.
+    pub reports_remediation: bool,
+}
+
+impl DiagnosticContractEntry {
+    /// Record what `diagnostic` reports for the rejection named `rejection`.
+    #[must_use]
+    pub fn observed(rejection: impl Into<String>, diagnostic: &ActivationDiagnostic) -> Self {
+        Self {
+            rejection: rejection.into(),
+            code: diagnostic.code().to_owned(),
+            path: diagnostic.path().to_owned(),
+            reports_expected: !diagnostic.expected().trim().is_empty(),
+            reports_actual: !diagnostic.actual().trim().is_empty(),
+            reports_remediation: !diagnostic.remediation().trim().is_empty(),
+        }
+    }
+
+    /// Whether this rejection satisfies the whole five-field contract.
+    ///
+    /// `code` and `path` are non-empty by construction — [`ActivationDiagnostic::new`]
+    /// refuses a diagnostic without them — so completeness reduces to the three
+    /// fields a producer could still leave blank.
+    #[must_use]
+    pub const fn is_complete(&self) -> bool {
+        self.reports_expected && self.reports_actual && self.reports_remediation
+    }
+}
+
+/// The versioned NS14 diagnostic-contract report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct DiagnosticContractReport {
+    /// Shape version of this report.
+    pub report_version: u16,
+    /// Contract this report is evidence for.
+    pub contract: String,
+    /// One entry per rejection variant, ordered by `(rejection, code)`.
+    pub entries: Vec<DiagnosticContractEntry>,
+}
+
+impl DiagnosticContractReport {
+    /// Build a report over `entries`, ordered so two runs produce one document.
+    #[must_use]
+    pub fn new(mut entries: Vec<DiagnosticContractEntry>) -> Self {
+        entries.sort_by(|left, right| {
+            (&left.rejection, &left.code).cmp(&(&right.rejection, &right.code))
+        });
+        Self {
+            report_version: DIAGNOSTIC_CONTRACT_REPORT_VERSION,
+            contract: "ns14".to_owned(),
+            entries,
+        }
+    }
+
+    /// Rejections that do not satisfy the five-field contract.
+    ///
+    /// An empty slice is the only passing state; a caller that wants a gate
+    /// asserts on this rather than on a count, so a failure names the
+    /// rejections rather than reporting an arithmetic mismatch.
+    #[must_use]
+    pub fn incomplete(&self) -> Vec<&DiagnosticContractEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| !entry.is_complete())
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod report_tests {
+    use super::*;
+
+    fn diagnostic() -> ActivationDiagnostic {
+        ActivationDiagnostic::new("E001", "/nodes/a", "a contract", "something else", "fix it")
+            .expect("the fixture uses non-empty diagnostic fields")
+    }
+
+    #[test]
+    fn a_complete_rejection_leaves_the_report_empty_of_gaps() {
+        let report = DiagnosticContractReport::new(vec![DiagnosticContractEntry::observed(
+            "WorkflowError::EmptyName",
+            &diagnostic(),
+        )]);
+
+        assert_eq!(report.report_version, DIAGNOSTIC_CONTRACT_REPORT_VERSION);
+        assert_eq!(report.contract, "ns14");
+        assert!(report.incomplete().is_empty());
+    }
+
+    /// The gate has to be able to fail, so a blank field must surface as a gap
+    /// rather than be smoothed over by the constructor.
+    #[test]
+    fn a_blank_field_surfaces_as_an_incomplete_entry() {
+        let mut entry = DiagnosticContractEntry::observed("WorkflowError::NoNodes", &diagnostic());
+        entry.reports_remediation = false;
+
+        let report = DiagnosticContractReport::new(vec![entry]);
+        let gaps = report.incomplete();
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].rejection, "WorkflowError::NoNodes");
+    }
+
+    #[test]
+    fn entries_are_ordered_so_two_runs_produce_one_document() {
+        let later = DiagnosticContractEntry::observed("B", &diagnostic());
+        let earlier = DiagnosticContractEntry::observed("A", &diagnostic());
+
+        let report = DiagnosticContractReport::new(vec![later, earlier]);
+        assert_eq!(report.entries[0].rejection, "A");
+        assert_eq!(report.entries[1].rejection, "B");
+    }
+}

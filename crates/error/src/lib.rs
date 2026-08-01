@@ -51,8 +51,9 @@ mod severity;
 mod traits;
 
 pub use activation::{
-    ActivationDiagnostic, ActivationDiagnostics, MAX_DIAGNOSTIC_FIELD_BYTES, TRUNCATION_MARKER,
-    canonical_diagnostics,
+    ActivationDiagnostic, ActivationDiagnostics, DIAGNOSTIC_CONTRACT_REPORT_VERSION,
+    DiagnosticContractEntry, DiagnosticContractReport, MAX_DIAGNOSTIC_FIELD_BYTES,
+    TRUNCATION_MARKER, canonical_diagnostics,
 };
 pub use category::ErrorCategory;
 pub use code::{ErrorCode, codes};

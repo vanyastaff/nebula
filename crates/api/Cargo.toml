@@ -14,7 +14,7 @@ documentation.workspace = true
 
 [dependencies]
 nebula-env = { workspace = true }
-nebula-error = { workspace = true, features = ["derive"] }
+nebula-error = { workspace = true, features = ["derive", "serde"] }
 nebula-storage = { path = "../storage", features = ["credential-in-memory", "sqlite"] }
 nebula-storage-port = { path = "../storage-port" }
 # Composition-root dependency: `AppState`/`default_state` wrap the storage
