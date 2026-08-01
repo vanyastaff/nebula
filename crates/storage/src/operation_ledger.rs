@@ -15,17 +15,28 @@ use nebula_storage_port::{
 };
 
 /// Durable text of each destination guarantee.
+///
+/// Only a SQL backend spells these; the in-memory reference model holds the
+/// typed values directly.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) const DESTINATION_STABLE_KEY: &str = "stable_key";
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) const DESTINATION_RECONCILABLE: &str = "reconcilable";
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) const DESTINATION_OPAQUE: &str = "opaque";
 
 /// Durable text of each operation state.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) const STATE_PREPARED: &str = "prepared";
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) const STATE_SUCCEEDED: &str = "succeeded";
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) const STATE_FAILED: &str = "failed";
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) const STATE_OUTCOME_UNKNOWN: &str = "outcome_unknown";
 
 /// Render a destination guarantee as the text migration 0045 admits.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) const fn destination_text(destination: DestinationCapability) -> &'static str {
     match destination {
         DestinationCapability::StableKey => DESTINATION_STABLE_KEY,
@@ -39,6 +50,7 @@ pub(crate) const fn destination_text(destination: DestinationCapability) -> &'st
 }
 
 /// Parse durable destination text, rejecting vocabulary outside the schema.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) fn destination_from_text(text: &str) -> Option<DestinationCapability> {
     match text {
         DESTINATION_STABLE_KEY => Some(DestinationCapability::StableKey),
@@ -49,6 +61,7 @@ pub(crate) fn destination_from_text(text: &str) -> Option<DestinationCapability>
 }
 
 /// Render an operation state as the text migration 0045 admits.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) const fn state_text(state: OperationState) -> &'static str {
     match state {
         OperationState::Prepared => STATE_PREPARED,
@@ -59,6 +72,7 @@ pub(crate) const fn state_text(state: OperationState) -> &'static str {
 }
 
 /// Parse durable state text, rejecting vocabulary outside the schema.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) fn state_from_text(text: &str) -> Option<OperationState> {
     match text {
         STATE_PREPARED => Some(OperationState::Prepared),
@@ -273,6 +287,8 @@ mod tests {
         )
     }
 
+    /// Durable text exists only where a SQL backend writes it.
+    #[cfg(any(feature = "sqlite", feature = "postgres"))]
     #[test]
     fn durable_vocabulary_round_trips() {
         for destination in [
