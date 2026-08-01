@@ -24,13 +24,11 @@ use nebula_storage_port::{
 use super::execution::SharedState;
 #[cfg(test)]
 use super::execution::State;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ArtifactLifecycle {
-    Active,
-    Draining,
-    Deleted,
-}
+use crate::revision_catalog::{
+    ArtifactLifecycle, delete_label, deleted_for, drain_label, draining_for, flavor_records_match,
+    insert_label, load_label, plan_records_match, unavailable_for, validate_pair_recorded_form,
+    validate_recorded_form,
+};
 
 #[derive(Debug, Clone)]
 struct WorkerFlavorRow {
@@ -184,69 +182,6 @@ impl InMemoryPlanFlavorCatalog {
     }
 }
 
-/// Whether two JSON record bodies carry the same content.
-///
-/// Compares the *parsed* documents, never the raw bytes. Record bodies are
-/// ordinary `serde_json` output, so their exact bytes depend on struct field
-/// declaration order and on whether `serde_json` was built with
-/// `preserve_order` — a workspace-unified feature any crate in the graph can
-/// turn on. Byte equality therefore made two binaries that agree on a
-/// revision's content address nonetheless disagree on its record, so
-/// re-installing the same immutable revision failed permanently with
-/// `ContentConflict` instead of reporting `AlreadyPresent`.
-///
-/// Parsing normalises exactly the incidental differences (key order,
-/// whitespace) while still separating genuinely different documents, so
-/// conflict detection keeps its meaning. Bodies that do not parse fall back to
-/// byte equality rather than being treated as equal.
-fn json_bodies_match(stored: &[u8], candidate: &[u8]) -> bool {
-    match (
-        serde_json::from_slice::<serde_json::Value>(stored),
-        serde_json::from_slice::<serde_json::Value>(candidate),
-    ) {
-        (Ok(stored), Ok(candidate)) => stored == candidate,
-        _ => stored == candidate,
-    }
-}
-
-fn flavor_records_match(
-    stored: &WorkerFlavorRevisionRecord,
-    candidate: &WorkerFlavorRevisionRecord,
-) -> bool {
-    stored.id() == candidate.id()
-        && stored.format() == candidate.format()
-        && json_bodies_match(stored.bytes(), candidate.bytes())
-}
-
-fn plan_records_match(
-    stored: &PlanFlavorRevisionRecord,
-    candidate: &PlanFlavorRevisionRecord,
-) -> bool {
-    stored.ids() == candidate.ids()
-        && stored.plan_format() == candidate.plan_format()
-        && json_bodies_match(stored.plan_bytes(), candidate.plan_bytes())
-        && flavor_records_match(stored.worker_flavor(), candidate.worker_flavor())
-}
-
-fn unavailable_for(target: PlanFlavorRevisionTarget) -> RevisionCatalogError {
-    match target {
-        PlanFlavorRevisionTarget::ExecutablePlan(plan_id) => {
-            RevisionCatalogError::PlanUnavailable { plan_id }
-        },
-        PlanFlavorRevisionTarget::WorkerFlavor(worker_flavor_id) => {
-            RevisionCatalogError::WorkerFlavorUnavailable { worker_flavor_id }
-        },
-    }
-}
-
-fn deleted_for(target: PlanFlavorRevisionTarget) -> RevisionCatalogError {
-    RevisionCatalogError::Deleted { target }
-}
-
-fn draining_for(target: PlanFlavorRevisionTarget) -> RevisionCatalogError {
-    RevisionCatalogError::Draining { target }
-}
-
 fn reference_counts(
     catalog: &RevisionCatalogState,
     target: PlanFlavorRevisionTarget,
@@ -287,6 +222,8 @@ fn insert_pair(
     catalog: &mut RevisionCatalogState,
     record: &PlanFlavorRevisionRecord,
 ) -> Result<RevisionInsertOutcome, RevisionCatalogError> {
+    validate_pair_recorded_form(record)?;
+
     let ids = record.ids();
     let plan_target = PlanFlavorRevisionTarget::ExecutablePlan(ids.plan());
     let flavor_target = PlanFlavorRevisionTarget::WorkerFlavor(ids.worker_flavor());
@@ -418,6 +355,7 @@ fn load_pair(
         .ok_or(RevisionCatalogError::CorruptRecord {
             target: plan_target,
         })?;
+    validate_recorded_form(record.plan_bytes(), plan_target)?;
     if record.ids().worker_flavor() != ids.worker_flavor() {
         return Err(RevisionCatalogError::PlanFlavorMismatch {
             requested: ids,
@@ -438,6 +376,7 @@ fn load_pair(
         .ok_or(RevisionCatalogError::CorruptRecord {
             target: flavor_target,
         })?;
+    validate_recorded_form(flavor_record.bytes(), flavor_target)?;
     if !flavor_records_match(flavor_record, record.worker_flavor()) {
         return Err(RevisionCatalogError::CorruptRecord {
             target: flavor_target,
@@ -594,7 +533,7 @@ impl PlanFlavorCatalog for InMemoryPlanFlavorCatalog {
             target: "nebula_storage::inmem",
             plan_revision_id = %ids.plan(),
             worker_flavor_revision_id = %ids.worker_flavor(),
-            outcome = if result.is_ok() { "loaded" } else { "rejected" },
+            outcome = load_label(&result),
             "exact plan/flavor catalog load"
         );
         result
@@ -616,11 +555,7 @@ impl PlanFlavorCatalogWriter for InMemoryPlanFlavorCatalog {
             target: "nebula_storage::inmem",
             plan_revision_id = %ids.plan(),
             worker_flavor_revision_id = %ids.worker_flavor(),
-            outcome = match &result {
-                Ok(RevisionInsertOutcome::Inserted) => "inserted",
-                Ok(RevisionInsertOutcome::AlreadyPresent) => "already_present",
-                Err(_) => "rejected",
-            },
+            outcome = insert_label(&result),
             "plan/flavor catalog insert"
         );
         result
@@ -641,7 +576,7 @@ impl PlanFlavorCatalogAdmin for InMemoryPlanFlavorCatalog {
         tracing::debug!(
             target: "nebula_storage::inmem",
             target = ?target,
-            outcome = if result.is_ok() { "draining" } else { "rejected" },
+            outcome = drain_label(&result),
             "plan/flavor catalog begin drain"
         );
         result
@@ -659,7 +594,7 @@ impl PlanFlavorCatalogAdmin for InMemoryPlanFlavorCatalog {
         tracing::debug!(
             target: "nebula_storage::inmem",
             target = ?target,
-            outcome = if result.is_ok() { "deleted" } else { "blocked" },
+            outcome = delete_label(&result),
             "plan/flavor catalog guarded delete"
         );
         result

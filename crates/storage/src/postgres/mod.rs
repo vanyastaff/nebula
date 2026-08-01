@@ -16,6 +16,7 @@ mod execution;
 mod idempotency_store;
 mod identity;
 mod job_dispatch;
+mod plan_flavor_catalog;
 mod resume_producer;
 mod resume_token;
 mod start_acceptance;
@@ -29,6 +30,7 @@ pub use identity::{
     PgTriggerStore, PgUserStore, PgWorkspaceStore,
 };
 pub use job_dispatch::{PgJobDispatchQueue, PgTriggerDedupInbox};
+pub use plan_flavor_catalog::PgPlanFlavorCatalog;
 pub use resume_producer::PgResumeProducer;
 pub use resume_token::PgResumeTokenStore;
 pub use start_acceptance::PgStartAcceptanceStore;

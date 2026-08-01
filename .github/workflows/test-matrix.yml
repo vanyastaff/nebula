@@ -279,6 +279,7 @@ jobs:
             credential_migration_postgres \
             credential_schema_admission_postgres \
             refresh_claim_pg_integration \
+            revision_catalog_conformance_postgres \
             revision_catalog_migration_postgres \
             schema_setup_postgres
           do
