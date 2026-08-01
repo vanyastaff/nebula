@@ -481,8 +481,11 @@ fn parameter_path(node: &NodeKey, param_key: &str) -> String {
 }
 
 /// Path to one connection, named by the endpoints it wires.
+///
+/// Matches the JSON Pointer convention the API already puts on the wire, so a
+/// client that keys on `errors[].pointer` keeps working.
 fn connection_path(from: &NodeKey, to: &NodeKey) -> String {
-    format!("/connections/{from}->{to}")
+    format!("/connections/{from}/{to}")
 }
 
 impl nebula_error::ActivationDiagnostics for WorkflowError {
@@ -511,14 +514,14 @@ impl nebula_error::ActivationDiagnostics for WorkflowError {
             ),
             Self::UnknownNode(key) => diagnostic(
                 "WORKFLOW:UNKNOWN_NODE",
-                "/connections".to_owned(),
+                format!("/nodes/{key}"),
                 "a connection endpoint naming a declared node".to_owned(),
                 key.to_string(),
                 "declare the node, or remove the connection that names it",
             ),
             Self::SelfLoop(key) => diagnostic(
                 "WORKFLOW:SELF_LOOP",
-                "/connections".to_owned(),
+                format!("/nodes/{key}"),
                 "a connection between two different nodes".to_owned(),
                 format!("{key}->{key}"),
                 "remove the self-referencing connection",
@@ -559,21 +562,21 @@ impl nebula_error::ActivationDiagnostics for WorkflowError {
             ),
             Self::InvalidActionKey { key, reason } => diagnostic(
                 "WORKFLOW:INVALID_ACTION_KEY",
-                "/nodes/action_key".to_owned(),
+                "/nodes".to_owned(),
                 "a well-formed action key".to_owned(),
                 key.clone(),
                 reason,
             ),
             Self::InvalidPluginKey { key, reason } => diagnostic(
                 "WORKFLOW:INVALID_PLUGIN_KEY",
-                "/nodes/plugin_key".to_owned(),
+                "/nodes".to_owned(),
                 "a well-formed plugin key".to_owned(),
                 key.clone(),
                 reason,
             ),
             Self::InvalidTrigger { reason } => diagnostic(
                 "WORKFLOW:INVALID_TRIGGER",
-                "/triggers".to_owned(),
+                "/trigger".to_owned(),
                 "a well-formed trigger".to_owned(),
                 reason.clone(),
                 "correct the trigger configuration",

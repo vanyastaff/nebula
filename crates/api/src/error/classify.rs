@@ -44,11 +44,11 @@ pub(super) fn flatten_validation_error(
         .or_else(|| inherited_pointer.map(str::to_owned))
         .unwrap_or_else(|| "/".to_owned());
 
-    out.push(ValidationFieldError {
-        code: err.code.to_string(),
-        detail: err.message.to_string(),
-        pointer: normalize_pointer(Some(&pointer)),
-    });
+    out.push(ValidationFieldError::field(
+        err.code.to_string(),
+        err.message.to_string(),
+        normalize_pointer(Some(&pointer)),
+    ));
 
     for nested in err.nested() {
         flatten_validation_error(nested, Some(&pointer), out);
@@ -56,67 +56,6 @@ pub(super) fn flatten_validation_error(
 }
 
 // ── Map a WorkflowError to a JSON Pointer ───────────────────────────────────
-
-/// Map a [`nebula_workflow::WorkflowError`] to a JSON Pointer (RFC 6901)
-/// that identifies the offending location in the workflow JSON document.
-///
-/// The workflow JSON schema is:
-/// ```json
-/// {
-///   "nodes":       [ { "id": "<key>", … }, … ],
-///   "connections": [ { "from_node": "<f>", "to_node": "<t>", … }, … ],
-///   "trigger":     { … },
-///   …
-/// }
-/// ```
-///
-/// Pointer conventions used here:
-/// - Node-specific errors: `/nodes/<node_key>`
-/// - Connection-specific: `/connections/<from>/<to>`
-/// - Trigger errors:      `/trigger`
-/// - Structural / whole-document errors: `""` (the root pointer, RFC 6901 §4)
-pub(super) fn workflow_error_pointer(err: &nebula_workflow::WorkflowError) -> String {
-    use nebula_workflow::WorkflowError;
-    match err {
-        // Node-keyed errors
-        WorkflowError::DuplicateNodeKey(key)
-        | WorkflowError::UnknownNode(key)
-        | WorkflowError::SelfLoop(key) => format!("/nodes/{key}"),
-
-        WorkflowError::InvalidParameterReference { node_key, .. } => {
-            format!("/nodes/{node_key}")
-        },
-
-        WorkflowError::InvalidActionKey { key, .. } => {
-            // The key string is the node's action_key; best we can do without
-            // the node key is to point at the nodes array.
-            let _ = key;
-            "/nodes".to_owned()
-        },
-
-        // Connection-keyed errors
-        WorkflowError::DuplicateConnection { from, to } => {
-            format!("/connections/{from}/{to}")
-        },
-
-        // Trigger errors
-        WorkflowError::InvalidTrigger { .. } => "/trigger".to_owned(),
-
-        // Schema-level / structural — point at root
-        WorkflowError::EmptyName
-        | WorkflowError::NoNodes
-        | WorkflowError::CycleDetected
-        | WorkflowError::NoEntryNodes
-        | WorkflowError::UnsupportedSchema { .. }
-        | WorkflowError::InvalidOwnerId
-        | WorkflowError::GraphError(_) => String::new(), // RFC 6901 root pointer
-
-        // `WorkflowError` is `#[non_exhaustive]`. Future variants without an
-        // API-side mapping fall back to the root pointer rather than failing
-        // to compile the API layer on every validator extension.
-        _ => String::new(),
-    }
-}
 
 // ── From<ValidationError> ────────────────────────────────────────────────────
 

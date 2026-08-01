@@ -43,15 +43,81 @@ pub struct ProblemDetails {
     pub errors: Option<Vec<ValidationFieldError>>,
 }
 
-/// Validation field error
+/// One structured validation or activation rejection.
+///
+/// `code` and `pointer` are stable machine-readable contracts: a client
+/// matches on them rather than parsing `detail`. `expected`, `actual`, and
+/// `remediation` are the NS14 activation-diagnostic fields — present whenever
+/// the rejection came from an activation diagnostic, absent for the
+/// request-level validators that have no contract to compare against.
+///
+/// Flattening these into `detail` prose was the previous shape and it cost
+/// every one of them: a client could not tell which rule fired, a UI could not
+/// point at the offending element, and an author was told a count rather than
+/// what to change.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ValidationFieldError {
-    /// Validator error code
+    /// Stable machine-readable rejection code.
     pub code: String,
-    /// Error detail message
+    /// Human-readable message. Never the only place a field appears.
     pub detail: String,
-    /// JSON Pointer to the field (RFC 6901), e.g. "/age"
+    /// JSON Pointer to the offending element (RFC 6901), e.g. `/nodes/a`.
     pub pointer: String,
+    /// Secret-free description of the contract that was required.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected: Option<String>,
+    /// Secret-free description of what was found, or a safe sentinel.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actual: Option<String>,
+    /// Stable, actionable guidance for resolving the rejection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remediation: Option<String>,
+}
+
+impl ValidationFieldError {
+    /// Build a request-level validation error with no contract comparison.
+    ///
+    /// Request-level validators reject a malformed field rather than a
+    /// mismatched contract, so they have no `expected`/`actual` pair to report
+    /// and deliberately omit the NS14 fields instead of inventing them.
+    #[must_use]
+    pub fn field(
+        code: impl Into<String>,
+        detail: impl Into<String>,
+        pointer: impl Into<String>,
+    ) -> Self {
+        Self {
+            code: code.into(),
+            detail: detail.into(),
+            pointer: pointer.into(),
+            expected: None,
+            actual: None,
+            remediation: None,
+        }
+    }
+}
+
+impl From<&nebula_error::ActivationDiagnostic> for ValidationFieldError {
+    /// Carry all five NS14 fields onto the wire without flattening any of them.
+    ///
+    /// `detail` stays populated for a human reading the response, but every
+    /// field it summarises is also present on its own, so a client never has to
+    /// parse prose to recover a value.
+    fn from(diagnostic: &nebula_error::ActivationDiagnostic) -> Self {
+        Self {
+            code: diagnostic.code().to_owned(),
+            detail: format!(
+                "{}: expected {}, found {}",
+                diagnostic.code(),
+                diagnostic.expected(),
+                diagnostic.actual()
+            ),
+            pointer: diagnostic.path().to_owned(),
+            expected: Some(diagnostic.expected().to_owned()),
+            actual: Some(diagnostic.actual().to_owned()),
+            remediation: Some(diagnostic.remediation().to_owned()),
+        }
+    }
 }
 
 impl ProblemDetails {
