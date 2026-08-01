@@ -260,7 +260,7 @@ impl ResourceRepo for FakeResourceRepo {
 fn port_resource_state(api_config: &ApiConfig) -> AppState {
     use nebula_storage::inmem::{
         InMemoryExecutionStore, InMemoryJournalReader, InMemoryNodeResultStore,
-        InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
+        InMemoryStartAcceptanceStore, InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
     };
     let exec_store = InMemoryExecutionStore::new();
     let control_queue = nebula_storage::InMemoryControlQueue::new(&exec_store);
@@ -274,10 +274,11 @@ fn port_resource_state(api_config: &ApiConfig) -> AppState {
     AppState::new(
         Arc::new(workflow_store),
         Arc::new(workflow_versions),
-        Arc::new(exec_store),
+        Arc::new(exec_store.clone()),
         Arc::new(node_results),
         Arc::new(journal),
         Arc::new(control_queue),
+        Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
         api_config.jwt_secret.clone(),
     )
     .with_org_resolver(Arc::new(TestOrgResolver))

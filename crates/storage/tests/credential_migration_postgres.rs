@@ -23,6 +23,9 @@ use sqlx::{
 };
 use uuid::Uuid;
 
+#[path = "support/canonical_head.rs"]
+mod canonical_head;
+
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/postgres");
 
 type TestResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -432,9 +435,10 @@ async fn exercise_migration(pool: &PgPool) -> TestResult<MigrationEvidence> {
     MIGRATOR.run(pool).await?;
 
     let post_migration_head = applied_head(pool).await?;
-    if post_migration_head != 41 {
+    let head = canonical_head::of(&MIGRATOR);
+    if post_migration_head != head {
         return Err(std::io::Error::other(format!(
-            "expected the full catalog through 0041, stopped at {post_migration_head:04}"
+            "expected the full catalog through {head:04}, stopped at {post_migration_head:04}"
         ))
         .into());
     }

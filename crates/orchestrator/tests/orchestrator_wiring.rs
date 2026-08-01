@@ -348,7 +348,7 @@ async fn routes_by_tag() {
         1,
         "beta job must still be Pending after alpha-only orchestrator ran"
     );
-    assert_eq!(leftover[0].required_plugin_key.as_str(), "beta");
+    assert_eq!(leftover[0].msg.required_plugin_key.as_str(), "beta");
 }
 
 // ── test 2: claim_route_sink_mark_dispatched ──────────────────────────────────
@@ -570,16 +570,13 @@ async fn reclaim_during_slow_sink_is_at_least_once() {
         1,
         "processor-B must claim the reclaimed row"
     );
-    queue
-        .mark_dispatched(&b_claimed[0].id, &proc_b)
-        .await
-        .unwrap();
+    queue.mark_dispatched(&b_claimed[0].token).await.unwrap();
 
-    // Step 5: release orchestrator-A's stall. A calls mark_dispatched(&proc_a)
-    // which returns StorageError::NotFound (ownership predicate
-    // `status='Processing' AND processed_by=proc_a` matches 0 rows — the row
-    // is now Dispatched under proc_b). The orchestrator swallows the error and
-    // continues; the row stays terminal under B's ACK.
+    // Step 5: release orchestrator-A's stall. A acknowledges with the token
+    // from its own (now superseded) claim, which returns
+    // `StorageError::FencedOut` — the generation fence matches 0 rows because
+    // the row is Dispatched under B's later claim. The orchestrator swallows
+    // the error and continues; the row stays terminal under B's ACK.
     release.notify_one();
 
     // Shut down and wait for the orchestrator to finish its current batch.

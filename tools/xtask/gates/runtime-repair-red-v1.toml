@@ -1,48 +1,40 @@
 # Versioned expected-failure policy for genuine first-party runtime-repair
 # scenarios. Every listed case must fail for exactly the reason recorded here;
 # setup failures, passes, skips, retries, timeouts, and extra cases fail closed.
+#
+# Entries are removed as their defect is repaired, in the same change that
+# repairs it. A repaired scenario is not deleted — it stays in the suite as
+# ordinary conformance coverage, where a regression reads as a plain failure.
+# Leaving a repaired case listed here would invert that: the verifier rejects an
+# unexpected pass, so a fixed defect would report as a broken gate.
+#
+# Every named case is now repaired, so this set is empty. That is the profile
+# in its finished state, not a disabled gate: the scenarios still run on every
+# pull request, and with nothing listed here the verifier requires them all to
+# pass. A regression therefore fails the gate as a plain unexpected failure.
+#
+# Repaired and promoted to ordinary coverage:
+#   - C7 same-processor ABA (in-memory, file SQLite, live PostgreSQL) —
+#     acknowledgement is fenced on a storage-minted claim generation.
+#   - StartKey (in-memory, file SQLite, live PostgreSQL) — keyed start
+#     acceptance reserves the key, creates the aggregate, and enqueues the
+#     Start command in one commit.
+#   - C1 cancellation authority (file SQLite, live PostgreSQL) — the API
+#     submits the cancellation through the control queue and writes no
+#     execution state at all; the runtime performs the terminal transition
+#     under its own lease. Both halves are asserted: the response must not
+#     report the run as stopped, and the runtime must actually stop it —
+#     without the second, dropping the cancel would satisfy the first.
+#   - C0 park/restart/resume (file SQLite, live PostgreSQL) — the worker drains
+#     the control queue the API writes to, a restart sweeps persisted state for
+#     overdue parked waits, and a runtime asked to stop releases the execution
+#     lease it holds instead of letting a bare drop strand it, so the successor
+#     takes the parked work over on the next sweep rather than waiting out the
+#     lease TTL. Handover costs a round trip and consults no clock.
 manifest_version = 1
 profile = "runtime-repair-red"
 package = "nebula-server"
 feature = "runtime-repair-red"
 test_binary = "runtime_repair_red_scenarios"
 
-[[expected_failures]]
-test_name = "c0_file_sqlite_park_restart_resume"
-reason_code = "c0-drive-not-connected"
-
-[[expected_failures]]
-test_name = "c0_live_postgresql_park_restart_resume"
-reason_code = "c0-drive-not-connected"
-
-[[expected_failures]]
-test_name = "c1_file_sqlite_cancel_before_handler_completion"
-reason_code = "c1-cancel-terminalized-by-api"
-
-[[expected_failures]]
-test_name = "c1_live_postgresql_cancel_before_handler_completion"
-reason_code = "c1-cancel-terminalized-by-api"
-
-[[expected_failures]]
-test_name = "component_c7::same_processor_id_aba_file_sqlite"
-reason_code = "c7-same-processor-aba-accepted"
-
-[[expected_failures]]
-test_name = "component_c7::same_processor_id_aba_in_memory"
-reason_code = "c7-same-processor-aba-accepted"
-
-[[expected_failures]]
-test_name = "component_c7::same_processor_id_aba_live_postgres"
-reason_code = "c7-same-processor-aba-accepted"
-
-[[expected_failures]]
-test_name = "startkey_file_sqlite"
-reason_code = "startkey-same-fingerprint-duplicated"
-
-[[expected_failures]]
-test_name = "startkey_in_memory"
-reason_code = "startkey-same-fingerprint-duplicated"
-
-[[expected_failures]]
-test_name = "startkey_live_postgresql"
-reason_code = "startkey-same-fingerprint-duplicated"
+expected_failures = []

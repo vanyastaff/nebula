@@ -8,6 +8,18 @@ use nebula_storage::sqlite::init_schema;
 use nebula_storage_port::StorageError;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
+#[path = "support/canonical_head.rs"]
+mod canonical_head;
+
+/// The catalog `init_schema` installs, embedded here to read its head and to
+/// build adoption fixtures that really are what they claim to be.
+static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/sqlite");
+
+/// The version an operator adopts through in these tests. Matches
+/// `GENERAL_CATALOG_SUPPORTED_FLOOR`: the lowest catalog ordinary setup
+/// admits without aggregate-owner validation.
+const ADOPTION_BASELINE: i64 = 40;
+
 async fn migration_head(pool: &sqlx::SqlitePool) -> i64 {
     sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations WHERE success")
         .fetch_one(pool)
@@ -54,7 +66,7 @@ async fn max_one_memory_pool_reaches_canonical_head_with_foreign_keys() {
     init_schema(&pool)
         .await
         .expect("canonical setup must accept a fresh max-one memory database");
-    assert_eq!(migration_head(&pool).await, 41);
+    assert_eq!(migration_head(&pool).await, canonical_head::of(&MIGRATOR));
     let mut connection = pool.acquire().await.expect("acquire admitted connection");
     assert!(foreign_keys_enabled(&mut connection).await);
 }
@@ -91,7 +103,10 @@ async fn named_shared_memory_pool_proves_second_connection_visibility() {
             .fetch_one(&mut *second)
             .await
             .expect("second connection sees canonical ledger");
-    assert_eq!((first_head, second_head), (41, 41));
+    assert_eq!(
+        (first_head, second_head),
+        (canonical_head::of(&MIGRATOR), canonical_head::of(&MIGRATOR))
+    );
     assert!(foreign_keys_enabled(&mut first).await);
     assert!(foreign_keys_enabled(&mut second).await);
 }
@@ -146,7 +161,7 @@ async fn concurrent_setup_on_max_two_shared_pool_does_not_starve_visibility_prob
     .expect("concurrent setup must not deadlock on pool-slot starvation");
     first.expect("first setup must succeed");
     second.expect("second setup must succeed");
-    assert_eq!(migration_head(&pool).await, 41);
+    assert_eq!(migration_head(&pool).await, canonical_head::of(&MIGRATOR));
 }
 
 #[tokio::test]
@@ -219,34 +234,45 @@ async fn adopting_an_unledgered_database_lets_setup_admit_it() {
 
     // Stand in for a database the old init_schema provisioned: real relations,
     // no ledger.
-    sqlx::query("CREATE TABLE port_legacy_marker (value TEXT NOT NULL)")
+    //
+    // Build the relations by actually migrating to the adoption baseline and
+    // then discarding the ledger, rather than by creating a token table. That
+    // is what adoption *asserts* about a database it stamps, and a fixture
+    // that only pretends silently invalidates everything after the stamp: a
+    // later `ALTER TABLE` migration would fail against tables the fixture
+    // never created, and the failure would look like a migration defect.
+    MIGRATOR
+        .run_to(ADOPTION_BASELINE, &pool)
+        .await
+        .expect("build the schema the operator will assert this database has");
+    sqlx::query("DROP TABLE _sqlx_migrations")
         .execute(&pool)
         .await
-        .expect("create pre-ledger relation");
+        .expect("discard the ledger to model a pre-ledger database");
 
     let rejection = init_schema(&pool)
         .await
         .expect_err("an unledgered database must fail closed before adoption");
     assert!(matches!(rejection, StorageError::Configuration(_)));
 
-    let outcome = nebula_storage::sqlite::adopt_ledger(&pool, 40)
+    let outcome = nebula_storage::sqlite::adopt_ledger(&pool, ADOPTION_BASELINE)
         .await
         .expect("adoption must succeed for a pre-ledger database");
     assert_eq!(
         outcome,
         nebula_storage::LedgerAdoptionOutcome::Adopted {
-            through_version: 40
+            through_version: ADOPTION_BASELINE
         }
     );
 
     init_schema(&pool)
         .await
         .expect("an adopted database must be admitted and migrated to head");
-    assert_eq!(migration_head(&pool).await, 41);
+    assert_eq!(migration_head(&pool).await, canonical_head::of(&MIGRATOR));
 
     // Re-adoption is refused rather than duplicating ledger rows.
     assert_eq!(
-        nebula_storage::sqlite::adopt_ledger(&pool, 40)
+        nebula_storage::sqlite::adopt_ledger(&pool, ADOPTION_BASELINE)
             .await
             .expect("re-adoption must not error"),
         nebula_storage::LedgerAdoptionOutcome::AlreadyLedgered
@@ -263,7 +289,7 @@ async fn adoption_refuses_an_empty_database() {
         .expect("open empty fixture");
 
     assert_eq!(
-        nebula_storage::sqlite::adopt_ledger(&pool, 40)
+        nebula_storage::sqlite::adopt_ledger(&pool, ADOPTION_BASELINE)
             .await
             .expect("adoption must not error on an empty database"),
         nebula_storage::LedgerAdoptionOutcome::FreshDatabase,

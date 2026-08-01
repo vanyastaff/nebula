@@ -237,11 +237,20 @@ impl IdentityBackend for SqliteBackend {
 /// store request (port schema installed once). Only exercised when
 /// `DATABASE_URL` is set and the crate is built with `--features
 /// postgres`; otherwise the case skips cleanly.
+///
+/// The pool is pinned to a private schema, matching the fresh-store contract
+/// the InMemory and SQLite backends give every case — see
+/// `tests/support/postgres_schema.rs` for why a shared `public` schema
+/// silently invalidated the Postgres arm.
 #[derive(Default)]
 struct PostgresBackend {
     #[cfg(feature = "postgres")]
     pool: tokio::sync::OnceCell<sqlx::PgPool>,
 }
+
+#[cfg(feature = "postgres")]
+#[path = "support/postgres_schema.rs"]
+mod postgres_schema;
 
 #[cfg(feature = "postgres")]
 impl PostgresBackend {
@@ -250,11 +259,12 @@ impl PostgresBackend {
             .get_or_init(|| async {
                 let url = std::env::var("DATABASE_URL")
                     .unwrap_or_else(|e| panic!("DATABASE_URL required for the Postgres case: {e}"));
-                let pool = sqlx::postgres::PgPoolOptions::new()
-                    .max_connections(8)
-                    .connect(&url)
-                    .await
-                    .expect("connect Postgres (DATABASE_URL)");
+                let pool = postgres_schema::connect_with_private_schema(
+                    &url,
+                    "nebula_identity_conformance",
+                )
+                .await
+                .expect("connect Postgres (DATABASE_URL)");
                 nebula_storage::postgres::init_schema(&pool)
                     .await
                     .expect("install port schema");

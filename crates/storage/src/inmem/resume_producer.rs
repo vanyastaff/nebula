@@ -94,6 +94,7 @@ impl ResumeProducer for InMemoryResumeProducer {
                 processed_at: None,
                 reclaim_count: 0,
                 error_message: None,
+                claim_generation: 0,
             },
         );
         Ok(true)

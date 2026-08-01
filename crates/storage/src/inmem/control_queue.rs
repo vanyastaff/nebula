@@ -17,9 +17,54 @@ use tokio::time::Instant;
 
 use nebula_storage_port::StorageError;
 use nebula_storage_port::dto::ControlMsg;
-use nebula_storage_port::store::{ControlQueue, ReclaimOutcome};
+use nebula_storage_port::store::{
+    ClaimGeneration, ControlClaim, ControlClaimToken, ControlQueue, ReclaimOutcome,
+};
 
 use super::execution::{QueuedMsg, SharedState};
+
+/// Format a raw 16-byte ULID as lowercase hex for `StorageError` ids, without
+/// the optional `hex` crate the `inmem` module deliberately avoids.
+fn ulid_hex(id: &[u8; 16]) -> String {
+    id.iter().fold(String::with_capacity(32), |mut s, b| {
+        use std::fmt::Write as _;
+        let _ = write!(s, "{b:02x}");
+        s
+    })
+}
+
+/// Terminalise a claimed row, fenced on `(row id, Processing, generation)`.
+///
+/// Mirrors the SQL backends: an absent row is [`StorageError::NotFound`], and a
+/// present row the token no longer owns is [`StorageError::FencedOut`] with
+/// **no state change**. Returning `Ok` for a superseded token would let a
+/// consumer whose claim was reclaimed terminalise a command the current owner
+/// is still dispatching.
+fn acknowledge(
+    state: &mut super::execution::State,
+    claim: &ControlClaimToken,
+    terminal_status: &str,
+    error: Option<&str>,
+) -> Result<(), StorageError> {
+    let id = claim.row_id();
+    let Some(queued) = state.queue.get_mut(id) else {
+        return Err(StorageError::NotFound {
+            entity: "control_queue",
+            id: ulid_hex(id),
+        });
+    };
+    if queued.status != "Processing" || queued.claim_generation != claim.generation().get() {
+        return Err(StorageError::FencedOut {
+            entity: "control_queue",
+            id: ulid_hex(id),
+        });
+    }
+    terminal_status.clone_into(&mut queued.status);
+    if let Some(error) = error {
+        queued.error_message = Some(error.to_owned());
+    }
+    Ok(())
+}
 
 /// In-memory durable-outbox handle. Shares the execution store's core.
 #[derive(Debug, Clone)]
@@ -107,6 +152,7 @@ impl InMemoryControlQueue {
                 processed_at: Some(processed_at),
                 reclaim_count,
                 error_message: None,
+                claim_generation: 0,
             },
         );
     }
@@ -125,6 +171,7 @@ impl ControlQueue for InMemoryControlQueue {
                 processed_at: None,
                 reclaim_count: 0,
                 error_message: None,
+                claim_generation: 0,
             },
         );
         tracing::debug!(
@@ -139,7 +186,7 @@ impl ControlQueue for InMemoryControlQueue {
         &self,
         processor: &[u8; 16],
         batch_size: u32,
-    ) -> Result<Vec<ControlMsg>, StorageError> {
+    ) -> Result<Vec<ControlClaim>, StorageError> {
         let mut st = self.inner.lock();
         let now = Instant::now();
         let mut claimed = Vec::new();
@@ -153,6 +200,18 @@ impl ControlQueue for InMemoryControlQueue {
         ids.sort_unstable();
         for id in ids.into_iter().take(batch_size as usize) {
             if let Some(q) = st.queue.get_mut(&id) {
+                // Mint the generation in the same critical section that flips
+                // Pending -> Processing, so no other claimer can observe the
+                // row as claimed under a generation that was not minted yet.
+                let Some(generation) = q.claim_generation.checked_add(1) else {
+                    // Fail closed: a wrapped generation would let a superseded
+                    // token match a future claim.
+                    return Err(StorageError::Internal(format!(
+                        "control_queue claim generation overflowed for row {}",
+                        ulid_hex(&id)
+                    )));
+                };
+                q.claim_generation = generation;
                 q.status = "Processing".to_string();
                 q.processed_by = Some(*processor);
                 q.processed_at = Some(now);
@@ -162,43 +221,38 @@ impl ControlQueue for InMemoryControlQueue {
                 // re-claims a reclaimed row therefore observes the bumped
                 // count — the cross-runner-redeliver invariant relies on it.
                 q.msg.reclaim_count = q.reclaim_count;
-                claimed.push(q.msg.clone());
+                claimed.push(ControlClaim {
+                    msg: q.msg.clone(),
+                    token: ControlClaimToken::new(id, ClaimGeneration::new(generation)),
+                });
             }
         }
         Ok(claimed)
     }
 
-    async fn mark_completed(
-        &self,
-        id: &[u8; 16],
-        processor: &[u8; 16],
-    ) -> Result<(), StorageError> {
+    async fn mark_completed(&self, claim: &ControlClaimToken) -> Result<(), StorageError> {
         let mut st = self.inner.lock();
-        if let Some(q) = st.queue.get_mut(id)
-            && q.status == "Processing"
-            && q.processed_by.as_ref() == Some(processor)
-        {
-            q.status = "Completed".to_string();
-        }
-        // A processor mismatch is an idempotent no-op under the
-        // at-least-once contract (a stale runner whose row was reclaimed
-        // must not flip a newer claim).
-        Ok(())
+        acknowledge(&mut st, claim, "Completed", None)
     }
 
     async fn mark_failed(
         &self,
-        id: &[u8; 16],
-        processor: &[u8; 16],
+        claim: &ControlClaimToken,
         error: &str,
     ) -> Result<(), StorageError> {
         let mut st = self.inner.lock();
-        if let Some(q) = st.queue.get_mut(id)
-            && q.status == "Processing"
-            && q.processed_by.as_ref() == Some(processor)
-        {
-            q.status = "Failed".to_string();
-            q.error_message = Some(error.to_string());
+        acknowledge(&mut st, claim, "Failed", Some(error))
+    }
+
+    async fn release_claim(&self, claim: &ControlClaimToken) -> Result<(), StorageError> {
+        let mut st = self.inner.lock();
+        acknowledge(&mut st, claim, "Pending", None)?;
+        // Clear the claim bookkeeping so the row looks untouched to the next
+        // claimer; leaving `processed_at` set would make an immediately
+        // re-claimed row look stale to the reclaim sweep.
+        if let Some(queued) = st.queue.get_mut(claim.row_id()) {
+            queued.processed_by = None;
+            queued.processed_at = None;
         }
         Ok(())
     }

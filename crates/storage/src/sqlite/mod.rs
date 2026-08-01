@@ -19,6 +19,7 @@ mod identity;
 mod job_dispatch;
 mod resume_producer;
 mod resume_token;
+mod start_acceptance;
 mod workflow;
 
 pub use control_queue::{SqliteControlQueue, SqliteJournalReader};
@@ -31,6 +32,7 @@ pub use identity::{
 pub use job_dispatch::{SqliteJobDispatchQueue, SqliteTriggerDedupInbox};
 pub use resume_producer::SqliteResumeProducer;
 pub use resume_token::SqliteResumeTokenStore;
+pub use start_acceptance::SqliteStartAcceptanceStore;
 pub use workflow::{SqliteWorkflowStore, SqliteWorkflowVersionStore};
 
 /// Admit a canonical schema and apply every pending ordered migration under

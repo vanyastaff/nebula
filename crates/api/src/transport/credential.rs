@@ -813,10 +813,13 @@ mod tests {
         AppState::new(
             Arc::new(workflow_store),
             Arc::new(workflow_versions),
-            Arc::new(exec_store),
+            Arc::new(exec_store.clone()),
             Arc::new(InMemoryNodeResultStore::new()),
             Arc::new(journal),
             Arc::new(control_queue),
+            Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
+                &exec_store,
+            )),
             jwt,
         )
     }

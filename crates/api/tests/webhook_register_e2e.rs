@@ -67,6 +67,7 @@ use nebula_core::{
 };
 use nebula_credential::{CredentialService, SigningKeyCredential, TenantScope};
 use nebula_engine::ActionRegistry;
+use nebula_storage::inmem::InMemoryStartAcceptanceStore;
 use nebula_storage::{
     credential::{EnvKeyProvider, KeyProvider},
     inmem::{
@@ -359,10 +360,11 @@ async fn build_full_state() -> (
     let state = AppState::new(
         Arc::clone(&workflow_store) as _,
         Arc::clone(&workflow_versions) as _,
-        Arc::new(exec_store),
+        Arc::new(exec_store.clone()),
         Arc::new(node_results),
         Arc::new(journal),
         Arc::new(control_queue),
+        Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
         config.jwt_secret,
     )
     .with_credential_gateway(
@@ -898,10 +900,11 @@ async fn register_without_transport_returns_503() {
     let state = AppState::new(
         Arc::clone(&workflow_store) as _,
         Arc::clone(&workflow_versions) as _,
-        Arc::new(exec_store),
+        Arc::new(exec_store.clone()),
         Arc::new(node_results),
         Arc::new(journal),
         Arc::new(control_queue),
+        Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
         config.jwt_secret,
     )
     .with_credential_gateway(
@@ -1026,10 +1029,11 @@ async fn register_compensation_cleans_up_on_activation_failure() {
     let state = AppState::new(
         Arc::clone(&workflow_store) as _,
         Arc::clone(&workflow_versions) as _,
-        Arc::new(exec_store),
+        Arc::new(exec_store.clone()),
         Arc::new(node_results),
         Arc::new(journal),
         Arc::new(control_queue),
+        Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
         config.jwt_secret,
     )
     .with_credential_gateway(
@@ -1430,10 +1434,11 @@ async fn register_factory_invalid_spec_returns_422() {
     let state = AppState::new(
         Arc::clone(&workflow_store) as _,
         Arc::clone(&workflow_versions) as _,
-        Arc::new(exec_store),
+        Arc::new(exec_store.clone()),
         Arc::new(node_results),
         Arc::new(journal),
         Arc::new(control_queue),
+        Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
         config.jwt_secret,
     )
     .with_credential_gateway(

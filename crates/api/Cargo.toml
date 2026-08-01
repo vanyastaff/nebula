@@ -95,7 +95,9 @@ zeroize = { version = "1.8.2", features = ["zeroize_derive"] }
 secrecy = { workspace = true }
 async-trait = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
-tokio-util = { workspace = true, optional = true }
+# Not optional: the start-key reservation sweep is production code, and it
+# takes the composition root's `CancellationToken` to know when to stop.
+tokio-util = { workspace = true }
 
 # Optional — only linked by `PgAuthBackend` (under `crate::domain::auth::backend::pg`,
 # feature-gated by `postgres`). The composition root constructs the `sqlx::Pool<Postgres>`
@@ -186,7 +188,7 @@ first-party-composition = []
 # Enables `ApiConfig::for_test()` and other test helpers. NEVER
 # enable this in production builds — it exposes a constructor that
 # bypasses the JwtSecret validation gate.
-test-util = ["dep:nebula-schema", "dep:tokio-util"]
+test-util = ["dep:nebula-schema"]
 # Forwards `nebula-storage/postgres` so the `PgIdempotencyStore` impl becomes
 # available to composition roots (e.g. `nebula-server`). The `sqlx` pool is
 # constructed by the composition root, not by this library. When this feature

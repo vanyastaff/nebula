@@ -20,13 +20,32 @@ pub(super) fn verify(
 ) -> Result<usize, VerificationError> {
     let report = JunitParser::parse(source)?;
     let expected_count = expected_failures.len();
-    if report.root_counts.tests != expected_count
-        || report.root_counts.failures != expected_count
+    // The profile runs the whole scenario binary, which holds both the cases
+    // still expected to fail and the ones already repaired. So the run is
+    // reconciled on *failures*, not on the total: exactly the manifested cases
+    // may fail, every other selected test must pass, and nothing may error or
+    // be disabled. Requiring `tests == expected_count` would mean a repaired
+    // scenario had to be deleted to keep the gate green — which is precisely
+    // the evidence deletion this verifier exists to prevent.
+    if report.root_counts.tests < expected_count {
+        return invalid_junit(format!(
+            "root aggregate reports {} tests but the manifest names {expected_count}",
+            report.root_counts.tests
+        ));
+    }
+    if report.root_counts.tests == 0 {
+        return invalid_junit(
+            "report contains no testcases; a suite that ran nothing is not evidence".to_owned(),
+        );
+    }
+    if report.root_counts.failures != expected_count
         || report.root_counts.errors != 0
         || report.root_counts.disabled != 0
     {
         return invalid_junit(format!(
-            "root aggregate must report tests={expected_count}, failures={expected_count}, errors=0, disabled=0"
+            "root aggregate must report failures={expected_count}, errors=0, disabled=0; \
+             found failures={}, errors={}, disabled={}",
+            report.root_counts.failures, report.root_counts.errors, report.root_counts.disabled
         ));
     }
     if report.suite_names.as_slice() != [expected_classname] {
@@ -34,9 +53,9 @@ pub(super) fn verify(
             "report must contain exactly one suite named `{expected_classname}`"
         ));
     }
-    if report.cases.len() != expected_count {
+    if report.cases.len() < expected_count {
         return invalid_junit(format!(
-            "report contains {} testcases; expected {expected_count}",
+            "report contains {} testcases; the manifest names {expected_count}",
             report.cases.len()
         ));
     }
@@ -46,6 +65,9 @@ pub(super) fn verify(
         .map(|expected| (expected.test_name.as_str(), expected.reason_code.as_str()))
         .collect::<BTreeMap<_, _>>();
     let mut observed_names = BTreeSet::new();
+    // Counts only the manifested cases that were verified as failing for their
+    // exact reason — a repaired case that passed is not evidence of a defect.
+    let mut verified_failures = 0_usize;
     for case in &report.cases {
         if case.classname != expected_classname {
             return invalid_junit(format!(
@@ -56,11 +78,27 @@ pub(super) fn verify(
         if !observed_names.insert(case.name.as_str()) {
             return invalid_junit(format!("test identity `{}` is duplicated", case.name));
         }
-        let expected_reason = expected_by_name.get(case.name.as_str()).ok_or_else(|| {
-            VerificationError::InvalidJunit {
-                detail: format!("unexpected test identity `{}`", case.name),
+        let Some(expected_reason) = expected_by_name.get(case.name.as_str()) else {
+            // A repaired case: it must have passed cleanly. Anything else means
+            // a scenario the manifest no longer excuses has started failing,
+            // which must surface rather than be tolerated as "not listed".
+            if case.failure_elements != 0 || case.error_elements != 0 {
+                return invalid_junit(format!(
+                    "test `{}` is not an expected failure but did not pass",
+                    case.name
+                ));
             }
-        })?;
+            if case.skipped_elements != 0 {
+                return invalid_junit(format!(
+                    "test `{}` was skipped; a skipped scenario is not evidence",
+                    case.name
+                ));
+            }
+            if case.timed_out {
+                return invalid_junit(format!("test `{}` was terminated by a timeout", case.name));
+            }
+            continue;
+        };
         if case.failure_elements != 1 {
             return invalid_junit(format!(
                 "test `{}` must contain exactly one failure element",
@@ -77,6 +115,7 @@ pub(super) fn verify(
             return invalid_junit(format!("test `{}` was terminated by a timeout", case.name));
         }
         validate_marker(case, expected_reason)?;
+        verified_failures += 1;
     }
 
     let missing = expected_by_name
@@ -90,7 +129,7 @@ pub(super) fn verify(
             missing.join(", ")
         ));
     }
-    Ok(report.cases.len())
+    Ok(verified_failures)
 }
 
 fn validate_marker(case: &ParsedCase, expected_reason: &str) -> Result<(), VerificationError> {

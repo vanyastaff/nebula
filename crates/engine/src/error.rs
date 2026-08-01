@@ -195,6 +195,23 @@ pub enum EngineError {
         observed_status: String,
     },
 
+    /// The runtime was asked to stop while this execution was still
+    /// running, and the frontier did not finish inside the shutdown grace.
+    ///
+    /// The runner abandoned the step *deliberately*: it persisted no final
+    /// state and released its execution lease, so a successor can take the
+    /// execution over immediately rather than waiting out the lease TTL. The
+    /// dispatch row stays unacknowledged and is redelivered by the next
+    /// runner's reclaim sweep.
+    ///
+    /// This is not a failure of the workflow — nothing about the execution is
+    /// known to be wrong — so it must never be mapped to a terminal status.
+    #[error("execution {execution_id} abandoned: runtime shut down before the frontier finished")]
+    ShutdownInterrupted {
+        /// The execution whose step was abandoned mid-flight.
+        execution_id: ExecutionId,
+    },
+
     /// Another engine instance currently holds the execution lease.
     ///
     /// Surfaced by [`WorkflowEngine::execute_workflow`] and
@@ -261,6 +278,10 @@ impl nebula_error::Classify for EngineError {
             // runner saw the execution already in flight. Conflict
             // matches HTTP 409 at the API edge.
             Self::Leased { .. } => nebula_error::ErrorCategory::Conflict,
+            // Nothing is wrong with the execution — this runner simply stopped
+            // first. Unavailable, so the caller retries against a live runner
+            // rather than reporting a workflow fault.
+            Self::ShutdownInterrupted { .. } => nebula_error::ErrorCategory::Unavailable,
             Self::Telemetry(_) => nebula_error::ErrorCategory::Internal,
             Self::Runtime(e) => nebula_error::Classify::category(e),
             Self::Execution(e) => nebula_error::Classify::category(e),
@@ -287,6 +308,7 @@ impl nebula_error::Classify for EngineError {
             Self::CheckpointFailed { .. } => "ENGINE:CHECKPOINT_FAILED",
             Self::CasConflict { .. } => "ENGINE:CAS_CONFLICT",
             Self::Leased { .. } => "ENGINE:LEASED",
+            Self::ShutdownInterrupted { .. } => "ENGINE:SHUTDOWN_INTERRUPTED",
             Self::Telemetry(_) => "ENGINE:TELEMETRY",
         })
     }

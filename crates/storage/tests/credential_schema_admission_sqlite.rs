@@ -12,6 +12,9 @@ use nebula_storage::sqlite::init_schema;
 use nebula_storage_port::StorageError;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
+#[path = "support/canonical_head.rs"]
+mod canonical_head;
+
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/sqlite");
 
 async fn raw_pool(path: &Path) -> sqlx::SqlitePool {
@@ -252,7 +255,7 @@ async fn catalog_setup_rejects_pre_0040_prefix_without_crossing_credential_bound
 }
 
 #[tokio::test]
-async fn fresh_file_and_memory_are_admitted_and_file_reopens_at_0041() {
+async fn fresh_file_and_memory_are_admitted_and_file_reopens_at_head() {
     let directory = tempfile::tempdir().expect("temporary directory must be created");
     let path = directory.path().join("fresh.sqlite");
     let url = file_url(&path);
@@ -268,7 +271,7 @@ async fn fresh_file_and_memory_are_admitted_and_file_reopens_at_0041() {
             .fetch_one(&pool)
             .await
             .expect("migration ledger must be readable");
-    assert_eq!(head, 41);
+    assert_eq!(head, canonical_head::of(&MIGRATOR));
     pool.close().await;
 
     let second = SqliteCredentialPersistence::connect(&url)
@@ -301,7 +304,7 @@ async fn two_fresh_file_starters_serialize_readiness_without_partial_schema() {
             .fetch_one(&pool)
             .await
             .expect("the contended migration ledger must be readable");
-    assert_eq!(head, 41);
+    assert_eq!(head, canonical_head::of(&MIGRATOR));
     assert_eq!(
         successful,
         i64::try_from(MIGRATOR.iter().count()).expect("migration count must fit in i64"),

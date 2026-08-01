@@ -62,9 +62,9 @@ use common::port_scope as knife_scope;
 /// (in-memory adapters behind the `nebula-tenancy` decorators, wired via
 /// `create_state_with_port_queue`). Asserted invariants: a workflow
 /// round-trips, activation validates, an execution is created in
-/// `created` with `started_at` set and `finished_at` absent, cancel
-/// drives the row to `cancelled`, and the durable outbox holds exactly
-/// the `Start` (step 3) and `Cancel` (step 5) rows, both still
+/// `created` with `started_at` set and `finished_at` absent, cancel enqueues
+/// its command without touching the execution row, and the durable outbox
+/// holds exactly the `Start` (step 3) and `Cancel` (step 5) rows, both still
 /// `Pending`.
 #[tokio::test]
 async fn knife_api_producer_boundary_via_scoped_port() {
@@ -245,8 +245,8 @@ async fn knife_api_producer_boundary_via_scoped_port() {
         .unwrap();
     assert_eq!(
         response.status(),
-        StatusCode::OK,
-        "API producer boundary, step 5: cancel must return 200"
+        StatusCode::ACCEPTED,
+        "API producer boundary, step 5: cancel must return 202"
     );
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
@@ -254,12 +254,14 @@ async fn knife_api_producer_boundary_via_scoped_port() {
     let cancelled: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(
         cancelled["status"].as_str(),
-        Some("cancelled"),
-        "API producer boundary, step 5: execution row must show 'cancelled'"
+        Some("created"),
+        "API producer boundary, step 5: the API submits the request and writes nothing, \
+         so the reported status is the one already persisted"
     );
     assert!(
-        cancelled["finished_at"].as_i64().is_some_and(|t| t > 0),
-        "API producer boundary, step 5: finished_at must be a real timestamp after cancel"
+        cancelled["finished_at"].is_null(),
+        "API producer boundary, step 5: finished_at must stay unset until the engine \
+         honors the cancel"
     );
 
     // Outbox now holds the Start (step 3) + Cancel (step 5), both
@@ -286,11 +288,14 @@ async fn knife_api_producer_boundary_via_scoped_port() {
     );
 }
 
-/// Cancel writes the terminal state and control signal through one
-/// `TransitionBatch`, so the legacy separately-wired control queue can fail
-/// without creating a cancelled-row / missing-signal orphan.
+/// A control queue that cannot accept the `Cancel` must surface as an error.
+///
+/// This used to assert atomicity between a state write and the outbox row.
+/// The handler writes no state now — the enqueue is the whole operation — so
+/// the contract is simply that a failure is reported and nothing is left
+/// behind.
 #[tokio::test]
-async fn knife_step6_cancel_control_signal_is_atomic_with_state() {
+async fn knife_step6_cancel_reports_a_failed_enqueue_and_writes_nothing() {
     use nebula_core::{ExecutionId, WorkflowId};
     use nebula_storage_port::store::ExecutionStore;
 
@@ -337,22 +342,30 @@ async fn knife_step6_cancel_control_signal_is_atomic_with_state() {
 
     assert_eq!(
         response.status(),
-        StatusCode::OK,
-        "cancel should not orphan a state transition when the legacy queue handle fails"
+        StatusCode::SERVICE_UNAVAILABLE,
+        "a control queue that cannot accept the command must be reported, not swallowed"
     );
 
     let queue = nebula_storage::inmem::InMemoryControlQueue::new(&exec_store);
-    let queued = queue.snapshot();
-    assert_eq!(queued.len(), 1);
-    assert_eq!(
-        queued[0].0.command,
-        nebula_storage_port::dto::ControlCommand::Cancel
+    assert!(
+        queue.snapshot().is_empty(),
+        "a failed enqueue must leave no command row behind"
     );
-    assert_eq!(
-        queued[0].0.execution_id,
-        execution_id.to_string(),
-        "atomic outbox row must reference the cancelled execution"
-    );
+    {
+        use nebula_storage_port::store::ExecutionStore;
+        let record = ExecutionStore::get(&exec_store, &knife_scope(), &execution_id.to_string())
+            .await
+            .expect("read back the seeded execution")
+            .expect("execution row must still exist");
+        assert_eq!(
+            record
+                .state
+                .get("status")
+                .and_then(serde_json::Value::as_str),
+            Some("running"),
+            "a failed cancel must not have moved the execution"
+        );
+    }
 }
 
 // ── Step 3 manual Start producer/consumer composition ─────────────────────────────────────────
@@ -691,7 +704,7 @@ async fn knife_step3_manually_composed_consumer_dispatches_start() {
 /// cancellation/control intent. It does not observe consumer delivery or
 /// handler exit.
 #[tokio::test]
-async fn knife_step5_api_persists_terminal_cancel_control_intent_while_handler_runs() {
+async fn knife_step5_api_submits_cancel_intent_without_writing_the_execution() {
     use std::time::Duration;
 
     use nebula_execution::ExecutionStatus;
@@ -764,8 +777,8 @@ async fn knife_step5_api_persists_terminal_cancel_control_intent_while_handler_r
         .unwrap();
     assert_eq!(
         cancel_response.status(),
-        StatusCode::OK,
-        "API producer boundary, step 5: cancel must return 200"
+        StatusCode::ACCEPTED,
+        "API producer boundary, step 5: cancel must return 202"
     );
 
     let queued = control_queue.snapshot();
@@ -779,39 +792,57 @@ async fn knife_step5_api_persists_terminal_cancel_control_intent_while_handler_r
         "durable Cancel control row must reference the cancelled execution"
     );
 
-    // Preserve the terminal-state assertion on the persisted producer result.
-    // The API CAS-transitioned this row before responding, so observing it
-    // within the timeout does not prove the consumer drained `Cancel` or that
-    // the slow handler exited.
+    // The API must not write the execution aggregate at all.
+    //
+    // Two earlier versions of this assertion were weaker. The first required a
+    // *terminal* state here, and its own note conceded that observing it proved
+    // nothing because the API had CAS-transitioned the row before responding.
+    // The second required `Cancelling` — honest about the outcome, but still an
+    // API write, committed under a fencing token rebuilt from a read.
+    //
+    // The oracle now separates *who wrote* from *what was written*. A cancel
+    // that lands is expected — the consumer this test installed drains the
+    // command and the engine terminalizes under its lease. What must never
+    // happen is the execution turning terminal while its `Cancel` row is still
+    // sitting `Pending` in the queue: nothing has consumed the command at that
+    // point, so the only party that could have written it is the handler.
+    //
+    // Polling for a whole window rather than reading once is what makes this
+    // non-vacuous — a handler-side write is caught whenever it happens inside
+    // the window, not only at the instant of the first read.
     let execution_id = nebula_core::ExecutionId::parse(&execution_id_str).unwrap();
-    let final_status = tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            // Read through the same scoped port handle the engine was
-            // wired with; the tenancy decorator substitutes its bound
-            // scope so the `knife_scope()` argument is immaterial.
-            let json = state
-                .execution_store
-                .get(&knife_scope(), &execution_id.to_string())
-                .await
-                .unwrap()
-                .expect("execution row present")
-                .state;
-            let status: ExecutionStatus =
-                serde_json::from_value(json.get("status").cloned().unwrap()).unwrap();
-            if status.is_terminal() {
-                return status;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
+    let observation_window = Duration::from_secs(1);
+    let deadline = tokio::time::Instant::now() + observation_window;
+    while tokio::time::Instant::now() < deadline {
+        // Read through the same scoped port handle the engine was wired with;
+        // the tenancy decorator substitutes its bound scope so the
+        // `knife_scope()` argument is immaterial.
+        let json = state
+            .execution_store
+            .get(&knife_scope(), &execution_id.to_string())
+            .await
+            .unwrap()
+            .expect("execution row present")
+            .state;
+        let status: ExecutionStatus =
+            serde_json::from_value(json.get("status").cloned().unwrap()).unwrap();
+        if status.is_terminal() {
+            let cancel_row_status = control_queue
+                .snapshot()
+                .into_iter()
+                .find(|(message, _)| message.command == ControlCommand::Cancel)
+                .map(|(_, row_status)| row_status)
+                .expect("the Cancel row must exist once the execution is terminal");
+            assert_ne!(
+                cancel_row_status, "Pending",
+                "step 5 producer contract: the execution went terminal while its Cancel \
+                 command was still unconsumed — the API wrote the aggregate instead of \
+                 submitting intent through the control queue"
+            );
+            break;
         }
-    })
-    .await
-    .expect("the API-persisted execution state became terminal within 10s");
-
-    assert!(
-        final_status.is_terminal(),
-        "step 5 producer contract: API cancellation persisted a terminal state. \
-         got: {final_status:?}"
-    );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 
     // Handler exit is outside this test's oracle; abort and join the
     // unobserved consumer so cleanup cannot masquerade as evidence.

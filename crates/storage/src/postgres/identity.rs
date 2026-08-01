@@ -64,7 +64,10 @@ fn user_from_row(r: &sqlx::postgres::PgRow) -> Result<Arc<UserRow>, StorageError
             .try_get::<i64, _>("failed_login_count")
             .map_err(conn_err)? as i32,
         mfa_enabled: r.try_get("mfa_enabled").map_err(conn_err)?,
-        mfa_secret_envelope: r.try_get("mfa_secret_envelope").ok(),
+        // The port schema column is `mfa_secret`; `mfa_secret_envelope` is the
+        // domain field name. Reading the domain name here silently yielded
+        // `None` for every user, and writing it below failed outright.
+        mfa_secret_envelope: r.try_get("mfa_secret").ok(),
         version: r.try_get::<i64, _>("version").map_err(conn_err)? as u64,
         deleted_at: r.try_get("deleted_at").ok(),
     }))
@@ -76,7 +79,7 @@ impl UserStore for PgUserStore {
         let res = sqlx::query(
             "INSERT INTO port_users (id, email, email_verified_at, display_name, \
              avatar_url, password_hash, created_at, last_login_at, locked_until, \
-             failed_login_count, mfa_enabled, mfa_secret_envelope, version, deleted_at) \
+             failed_login_count, mfa_enabled, mfa_secret, version, deleted_at) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
         )
         .bind(&row.id)
@@ -133,7 +136,7 @@ impl UserStore for PgUserStore {
             "UPDATE port_users SET email = $1, email_verified_at = $2, \
              display_name = $3, avatar_url = $4, password_hash = $5, \
              last_login_at = $6, locked_until = $7, failed_login_count = $8, \
-             mfa_enabled = $9, mfa_secret_envelope = $10, version = $11 \
+             mfa_enabled = $9, mfa_secret = $10, version = $11 \
              WHERE id = $12 AND deleted_at IS NULL AND version = $13",
         )
         .bind(&row.email)

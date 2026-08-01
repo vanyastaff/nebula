@@ -123,7 +123,10 @@ where
     Ok(())
 }
 
-#[cfg(test)]
+// Every case plans against `SQLITE_MIGRATOR`, which only exists with the
+// `sqlite` feature; gating the module (rather than each case) keeps the shared
+// `observation` helper and the imports from going unused without it.
+#[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::super::catalog::{CatalogObservation, MigrationLedger};
     use super::{AdoptionPlan, LedgerAdoptionError, LedgerAdoptionOutcome, plan_adoption};
@@ -135,7 +138,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "sqlite")]
     #[test]
     fn unledgered_database_with_relations_is_stamped() {
         let migrator = &super::super::SQLITE_MIGRATOR;
@@ -153,7 +155,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "sqlite")]
     #[test]
     fn empty_database_is_left_to_ordinary_setup() {
         let migrator = &super::super::SQLITE_MIGRATOR;
@@ -168,7 +169,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "sqlite")]
     #[test]
     fn already_ledgered_database_is_never_restamped() {
         let migrator = &super::super::SQLITE_MIGRATOR;
@@ -183,7 +183,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "sqlite")]
     #[test]
     fn baseline_outside_the_canonical_catalog_is_refused() {
         let migrator = &super::super::SQLITE_MIGRATOR;

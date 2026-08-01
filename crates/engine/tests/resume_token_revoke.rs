@@ -20,7 +20,7 @@
 //!   via `dispatch_start` (park) → `dispatch_resume` (drive to Completed).
 //! - **SINK 2** — `cancel_dangling_nodes_under_lease`: the no-live-runner
 //!   cancel-of-parked path. Driven here via `dispatch_start` (park) →
-//!   `force_status(Cancelled)` → `dispatch_cancel` with no live runner.
+//!   `dispatch_cancel` with no live runner.
 //!
 //! ## Falsifiability
 //!
@@ -629,42 +629,6 @@ impl RevokeHarness {
             .expect("execution row must exist");
         serde_json::from_value(record.state.get("status").cloned().unwrap()).unwrap()
     }
-
-    /// Force the persisted execution `status` under a fencing token — mirrors
-    /// how the API `cancel_execution` handler writes `Cancelled` before the
-    /// `Cancel` control command drains. Node states are left untouched.
-    async fn force_status(&self, execution_id: ExecutionId, status: ExecutionStatus) {
-        let scope = nebula_engine::store_seam::single_tenant_scope();
-        let id = execution_id.to_string();
-        let token = self
-            .execution
-            .acquire_lease(&scope, &id, "test-api-cancel", Duration::from_secs(30))
-            .await
-            .unwrap()
-            .expect("lease must be free for the simulated API cancel write");
-        let record = self.execution.get(&scope, &id).await.unwrap().unwrap();
-        let mut state = record.state;
-        state
-            .as_object_mut()
-            .unwrap()
-            .insert("status".to_owned(), serde_json::json!(status.to_string()));
-        let batch = TransitionBatch::builder()
-            .scope(scope.clone())
-            .execution_id(&id)
-            .expected_version(record.version)
-            .fencing(token)
-            .new_state(state)
-            .build()
-            .unwrap();
-        assert!(matches!(
-            self.execution.commit(batch).await.unwrap(),
-            TransitionOutcome::Applied { .. }
-        ));
-        self.execution
-            .release_lease(&scope, &id, token)
-            .await
-            .unwrap();
-    }
 }
 
 // ── SINK 1 — terminal completion revokes (decisive) ─────────────────────────────
@@ -756,18 +720,15 @@ async fn cancel_of_parked_execution_revokes_token() {
         "a token must be minted before the cancel"
     );
 
-    // The API cancel path records the terminal status BEFORE the Cancel drains.
-    harness
-        .force_status(execution_id, ExecutionStatus::Cancelled)
-        .await;
-
     // No live runner: `dispatch_cancel` reaches `cancel_dangling_nodes` (SINK 2),
-    // which terminalizes the parked node under a freshly-acquired lease.
+    // which terminalizes the execution and its parked node under a
+    // freshly-acquired lease. Nothing records the cancel ahead of it — the
+    // command row is the intent.
     harness
         .dispatch
         .dispatch_cancel(&scope, execution_id)
         .await
-        .expect("dispatch_cancel must terminalize the parked node (no live runner)");
+        .expect("dispatch_cancel must terminalize the parked execution (no live runner)");
 
     // The token is revoked by the cancel-of-parked cleanup.
     assert_eq!(

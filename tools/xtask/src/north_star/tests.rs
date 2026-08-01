@@ -283,7 +283,7 @@ fn percentile_threshold_with_p50_above_p90_is_rejected() {
 #[test]
 fn passed_state_is_rejected_by_registry_v1() {
     assert_validation_error(
-        &passed_ns04_registry(),
+        &passed_state_registry(),
         VALID_SCHEMA,
         "state `passed` is unsupported because schema v1 cannot represent trustworthy promotion",
     );
@@ -328,12 +328,19 @@ fn validate_fixture(
     validate_documents(registry, schema, fixture.path())
 }
 
-fn passed_ns04_registry() -> String {
-    VALID_REGISTRY.replacen(
-        "state = \"red\"\nstate_reason = \"Acceptance and durable drive identity do not yet form one atomic protocol.\"",
-        "state = \"passed\"\nstate_reason = \"This fixture attempts the unsupported schema-v1 promotion path.\"",
-        1,
-    )
+/// A registry whose first gate claims the unsupported `passed` state.
+///
+/// Targets the first `state = "red"` line rather than one gate's prose so the
+/// fixture keeps testing schema-v1 promotion no matter which gates are red on
+/// any given day — keying it to a specific `state_reason` made the guard
+/// silently vacuous the moment that gate's reason was reworded.
+fn passed_state_registry() -> String {
+    let promoted = VALID_REGISTRY.replacen("state = \"red\"", "state = \"passed\"", 1);
+    assert_ne!(
+        promoted, VALID_REGISTRY,
+        "the registry must contain a red gate for this fixture to promote"
+    );
+    promoted
 }
 
 fn validation_fixture() -> TempDir {

@@ -92,7 +92,14 @@ struct LeaseStores {
 
 impl LeaseStores {
     fn new() -> Self {
-        let execution = Arc::new(InMemoryExecutionStore::new());
+        // The store, not the engine, owns the clock that judges lease
+        // liveness — every replica has to agree on one reading, so a caller
+        // cannot hand one in. Both runners here share this single in-memory
+        // store, so wiring it to the same `TestClock` the engines use keeps
+        // the whole scenario in one era.
+        let execution = Arc::new(InMemoryExecutionStore::with_clock(Arc::new(
+            TestClock::shared(),
+        )));
         let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&execution));
         let versions = InMemoryWorkflowVersionStore::new();
         let workflow = nebula_storage::InMemoryWorkflowStore::new_with_versions(&versions);
@@ -287,7 +294,9 @@ fn make_engine(registry: Arc<ActionRegistry>) -> WorkflowEngine {
         )
         .unwrap(),
     );
-    WorkflowEngine::new(runtime, metrics).unwrap()
+    WorkflowEngine::new(runtime, metrics)
+        .unwrap()
+        .with_clock(Arc::new(TestClock::shared()))
 }
 
 // ---------------------------------------------------------------------------
@@ -447,11 +456,15 @@ async fn engine_b_takes_over_after_engine_a_runner_dies() {
     task_a.abort();
     let _ = task_a.await;
 
-    // Advance tokio's paused clock past the lease TTL. The in-memory
-    // execution store's `acquire_lease` liveness predicate
-    // (`expires_at >= now`) then returns false for the stale holder, so a
-    // fresh holder can claim the row. Buffer = 200ms past TTL covers any
-    // heartbeat-induced expiry bump that landed before abort.
+    // Advance the clock the *store* judges leases by, past the TTL.
+    //
+    // Runner A was aborted, not stopped — a crash releases nothing, so TTL
+    // expiry is the only takeover path and something has to make the deadline
+    // pass. The in-memory adapter is the one backend that lets a test do that
+    // without sleeping; the SQL backends decide in the database precisely so
+    // no caller can. Buffer = 200ms past TTL covers any heartbeat-induced
+    // expiry bump that landed before abort.
+    TestClock::advance(lease_ttl + Duration::from_millis(200));
     tokio::time::advance(lease_ttl + Duration::from_millis(200)).await;
 
     // Runner B resumes. Should:
@@ -660,7 +673,7 @@ async fn engine_b_cancels_execution_after_runner_a_death_via_reclaim_redeliver()
     let dead_processor = *b"engine-a-deadrnr";
     let claimed = queue.claim_pending(&dead_processor, 8).await.unwrap();
     assert!(
-        claimed.iter().any(|m| m.id == cancel_row_id),
+        claimed.iter().any(|c| c.msg.id == cancel_row_id),
         "the dead processor must have claimed the Cancel row (now orphaned Processing)"
     );
 
@@ -950,4 +963,39 @@ async fn replay_does_not_contend_for_held_lease() {
     // Tear down runner A so the test process exits cleanly.
     task_a.abort();
     let _ = task_a.await;
+}
+
+/// A process-wide clock the test can move forward.
+///
+/// Both engines share it, because both must agree on whether a lease deadline
+/// has passed — that agreement is the property under test. Offsets are added
+/// to the real clock rather than replacing it so persisted timestamps stay in
+/// a sane era alongside anything the storage layer stamps for itself.
+#[derive(Debug, Default)]
+struct TestClock;
+
+impl TestClock {
+    fn shared() -> Self {
+        Self
+    }
+
+    fn offset() -> &'static std::sync::atomic::AtomicI64 {
+        static OFFSET_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+        &OFFSET_MS
+    }
+
+    fn advance(by: Duration) {
+        let millis = i64::try_from(by.as_millis()).expect("test advance fits in i64");
+        Self::offset().fetch_add(millis, Ordering::SeqCst);
+    }
+}
+
+impl nebula_core::accessor::Clock for TestClock {
+    fn now(&self) -> chrono::DateTime<chrono::Utc> {
+        chrono::Utc::now() + chrono::Duration::milliseconds(Self::offset().load(Ordering::SeqCst))
+    }
+
+    fn monotonic(&self) -> std::time::Instant {
+        std::time::Instant::now()
+    }
 }

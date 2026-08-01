@@ -58,7 +58,7 @@ use tower::ServiceExt;
 /// The manually composed harness establishes active work. This test does not
 /// observe downstream command delivery or handler exit.
 #[tokio::test]
-async fn terminate_persists_terminal_state_and_control_intent_while_handler_runs() {
+async fn terminate_records_intent_without_terminalizing_a_running_handler() {
     use std::time::Duration;
 
     use nebula_execution::ExecutionStatus;
@@ -132,17 +132,17 @@ async fn terminate_persists_terminal_state_and_control_intent_while_handler_runs
         .unwrap();
     assert_eq!(
         terminate_response.status(),
-        StatusCode::OK,
-        "terminate must return 200"
+        StatusCode::ACCEPTED,
+        "terminate must return 202 — it records intent, it does not stop the run"
     );
     let body = axum::body::to_bytes(terminate_response.into_body(), usize::MAX)
         .await
         .unwrap();
     let terminated: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(
+    assert_ne!(
         terminated["status"].as_str(),
         Some("cancelled"),
-        "terminate response must show the API-persisted terminal `cancelled` status"
+        "the handler is still running, so the response must not report the run as cancelled"
     );
 
     // The control queue must hold the `Start` from the producer path AND a
@@ -158,32 +158,27 @@ async fn terminate_persists_terminal_state_and_control_intent_while_handler_runs
         "Terminate entry must reference the terminated execution"
     );
 
-    // Preserve the terminal-state assertion on the persisted producer result.
-    // The API CAS-transitioned this row before responding, so observing it
-    // within the timeout does not prove the consumer drained `Terminate` or
-    // that the slow handler exited.
+    // The load-bearing assertion: the slow handler is *still running*, so the
+    // durable row must not say the execution is over. The API used to write
+    // `Cancelled` plus a `completed_at` of its own making here, under a fencing
+    // token rebuilt from a read — a terminal claim about work still in flight,
+    // made by a process that held no lease. Only the runtime terminalizes, and
+    // only once it has honored the command.
     let execution_id = nebula_core::ExecutionId::parse(&execution_id_str).unwrap();
-    let final_status = tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let (_version, json) = handles
-                .execution_state(execution_id)
-                .await
-                .expect("execution row present");
-            let status: ExecutionStatus =
-                serde_json::from_value(json.get("status").cloned().unwrap()).unwrap();
-            if status.is_terminal() {
-                return status;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("the API-persisted execution state became terminal within 10s");
-
+    let (_version, json) = handles
+        .execution_state(execution_id)
+        .await
+        .expect("execution row present");
+    let persisted: ExecutionStatus =
+        serde_json::from_value(json.get("status").cloned().unwrap()).unwrap();
     assert!(
-        final_status.is_terminal(),
-        "terminate producer contract: API persisted terminal state and durable control intent. \
-         got: {final_status:?}"
+        !persisted.is_terminal(),
+        "the API must not terminalize an execution whose handler is still running; got {persisted:?}"
+    );
+    assert!(
+        json.get("completed_at")
+            .is_none_or(serde_json::Value::is_null),
+        "no completion timestamp may be stamped for work that has not completed"
     );
 
     // Handler exit is outside this test's oracle; abort and join the
@@ -193,9 +188,9 @@ async fn terminate_persists_terminal_state_and_control_intent_while_handler_runs
 
 // ── Producer durability + parity coverage (mirrors cancel) ───────────────────
 
-/// durable control queue: terminating a non-terminal execution must both
-/// (1) persist the terminal state in the execution row, AND
-/// (2) enqueue a `Terminate` command in the durable control queue.
+/// durable control queue: terminating a non-terminal execution must
+/// (1) enqueue a `Terminate` command in the durable control queue, and
+/// (2) leave the execution row alone — the runtime owns that write.
 /// Mirror of `integration_tests.rs::cancel_enqueues_durable_control_signal`.
 #[tokio::test]
 async fn terminate_enqueues_durable_control_signal() {
@@ -248,8 +243,8 @@ async fn terminate_enqueues_durable_control_signal() {
 
     assert_eq!(
         response.status(),
-        StatusCode::OK,
-        "terminate must return 200"
+        StatusCode::ACCEPTED,
+        "terminate must return 202 — the request is accepted, the run has not stopped"
     );
 
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -257,14 +252,24 @@ async fn terminate_enqueues_durable_control_signal() {
         .unwrap();
     let terminated: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    // (1) Execution row must reflect the terminal (cancelled) state.
+    // (1) The response describes the execution as it stands — still running —
+    // and the row is untouched. The runtime performs the transition.
     assert_eq!(
-        terminated["status"], "cancelled",
-        "execution row must show terminal `cancelled` status"
+        terminated["status"], "running",
+        "the response must report the persisted state, not one the handler asserted"
     );
     assert!(
-        terminated["finished_at"].is_number(),
-        "finished_at must be set after terminate"
+        terminated["finished_at"].is_null(),
+        "no finish timestamp may be reported for a run that has not finished"
+    );
+    let (_version, persisted) = handles
+        .execution_state(execution_id)
+        .await
+        .expect("execution row present");
+    assert_eq!(
+        persisted.get("status").and_then(serde_json::Value::as_str),
+        Some("running"),
+        "terminate must not write the execution aggregate"
     );
 
     // (2) Exactly one Terminate command must have been written to the queue.
@@ -291,11 +296,16 @@ async fn terminate_enqueues_durable_control_signal() {
     );
 }
 
-/// Terminate writes the terminal state and control signal through one
-/// `TransitionBatch`, so the legacy separately-wired control queue can fail
-/// without creating a cancelled-row / missing-signal orphan.
+/// A control queue that cannot accept the command must surface as an error, not
+/// as a silent success.
+///
+/// This used to be an atomicity test: the handler wrote the terminal state and
+/// the outbox row in one `TransitionBatch`, so a failing queue could not orphan
+/// a cancelled row. The handler writes no state at all now, so there is nothing
+/// to keep in step — the enqueue *is* the whole operation, and a failure means
+/// nothing happened and the caller must be told.
 #[tokio::test]
-async fn terminate_control_signal_is_atomic_with_state() {
+async fn terminate_reports_a_failed_enqueue_and_writes_nothing() {
     use nebula_core::{ExecutionId, WorkflowId};
 
     let (state, exec_store) = create_state_with_failing_queue().await;
@@ -343,22 +353,31 @@ async fn terminate_control_signal_is_atomic_with_state() {
 
     assert_eq!(
         response.status(),
-        StatusCode::OK,
-        "terminate should not orphan a state transition when the legacy queue handle fails"
+        StatusCode::SERVICE_UNAVAILABLE,
+        "a control queue that cannot accept the command must be reported, not swallowed"
     );
 
+    // Nothing was written: no command row, and the execution is untouched.
     let queue = nebula_storage::inmem::InMemoryControlQueue::new(&exec_store);
-    let queued = queue.snapshot();
-    assert_eq!(queued.len(), 1);
-    assert_eq!(
-        queued[0].0.command,
-        nebula_storage_port::dto::ControlCommand::Terminate
+    assert!(
+        queue.snapshot().is_empty(),
+        "a failed enqueue must leave no command row behind"
     );
-    assert_eq!(
-        queued[0].0.execution_id,
-        execution_id.to_string(),
-        "atomic outbox row must reference the terminated execution"
-    );
+    {
+        use nebula_storage_port::store::ExecutionStore;
+        let record = ExecutionStore::get(&exec_store, &port_scope(), &execution_id.to_string())
+            .await
+            .expect("read back the seeded execution")
+            .expect("execution row must still exist");
+        assert_eq!(
+            record
+                .state
+                .get("status")
+                .and_then(serde_json::Value::as_str),
+            Some("running"),
+            "a failed terminate must not have moved the execution"
+        );
+    }
 }
 
 /// Terminating a non-existent execution must return 404. Mirror of

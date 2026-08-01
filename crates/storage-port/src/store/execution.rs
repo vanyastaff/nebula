@@ -35,6 +35,21 @@ pub trait ExecutionStore: Send + Sync + std::fmt::Debug {
     /// Acquire the execution lease for `holder`. Returns the fresh
     /// [`FencingToken`] on success, `None` if another holder owns a live
     /// lease.
+    ///
+    /// **The adapter owns the clock**, and no caller supplies one.
+    ///
+    /// A lease is a claim about liveness, so whichever clock decides
+    /// live-vs-expired is the one every replica must agree on. A backend
+    /// serving multiple processes therefore decides inside the database
+    /// (`clock_timestamp()` for PostgreSQL), and a caller has no way to hand in
+    /// a reading of its own: a worker whose clock ran fast would judge a
+    /// healthy peer's lease expired and fence it out, and one running slow
+    /// would mint a lease that was already dead — neither detectable from the
+    /// row afterwards.
+    ///
+    /// Tests that need to control lease expiry do it where there is no shared
+    /// clock to disagree about: the in-memory adapter takes an injectable
+    /// clock, and the SQL backends take a short TTL.
     async fn acquire_lease(
         &self,
         scope: &Scope,
@@ -44,6 +59,8 @@ pub trait ExecutionStore: Send + Sync + std::fmt::Debug {
     ) -> Result<Option<FencingToken>, StorageError>;
 
     /// Extend the lease TTL. Returns `false` if `token` was superseded.
+    ///
+    /// Same clock ownership as [`Self::acquire_lease`].
     async fn renew_lease(
         &self,
         scope: &Scope,

@@ -19,6 +19,10 @@ use nebula_resilience::{
     timeout_with_policy_context_and_sink,
 };
 
+/// Generous enough that a correct drain always finishes, short enough that a
+/// regression fails the test instead of hanging it.
+const TEST_CLOSE_BUDGET: Duration = Duration::from_secs(5);
+
 #[tokio::test]
 async fn timeout_context_cancellation_wins_without_polling_future() {
     let cancellation = CancellationContext::with_reason("shutdown");
@@ -137,12 +141,12 @@ async fn fallback_context_cancellation_emits_no_fallback_events() {
 }
 
 #[tokio::test]
-async fn gate_close_with_timeout_keeps_gate_closed_until_later_drain() {
+async fn gate_close_timeout_keeps_gate_closed_until_later_drain() {
     let gate = Gate::new();
     let guard = gate.enter().expect("gate should start open");
 
     let error = gate
-        .close_with_timeout(Duration::from_millis(1))
+        .close(Duration::from_millis(1))
         .await
         .expect_err("held guard should block graceful drain");
 
@@ -151,7 +155,9 @@ async fn gate_close_with_timeout_keeps_gate_closed_until_later_drain() {
     assert!(gate.enter().is_err());
 
     drop(guard);
-    gate.close().await;
+    gate.close(TEST_CLOSE_BUDGET)
+        .await
+        .expect("guards drain within the test budget");
 
     assert_eq!(gate.active_count(), 0);
     assert!(gate.is_closed());

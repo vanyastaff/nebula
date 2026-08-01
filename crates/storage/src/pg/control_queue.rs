@@ -27,8 +27,18 @@ type EntryTuple = (
     Option<Json<nebula_core::W3cTraceContext>>, // w3c_trace_context
 );
 
-const SELECT_COLS: &str = "id, execution_id, command, issued_by, issued_at, status, processed_by, \
-     processed_at, error_message, reclaim_count, w3c_trace_context";
+/// [`EntryTuple`] projection qualified to the `e` alias of
+/// `execution_control_queue`.
+///
+/// `claim_pending` is an `UPDATE ... FROM claimed ... RETURNING`, so its
+/// `RETURNING` list resolves against the join of the update target *and* the
+/// `claimed` CTE. `claimed` projects `id`, so a bare `id` is ambiguous and
+/// Postgres rejects the whole statement with `42702 column reference "id" is
+/// ambiguous` — that is the entire Postgres control-claim path failing, not an
+/// edge case. Qualifying every column pins the projection to the update target
+/// and stays correct if `claimed` ever widens its own projection.
+const CLAIM_RETURNING_COLS: &str = "e.id, e.execution_id, e.command, e.issued_by, e.issued_at, e.status, e.processed_by, \
+     e.processed_at, e.error_message, e.reclaim_count, e.w3c_trace_context";
 
 fn decode_command(s: &str) -> Result<ControlCommand, StorageError> {
     match s {
@@ -160,7 +170,7 @@ impl ControlQueueRepo for PgControlQueueRepo {
              SET status = 'Processing', processed_at = NOW(), processed_by = $2 \
              FROM claimed \
              WHERE e.id = claimed.id \
-             RETURNING {SELECT_COLS}"
+             RETURNING {CLAIM_RETURNING_COLS}"
         );
         let rows = sqlx::query_as::<_, EntryTuple>(sqlx::AssertSqlSafe(sql))
             .bind(i64::from(batch_size))
@@ -343,13 +353,33 @@ mod tests {
     /// internal advisory-lock contention.
     static SCHEMA_READY: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
 
+    /// Whether this run treats a missing live PostgreSQL as a failure rather
+    /// than a skip. The required `postgres-conformance` CI job sets
+    /// `NEBULA_REQUIRE_POSTGRES=1`, because a clean skip is not release
+    /// evidence — it looks identical to a passing run while proving nothing.
+    fn postgres_is_required() -> bool {
+        match std::env::var("NEBULA_REQUIRE_POSTGRES") {
+            Ok(value) if value == "1" => true,
+            Ok(value) if value == "0" => false,
+            Ok(_) => panic!("NEBULA_REQUIRE_POSTGRES must be either 0 or 1"),
+            Err(std::env::VarError::NotPresent) => false,
+            Err(std::env::VarError::NotUnicode(_)) => {
+                panic!("NEBULA_REQUIRE_POSTGRES must be valid Unicode")
+            },
+        }
+    }
+
     /// Connect to `DATABASE_URL`, apply spec-16 migrations (once), or return
-    /// `None` to skip this test. `DATABASE_URL` absent → skip; `DATABASE_URL`
-    /// present but invalid Unicode → fail with context so Postgres coverage
-    /// is never silently disabled by a misconfigured environment.
+    /// `None` to skip this test. `DATABASE_URL` absent → skip locally, but
+    /// **fail** under `NEBULA_REQUIRE_POSTGRES=1`; `DATABASE_URL` present but
+    /// invalid Unicode → fail with context so Postgres coverage is never
+    /// silently disabled by a misconfigured environment.
     async fn pool() -> Option<Pool<Postgres>> {
         let url = match std::env::var("DATABASE_URL") {
             Ok(url) => url,
+            Err(std::env::VarError::NotPresent) if postgres_is_required() => {
+                panic!("NEBULA_REQUIRE_POSTGRES=1 requires DATABASE_URL")
+            },
             Err(std::env::VarError::NotPresent) => return None,
             Err(err) => panic!("DATABASE_URL is set but invalid: {err}"),
         };
@@ -389,14 +419,49 @@ mod tests {
         Some(pool)
     }
 
-    /// Module-level lock that serialises tests hitting the shared
-    /// `execution_control_queue` table. Nextest would otherwise interleave
-    /// `claim_pending` / `reclaim_stuck` calls across tests — each of which
-    /// mutates the same global queue state — producing flaky assertions.
-    /// The lock scopes only to THIS module (this test binary), so parallel
-    /// crates still need DB isolation from the CI harness.
-    static TEST_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
-        std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+    /// Advisory-lock key serialising every test that mutates the shared
+    /// `execution_control_queue` table. Arbitrary but fixed; it only has to
+    /// be distinct from other advisory-lock users on the same database.
+    const CONTROL_QUEUE_TEST_LOCK_KEY: i64 = 0x6e65_6275_6c61_0013;
+
+    /// Cross-process exclusion for tests that mutate the shared
+    /// `execution_control_queue` table.
+    ///
+    /// These tests are not isolatable by construction: `clean_control_queue`
+    /// truncates the table and `claim_pending` claims queue-wide with no
+    /// per-test predicate, so any two of them running at once corrupt each
+    /// other's preconditions. An in-process `Mutex` cannot provide that
+    /// exclusion — `cargo nextest` runs each test in its **own process**, so
+    /// a process-local lock is uncontended and does nothing. A PostgreSQL
+    /// *session* advisory lock is the only lock all the test processes share.
+    ///
+    /// The guard owns a connection detached from the pool, which makes
+    /// release unconditional: a panicking test drops the connection (and in
+    /// the limit its process exits), Postgres observes the closed session,
+    /// and every session-level advisory lock that session held is released.
+    /// Returning the connection to the pool instead would leave the lock held
+    /// on a live session and wedge the next test.
+    struct ControlQueueTestLock {
+        _connection: sqlx::PgConnection,
+    }
+
+    impl ControlQueueTestLock {
+        async fn acquire(pool: &Pool<Postgres>) -> Self {
+            let mut connection = pool
+                .acquire()
+                .await
+                .expect("acquire advisory-lock connection")
+                .detach();
+            sqlx::query("SELECT pg_advisory_lock($1)")
+                .bind(CONTROL_QUEUE_TEST_LOCK_KEY)
+                .execute(&mut connection)
+                .await
+                .expect("take control-queue advisory lock");
+            Self {
+                _connection: connection,
+            }
+        }
+    }
 
     /// Wipe the control queue before a test so it sees a deterministic
     /// empty state. Parent `executions` / `workflows` / ... rows from
@@ -546,7 +611,7 @@ mod tests {
     #[tokio::test]
     async fn enqueue_then_read_back_row() {
         let Some(pool) = pool().await else { return };
-        let _guard = TEST_LOCK.lock().await;
+        let _guard = ControlQueueTestLock::acquire(&pool).await;
         clean_control_queue(&pool).await;
         let repo = PgControlQueueRepo::new(pool.clone());
         let exec_id = seed_execution_parent_chain(&pool).await;
@@ -593,7 +658,7 @@ mod tests {
     #[tokio::test]
     async fn claim_pending_stamps_processed_at_and_processed_by() {
         let Some(pool) = pool().await else { return };
-        let _guard = TEST_LOCK.lock().await;
+        let _guard = ControlQueueTestLock::acquire(&pool).await;
         clean_control_queue(&pool).await;
         let repo = PgControlQueueRepo::new(pool.clone());
         let exec_id = seed_execution_parent_chain(&pool).await;
@@ -629,10 +694,94 @@ mod tests {
         );
     }
 
+    /// Regression for the ambiguous `RETURNING` projection (issue #756).
+    ///
+    /// `claim_pending` is `WITH claimed AS (SELECT id ...) UPDATE ... e FROM
+    /// claimed ... RETURNING <cols>`. An unqualified `id` in that projection
+    /// resolves against both `e` and `claimed`, so Postgres rejects the whole
+    /// statement with `42702 column reference "id" is ambiguous` — every claim
+    /// fails, not just an edge case. Only a live database can catch it: the
+    /// statement is built with `AssertSqlSafe` and never type-checked at
+    /// compile time, so a compile-only test passes against the broken SQL.
+    ///
+    /// Asserting every projected column round-trips (rather than just that the
+    /// call succeeded) also pins each column to the update target, so widening
+    /// `claimed`'s own projection cannot silently reintroduce the ambiguity or
+    /// shadow a column with the CTE's copy.
+    #[tokio::test]
+    async fn claim_pending_projects_every_column_from_the_update_target() {
+        let Some(pool) = pool().await else { return };
+        let _guard = ControlQueueTestLock::acquire(&pool).await;
+        clean_control_queue(&pool).await;
+        let repo = PgControlQueueRepo::new(pool.clone());
+        let exec_id = seed_execution_parent_chain(&pool).await;
+
+        // Populate every nullable column so a dropped or shadowed projection
+        // shows up as a value mismatch, not as an indistinguishable `None`.
+        let issuer = random_id();
+        let trace_context = nebula_core::W3cTraceContext::from_optional_headers(
+            Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"),
+            Some("nebula=control-queue"),
+        )
+        .expect("well-formed W3C trace context")
+        .expect("traceparent is present");
+        let mut entry = pending_entry(&exec_id);
+        entry.command = ControlCommand::Terminate;
+        entry.issued_by = Some(issuer.clone());
+        entry.reclaim_count = 2;
+        entry.w3c_trace_context = Some(trace_context.clone());
+        let row_id = entry.id.clone();
+        repo.enqueue(&entry).await.unwrap();
+
+        let claimed = repo
+            .claim_pending(b"runner-756", 16)
+            .await
+            .expect("claim must not fail with an ambiguous column reference");
+
+        let got = claimed
+            .into_iter()
+            .find(|candidate| candidate.id == row_id)
+            .expect("the enqueued row is returned by the claiming UPDATE");
+        assert_eq!(got.execution_id, exec_id, "execution_id");
+        assert_eq!(got.command, ControlCommand::Terminate, "command");
+        assert_eq!(
+            got.issued_by.as_deref(),
+            Some(issuer.as_slice()),
+            "issued_by"
+        );
+        // `TIMESTAMPTZ` keeps microseconds; `Utc::now()` carries nanoseconds.
+        // Compare within the storable resolution rather than bit-for-bit.
+        assert!(
+            (got.issued_at - entry.issued_at).num_microseconds() == Some(0),
+            "issued_at: got {}, enqueued {}",
+            got.issued_at,
+            entry.issued_at
+        );
+        assert_eq!(got.status, "Processing", "status is the post-update value");
+        assert_eq!(
+            got.processed_by.as_deref(),
+            Some(b"runner-756".as_slice()),
+            "processed_by is the post-update value"
+        );
+        assert!(
+            got.processed_at.is_some(),
+            "processed_at is the post-update value"
+        );
+        assert_eq!(got.error_message, None, "error_message");
+        assert_eq!(got.reclaim_count, 2, "reclaim_count");
+        assert_eq!(
+            got.w3c_trace_context
+                .as_ref()
+                .map(nebula_core::W3cTraceContext::traceparent),
+            Some(trace_context.traceparent()),
+            "w3c_trace_context"
+        );
+    }
+
     #[tokio::test]
     async fn mark_completed_transitions_status() {
         let Some(pool) = pool().await else { return };
-        let _guard = TEST_LOCK.lock().await;
+        let _guard = ControlQueueTestLock::acquire(&pool).await;
         clean_control_queue(&pool).await;
         let repo = PgControlQueueRepo::new(pool.clone());
         let exec_id = seed_execution_parent_chain(&pool).await;
@@ -655,7 +804,7 @@ mod tests {
     #[tokio::test]
     async fn mark_failed_records_error_message() {
         let Some(pool) = pool().await else { return };
-        let _guard = TEST_LOCK.lock().await;
+        let _guard = ControlQueueTestLock::acquire(&pool).await;
         clean_control_queue(&pool).await;
         let repo = PgControlQueueRepo::new(pool.clone());
         let exec_id = seed_execution_parent_chain(&pool).await;
@@ -688,7 +837,7 @@ mod tests {
         // not overwrite the newer status. Guarded UPDATE returns zero
         // rows; the repo method still returns Ok (idempotent no-op).
         let Some(pool) = pool().await else { return };
-        let _guard = TEST_LOCK.lock().await;
+        let _guard = ControlQueueTestLock::acquire(&pool).await;
         clean_control_queue(&pool).await;
         let repo = PgControlQueueRepo::new(pool.clone());
         let exec_id = seed_execution_parent_chain(&pool).await;
@@ -750,7 +899,7 @@ mod tests {
         // 'Processing'` check matches and overwrites B's in-progress
         // state. With the fence it must be a no-op.
         let Some(pool) = pool().await else { return };
-        let _guard = TEST_LOCK.lock().await;
+        let _guard = ControlQueueTestLock::acquire(&pool).await;
         clean_control_queue(&pool).await;
         let repo = PgControlQueueRepo::new(pool.clone());
         let exec_id = seed_execution_parent_chain(&pool).await;
@@ -811,7 +960,7 @@ mod tests {
     #[tokio::test]
     async fn reclaim_stuck_moves_expired_processing_to_pending() {
         let Some(pool) = pool().await else { return };
-        let _guard = TEST_LOCK.lock().await;
+        let _guard = ControlQueueTestLock::acquire(&pool).await;
         clean_control_queue(&pool).await;
         let repo = PgControlQueueRepo::new(pool.clone());
         let exec_id = seed_execution_parent_chain(&pool).await;
@@ -860,7 +1009,7 @@ mod tests {
     #[tokio::test]
     async fn reclaim_stuck_leaves_fresh_processing_alone() {
         let Some(pool) = pool().await else { return };
-        let _guard = TEST_LOCK.lock().await;
+        let _guard = ControlQueueTestLock::acquire(&pool).await;
         clean_control_queue(&pool).await;
         let repo = PgControlQueueRepo::new(pool.clone());
         let exec_id = seed_execution_parent_chain(&pool).await;
@@ -901,7 +1050,7 @@ mod tests {
     #[tokio::test]
     async fn reclaim_stuck_leaves_non_processing_rows_alone() {
         let Some(pool) = pool().await else { return };
-        let _guard = TEST_LOCK.lock().await;
+        let _guard = ControlQueueTestLock::acquire(&pool).await;
         clean_control_queue(&pool).await;
         let repo = PgControlQueueRepo::new(pool.clone());
         let exec_id = seed_execution_parent_chain(&pool).await;
@@ -924,7 +1073,7 @@ mod tests {
     #[tokio::test]
     async fn reclaim_stuck_exhausts_after_max_count() {
         let Some(pool) = pool().await else { return };
-        let _guard = TEST_LOCK.lock().await;
+        let _guard = ControlQueueTestLock::acquire(&pool).await;
         clean_control_queue(&pool).await;
         let repo = PgControlQueueRepo::new(pool.clone());
         let exec_id = seed_execution_parent_chain(&pool).await;
@@ -982,7 +1131,7 @@ mod tests {
     #[tokio::test]
     async fn cleanup_deletes_old_terminal_rows_only() {
         let Some(pool) = pool().await else { return };
-        let _guard = TEST_LOCK.lock().await;
+        let _guard = ControlQueueTestLock::acquire(&pool).await;
         clean_control_queue(&pool).await;
         let repo = PgControlQueueRepo::new(pool.clone());
         let exec_id = seed_execution_parent_chain(&pool).await;
@@ -1038,7 +1187,7 @@ mod tests {
     #[tokio::test]
     async fn claim_pending_skip_locked_prevents_double_claim() {
         let Some(pool) = pool().await else { return };
-        let _guard = TEST_LOCK.lock().await;
+        let _guard = ControlQueueTestLock::acquire(&pool).await;
         clean_control_queue(&pool).await;
         let repo = std::sync::Arc::new(PgControlQueueRepo::new(pool.clone()));
         let exec_id = seed_execution_parent_chain(&pool).await;
@@ -1082,7 +1231,7 @@ mod tests {
     #[tokio::test]
     async fn reclaim_stuck_safe_under_concurrent_sweep() {
         let Some(pool) = pool().await else { return };
-        let _guard = TEST_LOCK.lock().await;
+        let _guard = ControlQueueTestLock::acquire(&pool).await;
         clean_control_queue(&pool).await;
         let repo = std::sync::Arc::new(PgControlQueueRepo::new(pool.clone()));
         let exec_id = seed_execution_parent_chain(&pool).await;
@@ -1146,7 +1295,7 @@ mod tests {
     #[tokio::test]
     async fn enqueue_roundtrip_preserves_every_command_variant() {
         let Some(pool) = pool().await else { return };
-        let _guard = TEST_LOCK.lock().await;
+        let _guard = ControlQueueTestLock::acquire(&pool).await;
         clean_control_queue(&pool).await;
         let repo = PgControlQueueRepo::new(pool.clone());
         let exec_id = seed_execution_parent_chain(&pool).await;

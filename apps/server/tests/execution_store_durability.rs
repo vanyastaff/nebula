@@ -107,7 +107,8 @@ async fn claim_and_assert_recovered(db_path: &str, expected_execution_id: &str) 
         .expect("claim_pending must succeed in Phase 2");
 
     let survived = recovered_commands.iter().any(|msg| {
-        msg.execution_id == expected_execution_id && matches!(msg.command, ControlCommand::Cancel)
+        msg.msg.execution_id == expected_execution_id
+            && matches!(msg.msg.command, ControlCommand::Cancel)
     });
     assert!(
         survived,

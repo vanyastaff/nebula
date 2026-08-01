@@ -19,13 +19,14 @@ mod refresh_claim;
 mod resume_producer;
 mod resume_token;
 mod revision_catalog;
+mod start_acceptance;
 mod trigger_dedup;
 mod webhook;
 mod workflow;
 
 pub use crate::dto::RevisionCatalogError;
 pub use checkpoint::CheckpointStore;
-pub use control_queue::{ControlQueue, ReclaimOutcome};
+pub use control_queue::{ControlClaim, ControlClaimToken, ControlQueue, ReclaimOutcome};
 pub use credential::{
     CredentialAlreadyExistsKey, CredentialPersistence, CredentialPersistenceError,
 };
@@ -35,7 +36,7 @@ pub use identity::{
     AuditStore, BlobStore, MembershipStore, OrgStore, QuotaStore, ResourceStore, TriggerStore,
     UserStore, WorkspaceStore,
 };
-pub use job_dispatch::JobDispatchQueue;
+pub use job_dispatch::{ClaimGeneration, JobClaim, JobClaimToken, JobDispatchQueue};
 pub use journal::ExecutionJournalReader;
 pub use node_result::NodeResultStore;
 pub use refresh_claim::{
@@ -45,6 +46,9 @@ pub use refresh_claim::{
 pub use resume_producer::ResumeProducer;
 pub use resume_token::ResumeTokenStore;
 pub use revision_catalog::{PlanFlavorCatalog, PlanFlavorCatalogAdmin, PlanFlavorCatalogWriter};
+pub use start_acceptance::{
+    FingerprintVersion, KeyedStart, StartAcceptance, StartAcceptanceStore, StartFingerprint,
+};
 pub use trigger_dedup::TriggerDedupInbox;
 pub use webhook::WebhookActivationStore;
 pub use workflow::{WorkflowStore, WorkflowVersionStore};

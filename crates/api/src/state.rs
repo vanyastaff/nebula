@@ -13,8 +13,8 @@ use nebula_plugin::PluginRegistry;
 use nebula_storage_port::Scope;
 use nebula_storage_port::dto::WorkflowVersionRecord;
 use nebula_storage_port::store::{
-    ControlQueue, ExecutionJournalReader, ExecutionStore, NodeResultStore, TriggerDedupInbox,
-    TriggerStore, WebhookActivationStore, WorkflowStore, WorkflowVersionStore,
+    ControlQueue, ExecutionJournalReader, ExecutionStore, NodeResultStore, StartAcceptanceStore,
+    TriggerDedupInbox, TriggerStore, WebhookActivationStore, WorkflowStore, WorkflowVersionStore,
 };
 use nebula_tenancy::{
     ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore, ScopedNodeResultStore,
@@ -450,6 +450,16 @@ pub struct AppState {
     /// enqueued here; the engine dispatcher drains it.
     pub control_queue: Arc<dyn ControlQueue>,
 
+    /// Owner of keyed start acceptance.
+    ///
+    /// Start acceptance does **not** go through [`Self::execution_store`] plus
+    /// [`Self::control_queue`]: those are two writes on two connections, which
+    /// cannot reserve a start key, cannot make the execution row and its Start
+    /// command atomic, and leave a retry free to mint a second execution. This
+    /// handle owns all three writes in one commit. It must be backed by the
+    /// same backend as `execution_store` and `control_queue`.
+    pub start_acceptance: Arc<dyn StartAcceptanceStore>,
+
     /// Spec-16 scoped node-result port handle (per-node output reads on
     /// the outputs endpoint).
     pub node_result_store: Arc<dyn NodeResultStore>,
@@ -553,6 +563,11 @@ impl AppState {
     /// shared bucket. The spec-16 split stores a workflow's definition on
     /// its version records, so `workflow_store` and
     /// `workflow_version_store` are always wired together.
+    // guard-justified: one positional handle per storage port. Bundling them
+    // into a params struct just moves the arity to that struct's literal at
+    // every composition root, and loses the compiler's "you forgot to wire a
+    // port" error when a new port is added.
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         workflow_store: Arc<dyn WorkflowStore>,
         workflow_version_store: Arc<dyn WorkflowVersionStore>,
@@ -560,6 +575,7 @@ impl AppState {
         node_result_store: Arc<dyn NodeResultStore>,
         journal_reader: Arc<dyn ExecutionJournalReader>,
         control_queue: Arc<dyn ControlQueue>,
+        start_acceptance: Arc<dyn StartAcceptanceStore>,
         jwt_secret: JwtSecret,
     ) -> Self {
         Self {
@@ -591,6 +607,7 @@ impl AppState {
             workflow_version_store,
             workflow_store,
             control_queue,
+            start_acceptance,
             node_result_store,
             journal_reader,
             resource_repo: None,
@@ -633,8 +650,8 @@ impl AppState {
     pub fn in_memory(jwt_secret: JwtSecret) -> Self {
         use nebula_storage::inmem::{
             InMemoryControlQueue, InMemoryExecutionStore, InMemoryJournalReader,
-            InMemoryNodeResultStore, InMemoryTriggerDedupInbox, InMemoryWorkflowStore,
-            InMemoryWorkflowVersionStore,
+            InMemoryNodeResultStore, InMemoryStartAcceptanceStore, InMemoryTriggerDedupInbox,
+            InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
         };
 
         let exec_store = InMemoryExecutionStore::new();
@@ -649,6 +666,11 @@ impl AppState {
         // ownership — same ordering as `InMemoryControlQueue::new` and
         // `InMemoryJournalReader::new` above.
         let trigger_dedup_inbox = InMemoryTriggerDedupInbox::new(&exec_store);
+        // Same shared-core requirement: `accept_keyed_start` writes the
+        // reservation, the execution row, and the Start command in one
+        // critical section, which only holds when it wraps the very core the
+        // control queue and journal read from.
+        let start_acceptance = InMemoryStartAcceptanceStore::new(&exec_store);
         let node_results = InMemoryNodeResultStore::new();
         // The workflow-row store shares the version store's map so
         // `workflow_save`'s atomic `save_with_published_version` commits
@@ -665,6 +687,7 @@ impl AppState {
             Arc::new(node_results),
             Arc::new(journal),
             Arc::new(control_queue),
+            Arc::new(start_acceptance),
             jwt_secret,
         )
         .with_trigger_dedup_inbox(Arc::new(trigger_dedup_inbox))
@@ -1023,6 +1046,66 @@ impl AppState {
         })
     }
 
+    /// Accept a keyed start for the caller's tenant: reserve the key,
+    /// materialize the execution, and enqueue its Start command in one commit.
+    ///
+    /// `scope` comes from the authenticated request, so the reservation is
+    /// tenant-qualified and one tenant's key can neither collide with nor
+    /// probe another's.
+    ///
+    /// Storage failures follow the same 503-vs-500 split the control-queue
+    /// path uses — an absent or unreachable backend is infrastructure down,
+    /// anything else is a logic bug. Unlike the old split path there is no
+    /// "persisted but not dispatched" middle state to describe: the commit is
+    /// all-or-nothing, so a failure means nothing was written.
+    // guard-justified: the parameters are the acceptance's identity, its
+    // fingerprint, and the aggregate it materializes — each independent, and
+    // each already constructed separately by the single caller.
+    #[expect(clippy::too_many_arguments)]
+    pub(crate) async fn accept_keyed_start_scoped(
+        &self,
+        scope: &Scope,
+        start_key: &str,
+        fingerprint: nebula_storage_port::store::StartFingerprint,
+        execution_id: ExecutionId,
+        workflow_id: nebula_core::id::WorkflowId,
+        state_json: &serde_json::Value,
+        w3c: Option<nebula_core::W3cTraceContext>,
+    ) -> Result<nebula_storage_port::store::StartAcceptance, ApiError> {
+        let execution_text = execution_id.to_string();
+        let workflow_text = workflow_id.to_string();
+        let command = nebula_storage_port::dto::ControlMsg {
+            id: *uuid::Uuid::new_v4().as_bytes(),
+            execution_id: execution_text.clone(),
+            command: nebula_storage_port::dto::ControlCommand::Start,
+            scope: scope.clone(),
+            w3c_traceparent: w3c.as_ref().map(|c| c.traceparent().to_owned()),
+            reclaim_count: 0,
+            resume_target: None,
+        };
+        let start = nebula_storage_port::store::KeyedStart {
+            scope,
+            start_key,
+            fingerprint,
+            execution_id: &execution_text,
+            execution: nebula_storage_port::dto::NewExecution::new(&workflow_text, state_json),
+            command: &command,
+        };
+        self.start_acceptance
+            .accept_keyed_start(&start)
+            .await
+            .map_err(|e| {
+                use nebula_storage_port::StorageError;
+                if matches!(e, StorageError::Internal(_) | StorageError::Connection(_)) {
+                    ApiError::ServiceUnavailable(format!(
+                        "Start acceptance backend is unavailable; nothing was written: {e}"
+                    ))
+                } else {
+                    ApiError::Internal(format!("Failed to accept start: {e}"))
+                }
+            })
+    }
+
     /// Create a fresh execution row for the caller's tenant — created
     /// through a freshly bound `ScopedExecutionStore`, so it lands in
     /// that tenant.
@@ -1043,62 +1126,6 @@ impl AppState {
             )
             .await
             .map_err(|e| ApiError::Internal(format!("Failed to create execution: {e}")))
-    }
-
-    /// CAS-update an execution state and append one control message in the
-    /// same storage-port commit. This is the API-side path for control
-    /// commands that also pre-set execution state (`Cancel` / `Terminate`):
-    /// either the state transition and outbox row both land, or neither does.
-    pub(crate) async fn cas_transition_with_control_scoped(
-        &self,
-        scope: &Scope,
-        execution_id: ExecutionId,
-        expected_version: u64,
-        new_state: serde_json::Value,
-        command: nebula_storage_port::dto::ControlCommand,
-        w3c: Option<nebula_core::W3cTraceContext>,
-    ) -> Result<bool, ApiError> {
-        let store = ScopedExecutionStore::new(Arc::clone(&self.execution_store), scope.clone());
-        let id = execution_id.to_string();
-        let current = store.get(scope, &id).await.map_err(|e| {
-            ApiError::Internal(format!(
-                "Failed to read execution for control transition: {e}"
-            ))
-        })?;
-        let Some(record) = current else {
-            return Ok(false);
-        };
-        let fencing =
-            nebula_storage_port::FencingToken::from_generation(record.fencing.unwrap_or(0));
-        let msg = nebula_storage_port::dto::ControlMsg {
-            id: *uuid::Uuid::new_v4().as_bytes(),
-            execution_id: id.clone(),
-            command,
-            scope: scope.clone(),
-            w3c_traceparent: w3c.as_ref().map(|c| c.traceparent().to_owned()),
-            reclaim_count: 0,
-            // No targeted-Resume producer yet (W-S3d); enqueue untargeted.
-            resume_target: None,
-        };
-        let batch = nebula_storage_port::TransitionBatch::builder()
-            .scope(scope.clone())
-            .execution_id(&id)
-            .expected_version(expected_version)
-            .fencing(fencing)
-            .new_state(new_state)
-            .outbox(vec![msg])
-            .build()
-            .map_err(|e| ApiError::Internal(format!("Failed to build control transition: {e}")))?;
-        match store.commit(batch).await {
-            Ok(nebula_storage_port::TransitionOutcome::Applied { .. }) => Ok(true),
-            Ok(
-                nebula_storage_port::TransitionOutcome::VersionConflict { .. }
-                | nebula_storage_port::TransitionOutcome::FencedOut,
-            ) => Ok(false),
-            Err(e) => Err(ApiError::Internal(format!(
-                "Failed to apply control transition: {e}"
-            ))),
-        }
     }
 
     /// Load all persisted per-node *outputs* for an execution within the
@@ -1574,10 +1601,13 @@ mod tests {
         AppState::new(
             Arc::new(workflow_store),
             Arc::new(workflow_versions),
-            Arc::new(exec_store),
+            Arc::new(exec_store.clone()),
             Arc::new(InMemoryNodeResultStore::new()),
             Arc::new(journal),
             Arc::new(control_queue),
+            Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
+                &exec_store,
+            )),
             jwt,
         )
     }

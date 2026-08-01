@@ -465,12 +465,12 @@ async fn emitter_dispatched_creates_row_and_enqueues_start() {
         jobs.len()
     );
     assert_eq!(
-        jobs[0].execution_id,
+        jobs[0].msg.execution_id,
         execution_id.to_string(),
         "enqueued job execution_id must match the returned id"
     );
     assert!(
-        matches!(jobs[0].command, ControlCommand::Start),
+        matches!(jobs[0].msg.command, ControlCommand::Start),
         "job command must be Start"
     );
 
@@ -479,18 +479,18 @@ async fn emitter_dispatched_creates_row_and_enqueues_start() {
     // enabled node (TEST_PLUGIN_KEY), so required_plugins = [TEST_PLUGIN_KEY]
     // (deduplicated).
     assert_eq!(
-        jobs[0].required_plugin_key.as_str(),
+        jobs[0].msg.required_plugin_key.as_str(),
         TEST_PLUGIN_KEY,
         "required_plugin_key on enqueued job must equal TEST_PLUGIN_KEY"
     );
     let expected_key: PluginKey = TEST_PLUGIN_KEY.parse().unwrap();
     let expected_plugins = vec![expected_key];
     assert_eq!(
-        jobs[0].required_plugins, expected_plugins,
+        jobs[0].msg.required_plugins, expected_plugins,
         "required_plugins on enqueued job must equal exactly {{TEST_PLUGIN_KEY}}; \
          trigger and node share the same plugin key so dedup yields one entry. \
          got: {:?}",
-        jobs[0].required_plugins
+        jobs[0].msg.required_plugins
     );
 }
 

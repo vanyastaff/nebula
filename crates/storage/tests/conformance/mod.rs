@@ -28,9 +28,10 @@ use nebula_storage_port::dto::{
     WorkflowRecord, WorkflowVersionRecord,
 };
 use nebula_storage_port::store::{
-    ControlQueue, ExecutionJournalReader, ExecutionStore, IdempotencyGuard, IdempotencyStore,
-    JobDispatchQueue, TriggerDedupInbox, WebhookActivationStore, WorkflowStore,
-    WorkflowVersionStore,
+    ClaimGeneration, ControlClaimToken, ControlQueue, ExecutionJournalReader, ExecutionStore,
+    IdempotencyGuard, IdempotencyStore, JobClaimToken, JobDispatchQueue, KeyedStart,
+    StartAcceptance, StartAcceptanceStore, StartFingerprint, TriggerDedupInbox,
+    WebhookActivationStore, WorkflowStore, WorkflowVersionStore,
 };
 use nebula_storage_port::{FencingToken, Scope, StorageError, TransitionBatch, TransitionOutcome};
 
@@ -67,6 +68,10 @@ pub(crate) trait Backend: Send + Sync {
     /// core as [`Backend::job_dispatch_queue`] so `claim_and_materialize_start`
     /// is all-or-nothing within the backend.
     async fn trigger_dedup_inbox(&self) -> Arc<dyn TriggerDedupInbox>;
+    /// A keyed-start acceptance store backed by this backend, sharing the same
+    /// core as [`Backend::execution_store`] and [`Backend::control_queue`] so
+    /// `accept_keyed_start` commits all three of its writes together.
+    async fn start_acceptance_store(&self) -> Arc<dyn StartAcceptanceStore>;
 }
 
 /// InMemory backend (always available).
@@ -144,6 +149,11 @@ impl Backend for InMemoryBackend {
     }
     async fn trigger_dedup_inbox(&self) -> Arc<dyn TriggerDedupInbox> {
         Arc::new(nebula_storage::inmem::InMemoryTriggerDedupInbox::new(
+            &self.store,
+        ))
+    }
+    async fn start_acceptance_store(&self) -> Arc<dyn StartAcceptanceStore> {
+        Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
             &self.store,
         ))
     }
@@ -292,6 +302,16 @@ impl Backend for SqliteBackend {
     async fn trigger_dedup_inbox(&self) -> Arc<dyn TriggerDedupInbox> {
         unimplemented!("build with --features sqlite to exercise the SQLite backend")
     }
+    #[cfg(feature = "sqlite")]
+    async fn start_acceptance_store(&self) -> Arc<dyn StartAcceptanceStore> {
+        Arc::new(nebula_storage::sqlite::SqliteStartAcceptanceStore::new(
+            self.pool().await,
+        ))
+    }
+    #[cfg(not(feature = "sqlite"))]
+    async fn start_acceptance_store(&self) -> Arc<dyn StartAcceptanceStore> {
+        unimplemented!("build with --features sqlite to exercise the SQLite backend")
+    }
 }
 
 /// Postgres backend — only exercised when `DATABASE_URL` is set and the
@@ -299,11 +319,30 @@ impl Backend for SqliteBackend {
 /// short-circuits the case so the suite stays green on a machine without
 /// a database. Each `Backend` instance owns one pool created lazily on
 /// first store request; the port schema is installed once.
+///
+/// The instance also owns a **private PostgreSQL schema**. `InMemoryBackend`
+/// and `SqliteBackend` hand every case a fresh empty store, and the shared
+/// assertions rely on that: they use fixed fixture ids (`wf_c`, `exe_cq`, …)
+/// that several cases reuse. Pointing every case at one shared database
+/// instead made those ids collide — the second case to run saw
+/// `Duplicate { entity: "workflow", detail: "workflow wf_c already exists" }`
+/// whether or not the cases ran concurrently. Because the Postgres case
+/// skip-cleans without `DATABASE_URL`, and no CI job set one for this suite,
+/// the collisions stayed invisible: the "shared oracle" was green precisely
+/// because its Postgres arm never ran.
+///
+/// A per-instance schema restores the same-fresh-store contract the other two
+/// backends already satisfy. The migration catalog observes and installs
+/// through `current_schema()`, so it sees a genuinely fresh database here.
 #[derive(Default)]
 pub(crate) struct PostgresBackend {
     #[cfg(feature = "postgres")]
     pool: tokio::sync::OnceCell<sqlx::PgPool>,
 }
+
+#[cfg(feature = "postgres")]
+#[path = "../support/postgres_schema.rs"]
+mod postgres_schema;
 
 #[cfg(feature = "postgres")]
 impl PostgresBackend {
@@ -312,9 +351,7 @@ impl PostgresBackend {
             .get_or_init(|| async {
                 let url = std::env::var("DATABASE_URL")
                     .unwrap_or_else(|e| panic!("DATABASE_URL required for the Postgres case: {e}"));
-                let pool = sqlx::postgres::PgPoolOptions::new()
-                    .max_connections(8)
-                    .connect(&url)
+                let pool = postgres_schema::connect_with_private_schema(&url, "nebula_conformance")
                     .await
                     .expect("connect Postgres (DATABASE_URL)");
                 nebula_storage::postgres::init_schema(&pool)
@@ -430,6 +467,16 @@ impl Backend for PostgresBackend {
     }
     #[cfg(not(feature = "postgres"))]
     async fn trigger_dedup_inbox(&self) -> Arc<dyn TriggerDedupInbox> {
+        unimplemented!("build with --features postgres to exercise the Postgres backend")
+    }
+    #[cfg(feature = "postgres")]
+    async fn start_acceptance_store(&self) -> Arc<dyn StartAcceptanceStore> {
+        Arc::new(nebula_storage::postgres::PgStartAcceptanceStore::new(
+            self.pool().await,
+        ))
+    }
+    #[cfg(not(feature = "postgres"))]
+    async fn start_acceptance_store(&self) -> Arc<dyn StartAcceptanceStore> {
         unimplemented!("build with --features postgres to exercise the Postgres backend")
     }
 }
@@ -1242,7 +1289,6 @@ pub(crate) async fn assert_control_queue_outbox_and_fencing(backend: &dyn Backen
     );
 
     let runner_a = [1u8; 16];
-    let runner_b = [2u8; 16];
     let claimed = queue
         .claim_pending(&runner_a, 16)
         .await
@@ -1254,31 +1300,41 @@ pub(crate) async fn assert_control_queue_outbox_and_fencing(backend: &dyn Backen
         backend.name()
     );
     assert_eq!(
-        claimed[0].id,
+        claimed[0].msg.id,
         [42u8; 16],
         "[{}] typed 16-byte id round-trips through the queue",
         backend.name()
     );
+    let current = claimed[0].token;
 
-    // A stale runner (did not claim this row) must NOT flip it.
-    queue
-        .mark_completed(&[42u8; 16], &runner_b)
-        .await
-        .expect("mark_completed (stale)");
+    // A token naming a generation this row never reached must be rejected.
+    // Under the old `processed_by` fence this was expressed as "a different
+    // processor id"; authority is now the token, which a caller cannot forge
+    // into existence, so the equivalent probe is a wrong generation.
+    let forged = ControlClaimToken::new(
+        [42u8; 16],
+        ClaimGeneration::new(current.generation().get() + 1),
+    );
+    let stale_ack = queue.mark_completed(&forged).await;
+    assert!(
+        matches!(stale_ack, Err(StorageError::FencedOut { .. })),
+        "[{}] an acknowledgement with a non-current generation must be FencedOut, got: {stale_ack:?}",
+        backend.name()
+    );
     let reclaimed = queue
         .claim_pending(&runner_a, 16)
         .await
         .expect("claim_pending after stale ack");
     assert!(
         reclaimed.is_empty(),
-        "[{}] a stale processor's ack must be a no-op (row stays Processing, \
+        "[{}] a fenced ack must be a no-op (row stays Processing, \
          not re-Pending and not Completed)",
         backend.name()
     );
 
-    // The actual claimant can complete it.
+    // The holder of the current claim can complete it.
     queue
-        .mark_completed(&[42u8; 16], &runner_a)
+        .mark_completed(&current)
         .await
         .expect("mark_completed (claimant)");
 }
@@ -1346,7 +1402,7 @@ pub(crate) async fn assert_resume_target_survives_queue_round_trip(backend: &dyn
         backend.name()
     );
     assert_eq!(
-        claimed[0].resume_target,
+        claimed[0].msg.resume_target,
         Some(webhook_target),
         "[{}] resume_target must survive the enqueue→claim round-trip intact \
          (kind + identity both preserved)",
@@ -1385,7 +1441,7 @@ pub(crate) async fn assert_resume_target_survives_queue_round_trip(backend: &dyn
     store.commit(batch2).await.expect("commit 2");
     // First, drain the already-claimed row above to avoid re-claiming it.
     queue
-        .mark_completed(&[77u8; 16], &runner)
+        .mark_completed(&claimed[0].token)
         .await
         .expect("mark_completed first row");
     let claimed2 = queue
@@ -1399,7 +1455,7 @@ pub(crate) async fn assert_resume_target_survives_queue_round_trip(backend: &dyn
         backend.name()
     );
     assert_eq!(
-        claimed2[0].resume_target,
+        claimed2[0].msg.resume_target,
         None,
         "[{}] a None resume_target must round-trip as None (legacy compat)",
         backend.name()
@@ -1460,7 +1516,7 @@ async fn enqueue_and_climb_reclaim_count(
             .await
             .expect("claim during climb");
         assert!(
-            claimed.iter().any(|m| m.id == row_id),
+            claimed.iter().any(|c| c.msg.id == row_id),
             "[{}] the reclaim row must be claimable on climb cycle {cycle}",
             backend.name()
         );
@@ -1480,10 +1536,10 @@ async fn enqueue_and_climb_reclaim_count(
         .expect("final claim at target count");
     let row = claimed
         .iter()
-        .find(|m| m.id == row_id)
+        .find(|c| c.msg.id == row_id)
         .unwrap_or_else(|| panic!("[{}] reclaim row must be re-claimable", backend.name()));
     assert_eq!(
-        row.reclaim_count,
+        row.msg.reclaim_count,
         target_count,
         "[{}] the row must reach reclaim_count == {target_count} before the assertion sweep",
         backend.name()
@@ -1533,7 +1589,7 @@ pub(crate) async fn assert_resume_row_exempt_from_reclaim_budget(backend: &dyn B
         .claim_pending(&runner, 16)
         .await
         .expect("claim after the assertion sweep");
-    let row = claimed.iter().find(|m| m.id == row_id);
+    let row = claimed.iter().find(|c| c.msg.id == row_id);
     assert!(
         row.is_some(),
         "[{}] a budget-exempt Resume row must stay redeliverable after the exhaust \
@@ -1541,11 +1597,11 @@ pub(crate) async fn assert_resume_row_exempt_from_reclaim_budget(backend: &dyn B
         backend.name()
     );
     assert!(
-        row.is_some_and(|m| m.reclaim_count > max_reclaim_count),
+        row.is_some_and(|c| c.msg.reclaim_count > max_reclaim_count),
         "[{}] the redelivered Resume row's reclaim_count must keep climbing past max \
          (observable stuck-Resume signal), got {:?}",
         backend.name(),
-        row.map(|m| m.reclaim_count)
+        row.map(|c| c.msg.reclaim_count)
     );
 }
 
@@ -1587,7 +1643,7 @@ pub(crate) async fn assert_non_resume_row_still_exhausts(backend: &dyn Backend) 
         .await
         .expect("claim after the assertion sweep");
     assert!(
-        claimed.iter().all(|m| m.id != row_id),
+        claimed.iter().all(|c| c.msg.id != row_id),
         "[{}] an exhausted non-Resume row must be Failed (terminal), never re-claimable",
         backend.name()
     );
@@ -2135,6 +2191,442 @@ impl<B: Backend> Backend for ScopedBackend<B> {
     async fn trigger_dedup_inbox(&self) -> Arc<dyn TriggerDedupInbox> {
         self.inner.trigger_dedup_inbox().await
     }
+
+    // Start acceptance is not wrapped by the tenancy decorator: the scope is
+    // already an explicit field of `KeyedStart`, so there is no ambient scope
+    // for a decorator to substitute.
+    async fn start_acceptance_store(&self) -> Arc<dyn StartAcceptanceStore> {
+        self.inner.start_acceptance_store().await
+    }
+}
+
+/// A stable processor identity cannot acknowledge a control command whose
+/// claim a reclaim already superseded — the same-processor ABA, on the queue
+/// that carries accepted lifecycle commands.
+///
+/// The `JobDispatchQueue` twin of this assertion is
+/// `assert_job_dispatch_same_processor_aba_is_fenced`; both queues had the same
+/// `processed_by` fence and therefore the same defect. Here the stakes are a
+/// Cancel or Terminate being marked completed by a consumer that no longer owns
+/// it, while the attempt that does own it is still dispatching.
+pub(crate) async fn assert_control_queue_same_processor_aba_is_fenced(backend: &dyn Backend) {
+    let store = backend.execution_store().await;
+    let queue = backend.control_queue().await;
+    let scope = scope_a();
+    // One identity for both attempts — that is the whole point.
+    let processor = [11u8; 16];
+
+    let execution_id = "exe_control_aba";
+    store
+        .create(
+            &scope,
+            execution_id,
+            "wf_control_aba",
+            serde_json::json!({}),
+        )
+        .await
+        .expect("create the execution the command targets");
+    queue
+        .enqueue(&ControlMsg {
+            id: [0x5Au8; 16],
+            execution_id: execution_id.to_owned(),
+            command: ControlCommand::Cancel,
+            scope: scope.clone(),
+            w3c_traceparent: None,
+            reclaim_count: 0,
+            resume_target: None,
+        })
+        .await
+        .expect("enqueue the control command");
+
+    let first = queue
+        .claim_pending(&processor, 16)
+        .await
+        .expect("first claim");
+    assert_eq!(
+        first.len(),
+        1,
+        "[{}] generation N must claim the command",
+        backend.name()
+    );
+    let superseded = first[0].token;
+
+    tokio::time::sleep(ABA_CLAIM_AGE).await;
+    let outcome = queue
+        .reclaim_stuck(ABA_RECLAIM_HORIZON, 16)
+        .await
+        .expect("reclaim");
+    assert_eq!(
+        (outcome.reclaimed, outcome.exhausted),
+        (1, 0),
+        "[{}] the aged claim must be reclaimed, not exhausted",
+        backend.name()
+    );
+
+    let second = queue
+        .claim_pending(&processor, 16)
+        .await
+        .expect("second claim");
+    assert_eq!(
+        second.len(),
+        1,
+        "[{}] generation N+1 must re-claim the command",
+        backend.name()
+    );
+    let current = second[0].token;
+    assert!(
+        current.generation() > superseded.generation(),
+        "[{}] a re-claim must mint a strictly greater generation ({} then {})",
+        backend.name(),
+        superseded.generation(),
+        current.generation()
+    );
+
+    let late_ack = queue.mark_completed(&superseded).await;
+    assert!(
+        matches!(late_ack, Err(StorageError::FencedOut { .. })),
+        "[{}] a late ack from generation N must be FencedOut, got: {late_ack:?}",
+        backend.name()
+    );
+    let late_nack = queue
+        .mark_failed(&superseded, "late generation-N failure")
+        .await;
+    assert!(
+        matches!(late_nack, Err(StorageError::FencedOut { .. })),
+        "[{}] a late nack from generation N must be FencedOut, got: {late_nack:?}",
+        backend.name()
+    );
+
+    // Zero state change: the row is still owned by generation N+1, which can
+    // still acknowledge it.
+    queue
+        .mark_completed(&current)
+        .await
+        .expect("generation N+1 still owns the row after the fenced acknowledgements");
+}
+
+// ── keyed start acceptance conformance assertions ─────────────────────────
+
+/// Canonicalization version used by these assertions. Real callers own their
+/// own; the value only has to be stable within one comparison.
+const START_FINGERPRINT_VERSION: u16 = 1;
+
+fn start_command(id: u8, execution_id: &str) -> ControlMsg {
+    ControlMsg {
+        id: [id; 16],
+        execution_id: execution_id.to_owned(),
+        command: ControlCommand::Start,
+        scope: scope_a(),
+        w3c_traceparent: None,
+        reclaim_count: 0,
+        resume_target: None,
+    }
+}
+
+/// An absent start key creates exactly one execution and one Start command.
+pub(crate) async fn assert_keyed_start_creates_one_execution(backend: &dyn Backend) {
+    let acceptance = backend.start_acceptance_store().await;
+    let queue = backend.control_queue().await;
+    let executions = backend.execution_store().await;
+    let scope = scope_a();
+    let (workflow_id, initial_state) = make_new_execution();
+    let command = start_command(0x40, "exe_start_fresh");
+
+    let outcome = acceptance
+        .accept_keyed_start(&KeyedStart {
+            scope: &scope,
+            start_key: "key-fresh",
+            fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [1u8; 32]),
+            execution_id: "exe_start_fresh",
+            execution: NewExecution::new(&workflow_id, &initial_state),
+            command: &command,
+        })
+        .await
+        .expect("accept a fresh keyed start");
+    assert_eq!(
+        outcome,
+        StartAcceptance::Accepted {
+            execution_id: "exe_start_fresh".to_owned()
+        },
+        "[{}] a fresh key must be accepted",
+        backend.name()
+    );
+
+    assert!(
+        executions
+            .get(&scope, "exe_start_fresh")
+            .await
+            .expect("read the execution back")
+            .is_some(),
+        "[{}] acceptance must have created the execution aggregate",
+        backend.name()
+    );
+    let claimed = queue
+        .claim_pending(&[9u8; 16], 16)
+        .await
+        .expect("claim the Start command");
+    assert_eq!(
+        claimed
+            .iter()
+            .filter(|claim| claim.msg.execution_id == "exe_start_fresh")
+            .count(),
+        1,
+        "[{}] acceptance must have enqueued exactly one Start command",
+        backend.name()
+    );
+}
+
+/// A keyed start that cannot complete leaves **nothing** behind.
+///
+/// The in-memory adapter has no rollback, so its ordering has to do what a
+/// transaction does for the SQL backends: validate every collision before the
+/// first mutation. It previously inserted the execution row and only then
+/// rejected a duplicate command id, so a failed acceptance still created an
+/// execution — on one backend only, which is exactly the divergence a shared
+/// oracle exists to catch.
+pub(crate) async fn assert_keyed_start_failure_writes_nothing(backend: &dyn Backend) {
+    let acceptance = backend.start_acceptance_store().await;
+    let executions = backend.execution_store().await;
+    let scope = scope_a();
+    let (workflow_id, initial_state) = make_new_execution();
+
+    // Occupy the command id the second acceptance will try to use.
+    let first_command = start_command(0x47, "exe_start_conflict_first");
+    acceptance
+        .accept_keyed_start(&KeyedStart {
+            scope: &scope,
+            start_key: "key-conflict-first",
+            fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [7u8; 32]),
+            execution_id: "exe_start_conflict_first",
+            execution: NewExecution::new(&workflow_id, &initial_state),
+            command: &first_command,
+        })
+        .await
+        .expect("seed the colliding command id");
+
+    // A fresh key and a fresh execution id, but the command id is taken.
+    let colliding_command = start_command(0x47, "exe_start_conflict_second");
+    let outcome = acceptance
+        .accept_keyed_start(&KeyedStart {
+            scope: &scope,
+            start_key: "key-conflict-second",
+            fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [8u8; 32]),
+            execution_id: "exe_start_conflict_second",
+            execution: NewExecution::new(&workflow_id, &initial_state),
+            command: &colliding_command,
+        })
+        .await;
+    assert!(
+        outcome.is_err(),
+        "[{}] a colliding command id must fail the acceptance, got {outcome:?}",
+        backend.name()
+    );
+
+    assert!(
+        executions
+            .get(&scope, "exe_start_conflict_second")
+            .await
+            .expect("read the failed candidate back")
+            .is_none(),
+        "[{}] a failed acceptance must not leave an execution behind",
+        backend.name()
+    );
+}
+
+/// The same key with the same fingerprint returns the original receipt and
+/// writes nothing new — the lost-response retry converging.
+pub(crate) async fn assert_keyed_start_replays_the_original_receipt(backend: &dyn Backend) {
+    let acceptance = backend.start_acceptance_store().await;
+    let queue = backend.control_queue().await;
+    let scope = scope_a();
+    let (workflow_id, initial_state) = make_new_execution();
+    let fingerprint = StartFingerprint::new(START_FINGERPRINT_VERSION, [2u8; 32]);
+
+    let first_command = start_command(0x41, "exe_start_replay");
+    let first = acceptance
+        .accept_keyed_start(&KeyedStart {
+            scope: &scope,
+            start_key: "key-replay",
+            fingerprint,
+            execution_id: "exe_start_replay",
+            execution: NewExecution::new(&workflow_id, &initial_state),
+            command: &first_command,
+        })
+        .await
+        .expect("first keyed start");
+    assert_eq!(
+        first,
+        StartAcceptance::Accepted {
+            execution_id: "exe_start_replay".to_owned()
+        },
+        "[{}] the first request must be accepted",
+        backend.name()
+    );
+
+    // The retry carries a *different* candidate execution id and command id —
+    // exactly what a caller that never saw the first response would generate.
+    // The reservation, not the caller, decides the durable identity.
+    let retry_command = start_command(0x42, "exe_start_replay_retry");
+    let replay = acceptance
+        .accept_keyed_start(&KeyedStart {
+            scope: &scope,
+            start_key: "key-replay",
+            fingerprint,
+            execution_id: "exe_start_replay_retry",
+            execution: NewExecution::new(&workflow_id, &initial_state),
+            command: &retry_command,
+        })
+        .await
+        .expect("retry of the same keyed start");
+    assert_eq!(
+        replay,
+        StartAcceptance::Replayed {
+            execution_id: "exe_start_replay".to_owned()
+        },
+        "[{}] a same-fingerprint retry must return the original receipt",
+        backend.name()
+    );
+
+    let claimed = queue
+        .claim_pending(&[9u8; 16], 32)
+        .await
+        .expect("claim Start commands");
+    assert_eq!(
+        claimed
+            .iter()
+            .filter(|claim| claim.msg.execution_id.starts_with("exe_start_replay"))
+            .count(),
+        1,
+        "[{}] the retry must not enqueue a second Start command",
+        backend.name()
+    );
+    let executions = backend.execution_store().await;
+    assert!(
+        executions
+            .get(&scope, "exe_start_replay_retry")
+            .await
+            .expect("read the retry candidate back")
+            .is_none(),
+        "[{}] the retry must not create a second execution",
+        backend.name()
+    );
+}
+
+/// The same key with a different fingerprint is refused with **no durable
+/// delta** — not silently accepted, and not accepted-then-compensated.
+pub(crate) async fn assert_keyed_start_mismatch_writes_nothing(backend: &dyn Backend) {
+    let acceptance = backend.start_acceptance_store().await;
+    let queue = backend.control_queue().await;
+    let executions = backend.execution_store().await;
+    let scope = scope_a();
+    let (workflow_id, initial_state) = make_new_execution();
+
+    let original_command = start_command(0x43, "exe_start_mismatch");
+    acceptance
+        .accept_keyed_start(&KeyedStart {
+            scope: &scope,
+            start_key: "key-mismatch",
+            fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [3u8; 32]),
+            execution_id: "exe_start_mismatch",
+            execution: NewExecution::new(&workflow_id, &initial_state),
+            command: &original_command,
+        })
+        .await
+        .expect("original keyed start");
+
+    let conflicting_command = start_command(0x44, "exe_start_mismatch_other");
+    let mismatch = acceptance
+        .accept_keyed_start(&KeyedStart {
+            scope: &scope,
+            start_key: "key-mismatch",
+            fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [4u8; 32]),
+            execution_id: "exe_start_mismatch_other",
+            execution: NewExecution::new(&workflow_id, &initial_state),
+            command: &conflicting_command,
+        })
+        .await
+        .expect("mismatched keyed start must be a typed outcome, not an error");
+    assert_eq!(
+        mismatch,
+        StartAcceptance::FingerprintMismatch,
+        "[{}] a different request under the same key must be refused",
+        backend.name()
+    );
+
+    assert!(
+        executions
+            .get(&scope, "exe_start_mismatch_other")
+            .await
+            .expect("read the refused candidate back")
+            .is_none(),
+        "[{}] a refused start must leave no execution behind",
+        backend.name()
+    );
+    let claimed = queue
+        .claim_pending(&[9u8; 16], 32)
+        .await
+        .expect("claim Start commands");
+    assert_eq!(
+        claimed
+            .iter()
+            .filter(|claim| claim.msg.execution_id.starts_with("exe_start_mismatch"))
+            .count(),
+        1,
+        "[{}] a refused start must leave no extra Start command",
+        backend.name()
+    );
+}
+
+/// Two tenants using the same key text never collide, and neither can observe
+/// the other's reservation.
+pub(crate) async fn assert_keyed_start_is_scoped_per_tenant(backend: &dyn Backend) {
+    let acceptance = backend.start_acceptance_store().await;
+    let (workflow_id, initial_state) = make_new_execution();
+    let shared_key = "key-shared-across-tenants";
+
+    let command_a = start_command(0x45, "exe_start_tenant_a");
+    let accepted_a = acceptance
+        .accept_keyed_start(&KeyedStart {
+            scope: &scope_a(),
+            start_key: shared_key,
+            fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [5u8; 32]),
+            execution_id: "exe_start_tenant_a",
+            execution: NewExecution::new(&workflow_id, &initial_state),
+            command: &command_a,
+        })
+        .await
+        .expect("tenant A keyed start");
+
+    // Tenant B reuses the key text with a *different* fingerprint. If the
+    // reservation were not scope-qualified this would read as a mismatch and
+    // leak the existence of tenant A's key.
+    let mut command_b = start_command(0x46, "exe_start_tenant_b");
+    command_b.scope = scope_b();
+    let accepted_b = acceptance
+        .accept_keyed_start(&KeyedStart {
+            scope: &scope_b(),
+            start_key: shared_key,
+            fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [6u8; 32]),
+            execution_id: "exe_start_tenant_b",
+            execution: NewExecution::new(&workflow_id, &initial_state),
+            command: &command_b,
+        })
+        .await
+        .expect("tenant B keyed start");
+
+    assert_eq!(
+        (accepted_a, accepted_b),
+        (
+            StartAcceptance::Accepted {
+                execution_id: "exe_start_tenant_a".to_owned()
+            },
+            StartAcceptance::Accepted {
+                execution_id: "exe_start_tenant_b".to_owned()
+            }
+        ),
+        "[{}] a start key is scoped to one tenant",
+        backend.name()
+    );
 }
 
 // ── job-dispatch + dedup conformance assertions ───────────────────────────
@@ -2194,7 +2686,7 @@ pub(crate) async fn assert_job_dispatch_routes_by_plugin(backend: &dyn Backend) 
         backend.name()
     );
     assert_eq!(
-        claimed[0].required_plugin_key.as_str(),
+        claimed[0].msg.required_plugin_key.as_str(),
         "plugin.alpha",
         "[{}] claimed row must be alpha",
         backend.name()
@@ -2219,14 +2711,14 @@ pub(crate) async fn assert_job_dispatch_routes_by_plugin(backend: &dyn Backend) 
     );
 }
 
-/// `mark_dispatched` and `mark_failed` are both fenced by processor id: a
-/// stale processor cannot transition a row it did not claim.
+/// `mark_dispatched` and `mark_failed` are both fenced on the storage-minted
+/// claim generation: a token that does not name the row's current claim
+/// changes nothing.
 pub(crate) async fn assert_job_dispatch_fencing(backend: &dyn Backend) {
     let q = backend.job_dispatch_queue().await;
     let plugin_tags = &["plugin.x".parse::<PluginKey>().unwrap()];
 
     let runner_a = [1u8; 16];
-    let runner_b = [2u8; 16];
 
     // ── mark_dispatched fencing ───────────────────────────────────────────────
     let job_d = make_job(0x20, "plugin.x", &["plugin.x"]);
@@ -2237,18 +2729,27 @@ pub(crate) async fn assert_job_dispatch_fencing(backend: &dyn Backend) {
         .await
         .expect("claim");
     assert_eq!(claimed.len(), 1, "[{}] claimed one row", backend.name());
+    let current = claimed[0].token;
 
-    // Stale runner must be rejected: rows_affected == 0 because processed_by ≠ runner_b.
-    let stale_dispatched = q.mark_dispatched(&job_d.id, &runner_b).await;
+    // A token naming a generation this row never reached must be rejected.
+    // Under the old `processed_by` fence this was expressed as "a different
+    // processor id"; authority is now the token, which a caller cannot forge
+    // into existence, so the equivalent probe is a wrong generation.
+    let forged = JobClaimToken::new(
+        job_d.id,
+        ClaimGeneration::new(current.generation().get() + 1),
+    );
+    let stale_dispatched = q.mark_dispatched(&forged).await;
     assert!(
-        matches!(stale_dispatched, Err(StorageError::NotFound { .. })),
-        "[{}] mark_dispatched by a stale processor must return NotFound, got: {:?}",
+        matches!(stale_dispatched, Err(StorageError::FencedOut { .. })),
+        "[{}] mark_dispatched with a non-current generation must be FencedOut, got: {:?}",
         backend.name(),
         stale_dispatched
     );
 
-    // The row is still Processing (stale call made no change) — the real runner succeeds.
-    q.mark_dispatched(&job_d.id, &runner_a)
+    // The row is still Processing (the fenced call made no change) — the
+    // holder of the current claim succeeds.
+    q.mark_dispatched(&current)
         .await
         .expect("mark_dispatched (claimant)");
 
@@ -2272,18 +2773,22 @@ pub(crate) async fn assert_job_dispatch_fencing(backend: &dyn Backend) {
         .await
         .expect("claim job_f");
     assert_eq!(claimed_f.len(), 1, "[{}] claimed job_f", backend.name());
+    let current_f = claimed_f[0].token;
 
-    // Stale runner's mark_failed must also be rejected.
-    let stale_failed = q.mark_failed(&job_f.id, &runner_b, "stale error").await;
+    let forged_f = JobClaimToken::new(
+        job_f.id,
+        ClaimGeneration::new(current_f.generation().get() + 1),
+    );
+    let stale_failed = q.mark_failed(&forged_f, "stale error").await;
     assert!(
-        matches!(stale_failed, Err(StorageError::NotFound { .. })),
-        "[{}] mark_failed by a stale processor must return NotFound, got: {:?}",
+        matches!(stale_failed, Err(StorageError::FencedOut { .. })),
+        "[{}] mark_failed with a non-current generation must be FencedOut, got: {:?}",
         backend.name(),
         stale_failed
     );
 
-    // The row is still Processing — the real runner can still fail it.
-    q.mark_failed(&job_f.id, &runner_a, "real error")
+    // The row is still Processing — the current claim can still fail it.
+    q.mark_failed(&current_f, "real error")
         .await
         .expect("mark_failed (claimant)");
 
@@ -2297,6 +2802,105 @@ pub(crate) async fn assert_job_dispatch_fencing(backend: &dyn Backend) {
         "[{}] no pending rows after mark_failed",
         backend.name()
     );
+}
+
+/// How long a claim must age before `reclaim_stuck` will take it back.
+///
+/// The SQL backends compare wall-clock epoch-millis while the in-memory
+/// backend compares `tokio::time::Instant`s; a real sleep advances both, so
+/// one shared assertion can drive all three. The margin is generous because
+/// the assertion is about ordering, not about a deadline.
+const ABA_RECLAIM_HORIZON: std::time::Duration = std::time::Duration::from_millis(20);
+const ABA_CLAIM_AGE: std::time::Duration = std::time::Duration::from_millis(60);
+
+/// A stable processor identity cannot acknowledge a claim that a reclaim
+/// already superseded — the same-processor ABA (C7).
+///
+/// One processor claims a row, the sweep hands the row back, and the *same*
+/// processor claims it again. Every `processed_by`-based fence accepts an
+/// acknowledgement issued against the first claim at that point, because the
+/// recorded processor still matches: the late acknowledgement terminalises a
+/// row the second attempt is still working. Only a per-attempt generation
+/// tells the two apart.
+pub(crate) async fn assert_job_dispatch_same_processor_aba_is_fenced(backend: &dyn Backend) {
+    let q = backend.job_dispatch_queue().await;
+    let plugin_tags = &["plugin.aba".parse::<PluginKey>().unwrap()];
+    // One identity for both attempts — that is the whole point.
+    let processor = [7u8; 16];
+
+    let job = make_job(0x22, "plugin.aba", &["plugin.aba"]);
+    q.enqueue(&job).await.expect("enqueue aba job");
+
+    let first = q
+        .claim_pending(&processor, 16, plugin_tags)
+        .await
+        .expect("first claim");
+    assert_eq!(
+        first.len(),
+        1,
+        "[{}] generation N must claim the row",
+        backend.name()
+    );
+    let superseded = first[0].token;
+
+    tokio::time::sleep(ABA_CLAIM_AGE).await;
+    let outcome = q
+        .reclaim_stuck(ABA_RECLAIM_HORIZON, 16)
+        .await
+        .expect("reclaim");
+    assert_eq!(
+        (outcome.reclaimed, outcome.exhausted),
+        (1, 0),
+        "[{}] the aged claim must be reclaimed, not exhausted",
+        backend.name()
+    );
+
+    let second = q
+        .claim_pending(&processor, 16, plugin_tags)
+        .await
+        .expect("second claim");
+    assert_eq!(
+        second.len(),
+        1,
+        "[{}] generation N+1 must re-claim the row",
+        backend.name()
+    );
+    let current = second[0].token;
+    assert_eq!(
+        current.row_id(),
+        superseded.row_id(),
+        "[{}] both attempts must name the same row",
+        backend.name()
+    );
+    assert!(
+        current.generation() > superseded.generation(),
+        "[{}] a re-claim must mint a strictly greater generation ({} then {})",
+        backend.name(),
+        superseded.generation(),
+        current.generation()
+    );
+
+    let late_ack = q.mark_dispatched(&superseded).await;
+    assert!(
+        matches!(late_ack, Err(StorageError::FencedOut { .. })),
+        "[{}] a late ack from generation N must be FencedOut, got: {late_ack:?}",
+        backend.name()
+    );
+    let late_nack = q
+        .mark_failed(&superseded, "late generation-N failure")
+        .await;
+    assert!(
+        matches!(late_nack, Err(StorageError::FencedOut { .. })),
+        "[{}] a late nack from generation N must be FencedOut, got: {late_nack:?}",
+        backend.name()
+    );
+
+    // Zero state change: the row is still owned by generation N+1, which can
+    // still acknowledge it. Were the fence merely returning an error while
+    // terminalising the row, this would fail.
+    q.mark_dispatched(&current)
+        .await
+        .expect("generation N+1 still owns the row after the fenced acknowledgements");
 }
 
 /// `claim_and_materialize_start` is first-writer-wins when a `TriggerDedupRow`
@@ -2517,7 +3121,7 @@ pub(crate) async fn assert_dedup_compose_is_atomic(backend: &dyn Backend) {
         backend.name()
     );
     assert_eq!(
-        claimed[0].execution_id,
+        claimed[0].msg.execution_id,
         job.execution_id,
         "[{}] claimed Start job execution_id must match the candidate ({})",
         backend.name(),
@@ -2592,7 +3196,7 @@ pub(crate) async fn assert_job_dispatch_routes_by_plugin_superset(backend: &dyn 
         backend.name()
     );
     assert_eq!(
-        claimed_by_both[0].required_plugin_key.as_str(),
+        claimed_by_both[0].msg.required_plugin_key.as_str(),
         "plugin.alpha",
         "[{}] claimed job must be the alpha-required one",
         backend.name()
@@ -2620,13 +3224,13 @@ pub(crate) async fn assert_job_dispatch_routes_by_plugin_superset(backend: &dyn 
         backend.name()
     );
     assert_eq!(
-        claimed_by_superset[0].id,
+        claimed_by_superset[0].msg.id,
         job2.id,
         "[{}] claimed job must be the strict-superset job (id match)",
         backend.name()
     );
     assert_eq!(
-        claimed_by_superset[0].required_plugin_key.as_str(),
+        claimed_by_superset[0].msg.required_plugin_key.as_str(),
         "plugin.alpha",
         "[{}] claimed job must be the alpha-required one",
         backend.name()
@@ -2885,7 +3489,7 @@ pub(crate) async fn assert_dedup_compose_rejects_duplicate_job_id(backend: &dyn 
         backend.name()
     );
     assert_eq!(
-        claimed[0].execution_id,
+        claimed[0].msg.execution_id,
         "exe_176",
         "[{}] the original job must NOT be overwritten by the colliding compose",
         backend.name()
@@ -2957,5 +3561,103 @@ pub(crate) async fn assert_dedup_duplicate_returns_winner_id(backend: &dyn Backe
         backend.name(),
         winner_id,
         job2.execution_id
+    );
+}
+
+/// A released claim is immediately re-claimable, is fenced against a
+/// superseded token, and does not consume the reclaim budget.
+///
+/// `release_claim` exists so a dispatch that hit momentary contention retries
+/// on the next poll rather than waiting out `reclaim_after`, which is sized in
+/// minutes to detect a runner that *died*. Every backend has to agree on all
+/// three properties, because a `Cancel` that lost a millisecond-wide race is
+/// the case this serves, and a per-backend difference would be a latency cliff
+/// no operator could attribute.
+pub(crate) async fn assert_control_queue_release_returns_row_for_redelivery(backend: &dyn Backend) {
+    let store = backend.execution_store().await;
+    let queue = backend.control_queue().await;
+    let scope = scope_a();
+    let processor = [21u8; 16];
+
+    let execution_id = "exe_control_release";
+    store
+        .create(
+            &scope,
+            execution_id,
+            "wf_control_release",
+            serde_json::json!({}),
+        )
+        .await
+        .expect("create the execution the command targets");
+    queue
+        .enqueue(&ControlMsg {
+            id: [0x5Bu8; 16],
+            execution_id: execution_id.to_owned(),
+            command: ControlCommand::Cancel,
+            scope: scope.clone(),
+            w3c_traceparent: None,
+            reclaim_count: 0,
+            resume_target: None,
+        })
+        .await
+        .expect("enqueue the control command");
+
+    let first = queue
+        .claim_pending(&processor, 16)
+        .await
+        .expect("first claim");
+    assert_eq!(
+        first.len(),
+        1,
+        "[{}] the command must claim",
+        backend.name()
+    );
+    let released = first[0].token;
+
+    queue
+        .release_claim(&released)
+        .await
+        .expect("releasing an owned claim must succeed");
+
+    // Re-claimable at once — no reclaim sweep, no waiting.
+    let second = queue
+        .claim_pending(&processor, 16)
+        .await
+        .expect("second claim");
+    assert_eq!(
+        second.len(),
+        1,
+        "[{}] a released claim must be re-claimable immediately, without a reclaim sweep",
+        backend.name()
+    );
+    assert_eq!(
+        second[0].msg.reclaim_count,
+        0,
+        "[{}] releasing must not spend the reclaim budget — a retry is not a stuck row",
+        backend.name()
+    );
+    assert!(
+        second[0].token.generation() > released.generation(),
+        "[{}] the re-claim must mint a fresh generation so the released token is dead",
+        backend.name()
+    );
+
+    // The superseded token cannot release the row out from under its new owner.
+    let stale = queue.release_claim(&released).await;
+    assert!(
+        matches!(stale, Err(StorageError::FencedOut { .. })),
+        "[{}] a superseded claim must not release a row another processor now owns; got {stale:?}",
+        backend.name()
+    );
+
+    // And the row is still owned by the second claim, not sitting Pending.
+    let third = queue
+        .claim_pending(&processor, 16)
+        .await
+        .expect("third claim");
+    assert!(
+        third.is_empty(),
+        "[{}] the fenced-out release must have changed nothing",
+        backend.name()
     );
 }

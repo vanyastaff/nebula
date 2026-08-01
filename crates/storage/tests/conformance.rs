@@ -24,7 +24,9 @@ mod harness;
 
 use harness::{
     Backend, InMemoryBackend, PostgresBackend, ScopedBackend, SqliteBackend, assert_atomic_triple,
-    assert_cas_conflict, assert_control_queue_outbox_and_fencing, assert_create_get_roundtrip,
+    assert_cas_conflict, assert_control_queue_outbox_and_fencing,
+    assert_control_queue_release_returns_row_for_redelivery,
+    assert_control_queue_same_processor_aba_is_fenced, assert_create_get_roundtrip,
     assert_cross_scope_commit_is_rejected, assert_cross_scope_get_is_none,
     assert_dedup_compose_is_atomic, assert_dedup_compose_rejects_duplicate_job_id,
     assert_dedup_compose_rolls_back_on_id_collision, assert_dedup_duplicate_returns_winner_id,
@@ -32,7 +34,10 @@ use harness::{
     assert_idempotency_first_writer_wins, assert_idempotency_store_cross_scope_isolated,
     assert_idempotency_store_first_writer, assert_job_dispatch_fencing,
     assert_job_dispatch_routes_by_plugin, assert_job_dispatch_routes_by_plugin_superset,
-    assert_journal_visibility_and_scope, assert_live_lease_blocks_acquire,
+    assert_job_dispatch_same_processor_aba_is_fenced, assert_journal_visibility_and_scope,
+    assert_keyed_start_creates_one_execution, assert_keyed_start_failure_writes_nothing,
+    assert_keyed_start_is_scoped_per_tenant, assert_keyed_start_mismatch_writes_nothing,
+    assert_keyed_start_replays_the_original_receipt, assert_live_lease_blocks_acquire,
     assert_non_resume_row_still_exhausts, assert_resume_row_exempt_from_reclaim_budget,
     assert_resume_target_survives_queue_round_trip, assert_save_with_published_version_is_atomic,
     assert_stale_fencing_is_fenced_out, assert_trigger_dedup_first_writer,
@@ -144,7 +149,39 @@ matrix!(
     job_dispatch_routes_by_plugin,
     assert_job_dispatch_routes_by_plugin
 );
+matrix!(
+    keyed_start_creates_one_execution,
+    assert_keyed_start_creates_one_execution
+);
+matrix!(
+    keyed_start_replays_the_original_receipt,
+    assert_keyed_start_replays_the_original_receipt
+);
+matrix!(
+    keyed_start_mismatch_writes_nothing,
+    assert_keyed_start_mismatch_writes_nothing
+);
+matrix!(
+    keyed_start_is_scoped_per_tenant,
+    assert_keyed_start_is_scoped_per_tenant
+);
+matrix!(
+    keyed_start_failure_writes_nothing,
+    assert_keyed_start_failure_writes_nothing
+);
 matrix!(job_dispatch_fencing, assert_job_dispatch_fencing);
+matrix!(
+    job_dispatch_same_processor_aba_is_fenced,
+    assert_job_dispatch_same_processor_aba_is_fenced
+);
+matrix!(
+    control_queue_same_processor_aba_is_fenced,
+    assert_control_queue_same_processor_aba_is_fenced
+);
+matrix!(
+    control_queue_release_returns_row_for_redelivery,
+    assert_control_queue_release_returns_row_for_redelivery
+);
 matrix!(
     trigger_dedup_first_writer,
     assert_trigger_dedup_first_writer

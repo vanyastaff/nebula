@@ -123,12 +123,6 @@ pub(crate) enum CancelDanglingOutcome {
     /// or the execution reached a non-cancel terminal outcome before the cancel
     /// landed. The caller may ack.
     NothingToCancel,
-    /// The cancel is NOT yet durably recorded on the execution (status is still
-    /// non-terminal and not `Cancelling`). The API writes `Cancelled` before
-    /// enqueuing `Cancel`, so this is a producer-ordering anomaly — the caller
-    /// must DEFER (not ack), so B1 reclaim redelivers until the status reflects
-    /// the cancel and the node cleanup can run, rather than silently dropping it.
-    StatusNotCancelled,
 }
 
 /// Default execution-lease TTL.
@@ -144,6 +138,14 @@ pub const DEFAULT_EXECUTION_LEASE_TTL: Duration = Duration::from_secs(30);
 /// heartbeat misses still leave the lease valid for at least another TTL
 /// cycle before acquire-on-expiry can kick in. See ADR 0008.
 pub const DEFAULT_EXECUTION_LEASE_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
+
+/// How long a frontier may keep running after the host runtime asks it to stop.
+///
+/// Deliberately shorter than the orchestrator's own dispatch grace, so the
+/// engine always reaches its cooperative unwind — releasing the lease — before
+/// the orchestrator gives up and drops the dispatch future, which would strand
+/// that lease for a full [`DEFAULT_EXECUTION_LEASE_TTL`].
+pub const SHUTDOWN_FRONTIER_GRACE: Duration = Duration::from_secs(3);
 
 /// How long [`WorkflowEngine::resume_live`] waits for the live frontier loop
 /// to confirm a durable self-arm checkpoint before treating the Resume as
@@ -331,6 +333,24 @@ pub struct WorkflowEngine {
     /// tests via [`WorkflowEngine::with_lease_ttl`] to shorten
     /// time-based behavior.
     lease_ttl: Duration,
+    /// Cancelled when the host runtime begins a graceful stop.
+    ///
+    /// A parked frontier can sit on a durable timer far longer than a process
+    /// is willing to wait, so the host eventually stops waiting and drops the
+    /// dispatch future. Dropping it runs `LeaseGuard::drop`, which cannot
+    /// `await` and so cannot release — leaving a lease alive for its full TTL
+    /// with nobody behind it, and blocking the successor that restarted
+    /// precisely to take the work over.
+    ///
+    /// Observing the stop here instead lets the run unwind *cooperatively*:
+    /// release the lease, persist nothing, and return
+    /// [`EngineError::ShutdownInterrupted`]. Handover then costs a round trip
+    /// rather than a TTL, and no clock is consulted to make it happen.
+    ///
+    /// Never cancelled unless a host wires it up (see
+    /// [`WorkflowEngine::shutdown_token`]), so library-mode callers are
+    /// unaffected.
+    shutdown: CancellationToken,
     /// Interval between heartbeat renewals while a frontier loop runs.
     ///
     /// Defaults to [`DEFAULT_EXECUTION_LEASE_HEARTBEAT_INTERVAL`]. Tuned
@@ -555,6 +575,7 @@ impl WorkflowEngine {
             event_bus: None,
             clock: Arc::new(SystemClock),
             instance_id,
+            shutdown: CancellationToken::new(),
             lease_ttl: DEFAULT_EXECUTION_LEASE_TTL,
             lease_heartbeat_interval: DEFAULT_EXECUTION_LEASE_HEARTBEAT_INTERVAL,
             running: Arc::new(DashMap::new()),
@@ -678,6 +699,18 @@ impl WorkflowEngine {
     #[must_use]
     pub fn instance_id(&self) -> InstanceId {
         self.instance_id
+    }
+
+    /// The token this engine watches for a graceful stop.
+    ///
+    /// A host runtime cancels it when it begins shutting down; every
+    /// in-flight execution then releases its lease and returns
+    /// [`EngineError::ShutdownInterrupted`] instead of being dropped with the
+    /// lease still held. Executions are redelivered by the successor's reclaim
+    /// sweep.
+    #[must_use]
+    pub fn shutdown_token(&self) -> CancellationToken {
+        self.shutdown.clone()
     }
 
     /// Override the execution-lease TTL.
@@ -2225,8 +2258,21 @@ impl WorkflowEngine {
         let error_strategy = workflow.config.error_strategy;
         let workflow_retry_policy = workflow.config.retry_policy.clone();
         let seed_nodes: Vec<NodeKey> = graph.entry_nodes();
-        let failed_node = self
-            .run_frontier(
+        // Race the frontier against a graceful stop.
+        //
+        // `biased` so a frontier that is already finished always wins: an
+        // execution that completed must not be reported as abandoned merely
+        // because the stop arrived in the same poll.
+        //
+        // After the stop, the frontier still gets [`SHUTDOWN_FRONTIER_GRACE`]
+        // to land on its own — a step that is nearly done should finish rather
+        // than be redelivered. Past that it is abandoned, but abandoned
+        // *cooperatively*: control returns here, so the lease is released
+        // below instead of being stranded for a TTL by a bare drop.
+        // Scoped so the frontier future — which borrows `exec_state`
+        // mutably — is dropped before the final-status logic reads it back.
+        let landed = {
+            let frontier = self.run_frontier(
                 scope,
                 &graph,
                 &node_map,
@@ -2247,8 +2293,34 @@ impl WorkflowEngine {
                 seed_nodes,
                 HashMap::new(),
                 HashMap::new(),
-            )
-            .await;
+            );
+            tokio::pin!(frontier);
+            tokio::select! {
+                biased;
+                failed_node = &mut frontier => Some(failed_node),
+                () = self.shutdown.cancelled() => {
+                    tokio::time::timeout(SHUTDOWN_FRONTIER_GRACE, &mut frontier)
+                        .await
+                        .ok()
+                }
+            }
+        };
+        let Some(failed_node) = landed else {
+            tracing::warn!(
+                %execution_id,
+                grace_ms = SHUTDOWN_FRONTIER_GRACE.as_millis() as u64,
+                "runtime shutting down: abandoning the frontier and releasing the \
+                 execution lease so a successor can take over without waiting out the TTL"
+            );
+            self.runtime.clear_execution_output_totals(execution_id);
+            // Release before returning, and persist nothing. A successor that
+            // reclaims this row must find the execution exactly as the last
+            // committed transition left it.
+            if let Some(guard) = lease {
+                guard.shutdown().await;
+            }
+            return Err(EngineError::ShutdownInterrupted { execution_id });
+        };
 
         self.runtime.clear_execution_output_totals(execution_id);
 

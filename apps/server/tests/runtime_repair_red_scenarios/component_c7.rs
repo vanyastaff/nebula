@@ -10,7 +10,7 @@ use nebula_core::PluginKey;
 use nebula_storage::inmem::{InMemoryExecutionStore, InMemoryJobDispatchQueue};
 use nebula_storage::sqlite::{SqliteJobDispatchQueue, init_schema as sqlite_init_schema};
 use nebula_storage_port::dto::{ControlCommand, JobDispatchMsg};
-use nebula_storage_port::store::JobDispatchQueue;
+use nebula_storage_port::store::{JobClaim, JobClaimToken, JobDispatchQueue};
 use nebula_storage_port::{Scope, StorageError};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use uuid::Uuid;
@@ -87,7 +87,14 @@ fn make_job(
     )
 }
 
-async fn enqueue_and_claim_generation_n(queue: &impl JobDispatchQueue, scenario: &Scenario) {
+/// Claim both jobs as generation N and keep the tokens that claim minted.
+///
+/// The tokens are the whole point of the scenario: they are the authority the
+/// stale worker will present *after* the row has moved on to generation N+1.
+async fn enqueue_and_claim_generation_n(
+    queue: &impl JobDispatchQueue,
+    scenario: &Scenario,
+) -> [JobClaimToken; 2] {
     for job in &scenario.jobs {
         queue
             .enqueue(job)
@@ -104,12 +111,25 @@ async fn enqueue_and_claim_generation_n(queue: &impl JobDispatchQueue, scenario:
         .await
         .expect("SETUP: same processor claims logical generation N");
     assert_claimed(&claimed, scenario.ids(), 0, "logical generation N");
+    tokens_for(&claimed, scenario)
+}
+
+/// Order the claim's tokens to match `Scenario::jobs` (`[ack, nack]`), so the
+/// late acknowledgement and the late failure each address their own row.
+fn tokens_for(claimed: &[JobClaim], scenario: &Scenario) -> [JobClaimToken; 2] {
+    scenario.jobs.each_ref().map(|job| {
+        claimed
+            .iter()
+            .find(|claim| claim.msg.id == job.id)
+            .unwrap_or_else(|| panic!("SETUP: claim batch is missing C7 job {:?}", job.id))
+            .token
+    })
 }
 
 async fn reclaim_and_claim_generation_n_plus_one(
     queue: &impl JobDispatchQueue,
     scenario: &Scenario,
-) {
+) -> [JobClaimToken; 2] {
     let outcome = queue
         .reclaim_stuck(RECLAIM_AFTER, MAX_RECLAIM_COUNT)
         .await
@@ -132,15 +152,16 @@ async fn reclaim_and_claim_generation_n_plus_one(
         .await
         .expect("SETUP: same processor claims logical generation N+1");
     assert_claimed(&reclaimed, scenario.ids(), 1, "logical generation N+1");
+    tokens_for(&reclaimed, scenario)
 }
 
 fn assert_claimed(
-    claimed: &[JobDispatchMsg],
+    claimed: &[JobClaim],
     mut expected_ids: [[u8; 16]; 2],
     expected_reclaim_count: u32,
     generation: &str,
 ) {
-    let mut actual_ids: Vec<[u8; 16]> = claimed.iter().map(|job| job.id).collect();
+    let mut actual_ids: Vec<[u8; 16]> = claimed.iter().map(|claim| claim.msg.id).collect();
     actual_ids.sort_unstable();
     expected_ids.sort_unstable();
     assert_eq!(
@@ -151,24 +172,22 @@ fn assert_claimed(
     assert!(
         claimed
             .iter()
-            .all(|job| job.reclaim_count == expected_reclaim_count),
+            .all(|claim| claim.msg.reclaim_count == expected_reclaim_count),
         "SETUP: {generation} must expose reclaim_count={expected_reclaim_count}; got {claimed:?}"
     );
 }
 
+/// Present generation N's tokens after the rows moved to generation N+1.
+///
+/// Both calls carry the *same* processor identity that owns generation N+1, so
+/// any fence built on processor identity alone accepts them.
 async fn stale_generation_n_results(
     queue: &impl JobDispatchQueue,
-    scenario: &Scenario,
+    generation_n: &[JobClaimToken; 2],
 ) -> (Result<(), StorageError>, Result<(), StorageError>) {
-    let late_ack = queue
-        .mark_dispatched(&scenario.jobs[0].id, &scenario.processor_id)
-        .await;
+    let late_ack = queue.mark_dispatched(&generation_n[0]).await;
     let late_nack = queue
-        .mark_failed(
-            &scenario.jobs[1].id,
-            &scenario.processor_id,
-            "late logical-generation-N failure",
-        )
+        .mark_failed(&generation_n[1], "late logical-generation-N failure")
         .await;
     (late_ack, late_nack)
 }
@@ -211,10 +230,10 @@ async fn same_processor_id_aba_in_memory() {
     let store = InMemoryExecutionStore::new();
     let queue = InMemoryJobDispatchQueue::new(&store);
 
-    enqueue_and_claim_generation_n(&queue, &scenario).await;
+    let generation_n = enqueue_and_claim_generation_n(&queue, &scenario).await;
     tokio::time::advance(Duration::from_secs(2)).await;
-    reclaim_and_claim_generation_n_plus_one(&queue, &scenario).await;
-    let (late_ack, late_nack) = stale_generation_n_results(&queue, &scenario).await;
+    let _generation_n_plus_one = reclaim_and_claim_generation_n_plus_one(&queue, &scenario).await;
+    let (late_ack, late_nack) = stale_generation_n_results(&queue, &generation_n).await;
 
     drop(queue);
     drop(store);
@@ -239,7 +258,7 @@ async fn same_processor_id_aba_file_sqlite() {
         .expect("SETUP: install C7 SQLite component schema");
     let queue = SqliteJobDispatchQueue::new(pool.clone());
 
-    enqueue_and_claim_generation_n(&queue, &scenario).await;
+    let generation_n = enqueue_and_claim_generation_n(&queue, &scenario).await;
     let ids = scenario.ids();
     let backdated = sqlx::query(
         "UPDATE port_job_dispatch_queue \
@@ -257,8 +276,8 @@ async fn same_processor_id_aba_file_sqlite() {
         "SETUP: SQLite C7 stale barrier must backdate both exact ids"
     );
 
-    reclaim_and_claim_generation_n_plus_one(&queue, &scenario).await;
-    let (late_ack, late_nack) = stale_generation_n_results(&queue, &scenario).await;
+    let _generation_n_plus_one = reclaim_and_claim_generation_n_plus_one(&queue, &scenario).await;
+    let (late_ack, late_nack) = stale_generation_n_results(&queue, &generation_n).await;
 
     let deleted = sqlx::query("DELETE FROM port_job_dispatch_queue WHERE id = ? OR id = ?")
         .bind(ids[0].as_slice())
@@ -295,7 +314,7 @@ async fn same_processor_id_aba_live_postgres() {
         .expect("SETUP: install C7 PostgreSQL component schema");
     let queue = PgJobDispatchQueue::new(pool.clone());
 
-    enqueue_and_claim_generation_n(&queue, &scenario).await;
+    let generation_n = enqueue_and_claim_generation_n(&queue, &scenario).await;
     let ids = scenario.ids();
     let backdated = sqlx::query(
         "UPDATE port_job_dispatch_queue \
@@ -313,8 +332,8 @@ async fn same_processor_id_aba_live_postgres() {
         "SETUP: PostgreSQL C7 stale barrier must backdate both exact ids"
     );
 
-    reclaim_and_claim_generation_n_plus_one(&queue, &scenario).await;
-    let (late_ack, late_nack) = stale_generation_n_results(&queue, &scenario).await;
+    let _generation_n_plus_one = reclaim_and_claim_generation_n_plus_one(&queue, &scenario).await;
+    let (late_ack, late_nack) = stale_generation_n_results(&queue, &generation_n).await;
 
     let deleted = sqlx::query("DELETE FROM port_job_dispatch_queue WHERE id = $1 OR id = $2")
         .bind(ids[0].as_slice())

@@ -32,7 +32,10 @@ pub(super) struct Row {
     pub(super) state: serde_json::Value,
     /// Current lease holder, if any (alive only until `lease_expires_at`).
     pub(super) lease_holder: Option<String>,
-    pub(super) lease_expires_at: Option<Instant>,
+    /// Deadline in this adapter's clock era (see
+    /// [`InMemoryExecutionStore::with_clock`]), not this process's monotonic
+    /// one.
+    pub(super) lease_expires_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Monotone fencing generation. Bumped every time the lease is
     /// (re)acquired by a different/expired holder, so a superseded
     /// holder's token no longer matches.
@@ -50,6 +53,10 @@ pub(super) struct QueuedMsg {
     pub(super) processed_at: Option<Instant>,
     pub(super) reclaim_count: u32,
     pub(super) error_message: Option<String>,
+    /// Monotonic claim attempt, mirroring the SQL backends' `claim_generation`
+    /// column: incremented on every claim, never decremented or reused, and
+    /// the sole authority for acknowledging the row.
+    pub(super) claim_generation: u64,
 }
 
 /// One queued job-dispatch row plus its processing bookkeeping.
@@ -64,6 +71,10 @@ pub(super) struct QueuedJob {
     pub(super) processed_at: Option<Instant>,
     pub(super) reclaim_count: u32,
     pub(super) error_message: Option<String>,
+    /// Monotonic claim attempt, mirroring the SQL backends' `claim_generation`
+    /// column: incremented on every claim, never decremented or reused, and
+    /// the sole authority for acknowledging the row.
+    pub(super) claim_generation: u64,
 }
 
 #[derive(Debug, Default)]
@@ -88,6 +99,20 @@ pub(super) struct State {
     /// This shares the execution aggregate lock so future start and terminal
     /// transitions can compose reference mutations without a split boundary.
     pub(super) revision_catalog: super::plan_flavor_catalog::RevisionCatalogState,
+    /// Accepted start keys: `(workspace_id, org_id, start_key)` -> the
+    /// reservation that key already owns. Shares the aggregate lock so a
+    /// reservation, its execution row, and its Start command are written in
+    /// one critical section, mirroring the SQL backends' single transaction.
+    pub(super) start_keys: HashMap<(String, String, String), StartKeyReservation>,
+}
+
+/// One accepted start key.
+#[derive(Clone, Debug)]
+pub(super) struct StartKeyReservation {
+    pub(super) fingerprint_version: u16,
+    pub(super) fingerprint: [u8; 32],
+    pub(super) execution_id: String,
+    pub(super) created_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// Shared mutable core. One mutex guards the whole store so a `commit`
@@ -96,16 +121,55 @@ pub(super) struct State {
 pub(super) type SharedState = Arc<Mutex<State>>;
 
 /// In-memory execution aggregate.
-#[derive(Debug, Default, Clone)]
+#[derive(Clone)]
 pub struct InMemoryExecutionStore {
     pub(super) inner: SharedState,
+    /// This adapter's clock, and the **only** place a test clock enters the
+    /// lease path.
+    ///
+    /// A lease is a claim about liveness, so whichever clock decides
+    /// live-vs-expired must be one every holder agrees on. The SQL backends
+    /// therefore decide in the database and accept no caller reading. This
+    /// adapter has no such shared authority to protect — it serves exactly one
+    /// process — so it is the correct place to hand time-travelling tests
+    /// (`tokio::time::pause`, injected clocks) a lever, without letting a
+    /// production worker's skewed clock fence out a healthy peer.
+    clock: Arc<dyn nebula_core::accessor::Clock>,
+}
+
+impl std::fmt::Debug for InMemoryExecutionStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InMemoryExecutionStore")
+            .field("inner", &self.inner)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for InMemoryExecutionStore {
+    fn default() -> Self {
+        Self {
+            inner: SharedState::default(),
+            clock: Arc::new(nebula_core::accessor::SystemClock),
+        }
+    }
 }
 
 impl InMemoryExecutionStore {
-    /// Create an empty store.
+    /// Create an empty store driven by the system clock.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Create an empty store driven by `clock`.
+    ///
+    /// For tests that need to make a lease expire without sleeping.
+    #[must_use]
+    pub fn with_clock(clock: Arc<dyn nebula_core::accessor::Clock>) -> Self {
+        Self {
+            inner: SharedState::default(),
+            clock,
+        }
     }
 
     /// Borrow the shared core so sibling stores (control queue, journal
@@ -296,6 +360,7 @@ impl ExecutionStore for InMemoryExecutionStore {
                     processed_at: None,
                     reclaim_count: 0,
                     error_message: None,
+                    claim_generation: 0,
                 },
             );
         }
@@ -336,6 +401,7 @@ impl ExecutionStore for InMemoryExecutionStore {
         ttl: Duration,
     ) -> Result<Option<FencingToken>, StorageError> {
         let ttl = normalized_ttl(ttl);
+        let now = self.clock.now();
         let mut st = self.inner.lock();
         let Some(row) = st.rows.get_mut(id) else {
             return Err(StorageError::not_found("execution", id));
@@ -343,7 +409,6 @@ impl ExecutionStore for InMemoryExecutionStore {
         if &row.scope != scope {
             return Err(StorageError::not_found("execution", id));
         }
-        let now = Instant::now();
         let live = matches!(row.lease_expires_at, Some(exp) if exp >= now);
         if live {
             // A live lease blocks acquisition outright — including a
@@ -363,7 +428,12 @@ impl ExecutionStore for InMemoryExecutionStore {
         // (zombie-runner closure).
         row.fencing_generation += 1;
         row.lease_holder = Some(holder.to_string());
-        row.lease_expires_at = Some(now.checked_add(ttl).unwrap_or(now));
+        row.lease_expires_at = Some(
+            chrono::Duration::from_std(ttl)
+                .ok()
+                .and_then(|ttl| now.checked_add_signed(ttl))
+                .unwrap_or(now),
+        );
         let token = FencingToken::from_generation(row.fencing_generation);
         tracing::debug!(
             target: "nebula_storage::inmem",
@@ -383,6 +453,7 @@ impl ExecutionStore for InMemoryExecutionStore {
         ttl: Duration,
     ) -> Result<bool, StorageError> {
         let ttl = normalized_ttl(ttl);
+        let now = self.clock.now();
         let mut st = self.inner.lock();
         let Some(row) = st.rows.get_mut(id) else {
             return Ok(false);
@@ -390,8 +461,12 @@ impl ExecutionStore for InMemoryExecutionStore {
         if &row.scope != scope || token.generation() != row.fencing_generation {
             return Ok(false);
         }
-        let now = Instant::now();
-        row.lease_expires_at = Some(now.checked_add(ttl).unwrap_or(now));
+        row.lease_expires_at = Some(
+            chrono::Duration::from_std(ttl)
+                .ok()
+                .and_then(|ttl| now.checked_add_signed(ttl))
+                .unwrap_or(now),
+        );
         Ok(true)
     }
 

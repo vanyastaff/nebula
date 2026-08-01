@@ -11,7 +11,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use tokio_util::sync::CancellationToken;
+use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 
 use crate::CallError;
 
@@ -193,7 +193,7 @@ impl Default for CancellationContext {
 ///
 /// ```rust,no_run
 /// use nebula_resilience::{CallError, CancellationExt};
-/// use tokio_util::sync::CancellationToken;
+/// use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 ///
 /// # #[tokio::main]
 /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -210,8 +210,19 @@ impl Default for CancellationContext {
 /// ```
 pub struct CancellableFuture<F> {
     future: Pin<Box<F>>,
-    /// We use `tokio::select!` internally via a helper that owns the token.
-    cancellation: CancellationToken,
+    /// The cancellation wait, created **once** and polled across every poll of
+    /// this future.
+    ///
+    /// `CancellationToken::cancelled()` borrows the token, so storing that
+    /// future beside the token it borrows would be self-referential — which is
+    /// why the previous implementation rebuilt it on every poll instead. Each
+    /// rebuild re-registers a waker with the token, so a frequently-yielding
+    /// inner future paid that cost once per yield. `cancelled_owned()` holds
+    /// its own clone of the token, so the wait can simply be a field.
+    cancellation: Pin<Box<WaitForCancellationFutureOwned>>,
+    /// Retained for the fast path and for `is_cancelled` checks; the wait above
+    /// owns its own clone.
+    token: CancellationToken,
 }
 
 impl<F> fmt::Debug for CancellableFuture<F> {
@@ -229,7 +240,8 @@ where
     pub fn new(future: F, cancellation: CancellationToken) -> Self {
         Self {
             future: Box::pin(future),
-            cancellation,
+            cancellation: Box::pin(cancellation.clone().cancelled_owned()),
+            token: cancellation,
         }
     }
 }
@@ -241,24 +253,19 @@ where
     type Output = Result<F::Output, CallError<()>>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // Fast path: check if already cancelled (no allocation)
-        if self.cancellation.is_cancelled() {
+        // Fast path: already cancelled before the inner future ever ran.
+        if self.token.is_cancelled() {
             return Poll::Ready(Err(CallError::cancelled()));
         }
 
-        // Poll the underlying future
+        // Poll the underlying future first: work that is already complete is
+        // reported as complete, even if cancellation arrives in the same wake.
         match self.future.as_mut().poll(cx) {
             Poll::Ready(output) => Poll::Ready(Ok(output)),
             Poll::Pending => {
-                // Register waker for cancellation notification. `cancelled()`
-                // creates a stack-allocated `WaitForCancellationFuture` each
-                // poll — no heap allocation, but not zero-cost either. For a
-                // truly zero-cost approach, store the cancellation future as a
-                // struct field across polls. Current approach is simpler and
-                // sufficient for typical use cases.
-                let waker_future = self.cancellation.cancelled();
-                tokio::pin!(waker_future);
-                if waker_future.as_mut().poll(cx).is_ready() {
+                // One stored wait, polled across every poll of this future, so
+                // the waker is registered once rather than once per yield.
+                if self.cancellation.as_mut().poll(cx).is_ready() {
                     Poll::Ready(Err(CallError::cancelled_with(
                         "Future was cancelled while pending",
                     )))
@@ -276,7 +283,7 @@ where
 ///
 /// ```rust,no_run
 /// use nebula_resilience::{CallError, CancellationExt};
-/// use tokio_util::sync::CancellationToken;
+/// use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 ///
 /// # #[tokio::main]
 /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -294,6 +301,68 @@ pub trait CancellationExt<T>: Future<Output = T> + Sized {
 }
 
 impl<F, T> CancellationExt<T> for F where F: Future<Output = T> {}
+
+#[cfg(test)]
+mod cancellation_wakeup_tests {
+    //! Regression for #632: the cancellation wait is created once and stored,
+    //! not rebuilt on every poll.
+
+    use std::time::Duration;
+
+    use tokio_util::sync::CancellationToken;
+
+    use super::{CallError, CancellationExt};
+
+    /// A future that yields many times must still be woken by cancellation.
+    ///
+    /// Storing the wait instead of rebuilding it changes *when* the waker is
+    /// registered, so this pins the property that matters: after any number of
+    /// yields, cancelling still completes the future promptly.
+    #[tokio::test]
+    async fn cancellation_wakes_a_frequently_yielding_future() {
+        let token = CancellationToken::new();
+        let canceller = token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            canceller.cancel();
+        });
+
+        let yielding = async {
+            loop {
+                tokio::task::yield_now().await;
+            }
+        };
+
+        let outcome: Result<(), CallError<()>> =
+            tokio::time::timeout(Duration::from_secs(5), yielding.with_cancellation(token))
+                .await
+                .expect("cancellation must wake the future long before this bound");
+
+        assert!(
+            matches!(outcome, Err(CallError::Cancelled { .. })),
+            "a cancelled yielding future must report Cancelled, got {outcome:?}"
+        );
+    }
+
+    /// Completion still wins when the inner future is already done.
+    #[tokio::test]
+    async fn a_ready_future_completes_even_after_many_yields() {
+        let token = CancellationToken::new();
+        let work = async {
+            for _ in 0..10_000 {
+                tokio::task::yield_now().await;
+            }
+            7_u32
+        };
+
+        let outcome: Result<u32, CallError<()>> = work.with_cancellation(token).await;
+        assert_eq!(
+            outcome.expect("an uncancelled future must complete"),
+            7,
+            "repeated yields must not change the result"
+        );
+    }
+}
 
 #[cfg(test)]
 mod tests {

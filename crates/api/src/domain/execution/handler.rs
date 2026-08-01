@@ -3,11 +3,12 @@
 use axum::{
     Extension, Json,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
 };
 use nebula_core::{ExecutionId, TenantContext, WorkflowId};
 use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_storage_port::dto::ControlCommand;
+use nebula_storage_port::store::{StartAcceptance, StartFingerprint};
 
 use crate::{
     domain::{
@@ -272,14 +273,25 @@ pub async fn get_execution(
         ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
         ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
         ("wf" = String, Path, description = "Workflow identifier (`wf_<ULID>`)."),
+        (
+            "Idempotency-Key" = Option<String>,
+            Header,
+            description = "Start key identifying one accepted command, 1..=255 printable ASCII \
+                           characters. Retrying with the same key and an identical request \
+                           returns the original acceptance receipt — same execution id, same \
+                           timestamp — and creates nothing new; reusing it for a request that \
+                           differs is refused with 409 and no durable change. Omitting it means \
+                           every request creates its own execution.",
+        ),
     ),
     request_body = StartExecutionRequest,
     responses(
-        (status = 202, description = "Execution accepted; engine dispatch in flight.", body = ExecutionResponse),
+        (status = 202, description = "Execution accepted; engine dispatch in flight. A replayed keyed start returns the original receipt with this same status.", body = ExecutionResponse),
         (status = 400, description = "Invalid workflow identifier, or the stored workflow definition cannot be parsed as a workflow.", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Workflow does not exist.", body = ProblemDetails),
+        (status = 409, description = "The `Idempotency-Key` is already reserved for a request that canonicalizes differently (`code: operation_mismatch`). Nothing was written.", body = ProblemDetails),
         (status = 422, description = "Workflow definition fails structural validation (shift-left gate).", body = ProblemDetails),
         (status = 503, description = "Control queue is unavailable; the engine cannot pick up the dispatch signal.", body = ProblemDetails),
     ),
@@ -288,6 +300,7 @@ pub async fn start_execution(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, workflow_id)): Path<(String, String, String)>,
+    headers: HeaderMap,
     Json(payload): Json<StartExecutionRequest>,
 ) -> ApiResult<(StatusCode, Json<ExecutionResponse>)> {
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
@@ -334,27 +347,80 @@ pub async fn start_execution(
     let state_json = serde_json::to_value(&exec_state)
         .map_err(|e| ApiError::Internal(format!("serialize execution state: {e}")))?;
 
-    // Create execution record. We must call `create` here — the previous
-    // implementation called `transition(id, expected_version = 0, ...)`,
-    // which is a CAS UPDATE that can never match a brand-new ID (no row
-    // exists yet), so every call returned `Ok(false)` and the handler
-    // surfaced an Internal error unconditionally.
-    state
-        .create_execution_scoped(&scope, execution_id, workflow_id_parsed, state_json)
-        .await?;
+    let created_at = exec_state.created_at.timestamp();
+    let w3c = w3c_trace_context_for_control_queue();
 
-    // Enqueue the Start signal onto the durable control queue (durable control queue,
-    // integration seam step 3, #332). Before this PR the API persisted the row but never
-    // dispatched it — the honest capability violation ("advertise capability engine
-    // doesn't deliver end-to-end"). The engine-side `ControlConsumer`
-    // (durable control queue) drains this queue and drives the actual workflow run.
-    //
-    // Order matches the `cancel_execution` contract: create the row first,
-    // then enqueue. If enqueue fails after a successful create, the row
-    // exists but the engine will not see the Start signal — the handler
-    // fails loudly so the caller can retry. The retry is idempotent
-    // at the consumer layer via CAS (control-queue CAS).
-    enqueue_start_scoped(&state, &scope, execution_id, &validated).await?;
+    // A start key makes this request one *accepted command* rather than one
+    // delivery of it. Without a key there is nothing to converge on, so an
+    // unkeyed request creates its own execution every time — that is the
+    // caller's choice, not a defect.
+    // Both the durable identity *and* the acceptance timestamp come from
+    // whichever request actually created the execution — see the replay arm.
+    let accepted_execution_id = if let Some(start_key) = start_key(&headers)? {
+        let fingerprint = start_fingerprint(workflow_id_parsed, version.number, &payload);
+        match state
+            .accept_keyed_start_scoped(
+                &scope,
+                &start_key,
+                fingerprint,
+                execution_id,
+                workflow_id_parsed,
+                &state_json,
+                w3c,
+            )
+            .await?
+        {
+            StartAcceptance::Accepted { execution_id } => {
+                tracing::debug!(
+                    execution_id = %execution_id,
+                    node_count = validated.definition().nodes.len(),
+                    "execution: keyed start accepted (reservation + aggregate + Start committed)"
+                );
+                execution_id
+            },
+            StartAcceptance::Replayed { execution_id } => {
+                // The *original* receipt, which means every field comes from
+                // the persisted execution — not just its id. Building the rest
+                // from the state constructed above would report `created` and
+                // this retry's timestamp for an execution that may already be
+                // running or finished: a receipt that describes a request that
+                // was never accepted.
+                let replayed = ExecutionId::parse(&execution_id).map_err(|e| {
+                    ApiError::Internal(format!("replayed execution id is not parseable: {e}"))
+                })?;
+                let (_, persisted) = state
+                    .execution_state_scoped(&scope, replayed, "load the replayed receipt")
+                    .await?
+                    .ok_or_else(|| {
+                        // The reservation names an execution that is not there:
+                        // report it rather than answer with a fabricated state.
+                        ApiError::Internal(
+                            "start key reserved for an execution that no longer exists".to_owned(),
+                        )
+                    })?;
+                tracing::info!(
+                    execution_id = %execution_id,
+                    "execution: keyed start replayed; returning the original receipt"
+                );
+                return Ok((
+                    StatusCode::ACCEPTED,
+                    Json(ExecutionResponse {
+                        workflow_id,
+                        ..execution_receipt(execution_id, &persisted)
+                    }),
+                ));
+            },
+            // Deliberately no execution id in the error: the caller proved
+            // knowledge of a key, not of the execution behind it.
+            StartAcceptance::FingerprintMismatch => return Err(ApiError::StartConflict),
+        }
+    } else {
+        state
+            .create_execution_scoped(&scope, execution_id, workflow_id_parsed, state_json)
+            .await?;
+        enqueue_start_scoped(&state, &scope, execution_id, &validated).await?;
+        execution_id.to_string()
+    };
 
     // Build response. `started_at` is omitted on a Created execution —
     // integration seam step 3 forbids synthetic timestamps for fields the engine
@@ -370,9 +436,8 @@ pub async fn start_execution(
     // but we now return `created_at` as the observable timestamp so clients
     // still get a real time for "when did this execution exist?" — which
     // is what `started_at` was used for in practice pre-fix.
-    let created_at = exec_state.created_at.timestamp();
     let response = ExecutionResponse {
-        id: execution_id.to_string(),
+        id: accepted_execution_id,
         workflow_id,
         status: exec_state.status.to_string(),
         started_at: created_at,
@@ -382,6 +447,78 @@ pub async fn start_execution(
     };
 
     Ok((StatusCode::ACCEPTED, Json(response)))
+}
+
+/// Read the caller's start key from `Idempotency-Key`.
+///
+/// Bounded and charset-checked here rather than at the storage boundary: the
+/// key becomes a primary-key component, and an unbounded or non-ASCII value is
+/// a request defect, not a storage failure.
+fn start_key(headers: &HeaderMap) -> ApiResult<Option<String>> {
+    /// Long enough for a UUID, a ULID, or a caller's composite key; short
+    /// enough that the reservation index stays small.
+    const MAX_START_KEY_LEN: usize = 255;
+
+    let Some(raw) = headers.get("idempotency-key") else {
+        return Ok(None);
+    };
+    let key = raw.to_str().map_err(|_| {
+        ApiError::validation_message("Idempotency-Key must be printable ASCII".to_owned())
+    })?;
+    if key.is_empty() || key.len() > MAX_START_KEY_LEN {
+        return Err(ApiError::validation_message(format!(
+            "Idempotency-Key must be 1..={MAX_START_KEY_LEN} characters"
+        )));
+    }
+    if !key.bytes().all(|byte| byte.is_ascii_graphic()) {
+        return Err(ApiError::validation_message(
+            "Idempotency-Key must be printable ASCII without spaces".to_owned(),
+        ));
+    }
+    Ok(Some(key.to_owned()))
+}
+
+/// Canonicalization version for [`start_fingerprint`].
+///
+/// Bump this whenever the canonical form below changes. Two digests are only
+/// comparable when they were produced under the same version, so a bump reads
+/// as a mismatch rather than as a false match — the fail-closed direction.
+const START_FINGERPRINT_VERSION: u16 = 1;
+
+/// Fingerprint what makes two start requests "the same command".
+///
+/// Covers the workflow identity, the exact published version the request
+/// resolved to, and the caller's input. The version is inside the fingerprint
+/// on purpose: replaying a key after the workflow was republished is a
+/// *different* command, and silently returning the old receipt would hide that.
+///
+/// The digest is over `serde_json::to_vec` of a canonical array. `Value`
+/// serializes maps in sorted key order (`serde_json` uses a `BTreeMap` unless
+/// `preserve_order` is on, and this workspace does not enable it), so two
+/// requests whose JSON objects differ only in key order agree here.
+fn start_fingerprint(
+    workflow_id: WorkflowId,
+    version_number: u32,
+    payload: &StartExecutionRequest,
+) -> StartFingerprint {
+    use sha2::{Digest as _, Sha256};
+
+    let canonical = serde_json::json!([
+        "start",
+        workflow_id.to_string(),
+        version_number,
+        payload.input,
+    ]);
+    let mut digest = Sha256::new();
+    // `Value` is always serializable; a failure here would be a serde defect,
+    // not a request defect, so feed the debug form rather than fail the
+    // request on an impossible branch.
+    if let Ok(bytes) = serde_json::to_vec(&canonical) {
+        digest.update(&bytes);
+    } else {
+        digest.update(format!("{canonical:?}").as_bytes());
+    }
+    StartFingerprint::new(START_FINGERPRINT_VERSION, digest.finalize().into())
 }
 
 /// Enqueue a `ControlCommand::Start` onto the durable control queue for
@@ -485,20 +622,20 @@ pub(crate) fn validate_for_dispatch(
         ("exec" = String, Path, description = "Execution identifier (`exe_<ULID>`)."),
     ),
     responses(
-        (status = 200, description = "Execution cancelled; cancel signal enqueued for the engine.", body = ExecutionResponse),
+        (status = 202, description = "Cancellation accepted and durably enqueued. The body reports the execution as it stands right now; the runtime performs the transition to `cancelled` under its own lease, so poll the execution to observe it.", body = ExecutionResponse),
         (status = 400, description = "Invalid execution identifier or already in a terminal state.", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Execution does not exist.", body = ProblemDetails),
         (status = 409, description = "Concurrent modification detected.", body = ProblemDetails),
-        (status = 500, description = "Execution aggregate transition failed before the state/control outbox commit completed.", body = ProblemDetails),
+        (status = 500, description = "Failed to enqueue the control command.", body = ProblemDetails),
     ),
 )]
 pub async fn cancel_execution(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, id)): Path<(String, String, String)>,
-) -> ApiResult<Json<ExecutionResponse>> {
+) -> ApiResult<(StatusCode, Json<ExecutionResponse>)> {
     use nebula_core::ExecutionId;
 
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
@@ -512,7 +649,7 @@ pub async fn cancel_execution(
         .await?;
 
     // Check if execution exists
-    let (version, mut execution_state) =
+    let (_version, execution_state) =
         state_result.ok_or_else(|| ApiError::NotFound(format!("Execution {id} not found")))?;
 
     // Check if execution is already in a terminal state
@@ -530,104 +667,100 @@ pub async fn cancel_execution(
         )));
     }
 
-    // Update state to cancelled. Write the status as the canonical
-    // snake-case string that `ExecutionStatus::Cancelled` serializes to,
-    // so that engine-side reads via `ExecutionStatus::deserialize` round-
-    // trip cleanly (#327, honest capability contract). Persist `completed_at` (not the
-    // legacy `finished_at`) because that is the field `ExecutionState`
-    // actually declares — see `crates/execution/src/state.rs`.
-    if let Some(state_obj) = execution_state.as_object_mut() {
-        state_obj.insert(
-            "status".to_string(),
-            serde_json::json!(ExecutionStatus::Cancelled.to_string()),
+    // Duplicate Cancel is idempotent: the command is already in flight and
+    // runtime control owns the outcome, so re-requesting it must not enqueue a
+    // second command row. Report the state as it stands.
+    if current_status == ExecutionStatus::Cancelling.to_string() {
+        tracing::debug!(
+            execution_id = %execution_id,
+            "execution: cancellation already requested; returning the in-flight state"
         );
-
-        // Set completed_at timestamp. The canonical `ExecutionState`
-        // serializes `Option::None` as `null`, not as an absent field —
-        // so `contains_key` alone is not enough; we must also overwrite
-        // explicit nulls. RFC 3339 string matches what `DateTime<Utc>`
-        // serializes to via serde.
-        let needs_write = state_obj
-            .get("completed_at")
-            .is_none_or(serde_json::Value::is_null);
-        if needs_write {
-            let now = chrono::Utc::now();
-            state_obj.insert(
-                "completed_at".to_string(),
-                serde_json::json!(now.to_rfc3339()),
-            );
-        }
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(execution_receipt(id, &execution_state)),
+        ));
     }
 
-    // Apply the state transition and append the Cancel outbox row in one
-    // storage-port commit. This prevents a cancelled row without a matching
-    // engine-visible control signal.
+    // Submit the intent; write nothing.
+    //
+    // The execution aggregate has exactly one writer — the runtime, holding
+    // the lease and the fencing token that proves it. This handler holds
+    // neither. It used to commit the status transition itself, reconstructing
+    // a fencing token out of the generation it had just *read*; a token
+    // rebuilt from a read is not proof of anything, and it let an API request
+    // land a write that a live runner's fence was supposed to exclude.
+    //
+    // So the boundary is the control queue, exactly as it is for Resume: the
+    // API authorizes the cancel and records durable intent, and the runtime
+    // performs the `Running → Cancelling → Cancelled` transition under its own
+    // lease once it has actually honored the command.
     let w3c_trace_context = w3c_trace_context_for_control_queue();
     tracing::debug!(
         execution_id = %execution_id,
         command = ControlCommand::Cancel.as_str(),
         has_trace_context = w3c_trace_context.is_some(),
-        "execution: append Cancel control row with state transition"
+        "execution: enqueue Cancel control command"
     );
-    let transition_result = state
-        .cas_transition_with_control_scoped(
+    state
+        .enqueue_control_scoped(
             &scope,
-            execution_id,
-            version,
-            execution_state.clone(),
             ControlCommand::Cancel,
+            execution_id,
             w3c_trace_context,
         )
         .await?;
 
-    if !transition_result {
-        return Err(ApiError::Conflict(
-            "concurrent modification detected; refetch execution state and retry".to_string(),
-        ));
-    }
+    // 202 with the state as it stands: the cancel is accepted, not done. The
+    // reported `status` is whatever is durably true right now, so a client that
+    // polls it observes the runtime's own transition rather than a status this
+    // handler asserted on the runtime's behalf.
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(execution_receipt(id, &execution_state)),
+    ))
+}
 
-    // Extract fields from updated execution state
+/// Build a response describing an execution exactly as it is persisted.
+///
+/// Used wherever the answer must describe durable state rather than something
+/// the handler just constructed — a replayed start receipt and a cancellation
+/// acknowledgement both have to report what is stored, not what this request
+/// would have created.
+fn execution_receipt(id: String, execution_state: &serde_json::Value) -> ExecutionResponse {
     let workflow_id = execution_state
         .get("workflow_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_owned();
     let status = execution_state
         .get("status")
-        .and_then(|v| v.as_str())
-        .unwrap_or("cancelled")
-        .to_string();
-
-    // Canonical `ExecutionState` exposes `started_at` (engine run start,
-    // `None` until the engine transitions to `Running`) and `created_at`
-    // (always set at construction). Fall back to `created_at` so the API
-    // response retains a meaningful timestamp for executions that have
-    // not yet been dispatched (#327).
-    let started_at = extract_timestamp(&execution_state, "started_at")
-        .or_else(|| extract_timestamp(&execution_state, "created_at"))
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_owned();
+    // `started_at` is the engine run start and stays `None` until the engine
+    // reaches `Running`; `created_at` always exists, so it is the honest
+    // fallback for an execution that has not been dispatched yet.
+    let started_at = extract_timestamp(execution_state, "started_at")
+        .or_else(|| extract_timestamp(execution_state, "created_at"))
         .unwrap_or(0);
-    // Canonical field is `completed_at`; legacy rows used `finished_at`.
-    let finished_at = extract_timestamp(&execution_state, "completed_at")
-        .or_else(|| extract_timestamp(&execution_state, "finished_at"));
+    // Canonical field is `completed_at`; legacy rows used `finished_at`. Both
+    // stay absent until the engine has actually finished.
+    let finished_at = extract_timestamp(execution_state, "completed_at")
+        .or_else(|| extract_timestamp(execution_state, "finished_at"));
 
-    // Canonical field is `workflow_input`; legacy rows used `input`.
-    let input = execution_state
-        .get("workflow_input")
-        .or_else(|| execution_state.get("input"))
-        .cloned();
-
-    let output = execution_state.get("output").cloned();
-
-    Ok(Json(ExecutionResponse {
+    ExecutionResponse {
         id,
         workflow_id,
         status,
         started_at,
         finished_at,
-        input,
-        output,
-    }))
+        // Canonical field is `workflow_input`; legacy rows used `input`.
+        input: execution_state
+            .get("workflow_input")
+            .or_else(|| execution_state.get("input"))
+            .cloned(),
+        output: execution_state.get("output").cloned(),
+    }
 }
 
 /// Return journal (log) entries for an execution.
@@ -691,20 +824,20 @@ pub async fn get_execution_logs(
         ("exec" = String, Path, description = "Execution identifier (`exe_<ULID>`)."),
     ),
     responses(
-        (status = 200, description = "Execution terminated; terminate signal enqueued for the engine.", body = ExecutionResponse),
+        (status = 202, description = "Termination accepted and durably enqueued. `Terminate` is a cooperative-cancel synonym — the engine has no forced-shutdown path — so the run has not stopped yet; the body reports the execution as it stands and the runtime terminalizes it under its own lease.", body = ExecutionResponse),
         (status = 400, description = "Invalid execution identifier or already in a terminal state.", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Execution does not exist.", body = ProblemDetails),
         (status = 409, description = "Concurrent modification detected.", body = ProblemDetails),
-        (status = 500, description = "Execution aggregate transition failed before the state/control outbox commit completed.", body = ProblemDetails),
+        (status = 500, description = "Failed to enqueue the control command.", body = ProblemDetails),
     ),
 )]
 pub async fn terminate_execution(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, id)): Path<(String, String, String)>,
-) -> ApiResult<Json<ExecutionResponse>> {
+) -> ApiResult<(StatusCode, Json<ExecutionResponse>)> {
     use nebula_core::ExecutionId;
 
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
@@ -720,7 +853,7 @@ pub async fn terminate_execution(
         .await?;
 
     // Check if execution exists
-    let (version, mut execution_state) =
+    let (_version, execution_state) =
         state_result.ok_or_else(|| ApiError::NotFound(format!("Execution {id} not found")))?;
 
     // Check if execution is already in a terminal state
@@ -738,109 +871,39 @@ pub async fn terminate_execution(
         )));
     }
 
-    // Pre-set the terminal status. Forced-terminate lands in the same
-    // `Cancelled` terminal state as cooperative cancel: cooperative cancel documents
-    // that the engine has no distinct forced-shutdown path and treats
-    // `Terminate` as a cooperative-cancel synonym (the
-    // `Running → Cancelling → Cancelled` bridge in the engine tails), and
-    // `ExecutionStatus` carries no `Terminated` variant. Write the
-    // canonical snake-case string `ExecutionStatus::Cancelled` serializes
-    // to so engine-side reads via `ExecutionStatus::deserialize` round-trip
-    // cleanly (#327, honest capability contract). Persist `completed_at` (not the legacy
-    // `finished_at`) because that is the field `ExecutionState` declares —
-    // see `crates/execution/src/state.rs`.
-    if let Some(state_obj) = execution_state.as_object_mut() {
-        state_obj.insert(
-            "status".to_string(),
-            serde_json::json!(ExecutionStatus::Cancelled.to_string()),
-        );
-
-        // Set completed_at timestamp. The canonical `ExecutionState`
-        // serializes `Option::None` as `null`, not as an absent field —
-        // so `contains_key` alone is not enough; we must also overwrite
-        // explicit nulls. RFC 3339 string matches what `DateTime<Utc>`
-        // serializes to via serde.
-        let needs_write = state_obj
-            .get("completed_at")
-            .is_none_or(serde_json::Value::is_null);
-        if needs_write {
-            let now = chrono::Utc::now();
-            state_obj.insert(
-                "completed_at".to_string(),
-                serde_json::json!(now.to_rfc3339()),
-            );
-        }
-    }
-
-    // Apply the state transition and append the Terminate outbox row in one
-    // storage-port commit. This prevents a cancelled row without a matching
-    // engine-visible control signal.
+    // Submit the intent; write nothing — same boundary as cooperative cancel.
+    //
+    // This handler used to write `Cancelled` **and** a `completed_at` of its
+    // own making, then commit both under a fencing token rebuilt from the
+    // generation it had just read. Every part of that was a claim it was not
+    // entitled to make: the engine has no forced-shutdown path (`Terminate` is
+    // a cooperative-cancel synonym), so at this instant the run has not
+    // stopped, nothing has completed, and the runtime — not this request —
+    // holds the lease that authorizes the write.
+    //
+    // The runtime performs the transition to the terminal `Cancelled` under
+    // its own lease once it has honored the command, and stamps the completion
+    // time then.
     let w3c_trace_context = w3c_trace_context_for_control_queue();
     tracing::debug!(
         execution_id = %execution_id,
         command = ControlCommand::Terminate.as_str(),
         has_trace_context = w3c_trace_context.is_some(),
-        "execution: append Terminate control row with state transition"
+        "execution: enqueue Terminate control command"
     );
-    let transition_result = state
-        .cas_transition_with_control_scoped(
+    state
+        .enqueue_control_scoped(
             &scope,
-            execution_id,
-            version,
-            execution_state.clone(),
             ControlCommand::Terminate,
+            execution_id,
             w3c_trace_context,
         )
         .await?;
 
-    if !transition_result {
-        return Err(ApiError::Conflict(
-            "concurrent modification detected; refetch execution state and retry".to_string(),
-        ));
-    }
-
-    // Extract fields from updated execution state
-    let workflow_id = execution_state
-        .get("workflow_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-
-    let status = execution_state
-        .get("status")
-        .and_then(|v| v.as_str())
-        .unwrap_or("cancelled")
-        .to_string();
-
-    // Canonical `ExecutionState` exposes `started_at` (engine run start,
-    // `None` until the engine transitions to `Running`) and `created_at`
-    // (always set at construction). Fall back to `created_at` so the API
-    // response retains a meaningful timestamp for executions that have
-    // not yet been dispatched (#327).
-    let started_at = extract_timestamp(&execution_state, "started_at")
-        .or_else(|| extract_timestamp(&execution_state, "created_at"))
-        .unwrap_or(0);
-    // Canonical field is `completed_at`; legacy rows used `finished_at`.
-    let finished_at = extract_timestamp(&execution_state, "completed_at")
-        .or_else(|| extract_timestamp(&execution_state, "finished_at"));
-
-    // Canonical field is `workflow_input`; legacy rows used `input`.
-    let input = execution_state
-        .get("workflow_input")
-        .or_else(|| execution_state.get("input"))
-        .cloned();
-
-    let output = execution_state.get("output").cloned();
-
-    Ok(Json(ExecutionResponse {
-        id,
-        workflow_id,
-        status,
-        started_at,
-        finished_at,
-        input,
-        output,
-    }))
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(execution_receipt(id, &execution_state)),
+    ))
 }
 
 /// Restart execution from the beginning.

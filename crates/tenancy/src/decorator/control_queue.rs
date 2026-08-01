@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nebula_storage_port::dto::ControlMsg;
-use nebula_storage_port::store::{ControlQueue, ReclaimOutcome};
+use nebula_storage_port::store::{ControlClaim, ControlClaimToken, ControlQueue, ReclaimOutcome};
 use nebula_storage_port::{Scope, StorageError};
 
 /// Wraps a [`ControlQueue`] and forces every `enqueue` into the bound
@@ -54,25 +54,26 @@ impl ControlQueue for ScopedControlQueue {
         &self,
         processor: &[u8; 16],
         batch_size: u32,
-    ) -> Result<Vec<ControlMsg>, StorageError> {
+    ) -> Result<Vec<ControlClaim>, StorageError> {
         self.inner.claim_pending(processor, batch_size).await
     }
 
-    async fn mark_completed(
-        &self,
-        id: &[u8; 16],
-        processor: &[u8; 16],
-    ) -> Result<(), StorageError> {
-        self.inner.mark_completed(id, processor).await
+    // Acknowledgement carries a storage-minted token, which already names its
+    // own row; there is no scope to substitute and nothing to rebind.
+    async fn mark_completed(&self, claim: &ControlClaimToken) -> Result<(), StorageError> {
+        self.inner.mark_completed(claim).await
     }
 
     async fn mark_failed(
         &self,
-        id: &[u8; 16],
-        processor: &[u8; 16],
+        claim: &ControlClaimToken,
         error: &str,
     ) -> Result<(), StorageError> {
-        self.inner.mark_failed(id, processor, error).await
+        self.inner.mark_failed(claim, error).await
+    }
+
+    async fn release_claim(&self, claim: &ControlClaimToken) -> Result<(), StorageError> {
+        self.inner.release_claim(claim).await
     }
 
     async fn reclaim_stuck(

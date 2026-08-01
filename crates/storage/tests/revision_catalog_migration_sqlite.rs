@@ -9,6 +9,9 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
 
+#[path = "support/canonical_head.rs"]
+mod canonical_head;
+
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/sqlite");
 
 type TestResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -667,7 +670,7 @@ async fn assert_closed_catalog_constraints(pool: &SqlitePool) -> TestResult<()> 
 }
 
 #[tokio::test]
-async fn clean_catalog_reaches_0041_and_enforces_closed_shapes() -> TestResult<()> {
+async fn clean_catalog_reaches_head_and_enforces_closed_shapes() -> TestResult<()> {
     let directory = tempfile::tempdir()?;
     let pool = file_pool(&directory.path().join("revision-catalog-clean.sqlite")).await;
 
@@ -680,7 +683,11 @@ async fn clean_catalog_reaches_0041_and_enforces_closed_shapes() -> TestResult<(
     )
     .fetch_one(&pool)
     .await?;
-    assert_eq!(head, 41, "a clean database must reach migration 0041");
+    assert_eq!(
+        head,
+        canonical_head::of(&MIGRATOR),
+        "a clean database must reach the canonical catalog head"
+    );
 
     assert_closed_catalog_constraints(&pool).await?;
     Ok(())
@@ -731,7 +738,7 @@ async fn migration_0041_preserves_0040_state_and_is_idempotent() -> TestResult<(
     let ledger_count_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
         .fetch_one(&pool)
         .await?;
-    MIGRATOR.run(&pool).await?;
+    MIGRATOR.run_to(41, &pool).await?;
 
     let migration = sqlx::query_as::<_, (i64, String, bool, Vec<u8>)>(
         "SELECT version, description, success, checksum
@@ -803,7 +810,7 @@ async fn migration_0041_preserves_0040_state_and_is_idempotent() -> TestResult<(
         "the upgrade must append exactly one migration ledger row"
     );
 
-    MIGRATOR.run(&pool).await?;
+    MIGRATOR.run_to(41, &pool).await?;
 
     let schema_after_rerun = sqlx::query_as::<_, (String, String, Option<String>)>(
         "SELECT type, name, sql

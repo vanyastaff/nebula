@@ -39,7 +39,7 @@ use nebula_metrics::{
 };
 use nebula_storage_port::Scope;
 use nebula_storage_port::dto::{ControlCommand, ResumeTarget};
-use nebula_storage_port::store::ControlQueue;
+use nebula_storage_port::store::{ControlClaimToken, ControlQueue};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
@@ -58,6 +58,14 @@ pub const DEFAULT_BATCH_SIZE: u32 = 32;
 /// once `LISTEN / NOTIFY` wake-up is wired as an optimisation over the
 /// authoritative polling loop.
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// How long an in-flight dispatch may keep running after shutdown is
+/// requested.
+///
+/// Long enough that ordinary work finishes and is acknowledged (the graceful
+/// shutdown contract), short enough that a dispatch parked on a durable timer
+/// or an external wait cannot hold the process open indefinitely.
+const SHUTDOWN_DISPATCH_GRACE: Duration = Duration::from_secs(5);
 
 /// Maximum backoff between `claim_pending` retries after repeated storage
 /// errors. Prevents a 10Hz error-log flood when the backend is down.
@@ -251,7 +259,7 @@ pub trait ControlDispatch: Send + Sync {
 /// A raw claimed control message. The `execution_id` decode (and its
 /// per-row failure isolation) happens in `handle_entry`, not at claim
 /// time, so one malformed row never fails the whole batch.
-struct RawClaimed(nebula_storage_port::dto::ControlMsg);
+struct RawClaimed(nebula_storage_port::store::ControlClaim);
 
 /// Backend-agnostic reclaim-sweep tally (the normalized form the
 /// metrics/log path consumes).
@@ -265,6 +273,8 @@ struct ReclaimCounts {
 struct ClaimedRow {
     /// 16-byte ULID primary key (raw bytes).
     id: [u8; 16],
+    /// Authority to acknowledge this claim attempt.
+    token: ControlClaimToken,
     /// Target execution.
     execution_id: ExecutionId,
     /// Command to deliver.
@@ -286,7 +296,12 @@ impl RawClaimed {
     /// The 16-byte row id (for failure logging before a successful
     /// decode).
     fn row_id(&self) -> [u8; 16] {
-        self.0.id
+        self.0.msg.id
+    }
+
+    /// The token that acknowledges this claim.
+    const fn token(&self) -> ControlClaimToken {
+        self.0.token
     }
 
     /// Normalize into a [`ClaimedRow`], decoding `execution_id` (carried
@@ -297,7 +312,8 @@ impl RawClaimed {
     /// tenant this message belongs to and must be threaded into every
     /// dispatch call (cross-tenant isolation invariant #7).
     fn normalize(self) -> Result<ClaimedRow, String> {
-        let m = self.0;
+        let token = self.0.token;
+        let m = self.0.msg;
         let execution_id = m.execution_id.parse::<ExecutionId>().map_err(|e| {
             format!(
                 "execution_id {:?} not a valid ExecutionId: {e}",
@@ -327,6 +343,7 @@ impl RawClaimed {
         };
         Ok(ClaimedRow {
             id: m.id,
+            token,
             execution_id,
             command: m.command,
             scope: m.scope,
@@ -460,10 +477,34 @@ impl ControlConsumer {
         tokio::spawn(async move { self.run(shutdown).await })
     }
 
+    /// How many dispatches this consumer keeps in flight at once.
+    ///
+    /// More than one because a dispatch is not a short write: `Start` and
+    /// `Resume` drive a whole execution step, and a step that parks in-process
+    /// on a durable timer stays there until the wait resolves. Awaiting each
+    /// dispatch in the claim loop — as this consumer used to — meant one parked
+    /// execution starved every subsequent command on this worker, so a `Cancel`
+    /// for *that* execution could not be delivered until it finished on its
+    /// own. That is the one command it most needs to receive.
+    ///
+    /// Bounded rather than unbounded: each in-flight dispatch holds a claimed
+    /// row and an execution lease, and an unbounded consumer would claim work
+    /// faster than it can finish it.
+    const fn max_inflight(&self) -> usize {
+        // One batch's worth. The claim loop stops claiming at this ceiling and
+        // resumes as dispatches land.
+        self.batch_size as usize
+    }
+
     /// Run the polling loop on the current task. Exits when `shutdown` is
     /// cancelled. Prefer [`spawn`](Self::spawn) unless integrating into a
     /// custom task structure.
     pub async fn run(self, shutdown: CancellationToken) {
+        let consumer = Arc::new(self);
+        consumer.run_inner(shutdown).await;
+    }
+
+    async fn run_inner(self: Arc<Self>, shutdown: CancellationToken) {
         tracing::info!(
                    processor = %hex_display(&self.processor_id),
                    batch_size = self.batch_size,
@@ -475,6 +516,9 @@ impl ControlConsumer {
                );
 
         let mut consecutive_errors: u32 = 0;
+        // Dispatches run here rather than inline, so a long or parked one
+        // cannot stall the claim loop behind it.
+        let mut inflight: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
         let mut reclaim_ticker = tokio::time::interval(self.reclaim_interval);
         // Skip the immediate first tick — we just started, nothing is stuck
         // yet and the first `claim_pending` call has priority.
@@ -491,22 +535,37 @@ impl ControlConsumer {
             let claim_sleep = tokio::time::sleep_until(claim_deadline);
             tokio::pin!(claim_sleep);
 
+            // At the ceiling there is nothing useful to claim, so wait for a
+            // dispatch to land instead of spinning on a full set.
+            let at_capacity = inflight.len() >= self.max_inflight();
+
             tokio::select! {
                 biased;
                 () = shutdown.cancelled() => {
                     tracing::info!(
                         processor = %hex_display(&self.processor_id),
-                        "control-queue consumer shutting down"
+                        inflight = inflight.len(),
+                        "control-queue consumer shutting down; draining in-flight dispatches"
                     );
+                    // Each dispatch bounds its own drain against `shutdown`
+                    // (see `handle_entry`), so this join is bounded too.
+                    while inflight.join_next().await.is_some() {}
                     return;
+                }
+                Some(_) = inflight.join_next() => {
+                    // A dispatch finished; capacity freed. Nothing else to do —
+                    // it acked its own row.
                 }
                 _ = reclaim_ticker.tick() => {
                     self.sweep_reclaim().await;
                     // `claim_deadline` is preserved — reclaim does not
                     // short-circuit the backoff or the idle poll delay.
                 }
-                () = &mut claim_sleep => {
-                    let next_delay = self.tick(&mut consecutive_errors).await;
+                () = &mut claim_sleep, if !at_capacity => {
+                    let next_delay = self
+                        .clone()
+                        .tick(&mut consecutive_errors, &shutdown, &mut inflight)
+                        .await;
                     claim_deadline = tokio::time::Instant::now()
                         + next_delay.unwrap_or(Duration::ZERO);
                 }
@@ -598,7 +657,12 @@ impl ControlConsumer {
     ///
     /// The outer loop persists this delay as a deadline so that a reclaim
     /// interruption does not cancel the backoff — see `run`.
-    async fn tick(&self, consecutive_errors: &mut u32) -> Option<Duration> {
+    async fn tick(
+        self: Arc<Self>,
+        consecutive_errors: &mut u32,
+        shutdown: &CancellationToken,
+        inflight: &mut tokio::task::JoinSet<()>,
+    ) -> Option<Duration> {
         // Claim raw rows. A malformed `execution_id` must fail only
         // *that* row (mark it failed, continue) — not the whole batch —
         // so the decode happens per row in `handle_entry`, not here.
@@ -606,7 +670,7 @@ impl ControlConsumer {
             .queue
             .claim_pending(&self.processor_id, self.batch_size)
             .await
-            .map(|msgs| msgs.into_iter().map(RawClaimed).collect())
+            .map(|claims| claims.into_iter().map(RawClaimed).collect())
             .map_err(|e| e.to_string());
 
         let claimed = match claimed {
@@ -632,15 +696,23 @@ impl ControlConsumer {
         }
 
         for row in claimed {
-            self.handle_entry(row).await;
+            let consumer = Arc::clone(&self);
+            let shutdown = shutdown.clone();
+            inflight.spawn(async move {
+                consumer.handle_entry(row, &shutdown).await;
+            });
         }
         None
     }
 
-    async fn handle_entry(&self, raw: RawClaimed) {
+    async fn handle_entry(&self, raw: RawClaimed, shutdown: &CancellationToken) {
         let row_id = raw.row_id();
+        // Captured before `normalize` consumes `raw`, so a decode failure can
+        // still be acknowledged against the claim it came from.
+        let raw_token = raw.token();
         let ClaimedRow {
             id: row_id,
+            token,
             execution_id,
             command,
             scope,
@@ -654,7 +726,7 @@ impl ControlConsumer {
                     reason = %reason,
                     "control-queue row has malformed execution_id; marking failed"
                 );
-                self.ack_failed(&row_id, &format!("malformed execution_id: {reason}"))
+                self.ack_failed(&raw_token, &format!("malformed execution_id: {reason}"))
                     .await;
                 return;
             },
@@ -704,23 +776,77 @@ impl ControlConsumer {
                 },
             }
         }
-        .instrument(span)
-        .await;
+        .instrument(span);
+
+        // Bounded drain on shutdown.
+        //
+        // Graceful shutdown flushes the claimed batch, so a command that is
+        // nearly done should finish rather than be redelivered. But a dispatch
+        // drives a whole execution step, which can park on a durable timer or
+        // an external wait, so awaiting it unconditionally means the loop never
+        // returns to its `select!` and a process asked to stop hangs for as
+        // long as the workflow does.
+        //
+        // So: keep draining after cancellation, but only within
+        // [`SHUTDOWN_DISPATCH_GRACE`]. Past that the row is abandoned to the
+        // documented recovery path — it stays `Processing` and the reclaim
+        // sweep redelivers it. Acknowledging it either way would be the unsafe
+        // choice: the command was interrupted, not completed and not rejected.
+        tokio::pin!(dispatch_result);
+        let dispatch_result = tokio::select! {
+            biased;
+            result = &mut dispatch_result => result,
+            () = shutdown.cancelled() => {
+                let Ok(result) =
+                    tokio::time::timeout(SHUTDOWN_DISPATCH_GRACE, &mut dispatch_result).await
+                else {
+                    tracing::warn!(
+                        id = %hex_display(&row_id),
+                        %execution_id,
+                        command = command.as_str(),
+                        grace_ms = SHUTDOWN_DISPATCH_GRACE.as_millis() as u64,
+                        "control-queue: dispatch did not drain within the shutdown grace; \
+                         leaving the row Processing for reclaim"
+                    );
+                    return;
+                };
+                result
+            }
+        };
 
         match dispatch_result {
-            Ok(()) => self.ack_completed(&row_id).await,
+            Ok(()) => self.ack_completed(&token).await,
             Err(ControlDispatchError::Deferred(ref reason)) => {
-                // Transient contention: leave the row in `Processing` so the
-                // B1 reclaim sweep moves it back to `Pending` for redelivery.
-                // Calling `mark_failed` here would permanently record the row as
-                // failed — redelivery under B1 is only for `Processing` rows.
+                // Transient contention: hand the row straight back so the next
+                // poll retries it. `mark_failed` would permanently fail a
+                // command that is merely early.
+                //
+                // Leaving it in `Processing` for the reclaim sweep — as this
+                // used to — meant waiting `reclaim_after`, minutes by design,
+                // because that sweep exists to detect a runner that *died*
+                // mid-dispatch. A `Cancel` that lost a millisecond-wide race
+                // with the `Start` still acquiring its lease is not a dead
+                // runner, and making a user wait minutes for it is a defect the
+                // API's own aggregate write used to hide.
+                //
+                // Reclaim stays the backstop: if the release itself fails, the
+                // row is still `Processing` and the sweep recovers it.
+                if let Err(error) = self.queue.release_claim(&token).await {
+                    tracing::warn!(
+                        id = %hex_display(&row_id),
+                        %execution_id,
+                        %error,
+                        "control-queue: releasing a deferred claim failed; leaving the row \
+                         in Processing for B1 reclaim"
+                    );
+                }
                 tracing::warn!(
                     id = %hex_display(&row_id),
                     %execution_id,
                     command = command.as_str(),
                     reason = %reason,
                     "control-queue dispatch deferred (transient contention); \
-                     leaving row in Processing for B1 reclaim"
+                     row returned to Pending for prompt redelivery"
                 );
             },
             Err(e) => {
@@ -731,41 +857,47 @@ impl ControlConsumer {
                                    error = %e,
                 "control-queue dispatch failed; marking failed (no auto-retry — )"
                                );
-                self.ack_failed(&row_id, &e.to_string()).await;
+                self.ack_failed(&token, &e.to_string()).await;
             },
         }
     }
 
-    async fn ack_completed(&self, id: &[u8; 16]) {
+    async fn ack_completed(&self, claim: &ControlClaimToken) {
         // NOTE: dispatch already ran successfully at this point. If
         // `mark_completed` fails, the row stays in `Processing` and the B1
         // reclaim path redelivers the
         // command. Correctness under redelivery depends entirely on
         // `ControlDispatch` impls being idempotent per `(execution_id, command)`
         // — see the trait-level docs and.
+        //
+        // `FencedOut` is the one failure that is not a lost write: this claim
+        // was reclaimed and another attempt now owns the row, so leaving it
+        // alone is exactly right.
         let result: Result<(), String> = self
             .queue
-            .mark_completed(id, &self.processor_id)
+            .mark_completed(claim)
             .await
             .map_err(|e| e.to_string());
         if let Err(e) = result {
             tracing::error!(
-                id = %hex_display(id),
+                id = %hex_display(claim.row_id()),
+                claim_generation = %claim.generation(),
                 error = %e,
                 "control-queue mark_completed failed; row left in Processing for reclaim"
             );
         }
     }
 
-    async fn ack_failed(&self, id: &[u8; 16], reason: &str) {
+    async fn ack_failed(&self, claim: &ControlClaimToken, reason: &str) {
         let result: Result<(), String> = self
             .queue
-            .mark_failed(id, &self.processor_id, reason)
+            .mark_failed(claim, reason)
             .await
             .map_err(|e| e.to_string());
         if let Err(e) = result {
             tracing::error!(
-                id = %hex_display(id),
+                id = %hex_display(claim.row_id()),
+                claim_generation = %claim.generation(),
                 error = %e,
                 "control-queue mark_failed failed; row left in Processing for reclaim"
             );

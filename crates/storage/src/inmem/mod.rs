@@ -18,6 +18,7 @@ mod node_result;
 mod plan_flavor_catalog;
 mod resume_producer;
 mod resume_token;
+mod start_acceptance;
 mod workflow;
 
 pub use control_queue::InMemoryControlQueue;
@@ -34,4 +35,5 @@ pub use node_result::{InMemoryCheckpointStore, InMemoryNodeResultStore};
 pub use plan_flavor_catalog::InMemoryPlanFlavorCatalog;
 pub use resume_producer::InMemoryResumeProducer;
 pub use resume_token::InMemoryResumeTokenStore;
+pub use start_acceptance::InMemoryStartAcceptanceStore;
 pub use workflow::{InMemoryWorkflowStore, InMemoryWorkflowVersionStore};

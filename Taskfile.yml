@@ -7,6 +7,17 @@ dotenv:
   - 'deploy/.env'
   - 'deploy/.env.example'
 
+# `deploy/.env.example` is a template, and it ships a placeholder
+# `OTEL_EXPORTER_OTLP_ENDPOINT` pointing at a collector no developer runs
+# locally. Loading it as dotenv therefore hands every task an exporter target
+# that does not answer, which silently costs trace propagation and turns the
+# documented pre-PR gate red on a clean checkout. Empty is the sanctioned
+# opt-out (`normalise_otlp_endpoint`), so test tasks state it explicitly rather
+# than inheriting the template's value. Run `task obs:up` and set the endpoint
+# in `deploy/.env` when you actually want spans exported.
+env:
+  OTEL_EXPORTER_OTLP_ENDPOINT: ''
+
 vars:
   CARGO_FLAGS: '--workspace'
   COMPOSE_LOCAL: 'deploy/docker/docker-compose.yml'

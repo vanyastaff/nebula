@@ -6,6 +6,11 @@ use std::future::Future;
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 use tracing::{Instrument as _, Span};
 
+// Adoption is entirely `sqlx::migrate` ledger manipulation, so it exists only
+// where a backend does. Without this gate the module's `use sqlx::migrate::..`
+// fails to resolve under `--no-default-features`, which an `--all-features`
+// clippy pass cannot see.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) mod adopt;
 pub(crate) mod catalog;
 
@@ -371,10 +376,9 @@ async fn sqlite_main_database_path(
 async fn verify_shared_memory_visibility(pool: &sqlx::SqlitePool) -> Result<(), CatalogSetupError> {
     use std::time::Duration;
 
-    let mut observer = tokio::time::timeout(Duration::from_secs(5), pool.acquire())
+    let mut observer = tokio::time::timeout(Duration::from_secs(5), acquire_setup_connection(pool))
         .await
-        .map_err(|_| CatalogSetupError::Unavailable)?
-        .map_err(|_| CatalogSetupError::Unavailable)?;
+        .map_err(|_| CatalogSetupError::Unavailable)??;
     sqlite_foreign_keys_enabled::<CatalogSetupError>(&mut observer).await?;
     let observed_head: Option<i64> =
         sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations WHERE success")
@@ -393,15 +397,66 @@ async fn verify_shared_memory_visibility(pool: &sqlx::SqlitePool) -> Result<(), 
     }
 }
 
+/// Whether a `sqlx` failure is SQLite reporting a lock that clears on its own.
+///
+/// Shared-cache mode returns `SQLITE_LOCKED_SHAREDCACHE` (262) **immediately**
+/// and deliberately does not route it through `busy_timeout`: a busy handler
+/// cannot resolve a shared-cache lock without deadlocking, so SQLite hands the
+/// condition to the application to retry. `SQLITE_BUSY` (5) and plain
+/// `SQLITE_LOCKED` (6), plus their extended forms, are the same class.
+#[cfg(feature = "sqlite")]
+fn is_transient_sqlite_lock(error: &sqlx::Error) -> bool {
+    let sqlx::Error::Database(database_error) = error else {
+        return false;
+    };
+    // Primary codes 5 (BUSY) and 6 (LOCKED), and the extended codes that carry
+    // them in the low byte — 261 BUSY_SNAPSHOT, 262 LOCKED_SHAREDCACHE,
+    // 517 BUSY_TIMEOUT.
+    matches!(
+        database_error.code().as_deref(),
+        Some("5" | "6" | "261" | "262" | "517")
+    )
+}
+
+/// Acquire a pooled connection for schema setup, waiting out a transient lock.
+///
+/// Concurrent startup is the ordinary case, not an edge: while one connection
+/// runs the migration DDL it holds the schema lock, and any *other* connection
+/// opening against the same shared-cache database is refused outright. Failing
+/// setup on that would make a second replica's boot depend on losing a race it
+/// has no way to avoid, so the loser waits for the lock to clear instead —
+/// bounded by the same budget that covers a peer's whole migration run, so a
+/// genuinely stuck peer still surfaces.
+#[cfg(feature = "sqlite")]
+async fn acquire_setup_connection(
+    pool: &sqlx::SqlitePool,
+) -> Result<sqlx::pool::PoolConnection<sqlx::Sqlite>, CatalogSetupError> {
+    let deadline = tokio::time::Instant::now() + SETUP_LOCK_TIMEOUT;
+    loop {
+        match pool.acquire().await {
+            Ok(connection) => return Ok(connection),
+            Err(error) if is_transient_sqlite_lock(&error) => {
+                if tokio::time::Instant::now() >= deadline {
+                    tracing::warn!(
+                        target: "nebula_storage::migration",
+                        %error,
+                        "schema-setup connection stayed locked past the setup budget"
+                    );
+                    return Err(CatalogSetupError::Unavailable);
+                }
+                tokio::time::sleep(SQLITE_SETUP_LOCK_POLL_INTERVAL).await;
+            },
+            Err(_) => return Err(CatalogSetupError::Unavailable),
+        }
+    }
+}
+
 #[cfg(feature = "sqlite")]
 pub(crate) async fn setup_sqlite_pool(pool: sqlx::SqlitePool) -> Result<(), CatalogSetupError> {
     let span = sqlite_setup_span(<CatalogOnly as AdmissionPolicy<sqlx::SqliteConnection>>::SCOPE);
     async {
         let result = async {
-            let mut connection = pool
-                .acquire()
-                .await
-                .map_err(|_| CatalogSetupError::Unavailable)?;
+            let mut connection = acquire_setup_connection(&pool).await?;
             let main_path = sqlite_main_database_path(&mut connection).await?;
             let is_memory = main_path.as_os_str().is_empty();
             if is_memory {
@@ -410,10 +465,7 @@ pub(crate) async fn setup_sqlite_pool(pool: sqlx::SqlitePool) -> Result<(), Cata
                 // visibility.
                 drop(connection);
                 let _setup_guard = acquire_sqlite_memory_setup_guard().await?;
-                let mut migration_connection = pool
-                    .acquire()
-                    .await
-                    .map_err(|_| CatalogSetupError::Unavailable)?;
+                let mut migration_connection = acquire_setup_connection(&pool).await?;
                 migrate_sqlite_connection::<CatalogOnly>(&mut migration_connection).await?;
                 if pool.options().get_max_connections() > 1 {
                     verify_shared_memory_visibility(&pool).await?;
@@ -670,13 +722,45 @@ where
 mod tests {
     use super::{GENERAL_CATALOG_SUPPORTED_FLOOR, catalog};
 
+    /// Deliberately spelled with literals: this is the tripwire that makes a
+    /// new catalog head a decision rather than a side effect. Deriving either
+    /// value from the migrator would make it pass automatically and prove
+    /// nothing.
+    ///
+    /// Head 0044 (`control_queue_claim_generation`) reviewed against the
+    /// floor: it adds one defaulted column to `port_control_queue` and performs
+    /// no destructive transform, so it needs no aggregate-owner validation and
+    /// the floor stays at 0040. The same review covered 0043
+    /// (`port_start_key_reservations`), which creates one new table:
+    /// it creates one new table and touches no existing relation, so it needs
+    /// no aggregate-owner validation and the floor stays at 0040. The same
+    /// review covered 0042 (`job_dispatch_claim_generation`), which adds one
+    /// defaulted column and performs no destructive transform. A database
+    /// admitted at 0040 or later still reaches this head by ordinary forward
+    /// migration.
+    /// The lock classifier decides whether setup waits or fails.
+    ///
+    /// Both directions are load-bearing: treating a real failure as transient
+    /// would park startup until the whole setup budget elapsed, and treating
+    /// `SQLITE_LOCKED_SHAREDCACHE` as fatal is the concurrent-startup flake it
+    /// was added to remove.
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn only_sqlite_lock_codes_are_treated_as_transient() {
+        use super::is_transient_sqlite_lock;
+
+        // A non-database error is never a lock.
+        assert!(!is_transient_sqlite_lock(&sqlx::Error::PoolClosed));
+        assert!(!is_transient_sqlite_lock(&sqlx::Error::WorkerCrashed));
+    }
+
     #[test]
     fn new_catalog_head_requires_explicit_admission_policy_review() {
         assert_eq!(GENERAL_CATALOG_SUPPORTED_FLOOR, 40);
         #[cfg(feature = "sqlite")]
-        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 41);
+        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 44);
         #[cfg(feature = "postgres")]
-        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 41);
+        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 44);
     }
 
     /// The setup guard must never hold a descriptor on the database file.

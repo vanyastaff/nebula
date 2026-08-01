@@ -10,6 +10,9 @@ use sqlx::{
 };
 
 // Compile the canonical on-disk catalog into this acceptance-test binary.
+#[path = "support/canonical_head.rs"]
+mod canonical_head;
+
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/sqlite");
 
 const NAMED_ID: &str = "cred_01JAZ000000000000000000001";
@@ -659,7 +662,8 @@ async fn failed_migration_0039_rolls_back_and_can_be_retried() {
             .await
             .expect("migration ledger head must remain readable");
     assert_eq!(
-        repaired_head, 41,
+        repaired_head,
+        canonical_head::of(&MIGRATOR),
         "the repaired database must reach the full migration catalog"
     );
     let repaired_claim_id_columns: i64 = sqlx::query_scalar(
@@ -698,7 +702,8 @@ async fn migration_0039_rebuilds_credentials_without_live_data_loss() {
     .await
     .expect("migration ledger head must be readable");
     assert_eq!(
-        head, 41,
+        head,
+        canonical_head::of(&MIGRATOR),
         "the full catalog must install the dormant plan/flavor catalog after credential migration 0040"
     );
 

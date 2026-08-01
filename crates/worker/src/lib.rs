@@ -52,17 +52,19 @@
 //! [`JobDispatchQueue`]: nebula_storage_port::store::JobDispatchQueue
 //! [`EngineExecutionSink`]: nebula_engine::EngineExecutionSink
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use nebula_core::PluginKey;
 use nebula_engine::{
-    DEFAULT_TIMER_SCAN_INTERVAL, EngineExecutionSink, ExecutionStores, WorkflowEngine,
+    ControlConsumer, DEFAULT_TIMER_SCAN_INTERVAL, EngineControlDispatch, EngineExecutionSink,
+    ExecutionStores, WorkflowEngine,
 };
 use nebula_metrics::MetricsRegistry;
 use nebula_orchestrator::Orchestrator;
-use nebula_storage_port::store::JobDispatchQueue;
-use tokio::task::JoinHandle;
+use nebula_storage_port::store::{ControlQueue, JobDispatchQueue};
+use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 
 /// Errors that can be produced when building a [`WorkerRuntime`].
@@ -77,6 +79,68 @@ pub enum WorkerBuildError {
     /// on an empty available set rather than scanning the queue.
     #[error("available_plugins is empty — a worker must advertise at least one PluginKey")]
     NoPlugins,
+
+    /// No control queue was wired.
+    ///
+    /// Without one the worker drains job-dispatch rows but nothing drains the
+    /// control queue, so an execution accepted over HTTP is persisted with a
+    /// `Start` command no component ever consumes: the run never begins, and
+    /// the only symptom is an execution that stays `Created` forever. Requiring
+    /// the queue makes that miswiring a build error instead of silence.
+    #[error("no control queue wired — accepted Start commands would never be consumed")]
+    NoControlQueue,
+
+    /// The timer-scan interval is zero.
+    ///
+    /// `tokio::time::interval` panics on a zero period, so a zero here does not
+    /// mean "scan continuously" — it means the scanner task dies the moment it
+    /// starts. Rejecting it at build time keeps a plausible-looking
+    /// configuration from turning into a panic inside a supervised task.
+    #[error("timer scan interval must be greater than zero")]
+    ZeroTimerScanInterval,
+}
+
+/// Why a supervised worker component stopped.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum WorkerRuntimeError {
+    /// A supervised component panicked or was cancelled.
+    ///
+    /// Surfaced rather than swallowed: a worker whose control consumer died is
+    /// no longer draining accepted commands, and a silent survivor process is
+    /// indistinguishable from a healthy one.
+    #[error("worker component `{component}` ended abnormally: {source}")]
+    ComponentJoin {
+        /// Which component ended.
+        component: &'static str,
+        /// The join failure.
+        #[source]
+        source: tokio::task::JoinError,
+    },
+}
+
+/// What one supervised task reports: which component it was, and — when the
+/// failure happened *inside* it — the join failure it carried out.
+type ComponentOutcome = Result<Component, (Component, tokio::task::JoinError)>;
+
+/// One supervised top-level worker task.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Component {
+    Orchestrator,
+    ControlConsumer,
+    TimerScanner,
+    EngineShutdownRelay,
+}
+
+impl Component {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Orchestrator => "orchestrator",
+            Self::ControlConsumer => "control-consumer",
+            Self::TimerScanner => "timer-scanner",
+            Self::EngineShutdownRelay => "engine-shutdown-relay",
+        }
+    }
 }
 
 /// An assembled, ready-to-run worker runtime.
@@ -91,6 +155,11 @@ pub struct WorkerRuntime {
     engine: Arc<WorkflowEngine>,
     timer_scan_interval: Duration,
     orchestrator: Orchestrator,
+    /// Drains the durable control queue the API writes accepted commands to.
+    ///
+    /// Held by the runtime rather than by the caller so it lives and dies with
+    /// the orchestrator under one cancellation tree.
+    control_consumer: ControlConsumer,
     processor_id: [u8; 16],
     available_plugins_count: usize,
 }
@@ -118,15 +187,140 @@ impl WorkerRuntime {
     /// Mirrors [`Orchestrator::run`]: flushes the in-flight batch, then returns.
     /// Rows claimed but not yet marked remain `Processing` and are recovered by
     /// the next runner's reclaim sweep.
-    pub async fn run(self, shutdown: CancellationToken) {
+    pub async fn run(self, shutdown: CancellationToken) -> Result<(), WorkerRuntimeError> {
         tracing::info!(
             processor = %hex_id(&self.processor_id),
             available_plugins = self.available_plugins_count,
             "worker runtime starting (ADR-0095 D1)"
         );
-        let _scanner = Arc::clone(&self.engine)
-            .spawn_timer_scanner(self.timer_scan_interval, shutdown.clone());
-        self.orchestrator.run(shutdown).await;
+
+        // Recover persisted parked waits *before* joining the steady-state
+        // loops.
+        //
+        // The periodic scanner deliberately skips its first tick, on the
+        // reasoning that nothing is overdue the instant a process starts. That
+        // is true of a fresh process and false of a restarted one: a wait
+        // parked before the restart is overdue precisely *because* the process
+        // was down, and waiting a full scan interval to notice leaves the
+        // execution stalled for up to that long with every component reporting
+        // healthy. Sweeping once at startup makes recovery an ordered step the
+        // caller can observe rather than a side effect of the next tick.
+        //
+        // A sweep failure is logged, not fatal: it re-runs on the next tick,
+        // and refusing to start would turn a transient storage blip into an
+        // outage.
+        match self.engine.sweep_overdue_timers().await {
+            Ok(0) => tracing::debug!("startup recovery sweep found no overdue parked waits"),
+            Ok(redriven) => tracing::info!(
+                redriven,
+                "startup recovery sweep re-armed parked waits from persisted state"
+            ),
+            Err(error) => tracing::error!(
+                %error,
+                "startup recovery sweep failed; the periodic scanner will retry"
+            ),
+        }
+
+        // One cancellation tree, and every top-level task joined.
+        //
+        // The timer scanner used to be spawned and its `JoinHandle` dropped.
+        // A detached task that panics takes its failure with it: the worker
+        // keeps serving, parked executions silently stop waking, and nothing
+        // reports it. Joining all three means a component death is an error the
+        // app can act on, and cancelling the token stops the siblings rather
+        // than leaving them running against a half-dead runtime.
+        // Each task reports which component it is, so a failure is attributed
+        // rather than guessed. A task that panics yields only a `JoinError`, so
+        // the id map carries the label the payload no longer can.
+        let mut components: JoinSet<ComponentOutcome> = JoinSet::new();
+        let mut labels: HashMap<tokio::task::Id, Component> = HashMap::new();
+
+        // Relay this runtime's stop to the engine before anything else.
+        //
+        // The engine holds each in-flight execution's lease, and only the
+        // engine can release it: a dropped dispatch future runs
+        // `LeaseGuard::drop`, which cannot `await`. Without this relay a
+        // graceful restart leaves every parked execution's lease alive for its
+        // full TTL, so the successor that just started — the whole reason for
+        // the restart — is fenced out of work nobody is doing.
+        let engine_shutdown = self.engine.shutdown_token();
+        let relay_shutdown = shutdown.clone();
+        let handle = components.spawn(async move {
+            relay_shutdown.cancelled().await;
+            engine_shutdown.cancel();
+            Ok(Component::EngineShutdownRelay)
+        });
+        labels.insert(handle.id(), Component::EngineShutdownRelay);
+
+        let orchestrator_shutdown = shutdown.clone();
+        let orchestrator = self.orchestrator;
+        let handle = components.spawn(async move {
+            orchestrator.run(orchestrator_shutdown).await;
+            Ok(Component::Orchestrator)
+        });
+        labels.insert(handle.id(), Component::Orchestrator);
+
+        let consumer_shutdown = shutdown.clone();
+        let control_consumer = self.control_consumer;
+        let handle = components.spawn(async move {
+            control_consumer.run(consumer_shutdown).await;
+            Ok(Component::ControlConsumer)
+        });
+        labels.insert(handle.id(), Component::ControlConsumer);
+
+        let scanner_shutdown = shutdown.clone();
+        let scanner_engine = Arc::clone(&self.engine);
+        let scan_interval = self.timer_scan_interval;
+        let handle = components.spawn(async move {
+            let scanner = scanner_engine.spawn_timer_scanner(scan_interval, scanner_shutdown);
+            // The scanner owns its own task, so its failure has to be carried
+            // out deliberately. Discarding the `JoinError` here would report a
+            // panicked scanner as a clean stop: the runtime would keep serving
+            // with nothing waking parked executions, and the supervision loop
+            // would neither record the error nor stop the siblings — the exact
+            // silence joining the task was meant to end.
+            match scanner.await {
+                Ok(()) => Ok(Component::TimerScanner),
+                Err(source) => Err((Component::TimerScanner, source)),
+            }
+        });
+        labels.insert(handle.id(), Component::TimerScanner);
+
+        let mut first_failure = None;
+        while let Some(joined) = components.join_next().await {
+            let failure = match joined {
+                Ok(Ok(component)) => {
+                    tracing::debug!(component = component.label(), "worker component stopped");
+                    None
+                },
+                // A task this runtime supervises failed inside itself.
+                Ok(Err((component, source))) => Some((component, source)),
+                // The supervised task itself panicked or was cancelled; the id
+                // map says which one.
+                Err(source) => {
+                    let component = labels
+                        .get(&source.id())
+                        .copied()
+                        .unwrap_or(Component::Orchestrator);
+                    Some((component, source))
+                },
+            };
+            if let Some((component, source)) = failure {
+                tracing::error!(
+                    component = component.label(),
+                    error = %source,
+                    "worker component ended abnormally; stopping the runtime"
+                );
+                if first_failure.is_none() {
+                    first_failure = Some(WorkerRuntimeError::ComponentJoin {
+                        component: component.label(),
+                        source,
+                    });
+                }
+                shutdown.cancel();
+            }
+        }
+        first_failure.map_or(Ok(()), Err)
     }
 
     /// Spawn the claim-loop and durable-timer scanner as a single Tokio task.
@@ -136,7 +330,7 @@ impl WorkerRuntime {
     /// so they stop together. The caller owns signal→[`CancellationToken`] wiring;
     /// this crate provides no `tokio::signal` integration so it composes into any
     /// shutdown strategy.
-    pub fn spawn(self, shutdown: CancellationToken) -> JoinHandle<()> {
+    pub fn spawn(self, shutdown: CancellationToken) -> JoinHandle<Result<(), WorkerRuntimeError>> {
         tracing::info!(
             processor = %hex_id(&self.processor_id),
             available_plugins = self.available_plugins_count,
@@ -155,6 +349,9 @@ pub struct WorkerRuntimeBuilder {
     engine: Arc<WorkflowEngine>,
     stores: ExecutionStores,
     queue: Arc<dyn JobDispatchQueue>,
+    /// Durable control queue the API writes accepted commands to. Required at
+    /// `build` time — see [`WorkerBuildError::NoControlQueue`].
+    control_queue: Option<Arc<dyn ControlQueue>>,
     available_plugins: Vec<PluginKey>,
     processor_id: [u8; 16],
     // Optional orchestrator overrides — all None means "use Orchestrator defaults".
@@ -207,6 +404,7 @@ impl WorkerRuntimeBuilder {
             engine,
             stores,
             queue,
+            control_queue: None,
             available_plugins,
             processor_id,
             batch_size: None,
@@ -217,6 +415,16 @@ impl WorkerRuntimeBuilder {
             metrics: None,
             timer_scan_interval: None,
         }
+    }
+
+    /// Wire the durable control queue this worker drains.
+    ///
+    /// MUST be the same backend the API enqueues accepted commands onto —
+    /// pointing it at a different store leaves the run undriven while every
+    /// component reports healthy.
+    pub fn with_control_queue(mut self, control_queue: Arc<dyn ControlQueue>) -> Self {
+        self.control_queue = Some(control_queue);
+        self
     }
 
     /// Override the claim batch size (default: [`Orchestrator`] default = 32).
@@ -280,6 +488,13 @@ impl WorkerRuntimeBuilder {
         if self.available_plugins.is_empty() {
             return Err(WorkerBuildError::NoPlugins);
         }
+        let control_queue = self.control_queue.ok_or(WorkerBuildError::NoControlQueue)?;
+        let timer_scan_interval = self
+            .timer_scan_interval
+            .unwrap_or(DEFAULT_TIMER_SCAN_INTERVAL);
+        if timer_scan_interval.is_zero() {
+            return Err(WorkerBuildError::ZeroTimerScanInterval);
+        }
 
         let sink = Arc::new(EngineExecutionSink::new(
             Arc::clone(&self.engine),
@@ -313,12 +528,23 @@ impl WorkerRuntimeBuilder {
             orchestrator = orchestrator.with_metrics(m);
         }
 
+        // The dispatch reads status through the *same* execution store the
+        // engine commits against, so the consumer's idempotency check and the
+        // engine's CAS observe one row.
+        let control_consumer = ControlConsumer::new(
+            control_queue,
+            Arc::new(EngineControlDispatch::new(
+                Arc::clone(&self.engine),
+                Arc::clone(&self.stores.execution),
+            )),
+            self.processor_id,
+        );
+
         Ok(WorkerRuntime {
             engine: Arc::clone(&self.engine),
-            timer_scan_interval: self
-                .timer_scan_interval
-                .unwrap_or(DEFAULT_TIMER_SCAN_INTERVAL),
+            timer_scan_interval,
             orchestrator,
+            control_consumer,
             processor_id: self.processor_id,
             available_plugins_count,
         })

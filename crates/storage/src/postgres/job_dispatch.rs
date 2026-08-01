@@ -30,7 +30,9 @@ use nebula_core::PluginKey;
 use nebula_storage_port::dto::{
     DispatchKind, DispatchOutcome, JobDispatchMsg, NewExecution, TriggerDedupRow,
 };
-use nebula_storage_port::store::{JobDispatchQueue, ReclaimOutcome, TriggerDedupInbox};
+use nebula_storage_port::store::{
+    ClaimGeneration, JobClaim, JobClaimToken, JobDispatchQueue, ReclaimOutcome, TriggerDedupInbox,
+};
 use nebula_storage_port::{Scope, StorageError};
 use sqlx::{PgPool, Row};
 
@@ -68,6 +70,47 @@ fn plugins_to_jsonb(plugins: &[PluginKey]) -> serde_json::Value {
             .map(|k| serde_json::Value::String(k.as_str().to_owned()))
             .collect(),
     )
+}
+
+/// Pair a claimed row's message with the generation the claiming `UPDATE`
+/// minted for it.
+fn row_to_claim(row: &sqlx::postgres::PgRow) -> Result<JobClaim, StorageError> {
+    let msg = row_to_msg(row)?;
+    let generation: i64 = row.try_get("claim_generation").map_err(conn_err)?;
+    Ok(JobClaim {
+        token: JobClaimToken::new(msg.id, decode_generation(generation, &msg.id)?),
+        msg,
+    })
+}
+
+/// Widen a persisted generation to the port's `u64`.
+///
+/// `claim_generation` is a non-negative `BIGINT`; a negative value is
+/// persisted corruption, and treating it as `0` would make a stale token
+/// match. Fail closed instead.
+fn decode_generation(generation: i64, id: &[u8; 16]) -> Result<ClaimGeneration, StorageError> {
+    u64::try_from(generation)
+        .map(ClaimGeneration::new)
+        .map_err(|_| {
+            StorageError::Serialization(format!(
+                "invalid job_dispatch claim_generation {generation} (id={})",
+                hex::encode(id)
+            ))
+        })
+}
+
+/// Narrow a token's generation for binding against the `BIGINT` column.
+///
+/// A generation beyond `i64::MAX` cannot name a persisted row, so binding a
+/// saturated value would fence against the wrong row. Fail closed instead.
+fn generation_bind(claim: &JobClaimToken) -> Result<i64, StorageError> {
+    i64::try_from(claim.generation().get()).map_err(|_| {
+        StorageError::Serialization(format!(
+            "job_dispatch claim generation {} exceeds the persisted range (id={})",
+            claim.generation(),
+            hex::encode(claim.row_id())
+        ))
+    })
 }
 
 fn row_to_msg(row: &sqlx::postgres::PgRow) -> Result<JobDispatchMsg, StorageError> {
@@ -130,6 +173,33 @@ impl PgJobDispatchQueue {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
+
+    /// Explain why a fenced acknowledgement matched no row.
+    ///
+    /// The fenced `UPDATE` reports only "zero rows", which conflates "the row
+    /// is gone" with "this token is stale". Callers need them apart: an absent
+    /// row is a lost write, a superseded token is the fence doing its job.
+    /// The follow-up read is on the failure path only, so the acknowledged
+    /// path stays a single statement.
+    async fn unacknowledgeable(&self, claim: &JobClaimToken) -> Result<StorageError, StorageError> {
+        let exists: Option<i32> =
+            sqlx::query_scalar("SELECT 1 FROM port_job_dispatch_queue WHERE id = $1")
+                .bind(claim.row_id().as_slice())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(conn_err)?;
+        Ok(if exists.is_some() {
+            StorageError::FencedOut {
+                entity: "job_dispatch",
+                id: hex::encode(claim.row_id()),
+            }
+        } else {
+            StorageError::NotFound {
+                entity: "job_dispatch",
+                id: hex::encode(claim.row_id()),
+            }
+        })
+    }
 }
 
 #[async_trait::async_trait]
@@ -169,7 +239,7 @@ impl JobDispatchQueue for PgJobDispatchQueue {
         processor: &[u8; 16],
         batch_size: u32,
         available_plugins: &[PluginKey],
-    ) -> Result<Vec<JobDispatchMsg>, StorageError> {
+    ) -> Result<Vec<JobClaim>, StorageError> {
         if available_plugins.is_empty() {
             return Ok(Vec::new());
         }
@@ -186,7 +256,8 @@ impl JobDispatchQueue for PgJobDispatchQueue {
         let available_jsonb = plugins_to_jsonb(available_plugins);
         let rows = sqlx::query(
             "UPDATE port_job_dispatch_queue \
-             SET status = 'Processing', processed_by = $1, processed_at_ms = $2 \
+             SET status = 'Processing', processed_by = $1, processed_at_ms = $2, \
+                 claim_generation = claim_generation + 1 \
              WHERE id IN ( \
                  SELECT id FROM port_job_dispatch_queue \
                  WHERE status = 'Pending' \
@@ -198,7 +269,8 @@ impl JobDispatchQueue for PgJobDispatchQueue {
              ) \
              RETURNING id, execution_id, workspace_id, org_id, command, \
                        payload, event_id, target_flavor_sha, required_plugin_key, \
-                       required_plugins, w3c_traceparent, reclaim_count",
+                       required_plugins, w3c_traceparent, reclaim_count, \
+                       claim_generation",
         )
         .bind(processor.as_slice())
         .bind(now_ms)
@@ -208,7 +280,10 @@ impl JobDispatchQueue for PgJobDispatchQueue {
         .fetch_all(&self.pool)
         .await
         .map_err(conn_err)?;
-        let claimed = rows.iter().map(row_to_msg).collect::<Result<Vec<_>, _>>()?;
+        let claimed = rows
+            .iter()
+            .map(row_to_claim)
+            .collect::<Result<Vec<_>, _>>()?;
         tracing::debug!(
             target: "nebula_storage::postgres",
             claimed = claimed.len(),
@@ -217,60 +292,38 @@ impl JobDispatchQueue for PgJobDispatchQueue {
         Ok(claimed)
     }
 
-    async fn mark_dispatched(
-        &self,
-        id: &[u8; 16],
-        processor: &[u8; 16],
-    ) -> Result<(), StorageError> {
-        // Zero rows_affected means this worker no longer owns the job (reclaimed
-        // by another worker or the job id does not exist). Fail-closed: treat
-        // lost ownership as NotFound — the caller must not assume success when
-        // the ownership predicate (`processed_by = $2`) was not satisfied.
+    async fn mark_dispatched(&self, claim: &JobClaimToken) -> Result<(), StorageError> {
         let rows_updated = sqlx::query(
             "UPDATE port_job_dispatch_queue SET status = 'Dispatched' \
-             WHERE id = $1 AND status = 'Processing' AND processed_by = $2",
+             WHERE id = $1 AND status = 'Processing' AND claim_generation = $2",
         )
-        .bind(id.as_slice())
-        .bind(processor.as_slice())
+        .bind(claim.row_id().as_slice())
+        .bind(generation_bind(claim)?)
         .execute(&self.pool)
         .await
         .map_err(conn_err)?
         .rows_affected();
         if rows_updated == 0 {
-            return Err(StorageError::NotFound {
-                entity: "job_dispatch",
-                id: hex::encode(id),
-            });
+            return Err(self.unacknowledgeable(claim).await?);
         }
         Ok(())
     }
 
-    async fn mark_failed(
-        &self,
-        id: &[u8; 16],
-        processor: &[u8; 16],
-        error: &str,
-    ) -> Result<(), StorageError> {
-        // Zero rows_affected means this worker no longer owns the job (reclaimed
-        // by another worker or the job id does not exist). Fail-closed: same
-        // NotFound semantics as mark_dispatched.
+    async fn mark_failed(&self, claim: &JobClaimToken, error: &str) -> Result<(), StorageError> {
         let rows_updated = sqlx::query(
             "UPDATE port_job_dispatch_queue \
              SET status = 'Failed', error_message = $1 \
-             WHERE id = $2 AND status = 'Processing' AND processed_by = $3",
+             WHERE id = $2 AND status = 'Processing' AND claim_generation = $3",
         )
         .bind(error)
-        .bind(id.as_slice())
-        .bind(processor.as_slice())
+        .bind(claim.row_id().as_slice())
+        .bind(generation_bind(claim)?)
         .execute(&self.pool)
         .await
         .map_err(conn_err)?
         .rows_affected();
         if rows_updated == 0 {
-            return Err(StorageError::NotFound {
-                entity: "job_dispatch",
-                id: hex::encode(id),
-            });
+            return Err(self.unacknowledgeable(claim).await?);
         }
         Ok(())
     }
@@ -299,6 +352,10 @@ impl JobDispatchQueue for PgJobDispatchQueue {
         .await
         .map_err(conn_err)?
         .rows_affected();
+        // `claim_generation` is deliberately untouched here: ownership is
+        // cleared, but the counter only ever moves forward, so the next claim
+        // mints a value strictly greater than the token this reclaim just
+        // invalidated. Resetting it would let a stale token match again.
         let reclaimed = sqlx::query(
             "UPDATE port_job_dispatch_queue \
              SET status = 'Pending', reclaim_count = reclaim_count + 1, \

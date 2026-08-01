@@ -103,6 +103,10 @@ pub mod session_token;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
 
+/// Backend-independent start-key replay decision, shared by every
+/// `StartAcceptanceStore` so the accept/replay/mismatch fork cannot drift
+/// between adapters.
+mod start_acceptance;
 #[cfg(test)]
 pub mod test_support;
 
@@ -115,7 +119,10 @@ pub use inmem::{
     InMemoryResumeTokenStore, InMemoryWebhookActivationStore, InMemoryWorkflowStore,
     InMemoryWorkflowVersionStore,
 };
-// Mirrors the gating on `mod migration`: with no backend feature there is no
-// migration catalog to adopt a database into.
-#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
+// Mirrors the gating on `migration::adopt`: with no backend feature there is no
+// migration catalog to adopt a database into, and `sqlx` — which adoption is
+// written entirely against — is not even a dependency. `mod migration` also
+// builds under bare `test` for its catalog cases; adoption cannot, so this gate
+// is narrower than that one on purpose.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub use migration::adopt::{LedgerAdoptionError, LedgerAdoptionOutcome};

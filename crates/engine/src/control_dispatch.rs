@@ -973,41 +973,36 @@ impl ControlDispatch for EngineControlDispatch {
                         CancelDanglingOutcome::Cancelled(_)
                         | CancelDanglingOutcome::NothingToCancel,
                     ) => Ok(()),
-                    Ok(CancelDanglingOutcome::StatusNotCancelled) => {
-                        // The cancel is not yet durably recorded on the execution
-                        // (the API writes `Cancelled` before enqueuing `Cancel`,
-                        // so this is a producer-ordering anomaly). Defer rather
-                        // than ack-and-drop the node cleanup — B1 reclaim
-                        // redelivers until the status reflects the cancel.
+                    Err(EngineError::Leased { ref holder, .. }) => {
+                        // A live owner on another runner holds the lease, and
+                        // this process cannot reach its cancel registry.
+                        //
+                        // Acking here used to be safe because the API wrote
+                        // `Cancelled` durably before enqueuing, so the holder
+                        // saw the cancel on its next checkpoint CAS. Nothing
+                        // writes that state ahead of the runtime any more — the
+                        // command row *is* the cancel — so an ack now would drop
+                        // the request outright.
+                        //
+                        // Defer instead. Redelivery is untargeted, so the row
+                        // can land on the holder itself, where the local signal
+                        // works; and the holder's lease is short-lived by
+                        // construction (released on graceful stop, expired on
+                        // crash), so a later delivery finds it free. If reclaim
+                        // exhausts its budget first the row is marked failed with
+                        // this reason attached — an undelivered cancel that is
+                        // visible beats one that was acked and lost.
                         tracing::warn!(
                             %execution_id,
-                            "dispatch_cancel: cancel not yet durably recorded on the execution; \
-                             deferring node cleanup for B1 reclaim"
+                            %holder,
+                            "dispatch_cancel: execution lease held by a live owner on another \
+                             runner; deferring for redelivery rather than acking an undelivered \
+                             cancel"
                         );
                         Err(ControlDispatchError::Deferred(format!(
-                            "execution {execution_id} cancel not yet durably recorded; node \
-                             cleanup deferred for B1 reclaim"
+                            "execution {execution_id} cancel could not be delivered: lease held \
+                             by another runner; deferred for redelivery"
                         )))
-                    },
-                    Err(EngineError::Leased { ref holder, .. }) => {
-                        // A live owner holds the lease — it will observe the
-                        // durable `Cancelled` status on its next checkpoint CAS
-                        // and tear its own frontier down. ACK: there is no
-                        // targeted cross-runner cancel delivery, so churning the
-                        // row through reclaim would only burn the budget and mark
-                        // it failed without ever reaching the owner. (Prompt
-                        // cross-process cancel delivery — and recovery of a holder
-                        // that crashed before its TTL — is the general
-                        // crashed-runner / multi-runner follow-up, tracked
-                        // separately.)
-                        tracing::debug!(
-                            %execution_id,
-                            %holder,
-                            "dispatch_cancel: execution lease held by a live owner; acking — the \
-                             owner tears down via its checkpoint CAS against the durable Cancelled \
-                             status"
-                        );
-                        Ok(())
                     },
                     Err(e) => {
                         // The cleanup did not durably land; the execution is
