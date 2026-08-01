@@ -189,8 +189,11 @@ pub enum ApiError {
         /// Human-readable summary of all validation failures.
         detail: String,
         /// One entry per `WorkflowError` returned by `validate_workflow`.
-        /// Carrying the typed errors allows `to_problem_details` to produce
-        /// real RFC 6901 JSON Pointers rather than synthetic positional ones.
+        ///
+        /// The typed errors are carried rather than pre-rendered so
+        /// `to_problem_details` can emit each rejection's own NS14 diagnostic —
+        /// its code, the element it is about, the contract it required, what
+        /// was found, and how to fix it.
         errors: Vec<nebula_workflow::WorkflowError>,
     },
 
@@ -752,7 +755,7 @@ mod tests {
         let errors = problem.errors.expect("validation errors must be present");
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].code, "min_length");
-        assert_eq!(errors[0].pointer, "/profile/name");
+        assert_eq!(errors[0].pointer.as_deref(), Some("/profile/name"));
     }
 
     #[test]
@@ -771,7 +774,7 @@ mod tests {
         assert!(
             errors
                 .iter()
-                .any(|e| e.code == "required" && e.pointer == "/email")
+                .any(|e| e.code == "required" && e.pointer.as_deref() == Some("/email"))
         );
     }
 
@@ -791,11 +794,14 @@ mod tests {
         let errors = problem.errors.expect("errors must be present");
         assert_eq!(errors.len(), 1);
         assert!(
-            errors[0].pointer.starts_with("/nodes/"),
+            errors[0]
+                .path
+                .as_deref()
+                .is_some_and(|path| path.starts_with("/nodes/")),
             "DuplicateNodeKey must produce a /nodes/<key> pointer, got: {:?}",
             errors[0].pointer
         );
-        assert_eq!(errors[0].pointer, "/nodes/step_a");
+        assert_eq!(errors[0].path.as_deref(), Some("/nodes/step_a"));
     }
 
     #[test]
@@ -817,7 +823,7 @@ mod tests {
         // diagnostic, and a cycle is always a property of the connections, so
         // pointing there is both required and strictly more useful than
         // pointing at the whole document.
-        assert_eq!(errors[0].pointer, "/connections");
+        assert_eq!(errors[0].path.as_deref(), Some("/connections"));
         assert_eq!(errors[0].code, "WORKFLOW:CYCLE_DETECTED");
         assert_eq!(
             errors[0].expected.as_deref(),
@@ -854,9 +860,14 @@ mod tests {
         let errors = problem.errors.expect("errors must be present");
         assert_eq!(errors.len(), 1);
         assert_eq!(
-            errors[0].pointer, "/connections/a/b",
-            "DuplicateConnection must produce /connections/<from>/<to>, got: {:?}",
-            errors[0].pointer
+            errors[0].path.as_deref(),
+            Some("/connections/a/b"),
+            "a connection rejection names both endpoints it wires"
+        );
+        assert_eq!(
+            errors[0].pointer, None,
+            "an activation diagnostic reports a logical path, never a JSON Pointer it \
+             could not resolve against an array of connections"
         );
     }
 

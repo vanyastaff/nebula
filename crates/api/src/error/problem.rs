@@ -45,8 +45,10 @@ pub struct ProblemDetails {
 
 /// One structured validation or activation rejection.
 ///
-/// `code` and `pointer` are stable machine-readable contracts: a client
-/// matches on them rather than parsing `detail`. `expected`, `actual`, and
+/// `code` and the location fields are stable machine-readable contracts: a
+/// client matches on them rather than parsing `detail`. Exactly one location
+/// field is populated — `pointer` when the target is addressable by RFC 6901,
+/// `path` when it is a logical workflow element. `expected`, `actual`, and
 /// `remediation` are the NS14 activation-diagnostic fields — present whenever
 /// the rejection came from an activation diagnostic, absent for the
 /// request-level validators that have no contract to compare against.
@@ -61,8 +63,30 @@ pub struct ValidationFieldError {
     pub code: String,
     /// Human-readable message. Never the only place a field appears.
     pub detail: String,
-    /// JSON Pointer to the offending element (RFC 6901), e.g. `/nodes/a`.
-    pub pointer: String,
+    /// RFC 6901 JSON Pointer into the request body, e.g. `/age`.
+    ///
+    /// Present for request-level validators, which reject a malformed field in
+    /// a document whose shape the pointer can actually address. Absent for
+    /// activation diagnostics — see [`Self::path`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pointer: Option<String>,
+
+    /// Stable logical path to the offending workflow element, e.g.
+    /// `/nodes/fetch_users`.
+    ///
+    /// Deliberately **not** an RFC 6901 pointer. `nodes` and `connections` are
+    /// JSON arrays, so RFC 6901 addresses their elements by index (`/nodes/3`),
+    /// and a key-shaped segment does not resolve against the document at all —
+    /// which is what the previous `pointer` value claimed to be and was not.
+    ///
+    /// A key-based path is the stronger contract for a diagnostic. An index
+    /// silently changes meaning the moment an author inserts a node above the
+    /// offending one, so a stored or diffed diagnostic would point somewhere
+    /// else; the author-defined key is the identity the author actually edits
+    /// in, and it survives reordering. Node keys are restricted to
+    /// `[0-9A-Za-z_.-]`, so a path needs no escaping.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
     /// Secret-free description of the contract that was required.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expected: Option<String>,
@@ -89,7 +113,8 @@ impl ValidationFieldError {
         Self {
             code: code.into(),
             detail: detail.into(),
-            pointer: pointer.into(),
+            pointer: Some(pointer.into()),
+            path: None,
             expected: None,
             actual: None,
             remediation: None,
@@ -112,7 +137,8 @@ impl From<&nebula_error::ActivationDiagnostic> for ValidationFieldError {
                 diagnostic.expected(),
                 diagnostic.actual()
             ),
-            pointer: diagnostic.path().to_owned(),
+            pointer: None,
+            path: Some(diagnostic.path().to_owned()),
             expected: Some(diagnostic.expected().to_owned()),
             actual: Some(diagnostic.actual().to_owned()),
             remediation: Some(diagnostic.remediation().to_owned()),

@@ -482,8 +482,9 @@ fn parameter_path(node: &NodeKey, param_key: &str) -> String {
 
 /// Path to one connection, named by the endpoints it wires.
 ///
-/// Matches the JSON Pointer convention the API already puts on the wire, so a
-/// client that keys on `errors[].pointer` keeps working.
+/// Author-defined keys rather than an array index: an index changes meaning
+/// the moment a connection is inserted above this one, so a stored or diffed
+/// diagnostic would silently point elsewhere.
 fn connection_path(from: &NodeKey, to: &NodeKey) -> String {
     format!("/connections/{from}/{to}")
 }
