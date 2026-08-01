@@ -41,6 +41,42 @@ pub struct ActivationDiagnostic {
     remediation: String,
 }
 
+/// Longest a single diagnostic field may be, in bytes.
+///
+/// Diagnostics travel into logs and HTTP responses, and several fields embed
+/// author-supplied text: a `path` names a node key, an `actual` reports the
+/// contract that was observed. Neither is bounded by anything upstream, so a
+/// workflow carrying a megabyte-long key would push a megabyte per diagnostic
+/// into every log line and error body that mentions it. The bound is generous
+/// enough that no honest identifier reaches it.
+pub(crate) const MAX_DIAGNOSTIC_FIELD_BYTES: usize = 512;
+
+/// Marker appended to a field that was cut to fit [`MAX_DIAGNOSTIC_FIELD_BYTES`].
+///
+/// A truncated value must be visibly truncated: a consumer comparing `actual`
+/// against a known contract has to be able to tell "this differs" from "this is
+/// the first 512 bytes of something that differs".
+const TRUNCATION_MARKER: &str = "…";
+
+/// Cut `field` to the byte bound, splitting only on a `char` boundary.
+///
+/// Slicing a `String` mid-codepoint panics, and these fields carry
+/// author-supplied text, so the split point is walked back to the nearest
+/// boundary rather than assumed.
+fn bounded_field(field: String) -> String {
+    if field.len() <= MAX_DIAGNOSTIC_FIELD_BYTES {
+        return field;
+    }
+    let mut end = MAX_DIAGNOSTIC_FIELD_BYTES;
+    while end > 0 && !field.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut truncated = String::with_capacity(end + TRUNCATION_MARKER.len());
+    truncated.push_str(&field[..end]);
+    truncated.push_str(TRUNCATION_MARKER);
+    truncated
+}
+
 impl ActivationDiagnostic {
     pub(crate) fn new(
         code: impl Into<String>,
@@ -49,12 +85,21 @@ impl ActivationDiagnostic {
         actual: impl Into<String>,
         remediation: impl Into<String>,
     ) -> Option<Self> {
+        // `code` is a stable machine-readable contract, so it is checked
+        // against the bound rather than cut to fit: a truncated code would
+        // silently name a different diagnostic. Compiler-authored codes are
+        // short, so exceeding the bound is a construction bug, not input.
+        let code = code.into();
+        if code.len() > MAX_DIAGNOSTIC_FIELD_BYTES {
+            return None;
+        }
+
         let value = Self {
-            code: code.into(),
-            path: path.into(),
-            expected: expected.into(),
-            actual: actual.into(),
-            remediation: remediation.into(),
+            code,
+            path: bounded_field(path.into()),
+            expected: bounded_field(expected.into()),
+            actual: bounded_field(actual.into()),
+            remediation: bounded_field(remediation.into()),
         };
 
         [
@@ -2478,6 +2523,73 @@ mod tests {
         assert!(!format!("{earlier}").contains(ACTUAL_CONTRACT_DETAIL));
         assert!(!format!("{earlier:?}").contains(ACTUAL_CONTRACT_DETAIL));
         assert!(PlanCompilationError::new(Vec::new()).is_none());
+    }
+
+    /// Author-supplied text reaches `path` and `actual`, so an unbounded
+    /// workflow value would push its whole length into every log line and error
+    /// body that names the diagnostic.
+    #[test]
+    fn author_supplied_fields_are_bounded_and_visibly_truncated() {
+        let overlong = "n".repeat(MAX_DIAGNOSTIC_FIELD_BYTES * 4);
+        let bounded = diagnostic(
+            "E010",
+            &overlong,
+            "a contract",
+            &overlong,
+            "shorten the key",
+        );
+
+        for field in [bounded.path(), bounded.actual()] {
+            assert!(
+                field.len() <= MAX_DIAGNOSTIC_FIELD_BYTES + TRUNCATION_MARKER.len(),
+                "a diagnostic field must not carry an unbounded workflow value"
+            );
+            assert!(
+                field.ends_with(TRUNCATION_MARKER),
+                "a truncated value must be visibly truncated, so a consumer cannot \
+                 mistake a prefix for the whole contract"
+            );
+        }
+        assert_eq!(
+            bounded.code(),
+            "E010",
+            "a short field is left exactly as-is"
+        );
+        assert_eq!(bounded.expected(), "a contract");
+    }
+
+    /// The bound splits on a `char` boundary: these fields carry author-supplied
+    /// text, and slicing a `String` mid-codepoint panics.
+    #[test]
+    fn truncation_splits_on_a_char_boundary() {
+        // Three bytes per char, so the bound lands mid-codepoint.
+        let multibyte = "日".repeat(MAX_DIAGNOSTIC_FIELD_BYTES);
+        let bounded = diagnostic("E011", &multibyte, "a contract", &multibyte, "shorten it");
+
+        assert!(bounded.path().ends_with(TRUNCATION_MARKER));
+        assert!(
+            bounded.path().len() <= MAX_DIAGNOSTIC_FIELD_BYTES + TRUNCATION_MARKER.len(),
+            "walking back to a boundary must not push the value over the bound"
+        );
+        assert!(
+            bounded
+                .path()
+                .trim_end_matches(TRUNCATION_MARKER)
+                .chars()
+                .all(|character| character == '日'),
+            "truncation must not produce a partial codepoint"
+        );
+    }
+
+    /// A code is a stable machine-readable contract, so it is rejected rather
+    /// than cut: a truncated code would silently name a different diagnostic.
+    #[test]
+    fn an_overlong_code_is_rejected_rather_than_truncated() {
+        let overlong_code = "E".repeat(MAX_DIAGNOSTIC_FIELD_BYTES + 1);
+        assert!(
+            ActivationDiagnostic::new(&overlong_code, "/workflow", "a", "b", "fix").is_none(),
+            "a code that does not fit its own contract is a construction bug"
+        );
     }
 
     fn recorded_semver(major: u64, minor: u64, patch: u64) -> RecordedSemverV1 {
