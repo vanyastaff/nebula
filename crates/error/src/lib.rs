@@ -31,11 +31,14 @@
 //! | [`ErrorCode`] | Machine-readable error code newtype |
 //! | [`ErrorCollection`] | Batch/validation error aggregation |
 //! | [`RetryHint`] | Structured retry guidance consumed by `nebula-resilience` |
+//! | [`ActivationDiagnostic`] | Five-field structured activation rejection |
+//! | [`ActivationDiagnostics`] | Trait producing a rejection's diagnostics |
 
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
+mod activation;
 mod category;
 mod code;
 mod collection;
@@ -47,6 +50,11 @@ mod retry;
 mod severity;
 mod traits;
 
+pub use activation::{
+    ActivationDiagnostic, ActivationDiagnostics, DIAGNOSTIC_CONTRACT_REPORT_VERSION,
+    DiagnosticContractEntry, DiagnosticContractReport, MAX_DIAGNOSTIC_FIELD_BYTES,
+    TRUNCATION_MARKER, canonical_diagnostics,
+};
 pub use category::ErrorCategory;
 pub use code::{ErrorCode, codes};
 pub use collection::{BatchResult, ErrorCollection};

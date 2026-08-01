@@ -567,3 +567,98 @@ impl CanonicalSha256 {
         self.0.finalize().into()
     }
 }
+
+impl nebula_error::ActivationDiagnostics for WorkerFlavorIntegrityError {
+    fn activation_diagnostics(&self) -> Vec<nebula_error::ActivationDiagnostic> {
+        use nebula_error::ActivationDiagnostic;
+
+        let (code, path, expected, actual, remediation) = match self {
+            Self::UnsupportedRecordVersion { found } => (
+                "PLUGIN_FLAVOR_INTEGRITY:UNSUPPORTED_RECORD_VERSION",
+                "/worker_flavor/record_version",
+                WORKER_FLAVOR_RECORD_VERSION_V1.to_string(),
+                found.to_string(),
+                "re-record the worker flavor with a runtime that writes this envelope version",
+            ),
+            Self::UnsupportedCanonicalHashVersion { found } => (
+                "PLUGIN_FLAVOR_INTEGRITY:UNSUPPORTED_CANONICAL_HASH_VERSION",
+                "/worker_flavor/canonical_hash_version",
+                WORKER_FLAVOR_CANONICAL_HASH_VERSION_V1.to_string(),
+                found.to_string(),
+                "re-record the worker flavor with a runtime that derives this identity version",
+            ),
+            // Both identities are content digests, so reporting them leaks
+            // nothing about the artifacts they address.
+            Self::RevisionIdMismatch { claimed, computed } => (
+                "PLUGIN_FLAVOR_INTEGRITY:REVISION_ID_MISMATCH",
+                "/worker_flavor/id",
+                computed.to_string(),
+                claimed.to_string(),
+                "discard the record: its claimed identity does not match its own content",
+            ),
+        };
+
+        vec![
+            ActivationDiagnostic::new(code, path, expected, actual, remediation).unwrap_or_else(
+                || {
+                    ActivationDiagnostic::new(
+                        code,
+                        path,
+                        "<contract>",
+                        "<unavailable>",
+                        "discard and re-record the worker flavor",
+                    )
+                    .unwrap_or_else(|| {
+                        unreachable!("the fallback diagnostic uses non-empty constants")
+                    })
+                },
+            ),
+        ]
+    }
+}
+
+#[cfg(test)]
+mod activation_diagnostic_tests {
+    use nebula_error::ActivationDiagnostics;
+
+    use super::*;
+
+    #[test]
+    fn every_flavor_integrity_rejection_reports_all_five_fields() {
+        let rejections = [
+            WorkerFlavorIntegrityError::UnsupportedRecordVersion { found: 99 },
+            WorkerFlavorIntegrityError::UnsupportedCanonicalHashVersion { found: 99 },
+            WorkerFlavorIntegrityError::RevisionIdMismatch {
+                claimed: WorkerFlavorRevisionId::from_bytes([0x11; 32]),
+                computed: WorkerFlavorRevisionId::from_bytes([0x22; 32]),
+            },
+        ];
+
+        for rejection in &rejections {
+            let diagnostics = rejection.activation_diagnostics();
+            assert!(!diagnostics.is_empty());
+            for reported in diagnostics {
+                for field in [
+                    reported.code(),
+                    reported.path(),
+                    reported.expected(),
+                    reported.actual(),
+                    reported.remediation(),
+                ] {
+                    assert!(!field.trim().is_empty(), "NS14 requires all five fields");
+                }
+            }
+        }
+    }
+
+    /// The supported version is reported as `expected`, so a caller learns what
+    /// to re-record against rather than only that the found one was wrong.
+    #[test]
+    fn an_unsupported_version_names_the_one_this_runtime_reads() {
+        let reported = WorkerFlavorIntegrityError::UnsupportedRecordVersion { found: 99 }
+            .activation_diagnostics();
+        let only = reported.first().expect("one diagnostic is reported");
+        assert_eq!(only.expected(), WORKER_FLAVOR_RECORD_VERSION_V1.to_string());
+        assert_eq!(only.actual(), "99");
+    }
+}

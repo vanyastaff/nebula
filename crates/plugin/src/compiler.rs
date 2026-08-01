@@ -20,23 +20,25 @@ use nebula_workflow::{
 use semver::{BuildMetadata, Version};
 
 use crate::plan::{
-    ActivationDiagnostic, CANONICAL_HASH_VERSION_V1, COMPILER_VERSION_GRAPH_V1,
-    ExecutablePlanRevision, PlanCompilationError, RECORD_VERSION_V1, RecordedActionKindV1,
-    RecordedActionV1, RecordedAuthPatternV1, RecordedBindingContractV1, RecordedBindingSiteV1,
-    RecordedBindingV1, RecordedCheckpointPolicyV1, RecordedCheckpointingV1, RecordedConnectionV1,
-    RecordedConverterV1, RecordedCredentialV1, RecordedDependenciesV1, RecordedDependencyV1,
-    RecordedDurationV1, RecordedErrorStrategyV1, RecordedExecutablePlanRevisionV1,
-    RecordedFlowKindV1, RecordedGraphContentV1, RecordedInputPortV1, RecordedIsolationV1,
-    RecordedNodeV1, RecordedOutputPortV1, RecordedParameterV1, RecordedParameterValueV1,
-    RecordedPlanManifestV1, RecordedPlanProfileV1, RecordedPluginV1, RecordedRateLimitV1,
-    RecordedResourceV1, RecordedRetryV1, RecordedSchemaV1, RecordedSemverV1, RecordedSlotV1,
-    RecordedTriggerV1, RecordedVariableV1, RecordedWorkflowConfigV1, RecordedWorkflowVersionV1,
+    CANONICAL_HASH_VERSION_V1, COMPILER_VERSION_GRAPH_V1, ExecutablePlanRevision,
+    PlanCompilationError, RECORD_VERSION_V1, RecordedActionKindV1, RecordedActionV1,
+    RecordedAuthPatternV1, RecordedBindingContractV1, RecordedBindingSiteV1, RecordedBindingV1,
+    RecordedCheckpointPolicyV1, RecordedCheckpointingV1, RecordedConnectionV1, RecordedConverterV1,
+    RecordedCredentialV1, RecordedDependenciesV1, RecordedDependencyV1, RecordedDurationV1,
+    RecordedErrorStrategyV1, RecordedExecutablePlanRevisionV1, RecordedFlowKindV1,
+    RecordedGraphContentV1, RecordedInputPortV1, RecordedIsolationV1, RecordedNodeV1,
+    RecordedOutputPortV1, RecordedParameterV1, RecordedParameterValueV1, RecordedPlanManifestV1,
+    RecordedPlanProfileV1, RecordedPluginV1, RecordedRateLimitV1, RecordedResourceV1,
+    RecordedRetryV1, RecordedSchemaV1, RecordedSemverV1, RecordedSlotV1, RecordedTriggerV1,
+    RecordedVariableV1, RecordedWorkflowConfigV1, RecordedWorkflowVersionV1,
     SCHEMA_WIRE_VERSION_GRAPH_V1, validate_node_parameters, validate_parameter,
     validate_parameter_contract, validate_reference_contract, validate_trigger_configuration,
 };
 use crate::resolved_plugin::{
     ActionContractSnapshot, CredentialContractSnapshot, ResourceContractSnapshot,
 };
+use nebula_error::ActivationDiagnostic;
+
 use crate::{FrozenPluginRegistry, ResolvedPlugin};
 
 const DEFAULT_OUTPUT_PORT: &str = "out";

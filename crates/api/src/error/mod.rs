@@ -29,8 +29,6 @@ use axum::{
 };
 use thiserror::Error;
 
-use crate::error::classify::workflow_error_pointer;
-
 /// Main API Error Type
 #[non_exhaustive]
 #[derive(Debug, Error, nebula_error::Classify)]
@@ -191,8 +189,11 @@ pub enum ApiError {
         /// Human-readable summary of all validation failures.
         detail: String,
         /// One entry per `WorkflowError` returned by `validate_workflow`.
-        /// Carrying the typed errors allows `to_problem_details` to produce
-        /// real RFC 6901 JSON Pointers rather than synthetic positional ones.
+        ///
+        /// The typed errors are carried rather than pre-rendered so
+        /// `to_problem_details` can emit each rejection's own NS14 diagnostic —
+        /// its code, the element it is about, the contract it required, what
+        /// was found, and how to fix it.
         errors: Vec<nebula_workflow::WorkflowError>,
     },
 
@@ -567,16 +568,12 @@ impl ApiError {
                     StatusCode::UNPROCESSABLE_ENTITY,
                 )
                 .with_detail(detail)
-                .with_errors(
-                    errors
-                        .iter()
-                        .map(|err| ValidationFieldError {
-                            code: "workflow_definition_invalid".to_string(),
-                            detail: err.to_string(),
-                            pointer: workflow_error_pointer(err),
-                        })
-                        .collect(),
-                ),
+                // Every rejection contributes its own NS14 diagnostic rather
+                // than one shared `workflow_definition_invalid` code and a
+                // prose sentence. A client can now tell which rule fired, a UI
+                // can point at the element, and an author is told what to
+                // change — none of which survived being flattened into text.
+                .with_errors(activation_field_errors(errors)),
             ),
             ApiError::SessionExpired => (
                 StatusCode::UNAUTHORIZED,
@@ -679,6 +676,28 @@ impl ApiError {
     }
 }
 
+/// Render typed workflow rejections as NS14 problem-details entries.
+///
+/// Ordering is canonical, so the same invalid workflow always produces the
+/// same response body: a client diffing two responses sees only real changes,
+/// and a snapshot test is meaningful.
+///
+/// The JSON Pointer comes from each diagnostic's own `path`, which is why the
+/// API no longer keeps a second `WorkflowError` → pointer table: two mappings
+/// for one fact drift, and the crate that raises the rejection is the one that
+/// knows which element it is about.
+fn activation_field_errors(errors: &[nebula_workflow::WorkflowError]) -> Vec<ValidationFieldError> {
+    use nebula_error::ActivationDiagnostics;
+
+    let diagnostics = nebula_error::canonical_diagnostics(
+        errors
+            .iter()
+            .flat_map(nebula_workflow::WorkflowError::activation_diagnostics)
+            .collect(),
+    );
+    diagnostics.iter().map(ValidationFieldError::from).collect()
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, problem) = self.to_problem_details();
@@ -736,7 +755,7 @@ mod tests {
         let errors = problem.errors.expect("validation errors must be present");
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].code, "min_length");
-        assert_eq!(errors[0].pointer, "/profile/name");
+        assert_eq!(errors[0].pointer.as_deref(), Some("/profile/name"));
     }
 
     #[test]
@@ -755,7 +774,7 @@ mod tests {
         assert!(
             errors
                 .iter()
-                .any(|e| e.code == "required" && e.pointer == "/email")
+                .any(|e| e.code == "required" && e.pointer.as_deref() == Some("/email"))
         );
     }
 
@@ -775,15 +794,18 @@ mod tests {
         let errors = problem.errors.expect("errors must be present");
         assert_eq!(errors.len(), 1);
         assert!(
-            errors[0].pointer.starts_with("/nodes/"),
+            errors[0]
+                .path
+                .as_deref()
+                .is_some_and(|path| path.starts_with("/nodes/")),
             "DuplicateNodeKey must produce a /nodes/<key> pointer, got: {:?}",
             errors[0].pointer
         );
-        assert_eq!(errors[0].pointer, "/nodes/step_a");
+        assert_eq!(errors[0].path.as_deref(), Some("/nodes/step_a"));
     }
 
     #[test]
-    fn invalid_workflow_definition_structural_error_produces_root_pointer() {
+    fn invalid_workflow_definition_structural_error_points_at_the_offending_section() {
         use nebula_workflow::WorkflowError;
 
         let api_error = ApiError::InvalidWorkflowDefinition {
@@ -795,11 +817,29 @@ mod tests {
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
         let errors = problem.errors.expect("errors must be present");
         assert_eq!(errors.len(), 1);
-        // Structural errors (cycle, no entry nodes, etc.) point at root — RFC 6901 empty string.
+
+        // Structural rejections used to collapse to the RFC 6901 root pointer
+        // (the empty string). NS14 requires a non-empty path on every
+        // diagnostic, and a cycle is always a property of the connections, so
+        // pointing there is both required and strictly more useful than
+        // pointing at the whole document.
+        assert_eq!(errors[0].path.as_deref(), Some("/connections"));
+        assert_eq!(errors[0].code, "WORKFLOW:CYCLE_DETECTED");
         assert_eq!(
-            errors[0].pointer, "",
-            "CycleDetected must produce the RFC 6901 root pointer (empty string), got: {:?}",
-            errors[0].pointer
+            errors[0].expected.as_deref(),
+            Some("an acyclic graph"),
+            "the contract that was required travels as its own field"
+        );
+        assert_eq!(
+            errors[0].actual.as_deref(),
+            Some("a graph containing a cycle")
+        );
+        assert!(
+            errors[0]
+                .remediation
+                .as_deref()
+                .is_some_and(|text| text.contains("cycle")),
+            "an author is told what to change, not just what is wrong"
         );
     }
 
@@ -820,9 +860,14 @@ mod tests {
         let errors = problem.errors.expect("errors must be present");
         assert_eq!(errors.len(), 1);
         assert_eq!(
-            errors[0].pointer, "/connections/a/b",
-            "DuplicateConnection must produce /connections/<from>/<to>, got: {:?}",
-            errors[0].pointer
+            errors[0].path.as_deref(),
+            Some("/connections/a/b"),
+            "a connection rejection names both endpoints it wires"
+        );
+        assert_eq!(
+            errors[0].pointer, None,
+            "an activation diagnostic reports a logical path, never a JSON Pointer it \
+             could not resolve against an array of connections"
         );
     }
 

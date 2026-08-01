@@ -121,20 +121,22 @@ fn map_gateway_err(err: CredentialGatewayError, cred: &str) -> ApiError {
             detail: "credential properties were rejected".to_owned(),
             errors: report
                 .issues()
-                .map(|issue| crate::error::ValidationFieldError {
-                    detail: issue.message().to_owned(),
-                    pointer: issue.path().to_owned(),
-                    code: issue.code().to_owned(),
+                .map(|issue| {
+                    crate::error::ValidationFieldError::field(
+                        issue.code().to_owned(),
+                        issue.message().to_owned(),
+                        issue.path().to_owned(),
+                    )
                 })
                 .collect(),
         },
         CredentialGatewayError::TypeUnknown { key } => ApiError::Validation {
             detail: format!("unknown credential type: {key}"),
-            errors: vec![crate::error::ValidationFieldError {
-                detail: "no such credential type".to_owned(),
-                pointer: "/credential_key".to_owned(),
-                code: "unknown_credential_type".to_owned(),
-            }],
+            errors: vec![crate::error::ValidationFieldError::field(
+                "unknown_credential_type",
+                "no such credential type",
+                "/credential_key",
+            )],
         },
         CredentialGatewayError::CapabilityUnsupported { capability, key } => ApiError::Validation {
             detail: format!("credential type '{key}' does not support capability '{capability}'"),

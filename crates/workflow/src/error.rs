@@ -434,3 +434,418 @@ impl std::fmt::Display for ReferenceTypeUndecidableDetails {
         )
     }
 }
+
+/// Render a detail list, or a sentinel when it is empty.
+///
+/// An empty list makes `actual` blank, which the diagnostic contract refuses —
+/// and the whole diagnostic then falls back to a coarse `/workflow` path,
+/// losing the very element the author has to change. A sentinel keeps the
+/// specific code and path while still saying honestly that no detail was
+/// reported.
+fn join_or_sentinel<T: std::fmt::Display>(items: &[T]) -> String {
+    if items.is_empty() {
+        return "<no detail reported>".to_owned();
+    }
+    join_display(items)
+}
+
+/// Build one diagnostic, falling back to a complete but coarse one.
+///
+/// Every call site supplies five non-empty values, so construction cannot
+/// legitimately fail. The fallback exists because a rejection that reports
+/// nothing is worse than one that reports a coarse code: a caller must never
+/// receive an empty diagnostic list.
+fn diagnostic(
+    code: &str,
+    path: String,
+    expected: String,
+    actual: String,
+    remediation: &str,
+) -> nebula_error::ActivationDiagnostic {
+    nebula_error::ActivationDiagnostic::new(code, &path, expected, actual, remediation)
+        .or_else(|| {
+            nebula_error::ActivationDiagnostic::new(
+                code,
+                "/workflow",
+                "<contract>",
+                "<unavailable>",
+                "repair the reported workflow element",
+            )
+        })
+        .unwrap_or_else(|| unreachable!("the fallback diagnostic uses non-empty constants"))
+}
+
+/// Path to one node's parameter, or to the node when the parameter is unknown.
+fn parameter_path(node: &NodeKey, param_key: &str) -> String {
+    format!("/nodes/{node}/parameters/{param_key}")
+}
+
+/// Path to one connection, named by the endpoints it wires.
+///
+/// Author-defined keys rather than an array index: an index changes meaning
+/// the moment a connection is inserted above this one, so a stored or diffed
+/// diagnostic would silently point elsewhere.
+fn connection_path(from: &NodeKey, to: &NodeKey) -> String {
+    format!("/connections/{from}/{to}")
+}
+
+impl nebula_error::ActivationDiagnostics for WorkflowError {
+    fn activation_diagnostics(&self) -> Vec<nebula_error::ActivationDiagnostic> {
+        let single = match self {
+            Self::EmptyName => diagnostic(
+                "WORKFLOW:EMPTY_NAME",
+                "/name".to_owned(),
+                "a non-empty workflow name".to_owned(),
+                "an empty name".to_owned(),
+                "give the workflow a name",
+            ),
+            Self::NoNodes => diagnostic(
+                "WORKFLOW:NO_NODES",
+                "/nodes".to_owned(),
+                "at least one node".to_owned(),
+                "no nodes".to_owned(),
+                "add at least one node to the workflow",
+            ),
+            Self::DuplicateNodeKey(key) => diagnostic(
+                "WORKFLOW:DUPLICATE_NODE_KEY",
+                format!("/nodes/{key}"),
+                "one node per key".to_owned(),
+                "two or more nodes sharing this key".to_owned(),
+                "rename one of the nodes so every key is unique",
+            ),
+            Self::UnknownNode(key) => diagnostic(
+                "WORKFLOW:UNKNOWN_NODE",
+                format!("/nodes/{key}"),
+                "a connection endpoint naming a declared node".to_owned(),
+                key.to_string(),
+                "declare the node, or remove the connection that names it",
+            ),
+            Self::SelfLoop(key) => diagnostic(
+                "WORKFLOW:SELF_LOOP",
+                format!("/nodes/{key}"),
+                "a connection between two different nodes".to_owned(),
+                format!("{key}->{key}"),
+                "remove the self-referencing connection",
+            ),
+            Self::CycleDetected => diagnostic(
+                "WORKFLOW:CYCLE_DETECTED",
+                "/connections".to_owned(),
+                "an acyclic graph".to_owned(),
+                "a graph containing a cycle".to_owned(),
+                "break the cycle: execution order cannot be derived from a cyclic graph",
+            ),
+            Self::NoEntryNodes => diagnostic(
+                "WORKFLOW:NO_ENTRY_NODES",
+                "/nodes".to_owned(),
+                "at least one node with no incoming edge".to_owned(),
+                "every node has an incoming edge".to_owned(),
+                "remove an incoming edge so execution has somewhere to start",
+            ),
+            Self::InvalidParameterReference {
+                node_key,
+                source_node_key,
+            } => diagnostic(
+                "WORKFLOW:INVALID_PARAM_REF",
+                format!("/nodes/{node_key}/parameters"),
+                "a reference to a declared node".to_owned(),
+                source_node_key.to_string(),
+                "declare the referenced node, or point the parameter at an existing one",
+            ),
+            Self::ReferenceWithoutConnection {
+                node_key,
+                source_node_key,
+            } => diagnostic(
+                "WORKFLOW:REFERENCE_WITHOUT_CONNECTION",
+                format!("/nodes/{node_key}/parameters"),
+                format!("a connection from {source_node_key}"),
+                "a reference with no connection edge behind it".to_owned(),
+                "add the connection so the scheduler can see the dependency and order the nodes",
+            ),
+            Self::InvalidActionKey { key, reason } => diagnostic(
+                "WORKFLOW:INVALID_ACTION_KEY",
+                "/nodes".to_owned(),
+                "a well-formed action key".to_owned(),
+                key.clone(),
+                reason,
+            ),
+            Self::InvalidPluginKey { key, reason } => diagnostic(
+                "WORKFLOW:INVALID_PLUGIN_KEY",
+                "/nodes".to_owned(),
+                "a well-formed plugin key".to_owned(),
+                key.clone(),
+                reason,
+            ),
+            Self::InvalidTrigger { reason } => diagnostic(
+                "WORKFLOW:INVALID_TRIGGER",
+                "/trigger".to_owned(),
+                "a well-formed trigger".to_owned(),
+                reason.clone(),
+                "correct the trigger configuration",
+            ),
+            Self::UnsupportedSchema { version, max } => diagnostic(
+                "WORKFLOW:UNSUPPORTED_SCHEMA",
+                "/schema_version".to_owned(),
+                format!("at most {max}"),
+                version.to_string(),
+                "re-export the workflow from a version this runtime supports",
+            ),
+            Self::InvalidOwnerId => diagnostic(
+                "WORKFLOW:INVALID_OWNER_ID",
+                "/owner_id".to_owned(),
+                "a non-blank owner id".to_owned(),
+                "an empty or blank owner id".to_owned(),
+                "set an owner id on the workflow",
+            ),
+            Self::GraphError(reason) => diagnostic(
+                "WORKFLOW:GRAPH_ERROR",
+                "/connections".to_owned(),
+                "a constructible dependency graph".to_owned(),
+                reason.clone(),
+                "repair the connections so a dependency graph can be built",
+            ),
+            Self::DuplicateConnection { from, to } => diagnostic(
+                "WORKFLOW:DUPLICATE_CONNECTION",
+                connection_path(from, to),
+                "one connection per (source, target, port) triple".to_owned(),
+                "two or more identical connections".to_owned(),
+                "remove the redundant connection: duplicates confuse incoming-edge counting",
+            ),
+            Self::PortSchemaIncompatible(details) => diagnostic(
+                "WORKFLOW:PORT_SCHEMA_INCOMPATIBLE",
+                connection_path(&details.from_node, &details.to_node),
+                "an output schema assignable to the consumer's input schema".to_owned(),
+                join_or_sentinel(&details.incompatibilities),
+                "align the producer output with the consumer input, or insert a mapping node",
+            ),
+            Self::PortSchemaUndecidable(details) => diagnostic(
+                "WORKFLOW:PORT_SCHEMA_UNDECIDABLE",
+                connection_path(&details.from_node, &details.to_node),
+                "a statically decidable edge".to_owned(),
+                join_or_sentinel(&details.reasons),
+                "type the dynamic or opaque field, or validate in Gradual mode",
+            ),
+            Self::InvalidRetryConfig { node, reason } => diagnostic(
+                "WORKFLOW:INVALID_RETRY_CONFIG",
+                node.as_ref().map_or_else(
+                    || "/config/retry_policy".to_owned(),
+                    |key| format!("/nodes/{key}/retry_policy"),
+                ),
+                "a retry policy the scheduler can honour".to_owned(),
+                reason.clone(),
+                "correct the retry policy, or remove it to disable retries",
+            ),
+            Self::ReferencePathUnresolved(details) => diagnostic(
+                "WORKFLOW:REFERENCE_PATH_UNRESOLVED",
+                parameter_path(&details.consumer_node, &details.param_key),
+                format!(
+                    "a path resolvable through the output schema of {}",
+                    details.producer_node
+                ),
+                format!("{}: {}", details.output_path, details.reason),
+                "correct the output path, or widen the producer's output schema",
+            ),
+            Self::ReferenceTypeIncompatible(details) => diagnostic(
+                "WORKFLOW:REFERENCE_TYPE_INCOMPATIBLE",
+                parameter_path(&details.consumer_node, &details.param_key),
+                format!(
+                    "a leaf at {} assignable to this parameter",
+                    details.output_path
+                ),
+                join_or_sentinel(&details.incompatibilities),
+                "reference a compatible field, or change the parameter's expected type",
+            ),
+            Self::ReferenceTypeUndecidable(details) => diagnostic(
+                "WORKFLOW:REFERENCE_TYPE_UNDECIDABLE",
+                parameter_path(&details.consumer_node, &details.param_key),
+                format!("a statically decidable leaf at {}", details.output_path),
+                join_or_sentinel(&details.reasons),
+                "type the dynamic or opaque field, or validate in Gradual mode",
+            ),
+        };
+        vec![single]
+    }
+}
+
+#[cfg(test)]
+mod activation_diagnostic_tests {
+    use nebula_error::ActivationDiagnostics;
+
+    use super::*;
+
+    fn node(name: &'static str) -> NodeKey {
+        name.parse().expect("the fixture node key is well-formed")
+    }
+
+    /// One instance of every rejection this crate can produce.
+    ///
+    /// `activation_diagnostics` matches the enum without a wildcard, so a new
+    /// variant fails to compile there before it can reach a caller. This list
+    /// is the runtime half of that guarantee: it proves each variant actually
+    /// fills all five fields rather than merely having an arm.
+    fn every_rejection() -> Vec<WorkflowError> {
+        let incompat = || {
+            Box::new(PortSchemaIncompatDetails {
+                from_node: node("a"),
+                to_node: node("b"),
+                from_port: None,
+                to_port: None,
+                incompatibilities: Vec::new(),
+            })
+        };
+        vec![
+            WorkflowError::EmptyName,
+            WorkflowError::NoNodes,
+            WorkflowError::DuplicateNodeKey(node("a")),
+            WorkflowError::UnknownNode(node("a")),
+            WorkflowError::SelfLoop(node("a")),
+            WorkflowError::CycleDetected,
+            WorkflowError::NoEntryNodes,
+            WorkflowError::InvalidParameterReference {
+                node_key: node("a"),
+                source_node_key: node("b"),
+            },
+            WorkflowError::ReferenceWithoutConnection {
+                node_key: node("a"),
+                source_node_key: node("b"),
+            },
+            WorkflowError::InvalidActionKey {
+                key: "bad key".to_owned(),
+                reason: "keys must be dotted".to_owned(),
+            },
+            WorkflowError::InvalidPluginKey {
+                key: "bad key".to_owned(),
+                reason: "keys must be lowercase".to_owned(),
+            },
+            WorkflowError::InvalidTrigger {
+                reason: "cron expression is empty".to_owned(),
+            },
+            WorkflowError::UnsupportedSchema { version: 9, max: 1 },
+            WorkflowError::InvalidOwnerId,
+            WorkflowError::GraphError("edge resolution failed".to_owned()),
+            WorkflowError::DuplicateConnection {
+                from: node("a"),
+                to: node("b"),
+            },
+            WorkflowError::PortSchemaIncompatible(incompat()),
+            WorkflowError::PortSchemaUndecidable(Box::new(PortSchemaUndecidableDetails {
+                from_node: node("a"),
+                to_node: node("b"),
+                from_port: None,
+                to_port: None,
+                reasons: Vec::new(),
+            })),
+            WorkflowError::InvalidRetryConfig {
+                node: Some(node("a")),
+                reason: "max_attempts must be >= 1".to_owned(),
+            },
+            WorkflowError::InvalidRetryConfig {
+                node: None,
+                reason: "max_attempts must be >= 1".to_owned(),
+            },
+            WorkflowError::ReferencePathUnresolved(Box::new(ReferencePathUnresolvedDetails {
+                consumer_node: node("b"),
+                param_key: "input".to_owned(),
+                producer_node: node("a"),
+                output_path: "$.items[0]".to_owned(),
+                reason: "descend past leaf".to_owned(),
+            })),
+            WorkflowError::ReferenceTypeIncompatible(Box::new(ReferenceTypeIncompatDetails {
+                consumer_node: node("b"),
+                param_key: "input".to_owned(),
+                producer_node: node("a"),
+                output_path: "$.count".to_owned(),
+                incompatibilities: Vec::new(),
+            })),
+            WorkflowError::ReferenceTypeUndecidable(Box::new(ReferenceTypeUndecidableDetails {
+                consumer_node: node("b"),
+                param_key: "input".to_owned(),
+                producer_node: node("a"),
+                output_path: "$.count".to_owned(),
+                reasons: Vec::new(),
+            })),
+        ]
+    }
+
+    #[test]
+    fn every_workflow_rejection_reports_all_five_fields() {
+        for rejection in every_rejection() {
+            let diagnostics = rejection.activation_diagnostics();
+            assert!(
+                !diagnostics.is_empty(),
+                "a rejection with nothing to report is not actionable: {rejection:?}"
+            );
+            for reported in diagnostics {
+                for (name, field) in [
+                    ("code", reported.code()),
+                    ("path", reported.path()),
+                    ("expected", reported.expected()),
+                    ("actual", reported.actual()),
+                    ("remediation", reported.remediation()),
+                ] {
+                    assert!(
+                        !field.trim().is_empty(),
+                        "NS14 requires all five fields; `{name}` was blank for {rejection:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Codes are the machine-readable half of the contract, so two different
+    /// rejections must never answer to the same one.
+    #[test]
+    fn each_rejection_carries_a_distinct_stable_code() {
+        let mut codes: Vec<String> = every_rejection()
+            .iter()
+            .flat_map(|rejection| {
+                rejection
+                    .activation_diagnostics()
+                    .into_iter()
+                    .map(|reported| reported.code().to_owned())
+            })
+            .collect();
+        codes.sort();
+        codes.dedup();
+
+        // Both `InvalidRetryConfig` fixtures share one code by design; every
+        // other variant contributes its own.
+        assert_eq!(
+            codes.len(),
+            every_rejection().len() - 1,
+            "two rejections must not answer to the same code"
+        );
+        assert!(codes.iter().all(|code| code.starts_with("WORKFLOW:")));
+    }
+
+    /// The path points at the element the author has to change, so a UI can
+    /// highlight it instead of making the author search.
+    #[test]
+    fn the_path_names_the_offending_element() {
+        let reported =
+            WorkflowError::ReferenceTypeIncompatible(Box::new(ReferenceTypeIncompatDetails {
+                consumer_node: node("consumer"),
+                param_key: "input".to_owned(),
+                producer_node: node("producer"),
+                output_path: "$.count".to_owned(),
+                incompatibilities: Vec::new(),
+            }))
+            .activation_diagnostics();
+
+        let only = reported.first().expect("one diagnostic is reported");
+        assert_eq!(only.path(), "/nodes/consumer/parameters/input");
+
+        let workflow_default = WorkflowError::InvalidRetryConfig {
+            node: None,
+            reason: "max_attempts must be >= 1".to_owned(),
+        }
+        .activation_diagnostics();
+        assert_eq!(
+            workflow_default
+                .first()
+                .expect("one diagnostic is reported")
+                .path(),
+            "/config/retry_policy",
+            "a workflow-default policy points at the config, not at a node"
+        );
+    }
+}

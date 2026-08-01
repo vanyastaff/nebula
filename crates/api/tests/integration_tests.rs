@@ -2239,15 +2239,47 @@ async fn activate_invalid_returns_422() {
     for err in errors {
         assert!(err["code"].is_string(), "each error must have a code");
         assert!(err["detail"].is_string(), "each error must have a detail");
-        // RFC 6901 JSON Pointer: either the root pointer ("") or a path starting with "/".
-        // Structural errors (CycleDetected, NoEntryNodes, …) produce "" (root);
-        // node/connection errors produce "/nodes/<key>" or "/connections/<from>/<to>".
+
+        // Exactly one location field. `pointer` is an RFC 6901 pointer into a
+        // request body; `path` is a stable logical path to a workflow element.
+        // Activation rejections use `path`, because `nodes` and `connections`
+        // are JSON arrays — RFC 6901 addresses their elements by index, so a
+        // key-shaped `pointer` never resolved against the document it claimed
+        // to point into.
+        let pointer = err["pointer"].as_str();
+        let path = err["path"].as_str();
         assert!(
-            err["pointer"]
-                .as_str()
-                .is_some_and(|p| p.is_empty() || p.starts_with('/')),
-            "pointer must be a valid RFC 6901 JSON Pointer (empty string or starts with /)"
+            pointer.is_some() != path.is_some(),
+            "each error carries exactly one location field, got pointer={pointer:?} \
+             path={path:?}"
         );
+        if let Some(pointer) = pointer {
+            assert!(
+                pointer.is_empty() || pointer.starts_with('/'),
+                "an RFC 6901 pointer is the root or starts with /"
+            );
+        }
+        if let Some(path) = path {
+            assert!(
+                path.starts_with('/'),
+                "a logical path names an element, never the whole document"
+            );
+            // An activation rejection is only actionable with all five NS14
+            // fields, so the wire must carry the other three too.
+            for field in ["expected", "actual", "remediation"] {
+                assert!(
+                    err[field]
+                        .as_str()
+                        .is_some_and(|value| !value.trim().is_empty()),
+                    "an activation diagnostic must carry a non-blank `{field}`"
+                );
+            }
+            assert_ne!(
+                err["code"].as_str(),
+                Some("workflow_definition_invalid"),
+                "every rejection reports its own rule, not one shared placeholder code"
+            );
+        }
     }
 }
 

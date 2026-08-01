@@ -9,6 +9,7 @@ use nebula_core::{
     ResourceKey, WorkerFlavorRevisionId, WorkflowId, WorkflowVersionId,
 };
 use nebula_credential::Capabilities;
+use nebula_error::ActivationDiagnostic;
 use nebula_schema::{
     Assignability, Field, FieldKey, FieldValue, FieldValues, InputSchema, OutputSchema, PathWalk,
     RequiredMode, Schema, SchemaKind, ValidSchema, explain_assignable, explain_field_assignable,
@@ -27,95 +28,6 @@ pub(crate) const SCHEMA_WIRE_VERSION_GRAPH_V1: u16 = 1;
 const _: () = assert!(nebula_schema::VALUE_CANON_VERSION == VALUE_CANON_VERSION_GRAPH_V1);
 const _: () = assert!(nebula_schema::SCHEMA_WIRE_VERSION == SCHEMA_WIRE_VERSION_GRAPH_V1);
 
-/// One stable, secret-free activation diagnostic emitted by the plan compiler.
-///
-/// Values are constructed only inside this crate so the compiler can guarantee
-/// that the five fields contain identifiers, versions, paths, or safe
-/// sentinels rather than configuration or secret payloads.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ActivationDiagnostic {
-    code: String,
-    path: String,
-    expected: String,
-    actual: String,
-    remediation: String,
-}
-
-impl ActivationDiagnostic {
-    pub(crate) fn new(
-        code: impl Into<String>,
-        path: impl Into<String>,
-        expected: impl Into<String>,
-        actual: impl Into<String>,
-        remediation: impl Into<String>,
-    ) -> Option<Self> {
-        let value = Self {
-            code: code.into(),
-            path: path.into(),
-            expected: expected.into(),
-            actual: actual.into(),
-            remediation: remediation.into(),
-        };
-
-        [
-            value.code.as_str(),
-            value.path.as_str(),
-            value.expected.as_str(),
-            value.actual.as_str(),
-            value.remediation.as_str(),
-        ]
-        .iter()
-        .all(|field| !field.trim().is_empty())
-        .then_some(value)
-    }
-
-    /// Stable machine-readable diagnostic code.
-    #[must_use]
-    pub fn code(&self) -> &str {
-        &self.code
-    }
-
-    /// Canonical path to the incompatible workflow or registry element.
-    #[must_use]
-    pub fn path(&self) -> &str {
-        &self.path
-    }
-
-    /// Secret-free description of the required contract.
-    #[must_use]
-    pub fn expected(&self) -> &str {
-        &self.expected
-    }
-
-    /// Secret-free description of the observed contract or a safe sentinel.
-    #[must_use]
-    pub fn actual(&self) -> &str {
-        &self.actual
-    }
-
-    /// Stable, actionable remediation guidance.
-    #[must_use]
-    pub fn remediation(&self) -> &str {
-        &self.remediation
-    }
-}
-
-impl fmt::Debug for ActivationDiagnostic {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("ActivationDiagnostic")
-            .field("code", &self.code)
-            .field("path", &self.path)
-            .finish_non_exhaustive()
-    }
-}
-
-impl fmt::Display for ActivationDiagnostic {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{} at {}", self.code, self.path)
-    }
-}
-
 /// A non-empty, canonically ordered set of plan-activation diagnostics.
 #[derive(thiserror::Error)]
 #[error("workflow plan compilation failed")]
@@ -124,24 +36,24 @@ pub struct PlanCompilationError {
 }
 
 impl PlanCompilationError {
-    pub(crate) fn new(mut diagnostics: Vec<ActivationDiagnostic>) -> Option<Self> {
-        diagnostics.sort();
-        diagnostics.dedup();
+    pub(crate) fn new(diagnostics: Vec<ActivationDiagnostic>) -> Option<Self> {
+        let diagnostics = nebula_error::canonical_diagnostics(diagnostics);
         (!diagnostics.is_empty()).then(|| Self {
             diagnostics: diagnostics.into_boxed_slice(),
         })
     }
 
     pub(crate) fn invalid_compiled_record() -> Self {
+        let diagnostic = ActivationDiagnostic::new(
+            "PLUGIN_PLAN_GRAPH_V1:INVALID_COMPILED_RECORD",
+            "/workflow",
+            "<canonical-graph-v1-plan>",
+            "<unsupported-variant>",
+            "repair the reported workflow or component contract",
+        )
+        .expect("the compiled-record diagnostic has five non-empty constant fields");
         Self {
-            diagnostics: vec![ActivationDiagnostic {
-                code: "PLUGIN_PLAN_GRAPH_V1:INVALID_COMPILED_RECORD".to_owned(),
-                path: "/workflow".to_owned(),
-                expected: "<canonical-graph-v1-plan>".to_owned(),
-                actual: "<unsupported-variant>".to_owned(),
-                remediation: "repair the reported workflow or component contract".to_owned(),
-            }]
-            .into_boxed_slice(),
+            diagnostics: vec![diagnostic].into_boxed_slice(),
         }
     }
 
@@ -837,6 +749,83 @@ pub enum ExecutablePlanIntegrityError {
         /// Identity recomputed from canonical content.
         computed: ExecutablePlanRevisionId,
     },
+}
+
+impl nebula_error::ActivationDiagnostics for ExecutablePlanIntegrityError {
+    fn activation_diagnostics(&self) -> Vec<ActivationDiagnostic> {
+        let (code, path, expected, actual, remediation) = match self {
+            Self::UnsupportedFormat => (
+                "PLUGIN_PLAN_INTEGRITY:UNSUPPORTED_FORMAT",
+                "/plan/record_format".to_owned(),
+                "graph_v1_json".to_owned(),
+                "<unsupported-format>".to_owned(),
+                "recompile the workflow with a runtime that writes Graph-v1 plans",
+            ),
+            // The section is a stable path, never a payload value: a
+            // non-canonical section can hold parameter defaults.
+            Self::NonCanonical { section } => (
+                "PLUGIN_PLAN_INTEGRITY:NON_CANONICAL",
+                format!("/plan/{section}"),
+                "a canonically ordered, duplicate-free section".to_owned(),
+                "a section that is empty, unsorted, or duplicated".to_owned(),
+                "recompile the workflow: the record was not produced by a canonical compiler",
+            ),
+            Self::ConvertersUnsupported => (
+                "PLUGIN_PLAN_INTEGRITY:CONVERTERS_UNSUPPORTED",
+                "/plan/converters".to_owned(),
+                "an empty converter set".to_owned(),
+                "a non-empty converter set".to_owned(),
+                "recompile the workflow: Graph-v1 plans cannot carry converters",
+            ),
+            Self::UnknownCredentialCapability => (
+                "PLUGIN_PLAN_INTEGRITY:UNKNOWN_CAPABILITY",
+                "/plan/bindings/required_capability_bits".to_owned(),
+                "capability bits this runtime defines".to_owned(),
+                "<unknown-capability-bits>".to_owned(),
+                "run a worker whose credential contract defines every recorded capability",
+            ),
+            Self::CanonicalEncoding => (
+                "PLUGIN_PLAN_INTEGRITY:CANONICAL_ENCODING",
+                "/plan".to_owned(),
+                "a canonically encodable record".to_owned(),
+                "<uncanonicalizable-value>".to_owned(),
+                "recompile the workflow: a recorded value cannot be canonically encoded",
+            ),
+            // Both identities are content digests, so reporting them leaks
+            // nothing about the plan they address.
+            Self::RevisionIdMismatch { claimed, computed } => (
+                "PLUGIN_PLAN_INTEGRITY:REVISION_ID_MISMATCH",
+                "/plan/id".to_owned(),
+                computed.to_string(),
+                claimed.to_string(),
+                "discard the record: its claimed identity does not match its own content",
+            ),
+        };
+
+        vec![
+            ActivationDiagnostic::new(code, &path, expected, actual, remediation).unwrap_or_else(
+                || {
+                    ActivationDiagnostic::new(
+                        code,
+                        "/plan",
+                        "<contract>",
+                        "<unavailable>",
+                        "recompile the workflow against a canonical compiler",
+                    )
+                    .unwrap_or_else(|| {
+                        unreachable!("the fallback diagnostic uses non-empty constants")
+                    })
+                },
+            ),
+        ]
+    }
+}
+
+impl nebula_error::ActivationDiagnostics for PlanCompilationError {
+    fn activation_diagnostics(&self) -> Vec<ActivationDiagnostic> {
+        // Already canonical: `new` sorts and dedups on construction.
+        self.diagnostics.to_vec()
+    }
 }
 
 /// Integrity-checked, immutable, authority-free executable plan revision.
@@ -2478,6 +2467,64 @@ mod tests {
         assert!(!format!("{earlier}").contains(ACTUAL_CONTRACT_DETAIL));
         assert!(!format!("{earlier:?}").contains(ACTUAL_CONTRACT_DETAIL));
         assert!(PlanCompilationError::new(Vec::new()).is_none());
+    }
+
+    /// Every integrity rejection reports all five NS14 fields.
+    ///
+    /// The list is exhaustive by construction: `activation_diagnostics` matches
+    /// the enum without a wildcard, so a new variant fails to compile there
+    /// before it can reach a caller with a missing field.
+    #[test]
+    fn every_plan_integrity_rejection_reports_all_five_fields() {
+        use nebula_error::ActivationDiagnostics;
+
+        let rejections = [
+            ExecutablePlanIntegrityError::UnsupportedFormat,
+            ExecutablePlanIntegrityError::NonCanonical {
+                section: "bindings",
+            },
+            ExecutablePlanIntegrityError::ConvertersUnsupported,
+            ExecutablePlanIntegrityError::UnknownCredentialCapability,
+            ExecutablePlanIntegrityError::CanonicalEncoding,
+            ExecutablePlanIntegrityError::RevisionIdMismatch {
+                claimed: ExecutablePlanRevisionId::from_bytes([0x11; 32]),
+                computed: ExecutablePlanRevisionId::from_bytes([0x22; 32]),
+            },
+        ];
+
+        for rejection in &rejections {
+            let diagnostics = rejection.activation_diagnostics();
+            assert!(
+                !diagnostics.is_empty(),
+                "a rejection with nothing to report is not actionable"
+            );
+            for reported in diagnostics {
+                for field in [
+                    reported.code(),
+                    reported.path(),
+                    reported.expected(),
+                    reported.actual(),
+                    reported.remediation(),
+                ] {
+                    assert!(!field.trim().is_empty(), "NS14 requires all five fields");
+                }
+            }
+        }
+    }
+
+    /// A compilation rejection hands its diagnostics through already canonical,
+    /// so two runs over the same workflow report the same sequence.
+    #[test]
+    fn compilation_diagnostics_come_through_canonically_ordered() {
+        use nebula_error::ActivationDiagnostics;
+
+        let later = diagnostic("E002", "/nodes/b", "a contract", "second", "fix it");
+        let earlier = diagnostic("E001", "/nodes/a", "a contract", "first", "fix it");
+        let error =
+            PlanCompilationError::new(vec![later.clone(), earlier.clone(), earlier.clone()])
+                .expect("the fixture has diagnostics");
+
+        assert_eq!(error.activation_diagnostics(), vec![earlier, later]);
     }
 
     fn recorded_semver(major: u64, minor: u64, patch: u64) -> RecordedSemverV1 {
