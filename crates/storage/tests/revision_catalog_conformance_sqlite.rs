@@ -19,11 +19,21 @@ use std::str::FromStr;
 
 use nebula_storage::sqlite::{SqlitePlanFlavorCatalog, init_schema};
 use nebula_storage_port::{
-    PlanFlavorCatalog, PlanFlavorCatalogWriter, PlanFlavorRevisionTarget, RevisionCatalogError,
-    RevisionInsertOutcome,
+    PlanFlavorCatalog, PlanFlavorCatalogAdmin, PlanFlavorCatalogWriter, PlanFlavorRevisionTarget,
+    RevisionCatalogError, RevisionInsertOutcome,
 };
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+/// A private metrics registry for this backend under test.
+///
+/// Production wiring threads the process-shared registry so a scraper observes
+/// the catalog's conflict and unknown-outcome counts; a conformance run only
+/// needs the counters to be bindable, and a private registry keeps concurrent
+/// cases from sharing series.
+fn registry() -> nebula_metrics::MetricsRegistry {
+    nebula_metrics::MetricsRegistry::new()
+}
 
 /// An isolated in-memory database with the ordered migration catalog applied.
 ///
@@ -47,7 +57,29 @@ async fn fresh_pool() -> SqlitePool {
 }
 
 async fn catalog() -> Option<SqlitePlanFlavorCatalog> {
-    Some(SqlitePlanFlavorCatalog::new(fresh_pool().await))
+    Some(SqlitePlanFlavorCatalog::new(
+        fresh_pool().await,
+        &registry(),
+    ))
+}
+
+/// Read back one catalog outcome series.
+///
+/// The registry hands out the same counter for the same name and label set, so
+/// rebuilding the labels reads exactly the series the adapter incremented.
+fn counted(metrics: &nebula_metrics::MetricsRegistry, operation: &str, outcome: &str) -> u64 {
+    let labels = metrics.interner().label_set(&[
+        ("backend", "sqlite"),
+        ("operation", operation),
+        ("outcome", outcome),
+    ]);
+    metrics
+        .counter_labeled(
+            nebula_metrics::NEBULA_STORAGE_REVISION_CATALOG_OPERATIONS_TOTAL,
+            &labels,
+        )
+        .expect("the catalog counter registers")
+        .get()
 }
 
 revision_catalog_conformance_suite!(catalog());
@@ -62,7 +94,7 @@ revision_catalog_conformance_suite!(catalog());
 #[tokio::test]
 async fn a_durably_corrupted_plan_body_is_reported_as_corruption() {
     let pool = fresh_pool().await;
-    let catalog = SqlitePlanFlavorCatalog::new(pool.clone());
+    let catalog = SqlitePlanFlavorCatalog::new(pool.clone(), &registry());
     let record = oracle::pair(0x40, 0, "v1");
     assert_eq!(
         catalog.insert(&record).await,
@@ -88,15 +120,15 @@ async fn a_durably_corrupted_plan_body_is_reported_as_corruption() {
 }
 
 /// A durable `record_format` naming a recorded form this build cannot read is
-/// reported as unsupported rather than decoded as if it were the known form.
+/// refused by the schema, so the catalog never has to decode one.
 ///
-/// The table's `CHECK` refuses the unknown format, so this exercises the
-/// adapter's own guard by asserting the schema holds the line and then
-/// verifying the decoder's answer for a database that predates the constraint.
+/// The adapter's own `UnsupportedRecordFormat` guard is covered by the
+/// `decode_worker_flavor_row` unit tests in `crate::revision_catalog`, which
+/// can hand the decoder a row this `CHECK` makes unreachable through SQL.
 #[tokio::test]
 async fn the_schema_refuses_a_record_format_the_catalog_cannot_read() {
     let pool = fresh_pool().await;
-    let catalog = SqlitePlanFlavorCatalog::new(pool.clone());
+    let catalog = SqlitePlanFlavorCatalog::new(pool.clone(), &registry());
     let record = oracle::pair(0x41, 0, "v1");
     assert_eq!(
         catalog.insert(&record).await,
@@ -118,5 +150,59 @@ async fn the_schema_refuses_a_record_format_the_catalog_cannot_read() {
         catalog.load_exact(record.ids()).await,
         Ok(record),
         "a refused poke leaves the durable record readable"
+    );
+}
+
+/// Catalog outcomes reach a scraper, not only a trace sampler.
+///
+/// `content_conflict` is the case that motivates the counter: an immutable
+/// identity reused for different bytes is invisible in a success rate, and a
+/// deployment backend whose only record of it is a sampled span gives an
+/// operator nothing to alert on.
+#[tokio::test]
+async fn catalog_outcomes_are_counted_per_operation_and_outcome() {
+    let metrics = registry();
+    let catalog = SqlitePlanFlavorCatalog::new(fresh_pool().await, &metrics);
+    let record = oracle::pair(0x42, 0, "v1");
+
+    assert_eq!(
+        catalog.insert(&record).await,
+        Ok(RevisionInsertOutcome::Inserted)
+    );
+    assert_eq!(counted(&metrics, "insert", "inserted"), 1);
+
+    assert_eq!(
+        catalog.insert(&record).await,
+        Ok(RevisionInsertOutcome::AlreadyPresent)
+    );
+    assert_eq!(counted(&metrics, "insert", "already_present"), 1);
+
+    let conflicting = nebula_storage_port::PlanFlavorRevisionRecord::graph_v1_json(
+        record.ids().plan(),
+        nebula_storage_port::RevisionRecordBytes::try_from_vec(br#"{"plan":"rewritten"}"#.to_vec())
+            .expect("conflict body is non-empty"),
+        record.worker_flavor().clone(),
+    );
+    assert!(catalog.insert(&conflicting).await.is_err());
+    assert_eq!(
+        counted(&metrics, "insert", "content_conflict"),
+        1,
+        "an immutable identity reused for different bytes is alertable on its own"
+    );
+
+    assert!(catalog.load_exact(record.ids()).await.is_ok());
+    assert_eq!(counted(&metrics, "load_exact", "loaded"), 1);
+
+    let target = PlanFlavorRevisionTarget::ExecutablePlan(record.ids().plan());
+    assert!(catalog.begin_drain(target).await.is_ok());
+    assert_eq!(counted(&metrics, "begin_drain", "started"), 1);
+
+    assert_eq!(catalog.delete_drained(target).await, Ok(()));
+    assert_eq!(counted(&metrics, "delete_drained", "deleted"), 1);
+
+    assert_eq!(
+        counted(&metrics, "load_exact", "outcome_unknown"),
+        0,
+        "an outcome that did not happen must not be counted"
     );
 }

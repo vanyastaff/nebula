@@ -134,6 +134,54 @@ pub(crate) fn plan_records_match(
     )
 }
 
+/// Catalog operation counters bound to one shared metrics registry.
+///
+/// A deployment backend must be observable by a scraper, not only by a trace
+/// sampler: `content_conflict` (an immutable identity reused for different
+/// bytes) and `outcome_unknown` (a commit dispatched without an authoritative
+/// acknowledgement) both need an operator and neither shows up in a success
+/// rate. The registry is required rather than optional so a composition root
+/// cannot wire a catalog that silently reports nothing.
+///
+/// Only the SQLite and PostgreSQL deployment backends carry this. The
+/// in-memory adapter is a reference/conformance model that no scraper observes,
+/// so it emits spans alone.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+#[derive(Clone, Debug)]
+pub(crate) struct RevisionCatalogMetrics {
+    registry: nebula_metrics::MetricsRegistry,
+    backend: &'static str,
+}
+
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+impl RevisionCatalogMetrics {
+    /// Bind catalog counters for one backend against a shared registry.
+    pub(crate) fn new(registry: &nebula_metrics::MetricsRegistry, backend: &'static str) -> Self {
+        Self {
+            registry: registry.clone(),
+            backend,
+        }
+    }
+
+    /// Count one completed catalog operation under its outcome label.
+    ///
+    /// A registry failure is swallowed: losing a counter increment must never
+    /// turn a committed catalog operation into a caller-visible error.
+    pub(crate) fn record(&self, operation: &'static str, outcome: &'static str) {
+        let labels = self.registry.interner().label_set(&[
+            ("backend", self.backend),
+            ("operation", operation),
+            ("outcome", outcome),
+        ]);
+        if let Ok(counter) = self.registry.counter_labeled(
+            nebula_metrics::NEBULA_STORAGE_REVISION_CATALOG_OPERATIONS_TOTAL,
+            &labels,
+        ) {
+            counter.inc();
+        }
+    }
+}
+
 /// Stable label naming one catalog rejection, so every adapter reports the
 /// same outcome vocabulary on its spans.
 pub(crate) const fn error_label(error: &RevisionCatalogError) -> &'static str {

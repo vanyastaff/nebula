@@ -26,11 +26,14 @@ use nebula_storage_port::{
 };
 use sqlx::{PgPool, Postgres, Row, Transaction};
 
+use nebula_metrics::revision_catalog_operation;
+
 use crate::revision_catalog::{
-    ArtifactLifecycle, EXECUTABLE_PLAN_GRAPH_V1_JSON, StoredExecutablePlan, StoredWorkerFlavor,
-    WORKER_FLAVOR_V1_JSON, compose_pair, decode_executable_plan_row, decode_worker_flavor_row,
-    delete_label, deleted_for, drain_label, draining_for, flavor_records_match, insert_label,
-    load_label, plan_content_matches, unavailable_for, validate_pair_recorded_form,
+    ArtifactLifecycle, EXECUTABLE_PLAN_GRAPH_V1_JSON, RevisionCatalogMetrics, StoredExecutablePlan,
+    StoredWorkerFlavor, WORKER_FLAVOR_V1_JSON, compose_pair, decode_executable_plan_row,
+    decode_worker_flavor_row, delete_label, deleted_for, drain_label, draining_for,
+    flavor_records_match, insert_label, load_label, plan_content_matches, unavailable_for,
+    validate_pair_recorded_form,
 };
 
 /// PostgreSQL-backed exact executable-plan and worker-flavor catalog.
@@ -39,14 +42,22 @@ use crate::revision_catalog::{
 #[derive(Clone, Debug)]
 pub struct PgPlanFlavorCatalog {
     pool: PgPool,
+    metrics: RevisionCatalogMetrics,
 }
 
 impl PgPlanFlavorCatalog {
-    /// Wrap an existing pool. The caller installs the port schema (see
-    /// [`super::init_schema`]).
+    /// Wrap an existing pool and bind catalog counters to a shared registry.
+    ///
+    /// The caller installs the port schema (see [`super::init_schema`]). The
+    /// registry is required rather than optional so a composition root cannot
+    /// wire a deployment backend whose conflict and unknown-outcome counts are
+    /// invisible to a scraper.
     #[must_use]
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn new(pool: PgPool, metrics: &nebula_metrics::MetricsRegistry) -> Self {
+        Self {
+            pool,
+            metrics: RevisionCatalogMetrics::new(metrics, "postgres"),
+        }
     }
 
     /// Open the transaction every catalog operation runs in.
@@ -580,16 +591,28 @@ impl PlanFlavorCatalog for PgPlanFlavorCatalog {
         &self,
         ids: PlanFlavorRevisionIds,
     ) -> Result<PlanFlavorRevisionRecord, RevisionCatalogError> {
-        let mut tx = self.begin().await?;
-        let result = load_exact_locked(&mut tx, ids).await;
-        // Nothing was written on this path; the commit only releases the read
-        // transaction, so a failure to release cannot make the outcome unknown.
-        drop(tx.commit().await);
+        // The transaction is opened *inside* the observed body. Returning `?`
+        // from an unreachable pool would otherwise leave the span's `outcome`
+        // empty and emit no event at all, so the one failure that means "this
+        // backend is down" was the one failure nothing recorded.
+        let result = async {
+            let mut tx = self.begin().await?;
+            let loaded = load_exact_locked(&mut tx, ids).await;
+            // Nothing was written on this path; the commit only releases the
+            // read transaction, so failing to release cannot make the outcome
+            // unknown.
+            drop(tx.commit().await);
+            loaded
+        }
+        .await;
 
-        tracing::Span::current().record("outcome", load_label(&result));
+        let outcome = load_label(&result);
+        tracing::Span::current().record("outcome", outcome);
+        self.metrics
+            .record(revision_catalog_operation::LOAD_EXACT, outcome);
         tracing::debug!(
             target: "nebula_storage::postgres",
-            outcome = load_label(&result),
+            outcome,
             "exact plan/flavor catalog load"
         );
         result
@@ -613,23 +636,29 @@ impl PlanFlavorCatalogWriter for PgPlanFlavorCatalog {
         &self,
         record: &PlanFlavorRevisionRecord,
     ) -> Result<RevisionInsertOutcome, RevisionCatalogError> {
-        let mut tx = self.begin().await?;
-        let result = match insert_locked(&mut tx, record).await {
-            Ok(outcome) => tx
-                .commit()
-                .await
-                .map_err(commit_outcome_unknown)
-                .map(|()| outcome),
-            Err(rejection) => {
-                drop(tx.rollback().await);
-                Err(rejection)
-            },
-        };
+        let result = async {
+            let mut tx = self.begin().await?;
+            match insert_locked(&mut tx, record).await {
+                Ok(outcome) => tx
+                    .commit()
+                    .await
+                    .map_err(commit_outcome_unknown)
+                    .map(|()| outcome),
+                Err(rejection) => {
+                    drop(tx.rollback().await);
+                    Err(rejection)
+                },
+            }
+        }
+        .await;
 
-        tracing::Span::current().record("outcome", insert_label(&result));
+        let outcome = insert_label(&result);
+        tracing::Span::current().record("outcome", outcome);
+        self.metrics
+            .record(revision_catalog_operation::INSERT, outcome);
         tracing::debug!(
             target: "nebula_storage::postgres",
-            outcome = insert_label(&result),
+            outcome,
             "plan/flavor catalog insert"
         );
         result
@@ -649,23 +678,29 @@ impl PlanFlavorCatalogAdmin for PgPlanFlavorCatalog {
         target: PlanFlavorRevisionTarget,
     ) -> Result<BeginDrainOutcome, RevisionCatalogError> {
         let now_ms = chrono::Utc::now().timestamp_millis();
-        let mut tx = self.begin().await?;
-        let result = match begin_drain_locked(&mut tx, target, now_ms).await {
-            Ok(outcome) => tx
-                .commit()
-                .await
-                .map_err(commit_outcome_unknown)
-                .map(|()| outcome),
-            Err(rejection) => {
-                drop(tx.rollback().await);
-                Err(rejection)
-            },
-        };
+        let result = async {
+            let mut tx = self.begin().await?;
+            match begin_drain_locked(&mut tx, target, now_ms).await {
+                Ok(outcome) => tx
+                    .commit()
+                    .await
+                    .map_err(commit_outcome_unknown)
+                    .map(|()| outcome),
+                Err(rejection) => {
+                    drop(tx.rollback().await);
+                    Err(rejection)
+                },
+            }
+        }
+        .await;
 
-        tracing::Span::current().record("outcome", drain_label(&result));
+        let outcome = drain_label(&result);
+        tracing::Span::current().record("outcome", outcome);
+        self.metrics
+            .record(revision_catalog_operation::BEGIN_DRAIN, outcome);
         tracing::debug!(
             target: "nebula_storage::postgres",
-            outcome = drain_label(&result),
+            outcome,
             "plan/flavor catalog begin drain"
         );
         result
@@ -682,19 +717,25 @@ impl PlanFlavorCatalogAdmin for PgPlanFlavorCatalog {
         target: PlanFlavorRevisionTarget,
     ) -> Result<(), RevisionCatalogError> {
         let now_ms = chrono::Utc::now().timestamp_millis();
-        let mut tx = self.begin().await?;
-        let result = match delete_drained_locked(&mut tx, target, now_ms).await {
-            Ok(()) => tx.commit().await.map_err(commit_outcome_unknown),
-            Err(rejection) => {
-                drop(tx.rollback().await);
-                Err(rejection)
-            },
-        };
+        let result = async {
+            let mut tx = self.begin().await?;
+            match delete_drained_locked(&mut tx, target, now_ms).await {
+                Ok(()) => tx.commit().await.map_err(commit_outcome_unknown),
+                Err(rejection) => {
+                    drop(tx.rollback().await);
+                    Err(rejection)
+                },
+            }
+        }
+        .await;
 
-        tracing::Span::current().record("outcome", delete_label(&result));
+        let outcome = delete_label(&result);
+        tracing::Span::current().record("outcome", outcome);
+        self.metrics
+            .record(revision_catalog_operation::DELETE_DRAINED, outcome);
         tracing::debug!(
             target: "nebula_storage::postgres",
-            outcome = delete_label(&result),
+            outcome,
             "plan/flavor catalog guarded delete"
         );
         result

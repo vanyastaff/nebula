@@ -26,6 +26,16 @@ use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 use tokio::sync::OnceCell;
 
+/// A private metrics registry for this backend under test.
+///
+/// Production wiring threads the process-shared registry so a scraper observes
+/// the catalog's conflict and unknown-outcome counts; a conformance run only
+/// needs the counters to be bindable, and a private registry keeps concurrent
+/// cases from sharing series.
+fn registry() -> nebula_metrics::MetricsRegistry {
+    nebula_metrics::MetricsRegistry::new()
+}
+
 static SCHEMA_READY: OnceCell<()> = OnceCell::const_new();
 
 /// Connect to `DATABASE_URL` and apply the ordered migration catalog, or report
@@ -64,7 +74,9 @@ async fn pool() -> Option<PgPool> {
 }
 
 async fn catalog() -> Option<PgPlanFlavorCatalog> {
-    pool().await.map(PgPlanFlavorCatalog::new)
+    pool()
+        .await
+        .map(|pool| PgPlanFlavorCatalog::new(pool, &registry()))
 }
 
 revision_catalog_conformance_suite!(catalog());
@@ -82,7 +94,7 @@ async fn a_durably_corrupted_plan_body_is_reported_as_corruption() {
         eprintln!("PostgreSQL unreachable in this environment");
         return;
     };
-    let catalog = PgPlanFlavorCatalog::new(pool.clone());
+    let catalog = PgPlanFlavorCatalog::new(pool.clone(), &registry());
     let record = oracle::pair(0x40, 0, "v1");
     assert_eq!(
         catalog.insert(&record).await,
@@ -115,7 +127,7 @@ async fn the_schema_refuses_a_record_format_the_catalog_cannot_read() {
         eprintln!("PostgreSQL unreachable in this environment");
         return;
     };
-    let catalog = PgPlanFlavorCatalog::new(pool.clone());
+    let catalog = PgPlanFlavorCatalog::new(pool.clone(), &registry());
     let record = oracle::pair(0x41, 0, "v1");
     assert_eq!(
         catalog.insert(&record).await,
