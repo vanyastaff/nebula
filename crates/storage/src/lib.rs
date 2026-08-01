@@ -19,6 +19,15 @@
 //! - `postgres` — PostgreSQL adapter behind the `postgres` feature
 //!   (production multi-process; real tx + `FOR UPDATE SKIP LOCKED`).
 //!
+//! ## Exact plan/flavor revision catalog
+//!
+//! `InMemoryPlanFlavorCatalog` is the reference/conformance model;
+//! `sqlite::SqlitePlanFlavorCatalog` and `postgres::PgPlanFlavorCatalog` are
+//! the deployment backends. All three implement the same three port roles over
+//! ordered migration 0041 and are held to one shared acceptance oracle
+//! (`tests/support/revision_catalog_oracle.rs`), so a behaviour only one
+//! backend gets right fails the suite rather than diverging silently.
+//!
 //! This is the layer the knife scenario (`docs/PRODUCT_CANON.md` §13)
 //! exercises end-to-end.
 //!
@@ -94,6 +103,10 @@ pub mod postgres;
 /// so it is referenced with plain backticks (not an intra-doc link) to
 /// keep default-feature rustdoc clean.
 pub mod repos;
+/// Backend-independent exact plan/flavor catalog decisions, shared by every
+/// catalog adapter so record identity, recorded-form validity, and lifecycle
+/// vocabulary cannot drift between backends.
+mod revision_catalog;
 /// Database row types.
 pub mod rows;
 /// Domain-separated lookup digests for opaque browser-session tokens.

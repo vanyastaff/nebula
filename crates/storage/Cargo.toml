@@ -62,6 +62,11 @@ sqlx = { workspace = true, optional = true, features = [
 ] }
 hex = { version = "0.4", optional = true }
 rmp-serde = { version = "1", optional = true }
+# Exact plan/flavor catalog counters, enabled with either SQL backend.
+# Optional because the in-memory adapter is a reference/conformance model that
+# no scraper observes, so a default-feature build exports no catalog series and
+# should not link the metrics registry to say so.
+nebula-metrics = { path = "../metrics", optional = true }
 
 [features]
 default = []
@@ -88,8 +93,8 @@ chaos-full = []
 # dragging system openssl into the build matrix. The base `sqlx` dep
 # already enables `runtime-tokio`, so the runtime+TLS bundle isn't
 # needed separately.
-postgres = ["dep:sqlx", "sqlx/postgres", "sqlx/tls-rustls-ring-native-roots", "dep:hex"]
-sqlite = ["dep:sqlx", "sqlx/sqlite"]
+postgres = ["dep:sqlx", "sqlx/postgres", "sqlx/tls-rustls-ring-native-roots", "dep:hex", "dep:nebula-metrics"]
+sqlite = ["dep:sqlx", "sqlx/sqlite", "dep:nebula-metrics"]
 msgpack-storage = ["dep:rmp-serde"]
 
 [dev-dependencies]

@@ -51,20 +51,43 @@ fn ordered_migrations_are_the_only_embedded_schema_source() {
         !rust_source.contains("include_str!(\"schema.sql\")"),
         "setup must not embed a schema snapshot"
     );
-    for forbidden_sql_catalog_surface in [
-        "SqlitePlanFlavorCatalog",
-        "PgPlanFlavorCatalog",
-        "PostgresPlanFlavorCatalog",
-        "port_worker_flavor_revisions",
-        "port_executable_plan_revisions",
-        "port_execution_revision_refs",
+    // The SQL catalog adapters read and write the 0041 tables, so naming those
+    // tables in Rust source is now expected. What must stay true is that
+    // migration 0041 remains their only schema authority: an adapter that
+    // issued its own DDL would be a second, divergent definition of the same
+    // tables, reachable without the ordered catalog ever running.
+    let catalog_adapters = [
+        source_root.join("sqlite/plan_flavor_catalog.rs"),
+        source_root.join("postgres/plan_flavor_catalog.rs"),
+        source_root.join("revision_catalog.rs"),
+    ];
+    for adapter in &catalog_adapters {
+        let source = fs::read_to_string(adapter).expect("catalog adapter source must be UTF-8");
+        for forbidden_ddl in ["CREATE TABLE", "CREATE INDEX", "ALTER TABLE", "DROP TABLE"] {
+            assert!(
+                !source.contains(forbidden_ddl),
+                "migration 0041 is the only schema authority; found `{forbidden_ddl}` in \
+                 {adapter:?}"
+            );
+        }
+    }
+
+    // Execution-owned revision references are still read-only from production
+    // code: creating or transitioning one has to compose with the execution
+    // aggregate's own transaction, which does not exist yet. Until it does, no
+    // production API may write `port_execution_revision_refs` — otherwise a
+    // reference could outlive, or never reach, the execution that owns it.
+    for reference_mutation in [
+        "INSERT INTO port_execution_revision_refs",
+        "UPDATE port_execution_revision_refs",
+        "DELETE FROM port_execution_revision_refs",
         "activate_execution_revision",
         "persist_execution_revision_ref",
     ] {
         assert!(
-            !rust_source.contains(forbidden_sql_catalog_surface),
-            "0041 is dormant DDL; found SQL catalog adapter or activation surface \
-             `{forbidden_sql_catalog_surface}` in production Rust source"
+            !rust_source.contains(reference_mutation),
+            "revision-reference mutation belongs to the execution-owner transaction; found \
+             `{reference_mutation}` in production Rust source"
         );
     }
 

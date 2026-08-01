@@ -898,6 +898,43 @@ pub mod orchestrator_reclaim_outcome {
 }
 
 // ---------------------------------------------------------------------------
+// Exact plan/flavor revision catalog (storage crate)
+// ---------------------------------------------------------------------------
+
+/// Counter: exact plan/flavor catalog operations, by operation and outcome.
+///
+/// Labeled by `backend` (`sqlite` | `postgres`), `operation` (see
+/// [`revision_catalog_operation`]), and `outcome`. The outcome vocabulary is
+/// the catalog's own closed rejection set plus the success values — the same
+/// labels the adapter records on its span, so a dashboard and a trace agree on
+/// what happened.
+///
+/// Two outcomes are the reason this counter exists rather than a plain
+/// success/failure split: `content_conflict` means an immutable identity was
+/// reused for different bytes, and `outcome_unknown` means a commit was
+/// dispatched without an authoritative acknowledgement. Neither is visible in
+/// a success rate, and both need an operator, so alert on them directly.
+///
+/// Cardinality: 2 backends × 4 operations × the closed outcome set.
+pub const NEBULA_STORAGE_REVISION_CATALOG_OPERATIONS_TOTAL: &str =
+    "nebula_storage_revision_catalog_operations_total";
+
+/// Operation labels for [`NEBULA_STORAGE_REVISION_CATALOG_OPERATIONS_TOTAL`].
+///
+/// Closed label set — one value per port method. Adding a value means adding a
+/// catalog capability, not widening a label.
+pub mod revision_catalog_operation {
+    /// `PlanFlavorCatalogWriter::insert`.
+    pub const INSERT: &str = "insert";
+    /// `PlanFlavorCatalog::load_exact`.
+    pub const LOAD_EXACT: &str = "load_exact";
+    /// `PlanFlavorCatalogAdmin::begin_drain`.
+    pub const BEGIN_DRAIN: &str = "begin_drain";
+    /// `PlanFlavorCatalogAdmin::delete_drained`.
+    pub const DELETE_DRAINED: &str = "delete_drained";
+}
+
+// ---------------------------------------------------------------------------
 // Cache (memory crate)
 // ---------------------------------------------------------------------------
 
@@ -943,10 +980,11 @@ mod tests {
         NEBULA_RESOURCE_POOL_EXHAUSTED_TOTAL, NEBULA_RESOURCE_POOL_WAITERS,
         NEBULA_RESOURCE_QUARANTINE_RELEASED_TOTAL, NEBULA_RESOURCE_QUARANTINE_TOTAL,
         NEBULA_RESOURCE_RECYCLE_OUTCOME_TOTAL, NEBULA_RESOURCE_RELEASE_ERROR_TOTAL,
-        NEBULA_RESOURCE_RELEASE_TOTAL, NEBULA_RESOURCE_USAGE_DURATION_SECONDS, auth_oauth_provider,
-        auth_outcome, idempotency_reject_reason, orchestrator_dispatch_outcome,
-        orchestrator_reclaim_outcome, recycle_outcome, refresh_coord_claim_outcome,
-        refresh_coord_coalesced_tier, refresh_coord_reclaim_outcome, refresh_coord_sentinel_action,
+        NEBULA_RESOURCE_RELEASE_TOTAL, NEBULA_RESOURCE_USAGE_DURATION_SECONDS,
+        NEBULA_STORAGE_REVISION_CATALOG_OPERATIONS_TOTAL, auth_oauth_provider, auth_outcome,
+        idempotency_reject_reason, orchestrator_dispatch_outcome, orchestrator_reclaim_outcome,
+        recycle_outcome, refresh_coord_claim_outcome, refresh_coord_coalesced_tier,
+        refresh_coord_reclaim_outcome, refresh_coord_sentinel_action, revision_catalog_operation,
         rotation_outcome, webhook_rate_limit_tier, webhook_signature_failure_reason,
     };
 
@@ -1071,6 +1109,42 @@ mod tests {
         NEBULA_CREDENTIAL_REFRESH_COORD_RECLAIM_SWEEPS_TOTAL,
         NEBULA_CREDENTIAL_REFRESH_COORD_HOLD_DURATION_SECONDS,
     ];
+
+    #[test]
+    fn revision_catalog_operation_labels_are_closed_set() {
+        // One value per port method. Adding a value here means the catalog
+        // grew a capability, not that a label widened; this test is the CI
+        // gate against silent expansion.
+        let labels = [
+            revision_catalog_operation::INSERT,
+            revision_catalog_operation::LOAD_EXACT,
+            revision_catalog_operation::BEGIN_DRAIN,
+            revision_catalog_operation::DELETE_DRAINED,
+        ];
+        let mut unique = HashSet::new();
+        for label in labels {
+            assert!(!label.is_empty());
+            assert!(label.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'));
+            assert!(unique.insert(label));
+        }
+        assert_eq!(unique.len(), 4);
+    }
+
+    #[test]
+    fn revision_catalog_metric_is_registry_safe() {
+        let registry = MetricsRegistry::new();
+        let name = NEBULA_STORAGE_REVISION_CATALOG_OPERATIONS_TOTAL;
+        assert!(name.starts_with("nebula_storage_"));
+        assert!(
+            name.chars()
+                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+        );
+        let counter = registry
+            .counter(name)
+            .expect("the catalog counter registers");
+        counter.inc();
+        assert_eq!(counter.get(), 1);
+    }
 
     const CACHE_METRIC_NAMES: [&str; 4] = [
         NEBULA_CACHE_HITS,
