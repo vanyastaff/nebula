@@ -1,6 +1,7 @@
 //! Exact frozen-registry compatibility for integrity-checked Graph-v1 plans.
 
 use nebula_core::{CredentialKey, Dependencies, PluginSetId, ResourceKey, WorkerFlavorRevisionId};
+use nebula_error::{ActivationDiagnostic, ActivationDiagnostics};
 
 use crate::{
     FrozenPluginRegistry,
@@ -334,4 +335,124 @@ fn find_credential<'a>(
         })
         .min_by_key(|(plugin_key, _, _)| *plugin_key)
         .map(|(_, plugin, snapshot)| (plugin, snapshot))
+}
+
+/// Build one diagnostic from constant parts, or fall back to a complete one.
+///
+/// Every field here is a compiler-authored constant or a typed identifier, so
+/// construction cannot legitimately fail. The fallback exists because a
+/// rejection that reports nothing is worse than one that reports a coarse
+/// code: a caller must never receive an empty diagnostic list.
+fn diagnostic(
+    code: &str,
+    path: &str,
+    expected: String,
+    actual: String,
+    remediation: &str,
+) -> ActivationDiagnostic {
+    ActivationDiagnostic::new(code, path, expected, actual, remediation).unwrap_or_else(|| {
+        ActivationDiagnostic::new(
+            code,
+            path,
+            "<contract>",
+            "<unavailable>",
+            "recompile the plan against the frozen registry this worker loads",
+        )
+        .unwrap_or_else(|| unreachable!("the fallback diagnostic uses non-empty constants"))
+    })
+}
+
+impl ActivationDiagnostics for PlanRegistryCompatibilityError {
+    fn activation_diagnostics(&self) -> Vec<ActivationDiagnostic> {
+        let single = match self {
+            Self::PluginSetMismatch { plan, registry } => diagnostic(
+                "PLUGIN_PLAN_COMPATIBILITY:PLUGIN_SET_MISMATCH",
+                "/plan/plugin_set_id",
+                plan.to_string(),
+                registry.to_string(),
+                "load the worker flavor whose plugin set this plan was compiled against, \
+                 or recompile the plan against this worker's frozen registry",
+            ),
+            Self::WorkerFlavorMismatch { plan, registry } => diagnostic(
+                "PLUGIN_PLAN_COMPATIBILITY:WORKER_FLAVOR_MISMATCH",
+                "/plan/worker_flavor_revision_id",
+                plan.to_string(),
+                registry.to_string(),
+                "dispatch this plan to a worker running its pinned flavor, \
+                 or recompile the plan against this worker's flavor",
+            ),
+            // The section is a stable, payload-free contract name; the differing
+            // contract body is deliberately not reported, because it can carry
+            // schema defaults and credential metadata.
+            Self::ContractMismatch { section } => diagnostic(
+                "PLUGIN_PLAN_COMPATIBILITY:CONTRACT_MISMATCH",
+                &format!("/plan/{section}"),
+                "the contract recorded when this plan was compiled".to_owned(),
+                "a different contract in the frozen registry".to_owned(),
+                "recompile the plan against this worker's frozen registry",
+            ),
+        };
+        vec![single]
+    }
+}
+
+#[cfg(test)]
+mod activation_diagnostic_tests {
+    use nebula_core::PluginSetId;
+
+    use super::*;
+
+    #[test]
+    fn every_compatibility_rejection_reports_all_five_fields() {
+        let plan_set = PluginSetId::from_bytes([0x11; 32]);
+        let registry_set = PluginSetId::from_bytes([0x22; 32]);
+        let flavor_plan = WorkerFlavorRevisionId::from_bytes([0x33; 32]);
+        let flavor_registry = WorkerFlavorRevisionId::from_bytes([0x44; 32]);
+
+        let rejections = [
+            PlanRegistryCompatibilityError::PluginSetMismatch {
+                plan: plan_set,
+                registry: registry_set,
+            },
+            PlanRegistryCompatibilityError::WorkerFlavorMismatch {
+                plan: flavor_plan,
+                registry: flavor_registry,
+            },
+            PlanRegistryCompatibilityError::ContractMismatch { section: "actions" },
+        ];
+
+        for rejection in &rejections {
+            let diagnostics = rejection.activation_diagnostics();
+            assert!(
+                !diagnostics.is_empty(),
+                "a rejection with nothing to report is not actionable"
+            );
+            for reported in diagnostics {
+                for field in [
+                    reported.code(),
+                    reported.path(),
+                    reported.expected(),
+                    reported.actual(),
+                    reported.remediation(),
+                ] {
+                    assert!(!field.trim().is_empty(), "NS14 requires all five fields");
+                }
+            }
+        }
+    }
+
+    /// A mismatch names both sides, so a caller can tell which artifact to move
+    /// without re-deriving either identity.
+    #[test]
+    fn an_identity_mismatch_reports_both_sides() {
+        let plan = WorkerFlavorRevisionId::from_bytes([0x33; 32]);
+        let registry = WorkerFlavorRevisionId::from_bytes([0x44; 32]);
+        let reported = PlanRegistryCompatibilityError::WorkerFlavorMismatch { plan, registry }
+            .activation_diagnostics();
+
+        let only = reported.first().expect("one diagnostic is reported");
+        assert_eq!(only.expected(), plan.to_string());
+        assert_eq!(only.actual(), registry.to_string());
+        assert_ne!(only.expected(), only.actual());
+    }
 }

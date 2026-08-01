@@ -76,8 +76,8 @@ pub use nebula_core::PluginKey;
 pub use nebula_metadata::PluginDependency;
 pub use nebula_plugin_macros::Plugin;
 pub use plan::{
-    ActivationDiagnostic, ExecutablePlanIntegrityError, ExecutablePlanRevision,
-    PlanBindingContract, PlanBindingRequirement, PlanBindingSite, PlanCompilationError,
+    ExecutablePlanIntegrityError, ExecutablePlanRevision, PlanBindingContract,
+    PlanBindingRequirement, PlanBindingSite, PlanCompilationError,
     RecordedExecutablePlanRevisionV1,
 };
 pub use plugin::Plugin;
