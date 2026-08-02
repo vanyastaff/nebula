@@ -15,6 +15,7 @@ mod identity;
 mod job_dispatch;
 mod journal;
 mod node_result;
+mod operation_ledger;
 mod plan_flavor_catalog;
 mod resume_producer;
 mod resume_token;
@@ -32,6 +33,7 @@ pub use identity::{
 pub use job_dispatch::{InMemoryJobDispatchQueue, InMemoryTriggerDedupInbox};
 pub use journal::InMemoryJournalReader;
 pub use node_result::{InMemoryCheckpointStore, InMemoryNodeResultStore};
+pub use operation_ledger::InMemoryOperationLedger;
 pub use plan_flavor_catalog::InMemoryPlanFlavorCatalog;
 pub use resume_producer::InMemoryResumeProducer;
 pub use resume_token::InMemoryResumeTokenStore;

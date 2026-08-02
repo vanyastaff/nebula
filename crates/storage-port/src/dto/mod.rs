@@ -14,6 +14,7 @@ mod identity;
 mod job_dispatch;
 mod journal;
 mod node_result;
+mod operation_ledger;
 pub mod resume_token;
 mod revision_catalog;
 mod trigger_dedup;
@@ -43,6 +44,11 @@ pub use identity::{
 pub use job_dispatch::{DispatchKind, DispatchOutcome, JobDispatchMsg};
 pub use journal::JournalEntry;
 pub use node_result::{MAX_SUPPORTED_RESULT_SCHEMA_VERSION, NodeResultRecord};
+pub use operation_ledger::{
+    AttemptGeneration, DestinationCapability, EffectSlotBinding, EffectSlotId, KnownOutcome,
+    OperationId, OperationLedgerError, OperationRecord, OperationState, PrepareOutcome,
+    PreparedOperation, RequestFingerprint,
+};
 pub use resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash, TokenHashLengthError};
 pub use revision_catalog::{
     BeginDrainOutcome, ExecutablePlanRecordFormat, PlanFlavorRevisionIds, PlanFlavorRevisionRecord,

@@ -77,6 +77,10 @@ pub mod inmem;
 pub mod mapping;
 #[cfg(any(test, feature = "sqlite", feature = "postgres"))]
 mod migration;
+/// Backend-independent operation-ledger decisions, shared by every ledger
+/// adapter so state vocabulary, fence comparison, and outcome write-once rules
+/// cannot drift between backends.
+mod operation_ledger;
 /// Postgres implementations of [`repos`] traits.
 #[cfg(feature = "postgres")]
 pub mod pg;

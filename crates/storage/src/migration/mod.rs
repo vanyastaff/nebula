@@ -727,8 +727,13 @@ mod tests {
     /// value from the migrator would make it pass automatically and prove
     /// nothing.
     ///
-    /// Head 0044 (`control_queue_claim_generation`) reviewed against the
-    /// floor: it adds one defaulted column to `port_control_queue` and performs
+    /// Head 0045 (`port_operation_ledger`) reviewed against the floor: it
+    /// creates one new table and touches no existing relation, so it needs no
+    /// aggregate-owner validation and the floor stays at 0040. Its `CHECK`
+    /// constraints bind only rows the migration itself introduces, so no
+    /// database admitted at 0040 or later can hold a row they would reject.
+    /// The same review covered 0044 (`control_queue_claim_generation`), which
+    /// adds one defaulted column to `port_control_queue` and performs
     /// no destructive transform, so it needs no aggregate-owner validation and
     /// the floor stays at 0040. The same review covered 0043
     /// (`port_start_key_reservations`), which creates one new table:
@@ -758,9 +763,9 @@ mod tests {
     fn new_catalog_head_requires_explicit_admission_policy_review() {
         assert_eq!(GENERAL_CATALOG_SUPPORTED_FLOOR, 40);
         #[cfg(feature = "sqlite")]
-        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 44);
+        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 45);
         #[cfg(feature = "postgres")]
-        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 44);
+        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 45);
     }
 
     /// The setup guard must never hold a descriptor on the database file.

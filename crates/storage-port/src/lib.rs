@@ -35,18 +35,20 @@ pub use dto::credential::{
 };
 pub use dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash, TokenHashLengthError};
 pub use dto::{
-    BeginDrainOutcome, ExecutablePlanRecordFormat, PlanFlavorRevisionIds, PlanFlavorRevisionRecord,
-    PlanFlavorRevisionTarget, RefreshRetryAdmission, RefreshRetryBlock, RefreshRetryDelay,
+    AttemptGeneration, BeginDrainOutcome, DestinationCapability, EffectSlotBinding, EffectSlotId,
+    ExecutablePlanRecordFormat, KnownOutcome, OperationId, OperationLedgerError, OperationRecord,
+    OperationState, PlanFlavorRevisionIds, PlanFlavorRevisionRecord, PlanFlavorRevisionTarget,
+    PrepareOutcome, PreparedOperation, RefreshRetryAdmission, RefreshRetryBlock, RefreshRetryDelay,
     RefreshRetryDelayError, RefreshRetryDiagnosticCode, RefreshRetryDiagnosticCodeError,
     RefreshRetryEvidence, RefreshRetryGate, RefreshRetryKind, RefreshRetryPhase,
-    RefreshRetrySnapshot, RefreshRetryTransition, RevisionCatalogError, RevisionInsertOutcome,
-    RevisionRecordBytes, RevisionReferenceCounts, WorkerFlavorRecordFormat,
+    RefreshRetrySnapshot, RefreshRetryTransition, RequestFingerprint, RevisionCatalogError,
+    RevisionInsertOutcome, RevisionRecordBytes, RevisionReferenceCounts, WorkerFlavorRecordFormat,
     WorkerFlavorRevisionRecord,
 };
 pub use error::StorageError;
 pub use ids::{CredentialId, FencingToken};
 pub use scope::Scope;
 pub use store::{
-    CredentialAlreadyExistsKey, CredentialPersistence, CredentialPersistenceError,
-    PlanFlavorCatalog, PlanFlavorCatalogAdmin, PlanFlavorCatalogWriter,
+    CredentialAlreadyExistsKey, CredentialPersistence, CredentialPersistenceError, OperationLedger,
+    OperationLedgerAdjudicator, PlanFlavorCatalog, PlanFlavorCatalogAdmin, PlanFlavorCatalogWriter,
 };

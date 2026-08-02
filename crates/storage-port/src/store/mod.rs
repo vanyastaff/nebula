@@ -15,6 +15,7 @@ mod identity;
 mod job_dispatch;
 mod journal;
 mod node_result;
+mod operation_ledger;
 mod refresh_claim;
 mod resume_producer;
 mod resume_token;
@@ -39,6 +40,7 @@ pub use identity::{
 pub use job_dispatch::{ClaimGeneration, JobClaim, JobClaimToken, JobDispatchQueue};
 pub use journal::ExecutionJournalReader;
 pub use node_result::NodeResultStore;
+pub use operation_ledger::{OperationLedger, OperationLedgerAdjudicator};
 pub use refresh_claim::{
     ClaimAttempt, ClaimToken, ExpiredClaim, HeartbeatError, RefreshClaim, RefreshClaimError,
     RefreshClaimStore, ReplicaId, SentinelState,
