@@ -17,6 +17,7 @@ mod execution;
 mod idempotency_store;
 mod identity;
 mod job_dispatch;
+mod operation_ledger;
 mod plan_flavor_catalog;
 mod resume_producer;
 mod resume_token;
@@ -31,6 +32,7 @@ pub use identity::{
     SqliteResourceStore, SqliteTriggerStore, SqliteUserStore, SqliteWorkspaceStore,
 };
 pub use job_dispatch::{SqliteJobDispatchQueue, SqliteTriggerDedupInbox};
+pub use operation_ledger::SqliteOperationLedger;
 pub use plan_flavor_catalog::SqlitePlanFlavorCatalog;
 pub use resume_producer::SqliteResumeProducer;
 pub use resume_token::SqliteResumeTokenStore;

@@ -290,6 +290,7 @@ jobs:
             credential_lifecycle_postgres \
             credential_migration_postgres \
             credential_schema_admission_postgres \
+            operation_ledger_conformance_postgres \
             refresh_claim_pg_integration \
             revision_catalog_conformance_postgres \
             revision_catalog_migration_postgres \
