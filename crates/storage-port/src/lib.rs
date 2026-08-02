@@ -49,6 +49,7 @@ pub use error::StorageError;
 pub use ids::{CredentialId, FencingToken};
 pub use scope::Scope;
 pub use store::{
-    CredentialAlreadyExistsKey, CredentialPersistence, CredentialPersistenceError, OperationLedger,
-    OperationLedgerAdjudicator, PlanFlavorCatalog, PlanFlavorCatalogAdmin, PlanFlavorCatalogWriter,
+    CredentialAlreadyExistsKey, CredentialPersistence, CredentialPersistenceError,
+    ExecutionTurnHandoff, OperationLedger, OperationLedgerAdjudicator, PlanFlavorCatalog,
+    PlanFlavorCatalogAdmin, PlanFlavorCatalogWriter, TurnAcceptance, TurnHandoff,
 };
