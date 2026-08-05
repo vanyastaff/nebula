@@ -1,0 +1,157 @@
+//! PostgreSQL dispatch-claim → execution-turn handoff.
+//!
+//! The claim re-check, the lease acquisition, and the queue acknowledgement are
+//! three statements in **one** transaction, so a crash can only land on one
+//! side of it: either the row is still `Processing` and no turn was accepted,
+//! or the row is acknowledged and the execution holds the lease that governs
+//! the work.
+//!
+//! The claim row is re-read `FOR UPDATE`, so a concurrent reclaim sweep cannot
+//! move it between the check and the acknowledgement — the window that would
+//! otherwise let two workers believe they own the same turn.
+//!
+//! The database stamps the lease deadline from `clock_timestamp()`, exactly as
+//! `acquire_lease` does. A caller's clock never decides liveness: one running
+//! fast would fence out a healthy peer, one running slow would mint an
+//! already-dead lease, and neither is detectable from the row afterwards.
+
+use nebula_storage_port::store::{ExecutionTurnHandoff, TurnAcceptance, TurnHandoff};
+use nebula_storage_port::{FencingToken, StorageError};
+use sqlx::PgPool;
+
+use crate::inmem::acceptance_label;
+use crate::postgres::execution::conn_err;
+
+/// PostgreSQL-backed owner of the dispatch-claim → execution-turn handoff.
+#[derive(Clone, Debug)]
+pub struct PgTurnHandoff {
+    pool: PgPool,
+}
+
+impl PgTurnHandoff {
+    /// Wrap a pool whose schema was installed via [`super::init_schema`].
+    #[must_use]
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+/// Clamp the lease TTL exactly as the execution store does, so a handoff cannot
+/// mint a lease the store itself would have refused to issue.
+fn normalized_ttl_ms(ttl: std::time::Duration) -> i64 {
+    let clamped = std::time::Duration::from_secs_f64(ttl.as_secs_f64().clamp(1.0, 86_400.0));
+    i64::try_from(clamped.as_millis()).unwrap_or(i64::MAX)
+}
+
+#[async_trait::async_trait]
+impl ExecutionTurnHandoff for PgTurnHandoff {
+    #[tracing::instrument(
+        level = "debug",
+        name = "turn_handoff.accept_turn",
+        skip(self, handoff),
+        fields(
+            backend = "postgres",
+            execution_id = handoff.execution_id,
+            claim_generation = handoff.claim.generation().get(),
+            outcome = tracing::field::Empty,
+        )
+    )]
+    async fn accept_turn(&self, handoff: &TurnHandoff<'_>) -> Result<TurnAcceptance, StorageError> {
+        let ttl_ms = normalized_ttl_ms(handoff.lease_ttl);
+        let result = async {
+            let mut tx = self.pool.begin().await.map_err(conn_err)?;
+
+            // `SELECT 1` is INT4 in PostgreSQL, not INT8: decoding it as i64
+            // fails at the driver. The probe only needs existence, so the
+            // narrow type is also the honest one.
+            let still_claimed: Option<i32> = sqlx::query_scalar(
+                "SELECT 1 FROM port_job_dispatch_queue \
+                 WHERE id = $1 AND status = 'Processing' AND claim_generation = $2 \
+                 FOR UPDATE",
+            )
+            .bind(handoff.claim.row_id().as_slice())
+            .bind(i64::try_from(handoff.claim.generation().get()).unwrap_or(i64::MAX))
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(conn_err)?;
+            if still_claimed.is_none() {
+                drop(tx.rollback().await);
+                return Ok(TurnAcceptance::ClaimSuperseded);
+            }
+
+            // Same statement shape as `acquire_lease`: the database decides
+            // live-vs-expired and stamps the deadline, so a caller's clock
+            // cannot fence out a healthy peer or mint an already-dead lease.
+            let acquired: Option<i64> = sqlx::query_scalar(
+                "UPDATE port_executions \
+                 SET lease_holder = $1, \
+                     lease_expires_at_ms = \
+                         (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint + $2, \
+                     fencing_generation = fencing_generation + 1 \
+                 WHERE id = $3 AND workspace_id = $4 AND org_id = $5 \
+                   AND (lease_expires_at_ms IS NULL \
+                        OR lease_expires_at_ms \
+                           < (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint) \
+                 RETURNING fencing_generation",
+            )
+            .bind(handoff.holder)
+            .bind(ttl_ms)
+            .bind(handoff.execution_id)
+            .bind(&handoff.scope.workspace_id)
+            .bind(&handoff.scope.org_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(conn_err)?;
+
+            let Some(generation) = acquired else {
+                // Either a live lease blocks the turn, or the execution does
+                // not exist in this tenant. Distinguishing them costs one read
+                // and is worth it: a caller must not treat a missing execution
+                // as contention it can wait out.
+                let exists: Option<i32> = sqlx::query_scalar(
+                    "SELECT 1 FROM port_executions \
+                     WHERE id = $1 AND workspace_id = $2 AND org_id = $3",
+                )
+                .bind(handoff.execution_id)
+                .bind(&handoff.scope.workspace_id)
+                .bind(&handoff.scope.org_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(conn_err)?;
+                drop(tx.rollback().await);
+                return if exists.is_some() {
+                    // The queue row stays claimed on purpose: acknowledging it
+                    // would make it terminal while no owner ever ran the turn.
+                    Ok(TurnAcceptance::TurnHeldByAnotherOwner)
+                } else {
+                    Err(StorageError::not_found("execution", handoff.execution_id))
+                };
+            };
+
+            sqlx::query(
+                "UPDATE port_job_dispatch_queue SET status = 'Dispatched' \
+                 WHERE id = $1 AND status = 'Processing' AND claim_generation = $2",
+            )
+            .bind(handoff.claim.row_id().as_slice())
+            .bind(i64::try_from(handoff.claim.generation().get()).unwrap_or(i64::MAX))
+            .execute(&mut *tx)
+            .await
+            .map_err(conn_err)?;
+
+            tx.commit().await.map_err(conn_err)?;
+            Ok(TurnAcceptance::Accepted {
+                fence: FencingToken::from_generation(u64::try_from(generation).unwrap_or_default()),
+            })
+        }
+        .await;
+
+        let outcome = acceptance_label(&result);
+        tracing::Span::current().record("outcome", outcome);
+        tracing::debug!(
+            target: "nebula_storage::postgres",
+            outcome,
+            "dispatch claim handed off to an execution turn"
+        );
+        result
+    }
+}

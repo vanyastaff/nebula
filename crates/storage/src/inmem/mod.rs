@@ -40,4 +40,5 @@ pub use resume_producer::InMemoryResumeProducer;
 pub use resume_token::InMemoryResumeTokenStore;
 pub use start_acceptance::InMemoryStartAcceptanceStore;
 pub use turn_handoff::InMemoryTurnHandoff;
+pub(crate) use turn_handoff::acceptance_label;
 pub use workflow::{InMemoryWorkflowStore, InMemoryWorkflowVersionStore};

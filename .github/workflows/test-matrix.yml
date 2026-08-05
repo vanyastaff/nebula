@@ -294,7 +294,8 @@ jobs:
             refresh_claim_pg_integration \
             revision_catalog_conformance_postgres \
             revision_catalog_migration_postgres \
-            schema_setup_postgres
+            schema_setup_postgres \
+            turn_handoff_conformance_postgres
           do
             cargo nextest run "${common[@]}" --test "$suite"
           done
