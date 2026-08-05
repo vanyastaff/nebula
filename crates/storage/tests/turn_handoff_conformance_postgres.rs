@@ -95,12 +95,25 @@ impl Fixture {
         })
     }
 
+    /// A plugin key unique to one execution.
+    ///
+    /// The required PostgreSQL job runs against a shared `DATABASE_URL`, so a
+    /// shared routing key would let `claim_pending` return another case's
+    /// pending row. Binding the key to the execution keeps each case claiming
+    /// only what it enqueued.
+    fn plugin_for(execution_id: &str) -> PluginKey {
+        execution_id
+            .replace('-', "")
+            .parse()
+            .expect("a hex execution id is a valid plugin key")
+    }
+
     async fn seed(&self, execution_id: &str) -> nebula_storage_port::store::JobClaimToken {
         self.store
             .create(&scope(), execution_id, "wf", serde_json::json!({}))
             .await
             .expect("the execution row is created");
-        let plugin: PluginKey = "demo".parse().expect("the fixture plugin key is valid");
+        let plugin = Self::plugin_for(execution_id);
         let msg = JobDispatchMsg::new(
             *uuid::Uuid::new_v4().as_bytes(),
             execution_id.to_owned(),
@@ -115,10 +128,9 @@ impl Fixture {
             0,
         );
         self.queue.enqueue(&msg).await.expect("the job enqueues");
-        let plugin: PluginKey = "demo".parse().expect("the fixture plugin key is valid");
         let claimed = self
             .queue
-            .claim_pending(&PROCESSOR_A, 1, &[plugin])
+            .claim_pending(&PROCESSOR_A, 1, &[Self::plugin_for(execution_id)])
             .await
             .expect("the job is claimable");
         claimed
@@ -195,8 +207,10 @@ async fn a_superseded_claim_cannot_accept_the_turn() {
     // never on the other — a boundary divergence worth naming, and one this
     // test must not depend on either way.
     sqlx::query(
-        "UPDATE port_job_dispatch_queue SET processed_at_ms = 0 WHERE status = 'Processing'",
+        "UPDATE port_job_dispatch_queue SET processed_at_ms = 0 \
+         WHERE status = 'Processing' AND execution_id = $1",
     )
+    .bind(execution)
     .execute(&fixture.pool)
     .await
     .expect("the claim is backdated");
@@ -207,10 +221,9 @@ async fn a_superseded_claim_cannot_accept_the_turn() {
         .reclaim_stuck(Duration::from_secs(0), 8)
         .await
         .expect("the sweep runs");
-    let plugin: PluginKey = "demo".parse().expect("the fixture plugin key is valid");
     let fresh = fixture
         .queue
-        .claim_pending(&PROCESSOR_B, 1, &[plugin])
+        .claim_pending(&PROCESSOR_B, 1, &[Fixture::plugin_for(execution)])
         .await
         .expect("the reclaimed job is claimable again");
     assert_eq!(fresh.len(), 1, "the sweep returned the row to the queue");
@@ -290,11 +303,16 @@ async fn a_foreign_tenant_cannot_accept_the_turn() {
     let claim = fixture.seed(execution).await;
     let intruder = Scope::new("ws-other", "org-other");
 
-    assert!(matches!(
+    // The claim predicate carries the tenant, so a foreign scope fails there
+    // first and answers `ClaimSuperseded` rather than reporting anything about
+    // the execution. That is the stronger reply: it does not reveal whether the
+    // execution exists in some other tenant.
+    assert_eq!(
         fixture
             .handoff
             .accept_turn(&fixture.request(execution, claim, "worker-a", &intruder))
-            .await,
-        Err(StorageError::NotFound { .. })
-    ));
+            .await
+            .expect("a foreign tenant is a typed outcome, not an error"),
+        TurnAcceptance::ClaimSuperseded
+    );
 }

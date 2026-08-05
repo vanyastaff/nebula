@@ -215,11 +215,59 @@ async fn a_foreign_tenant_cannot_accept_the_turn() {
     let claim = fixture.seed(execution).await;
     let intruder = Scope::new("ws-other", "org-other");
 
-    assert!(matches!(
+    // The claim predicate carries the tenant, so a foreign scope fails there
+    // first and answers `ClaimSuperseded` rather than reporting anything about
+    // the execution. That is the stronger reply: it does not reveal whether the
+    // execution exists in some other tenant.
+    assert_eq!(
         fixture
             .handoff
             .accept_turn(&fixture.request(execution, claim, "worker-a", &intruder))
-            .await,
-        Err(StorageError::NotFound { .. })
-    ));
+            .await
+            .expect("a foreign tenant is a typed outcome, not an error"),
+        TurnAcceptance::ClaimSuperseded
+    );
+}
+
+/// A claim token is authority over *one* row, not a bearer pass.
+///
+/// Pairing a valid token from one job with a different execution id would
+/// otherwise lease the wrong aggregate and acknowledge — dropping — the job
+/// that was actually claimed.
+#[tokio::test]
+async fn a_claim_token_cannot_be_paired_with_another_execution() {
+    let fixture = Fixture::new();
+    let scope = scope();
+    let claimed = "exe-claimed";
+    let other = "exe-other";
+    let claim = fixture.seed(claimed).await;
+    fixture
+        .store
+        .create(&scope, other, "wf", serde_json::json!({}))
+        .await
+        .expect("the second execution row is created");
+
+    assert_eq!(
+        fixture
+            .handoff
+            .accept_turn(&fixture.request(other, claim, "worker-a", &scope))
+            .await
+            .expect("a mismatched pairing is a typed outcome, not an error"),
+        TurnAcceptance::ClaimSuperseded,
+        "a token proves ownership of one row, so it cannot drive another execution"
+    );
+
+    // Neither side moved: the claimed row is still acknowledgeable, and the
+    // unrelated execution was never leased.
+    fixture
+        .queue
+        .mark_dispatched(&claim)
+        .await
+        .expect("the claimed row is untouched");
+    fixture
+        .store
+        .acquire_lease(&scope, other, "worker-b", TTL)
+        .await
+        .expect("the unrelated execution is reachable")
+        .expect("the unrelated execution was never leased");
 }

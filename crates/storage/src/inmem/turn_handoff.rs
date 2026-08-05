@@ -64,15 +64,23 @@ impl ExecutionTurnHandoff for InMemoryTurnHandoff {
             // Decide everything before writing: this critical section cannot
             // roll back, so a rejection discovered after a write would leave
             // the execution leased to a worker that must not run it.
-            let job = state
-                .jobs
-                .get(handoff.claim.row_id())
-                .ok_or_else(|| StorageError::not_found("job_dispatch", "claimed row"))?;
-            if job.status != "Processing"
-                || job.claim_generation != handoff.claim.generation().get()
-            {
-                Ok(TurnAcceptance::ClaimSuperseded)
-            } else {
+            // A vanished row is the superseded case, not an error: the SQL
+            // backends select on identity, status, and generation together, so
+            // a purged row yields no match there either. A caller swapping
+            // backends must not see a typed outcome on one and a hard error on
+            // the other.
+            //
+            // The row must also belong to the execution and tenant this handoff
+            // names. A valid token from one job paired with another execution id
+            // would otherwise lease the wrong aggregate and acknowledge —
+            // dropping — the job that was actually claimed.
+            let claim_live = state.jobs.get(handoff.claim.row_id()).is_some_and(|job| {
+                job.status == "Processing"
+                    && job.claim_generation == handoff.claim.generation().get()
+                    && job.msg.execution_id == handoff.execution_id
+                    && &job.msg.scope == handoff.scope
+            });
+            if claim_live {
                 let row = state
                     .rows
                     .get(handoff.execution_id)
@@ -113,6 +121,8 @@ impl ExecutionTurnHandoff for InMemoryTurnHandoff {
                         fence: FencingToken::from_generation(generation),
                     })
                 }
+            } else {
+                Ok(TurnAcceptance::ClaimSuperseded)
             }
         };
 

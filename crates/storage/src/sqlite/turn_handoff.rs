@@ -64,11 +64,19 @@ impl ExecutionTurnHandoff for SqliteTurnHandoff {
                 .map_err(conn_err)?;
 
             let still_claimed: Option<i64> = sqlx::query_scalar(
+                // The row must belong to the execution and tenant this handoff
+                // names. A valid token from one job paired with another
+                // execution id would otherwise lease the wrong aggregate and
+                // acknowledge — dropping — the job that was actually claimed.
                 "SELECT 1 FROM port_job_dispatch_queue \
-                 WHERE id = ? AND status = 'Processing' AND claim_generation = ?",
+                 WHERE id = ? AND status = 'Processing' AND claim_generation = ? \
+                   AND execution_id = ? AND workspace_id = ? AND org_id = ?",
             )
             .bind(handoff.claim.row_id().as_slice())
             .bind(i64::try_from(handoff.claim.generation().get()).unwrap_or(i64::MAX))
+            .bind(handoff.execution_id)
+            .bind(&handoff.scope.workspace_id)
+            .bind(&handoff.scope.org_id)
             .fetch_optional(&mut *tx)
             .await
             .map_err(conn_err)?;
@@ -128,10 +136,14 @@ impl ExecutionTurnHandoff for SqliteTurnHandoff {
 
             sqlx::query(
                 "UPDATE port_job_dispatch_queue SET status = 'Dispatched' \
-                 WHERE id = ? AND status = 'Processing' AND claim_generation = ?",
+                 WHERE id = ? AND status = 'Processing' AND claim_generation = ? \
+                   AND execution_id = ? AND workspace_id = ? AND org_id = ?",
             )
             .bind(handoff.claim.row_id().as_slice())
             .bind(i64::try_from(handoff.claim.generation().get()).unwrap_or(i64::MAX))
+            .bind(handoff.execution_id)
+            .bind(&handoff.scope.workspace_id)
+            .bind(&handoff.scope.org_id)
             .execute(&mut *tx)
             .await
             .map_err(conn_err)?;

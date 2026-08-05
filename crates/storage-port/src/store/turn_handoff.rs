@@ -51,6 +51,13 @@ pub struct TurnHandoff<'a> {
     ///
     /// This bounds recovery latency after a crash, not how long the action may
     /// run: a live owner renews it, and the queue claim is already finished.
+    ///
+    /// Every backend clamps it to `[1s, 24h]`, exactly as
+    /// [`crate::store::ExecutionStore::acquire_lease`] does, so a handoff cannot
+    /// mint a lease the execution store would have refused. `Duration::ZERO`
+    /// therefore becomes one second rather than an already-expired lease — a
+    /// caller cannot acknowledge a queue row and be left with no durable
+    /// ownership.
     pub lease_ttl: Duration,
 }
 

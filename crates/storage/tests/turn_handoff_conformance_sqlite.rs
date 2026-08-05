@@ -255,11 +255,16 @@ async fn a_foreign_tenant_cannot_accept_the_turn() {
     let claim = fixture.seed(execution).await;
     let intruder = Scope::new("ws-other", "org-other");
 
-    assert!(matches!(
+    // The claim predicate carries the tenant, so a foreign scope fails there
+    // first and answers `ClaimSuperseded` rather than reporting anything about
+    // the execution. That is the stronger reply: it does not reveal whether the
+    // execution exists in some other tenant.
+    assert_eq!(
         fixture
             .handoff
             .accept_turn(&fixture.request(execution, claim, "worker-a", &intruder))
-            .await,
-        Err(StorageError::NotFound { .. })
-    ));
+            .await
+            .expect("a foreign tenant is a typed outcome, not an error"),
+        TurnAcceptance::ClaimSuperseded
+    );
 }

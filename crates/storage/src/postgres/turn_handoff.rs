@@ -65,12 +65,20 @@ impl ExecutionTurnHandoff for PgTurnHandoff {
             // fails at the driver. The probe only needs existence, so the
             // narrow type is also the honest one.
             let still_claimed: Option<i32> = sqlx::query_scalar(
+                // The row must belong to the execution and tenant this handoff
+                // names. A valid token from one job paired with another
+                // execution id would otherwise lease the wrong aggregate and
+                // acknowledge — dropping — the job that was actually claimed.
                 "SELECT 1 FROM port_job_dispatch_queue \
                  WHERE id = $1 AND status = 'Processing' AND claim_generation = $2 \
+                   AND execution_id = $3 AND workspace_id = $4 AND org_id = $5 \
                  FOR UPDATE",
             )
             .bind(handoff.claim.row_id().as_slice())
             .bind(i64::try_from(handoff.claim.generation().get()).unwrap_or(i64::MAX))
+            .bind(handoff.execution_id)
+            .bind(&handoff.scope.workspace_id)
+            .bind(&handoff.scope.org_id)
             .fetch_optional(&mut *tx)
             .await
             .map_err(conn_err)?;
@@ -130,10 +138,14 @@ impl ExecutionTurnHandoff for PgTurnHandoff {
 
             sqlx::query(
                 "UPDATE port_job_dispatch_queue SET status = 'Dispatched' \
-                 WHERE id = $1 AND status = 'Processing' AND claim_generation = $2",
+                 WHERE id = $1 AND status = 'Processing' AND claim_generation = $2 \
+                   AND execution_id = $3 AND workspace_id = $4 AND org_id = $5",
             )
             .bind(handoff.claim.row_id().as_slice())
             .bind(i64::try_from(handoff.claim.generation().get()).unwrap_or(i64::MAX))
+            .bind(handoff.execution_id)
+            .bind(&handoff.scope.workspace_id)
+            .bind(&handoff.scope.org_id)
             .execute(&mut *tx)
             .await
             .map_err(conn_err)?;
