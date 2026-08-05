@@ -20,6 +20,7 @@ mod plan_flavor_catalog;
 mod resume_producer;
 mod resume_token;
 mod start_acceptance;
+mod turn_handoff;
 mod workflow;
 
 pub use control_queue::InMemoryControlQueue;
@@ -38,4 +39,5 @@ pub use plan_flavor_catalog::InMemoryPlanFlavorCatalog;
 pub use resume_producer::InMemoryResumeProducer;
 pub use resume_token::InMemoryResumeTokenStore;
 pub use start_acceptance::InMemoryStartAcceptanceStore;
+pub use turn_handoff::InMemoryTurnHandoff;
 pub use workflow::{InMemoryWorkflowStore, InMemoryWorkflowVersionStore};
