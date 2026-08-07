@@ -1784,6 +1784,70 @@ impl WorkflowEngine {
             "execution lease acquired"
         );
 
+        Ok(Some(self.spawn_lease_guard(
+            backend,
+            execution_id,
+            holder,
+            frontier_cancel,
+        )))
+    }
+
+    /// Adopt a lease the durable handoff already minted (#976) and run the
+    /// same heartbeat loop an acquired lease gets.
+    ///
+    /// The handoff (`ExecutionTurnHandoff::accept_turn`) acquires the lease
+    /// and acknowledges the queue row in one transaction; the engine must
+    /// drive the turn under that fence rather than acquire again — a live
+    /// lease blocks acquisition outright, even for the same holder. Renewal
+    /// and release are fence-gated, so the holder string recorded at handoff
+    /// time never gates this engine's ownership; the fence does.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::PlanningFailed`] when no execution stores are
+    /// configured: a handoff fence without a storage seam is a wiring bug,
+    /// not a library-mode fallback.
+    fn adopt_handoff_lease(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+        fence: nebula_storage_port::FencingToken,
+        frontier_cancel: CancellationToken,
+    ) -> Result<LeaseGuard, EngineError> {
+        let stores = self.stores.clone().ok_or_else(|| {
+            EngineError::PlanningFailed("handoff lease adoption requires execution stores".into())
+        })?;
+        let holder = self.instance_id.to_string();
+        tracing::debug!(
+            %execution_id,
+            %holder,
+            fence_generation = fence.generation(),
+            ttl_secs = self.lease_ttl.as_secs(),
+            heartbeat_secs = self.lease_heartbeat_interval.as_secs(),
+            "adopting handoff-minted execution lease (#976)"
+        );
+        let backend =
+            crate::store_seam::LeaseBackend::new(stores.execution.clone(), scope.clone(), fence);
+        Ok(self.spawn_lease_guard(backend, execution_id, holder, frontier_cancel))
+    }
+
+    /// Spawn the lease heartbeat task and assemble the [`LeaseGuard`] around
+    /// an already-established [`crate::store_seam::LeaseBackend`].
+    ///
+    /// Shared by both lease entry points: `acquire_and_heartbeat_lease`
+    /// (engine acquires) and [`adopt_handoff_lease`](Self::adopt_handoff_lease)
+    /// (the durable handoff acquired and this engine renews/releases under
+    /// its fence).
+    fn spawn_lease_guard(
+        &self,
+        backend: crate::store_seam::LeaseBackend,
+        execution_id: ExecutionId,
+        holder: String,
+        frontier_cancel: CancellationToken,
+    ) -> LeaseGuard {
+        let ttl = self.lease_ttl;
+        let heartbeat_interval = self.lease_heartbeat_interval;
+
         // Spawn a heartbeat task. A shared `heartbeat_lost` token
         // trips when a renew returns `Ok(false)` (stolen or expired) or
         // errors — the frontier loop observes it via the
@@ -1795,7 +1859,6 @@ impl WorkflowEngine {
         let metrics = self.metrics.clone();
         let heartbeat_lost_cloned = heartbeat_lost.clone();
         let heartbeat_shutdown_cloned = heartbeat_shutdown.clone();
-        let frontier_cancel_cloned = frontier_cancel.clone();
         let handle = tokio::spawn(async move {
             let mut ticker = tokio::time::interval(heartbeat_interval);
             // The first tick fires immediately; skip it — we just
@@ -1841,7 +1904,7 @@ impl WorkflowEngine {
                                      state the new holder now drives (ADR 0008, §12.2)"
                                 );
                                 heartbeat_lost_cloned.cancel();
-                                frontier_cancel_cloned.cancel();
+                                frontier_cancel.cancel();
                                 break;
                             }
                             Err(e) => {
@@ -1870,7 +1933,7 @@ impl WorkflowEngine {
                                      runner conservatively (ADR 0008, §12.2)"
                                 );
                                 heartbeat_lost_cloned.cancel();
-                                frontier_cancel_cloned.cancel();
+                                frontier_cancel.cancel();
                                 break;
                             }
                         }
@@ -1879,14 +1942,14 @@ impl WorkflowEngine {
             }
         });
 
-        Ok(Some(LeaseGuard {
+        LeaseGuard {
             backend,
             execution_id,
             holder,
             handle: Some(handle),
             shutdown: heartbeat_shutdown,
             heartbeat_lost,
-        }))
+        }
     }
 
     /// Pre-flight: reject any `Connection` whose `from_port` the source

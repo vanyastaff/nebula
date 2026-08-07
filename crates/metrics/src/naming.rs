@@ -859,8 +859,12 @@ pub const NEBULA_CREDENTIAL_RESOLVER_REAUTH_PERSIST_CAS_EXHAUSTED_TOTAL: &str =
 ///
 /// Labeled by `outcome` (see [`orchestrator_dispatch_outcome`]). Incremented
 /// once per row in `handle_entry`: `dispatched` when the sink returned `Ok`
-/// and `mark_dispatched` was called; `failed` when the sink returned `Err`
-/// and `mark_failed` was called. Cardinality: 2 closed label values.
+/// after the durable handoff accepted the turn; `failed` when the row was
+/// terminalised before or instead of execution — an invalid execution id, an
+/// orphaned execution (handoff `NotFound`), or a sink that returned `Err`
+/// after the handoff. A post-handoff `failed` never touches the queue row
+/// (it is already acknowledged); recovery drives from the execution lease.
+/// Cardinality: 2 closed label values.
 pub const NEBULA_ORCHESTRATOR_DISPATCH_TOTAL: &str = "nebula_orchestrator_dispatch_total";
 
 /// Outcome labels for [`NEBULA_ORCHESTRATOR_DISPATCH_TOTAL`].
@@ -869,10 +873,33 @@ pub const NEBULA_ORCHESTRATOR_DISPATCH_TOTAL: &str = "nebula_orchestrator_dispat
 /// floor. The CI gate test in `crates/metrics/src/naming.rs` fails on silent
 /// expansion.
 pub mod orchestrator_dispatch_outcome {
-    /// Sink returned `Ok`; row marked dispatched.
+    /// Sink returned `Ok` after the handoff accepted the turn.
     pub const DISPATCHED: &str = "dispatched";
-    /// Sink returned `Err`; row marked failed.
+    /// The row failed before or instead of execution; see the counter docs.
     pub const FAILED: &str = "failed";
+}
+
+/// Counter: durable dispatch-claim → execution-turn handoff outcomes (#976).
+///
+/// Labeled by `outcome` (see [`orchestrator_handoff_outcome`]). Incremented
+/// once per `accept_turn` result in `handle_entry`. The label vocabulary
+/// mirrors the storage crate's `acceptance_label` so a dashboard and the
+/// backend spans agree on what happened. Cardinality: 4 closed label values.
+pub const NEBULA_ORCHESTRATOR_HANDOFF_TOTAL: &str = "nebula_orchestrator_handoff_total";
+
+/// Outcome labels for [`NEBULA_ORCHESTRATOR_HANDOFF_TOTAL`].
+///
+/// Closed label set — same cardinality hygiene rationale as
+/// [`orchestrator_dispatch_outcome`].
+pub mod orchestrator_handoff_outcome {
+    /// The turn was durably accepted and the queue row acknowledged.
+    pub const ACCEPTED: &str = "accepted";
+    /// The claim was superseded before the handoff committed; nothing written.
+    pub const CLAIM_SUPERSEDED: &str = "claim_superseded";
+    /// Another holder owns a live lease; the row stays claimable for redelivery.
+    pub const TURN_HELD: &str = "turn_held";
+    /// The backend errored; the row stays `Processing` for reclaim.
+    pub const ERROR: &str = "error";
 }
 
 /// Counter: job-dispatch reclaim sweep outcomes from the orchestrator.
@@ -968,11 +995,11 @@ mod tests {
         NEBULA_CREDENTIAL_RESOLVER_REAUTH_PERSIST_CAS_EXHAUSTED_TOTAL,
         NEBULA_CREDENTIAL_ROTATION_DURATION_SECONDS, NEBULA_CREDENTIAL_ROTATION_FAILURES_TOTAL,
         NEBULA_CREDENTIAL_ROTATIONS_TOTAL, NEBULA_ORCHESTRATOR_DISPATCH_TOTAL,
-        NEBULA_ORCHESTRATOR_RECLAIM_TOTAL, NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL,
-        NEBULA_RESOURCE_ACQUIRE_TOTAL, NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
-        NEBULA_RESOURCE_CLEANUP_TOTAL, NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL,
-        NEBULA_RESOURCE_CREATE_TOTAL, NEBULA_RESOURCE_CREDENTIAL_REVOKE_ATTEMPTS_TOTAL,
-        NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL,
+        NEBULA_ORCHESTRATOR_HANDOFF_TOTAL, NEBULA_ORCHESTRATOR_RECLAIM_TOTAL,
+        NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL, NEBULA_RESOURCE_ACQUIRE_TOTAL,
+        NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS, NEBULA_RESOURCE_CLEANUP_TOTAL,
+        NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL, NEBULA_RESOURCE_CREATE_TOTAL,
+        NEBULA_RESOURCE_CREDENTIAL_REVOKE_ATTEMPTS_TOTAL, NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL,
         NEBULA_RESOURCE_CREDENTIAL_ROTATION_ATTEMPTS_TOTAL,
         NEBULA_RESOURCE_CREDENTIAL_ROTATION_DISPATCH_LATENCY_SECONDS,
         NEBULA_RESOURCE_CREDENTIAL_ROTATION_SKIPPED_TOTAL, NEBULA_RESOURCE_DESTROY_TOTAL,
@@ -982,10 +1009,11 @@ mod tests {
         NEBULA_RESOURCE_RECYCLE_OUTCOME_TOTAL, NEBULA_RESOURCE_RELEASE_ERROR_TOTAL,
         NEBULA_RESOURCE_RELEASE_TOTAL, NEBULA_RESOURCE_USAGE_DURATION_SECONDS,
         NEBULA_STORAGE_REVISION_CATALOG_OPERATIONS_TOTAL, auth_oauth_provider, auth_outcome,
-        idempotency_reject_reason, orchestrator_dispatch_outcome, orchestrator_reclaim_outcome,
-        recycle_outcome, refresh_coord_claim_outcome, refresh_coord_coalesced_tier,
-        refresh_coord_reclaim_outcome, refresh_coord_sentinel_action, revision_catalog_operation,
-        rotation_outcome, webhook_rate_limit_tier, webhook_signature_failure_reason,
+        idempotency_reject_reason, orchestrator_dispatch_outcome, orchestrator_handoff_outcome,
+        orchestrator_reclaim_outcome, recycle_outcome, refresh_coord_claim_outcome,
+        refresh_coord_coalesced_tier, refresh_coord_reclaim_outcome, refresh_coord_sentinel_action,
+        revision_catalog_operation, rotation_outcome, webhook_rate_limit_tier,
+        webhook_signature_failure_reason,
     };
 
     const RESOURCE_METRIC_NAMES: [&str; 22] = [
@@ -1468,9 +1496,10 @@ mod tests {
 
     /// Orchestrator metrics (ADR-0095 pull loop).
     ///
-    /// 2 counters — both labeled by `outcome` with a 2-value closed set.
-    const ORCHESTRATOR_METRIC_NAMES: [&str; 2] = [
+    /// 3 counters — all labeled by `outcome` with a closed label set.
+    const ORCHESTRATOR_METRIC_NAMES: [&str; 3] = [
         NEBULA_ORCHESTRATOR_DISPATCH_TOTAL,
+        NEBULA_ORCHESTRATOR_HANDOFF_TOTAL,
         NEBULA_ORCHESTRATOR_RECLAIM_TOTAL,
     ];
 
@@ -1489,14 +1518,14 @@ mod tests {
             );
             assert!(unique.insert(metric_name));
 
-            // Both orchestrator metrics are labeled counters.
+            // All orchestrator metrics are labeled counters.
             let labels = registry.interner().single("outcome", "dispatched");
             let counter = registry.counter_labeled(metric_name, &labels).unwrap();
             counter.inc();
             assert_eq!(counter.get(), 1);
         }
 
-        assert_eq!(unique.len(), 2);
+        assert_eq!(unique.len(), 3);
     }
 
     #[test]
@@ -1525,6 +1554,25 @@ mod tests {
         ];
         let unique: HashSet<&str> = labels.iter().copied().collect();
         assert_eq!(unique.len(), 2, "reclaim outcome labels must be unique");
+        for label in labels {
+            assert!(!label.is_empty());
+            assert!(label.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'));
+        }
+    }
+
+    #[test]
+    fn orchestrator_handoff_outcome_labels_are_closed_set() {
+        // Closed label set — same CI gate as the other orchestrator counters.
+        // The vocabulary mirrors the storage crate's `acceptance_label` so a
+        // dashboard and the backend spans agree on what happened.
+        let labels = [
+            orchestrator_handoff_outcome::ACCEPTED,
+            orchestrator_handoff_outcome::CLAIM_SUPERSEDED,
+            orchestrator_handoff_outcome::TURN_HELD,
+            orchestrator_handoff_outcome::ERROR,
+        ];
+        let unique: HashSet<&str> = labels.iter().copied().collect();
+        assert_eq!(unique.len(), 4, "handoff outcome labels must be unique");
         for label in labels {
             assert!(!label.is_empty());
             assert!(label.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'));

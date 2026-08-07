@@ -256,6 +256,7 @@ impl RuntimeRepairHarness {
                 worker_projection.execution_stores,
                 worker_projection.workflow_stores,
                 worker_projection.job_dispatch_queue,
+                worker_projection.turn_handoff,
                 PROFILE_PROCESSOR_ID,
                 engine_clock,
                 execution_event_bus,

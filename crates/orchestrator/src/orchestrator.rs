@@ -6,13 +6,35 @@
 //! per-row failure isolation, and optional [`MetricsRegistry`] injection via
 //! the builder.
 //!
+//! ## Claim lifecycle — the handoff (#976)
+//!
+//! A dispatch claim protects **delivery only**, never work. Each claimed row
+//! is processed as `validate → handoff → dispatch`:
+//!
+//! 1. **Validate** the claim locally (the execution id parses). A row that
+//!    can never be dispatched is terminalised with `mark_failed` instead of
+//!    being redelivered forever.
+//! 2. **Hand off** durably via [`ExecutionTurnHandoff::accept_turn`]: the
+//!    execution lease is acquired and the queue row acknowledged in one
+//!    transaction. The claim ends at this point — how long the action
+//!    subsequently runs cannot extend it.
+//! 3. **Dispatch** the accepted turn to the [`ExecutionSink`], which drives
+//!    the execution under the handoff's fence. Post-handoff failures never
+//!    touch queue state: recovery proceeds from the execution lease and
+//!    persisted aggregate truth.
+//!
+//! A crash before the handoff commits leaves the row `Processing` for the
+//! reclaim sweep; a crash after leaves a terminal row and a leased execution
+//! that recovery drives. There is no state in between.
+//!
 //! ## Shutdown contract
 //!
 //! When [`CancellationToken`] is cancelled the orchestrator flushes the
 //! in-flight batch already being processed, then returns. It does **not** begin
 //! a fresh [`JobDispatchQueue::claim_pending`] once shutdown is requested.
-//! Rows claimed but not yet marked remain in `Processing` and are recovered
-//! by the next runner's reclaim sweep.
+//! Rows claimed but not yet handed off remain in `Processing` and are
+//! recovered by the next runner's reclaim sweep; rows already handed off are
+//! governed by their execution lease.
 //!
 //! Worst-case shutdown observability latency is bounded by
 //! `max(one reclaim_stuck() sweep, batch_size × one sink.dispatch() latency)`,
@@ -22,23 +44,30 @@
 //! [`CancellationToken`]: tokio_util::sync::CancellationToken
 //! [`MetricsRegistry`]: nebula_metrics::MetricsRegistry
 //! [`JobDispatchQueue::claim_pending`]: nebula_storage_port::store::JobDispatchQueue::claim_pending
+//! [`ExecutionTurnHandoff::accept_turn`]: nebula_storage_port::store::ExecutionTurnHandoff::accept_turn
 
 use std::{sync::Arc, time::Duration};
 
 use nebula_core::PluginKey;
+use nebula_core::id::ExecutionId;
 use nebula_metrics::{
     MetricsRegistry,
     naming::{
-        NEBULA_ORCHESTRATOR_DISPATCH_TOTAL, NEBULA_ORCHESTRATOR_RECLAIM_TOTAL,
-        orchestrator_dispatch_outcome, orchestrator_reclaim_outcome,
+        NEBULA_ORCHESTRATOR_DISPATCH_TOTAL, NEBULA_ORCHESTRATOR_HANDOFF_TOTAL,
+        NEBULA_ORCHESTRATOR_RECLAIM_TOTAL, orchestrator_dispatch_outcome,
+        orchestrator_handoff_outcome, orchestrator_reclaim_outcome,
     },
 };
-use nebula_storage_port::store::{JobClaim, JobClaimToken, JobDispatchQueue, ReclaimOutcome};
+use nebula_storage_port::StorageError;
+use nebula_storage_port::store::{
+    ExecutionTurnHandoff, JobClaim, JobClaimToken, JobDispatchQueue, ReclaimOutcome,
+    TurnAcceptance, TurnHandoff,
+};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
-use crate::sink::ExecutionSink;
+use crate::sink::{DispatchedTurn, ExecutionSink};
 
 /// Default claim batch size.
 ///
@@ -73,37 +102,35 @@ pub const MAX_CLAIM_ERROR_BACKOFF: Duration = Duration::from_secs(30);
 ///
 /// ## Relationship between the job-dispatch claim and execution liveness
 ///
-/// The job-dispatch claim is held for the **entire synchronous drive** of a
-/// workflow: the orchestrator claims the row, hands it to the sink, and only
-/// marks it `Dispatched` or `Failed` after `ExecutionSink::dispatch` returns.
-/// There is no heartbeat on the claim while the sink is running.
+/// The job-dispatch claim protects **delivery only** (#976): the orchestrator
+/// claims the row, ends the claim at the durable handoff
+/// ([`ExecutionTurnHandoff::accept_turn`]), and only then dispatches the
+/// accepted turn. The row is terminal before the action runs, so how long the
+/// action takes can neither extend the claim nor trip this window — a
+/// deliberately slow action and a crashed runner are no longer the same
+/// signal.
 ///
-/// Execution liveness is tracked separately: the engine issues a per-execution
-/// lease (renewed by `nebula-engine`'s `acquire_and_heartbeat_lease` loop) whose
-/// TTL is the authoritative signal that a runner has crashed.  The
+/// Execution liveness is tracked separately: the handoff acquires the
+/// per-execution lease, and the engine renews it on a heartbeat loop whose
+/// TTL is the authoritative signal that a runner has crashed. The
 /// job-dispatch `reclaim_stuck` sweep is a **routing-layer** recovery
-/// mechanism, not an execution-failure detector.
-///
-/// **Implication for long-running, non-parking workflows:** if a workflow
-/// drives synchronously from `Created` to `Completed` in a single
-/// `resume_execution` call and that drive takes longer than
-/// `reclaim_after × max_reclaim_count`, the orchestrator's reclaim sweep
-/// will eventually mark the dispatch row `Failed` — even though the execution
-/// itself completed correctly.  This is a routing-row observability artifact,
-/// not an execution failure; the execution status in the execution store is
-/// unaffected.
-///
-/// Operators expecting workflows whose single synchronous drive exceeds
-/// `reclaim_after × max_reclaim_count` should increase `max_reclaim_count`
-/// via [`Orchestrator::with_max_reclaim_count`] (or the corresponding builder
-/// method on `WorkerRuntimeBuilder` in `nebula-worker`).
-/// Long workflows that park at a checkpoint do not trigger this: parking
-/// returns control to the engine, the sink returns `Ok(())`, and the dispatch
-/// row is marked `Dispatched` promptly.
+/// mechanism for rows whose runner crashed before the handoff committed —
+/// not an execution-failure detector.
 ///
 /// See ADR-0017 (execution lease contract) and ADR-0095 (job-dispatch
 /// routing) for the full context.
+///
+/// [`ExecutionTurnHandoff::accept_turn`]: nebula_storage_port::store::ExecutionTurnHandoff::accept_turn
 pub const DEFAULT_RECLAIM_AFTER: Duration = Duration::from_secs(150);
+
+/// Default lease TTL the durable handoff mints for the accepted turn.
+///
+/// Matches the engine's `DEFAULT_EXECUTION_LEASE_TTL`: long enough that the
+/// engine's heartbeat loop takes over renewal with margin, short enough to
+/// bound recovery latency when the accepting runner crashes right after the
+/// commit. Every backend clamps it to `[1s, 24h]`, the same window
+/// `ExecutionStore::acquire_lease` enforces.
+pub const DEFAULT_HANDOFF_LEASE_TTL: Duration = Duration::from_secs(30);
 
 /// Default cadence of the reclaim sweep.
 pub const DEFAULT_RECLAIM_INTERVAL: Duration = Duration::from_secs(30);
@@ -112,17 +139,17 @@ pub const DEFAULT_RECLAIM_INTERVAL: Duration = Duration::from_secs(30);
 ///
 /// A row that has been reclaimed this many times transitions to `Failed` on
 /// the next sweep, preventing unbounded redelivery of permanently stuck jobs.
-///
-/// As noted on [`DEFAULT_RECLAIM_AFTER`], operators running long synchronous
-/// workflows should raise this value; the dispatch `Failed` status is a
-/// routing artifact and does not indicate execution failure.
+/// Since the handoff (#976) ends the claim before the action runs, only rows
+/// whose runner repeatedly crashes **before** the handoff commits consume
+/// this budget.
 pub const DEFAULT_MAX_RECLAIM_COUNT: u32 = 3;
 
 /// Capability-routed job-dispatch pull loop (ADR-0095).
 ///
 /// Claims [`JobDispatchQueue`] rows whose `required_plugins ⊆ available_plugins`,
-/// hands each to an [`ExecutionSink`], and fences the row dispatched or failed.
-/// A periodic sweep reclaims rows stuck in `Processing` after a crashed runner.
+/// ends each claim at the durable handoff, and dispatches the accepted turn
+/// to an [`ExecutionSink`]. A periodic sweep reclaims rows stuck in
+/// `Processing` after a runner crashed before its handoff committed.
 ///
 /// Construct with [`Orchestrator::new`] and optional builder methods, then
 /// call [`Orchestrator::run`] (or [`Orchestrator::spawn`]).
@@ -132,17 +159,29 @@ pub const DEFAULT_MAX_RECLAIM_COUNT: u32 = 3;
 pub struct Orchestrator {
     queue: Arc<dyn JobDispatchQueue>,
     sink: Arc<dyn ExecutionSink>,
+    /// Durable owner of the dispatch-claim → execution-turn handoff. MUST be
+    /// backed by the same store the queue and the engine's execution store
+    /// use: the handoff commits the lease write and the queue acknowledgement
+    /// in one transaction, and two backends would give them two boundaries.
+    handoff: Arc<dyn ExecutionTurnHandoff>,
     /// Fixed 16-byte fence token recorded in `processed_by` and matched on
-    /// `mark_dispatched` / `mark_failed`. Typed `[u8; 16]` end-to-end — no
-    /// truncate/pad of an arbitrary-length id, which would let two distinct
-    /// workers collapse to the same token and ack each other's rows.
+    /// `mark_failed`. Typed `[u8; 16]` end-to-end — no truncate/pad of an
+    /// arbitrary-length id, which would let two distinct workers collapse to
+    /// the same token and ack each other's rows.
     processor_id: [u8; 16],
+    /// Identity recorded as the accepted turn's lease holder. Derived from
+    /// `processor_id` so contention diagnostics name the processor, but the
+    /// lease authority is the fence, not this string.
+    lease_holder: String,
     available_plugins: Vec<PluginKey>,
     batch_size: u32,
     poll_interval: Duration,
     reclaim_after: Duration,
     reclaim_interval: Duration,
     max_reclaim_count: u32,
+    /// Lease TTL the handoff mints for each accepted turn. The engine's
+    /// heartbeat loop takes over renewal once the turn is dispatched.
+    handoff_lease_ttl: Duration,
     /// Shared metrics registry. Defaults to a private fresh registry so the
     /// orchestrator is always emit-safe without injection; production
     /// composition roots inject the shared registry via [`with_metrics`] so
@@ -155,25 +194,36 @@ pub struct Orchestrator {
 impl Orchestrator {
     /// Construct an orchestrator.
     ///
+    /// `handoff` is the durable owner of the dispatch-claim → execution-turn
+    /// handoff and MUST share the backend the queue and the engine's
+    /// execution store use — see the field docs. An orchestrator without a
+    /// handoff would hold claims for whole action durations (NS05), so none
+    /// can be constructed.
+    ///
     /// `processor_id` is the fixed 16-byte fence token recorded in the row's
     /// `processed_by`. Supply the full id bytes — no truncation or padding is
     /// done, which would let two distinct workers collapse to the same token.
     pub fn new(
         queue: Arc<dyn JobDispatchQueue>,
         sink: Arc<dyn ExecutionSink>,
+        handoff: Arc<dyn ExecutionTurnHandoff>,
         processor_id: [u8; 16],
         available_plugins: Vec<PluginKey>,
     ) -> Self {
+        let lease_holder = format!("orchestrator:{}", hex_display(&processor_id));
         Self {
             queue,
             sink,
+            handoff,
             processor_id,
+            lease_holder,
             available_plugins,
             batch_size: DEFAULT_BATCH_SIZE,
             poll_interval: DEFAULT_POLL_INTERVAL,
             reclaim_after: DEFAULT_RECLAIM_AFTER,
             reclaim_interval: DEFAULT_RECLAIM_INTERVAL,
             max_reclaim_count: DEFAULT_MAX_RECLAIM_COUNT,
+            handoff_lease_ttl: DEFAULT_HANDOFF_LEASE_TTL,
             metrics: MetricsRegistry::new(),
         }
     }
@@ -208,6 +258,17 @@ impl Orchestrator {
     /// `Failed`. Default: [`DEFAULT_MAX_RECLAIM_COUNT`].
     pub fn with_max_reclaim_count(mut self, n: u32) -> Self {
         self.max_reclaim_count = n;
+        self
+    }
+
+    /// Override the lease TTL the handoff mints for each accepted turn.
+    /// Default: [`DEFAULT_HANDOFF_LEASE_TTL`].
+    ///
+    /// Backends clamp it to `[1s, 24h]`. Shorter values bound recovery
+    /// latency after a post-handoff crash at the cost of less margin before
+    /// the engine's heartbeat loop takes over renewal.
+    pub fn with_handoff_lease_ttl(mut self, d: Duration) -> Self {
+        self.handoff_lease_ttl = d;
         self
     }
 
@@ -439,24 +500,121 @@ impl Orchestrator {
             }
         }
 
-        let sink = Arc::clone(&self.sink);
+        // ── 1. validate ─────────────────────────────────────────────────────
+        //
+        // Check everything decidable from the claim alone before the handoff
+        // writes anything. A row that fails here can never be dispatched, so
+        // it is terminalised instead of being redelivered until the reclaim
+        // budget exhausts. The claim is still ours at this point — the
+        // handoff has not run — so `mark_failed` is the honest write.
+        if msg.execution_id.parse::<ExecutionId>().is_err() {
+            let reason = format!("invalid execution_id `{}`", msg.execution_id);
+            tracing::error!(
+                row_id = %hex_display(&row_id),
+                execution_id = %msg.execution_id,
+                "orchestrator claim failed validation; marking row failed (#976)"
+            );
+            self.mark_failed(&token, &reason).await;
+            self.inc_dispatch(orchestrator_dispatch_outcome::FAILED);
+            return;
+        }
+
+        // ── 2. handoff ──────────────────────────────────────────────────────
+        //
+        // End the claim at a definite point: `accept_turn` acquires the
+        // execution lease and acknowledges the queue row in one transaction.
+        // Past this commit the action's duration is governed by the lease,
+        // and the queue can never redeliver this row.
+        let turn_handoff = TurnHandoff {
+            scope: &msg.scope,
+            execution_id: &msg.execution_id,
+            claim: token,
+            holder: &self.lease_holder,
+            lease_ttl: self.handoff_lease_ttl,
+        };
+        let acceptance = self.handoff.accept_turn(&turn_handoff).await;
+        let fence = match acceptance {
+            Ok(TurnAcceptance::Accepted { fence }) => {
+                self.inc_handoff(orchestrator_handoff_outcome::ACCEPTED);
+                fence
+            },
+            // Another attempt now owns the row — nothing was written, and the
+            // current owner drives the turn. There is nothing to do.
+            Ok(TurnAcceptance::ClaimSuperseded) => {
+                self.inc_handoff(orchestrator_handoff_outcome::CLAIM_SUPERSEDED);
+                tracing::debug!(
+                    row_id = %hex_display(&row_id),
+                    execution_id = %msg.execution_id,
+                    claim_generation = %token.generation(),
+                    "handoff found the claim superseded; the current owner drives the turn (#976)"
+                );
+                return;
+            },
+            // A live lease owned by someone else: the row is deliberately left
+            // claimed so the sweep redelivers it once that lease expires.
+            // Acknowledging here would drop the turn on the floor.
+            Ok(TurnAcceptance::TurnHeldByAnotherOwner) => {
+                self.inc_handoff(orchestrator_handoff_outcome::TURN_HELD);
+                tracing::debug!(
+                    row_id = %hex_display(&row_id),
+                    execution_id = %msg.execution_id,
+                    "turn already owned by another holder; leaving the row claimable for redelivery (#976)"
+                );
+                return;
+            },
+            // The execution (or the row itself) is gone: an orphaned dispatch.
+            // The emitter materialises the execution row and the queue row in
+            // one atomic write, so an execution missing here will not appear
+            // later — terminalise rather than redeliver forever.
+            Err(StorageError::NotFound { .. }) => {
+                self.inc_handoff(orchestrator_handoff_outcome::ERROR);
+                let reason = format!("execution {} not found at handoff", msg.execution_id);
+                tracing::error!(
+                    row_id = %hex_display(&row_id),
+                    execution_id = %msg.execution_id,
+                    "handoff found no execution; marking row failed (#976)"
+                );
+                self.mark_failed(&token, &reason).await;
+                self.inc_dispatch(orchestrator_dispatch_outcome::FAILED);
+                return;
+            },
+            // Backend error: nothing was written, the row stays `Processing`,
+            // and the reclaim sweep redelivers it. No terminal write — the
+            // failure may be transient.
+            Err(ref e) => {
+                self.inc_handoff(orchestrator_handoff_outcome::ERROR);
+                tracing::error!(
+                    row_id = %hex_display(&row_id),
+                    execution_id = %msg.execution_id,
+                    claim_generation = %token.generation(),
+                    error = %e,
+                    "handoff failed; row left in Processing for reclaim (#976)"
+                );
+                return;
+            },
+        };
+
+        // ── 3. dispatch the accepted turn ───────────────────────────────────
+        //
         // Bounded drain on shutdown.
         //
         // Graceful shutdown flushes the in-flight batch — a dispatch that is
-        // nearly done should finish rather than be redelivered. But `dispatch`
+        // nearly done should finish rather than be abandoned. But `dispatch`
         // drives a whole execution step, which can park on a durable timer or
         // an external wait, so awaiting it unconditionally means the loop never
         // returns to its `select!` and a process asked to stop hangs for as
         // long as the workflow does.
         //
         // So: keep flushing after cancellation, but only within
-        // [`SHUTDOWN_DISPATCH_GRACE`]. Past that the row is abandoned to the
-        // documented recovery path — it stays `Processing` and the next
-        // runner's reclaim sweep redelivers it. Acknowledging it either way
-        // would be the unsafe choice: `mark_dispatched` would claim work that
-        // did not finish, and `mark_failed` would terminalise a row that was
-        // merely interrupted.
-        let dispatch = sink.dispatch(&msg).instrument(span);
+        // [`SHUTDOWN_DISPATCH_GRACE`]. Past that the turn is abandoned to the
+        // documented recovery path — the queue row is already acknowledged by
+        // the handoff, and the execution lease this handoff minted expires so
+        // recovery drives from persisted aggregate truth. Nothing here can
+        // lose the turn: a crash at any point past the handoff commit is the
+        // same case.
+        let sink = Arc::clone(&self.sink);
+        let turn = DispatchedTurn { msg: &msg, fence };
+        let dispatch = sink.dispatch(&turn).instrument(span);
         tokio::pin!(dispatch);
         let dispatch_result = tokio::select! {
             biased;
@@ -471,7 +629,7 @@ impl Orchestrator {
                         claim_generation = %token.generation(),
                         grace_ms = SHUTDOWN_DISPATCH_GRACE.as_millis() as u64,
                         "orchestrator dispatch did not drain within the shutdown grace; \
-                         leaving the row Processing for reclaim"
+                         the acknowledged row's execution lease governs recovery (#976)"
                     );
                     return;
                 };
@@ -481,61 +639,50 @@ impl Orchestrator {
 
         match dispatch_result {
             Ok(()) => {
-                self.mark_dispatched(&token).await;
-                let labels = self
-                    .metrics
-                    .interner()
-                    .single("outcome", orchestrator_dispatch_outcome::DISPATCHED);
-                if let Ok(c) = self
-                    .metrics
-                    .counter_labeled(NEBULA_ORCHESTRATOR_DISPATCH_TOTAL, &labels)
-                {
-                    c.inc();
-                }
+                self.inc_dispatch(orchestrator_dispatch_outcome::DISPATCHED);
             },
             Err(ref e) => {
+                // The queue row was already acknowledged by the handoff, so
+                // there is no queue state to fix: the execution lease and
+                // persisted recovery state govern what happens next (lease
+                // expiry → recovery redrive). Record the failure for
+                // operators and move on.
                 tracing::error!(
                     row_id = %hex_display(&row_id),
                     execution_id = %msg.execution_id,
                     command = msg.command.as_str(),
+                    fence_generation = %fence.generation(),
                     error = %e,
-                    "orchestrator dispatch failed; marking row failed (ADR-0095)"
+                    "orchestrator dispatch failed after handoff; recovery drives from the execution lease (#976)"
                 );
-                self.mark_failed(&token, &e.to_string()).await;
-                let labels = self
-                    .metrics
-                    .interner()
-                    .single("outcome", orchestrator_dispatch_outcome::FAILED);
-                if let Ok(c) = self
-                    .metrics
-                    .counter_labeled(NEBULA_ORCHESTRATOR_DISPATCH_TOTAL, &labels)
-                {
-                    c.inc();
-                }
+                self.inc_dispatch(orchestrator_dispatch_outcome::FAILED);
             },
         }
     }
 
-    async fn mark_dispatched(&self, token: &JobClaimToken) {
-        // If `mark_dispatched` fails, the row stays in `Processing` and the
-        // reclaim sweep redelivers. Correctness under redelivery requires the
-        // `ExecutionSink` to be idempotent per `(execution_id, command)`.
-        //
-        // `FencedOut` is the one failure that is not a lost write: this claim
-        // was reclaimed and another attempt now owns the row, so leaving it
-        // alone is exactly right and the current owner will acknowledge it.
-        if let Err(e) = self
-            .queue
-            .mark_dispatched(token)
-            .await
-            .map_err(|e| e.to_string())
+    /// Increment the handoff-outcome counter. Counter construction failure is
+    /// swallowed (same policy as the dispatch/reclaim counters): metrics must
+    /// never take down the pull loop.
+    fn inc_handoff(&self, outcome: &'static str) {
+        let labels = self.metrics.interner().single("outcome", outcome);
+        if let Ok(c) = self
+            .metrics
+            .counter_labeled(NEBULA_ORCHESTRATOR_HANDOFF_TOTAL, &labels)
         {
-            tracing::error!(
-                row_id = %hex_display(token.row_id()),
-                claim_generation = %token.generation(),
-                error = %e,
-                "orchestrator mark_dispatched failed; row left in Processing for reclaim"
-            );
+            c.inc();
+        }
+    }
+
+    /// Increment the dispatch-outcome counter. Counter construction failure is
+    /// swallowed (same policy as the reclaim counter): metrics must never take
+    /// down the pull loop.
+    fn inc_dispatch(&self, outcome: &'static str) {
+        let labels = self.metrics.interner().single("outcome", outcome);
+        if let Ok(c) = self
+            .metrics
+            .counter_labeled(NEBULA_ORCHESTRATOR_DISPATCH_TOTAL, &labels)
+        {
+            c.inc();
         }
     }
 

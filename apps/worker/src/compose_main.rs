@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use nebula_storage::sqlite::{
     SqliteControlQueue, SqliteExecutionStore, SqliteIdempotencyGuard, SqliteJobDispatchQueue,
-    SqliteJournalReader, SqliteResumeTokenStore, SqliteWorkflowStore, SqliteWorkflowVersionStore,
-    init_schema,
+    SqliteJournalReader, SqliteResumeTokenStore, SqliteTurnHandoff, SqliteWorkflowStore,
+    SqliteWorkflowVersionStore, init_schema,
 };
 use nebula_storage::{InMemoryCheckpointStore, InMemoryNodeResultStore};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{EnvFilter, fmt};
 
 use nebula_engine::{ExecutionStores, WorkflowStores};
-use nebula_storage_port::store::{ControlQueue, JobDispatchQueue};
+use nebula_storage_port::store::{ControlQueue, ExecutionTurnHandoff, JobDispatchQueue};
 use nebula_worker_bin::compose::{
     ComposeError, WorkerConfig, WorkerConfigError, build_core_flavor_runtime,
 };
@@ -117,6 +117,7 @@ async fn build_stores(
         WorkflowStores,
         Arc<dyn JobDispatchQueue>,
         Arc<dyn ControlQueue>,
+        Arc<dyn ExecutionTurnHandoff>,
     ),
     WorkerRunError,
 > {
@@ -173,6 +174,11 @@ async fn build_stores(
         let workflow_store = Arc::new(SqliteWorkflowStore::new(pool.clone()));
         let versions_store = Arc::new(SqliteWorkflowVersionStore::new(pool.clone()));
         let queue = Arc::new(SqliteJobDispatchQueue::new(pool.clone()));
+        // Same pool as the execution store and the queue: the handoff commits
+        // the lease acquisition and the queue acknowledgement in one
+        // transaction, so it must share the boundary both are written under
+        // (#976).
+        let turn_handoff = Arc::new(SqliteTurnHandoff::new(pool.clone()));
         // Same pool as the execution store: the consumer must drain the
         // queue the API writes to, not a second one.
         let control_queue = Arc::new(SqliteControlQueue::new(pool));
@@ -190,7 +196,13 @@ async fn build_stores(
             versions: versions_store,
         };
 
-        return Ok((execution_stores, workflow_stores, queue, control_queue));
+        return Ok((
+            execution_stores,
+            workflow_stores,
+            queue,
+            control_queue,
+            turn_handoff,
+        ));
     }
 
     // ── Postgres path (opt-in; compile-verified but not CI-integration-tested) ──
@@ -224,12 +236,14 @@ async fn build_pg_stores(
         WorkflowStores,
         Arc<dyn JobDispatchQueue>,
         Arc<dyn ControlQueue>,
+        Arc<dyn ExecutionTurnHandoff>,
     ),
     WorkerRunError,
 > {
     use nebula_storage::postgres::{
         PgControlQueue, PgExecutionStore, PgIdempotencyGuard, PgJobDispatchQueue, PgJournalReader,
-        PgResumeTokenStore, PgWorkflowStore, PgWorkflowVersionStore, init_schema as pg_init_schema,
+        PgResumeTokenStore, PgTurnHandoff, PgWorkflowStore, PgWorkflowVersionStore,
+        init_schema as pg_init_schema,
     };
     use sqlx::postgres::PgPoolOptions;
 
@@ -263,6 +277,8 @@ async fn build_pg_stores(
     let workflow_store = Arc::new(PgWorkflowStore::new(pool.clone()));
     let versions_store = Arc::new(PgWorkflowVersionStore::new(pool.clone()));
     let queue = Arc::new(PgJobDispatchQueue::new(pool.clone()));
+    // Same pool as the execution store and the queue — see the SQLite arm.
+    let turn_handoff = Arc::new(PgTurnHandoff::new(pool.clone()));
     // Same pool as the execution store — see the SQLite arm.
     let control_queue = Arc::new(PgControlQueue::new(pool));
 
@@ -279,7 +295,13 @@ async fn build_pg_stores(
         versions: versions_store,
     };
 
-    Ok((execution_stores, workflow_stores, queue, control_queue))
+    Ok((
+        execution_stores,
+        workflow_stores,
+        queue,
+        control_queue,
+        turn_handoff,
+    ))
 }
 
 /// Fail-closed twin compiled when the `postgres` feature is absent.
@@ -298,6 +320,7 @@ async fn build_pg_stores(
         WorkflowStores,
         Arc<dyn JobDispatchQueue>,
         Arc<dyn ControlQueue>,
+        Arc<dyn ExecutionTurnHandoff>,
     ),
     WorkerRunError,
 > {
@@ -343,7 +366,8 @@ pub(crate) async fn run() -> Result<(), WorkerRunError> {
     }
 
     // Build the store bundle — SQLite or Postgres depending on config.
-    let (execution_stores, workflow_stores, queue, control_queue) = build_stores(&config).await?;
+    let (execution_stores, workflow_stores, queue, control_queue, turn_handoff) =
+        build_stores(&config).await?;
 
     // Assemble the core-flavor builder (boots CorePlugin + wires into engine).
     // The returned MetricsRegistry is the same instance the engine's ActionRuntime
@@ -354,6 +378,7 @@ pub(crate) async fn run() -> Result<(), WorkerRunError> {
         execution_stores,
         workflow_stores,
         queue,
+        turn_handoff,
         config.processor_id,
     )?;
 

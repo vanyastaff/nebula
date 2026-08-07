@@ -27,7 +27,7 @@
 //!
 //! use nebula_core::PluginKey;
 //! use nebula_engine::{ExecutionStores, WorkflowEngine};
-//! use nebula_storage_port::store::JobDispatchQueue;
+//! use nebula_storage_port::store::{ControlQueue, ExecutionTurnHandoff, JobDispatchQueue};
 //! use nebula_worker::WorkerRuntimeBuilder;
 //! use tokio_util::sync::CancellationToken;
 //!
@@ -35,11 +35,15 @@
 //! #     engine: Arc<WorkflowEngine>,
 //! #     stores: ExecutionStores,
 //! #     queue: Arc<dyn JobDispatchQueue>,
+//! #     control_queue: Arc<dyn ControlQueue>,
+//! #     handoff: Arc<dyn ExecutionTurnHandoff>,
 //! #     plugins: Vec<PluginKey>,
 //! #     proc_id: [u8; 16],
 //! #     shutdown_token: CancellationToken,
 //! # ) -> Result<(), Box<dyn std::error::Error>> {
 //! let runtime = WorkerRuntimeBuilder::from_wired_engine(engine, stores, queue, plugins, proc_id)
+//!     .with_control_queue(control_queue)
+//!     .with_turn_handoff(handoff)
 //!     .with_batch_size(16)
 //!     .build()?;
 //!
@@ -63,7 +67,7 @@ use nebula_engine::{
 };
 use nebula_metrics::MetricsRegistry;
 use nebula_orchestrator::Orchestrator;
-use nebula_storage_port::store::{ControlQueue, JobDispatchQueue};
+use nebula_storage_port::store::{ControlQueue, ExecutionTurnHandoff, JobDispatchQueue};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 
@@ -89,6 +93,16 @@ pub enum WorkerBuildError {
     /// the queue makes that miswiring a build error instead of silence.
     #[error("no control queue wired — accepted Start commands would never be consumed")]
     NoControlQueue,
+
+    /// No turn handoff was wired.
+    ///
+    /// Without it the orchestrator cannot end dispatch claims at the durable
+    /// runtime handoff (#976): claims would be held for whole action
+    /// durations and the reclaim window would cap how long an action may run.
+    /// Requiring the handoff makes that miswiring a build error instead of
+    /// silently restoring the pre-#976 behaviour.
+    #[error("no turn handoff wired — dispatch claims could not end at the durable runtime handoff")]
+    NoTurnHandoff,
 
     /// The timer-scan interval is zero.
     ///
@@ -352,6 +366,9 @@ pub struct WorkerRuntimeBuilder {
     /// Durable control queue the API writes accepted commands to. Required at
     /// `build` time — see [`WorkerBuildError::NoControlQueue`].
     control_queue: Option<Arc<dyn ControlQueue>>,
+    /// Durable owner of the dispatch-claim → execution-turn handoff. Required
+    /// at `build` time — see [`WorkerBuildError::NoTurnHandoff`].
+    turn_handoff: Option<Arc<dyn ExecutionTurnHandoff>>,
     available_plugins: Vec<PluginKey>,
     processor_id: [u8; 16],
     // Optional orchestrator overrides — all None means "use Orchestrator defaults".
@@ -360,6 +377,7 @@ pub struct WorkerRuntimeBuilder {
     reclaim_after: Option<Duration>,
     reclaim_interval: Option<Duration>,
     max_reclaim_count: Option<u32>,
+    handoff_lease_ttl: Option<Duration>,
     metrics: Option<MetricsRegistry>,
     // Optional timer scanner override — None means DEFAULT_TIMER_SCAN_INTERVAL.
     timer_scan_interval: Option<Duration>,
@@ -405,6 +423,7 @@ impl WorkerRuntimeBuilder {
             stores,
             queue,
             control_queue: None,
+            turn_handoff: None,
             available_plugins,
             processor_id,
             batch_size: None,
@@ -412,6 +431,7 @@ impl WorkerRuntimeBuilder {
             reclaim_after: None,
             reclaim_interval: None,
             max_reclaim_count: None,
+            handoff_lease_ttl: None,
             metrics: None,
             timer_scan_interval: None,
         }
@@ -424,6 +444,18 @@ impl WorkerRuntimeBuilder {
     /// component reports healthy.
     pub fn with_control_queue(mut self, control_queue: Arc<dyn ControlQueue>) -> Self {
         self.control_queue = Some(control_queue);
+        self
+    }
+
+    /// Wire the durable owner of the dispatch-claim → execution-turn handoff
+    /// (#976).
+    ///
+    /// MUST be constructed over the same backend the `queue` and the engine's
+    /// execution store use: the handoff commits the lease write and the queue
+    /// acknowledgement in one transaction, and two backends would give them
+    /// two boundaries.
+    pub fn with_turn_handoff(mut self, handoff: Arc<dyn ExecutionTurnHandoff>) -> Self {
+        self.turn_handoff = Some(handoff);
         self
     }
 
@@ -459,6 +491,13 @@ impl WorkerRuntimeBuilder {
         self
     }
 
+    /// Override the lease TTL the handoff mints for each accepted turn
+    /// (default: [`Orchestrator`] default = 30 s).
+    pub fn with_handoff_lease_ttl(mut self, d: Duration) -> Self {
+        self.handoff_lease_ttl = Some(d);
+        self
+    }
+
     /// Inject the shared [`MetricsRegistry`] the orchestrator emits counters into.
     ///
     /// Without this the counters increment against a private registry no scraper
@@ -483,12 +522,16 @@ impl WorkerRuntimeBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`WorkerBuildError::NoPlugins`] when `available_plugins` is empty.
+    /// Returns [`WorkerBuildError::NoPlugins`] when `available_plugins` is
+    /// empty, [`WorkerBuildError::NoControlQueue`] when no control queue was
+    /// wired, and [`WorkerBuildError::NoTurnHandoff`] when no turn handoff
+    /// was wired.
     pub fn build(self) -> Result<WorkerRuntime, WorkerBuildError> {
         if self.available_plugins.is_empty() {
             return Err(WorkerBuildError::NoPlugins);
         }
         let control_queue = self.control_queue.ok_or(WorkerBuildError::NoControlQueue)?;
+        let turn_handoff = self.turn_handoff.ok_or(WorkerBuildError::NoTurnHandoff)?;
         let timer_scan_interval = self
             .timer_scan_interval
             .unwrap_or(DEFAULT_TIMER_SCAN_INTERVAL);
@@ -506,8 +549,13 @@ impl WorkerRuntimeBuilder {
 
         let available_plugins_count = self.available_plugins.len();
 
-        let mut orchestrator =
-            Orchestrator::new(self.queue, sink, self.processor_id, self.available_plugins);
+        let mut orchestrator = Orchestrator::new(
+            self.queue,
+            sink,
+            turn_handoff,
+            self.processor_id,
+            self.available_plugins,
+        );
 
         if let Some(n) = self.batch_size {
             orchestrator = orchestrator.with_batch_size(n);
@@ -523,6 +571,9 @@ impl WorkerRuntimeBuilder {
         }
         if let Some(n) = self.max_reclaim_count {
             orchestrator = orchestrator.with_max_reclaim_count(n);
+        }
+        if let Some(d) = self.handoff_lease_ttl {
+            orchestrator = orchestrator.with_handoff_lease_ttl(d);
         }
         if let Some(m) = self.metrics {
             orchestrator = orchestrator.with_metrics(m);
