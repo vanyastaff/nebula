@@ -151,8 +151,18 @@ impl ExecutionTurnHandoff for PgTurnHandoff {
             .map_err(conn_err)?;
 
             tx.commit().await.map_err(conn_err)?;
+            // A negative generation here would mean the monotone column was
+            // written out of band — fail closed with a typed error rather
+            // than handing out fence 0 (the lowest possible value, which a
+            // stale token compares against as at least as new).
+            let generation = u64::try_from(generation).map_err(|_| {
+                StorageError::Internal(format!(
+                    "fencing_generation out of u64 range for execution {}: {generation}",
+                    handoff.execution_id
+                ))
+            })?;
             Ok(TurnAcceptance::Accepted {
-                fence: FencingToken::from_generation(u64::try_from(generation).unwrap_or_default()),
+                fence: FencingToken::from_generation(generation),
             })
         }
         .await;
