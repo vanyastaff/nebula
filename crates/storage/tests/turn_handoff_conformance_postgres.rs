@@ -201,7 +201,7 @@ async fn a_superseded_claim_cannot_accept_the_turn() {
     let stale = fixture.seed(execution).await;
 
     // Age the claim so the sweep is guaranteed to see it, rather than racing
-    // the clock. SQLite's reclaim predicate is `processed_at_ms < cutoff`
+    // the clock. Postgres's reclaim predicate is `processed_at_ms < cutoff`
     // (strict) while the in-memory model uses `elapsed >= reclaim_after`
     // (inclusive), so a zero window reclaims immediately on one backend and
     // never on the other — a boundary divergence worth naming, and one this
@@ -299,6 +299,7 @@ async fn a_foreign_tenant_cannot_accept_the_turn() {
         eprintln!("PostgreSQL unreachable in this environment");
         return;
     };
+    let scope = scope();
     let execution = &unique("tenant");
     let claim = fixture.seed(execution).await;
     let intruder = Scope::new("ws-other", "org-other");
@@ -315,4 +316,63 @@ async fn a_foreign_tenant_cannot_accept_the_turn() {
             .expect("a foreign tenant is a typed outcome, not an error"),
         TurnAcceptance::ClaimSuperseded
     );
+
+    // The refusal wrote nothing: the original handoff, retried with its own
+    // scope and claim, is still accepted — the claim was not consumed and the
+    // execution was not leased under the foreign scope.
+    let taken = fixture
+        .handoff
+        .accept_turn(&fixture.request(execution, claim, "worker-a", &scope))
+        .await
+        .expect("the original handoff still runs after the foreign refusal");
+    assert!(
+        matches!(taken, TurnAcceptance::Accepted { .. }),
+        "a foreign-tenant refusal must leave the original claim intact, got {taken:?}"
+    );
+}
+
+/// A claim token is authority over *one* row, not a bearer pass.
+///
+/// Pairing a valid token from one job with a different execution id would
+/// otherwise lease the wrong aggregate and acknowledge — dropping — the job
+/// that was actually claimed.
+#[tokio::test]
+async fn a_claim_token_cannot_be_paired_with_another_execution() {
+    let Some(fixture) = Fixture::new().await else {
+        eprintln!("PostgreSQL unreachable in this environment");
+        return;
+    };
+    let scope = scope();
+    let claimed = unique("claimed");
+    let other = unique("other");
+    let claim = fixture.seed(&claimed).await;
+    fixture
+        .store
+        .create(&scope, &other, "wf", serde_json::json!({}))
+        .await
+        .expect("the second execution row is created");
+
+    assert_eq!(
+        fixture
+            .handoff
+            .accept_turn(&fixture.request(&other, claim, "worker-a", &scope))
+            .await
+            .expect("a mismatched pairing is a typed outcome, not an error"),
+        TurnAcceptance::ClaimSuperseded,
+        "a token proves ownership of one row, so it cannot drive another execution"
+    );
+
+    // Neither side moved: the claimed row is still acknowledgeable, and the
+    // unrelated execution was never leased.
+    fixture
+        .queue
+        .mark_dispatched(&claim)
+        .await
+        .expect("the claimed row is untouched");
+    fixture
+        .store
+        .acquire_lease(&scope, &other, "worker-b", TTL)
+        .await
+        .expect("the unrelated execution is reachable")
+        .expect("the unrelated execution was never leased");
 }

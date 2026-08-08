@@ -211,6 +211,7 @@ async fn a_live_foreign_lease_blocks_the_turn_without_acknowledging_the_row() {
 #[tokio::test]
 async fn a_foreign_tenant_cannot_accept_the_turn() {
     let fixture = Fixture::new();
+    let scope = scope();
     let execution = "exe-tenant";
     let claim = fixture.seed(execution).await;
     let intruder = Scope::new("ws-other", "org-other");
@@ -226,6 +227,19 @@ async fn a_foreign_tenant_cannot_accept_the_turn() {
             .await
             .expect("a foreign tenant is a typed outcome, not an error"),
         TurnAcceptance::ClaimSuperseded
+    );
+
+    // The refusal wrote nothing: the original handoff, retried with its own
+    // scope and claim, is still accepted — the claim was not consumed and the
+    // execution was not leased under the foreign scope.
+    let taken = fixture
+        .handoff
+        .accept_turn(&fixture.request(execution, claim, "worker-a", &scope))
+        .await
+        .expect("the original handoff still runs after the foreign refusal");
+    assert!(
+        matches!(taken, TurnAcceptance::Accepted { .. }),
+        "a foreign-tenant refusal must leave the original claim intact, got {taken:?}"
     );
 }
 
