@@ -20,6 +20,7 @@ mod plan_flavor_catalog;
 mod resume_producer;
 mod resume_token;
 mod start_acceptance;
+mod turn_handoff;
 mod workflow;
 
 pub use control_queue::InMemoryControlQueue;
@@ -38,4 +39,7 @@ pub use plan_flavor_catalog::InMemoryPlanFlavorCatalog;
 pub use resume_producer::InMemoryResumeProducer;
 pub use resume_token::InMemoryResumeTokenStore;
 pub use start_acceptance::InMemoryStartAcceptanceStore;
+pub use turn_handoff::InMemoryTurnHandoff;
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+pub(crate) use turn_handoff::acceptance_label;
 pub use workflow::{InMemoryWorkflowStore, InMemoryWorkflowVersionStore};

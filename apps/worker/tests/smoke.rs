@@ -113,6 +113,15 @@ impl TestStores {
             versions: self.versions.clone(),
         }
     }
+
+    /// Handoff over the SAME shared core the queue and execution store use —
+    /// the lease write and the queue acknowledgement must land under one
+    /// boundary (#976).
+    fn turn_handoff(&self) -> Arc<nebula_storage::inmem::InMemoryTurnHandoff> {
+        Arc::new(nebula_storage::inmem::InMemoryTurnHandoff::new(
+            &self.execution,
+        ))
+    }
 }
 
 // ── Workflow helpers ──────────────────────────────────────────────────────────
@@ -239,6 +248,7 @@ async fn core_flavor_runtime_processes_seeded_start_job() {
         stores.execution_stores(),
         stores.workflow_stores(),
         Arc::clone(&queue),
+        stores.turn_handoff(),
         [0xCCu8; 16],
     )
     .expect("build_core_flavor_runtime must succeed");
@@ -355,6 +365,7 @@ async fn core_flavor_runtime_advertises_core_plugin_key() {
         stores.execution_stores(),
         stores.workflow_stores(),
         queue,
+        stores.turn_handoff(),
         [0x01u8; 16],
     )
     .expect("build_core_flavor_runtime must succeed with the CorePlugin installed");
@@ -387,6 +398,7 @@ fn runtime_repair_builder_seals_exact_clock_and_event_bus() {
         stores.execution_stores(),
         stores.workflow_stores(),
         queue,
+        stores.turn_handoff(),
         [0xEEu8; 16],
         clock,
         event_bus,

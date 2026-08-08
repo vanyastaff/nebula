@@ -43,15 +43,18 @@ use nebula_engine::{
 };
 use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_metrics::MetricsRegistry;
-use nebula_orchestrator::{ExecutionSink, Orchestrator};
+use nebula_orchestrator::{DispatchedTurn, ExecutionSink, Orchestrator};
 use nebula_storage::{
     InMemoryExecutionStore, InMemoryWorkflowVersionStore,
-    inmem::{InMemoryJobDispatchQueue, InMemoryTriggerDedupInbox},
+    inmem::{InMemoryJobDispatchQueue, InMemoryTriggerDedupInbox, InMemoryTurnHandoff},
 };
 use nebula_storage_port::{
     Scope,
     dto::{ControlCommand, JobDispatchMsg, WorkflowVersionRecord},
-    store::{ExecutionStore, JobDispatchQueue, TriggerDedupInbox, WorkflowVersionStore},
+    store::{
+        ExecutionStore, ExecutionTurnHandoff, JobDispatchQueue, TriggerDedupInbox,
+        WorkflowVersionStore,
+    },
 };
 use nebula_workflow::{
     CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, TriggerBinding, ValidatedWorkflow, Version,
@@ -112,6 +115,13 @@ impl TestStores {
         engine
             .with_execution_stores(self.execution_stores())
             .with_workflow_stores(self.workflow_stores())
+    }
+
+    /// Handoff over the SAME shared core the queue and execution store use —
+    /// the lease write and the queue acknowledgement must land under one
+    /// boundary (#976).
+    fn turn_handoff(&self) -> Arc<InMemoryTurnHandoff> {
+        Arc::new(InMemoryTurnHandoff::new(&self.execution))
     }
 }
 
@@ -286,8 +296,29 @@ fn proc16(b: u8) -> [u8; 16] {
 
 // ── B-series: EngineExecutionSink unit tests ─────────────────────────────────
 
-/// `EngineExecutionSink::dispatch` on a `Created` row drives `resume_execution`
-/// and the execution reaches `Completed`.
+/// Mint a turn fence the way the durable handoff does (#976): acquire the
+/// execution lease and hand the fence to the sink, which adopts it instead of
+/// acquiring a second lease.
+async fn mint_turn_fence(
+    stores: &TestStores,
+    execution_id: ExecutionId,
+) -> nebula_storage_port::FencingToken {
+    stores
+        .execution
+        .acquire_lease(
+            &scope(),
+            &execution_id.to_string(),
+            "test-driver",
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("acquire lease for the test turn")
+        .expect("no live lease yet")
+}
+
+/// `EngineExecutionSink::dispatch` on a `Created` row drives
+/// `resume_execution_leased` under the handoff fence and the execution
+/// reaches `Completed`.
 #[tokio::test(start_paused = true)]
 async fn sink_dispatch_drives_resume_execution() {
     let stores = TestStores::new();
@@ -322,7 +353,9 @@ async fn sink_dispatch_drives_resume_execution() {
         0,
     );
 
-    let result = sink.dispatch(&msg).await;
+    let fence = mint_turn_fence(&stores, execution_id).await;
+    let turn = DispatchedTurn { msg: &msg, fence };
+    let result = sink.dispatch(&turn).await;
     assert!(
         result.is_ok(),
         "EngineExecutionSink::dispatch must succeed on a Created row: {result:?}"
@@ -373,13 +406,18 @@ async fn sink_dispatch_redelivery_is_idempotent() {
         0,
     );
 
-    // First dispatch — drives execution to Completed.
-    sink.dispatch(&msg)
+    // First dispatch — drives execution to Completed under the handoff fence.
+    let fence = mint_turn_fence(&stores, execution_id).await;
+    let turn = DispatchedTurn { msg: &msg, fence };
+    sink.dispatch(&turn)
         .await
         .expect("first dispatch must succeed");
 
-    // Second dispatch (redelivery) — must be Ok without re-running the handler.
-    let second = sink.dispatch(&msg).await;
+    // Second dispatch (redelivery) — must be Ok without re-running the
+    // handler. The idempotency guard short-circuits before the fence is
+    // adopted, so the same (now released) fence value is fine.
+    let redelivery = DispatchedTurn { msg: &msg, fence };
+    let second = sink.dispatch(&redelivery).await;
     assert!(
         second.is_ok(),
         "redelivery must return Ok (idempotency contract): {second:?}"
@@ -592,7 +630,8 @@ async fn trigger_dispatch_end_to_end_real_engine_resume() {
         "row must be Created before orchestrator claims it; got {status_before:?}"
     );
 
-    // 2. Orchestrator: wire sink, start pull loop, let it claim + dispatch.
+    // 2. Orchestrator: wire sink + handoff, start pull loop, let it claim,
+    //    hand off, and dispatch.
     let sink = Arc::new(EngineExecutionSink::new(
         Arc::clone(&engine),
         stores.execution.clone() as Arc<dyn ExecutionStore>,
@@ -602,6 +641,7 @@ async fn trigger_dispatch_end_to_end_real_engine_resume() {
     let orch = Orchestrator::new(
         Arc::clone(&queue) as Arc<dyn JobDispatchQueue>,
         sink as Arc<dyn ExecutionSink>,
+        stores.turn_handoff() as Arc<dyn ExecutionTurnHandoff>,
         proc16(0xAA),
         vec![orch_plugin_key],
     );

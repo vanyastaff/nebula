@@ -14,7 +14,7 @@ use nebula_engine::{
 use nebula_metrics::MetricsRegistry;
 use nebula_plugin::{ManifestError, PluginError};
 use nebula_plugin_core::CorePlugin;
-use nebula_storage_port::store::JobDispatchQueue;
+use nebula_storage_port::store::{ExecutionTurnHandoff, JobDispatchQueue};
 use nebula_worker::{WorkerBuildError, WorkerRuntimeBuilder};
 
 /// Typed errors emitted by the composition root.
@@ -87,12 +87,14 @@ pub fn build_core_flavor_runtime(
     execution_stores: ExecutionStores,
     workflow_stores: WorkflowStores,
     queue: Arc<dyn JobDispatchQueue>,
+    turn_handoff: Arc<dyn ExecutionTurnHandoff>,
     processor_id: [u8; 16],
 ) -> Result<(WorkerRuntimeBuilder, MetricsRegistry, PluginKey), ComposeError> {
     build_core_flavor_runtime_impl(
         execution_stores,
         workflow_stores,
         queue,
+        turn_handoff,
         processor_id,
         EngineEvidenceInputs::Ordinary,
     )
@@ -118,6 +120,7 @@ pub fn build_core_flavor_runtime_for_runtime_repair_red(
     execution_stores: ExecutionStores,
     workflow_stores: WorkflowStores,
     queue: Arc<dyn JobDispatchQueue>,
+    turn_handoff: Arc<dyn ExecutionTurnHandoff>,
     processor_id: [u8; 16],
     clock: Arc<dyn nebula_core::accessor::Clock>,
     event_bus: nebula_eventbus::EventBus<nebula_engine::ExecutionEvent>,
@@ -126,6 +129,7 @@ pub fn build_core_flavor_runtime_for_runtime_repair_red(
         execution_stores,
         workflow_stores,
         queue,
+        turn_handoff,
         processor_id,
         EngineEvidenceInputs::RuntimeRepair { clock, event_bus },
     )
@@ -144,6 +148,7 @@ fn build_core_flavor_runtime_impl(
     execution_stores: ExecutionStores,
     workflow_stores: WorkflowStores,
     queue: Arc<dyn JobDispatchQueue>,
+    turn_handoff: Arc<dyn ExecutionTurnHandoff>,
     processor_id: [u8; 16],
     evidence_inputs: EngineEvidenceInputs,
 ) -> Result<(WorkerRuntimeBuilder, MetricsRegistry, PluginKey), ComposeError> {
@@ -199,13 +204,18 @@ fn build_core_flavor_runtime_impl(
     // `main` can apply env-driven overrides (`batch_size`, `poll_interval`)
     // before calling `.build()`. Integration tests call `.build()` directly
     // on the returned builder, optionally adding a fast poll interval first.
+    //
+    // The turn handoff is wired here (not left to the caller) because it is a
+    // build-time requirement — an orchestrator without it cannot end dispatch
+    // claims at the durable runtime handoff (#976).
     let builder = WorkerRuntimeBuilder::from_wired_engine(
         Arc::clone(&engine),
         execution_stores,
         queue,
         vec![plugin_key.clone()],
         processor_id,
-    );
+    )
+    .with_turn_handoff(turn_handoff);
 
     tracing::info!(
         plugin = %plugin_key,

@@ -268,6 +268,10 @@ pub(crate) struct WorkerStoreProjection {
     /// different backends is exactly the miswiring that leaves an accepted
     /// execution parked forever with every component reporting healthy.
     pub(crate) control_queue: Arc<dyn nebula_storage_port::store::ControlQueue>,
+    /// Handoff over the **same** backend the queue and execution store use:
+    /// it commits the lease write and the queue acknowledgement in one
+    /// transaction (#976), so it must share their boundary.
+    pub(crate) turn_handoff: Arc<dyn nebula_storage_port::store::ExecutionTurnHandoff>,
 }
 
 #[cfg(feature = "runtime-repair-red")]
@@ -409,6 +413,7 @@ fn build_memory_execution_stores() -> Result<ExecutionStoreBundle, TransportInit
             },
             job_dispatch_queue: Arc::new(InMemoryJobDispatchQueue::new(&exec_store)),
             control_queue: Arc::clone(&shared_control_queue),
+            turn_handoff: Arc::new(nebula_storage::inmem::InMemoryTurnHandoff::new(&exec_store)),
         }
     };
 
@@ -451,7 +456,9 @@ async fn build_sqlite_execution_stores(
         SqliteWorkflowStore, SqliteWorkflowVersionStore, init_schema,
     };
     #[cfg(feature = "runtime-repair-red")]
-    use nebula_storage::sqlite::{SqliteIdempotencyGuard, SqliteJobDispatchQueue};
+    use nebula_storage::sqlite::{
+        SqliteIdempotencyGuard, SqliteJobDispatchQueue, SqliteTurnHandoff,
+    };
     use sqlx::sqlite::{
         SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
     };
@@ -525,6 +532,8 @@ async fn build_sqlite_execution_stores(
         },
         job_dispatch_queue: Arc::new(SqliteJobDispatchQueue::new(pool.clone())),
         control_queue: Arc::clone(&shared_control_queue),
+        // Same pool as the queue and execution store — see the field docs.
+        turn_handoff: Arc::new(SqliteTurnHandoff::new(pool.clone())),
     };
     #[cfg(feature = "runtime-repair-red")]
     let backend_lifecycle = ProfileBackendLifecycle::Sqlite(pool.clone());
@@ -572,7 +581,7 @@ async fn build_pg_execution_stores(
         init_schema as pg_init_schema,
     };
     #[cfg(feature = "runtime-repair-red")]
-    use nebula_storage::postgres::{PgIdempotencyGuard, PgJobDispatchQueue};
+    use nebula_storage::postgres::{PgIdempotencyGuard, PgJobDispatchQueue, PgTurnHandoff};
     use sqlx::postgres::PgPoolOptions;
 
     let environment_dsn;
@@ -645,6 +654,8 @@ async fn build_pg_execution_stores(
         },
         job_dispatch_queue: Arc::new(PgJobDispatchQueue::new(pool.clone())),
         control_queue: Arc::clone(&shared_control_queue),
+        // Same pool as the queue and execution store — see the field docs.
+        turn_handoff: Arc::new(PgTurnHandoff::new(pool.clone())),
     };
     #[cfg(feature = "runtime-repair-red")]
     let backend_lifecycle = ProfileBackendLifecycle::Postgres(pool.clone());

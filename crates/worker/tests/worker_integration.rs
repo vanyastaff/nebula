@@ -111,6 +111,15 @@ impl TestStores {
             .with_execution_stores(self.execution_stores())
             .with_workflow_stores(self.workflow_stores())
     }
+
+    /// Handoff over the SAME shared core the queue and execution store use —
+    /// the lease write and the queue acknowledgement must land under one
+    /// boundary (#976).
+    fn turn_handoff(&self) -> Arc<nebula_storage::inmem::InMemoryTurnHandoff> {
+        Arc::new(nebula_storage::inmem::InMemoryTurnHandoff::new(
+            &self.execution,
+        ))
+    }
 }
 
 /// Test scope used for worker integration tests. Matches `nebula_engine::store_seam::single_tenant_scope()`
@@ -343,6 +352,7 @@ async fn worker_runtime_drives_execution_to_completed() {
         proc16(0xBB),
     )
     .with_control_queue(Arc::new(InMemoryControlQueue::new(&stores.execution)))
+    .with_turn_handoff(stores.turn_handoff())
     // Use a fast poll interval so virtual-time advance is small.
     .with_poll_interval(Duration::from_millis(10))
     .build()
@@ -411,6 +421,7 @@ async fn builder_rejects_a_zero_timer_scan_interval() {
         proc16(0x01),
     )
     .with_control_queue(Arc::new(InMemoryControlQueue::new(&stores.execution)))
+    .with_turn_handoff(stores.turn_handoff())
     .with_timer_scan_interval(Duration::ZERO)
     .build();
 
@@ -541,6 +552,7 @@ async fn reclaim_then_rerun_drives_exactly_once_via_real_sink() {
         proc_b,
     )
     .with_control_queue(Arc::new(InMemoryControlQueue::new(&stores.execution)))
+    .with_turn_handoff(stores.turn_handoff())
     .with_poll_interval(Duration::from_millis(10))
     .build()
     .expect("WorkerRuntimeBuilder::build must succeed");
@@ -592,7 +604,7 @@ async fn reclaim_then_rerun_drives_exactly_once_via_real_sink() {
 #[tokio::test(start_paused = true)]
 async fn redelivered_start_on_running_or_terminal_is_noop() {
     use nebula_engine::EngineExecutionSink;
-    use nebula_orchestrator::ExecutionSink;
+    use nebula_orchestrator::{DispatchedTurn, ExecutionSink};
 
     let stores = TestStores::new();
     let (engine, echo_count) = make_engine(&stores).await;
@@ -615,6 +627,20 @@ async fn redelivered_start_on_running_or_terminal_is_noop() {
         Arc::clone(&stores.execution) as Arc<dyn ExecutionStore>,
     );
 
+    // Mint the turn the way the durable handoff does: lease acquired under
+    // this test's driver identity, fence threaded into the sink (#976).
+    let fence = stores
+        .execution
+        .acquire_lease(
+            &scope(),
+            &execution_id.to_string(),
+            "test-driver",
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("acquire lease for the test turn")
+        .expect("no live lease yet");
+
     let plugin_key: PluginKey = TEST_PLUGIN_KEY.parse().unwrap();
     let job_id = [0xCCu8; 16];
     let msg = JobDispatchMsg::new(
@@ -631,8 +657,10 @@ async fn redelivered_start_on_running_or_terminal_is_noop() {
         0,
     );
 
-    // First dispatch: drives Created → Completed; handler runs once.
-    let result1 = sink.dispatch(&msg).await;
+    // First dispatch: drives Created → Completed under the handoff fence;
+    // handler runs once.
+    let turn = DispatchedTurn { msg: &msg, fence };
+    let result1 = sink.dispatch(&turn).await;
     assert!(
         result1.is_ok(),
         "first dispatch must succeed; got {result1:?}"
@@ -652,8 +680,11 @@ async fn redelivered_start_on_running_or_terminal_is_noop() {
         "execution must be Completed after first dispatch; got {status_after_first:?}"
     );
 
-    // Second dispatch: execution is already Completed; must be a no-op.
-    let result2 = sink.dispatch(&msg).await;
+    // Second dispatch: execution is already Completed; the idempotency guard
+    // short-circuits before the fence is ever adopted, so the same (now
+    // released) fence value is fine.
+    let redelivery = DispatchedTurn { msg: &msg, fence };
+    let result2 = sink.dispatch(&redelivery).await;
     assert!(
         result2.is_ok(),
         "re-delivered Start on a Completed execution must return Ok(()); got {result2:?}"

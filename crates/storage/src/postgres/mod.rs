@@ -21,6 +21,7 @@ mod plan_flavor_catalog;
 mod resume_producer;
 mod resume_token;
 mod start_acceptance;
+mod turn_handoff;
 mod workflow;
 
 pub use control_queue::{PgControlQueue, PgJournalReader};
@@ -36,6 +37,7 @@ pub use plan_flavor_catalog::PgPlanFlavorCatalog;
 pub use resume_producer::PgResumeProducer;
 pub use resume_token::PgResumeTokenStore;
 pub use start_acceptance::PgStartAcceptanceStore;
+pub use turn_handoff::PgTurnHandoff;
 pub use workflow::{PgWorkflowStore, PgWorkflowVersionStore};
 
 /// Admit a canonical schema and apply every pending ordered migration under

@@ -10,6 +10,20 @@
 
 use super::*;
 
+/// Where the execution lease for a resume turn comes from.
+enum ResumeLeaseSource {
+    /// The engine acquires the lease itself — the control-queue and restart
+    /// paths, where nothing has leased the execution yet.
+    Acquire,
+    /// The durable handoff (#976) already minted the lease when it
+    /// acknowledged the dispatch row; the engine adopts that fence instead of
+    /// acquiring (a live lease blocks acquisition outright, even for the same
+    /// holder, so acquiring here could never succeed).
+    Adopt {
+        fence: nebula_storage_port::FencingToken,
+    },
+}
+
 impl WorkflowEngine {
     /// Resume an incomplete execution after process restart.
     ///
@@ -17,6 +31,10 @@ impl WorkflowEngine {
     /// which nodes are already complete, and re-executes from the frontier of
     /// ready-but-not-yet-executed nodes (nodes whose predecessors are all
     /// terminal but which are not yet terminal themselves).
+    ///
+    /// The execution lease is acquired by this call — use
+    /// [`resume_execution_leased`](Self::resume_execution_leased) when the
+    /// durable handoff already minted it.
     ///
     /// Persisted outputs are pre-loaded into the shared output map so that
     /// resumed nodes receive the correct predecessor data.
@@ -32,6 +50,40 @@ impl WorkflowEngine {
         &self,
         scope: &Scope,
         execution_id: ExecutionId,
+    ) -> Result<ExecutionResult, EngineError> {
+        self.resume_execution_inner(scope, execution_id, ResumeLeaseSource::Acquire)
+            .await
+    }
+
+    /// Resume an execution whose lease the durable handoff already minted.
+    ///
+    /// The orchestrator's handoff (`ExecutionTurnHandoff::accept_turn`)
+    /// acknowledged the dispatch row and acquired this execution's lease in
+    /// one transaction; `fence` is the token it returned. This call adopts
+    /// that fence — renewing and releasing it on the same heartbeat loop the
+    /// acquire path uses — instead of acquiring a second lease.
+    ///
+    /// # Errors
+    ///
+    /// Same error contract as [`resume_execution`](Self::resume_execution);
+    /// additionally returns [`EngineError::PlanningFailed`] when no execution
+    /// stores are configured, since a handoff fence without a storage seam is
+    /// a wiring bug.
+    pub async fn resume_execution_leased(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+        fence: nebula_storage_port::FencingToken,
+    ) -> Result<ExecutionResult, EngineError> {
+        self.resume_execution_inner(scope, execution_id, ResumeLeaseSource::Adopt { fence })
+            .await
+    }
+
+    async fn resume_execution_inner(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+        lease_source: ResumeLeaseSource,
     ) -> Result<ExecutionResult, EngineError> {
         let started = Instant::now();
 
@@ -267,12 +319,22 @@ impl WorkflowEngine {
             // CONTROL-QUEUE row failed, never the execution row itself.
             // Durably fail the execution row before propagating so the
             // rejection is actually observable.
+            //
+            // On the adopt path (#976) the durable handoff already holds the
+            // lease under its fence, so the failure write must commit under
+            // that fence — acquiring is blocked outright by the live lease,
+            // even for the same holder.
+            let handoff_fence = match lease_source {
+                ResumeLeaseSource::Adopt { fence } => Some(fence),
+                ResumeLeaseSource::Acquire => None,
+            };
             self.fail_cold_start_preflight(
                 scope,
                 execution_id,
                 exec_state,
                 repo_version_loaded,
                 &reject,
+                handoff_fence,
             )
             .await;
             return Err(reject);
@@ -368,16 +430,25 @@ impl WorkflowEngine {
         let cancel_token = CancellationToken::new();
         let mut repo_version = repo_version_loaded;
 
-        // Acquire the execution lease before running the frontier (ADR
+        // Establish the execution lease before running the frontier (ADR
         // 0008, #325). Resume is explicitly a second entry point for an
         // existing execution — if another runner is already driving it
         // (whether because the crash recovery loop picked it up or an
-        // operator issued two resumes back-to-back), we fence this call
-        // with `EngineError::Leased` instead of running nodes in parallel
-        // with the existing runner.
-        let lease = self
-            .acquire_and_heartbeat_lease(scope, execution_id, cancel_token.clone())
-            .await?;
+        // operator issued two resumes back-to-back), the acquire path fences
+        // this call with `EngineError::Leased` instead of running nodes in
+        // parallel with the existing runner. The adopt path (#976) skips the
+        // acquire: the durable handoff already minted this lease when it
+        // acknowledged the dispatch row, and this engine renews/releases it
+        // under the returned fence.
+        let lease = match lease_source {
+            ResumeLeaseSource::Acquire => {
+                self.acquire_and_heartbeat_lease(scope, execution_id, cancel_token.clone())
+                    .await?
+            },
+            ResumeLeaseSource::Adopt { fence } => {
+                Some(self.adopt_handoff_lease(scope, execution_id, fence, cancel_token.clone())?)
+            },
+        };
 
         // Fencing token threaded into every checkpoint / final-state
         // commit. `Some` only on the spec-16 port lease path.
@@ -645,6 +716,15 @@ impl WorkflowEngine {
     /// succeeds, so no rejection is ever silently swallowed — a row left
     /// stuck in `Created` after a failed best-effort attempt remains
     /// reachable by the existing crash-recovery reclaim path.
+    ///
+    /// `handoff_fence` carries the durable handoff's fence on the adopt path
+    /// (#976): the handoff already holds the lease, so this function commits
+    /// (and afterwards releases) under that fence instead of acquiring — a
+    /// live lease blocks acquisition outright, even for the same holder, and
+    /// the queue row is already acknowledged, so an acquire failure here
+    /// would orphan the row in `Created` with nothing left to redeliver it.
+    /// `None` is the acquire path: this function takes and releases the lease
+    /// itself.
     async fn fail_cold_start_preflight(
         &self,
         scope: &Scope,
@@ -652,6 +732,7 @@ impl WorkflowEngine {
         mut exec_state: ExecutionState,
         repo_version: u64,
         reject: &EngineError,
+        handoff_fence: Option<nebula_storage_port::FencingToken>,
     ) {
         let Some(stores) = &self.stores else {
             // Library mode (no storage) — no durable row to repair.
@@ -661,31 +742,35 @@ impl WorkflowEngine {
         let id = execution_id.to_string();
         let holder = self.instance_id.to_string();
 
-        let lease_token = match stores
-            .execution
-            .acquire_lease(scope, &id, &holder, self.lease_ttl)
-            .await
-        {
-            Ok(Some(token)) => token,
-            Ok(None) => {
-                tracing::warn!(
-                    %execution_id,
-                    error = %reject,
-                    "cold-start preflight rejection: execution lease held by another runner; \
-                     leaving the execution row for that runner to resolve"
-                );
-                return;
-            },
-            Err(e) => {
-                tracing::warn!(
-                    %execution_id,
-                    error = %e,
-                    reject = %reject,
-                    "cold-start preflight rejection: failed to acquire lease; the execution row \
-                     remains Created (recoverable via reclaim)"
-                );
-                return;
-            },
+        let lease_token = if let Some(fence) = handoff_fence {
+            fence
+        } else {
+            match stores
+                .execution
+                .acquire_lease(scope, &id, &holder, self.lease_ttl)
+                .await
+            {
+                Ok(Some(token)) => token,
+                Ok(None) => {
+                    tracing::warn!(
+                        %execution_id,
+                        error = %reject,
+                        "cold-start preflight rejection: execution lease held by another runner; \
+                         leaving the execution row for that runner to resolve"
+                    );
+                    return;
+                },
+                Err(e) => {
+                    tracing::warn!(
+                        %execution_id,
+                        error = %e,
+                        reject = %reject,
+                        "cold-start preflight rejection: failed to acquire lease; the execution row \
+                         remains Created (recoverable via reclaim)"
+                    );
+                    return;
+                },
+            }
         };
 
         // `mark_setup_failed` and each `transition_status` call bump

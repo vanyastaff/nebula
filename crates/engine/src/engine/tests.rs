@@ -1749,6 +1749,111 @@ async fn resume_execution_rejects_undeclared_port_on_genuine_first_attempt() {
     );
 }
 
+/// The adopt path (#976) must not lose the cold-start pre-flight's durable
+/// failure write. Mirrors
+/// `resume_execution_rejects_undeclared_port_on_genuine_first_attempt`, but
+/// the lease is already held when `resume_execution_leased` starts — exactly
+/// the shape the orchestrator's handoff produces: the queue row is
+/// acknowledged and the execution lease minted before the sink drives the
+/// turn.
+///
+/// Red-ability: if `fail_cold_start_preflight` tried to `acquire_lease` on
+/// this path, the live handoff lease would block it (even for the same
+/// holder), the best-effort write would be skipped, and the row would stay
+/// `Created` — orphaned, because the acknowledged queue row is never
+/// redelivered. The `Failed`-status assertion below is the one that fires.
+#[tokio::test]
+async fn resume_execution_leased_rejects_undeclared_port_and_still_marks_failed() {
+    let registry = Arc::new(ActionRegistry::new());
+    registry.register_stateless_instance(
+        ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+        EchoHandler,
+    );
+
+    let stores = TestStores::new();
+    let (engine, _) = make_engine(registry);
+    let engine = stores.attach(engine);
+
+    let a = node_key!("a");
+    let b = node_key!("b");
+    let wf = make_workflow(
+        vec![
+            NodeDefinition::new(a.clone(), "A", "core", "echo").unwrap(),
+            NodeDefinition::new(b.clone(), "B", "core", "echo").unwrap(),
+        ],
+        vec![Connection::new(a.clone(), b.clone()).with_from_port(port_key!("typo_port"))],
+    );
+    stores.save_workflow(&wf).await;
+
+    // Cold-start shape persisted by the emitter before the handoff runs.
+    let execution_id = ExecutionId::new();
+    let exec_state = ExecutionState::new(execution_id, wf.id, &[]);
+    let state_json = serde_json::to_value(&exec_state).unwrap();
+    stores.inject_state(execution_id, wf.id, state_json).await;
+
+    let scope = crate::store_seam::single_tenant_scope();
+
+    // The handoff's lease: minted before the sink drives the turn, held
+    // while `resume_execution_leased` runs.
+    let fence = stores
+        .execution
+        .acquire_lease(
+            &scope,
+            &execution_id.to_string(),
+            "orchestrator:test",
+            Duration::from_secs(30),
+        )
+        .await
+        .unwrap()
+        .expect("no lease existed yet");
+
+    let result = engine
+        .resume_execution_leased(&scope, execution_id, fence)
+        .await;
+
+    assert!(
+        matches!(result, Err(EngineError::UndeclaredOutputPort { .. })),
+        "expected UndeclaredOutputPort, got {result:?}"
+    );
+
+    // The rejection must still be durable even though the lease was already
+    // held: the row is Failed, not orphaned in Created.
+    let (version, state_json) = stores
+        .get_state(execution_id)
+        .await
+        .unwrap()
+        .expect("row must still exist — a rejection must not delete it");
+    assert!(
+        version > 0,
+        "the Failed transition must be durably committed under the handoff fence"
+    );
+    let state_str = serde_json::to_string(&state_json).unwrap();
+    let persisted: ExecutionState = serde_json::from_str(&state_str).unwrap();
+    assert_eq!(
+        persisted.status,
+        ExecutionStatus::Failed,
+        "a cold-start pre-flight rejection on the adopt path must leave the execution row \
+         Failed, not orphaned in Created with an acknowledged queue row"
+    );
+    assert_eq!(
+        persisted.node_states.get(&a).map(|ns| ns.state),
+        Some(NodeState::Failed),
+        "the offending node must record the rejection"
+    );
+
+    // The handoff lease must be released after the failure write — nothing
+    // else will ever touch this terminal row.
+    let rows = stores.execution.list_all_running().await.unwrap();
+    let row = rows
+        .iter()
+        .find(|r| r.id == execution_id)
+        .expect("row must still exist");
+    assert!(
+        row.lease_holder.is_none(),
+        "the handoff lease must be released once the row is terminally Failed"
+    );
+}
+
 /// The `is_first_attempt` gate must not retroactively enforce the W0 U2
 /// pre-flight on a genuine resume. Mirrors
 /// `resume_execution_rejects_undeclared_port_on_genuine_first_attempt`'s

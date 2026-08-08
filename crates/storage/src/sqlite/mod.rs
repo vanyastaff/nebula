@@ -22,6 +22,7 @@ mod plan_flavor_catalog;
 mod resume_producer;
 mod resume_token;
 mod start_acceptance;
+mod turn_handoff;
 mod workflow;
 
 pub use control_queue::{SqliteControlQueue, SqliteJournalReader};
@@ -37,6 +38,7 @@ pub use plan_flavor_catalog::SqlitePlanFlavorCatalog;
 pub use resume_producer::SqliteResumeProducer;
 pub use resume_token::SqliteResumeTokenStore;
 pub use start_acceptance::SqliteStartAcceptanceStore;
+pub use turn_handoff::SqliteTurnHandoff;
 pub use workflow::{SqliteWorkflowStore, SqliteWorkflowVersionStore};
 
 /// Admit a canonical schema and apply every pending ordered migration under

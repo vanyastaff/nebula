@@ -22,6 +22,7 @@ mod resume_token;
 mod revision_catalog;
 mod start_acceptance;
 mod trigger_dedup;
+mod turn_handoff;
 mod webhook;
 mod workflow;
 
@@ -52,5 +53,6 @@ pub use start_acceptance::{
     FingerprintVersion, KeyedStart, StartAcceptance, StartAcceptanceStore, StartFingerprint,
 };
 pub use trigger_dedup::TriggerDedupInbox;
+pub use turn_handoff::{ExecutionTurnHandoff, TurnAcceptance, TurnHandoff};
 pub use webhook::WebhookActivationStore;
 pub use workflow::{WorkflowStore, WorkflowVersionStore};

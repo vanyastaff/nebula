@@ -1,9 +1,13 @@
 //! Capability-routed job-dispatch pull loop for the Nebula orchestration layer.
 //!
 //! `nebula-orchestrator` owns exactly one thing: the **leaderless routing pull-loop** —
-//! claim [`JobDispatchQueue`] rows whose `required_plugins ⊆ available_plugins`, hand each
-//! [`JobDispatchMsg`] to an [`ExecutionSink`], fence-mark the row dispatched/failed, plus a
-//! periodic [`JobDispatchQueue::reclaim_stuck`] sweep.
+//! claim [`JobDispatchQueue`] rows whose `required_plugins ⊆ available_plugins`, end each
+//! claim at the durable handoff ([`ExecutionTurnHandoff`]: lease acquired and row
+//! acknowledged in one transaction), hand the accepted turn to an [`ExecutionSink`], plus a
+//! periodic [`JobDispatchQueue::reclaim_stuck`] sweep for rows whose runner crashed before
+//! its handoff committed.
+//!
+//! [`ExecutionTurnHandoff`]: nebula_storage_port::store::ExecutionTurnHandoff
 //!
 //! ## What this crate defers
 //!
@@ -29,4 +33,4 @@ pub mod orchestrator;
 pub mod sink;
 
 pub use orchestrator::Orchestrator;
-pub use sink::{ExecutionSink, ExecutionSinkError};
+pub use sink::{DispatchedTurn, ExecutionSink, ExecutionSinkError};

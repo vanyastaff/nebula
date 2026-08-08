@@ -1,18 +1,23 @@
 //! [`EngineExecutionSink`] — orchestrator→engine hand-off for the
 //! trigger-dispatch slice.
 //!
-//! Implements [`nebula_orchestrator::ExecutionSink`] by mirroring the logic
-//! of [`EngineControlDispatch`]: read the persisted status for idempotency,
-//! then call `resume_execution` for `Created`/`Paused` rows.
+//! Implements [`nebula_orchestrator::ExecutionSink`]: read the persisted
+//! status for idempotency, then drive `Created`/`Paused` rows via
+//! `resume_execution_leased` under the fence the durable handoff minted
+//! (#976). The dispatch claim is already ended and the queue row already
+//! acknowledged by the time a turn arrives here — the engine never acquires
+//! a second lease (a live lease blocks acquisition outright, even for the
+//! same holder).
 //!
 //! ## Idempotency contract (mirrors `EngineControlDispatch`)
 //!
-//! The orchestrator's reclaim sweep can redeliver a `JobDispatchMsg` whose
-//! `mark_dispatched` failed after a successful dispatch.  This sink handles
-//! re-delivery via the same guard as `EngineControlDispatch::dispatch_start`:
+//! The job queue never redelivers an acknowledged row, but a second queue
+//! row for the same execution (e.g. a restart fan-out) and the control-queue
+//! consumer reach the same engine state. This sink handles re-delivery via
+//! the same guard as `EngineControlDispatch::dispatch_start`:
 //!
 //! - **Already terminal / Running / Cancelling** → `Ok(())` (idempotent no-op).
-//! - **Created / Paused** → drive via `resume_execution`.
+//! - **Created / Paused** → drive via `resume_execution_leased`.
 //! - **Row not found** → `ExecutionSinkError::Rejected` (orphaned Start).
 //! - **`EngineError::Leased`** → `Ok(())` (sibling runner already holds the
 //!   lease; same reasoning as `EngineControlDispatch`).
@@ -24,8 +29,8 @@ use std::sync::Arc;
 
 use nebula_core::id::ExecutionId;
 use nebula_execution::ExecutionStatus;
-use nebula_orchestrator::{ExecutionSink, ExecutionSinkError};
-use nebula_storage_port::{Scope, dto::JobDispatchMsg, store::ExecutionStore};
+use nebula_orchestrator::{DispatchedTurn, ExecutionSink, ExecutionSinkError};
+use nebula_storage_port::{Scope, store::ExecutionStore};
 
 use crate::{WorkflowEngine, error::EngineError};
 
@@ -105,21 +110,27 @@ impl EngineExecutionSink {
         }
     }
 
-    /// Drive an execution through `resume_execution` under the given tenant scope.
+    /// Drive an execution through `resume_execution_leased` under the given
+    /// tenant scope, adopting the fence the durable handoff minted (#976).
     ///
-    /// Maps [`EngineError::Leased`] to `Ok(())` (sibling runner already owns
-    /// the dispatch; we should not mark the row Failed) and re-checks terminal
-    /// status before surfacing other engine errors as `Internal`.
+    /// Maps [`EngineError::Leased`] to `Ok(())` (a sibling runner owns the
+    /// transition — the accepted turn's work is being driven, just not here)
+    /// and re-checks terminal status before surfacing other engine errors as
+    /// `Internal`.
     async fn drive(
         &self,
         scope: &Scope,
         execution_id: ExecutionId,
+        fence: nebula_storage_port::FencingToken,
     ) -> Result<(), ExecutionSinkError> {
-        match self.engine.resume_execution(scope, execution_id).await {
+        match self
+            .engine
+            .resume_execution_leased(scope, execution_id, fence)
+            .await
+        {
             Ok(_) => Ok(()),
             // Concurrent dispatcher already holds the lease — the canonical
-            // idempotency outcome. Returning Ok prevents the orchestrator from
-            // marking the row Failed; the lease holder owns the transition.
+            // idempotency outcome. The lease holder owns the transition.
             Err(EngineError::Leased { .. }) => Ok(()),
             Err(e) => {
                 // Last-ditch idempotency guard: re-read in case a sibling
@@ -142,14 +153,19 @@ impl EngineExecutionSink {
 impl ExecutionSink for EngineExecutionSink {
     #[tracing::instrument(
         level = "debug",
-        skip(self, msg),
+        skip(self, turn),
         fields(
-            execution_id = %msg.execution_id,
-            command      = msg.command.as_str(),
-            reclaim      = msg.reclaim_count,
+            execution_id = %turn.msg.execution_id,
+            command      = turn.msg.command.as_str(),
+            reclaim      = turn.msg.reclaim_count,
+            fence_generation = turn.fence.generation(),
         )
     )]
-    async fn dispatch(&self, msg: &JobDispatchMsg) -> Result<(), ExecutionSinkError> {
+    async fn dispatch(&self, turn: &DispatchedTurn<'_>) -> Result<(), ExecutionSinkError> {
+        let msg = turn.msg;
+        // Defense in depth: the orchestrator validates this before the
+        // handoff, so a parse failure here means a sink was handed a turn it
+        // should never have seen. Reject rather than drive.
         let execution_id = msg.execution_id.parse::<ExecutionId>().map_err(|e| {
             ExecutionSinkError::Rejected(format!(
                 "invalid execution_id `{}` in job dispatch msg: {e}",
@@ -165,7 +181,8 @@ impl ExecutionSink for EngineExecutionSink {
                 "execution {execution_id} not found — start command orphaned"
             ))),
             // Already past Created gate: running, cancelling, or terminal.
-            // Re-delivered Start is a safe no-op (idempotency contract).
+            // A second turn for this execution is a safe no-op (idempotency
+            // contract).
             Some(
                 ExecutionStatus::Running
                 | ExecutionStatus::Cancelling
@@ -175,7 +192,7 @@ impl ExecutionSink for EngineExecutionSink {
                 | ExecutionStatus::TimedOut,
             ) => Ok(()),
             Some(ExecutionStatus::Created | ExecutionStatus::Paused) => {
-                self.drive(&msg.scope, execution_id).await
+                self.drive(&msg.scope, execution_id, turn.fence).await
             },
         }
     }
@@ -196,6 +213,8 @@ mod tests {
     };
 
     use nebula_action::ActionResult;
+    use nebula_orchestrator::DispatchedTurn;
+    use nebula_storage_port::FencingToken;
 
     use super::EngineExecutionSink;
     use crate::{
@@ -283,7 +302,13 @@ mod tests {
             0,
         );
 
-        let result = sink.dispatch(&msg).await;
+        // The fence never matters here: read_status short-circuits with
+        // `None` before any lease adoption. Generation 1 is placeholder-valid.
+        let turn = DispatchedTurn {
+            msg: &msg,
+            fence: FencingToken::from_generation(1),
+        };
+        let result = sink.dispatch(&turn).await;
 
         // New code: read_status reads under scope_b → None → Rejected.
         // Old code: read_status reads under ("nebula","nebula") → finds the row →
