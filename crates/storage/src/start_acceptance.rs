@@ -6,7 +6,42 @@
 //! (which would hand two different requests one execution) or into rejecting a
 //! match (which would break retry convergence).
 
-use nebula_storage_port::store::{KeyedStart, StartAcceptance};
+use nebula_storage_port::StorageError;
+use nebula_storage_port::dto::ControlCommand;
+use nebula_storage_port::store::{KeyedStart, MaterializedKeyedStart, StartAcceptance};
+
+/// Validate that a materialized start's control command is the one this start
+/// is allowed to enqueue.
+///
+/// The command is caller-supplied alongside the keyed identity, so before any
+/// backend writes a row we verify that it is a `Start` for the exact execution
+/// and tenant being materialized. A mismatched command would otherwise strand
+/// the new execution or dispatch against a different execution/tenant.
+pub(crate) fn validate_materialized_start(
+    start: &MaterializedKeyedStart<'_>,
+) -> Result<(), StorageError> {
+    let keyed = &start.keyed;
+    if keyed.command.command != ControlCommand::Start {
+        return Err(StorageError::Internal(
+            "materialize_keyed_start: control command must be Start".to_owned(),
+        ));
+    }
+    if keyed.command.execution_id != keyed.execution_id {
+        return Err(StorageError::Internal(
+            "materialize_keyed_start: control command execution id does not match the keyed execution id"
+                .to_owned(),
+        ));
+    }
+    if keyed.command.scope.workspace_id != keyed.scope.workspace_id
+        || keyed.command.scope.org_id != keyed.scope.org_id
+    {
+        return Err(StorageError::Internal(
+            "materialize_keyed_start: control command scope does not match the keyed scope"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
 
 /// Decide whether an existing reservation is this request replayed.
 ///

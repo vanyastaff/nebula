@@ -50,7 +50,8 @@ pub use resume_producer::ResumeProducer;
 pub use resume_token::ResumeTokenStore;
 pub use revision_catalog::{PlanFlavorCatalog, PlanFlavorCatalogAdmin, PlanFlavorCatalogWriter};
 pub use start_acceptance::{
-    FingerprintVersion, KeyedStart, StartAcceptance, StartAcceptanceStore, StartFingerprint,
+    FingerprintVersion, KeyedStart, MaterializedKeyedStart, StartAcceptance, StartAcceptanceStore,
+    StartContractIdentity, StartFingerprint, StartMaterialization, StartRevisionRejection,
 };
 pub use trigger_dedup::TriggerDedupInbox;
 pub use turn_handoff::{ExecutionTurnHandoff, TurnAcceptance, TurnHandoff};

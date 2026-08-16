@@ -21,9 +21,7 @@ use nebula_storage_port::{
     WorkerFlavorRevisionRecord,
 };
 
-use super::execution::SharedState;
-#[cfg(test)]
-use super::execution::State;
+use super::execution::{SharedState, State};
 use crate::revision_catalog::{
     ArtifactLifecycle, delete_label, deleted_for, drain_label, draining_for, flavor_records_match,
     insert_label, load_label, plan_records_match, unavailable_for, validate_pair_recorded_form,
@@ -48,8 +46,7 @@ struct ExecutablePlanRow {
 pub(super) struct RevisionReferenceOwner(ExecutionId);
 
 impl RevisionReferenceOwner {
-    #[cfg(test)]
-    const fn for_execution(execution_id: ExecutionId) -> Self {
+    pub(super) const fn for_execution(execution_id: ExecutionId) -> Self {
         Self(execution_id)
     }
 }
@@ -58,20 +55,27 @@ impl RevisionReferenceOwner {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) struct RollbackWindowId([u8; 16]);
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "reference mutation remains syntactically closed until an execution-owner transaction composes it"
-    )
-)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RevisionReferenceState {
     Live,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "rollback retention is composed by the terminal dereference transaction (#975)"
+        )
+    )]
     Rollback {
         window_id: RollbackWindowId,
         retain_until: DateTime<Utc>,
     },
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "release provenance is composed by the terminal dereference transaction (#975)"
+        )
+    )]
     Released {
         origin: ReferenceReleaseOrigin,
     },
@@ -81,7 +85,7 @@ enum RevisionReferenceState {
     not(test),
     expect(
         dead_code,
-        reason = "release provenance remains dormant with the execution-owner reference transaction"
+        reason = "release provenance remains dormant until the terminal dereference transaction (#975) composes it"
     )
 )]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,8 +107,7 @@ pub(super) struct RevisionReference {
 }
 
 impl RevisionReference {
-    #[cfg(test)]
-    const fn new(
+    pub(super) const fn new(
         owner: RevisionReferenceOwner,
         bundle_id: ExecutionContractBundleId,
         ids: PlanFlavorRevisionIds,
@@ -602,7 +605,6 @@ impl PlanFlavorCatalogAdmin for InMemoryPlanFlavorCatalog {
 }
 
 /// Result of creating the private execution-owned reference.
-#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum RetainDecision {
     Retained,
@@ -638,13 +640,14 @@ pub(super) enum OwningReferenceTransition {
 }
 
 /// Closed failures for backend-private reference fragments.
-#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub(super) enum InternalRevisionError {
     #[error("executable plan revision is unavailable")]
     PlanUnavailable,
     #[error("worker flavor revision is unavailable")]
     WorkerFlavorUnavailable,
+    #[error("exact pair exists but is not admissible")]
+    PairNotAdmitted,
     #[error("revision is draining")]
     Draining,
     #[error("revision has been deleted")]
@@ -653,11 +656,17 @@ pub(super) enum InternalRevisionError {
     ReferenceMismatch,
     #[error("reference owner has already closed its reference")]
     ReferenceClosed,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "reference transitions are composed by the terminal dereference transaction (#975)"
+        )
+    )]
     #[error("reference owner does not exist")]
     ReferenceUnavailable,
 }
 
-#[cfg(test)]
 fn require_active_pair(
     catalog: &RevisionCatalogState,
     ids: PlanFlavorRevisionIds,
@@ -675,7 +684,7 @@ fn require_active_pair(
         return Err(InternalRevisionError::PlanUnavailable);
     };
     if plan_record.ids().worker_flavor() != ids.worker_flavor() {
-        return Err(InternalRevisionError::WorkerFlavorUnavailable);
+        return Err(InternalRevisionError::PairNotAdmitted);
     }
 
     let flavor = catalog
@@ -695,7 +704,6 @@ fn require_active_pair(
 /// Existing byte-for-byte pins for the same owner are idempotent even if a
 /// drain started after the original commit. A different binding never changes
 /// the authoritative row.
-#[cfg(test)]
 pub(super) fn retain_exact_locked(
     state: &mut State,
     reference: RevisionReference,
