@@ -3431,6 +3431,101 @@ pub(crate) async fn assert_terminal_commit_retains_rollback_window(backend: &dyn
     assert_reference_counts(backend, &record, 0, 1).await;
 }
 
+/// A terminal commit that tries to release a reference already moved into a
+/// rollback window is rejected before any aggregate state changes.
+pub(crate) async fn assert_terminal_commit_rejects_incompatible_reference_transition(
+    backend: &dyn Backend,
+) {
+    let acceptance = backend.start_acceptance_store().await;
+    let executions = backend.execution_store().await;
+    let scope = scope_a();
+    let (workflow_id, initial_state) = make_new_execution();
+    let execution_id = ExecutionId::new().to_string();
+    install_materialized_pair(backend, 0x72).await;
+    let command = start_command(0x72, &execution_id);
+
+    let accepted = acceptance
+        .materialize_keyed_start(&MaterializedKeyedStart {
+            keyed: KeyedStart {
+                scope: &scope,
+                start_key: "mat-key-term-incompatible",
+                fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [0x32; 32]),
+                execution_id: &execution_id,
+                execution: NewExecution::new(&workflow_id, &initial_state),
+                command: &command,
+            },
+            identity: materialized_identity(0x72),
+        })
+        .await
+        .expect("materialize execution for incompatible transition");
+    assert!(matches!(accepted, StartMaterialization::Accepted { .. }));
+
+    let token = executions
+        .acquire_lease(
+            &scope,
+            &execution_id,
+            "terminal-incompatible",
+            std::time::Duration::from_secs(30),
+        )
+        .await
+        .expect("acquire lease")
+        .expect("lease must be available for a fresh execution");
+
+    let first = TransitionBatch::builder()
+        .scope(scope.clone())
+        .execution_id(execution_id.clone())
+        .expected_version(0)
+        .fencing(token)
+        .new_state(serde_json::json!({"status": "Completed"}))
+        .reference_transition(ExecutionReferenceTransition::RetainRollback {
+            window_id: [0x72; 16],
+            retain_until: chrono::Utc::now() + chrono::TimeDelta::minutes(5),
+        })
+        .build()
+        .expect("rollback batch");
+    let first_outcome = executions
+        .commit(first)
+        .await
+        .expect("rollback commit must apply");
+    assert!(matches!(first_outcome, TransitionOutcome::Applied { .. }));
+
+    // The same lease token is still current; only the reference transition is
+    // incompatible now.
+    let second = TransitionBatch::builder()
+        .scope(scope.clone())
+        .execution_id(execution_id.clone())
+        .expected_version(1)
+        .fencing(token)
+        .new_state(serde_json::json!({"status": "Completed", "second": true}))
+        .reference_transition(ExecutionReferenceTransition::ReleaseLive)
+        .build()
+        .expect("incompatible release batch");
+    let second_outcome = executions.commit(second).await;
+    assert!(
+        matches!(second_outcome, Err(StorageError::Internal(_))),
+        "[{}] releasing a rollback-window reference must fail, got {second_outcome:?}",
+        backend.name()
+    );
+
+    let row = executions
+        .get(&scope, &execution_id)
+        .await
+        .expect("read execution after failed transition")
+        .expect("execution must still exist");
+    assert_eq!(
+        row.version,
+        1,
+        "[{}] a failed reference transition must not advance the execution version",
+        backend.name()
+    );
+    assert_eq!(
+        row.state,
+        serde_json::json!({"status": "Completed"}),
+        "[{}] a failed reference transition must not change the execution state",
+        backend.name()
+    );
+}
+
 // ── job-dispatch + dedup conformance assertions ───────────────────────────
 
 /// A `NewExecution` with placeholder content for conformance tests that focus

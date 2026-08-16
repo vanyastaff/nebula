@@ -296,30 +296,90 @@ impl ExecutionStore for SqliteExecutionStore {
         }
 
         if let Some(transition) = batch.reference_transition() {
-            match transition {
-                nebula_storage_port::ExecutionReferenceTransition::ReleaseLive => {
-                    sqlx::query(
-                        "UPDATE port_execution_revision_refs                          SET reference_state = 'released', rollback_window_id = NULL,                              retain_until_ms = NULL                          WHERE execution_id = ? AND reference_state IN ('live', 'released')",
-                    )
-                    .bind(&id)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(conn_err)?;
-                },
-                nebula_storage_port::ExecutionReferenceTransition::RetainRollback {
-                    window_id,
-                    retain_until,
-                } => {
-                    sqlx::query(
-                        "UPDATE port_execution_revision_refs                          SET reference_state = 'rollback', rollback_window_id = ?,                              retain_until_ms = ?                          WHERE execution_id = ? AND reference_state = 'live'",
-                    )
-                    .bind(window_id.as_slice())
-                    .bind(retain_until.timestamp_millis())
-                    .bind(&id)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(conn_err)?;
-                },
+            let reference_row = sqlx::query(
+                "SELECT reference_state, rollback_window_id, retain_until_ms \
+                 FROM port_execution_revision_refs WHERE execution_id = ?",
+            )
+            .bind(&id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(conn_err)?;
+
+            // A missing row is a legacy execution that predates materialized
+            // starts; terminal transitions on it are a no-op. An existing row
+            // in an incompatible lifecycle must fail the whole commit.
+            if let Some(reference_row) = reference_row {
+                let state: String = reference_row.try_get("reference_state").map_err(conn_err)?;
+                match transition {
+                    nebula_storage_port::ExecutionReferenceTransition::ReleaseLive => {
+                        match state.as_str() {
+                            "live" => {
+                                sqlx::query(
+                                    "UPDATE port_execution_revision_refs \
+                                     SET reference_state = 'released', rollback_window_id = NULL, \
+                                         retain_until_ms = NULL \
+                                     WHERE execution_id = ? AND reference_state = 'live'",
+                                )
+                                .bind(&id)
+                                .execute(&mut *tx)
+                                .await
+                                .map_err(conn_err)?;
+                            },
+                            "released" => {
+                                let window: Option<Vec<u8>> = reference_row
+                                    .try_get("rollback_window_id")
+                                    .map_err(conn_err)?;
+                                if window.is_some() {
+                                    tx.rollback().await.map_err(conn_err)?;
+                                    return Err(StorageError::Internal(format!(
+                                        "terminal dereference: execution {id} reference is                                          released from a rollback window"
+                                    )));
+                                }
+                            },
+                            _ => {
+                                tx.rollback().await.map_err(conn_err)?;
+                                return Err(StorageError::Internal(format!(
+                                    "terminal dereference: execution {id} reference is in                                      incompatible state {state}"
+                                )));
+                            },
+                        }
+                    },
+                    nebula_storage_port::ExecutionReferenceTransition::RetainRollback {
+                        window_id,
+                        retain_until,
+                    } => {
+                        let stored_window: Option<Vec<u8>> = reference_row
+                            .try_get("rollback_window_id")
+                            .map_err(conn_err)?;
+                        let stored_until: Option<i64> =
+                            reference_row.try_get("retain_until_ms").map_err(conn_err)?;
+                        match state.as_str() {
+                            "live" => {
+                                sqlx::query(
+                                    "UPDATE port_execution_revision_refs \
+                                     SET reference_state = 'rollback', rollback_window_id = ?, \
+                                         retain_until_ms = ? \
+                                     WHERE execution_id = ? AND reference_state = 'live'",
+                                )
+                                .bind(window_id.as_slice())
+                                .bind(retain_until.timestamp_millis())
+                                .bind(&id)
+                                .execute(&mut *tx)
+                                .await
+                                .map_err(conn_err)?;
+                            },
+                            "rollback"
+                                if stored_window.as_deref() == Some(window_id.as_slice())
+                                    && stored_until == Some(retain_until.timestamp_millis()) => {},
+                            _ => {
+                                tx.rollback().await.map_err(conn_err)?;
+                                return Err(StorageError::Internal(format!(
+                                    "terminal dereference: execution {id} reference is in                                      incompatible state {state}"
+                                )));
+                            },
+                        }
+                    },
+                }
             }
         }
 
