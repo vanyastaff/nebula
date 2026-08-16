@@ -3584,7 +3584,7 @@ pub(crate) async fn assert_expired_rollbacks_are_released(backend: &dyn Backend)
 
     let admin = backend.plan_flavor_catalog_admin().await;
     let released = admin
-        .release_expired_rollbacks(chrono::Utc::now())
+        .release_expired_rollbacks(10)
         .await
         .expect("expired rollback release must succeed");
     assert_eq!(
@@ -3596,7 +3596,7 @@ pub(crate) async fn assert_expired_rollbacks_are_released(backend: &dyn Backend)
     assert_reference_counts(backend, &record, 0, 0).await;
 
     let again = admin
-        .release_expired_rollbacks(chrono::Utc::now())
+        .release_expired_rollbacks(10)
         .await
         .expect("repeat rollback release must succeed");
     assert_eq!(

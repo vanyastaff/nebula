@@ -582,10 +582,8 @@ impl PlanFlavorCatalogAdmin for InMemoryPlanFlavorCatalog {
         result
     }
 
-    async fn release_expired_rollbacks(
-        &self,
-        now: DateTime<Utc>,
-    ) -> Result<u64, RevisionCatalogError> {
+    async fn release_expired_rollbacks(&self, limit: u64) -> Result<u64, RevisionCatalogError> {
+        let now = self.clock.now();
         let mut state = self.inner.lock();
         let expired: Vec<RevisionReferenceOwner> = state
             .revision_catalog
@@ -597,6 +595,7 @@ impl PlanFlavorCatalogAdmin for InMemoryPlanFlavorCatalog {
                     RevisionReferenceState::Rollback { retain_until, .. } if retain_until <= now
                 )
             })
+            .take(usize::try_from(limit).unwrap_or(usize::MAX))
             .map(|(owner, _)| *owner)
             .collect();
 

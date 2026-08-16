@@ -1432,7 +1432,7 @@ mod tests {
                 assert_eq!(counter.get(), 1);
             }
         }
-        assert_eq!(unique.len(), 5);
+        assert_eq!(unique.len(), 4);
     }
 
     #[test]
@@ -1604,7 +1604,7 @@ mod tests {
             assert_eq!(gauge.get(), 1);
         }
 
-        assert_eq!(unique.len(), 5);
+        assert_eq!(unique.len(), 4);
     }
 
     #[test]

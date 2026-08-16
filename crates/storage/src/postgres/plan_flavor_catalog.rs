@@ -18,7 +18,7 @@
 //! [`RevisionCatalogError::OutcomeUnknown`], because a lost commit
 //! acknowledgement leaves the caller unable to prove whether the write landed.
 
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use nebula_core::{ExecutablePlanRevisionId, WorkerFlavorRevisionId};
 use nebula_storage_port::{
     BeginDrainOutcome, ExecutablePlanRecordFormat, PlanFlavorCatalog, PlanFlavorCatalogAdmin,
@@ -748,18 +748,24 @@ impl PlanFlavorCatalogAdmin for PgPlanFlavorCatalog {
         skip(self),
         fields(backend = "postgres", outcome = tracing::field::Empty)
     )]
-    async fn release_expired_rollbacks(
-        &self,
-        now: DateTime<Utc>,
-    ) -> Result<u64, RevisionCatalogError> {
+    async fn release_expired_rollbacks(&self, limit: u64) -> Result<u64, RevisionCatalogError> {
+        let now_ms = Utc::now().timestamp_millis();
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         let result = async {
             let mut tx = self.begin().await?;
             let released = sqlx::query(
                 "UPDATE port_execution_revision_refs \
                  SET reference_state = 'released' \
-                 WHERE reference_state = 'rollback' AND retain_until_ms <= $1",
+                 WHERE execution_id IN ( \
+                     SELECT execution_id FROM port_execution_revision_refs \
+                     WHERE reference_state = 'rollback' AND retain_until_ms <= $1 \
+                     ORDER BY execution_id \
+                     LIMIT $2 \
+                     FOR UPDATE SKIP LOCKED \
+                 )",
             )
-            .bind(now.timestamp_millis())
+            .bind(now_ms)
+            .bind(limit)
             .execute(&mut *tx)
             .await
             .map_err(driver_did_not_commit)?

@@ -3,7 +3,6 @@
 use std::{fmt, sync::Arc};
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 
 use crate::dto::{
     BeginDrainOutcome, PlanFlavorRevisionIds, PlanFlavorRevisionRecord, PlanFlavorRevisionTarget,
@@ -91,15 +90,15 @@ pub trait PlanFlavorCatalogAdmin: Send + Sync + fmt::Debug {
         target: PlanFlavorRevisionTarget,
     ) -> Result<(), RevisionCatalogError>;
 
-    /// Release every rollback-window reference that has reached `now`.
+    /// Release up to `limit` rollback-window references whose retention has
+    /// expired.
     ///
-    /// Expired rollback windows no longer block deletion. Returns the number
-    /// of references released. The operation is idempotent and safe to call
-    /// from a bounded cleanup scanner.
-    async fn release_expired_rollbacks(
-        &self,
-        now: DateTime<Utc>,
-    ) -> Result<u64, RevisionCatalogError>;
+    /// The backend owns the clock, so a caller cannot accidentally or
+    /// maliciously pass a future timestamp and release windows that are still
+    /// valid. Expired rollback windows no longer block deletion. Returns the
+    /// number of references released. The operation is idempotent and safe to
+    /// call repeatedly from a bounded cleanup scanner.
+    async fn release_expired_rollbacks(&self, limit: u64) -> Result<u64, RevisionCatalogError>;
 }
 
 #[async_trait]
@@ -147,10 +146,7 @@ where
         (**self).delete_drained(target).await
     }
 
-    async fn release_expired_rollbacks(
-        &self,
-        now: DateTime<Utc>,
-    ) -> Result<u64, RevisionCatalogError> {
-        (**self).release_expired_rollbacks(now).await
+    async fn release_expired_rollbacks(&self, limit: u64) -> Result<u64, RevisionCatalogError> {
+        (**self).release_expired_rollbacks(limit).await
     }
 }
