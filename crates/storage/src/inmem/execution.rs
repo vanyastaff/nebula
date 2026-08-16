@@ -298,35 +298,53 @@ impl ExecutionStore for InMemoryExecutionStore {
             // — never Apply.
             return Ok(TransitionOutcome::VersionConflict { actual: 0 });
         };
+        let row_scope = row.scope.clone();
+        let current_version = row.version;
+        let current_generation = row.fencing_generation;
+        let _ = row;
         // Cross-scope commit: the row is invisible to this tenant. Surface
         // it exactly like the unknown-id path above (`actual: 0`), never
         // an Apply. Echoing the real `row.version` here would be a
         // cross-tenant version oracle — a caller in scope B could probe
         // scope A's row by observing the conflict's `actual` counter. A
         // cross-tenant row must be indistinguishable from a missing one.
-        if &row.scope != batch.scope() {
+        if &row_scope != batch.scope() {
             return Ok(TransitionOutcome::VersionConflict { actual: 0 });
         }
         // Fencing gate: a superseded/older generation is rejected even if
         // the version matches (closes the zombie-runner hole, spec §4.1).
-        if batch.fencing().generation() != row.fencing_generation {
+        if batch.fencing().generation() != current_generation {
             tracing::warn!(
                 target: "nebula_storage::inmem",
                 execution_id = %id,
                 caller_generation = batch.fencing().generation(),
-                current_generation = row.fencing_generation,
+                current_generation,
                 "commit fenced out: caller token superseded"
             );
             return Ok(TransitionOutcome::FencedOut);
         }
-        if row.version != batch.expected_version() {
+        if current_version != batch.expected_version() {
             return Ok(TransitionOutcome::VersionConflict {
-                actual: row.version,
+                actual: current_version,
             });
         }
+        // CAS + fencing held — apply the fallible reference transition before
+        // mutating any aggregate state. The in-memory adapter has no rollback,
+        // so an incompatible terminal reference change must fail before any
+        // durable in-memory write lands.
+        if let Some(transition) = batch.reference_transition()
+            && let Ok(execution_id) = id.parse::<nebula_core::id::ExecutionId>()
+        {
+            super::plan_flavor_catalog::apply_reference_transition_locked(
+                &mut st,
+                execution_id,
+                transition,
+            )?;
+        }
+
         // CAS + fencing held — apply state, outbox, journal atomically
         // under the single lock.
-        let new_version = row.version + 1;
+        let new_version = current_version + 1;
         let new_state = batch.new_state().clone();
         let outbox: Vec<ControlMsg> = batch.outbox().to_vec();
         let journal_payloads: Vec<serde_json::Value> =
@@ -388,7 +406,7 @@ impl ExecutionStore for InMemoryExecutionStore {
             target: "nebula_storage::inmem",
             execution_id = %id,
             new_version,
-            "commit applied (state + outbox + journal + resume_tokens)"
+            "commit applied (state + outbox + journal + resume_tokens + reference_transition)"
         );
         Ok(TransitionOutcome::Applied { new_version })
     }

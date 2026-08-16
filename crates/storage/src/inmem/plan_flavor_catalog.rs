@@ -15,10 +15,10 @@ use nebula_core::{
     ExecutablePlanRevisionId, ExecutionContractBundleId, ExecutionId, WorkerFlavorRevisionId,
 };
 use nebula_storage_port::{
-    BeginDrainOutcome, PlanFlavorCatalog, PlanFlavorCatalogAdmin, PlanFlavorCatalogWriter,
-    PlanFlavorRevisionIds, PlanFlavorRevisionRecord, PlanFlavorRevisionTarget,
-    RevisionCatalogError, RevisionInsertOutcome, RevisionReferenceCounts,
-    WorkerFlavorRevisionRecord,
+    BeginDrainOutcome, ExecutionReferenceTransition, PlanFlavorCatalog, PlanFlavorCatalogAdmin,
+    PlanFlavorCatalogWriter, PlanFlavorRevisionIds, PlanFlavorRevisionRecord,
+    PlanFlavorRevisionTarget, RevisionCatalogError, RevisionInsertOutcome, RevisionReferenceCounts,
+    StorageError, WorkerFlavorRevisionRecord,
 };
 
 use super::execution::{SharedState, State};
@@ -58,36 +58,15 @@ pub(super) struct RollbackWindowId([u8; 16]);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RevisionReferenceState {
     Live,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "rollback retention is composed by the terminal dereference transaction (#975)"
-        )
-    )]
     Rollback {
         window_id: RollbackWindowId,
         retain_until: DateTime<Utc>,
     },
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "release provenance is composed by the terminal dereference transaction (#975)"
-        )
-    )]
     Released {
         origin: ReferenceReleaseOrigin,
     },
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "release provenance remains dormant until the terminal dereference transaction (#975) composes it"
-    )
-)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReferenceReleaseOrigin {
     Live,
@@ -612,7 +591,6 @@ pub(super) enum RetainDecision {
 }
 
 /// Result of a private owning reference transition.
-#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ReferenceDecision {
     Applied,
@@ -621,7 +599,6 @@ pub(super) enum ReferenceDecision {
 
 /// Private execution-owner transition. This never crosses the storage-port or
 /// SDK boundary.
-#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum OwningReferenceTransition {
     ReleaseLive {
@@ -632,6 +609,13 @@ pub(super) enum OwningReferenceTransition {
         window_id: RollbackWindowId,
         retain_until: DateTime<Utc>,
     },
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "rollback expiry is composed by the cleanup sweep after #975 lands"
+        )
+    )]
     ReleaseRollback {
         reference: RevisionReference,
         window_id: RollbackWindowId,
@@ -656,13 +640,6 @@ pub(super) enum InternalRevisionError {
     ReferenceMismatch,
     #[error("reference owner has already closed its reference")]
     ReferenceClosed,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "reference transitions are composed by the terminal dereference transaction (#975)"
-        )
-    )]
     #[error("reference owner does not exist")]
     ReferenceUnavailable,
 }
@@ -733,7 +710,6 @@ pub(super) fn retain_exact_locked(
 
 /// Transition a reference while the caller holds the owning aggregate's
 /// shared backend transaction/lock.
-#[cfg(test)]
 pub(super) fn transition_reference_locked(
     state: &mut State,
     transition: OwningReferenceTransition,
@@ -839,6 +815,46 @@ pub(super) fn transition_reference_locked(
                 },
             }
         },
+    }
+}
+
+/// Apply one execution-owned reference transition while the caller holds the
+/// aggregate lock.
+///
+/// The reference row is keyed by execution id, so the caller only supplies the
+/// terminal transition; the exact bundle/plan/flavor pins are read from the
+/// authoritative row. Missing rows (legacy executions that predate
+/// materialized starts) and already-applied transitions are idempotent.
+pub(super) fn apply_reference_transition_locked(
+    state: &mut State,
+    execution_id: ExecutionId,
+    transition: ExecutionReferenceTransition,
+) -> Result<(), StorageError> {
+    let owner = RevisionReferenceOwner::for_execution(execution_id);
+    let Some(row) = state.revision_catalog.references.get(&owner) else {
+        return Ok(());
+    };
+    let reference = row.reference;
+    let owning = match transition {
+        ExecutionReferenceTransition::ReleaseLive => {
+            OwningReferenceTransition::ReleaseLive { reference }
+        },
+        ExecutionReferenceTransition::RetainRollback {
+            window_id,
+            retain_until,
+        } => OwningReferenceTransition::RetainForRollback {
+            reference,
+            window_id: RollbackWindowId(window_id),
+            retain_until,
+        },
+    };
+
+    match transition_reference_locked(state, owning) {
+        Ok(ReferenceDecision::Applied | ReferenceDecision::AlreadyApplied) => Ok(()),
+        Err(InternalRevisionError::ReferenceUnavailable) => Ok(()),
+        Err(other) => Err(StorageError::Internal(format!(
+            "terminal dereference failed: {other}"
+        ))),
     }
 }
 

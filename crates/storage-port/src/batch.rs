@@ -15,11 +15,33 @@
 //! signal-park: the engine mints the token and pushes the row here so
 //! backends insert it atomically with the `Waiting` state snapshot.  See
 //! ADR-0099 W-S3c.
+use chrono::{DateTime, Utc};
+
 use crate::dto::resume_token::ResumeTokenRow;
 use crate::dto::{ControlMsg, JournalEntry};
 use crate::error::StorageError;
 use crate::ids::FencingToken;
 use crate::scope::Scope;
+
+/// How a terminal execution transition mutates its execution-owned
+/// plan/flavor reference.
+///
+/// The terminal commit is the execution-owner transaction that releases a
+/// live reference or moves it into a rollback window. Backends apply the
+/// reference change atomically with the aggregate state, outbox, journal, and
+/// resume-token writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionReferenceTransition {
+    /// Release the live reference immediately (plain terminal transition).
+    ReleaseLive,
+    /// Keep the reference in a rollback window until `retain_until`.
+    RetainRollback {
+        /// Opaque rollback-window identity.
+        window_id: [u8; 16],
+        /// Absolute expiry of the rollback window.
+        retain_until: DateTime<Utc>,
+    },
+}
 
 /// The atomic transition payload consumed by `ExecutionStore::commit`.
 #[derive(Debug, Clone)]
@@ -36,6 +58,9 @@ pub struct TransitionBatch {
     /// `ON CONFLICT(execution_id, node_key) DO NOTHING` so a crash
     /// re-drive that re-parks the same node does NOT mint a second token.
     resume_tokens: Vec<ResumeTokenRow>,
+    /// Optional execution-owned revision-reference mutation to apply in the
+    /// same commit. `None` on non-terminal transitions.
+    reference_transition: Option<ExecutionReferenceTransition>,
 }
 
 impl TransitionBatch {
@@ -100,6 +125,14 @@ impl TransitionBatch {
     pub fn resume_tokens(&self) -> &[ResumeTokenRow] {
         &self.resume_tokens
     }
+
+    /// Optional execution-owned revision-reference mutation for this commit.
+    ///
+    /// `None` for non-terminal transitions.
+    #[must_use]
+    pub const fn reference_transition(&self) -> Option<ExecutionReferenceTransition> {
+        self.reference_transition
+    }
 }
 
 /// Typed builder for [`TransitionBatch`]. A missing required field makes
@@ -115,6 +148,7 @@ pub struct TransitionBatchBuilder {
     outbox: Vec<ControlMsg>,
     journal: Vec<JournalEntry>,
     resume_tokens: Vec<ResumeTokenRow>,
+    reference_transition: Option<ExecutionReferenceTransition>,
 }
 
 impl TransitionBatchBuilder {
@@ -179,6 +213,14 @@ impl TransitionBatchBuilder {
         self
     }
 
+    /// Set an execution-owned revision-reference mutation to apply atomically
+    /// with the transition (optional, default `None`).
+    #[must_use]
+    pub fn reference_transition(mut self, transition: ExecutionReferenceTransition) -> Self {
+        self.reference_transition = Some(transition);
+        self
+    }
+
     /// Finalize the batch. Fails closed if any required field is missing.
     pub fn build(self) -> Result<TransitionBatch, StorageError> {
         let scope = self
@@ -205,6 +247,7 @@ impl TransitionBatchBuilder {
             outbox: self.outbox,
             journal: self.journal,
             resume_tokens: self.resume_tokens,
+            reference_transition: self.reference_transition,
         })
     }
 }

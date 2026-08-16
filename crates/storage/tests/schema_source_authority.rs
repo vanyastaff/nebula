@@ -99,8 +99,31 @@ fn ordered_migrations_are_the_only_embedded_schema_source() {
          `port_execution_revision_refs`"
     );
 
+    // Terminal dereference and rollback retention also belong to the
+    // execution-owner transaction. The SQL execution adapters update the
+    // reference row in the same commit as the terminal aggregate state change.
+    let mut reference_update_sites = source_files
+        .iter()
+        .filter(|path| path.extension() == Some(OsStr::new("rs")))
+        .filter(|path| {
+            fs::read_to_string(path)
+                .expect("Rust source must be UTF-8")
+                .contains("UPDATE port_execution_revision_refs")
+        })
+        .collect::<Vec<_>>();
+    reference_update_sites.sort();
+    let expected_update_sites_array = [
+        source_root.join("sqlite/execution.rs"),
+        source_root.join("postgres/execution.rs"),
+    ];
+    let mut expected_update_sites = expected_update_sites_array.iter().collect::<Vec<_>>();
+    expected_update_sites.sort();
+    assert_eq!(
+        reference_update_sites, expected_update_sites,
+        "only the execution-owner terminal adapters may update `port_execution_revision_refs`"
+    );
+
     for reference_mutation in [
-        "UPDATE port_execution_revision_refs",
         "DELETE FROM port_execution_revision_refs",
         "activate_execution_revision",
         "persist_execution_revision_ref",
