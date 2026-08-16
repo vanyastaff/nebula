@@ -77,7 +77,7 @@ fn ordered_migrations_are_the_only_embedded_schema_source() {
     // keyed-start adapters insert the live reference row in the same commit as
     // the execution aggregate and its Start command; any other production API
     // that writes the reference table would still violate that ownership.
-    let reference_insert_sites = source_files
+    let mut reference_insert_sites = source_files
         .iter()
         .filter(|path| path.extension() == Some(OsStr::new("rs")))
         .filter(|path| {
@@ -86,13 +86,15 @@ fn ordered_migrations_are_the_only_embedded_schema_source() {
                 .contains("INSERT INTO port_execution_revision_refs")
         })
         .collect::<Vec<_>>();
-    let expected_insert_sites = [
+    reference_insert_sites.sort();
+    let expected_insert_sites_array = [
         source_root.join("sqlite/start_acceptance.rs"),
         source_root.join("postgres/start_acceptance.rs"),
     ];
+    let mut expected_insert_sites = expected_insert_sites_array.iter().collect::<Vec<_>>();
+    expected_insert_sites.sort();
     assert_eq!(
-        reference_insert_sites,
-        expected_insert_sites.iter().collect::<Vec<_>>(),
+        reference_insert_sites, expected_insert_sites,
         "only the execution-owner start-materialization adapters may insert \
          `port_execution_revision_refs`"
     );
