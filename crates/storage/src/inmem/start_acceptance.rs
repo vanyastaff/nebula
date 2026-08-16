@@ -149,6 +149,7 @@ impl StartAcceptanceStore for InMemoryStartAcceptanceStore {
         start: &MaterializedKeyedStart<'_>,
     ) -> Result<StartMaterialization, StorageError> {
         let keyed = &start.keyed;
+        crate::start_acceptance::validate_materialized_start(start)?;
         let key = (
             keyed.scope.workspace_id.clone(),
             keyed.scope.org_id.clone(),

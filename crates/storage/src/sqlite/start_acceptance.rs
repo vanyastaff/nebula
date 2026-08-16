@@ -161,6 +161,7 @@ impl StartAcceptanceStore for SqliteStartAcceptanceStore {
         start: &MaterializedKeyedStart<'_>,
     ) -> Result<StartMaterialization, StorageError> {
         let keyed = &start.keyed;
+        crate::start_acceptance::validate_materialized_start(start)?;
         // The reference row's CHECK admits only typed `exe_` ids; validate up
         // front so a malformed id fails closed before the transaction starts.
         keyed.execution_id.parse::<ExecutionId>().map_err(|_| {

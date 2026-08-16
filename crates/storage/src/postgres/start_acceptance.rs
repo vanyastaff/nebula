@@ -167,6 +167,7 @@ impl StartAcceptanceStore for PgStartAcceptanceStore {
         start: &MaterializedKeyedStart<'_>,
     ) -> Result<StartMaterialization, StorageError> {
         let keyed = &start.keyed;
+        crate::start_acceptance::validate_materialized_start(start)?;
         // The reference row's CHECK admits only typed `exe_` ids; validate up
         // front so a malformed id fails closed before the transaction starts.
         keyed.execution_id.parse::<ExecutionId>().map_err(|_| {
@@ -346,7 +347,7 @@ async fn admit_exact_pair(
 ) -> Result<Option<StartRevisionRejection>, StorageError> {
     let Some(plan_row) = sqlx::query(
         "SELECT worker_flavor_id, lifecycle FROM port_executable_plan_revisions \
-         WHERE executable_plan_id = $1",
+         WHERE executable_plan_id = $1 FOR UPDATE",
     )
     .bind(plan_id.as_bytes().as_slice())
     .fetch_optional(&mut **tx)
@@ -369,7 +370,7 @@ async fn admit_exact_pair(
     }
 
     let Some(flavor_row) = sqlx::query(
-        "SELECT lifecycle FROM port_worker_flavor_revisions WHERE worker_flavor_id = $1",
+        "SELECT lifecycle FROM port_worker_flavor_revisions WHERE worker_flavor_id = $1 FOR UPDATE",
     )
     .bind(worker_flavor_id.as_bytes().as_slice())
     .fetch_optional(&mut **tx)

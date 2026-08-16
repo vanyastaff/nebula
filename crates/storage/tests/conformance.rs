@@ -41,6 +41,7 @@ use harness::{
     assert_materialized_start_creates_one_execution_and_reference,
     assert_materialized_start_mismatch_writes_nothing,
     assert_materialized_start_rejects_draining_pair_and_writes_nothing,
+    assert_materialized_start_rejects_mismatched_command_and_writes_nothing,
     assert_materialized_start_rejects_mismatched_flavor_and_writes_nothing,
     assert_materialized_start_rejects_missing_plan_and_writes_nothing,
     assert_materialized_start_replays_original_receipt, assert_non_resume_row_still_exhausts,
@@ -194,6 +195,10 @@ matrix!(
 matrix!(
     materialized_start_rejects_draining_pair_and_writes_nothing,
     assert_materialized_start_rejects_draining_pair_and_writes_nothing
+);
+matrix!(
+    materialized_start_rejects_mismatched_command_and_writes_nothing,
+    assert_materialized_start_rejects_mismatched_command_and_writes_nothing
 );
 matrix!(
     materialized_start_rejects_mismatched_flavor_and_writes_nothing,

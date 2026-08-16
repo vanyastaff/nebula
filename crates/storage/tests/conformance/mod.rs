@@ -3220,6 +3220,60 @@ pub(crate) async fn assert_materialized_start_rejects_mismatched_flavor_and_writ
     );
 }
 
+/// A materialized start refuses a control command that does not belong to the
+/// keyed execution/tenant and writes nothing.
+pub(crate) async fn assert_materialized_start_rejects_mismatched_command_and_writes_nothing(
+    backend: &dyn Backend,
+) {
+    let acceptance = backend.start_acceptance_store().await;
+    let queue = backend.control_queue().await;
+    let executions = backend.execution_store().await;
+    let scope = scope_a();
+    let (workflow_id, initial_state) = make_new_execution();
+    let execution_id = ExecutionId::new().to_string();
+    install_materialized_pair(backend, 0x69).await;
+    let mut command = start_command(0x69, &execution_id);
+    command.command = ControlCommand::Cancel;
+
+    let outcome = acceptance
+        .materialize_keyed_start(&MaterializedKeyedStart {
+            keyed: KeyedStart {
+                scope: &scope,
+                start_key: "mat-key-bad-command",
+                fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [0x29; 32]),
+                execution_id: &execution_id,
+                execution: NewExecution::new(&workflow_id, &initial_state),
+                command: &command,
+            },
+            identity: materialized_identity(0x69),
+        })
+        .await;
+    assert!(
+        matches!(outcome, Err(StorageError::Internal(_))),
+        "[{}] a non-Start command must be refused before any write, got {outcome:?}",
+        backend.name()
+    );
+
+    assert!(
+        executions
+            .get(&scope, &execution_id)
+            .await
+            .expect("read the bad-command candidate back")
+            .is_none(),
+        "[{}] a bad-command rejection must leave no execution behind",
+        backend.name()
+    );
+    let claimed = queue
+        .claim_pending(&[9u8; 16], 16)
+        .await
+        .expect("claim Start commands after a bad-command rejection");
+    assert!(
+        claimed.is_empty(),
+        "[{}] a bad-command rejection must leave no Start command behind",
+        backend.name()
+    );
+}
+
 // ── job-dispatch + dedup conformance assertions ───────────────────────────
 
 /// A `NewExecution` with placeholder content for conformance tests that focus
