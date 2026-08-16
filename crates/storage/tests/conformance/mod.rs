@@ -21,7 +21,10 @@
 
 use std::sync::Arc;
 
-use nebula_core::PluginKey;
+use nebula_core::{
+    ExecutablePlanRevisionId, ExecutionContractBundleId, ExecutionId, PluginKey,
+    WorkerFlavorRevisionId,
+};
 use nebula_storage_port::dto::{
     CachedRecord, ControlCommand, ControlMsg, DispatchKind, JobDispatchMsg, JournalEntry,
     NewExecution, ResumeTarget, TriggerDedupRow, WebhookActivationRecord, WebhookMode,
@@ -30,10 +33,16 @@ use nebula_storage_port::dto::{
 use nebula_storage_port::store::{
     ClaimGeneration, ControlClaimToken, ControlQueue, ExecutionJournalReader, ExecutionStore,
     IdempotencyGuard, IdempotencyStore, JobClaimToken, JobDispatchQueue, KeyedStart,
-    StartAcceptance, StartAcceptanceStore, StartFingerprint, TriggerDedupInbox,
+    MaterializedKeyedStart, StartAcceptance, StartAcceptanceStore, StartContractIdentity,
+    StartFingerprint, StartMaterialization, StartRevisionRejection, TriggerDedupInbox,
     WebhookActivationStore, WorkflowStore, WorkflowVersionStore,
 };
-use nebula_storage_port::{FencingToken, Scope, StorageError, TransitionBatch, TransitionOutcome};
+use nebula_storage_port::{
+    BeginDrainOutcome, FencingToken, PlanFlavorCatalogAdmin, PlanFlavorCatalogWriter,
+    PlanFlavorRevisionIds, PlanFlavorRevisionRecord, PlanFlavorRevisionTarget,
+    RevisionInsertOutcome, RevisionRecordBytes, Scope, StorageError, TransitionBatch,
+    TransitionOutcome, WorkerFlavorRevisionRecord,
+};
 
 /// A storage backend under conformance test. Returns port handles built on
 /// that backend's concrete adapter.
@@ -72,6 +81,13 @@ pub(crate) trait Backend: Send + Sync {
     /// core as [`Backend::execution_store`] and [`Backend::control_queue`] so
     /// `accept_keyed_start` commits all three of its writes together.
     async fn start_acceptance_store(&self) -> Arc<dyn StartAcceptanceStore>;
+    /// The exact plan/flavor catalog writer backed by this backend, sharing
+    /// the same store as [`Backend::start_acceptance_store`] so a materialized
+    /// start can install its contract revisions before acceptance.
+    async fn plan_flavor_catalog_writer(&self) -> Arc<dyn PlanFlavorCatalogWriter>;
+    /// The exact plan/flavor catalog lifecycle admin backed by this backend,
+    /// used to prove a drain causes materialized starts to fail closed.
+    async fn plan_flavor_catalog_admin(&self) -> Arc<dyn PlanFlavorCatalogAdmin>;
 }
 
 /// InMemory backend (always available).
@@ -154,6 +170,16 @@ impl Backend for InMemoryBackend {
     }
     async fn start_acceptance_store(&self) -> Arc<dyn StartAcceptanceStore> {
         Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
+            &self.store,
+        ))
+    }
+    async fn plan_flavor_catalog_writer(&self) -> Arc<dyn PlanFlavorCatalogWriter> {
+        Arc::new(nebula_storage::inmem::InMemoryPlanFlavorCatalog::new(
+            &self.store,
+        ))
+    }
+    async fn plan_flavor_catalog_admin(&self) -> Arc<dyn PlanFlavorCatalogAdmin> {
+        Arc::new(nebula_storage::inmem::InMemoryPlanFlavorCatalog::new(
             &self.store,
         ))
     }
@@ -310,6 +336,28 @@ impl Backend for SqliteBackend {
     }
     #[cfg(not(feature = "sqlite"))]
     async fn start_acceptance_store(&self) -> Arc<dyn StartAcceptanceStore> {
+        unimplemented!("build with --features sqlite to exercise the SQLite backend")
+    }
+    #[cfg(feature = "sqlite")]
+    async fn plan_flavor_catalog_writer(&self) -> Arc<dyn PlanFlavorCatalogWriter> {
+        Arc::new(nebula_storage::sqlite::SqlitePlanFlavorCatalog::new(
+            self.pool().await,
+            &nebula_metrics::MetricsRegistry::new(),
+        ))
+    }
+    #[cfg(not(feature = "sqlite"))]
+    async fn plan_flavor_catalog_writer(&self) -> Arc<dyn PlanFlavorCatalogWriter> {
+        unimplemented!("build with --features sqlite to exercise the SQLite backend")
+    }
+    #[cfg(feature = "sqlite")]
+    async fn plan_flavor_catalog_admin(&self) -> Arc<dyn PlanFlavorCatalogAdmin> {
+        Arc::new(nebula_storage::sqlite::SqlitePlanFlavorCatalog::new(
+            self.pool().await,
+            &nebula_metrics::MetricsRegistry::new(),
+        ))
+    }
+    #[cfg(not(feature = "sqlite"))]
+    async fn plan_flavor_catalog_admin(&self) -> Arc<dyn PlanFlavorCatalogAdmin> {
         unimplemented!("build with --features sqlite to exercise the SQLite backend")
     }
 }
@@ -477,6 +525,28 @@ impl Backend for PostgresBackend {
     }
     #[cfg(not(feature = "postgres"))]
     async fn start_acceptance_store(&self) -> Arc<dyn StartAcceptanceStore> {
+        unimplemented!("build with --features postgres to exercise the Postgres backend")
+    }
+    #[cfg(feature = "postgres")]
+    async fn plan_flavor_catalog_writer(&self) -> Arc<dyn PlanFlavorCatalogWriter> {
+        Arc::new(nebula_storage::postgres::PgPlanFlavorCatalog::new(
+            self.pool().await,
+            &nebula_metrics::MetricsRegistry::new(),
+        ))
+    }
+    #[cfg(not(feature = "postgres"))]
+    async fn plan_flavor_catalog_writer(&self) -> Arc<dyn PlanFlavorCatalogWriter> {
+        unimplemented!("build with --features postgres to exercise the Postgres backend")
+    }
+    #[cfg(feature = "postgres")]
+    async fn plan_flavor_catalog_admin(&self) -> Arc<dyn PlanFlavorCatalogAdmin> {
+        Arc::new(nebula_storage::postgres::PgPlanFlavorCatalog::new(
+            self.pool().await,
+            &nebula_metrics::MetricsRegistry::new(),
+        ))
+    }
+    #[cfg(not(feature = "postgres"))]
+    async fn plan_flavor_catalog_admin(&self) -> Arc<dyn PlanFlavorCatalogAdmin> {
         unimplemented!("build with --features postgres to exercise the Postgres backend")
     }
 }
@@ -2198,6 +2268,15 @@ impl<B: Backend> Backend for ScopedBackend<B> {
     async fn start_acceptance_store(&self) -> Arc<dyn StartAcceptanceStore> {
         self.inner.start_acceptance_store().await
     }
+
+    // The exact catalog is not wrapped either; it is backend-owned.
+    async fn plan_flavor_catalog_writer(&self) -> Arc<dyn PlanFlavorCatalogWriter> {
+        self.inner.plan_flavor_catalog_writer().await
+    }
+
+    async fn plan_flavor_catalog_admin(&self) -> Arc<dyn PlanFlavorCatalogAdmin> {
+        self.inner.plan_flavor_catalog_admin().await
+    }
 }
 
 /// A stable processor identity cannot acknowledge a control command whose
@@ -2625,6 +2704,518 @@ pub(crate) async fn assert_keyed_start_is_scoped_per_tenant(backend: &dyn Backen
             }
         ),
         "[{}] a start key is scoped to one tenant",
+        backend.name()
+    );
+}
+
+// ── materialized keyed start conformance assertions ─────────────────────────
+
+fn materialized_plan_id(seed: u8) -> ExecutablePlanRevisionId {
+    let mut bytes = [0_u8; 32];
+    bytes[0] = seed;
+    bytes[1] = 0x50;
+    ExecutablePlanRevisionId::from_bytes(bytes)
+}
+
+fn materialized_flavor_id(seed: u8) -> WorkerFlavorRevisionId {
+    let mut bytes = [0_u8; 32];
+    bytes[0] = seed;
+    bytes[1] = 0x46;
+    WorkerFlavorRevisionId::from_bytes(bytes)
+}
+
+fn materialized_pair(seed: u8) -> PlanFlavorRevisionRecord {
+    let flavor = WorkerFlavorRevisionRecord::v1_json(
+        materialized_flavor_id(seed),
+        RevisionRecordBytes::try_from_vec(format!(r#"{{"flavor":"{seed}"}}"#).into_bytes())
+            .expect("materialized flavor record body is non-empty"),
+    );
+    PlanFlavorRevisionRecord::graph_v1_json(
+        materialized_plan_id(seed),
+        RevisionRecordBytes::try_from_vec(format!(r#"{{"plan":"{seed}"}}"#).into_bytes())
+            .expect("materialized plan record body is non-empty"),
+        flavor,
+    )
+}
+
+fn materialized_identity(seed: u8) -> StartContractIdentity {
+    let mut bundle = [0_u8; 16];
+    bundle[0] = seed;
+    StartContractIdentity::new(
+        ExecutionContractBundleId::from_bytes(bundle),
+        materialized_pair(seed).ids(),
+    )
+}
+
+async fn install_materialized_pair(backend: &dyn Backend, seed: u8) -> PlanFlavorRevisionRecord {
+    let writer = backend.plan_flavor_catalog_writer().await;
+    let record = materialized_pair(seed);
+    assert_eq!(
+        writer.insert(&record).await,
+        Ok(RevisionInsertOutcome::Inserted),
+        "[{}] a fresh materialized pair installs exactly once",
+        backend.name()
+    );
+    record
+}
+
+async fn assert_live_reference_count(
+    backend: &dyn Backend,
+    record: &PlanFlavorRevisionRecord,
+    expected: u64,
+) {
+    let admin = backend.plan_flavor_catalog_admin().await;
+    let outcome = admin
+        .begin_drain(PlanFlavorRevisionTarget::ExecutablePlan(
+            record.ids().plan(),
+        ))
+        .await;
+    match outcome {
+        Ok(BeginDrainOutcome::Started(counts) | BeginDrainOutcome::AlreadyDraining(counts)) => {
+            assert_eq!(
+                counts.live_executions(),
+                expected,
+                "[{}] live reference count after materialization",
+                backend.name()
+            );
+        },
+        Err(error) => panic!(
+            "[{}] begin_drain failed while counting live references: {error:?}",
+            backend.name()
+        ),
+    }
+}
+
+/// A materialized start admits an active exact pair, creates one execution and
+/// one Start command, and persists one live revision reference in the same
+/// commit.
+pub(crate) async fn assert_materialized_start_creates_one_execution_and_reference(
+    backend: &dyn Backend,
+) {
+    let acceptance = backend.start_acceptance_store().await;
+    let queue = backend.control_queue().await;
+    let executions = backend.execution_store().await;
+    let scope = scope_a();
+    let (workflow_id, initial_state) = make_new_execution();
+    let execution_id = ExecutionId::new().to_string();
+    let record = install_materialized_pair(backend, 0x60).await;
+    let command = start_command(0x60, &execution_id);
+
+    let outcome = acceptance
+        .materialize_keyed_start(&MaterializedKeyedStart {
+            keyed: KeyedStart {
+                scope: &scope,
+                start_key: "mat-key-fresh",
+                fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [0x20; 32]),
+                execution_id: &execution_id,
+                execution: NewExecution::new(&workflow_id, &initial_state),
+                command: &command,
+            },
+            identity: materialized_identity(0x60),
+        })
+        .await
+        .expect("materialize a fresh keyed start");
+    assert_eq!(
+        outcome,
+        StartMaterialization::Accepted {
+            execution_id: execution_id.clone()
+        },
+        "[{}] a fresh materialized key must be accepted",
+        backend.name()
+    );
+
+    assert!(
+        executions
+            .get(&scope, &execution_id)
+            .await
+            .expect("read the materialized execution back")
+            .is_some(),
+        "[{}] materialization must have created the execution aggregate",
+        backend.name()
+    );
+    let claimed = queue
+        .claim_pending(&[9u8; 16], 16)
+        .await
+        .expect("claim the materialized Start command");
+    assert_eq!(
+        claimed
+            .iter()
+            .filter(|claim| claim.msg.execution_id == execution_id)
+            .count(),
+        1,
+        "[{}] materialization must have enqueued exactly one Start command",
+        backend.name()
+    );
+    assert_live_reference_count(backend, &record, 1).await;
+}
+
+/// A same-fingerprint retry of a materialized start returns the original
+/// receipt and deliberately ignores the retry's contract identity: no second
+/// execution, command, or reference row is written.
+pub(crate) async fn assert_materialized_start_replays_original_receipt(backend: &dyn Backend) {
+    let acceptance = backend.start_acceptance_store().await;
+    let queue = backend.control_queue().await;
+    let executions = backend.execution_store().await;
+    let scope = scope_a();
+    let (workflow_id, initial_state) = make_new_execution();
+    let execution_id = ExecutionId::new().to_string();
+    let retry_execution_id = ExecutionId::new().to_string();
+    let record = install_materialized_pair(backend, 0x61).await;
+    let fingerprint = StartFingerprint::new(START_FINGERPRINT_VERSION, [0x21; 32]);
+    let first_command = start_command(0x61, &execution_id);
+
+    let first = acceptance
+        .materialize_keyed_start(&MaterializedKeyedStart {
+            keyed: KeyedStart {
+                scope: &scope,
+                start_key: "mat-key-replay",
+                fingerprint,
+                execution_id: &execution_id,
+                execution: NewExecution::new(&workflow_id, &initial_state),
+                command: &first_command,
+            },
+            identity: materialized_identity(0x61),
+        })
+        .await
+        .expect("first materialized start");
+    assert_eq!(
+        first,
+        StartMaterialization::Accepted {
+            execution_id: execution_id.clone()
+        },
+        "[{}] the first materialized request must be accepted",
+        backend.name()
+    );
+
+    // The retry uses a different execution id, command id, and a different
+    // contract identity. None of that matters: the key and fingerprint define
+    // convergence, and the original live reference stays authoritative.
+    let retry_command = start_command(0x62, &retry_execution_id);
+    let replay = acceptance
+        .materialize_keyed_start(&MaterializedKeyedStart {
+            keyed: KeyedStart {
+                scope: &scope,
+                start_key: "mat-key-replay",
+                fingerprint,
+                execution_id: &retry_execution_id,
+                execution: NewExecution::new(&workflow_id, &initial_state),
+                command: &retry_command,
+            },
+            identity: materialized_identity(0x62),
+        })
+        .await
+        .expect("retry of the same materialized start");
+    assert_eq!(
+        replay,
+        StartMaterialization::Replayed {
+            execution_id: execution_id.clone()
+        },
+        "[{}] a same-fingerprint materialized retry must return the original receipt",
+        backend.name()
+    );
+
+    assert!(
+        executions
+            .get(&scope, &retry_execution_id)
+            .await
+            .expect("read the retry candidate back")
+            .is_none(),
+        "[{}] the materialized retry must not create a second execution",
+        backend.name()
+    );
+    let claimed = queue
+        .claim_pending(&[9u8; 16], 32)
+        .await
+        .expect("claim materialized Start commands");
+    assert_eq!(
+        claimed
+            .iter()
+            .filter(|claim| claim.msg.execution_id == execution_id)
+            .count(),
+        1,
+        "[{}] the materialized retry must not enqueue a second Start command",
+        backend.name()
+    );
+    assert_live_reference_count(backend, &record, 1).await;
+}
+
+/// A different fingerprint under an already-reserved materialized key is
+/// refused with no durable delta.
+pub(crate) async fn assert_materialized_start_mismatch_writes_nothing(backend: &dyn Backend) {
+    let acceptance = backend.start_acceptance_store().await;
+    let queue = backend.control_queue().await;
+    let executions = backend.execution_store().await;
+    let scope = scope_a();
+    let (workflow_id, initial_state) = make_new_execution();
+    let execution_id = ExecutionId::new().to_string();
+    let other_execution_id = ExecutionId::new().to_string();
+    let record = install_materialized_pair(backend, 0x63).await;
+    let original_command = start_command(0x63, &execution_id);
+
+    acceptance
+        .materialize_keyed_start(&MaterializedKeyedStart {
+            keyed: KeyedStart {
+                scope: &scope,
+                start_key: "mat-key-mismatch",
+                fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [0x23; 32]),
+                execution_id: &execution_id,
+                execution: NewExecution::new(&workflow_id, &initial_state),
+                command: &original_command,
+            },
+            identity: materialized_identity(0x63),
+        })
+        .await
+        .expect("original materialized start");
+
+    let conflicting_command = start_command(0x64, &other_execution_id);
+    let mismatch = acceptance
+        .materialize_keyed_start(&MaterializedKeyedStart {
+            keyed: KeyedStart {
+                scope: &scope,
+                start_key: "mat-key-mismatch",
+                fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [0x24; 32]),
+                execution_id: &other_execution_id,
+                execution: NewExecution::new(&workflow_id, &initial_state),
+                command: &conflicting_command,
+            },
+            identity: materialized_identity(0x64),
+        })
+        .await
+        .expect("mismatched materialized start must be a typed outcome, not an error");
+    assert_eq!(
+        mismatch,
+        StartMaterialization::FingerprintMismatch,
+        "[{}] a different request under the same materialized key must be refused",
+        backend.name()
+    );
+
+    assert!(
+        executions
+            .get(&scope, &other_execution_id)
+            .await
+            .expect("read the refused candidate back")
+            .is_none(),
+        "[{}] a refused materialized start must leave no execution behind",
+        backend.name()
+    );
+    let claimed = queue
+        .claim_pending(&[9u8; 16], 32)
+        .await
+        .expect("claim materialized Start commands");
+    assert_eq!(
+        claimed
+            .iter()
+            .filter(|claim| claim.msg.execution_id == execution_id)
+            .count(),
+        1,
+        "[{}] a refused materialized start must not enqueue a second Start command",
+        backend.name()
+    );
+    assert_live_reference_count(backend, &record, 1).await;
+}
+
+/// A missing executable-plan revision is refused before any durable write;
+/// after the same pair is installed, the same key can be accepted, proving the
+/// rejection left no reservation behind.
+pub(crate) async fn assert_materialized_start_rejects_missing_plan_and_writes_nothing(
+    backend: &dyn Backend,
+) {
+    let acceptance = backend.start_acceptance_store().await;
+    let queue = backend.control_queue().await;
+    let executions = backend.execution_store().await;
+    let scope = scope_a();
+    let (workflow_id, initial_state) = make_new_execution();
+    let execution_id = ExecutionId::new().to_string();
+    let command = start_command(0x65, &execution_id);
+    let fingerprint = StartFingerprint::new(START_FINGERPRINT_VERSION, [0x25; 32]);
+
+    let rejected = acceptance
+        .materialize_keyed_start(&MaterializedKeyedStart {
+            keyed: KeyedStart {
+                scope: &scope,
+                start_key: "mat-key-missing",
+                fingerprint,
+                execution_id: &execution_id,
+                execution: NewExecution::new(&workflow_id, &initial_state),
+                command: &command,
+            },
+            identity: materialized_identity(0x65),
+        })
+        .await
+        .expect("missing-plan materialized start must be a typed outcome");
+    assert_eq!(
+        rejected,
+        StartMaterialization::RevisionRejected(StartRevisionRejection::PlanUnavailable),
+        "[{}] an unknown plan must be refused",
+        backend.name()
+    );
+    assert!(
+        executions
+            .get(&scope, &execution_id)
+            .await
+            .expect("read the rejected candidate back")
+            .is_none(),
+        "[{}] a rejected materialized start must leave no execution behind",
+        backend.name()
+    );
+
+    // Install the exact pair and retry with the same key. If the rejection had
+    // left a reservation behind, this would replay or mismatch instead of
+    // accepting the same request.
+    let record = install_materialized_pair(backend, 0x65).await;
+    let accepted = acceptance
+        .materialize_keyed_start(&MaterializedKeyedStart {
+            keyed: KeyedStart {
+                scope: &scope,
+                start_key: "mat-key-missing",
+                fingerprint,
+                execution_id: &execution_id,
+                execution: NewExecution::new(&workflow_id, &initial_state),
+                command: &command,
+            },
+            identity: materialized_identity(0x65),
+        })
+        .await
+        .expect("retry after installing the missing plan");
+    assert_eq!(
+        accepted,
+        StartMaterialization::Accepted {
+            execution_id: execution_id.clone()
+        },
+        "[{}] a rejected materialized start must have left no reservation",
+        backend.name()
+    );
+    assert_live_reference_count(backend, &record, 1).await;
+
+    let claimed = queue
+        .claim_pending(&[9u8; 16], 16)
+        .await
+        .expect("claim the accepted retry Start command");
+    assert_eq!(
+        claimed
+            .iter()
+            .filter(|claim| claim.msg.execution_id == execution_id)
+            .count(),
+        1,
+        "[{}] the accepted retry must enqueue exactly one Start command",
+        backend.name()
+    );
+}
+
+/// A draining exact pair is refused and writes nothing.
+pub(crate) async fn assert_materialized_start_rejects_draining_pair_and_writes_nothing(
+    backend: &dyn Backend,
+) {
+    let acceptance = backend.start_acceptance_store().await;
+    let queue = backend.control_queue().await;
+    let executions = backend.execution_store().await;
+    let scope = scope_a();
+    let (workflow_id, initial_state) = make_new_execution();
+    let execution_id = ExecutionId::new().to_string();
+    let record = install_materialized_pair(backend, 0x66).await;
+    let admin = backend.plan_flavor_catalog_admin().await;
+    admin
+        .begin_drain(PlanFlavorRevisionTarget::ExecutablePlan(
+            record.ids().plan(),
+        ))
+        .await
+        .expect("begin drain on the installed plan");
+
+    let command = start_command(0x66, &execution_id);
+    let rejected = acceptance
+        .materialize_keyed_start(&MaterializedKeyedStart {
+            keyed: KeyedStart {
+                scope: &scope,
+                start_key: "mat-key-draining",
+                fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [0x26; 32]),
+                execution_id: &execution_id,
+                execution: NewExecution::new(&workflow_id, &initial_state),
+                command: &command,
+            },
+            identity: materialized_identity(0x66),
+        })
+        .await
+        .expect("draining materialized start must be a typed outcome");
+    assert_eq!(
+        rejected,
+        StartMaterialization::RevisionRejected(StartRevisionRejection::PairNotAdmitted),
+        "[{}] a draining pair must be refused",
+        backend.name()
+    );
+    assert!(
+        executions
+            .get(&scope, &execution_id)
+            .await
+            .expect("read the draining candidate back")
+            .is_none(),
+        "[{}] a draining rejection must leave no execution behind",
+        backend.name()
+    );
+    let claimed = queue
+        .claim_pending(&[9u8; 16], 16)
+        .await
+        .expect("claim Start commands after a draining rejection");
+    assert!(
+        claimed.is_empty(),
+        "[{}] a draining rejection must leave no Start command behind",
+        backend.name()
+    );
+}
+
+/// A plan pinned to a different worker flavor is refused as a non-admissible
+/// pair and writes nothing.
+pub(crate) async fn assert_materialized_start_rejects_mismatched_flavor_and_writes_nothing(
+    backend: &dyn Backend,
+) {
+    let acceptance = backend.start_acceptance_store().await;
+    let queue = backend.control_queue().await;
+    let executions = backend.execution_store().await;
+    let scope = scope_a();
+    let (workflow_id, initial_state) = make_new_execution();
+    let execution_id = ExecutionId::new().to_string();
+    let record = install_materialized_pair(backend, 0x67).await;
+    let mismatched_identity = StartContractIdentity::new(
+        ExecutionContractBundleId::from_bytes([0x67; 16]),
+        PlanFlavorRevisionIds::new(record.ids().plan(), materialized_flavor_id(0x68)),
+    );
+
+    let command = start_command(0x67, &execution_id);
+    let rejected = acceptance
+        .materialize_keyed_start(&MaterializedKeyedStart {
+            keyed: KeyedStart {
+                scope: &scope,
+                start_key: "mat-key-mismatched-flavor",
+                fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [0x27; 32]),
+                execution_id: &execution_id,
+                execution: NewExecution::new(&workflow_id, &initial_state),
+                command: &command,
+            },
+            identity: mismatched_identity,
+        })
+        .await
+        .expect("mismatched-flavor materialized start must be a typed outcome");
+    assert_eq!(
+        rejected,
+        StartMaterialization::RevisionRejected(StartRevisionRejection::PairNotAdmitted),
+        "[{}] a plan pinned to a different worker flavor must be refused",
+        backend.name()
+    );
+    assert!(
+        executions
+            .get(&scope, &execution_id)
+            .await
+            .expect("read the mismatched candidate back")
+            .is_none(),
+        "[{}] a mismatched-flavor rejection must leave no execution behind",
+        backend.name()
+    );
+    let claimed = queue
+        .claim_pending(&[9u8; 16], 16)
+        .await
+        .expect("claim Start commands after a mismatched-flavor rejection");
+    assert!(
+        claimed.is_empty(),
+        "[{}] a mismatched-flavor rejection must leave no Start command behind",
         backend.name()
     );
 }

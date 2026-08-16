@@ -38,11 +38,17 @@ use harness::{
     assert_keyed_start_creates_one_execution, assert_keyed_start_failure_writes_nothing,
     assert_keyed_start_is_scoped_per_tenant, assert_keyed_start_mismatch_writes_nothing,
     assert_keyed_start_replays_the_original_receipt, assert_live_lease_blocks_acquire,
-    assert_non_resume_row_still_exhausts, assert_resume_row_exempt_from_reclaim_budget,
-    assert_resume_target_survives_queue_round_trip, assert_save_with_published_version_is_atomic,
-    assert_stale_fencing_is_fenced_out, assert_trigger_dedup_first_writer,
-    assert_trigger_dedup_is_scoped, assert_webhook_activation_and_scope,
-    assert_webhook_system_surface, assert_workflow_store_contract, skip_reason,
+    assert_materialized_start_creates_one_execution_and_reference,
+    assert_materialized_start_mismatch_writes_nothing,
+    assert_materialized_start_rejects_draining_pair_and_writes_nothing,
+    assert_materialized_start_rejects_mismatched_flavor_and_writes_nothing,
+    assert_materialized_start_rejects_missing_plan_and_writes_nothing,
+    assert_materialized_start_replays_original_receipt, assert_non_resume_row_still_exhausts,
+    assert_resume_row_exempt_from_reclaim_budget, assert_resume_target_survives_queue_round_trip,
+    assert_save_with_published_version_is_atomic, assert_stale_fencing_is_fenced_out,
+    assert_trigger_dedup_first_writer, assert_trigger_dedup_is_scoped,
+    assert_webhook_activation_and_scope, assert_webhook_system_surface,
+    assert_workflow_store_contract, skip_reason,
 };
 use rstest::rstest;
 use std::future::Future;
@@ -168,6 +174,30 @@ matrix!(
 matrix!(
     keyed_start_failure_writes_nothing,
     assert_keyed_start_failure_writes_nothing
+);
+matrix!(
+    materialized_start_creates_one_execution_and_reference,
+    assert_materialized_start_creates_one_execution_and_reference
+);
+matrix!(
+    materialized_start_replays_original_receipt,
+    assert_materialized_start_replays_original_receipt
+);
+matrix!(
+    materialized_start_mismatch_writes_nothing,
+    assert_materialized_start_mismatch_writes_nothing
+);
+matrix!(
+    materialized_start_rejects_missing_plan_and_writes_nothing,
+    assert_materialized_start_rejects_missing_plan_and_writes_nothing
+);
+matrix!(
+    materialized_start_rejects_draining_pair_and_writes_nothing,
+    assert_materialized_start_rejects_draining_pair_and_writes_nothing
+);
+matrix!(
+    materialized_start_rejects_mismatched_flavor_and_writes_nothing,
+    assert_materialized_start_rejects_mismatched_flavor_and_writes_nothing
 );
 matrix!(job_dispatch_fencing, assert_job_dispatch_fencing);
 matrix!(

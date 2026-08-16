@@ -118,7 +118,7 @@ mod tests {
 
     use nebula_storage_port::{
         StorageError,
-        store::{KeyedStart, StartAcceptance},
+        store::{KeyedStart, MaterializedKeyedStart, StartAcceptance, StartMaterialization},
     };
 
     use super::*;
@@ -138,6 +138,13 @@ mod tests {
             _start: &KeyedStart<'_>,
         ) -> Result<StartAcceptance, StorageError> {
             unreachable!("the sweep never accepts starts")
+        }
+
+        async fn materialize_keyed_start(
+            &self,
+            _start: &MaterializedKeyedStart<'_>,
+        ) -> Result<StartMaterialization, StorageError> {
+            unreachable!("the sweep never materializes starts")
         }
 
         async fn evict_reservations_older_than(

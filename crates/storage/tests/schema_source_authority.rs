@@ -72,13 +72,32 @@ fn ordered_migrations_are_the_only_embedded_schema_source() {
         }
     }
 
-    // Execution-owned revision references are still read-only from production
-    // code: creating or transitioning one has to compose with the execution
-    // aggregate's own transaction, which does not exist yet. Until it does, no
-    // production API may write `port_execution_revision_refs` — otherwise a
-    // reference could outlive, or never reach, the execution that owns it.
+    // Execution-owned revision references may be written only by the
+    // execution-owner start-materialization transaction. The materialized
+    // keyed-start adapters insert the live reference row in the same commit as
+    // the execution aggregate and its Start command; any other production API
+    // that writes the reference table would still violate that ownership.
+    let reference_insert_sites = source_files
+        .iter()
+        .filter(|path| path.extension() == Some(OsStr::new("rs")))
+        .filter(|path| {
+            fs::read_to_string(path)
+                .expect("Rust source must be UTF-8")
+                .contains("INSERT INTO port_execution_revision_refs")
+        })
+        .collect::<Vec<_>>();
+    let expected_insert_sites = [
+        source_root.join("sqlite/start_acceptance.rs"),
+        source_root.join("postgres/start_acceptance.rs"),
+    ];
+    assert_eq!(
+        reference_insert_sites,
+        expected_insert_sites.iter().collect::<Vec<_>>(),
+        "only the execution-owner start-materialization adapters may insert \
+         `port_execution_revision_refs`"
+    );
+
     for reference_mutation in [
-        "INSERT INTO port_execution_revision_refs",
         "UPDATE port_execution_revision_refs",
         "DELETE FROM port_execution_revision_refs",
         "activate_execution_revision",
