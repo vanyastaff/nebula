@@ -3,6 +3,7 @@
 use std::{fmt, sync::Arc};
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 
 use crate::dto::{
     BeginDrainOutcome, PlanFlavorRevisionIds, PlanFlavorRevisionRecord, PlanFlavorRevisionTarget,
@@ -89,6 +90,16 @@ pub trait PlanFlavorCatalogAdmin: Send + Sync + fmt::Debug {
         &self,
         target: PlanFlavorRevisionTarget,
     ) -> Result<(), RevisionCatalogError>;
+
+    /// Release every rollback-window reference that has reached `now`.
+    ///
+    /// Expired rollback windows no longer block deletion. Returns the number
+    /// of references released. The operation is idempotent and safe to call
+    /// from a bounded cleanup scanner.
+    async fn release_expired_rollbacks(
+        &self,
+        now: DateTime<Utc>,
+    ) -> Result<u64, RevisionCatalogError>;
 }
 
 #[async_trait]
@@ -134,5 +145,12 @@ where
         target: PlanFlavorRevisionTarget,
     ) -> Result<(), RevisionCatalogError> {
         (**self).delete_drained(target).await
+    }
+
+    async fn release_expired_rollbacks(
+        &self,
+        now: DateTime<Utc>,
+    ) -> Result<u64, RevisionCatalogError> {
+        (**self).release_expired_rollbacks(now).await
     }
 }

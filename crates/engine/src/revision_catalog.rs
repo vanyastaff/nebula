@@ -627,6 +627,13 @@ mod tests {
         ) -> Result<(), RevisionCatalogError> {
             Ok(())
         }
+
+        async fn release_expired_rollbacks(
+            &self,
+            _now: chrono::DateTime<chrono::Utc>,
+        ) -> Result<u64, RevisionCatalogError> {
+            Ok(0)
+        }
     }
 
     fn bridges(

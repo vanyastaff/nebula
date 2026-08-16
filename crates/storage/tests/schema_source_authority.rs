@@ -99,9 +99,10 @@ fn ordered_migrations_are_the_only_embedded_schema_source() {
          `port_execution_revision_refs`"
     );
 
-    // Terminal dereference and rollback retention also belong to the
-    // execution-owner transaction. The SQL execution adapters update the
-    // reference row in the same commit as the terminal aggregate state change.
+    // Terminal dereference and rollback retention are storage-owned reference
+    // mutations: the SQL execution adapters update the reference row in the
+    // same commit as the terminal aggregate state change, and the SQL catalog
+    // adapters release expired rollback windows during bounded cleanup.
     let mut reference_update_sites = source_files
         .iter()
         .filter(|path| path.extension() == Some(OsStr::new("rs")))
@@ -113,14 +114,16 @@ fn ordered_migrations_are_the_only_embedded_schema_source() {
         .collect::<Vec<_>>();
     reference_update_sites.sort();
     let expected_update_sites_array = [
-        source_root.join("sqlite/execution.rs"),
         source_root.join("postgres/execution.rs"),
+        source_root.join("postgres/plan_flavor_catalog.rs"),
+        source_root.join("sqlite/execution.rs"),
+        source_root.join("sqlite/plan_flavor_catalog.rs"),
     ];
     let mut expected_update_sites = expected_update_sites_array.iter().collect::<Vec<_>>();
     expected_update_sites.sort();
     assert_eq!(
         reference_update_sites, expected_update_sites,
-        "only the execution-owner terminal adapters may update `port_execution_revision_refs`"
+        "only the execution-owner terminal and rollback-cleanup adapters may update `port_execution_revision_refs`"
     );
 
     for reference_mutation in [

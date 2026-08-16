@@ -3526,6 +3526,87 @@ pub(crate) async fn assert_terminal_commit_rejects_incompatible_reference_transi
     );
 }
 
+/// Expired rollback windows are released by the cleanup primitive and no
+/// longer count as references.
+pub(crate) async fn assert_expired_rollbacks_are_released(backend: &dyn Backend) {
+    let acceptance = backend.start_acceptance_store().await;
+    let executions = backend.execution_store().await;
+    let scope = scope_a();
+    let (workflow_id, initial_state) = make_new_execution();
+    let execution_id = ExecutionId::new().to_string();
+    let record = install_materialized_pair(backend, 0x73).await;
+    let command = start_command(0x73, &execution_id);
+
+    let accepted = acceptance
+        .materialize_keyed_start(&MaterializedKeyedStart {
+            keyed: KeyedStart {
+                scope: &scope,
+                start_key: "mat-key-expired-rollback",
+                fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [0x33; 32]),
+                execution_id: &execution_id,
+                execution: NewExecution::new(&workflow_id, &initial_state),
+                command: &command,
+            },
+            identity: materialized_identity(0x73),
+        })
+        .await
+        .expect("materialize execution for expired rollback");
+    assert!(matches!(accepted, StartMaterialization::Accepted { .. }));
+
+    let token = executions
+        .acquire_lease(
+            &scope,
+            &execution_id,
+            "expired-rollback",
+            std::time::Duration::from_secs(30),
+        )
+        .await
+        .expect("acquire lease")
+        .expect("lease must be available for a fresh execution");
+
+    let batch = TransitionBatch::builder()
+        .scope(scope.clone())
+        .execution_id(execution_id.clone())
+        .expected_version(0)
+        .fencing(token)
+        .new_state(serde_json::json!({"status": "Completed"}))
+        .reference_transition(ExecutionReferenceTransition::RetainRollback {
+            window_id: [0x73; 16],
+            retain_until: chrono::Utc::now() - chrono::TimeDelta::minutes(1),
+        })
+        .build()
+        .expect("expired rollback batch");
+    let outcome = executions
+        .commit(batch)
+        .await
+        .expect("terminal commit must apply");
+    assert!(matches!(outcome, TransitionOutcome::Applied { .. }));
+
+    let admin = backend.plan_flavor_catalog_admin().await;
+    let released = admin
+        .release_expired_rollbacks(chrono::Utc::now())
+        .await
+        .expect("expired rollback release must succeed");
+    assert_eq!(
+        released,
+        1,
+        "[{}] exactly one expired rollback window must be released",
+        backend.name()
+    );
+    assert_reference_counts(backend, &record, 0, 0).await;
+
+    let again = admin
+        .release_expired_rollbacks(chrono::Utc::now())
+        .await
+        .expect("repeat rollback release must succeed");
+    assert_eq!(
+        again,
+        0,
+        "[{}] releasing expired rollbacks is idempotent",
+        backend.name()
+    );
+}
+
 // ── job-dispatch + dedup conformance assertions ───────────────────────────
 
 /// A `NewExecution` with placeholder content for conformance tests that focus

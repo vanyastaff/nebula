@@ -18,6 +18,7 @@
 //! [`RevisionCatalogError::OutcomeUnknown`], because SQLite cannot tell the
 //! caller whether the write landed.
 
+use chrono::{DateTime, Utc};
 use nebula_core::{ExecutablePlanRevisionId, WorkerFlavorRevisionId};
 use nebula_storage_port::{
     BeginDrainOutcome, ExecutablePlanRecordFormat, PlanFlavorCatalog, PlanFlavorCatalogAdmin,
@@ -656,7 +657,7 @@ impl PlanFlavorCatalogAdmin for SqlitePlanFlavorCatalog {
         &self,
         target: PlanFlavorRevisionTarget,
     ) -> Result<BeginDrainOutcome, RevisionCatalogError> {
-        let now_ms = chrono::Utc::now().timestamp_millis();
+        let now_ms = Utc::now().timestamp_millis();
         let result = async {
             let mut tx = self.begin_write().await?;
             match begin_drain_locked(&mut tx, target, now_ms).await {
@@ -695,7 +696,7 @@ impl PlanFlavorCatalogAdmin for SqlitePlanFlavorCatalog {
         &self,
         target: PlanFlavorRevisionTarget,
     ) -> Result<(), RevisionCatalogError> {
-        let now_ms = chrono::Utc::now().timestamp_millis();
+        let now_ms = Utc::now().timestamp_millis();
         let result = async {
             let mut tx = self.begin_write().await?;
             match delete_drained_locked(&mut tx, target, now_ms).await {
@@ -716,6 +717,47 @@ impl PlanFlavorCatalogAdmin for SqlitePlanFlavorCatalog {
             target: "nebula_storage::sqlite",
             outcome,
             "plan/flavor catalog guarded delete"
+        );
+        result
+    }
+
+    #[tracing::instrument(
+        level = "debug",
+        name = "revision_catalog.release_expired_rollbacks",
+        skip(self),
+        fields(backend = "sqlite", outcome = tracing::field::Empty)
+    )]
+    async fn release_expired_rollbacks(
+        &self,
+        now: DateTime<Utc>,
+    ) -> Result<u64, RevisionCatalogError> {
+        let result = async {
+            let mut tx = self.begin_write().await?;
+            let released = sqlx::query(
+                "UPDATE port_execution_revision_refs \
+                 SET reference_state = 'released' \
+                 WHERE reference_state = 'rollback' AND retain_until_ms <= ?",
+            )
+            .bind(now.timestamp_millis())
+            .execute(&mut *tx)
+            .await
+            .map_err(driver_did_not_commit)?
+            .rows_affected();
+            tx.commit().await.map_err(commit_outcome_unknown)?;
+            Ok(released)
+        }
+        .await;
+
+        let outcome = result.as_ref().map(|_| "released").unwrap_or("failed");
+        tracing::Span::current().record("outcome", outcome);
+        self.metrics.record(
+            revision_catalog_operation::RELEASE_EXPIRED_ROLLBACKS,
+            outcome,
+        );
+        tracing::debug!(
+            target: "nebula_storage::sqlite",
+            outcome,
+            "plan/flavor catalog release expired rollbacks"
         );
         result
     }

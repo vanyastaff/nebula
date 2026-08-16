@@ -581,6 +581,59 @@ impl PlanFlavorCatalogAdmin for InMemoryPlanFlavorCatalog {
         );
         result
     }
+
+    async fn release_expired_rollbacks(
+        &self,
+        now: DateTime<Utc>,
+    ) -> Result<u64, RevisionCatalogError> {
+        let mut state = self.inner.lock();
+        let expired: Vec<RevisionReferenceOwner> = state
+            .revision_catalog
+            .references
+            .iter()
+            .filter(|(_, row)| {
+                matches!(
+                    row.state,
+                    RevisionReferenceState::Rollback { retain_until, .. } if retain_until <= now
+                )
+            })
+            .map(|(owner, _)| *owner)
+            .collect();
+
+        let mut released = 0_u64;
+        for owner in expired {
+            let reference = state
+                .revision_catalog
+                .references
+                .get(&owner)
+                .expect("expired owner was collected from the same lock")
+                .reference;
+            let (window_id, retain_until) = match state.revision_catalog.references.get(&owner) {
+                Some(row) => match row.state {
+                    RevisionReferenceState::Rollback {
+                        window_id,
+                        retain_until,
+                    } => (window_id, retain_until),
+                    _ => continue,
+                },
+                None => continue,
+            };
+            match transition_reference_locked(
+                &mut state,
+                OwningReferenceTransition::ReleaseRollback {
+                    reference,
+                    window_id,
+                    retain_until,
+                },
+            ) {
+                Ok(ReferenceDecision::Applied | ReferenceDecision::AlreadyApplied) => {
+                    released = released.saturating_add(1);
+                },
+                Err(_) => return Err(RevisionCatalogError::Unavailable),
+            }
+        }
+        Ok(released)
+    }
 }
 
 /// Result of creating the private execution-owned reference.
@@ -609,13 +662,6 @@ pub(super) enum OwningReferenceTransition {
         window_id: RollbackWindowId,
         retain_until: DateTime<Utc>,
     },
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "rollback expiry is composed by the cleanup sweep after #975 lands"
-        )
-    )]
     ReleaseRollback {
         reference: RevisionReference,
         window_id: RollbackWindowId,
