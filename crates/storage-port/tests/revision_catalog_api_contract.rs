@@ -51,6 +51,10 @@ impl PlanFlavorCatalogAdmin for CatalogProbe {
     ) -> Result<(), RevisionCatalogError> {
         Ok(())
     }
+
+    async fn release_expired_rollbacks(&self, _limit: u64) -> Result<u64, RevisionCatalogError> {
+        Ok(0)
+    }
 }
 
 fn plan_id(byte: u8) -> ExecutablePlanRevisionId {

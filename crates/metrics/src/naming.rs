@@ -959,6 +959,8 @@ pub mod revision_catalog_operation {
     pub const BEGIN_DRAIN: &str = "begin_drain";
     /// `PlanFlavorCatalogAdmin::delete_drained`.
     pub const DELETE_DRAINED: &str = "delete_drained";
+    /// `PlanFlavorCatalogAdmin::release_expired_rollbacks`.
+    pub const RELEASE_EXPIRED_ROLLBACKS: &str = "release_expired_rollbacks";
 }
 
 // ---------------------------------------------------------------------------
@@ -1148,6 +1150,7 @@ mod tests {
             revision_catalog_operation::LOAD_EXACT,
             revision_catalog_operation::BEGIN_DRAIN,
             revision_catalog_operation::DELETE_DRAINED,
+            revision_catalog_operation::RELEASE_EXPIRED_ROLLBACKS,
         ];
         let mut unique = HashSet::new();
         for label in labels {
@@ -1155,7 +1158,7 @@ mod tests {
             assert!(label.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'));
             assert!(unique.insert(label));
         }
-        assert_eq!(unique.len(), 4);
+        assert_eq!(unique.len(), 5);
     }
 
     #[test]

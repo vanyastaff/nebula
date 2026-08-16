@@ -30,10 +30,11 @@ use harness::{
     assert_cross_scope_commit_is_rejected, assert_cross_scope_get_is_none,
     assert_dedup_compose_is_atomic, assert_dedup_compose_rejects_duplicate_job_id,
     assert_dedup_compose_rolls_back_on_id_collision, assert_dedup_duplicate_returns_winner_id,
-    assert_dispatch_without_dedup_key, assert_get_published_is_highest_numbered,
-    assert_idempotency_first_writer_wins, assert_idempotency_store_cross_scope_isolated,
-    assert_idempotency_store_first_writer, assert_job_dispatch_fencing,
-    assert_job_dispatch_routes_by_plugin, assert_job_dispatch_routes_by_plugin_superset,
+    assert_dispatch_without_dedup_key, assert_expired_rollbacks_are_released,
+    assert_get_published_is_highest_numbered, assert_idempotency_first_writer_wins,
+    assert_idempotency_store_cross_scope_isolated, assert_idempotency_store_first_writer,
+    assert_job_dispatch_fencing, assert_job_dispatch_routes_by_plugin,
+    assert_job_dispatch_routes_by_plugin_superset,
     assert_job_dispatch_same_processor_aba_is_fenced, assert_journal_visibility_and_scope,
     assert_keyed_start_creates_one_execution, assert_keyed_start_failure_writes_nothing,
     assert_keyed_start_is_scoped_per_tenant, assert_keyed_start_mismatch_writes_nothing,
@@ -217,6 +218,10 @@ matrix!(
 matrix!(
     terminal_commit_rejects_incompatible_reference_transition,
     assert_terminal_commit_rejects_incompatible_reference_transition
+);
+matrix!(
+    expired_rollbacks_are_released,
+    assert_expired_rollbacks_are_released
 );
 matrix!(job_dispatch_fencing, assert_job_dispatch_fencing);
 matrix!(

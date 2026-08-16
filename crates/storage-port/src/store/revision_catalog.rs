@@ -89,6 +89,16 @@ pub trait PlanFlavorCatalogAdmin: Send + Sync + fmt::Debug {
         &self,
         target: PlanFlavorRevisionTarget,
     ) -> Result<(), RevisionCatalogError>;
+
+    /// Release up to `limit` rollback-window references whose retention has
+    /// expired.
+    ///
+    /// The backend owns the clock, so a caller cannot accidentally or
+    /// maliciously pass a future timestamp and release windows that are still
+    /// valid. Expired rollback windows no longer block deletion. Returns the
+    /// number of references released. The operation is idempotent and safe to
+    /// call repeatedly from a bounded cleanup scanner.
+    async fn release_expired_rollbacks(&self, limit: u64) -> Result<u64, RevisionCatalogError>;
 }
 
 #[async_trait]
@@ -134,5 +144,9 @@ where
         target: PlanFlavorRevisionTarget,
     ) -> Result<(), RevisionCatalogError> {
         (**self).delete_drained(target).await
+    }
+
+    async fn release_expired_rollbacks(&self, limit: u64) -> Result<u64, RevisionCatalogError> {
+        (**self).release_expired_rollbacks(limit).await
     }
 }
