@@ -135,6 +135,7 @@ fn make_msg(row_id: u8, required_plugin_key: &str, execution_id: &str) -> JobDis
         vec![key],
         None::<String>,
         0,
+        None,
     )
 }
 

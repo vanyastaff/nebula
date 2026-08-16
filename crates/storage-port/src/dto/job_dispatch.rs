@@ -8,6 +8,7 @@
 //! because the DTO invariant guarantees `required_plugins ⊇ {required_plugin_key}`).
 //! `target_flavor_sha` is a version-pin guard and is never used for routing.
 use nebula_core::PluginKey;
+use nebula_core::WorkerFlavorRevisionId;
 
 use crate::Scope;
 use crate::dto::ControlCommand;
@@ -97,6 +98,11 @@ pub struct JobDispatchMsg {
     pub w3c_traceparent: Option<String>,
     /// Times this row was reclaimed back to `Pending` after a crashed runner.
     pub reclaim_count: u32,
+    /// Exact worker-flavor revision required to claim this job (#974).
+    ///
+    /// A worker whose flavor does not match cannot claim the row. `None`
+    /// on legacy rows that predate exact-revision dispatch.
+    pub required_worker_flavor_id: Option<WorkerFlavorRevisionId>,
 }
 
 impl JobDispatchMsg {
@@ -124,6 +130,7 @@ impl JobDispatchMsg {
         required_plugins: Vec<PluginKey>,
         w3c_traceparent: Option<impl Into<String>>,
         reclaim_count: u32,
+        required_worker_flavor_id: Option<WorkerFlavorRevisionId>,
     ) -> Self {
         debug_assert!(
             required_plugins.contains(&required_plugin_key),
@@ -144,6 +151,7 @@ impl JobDispatchMsg {
             required_plugins,
             w3c_traceparent: w3c_traceparent.map(Into::into),
             reclaim_count,
+            required_worker_flavor_id,
         }
     }
 }

@@ -577,6 +577,7 @@ async fn knife_step3_manually_composed_consumer_dispatches_start() {
                 checkpoints: Arc::new(nebula_storage::inmem::InMemoryCheckpointStore::new()),
                 idempotency: Arc::new(nebula_storage::inmem::InMemoryIdempotencyGuard::new()),
                 resume_tokens: Arc::new(nebula_storage::InMemoryResumeTokenStore::standalone()),
+                operation_ledger: None,
             })
             .with_workflow_stores(WorkflowStores {
                 workflow: Arc::new(nebula_tenancy::ScopedWorkflowStore::new(

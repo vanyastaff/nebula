@@ -31,7 +31,7 @@ use std::sync::Arc;
 use nebula_storage_port::dto::NodeResultRecord;
 use nebula_storage_port::store::{
     CheckpointStore, ExecutionJournalReader, ExecutionStore, IdempotencyGuard, NodeResultStore,
-    ResumeTokenStore, WorkflowStore, WorkflowVersionStore,
+    OperationLedger, ResumeTokenStore, WorkflowStore, WorkflowVersionStore,
 };
 use nebula_storage_port::{FencingToken, Scope, StorageError};
 
@@ -132,6 +132,9 @@ pub struct ExecutionStores {
     /// Mint-on-park resume tokens: atomic insert at park time (W-S3c),
     /// consume at resume time (W-S3d), revoke on terminal (W-S3e).
     pub resume_tokens: Arc<dyn ResumeTokenStore>,
+    /// ADR-0120 operation ledger: prepares, commits, and adjudicates
+    /// durable effect-slot outcomes (#978).
+    pub operation_ledger: Option<Arc<dyn OperationLedger>>,
 }
 
 impl std::fmt::Debug for ExecutionStores {

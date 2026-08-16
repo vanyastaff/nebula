@@ -101,6 +101,7 @@ impl TestStores {
             checkpoints: self.checkpoints.clone(),
             idempotency: self.idempotency.clone(),
             resume_tokens: Arc::new(self.execution.resume_token_store()),
+            operation_ledger: None,
         }
     }
 
@@ -351,6 +352,7 @@ async fn sink_dispatch_drives_resume_execution() {
         vec![test_plugin_key],
         None::<String>,
         0,
+        None,
     );
 
     let fence = mint_turn_fence(&stores, execution_id).await;
@@ -404,6 +406,7 @@ async fn sink_dispatch_redelivery_is_idempotent() {
         vec![test_plugin_key],
         None::<String>,
         0,
+        None,
     );
 
     // First dispatch — drives execution to Completed under the handoff fence.

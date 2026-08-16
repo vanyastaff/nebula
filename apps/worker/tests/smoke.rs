@@ -102,6 +102,7 @@ impl TestStores {
             checkpoints: self.checkpoints.clone(),
             idempotency: self.idempotency.clone(),
             resume_tokens: Arc::new(self.execution.resume_token_store()),
+            operation_ledger: None,
         }
     }
 
@@ -282,6 +283,7 @@ async fn core_flavor_runtime_processes_seeded_start_job() {
         vec![plugin_key],
         None::<String>,
         0,
+        None,
     );
     queue
         .enqueue(&msg)

@@ -421,6 +421,7 @@ mod job_ownership_tests {
             vec!["plugin-a".parse().unwrap()],
             None::<String>,
             0,
+            None,
         )
     }
 

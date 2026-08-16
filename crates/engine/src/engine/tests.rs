@@ -235,6 +235,7 @@ impl TestStores {
             checkpoints: self.checkpoints.clone(),
             idempotency: self.idempotency.clone(),
             resume_tokens: Arc::new(self.execution.resume_token_store()),
+            operation_ledger: None,
         }
     }
 
@@ -2282,6 +2283,7 @@ async fn runtime_failure_checkpoint_error_aborts_before_edge_routing() {
         checkpoints: stores.checkpoints.clone(),
         idempotency: stores.idempotency.clone(),
         resume_tokens: Arc::new(nebula_storage::InMemoryResumeTokenStore::standalone()),
+        operation_ledger: None,
     };
 
     let (engine, _) = make_engine(registry);
@@ -2458,6 +2460,7 @@ async fn setup_failure_checkpoint_error_aborts_before_edge_routing() {
         checkpoints: stores.checkpoints.clone(),
         idempotency: stores.idempotency.clone(),
         resume_tokens: Arc::new(nebula_storage::InMemoryResumeTokenStore::standalone()),
+        operation_ledger: None,
     };
 
     let (engine, _) = make_engine(registry);
@@ -4391,6 +4394,7 @@ async fn final_cas_conflict_with_external_cancel_honors_external_status() {
         checkpoints: stores.checkpoints.clone(),
         idempotency: stores.idempotency.clone(),
         resume_tokens: Arc::new(inner.resume_token_store()),
+        operation_ledger: None,
     };
 
     let (engine, _) = make_engine(registry);
@@ -4478,6 +4482,7 @@ async fn node_checkpoint_cas_conflict_surfaces_observed_status() {
         checkpoints: stores.checkpoints.clone(),
         idempotency: stores.idempotency.clone(),
         resume_tokens: Arc::new(inner.resume_token_store()),
+        operation_ledger: None,
     };
 
     let (engine, _) = make_engine(registry);

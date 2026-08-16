@@ -193,6 +193,7 @@ impl DurableExecutionEmitter {
             route.required_plugins.clone(),
             None::<String>, // w3c_traceparent: future D1
             0,              // reclaim_count: 0 on first enqueue
+            None,           // required_worker_flavor_id (#974)
         );
 
         let workflow_id_str = workflow_id.to_string();

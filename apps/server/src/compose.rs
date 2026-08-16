@@ -406,6 +406,7 @@ fn build_memory_execution_stores() -> Result<ExecutionStoreBundle, TransportInit
                 // as evidence rather than implying atomicity.
                 idempotency: Arc::new(InMemoryIdempotencyGuard::new()),
                 resume_tokens: resume_token_store,
+                operation_ledger: None,
             },
             workflow_stores: nebula_engine::WorkflowStores {
                 workflow: Arc::new(workflow_store.clone()),
@@ -525,6 +526,7 @@ async fn build_sqlite_execution_stores(
             checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
             idempotency: Arc::new(SqliteIdempotencyGuard::new(pool.clone())),
             resume_tokens: Arc::clone(&resume_token_store),
+            operation_ledger: None,
         },
         workflow_stores: nebula_engine::WorkflowStores {
             workflow: Arc::clone(&workflow_store),
@@ -647,6 +649,7 @@ async fn build_pg_execution_stores(
             checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
             idempotency: Arc::new(PgIdempotencyGuard::new(pool.clone())),
             resume_tokens: Arc::clone(&resume_token_store),
+            operation_ledger: None,
         },
         workflow_stores: nebula_engine::WorkflowStores {
             workflow: Arc::clone(&workflow_store),

@@ -2172,6 +2172,10 @@ impl WorkflowEngine {
                 resources,
                 credential_refresh,
                 rate_limiter,
+                operation_ledger: self
+                    .stores
+                    .as_ref()
+                    .and_then(|s| s.operation_ledger.clone()),
             }
             .run(),
         );

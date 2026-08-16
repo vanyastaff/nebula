@@ -84,6 +84,7 @@ fn make_job(
         vec![plugin],
         None::<String>,
         0,
+        None,
     )
 }
 

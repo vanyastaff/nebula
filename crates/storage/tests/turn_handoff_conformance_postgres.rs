@@ -126,6 +126,7 @@ impl Fixture {
             vec![plugin],
             None::<String>,
             0,
+            None,
         );
         self.queue.enqueue(&msg).await.expect("the job enqueues");
         let claimed = self

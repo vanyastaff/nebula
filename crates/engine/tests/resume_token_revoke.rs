@@ -440,6 +440,7 @@ impl RevokeHarness {
             checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
             idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
             resume_tokens,
+            operation_ledger: None,
         };
         let workflow_stores = nebula_engine::WorkflowStores {
             workflow,
@@ -518,6 +519,7 @@ impl RevokeHarness {
             checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
             idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
             resume_tokens,
+            operation_ledger: None,
         };
         let workflow_stores = nebula_engine::WorkflowStores {
             workflow,

@@ -96,6 +96,7 @@ impl TestStores {
             checkpoints: self.checkpoints.clone(),
             idempotency: self.idempotency.clone(),
             resume_tokens: Arc::new(self.execution.resume_token_store()),
+            operation_ledger: None,
         }
     }
 
@@ -339,6 +340,7 @@ async fn worker_runtime_drives_execution_to_completed() {
         vec![plugin_key.clone()],
         None::<String>,
         0,
+        None,
     );
     queue.enqueue(&msg).await.expect("enqueue Start job");
 
@@ -504,6 +506,7 @@ async fn reclaim_then_rerun_drives_exactly_once_via_real_sink() {
         vec![plugin_key.clone()],
         None::<String>,
         0,
+        None,
     );
     queue.enqueue(&msg).await.expect("enqueue Start job");
 
@@ -655,6 +658,7 @@ async fn redelivered_start_on_running_or_terminal_is_noop() {
         vec![plugin_key],
         None::<String>,
         0,
+        None,
     );
 
     // First dispatch: drives Created → Completed under the handoff fence;
@@ -770,6 +774,7 @@ async fn job_dispatch_row_exhausted_to_failed_leaves_execution_intact() {
         vec![plugin_key.clone()],
         None::<String>,
         0,
+        None,
     );
     queue.enqueue(&msg).await.expect("enqueue job");
 

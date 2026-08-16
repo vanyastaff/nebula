@@ -575,6 +575,7 @@ async fn idempotency_key_differentiates_attempts() {
         checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
         idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
         resume_tokens: Arc::new(execution.resume_token_store()),
+        operation_ledger: None,
     };
     let engine = make_engine(registry).with_execution_stores(stores);
 

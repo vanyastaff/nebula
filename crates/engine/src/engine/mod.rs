@@ -46,7 +46,7 @@ use nebula_metrics::naming::{
     NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL, engine_lease_contention_reason,
 };
 use nebula_metrics::{Counter, Histogram, MetricsRegistry};
-use nebula_plugin::PluginRegistry;
+use nebula_plugin::{FrozenPluginRegistry, PluginRegistry};
 use nebula_workflow::{DependencyGraph, NodeState, WorkflowDefinition};
 use tokio::{
     sync::{Semaphore, mpsc, oneshot},
@@ -291,6 +291,12 @@ pub struct WorkflowEngine {
     /// node-result / idempotency / checkpoint). `None` puts the engine in
     /// single-process library mode (no coordination seam, no lease).
     stores: Option<crate::store_seam::ExecutionStores>,
+    /// Optional exact plan/flavor revision loader (#974).
+    ///
+    /// When set, the resume path uses it to load the plan/flavor pair pinned
+    /// by the execution's revision reference instead of falling back to the
+    /// currently-published workflow version.
+    plan_flavor_loader: Option<Arc<crate::revision_catalog::PlanFlavorRevisionLoader>>,
     /// Optional spec-16 workflow-definition port bundle for the resume
     /// path (workflow-row + version stores).
     workflow_stores: Option<crate::store_seam::WorkflowStores>,
@@ -569,6 +575,7 @@ impl WorkflowEngine {
             resource_slot_identities_by_execution: DashMap::new(),
             stores: None,
             workflow_stores: None,
+            plan_flavor_loader: None,
             credential_resolver: None,
             credential_refresh: None,
             action_credentials: HashMap::new(),
@@ -610,6 +617,39 @@ impl WorkflowEngine {
             },
             None => false,
         }
+    }
+
+    /// Validate the execution's revision pins against a frozen registry (#974).
+    ///
+    /// When the execution carries exact plan/flavor revision pins and a
+    /// `PlanFlavorRevisionLoader` is configured, this method loads and
+    /// revalidates the exact pair. A missing, corrupt, or mismatched revision
+    /// fails closed — the caller must not proceed with execution.
+    ///
+    /// Call this from the composition root before dispatching a Start/Resume
+    /// when the execution state carries revision pins.
+    pub async fn validate_revision_pins(
+        &self,
+        exec_state: &ExecutionState,
+        frozen_registry: Arc<FrozenPluginRegistry>,
+    ) -> Result<(), EngineError> {
+        let (Some(plan_id), Some(flavor_id)) = (
+            exec_state.executable_plan_revision_id,
+            exec_state.worker_flavor_revision_id,
+        ) else {
+            return Ok(()); // No pins to validate — legacy execution
+        };
+        let Some(loader) = &self.plan_flavor_loader else {
+            return Ok(()); // No loader configured — library mode
+        };
+        let ids = nebula_storage_port::PlanFlavorRevisionIds::new(plan_id, flavor_id);
+        loader.load_exact(ids, frozen_registry).await.map_err(|e| {
+            EngineError::PlanningFailed(format!(
+                "exact revision validation failed for {}: {e}",
+                exec_state.execution_id
+            ))
+        })?;
+        Ok(())
     }
 
     /// Deliver a `Resume` to a LIVE frontier loop owned by THIS runner and
@@ -1417,6 +1457,20 @@ impl WorkflowEngine {
     #[must_use = "builder methods must be chained or built"]
     pub fn with_workflow_stores(mut self, stores: crate::store_seam::WorkflowStores) -> Self {
         self.workflow_stores = Some(stores);
+        self
+    }
+
+    /// Set the exact plan/flavor revision loader for the resume path (#974).
+    ///
+    /// When set and the execution carries revision pins, the resume path
+    /// loads the exact plan/flavor pair instead of falling back to the
+    /// currently-published workflow version.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_plan_flavor_loader(
+        mut self,
+        loader: crate::revision_catalog::PlanFlavorRevisionLoader,
+    ) -> Self {
+        self.plan_flavor_loader = Some(Arc::new(loader));
         self
     }
 
@@ -2586,6 +2640,8 @@ struct NodeTask {
     credential_refresh: Option<CredentialRefreshFn>,
     /// Optional rate limiter shared with other nodes using the same ActionKey.
     rate_limiter: Option<Arc<nebula_resilience::rate_limiter::TokenBucket>>,
+    /// ADR-0120 operation ledger for durable effect-slot tracking (#978).
+    operation_ledger: Option<Arc<dyn nebula_storage_port::store::OperationLedger>>,
 }
 
 impl NodeTask {
@@ -2694,6 +2750,38 @@ impl NodeTask {
         // `factory.instantiate(node, ctx)` to build a fresh erased
         // action, then dispatches the matching variant. The factory
         // spine is the sole dispatch path as of ADR-0098 D0 PR3.
+
+        // #978: prepare a durable effect slot before the provider is invoked.
+        // A failure here means the provider must NOT be called: without a
+        // durably prepared slot, a crash or retry could repeat an effect the
+        // ledger cannot adjudicate.
+        if let Some(ref ledger) = self.operation_ledger {
+            use nebula_storage_port::dto::{
+                AttemptGeneration, DestinationCapability, EffectSlotBinding, RequestFingerprint,
+            };
+            let scope = Scope::new("nebula", "nebula");
+            let binding = EffectSlotBinding {
+                scope: &scope,
+                execution_id: &self.execution_id.to_string(),
+                node_key: self.node_key.as_str(),
+                occurrence: "main",
+                attempt_generation: AttemptGeneration::new(1),
+                fingerprint: RequestFingerprint::new(1, [0u8; 32]),
+                destination: DestinationCapability::Opaque,
+            };
+            if let Err(e) = ledger.prepare(&binding).await {
+                return (
+                    self.node_key.clone(),
+                    Err(EngineError::Runtime(
+                        crate::runtime::RuntimeError::Internal(format!(
+                            "operation ledger prepare failed for {:?}: {e}",
+                            self.node_key
+                        )),
+                    )),
+                );
+            }
+        }
+
         let result = self
             .runtime
             .execute_action_with_node(

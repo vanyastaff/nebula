@@ -158,6 +158,7 @@ impl ExecutionSink for EngineExecutionSink {
             execution_id = %turn.msg.execution_id,
             command      = turn.msg.command.as_str(),
             reclaim      = turn.msg.reclaim_count,
+            None,
             fence_generation = turn.fence.generation(),
         )
     )]
@@ -300,6 +301,7 @@ mod tests {
             vec![plugin_key],
             None::<String>,
             0,
+            None,
         );
 
         // The fence never matters here: read_status short-circuits with

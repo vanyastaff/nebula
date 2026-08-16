@@ -3638,6 +3638,7 @@ fn make_job(id: u8, required_plugin_key: &str, tags: &[&str]) -> JobDispatchMsg 
         required_plugins,
         None::<&str>,
         0,
+        None,
     )
 }
 

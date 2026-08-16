@@ -1086,6 +1086,7 @@ pub(crate) mod engine_seam {
                     checkpoints: Arc::new(nebula_storage::inmem::InMemoryCheckpointStore::new()),
                     idempotency: Arc::new(nebula_storage::inmem::InMemoryIdempotencyGuard::new()),
                     resume_tokens: Arc::new(nebula_storage::InMemoryResumeTokenStore::standalone()),
+                    operation_ledger: None,
                 })
                 .with_workflow_stores(nebula_engine::WorkflowStores {
                     workflow: Arc::new(ScopedWorkflowStore::new(

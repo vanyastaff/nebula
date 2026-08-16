@@ -19,6 +19,11 @@ use nebula_metrics::naming::{
     NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_ACTION_FAILURES_TOTAL, dispatch_reject_reason,
 };
 use nebula_metrics::{Counter, Histogram, MetricsError, MetricsRegistry};
+use nebula_storage_port::dto::{
+    AttemptGeneration, EffectSlotBinding, EffectSlotId, KnownOutcome, PrepareOutcome,
+};
+use nebula_storage_port::store::OperationLedger;
+use nebula_storage_port::{OperationLedgerError, Scope};
 use nebula_workflow::NodeDefinition;
 use serde::{Deserialize, Serialize};
 
@@ -139,6 +144,8 @@ pub struct ActionRuntime {
     /// Sum of estimated output bytes per execution for
     /// [`DataPassingPolicy::max_total_execution_bytes`].
     execution_output_totals: Arc<DashMap<ExecutionId, u64>>,
+    /// ADR-0120 operation ledger for durable effect-slot tracking (#978).
+    operation_ledger: Option<Arc<dyn OperationLedger>>,
 }
 
 impl ActionRuntime {
@@ -168,6 +175,7 @@ impl ActionRuntime {
             action_executions_total,
             blob_storage: None,
             execution_output_totals: Arc::new(DashMap::new()),
+            operation_ledger: None,
         })
     }
 
@@ -177,6 +185,13 @@ impl ActionRuntime {
     /// entries do not accumulate forever ([`DataPassingPolicy::max_total_execution_bytes`]).
     pub fn clear_execution_output_totals(&self, execution_id: ExecutionId) {
         self.execution_output_totals.remove(&execution_id);
+    }
+
+    /// Set the ADR-0120 operation ledger for durable effect-slot tracking (#978).
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_operation_ledger(mut self, ledger: Arc<dyn OperationLedger>) -> Self {
+        self.operation_ledger = Some(ledger);
+        self
     }
 
     /// Access the action registry.
@@ -192,6 +207,35 @@ impl ActionRuntime {
     pub fn with_blob_storage(mut self, storage: Arc<dyn BlobStorage>) -> Self {
         self.blob_storage = Some(storage);
         self
+    }
+
+    /// Prepare a durable effect slot before executing an action (#978).
+    pub async fn prepare_effect(
+        &self,
+        binding: &EffectSlotBinding<'_>,
+    ) -> Option<Result<PrepareOutcome, OperationLedgerError>> {
+        match &self.operation_ledger {
+            Some(ledger) => Some(ledger.prepare(binding).await),
+            None => None,
+        }
+    }
+
+    /// Commit the outcome of a previously prepared effect slot (#978).
+    pub async fn commit_effect(
+        &self,
+        scope: &Scope,
+        slot_id: EffectSlotId,
+        generation: AttemptGeneration,
+        outcome: KnownOutcome,
+    ) -> Option<Result<(), OperationLedgerError>> {
+        match &self.operation_ledger {
+            Some(ledger) => Some(
+                ledger
+                    .commit_outcome(scope, slot_id, generation, outcome)
+                    .await,
+            ),
+            None => None,
+        }
     }
 
     /// Access the data passing policy.

@@ -104,6 +104,7 @@ fn row_to_msg(row: &sqlx::sqlite::SqliteRow) -> Result<JobDispatchMsg, StorageEr
         row.try_get::<Option<String>, _>("w3c_traceparent")
             .map_err(conn_err)?,
         row.try_get::<i64, _>("reclaim_count").map_err(conn_err)? as u32,
+        None,
     ))
 }
 

@@ -156,6 +156,7 @@ fn row_to_msg(row: &sqlx::postgres::PgRow) -> Result<JobDispatchMsg, StorageErro
         row.try_get::<Option<String>, _>("w3c_traceparent")
             .map_err(conn_err)?,
         row.try_get::<i32, _>("reclaim_count").map_err(conn_err)? as u32,
+        None,
     ))
 }
 

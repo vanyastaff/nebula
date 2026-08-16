@@ -3,7 +3,9 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
-use nebula_core::{ExecutionId, NodeKey, WorkflowId};
+use nebula_core::{
+    ExecutablePlanRevisionId, ExecutionId, NodeKey, WorkerFlavorRevisionId, WorkflowId,
+};
 use nebula_workflow::NodeState;
 use serde::{Deserialize, Serialize};
 
@@ -365,6 +367,21 @@ pub struct ExecutionState {
     /// published version.
     #[serde(default)]
     pub workflow_version_number: Option<u32>,
+    /// Exact executable-plan revision this execution is pinned to (#974).
+    ///
+    /// Persisted so resume/re-drive loads the same plan even if the
+    /// registry is replaced. Legacy rows that predate this field
+    /// deserialize as `None` and the engine falls back to the
+    /// currently-published version.
+    #[serde(default)]
+    pub executable_plan_revision_id: Option<ExecutablePlanRevisionId>,
+    /// Exact worker-flavor revision this execution is pinned to (#974).
+    ///
+    /// Persisted so resume/re-drive validates the same flavor even if the
+    /// registry is replaced. Legacy rows that predate this field
+    /// deserialize as `None`.
+    #[serde(default)]
+    pub worker_flavor_revision_id: Option<WorkerFlavorRevisionId>,
     /// Current execution status.
     pub status: ExecutionStatus,
     /// Per-node execution states.
@@ -455,6 +472,8 @@ impl ExecutionState {
             execution_id,
             workflow_id,
             workflow_version_number: None,
+            executable_plan_revision_id: None,
+            worker_flavor_revision_id: None,
             status: ExecutionStatus::Created,
             node_states,
             version: 0,
@@ -469,6 +488,18 @@ impl ExecutionState {
             terminated_by: None,
             total_retries: 0,
         }
+    }
+
+    /// Attach the exact plan/flavor revision pair this execution is pinned to.
+    ///
+    /// Call once at start time, before the execution is persisted (#974).
+    pub fn set_revision_ids(
+        &mut self,
+        plan_id: ExecutablePlanRevisionId,
+        flavor_id: WorkerFlavorRevisionId,
+    ) {
+        self.executable_plan_revision_id = Some(plan_id);
+        self.worker_flavor_revision_id = Some(flavor_id);
     }
 
     /// Attach the published workflow version number this execution starts under.

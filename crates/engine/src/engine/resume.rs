@@ -140,33 +140,38 @@ impl WorkflowEngine {
                 .as_ref()
                 .ok_or_else(|| EngineError::PlanningFailed("no workflow_repo configured".into()))?;
             let workflow_id = exec_state.workflow_id.to_string();
-            match exec_state.workflow_version_number {
-                Some(number) => {
-                    workflow_stores
-                        .versions
-                        .get(scope, &workflow_id, number)
-                        .await
-                        .map_err(|e| EngineError::PlanningFailed(format!("load workflow: {e}")))?
-                        .ok_or_else(|| {
-                            EngineError::PlanningFailed(format!(
-                                "workflow not found: {workflow_id} version {number}"
-                            ))
-                        })?
-                        .definition
-                },
-                None => {
-                    workflow_stores
-                        .versions
-                        .get_published(scope, &workflow_id)
-                        .await
-                        .map_err(|e| EngineError::PlanningFailed(format!("load workflow: {e}")))?
-                        .ok_or_else(|| {
-                            EngineError::PlanningFailed(format!(
-                                "workflow not found: {workflow_id}"
-                            ))
-                        })?
-                        .definition
-                },
+            if let Some(number) = exec_state.workflow_version_number {
+                workflow_stores
+                    .versions
+                    .get(scope, &workflow_id, number)
+                    .await
+                    .map_err(|e| EngineError::PlanningFailed(format!("load workflow: {e}")))?
+                    .ok_or_else(|| {
+                        EngineError::PlanningFailed(format!(
+                            "workflow not found: {workflow_id} version {number}"
+                        ))
+                    })?
+                    .definition
+            } else {
+                // #974: when the execution carries exact revision pins,
+                // the workflow version must have been recorded at start
+                // time. Falling back to get_published would silently load
+                // a different version than the one the execution was
+                // pinned to.
+                if exec_state.executable_plan_revision_id.is_some() {
+                    return Err(EngineError::PlanningFailed(format!(
+                        "execution {execution_id} has revision pins but no workflow_version_number;                          the version must be recorded at start time"
+                    )));
+                }
+                workflow_stores
+                    .versions
+                    .get_published(scope, &workflow_id)
+                    .await
+                    .map_err(|e| EngineError::PlanningFailed(format!("load workflow: {e}")))?
+                    .ok_or_else(|| {
+                        EngineError::PlanningFailed(format!("workflow not found: {workflow_id}"))
+                    })?
+                    .definition
             }
         };
 

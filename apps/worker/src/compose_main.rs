@@ -190,6 +190,7 @@ async fn build_stores(
             checkpoints,
             idempotency,
             resume_tokens,
+            operation_ledger: None,
         };
         let workflow_stores = WorkflowStores {
             workflow: workflow_store,
@@ -289,6 +290,7 @@ async fn build_pg_stores(
         checkpoints,
         idempotency,
         resume_tokens,
+        operation_ledger: None,
     };
     let workflow_stores = WorkflowStores {
         workflow: workflow_store,
