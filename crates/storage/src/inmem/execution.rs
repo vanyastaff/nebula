@@ -384,11 +384,20 @@ impl ExecutionStore for InMemoryExecutionStore {
                 st.resume_tokens.insert(hash_key, token_row.clone());
             }
         }
+        if let Some(transition) = batch.reference_transition()
+            && let Ok(execution_id) = id.parse::<nebula_core::id::ExecutionId>()
+        {
+            super::plan_flavor_catalog::apply_reference_transition_locked(
+                &mut st,
+                execution_id,
+                transition,
+            )?;
+        }
         tracing::debug!(
             target: "nebula_storage::inmem",
             execution_id = %id,
             new_version,
-            "commit applied (state + outbox + journal + resume_tokens)"
+            "commit applied (state + outbox + journal + resume_tokens + reference_transition)"
         );
         Ok(TransitionOutcome::Applied { new_version })
     }

@@ -25,7 +25,9 @@ mod scope;
 /// Repository traits (ISP-segregated, object-safe).
 pub mod store;
 
-pub use batch::{TransitionBatch, TransitionBatchBuilder, TransitionOutcome};
+pub use batch::{
+    ExecutionReferenceTransition, TransitionBatch, TransitionBatchBuilder, TransitionOutcome,
+};
 pub use dto::credential::{
     CredentialCommit, CredentialCreate, CredentialMaterialEpoch, CredentialMaterialEpochError,
     CredentialMaterialTransition, CredentialOwner, CredentialRecordState, CredentialReplacement,

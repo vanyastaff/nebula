@@ -295,12 +295,40 @@ impl ExecutionStore for SqliteExecutionStore {
             .map_err(conn_err)?;
         }
 
+        if let Some(transition) = batch.reference_transition() {
+            match transition {
+                nebula_storage_port::ExecutionReferenceTransition::ReleaseLive => {
+                    sqlx::query(
+                        "UPDATE port_execution_revision_refs                          SET reference_state = 'released', rollback_window_id = NULL,                              retain_until_ms = NULL                          WHERE execution_id = ? AND reference_state IN ('live', 'released')",
+                    )
+                    .bind(&id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(conn_err)?;
+                },
+                nebula_storage_port::ExecutionReferenceTransition::RetainRollback {
+                    window_id,
+                    retain_until,
+                } => {
+                    sqlx::query(
+                        "UPDATE port_execution_revision_refs                          SET reference_state = 'rollback', rollback_window_id = ?,                              retain_until_ms = ?                          WHERE execution_id = ? AND reference_state = 'live'",
+                    )
+                    .bind(window_id.as_slice())
+                    .bind(retain_until.timestamp_millis())
+                    .bind(&id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(conn_err)?;
+                },
+            }
+        }
+
         tx.commit().await.map_err(conn_err)?;
         tracing::debug!(
             target: "nebula_storage::sqlite",
             execution_id = %id,
             new_version,
-            "commit applied (state + outbox + journal + resume_tokens in one tx)"
+            "commit applied (state + outbox + journal + resume_tokens + reference_transition in one tx)"
         );
         Ok(TransitionOutcome::Applied { new_version })
     }

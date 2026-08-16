@@ -38,10 +38,10 @@ use nebula_storage_port::store::{
     WebhookActivationStore, WorkflowStore, WorkflowVersionStore,
 };
 use nebula_storage_port::{
-    BeginDrainOutcome, FencingToken, PlanFlavorCatalogAdmin, PlanFlavorCatalogWriter,
-    PlanFlavorRevisionIds, PlanFlavorRevisionRecord, PlanFlavorRevisionTarget,
-    RevisionInsertOutcome, RevisionRecordBytes, Scope, StorageError, TransitionBatch,
-    TransitionOutcome, WorkerFlavorRevisionRecord,
+    BeginDrainOutcome, ExecutionReferenceTransition, FencingToken, PlanFlavorCatalogAdmin,
+    PlanFlavorCatalogWriter, PlanFlavorRevisionIds, PlanFlavorRevisionRecord,
+    PlanFlavorRevisionTarget, RevisionInsertOutcome, RevisionRecordBytes, Scope, StorageError,
+    TransitionBatch, TransitionOutcome, WorkerFlavorRevisionRecord,
 };
 
 /// A storage backend under conformance test. Returns port handles built on
@@ -3272,6 +3272,163 @@ pub(crate) async fn assert_materialized_start_rejects_mismatched_command_and_wri
         "[{}] a bad-command rejection must leave no Start command behind",
         backend.name()
     );
+}
+
+// ── terminal reference transition conformance assertions ─────────────────
+
+async fn assert_reference_counts(
+    backend: &dyn Backend,
+    record: &PlanFlavorRevisionRecord,
+    live: u64,
+    rollback: u64,
+) {
+    let admin = backend.plan_flavor_catalog_admin().await;
+    let outcome = admin
+        .begin_drain(PlanFlavorRevisionTarget::ExecutablePlan(
+            record.ids().plan(),
+        ))
+        .await;
+    match outcome {
+        Ok(BeginDrainOutcome::Started(counts) | BeginDrainOutcome::AlreadyDraining(counts)) => {
+            assert_eq!(
+                counts.live_executions(),
+                live,
+                "[{}] live reference count after terminal transition",
+                backend.name()
+            );
+            assert_eq!(
+                counts.rollback_windows(),
+                rollback,
+                "[{}] rollback-window count after terminal transition",
+                backend.name()
+            );
+        },
+        Err(error) => panic!(
+            "[{}] begin_drain failed while counting references: {error:?}",
+            backend.name()
+        ),
+    }
+}
+
+/// A terminal commit with `ReleaseLive` releases the materialized execution's
+/// live revision reference atomically with the aggregate state change.
+pub(crate) async fn assert_terminal_commit_releases_live_reference(backend: &dyn Backend) {
+    let acceptance = backend.start_acceptance_store().await;
+    let executions = backend.execution_store().await;
+    let scope = scope_a();
+    let (workflow_id, initial_state) = make_new_execution();
+    let execution_id = ExecutionId::new().to_string();
+    let record = install_materialized_pair(backend, 0x70).await;
+    let command = start_command(0x70, &execution_id);
+
+    let accepted = acceptance
+        .materialize_keyed_start(&MaterializedKeyedStart {
+            keyed: KeyedStart {
+                scope: &scope,
+                start_key: "mat-key-term-release",
+                fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [0x30; 32]),
+                execution_id: &execution_id,
+                execution: NewExecution::new(&workflow_id, &initial_state),
+                command: &command,
+            },
+            identity: materialized_identity(0x70),
+        })
+        .await
+        .expect("materialize execution for terminal release");
+    assert!(matches!(accepted, StartMaterialization::Accepted { .. }));
+
+    let token = executions
+        .acquire_lease(
+            &scope,
+            &execution_id,
+            "terminal-release",
+            std::time::Duration::from_secs(30),
+        )
+        .await
+        .expect("acquire lease")
+        .expect("lease must be available for a fresh execution");
+
+    let batch = TransitionBatch::builder()
+        .scope(scope.clone())
+        .execution_id(execution_id.clone())
+        .expected_version(0)
+        .fencing(token)
+        .new_state(serde_json::json!({"status": "Completed"}))
+        .reference_transition(ExecutionReferenceTransition::ReleaseLive)
+        .build()
+        .expect("terminal release batch");
+    let outcome = executions
+        .commit(batch)
+        .await
+        .expect("terminal commit must apply");
+    assert!(
+        matches!(outcome, TransitionOutcome::Applied { .. }),
+        "[{}] terminal release commit must apply, got {outcome:?}",
+        backend.name()
+    );
+    assert_reference_counts(backend, &record, 0, 0).await;
+}
+
+/// A terminal commit with `RetainRollback` moves the live reference into a
+/// rollback window in the same transaction.
+pub(crate) async fn assert_terminal_commit_retains_rollback_window(backend: &dyn Backend) {
+    let acceptance = backend.start_acceptance_store().await;
+    let executions = backend.execution_store().await;
+    let scope = scope_a();
+    let (workflow_id, initial_state) = make_new_execution();
+    let execution_id = ExecutionId::new().to_string();
+    let record = install_materialized_pair(backend, 0x71).await;
+    let command = start_command(0x71, &execution_id);
+
+    let accepted = acceptance
+        .materialize_keyed_start(&MaterializedKeyedStart {
+            keyed: KeyedStart {
+                scope: &scope,
+                start_key: "mat-key-term-rollback",
+                fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [0x31; 32]),
+                execution_id: &execution_id,
+                execution: NewExecution::new(&workflow_id, &initial_state),
+                command: &command,
+            },
+            identity: materialized_identity(0x71),
+        })
+        .await
+        .expect("materialize execution for rollback retention");
+    assert!(matches!(accepted, StartMaterialization::Accepted { .. }));
+
+    let token = executions
+        .acquire_lease(
+            &scope,
+            &execution_id,
+            "terminal-rollback",
+            std::time::Duration::from_secs(30),
+        )
+        .await
+        .expect("acquire lease")
+        .expect("lease must be available for a fresh execution");
+
+    let batch = TransitionBatch::builder()
+        .scope(scope.clone())
+        .execution_id(execution_id.clone())
+        .expected_version(0)
+        .fencing(token)
+        .new_state(serde_json::json!({"status": "Completed"}))
+        .reference_transition(ExecutionReferenceTransition::RetainRollback {
+            window_id: [0x71; 16],
+            retain_until: chrono::Utc::now() + chrono::TimeDelta::minutes(5),
+        })
+        .build()
+        .expect("terminal rollback batch");
+    let outcome = executions
+        .commit(batch)
+        .await
+        .expect("terminal commit must apply");
+    assert!(
+        matches!(outcome, TransitionOutcome::Applied { .. }),
+        "[{}] terminal rollback commit must apply, got {outcome:?}",
+        backend.name()
+    );
+    assert_reference_counts(backend, &record, 0, 1).await;
 }
 
 // ── job-dispatch + dedup conformance assertions ───────────────────────────

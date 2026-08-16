@@ -47,6 +47,7 @@ use harness::{
     assert_materialized_start_replays_original_receipt, assert_non_resume_row_still_exhausts,
     assert_resume_row_exempt_from_reclaim_budget, assert_resume_target_survives_queue_round_trip,
     assert_save_with_published_version_is_atomic, assert_stale_fencing_is_fenced_out,
+    assert_terminal_commit_releases_live_reference, assert_terminal_commit_retains_rollback_window,
     assert_trigger_dedup_first_writer, assert_trigger_dedup_is_scoped,
     assert_webhook_activation_and_scope, assert_webhook_system_surface,
     assert_workflow_store_contract, skip_reason,
@@ -203,6 +204,14 @@ matrix!(
 matrix!(
     materialized_start_rejects_mismatched_flavor_and_writes_nothing,
     assert_materialized_start_rejects_mismatched_flavor_and_writes_nothing
+);
+matrix!(
+    terminal_commit_releases_live_reference,
+    assert_terminal_commit_releases_live_reference
+);
+matrix!(
+    terminal_commit_retains_rollback_window,
+    assert_terminal_commit_retains_rollback_window
 );
 matrix!(job_dispatch_fencing, assert_job_dispatch_fencing);
 matrix!(
