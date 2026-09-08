@@ -823,11 +823,14 @@ impl Manager {
     /// it does not wait for provider teardown or outstanding handles. An
     /// existing key returns [`ErrorKind::Backpressure`](crate::ErrorKind::Backpressure)
     /// before mutation when the bounded retirement queue is saturated.
+    /// Returns [`ErrorKind::Cancelled`](crate::ErrorKind::Cancelled) after shutdown
+    /// admission closes. This prevents removal from duplicating a graceful-shutdown snapshot.
     pub fn remove(&self, key: &ResourceKey) -> Result<(), Error> {
         let _admission = self
             .admission
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.shutdown_guard()?;
         if !self.registry.contains(key) {
             return Err(Error::not_found(key));
         }
@@ -839,7 +842,10 @@ impl Manager {
         );
         let retirements = removed
             .into_iter()
-            .map(|managed| self.prepare_retirement(managed))
+            .map(|managed| {
+                managed.set_phase(crate::state::ResourcePhase::ShuttingDown);
+                self.prepare_retirement(managed)
+            })
             .collect();
         retirement_permit.commit_batch(retirements);
 
@@ -871,6 +877,8 @@ impl Manager {
     /// no row matches `(key, scope, slot_identity)` exactly. A matching row
     /// returns [`ErrorKind::Backpressure`](crate::ErrorKind::Backpressure)
     /// before mutation when the bounded retirement queue is saturated.
+    /// Returns [`ErrorKind::Cancelled`](crate::ErrorKind::Cancelled) after shutdown
+    /// admission closes. This prevents removal from duplicating a graceful-shutdown snapshot.
     pub fn remove_for(
         &self,
         key: &ResourceKey,
@@ -881,6 +889,7 @@ impl Manager {
             .admission
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.shutdown_guard()?;
         if !self.registry.contains_row(key, scope, slot_identity) {
             return Err(Error::not_found(key));
         }
@@ -902,12 +911,12 @@ impl Manager {
     }
 
     /// Transfers a fenced row into manager-owned retirement before any await.
+    /// The caller selects its diagnostic phase: shutdown drains while removal retires.
     pub(super) fn prepare_retirement(
         &self,
         managed: Arc<dyn crate::registry::ManagedHandle>,
     ) -> super::retirement::PendingRetirement {
         managed.begin_close();
-        managed.set_phase(crate::state::ResourcePhase::ShuttingDown);
         let key = managed.resource_key();
         tracing::debug!(resource.key = %key, "resource row retired; cleanup scheduled");
         let settlement =
@@ -921,6 +930,7 @@ impl Manager {
         managed: Arc<dyn crate::registry::ManagedHandle>,
         permit: super::retirement::RetirementPermit,
     ) {
+        managed.set_phase(crate::state::ResourcePhase::ShuttingDown);
         permit.commit(self.prepare_retirement(managed));
     }
 }

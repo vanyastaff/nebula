@@ -347,6 +347,9 @@ mod registration;
 mod retirement;
 mod rotation;
 pub(crate) mod shutdown;
+mod shutdown_session;
+#[cfg(test)]
+mod shutdown_session_tests;
 
 pub use options::{
     DrainTimeoutPolicy, ManagerConfig, RegisterOptions, RegistrationSpec, ShutdownConfig,
@@ -418,11 +421,7 @@ pub struct Manager {
     /// Bounded outside-queue retirement owner; dropping aborts its supervisor.
     retirement_supervisor: Arc<retirement::RetirementSupervisor>,
     /// Serializes shutdown drivers and retains the terminal task across caller cancellation.
-    terminal_shutdown: tokio::sync::Mutex<Option<shutdown::TerminalShutdownTask>>,
-    /// First caller's shutdown policy; resumed callers cannot silently change it.
-    shutdown_config: std::sync::Mutex<Option<ShutdownConfig>>,
-    /// Terminal task reached an owned completion result.
-    shutdown_complete: AtomicBool,
+    shutdown_state: tokio::sync::Mutex<shutdown_session::ShutdownState>,
     /// Fast admission fence flipped before the first shutdown await.
     pub(super) shutting_down: AtomicBool,
     /// Optional lifecycle handle for coordinated cancellation (spec 08).
@@ -493,9 +492,7 @@ impl Manager {
             drain_tracker: Arc::new((AtomicU64::new(0), Notify::new())),
             retirement_tracker: Arc::new((AtomicU64::new(0), Notify::new())),
             retirement_supervisor,
-            terminal_shutdown: tokio::sync::Mutex::new(None),
-            shutdown_config: std::sync::Mutex::new(None),
-            shutdown_complete: AtomicBool::new(false),
+            shutdown_state: tokio::sync::Mutex::new(shutdown_session::ShutdownState::Open),
             shutting_down: AtomicBool::new(false),
             lifecycle: None,
             acquire_slow_threshold,
@@ -966,16 +963,24 @@ impl InFlightCounter {
 impl Drop for Manager {
     fn drop(&mut self) {
         self.cancel.cancel();
-        if let Some(handle) = self.terminal_shutdown.get_mut().take() {
-            handle.abort();
-        }
-        for managed in self.registry.clear() {
-            if let Ok(permit) = self.retirement_supervisor.try_reserve() {
-                self.retire_resource(managed, permit);
-            } else {
-                drop(self.prepare_retirement(managed));
+        if matches!(
+            self.shutdown_state.get_mut(),
+            shutdown_session::ShutdownState::Open
+        ) {
+            for managed in self.registry.clear() {
+                if let Ok(permit) = self.retirement_supervisor.try_reserve() {
+                    self.retire_resource(managed, permit);
+                } else {
+                    managed.set_phase(crate::state::ResourcePhase::ShuttingDown);
+                    drop(self.prepare_retirement(managed));
+                }
             }
+        } else {
+            // The session already owns this snapshot; the registry is only an index.
+            self.registry.clear();
         }
+        self.shutdown_state.get_mut().abort();
+        *self.shutdown_state.get_mut() = shutdown_session::ShutdownState::Finished;
         self.release_queue.close();
     }
 }

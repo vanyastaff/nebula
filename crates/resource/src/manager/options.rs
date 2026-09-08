@@ -43,12 +43,17 @@ pub enum DrainTimeoutPolicy {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ShutdownConfig {
-    /// How long to wait for in-flight handles to be released.
+    /// How long to wait for in-flight handles from the first shutdown call.
+    /// Retained and idle roots retire concurrently so their child guards can release.
+    /// Cancellation and retry preserve this original deadline and policy.
     pub drain_timeout: Duration,
     /// What to do on drain timeout. Default: [`DrainTimeoutPolicy::Abort`].
     pub on_drain_timeout: DrainTimeoutPolicy,
-    /// Cooperative budget for release-queue workers to finish outstanding tasks.
-    /// On expiry all workers are aborted and their termination is awaited.
+    /// Cooperative budget for terminal publication, retirement and release-worker joining.
+    /// Finalization gets at most this duration and never extends past the first call's
+    /// `drain_timeout + release_queue_timeout` envelope. On expiry owned tasks are
+    /// aborted and their termination is awaited. Publication/finalization failure with
+    /// live guards retains release workers for late cleanup while the manager lives.
     /// Blocking future polls or destructors cannot be preempted by Tokio, so
     /// abort acknowledgement may exceed this budget. This ownership includes
     /// cooperative nested cleanup and the bounded rescue dispatcher.

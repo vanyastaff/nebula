@@ -493,6 +493,11 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
     ///
     /// This hook never receives entry ownership. Even if it fails, panics, or
     /// hangs, the framework drains retained roots and tears them down separately.
+    /// It runs while issued guards may still be live: it must neither invalidate
+    /// their instances nor wait for those guards to release. Stop only policy-owned
+    /// background work here. Physical shutdown belongs exclusively to
+    /// [`Provider::destroy`] after [`Self::into_owned_instance`] yields the final owner.
+    /// Relinquishing a retained root does not physically destroy a shared instance.
     fn quiesce(&self) -> impl Future<Output = Result<(), Error>> + Send {
         async { Ok(()) }
     }

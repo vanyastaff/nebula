@@ -172,7 +172,8 @@ Aliases intentionally exposed by a provider's instance remain the author's respo
 - Retained state is manipulated only through the borrowed store. The store is
   not cloneable and exposes no public drain or remove-and-take capability;
   closing and destruction remain framework-owned. `Topology::quiesce` may stop
-  policy-owned background work, but never transfers entry ownership.
+  policy-owned background work, but must not invalidate or await issued guards.
+  Physical shutdown belongs to final-owner `Provider::destroy`.
 - `CreatedEntry` exposes `new`, `entry`, and `into_entry`; displaced retained
   owners are retired inside `RetainedStore`, not returned beside a new lease.
   `into_owned_instance` returns `Option<Instance>`: shared ownership yields an
@@ -184,7 +185,7 @@ Aliases intentionally exposed by a provider's instance remain the author's respo
   `ErrorKind::DeferredCleanup` after acceptance instead of creating a wait cycle.
   Cleanup remains queue-owned; never retry that release. Separately spawned
   provider tasks do not inherit the current cleanup context.
-- Registration after shutdown is rejected. Replacement/removal fences the old
+- Registration and removal after shutdown admission closes are rejected. Replacement/removal fences the old
   row and schedules owned retirement; normal graceful shutdown awaits idle/master teardown.
 - Force with outstanding leases returns an incomplete snapshot and retains cleanup
   workers while the manager lives. Manager Drop closes the queue; later releases
@@ -273,21 +274,38 @@ swap → refresh/revoke sequence behind the second example is diagrammed in
 
 ## Contract
 
-`Manager::graceful_shutdown` first rejects acquires and waits for guards while
-keeping asynchronous release available. It fences idle stores, joins tracked
-maintenance, and transfers idle/master ownership to teardown before closing the
-queue and awaiting workers. Replaced/removed rows are also included in cleanup.
+`Manager::graceful_shutdown` rejects acquires and snapshots/fences registered rows
+before its first await. One manager-owned publisher submits that snapshot to the
+bounded retirement supervisor while guard drain runs. Retirement joins tracked
+maintenance and relinquishes idle/master ownership. A retained Resident parent or
+idle Pooled parent can therefore release same-manager child guards during normal
+graceful shutdown. Shared instances stay usable until their last owning lease
+releases; relinquishing a root is not physical destruction. Replaced/removed rows
+are also included in cleanup. Once guards drain, shutdown clears the registry index,
+settles retirement, closes the release queue and joins its workers.
 `Force` with outstanding leases returns an incomplete report and leaves cleanup
 workers open while the manager lives; late leases can still release.
-An `Abort` drain timeout or cancellation during drain preserves the registry and
-cleanup while the manager lives. Immediate `shutdown()` and cancellation of the
+An `Abort` drain timeout or cancellation during drain preserves the diagnostic
+registry, the single snapshot and its publisher while the manager lives. Retried
+calls keep the first caller's policy and start time. Publication is bounded by the
+original drain-plus-cleanup envelope; terminal finalization gets at most the cleanup
+budget and cannot extend that envelope. A late zero guard count can advance after
+the drain deadline. Publication failure returns a terminal error; with outstanding
+guards it retains release workers for late cleanup. Immediate `shutdown()` and cancellation of the
 manager token also leave cleanup available; dropping the manager closes it.
+
+This is process-local ownership within one manager. Engine wiring of activation-bound
+nested resource accessors, tenant authorization and durable lifecycle fan-out remain
+separate contracts; the manager does not infer or schedule a runtime dependency graph.
 
 The release worker budget is cooperative: expiry aborts all workers and awaits
 termination, including disposal of buffered tasks. Tokio cannot preempt a blocking
 future poll or destructor. Cancellation during worker waiting requests abort but
-cannot await acknowledgement. Standalone `ReleaseQueue::shutdown` retains its
-best-effort behavior: cancelling its wait leaves workers running.
+cannot await acknowledgement only when the owning bounded worker-wait future is
+dropped. Cancelling a `Manager::graceful_shutdown` caller leaves that future in
+the manager-owned terminal task, which still joins or aborts and joins workers.
+Standalone `ReleaseQueue::shutdown` retains its best-effort behavior: cancelling
+its wait leaves workers running.
 
 `ShutdownReport::release_queue_drained` reports worker completion, and
 `dropped_release_tasks` is a cumulative queue-lifetime snapshot of futures that
@@ -379,12 +397,14 @@ See the `nebula-resource` row in the workspace [`docs/MATURITY.md`](../../docs/M
 
 ### Drain mechanism types (evicted from PRODUCT_CANON.md §11.4)
 
-Orphaned resources are drained by the next process through:
+Cooperative process-local drain uses:
 
 - `DrainTimeoutPolicy` — policy controlling how long a drain operation waits.
 - `ReleaseQueue` (`src/release_queue.rs`) — the queue of releases awaiting drain.
 
-These types are L4 implementation detail — rename/refactor without canon revision. The L2 invariant ("async release is best-effort on crash; orphaned resources rely on next process") lives in canon §11.4.
+These types are L4 implementation detail — rename/refactor without canon revision.
+The queue is not persisted and cannot drain a crashed process's work after restart.
+External orphan recovery requires a durable recovery mechanism or a provider TTL.
 
 ### Topology reference
 

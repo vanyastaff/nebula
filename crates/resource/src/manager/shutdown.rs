@@ -3,10 +3,9 @@
 //! Phases:
 //!
 //! 1. **SIGNAL** — cancel the manager token, rejecting new acquires.
-//! 2. **DRAIN** — wait for in-flight handles, honouring
+//! 2. **RETIRE AND DRAIN** — relinquish retained and idle roots while waiting for handles, honouring
 //!    [`DrainTimeoutPolicy`].
-//! 3. **RETIRE** — fence rows and submit retained-instance cleanup.
-//! 4. **AWAIT WORKERS** — wait for release-queue workers to exit.
+//! 3. **FINALIZE** — settle retirement and wait for release-queue workers to exit.
 //!
 //! Errors are typed [`ShutdownError`] variants; the previous behaviour of
 //! silently force-clearing the registry on drain timeout is now opt-in
@@ -26,30 +25,30 @@ use crate::{
 };
 
 use super::retirement::RetirementFailure;
+use super::shutdown_session::{DrainFailure, ShutdownSession, ShutdownState};
 
-pub(super) type TerminalShutdownTask =
-    tokio::task::JoinHandle<Result<ShutdownReport, ShutdownError>>;
-
-async fn await_terminal_task(
-    task: &mut Option<TerminalShutdownTask>,
-) -> Result<ShutdownReport, ShutdownError> {
-    let Some(handle) = task.as_mut() else {
+async fn await_terminal_task(state: &mut ShutdownState) -> Result<ShutdownReport, ShutdownError> {
+    let ShutdownState::Finishing(handle) = state else {
         return Err(ShutdownError::RetirementSupervisorFailed);
     };
     let result = match handle.await {
         Ok(result) => result,
         Err(error) => {
-            tracing::error!(?error, "manager-owned terminal shutdown task failed");
+            tracing::error!(
+                cancelled = error.is_cancelled(),
+                panicked = error.is_panic(),
+                "manager-owned terminal shutdown task failed"
+            );
             Err(ShutdownError::RetirementSupervisorFailed)
         },
     };
-    task.take();
+    *state = ShutdownState::Finished;
     result
 }
 
 /// Waits until `tracker`'s counter reaches `0` or `timeout` elapses.
 ///
-/// Shared by the manager-wide [`Manager::wait_for_drain`] (drains
+/// Shared by the manager-wide shutdown session (drains
 /// `Manager::drain_tracker` for `graceful_shutdown`) and the per-resource
 /// drain in `Manager::revoke_resolved` (drains a single
 /// [`ManagedResource`](crate::ManagedResource)'s own
@@ -167,10 +166,14 @@ pub enum ShutdownError {
         outstanding: u64,
     },
 
-    /// Phase 4 did not finish within `release_queue_timeout`.
-    #[error("release queue workers did not finish within {timeout:?}")]
+    /// Snapshot publication, retirement or release-worker joining exceeded the
+    /// original shutdown envelope or the terminal `release_queue_timeout` budget.
+    #[error(
+        "resource shutdown did not complete within its configured deadline (cleanup budget: {timeout:?})"
+    )]
     ReleaseQueueTimeout {
-        /// The budget that was exceeded.
+        /// The configured cleanup budget; the original shutdown envelope may
+        /// leave less time available to the terminal stage.
         timeout: Duration,
     },
 
@@ -179,8 +182,9 @@ pub enum ShutdownError {
     #[error("release queue worker failed")]
     ReleaseQueueWorkerFailed,
 
-    /// The manager-owned retirement supervisor stopped before it settled all rows.
-    #[error("resource retirement supervisor failed")]
+    /// A manager-owned publication, retirement-supervisor, or terminal task
+    /// stopped before completing its shutdown work.
+    #[error("resource shutdown task failed before completing terminal work")]
     RetirementSupervisorFailed,
 
     /// A row's terminal cleanup failed. Other rows still receive cleanup.
@@ -217,13 +221,6 @@ impl std::fmt::Debug for ShutdownError {
     }
 }
 
-/// Internal drain-phase error used by the private `wait_for_drain` helper.
-/// Carries the outstanding-handle count at the moment the drain timer fired.
-#[derive(Debug)]
-pub(super) struct DrainTimeoutError {
-    pub(super) outstanding: u64,
-}
-
 /// Counts the ownership of a terminal job, including an unpolled factory.
 pub(super) struct RetirementSettlement(Arc<(std::sync::atomic::AtomicU64, Notify)>);
 
@@ -258,42 +255,19 @@ fn retirement_failure(failure: RetirementFailure) -> ShutdownError {
 /// Owns every terminal value after the registry snapshot. The public
 /// shutdown future only awaits this stored task, so cancelling that waiter
 /// cannot drop unpublished rows or detach supervisor/release-worker handles.
+#[tracing::instrument(skip_all, fields(outstanding_handles = outstanding_after_drain))]
 async fn run_terminal_shutdown(
-    pending_retirements: Vec<super::retirement::PendingRetirement>,
+    session: ShutdownSession,
     retirement_supervisor: Arc<super::retirement::RetirementSupervisor>,
     retirement_tracker: Arc<(std::sync::atomic::AtomicU64, Notify)>,
+    drain_tracker: Arc<(std::sync::atomic::AtomicU64, Notify)>,
     release_queue: Arc<ReleaseQueue>,
     release_queue_handle: Arc<tokio::sync::Mutex<Option<ReleaseQueueHandle>>>,
-    config: ShutdownConfig,
     outstanding_after_drain: u64,
 ) -> Result<ShutdownReport, ShutdownError> {
     let started = tokio::time::Instant::now();
-    let mut terminal_error = None;
-    if !pending_retirements.is_empty() {
-        let remaining = config
-            .release_queue_timeout
-            .saturating_sub(started.elapsed());
-        match retirement_supervisor
-            .publish_batch_bounded(pending_retirements, remaining)
-            .await
-        {
-            Ok(()) => {},
-            Err(super::retirement::PublishBatchError::TimedOut(retirements)) => {
-                for retirement in retirements {
-                    retirement.abandon("terminal publication timed out");
-                }
-                terminal_error = Some(ShutdownError::ReleaseQueueTimeout {
-                    timeout: config.release_queue_timeout,
-                });
-            },
-            Err(super::retirement::PublishBatchError::Closed(retirements)) => {
-                for retirement in retirements {
-                    retirement.abandon("retirement supervisor closed before publication");
-                }
-                terminal_error = Some(ShutdownError::RetirementSupervisorFailed);
-            },
-        }
-    }
+    let budget = session.terminal_budget();
+    let (config, mut terminal_error) = session.settle_publication(budget).await;
 
     if outstanding_after_drain > 0 && terminal_error.is_none() {
         tracing::warn!(
@@ -309,9 +283,7 @@ async fn run_terminal_shutdown(
     }
 
     if terminal_error.is_none() {
-        let remaining = config
-            .release_queue_timeout
-            .saturating_sub(started.elapsed());
+        let remaining = budget.saturating_sub(started.elapsed());
         terminal_error = match tokio::time::timeout(remaining, retirement_supervisor.seal()).await {
             Ok(Ok(())) => None,
             Ok(Err(_)) => Some(ShutdownError::RetirementSupervisorFailed),
@@ -321,9 +293,7 @@ async fn run_terminal_shutdown(
         };
     }
 
-    let remaining = config
-        .release_queue_timeout
-        .saturating_sub(started.elapsed());
+    let remaining = budget.saturating_sub(started.elapsed());
     let supervisor_error = match retirement_supervisor.take_handle() {
         Some(handle) => match handle.join_bounded(remaining).await {
             Ok(first_failure) => first_failure.map(retirement_failure),
@@ -342,9 +312,18 @@ async fn run_terminal_shutdown(
         terminal_error = supervisor_error;
     }
 
-    let remaining = config
-        .release_queue_timeout
-        .saturating_sub(started.elapsed());
+    // Publication/finalization failure cannot revoke late guards' release path.
+    // The publisher and supervisor are settled, but workers remain manager-owned.
+    let outstanding = drain_tracker.0.load(AtomicOrdering::Acquire);
+    if outstanding > 0 {
+        tracing::warn!(
+            outstanding,
+            "resource manager: shutdown failed; late cleanup remains open"
+        );
+        return Err(terminal_error.unwrap_or(ShutdownError::RetirementSupervisorFailed));
+    }
+
+    let remaining = budget.saturating_sub(started.elapsed());
     if wait_for_tracker_drain(&retirement_tracker, remaining)
         .await
         .is_err()
@@ -360,9 +339,7 @@ async fn run_terminal_shutdown(
     release_queue.close();
     let handle = release_queue_handle.lock().await.take();
     if let Some(handle) = handle {
-        let remaining = config
-            .release_queue_timeout
-            .saturating_sub(started.elapsed());
+        let remaining = budget.saturating_sub(started.elapsed());
         let worker_error = ReleaseQueue::shutdown_bounded(handle, remaining)
             .await
             .err()
@@ -394,9 +371,11 @@ impl Manager {
     /// Triggers graceful shutdown with drain and cleanup.
     ///
     /// 1. **Signal** — cancels the token so new acquires are rejected.
-    /// 2. **Drain** — waits up to [`ShutdownConfig::drain_timeout`] for in-flight handles to be
-    ///    released.
-    /// 3. **Retire** — fences rows, joins maintenance, and destroys retained entries.
+    /// 2. **Retire and drain** — fences stores and relinquishes retained/idle roots while
+    ///    waiting up to [`ShutdownConfig::drain_timeout`] for in-flight handles.
+    ///    A parent instance can therefore release its same-manager child guards during drain.
+    ///    Shared instances remain usable until their final owning lease releases.
+    /// 3. **Finalize** — clears the diagnostic registry index and settles retirement.
     /// 4. **Await workers** — waits for the release queue workers to finish processing remaining
     ///    tasks.
     ///
@@ -423,10 +402,12 @@ impl Manager {
     ///   [`ShutdownConfig::on_drain_timeout`] is
     ///   [`DrainTimeoutPolicy::Abort`] (the registry is left un-cleared so a
     ///   caller can inspect what is still outstanding).
-    /// - [`ShutdownError::ReleaseQueueTimeout`] if the release-queue workers
-    ///   do not finish draining within
-    ///   [`ShutdownConfig::release_queue_timeout`].
+    /// - [`ShutdownError::ReleaseQueueTimeout`] if snapshot publication,
+    ///   retirement, or release-worker joining exceeds the original shutdown
+    ///   envelope or the terminal [`ShutdownConfig::release_queue_timeout`] budget.
     /// - [`ShutdownError::ReleaseQueueWorkerFailed`] if a worker failed to join.
+    /// - [`ShutdownError::RetirementSupervisorFailed`] if a manager-owned
+    ///   publication, retirement-supervisor, or terminal task fails.
     /// - [`ShutdownError::ResourceTeardownFailed`] if a current row's terminal cleanup failed.
     ///
     /// With Force and outstanding handles, returns an incomplete report without
@@ -437,8 +418,12 @@ impl Manager {
     /// Cancel safe and resumable. The shutdown flag and cancellation token are
     /// set synchronously before the first await. During DRAIN, cancellation
     /// preserves the registry and a later call resumes using the first caller's
-    /// latched policy. After the final registry snapshot, a manager-owned task
-    /// owns all unpublished rows and supervisor/worker handles; cancelling a
+    /// policy and start time. A single manager-owned publisher owns the fenced snapshot
+    /// before the first await and publishes it while drain runs. Publication failure
+    /// enters terminal finalization; an Abort drain timeout preserves the session.
+    /// Neither cancellation nor retry restarts either budget. Finalization ends by
+    /// the earlier of its own cleanup budget and the original drain-plus-cleanup envelope.
+    /// A manager-owned terminal task owns publisher/supervisor/worker joining; cancelling a
     /// caller only stops waiting for that task. A later call awaits the same
     /// terminal result. Concurrent drivers still fail fast with
     /// [`ShutdownError::AlreadyShuttingDown`].
@@ -449,21 +434,19 @@ impl Manager {
         // The guard is deliberately held across awaits. Caller cancellation
         // releases only this driver lease; all terminal owners live either in
         // `Manager` or its stored terminal task. A concurrent driver fails fast.
-        let mut terminal_task = self
-            .terminal_shutdown
+        let mut state = self
+            .shutdown_state
             .try_lock()
             .map_err(|_| ShutdownError::AlreadyShuttingDown)?;
-        if self.shutdown_complete.load(AtomicOrdering::Acquire) {
+        if matches!(*state, ShutdownState::Finished) {
             return Err(ShutdownError::AlreadyShuttingDown);
         }
-        if terminal_task.is_some() {
-            let result = await_terminal_task(&mut terminal_task).await;
-            self.shutdown_complete.store(true, AtomicOrdering::Release);
-            return result;
+        if matches!(*state, ShutdownState::Finishing(_)) {
+            return await_terminal_task(&mut state).await;
         }
 
-        let first_driver = !self.shutting_down.load(AtomicOrdering::Acquire);
-        if first_driver {
+        if matches!(*state, ShutdownState::Open) {
+            let started = tokio::time::Instant::now();
             let _admission = self
                 .admission
                 .lock()
@@ -481,35 +464,30 @@ impl Manager {
             // Reject acquires while preserving cleanup for guards released during drain.
             self.cancel.cancel();
 
-            // Mark every registered resource as `Draining` so operators polling
-            // `health_check` during the drain window see the correct lifecycle
-            // phase instead of a stale `Ready`.
-            self.set_phase_all(crate::state::ResourcePhase::Draining);
-            for managed in self.registry.all_managed() {
-                managed.begin_close();
-            }
-
-            *self
-                .shutdown_config
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(config.clone());
+            let retirements = self
+                .registry
+                .all_managed()
+                .into_iter()
+                .map(|managed| {
+                    managed.set_phase(crate::state::ResourcePhase::Draining);
+                    self.prepare_retirement(managed)
+                })
+                .collect();
+            *state = ShutdownState::Draining(ShutdownSession::start(
+                config,
+                started,
+                retirements,
+                Arc::clone(&self.retirement_supervisor),
+            ));
         }
 
-        let config = self
-            .shutdown_config
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-            .unwrap_or(config);
-
-        // Phase 2: DRAIN — wait for in-flight handles to be released.
-        // On timeout, respect the policy: Abort preserves "graceful"
-        // (returns Err *without* clearing the registry), Force proceeds
-        // but records the outstanding count in the report.
-        let mut outstanding_after_drain: u64 = 0;
-        match self.wait_for_drain(config.drain_timeout).await {
-            Ok(()) => {},
-            Err(DrainTimeoutError { outstanding }) => match config.on_drain_timeout {
+        let ShutdownState::Draining(session) = &mut *state else {
+            return Err(ShutdownError::RetirementSupervisorFailed);
+        };
+        let outstanding_after_drain = match session.drain(&self.drain_tracker).await {
+            Ok(()) => 0,
+            Err(DrainFailure::Publication) => self.drain_tracker.0.load(AtomicOrdering::Acquire),
+            Err(DrainFailure::TimedOut { outstanding }) => match session.config.on_drain_timeout {
                 DrainTimeoutPolicy::Abort => {
                     tracing::warn!(
                         outstanding,
@@ -517,25 +495,10 @@ impl Manager {
                          registry preserved, marking all resources Failed, \
                          returning DrainTimeout"
                     );
-                    // Every resource transitions to `Failed` (with
-                    // `HealthChanged{healthy:false}` emitted per key) rather
-                    // than back to `Ready`. The cancel token fired in Phase 1
-                    // already rejects new acquires; pretending the registry
-                    // is `Ready` while the caller observes a `DrainTimeout`
-                    // is phase corruption — callers polling `health_check`
-                    // would see `Ready` but get `Error::cancelled` from
-                    // `lookup`. Marking `Failed` makes the registry tell the
-                    // truth.
                     let err = ShutdownError::DrainTimeout { outstanding };
                     self.set_phase_all_failed(&err);
-                    // Do NOT reset `shutting_down` here. Both shutdown
-                    // failure modes (`DrainTimeout`, `ReleaseQueueTimeout`
-                    // below) are non-recoverable — the cancel token has
-                    // fired and the registry has either been marked Failed
-                    // or contains live handles we cannot safely re-drain.
-                    // Resetting would only permit a doomed retry that races
-                    // the cancel token with no benefit and risks tearing
-                    // down state mid-observation by a concurrent caller.
+                    // Keep the original snapshot, publisher and deadline. A later
+                    // driver can observe a zero counter even after drain expiry.
                     return Err(err);
                 },
                 DrainTimeoutPolicy::Force => {
@@ -544,38 +507,34 @@ impl Manager {
                         "resource manager: drain timeout, policy=Force — \
                          clearing registry anyway"
                     );
-                    outstanding_after_drain = outstanding;
+                    outstanding
                 },
             },
-        }
+        };
 
-        // Fence and retain every row in the final snapshot before awaiting
-        // anything. Shutdown admission prevents later registry growth. The
-        // snapshot is moved directly into a manager-owned task before this
-        // public future reaches its next cancellation point.
-        let pending_retirements: Vec<_> = {
+        {
             let _admission = self
                 .admission
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            self.registry
-                .clear()
-                .into_iter()
-                .map(|managed| self.prepare_retirement(managed))
-                .collect()
+            self.set_phase_all(crate::state::ResourcePhase::ShuttingDown);
+            self.registry.clear();
+        }
+        let ShutdownState::Draining(session) =
+            std::mem::replace(&mut *state, ShutdownState::Finished)
+        else {
+            return Err(ShutdownError::RetirementSupervisorFailed);
         };
-        *terminal_task = Some(tokio::spawn(run_terminal_shutdown(
-            pending_retirements,
+        *state = ShutdownState::Finishing(tokio::spawn(run_terminal_shutdown(
+            session,
             Arc::clone(&self.retirement_supervisor),
             Arc::clone(&self.retirement_tracker),
+            Arc::clone(&self.drain_tracker),
             Arc::clone(&self.release_queue),
             Arc::clone(&self.release_queue_handle),
-            config,
             outstanding_after_drain,
         )));
-        let result = await_terminal_task(&mut terminal_task).await;
-        self.shutdown_complete.store(true, AtomicOrdering::Release);
-        result
+        await_terminal_task(&mut state).await
     }
 
     /// Drives every registered resource to the given lifecycle phase.
@@ -622,10 +581,9 @@ impl Manager {
     /// `Manager::drain_tracker`; the lost-wakeup-safe ordering and its
     /// rationale live on that shared helper (the per-resource revoke drain
     /// reuses the same helper against a single resource's tracker).
-    pub(super) async fn wait_for_drain(&self, timeout: Duration) -> Result<(), DrainTimeoutError> {
-        wait_for_tracker_drain(&self.drain_tracker, timeout)
-            .await
-            .map_err(|outstanding| DrainTimeoutError { outstanding })
+    #[cfg(test)]
+    pub(super) async fn wait_for_drain(&self, timeout: Duration) -> Result<(), u64> {
+        wait_for_tracker_drain(&self.drain_tracker, timeout).await
     }
 }
 

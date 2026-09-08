@@ -167,6 +167,12 @@ topology-owned entry. See
   terminal cleanup accounts for roots published into the store. Trusted custom
   topologies must not clone or forget untracked strong aliases outside it;
   doing so violates the lifecycle contract and escapes this accounting.
+- **Shutdown retires roots while leases remain live.** Retained and idle parents
+  may own child guards from the same manager; releasing their roots during drain
+  lets those dependencies settle without author-managed shutdown ordering.
+  `Topology::quiesce` stops policy background work only and must not invalidate or
+  await issued guards. `into_owned_instance` yields the final owner for
+  `Provider::destroy`; other consumers remain usable until they release.
 - **Revoke teardown runs through the credential hook.** The master handle is
   never in the framework idle store, so the store revoke-fence cannot reach it;
   Resident handles its own revoke via `dispatch_credential_hook`
