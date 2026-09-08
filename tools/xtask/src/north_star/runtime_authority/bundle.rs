@@ -111,7 +111,7 @@ fn fragment(
     identity: &GateBackend,
     case: Option<&str>,
 ) -> Result<Value, VerificationError> {
-    let backend = backend_name(identity.backend)?;
+    let backend = super::backend_name(identity.backend);
     let relative = match (runtime_gate(identity.gate)?, case) {
         (
             RuntimeAuthorityGate::ExecutionIdentity
@@ -196,15 +196,6 @@ fn read(root: &std::path::Path, relative: &str) -> Result<Value, VerificationErr
     let bytes = loader::bounded_file(&path)?;
     let digest = loader::digest(&bytes);
     json::decode(&loader::artifact(root, relative, &digest)?)
-}
-
-fn backend_name(backend: Option<Backend>) -> Result<&'static str, VerificationError> {
-    match backend {
-        Some(Backend::InMemory) => Ok("in-memory"),
-        Some(Backend::Sqlite) => Ok("sqlite"),
-        Some(Backend::Postgresql) => Ok("postgresql"),
-        None => Ok("independent"),
-    }
 }
 
 fn write_new(path: PathBuf, bytes: &[u8]) -> Result<(), VerificationError> {

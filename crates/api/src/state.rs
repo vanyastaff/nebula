@@ -336,7 +336,7 @@ pub struct AppState {
     /// `format!("{}/api/v1/auth/oauth/{}/callback", public_url, provider)`.
     ///
     /// Defaults to an empty string when constructed via
-    /// [`Self::in_memory`]; the composition root (`build_state`) sets
+    /// [`Self::new`]; the composition root (`build_state`) sets
     /// it from the parsed `ApiConfig`. Empty / relative values are
     /// rejected at boot when `auth.oauth.providers` is non-empty (T2.8
     /// REQ-compose-001 Invariant 1).

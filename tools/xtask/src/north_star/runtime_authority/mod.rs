@@ -29,6 +29,10 @@ fn runtime_gate(id: ExternalGateId) -> Result<RuntimeAuthorityGate, Verification
 const FORMAT_VERSION: u16 = 1;
 const POLICY_SOURCE: &str = concat!(
     "nebula-runtime-authority-structural-policy-v1\0",
+    include_str!("../backend.rs"),
+    "\0",
+    include_str!("../external_registry.rs"),
+    "\0",
     include_str!("mod.rs"),
     "\0",
     // The assembler decides which raw observation backs which gate and case,
@@ -93,6 +97,14 @@ pub enum VerificationError {
     PolicyMismatch,
     #[error("runtime authority observation does not satisfy its executable semantic policy")]
     SemanticObservation,
+    #[error(
+        "runtime authority observation for gate {gate}, backend {backend}, case {case} does not satisfy its executable semantic policy"
+    )]
+    SemanticArtifact {
+        gate: String,
+        backend: String,
+        case: String,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -335,10 +347,19 @@ fn verify_semantics(
                 &artifact.identity,
                 observation.case.as_deref(),
                 &observation.events,
-            )?;
+            )
+            .map_err(|_| VerificationError::SemanticArtifact {
+                gate: artifact.identity.gate.to_string(),
+                backend: backend_name(artifact.identity.backend).to_owned(),
+                case: observation.case.as_deref().unwrap_or("default").to_owned(),
+            })?;
         }
     }
     Ok(())
+}
+
+fn backend_name(backend: Option<Backend>) -> &'static str {
+    backend.map_or("independent", <&'static str>::from)
 }
 
 fn admit_artifacts(
@@ -385,12 +406,7 @@ fn artifact_path(
     identity: &GateBackend,
     policy: &RequiredArtifact,
 ) -> Result<String, VerificationError> {
-    let backend = match identity.backend {
-        Some(Backend::InMemory) => "in-memory",
-        Some(Backend::Sqlite) => "sqlite",
-        Some(Backend::Postgresql) => "postgresql",
-        None => "independent",
-    };
+    let backend = backend_name(identity.backend);
     if policy
         .artifact_stem
         .bytes()

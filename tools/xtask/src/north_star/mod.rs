@@ -10,9 +10,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
+mod backend;
 mod external_registry;
 mod runtime_authority;
 mod schema;
+use backend::Backend;
 use external_registry::{ActivationCheckpoint, ExternalGateId};
 pub(crate) use runtime_authority::{
     BundleRequest as RuntimeAuthorityBundleRequest, RunnerIdentity,
@@ -164,14 +166,6 @@ impl From<GateState> for &'static str {
             GateState::Passed => "passed",
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, Ord, PartialOrd, Eq, PartialEq)]
-#[serde(rename_all = "kebab-case")]
-enum Backend {
-    InMemory,
-    Sqlite,
-    Postgresql,
 }
 
 #[derive(Debug, Deserialize)]

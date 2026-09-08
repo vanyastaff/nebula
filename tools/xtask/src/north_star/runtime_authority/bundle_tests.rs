@@ -26,11 +26,7 @@ fn write(root: &Path, relative: &str, value: &serde_json::Value) {
 
 /// Every observation the compiled policy can ask `fragment` for.
 fn observation_root(root: &Path, workspace: &Path) {
-    let backend_identities = [
-        (Backend::InMemory, "in-memory"),
-        (Backend::Sqlite, "sqlite"),
-        (Backend::Postgresql, "postgresql"),
-    ];
+    let backend_identities = [Backend::InMemory, Backend::Sqlite, Backend::Postgresql];
     let contracts = [
         ("start-authority", RuntimeAuthorityGate::ExecutionIdentity),
         (
@@ -48,7 +44,8 @@ fn observation_root(root: &Path, workspace: &Path) {
         ),
         ("remote-effects", RuntimeAuthorityGate::RemoteEffects),
     ];
-    for (backend, backend_name) in backend_identities {
+    for backend in backend_identities {
+        let backend_name = <&'static str>::from(backend);
         for (contract, gate) in contracts {
             let case = match contract {
                 "checkpoint-reconnect" => Some("checkpoint-reconnect"),
@@ -66,10 +63,8 @@ fn observation_root(root: &Path, workspace: &Path) {
             );
         }
     }
-    for (backend, backend_name) in [
-        (Backend::Sqlite, "sqlite"),
-        (Backend::Postgresql, "postgresql"),
-    ] {
+    for backend in [Backend::Sqlite, Backend::Postgresql] {
+        let backend_name = <&'static str>::from(backend);
         let identity = GateBackend {
             gate: RuntimeAuthorityGate::OrderedMigrations.into(),
             backend: Some(backend),

@@ -37,12 +37,9 @@ impl Fixture {
         // This is synthetic verifier input only, never a runtime gate report.
         for (identity, required) in policy().unwrap() {
             let path = artifact_path(&identity, &required).unwrap();
-            let backend = match identity.backend {
-                Some(Backend::InMemory) => json!("in-memory"),
-                Some(Backend::Sqlite) => json!("sqlite"),
-                Some(Backend::Postgresql) => json!("postgresql"),
-                None => Value::Null,
-            };
+            let backend = identity
+                .backend
+                .map_or(Value::Null, |backend| json!(<&str>::from(backend)));
             let identity = json!({"gate":identity.gate,"backend":backend});
             let environment = json!({"toolchain":"synthetic-toolchain-version"});
             let observations: Vec<_> = required
@@ -111,6 +108,19 @@ impl Fixture {
         let bytes = serde_json::to_vec(&artifact).unwrap();
         fs::write(path, &bytes).unwrap();
         entry["sha256"] = loader::digest(&bytes).into();
+    }
+
+    fn artifact_index(&self, gate: ExternalGateId, backend: Option<Backend>) -> usize {
+        self.expected["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|entry| {
+                entry["identity"]["gate"] == json!(gate)
+                    && entry["identity"]["backend"]
+                        == backend.map_or(Value::Null, |value| json!(<&str>::from(value)))
+            })
+            .unwrap()
     }
 }
 
@@ -200,7 +210,11 @@ fn structurally_complete_synthetic_evidence_fails_semantic_policy() {
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     assert_eq!(
         verify(&workspace, &fixture.root, &expected_path, &runner()),
-        Err(VerificationError::SemanticObservation)
+        Err(VerificationError::SemanticArtifact {
+            gate: <&'static str>::from(ExternalGateId::ExecutionIdentity).to_owned(),
+            backend: "in-memory".to_owned(),
+            case: "default".to_owned(),
+        })
     );
 }
 
@@ -217,7 +231,11 @@ fn failed_provenance_and_semantics_produce_no_derived_state_output() {
             &semantic_expected,
             &runner(),
         ),
-        Err(VerificationError::SemanticObservation)
+        Err(VerificationError::SemanticArtifact {
+            gate: <&'static str>::from(ExternalGateId::ExecutionIdentity).to_owned(),
+            backend: "in-memory".to_owned(),
+            case: "default".to_owned(),
+        })
     );
 
     let provenance_failure = Fixture::with_verified_observations();
@@ -233,6 +251,55 @@ fn failed_provenance_and_semantics_produce_no_derived_state_output() {
             },
         ),
         Err(VerificationError::ProvenanceMismatch)
+    );
+}
+
+#[test]
+fn semantic_failure_identifies_a_named_sqlite_case() {
+    let mut fixture = Fixture::with_verified_observations();
+    let index = fixture.artifact_index(
+        ExternalGateId::PersistenceConformance,
+        Some(Backend::Sqlite),
+    );
+    fixture.mutate_artifact(index, |artifact| {
+        let observation = artifact["observations"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|observation| observation["case"] == "backend-reinitialization")
+            .unwrap();
+        observation["events"] = json!([{}]);
+    });
+    let expected_path = fixture.expected_path();
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+    assert_eq!(
+        verify(&workspace, &fixture.root, &expected_path, &runner()),
+        Err(VerificationError::SemanticArtifact {
+            gate: <&'static str>::from(ExternalGateId::PersistenceConformance).to_owned(),
+            backend: <&'static str>::from(Backend::Sqlite).to_owned(),
+            case: "backend-reinitialization".to_owned(),
+        })
+    );
+}
+
+#[test]
+fn semantic_failure_identifies_a_backend_independent_artifact() {
+    let mut fixture = Fixture::with_verified_observations();
+    let index = fixture.artifact_index(ExternalGateId::ActivationDiagnostics, None);
+    fixture.mutate_artifact(index, |artifact| {
+        artifact["observations"][0]["events"] = json!([{}]);
+    });
+    let expected_path = fixture.expected_path();
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+    assert_eq!(
+        verify(&workspace, &fixture.root, &expected_path, &runner()),
+        Err(VerificationError::SemanticArtifact {
+            gate: <&'static str>::from(ExternalGateId::ActivationDiagnostics).to_owned(),
+            backend: "independent".to_owned(),
+            case: "default".to_owned(),
+        })
     );
 }
 

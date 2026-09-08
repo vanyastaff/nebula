@@ -125,9 +125,10 @@ pub(in super::super) fn for_observation(
             checkpoint_reconnect()
         },
         (RuntimeAuthorityGate::PersistenceConformance, Some("backend-reinitialization"))
-        | (RuntimeAuthorityGate::OrderedMigrations, Some(_)) => {
-            super::ordered_migrations::fixture(workspace, backend_name(identity.backend))
-        },
+        | (RuntimeAuthorityGate::OrderedMigrations, Some(_)) => super::ordered_migrations::fixture(
+            workspace,
+            super::super::backend_name(identity.backend),
+        ),
         (RuntimeAuthorityGate::PersistenceConformance, Some("remote-effects"))
         | (RuntimeAuthorityGate::RemoteEffects, None) => super::remote_effects::fixture(),
         (RuntimeAuthorityGate::RequiredPostgresql, None) => {
@@ -138,15 +139,6 @@ pub(in super::super) fn for_observation(
         },
         _ => panic!("the compiled policy requested an unsupported semantic fixture"),
     };
-    fragment["backend"] = backend_name(identity.backend).into();
+    fragment["backend"] = super::super::backend_name(identity.backend).into();
     fragment
-}
-
-fn backend_name(backend: Option<Backend>) -> &'static str {
-    match backend {
-        Some(Backend::InMemory) => "in-memory",
-        Some(Backend::Sqlite) => "sqlite",
-        Some(Backend::Postgresql) => "postgresql",
-        None => panic!("backend-independent fixtures return before backend selection"),
-    }
 }

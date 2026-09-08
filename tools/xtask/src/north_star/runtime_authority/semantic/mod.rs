@@ -117,12 +117,7 @@ fn verify_backend(
     if gate == RuntimeAuthorityGate::RequiredPostgresql {
         return Ok(());
     }
-    let expected = match backend {
-        Some(Backend::InMemory) => Some("in-memory"),
-        Some(Backend::Sqlite) => Some("sqlite"),
-        Some(Backend::Postgresql) => Some("postgresql"),
-        None => None,
-    };
+    let expected = backend.map(<&'static str>::from);
     if let Some(expected) = expected {
         if fragment.get("backend").and_then(Value::as_str) != Some(expected) {
             return Err(VerificationError::SemanticObservation);
