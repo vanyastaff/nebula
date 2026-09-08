@@ -8,15 +8,19 @@
 //! See ADR-0018 (historical — the maintainers' private design vault).
 //!
 //! This module lives in `nebula-metadata` (moved here from `nebula-plugin`
-//! in slice B of the plugin load-path stabilization) so that
-//! `nebula-plugin-sdk` — which must have zero engine-side deps per canon
-//! §7.1 — can import the canonical bundle descriptor on the plugin-author
-//! side.
+//! in slice B of the plugin load-path stabilization): ADR-0018 draws the
+//! container-descriptor line at the Core layer, so the bundle descriptor
+//! belongs beside the other shared catalog types it reuses rather than in
+//! the higher-layer `nebula-plugin`. The original rationale for the move
+//! named `nebula-plugin-sdk`, an out-of-process plugin-authoring crate that
+//! ADR-0091's in-process registry pivot retired; that crate no longer
+//! exists, and the placement now rests on the ADR-0018 rationale above.
 
 use nebula_core::PluginKey;
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 
+use crate::defaults::{default_version, is_default_maturity, is_default_version};
 use crate::{DeprecationNotice, Icon, MaturityLevel};
 
 /// A declared dependency of one plugin on another.
@@ -82,22 +86,6 @@ pub enum ManifestError {
 /// validation. Not part of the public API.
 pub(crate) fn normalize_key(s: &str) -> String {
     s.to_ascii_lowercase().replace(' ', "_")
-}
-
-fn default_version() -> Version {
-    Version::new(1, 0, 0)
-}
-
-fn is_default_version(v: &Version) -> bool {
-    v == &default_version()
-}
-
-#[expect(
-    clippy::trivially_copy_pass_by_ref,
-    reason = "serde skip_serializing_if requires the &T signature"
-)]
-fn is_default_maturity(m: &MaturityLevel) -> bool {
-    *m == MaturityLevel::default()
 }
 
 /// Static manifest describing a plugin bundle.
@@ -433,10 +421,21 @@ impl PluginManifestBuilder {
     /// present the built manifest's maturity is forced to
     /// [`MaturityLevel::Deprecated`] regardless of the order in which
     /// `.deprecation()` and `.maturity()` were called on the builder.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ManifestError::InvalidKey`] if the normalized key fails
+    /// [`PluginKey`] validation, or
+    /// [`ManifestError::MissingRequiredField`] with `field: "name"` if the
+    /// name is empty or contains only whitespace.
     pub fn build(self) -> Result<PluginManifest, ManifestError> {
         let key: PluginKey = normalize_key(&self.key)
             .parse()
             .map_err(ManifestError::InvalidKey)?;
+
+        if self.name.trim().is_empty() {
+            return Err(ManifestError::MissingRequiredField { field: "name" });
+        }
 
         // Invariant: a deprecation notice always implies Deprecated maturity.
         // Enforcing this here (rather than only in `.deprecation()`) makes the
@@ -578,6 +577,24 @@ mod tests {
     fn builder_rejects_invalid_key() {
         let result = PluginManifest::builder("", "Empty").build();
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn builder_rejects_empty_name() {
+        let result = PluginManifest::builder("slack", "").build();
+        assert_eq!(
+            result,
+            Err(ManifestError::MissingRequiredField { field: "name" })
+        );
+    }
+
+    #[test]
+    fn builder_rejects_whitespace_only_name() {
+        let result = PluginManifest::builder("slack", "   ").build();
+        assert_eq!(
+            result,
+            Err(ManifestError::MissingRequiredField { field: "name" })
+        );
     }
 
     #[test]
