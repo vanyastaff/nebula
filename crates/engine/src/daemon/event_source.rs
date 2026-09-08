@@ -242,14 +242,11 @@ where
                     match recv {
                         Ok(event) => {
                             let payload = (self.event_to_payload)(&event);
-                            // CANCEL SAFETY: a drop before `claim_and_materialize_start`
-                            // commits is a clean no-op — no dedup row, no execution row,
-                            // no job (all three are atomic in one transaction).  A drop
-                            // AFTER the transaction commits is safe: the Created row, the
-                            // dedup guard, and the Start job all landed atomically, so the
-                            // orchestrator can pick up the job with a valid execution row
-                            // already present.  EventSourceAdapter passes `event_id = None`
-                            // (unconditional dispatch; no dedup row written).
+                            // CANCEL SAFETY: start materialization is one transaction. A
+                            // drop before commit writes nothing; after commit, execution,
+                            // contract, revision references, and Start command are durable.
+                            // EventSourceAdapter passes no event key, so this is an
+                            // unconditional start.
                             match ctx.emitter().emit(payload, None).await {
                                 Ok(_) => ctx.health().record_success(1),
                                 Err(e) => {

@@ -159,7 +159,7 @@ impl WorkflowEngine {
         let decision = request
             .handoff
             .commit_control_turn(&ControlTurnCommit::new(
-                request.claim,
+                request.claim.clone(),
                 flavor,
                 request.command.clone(),
                 transition,

@@ -20,7 +20,7 @@
 //!
 //! Abuse case 4 (credential scope-layer fail-closed + zeroize + pending
 //! single-use cross-tenant replay) is covered by the credential
-//! scope-layer re-home suite (Task 17), where the credential layer lives.
+//! scope-layer coverage suite, where the credential layer lives.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -35,19 +35,19 @@ use nebula_storage_port::dto::{
     ResourceRow, StartReservation, StoredContractBundle, TriggerRow,
 };
 use nebula_storage_port::store::{
-    ClaimGeneration, ControlQueue, ControlStartAcceptance, ControlStartHandoff, ControlTurnCommit,
-    ControlTurnCommitOutcome, ExecutionStore, ExecutionTurnHandoff, IdempotencyStore,
-    JobClaimToken, OperationLedger, OperationLedgerAdjudicator, ReclaimOutcome, ResourceStore,
-    StartAcceptanceStore, StartMaterialization, StartMaterializationError, TriggerStore,
-    TurnAcceptance, TurnHandoff,
+    CheckpointStore, ClaimGeneration, ControlQueue, ControlStartAcceptance, ControlStartHandoff,
+    ControlTurnCommit, ControlTurnCommitOutcome, ExecutionStore, ExecutionTurnHandoff,
+    IdempotencyStore, JobClaimToken, OperationLedger, OperationLedgerAdjudicator, ReclaimOutcome,
+    ResourceStore, StartAcceptanceStore, StartMaterialization, StartMaterializationError,
+    TriggerStore, TurnAcceptance, TurnHandoff,
 };
 use nebula_storage_port::{
     FencingToken, OperationCallId, Scope, StorageError, TransitionBatch, TransitionOutcome,
 };
 use nebula_tenancy::{
-    ScopedControlQueue, ScopedExecutionStore, ScopedExecutionTurnHandoff, ScopedIdempotencyStore,
-    ScopedOperationLedger, ScopedOperationLedgerAdjudicator, ScopedResourceStore,
-    ScopedStartAcceptanceStore, ScopedTriggerStore,
+    ScopedCheckpointStore, ScopedControlQueue, ScopedExecutionStore, ScopedExecutionTurnHandoff,
+    ScopedIdempotencyStore, ScopedOperationLedger, ScopedOperationLedgerAdjudicator,
+    ScopedResourceStore, ScopedStartAcceptanceStore, ScopedTriggerStore,
 };
 
 fn scope_a() -> Scope {
@@ -56,6 +56,67 @@ fn scope_a() -> Scope {
 
 fn scope_b() -> Scope {
     Scope::new("ws_b", "org_b")
+}
+
+#[derive(Default)]
+struct ScopeRecordingCheckpoints {
+    observed: Mutex<Vec<Scope>>,
+}
+
+impl std::fmt::Debug for ScopeRecordingCheckpoints {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ScopeRecordingCheckpoints")
+    }
+}
+
+#[async_trait::async_trait]
+impl CheckpointStore for ScopeRecordingCheckpoints {
+    async fn save_stateful_checkpoint(
+        &self,
+        scope: &Scope,
+        _execution_id: &str,
+        _node_id: &str,
+        _checkpoint: serde_json::Value,
+    ) -> Result<(), StorageError> {
+        self.observed
+            .lock()
+            .expect("recording lock")
+            .push(scope.clone());
+        Ok(())
+    }
+
+    async fn load_stateful_checkpoint(
+        &self,
+        scope: &Scope,
+        _execution_id: &str,
+        _node_id: &str,
+    ) -> Result<Option<serde_json::Value>, StorageError> {
+        self.observed
+            .lock()
+            .expect("recording lock")
+            .push(scope.clone());
+        Ok(None)
+    }
+}
+
+#[tokio::test]
+async fn checkpoint_store_substitutes_the_bound_scope() {
+    let inner = Arc::new(ScopeRecordingCheckpoints::default());
+    let scoped = ScopedCheckpointStore::new(inner.clone(), scope_a());
+
+    scoped
+        .save_stateful_checkpoint(&scope_b(), "execution", "node", serde_json::json!({}))
+        .await
+        .unwrap();
+    scoped
+        .load_stateful_checkpoint(&scope_b(), "execution", "node")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        inner.observed.lock().expect("recording lock").as_slice(),
+        &[scope_a(), scope_a()]
+    );
 }
 
 // ── Mock execution store ──────────────────────────────────────────────────
@@ -254,6 +315,7 @@ impl IdempotencyStore for MockIdemStore {
 struct MockControlQueue {
     enqueued: Mutex<Vec<ControlMsg>>,
     exact_claims: Mutex<Vec<([u8; 16], u32, WorkerFlavorRevisionId)>>,
+    acknowledged: Mutex<Vec<Scope>>,
 }
 
 impl std::fmt::Debug for MockControlQueue {
@@ -285,6 +347,7 @@ impl ControlQueue for MockControlQueue {
                 token: nebula_storage_port::store::ControlClaimToken::new(
                     msg.id,
                     ClaimGeneration::new(1),
+                    msg.scope.clone(),
                 ),
                 msg: msg.clone(),
             })
@@ -307,8 +370,12 @@ impl ControlQueue for MockControlQueue {
 
     async fn mark_completed(
         &self,
-        _claim: &nebula_storage_port::store::ControlClaimToken,
+        claim: &nebula_storage_port::store::ControlClaimToken,
     ) -> Result<(), StorageError> {
+        self.acknowledged
+            .lock()
+            .expect("mock lock")
+            .push(claim.scope().clone());
         Ok(())
     }
 
@@ -513,18 +580,34 @@ async fn cross_tenant_control_enqueue_is_stamped_with_bound_scope() {
 
     // The decorator overwrote the scope with A's bound scope before the
     // queue saw it — the Cancel can never be dispatched against B.
-    let enqueued = mock.enqueued.lock().expect("mock lock");
-    assert_eq!(enqueued.len(), 1);
-    assert_eq!(
-        enqueued[0].scope,
-        scope_a(),
-        "enqueued control message must carry the enqueuer's bound scope, never the forged target"
-    );
-    assert_ne!(
-        enqueued[0].scope,
+    {
+        let enqueued = mock.enqueued.lock().expect("mock lock");
+        assert_eq!(enqueued.len(), 1);
+        assert_eq!(
+            enqueued[0].scope,
+            scope_a(),
+            "enqueued control message must carry the enqueuer's bound scope, never the forged target"
+        );
+        assert_ne!(
+            enqueued[0].scope,
+            scope_b(),
+            "a low-privilege tenant must not enqueue a Cancel for another tenant"
+        );
+    }
+
+    let forged = nebula_storage_port::store::ControlClaimToken::new(
+        [8; 16],
+        ClaimGeneration::new(1),
         scope_b(),
-        "a low-privilege tenant must not enqueue a Cancel for another tenant"
     );
+    assert!(matches!(
+        tenant_a.mark_completed(&forged).await,
+        Err(StorageError::NotFound {
+            entity: "control_queue",
+            ..
+        })
+    ));
+    assert!(mock.acknowledged.lock().expect("mock lock").is_empty());
 }
 
 // ── Abuse case 5: ResourceStore / TriggerStore BOLA/IDOR ──────────────────
@@ -1392,7 +1475,7 @@ async fn execution_turn_handoff_substitutes_the_bound_scope() {
     let request = TurnHandoff::for_claim(
         &foreign_scope,
         "execution",
-        JobClaimToken::new([7; 16], ClaimGeneration::new(1)),
+        JobClaimToken::new([7; 16], ClaimGeneration::new(1), foreign_scope.clone()),
         WorkerFlavorRevisionId::from_bytes([9; 32]),
     )
     .lease_to("worker", Duration::from_secs(30));

@@ -86,7 +86,7 @@ impl ExecutionTurnHandoff for ScopedExecutionTurnHandoff {
                 ..
             } => {
                 let scoped_commit = ControlTurnCommit::new(
-                    commit.claim(),
+                    commit.claim().clone(),
                     commit.worker_flavor_revision_id(),
                     commit.command().clone(),
                     ControlTurnTransition::Unchanged {
@@ -101,7 +101,7 @@ impl ExecutionTurnHandoff for ScopedExecutionTurnHandoff {
             ControlTurnTransition::Checkpoint(batch) => {
                 let scoped_batch = self.rebind_batch(batch)?;
                 let scoped_commit = ControlTurnCommit::new(
-                    commit.claim(),
+                    commit.claim().clone(),
                     commit.worker_flavor_revision_id(),
                     commit.command().clone(),
                     ControlTurnTransition::Checkpoint(&scoped_batch),
@@ -121,7 +121,7 @@ impl ExecutionTurnHandoff for ScopedExecutionTurnHandoff {
         let scoped_handoff = ControlStartHandoff::for_claim(
             &self.bound,
             handoff.execution_id(),
-            handoff.claim(),
+            handoff.claim().clone(),
             handoff.worker_flavor_revision_id(),
         )
         .at_version(handoff.expected_execution_version())
@@ -133,7 +133,7 @@ impl ExecutionTurnHandoff for ScopedExecutionTurnHandoff {
         let scoped_handoff = TurnHandoff::for_claim(
             &self.bound,
             handoff.execution_id(),
-            handoff.claim(),
+            handoff.claim().clone(),
             handoff.worker_flavor_revision_id(),
         )
         .lease_to(handoff.holder(), handoff.lease_ttl());

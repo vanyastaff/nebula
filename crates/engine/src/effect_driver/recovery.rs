@@ -75,7 +75,11 @@ impl Driver<'_, '_> {
             })
             .await
         {
-            Ok(Some(GrantedCall::Reconciliation(call))) => call,
+            Ok(Some(GrantedCall::Reconciliation {
+                call,
+                authorized_at_ms,
+                request_started,
+            })) => (call, authorized_at_ms, request_started),
             Err(EffectExecutionError::Ledger(OperationLedgerError::RecoveryExhausted)) => {
                 return Err(EffectExecutionError::OutcomeUnknown {
                     operation_id: self.operation_id(),
@@ -84,9 +88,13 @@ impl Driver<'_, '_> {
             Err(error) => return Err(error),
             _ => return Err(EffectExecutionError::InvalidEvidence),
         };
-        let deadline = self.deadline(CallPurpose::Reconciliation)?;
-        let remaining = deadline.saturating_sub(self.turn.clock.now().timestamp_millis());
-        if remaining <= 0 {
+        let (call, authorized_at_ms, request_started) = call;
+        let (deadline, timeout) = self.call_timing(
+            CallPurpose::Reconciliation,
+            authorized_at_ms,
+            request_started,
+        )?;
+        if timeout.is_zero() {
             self.advance(&OperationCommand::RecordReconciliationInconclusive { query: call })
                 .await?;
             return Err(EffectExecutionError::OutcomeUnknown {
@@ -104,9 +112,6 @@ impl Driver<'_, '_> {
             .adapter()
             .read_only_query()
             .ok_or(EffectExecutionError::InvalidContract)?;
-        let timeout = Duration::from_millis(
-            u64::try_from(remaining).map_err(|_| EffectExecutionError::InvalidEvidence)?,
-        );
         let outcome = tokio::select! {
             biased;
             () = self.turn.cancellation.cancelled() => EffectReconciliationOutcome::Inconclusive,

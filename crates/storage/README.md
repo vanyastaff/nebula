@@ -18,9 +18,9 @@ transitions, journal appends, and outbox writes can share the same logical opera
 transactions. `nebula-storage` is that seam: it implements the spec-16 storage port for
 execution state, workflow definitions and versions, the append-only journal, idempotency keys,
 checkpoints, leases, identity stores, owner-bound credential persistence, and the durable
-control-queue outbox. Task 13A also provides an InMemory exact plan/worker-flavor catalog and
-reference-state model. SQLite and PostgreSQL are deployment backends; InMemory implementations
-are internal test/reference/conformance adapters only.
+control-queue outbox. It provides exact plan/worker-flavor catalogs and reference-state models
+for SQLite and PostgreSQL. InMemory implementations remain internal
+test/reference/conformance adapters only.
 
 ## Role
 
@@ -42,11 +42,10 @@ provides the adapters:
 
 - `inmem::*` — internal test/reference/conformance adapters and the loom probe;
   not a supported deployment backend.
-- `InMemoryPlanFlavorCatalog` — Task 13A component/reference adapter over the
-  execution store's shared lock. Exact immutable load, drain, guarded delete,
-  and row-derived blockers are implemented. Paired dormant SQL layout now
-  exists; production SQL adapters, reference mutation, and three-backend
-  conformance remain Tasks 13B/20.
+- `InMemoryPlanFlavorCatalog` — component/reference adapter over the execution
+  store's shared lock. Exact immutable load, drain, guarded delete, reference
+  mutation, and row-derived blockers mirror the SQLite and PostgreSQL
+  deployment adapters and their three-backend conformance suite.
 - `sqlite::*` (feature `sqlite`) — single-writer-correct adapters over a
   canonical ordered catalog. `init_schema` performs catalog-only bootstrap and
   admission for file, `:memory:`, and test pools; it does not inspect
@@ -432,7 +431,7 @@ model — they keep live consumers (the API idempotency middleware, the
 
 Job-dispatch claims require both exact worker-flavor revision equality and a
 superset of required plugin keys. The exact identity is mandatory on the port
-DTO and persisted by ordinary enqueue and trigger dedup materialization.
+DTO and persisted by ordinary enqueue.
 Paired migration `0046_exact_dispatch_flavor.sql` adds a required 32-byte identity
 without a default. It rejects every preexisting dispatch row (including terminal
 rows) atomically, preserving the prior schema and aggregate state. This is an

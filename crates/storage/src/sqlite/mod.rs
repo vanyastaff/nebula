@@ -34,7 +34,7 @@ pub use identity::{
     SqliteAuditStore, SqliteBlobStore, SqliteMembershipStore, SqliteOrgStore, SqliteQuotaStore,
     SqliteResourceStore, SqliteTriggerStore, SqliteUserStore, SqliteWorkspaceStore,
 };
-pub use job_dispatch::{SqliteJobDispatchQueue, SqliteTriggerDedupInbox};
+pub use job_dispatch::SqliteJobDispatchQueue;
 pub use operation_ledger::SqliteOperationLedger;
 pub use plan_flavor_catalog::SqlitePlanFlavorCatalog;
 pub use resume_producer::SqliteResumeProducer;

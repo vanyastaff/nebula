@@ -59,18 +59,7 @@ async fn in_memory_trigger_contract() {
     let starts = nebula_storage::inmem::InMemoryStartAcceptanceStore::new(&executions);
     let catalog = executions.plan_flavor_catalog();
     let queue = nebula_storage::inmem::InMemoryControlQueue::new(&executions);
-    let legacy = nebula_storage::inmem::InMemoryTriggerDedupInbox::new(&executions);
-    let jobs = nebula_storage::inmem::InMemoryJobDispatchQueue::new(&executions);
-    oracle::trigger_replay(
-        &starts,
-        &executions,
-        &queue,
-        &catalog,
-        &catalog,
-        &legacy,
-        &jobs,
-    )
-    .await;
+    oracle::trigger_replay(&starts, &executions, &queue, &catalog, &catalog).await;
 }
 
 #[cfg(feature = "sqlite")]
@@ -101,18 +90,7 @@ async fn sqlite_materialization_contract() {
         evidence.observations,
     );
     let stored = evidence.stored;
-    let legacy = nebula_storage::sqlite::SqliteTriggerDedupInbox::new(pool.clone());
-    let jobs = nebula_storage::sqlite::SqliteJobDispatchQueue::new(pool.clone());
-    oracle::trigger_replay(
-        &starts,
-        &executions,
-        &queue,
-        &catalog,
-        &catalog,
-        &legacy,
-        &jobs,
-    )
-    .await;
+    oracle::trigger_replay(&starts, &executions, &queue, &catalog, &catalog).await;
     pool.close().await;
     let reopened = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
@@ -171,18 +149,7 @@ async fn postgres_materialization_contract() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    let legacy = nebula_storage::postgres::PgTriggerDedupInbox::new(pool.clone());
-    let jobs = nebula_storage::postgres::PgJobDispatchQueue::new(pool.clone());
-    oracle::trigger_replay(
-        &starts,
-        &executions,
-        &queue,
-        &catalog,
-        &catalog,
-        &legacy,
-        &jobs,
-    )
-    .await;
+    oracle::trigger_replay(&starts, &executions, &queue, &catalog, &catalog).await;
     pool.close().await;
     let options = url
         .parse::<sqlx::postgres::PgConnectOptions>()

@@ -756,7 +756,7 @@ pub(crate) async fn bounded_permits_preserve_identity_and_frozen_evidence(
         .await
         .unwrap()
     {
-        OperationAdvance::Granted { call, record } => {
+        OperationAdvance::Granted { call, record, .. } => {
             assert_eq!(record.operation().operation_id(), original_id);
             call
         },
@@ -790,7 +790,7 @@ pub(crate) async fn bounded_permits_preserve_identity_and_frozen_evidence(
         .await
         .unwrap()
     {
-        OperationAdvance::Granted { call, record } => {
+        OperationAdvance::Granted { call, record, .. } => {
             assert_eq!(record.operation().operation_id(), original_id);
             call
         },

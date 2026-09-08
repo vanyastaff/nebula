@@ -33,7 +33,7 @@ pub use identity::{
     PgAuditStore, PgBlobStore, PgMembershipStore, PgOrgStore, PgQuotaStore, PgResourceStore,
     PgTriggerStore, PgUserStore, PgWorkspaceStore,
 };
-pub use job_dispatch::{PgJobDispatchQueue, PgTriggerDedupInbox};
+pub use job_dispatch::PgJobDispatchQueue;
 pub use operation_ledger::PgOperationLedger;
 pub use plan_flavor_catalog::PgPlanFlavorCatalog;
 pub use resume_producer::PgResumeProducer;

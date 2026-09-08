@@ -24,16 +24,18 @@ use nebula_action::{
 };
 use nebula_core::{Dependencies, action_key, id::WorkflowId, node_key};
 use nebula_engine::{
-    ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, ExecutionEvent,
+    ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, EngineError, ExecutionEvent,
     InProcessRunner, WorkflowEngine,
 };
-use nebula_execution::{ExecutionStatus, context::ExecutionBudget};
+use nebula_execution::{ExecutionState, ExecutionStatus, context::ExecutionBudget};
 use nebula_metrics::MetricsRegistry;
 use nebula_storage_port::store::ExecutionStore;
 use nebula_workflow::{
     CURRENT_SCHEMA_VERSION, NodeDefinition, RetryConfig, Version, WorkflowConfig,
     WorkflowDefinition,
 };
+
+mod exact_fixture;
 
 // ---------------------------------------------------------------------------
 // Test handlers — Variant A trait shape with placeholder static metadata.
@@ -237,6 +239,55 @@ fn make_workflow(
         ui_metadata: None,
         schema_version: CURRENT_SCHEMA_VERSION,
     }
+}
+
+#[tokio::test]
+async fn persistent_engine_refuses_a_direct_fresh_start() {
+    let registry = Arc::new(ActionRegistry::new());
+    registry.register_stateless_instance(
+        ActionMetadata::new(action_key!("direct_start"), "DirectStart", "test action")
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+        FlakyHandler {
+            fail_count: 0,
+            invocations: Arc::new(AtomicU32::new(0)),
+        },
+    );
+    let execution = Arc::new(nebula_storage::InMemoryExecutionStore::new());
+    let stores = nebula_engine::ExecutionStores {
+        execution: execution.clone(),
+        journal: Arc::new(nebula_storage::InMemoryJournalReader::new(&execution)),
+        node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
+        checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
+        idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
+        resume_tokens: Arc::new(execution.resume_token_store()),
+        operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(
+            &execution,
+        )),
+    };
+    let workflow = make_workflow(
+        vec![NodeDefinition::new(node_key!("direct"), "direct", "core", "direct_start").unwrap()],
+        vec![],
+        WorkflowConfig::default(),
+    );
+    let result = make_engine(registry)
+        .with_execution_stores(stores)
+        .execute_workflow(
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &workflow,
+            serde_json::Value::Null,
+            ExecutionBudget::default(),
+        )
+        .await;
+
+    std::assert_matches!(result, Err(EngineError::PersistentStartRequiresAcceptance));
+    assert_eq!(
+        execution
+            .count(&nebula_engine::store_seam::single_tenant_scope(), None)
+            .await
+            .unwrap(),
+        0,
+        "refused direct starts must leave no persistent execution row"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -588,19 +639,38 @@ async fn idempotency_key_differentiates_attempts() {
             &execution,
         )),
     };
-    let engine = make_engine(registry).with_execution_stores(stores);
-
     let n = node_key!("idem");
     let mut node = NodeDefinition::new(n.clone(), "idem_node", "core", "flaky_idem").unwrap();
     node.retry_policy = Some(RetryConfig::fixed(3, 1));
 
     let wf = make_workflow(vec![node], vec![], WorkflowConfig::default());
+    let frozen = exact_fixture::freeze_registry(&registry, &[("core", "flaky_idem")]);
+    let engine = make_engine(registry)
+        .with_execution_stores(stores)
+        .with_plan_flavor_runtime(
+            Arc::new(nebula_engine::PlanFlavorRevisionLoader::new(Arc::new(
+                execution.plan_flavor_catalog(),
+            ))),
+            Arc::clone(&frozen),
+            Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
+                &execution,
+            )),
+        );
+    let execution_id = nebula_core::ExecutionId::new();
+    let mut state = ExecutionState::new(execution_id, wf.id, std::slice::from_ref(&n));
+    state.set_workflow_input(serde_json::json!({"v": 1}));
+    exact_fixture::materialize_state(
+        &execution,
+        &nebula_engine::store_seam::single_tenant_scope(),
+        &frozen,
+        &wf,
+        &mut state,
+    )
+    .await;
     let result = engine
-        .execute_workflow(
+        .resume_execution(
             &nebula_engine::store_seam::single_tenant_scope(),
-            &wf,
-            serde_json::json!({"v": 1}),
-            ExecutionBudget::default(),
+            execution_id,
         )
         .await
         .unwrap();
@@ -618,8 +688,7 @@ async fn idempotency_key_differentiates_attempts() {
         .unwrap()
         .expect("state must be persisted");
     let state_str = serde_json::to_string(&record.state).unwrap();
-    let exec_state: nebula_execution::state::ExecutionState =
-        serde_json::from_str(&state_str).unwrap();
+    let exec_state: ExecutionState = serde_json::from_str(&state_str).unwrap();
     let ns = exec_state.node_state(n).unwrap();
     assert_eq!(ns.attempts.len(), 2, "two attempts pushed");
     assert_ne!(

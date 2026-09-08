@@ -2169,11 +2169,15 @@ impl WorkflowEngine {
     /// Entry nodes receive the workflow-level `input`. Subsequent nodes
     /// receive the output of their activated predecessors.
     ///
-    /// This method is used in tests and local library mode. Production code
-    /// enters the engine via [`Self::resume_execution`] (which carries the
-    /// real per-message tenant scope from the control-queue / job-dispatch row).
-    /// Tests and library-mode callers pass [`crate::store_seam::single_tenant_scope`]
-    /// (or a real scope) explicitly — this method does not manufacture one.
+    /// This entry point is available only for in-process execution without
+    /// persistent stores. Durable starts must first be accepted through
+    /// [`DurableExecutionEmitter`](crate::DurableExecutionEmitter), then driven
+    /// from their accepted control delivery.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::PersistentStartRequiresAcceptance`] when
+    /// persistent execution stores are configured.
     pub async fn execute_workflow(
         &self,
         scope: &Scope,
@@ -2181,6 +2185,13 @@ impl WorkflowEngine {
         input: serde_json::Value,
         budget: ExecutionBudget,
     ) -> Result<ExecutionResult, EngineError> {
+        if self.stores.is_some() {
+            tracing::warn!(
+                target: "nebula_engine::start",
+                "refused direct start because persistent stores require durable acceptance"
+            );
+            return Err(EngineError::PersistentStartRequiresAcceptance);
+        }
         self.execute_workflow_scoped(scope, workflow, input, budget, None)
             .await
     }
@@ -2194,7 +2205,13 @@ impl WorkflowEngine {
     /// Fields set here override the engine default from
     /// [`with_resource_acquire_scope`](Self::with_resource_acquire_scope).
     ///
-    /// Production code uses [`resume_execution`](Self::resume_execution).
+    /// This entry point has the same durable-start restriction as
+    /// [`execute_workflow`](Self::execute_workflow).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::PersistentStartRequiresAcceptance`] when
+    /// persistent execution stores are configured.
     pub async fn execute_workflow_with_acquire_scope(
         &self,
         scope: &Scope,
@@ -2203,7 +2220,30 @@ impl WorkflowEngine {
         budget: ExecutionBudget,
         run_acquire_scope: Option<nebula_core::scope::Scope>,
     ) -> Result<ExecutionResult, EngineError> {
+        if self.stores.is_some() {
+            tracing::warn!(
+                target: "nebula_engine::start",
+                "refused direct start because persistent stores require durable acceptance"
+            );
+            return Err(EngineError::PersistentStartRequiresAcceptance);
+        }
         self.execute_workflow_scoped(scope, workflow, input, budget, run_acquire_scope)
+            .await
+    }
+
+    #[cfg(test)]
+    async fn execute_unit_fixture(
+        &self,
+        scope: &Scope,
+        workflow: &WorkflowDefinition,
+        input: serde_json::Value,
+        budget: ExecutionBudget,
+    ) -> Result<ExecutionResult, EngineError> {
+        assert!(
+            self.stores.is_none(),
+            "persistent engine fixtures must enter through durable acceptance"
+        );
+        self.execute_workflow_scoped(scope, workflow, input, budget, None)
             .await
     }
 
@@ -2213,7 +2253,8 @@ impl WorkflowEngine {
     /// [`execute_workflow_with_acquire_scope`](Self::execute_workflow_with_acquire_scope), and
     /// [`replay_execution`](Self::replay_execution) with a caller-supplied scope; called by
     /// [`resume_execution`](Self::resume_execution) with the per-message tenant scope from the
-    /// control-queue / job-dispatch row.
+    /// control-queue / job-dispatch row. The test-only `execute_unit_fixture` caller is restricted
+    /// to storeless execution so persistent fixtures cannot bypass durable acceptance.
     async fn execute_workflow_scoped(
         &self,
         scope: &Scope,

@@ -64,12 +64,16 @@ impl SqliteControlQueue {
         &self,
         claim: &ControlClaimToken,
     ) -> Result<StorageError, StorageError> {
-        let exists: Option<i64> =
-            sqlx::query_scalar("SELECT 1 FROM port_control_queue WHERE id = ?")
-                .bind(claim.row_id().as_slice())
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(conn_err)?;
+        let exists: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM port_control_queue \
+                 WHERE id = ? AND workspace_id = ? AND org_id = ?",
+        )
+        .bind(claim.row_id().as_slice())
+        .bind(&claim.scope().workspace_id)
+        .bind(&claim.scope().org_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(conn_err)?;
         Ok(if exists.is_some() {
             StorageError::FencedOut {
                 entity: "control_queue",
@@ -223,10 +227,10 @@ impl ControlQueue for SqliteControlQueue {
             let Some(generation) = minted else {
                 continue;
             };
-            claimed.push(ControlClaim {
-                msg: decode_message(&row, id)?,
-                token: ControlClaimToken::new(id, decode_generation(generation, &id)?),
-            });
+            let msg = decode_message(&row, id)?;
+            let token =
+                ControlClaimToken::new(id, decode_generation(generation, &id)?, msg.scope.clone());
+            claimed.push(ControlClaim { msg, token });
         }
         tx.commit().await.map_err(conn_err)?;
         Ok(claimed)
@@ -271,10 +275,13 @@ impl ControlQueue for SqliteControlQueue {
             .map(|row| {
                 let id = decode_id(&row.try_get::<Vec<u8>, _>("id").map_err(conn_err)?)?;
                 let generation = row.try_get("claim_generation").map_err(conn_err)?;
-                Ok(ControlClaim {
-                    msg: decode_message(&row, id)?,
-                    token: ControlClaimToken::new(id, decode_generation(generation, &id)?),
-                })
+                let msg = decode_message(&row, id)?;
+                let token = ControlClaimToken::new(
+                    id,
+                    decode_generation(generation, &id)?,
+                    msg.scope.clone(),
+                );
+                Ok(ControlClaim { msg, token })
             })
             .collect::<Result<Vec<_>, StorageError>>()?;
         tx.commit().await.map_err(conn_err)?;
@@ -288,9 +295,12 @@ impl ControlQueue for SqliteControlQueue {
     async fn mark_completed(&self, claim: &ControlClaimToken) -> Result<(), StorageError> {
         let rows_updated = sqlx::query(
             "UPDATE port_control_queue SET status = 'Completed' \
-             WHERE id = ? AND status = 'Processing' AND claim_generation = ?",
+             WHERE id = ? AND workspace_id = ? AND org_id = ? \
+               AND status = 'Processing' AND claim_generation = ?",
         )
         .bind(claim.row_id().as_slice())
+        .bind(&claim.scope().workspace_id)
+        .bind(&claim.scope().org_id)
         .bind(generation_bind(claim)?)
         .execute(&self.pool)
         .await
@@ -310,10 +320,13 @@ impl ControlQueue for SqliteControlQueue {
         let rows_updated = sqlx::query(
             "UPDATE port_control_queue \
              SET status = 'Failed', error_message = ? \
-             WHERE id = ? AND status = 'Processing' AND claim_generation = ?",
+             WHERE id = ? AND workspace_id = ? AND org_id = ? \
+               AND status = 'Processing' AND claim_generation = ?",
         )
         .bind(error)
         .bind(claim.row_id().as_slice())
+        .bind(&claim.scope().workspace_id)
+        .bind(&claim.scope().org_id)
         .bind(generation_bind(claim)?)
         .execute(&self.pool)
         .await
@@ -334,9 +347,12 @@ impl ControlQueue for SqliteControlQueue {
         let rows_updated = sqlx::query(
             "UPDATE port_control_queue \
              SET status = 'Pending', processed_by = NULL, processed_at_ms = NULL \
-             WHERE id = ? AND status = 'Processing' AND claim_generation = ?",
+             WHERE id = ? AND workspace_id = ? AND org_id = ? \
+               AND status = 'Processing' AND claim_generation = ?",
         )
         .bind(claim.row_id().as_slice())
+        .bind(&claim.scope().workspace_id)
+        .bind(&claim.scope().org_id)
         .bind(generation_bind(claim)?)
         .execute(&self.pool)
         .await

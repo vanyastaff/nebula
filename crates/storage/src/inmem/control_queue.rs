@@ -74,6 +74,12 @@ fn acknowledge(
             id: ulid_hex(id),
         });
     };
+    if queued.msg.scope != *claim.scope() {
+        return Err(StorageError::NotFound {
+            entity: "control_queue",
+            id: ulid_hex(id),
+        });
+    }
     if queued.status != "Processing" || queued.claim_generation != claim.generation().get() {
         return Err(StorageError::FencedOut {
             entity: "control_queue",
@@ -135,6 +141,7 @@ impl InMemoryControlQueue {
                     token: ControlClaimToken::new(
                         id,
                         ClaimGeneration::new(queued.claim_generation),
+                        queued.msg.scope.clone(),
                     ),
                 });
             }
@@ -236,6 +243,12 @@ impl InMemoryControlQueue {
 impl ControlQueue for InMemoryControlQueue {
     async fn enqueue(&self, msg: &ControlMsg) -> Result<(), StorageError> {
         let mut st = self.inner.lock();
+        if st.queue.contains_key(&msg.id) {
+            return Err(StorageError::Duplicate {
+                entity: "control_queue",
+                detail: ulid_hex(&msg.id),
+            });
+        }
         st.queue.insert(
             msg.id,
             QueuedMsg {
@@ -350,5 +363,41 @@ impl ControlQueue for InMemoryControlQueue {
         // timestamps, so age-based pruning is a no-op (parity with the
         // legacy in-memory control queue).
         Ok(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nebula_storage_port::dto::{ControlCommand, ControlMsg};
+    use nebula_storage_port::store::ControlQueue;
+    use nebula_storage_port::{Scope, StorageError};
+
+    use super::InMemoryControlQueue;
+    use crate::inmem::InMemoryExecutionStore;
+
+    #[tokio::test]
+    async fn duplicate_enqueue_preserves_the_active_claim() {
+        let store = InMemoryExecutionStore::new();
+        let queue = InMemoryControlQueue::new(&store);
+        let message = ControlMsg {
+            id: [1; 16],
+            execution_id: "execution".to_owned(),
+            command: ControlCommand::Start,
+            scope: Scope::new("workspace", "organization"),
+            w3c_traceparent: None,
+            reclaim_count: 0,
+            resume_target: None,
+        };
+        queue.enqueue(&message).await.unwrap();
+        let claim = queue.claim_pending(&[2; 16], 1).await.unwrap().remove(0);
+
+        assert!(matches!(
+            queue.enqueue(&message).await,
+            Err(StorageError::Duplicate {
+                entity: "control_queue",
+                ..
+            })
+        ));
+        queue.mark_completed(&claim.token).await.unwrap();
     }
 }

@@ -208,7 +208,7 @@ async fn accepting_a_turn_acknowledges_the_claim_in_one_commit() {
 
     let accepted = fixture
         .handoff
-        .accept_turn(&fixture.request(execution, claim, "worker-a", &scope))
+        .accept_turn(&fixture.request(execution, claim.clone(), "worker-a", &scope))
         .await
         .expect("a fresh claim on an unleased execution hands off");
     let TurnAcceptance::Accepted { fence } = accepted else {
@@ -320,7 +320,7 @@ async fn a_live_foreign_lease_blocks_the_turn_without_acknowledging_the_row() {
     assert_eq!(
         fixture
             .handoff
-            .accept_turn(&fixture.request(execution, claim, "worker-a", &scope))
+            .accept_turn(&fixture.request(execution, claim.clone(), "worker-a", &scope))
             .await
             .expect("contention is a typed outcome, not an error"),
         TurnAcceptance::TurnHeldByAnotherOwner
@@ -354,7 +354,7 @@ async fn a_foreign_tenant_cannot_accept_the_turn() {
     assert_eq!(
         fixture
             .handoff
-            .accept_turn(&fixture.request(execution, claim, "worker-a", &intruder))
+            .accept_turn(&fixture.request(execution, claim.clone(), "worker-a", &intruder))
             .await
             .expect("a foreign tenant is a typed outcome, not an error"),
         TurnAcceptance::ClaimSuperseded
@@ -398,7 +398,7 @@ async fn a_claim_token_cannot_be_paired_with_another_execution() {
     assert_eq!(
         fixture
             .handoff
-            .accept_turn(&fixture.request(&other, claim, "worker-a", &scope))
+            .accept_turn(&fixture.request(&other, claim.clone(), "worker-a", &scope))
             .await
             .expect("a mismatched pairing is a typed outcome, not an error"),
         TurnAcceptance::ClaimSuperseded,

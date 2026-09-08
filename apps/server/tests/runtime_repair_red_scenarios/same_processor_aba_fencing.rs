@@ -127,6 +127,7 @@ fn tokens_for(claimed: &[JobClaim], scenario: &Scenario) -> [JobClaimToken; 2] {
             .find(|claim| claim.msg.id == job.id)
             .unwrap_or_else(|| panic!("SETUP: claim batch is missing job {:?}", job.id))
             .token
+            .clone()
     })
 }
 

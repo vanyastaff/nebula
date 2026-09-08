@@ -135,6 +135,9 @@ pub enum EngineError {
     /// Durable execution limits are absent or invalid.
     #[error("persisted execution budget is missing or invalid")]
     InvalidRecordedBudget,
+    /// A fresh durable execution must enter through atomic start acceptance.
+    #[error("persistent execution requires durable start acceptance")]
+    PersistentStartRequiresAcceptance,
     /// A referenced node was not found in the workflow.
     #[error("node not found: {node_key}")]
     NodeNotFound {
@@ -408,7 +411,8 @@ impl nebula_error::Classify for EngineError {
             | Self::ContractBundleIntegrity { .. }
             | Self::UnresolvedPlanBindings
             | Self::UnsupportedRecordedSemantics
-            | Self::InvalidRecordedBudget => nebula_error::ErrorCategory::Validation,
+            | Self::InvalidRecordedBudget
+            | Self::PersistentStartRequiresAcceptance => nebula_error::ErrorCategory::Validation,
             Self::NodeNotFound { .. } => nebula_error::ErrorCategory::NotFound,
             Self::PlanningFailed(_)
             | Self::ParameterResolution { .. }
@@ -469,6 +473,9 @@ impl nebula_error::Classify for EngineError {
             Self::UnresolvedPlanBindings => "ENGINE:UNRESOLVED_PLAN_BINDINGS",
             Self::UnsupportedRecordedSemantics => "ENGINE:UNSUPPORTED_RECORDED_SEMANTICS",
             Self::InvalidRecordedBudget => "ENGINE:INVALID_RECORDED_BUDGET",
+            Self::PersistentStartRequiresAcceptance => {
+                "ENGINE:PERSISTENT_START_REQUIRES_ACCEPTANCE"
+            },
             Self::NodeNotFound { .. } => "ENGINE:NODE_NOT_FOUND",
             Self::PlanningFailed(_) => "ENGINE:PLANNING_FAILED",
             Self::NodeFailed { .. } => "ENGINE:NODE_FAILED",

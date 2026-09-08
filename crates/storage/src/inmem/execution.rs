@@ -61,8 +61,7 @@ pub(super) struct QueuedMsg {
 
 /// One queued job-dispatch row plus its processing bookkeeping.
 ///
-/// Lives in `State::jobs` alongside the control queue and execution rows so
-/// `claim_and_materialize_start` writes all three atomically under one lock.
+/// Lives in `State::jobs` alongside the control queue and execution rows.
 #[derive(Debug, Clone)]
 pub(super) struct QueuedJob {
     pub(super) msg: nebula_storage_port::dto::JobDispatchMsg,
@@ -218,12 +217,8 @@ fn normalized_ttl(ttl: Duration) -> Duration {
 
 /// Insert a `Created` execution row into `st` without taking the lock.
 ///
-/// Called by both `ExecutionStore::create` and the dedup compose so the row
-/// shape is defined exactly once.  Returns `Err(Duplicate)` when `id` is
-/// already present.  The dedup compose calls this **before** writing the dedup
-/// guard or the Start job (all under one lock), so an `Err` here leaves
-/// `st.dedup` and `st.jobs` untouched — the compose is all-or-nothing by write
-/// ordering, with no rollback needed.
+/// Called by `ExecutionStore::create` so the row shape is defined exactly
+/// once. Returns `Err(Duplicate)` when `id` is already present.
 pub(super) fn insert_created_row(
     st: &mut State,
     scope: &Scope,

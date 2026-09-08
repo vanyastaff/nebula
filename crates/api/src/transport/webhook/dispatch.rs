@@ -228,7 +228,7 @@ pub(super) async fn dispatch_inner(
                 // trigger to the Noop in-memory path: that would 2xx the sender
                 // and lose the event (no retry). Fail closed with 503 so the
                 // sender retries; on store recovery the retry resolves and
-                // `claim_and_materialize_start` dedups by `event_id`. If durable
+                // trigger start materialization deduplicates by `event_id`. If durable
                 // dispatch is NOT wired there is no durable contract to protect —
                 // fall through to in-memory for availability.
                 let durable_wired = transport.inner.durable_dispatch.is_some();

@@ -157,8 +157,8 @@ impl<'a> ControlTurnCommit<'a> {
     }
 
     /// Current control claim.
-    pub const fn claim(&self) -> crate::store::ControlClaimToken {
-        self.claim
+    pub const fn claim(&self) -> &crate::store::ControlClaimToken {
+        &self.claim
     }
 
     /// Exact live revision validated by runtime preflight.
@@ -290,8 +290,8 @@ impl<'a> TurnHandoff<'a> {
         self.execution_id
     }
     /// Current generation-bound dispatch claim.
-    pub const fn claim(&self) -> JobClaimToken {
-        self.claim
+    pub const fn claim(&self) -> &JobClaimToken {
+        &self.claim
     }
     /// Exact worker revision admitted for this execution.
     pub const fn worker_flavor_revision_id(&self) -> WorkerFlavorRevisionId {
@@ -320,7 +320,7 @@ pub struct TurnHandoffLease<'a> {
 
 impl<'a> TurnHandoffLease<'a> {
     /// Request the execution lease that atomically completes this dispatch claim.
-    pub const fn lease_to(self, holder: &'a str, lease_ttl: Duration) -> TurnHandoff<'a> {
+    pub fn lease_to(self, holder: &'a str, lease_ttl: Duration) -> TurnHandoff<'a> {
         TurnHandoff {
             scope: self.scope,
             execution_id: self.execution_id,
@@ -379,8 +379,8 @@ impl<'a> ControlStartHandoff<'a> {
         self.execution_id
     }
     /// Current generation-bound control claim.
-    pub const fn claim(&self) -> crate::store::ControlClaimToken {
-        self.claim
+    pub const fn claim(&self) -> &crate::store::ControlClaimToken {
+        &self.claim
     }
     /// Holder requested for the execution lease.
     pub const fn holder(&self) -> &str {
@@ -409,7 +409,7 @@ impl<'a> ControlStartHandoff<'a> {
         self
     }
     /// Replace the current claim proof.
-    pub const fn with_claim(mut self, claim: crate::store::ControlClaimToken) -> Self {
+    pub fn with_claim(mut self, claim: crate::store::ControlClaimToken) -> Self {
         self.claim = claim;
         self
     }
@@ -445,7 +445,7 @@ pub struct ControlStartPreflight<'a> {
 
 impl<'a> ControlStartPreflight<'a> {
     /// Bind the execution version observed during exact preflight.
-    pub const fn at_version(self, expected_execution_version: u64) -> ControlStartLease<'a> {
+    pub fn at_version(self, expected_execution_version: u64) -> ControlStartLease<'a> {
         ControlStartLease {
             scope: self.scope,
             execution_id: self.execution_id,
@@ -469,7 +469,7 @@ pub struct ControlStartLease<'a> {
 
 impl<'a> ControlStartLease<'a> {
     /// Request the execution lease that atomically completes this Start claim.
-    pub const fn lease_to(self, holder: &'a str, lease_ttl: Duration) -> ControlStartHandoff<'a> {
+    pub fn lease_to(self, holder: &'a str, lease_ttl: Duration) -> ControlStartHandoff<'a> {
         ControlStartHandoff {
             scope: self.scope,
             execution_id: self.execution_id,

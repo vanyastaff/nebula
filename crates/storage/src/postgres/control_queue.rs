@@ -30,21 +30,20 @@ fn decode_claim(row: sqlx::postgres::PgRow) -> Result<ControlClaim, StorageError
         .map(serde_json::from_str)
         .transpose()
         .map_err(|error| StorageError::Serialization(error.to_string()))?;
-    Ok(ControlClaim {
-        msg: ControlMsg {
-            id,
-            execution_id: row.try_get("execution_id").map_err(conn_err)?,
-            scope: Scope::new(
-                row.try_get::<String, _>("workspace_id").map_err(conn_err)?,
-                row.try_get::<String, _>("org_id").map_err(conn_err)?,
-            ),
-            command: decode_command(&row.try_get::<String, _>("command").map_err(conn_err)?)?,
-            w3c_traceparent: row.try_get("w3c_traceparent").map_err(conn_err)?,
-            reclaim_count: row.try_get::<i32, _>("reclaim_count").map_err(conn_err)? as u32,
-            resume_target,
-        },
-        token: ControlClaimToken::new(id, decode_generation(generation, &id)?),
-    })
+    let msg = ControlMsg {
+        id,
+        execution_id: row.try_get("execution_id").map_err(conn_err)?,
+        scope: Scope::new(
+            row.try_get::<String, _>("workspace_id").map_err(conn_err)?,
+            row.try_get::<String, _>("org_id").map_err(conn_err)?,
+        ),
+        command: decode_command(&row.try_get::<String, _>("command").map_err(conn_err)?)?,
+        w3c_traceparent: row.try_get("w3c_traceparent").map_err(conn_err)?,
+        reclaim_count: row.try_get::<i32, _>("reclaim_count").map_err(conn_err)? as u32,
+        resume_target,
+    };
+    let token = ControlClaimToken::new(id, decode_generation(generation, &id)?, msg.scope.clone());
+    Ok(ControlClaim { msg, token })
 }
 
 /// Postgres-backed durable-outbox handle.
@@ -70,12 +69,16 @@ impl PgControlQueue {
         &self,
         claim: &ControlClaimToken,
     ) -> Result<StorageError, StorageError> {
-        let exists: Option<i32> =
-            sqlx::query_scalar("SELECT 1 FROM port_control_queue WHERE id = $1")
-                .bind(claim.row_id().as_slice())
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(conn_err)?;
+        let exists: Option<i32> = sqlx::query_scalar(
+            "SELECT 1 FROM port_control_queue \
+                 WHERE id = $1 AND workspace_id = $2 AND org_id = $3",
+        )
+        .bind(claim.row_id().as_slice())
+        .bind(&claim.scope().workspace_id)
+        .bind(&claim.scope().org_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(conn_err)?;
         Ok(if exists.is_some() {
             StorageError::FencedOut {
                 entity: "control_queue",
@@ -192,6 +195,7 @@ impl ControlQueue for PgControlQueue {
         // Rust (`now()` SQL would be `TIMESTAMPTZ`) so both dialects
         // stamp and compare the reclaim clock identically.
         let now_ms = Utc::now().timestamp_millis();
+        let mut tx = self.pool.begin().await.map_err(conn_err)?;
         let rows = sqlx::query(
             "UPDATE port_control_queue SET status = 'Processing', \
                     processed_by = $1, processed_at_ms = $2, \
@@ -210,10 +214,15 @@ impl ControlQueue for PgControlQueue {
         .bind(processor.as_slice())
         .bind(now_ms)
         .bind(i64::from(batch_size.clamp(1, 256)))
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(conn_err)?;
-        rows.into_iter().map(decode_claim).collect()
+        let claims = rows
+            .into_iter()
+            .map(decode_claim)
+            .collect::<Result<Vec<_>, StorageError>>()?;
+        tx.commit().await.map_err(conn_err)?;
+        Ok(claims)
     }
 
     async fn claim_pending_for_flavor(
@@ -222,6 +231,7 @@ impl ControlQueue for PgControlQueue {
         batch_size: u32,
         worker_flavor: nebula_core::WorkerFlavorRevisionId,
     ) -> Result<Vec<ControlClaim>, StorageError> {
+        let mut tx = self.pool.begin().await.map_err(conn_err)?;
         let rows = sqlx::query(
             "UPDATE port_control_queue SET status = 'Processing', \
                  processed_by = $1, processed_at_ms = $2, \
@@ -242,13 +252,14 @@ impl ControlQueue for PgControlQueue {
         .bind(Utc::now().timestamp_millis())
         .bind(i64::from(batch_size.clamp(1, 256)))
         .bind(worker_flavor.as_bytes().as_slice())
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(conn_err)?;
         let claims = rows
             .into_iter()
             .map(decode_claim)
             .collect::<Result<Vec<_>, StorageError>>()?;
+        tx.commit().await.map_err(conn_err)?;
         tracing::debug!(
             claimed = claims.len(),
             "claimed exact-flavor control commands"
@@ -259,9 +270,12 @@ impl ControlQueue for PgControlQueue {
     async fn mark_completed(&self, claim: &ControlClaimToken) -> Result<(), StorageError> {
         let rows_updated = sqlx::query(
             "UPDATE port_control_queue SET status = 'Completed' \
-             WHERE id = $1 AND status = 'Processing' AND claim_generation = $2",
+             WHERE id = $1 AND workspace_id = $2 AND org_id = $3 \
+               AND status = 'Processing' AND claim_generation = $4",
         )
         .bind(claim.row_id().as_slice())
+        .bind(&claim.scope().workspace_id)
+        .bind(&claim.scope().org_id)
         .bind(generation_bind(claim)?)
         .execute(&self.pool)
         .await
@@ -281,10 +295,13 @@ impl ControlQueue for PgControlQueue {
         let rows_updated = sqlx::query(
             "UPDATE port_control_queue \
              SET status = 'Failed', error_message = $1 \
-             WHERE id = $2 AND status = 'Processing' AND claim_generation = $3",
+             WHERE id = $2 AND workspace_id = $3 AND org_id = $4 \
+               AND status = 'Processing' AND claim_generation = $5",
         )
         .bind(error)
         .bind(claim.row_id().as_slice())
+        .bind(&claim.scope().workspace_id)
+        .bind(&claim.scope().org_id)
         .bind(generation_bind(claim)?)
         .execute(&self.pool)
         .await
@@ -305,9 +322,12 @@ impl ControlQueue for PgControlQueue {
         let rows_updated = sqlx::query(
             "UPDATE port_control_queue \
              SET status = 'Pending', processed_by = NULL, processed_at_ms = NULL \
-             WHERE id = $1 AND status = 'Processing' AND claim_generation = $2",
+             WHERE id = $1 AND workspace_id = $2 AND org_id = $3 \
+               AND status = 'Processing' AND claim_generation = $4",
         )
         .bind(claim.row_id().as_slice())
+        .bind(&claim.scope().workspace_id)
+        .bind(&claim.scope().org_id)
         .bind(generation_bind(claim)?)
         .execute(&self.pool)
         .await

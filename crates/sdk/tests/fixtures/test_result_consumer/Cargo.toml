@@ -5,6 +5,6 @@ edition = "2024"
 publish = false
 
 [dependencies]
-nebula-sdk = { version = "=0.2.0", default-features = false }
+nebula-sdk = { version = "=0.3.0", default-features = false }
 
 [workspace]

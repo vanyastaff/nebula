@@ -766,6 +766,8 @@ pub enum OperationAdvance {
     Granted {
         /// Fresh effect call identity.
         call: OperationCallId,
+        /// Backend clock when this permit was durably authorized.
+        authorized_at_ms: i64,
         /// Exact state committed with this grant.
         record: super::OperationRecord,
     },
@@ -773,6 +775,8 @@ pub enum OperationAdvance {
     ReconciliationGranted {
         /// Fresh read-only call identity.
         call: OperationCallId,
+        /// Backend clock when this permit was durably authorized.
+        authorized_at_ms: i64,
         /// Exact state committed with this grant.
         record: super::OperationRecord,
     },

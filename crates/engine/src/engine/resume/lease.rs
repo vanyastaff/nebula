@@ -21,7 +21,7 @@ impl From<EngineError> for ExactTurnFailure {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(super) enum ResumeLeaseSource<'a> {
     Acquire,
     Adopt {

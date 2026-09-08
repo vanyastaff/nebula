@@ -94,16 +94,16 @@ configuration, and process lifecycle.
 - `ControlDispatchError` — typed error returned from `ControlDispatch` methods; recorded on
   the control-queue row via `mark_failed` (no auto-retry — ADR-0008 §5).
 - `ExecutionResult` — post-run summary returned to the API layer.
-- `PlanFlavorRevisionInstaller` / `PlanFlavorRevisionLoader` — Task 13A
+- `PlanFlavorRevisionInstaller` / `PlanFlavorRevisionLoader` —
   contract-plane/runtime-control bridges. The installer revalidates and
   encodes one immutable authority-free plan/flavor pair for the technical
   catalog; the loader decodes only the requested exact pair, recomputes both
   identities, and checks it against one `FrozenPluginRegistry`. The successful
   load witness retains that exact registry snapshot so compatibility evidence
-  cannot outlive or detach from it. Neither type carries
-  tenant/admission/reference authority. Task 13A is component-only;
-  SQLite/PostgreSQL retention and production start wiring remain Tasks
-  14A/13B/20.
+  cannot outlive or detach from it. Neither type carries tenant, admission,
+  or reference authority. SQLite and PostgreSQL retain the exact revisions;
+  activation and start composition install and load them through these
+  bridges.
 - `EngineError` — typed engine-layer error (includes `Telemetry` when metric registration fails at
   `WorkflowEngine::new` time).
 - `EffectExecutionError` — bounded remote-effect failures including durable unknown
@@ -180,10 +180,10 @@ See `docs/MATURITY.md` row for `nebula-engine`.
 
 - API stability: `partial` — `WorkflowEngine` and `ExecutionResult` are in active use;
   known open debts (see Appendix) affect correctness boundaries.
-- Exact plan/flavor loading: `partial` — the checked runtime-control bridge
-  exists after Task 13A, but only the InMemory reference model is available.
-  It is not a production durability or admission claim until the ordered SQL
-  schema, three-backend conformance, and atomic `materialize_start` path ship.
+- Exact plan/flavor loading: `partial` — InMemory provides the internal
+  reference model, while SQLite and PostgreSQL provide deployment adapters.
+  The ordered schema, three-backend conformance, and atomic
+  `materialize_start` path enforce durable admission for exact revisions.
 - Downstream-edge gate only blocks local edges, not the full graph (§10 narrower than
   advertised for multi-hop conditional flows).
 

@@ -31,7 +31,7 @@ nebula-api = { path = "../../crates/api", features = ["first-party-composition"]
 # PG-backed stores are gated behind the `postgres` cargo feature.
 nebula-storage = { path = "../../crates/storage", features = ["credential-in-memory", "sqlite"] }
 # Direct dep: `ExecutionStoreBundle` in compose.rs names the port trait objects
-# (`WorkflowStore`, `ControlQueue`, `TriggerDedupInbox`, …) directly, so the
+# (`WorkflowStore`, `ControlQueue`, `StartAcceptanceStore`, …) directly, so the
 # storage-port crate must be a real dependency, not accessed through re-exports.
 # nebula-server is in deny.toml's nebula-storage-port `wrappers` allowlist.
 nebula-storage-port = { path = "../../crates/storage-port" }

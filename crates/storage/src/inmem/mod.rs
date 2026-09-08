@@ -33,7 +33,7 @@ pub use identity::{
     InMemoryQuotaStore, InMemoryResourceStore, InMemoryTriggerStore, InMemoryUserStore,
     InMemoryWorkspaceStore,
 };
-pub use job_dispatch::{InMemoryJobDispatchQueue, InMemoryTriggerDedupInbox};
+pub use job_dispatch::InMemoryJobDispatchQueue;
 pub use journal::InMemoryJournalReader;
 pub use node_result::{InMemoryCheckpointStore, InMemoryNodeResultStore};
 pub use operation_ledger::InMemoryOperationLedger;

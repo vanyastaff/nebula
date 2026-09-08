@@ -26,15 +26,15 @@ use nebula_core::{
     PluginSetId, WorkerFlavorRevisionId, WorkflowId, WorkflowVersionId, WorkspaceId,
 };
 use nebula_storage_port::dto::{
-    CachedRecord, ContractBundleRecord, ControlCommand, ControlMsg, DispatchKind, JobDispatchMsg,
-    JournalEntry, MaterializedStart, NewExecution, ResumeTarget, TriggerDedupRow,
-    WebhookActivationRecord, WebhookMode, WorkflowRecord, WorkflowVersionRecord,
+    CachedRecord, ContractBundleRecord, ControlCommand, ControlMsg, JobDispatchMsg, JournalEntry,
+    MaterializedStart, NewExecution, ResumeTarget, WebhookActivationRecord, WebhookMode,
+    WorkflowRecord, WorkflowVersionRecord,
 };
 use nebula_storage_port::store::{
     ClaimGeneration, ControlClaimToken, ControlQueue, ExecutionJournalReader, ExecutionStore,
     IdempotencyGuard, IdempotencyStore, JobClaimToken, JobDispatchQueue, StartAcceptanceStore,
-    StartContractIdentity, StartMaterialization, TriggerDedupInbox, WebhookActivationStore,
-    WorkflowStore, WorkflowVersionStore,
+    StartContractIdentity, StartMaterialization, WebhookActivationStore, WorkflowStore,
+    WorkflowVersionStore,
 };
 use nebula_storage_port::{
     BeginDrainOutcome, ExecutionReferenceTransition, FencingToken, PlanFlavorCatalogAdmin,
@@ -72,10 +72,6 @@ pub(crate) trait Backend: Send + Sync {
     async fn workflow_version_store(&self) -> Arc<dyn WorkflowVersionStore>;
     /// A job-dispatch queue backed by this backend.
     async fn job_dispatch_queue(&self) -> Arc<dyn JobDispatchQueue>;
-    /// A trigger-dedup inbox backed by this backend, sharing the same
-    /// core as [`Backend::job_dispatch_queue`] so `claim_and_materialize_start`
-    /// is all-or-nothing within the backend.
-    async fn trigger_dedup_inbox(&self) -> Arc<dyn TriggerDedupInbox>;
     /// A keyed-start acceptance store backed by this backend, sharing the same
     /// core as [`Backend::execution_store`] and [`Backend::control_queue`] so
     /// `materialize_start` commits every start-owned write together.
@@ -89,12 +85,23 @@ pub(crate) trait Backend: Send + Sync {
     async fn plan_flavor_catalog_admin(&self) -> Arc<dyn PlanFlavorCatalogAdmin>;
 }
 
+/// Test-only clock control for SQL job-dispatch retention assertions.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+#[async_trait::async_trait]
+pub(crate) trait SqlJobTimestampFixture: Backend {
+    /// Move a job's current processing timestamp into the past.
+    async fn age_job_timestamp(
+        &self,
+        job_id: &[u8; 16],
+        age: std::time::Duration,
+    ) -> Result<(), StorageError>;
+}
+
 /// InMemory backend (always available).
 ///
 /// Holds one execution store whose core is shared (it is `Clone` over an
-/// `Arc<Mutex<…>>`), so the control queue, journal reader, job-dispatch queue,
-/// and trigger-dedup inbox all observe the same rows and operate atomically
-/// under one lock.
+/// `Arc<Mutex<…>>`), so the control queue, journal reader, and job-dispatch
+/// queue observe the same rows under one lock.
 pub(crate) struct InMemoryBackend {
     store: nebula_storage::inmem::InMemoryExecutionStore,
     guard: nebula_storage::inmem::InMemoryIdempotencyGuard,
@@ -165,11 +172,6 @@ impl Backend for InMemoryBackend {
             &self.store,
         ))
     }
-    async fn trigger_dedup_inbox(&self) -> Arc<dyn TriggerDedupInbox> {
-        Arc::new(nebula_storage::inmem::InMemoryTriggerDedupInbox::new(
-            &self.store,
-        ))
-    }
     async fn start_acceptance_store(&self) -> Arc<dyn StartAcceptanceStore> {
         Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
             &self.store,
@@ -222,6 +224,34 @@ impl SqliteBackend {
             })
             .await
             .clone()
+    }
+}
+
+#[cfg(feature = "sqlite")]
+#[async_trait::async_trait]
+impl SqlJobTimestampFixture for SqliteBackend {
+    async fn age_job_timestamp(
+        &self,
+        job_id: &[u8; 16],
+        age: std::time::Duration,
+    ) -> Result<(), StorageError> {
+        let age_ms = i64::try_from(age.as_millis()).unwrap_or(i64::MAX);
+        let timestamp_ms = chrono::Utc::now().timestamp_millis().saturating_sub(age_ms);
+        let rows_updated =
+            sqlx::query("UPDATE port_job_dispatch_queue SET processed_at_ms = ? WHERE id = ?")
+                .bind(timestamp_ms)
+                .bind(job_id.as_slice())
+                .execute(&self.pool().await)
+                .await
+                .map_err(|error| StorageError::Connection(error.to_string()))?
+                .rows_affected();
+        if rows_updated != 1 {
+            return Err(StorageError::NotFound {
+                entity: "job_dispatch",
+                id: hex::encode(job_id),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -321,16 +351,6 @@ impl Backend for SqliteBackend {
         unimplemented!("build with --features sqlite to exercise the SQLite backend")
     }
     #[cfg(feature = "sqlite")]
-    async fn trigger_dedup_inbox(&self) -> Arc<dyn TriggerDedupInbox> {
-        Arc::new(nebula_storage::sqlite::SqliteTriggerDedupInbox::new(
-            self.pool().await,
-        ))
-    }
-    #[cfg(not(feature = "sqlite"))]
-    async fn trigger_dedup_inbox(&self) -> Arc<dyn TriggerDedupInbox> {
-        unimplemented!("build with --features sqlite to exercise the SQLite backend")
-    }
-    #[cfg(feature = "sqlite")]
     async fn start_acceptance_store(&self) -> Arc<dyn StartAcceptanceStore> {
         Arc::new(nebula_storage::sqlite::SqliteStartAcceptanceStore::new(
             self.pool().await,
@@ -411,6 +431,34 @@ impl PostgresBackend {
             })
             .await
             .clone()
+    }
+}
+
+#[cfg(feature = "postgres")]
+#[async_trait::async_trait]
+impl SqlJobTimestampFixture for PostgresBackend {
+    async fn age_job_timestamp(
+        &self,
+        job_id: &[u8; 16],
+        age: std::time::Duration,
+    ) -> Result<(), StorageError> {
+        let age_ms = i64::try_from(age.as_millis()).unwrap_or(i64::MAX);
+        let timestamp_ms = chrono::Utc::now().timestamp_millis().saturating_sub(age_ms);
+        let rows_updated =
+            sqlx::query("UPDATE port_job_dispatch_queue SET processed_at_ms = $1 WHERE id = $2")
+                .bind(timestamp_ms)
+                .bind(job_id.as_slice())
+                .execute(&self.pool().await)
+                .await
+                .map_err(|error| StorageError::Connection(error.to_string()))?
+                .rows_affected();
+        if rows_updated != 1 {
+            return Err(StorageError::NotFound {
+                entity: "job_dispatch",
+                id: hex::encode(job_id),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -507,16 +555,6 @@ impl Backend for PostgresBackend {
     }
     #[cfg(not(feature = "postgres"))]
     async fn job_dispatch_queue(&self) -> Arc<dyn JobDispatchQueue> {
-        unimplemented!("build with --features postgres to exercise the Postgres backend")
-    }
-    #[cfg(feature = "postgres")]
-    async fn trigger_dedup_inbox(&self) -> Arc<dyn TriggerDedupInbox> {
-        Arc::new(nebula_storage::postgres::PgTriggerDedupInbox::new(
-            self.pool().await,
-        ))
-    }
-    #[cfg(not(feature = "postgres"))]
-    async fn trigger_dedup_inbox(&self) -> Arc<dyn TriggerDedupInbox> {
         unimplemented!("build with --features postgres to exercise the Postgres backend")
     }
     #[cfg(feature = "postgres")]
@@ -1466,7 +1504,21 @@ pub(crate) async fn assert_control_queue_outbox_and_fencing(backend: &dyn Backen
         "[{}] typed 16-byte id round-trips through the queue",
         backend.name()
     );
-    let current = claimed[0].token;
+    let current = &claimed[0].token;
+
+    let foreign_scope = ControlClaimToken::new([42u8; 16], current.generation(), scope_b());
+    let foreign_acknowledgement = queue.mark_completed(&foreign_scope).await;
+    assert!(
+        matches!(
+            foreign_acknowledgement,
+            Err(StorageError::NotFound {
+                entity: "control_queue",
+                ..
+            })
+        ),
+        "[{}] a claim bound to another tenant must receive uniform NotFound, got: {foreign_acknowledgement:?}",
+        backend.name()
+    );
 
     // A token naming a generation this row never reached must be rejected.
     // Under the old `processed_by` fence this was expressed as "a different
@@ -1475,6 +1527,7 @@ pub(crate) async fn assert_control_queue_outbox_and_fencing(backend: &dyn Backen
     let forged = ControlClaimToken::new(
         [42u8; 16],
         ClaimGeneration::new(current.generation().get() + 1),
+        current.scope().clone(),
     );
     let stale_ack = queue.mark_completed(&forged).await;
     assert!(
@@ -1495,7 +1548,7 @@ pub(crate) async fn assert_control_queue_outbox_and_fencing(backend: &dyn Backen
 
     // The holder of the current claim can complete it.
     queue
-        .mark_completed(&current)
+        .mark_completed(current)
         .await
         .expect("mark_completed (claimant)");
 }
@@ -2342,15 +2395,10 @@ impl<B: Backend> Backend for ScopedBackend<B> {
         ))
     }
 
-    // Job-dispatch queue and trigger-dedup inbox are not wrapped by the
-    // tenancy decorator (no `Scoped*` implementation exists yet); delegate
-    // directly to the inner backend so the raw conformance assertions work.
+    // Job dispatch is a worker-global discovery port. Tenant predicates are
+    // carried by the storage-minted claim token on acknowledgement.
     async fn job_dispatch_queue(&self) -> Arc<dyn JobDispatchQueue> {
         self.inner.job_dispatch_queue().await
-    }
-
-    async fn trigger_dedup_inbox(&self) -> Arc<dyn TriggerDedupInbox> {
-        self.inner.trigger_dedup_inbox().await
     }
 
     // Start acceptance is not wrapped by the tenancy decorator: the scope is
@@ -2421,7 +2469,7 @@ pub(crate) async fn assert_control_queue_same_processor_aba_is_fenced(
         "[{}] generation N must claim the command",
         backend.name()
     );
-    let superseded = first[0].token;
+    let superseded = first[0].token.clone();
 
     tokio::time::sleep(ABA_CLAIM_AGE).await;
     let outcome = queue
@@ -2445,7 +2493,7 @@ pub(crate) async fn assert_control_queue_same_processor_aba_is_fenced(
         "[{}] generation N+1 must re-claim the command",
         backend.name()
     );
-    let current = second[0].token;
+    let current = second[0].token.clone();
     assert!(
         current.generation() > superseded.generation(),
         "[{}] a re-claim must mint a strictly greater generation ({} then {})",
@@ -2891,13 +2939,7 @@ pub(crate) async fn assert_expired_rollbacks_are_released(backend: &dyn Backend)
     );
 }
 
-// ── job-dispatch + dedup conformance assertions ───────────────────────────
-
-/// A `NewExecution` with placeholder content for conformance tests that focus
-/// on the dedup/routing behaviour rather than the execution-row fields.
-fn make_new_execution() -> (String, serde_json::Value) {
-    ("wf_conformance".to_owned(), serde_json::json!({}))
-}
+// ── job-dispatch conformance assertions ───────────────────────────────────
 
 fn make_job(id: u8, required_plugin_key: &str, tags: &[&str]) -> JobDispatchMsg {
     let key: PluginKey = required_plugin_key
@@ -2988,6 +3030,93 @@ pub(crate) async fn assert_job_dispatch_routes_by_plugin(backend: &dyn Backend) 
     );
 }
 
+/// The primary plugin remains an independent routing requirement when a
+/// malformed decoded message omits it from the full plugin set.
+pub(crate) async fn assert_job_dispatch_requires_primary_plugin(backend: &dyn Backend) {
+    let queue = backend.job_dispatch_queue().await;
+    let mut job = make_job(0x12, "plugin.alpha", &["plugin.alpha"]);
+    job.required_plugins = vec![
+        "plugin.beta"
+            .parse::<PluginKey>()
+            .expect("conformance test plugin key must be valid"),
+    ];
+    queue.enqueue(&job).await.expect("enqueue malformed job");
+
+    let claims = queue
+        .claim_pending(
+            &[9; 16],
+            16,
+            &["plugin.beta"
+                .parse::<PluginKey>()
+                .expect("conformance test plugin key must be valid")],
+            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
+        )
+        .await
+        .expect("claim malformed job");
+
+    assert!(
+        claims.is_empty(),
+        "[{}] a worker missing the primary plugin must not claim malformed routing metadata",
+        backend.name()
+    );
+}
+
+/// Terminal retention starts at the terminal transition, not when the claim
+/// began. SQL fixtures move timestamps directly so the assertion has no
+/// wall-clock sleep or scheduler race.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+pub(crate) async fn assert_sql_job_cleanup_uses_terminal_transition(
+    backend: &dyn SqlJobTimestampFixture,
+) {
+    let queue = backend.job_dispatch_queue().await;
+    let job = make_job(0x13, "plugin.alpha", &["plugin.alpha"]);
+    queue.enqueue(&job).await.expect("enqueue cleanup job");
+    let claim = queue
+        .claim_pending(
+            &[9; 16],
+            1,
+            &["plugin.alpha"
+                .parse::<PluginKey>()
+                .expect("conformance test plugin key must be valid")],
+            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
+        )
+        .await
+        .expect("claim cleanup job")
+        .remove(0);
+
+    backend
+        .age_job_timestamp(&job.id, std::time::Duration::from_secs(10))
+        .await
+        .expect("age active claim timestamp");
+    queue
+        .mark_dispatched(&claim.token)
+        .await
+        .expect("terminalize cleanup job");
+    assert_eq!(
+        queue
+            .cleanup(std::time::Duration::from_secs(1))
+            .await
+            .expect("cleanup immediately after terminal transition"),
+        0,
+        "[{}] a long-running claim must survive immediately after terminalization",
+        backend.name()
+    );
+
+    backend
+        .age_job_timestamp(&job.id, std::time::Duration::from_secs(10))
+        .await
+        .expect("age terminal timestamp");
+    assert_eq!(
+        queue
+            .cleanup(std::time::Duration::from_secs(1))
+            .await
+            .expect("cleanup expired terminal job"),
+        1,
+        "[{}] an expired terminal job must be deleted",
+        backend.name()
+    );
+}
+
 /// `mark_dispatched` and `mark_failed` are both fenced on the storage-minted
 /// claim generation: a token that does not name the row's current claim
 /// changes nothing.
@@ -3011,7 +3140,21 @@ pub(crate) async fn assert_job_dispatch_fencing(backend: &dyn Backend) {
         .await
         .expect("claim");
     assert_eq!(claimed.len(), 1, "[{}] claimed one row", backend.name());
-    let current = claimed[0].token;
+    let current = &claimed[0].token;
+
+    let foreign_scope = JobClaimToken::new(job_d.id, current.generation(), scope_b());
+    let foreign_dispatch = q.mark_dispatched(&foreign_scope).await;
+    assert!(
+        matches!(
+            foreign_dispatch,
+            Err(StorageError::NotFound {
+                entity: "job_dispatch",
+                ..
+            })
+        ),
+        "[{}] a job claim bound to another tenant must receive uniform NotFound, got: {foreign_dispatch:?}",
+        backend.name()
+    );
 
     // A token naming a generation this row never reached must be rejected.
     // Under the old `processed_by` fence this was expressed as "a different
@@ -3020,6 +3163,7 @@ pub(crate) async fn assert_job_dispatch_fencing(backend: &dyn Backend) {
     let forged = JobClaimToken::new(
         job_d.id,
         ClaimGeneration::new(current.generation().get() + 1),
+        current.scope().clone(),
     );
     let stale_dispatched = q.mark_dispatched(&forged).await;
     assert!(
@@ -3031,7 +3175,7 @@ pub(crate) async fn assert_job_dispatch_fencing(backend: &dyn Backend) {
 
     // The row is still Processing (the fenced call made no change) — the
     // holder of the current claim succeeds.
-    q.mark_dispatched(&current)
+    q.mark_dispatched(current)
         .await
         .expect("mark_dispatched (claimant)");
 
@@ -3065,11 +3209,12 @@ pub(crate) async fn assert_job_dispatch_fencing(backend: &dyn Backend) {
         .await
         .expect("claim job_f");
     assert_eq!(claimed_f.len(), 1, "[{}] claimed job_f", backend.name());
-    let current_f = claimed_f[0].token;
+    let current_f = &claimed_f[0].token;
 
     let forged_f = JobClaimToken::new(
         job_f.id,
         ClaimGeneration::new(current_f.generation().get() + 1),
+        current_f.scope().clone(),
     );
     let stale_failed = q.mark_failed(&forged_f, "stale error").await;
     assert!(
@@ -3080,7 +3225,7 @@ pub(crate) async fn assert_job_dispatch_fencing(backend: &dyn Backend) {
     );
 
     // The row is still Processing — the current claim can still fail it.
-    q.mark_failed(&current_f, "real error")
+    q.mark_failed(current_f, "real error")
         .await
         .expect("mark_failed (claimant)");
 
@@ -3145,7 +3290,7 @@ pub(crate) async fn assert_job_dispatch_same_processor_aba_is_fenced(
         "[{}] generation N must claim the row",
         backend.name()
     );
-    let superseded = first[0].token;
+    let superseded = first[0].token.clone();
 
     tokio::time::sleep(ABA_CLAIM_AGE).await;
     let outcome = q
@@ -3174,7 +3319,7 @@ pub(crate) async fn assert_job_dispatch_same_processor_aba_is_fenced(
         "[{}] generation N+1 must re-claim the row",
         backend.name()
     );
-    let current = second[0].token;
+    let current = second[0].token.clone();
     assert_eq!(
         current.row_id(),
         superseded.row_id(),
@@ -3221,247 +3366,6 @@ pub(crate) async fn assert_job_dispatch_same_processor_aba_is_fenced(
         "stale_generation_mutation_count": 0,
         "current_owner_completed_after_stale_attempts": true
     })
-}
-
-/// `claim_and_materialize_start` is first-writer-wins when a `TriggerDedupRow`
-/// is provided: the second call with the same `(trigger_id, event_id)` must
-/// return `Duplicate` and must NOT enqueue a second job.  The `Duplicate`
-/// outcome carries the winner's execution id, not the candidate's.
-pub(crate) async fn assert_trigger_dedup_first_writer(backend: &dyn Backend) {
-    let inbox = backend.trigger_dedup_inbox().await;
-    let q = backend.job_dispatch_queue().await;
-
-    let row = TriggerDedupRow::new("trg_fw", "evt_001", scope_a(), "2026-01-01T00:00:00Z");
-    let job1 = make_job(0x30, "plugin.y", &["plugin.y"]);
-    let job2 = make_job(0x31, "plugin.y", &["plugin.y"]);
-
-    let (wf_id, initial) = make_new_execution();
-    let exec1 = NewExecution::new(&wf_id, &initial);
-
-    let out1 = inbox
-        .claim_and_materialize_start(Some(&row), &job1, &exec1)
-        .await
-        .expect("first compose");
-    assert_eq!(
-        out1.kind,
-        DispatchKind::Dispatched,
-        "[{}] first writer must be Dispatched",
-        backend.name()
-    );
-    assert_eq!(
-        out1.execution_id,
-        job1.execution_id,
-        "[{}] Dispatched outcome must carry the candidate execution id",
-        backend.name()
-    );
-
-    let (wf_id2, initial2) = make_new_execution();
-    let exec2 = NewExecution::new(&wf_id2, &initial2);
-    let out2 = inbox
-        .claim_and_materialize_start(Some(&row), &job2, &exec2)
-        .await
-        .expect("second compose");
-    assert_eq!(
-        out2.kind,
-        DispatchKind::Duplicate,
-        "[{}] second writer must be Duplicate",
-        backend.name()
-    );
-    // Duplicate must carry the WINNER's execution id (job1's), not the candidate's.
-    assert_eq!(
-        out2.execution_id,
-        job1.execution_id,
-        "[{}] Duplicate outcome must carry the winner's execution id, not the candidate's",
-        backend.name()
-    );
-
-    // Only one job row must have been enqueued.
-    let proc = [7u8; 16];
-    let claimed = q
-        .claim_pending(
-            &proc,
-            16,
-            &["plugin.y".parse::<PluginKey>().unwrap()],
-            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
-        )
-        .await
-        .expect("claim");
-    assert_eq!(
-        claimed.len(),
-        1,
-        "[{}] exactly one job row after first-writer-wins compose",
-        backend.name()
-    );
-
-    // `exists` must confirm the dedup row.
-    let present = inbox
-        .exists(&scope_a(), "trg_fw", "evt_001")
-        .await
-        .expect("exists");
-    assert!(
-        present,
-        "[{}] exists must return true after a Dispatched compose",
-        backend.name()
-    );
-}
-
-/// `claim_and_materialize_start` with `row = None` always dispatches without
-/// a dedup row (unconditional dispatch path).
-pub(crate) async fn assert_dispatch_without_dedup_key(backend: &dyn Backend) {
-    let inbox = backend.trigger_dedup_inbox().await;
-    let q = backend.job_dispatch_queue().await;
-
-    let job = make_job(0x40, "plugin.z", &["plugin.z"]);
-    let (wf_id, initial) = make_new_execution();
-    let exec = NewExecution::new(&wf_id, &initial);
-    let out = inbox
-        .claim_and_materialize_start(None, &job, &exec)
-        .await
-        .expect("compose none");
-    assert_eq!(
-        out.kind,
-        DispatchKind::Dispatched,
-        "[{}] None row must always be Dispatched",
-        backend.name()
-    );
-    assert_eq!(
-        out.execution_id,
-        job.execution_id,
-        "[{}] None-row Dispatched must carry the candidate execution id",
-        backend.name()
-    );
-
-    let proc = [8u8; 16];
-    let claimed = q
-        .claim_pending(
-            &proc,
-            16,
-            &["plugin.z".parse::<PluginKey>().unwrap()],
-            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
-        )
-        .await
-        .expect("claim");
-    assert_eq!(
-        claimed.len(),
-        1,
-        "[{}] unconditional dispatch must enqueue one job",
-        backend.name()
-    );
-
-    // A second None-row dispatch for a different job is also unconditional.
-    let job2 = make_job(0x41, "plugin.z", &["plugin.z"]);
-    let (wf_id2, initial2) = make_new_execution();
-    let exec2 = NewExecution::new(&wf_id2, &initial2);
-    let out2 = inbox
-        .claim_and_materialize_start(None, &job2, &exec2)
-        .await
-        .expect("compose none 2");
-    assert_eq!(
-        out2.kind,
-        DispatchKind::Dispatched,
-        "[{}] second None-row dispatch must also be Dispatched (no dedup)",
-        backend.name()
-    );
-    assert_eq!(
-        out2.execution_id,
-        job2.execution_id,
-        "[{}] second None-row dispatch must carry its candidate execution id",
-        backend.name()
-    );
-}
-
-/// `claim_and_materialize_start` is atomic: the dedup guard, execution row,
-/// and Start job are written together.  A dedup row in scope_a is invisible
-/// from scope_b (cross-scope `exists` returns false), and after a Dispatched
-/// compose the execution row is visible in the store and exactly one Start job
-/// is claimable from the dispatch queue.
-pub(crate) async fn assert_dedup_compose_is_atomic(backend: &dyn Backend) {
-    let inbox = backend.trigger_dedup_inbox().await;
-    let store = backend.execution_store().await;
-    let q = backend.job_dispatch_queue().await;
-
-    let row = TriggerDedupRow::new(
-        "trg_atomic",
-        "evt_atomic",
-        scope_a(),
-        "2026-01-01T00:00:00Z",
-    );
-    let job = make_job(0x50, "plugin.q", &["plugin.q"]);
-    let (wf_id, initial) = make_new_execution();
-    let exec = NewExecution::new(&wf_id, &initial);
-    let outcome = inbox
-        .claim_and_materialize_start(Some(&row), &job, &exec)
-        .await
-        .expect("compose");
-    assert_eq!(
-        outcome.kind,
-        DispatchKind::Dispatched,
-        "[{}] compose must be Dispatched",
-        backend.name()
-    );
-
-    // All three writes must be visible atomically after a Dispatched compose.
-
-    // 1. Execution row: must exist with the candidate id.
-    let exec_row = store
-        .get(&scope_a(), &job.execution_id)
-        .await
-        .expect("get execution row after compose");
-    assert!(
-        exec_row.is_some(),
-        "[{}] execution row must exist after Dispatched compose (three-way atomicity)",
-        backend.name()
-    );
-
-    // 2. Dedup guard: visible within scope_a.
-    let in_scope = inbox
-        .exists(&scope_a(), "trg_atomic", "evt_atomic")
-        .await
-        .expect("exists scope_a");
-    assert!(
-        in_scope,
-        "[{}] dedup row must be visible in scope_a",
-        backend.name()
-    );
-
-    // Cross-scope: invisible (scope_b has no such row).
-    let cross = inbox
-        .exists(&scope_b(), "trg_atomic", "evt_atomic")
-        .await
-        .expect("exists scope_b");
-    assert!(
-        !cross,
-        "[{}] dedup row must not be visible cross-scope",
-        backend.name()
-    );
-
-    // 3. Start job: exactly one claimable job must have landed, with the
-    //    correct execution id.  This closes the gap in the "three-way"
-    //    atomicity claim — a backend that commits dedup+execution but fails
-    //    to enqueue the Start job would still pass the two checks above.
-    let proc = [0xA0u8; 16];
-    let claimed = q
-        .claim_pending(
-            &proc,
-            16,
-            &["plugin.q".parse::<PluginKey>().unwrap()],
-            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
-        )
-        .await
-        .expect("claim_pending after compose");
-    assert_eq!(
-        claimed.len(),
-        1,
-        "[{}] exactly one Start job must be enqueued after Dispatched compose (three-way atomicity)",
-        backend.name()
-    );
-    assert_eq!(
-        claimed[0].msg.execution_id,
-        job.execution_id,
-        "[{}] claimed Start job execution_id must match the candidate ({})",
-        backend.name(),
-        job.execution_id
-    );
 }
 
 /// `claim_pending` enforces a superset predicate: a worker may claim a job
@@ -3607,325 +3511,6 @@ pub(crate) async fn assert_job_dispatch_routes_by_plugin_superset(backend: &dyn 
     );
 }
 
-/// Trigger-dedup is scoped per tenant: the same `(trigger_id, event_id)` pair
-/// under two different tenant scopes MUST NOT collide.
-///
-/// This is the regression lock for the cross-tenant confused-deputy bug where
-/// the dedup key omitted scope: tenant B's `claim_and_materialize_start` would
-/// hit tenant A's dedup row and return `Duplicate`, silently dropping tenant B's
-/// job.
-///
-/// Contract:
-/// 1. Tenant A dispatches `(trg_iso, evt_iso)` → `Dispatched`.
-/// 2. Tenant B dispatches the **same** `(trg_iso, evt_iso)` → must also be
-///    `Dispatched` (cross-tenant MUST NOT dedup).
-/// 3. Tenant A repeats `(trg_iso, evt_iso)` → `Duplicate` (same-tenant dedup
-///    still fires).
-/// 4. `exists` confirms the row is visible inside each scope and invisible
-///    across scopes.
-pub(crate) async fn assert_trigger_dedup_is_scoped(backend: &dyn Backend) {
-    let inbox = backend.trigger_dedup_inbox().await;
-
-    let row_a = TriggerDedupRow::new("trg_iso", "evt_iso", scope_a(), "2026-01-01T00:00:00Z");
-    let row_b = TriggerDedupRow::new("trg_iso", "evt_iso", scope_b(), "2026-01-01T00:00:00Z");
-    // Unique ids per job so they never collide on the job-queue PK.
-    let job_a1 = make_job(0x70, "plugin.iso", &["plugin.iso"]);
-    let job_b = {
-        let mut j = make_job(0x71, "plugin.iso", &["plugin.iso"]);
-        j.scope = scope_b();
-        j
-    };
-    let job_a2 = make_job(0x72, "plugin.iso", &["plugin.iso"]);
-
-    let (wf_id_a1, initial_a1) = make_new_execution();
-    let exec_a1 = NewExecution::new(&wf_id_a1, &initial_a1);
-    // Step 1: tenant A dispatches — must be Dispatched.
-    let out_a1 = inbox
-        .claim_and_materialize_start(Some(&row_a), &job_a1, &exec_a1)
-        .await
-        .expect("step 1: tenant A dispatch");
-    assert_eq!(
-        out_a1.kind,
-        DispatchKind::Dispatched,
-        "[{}] step 1: tenant A must be Dispatched",
-        backend.name()
-    );
-
-    let (wf_id_b, initial_b) = make_new_execution();
-    let exec_b = NewExecution::new(&wf_id_b, &initial_b);
-    // Step 2: tenant B dispatches the SAME (trigger_id, event_id) — must also
-    // be Dispatched; cross-tenant MUST NOT dedup.
-    let out_b = inbox
-        .claim_and_materialize_start(Some(&row_b), &job_b, &exec_b)
-        .await
-        .expect("step 2: tenant B dispatch");
-    assert_eq!(
-        out_b.kind,
-        DispatchKind::Dispatched,
-        "[{}] step 2: tenant B with the same (trigger_id, event_id) must be \
-         Dispatched — cross-tenant dedup collision (confused-deputy bug)",
-        backend.name()
-    );
-
-    let (wf_id_a2, initial_a2) = make_new_execution();
-    let exec_a2 = NewExecution::new(&wf_id_a2, &initial_a2);
-    // Step 3: tenant A repeats — same-tenant dedup must fire (Duplicate).
-    let out_a2 = inbox
-        .claim_and_materialize_start(Some(&row_a), &job_a2, &exec_a2)
-        .await
-        .expect("step 3: tenant A repeat");
-    assert_eq!(
-        out_a2.kind,
-        DispatchKind::Duplicate,
-        "[{}] step 3: same-tenant repeat must be Duplicate",
-        backend.name()
-    );
-    // Duplicate must carry the winner's execution id (job_a1's).
-    assert_eq!(
-        out_a2.execution_id,
-        job_a1.execution_id,
-        "[{}] step 3: Duplicate outcome must carry tenant A's winner execution id",
-        backend.name()
-    );
-
-    // Step 4: `exists` is scope-qualified: each tenant sees its own row only.
-    let a_sees_self = inbox
-        .exists(&scope_a(), "trg_iso", "evt_iso")
-        .await
-        .expect("exists scope_a");
-    assert!(
-        a_sees_self,
-        "[{}] scope_a must see its own dedup row",
-        backend.name()
-    );
-    let b_sees_self = inbox
-        .exists(&scope_b(), "trg_iso", "evt_iso")
-        .await
-        .expect("exists scope_b");
-    assert!(
-        b_sees_self,
-        "[{}] scope_b must see its own dedup row",
-        backend.name()
-    );
-    // Cross-scope: each tenant must NOT see the other's row via exists.
-    let a_sees_b = inbox
-        .exists(&scope_a(), "trg_iso", "evt_iso")
-        .await
-        .expect("exists a→b check");
-    // Both scopes have a row for this (trigger_id, event_id), but they are
-    // separate rows.  The relevant isolation is that scope B's claim above
-    // returned Dispatched, not Duplicate — that is the confused-deputy guard.
-    // `exists` is per-scope so both return true (each for their own row).
-    assert!(
-        a_sees_b,
-        "[{}] scope_a exists must still return true (own row present)",
-        backend.name()
-    );
-}
-
-/// `claim_and_materialize_start` rolls back atomically on execution-id
-/// collision: if the execution row cannot be inserted (id already exists),
-/// neither the dedup guard nor the Start job must land in the store.
-///
-/// Contract:
-/// 1. Pre-insert an execution row with a known id.
-/// 2. Attempt `claim_and_materialize_start` with a `JobDispatchMsg` whose
-///    `execution_id` matches — must return `Err(StorageError::Duplicate)`.
-/// 3. Assert: no dedup guard was inserted (`exists` returns false), and no
-///    Start job was enqueued (`claim_pending` returns empty).
-pub(crate) async fn assert_dedup_compose_rolls_back_on_id_collision(backend: &dyn Backend) {
-    let inbox = backend.trigger_dedup_inbox().await;
-    let store = backend.execution_store().await;
-    let q = backend.job_dispatch_queue().await;
-    let s = scope_a();
-
-    // Pre-insert an execution row with a known id.
-    store
-        .create(&s, "exe_collision", "wf_rollback", serde_json::json!({}))
-        .await
-        .expect("pre-insert execution row");
-
-    // Build a compose whose execution_id collides with the pre-existing row.
-    let row = TriggerDedupRow::new("trg_rb", "evt_rb", s.clone(), "2026-01-01T00:00:00Z");
-    let mut job = make_job(0x80, "plugin.rb", &["plugin.rb"]);
-    // Override the execution_id to the colliding id.
-    "exe_collision".clone_into(&mut job.execution_id);
-
-    let (wf_id, initial) = make_new_execution();
-    let exec = NewExecution::new(&wf_id, &initial);
-    let result = inbox
-        .claim_and_materialize_start(Some(&row), &job, &exec)
-        .await;
-
-    assert!(
-        matches!(result, Err(StorageError::Duplicate { .. })),
-        "[{}] compose with a colliding execution id must return Duplicate error, got {result:?}",
-        backend.name()
-    );
-
-    // The dedup row must NOT have been inserted (rollback).
-    let dedup_exists = inbox
-        .exists(&s, "trg_rb", "evt_rb")
-        .await
-        .expect("exists after failed compose");
-    assert!(
-        !dedup_exists,
-        "[{}] dedup row must NOT exist after a rolled-back compose",
-        backend.name()
-    );
-
-    // No Start job must have been enqueued (rollback).
-    let proc = [0x9Au8; 16];
-    let enqueued = q
-        .claim_pending(
-            &proc,
-            16,
-            &["plugin.rb".parse::<PluginKey>().unwrap()],
-            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
-        )
-        .await
-        .expect("claim_pending after failed compose");
-    assert!(
-        enqueued.is_empty(),
-        "[{}] no Start job must be enqueued after a rolled-back compose",
-        backend.name()
-    );
-}
-
-/// `claim_and_materialize_start` must fail closed on a colliding job-dispatch
-/// id (`start.id`) and leave all state intact.  The SQL backends hit the
-/// job-dispatch primary key and roll the transaction back; the in-memory
-/// backend must reject the collision too — never silently overwrite the queued
-/// job while reporting `Dispatched`.  (Regression guard for the codex P2
-/// backend-divergence on PR #814.)
-///
-/// The second compose reuses the SAME job id but a DIFFERENT execution id and a
-/// DIFFERENT `(trigger, event)`, so it is not a dedup duplicate — the only
-/// collision is on the job-dispatch primary key.
-pub(crate) async fn assert_dedup_compose_rejects_duplicate_job_id(backend: &dyn Backend) {
-    let inbox = backend.trigger_dedup_inbox().await;
-    let q = backend.job_dispatch_queue().await;
-    let s = scope_a();
-
-    // 1. First compose succeeds: enqueues job id 0xB0 (execution id "exe_176").
-    let row1 = TriggerDedupRow::new("trg_j1", "evt_j1", s.clone(), "2026-01-01T00:00:00Z");
-    let job1 = make_job(0xB0, "plugin.jid", &["plugin.jid"]);
-    let (wf1, init1) = make_new_execution();
-    let exec1 = NewExecution::new(&wf1, &init1);
-    let _ = inbox
-        .claim_and_materialize_start(Some(&row1), &job1, &exec1)
-        .await
-        .expect("first compose dispatches");
-
-    // 2. Second compose reuses the SAME job id (0xB0), different execution id.
-    let row2 = TriggerDedupRow::new("trg_j2", "evt_j2", s.clone(), "2026-01-01T00:00:00Z");
-    let mut job2 = make_job(0xB0, "plugin.jid", &["plugin.jid"]);
-    "exe_jid_other".clone_into(&mut job2.execution_id);
-    let (wf2, init2) = make_new_execution();
-    let exec2 = NewExecution::new(&wf2, &init2);
-    let result = inbox
-        .claim_and_materialize_start(Some(&row2), &job2, &exec2)
-        .await;
-    assert!(
-        result.is_err(),
-        "[{}] compose with a colliding job-dispatch id must fail closed, got {result:?}",
-        backend.name()
-    );
-
-    // 3. The original job must be intact (NOT overwritten by job2): exactly one
-    //    queued job, still carrying the first execution id.
-    let proc = [0xB1u8; 16];
-    let claimed = q
-        .claim_pending(
-            &proc,
-            16,
-            &["plugin.jid".parse::<PluginKey>().unwrap()],
-            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
-        )
-        .await
-        .expect("claim after failed compose");
-    assert_eq!(
-        claimed.len(),
-        1,
-        "[{}] exactly the original job must remain queued",
-        backend.name()
-    );
-    assert_eq!(
-        claimed[0].msg.execution_id,
-        "exe_176",
-        "[{}] the original job must NOT be overwritten by the colliding compose",
-        backend.name()
-    );
-
-    // 4. The second dedup row must NOT have been inserted (all-or-nothing).
-    let dedup2 = inbox
-        .exists(&s, "trg_j2", "evt_j2")
-        .await
-        .expect("exists after failed compose");
-    assert!(
-        !dedup2,
-        "[{}] the colliding compose must not insert its dedup row",
-        backend.name()
-    );
-}
-
-/// `claim_and_materialize_start` returns the winner's `execution_id` on
-/// `Duplicate`, NOT a freshly-minted candidate.  This is the P2 contract
-/// upgrade over the old `claim_and_enqueue_start` which returned a
-/// caller-supplied candidate id.
-///
-/// Contract:
-/// 1. First compose with `(trg_rb2, evt_rb2)` → `Dispatched`; record
-///    `winner_id = outcome.execution_id`.
-/// 2. Second compose with the same `(trg_rb2, evt_rb2)` → `Duplicate`;
-///    `outcome.execution_id` must equal `winner_id`.
-pub(crate) async fn assert_dedup_duplicate_returns_winner_id(backend: &dyn Backend) {
-    let inbox = backend.trigger_dedup_inbox().await;
-    let s = scope_a();
-
-    let row = TriggerDedupRow::new("trg_rb2", "evt_rb2", s.clone(), "2026-01-01T00:00:00Z");
-    let job1 = make_job(0x90, "plugin.w", &["plugin.w"]);
-    let (wf_id1, initial1) = make_new_execution();
-    let exec1 = NewExecution::new(&wf_id1, &initial1);
-
-    let out1 = inbox
-        .claim_and_materialize_start(Some(&row), &job1, &exec1)
-        .await
-        .expect("first compose");
-    assert_eq!(
-        out1.kind,
-        DispatchKind::Dispatched,
-        "[{}] first compose must be Dispatched",
-        backend.name()
-    );
-    let winner_id = out1.execution_id.clone();
-
-    // Second compose: different candidate id, same (trigger_id, event_id).
-    let job2 = make_job(0x91, "plugin.w", &["plugin.w"]);
-    let (wf_id2, initial2) = make_new_execution();
-    let exec2 = NewExecution::new(&wf_id2, &initial2);
-
-    let out2 = inbox
-        .claim_and_materialize_start(Some(&row), &job2, &exec2)
-        .await
-        .expect("second compose");
-    assert_eq!(
-        out2.kind,
-        DispatchKind::Duplicate,
-        "[{}] second compose must be Duplicate",
-        backend.name()
-    );
-    assert_eq!(
-        out2.execution_id,
-        winner_id,
-        "[{}] Duplicate outcome must carry the original winner's execution id ({}), \
-         not the new candidate's ({})",
-        backend.name(),
-        winner_id,
-        job2.execution_id
-    );
-}
-
 /// A released claim is immediately re-claimable, is fenced against a
 /// superseded token, and does not consume the reclaim budget.
 ///
@@ -3974,7 +3559,7 @@ pub(crate) async fn assert_control_queue_release_returns_row_for_redelivery(back
         "[{}] the command must claim",
         backend.name()
     );
-    let released = first[0].token;
+    let released = first[0].token.clone();
 
     queue
         .release_claim(&released)
@@ -4029,7 +3614,6 @@ pub(crate) async fn assert_control_queue_release_returns_row_for_redelivery(back
 pub(crate) async fn assert_job_dispatch_exact_flavor(backend: &dyn Backend) {
     use std::time::Duration;
     let queue = backend.job_dispatch_queue().await;
-    let inbox = backend.trigger_dedup_inbox().await;
     let matching_flavor = WorkerFlavorRevisionId::from_bytes([0x61; 32]);
     let other_flavor = WorkerFlavorRevisionId::from_bytes([0x62; 32]);
     let plugins = ["exact.flavor".parse::<PluginKey>().unwrap()];
@@ -4039,15 +3623,7 @@ pub(crate) async fn assert_job_dispatch_exact_flavor(backend: &dyn Backend) {
     let mut matching = make_job(0x62, "exact.flavor", &["exact.flavor"]);
     matching.required_worker_flavor_id = matching_flavor;
     queue.enqueue(&wrong).await.unwrap();
-    let (workflow_id, state) = make_new_execution();
-    let execution = NewExecution::new(&workflow_id, &state);
-    let outcome = inbox
-        .claim_and_materialize_start(None, &matching, &execution)
-        .await
-        .unwrap();
-
-    assert_eq!(outcome.execution_id, matching.execution_id);
-    assert_eq!(outcome.kind, DispatchKind::Dispatched);
+    queue.enqueue(&matching).await.unwrap();
 
     let claims = queue
         .claim_pending(&processor, 1, &plugins, matching_flavor)
@@ -4058,7 +3634,7 @@ pub(crate) async fn assert_job_dispatch_exact_flavor(backend: &dyn Backend) {
         claims[0].msg, matching,
         "compose must persist exact identity and filter before LIMIT"
     );
-    let stale = claims[0].token;
+    let stale = claims[0].token.clone();
     assert!(
         queue
             .claim_pending(&processor, 1, &plugins, matching_flavor)

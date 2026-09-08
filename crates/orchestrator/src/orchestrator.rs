@@ -465,6 +465,7 @@ impl Orchestrator {
 
     async fn handle_entry(&self, claim: JobClaim, shutdown: &CancellationToken) {
         let JobClaim { msg, token } = claim;
+        let claim_generation = token.generation();
         // The queue routing predicate (`required_plugins ⊆ available_plugins`)
         // is enforced at claim time. This assert checks the implied single-key
         // condition (`required_plugin_key ∈ available_plugins`, since
@@ -540,7 +541,7 @@ impl Orchestrator {
         let turn_handoff = TurnHandoff::for_claim(
             &msg.scope,
             &msg.execution_id,
-            token,
+            token.clone(),
             msg.required_worker_flavor_id,
         )
         .lease_to(&self.lease_holder, self.handoff_lease_ttl);
@@ -557,7 +558,7 @@ impl Orchestrator {
                 tracing::debug!(
                     row_id = %hex_display(&row_id),
                     execution_id = %msg.execution_id,
-                    claim_generation = %token.generation(),
+                    claim_generation = %claim_generation,
                     "handoff found the claim superseded; the current owner drives the turn (#976)"
                 );
                 return;
@@ -579,7 +580,7 @@ impl Orchestrator {
                 tracing::error!(
                     row_id = %hex_display(&row_id),
                     execution_id = %msg.execution_id,
-                    claim_generation = %token.generation(),
+                    claim_generation = %claim_generation,
                     "storage returned an unsupported handoff outcome"
                 );
                 return;
@@ -608,7 +609,7 @@ impl Orchestrator {
                 tracing::error!(
                     row_id = %hex_display(&row_id),
                     execution_id = %msg.execution_id,
-                    claim_generation = %token.generation(),
+                    claim_generation = %claim_generation,
                     error = %e,
                     "handoff failed; row left in Processing for reclaim (#976)"
                 );
@@ -648,7 +649,7 @@ impl Orchestrator {
                     tracing::warn!(
                         row_id = %hex_display(&row_id),
                         execution_id = %msg.execution_id,
-                        claim_generation = %token.generation(),
+                        claim_generation = %claim_generation,
                         grace_ms = SHUTDOWN_DISPATCH_GRACE.as_millis() as u64,
                         "orchestrator dispatch did not drain within the shutdown grace; \
                          the acknowledged row's execution lease governs recovery (#976)"
