@@ -48,7 +48,7 @@ pub(crate) type DrainTrackers = (DrainTracker, DrainTracker);
 /// Dereferences to the instance inside the actual topology entry; the framework
 /// never clones that instance or transfers it outside lifecycle cleanup. Both explicit
 /// [`release`](Self::release) and Drop enqueue the same cleanup job.
-/// An author may still expose clonable aliases through its instance API; the
+/// An author may still expose cloneable aliases through its instance API; the
 /// framework cannot revoke or account for those external aliases or their work.
 ///
 /// The job holds the admission permit and drain reservations until cleanup
