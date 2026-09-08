@@ -21,6 +21,20 @@ for direct use.
 ## Supported surface
 
 - `prelude` — curated authoring types and traits.
+- `nebula-metadata` re-export set (settled issue 996, `crates/metadata/docs/DESIGN.md` §8): the
+  prelude re-exports this crate's **entire** public surface — `BaseMetadata`, `Metadata`, `Icon`,
+  `MaturityLevel`, `DeprecationNotice`, `BaseCompatError`, `validate_base_compat`,
+  `PluginManifest`, `PluginManifestBuilder`, `ManifestError`, `PluginDependency` — not a curated
+  subset. `BaseCompatError<K>` is reachable because `ActionMetadata`/`CredentialMetadata`/
+  `ResourceMetadata` — the three composed metadata **types**, not their `MetadataCompatibilityError`
+  enums — are already in this prelude, and each type's `validate_compatibility` returns an error
+  carrying `BaseCompatError` as the payload of its `Base(..)` variant; without the re-export a
+  consumer could obtain that value but not name its payload type. The three
+  `MetadataCompatibilityError` enums themselves are re-exported from their own crate roots
+  (`action/src/lib.rs:141`, `credential/src/lib.rs:274`, `resource/src/lib.rs:382`) and deliberately
+  **not** from the prelude (re-exporting three same-named types from one facade was out of scope).
+  `PluginManifestBuilder` is reachable because a consumer already names it as a parameter type
+  (`crates/plugin/tests/frozen_registry.rs:284,294`).
 - `integration` — narrow integration contracts; credential tests currently expose
   `TestFailureCode` and `TestResult` here.
 - `action::ActionBuilder` and `workflow::WorkflowBuilder` — programmatic authoring.
@@ -59,6 +73,10 @@ This fixture does not prove procedural-derive authoring.
   require authors to name Nebula implementation crates.
 - Breaking changes require release notes and a migration path. Intentional removal of broad crate
   re-exports is a breaking perimeter correction.
+- Issue 1000 (prelude contraction into persona modules) must preserve reachability of the
+  `nebula-metadata` re-export set settled above — it moves *where* each item is reachable from
+  (which persona module), not *whether* it stays reachable. Do not re-decide the set itself while
+  doing the contraction.
 
 ## Known gaps
 

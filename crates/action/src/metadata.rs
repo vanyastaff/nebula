@@ -573,6 +573,21 @@ mod tests {
             serde_json::from_str(&json).expect("deserialization succeeds");
 
         assert_eq!(original, decoded);
+
+        // `original == decoded` alone passes even if `#[serde(flatten)]` were
+        // lost and `base` nested as a sub-object (both sides would nest
+        // identically). Assert the actual wire shape on this real
+        // multi-field composed type, as `nebula-credential` and
+        // `nebula-resource` already do for their metadata types.
+        let value: serde_json::Value = serde_json::to_value(&original).expect("value conversion");
+        assert!(
+            value.get("base").is_none(),
+            "shared metadata must stay flattened on the wire, not nested under `base`"
+        );
+        assert_eq!(
+            value.get("key").and_then(serde_json::Value::as_str),
+            Some("http.request")
+        );
     }
 
     #[test]

@@ -27,21 +27,6 @@ pub enum MaturityLevel {
     Deprecated,
 }
 
-impl MaturityLevel {
-    /// Returns `true` for [`Self::Experimental`] and [`Self::Beta`] — the
-    /// levels where breaking changes can land without a major bump.
-    #[must_use]
-    pub fn is_unstable(self) -> bool {
-        matches!(self, Self::Experimental | Self::Beta)
-    }
-
-    /// Returns `true` for [`Self::Deprecated`].
-    #[must_use]
-    pub fn is_deprecated(self) -> bool {
-        matches!(self, Self::Deprecated)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -49,7 +34,6 @@ mod tests {
     #[test]
     fn default_is_stable() {
         assert_eq!(MaturityLevel::default(), MaturityLevel::Stable);
-        assert!(!MaturityLevel::default().is_unstable());
     }
 
     #[test]

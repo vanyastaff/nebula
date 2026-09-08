@@ -13,6 +13,9 @@ pub mod base;
 /// [`BaseCompatError`] + [`validate_base_compat`] — generic compat rules
 /// shared by every catalog citizen.
 pub mod compat;
+/// Shared `serde` default/`skip_serializing_if` helpers used by both
+/// [`base`] and [`manifest`] — not part of the public API.
+mod defaults;
 /// [`DeprecationNotice`] — standard deprecation payload.
 pub mod deprecation;
 /// [`Icon`] enum — one valid representation for catalog icons.
