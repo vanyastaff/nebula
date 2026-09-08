@@ -30,7 +30,11 @@ fn sdk_only_consumer_can_expand_supported_derive_families() {
         .collect::<Vec<_>>();
     assert_eq!(
         dependencies,
-        ["nebula = { package = \"nebula-sdk\", version = \"=0.2.0\", default-features = false }"],
+        [format!(
+            "nebula = {{ package = \"nebula-sdk\", version = \"={}\", default-features = false }}",
+            env!("CARGO_PKG_VERSION")
+        )
+        .as_str()],
         "fixture must depend on a renamed nebula-sdk and nothing else"
     );
 
