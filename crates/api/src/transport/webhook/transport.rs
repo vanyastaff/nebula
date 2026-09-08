@@ -31,9 +31,9 @@ use nebula_action::{
     Clock, SystemClock, TriggerHandler, TriggerRuntimeContext, WebhookConfig,
     WebhookEndpointProvider,
 };
-use nebula_engine::{DefinitionRoutingResolver, RoutingResolver};
+use nebula_engine::WorkflowStartService;
 use nebula_metrics::MetricsRegistry;
-use nebula_storage_port::store::{TriggerDedupInbox, WebhookActivationStore, WorkflowVersionStore};
+use nebula_storage_port::store::WebhookActivationStore;
 use url::Url;
 use uuid::Uuid;
 
@@ -191,26 +191,16 @@ pub(super) struct TransportInner {
     /// Durable dispatch components (U-D1.4b).
     ///
     /// When `Some`, Prod-mode activation rows spawn durable executions
-    /// via `DurableExecutionEmitter`.  All three fields must be wired
-    /// together by the composition root; `None` means Prod-mode
+    /// via `DurableExecutionEmitter`. The runtime start service is wired
+    /// by the composition root; `None` means Prod-mode
     /// dispatches fail closed (5xx).
     pub(super) durable_dispatch: Option<DurableDispatchComponents>,
 }
 
-/// The three components required for durable webhook dispatch (U-D1.4b).
-///
-/// Grouped into one struct so `TransportInner` does not grow three
-/// independent `Option` fields whose validity is coupled — all three
-/// must be present together or absent together.
+/// Runtime authority for atomic durable webhook starts and replay.
 #[derive(Clone)]
 pub(super) struct DurableDispatchComponents {
-    /// Atomic dedup + execution-row + job enqueue.  Shared with the
-    /// orchestrator's `JobDispatchQueue` (same underlying store / mutex).
-    pub(super) dedup: Arc<dyn TriggerDedupInbox>,
-    /// Maps `(validated_workflow, trigger_id)` → dispatch route.
-    pub(super) resolver: Arc<dyn RoutingResolver>,
-    /// Workflow-version store for per-request `ValidatedWorkflow` load.
-    pub(super) version_store: Arc<dyn WorkflowVersionStore>,
+    pub(super) start: Arc<WorkflowStartService>,
 }
 
 impl std::fmt::Debug for WebhookTransport {
@@ -350,9 +340,9 @@ impl WebhookTransport {
     /// Attach the durable-dispatch components for Prod-mode webhook
     /// execution spawning (ADR-0095 D1, U-D1.4b).
     ///
-    /// All three components must share the **same underlying store** so
-    /// `claim_and_materialize_start` is atomic (dedup guard + Created
-    /// execution row + Start job in one transaction).
+    /// The service owns admission, event replay, and atomic persistence of
+    /// the execution, exact contract bundle, and Start command. Compose it
+    /// over the same backend consumed by the worker.
     ///
     /// Returns a **new** `WebhookTransport` — same Arc-replacement contract
     /// as [`Self::with_activation_store`]: call before distributing the
@@ -377,17 +367,8 @@ impl WebhookTransport {
     /// replicas the effective cap is `N ×` the configured RPM.  See
     /// [`WebhookRateLimiter`] for the full per-replica limitation note.
     #[must_use = "builder methods must be chained or the result used"]
-    pub fn with_durable_dispatch(
-        self,
-        dedup: Arc<dyn TriggerDedupInbox>,
-        resolver: Arc<dyn RoutingResolver>,
-        version_store: Arc<dyn WorkflowVersionStore>,
-    ) -> Self {
-        let components = DurableDispatchComponents {
-            dedup,
-            resolver,
-            version_store,
-        };
+    pub fn with_durable_dispatch(self, start: Arc<WorkflowStartService>) -> Self {
+        let components = DurableDispatchComponents { start };
         let inner = match Arc::try_unwrap(self.inner) {
             Ok(mut i) => {
                 // Structural guarantee: both limiters are mandatory with
@@ -446,17 +427,6 @@ impl WebhookTransport {
             },
         };
         Self { inner }
-    }
-
-    /// Build a `DefinitionRoutingResolver` with the slice flavor SHA and
-    /// return it as `Arc<dyn RoutingResolver>`.
-    ///
-    /// Convenience for composition roots that do not need to customize the
-    /// flavor SHA.  The `DefinitionRoutingResolver` is registry-free and
-    /// stateless; a single instance is safe to share across all dispatches.
-    #[must_use]
-    pub fn default_resolver() -> Arc<dyn RoutingResolver> {
-        Arc::new(DefinitionRoutingResolver::default())
     }
 
     /// Register a webhook trigger and allocate its public endpoint.

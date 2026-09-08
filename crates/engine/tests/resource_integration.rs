@@ -59,6 +59,7 @@ impl Action for ResourceConsumerHandler {
             "ResourceConsumer",
             "static",
         )
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -99,6 +100,7 @@ impl Action for ResourceProbeHandler {
             "ResourceProbe",
             "static",
         )
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -157,6 +159,7 @@ fn make_workflow(nodes: Vec<NodeDefinition>) -> WorkflowDefinition {
 fn meta(key: ActionKey) -> ActionMetadata {
     let name = key.to_string();
     ActionMetadata::new(key, name, "resource integration test")
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
 }
 
 // ---------------------------------------------------------------------------
@@ -365,6 +368,7 @@ impl Action for IntegrationAcquireHandler {
             "IntegrationAcquire",
             "static",
         )
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
 
     fn dependencies() -> &'static Dependencies {

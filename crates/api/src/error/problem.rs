@@ -49,7 +49,7 @@ pub struct ProblemDetails {
 /// client matches on them rather than parsing `detail`. Exactly one location
 /// field is populated — `pointer` when the target is addressable by RFC 6901,
 /// `path` when it is a logical workflow element. `expected`, `actual`, and
-/// `remediation` are the NS14 activation-diagnostic fields — present whenever
+/// `remediation` are the activation-diagnostic fields — present whenever
 /// the rejection came from an activation diagnostic, absent for the
 /// request-level validators that have no contract to compare against.
 ///
@@ -103,7 +103,7 @@ impl ValidationFieldError {
     ///
     /// Request-level validators reject a malformed field rather than a
     /// mismatched contract, so they have no `expected`/`actual` pair to report
-    /// and deliberately omit the NS14 fields instead of inventing them.
+    /// and deliberately omit activation-contract fields instead of inventing them.
     #[must_use]
     pub fn field(
         code: impl Into<String>,
@@ -123,7 +123,7 @@ impl ValidationFieldError {
 }
 
 impl From<&nebula_error::ActivationDiagnostic> for ValidationFieldError {
-    /// Carry all five NS14 fields onto the wire without flattening any of them.
+    /// Carry all five activation-diagnostic fields onto the wire without flattening them.
     ///
     /// `detail` stays populated for a human reading the response, but every
     /// field it summarises is also present on its own, so a client never has to

@@ -66,11 +66,15 @@ mod control_trace;
 pub mod credential;
 pub mod credential_accessor;
 pub mod daemon;
+mod effect_driver;
 pub mod engine;
+pub use effect_driver::EffectExecutionError;
 pub mod error;
 pub mod event;
 pub mod node_output;
 pub(crate) mod plugin_wiring;
+mod recorded_contract;
+mod recorded_graph;
 pub(crate) mod resolver;
 pub mod resource;
 pub mod resource_accessor;
@@ -79,14 +83,16 @@ pub mod result;
 pub mod revision_catalog;
 pub mod runtime;
 pub mod scoped_resources;
+pub mod start_materialization;
 pub mod store_seam;
+pub mod workflow_activation;
 
 // Re-export the absorbed `nebula-runtime` public surface at the crate root so
 // every downstream caller can migrate `use crate::runtime::X` → `use
 // nebula_engine::X` without path adjustments deeper than the crate name.
 pub use control_consumer::{
-    ControlConsumer, ControlDispatch, ControlDispatchError, DEFAULT_BATCH_SIZE,
-    DEFAULT_POLL_INTERVAL, MAX_CLAIM_ERROR_BACKOFF,
+    ClaimedControlDispatchOutcome, ControlConsumer, ControlDispatch, ControlDispatchError,
+    DEFAULT_BATCH_SIZE, DEFAULT_POLL_INTERVAL, MAX_CLAIM_ERROR_BACKOFF,
 };
 pub use control_dispatch::EngineControlDispatch;
 // Credential runtime types (`CredentialResolver`, `ResolveResponse`, …) live in
@@ -98,9 +104,13 @@ pub use daemon::{
     AnyDaemonHandle, Daemon, DaemonConfig, DaemonError, DaemonRegistry, DaemonRuntime,
     DefinitionRoutingResolver, DispatchRoute, DurableExecutionEmitter, EngineExecutionSink,
     EventSource, EventSourceAdapter, EventSourceConfig, EventSourceRuntime, RestartPolicy,
-    RoutingError, RoutingResolver, SLICE_FLAVOR_SHA,
+    RoutingError, RoutingResolver,
 };
-pub use engine::{DEFAULT_EVENT_CHANNEL_CAPACITY, DEFAULT_TIMER_SCAN_INTERVAL, WorkflowEngine};
+pub use engine::{
+    ClaimedControlTurnOutcome, ClaimedControlTurnRequest, ClaimedStartOutcome, ClaimedStartRequest,
+    DEFAULT_EVENT_CHANNEL_CAPACITY, DEFAULT_TIMER_SCAN_INTERVAL, RecoveryTurnOutcome,
+    RecoveryTurnRequest, WorkflowEngine,
+};
 pub use error::EngineError;
 pub use event::{ExecutionEvent, NodeFailedDetails};
 pub use nebula_storage_port::dto::ResumeTarget;
@@ -132,4 +142,12 @@ pub use scoped_resources::{
     EmptyScopedResourceMap, LayeredResourceAccessor, MAX_ANCESTOR_DEPTH, PoppedEntry, ScopedLookup,
     ScopedResourceGuard, ScopedResourceMap, run_cleanup, run_cleanup_with_timeout,
 };
+pub use start_materialization::{
+    IndeterminateWorkflowStart, WorkflowStartBuildError, WorkflowStartDisposition,
+    WorkflowStartError, WorkflowStartReceipt, WorkflowStartService,
+};
 pub use store_seam::{ExecutionStores, WorkflowStores};
+pub use workflow_activation::{
+    IndeterminateWorkflowPublication, WorkflowActivationError, WorkflowActivationReceipt,
+    WorkflowActivationService,
+};

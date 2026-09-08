@@ -3,31 +3,75 @@
 //! `resume_execution` rebuilds an incomplete execution after a process
 //! restart; the `satisfy_*_signal_waits` methods deliver external signals to
 //! parked nodes; the `cancel_dangling_*` methods tear down nodes left ready
-//! when an execution is cancelled. Split out of `engine.rs` as part of the
-//! god-module decomposition (audit 🔴-1). These remain `impl WorkflowEngine`
-//! methods in a child module, retaining access to the engine's private fields,
-//! sibling methods, helper free functions and types via `use super::*`.
+//! when an execution is cancelled.
 
 use super::*;
+use nebula_core::WorkerFlavorRevisionId;
 
-/// Where the execution lease for a resume turn comes from.
-enum ResumeLeaseSource {
-    /// The engine acquires the lease itself — the control-queue and restart
-    /// paths, where nothing has leased the execution yet.
-    Acquire,
-    /// The durable handoff (#976) already minted the lease when it
-    /// acknowledged the dispatch row; the engine adopts that fence instead of
-    /// acquiring (a live lease blocks acquisition outright, even for the same
-    /// holder, so acquiring here could never succeed).
-    Adopt {
-        fence: nebula_storage_port::FencingToken,
-    },
+mod lease;
+use lease::{ExactTurnFailure, LeasePreparation, ResumeLeaseRequest, ResumeLeaseSource};
+mod recorded_execution;
+use recorded_execution::ValidatedRecordedExecution;
+mod recovery;
+pub use recovery::{
+    ClaimedStartOutcome, ClaimedStartRequest, RecoveryTurnOutcome, RecoveryTurnRequest,
+};
+
+struct LoadedExactExecution {
+    repository_version: u64,
+    workflow_id: WorkflowId,
+    original_status: ExecutionStatus,
+    state: ExecutionState,
+    recorded: ValidatedRecordedExecution,
+    worker_flavor_revision_id: WorkerFlavorRevisionId,
+    elapsed_before_turn: Duration,
+}
+
+struct PreparedExactExecution {
+    loaded_repository_version: u64,
+    workflow_id: WorkflowId,
+    original_status: ExecutionStatus,
+    worker_flavor_revision_id: WorkerFlavorRevisionId,
+    elapsed_before_turn: Duration,
+    loaded: crate::revision_catalog::LoadedPlanFlavorRevision,
+    workflow: nebula_plugin::ExecutableGraph,
+    factories: HashMap<NodeKey, Arc<dyn nebula_action::ActionFactory>>,
+    graph: DependencyGraph,
+    state: ExecutionState,
+    outputs: Arc<DashMap<NodeKey, serde_json::Value>>,
+    semaphore: Arc<Semaphore>,
+    budget: ExecutionBudget,
+    seed_nodes: Vec<NodeKey>,
+    activated_edges: HashMap<NodeKey, HashSet<NodeKey>>,
+    resolved_edges: HashMap<NodeKey, usize>,
+}
+
+struct ExactExecutionBody<'a> {
+    scope: &'a Scope,
+    execution_id: ExecutionId,
+    started: Instant,
+    loaded: crate::revision_catalog::LoadedPlanFlavorRevision,
+    workflow: nebula_plugin::ExecutableGraph,
+    factories: HashMap<NodeKey, Arc<dyn nebula_action::ActionFactory>>,
+    graph: DependencyGraph,
+    state: ExecutionState,
+    outputs: Arc<DashMap<NodeKey, serde_json::Value>>,
+    semaphore: Arc<Semaphore>,
+    cancel_token: CancellationToken,
+    repository_version: u64,
+    workflow_id: WorkflowId,
+    elapsed_before_turn: Duration,
+    budget: ExecutionBudget,
+    seed_nodes: Vec<NodeKey>,
+    activated_edges: HashMap<NodeKey, HashSet<NodeKey>>,
+    resolved_edges: HashMap<NodeKey, usize>,
+    lease: Option<LeaseGuard>,
 }
 
 impl WorkflowEngine {
     /// Resume an incomplete execution after process restart.
     ///
-    /// Loads execution state and workflow definition from storage, identifies
+    /// Loads execution state and its exact recorded graph from storage, identifies
     /// which nodes are already complete, and re-executes from the frontier of
     /// ready-but-not-yet-executed nodes (nodes whose predecessors are all
     /// terminal but which are not yet terminal themselves).
@@ -42,10 +86,13 @@ impl WorkflowEngine {
     /// # Errors
     ///
     /// Returns [`EngineError::PlanningFailed`] if:
-    /// - `execution_repo` or `workflow_repo` is not configured on this engine
-    /// - The execution or workflow is not found in storage
+    /// - `execution_repo` is not configured on this engine
+    /// - The execution is not found in storage
     /// - The execution is already in a terminal state
     /// - The persisted state cannot be deserialized
+    ///
+    /// Exact revision failures, missing pins/configuration, unsupported recorded
+    /// semantics and unresolved binding admission return typed errors before dispatch.
     pub async fn resume_execution(
         &self,
         scope: &Scope,
@@ -83,389 +130,423 @@ impl WorkflowEngine {
         &self,
         scope: &Scope,
         execution_id: ExecutionId,
-        lease_source: ResumeLeaseSource,
+        lease_source: ResumeLeaseSource<'_>,
     ) -> Result<ExecutionResult, EngineError> {
-        let started = Instant::now();
-
-        // 1-5. Load persisted state + node outputs. The workflow
-        // definition is loaded after deserializing `ExecutionState` so
-        // resume can honor `workflow_version_number` when present instead
-        // of blindly following the latest published version.
-        let (repo_version_loaded, state_json, persisted_outputs): (
-            u64,
-            serde_json::Value,
-            Vec<(NodeKey, serde_json::Value)>,
-        ) = {
-            // The scoped execution-store bundle is required for resume;
-            // its absence preserves the historical `execution_repo`
-            // wording the resume contract (and tests) assert on.
-            let stores = self.stores.as_ref().ok_or_else(|| {
-                EngineError::PlanningFailed("no execution_repo configured".into())
-            })?;
-            let id = execution_id.to_string();
-            let record = stores
-                .execution
-                .get(scope, &id)
-                .await
-                .map_err(|e| EngineError::PlanningFailed(format!("load state: {e}")))?
-                .ok_or_else(|| {
-                    EngineError::PlanningFailed(format!("execution not found: {execution_id}"))
-                })?;
-            // Reload the raw per-node *outputs* (not the typed-result
-            // slot): the result slot stores the serialized `ActionResult`
-            // envelope, whereas successors consume the bare output payload
-            // — reading results here would feed a crash-resumed run a
-            // different value than a non-crashed run.
-            let outputs = stores
-                .node_results
-                .load_all_node_outputs(scope, &id)
-                .await
-                .map_err(|e| EngineError::PlanningFailed(format!("load outputs: {e}")))?
-                .into_iter()
-                .filter_map(|(node_id, rec)| NodeKey::new(&node_id).ok().map(|k| (k, rec.json)))
-                .collect();
-            (record.version, record.state, outputs)
-        };
-
-        // Deserialize via JSON string to avoid `serde_json::from_value` issues
-        // with Key<D> types that expect borrowed strings (domain-key serde impl).
-        let state_str = serde_json::to_string(&state_json)
-            .map_err(|e| EngineError::PlanningFailed(format!("serialize state: {e}")))?;
-        let exec_state: ExecutionState = serde_json::from_str(&state_str)
-            .map_err(|e| EngineError::PlanningFailed(format!("deserialize state: {e}")))?;
-
-        let workflow_json = {
-            let workflow_stores = self
-                .workflow_stores
-                .as_ref()
-                .ok_or_else(|| EngineError::PlanningFailed("no workflow_repo configured".into()))?;
-            let workflow_id = exec_state.workflow_id.to_string();
-            if let Some(number) = exec_state.workflow_version_number {
-                workflow_stores
-                    .versions
-                    .get(scope, &workflow_id, number)
+        let result = self
+            .drive_exact_execution(scope, execution_id, lease_source)
+            .await
+            .map_err(|failure| match failure {
+                ExactTurnFailure::BeforeLease(error)
+                | ExactTurnFailure::AfterLease(error)
+                | ExactTurnFailure::AcceptanceUnknown(error) => error,
+                ExactTurnFailure::ClaimSuperseded
+                | ExactTurnFailure::CandidateSuperseded
+                | ExactTurnFailure::NotReady => EngineError::Leased {
+                    execution_id,
+                    holder: self.instance_id.to_string(),
+                },
+            });
+        if let Err(error) = &result {
+            tracing::warn!(%execution_id, %error, "durable execution turn rejected");
+            // A rejected preparation has not constructed its heartbeat guard.
+            // Release only the handed-off generation; a successor's lease is untouched.
+            if let ResumeLeaseSource::Adopt { fence } = lease_source
+                && let Some(stores) = &self.stores
+                && let Err(release_error) = stores
+                    .execution
+                    .release_lease(scope, &execution_id.to_string(), fence)
                     .await
-                    .map_err(|e| EngineError::PlanningFailed(format!("load workflow: {e}")))?
-                    .ok_or_else(|| {
-                        EngineError::PlanningFailed(format!(
-                            "workflow not found: {workflow_id} version {number}"
-                        ))
-                    })?
-                    .definition
-            } else {
-                // #974: when the execution carries exact revision pins,
-                // the workflow version must have been recorded at start
-                // time. Falling back to get_published would silently load
-                // a different version than the one the execution was
-                // pinned to.
-                if exec_state.executable_plan_revision_id.is_some() {
-                    return Err(EngineError::PlanningFailed(format!(
-                        "execution {execution_id} has revision pins but no workflow_version_number;                          the version must be recorded at start time"
-                    )));
-                }
-                workflow_stores
-                    .versions
-                    .get_published(scope, &workflow_id)
-                    .await
-                    .map_err(|e| EngineError::PlanningFailed(format!("load workflow: {e}")))?
-                    .ok_or_else(|| {
-                        EngineError::PlanningFailed(format!("workflow not found: {workflow_id}"))
-                    })?
-                    .definition
+            {
+                tracing::warn!(%execution_id, error = %release_error,
+                    "rejected durable turn lease release failed; lease expires at TTL");
             }
-        };
+        }
+        result
+    }
 
-        // 3. Guard against resuming a terminal execution.
-        if exec_state.status.is_terminal() {
-            return Err(EngineError::PlanningFailed(format!(
-                "execution {execution_id} is already terminal ({})",
-                exec_state.status
-            )));
+    async fn load_exact_execution(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+        lease_source: ResumeLeaseSource<'_>,
+        turn_started_at: DateTime<Utc>,
+    ) -> Result<LoadedExactExecution, ExactTurnFailure> {
+        // The scoped execution-store bundle is required for resume; its absence
+        // preserves the historical `execution_repo` wording asserted by callers.
+        let stores = self
+            .stores
+            .as_ref()
+            .ok_or_else(|| EngineError::PlanningFailed("no execution_repo configured".into()))?;
+        let execution_key = execution_id.to_string();
+        let record = stores
+            .execution
+            .get(scope, &execution_key)
+            .await
+            .map_err(|source| EngineError::ExecutionRead { source })?
+            .ok_or_else(|| {
+                EngineError::PlanningFailed(format!("execution not found: {execution_id}"))
+            })?;
+        if record.scope != *scope || record.id != execution_key {
+            return Err(EngineError::InvalidRecordedExecution.into());
+        }
+        let workflow_id = record
+            .workflow_id
+            .parse()
+            .map_err(|_| EngineError::InvalidRecordedExecution)?;
+
+        checkpoint::validate_encoded_checkpoint_size(&record.state)?;
+        // Deserialize via JSON bytes because domain keys expect borrowed strings.
+        let encoded_state = serde_json::to_vec(&record.state)
+            .map_err(|error| EngineError::PlanningFailed(format!("serialize state: {error}")))?;
+        let state: ExecutionState = serde_json::from_slice(&encoded_state)
+            .map_err(|_| EngineError::InvalidRecordedExecution)?;
+        if state.execution_id != execution_id || state.workflow_id != workflow_id {
+            return Err(EngineError::InvalidRecordedExecution.into());
+        }
+        let original_status = state.status;
+
+        if matches!(lease_source, ResumeLeaseSource::Recovery(_)) {
+            let is_ready_for_recovery = match state.status {
+                ExecutionStatus::Created | ExecutionStatus::Running => true,
+                ExecutionStatus::Paused => state.node_states.values().any(|node| {
+                    matches!(node.state, NodeState::Waiting | NodeState::WaitingRetry)
+                        && node
+                            .next_attempt_at
+                            .is_some_and(|wake| wake <= turn_started_at)
+                }),
+                _ => false,
+            };
+            if !is_ready_for_recovery {
+                return Err(ExactTurnFailure::NotReady);
+            }
         }
 
-        // Deserialize via JSON string to avoid `serde_json::from_value` issues
-        // with borrowed key types (e.g. `ActionKey` uses `#[serde(borrow)]`).
-        let workflow_str = serde_json::to_string(&workflow_json)
-            .map_err(|e| EngineError::PlanningFailed(format!("serialize workflow: {e}")))?;
-        let workflow: WorkflowDefinition = serde_json::from_str(&workflow_str)
-            .map_err(|e| EngineError::PlanningFailed(format!("deserialize workflow: {e}")))?;
+        if state.status.is_terminal() {
+            return Err(EngineError::PlanningFailed(format!(
+                "execution {execution_id} is already terminal ({})",
+                state.status
+            ))
+            .into());
+        }
 
-        let workflow_id = exec_state.workflow_id;
+        let recorded = self
+            .validate_recorded_execution(scope, execution_id, workflow_id, &state)
+            .await?;
+        let worker_flavor_revision_id = state
+            .worker_flavor_revision_id
+            .ok_or(EngineError::MissingRevisionPins)?;
+        let elapsed_before_turn = match state.started_at {
+            Some(started_at) => turn_started_at
+                .signed_duration_since(started_at)
+                .to_std()
+                .map_err(|_| EngineError::InvalidRecordedExecution)?,
+            None if state.status == ExecutionStatus::Created => Duration::ZERO,
+            None => return Err(EngineError::InvalidRecordedExecution.into()),
+        };
 
-        // 6. Build dependency graph.
-        let graph = DependencyGraph::from_definition(&workflow)
-            .map_err(|e| EngineError::PlanningFailed(e.to_string()))?;
+        Ok(LoadedExactExecution {
+            repository_version: record.version,
+            workflow_id,
+            original_status,
+            state,
+            recorded,
+            worker_flavor_revision_id,
+            elapsed_before_turn,
+        })
+    }
 
-        // 7. Reconstruct the execution state, resetting non-terminal nodes. Nodes that were Running
-        //    at crash time need to be re-executed. This is a recovery path, so the reset bypasses
-        //    the forward state machine via `override_node_state` but still bumps the version per
-        //    transition so CAS readers see the change (issue #255).
-        let mut exec_state = exec_state;
-        // Cold-start seam : the API's start handler persists an
-        // `ExecutionState::new(id, workflow_id, &[])` row — no per-node entries,
-        // because the handler does not load the workflow on the hot path. The
-        // first `ControlCommand::Start` that drains via `EngineControlDispatch`
-        // lands here; seed `node_states` from the workflow definition so the
-        // frontier seeder below treats graph entry nodes as the natural starting
-        // set. A warm resume (post-crash, with persisted per-node state) skips
-        // this branch untouched.
-        //
-        // Captured before the seeding mutation below so the W0 U2 pre-flight
-        // further down (`validate_declared_output_ports`) can tell a genuine
-        // first attempt (production `Start` traffic — this is production's
-        // ONLY entry point for a brand-new execution; `execute_workflow_scoped`
-        // is reachable only from tests/direct-embed callers) from an actual
-        // resume of an already-in-progress execution, after this same check
-        // has already emptied the condition it reads.
-        let is_first_attempt = exec_state.node_states.is_empty();
-        if is_first_attempt {
-            for node in &workflow.nodes {
-                exec_state.set_node_state(
+    async fn prepare_exact_execution(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+        lease_source: ResumeLeaseSource<'_>,
+        turn_started_at: DateTime<Utc>,
+        exact_execution: LoadedExactExecution,
+    ) -> Result<PreparedExactExecution, ExactTurnFailure> {
+        let LoadedExactExecution {
+            repository_version: loaded_repository_version,
+            workflow_id,
+            original_status,
+            state,
+            recorded,
+            worker_flavor_revision_id,
+            elapsed_before_turn,
+        } = exact_execution;
+        let ValidatedRecordedExecution {
+            loaded,
+            workflow,
+            persisted_outputs,
+            factories,
+        } = recorded;
+        let graph = DependencyGraph::from_parts(workflow.nodes(), workflow.connections())
+            .map_err(|error| EngineError::PlanningFailed(error.to_string()))?;
+
+        let mut state = state;
+        if state.node_states.is_empty() {
+            for node in workflow.nodes() {
+                state.set_node_state(
                     node.id.clone(),
                     nebula_execution::state::NodeExecutionState::new(),
                 );
             }
         }
-        // Reset non-terminal nodes that crashed mid-attempt back to
-        // `Pending` so the frontier loop can re-dispatch them. Retry
-        // waits are different — a `WaitingRetry` node carries a
-        // durable `next_attempt_at` that the frontier loop's
-        // `retry_heap` consumes via the Phase-0 drain. Resetting it
-        // would lose the persisted backoff and re-dispatch the node
-        // immediately on resume, defeating T2's
-        // resume guarantee. (Crashed `Running` attempts have no
-        // such timestamp and must be re-driven from `Pending`.)
-        //
-        // `Waiting` nodes are excluded for the same reason: they are
-        // durably parked for an external wait condition (timer or
-        // signal). Their `next_attempt_at` is the timer wake instant;
-        // the Phase-0b drain re-seeds `wait_heap` from them below.
-        // Resetting a `Waiting` node to `Pending` would immediately
-        // re-dispatch it, defeating the durable park guarantee.
-        let non_terminal: Vec<NodeKey> = exec_state
+        let interrupted_nodes: Vec<NodeKey> = state
             .node_states
             .iter()
-            .filter(|(_, ns)| {
-                !ns.state.is_terminal()
-                    && ns.state != NodeState::WaitingRetry
-                    && ns.state != NodeState::Waiting
+            .filter(|(_, node_state)| {
+                !node_state.state.is_terminal()
+                    && node_state.state != NodeState::WaitingRetry
+                    && node_state.state != NodeState::Waiting
             })
-            .map(|(id, _)| id.clone())
+            .map(|(node_id, _)| node_id.clone())
             .collect();
-        for id in non_terminal {
-            let _ = exec_state.override_node_state(id, NodeState::Pending);
-        }
-        // Transition back to Running so the frontier loop can proceed.
-        // The persisted state may be Created, Paused, or already Running after a crash.
-        // Use transition_status when the transition is valid; skip if already Running.
-        if !exec_state.status.is_terminal() && exec_state.status != ExecutionStatus::Running {
-            // Ignoring the result is intentional: if this fails the status is left
-            // as-is (e.g. Paused), which is still non-terminal and the loop will proceed.
-            let _ = exec_state.transition_status(ExecutionStatus::Running);
+        for node_id in interrupted_nodes {
+            let _ = state.override_node_state(node_id, NodeState::Pending);
         }
 
-        // 8. Populate shared output map from persisted outputs.
-        let outputs: Arc<DashMap<NodeKey, serde_json::Value>> = Arc::new(DashMap::new());
-        for (node_key, value) in persisted_outputs {
-            outputs.insert(node_key.clone(), value);
+        let outputs = Arc::new(DashMap::new());
+        for (node_id, output) in persisted_outputs {
+            outputs.insert(node_id, output);
         }
-
-        // 9. Compute the resume frontier and pre-populate edge-tracking maps.
-        //
-        //    A node is on the frontier if:
-        //    - it is not yet terminal (Pending after the reset above), AND
-        //    - all its predecessor nodes are terminal in the loaded state.
-        //
-        //    We also rebuild `activated_edges` and `resolved_edges` for terminal
-        //    nodes so that `run_frontier`'s bookkeeping stays consistent when
-        //    it evaluates edges from the frontier.
-        let node_map: HashMap<NodeKey, &nebula_workflow::NodeDefinition> =
-            workflow.nodes.iter().map(|n| (n.id.clone(), n)).collect();
-
-        // W0 U2 fresh-execution-only pre-flight, gated on `is_first_attempt`
-        // (captured above, before the cold-start seed emptied the condition
-        // it was read from): reject connections wired to an output port the
-        // source action never declared. This is production's ONLY path for
-        // validating a brand-new execution — `execute_workflow_scoped` (which
-        // runs the same check) is never reached from production dispatch;
-        // production `Start`/`Resume`/`Restart` all converge on this function
-        // via `EngineControlDispatch::drive` → `resume_execution`.
-        //
-        // Runs ONLY on a genuine first attempt, never on an actual resume of
-        // an already-in-progress execution: re-validating a resumed run
-        // against `resume_execution`'s reloaded *latest published* workflow
-        // version (rather than the version the execution actually started
-        // under — a separate, pre-existing bug, see the module-level
-        // rationale on `validate_declared_output_ports`) could hard-fail an
-        // in-flight execution over a version mismatch its operator never had
-        // a chance to see. A true first attempt carries no such risk: there
-        // is no prior in-flight state to conflict with, and the workflow
-        // version it loads here IS the version it is starting under.
-        //
-        // Placement is load-bearing, same principle as `execute_workflow_scoped`:
-        // this must run before the execution lease is acquired below
-        // (`acquire_and_heartbeat_lease`, ~100 lines down) — verified by
-        // reading every intervening line: nothing between here and the lease
-        // acquire persists anything (`resume_execution` never creates the
-        // execution row itself; the API's start handler already did, before
-        // this function was ever called) or takes a lease, so a rejection
-        // here requires zero teardown.
-        if is_first_attempt
-            && let Err(reject) = self.validate_declared_output_ports(&graph, &node_map)
+        let node_map: HashMap<NodeKey, &nebula_workflow::NodeDefinition> = workflow
+            .nodes()
+            .iter()
+            .map(|node| (node.id.clone(), node))
+            .collect();
+        if let Err(rejection) =
+            self.validate_declared_output_ports_exact(&graph, &node_map, &factories)
         {
-            // Production's ONLY entry point for a brand-new execution — the
-            // API start handler already durably created this `Created` row
-            // before `resume_execution` was ever called (see the seam
-            // comment above). A bare `?` here would return before this
-            // function's own `persist_final_state` call ever runs (it is
-            // reached only via the frontier loop below), leaving that row
-            // orphaned in `Created` forever with no visible failure
-            // anywhere — `EngineControlDispatch::drive` only marks the
-            // CONTROL-QUEUE row failed, never the execution row itself.
-            // Durably fail the execution row before propagating so the
-            // rejection is actually observable.
-            //
-            // On the adopt path (#976) the durable handoff already holds the
-            // lease under its fence, so the failure write must commit under
-            // that fence — acquiring is blocked outright by the live lease,
-            // even for the same holder.
+            if matches!(
+                lease_source,
+                ResumeLeaseSource::ControlStart(_)
+                    | ResumeLeaseSource::Recovery(_)
+                    | ResumeLeaseSource::Control(_)
+            ) {
+                return Err(rejection.into());
+            }
             let handoff_fence = match lease_source {
                 ResumeLeaseSource::Adopt { fence } => Some(fence),
-                ResumeLeaseSource::Acquire => None,
+                ResumeLeaseSource::Acquire
+                | ResumeLeaseSource::ControlStart(_)
+                | ResumeLeaseSource::Recovery(_)
+                | ResumeLeaseSource::Control(_) => None,
             };
             self.fail_cold_start_preflight(
                 scope,
                 execution_id,
-                exec_state,
-                repo_version_loaded,
-                &reject,
+                state,
+                loaded_repository_version,
+                &rejection,
                 handoff_fence,
             )
             .await;
-            return Err(reject);
+            return Err(rejection.into());
         }
 
         let mut activated_edges: HashMap<NodeKey, HashSet<NodeKey>> = HashMap::new();
         let mut resolved_edges: HashMap<NodeKey, usize> = HashMap::new();
-        let mut seed_nodes: Vec<NodeKey> = Vec::new();
-
-        // Mark edges from terminal nodes as resolved (and activated, since they
-        // completed successfully or were skipped).
-        for (node_key, ns) in &exec_state.node_states {
-            if !ns.state.is_terminal() {
+        let mut seed_nodes = Vec::new();
+        for (node_id, node_state) in &state.node_states {
+            if !node_state.state.is_terminal() {
                 continue;
             }
-            for conn in graph.outgoing_connections(node_key.clone()) {
-                let target = conn.to_node.clone();
-                // Increment per-edge count so multiple edges from the same terminal
-                // source to the same target are each counted during resume.
+            let routing = match node_state.state {
+                NodeState::Skipped
+                    if state
+                        .checkpoint
+                        .as_ref()
+                        .and_then(|checkpoint| checkpoint.nodes().get(node_id))
+                        .is_some_and(|evidence| {
+                            matches!(evidence, nebula_execution::NodeCheckpoint::Bypassed {})
+                        }) =>
+                {
+                    checkpoint::CheckpointRouting::Bypass
+                },
+                NodeState::Skipped | NodeState::Cancelled => checkpoint::CheckpointRouting::None,
+                _ => checkpoint::checkpoint_routing(
+                    state
+                        .checkpoint
+                        .as_ref()
+                        .and_then(|checkpoint| checkpoint.nodes().get(node_id))
+                        .ok_or(EngineError::InvalidRecordedCheckpoint)?,
+                )?,
+            };
+            for connection in graph.outgoing_connections(node_id.clone()) {
+                let target = connection.to_node.clone();
                 *resolved_edges.entry(target.clone()).or_insert(0) += 1;
-                // Completed and Skipped nodes activate their outgoing edges so
-                // that downstream nodes see a resolved predecessor.
-                if matches!(ns.state, NodeState::Completed | NodeState::Skipped) {
+                let activates_target = match &routing {
+                    checkpoint::CheckpointRouting::Action(result) => {
+                        evaluate_edge(connection.effective_from_port(), Some(result), false)
+                    },
+                    checkpoint::CheckpointRouting::Main | checkpoint::CheckpointRouting::Bypass => {
+                        evaluate_edge(connection.effective_from_port(), None, false)
+                    },
+                    checkpoint::CheckpointRouting::Error => {
+                        evaluate_edge(connection.effective_from_port(), None, true)
+                    },
+                    checkpoint::CheckpointRouting::None => false,
+                };
+                if activates_target {
                     activated_edges
-                        .entry(target.clone())
+                        .entry(target)
                         .or_default()
-                        .insert(node_key.clone());
+                        .insert(node_id.clone());
                 }
             }
         }
 
-        // Identify frontier nodes: non-terminal nodes whose incoming edges are
-        // all resolved (i.e., all predecessors are terminal).
-        //
-        // Note: we do NOT require that at least one edge is activated here.
-        // During crash recovery we cannot know which edges were activated — that
-        // state is not persisted separately. The conservative check (all
-        // predecessors terminal → node is eligible) is correct for crash recovery:
-        // the node may have been waiting for an edge that was never activated, but
-        // the activated_edges map reconstructed above from Completed/Skipped
-        // predecessors gives run_frontier the correct activation context to
-        // evaluate edge conditions normally once the node is dispatched.
-        for (node_key, ns) in &exec_state.node_states {
-            if ns.state.is_terminal() {
+        let required_edges: HashMap<_, _> = node_map
+            .keys()
+            .map(|node_id| {
+                (
+                    node_id.clone(),
+                    graph.incoming_connections(node_id.clone()).len(),
+                )
+            })
+            .collect();
+        let mut newly_ready = VecDeque::new();
+        let unreachable_nodes: Vec<_> = state
+            .node_states
+            .iter()
+            .filter(|(node_id, node_state)| {
+                node_state.state == NodeState::Pending
+                    && required_edges.get(*node_id).is_some_and(|required| {
+                        *required > 0
+                            && resolved_edges.get(*node_id).copied().unwrap_or(0) == *required
+                    })
+                    && activated_edges.get(*node_id).is_none_or(HashSet::is_empty)
+            })
+            .map(|(node_id, _)| node_id.clone())
+            .collect();
+        for node_id in unreachable_nodes {
+            propagate_skip(
+                node_id,
+                &graph,
+                &mut state,
+                &mut resolved_edges,
+                &activated_edges,
+                &required_edges,
+                &mut newly_ready,
+            );
+        }
+        for (node_id, node_state) in &state.node_states {
+            if node_state.state.is_terminal()
+                || matches!(
+                    node_state.state,
+                    NodeState::WaitingRetry | NodeState::Waiting
+                )
+            {
                 continue;
             }
-            // T5 — `WaitingRetry` nodes belong to the
-            // retry-pending heap, not to the seed/ready_queue. The
-            // frontier loop seeds the heap from `WaitingRetry` nodes
-            // separately; including them here would re-dispatch
-            // immediately and bypass the persisted backoff timer.
-            if ns.state == NodeState::WaitingRetry {
-                continue;
-            }
-            // `Waiting` nodes are durably parked for an external
-            // wait condition. Like `WaitingRetry`, they must NOT
-            // enter the seed/ready_queue. The Phase-0b wait drain
-            // re-seeds `wait_heap` from these nodes and drives
-            // timer-based `Waiting→Completed` transitions.
-            if ns.state == NodeState::Waiting {
-                continue;
-            }
-            let incoming = graph.incoming_connections(node_key.clone());
-            let required = incoming.len();
-            let resolved = resolved_edges.get(node_key).copied().unwrap_or(0);
-
-            if required == 0 || resolved == required {
-                seed_nodes.push(node_key.clone());
+            let required = graph.incoming_connections(node_id.clone()).len();
+            let resolved = resolved_edges.get(node_id).copied().unwrap_or(0);
+            if required == 0
+                || (resolved == required
+                    && activated_edges
+                        .get(node_id)
+                        .is_some_and(|sources| !sources.is_empty()))
+            {
+                seed_nodes.push(node_id.clone());
             }
         }
 
-        // 10. Build remaining infrastructure for the frontier loop.
-        //
-        // Restore the `ExecutionBudget` the original run was configured
-        // with (issue #289). Legacy states that predate budget
-        // persistence deserialize the field as `None` — fall back to
-        // `ExecutionBudget::default()` with a warning so the degraded
-        // limits are visible in logs instead of silently swapping
-        // operator-configured limits for default ones.
-        let budget = if let Some(b) = exec_state.budget.clone() {
-            b
-        } else {
-            tracing::warn!(
-                %execution_id,
-                "resume: persisted execution state is missing budget; \
-                 falling back to ExecutionBudget::default() — \
-                 concurrency, timeout, and output-size limits from \
-                 the original run are not being honoured (issue #289)"
-            );
-            ExecutionBudget::default()
+        let mut budget = state
+            .budget
+            .clone()
+            .ok_or(EngineError::InvalidRecordedBudget)?;
+        budget
+            .validate_for_execution()
+            .map_err(|_| EngineError::InvalidRecordedBudget)?;
+        if workflow.config().max_parallel_nodes == 0 {
+            return Err(EngineError::InvalidRecordedBudget.into());
+        }
+        budget.max_concurrent_nodes = budget
+            .max_concurrent_nodes
+            .min(workflow.config().max_parallel_nodes);
+        if budget.max_concurrent_nodes > Semaphore::MAX_PERMITS {
+            return Err(EngineError::InvalidRecordedBudget.into());
+        }
+        budget.max_duration = match (budget.max_duration, workflow.config().timeout) {
+            (Some(admitted), Some(recorded)) => Some(admitted.min(recorded)),
+            (admitted, recorded) => admitted.or(recorded),
         };
         let semaphore = Arc::new(Semaphore::new(budget.max_concurrent_nodes));
-        let cancel_token = CancellationToken::new();
-        let mut repo_version = repo_version_loaded;
+        if matches!(lease_source, ResumeLeaseSource::Recovery(_))
+            && seed_nodes.is_empty()
+            && state
+                .node_states
+                .values()
+                .any(|node| !node.state.is_terminal())
+            && !state.node_states.values().any(|node| {
+                matches!(node.state, NodeState::Waiting | NodeState::WaitingRetry)
+                    && node
+                        .next_attempt_at
+                        .is_some_and(|wake| wake <= turn_started_at)
+            })
+        {
+            return Err(ExactTurnFailure::NotReady);
+        }
 
-        // Establish the execution lease before running the frontier (ADR
-        // 0008, #325). Resume is explicitly a second entry point for an
-        // existing execution — if another runner is already driving it
-        // (whether because the crash recovery loop picked it up or an
-        // operator issued two resumes back-to-back), the acquire path fences
-        // this call with `EngineError::Leased` instead of running nodes in
-        // parallel with the existing runner. The adopt path (#976) skips the
-        // acquire: the durable handoff already minted this lease when it
-        // acknowledged the dispatch row, and this engine renews/releases it
-        // under the returned fence.
-        let lease = match lease_source {
-            ResumeLeaseSource::Acquire => {
-                self.acquire_and_heartbeat_lease(scope, execution_id, cancel_token.clone())
-                    .await?
-            },
-            ResumeLeaseSource::Adopt { fence } => {
-                Some(self.adopt_handoff_lease(scope, execution_id, fence, cancel_token.clone())?)
-            },
-        };
+        Ok(PreparedExactExecution {
+            loaded_repository_version,
+            workflow_id,
+            original_status,
+            worker_flavor_revision_id,
+            elapsed_before_turn,
+            loaded,
+            workflow,
+            factories,
+            graph,
+            state,
+            outputs,
+            semaphore,
+            budget,
+            seed_nodes,
+            activated_edges,
+            resolved_edges,
+        })
+    }
 
-        // Fencing token threaded into every checkpoint / final-state
-        // commit. `Some` only on the spec-16 port lease path.
+    async fn execute_exact_execution_body(
+        &self,
+        body: ExactExecutionBody<'_>,
+    ) -> Result<ExecutionResult, EngineError> {
+        let ExactExecutionBody {
+            scope,
+            execution_id,
+            started,
+            loaded,
+            workflow,
+            factories,
+            graph,
+            mut state,
+            outputs,
+            semaphore,
+            cancel_token,
+            mut repository_version,
+            workflow_id,
+            elapsed_before_turn,
+            budget,
+            seed_nodes,
+            activated_edges,
+            resolved_edges,
+            lease,
+        } = body;
+        let node_map: HashMap<NodeKey, &nebula_workflow::NodeDefinition> = workflow
+            .nodes()
+            .iter()
+            .map(|node| (node.id.clone(), node))
+            .collect();
+
+        // Command arming preserves the original stored status. Enter Running
+        // only after the command and its intent have durably committed.
+        if !state.status.is_terminal() && state.status != ExecutionStatus::Running {
+            let _ = state.transition_status(ExecutionStatus::Running);
+        }
         let fencing = lease.as_ref().and_then(LeaseGuard::fencing_token);
 
-        // Publish the cancel token into the running registry ONLY after
-        // the lease is ours . Symmetric to
-        // `execute_workflow` — see its comment for the full rationale
-        // and the #482 Copilot review context.
+        // Publish the cancel token only after this runtime owns the lease.
         let registration_id = NEXT_REGISTRATION_ID.fetch_add(1, Ordering::Relaxed);
-        // Live-frontier resume channel (W-S2b) — symmetric to
-        // `execute_workflow`; see its comment for the rationale.
         let (resume_tx, mut resume_rx) = mpsc::channel::<ResumeRequest>(RESUME_CHANNEL_CAPACITY);
         self.running.insert(
             execution_id,
@@ -482,15 +563,10 @@ impl WorkflowEngine {
         };
 
         self.workflow_executions_started.inc();
-
-        let error_strategy = workflow.config.error_strategy;
-        let workflow_retry_policy = workflow.config.retry_policy.clone();
-        // Restore the original trigger payload from the persisted
-        // execution state. Legacy states that predate #311 deserialize
-        // the field as `None` — fall back to `Null` with a warning so
-        // the regression is visible in logs.
-        let workflow_input = if let Some(v) = exec_state.workflow_input.clone() {
-            v
+        let error_strategy = workflow.config().error_strategy;
+        let workflow_retry_policy = workflow.config().retry_policy.clone();
+        let workflow_input = if let Some(input) = state.workflow_input.clone() {
+            input
         } else {
             tracing::warn!(
                 %execution_id,
@@ -500,31 +576,30 @@ impl WorkflowEngine {
             );
             serde_json::Value::Null
         };
-        // Race the frontier against a graceful stop — see the identical guard
-        // in `execute_workflow`. This is the path a worker actually drives
-        // (`EngineExecutionSink` dispatches every queued job through
-        // `resume_execution`), so it is the one that decides whether a
-        // restarted runtime waits out a lease TTL.
-        //
-        // Scoped so the frontier future — which borrows `exec_state` mutably —
-        // is dropped before the final-status logic reads it back.
+
+        // Keep the frontier borrow inside this scope so finalization can read state.
         let landed = {
             let frontier = self.run_frontier(
                 scope,
                 &graph,
                 &node_map,
+                FactoryDispatch::Frozen {
+                    factories: &factories,
+                    plan: loaded.plan(),
+                },
                 &outputs,
                 &semaphore,
                 &cancel_token,
                 &mut resume_rx,
-                &mut exec_state,
+                &mut state,
                 execution_id,
                 workflow_id,
                 &workflow_input,
-                &mut repo_version,
+                &mut repository_version,
                 fencing,
                 &budget,
                 &started,
+                elapsed_before_turn,
                 error_strategy,
                 workflow_retry_policy,
                 seed_nodes,
@@ -536,12 +611,9 @@ impl WorkflowEngine {
                 biased;
                 failed_node = &mut frontier => Some(failed_node),
                 () = self.shutdown.cancelled() => {
-                    tokio::time::timeout(
-                        SHUTDOWN_FRONTIER_GRACE,
-                        &mut frontier,
-                    )
-                    .await
-                    .ok()
+                    tokio::time::timeout(SHUTDOWN_FRONTIER_GRACE, &mut frontier)
+                        .await
+                        .ok()
                 }
             }
         };
@@ -553,9 +625,6 @@ impl WorkflowEngine {
                  execution lease so a successor can take over without waiting out the TTL"
             );
             self.runtime.clear_execution_output_totals(execution_id);
-            // Release before returning, and persist nothing. A successor that
-            // reclaims this row must find the execution exactly as the last
-            // committed transition left it.
             if let Some(guard) = lease {
                 guard.shutdown().await;
             }
@@ -563,39 +632,32 @@ impl WorkflowEngine {
         };
 
         self.runtime.clear_execution_output_totals(execution_id);
-
+        let failed_node = match failed_node {
+            Ok(failed_node) => failed_node,
+            Err(error) => {
+                if let Some(guard) = lease {
+                    guard.shutdown().await;
+                }
+                return Err(error);
+            },
+        };
         let elapsed = started.elapsed();
-
         let heartbeat_lost = lease.as_ref().is_some_and(LeaseGuard::heartbeat_lost);
         let FinalStatusDecision {
             status: final_status,
             termination_reason,
             integrity_violation,
-        } = determine_final_status(&failed_node, &cancel_token, &exec_state);
-        // Use the validated transition path. Ignoring the result is intentional:
-        // if the current status is already terminal (e.g. the execution was
-        // cancelled during the frontier loop), we do not overwrite it.
-        //
-        // Bridge `Running → Cancelling → Cancelled` when the cancel token
-        // fired mid-flight — one-step `Running → Cancelled` is not in the
-        // valid-transition table (issue #273), so without the bridge the
-        // invalid-transition error is silently swallowed and the row stays
-        // at `Running`, producing a two-truth violation.
-        if final_status == ExecutionStatus::Cancelled
-            && exec_state.status == ExecutionStatus::Running
-        {
-            let _ = exec_state.transition_status(ExecutionStatus::Cancelling);
+        } = determine_final_status(&failed_node, &cancel_token, &state);
+        if final_status == ExecutionStatus::Cancelled && state.status == ExecutionStatus::Running {
+            let _ = state.transition_status(ExecutionStatus::Cancelling);
         }
-        let _ = exec_state.transition_status(final_status);
+        let _ = state.transition_status(final_status);
 
-        // Heartbeat loss: another runner now owns the canonical state.
-        // Skip final persist and surface as Leased — mirrors the
-        // execute_workflow contract. ADR 0008 / / #325.
         let reported_status = if heartbeat_lost {
             tracing::error!(
                 %execution_id,
                 "resume: final state persistence skipped: heartbeat lost this runner's lease; \
-                 another runner now owns the execution (ADR 0008, §12.2, #325)"
+                 another runner now owns the execution"
             );
             if let Some(guard) = lease {
                 guard.shutdown().await;
@@ -605,14 +667,14 @@ impl WorkflowEngine {
                 holder: self.instance_id.to_string(),
             });
         } else {
-            // Persist final state with CAS-conflict reconciliation
-            // (issue #333). `self.stores` is guaranteed `Some` here: the
-            // load path at the top of `resume_execution` returns early with
-            // `PlanningFailed` when stores are absent, so control can only
-            // reach this point when the spec-16 bundle is configured.
-            // Mirrors `execute_workflow` — see its comment for the full contract.
             match self
-                .persist_final_state(scope, execution_id, &exec_state, &mut repo_version, fencing)
+                .persist_final_state(
+                    scope,
+                    execution_id,
+                    &state,
+                    &mut repository_version,
+                    fencing,
+                )
                 .await
             {
                 Ok(None) => final_status,
@@ -629,27 +691,25 @@ impl WorkflowEngine {
                         observed_version,
                         %observed_status,
                         "resume: final state CAS conflict could not be reconciled; \
-                         reporting Failed instead of silently completing (§11.5, #333)"
+                         reporting Failed instead of silently completing"
                     );
                     ExecutionStatus::Failed
                 },
-                Err(e) => {
+                Err(error) => {
                     tracing::error!(
                         %execution_id,
-                        error = %e,
+                        %error,
                         "resume: final state persist failed; \
-                         reporting Failed instead of silently completing (§11.5, #333)"
+                         reporting Failed instead of silently completing"
                     );
                     ExecutionStatus::Failed
                 },
             }
         };
 
-        // Release the lease after the final persist completes.
         if let Some(guard) = lease {
             guard.shutdown().await;
         }
-
         self.emit_final_event(execution_id, reported_status, elapsed, &failed_node);
         self.emit_frontier_integrity_if_violated(execution_id, integrity_violation);
         tracing::info!(
@@ -667,18 +727,18 @@ impl WorkflowEngine {
             termination_reason: termination_reason.clone(),
         });
 
-        let node_outputs: HashMap<NodeKey, serde_json::Value> = outputs
+        let node_outputs = outputs
             .iter()
-            .map(|r| (r.key().clone(), r.value().clone()))
+            .map(|output| (output.key().clone(), output.value().clone()))
             .collect();
-
-        let node_errors: HashMap<NodeKey, String> = exec_state
+        let node_errors = state
             .node_states
             .iter()
-            .filter_map(|(id, ns)| {
-                ns.error_message
+            .filter_map(|(node_id, node_state)| {
+                node_state
+                    .error_message
                     .as_ref()
-                    .map(|msg| (id.clone(), msg.clone()))
+                    .map(|message| (node_id.clone(), message.clone()))
             })
             .collect();
 
@@ -688,13 +748,100 @@ impl WorkflowEngine {
             node_outputs,
             node_errors,
             duration: elapsed,
-            termination_reason: termination_reason.clone(),
+            termination_reason,
         })
     }
 
-    /// Durably fail a freshly-`Created` execution row when the W0 U2
-    /// cold-start pre-flight (`validate_declared_output_ports`) rejects it
-    /// inside [`Self::resume_execution`]'s `is_first_attempt` branch.
+    #[tracing::instrument(skip(self, scope, lease_source), fields(%execution_id))]
+    async fn drive_exact_execution(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+        lease_source: ResumeLeaseSource<'_>,
+    ) -> Result<ExecutionResult, ExactTurnFailure> {
+        let started = Instant::now();
+        let turn_started_at = self.clock.now();
+        let exact_execution = self
+            .load_exact_execution(scope, execution_id, lease_source, turn_started_at)
+            .await?;
+        let prepared = self
+            .prepare_exact_execution(
+                scope,
+                execution_id,
+                lease_source,
+                turn_started_at,
+                exact_execution,
+            )
+            .await?;
+        let PreparedExactExecution {
+            loaded_repository_version,
+            workflow_id,
+            original_status,
+            worker_flavor_revision_id,
+            elapsed_before_turn,
+            loaded,
+            workflow,
+            factories,
+            graph,
+            mut state,
+            outputs,
+            semaphore,
+            budget,
+            seed_nodes,
+            activated_edges,
+            resolved_edges,
+        } = prepared;
+
+        let cancel_token = CancellationToken::new();
+        let mut repository_version = loaded_repository_version;
+        let lease = match self
+            .prepare_resume_lease(ResumeLeaseRequest {
+                scope,
+                execution_id,
+                source: lease_source,
+                cancel_token: cancel_token.clone(),
+                execution_state: &mut state,
+                repository_version: &mut repository_version,
+                loaded_repository_version,
+                worker_flavor_revision_id,
+                original_status,
+                outputs: &outputs,
+                started,
+            })
+            .await?
+        {
+            LeasePreparation::Drive(lease) => lease,
+            LeasePreparation::Completed(result) => return Ok(result),
+        };
+
+        self.execute_exact_execution_body(ExactExecutionBody {
+            scope,
+            execution_id,
+            started,
+            loaded,
+            workflow,
+            factories,
+            graph,
+            state,
+            outputs,
+            semaphore,
+            cancel_token,
+            repository_version,
+            workflow_id,
+            elapsed_before_turn,
+            budget,
+            seed_nodes,
+            activated_edges,
+            resolved_edges,
+            lease,
+        })
+        .await
+        .map_err(ExactTurnFailure::AfterLease)
+    }
+
+    /// Durably fail a graph-preflight rejection under the acquired/adopted fence.
+    /// This is called only after the plan and frozen registry have been checked;
+    /// worker/configuration incompatibility never terminalizes an execution.
     ///
     /// `resume_execution` never creates its own execution row — production's
     /// API start handler already durably persisted this row as `Created`
@@ -723,14 +870,14 @@ impl WorkflowEngine {
     /// reachable by the existing crash-recovery reclaim path.
     ///
     /// `handoff_fence` carries the durable handoff's fence on the adopt path
-    /// (#976): the handoff already holds the lease, so this function commits
+    /// The handoff already holds the lease, so this function commits
     /// (and afterwards releases) under that fence instead of acquiring — a
     /// live lease blocks acquisition outright, even for the same holder, and
     /// the queue row is already acknowledged, so an acquire failure here
     /// would orphan the row in `Created` with nothing left to redeliver it.
     /// `None` is the acquire path: this function takes and releases the lease
     /// itself.
-    async fn fail_cold_start_preflight(
+    pub(super) async fn fail_cold_start_preflight(
         &self,
         scope: &Scope,
         execution_id: ExecutionId,
@@ -888,9 +1035,9 @@ impl WorkflowEngine {
     ///
     /// This method *arms* every such node for completion by setting its
     /// `next_attempt_at = now` while LEAVING it `Waiting`, persisted via the
-    /// spec-16 `ExecutionStore` with a version-CAS + fencing batch (the same
+    /// `ExecutionStore` with a version-CAS + fencing batch (the same
     /// durability contract as `checkpoint_node`). The subsequent `drive`
-    /// re-seeds the armed node into the frontier `wait_heap` and Phase-0b
+    /// re-seeds the armed node into the frontier `wait_heap`; the wait drain
     /// transitions it `Waiting → Completed` and activates its downstream edges
     /// through the **port-aware** `process_outgoing_edges` — exactly the path a
     /// timer wait takes. Completing the node here instead would route its edges
@@ -921,13 +1068,13 @@ impl WorkflowEngine {
     ///   the caller must defer and let the current lease holder finish.
     /// - On success, the lease is released (best-effort) after the commit.
     ///
-    /// # Targeting (W-S3a)
+    /// # Targeting
     ///
     /// `resume_target` selects which parked signal wait this Resume arms:
     /// `Some(target)` arms only the node whose persisted [`WaitSignal`] matches
     /// the target by kind + identity (a webhook target never satisfies an
     /// approval gate — the kind-confusion safety rule); `None` arms every
-    /// signal-driven wait (the W-S2b untargeted behavior).
+    /// signal-driven wait (the untargeted behavior).
     ///
     /// # Returns
     ///
@@ -1025,8 +1172,7 @@ impl WorkflowEngine {
 
     /// Recover a no-live-owner **`Running`** execution by arming its signal
     /// waits under a freshly-acquired lease — the structural sibling of
-    /// [`Self::satisfy_signal_waits`] for the crash-recovery path (ADR-0099
-    /// W-S3b).
+    /// [`Self::satisfy_signal_waits`] for the crash-recovery path.
     ///
     /// A signal wait parked WITH a timeout keeps its execution `Running` (the
     /// timeout timer lives on the parking runner's `wait_heap`). When that
@@ -1042,7 +1188,7 @@ impl WorkflowEngine {
     ///
     /// - [`EngineError::Leased`] — the lease is still LIVE elsewhere, so a real
     ///   owner is actively driving this execution. We must NOT touch the row;
-    ///   the caller defers (B1 reclaim redelivers once the lease frees, or the
+    ///   the caller defers (recovery reclaim redelivers once the lease frees, or the
     ///   live owner's own resume channel handles it). This is the cross-runner /
     ///   not-yet-crashed case.
     /// - lease acquired (free, or TTL-expired ⇒ the parking runner crashed and
@@ -1052,10 +1198,10 @@ impl WorkflowEngine {
     ///   the kind-aware [`arm_signal_waits_under_lease`] targeting are identical.
     ///   A targeted recovery (`Some(resume_target)`) arms ONLY the matching
     ///   node; an untargeted one arms every signal wait. The caller then
-    ///   re-drives via `drive_armed_resume`, whose Phase-0b completes the armed
+    ///   re-drives via `drive_armed_resume`, whose wait drain completes the armed
     ///   wait on the main port.
     ///
-    /// The own-the-lease-before-read-modify-write invariant (#856) is preserved:
+    /// The own-the-lease-before-read-modify-write invariant is preserved:
     /// the lease is held across the whole inner commit and released best-effort
     /// only afterwards (mirroring `satisfy_signal_waits`), so a stale token can
     /// never be manufactured from persisted metadata.
@@ -1207,10 +1353,10 @@ impl WorkflowEngine {
             return Ok(SatisfyOutcome::ExecutionNotResumable);
         }
 
-        // Arm the signal-driven waits selected by `resume_target` for Phase-0b
+        // Arm the signal-driven waits selected by `resume_target` for the wait drain:
         // completion: set each match's wake instant to `now` and LEAVE it
         // `Waiting`. The subsequent `drive` re-seeds it into the frontier
-        // `wait_heap` (its `next_attempt_at` is now `Some`) and Phase-0b
+        // `wait_heap` (its `next_attempt_at` is now `Some`), and the wait drain
         // transitions it `Waiting → Completed` and activates downstream through
         // the PORT-AWARE `process_outgoing_edges` — the same path a timer wait
         // takes. Transitioning to `Completed` HERE would instead route the
@@ -1220,8 +1366,8 @@ impl WorkflowEngine {
         //
         // `arm_signal_waits_under_lease` is the shared armer: a `Some(target)`
         // Resume arms only the kind+identity match; a `None` Resume arms every
-        // signal wait (W-S2b behavior). It runs under the lease we hold, so the
-        // own-the-lease-before-RMW invariant (#856) is preserved.
+        // signal wait. It runs under the lease we hold, so the
+        // own-the-lease-before-read-modify-write invariant is preserved.
         let now = self.clock.now();
         let armed = arm_signal_waits_under_lease(&mut exec_state, resume_target, now);
 
@@ -1238,7 +1384,7 @@ impl WorkflowEngine {
         // on `exec_state.version` must not accept a stale snapshot whose version
         // never moved. (The store CAS below keys on `repo_version`, so the
         // commit is correct regardless; this keeps the in-blob copy honest —
-        // the same bump the W-S2b live-frontier self-arm performs.)
+        // the same bump the live-frontier self-arm performs.)
         exec_state.version += 1;
         exec_state.updated_at = now;
 
@@ -1280,11 +1426,11 @@ impl WorkflowEngine {
                     %execution_id,
                     satisfied_count,
                     new_version,
-                    "satisfy_signal_waits: armed signal waits for Phase-0b completion — \
+                    "satisfy_signal_waits: armed signal waits for frontier completion — \
                      drive will complete them and activate downstream on the main port"
                 );
                 // No `NodeWaitCompleted` is emitted here: the node is still
-                // `Waiting`. Phase-0b emits that event when it transitions the
+                // `Waiting`. The wait drain emits that event when it transitions the
                 // node `Waiting → Completed` (the single completion site shared
                 // with timer waits), so observers never see a completion for a
                 // node that is not yet durably `Completed`.
@@ -1349,7 +1495,7 @@ impl WorkflowEngine {
     /// (in-process or cross-runner) holds the lease, so a held lease means a
     /// frontier is still driving — we must NOT terminalize nodes it owns;
     /// returns [`EngineError::Leased`] so the caller defers (the live runner's
-    /// own teardown, or B1 reclaim, completes the cancel). Only acts when the
+    /// own teardown, or recovery reclaim, completes the cancel). Only acts when the
     /// execution is itself `Cancelled`/`Cancelling` (the cancel was durably
     /// recorded); idempotent — a re-delivered Cancel finds all nodes terminal
     /// and returns [`CancelDanglingOutcome::NothingToCancel`].
@@ -1387,7 +1533,7 @@ impl WorkflowEngine {
                 %execution_id,
                 %holder,
                 "cancel_dangling_nodes: execution lease held by another runner; deferring \
-                 (live frontier teardown or B1 reclaim will complete the cancel)"
+                 (live frontier teardown or recovery reclaim will complete the cancel)"
             );
             return Err(EngineError::Leased {
                 execution_id,
@@ -1488,7 +1634,7 @@ impl WorkflowEngine {
         // Drive the execution itself to the terminal `Cancelled`, bridging
         // through `Cancelling` where the table requires it. `Created` goes
         // straight to `Cancelled` — a pre-start cancel must not fabricate a
-        // `Running` phase it never had (issue #273).
+        // `Running` phase it never had.
         if matches!(
             exec_state.status,
             ExecutionStatus::Running | ExecutionStatus::Paused
@@ -1536,7 +1682,7 @@ impl WorkflowEngine {
                     "cancel_dangling_nodes: terminalized parked nodes of a cancelled \
                      no-live-runner execution"
                 );
-                // W-S3e — the no-live-runner cancel-of-parked path: this is the
+                // In the no-live-runner cancel-of-parked path, this is the
                 // most likely sink to hold live un-consumed tokens (a signal-parked
                 // node minted one at park, then the execution was cancelled). The
                 // commit above made the execution durably `Cancelled` (terminal), so

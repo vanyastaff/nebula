@@ -197,7 +197,7 @@ Credential coordination — durable refresh claim (П2 / ADR-0041):
   `nebula-execution`; the adapter folds scope into storage so callers cannot share keys across
   tenants. This is a local replay/dedup oracle only: it is not atomic with a remote provider,
   cannot tell whether an external effect committed, and does not establish single-effect or
-  exactly-once semantics. The future effect ledger is a separate runtime-control contract:
+  exactly-once semantics. The effect ledger is a separate runtime-control contract:
   storage mints an `EffectSlotId` per intended occurrence and binds its fingerprint to a stable
   runtime-minted `OperationId`; same-slot mismatch is `OperationMismatch` with no durable delta,
   while distinct slots remain distinct. Only a pinned stable-key destination may make bounded
@@ -206,8 +206,13 @@ Credential coordination — durable refresh claim (П2 / ADR-0041):
   `OutcomeUnknown`, after which no effecting call may repeat. `AcknowledgementUnknown` applies to
   prepare and outcome database commits: prepare uncertainty forbids provider invocation until
   database-only reconciliation confirms the exact durable prepared record and ID; outcome
-  uncertainty permits only ledger reads and exact frozen-evidence recommit. Seam:
-  `crates/storage-port/src/store/idempotency.rs`.
+  uncertainty permits only ledger reads and exact frozen-evidence recommit. All three
+  adapters persist finite invocation/query budgets, backend-clock deadlines and immutable
+  outcome evidence with the execution owner's journal. A legacy ledger row or unexplained
+  outstanding invocation cannot grant another effect call. This storage protocol does not
+  establish provider-side atomicity; runtime capability enforcement and adapter guarantees
+  remain required. Seams: `crates/storage-port/src/store/idempotency.rs` and
+  `crates/storage-port/src/store/operation_ledger.rs`.
 
 - **[L2-§11.5]** `TransitionBatch::journal` backs the durable `port_execution_journal`
   (append-only, replayable) and is committed with the state transition. `CheckpointStore`
@@ -261,10 +266,13 @@ See `docs/MATURITY.md` row for `nebula-storage`.
   InMemory + SQLite + Postgres and rewired through `engine` / `api`
   (ADR-0072). The legacy `ExecutionRepo` / `WorkflowRepo` dual layer was
   deleted.
-- Exact plan/flavor retention: `partial` — the Task 13A InMemory model and
-  dormant paired `0041` SQLite/PostgreSQL constraints are component evidence.
-  SQL catalog adapters do not exist, and no production start/terminal
-  transaction mutates reference rows.
+- Exact plan/flavor retention has adapters and transaction conformance for
+  InMemory, SQLite, and PostgreSQL. `StartAcceptanceStore::materialize_start`
+  atomically admits the exact pair and persists execution state, Start command,
+  immutable contract bundle, and live reference, with optional keyed replay.
+  Terminal transitions release the live reference while retaining the bundle.
+  Storage checks relational identities and the fresh execution envelope;
+  runtime owns full bundle integrity and authenticated start admission.
 - Lease fencing is **enforced**: `acquire_lease` returns a monotone
   `FencingToken` that gates every committed `TransitionBatch`, so a
   superseded holder is rejected even on a matching CAS version (the
@@ -421,3 +429,13 @@ model — they keep live consumers (the API idempotency middleware, the
 | Redis | `redis` | `experimental` — KV only, not execution state |
 | S3 / MinIO | `s3` | `experimental` — blob storage |
 | Local filesystem | — | `planned` |
+
+Job-dispatch claims require both exact worker-flavor revision equality and a
+superset of required plugin keys. The exact identity is mandatory on the port
+DTO and persisted by ordinary enqueue and trigger dedup materialization.
+Paired migration `0046_exact_dispatch_flavor.sql` adds a required 32-byte identity
+without a default. It rejects every preexisting dispatch row (including terminal
+rows) atomically, preserving the prior schema and aggregate state. This is an
+empty-queue upgrade: owners must retire legacy rows through their lifecycle
+before setup can cross this migration; setup never invents identities or marks
+legacy work failed to bypass the preflight.

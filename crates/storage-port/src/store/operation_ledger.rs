@@ -9,22 +9,32 @@
 use core::fmt;
 
 use crate::dto::{
-    AttemptGeneration, EffectSlotBinding, EffectSlotId, KnownOutcome, OperationLedgerError,
-    OperationRecord, PrepareOutcome,
+    EffectOccurrenceKey, EffectSlotBinding, EffectSlotId, OperationLedgerError, OperationRecord,
+    PrepareOutcome,
 };
 use crate::scope::Scope;
 
 /// Durable preparation and outcome recording for remote effects.
 ///
-/// This is the capability runtime control holds while driving an effect. It
-/// cannot resolve an operation that has reached `OutcomeUnknown`.
+/// Runtime drives bounded invocation and authenticated read-only reconciliation.
+/// An unknown operation can be resolved through a recorded read-only query,
+/// but this capability never authorizes privileged manual adjudication.
 #[async_trait::async_trait]
 pub trait OperationLedger: Send + Sync + fmt::Debug {
+    /// Read by the scoped natural address after an uncertain preparation.
+    /// Absence and a foreign tenant both return `None`; this read grants no invocation authority.
+    ///
+    /// # Errors
+    /// Returns a bounded storage failure when the durable record cannot be read.
+    async fn read_occurrence(
+        &self,
+        key: &EffectOccurrenceKey<'_>,
+    ) -> Result<Option<OperationRecord>, OperationLedgerError>;
     /// Durably prepare one effect slot before the provider is invoked.
     ///
     /// The ledger mints the slot and operation identities; the caller supplies
     /// only the binding. Preparing the same slot again with the same
-    /// fingerprint returns the original binding — including the original
+    /// fingerprint and complete contract returns the original binding — including the original
     /// operation identity — so every retry and recovery reaches the provider
     /// under one identity.
     ///
@@ -34,10 +44,14 @@ pub trait OperationLedger: Send + Sync + fmt::Debug {
     /// already bound to a different canonical request, with no durable change.
     /// [`OperationLedgerError::AcknowledgementUnknown`] means the commit may
     /// have landed and **authorizes zero provider calls** until
-    /// [`Self::read_exact`] confirms the exact durable binding.
+    /// [`Self::read_occurrence`] confirms the exact durable binding when no
+    /// slot identity was acknowledged. A matching live execution lease is
+    /// mandatory even when an existing preparation is replayed.
+    /// Counters above `i64::MAX` return [`OperationLedgerError::InvalidAttemptGeneration`].
     async fn prepare(
         &self,
         binding: &EffectSlotBinding<'_>,
+        fencing: crate::FencingToken,
     ) -> Result<PrepareOutcome, OperationLedgerError>;
 
     /// Read one slot's durable record without mutating anything.
@@ -48,35 +62,42 @@ pub trait OperationLedger: Send + Sync + fmt::Debug {
     /// # Errors
     ///
     /// Returns [`OperationLedgerError::SlotUnprepared`] when the slot has no
-    /// durable preparation, and [`OperationLedgerError::TenantDenied`] when it
-    /// belongs to another tenant — the two are deliberately
-    /// indistinguishable to a caller that cannot see the tenant boundary.
+    /// durable preparation or belongs to another tenant. These cases are
+    /// deliberately indistinguishable.
     async fn read_exact(
         &self,
         scope: &Scope,
         slot_id: EffectSlotId,
     ) -> Result<OperationRecord, OperationLedgerError>;
 
-    /// Record a known outcome against a prepared operation, under its fence.
+    /// Atomically advance the finite effect protocol under the execution fence.
     ///
-    /// `attempt_generation` must match the slot's durable binding: a
-    /// superseded worker cannot decide the current attempt's outcome.
-    /// Committing the same outcome again is idempotent, which is what lets a
-    /// caller whose acknowledgement was lost recommit the same frozen evidence.
+    /// The execution's current live lease must match `fencing` in the same
+    /// transaction, including on an identical terminal recommit.
+    /// Fresh grants consume durable limits before returning. An uncertain grant
+    /// acknowledgement grants no egress; reloading an outstanding call cannot
+    /// manufacture invocation authority. An unexplained outstanding invocation
+    /// permits only read-only reconciliation or durable `OutcomeUnknown`.
+    /// Outcome evidence, terminal state and the owner journal commit together.
+    /// Exact evidence recommit is idempotent, including its original bytes.
     ///
     /// # Errors
     ///
-    /// Returns [`OperationLedgerError::StaleFence`] when the generation is
-    /// behind, [`OperationLedgerError::OutcomeAlreadyRecorded`] when a
+    /// Returns [`OperationLedgerError::ExecutionLeaseRejected`] when the lease
+    /// is not current and live, [`OperationLedgerError::OutcomeAlreadyRecorded`] when a
     /// *different* terminal outcome exists, and
     /// [`OperationLedgerError::SlotUnprepared`] when nothing was prepared.
-    async fn commit_outcome(
+    /// Stale revisions or call identities return [`OperationLedgerError::ProtocolConflict`].
+    /// Exhausted effect grants record `OutcomeUnknown` without a permit;
+    /// exhausted read-only queries return [`OperationLedgerError::RecoveryExhausted`].
+    /// Commit uncertainty returns [`OperationLedgerError::AcknowledgementUnknown`].
+    async fn advance(
         &self,
         scope: &Scope,
         slot_id: EffectSlotId,
-        attempt_generation: AttemptGeneration,
-        outcome: KnownOutcome,
-    ) -> Result<(), OperationLedgerError>;
+        fencing: crate::FencingToken,
+        command: &crate::dto::OperationCommand,
+    ) -> Result<crate::dto::OperationAdvance, OperationLedgerError>;
 }
 
 /// Privileged, audited resolution of an operation whose outcome is unknown.
@@ -92,7 +113,11 @@ pub trait OperationLedgerAdjudicator: Send + Sync + fmt::Debug {
     /// `evidence` is an operator-supplied, secret-free note recording *why*
     /// the outcome is now known — a reconciliation query result, a provider
     /// support ticket. It is persisted with the adjudication so the decision
-    /// is reviewable rather than anonymous.
+    /// is reviewable rather than anonymous. The adapter serializes this write
+    /// under the owning execution lock and then the ledger lock. This separate
+    /// operator capability does not require an active runner lease.
+    /// `outcome` must identify an adjudication source and contain bounded frozen
+    /// result evidence. Repeating the same evidence and audit note is idempotent.
     ///
     /// # Errors
     ///
@@ -104,7 +129,7 @@ pub trait OperationLedgerAdjudicator: Send + Sync + fmt::Debug {
         &self,
         scope: &Scope,
         slot_id: EffectSlotId,
-        outcome: KnownOutcome,
+        outcome: &crate::dto::FrozenOutcomeEvidence,
         evidence: &str,
     ) -> Result<(), OperationLedgerError>;
 }

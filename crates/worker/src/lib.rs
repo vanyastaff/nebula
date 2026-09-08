@@ -2,49 +2,44 @@
 #![warn(missing_docs)]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
-//! # nebula-worker — Generic worker runtime (ADR-0095 D1)
+//! # nebula-worker — Durable execution worker runtime
 //!
 //! A worker is a long-running process that:
 //!
-//! 1. Boots a flavor's plugins and derives the set of [`PluginKey`]s it can serve.
-//! 2. Advertises those keys as `available_plugins` to the pull-loop.
-//! 3. Runs a **leaderless claim-loop** via [`nebula_orchestrator::Orchestrator`]:
-//!    claims [`JobDispatchQueue`] rows whose `required_plugins ⊆ available_plugins`,
-//!    hands them to [`EngineExecutionSink`], and fences each row dispatched or failed.
-//! 4. Drives execution into the engine via `resume_execution` (the sink's job).
+//! 1. Boots a flavor's plugins and derives the set of `PluginKey`s it can serve.
+//! 2. Derives the exact frozen flavor identity used to claim matching control commands.
+//! 3. Drains the durable control queue through [`ControlConsumer`].
+//! 4. Recovers accepted turns abandoned by a previous owner and wakes overdue timers.
 //!
 //! ## Wiring honesty
 //!
-//! This crate provides the **generic runtime** only. A per-flavor binary that
-//! boots concrete plugins and derives `available_plugins` from them is a later
-//! unit (U-D1.4+). Today, callers pass the `Vec<PluginKey>` they have already
-//! derived from their plugin registry.
+//! Assembly derives its advertised flavor from the engine's exact runtime
+//! configuration. The frozen registry used to execute stored plans also
+//! supplies the identity and supported plugins used to claim work.
 //!
 //! ## Construction
 //!
 //! ```rust,no_run
 //! use std::sync::Arc;
 //!
-//! use nebula_core::PluginKey;
 //! use nebula_engine::{ExecutionStores, WorkflowEngine};
-//! use nebula_storage_port::store::{ControlQueue, ExecutionTurnHandoff, JobDispatchQueue};
+//! use nebula_storage_port::store::{ControlQueue, ExecutionTurnHandoff, TurnRecovery};
 //! use nebula_worker::WorkerRuntimeBuilder;
 //! use tokio_util::sync::CancellationToken;
 //!
 //! # fn wire(
 //! #     engine: Arc<WorkflowEngine>,
 //! #     stores: ExecutionStores,
-//! #     queue: Arc<dyn JobDispatchQueue>,
 //! #     control_queue: Arc<dyn ControlQueue>,
 //! #     handoff: Arc<dyn ExecutionTurnHandoff>,
-//! #     plugins: Vec<PluginKey>,
+//! #     recovery: Arc<dyn TurnRecovery>,
 //! #     proc_id: [u8; 16],
 //! #     shutdown_token: CancellationToken,
 //! # ) -> Result<(), Box<dyn std::error::Error>> {
-//! let runtime = WorkerRuntimeBuilder::from_wired_engine(engine, stores, queue, plugins, proc_id)
+//! let runtime = WorkerRuntimeBuilder::from_wired_engine(engine, stores, proc_id)
 //!     .with_control_queue(control_queue)
 //!     .with_turn_handoff(handoff)
-//!     .with_batch_size(16)
+//!     .with_turn_recovery(recovery)
 //!     .build()?;
 //!
 //! runtime.spawn(shutdown_token);
@@ -52,22 +47,17 @@
 //! # }
 //! ```
 //!
-//! [`PluginKey`]: nebula_core::PluginKey
-//! [`JobDispatchQueue`]: nebula_storage_port::store::JobDispatchQueue
-//! [`EngineExecutionSink`]: nebula_engine::EngineExecutionSink
+mod recovery;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use nebula_core::PluginKey;
 use nebula_engine::{
-    ControlConsumer, DEFAULT_TIMER_SCAN_INTERVAL, EngineControlDispatch, EngineExecutionSink,
-    ExecutionStores, WorkflowEngine,
+    ControlConsumer, DEFAULT_TIMER_SCAN_INTERVAL, EngineControlDispatch, ExecutionStores,
+    WorkflowEngine,
 };
-use nebula_metrics::MetricsRegistry;
-use nebula_orchestrator::Orchestrator;
-use nebula_storage_port::store::{ControlQueue, ExecutionTurnHandoff, JobDispatchQueue};
+use nebula_storage_port::store::{ControlQueue, ExecutionTurnHandoff, TurnRecovery};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 
@@ -75,19 +65,13 @@ use tokio_util::sync::CancellationToken;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum WorkerBuildError {
-    /// `available_plugins` is empty — the worker would never claim any job.
-    ///
-    /// A worker with no advertised plugins is a configuration error: the superset
-    /// predicate `required_plugins ⊆ available_plugins` is vacuously unsatisfiable
-    /// for any non-empty `required_plugins`, and the storage backends short-circuit
-    /// on an empty available set rather than scanning the queue.
-    #[error("available_plugins is empty — a worker must advertise at least one PluginKey")]
-    NoPlugins,
+    /// The engine has no paired exact revision loader and frozen registry.
+    #[error("exact runtime configuration is required")]
+    MissingExactRuntime,
 
     /// No control queue was wired.
     ///
-    /// Without one the worker drains job-dispatch rows but nothing drains the
-    /// control queue, so an execution accepted over HTTP is persisted with a
+    /// Without one an execution accepted over HTTP is persisted with a
     /// `Start` command no component ever consumes: the run never begins, and
     /// the only symptom is an execution that stays `Created` forever. Requiring
     /// the queue makes that miswiring a build error instead of silence.
@@ -96,13 +80,14 @@ pub enum WorkerBuildError {
 
     /// No turn handoff was wired.
     ///
-    /// Without it the orchestrator cannot end dispatch claims at the durable
-    /// runtime handoff (#976): claims would be held for whole action
-    /// durations and the reclaim window would cap how long an action may run.
-    /// Requiring the handoff makes that miswiring a build error instead of
-    /// silently restoring the pre-#976 behaviour.
-    #[error("no turn handoff wired — dispatch claims could not end at the durable runtime handoff")]
+    /// The control consumer needs this capability to accept a claimed command
+    /// and acquire the execution turn atomically.
+    #[error("no turn handoff wired — control commands could not acquire durable execution turns")]
     NoTurnHandoff,
+
+    /// No worker-wide abandoned-turn recovery capability was wired.
+    #[error("no turn recovery wired — accepted turns could remain abandoned after owner loss")]
+    NoTurnRecovery,
 
     /// The timer-scan interval is zero.
     ///
@@ -131,27 +116,37 @@ pub enum WorkerRuntimeError {
         #[source]
         source: tokio::task::JoinError,
     },
+
+    /// Accepted-turn discovery could not read durable recovery candidates.
+    #[error("accepted-turn recovery failed after {attempts} attempts: {source}")]
+    AcceptedTurnRecovery {
+        /// Consecutive failed discovery attempts.
+        attempts: u32,
+        /// The storage failure returned by the durable handoff owner.
+        #[source]
+        source: nebula_storage_port::StorageError,
+    },
 }
 
 /// What one supervised task reports: which component it was, and — when the
 /// failure happened *inside* it — the join failure it carried out.
-type ComponentOutcome = Result<Component, (Component, tokio::task::JoinError)>;
+type ComponentOutcome = Result<Component, (Component, WorkerRuntimeError)>;
 
 /// One supervised top-level worker task.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Component {
-    Orchestrator,
     ControlConsumer,
     TimerScanner,
+    AcceptedTurnRecovery,
     EngineShutdownRelay,
 }
 
 impl Component {
     const fn label(self) -> &'static str {
         match self {
-            Self::Orchestrator => "orchestrator",
             Self::ControlConsumer => "control-consumer",
             Self::TimerScanner => "timer-scanner",
+            Self::AcceptedTurnRecovery => "accepted-turn-recovery",
             Self::EngineShutdownRelay => "engine-shutdown-relay",
         }
     }
@@ -159,20 +154,21 @@ impl Component {
 
 /// An assembled, ready-to-run worker runtime.
 ///
-/// Holds the [`Orchestrator`] configured with an [`EngineExecutionSink`]
-/// connected to the provided engine and execution store, plus the engine
-/// reference needed to spawn the durable-timer wake scanner.
+/// Owns the control consumer, abandoned-turn recovery, and durable-timer
+/// scanner connected to one exact runtime flavor.
 ///
 /// Obtain via [`WorkerRuntimeBuilder::build`].
-#[must_use = "call .run() or .spawn() to start the pull loop"]
+#[must_use = "call .run() or .spawn() to start the worker runtime"]
 pub struct WorkerRuntime {
     engine: Arc<WorkflowEngine>,
+    turn_recovery: Arc<dyn TurnRecovery>,
+    handoff_lease_ttl: Duration,
+    worker_flavor: nebula_core::WorkerFlavorRevisionId,
     timer_scan_interval: Duration,
-    orchestrator: Orchestrator,
     /// Drains the durable control queue the API writes accepted commands to.
     ///
     /// Held by the runtime rather than by the caller so it lives and dies with
-    /// the orchestrator under one cancellation tree.
+    /// the other worker components under one cancellation tree.
     control_consumer: ControlConsumer,
     processor_id: [u8; 16],
     available_plugins_count: usize,
@@ -188,7 +184,7 @@ impl std::fmt::Debug for WorkerRuntime {
 }
 
 impl WorkerRuntime {
-    /// Run the claim-loop and durable-timer scanner on the current task until
+    /// Run the durable runtime components on the current task until
     /// `shutdown` is cancelled.
     ///
     /// The timer scanner runs as a sibling background task sharing the same
@@ -198,42 +194,14 @@ impl WorkerRuntime {
     ///
     /// ## Shutdown contract
     ///
-    /// Mirrors [`Orchestrator::run`]: flushes the in-flight batch, then returns.
-    /// Rows claimed but not yet marked remain `Processing` and are recovered by
-    /// the next runner's reclaim sweep.
+    /// Cancellation stops control polling, accepted-turn recovery, and timer
+    /// scanning. In-flight engine turns observe the relayed engine shutdown.
     pub async fn run(self, shutdown: CancellationToken) -> Result<(), WorkerRuntimeError> {
         tracing::info!(
             processor = %hex_id(&self.processor_id),
             available_plugins = self.available_plugins_count,
-            "worker runtime starting (ADR-0095 D1)"
+            "worker runtime starting"
         );
-
-        // Recover persisted parked waits *before* joining the steady-state
-        // loops.
-        //
-        // The periodic scanner deliberately skips its first tick, on the
-        // reasoning that nothing is overdue the instant a process starts. That
-        // is true of a fresh process and false of a restarted one: a wait
-        // parked before the restart is overdue precisely *because* the process
-        // was down, and waiting a full scan interval to notice leaves the
-        // execution stalled for up to that long with every component reporting
-        // healthy. Sweeping once at startup makes recovery an ordered step the
-        // caller can observe rather than a side effect of the next tick.
-        //
-        // A sweep failure is logged, not fatal: it re-runs on the next tick,
-        // and refusing to start would turn a transient storage blip into an
-        // outage.
-        match self.engine.sweep_overdue_timers().await {
-            Ok(0) => tracing::debug!("startup recovery sweep found no overdue parked waits"),
-            Ok(redriven) => tracing::info!(
-                redriven,
-                "startup recovery sweep re-armed parked waits from persisted state"
-            ),
-            Err(error) => tracing::error!(
-                %error,
-                "startup recovery sweep failed; the periodic scanner will retry"
-            ),
-        }
 
         // One cancellation tree, and every top-level task joined.
         //
@@ -266,14 +234,6 @@ impl WorkerRuntime {
         });
         labels.insert(handle.id(), Component::EngineShutdownRelay);
 
-        let orchestrator_shutdown = shutdown.clone();
-        let orchestrator = self.orchestrator;
-        let handle = components.spawn(async move {
-            orchestrator.run(orchestrator_shutdown).await;
-            Ok(Component::Orchestrator)
-        });
-        labels.insert(handle.id(), Component::Orchestrator);
-
         let consumer_shutdown = shutdown.clone();
         let control_consumer = self.control_consumer;
         let handle = components.spawn(async move {
@@ -286,7 +246,22 @@ impl WorkerRuntime {
         let scanner_engine = Arc::clone(&self.engine);
         let scan_interval = self.timer_scan_interval;
         let handle = components.spawn(async move {
-            let scanner = scanner_engine.spawn_timer_scanner(scan_interval, scanner_shutdown);
+            // Run the initial timer sweep as a supervised sibling. A resumed
+            // long action must not block control consumption or shutdown setup.
+            let startup_sweep = tokio::select! {
+                biased;
+                () = scanner_shutdown.cancelled() => return Ok(Component::TimerScanner),
+                result = scanner_engine.sweep_overdue_timers() => result,
+            };
+            match startup_sweep {
+                Ok(redriven) => tracing::debug!(redriven, "startup timer recovery sweep completed"),
+                Err(error) => tracing::error!(%error, "startup timer recovery sweep failed; periodic scanner will retry"),
+            }
+            // The child must also stop if this supervised parent is aborted.
+            // A bare JoinHandle would detach it and retain the old engine.
+            let scanner = tokio_util::task::AbortOnDropHandle::new(
+                scanner_engine.spawn_timer_scanner(scan_interval, scanner_shutdown),
+            );
             // The scanner owns its own task, so its failure has to be carried
             // out deliberately. Discarding the `JoinError` here would report a
             // panicked scanner as a clean stop: the runtime would keep serving
@@ -295,10 +270,34 @@ impl WorkerRuntime {
             // silence joining the task was meant to end.
             match scanner.await {
                 Ok(()) => Ok(Component::TimerScanner),
-                Err(source) => Err((Component::TimerScanner, source)),
+                Err(source) => Err((
+                    Component::TimerScanner,
+                    WorkerRuntimeError::ComponentJoin {
+                        component: Component::TimerScanner.label(),
+                        source,
+                    },
+                )),
             }
         });
         labels.insert(handle.id(), Component::TimerScanner);
+
+        let recovery_engine = Arc::clone(&self.engine);
+        let recovery_shutdown = shutdown.clone();
+        let recovery_holder = format!("recovery:{}", hex_id(&self.processor_id));
+        let handle = components.spawn(async move {
+            recovery::run(
+                recovery_engine,
+                self.turn_recovery,
+                self.worker_flavor,
+                recovery_holder,
+                self.handoff_lease_ttl,
+                recovery_shutdown,
+            )
+            .await
+            .map(|()| Component::AcceptedTurnRecovery)
+            .map_err(|source| (Component::AcceptedTurnRecovery, source))
+        });
+        labels.insert(handle.id(), Component::AcceptedTurnRecovery);
 
         let mut first_failure = None;
         while let Some(joined) = components.join_next().await {
@@ -315,8 +314,14 @@ impl WorkerRuntime {
                     let component = labels
                         .get(&source.id())
                         .copied()
-                        .unwrap_or(Component::Orchestrator);
-                    Some((component, source))
+                        .unwrap_or(Component::ControlConsumer);
+                    Some((
+                        component,
+                        WorkerRuntimeError::ComponentJoin {
+                            component: component.label(),
+                            source,
+                        },
+                    ))
                 },
             };
             if let Some((component, source)) = failure {
@@ -326,10 +331,7 @@ impl WorkerRuntime {
                     "worker component ended abnormally; stopping the runtime"
                 );
                 if first_failure.is_none() {
-                    first_failure = Some(WorkerRuntimeError::ComponentJoin {
-                        component: component.label(),
-                        source,
-                    });
+                    first_failure = Some(source);
                 }
                 shutdown.cancel();
             }
@@ -337,18 +339,18 @@ impl WorkerRuntime {
         first_failure.map_or(Ok(()), Err)
     }
 
-    /// Spawn the claim-loop and durable-timer scanner as a single Tokio task.
+    /// Spawn the durable runtime components as a single Tokio task.
     ///
     /// Returns a [`JoinHandle`] that completes when `shutdown` is cancelled.
-    /// Both the orchestrator and the timer scanner share the same shutdown token
-    /// so they stop together. The caller owns signal→[`CancellationToken`] wiring;
+    /// Every component shares the same shutdown token so they stop together.
+    /// The caller owns signal→[`CancellationToken`] wiring;
     /// this crate provides no `tokio::signal` integration so it composes into any
     /// shutdown strategy.
     pub fn spawn(self, shutdown: CancellationToken) -> JoinHandle<Result<(), WorkerRuntimeError>> {
         tracing::info!(
             processor = %hex_id(&self.processor_id),
             available_plugins = self.available_plugins_count,
-            "worker runtime spawning (ADR-0095 D1)"
+            "worker runtime spawning"
         );
         tokio::spawn(async move { self.run(shutdown).await })
     }
@@ -356,29 +358,20 @@ impl WorkerRuntime {
 
 /// Builder for [`WorkerRuntime`].
 ///
-/// Obtained via [`WorkerRuntimeBuilder::from_wired_engine`]. Optional overrides
-/// mirror [`Orchestrator`]'s builder methods.
+/// Obtained via [`WorkerRuntimeBuilder::from_wired_engine`].
 #[must_use = "call .build() to produce a WorkerRuntime"]
 pub struct WorkerRuntimeBuilder {
     engine: Arc<WorkflowEngine>,
     stores: ExecutionStores,
-    queue: Arc<dyn JobDispatchQueue>,
     /// Durable control queue the API writes accepted commands to. Required at
     /// `build` time — see [`WorkerBuildError::NoControlQueue`].
     control_queue: Option<Arc<dyn ControlQueue>>,
-    /// Durable owner of the dispatch-claim → execution-turn handoff. Required
+    /// Durable owner of the control-claim → execution-turn handoff. Required
     /// at `build` time — see [`WorkerBuildError::NoTurnHandoff`].
     turn_handoff: Option<Arc<dyn ExecutionTurnHandoff>>,
-    available_plugins: Vec<PluginKey>,
+    turn_recovery: Option<Arc<dyn TurnRecovery>>,
     processor_id: [u8; 16],
-    // Optional orchestrator overrides — all None means "use Orchestrator defaults".
-    batch_size: Option<u32>,
-    poll_interval: Option<Duration>,
-    reclaim_after: Option<Duration>,
-    reclaim_interval: Option<Duration>,
-    max_reclaim_count: Option<u32>,
     handoff_lease_ttl: Option<Duration>,
-    metrics: Option<MetricsRegistry>,
     // Optional timer scanner override — None means DEFAULT_TIMER_SCAN_INTERVAL.
     timer_scan_interval: Option<Duration>,
 }
@@ -401,12 +394,11 @@ impl WorkerRuntimeBuilder {
     /// from a different store clone. The sink's idempotency read and the engine's
     /// lease CAS must observe the identical rows.
     ///
-    /// `available_plugins` is the set of [`PluginKey`]s this worker can serve.
-    /// A worker with no plugins would never claim any job; [`build`] rejects
-    /// that case as [`WorkerBuildError::NoPlugins`].
+    /// The engine's exact runtime configuration supplies the advertised flavor.
+    /// [`Self::build`] rejects an engine without that configuration.
     ///
-    /// `processor_id` is a fixed 16-byte fence token recorded in the job row's
-    /// `processed_by` field. Supply the full 16 bytes — no truncation or padding
+    /// `processor_id` is a fixed 16-byte fence token recorded on claimed work.
+    /// Supply the full 16 bytes — no truncation or padding
     /// is performed, so two distinct workers with different ids cannot collapse
     /// to the same token.
     ///
@@ -414,25 +406,16 @@ impl WorkerRuntimeBuilder {
     pub fn from_wired_engine(
         engine: Arc<WorkflowEngine>,
         stores: ExecutionStores,
-        queue: Arc<dyn JobDispatchQueue>,
-        available_plugins: Vec<PluginKey>,
         processor_id: [u8; 16],
     ) -> Self {
         Self {
             engine,
             stores,
-            queue,
             control_queue: None,
             turn_handoff: None,
-            available_plugins,
+            turn_recovery: None,
             processor_id,
-            batch_size: None,
-            poll_interval: None,
-            reclaim_after: None,
-            reclaim_interval: None,
-            max_reclaim_count: None,
             handoff_lease_ttl: None,
-            metrics: None,
             timer_scan_interval: None,
         }
     }
@@ -447,64 +430,28 @@ impl WorkerRuntimeBuilder {
         self
     }
 
-    /// Wire the durable owner of the dispatch-claim → execution-turn handoff
-    /// (#976).
+    /// Wire the durable owner of the control-claim → execution-turn handoff.
     ///
-    /// MUST be constructed over the same backend the `queue` and the engine's
-    /// execution store use: the handoff commits the lease write and the queue
-    /// acknowledgement in one transaction, and two backends would give them
-    /// two boundaries.
+    /// MUST be constructed over the same backend as the control queue and the
+    /// engine's execution store because acceptance is one transaction.
     pub fn with_turn_handoff(mut self, handoff: Arc<dyn ExecutionTurnHandoff>) -> Self {
         self.turn_handoff = Some(handoff);
         self
     }
 
-    /// Override the claim batch size (default: [`Orchestrator`] default = 32).
-    pub fn with_batch_size(mut self, n: u32) -> Self {
-        self.batch_size = Some(n);
-        self
-    }
-
-    /// Override the idle poll interval (default: [`Orchestrator`] default = 100 ms).
-    pub fn with_poll_interval(mut self, d: Duration) -> Self {
-        self.poll_interval = Some(d);
-        self
-    }
-
-    /// Override the staleness window before a `Processing` row becomes reclaimable
-    /// (default: [`Orchestrator`] default = 150 s).
-    pub fn with_reclaim_after(mut self, d: Duration) -> Self {
-        self.reclaim_after = Some(d);
-        self
-    }
-
-    /// Override the reclaim sweep cadence (default: [`Orchestrator`] default = 30 s).
-    pub fn with_reclaim_interval(mut self, d: Duration) -> Self {
-        self.reclaim_interval = Some(d);
-        self
-    }
-
-    /// Override the max retry budget before an exhausted row moves to `Failed`
-    /// (default: [`Orchestrator`] default = 3).
-    pub fn with_max_reclaim_count(mut self, n: u32) -> Self {
-        self.max_reclaim_count = Some(n);
+    /// Wire worker-wide discovery and acceptance of abandoned durable turns.
+    ///
+    /// This capability spans tenants and must remain in the worker composition
+    /// root rather than a tenant-facing request state.
+    pub fn with_turn_recovery(mut self, recovery: Arc<dyn TurnRecovery>) -> Self {
+        self.turn_recovery = Some(recovery);
         self
     }
 
     /// Override the lease TTL the handoff mints for each accepted turn
-    /// (default: [`Orchestrator`] default = 30 s).
+    /// (default: 30 s).
     pub fn with_handoff_lease_ttl(mut self, d: Duration) -> Self {
         self.handoff_lease_ttl = Some(d);
-        self
-    }
-
-    /// Inject the shared [`MetricsRegistry`] the orchestrator emits counters into.
-    ///
-    /// Without this the counters increment against a private registry no scraper
-    /// sees. Production composition roots should inject the shared registry so
-    /// counters reach the Prometheus scrape endpoint.
-    pub fn with_metrics(mut self, m: MetricsRegistry) -> Self {
-        self.metrics = Some(m);
         self
     }
 
@@ -518,20 +465,20 @@ impl WorkerRuntimeBuilder {
         self
     }
 
-    /// Validate required fields, wire the sink, and construct [`WorkerRuntime`].
+    /// Validate required fields and construct [`WorkerRuntime`].
     ///
     /// # Errors
     ///
-    /// Returns [`WorkerBuildError::NoPlugins`] when `available_plugins` is
-    /// empty, [`WorkerBuildError::NoControlQueue`] when no control queue was
+    /// Returns [`WorkerBuildError::NoControlQueue`] when no control queue was
     /// wired, and [`WorkerBuildError::NoTurnHandoff`] when no turn handoff
-    /// was wired.
+    /// was wired. Returns [`WorkerBuildError::NoTurnRecovery`] when the
+    /// worker-wide recovery capability is absent. Returns
+    /// [`WorkerBuildError::MissingExactRuntime`] if the engine has no exact
+    /// revision loader and frozen registry.
     pub fn build(self) -> Result<WorkerRuntime, WorkerBuildError> {
-        if self.available_plugins.is_empty() {
-            return Err(WorkerBuildError::NoPlugins);
-        }
         let control_queue = self.control_queue.ok_or(WorkerBuildError::NoControlQueue)?;
         let turn_handoff = self.turn_handoff.ok_or(WorkerBuildError::NoTurnHandoff)?;
+        let turn_recovery = self.turn_recovery.ok_or(WorkerBuildError::NoTurnRecovery)?;
         let timer_scan_interval = self
             .timer_scan_interval
             .unwrap_or(DEFAULT_TIMER_SCAN_INTERVAL);
@@ -539,62 +486,35 @@ impl WorkerRuntimeBuilder {
             return Err(WorkerBuildError::ZeroTimerScanInterval);
         }
 
-        let sink = Arc::new(EngineExecutionSink::new(
-            Arc::clone(&self.engine),
-            // Extract execution store from the bundle.
-            // INVARIANT: this must be the same Arc passed to `with_execution_stores`
-            // — enforced by documentation on `from_wired_engine`.
-            Arc::clone(&self.stores.execution),
-        ));
+        let flavor = self
+            .engine
+            .worker_flavor_context()
+            .ok_or(WorkerBuildError::MissingExactRuntime)?;
+        let available_plugins_count = flavor.plugin_keys().len();
+        let worker_flavor_revision = flavor.revision_id();
 
-        let available_plugins_count = self.available_plugins.len();
-
-        let mut orchestrator = Orchestrator::new(
-            self.queue,
-            sink,
-            turn_handoff,
-            self.processor_id,
-            self.available_plugins,
-        );
-
-        if let Some(n) = self.batch_size {
-            orchestrator = orchestrator.with_batch_size(n);
-        }
-        if let Some(d) = self.poll_interval {
-            orchestrator = orchestrator.with_poll_interval(d);
-        }
-        if let Some(d) = self.reclaim_after {
-            orchestrator = orchestrator.with_reclaim_after(d);
-        }
-        if let Some(d) = self.reclaim_interval {
-            orchestrator = orchestrator.with_reclaim_interval(d);
-        }
-        if let Some(n) = self.max_reclaim_count {
-            orchestrator = orchestrator.with_max_reclaim_count(n);
-        }
-        if let Some(d) = self.handoff_lease_ttl {
-            orchestrator = orchestrator.with_handoff_lease_ttl(d);
-        }
-        if let Some(m) = self.metrics {
-            orchestrator = orchestrator.with_metrics(m);
-        }
-
-        // The dispatch reads status through the *same* execution store the
+        // Control dispatch reads status through the same execution store the
         // engine commits against, so the consumer's idempotency check and the
         // engine's CAS observe one row.
-        let control_consumer = ControlConsumer::new(
+        let control_consumer = ControlConsumer::for_flavor(
             control_queue,
             Arc::new(EngineControlDispatch::new(
                 Arc::clone(&self.engine),
                 Arc::clone(&self.stores.execution),
+                Arc::clone(&turn_handoff),
+                format!("control:{}", hex_id(&self.processor_id)),
+                self.handoff_lease_ttl.unwrap_or(Duration::from_secs(30)),
             )),
             self.processor_id,
+            worker_flavor_revision,
         );
 
         Ok(WorkerRuntime {
             engine: Arc::clone(&self.engine),
+            turn_recovery,
+            handoff_lease_ttl: self.handoff_lease_ttl.unwrap_or(Duration::from_secs(30)),
+            worker_flavor: worker_flavor_revision,
             timer_scan_interval,
-            orchestrator,
             control_consumer,
             processor_id: self.processor_id,
             available_plugins_count,

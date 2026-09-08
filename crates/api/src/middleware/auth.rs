@@ -477,7 +477,7 @@ mod tests {
         AuthContext, AuthMethod, Claims, X_API_KEY, auth_middleware, pending_authentication_binding,
     };
     use crate::{
-        ApiConfig, AppState,
+        ApiConfig,
         domain::auth::backend::{
             AuthBackend, CSRF_COOKIE, CSRF_HEADER, CreatePatParams, InMemoryAuthBackend,
             SESSION_COOKIE, SignupRequest, dto::SecretString,
@@ -559,7 +559,7 @@ mod tests {
         )
         .expect("encode JWT");
         let backend: Arc<dyn AuthBackend> = backend;
-        let state = AppState::in_memory(config.jwt_secret.clone())
+        let state = crate::state::test_state_with_in_memory_stores()
             .with_api_keys(vec![API_KEY.to_owned()])
             .with_auth_backend(backend);
         let app = Router::new()

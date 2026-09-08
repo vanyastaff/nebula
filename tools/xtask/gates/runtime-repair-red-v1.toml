@@ -14,18 +14,18 @@
 # pass. A regression therefore fails the gate as a plain unexpected failure.
 #
 # Repaired and promoted to ordinary coverage:
-#   - C7 same-processor ABA (in-memory, file SQLite, live PostgreSQL) —
+#   - same-processor claim-generation fencing (in-memory, file SQLite, live PostgreSQL) —
 #     acknowledgement is fenced on a storage-minted claim generation.
 #   - StartKey (in-memory, file SQLite, live PostgreSQL) — keyed start
 #     acceptance reserves the key, creates the aggregate, and enqueues the
 #     Start command in one commit.
-#   - C1 cancellation authority (file SQLite, live PostgreSQL) — the API
+#   - cancellation authority (file SQLite, live PostgreSQL) — the API
 #     submits the cancellation through the control queue and writes no
 #     execution state at all; the runtime performs the terminal transition
 #     under its own lease. Both halves are asserted: the response must not
 #     report the run as stopped, and the runtime must actually stop it —
 #     without the second, dropping the cancel would satisfy the first.
-#   - C0 park/restart/resume (file SQLite, live PostgreSQL) — the worker drains
+#   - durable wait park/restart/resume (file SQLite, live PostgreSQL) — the worker drains
 #     the control queue the API writes to, a restart sweeps persisted state for
 #     overdue parked waits, and a runtime asked to stop releases the execution
 #     lease it holds instead of letting a bare drop strand it, so the successor

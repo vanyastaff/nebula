@@ -200,18 +200,27 @@ The examples deliberately wire slot resolution manually (no `#[derive(Action)]`)
 - **[L1-§3.5]** The action trait family (`StatelessAction`, `StatefulAction`, `TriggerAction`, `ResourceAction`) is the typed dispatch surface. Adding a new trait requires a canon revision (§0.2). The engine routes by trait, not by `ActionKind` — that field is metadata for UI, validation, and audit only.
 - **[L2-§11.3]** Remote effects are not atomic with Nebula's database. The current
   `IdempotencyKey` / `check_and_mark` path is a local replay/dedup oracle only; it does not prove
-  whether a provider accepted an effect. Current invocation semantics are at-least-once with a
-  possible duplicate. After an ambiguous boundary, only a pinned stable-key destination may make
+  whether a provider accepted an effect. Durable compilation requires an explicit
+  `ActionEffectContract`: `NoExternalEffects` or `Remote(RemoteEffectDescriptor)`;
+  the default `Undeclared` is rejected. A remote stateless factory exposes
+  `RemoteEffectFactory`; generic action dispatch cannot invoke it. Preparation produces
+  bounded canonical request and destination-binding bytes without invocation authority.
+  Only the execution owner issues an `EffectInvocationContext` after the ledger
+  acknowledges a fresh call grant. After an ambiguous boundary, only a pinned stable-key destination may make
   bounded effect-call re-invocations of the same `Prepared` operation with the same
   `OperationId`, and only while its complete guarantee remains valid. Reconciliation is
   authenticated and read-only; it never repeats the effecting call. Exhaustion or expiry records
-  `OutcomeUnknown`, after which no effecting re-invocation is allowed. The planned runtime
+  `OutcomeUnknown`, after which no effecting re-invocation is allowed. The runtime
   protocol binds each intended occurrence to a storage-minted `EffectSlotId`, injects one stable,
   durably prepared runtime-minted `OperationId`, and retains it across recovery. Same-slot
   fingerprint mismatch is `OperationMismatch`. `AcknowledgementUnknown` applies independently to
   prepare and outcome database commits: prepare uncertainty forbids provider invocation until
   database-only reconciliation confirms the exact prepared record and ID; outcome uncertainty
-  permits only ledger reads and exact frozen-evidence recommit.
+  permits only ledger reads and exact frozen-evidence recommit. An outstanding call
+  found after a crash becomes unknown and may only use the separate
+  `ReadOnlyEffectQuery` capability. Known applied outputs are replayed from bounded
+  persisted evidence; oversized or unsupported outputs become `OutputUnavailable`
+  without another effect call.
 - **[L2-§13.4]** For `TriggerAction`-backed workflow starts, tests must cover the declared delivery contract (at-least-once): no silent drop, and duplicate delivery is handled via stable event identity and dedup/idempotency. Seam: `TriggerAction::start`, `TriggerEvent`.
 - **[ADR-0022]** `WebhookAction::config()` is the declarative seam for webhook-transport signature enforcement. Default is `SignaturePolicy::Required` with an empty secret (fail-closed); the HTTP transport returns `401 problem+json` on signature mismatch and `500 problem+json` when `Required` is used without a secret. `OptionalAcceptUnsigned` is the explicit opt-out; `Custom(fn)` composes the primitives in `webhook.rs`. Secret material never flows through the dyn `TriggerHandler` surface — webhook configuration is read from the typed action at activation time and forwarded to `WebhookTransport::activate` as an explicit parameter.
 - **[L2-§13.5]** For ordinary `StatelessAction` instances that cause irreversible external

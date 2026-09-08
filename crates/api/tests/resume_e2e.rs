@@ -212,7 +212,7 @@ async fn build_resume_harness(components: ResumeHandlerComponents) -> ResumeHarn
     let journal = InMemoryJournalReader::new(&exec_store);
     let node_results = InMemoryNodeResultStore::new();
     let workflow_versions = InMemoryWorkflowVersionStore::new();
-    let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
+    let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions, &exec_store);
     // Token store + producer over the SAME shared state as the control queue —
     // built before `exec_store` is moved into the `Arc`.
     let token_store = exec_store.resume_token_store();
@@ -226,6 +226,8 @@ async fn build_resume_harness(components: ResumeHandlerComponents) -> ResumeHarn
         Arc::new(node_results),
         Arc::new(journal),
         Arc::new(control_queue.clone()),
+        Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
+        Arc::new(nebula_storage::inmem::InMemoryTurnHandoff::new(&exec_store)),
         Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
         api_config.jwt_secret.clone(),
     )
@@ -285,7 +287,7 @@ async fn build_failing_store_harness(components: ResumeHandlerComponents) -> Res
     let journal = InMemoryJournalReader::new(&exec_store);
     let node_results = InMemoryNodeResultStore::new();
     let workflow_versions = InMemoryWorkflowVersionStore::new();
-    let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
+    let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions, &exec_store);
     // A standalone store is returned in `token_store` for the field but is
     // never wired into AppState — `AlwaysFailResumeProducer` is wired instead.
     let token_store_placeholder = InMemoryResumeTokenStore::standalone();
@@ -298,6 +300,8 @@ async fn build_failing_store_harness(components: ResumeHandlerComponents) -> Res
         Arc::new(node_results),
         Arc::new(journal),
         Arc::new(control_queue.clone()),
+        Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
+        Arc::new(nebula_storage::inmem::InMemoryTurnHandoff::new(&exec_store)),
         Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
         api_config.jwt_secret.clone(),
     )
@@ -1138,7 +1142,7 @@ fn build_sqlite_resume_app(
     let journal = InMemoryJournalReader::new(&exec_store);
     let node_results = InMemoryNodeResultStore::new();
     let workflow_versions = InMemoryWorkflowVersionStore::new();
-    let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
+    let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions, &exec_store);
 
     let state = AppState::new(
         Arc::new(workflow_store),
@@ -1147,6 +1151,8 @@ fn build_sqlite_resume_app(
         Arc::new(node_results),
         Arc::new(journal),
         Arc::new(control_queue),
+        Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
+        Arc::new(nebula_storage::inmem::InMemoryTurnHandoff::new(&exec_store)),
         Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
         api_config.jwt_secret.clone(),
     )

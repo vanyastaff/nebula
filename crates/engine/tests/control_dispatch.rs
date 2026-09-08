@@ -28,6 +28,7 @@ use nebula_engine::{
 };
 use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_metrics::MetricsRegistry;
+use nebula_storage::inmem::InMemoryTurnHandoff;
 use nebula_storage::{InMemoryExecutionStore, InMemoryWorkflowVersionStore};
 use nebula_storage_port::dto::WorkflowVersionRecord;
 use nebula_storage_port::store::{ExecutionStore, WorkflowVersionStore};
@@ -35,6 +36,8 @@ use nebula_workflow::{
     CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
 };
 use tokio::sync::Notify;
+
+mod exact_fixture;
 
 /// Bundled port adapters for one shared in-memory tenant (mirrors the
 /// in-source `TestStores` pattern). All store calls use `single_tenant_scope()`
@@ -46,7 +49,6 @@ struct DispatchStores {
     node_results: Arc<nebula_storage::InMemoryNodeResultStore>,
     checkpoints: Arc<nebula_storage::InMemoryCheckpointStore>,
     idempotency: Arc<nebula_storage::InMemoryIdempotencyGuard>,
-    workflow: Arc<nebula_storage::InMemoryWorkflowStore>,
     versions: Arc<InMemoryWorkflowVersionStore>,
 }
 
@@ -55,14 +57,12 @@ impl DispatchStores {
         let execution = Arc::new(InMemoryExecutionStore::new());
         let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&execution));
         let versions = InMemoryWorkflowVersionStore::new();
-        let workflow = nebula_storage::InMemoryWorkflowStore::new_with_versions(&versions);
         Self {
             execution,
             journal,
             node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
             checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
             idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
-            workflow: Arc::new(workflow),
             versions: Arc::new(versions),
         }
     }
@@ -75,21 +75,14 @@ impl DispatchStores {
             checkpoints: self.checkpoints.clone(),
             idempotency: self.idempotency.clone(),
             resume_tokens: Arc::new(self.execution.resume_token_store()),
-            operation_ledger: None,
-        }
-    }
-
-    fn workflow_stores(&self) -> nebula_engine::WorkflowStores {
-        nebula_engine::WorkflowStores {
-            workflow: self.workflow.clone(),
-            versions: self.versions.clone(),
+            operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(
+                &self.execution,
+            )),
         }
     }
 
     fn attach(&self, engine: WorkflowEngine) -> WorkflowEngine {
-        engine
-            .with_execution_stores(self.execution_stores())
-            .with_workflow_stores(self.workflow_stores())
+        engine.with_execution_stores(self.execution_stores())
     }
 
     /// Persist a workflow definition as published version 0.
@@ -102,6 +95,7 @@ impl DispatchStores {
                     number: 0,
                     published: true,
                     pinned: false,
+                    activation: None,
                     definition: serde_json::to_value(wf).unwrap(),
                 },
             )
@@ -199,6 +193,7 @@ struct Harness {
     action_count: Arc<AtomicU32>,
     slow_count: Arc<AtomicU32>,
     slow_started: Arc<Notify>,
+    frozen: Arc<nebula_plugin::FrozenPluginRegistry>,
 }
 
 impl Harness {
@@ -220,6 +215,8 @@ impl Harness {
                 count: Arc::clone(&slow_count),
             },
         );
+        let frozen =
+            exact_fixture::freeze_registry(&registry, &[("core", "echo"), ("core", "slow")]);
 
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
@@ -237,8 +234,26 @@ impl Harness {
         );
 
         let stores = DispatchStores::new();
-        let engine = Arc::new(stores.attach(WorkflowEngine::new(runtime, metrics).unwrap()));
-        let dispatch = EngineControlDispatch::new(Arc::clone(&engine), stores.execution.clone());
+        let engine = Arc::new(
+            stores
+                .attach(WorkflowEngine::new(runtime, metrics).unwrap())
+                .with_plan_flavor_runtime(
+                    Arc::new(nebula_engine::PlanFlavorRevisionLoader::new(Arc::new(
+                        stores.execution.plan_flavor_catalog(),
+                    ))),
+                    Arc::clone(&frozen),
+                    Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
+                        &stores.execution,
+                    )),
+                ),
+        );
+        let dispatch = EngineControlDispatch::new(
+            Arc::clone(&engine),
+            stores.execution.clone(),
+            Arc::new(InMemoryTurnHandoff::new(&stores.execution)),
+            "control-dispatch-test".to_owned(),
+            Duration::from_secs(30),
+        );
 
         Self {
             dispatch,
@@ -247,6 +262,7 @@ impl Harness {
             action_count,
             slow_count,
             slow_started,
+            frozen,
         }
     }
 
@@ -285,17 +301,27 @@ impl Harness {
         let execution_id = ExecutionId::new();
         let mut exec_state = ExecutionState::new(execution_id, workflow_id, &[]);
         exec_state.set_workflow_input(input);
-        let state_json = serde_json::to_value(&exec_state).unwrap();
-        self.stores
-            .execution
-            .create(
+        let record = self
+            .stores
+            .versions
+            .get(
                 &nebula_engine::store_seam::single_tenant_scope(),
-                &execution_id.to_string(),
                 &workflow_id.to_string(),
-                state_json,
+                0,
             )
             .await
-            .unwrap();
+            .unwrap()
+            .expect("fixture workflow was persisted");
+        let workflow: WorkflowDefinition =
+            serde_json::from_str(&serde_json::to_string(&record.definition).unwrap()).unwrap();
+        exact_fixture::materialize_state(
+            &self.stores.execution,
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &self.frozen,
+            &workflow,
+            &mut exec_state,
+        )
+        .await;
         execution_id
     }
 

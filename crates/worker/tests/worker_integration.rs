@@ -1,20 +1,14 @@
-//! Integration tests for `nebula-worker`: the worker-runtime claim→drive→complete
-//! happy path, plus the reclaim / redelivery / reclaim-exhaustion liveness
-//! properties of the job-dispatch claim.
+//! Integration tests for `nebula-worker` durable control processing and for
+//! the separately retained job-dispatch technical contract.
 //!
-//! Verifies the full path:
-//!   `WorkerRuntimeBuilder::build` → `.spawn(cancel)` →
-//!   orchestrator claims a `Start` job → `EngineExecutionSink::dispatch` →
-//!   `WorkflowEngine::resume_execution` → execution reaches `Completed`.
+//! Verifies that exact-flavor control starts reach the engine and that the
+//! worker runtime does not attach a competing `JobDispatchQueue` poller.
 //!
 //! ## Test plan
 //!
-//! `worker_runtime_drives_execution_to_completed`
-//!   - Seeds a one-node echo workflow (published) + a `Created` execution row.
-//!   - Enqueues a `Start` `JobDispatchMsg` matching the worker's `available_plugins`.
-//!   - Builds a `WorkerRuntime` via `WorkerRuntimeBuilder` and spawns it.
-//!   - Advances virtual time so the orchestrator's poll interval fires.
-//!   - Asserts the execution row reaches `Completed` and the job row is `Dispatched`.
+//! `worker_runtime_does_not_poll_the_technical_job_queue` asserts the component
+//! boundary directly. `control_start_waits_for_worker_with_retained_exact_flavor`
+//! covers the production command path.
 //!
 //! Backend: InMemory only.
 
@@ -55,7 +49,7 @@ use tokio_util::sync::CancellationToken;
 
 // ── Plugin key used across all test helpers ───────────────────────────────────
 
-const TEST_PLUGIN_KEY: &str = "test.worker.plugin";
+const TEST_PLUGIN_KEY: &str = "test";
 
 // ── Shared harness ────────────────────────────────────────────────────────────
 
@@ -76,7 +70,8 @@ impl TestStores {
         let execution = Arc::new(InMemoryExecutionStore::new());
         let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&execution));
         let versions = InMemoryWorkflowVersionStore::new();
-        let workflow = nebula_storage::InMemoryWorkflowStore::new_with_versions(&versions);
+        let workflow =
+            nebula_storage::InMemoryWorkflowStore::new_with_versions(&versions, &execution);
         Self {
             execution,
             journal,
@@ -96,7 +91,9 @@ impl TestStores {
             checkpoints: self.checkpoints.clone(),
             idempotency: self.idempotency.clone(),
             resume_tokens: Arc::new(self.execution.resume_token_store()),
-            operation_ledger: None,
+            operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(
+                &self.execution,
+            )),
         }
     }
 
@@ -108,14 +105,12 @@ impl TestStores {
     }
 
     fn attach(&self, engine: WorkflowEngine) -> WorkflowEngine {
-        engine
-            .with_execution_stores(self.execution_stores())
-            .with_workflow_stores(self.workflow_stores())
+        engine.with_execution_stores(self.execution_stores())
     }
 
     /// Handoff over the SAME shared core the queue and execution store use —
     /// the lease write and the queue acknowledgement must land under one
-    /// boundary (#976).
+    /// boundary.
     fn turn_handoff(&self) -> Arc<nebula_storage::inmem::InMemoryTurnHandoff> {
         Arc::new(nebula_storage::inmem::InMemoryTurnHandoff::new(
             &self.execution,
@@ -124,10 +119,10 @@ impl TestStores {
 }
 
 /// Test scope used for worker integration tests. Matches `nebula_engine::store_seam::single_tenant_scope()`
-/// (`("nebula","nebula")`) so the worker and engine observe the same in-memory rows.
+/// so the worker and engine observe the same in-memory rows.
 /// Production code uses the per-message scope from the control-queue / job-dispatch DTO.
 fn scope() -> Scope {
-    Scope::new("nebula", "nebula")
+    nebula_engine::store_seam::single_tenant_scope()
 }
 
 /// `[b; 16]` processor id helper.
@@ -147,6 +142,7 @@ impl Action for EchoHandler {
 
     fn metadata() -> ActionMetadata {
         ActionMetadata::new(action_key!("test.echo.worker"), "Echo", "echo")
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -169,10 +165,26 @@ impl StatelessAction for EchoHandler {
 // ── Engine builder ────────────────────────────────────────────────────────────
 
 async fn make_engine(stores: &TestStores) -> (Arc<WorkflowEngine>, Arc<AtomicU32>) {
+    make_engine_with_exact_configuration(stores, true).await
+}
+
+async fn make_engine_with_exact_configuration(
+    stores: &TestStores,
+    exact: bool,
+) -> (Arc<WorkflowEngine>, Arc<AtomicU32>) {
+    make_engine_with_plugins(stores, exact, &[TEST_PLUGIN_KEY.parse().unwrap()]).await
+}
+
+async fn make_engine_with_plugins(
+    stores: &TestStores,
+    exact: bool,
+    plugins: &[PluginKey],
+) -> (Arc<WorkflowEngine>, Arc<AtomicU32>) {
     let count = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
     registry.register_stateless_instance(
-        ActionMetadata::new(action_key!("test.echo.worker"), "Echo", "echo"),
+        ActionMetadata::new(action_key!("test.echo.worker"), "Echo", "echo")
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
         EchoHandler {
             count: count.clone(),
         },
@@ -194,15 +206,31 @@ async fn make_engine(stores: &TestStores) -> (Arc<WorkflowEngine>, Arc<AtomicU32
         )
         .expect("ActionRuntime must build in tests"),
     );
-    let engine = Arc::new(stores.attach(
-        WorkflowEngine::new(runtime, metrics).expect("WorkflowEngine must build in tests"),
-    ));
-    (engine, count)
+    let engine = stores
+        .attach(WorkflowEngine::new(runtime, metrics).expect("WorkflowEngine must build in tests"));
+    let engine = if exact {
+        engine.with_plan_flavor_runtime(
+            Arc::new(nebula_engine::PlanFlavorRevisionLoader::new(Arc::new(
+                nebula_storage::InMemoryPlanFlavorCatalog::new(&stores.execution),
+            ))),
+            Arc::new(frozen_fixture(plugins, count.clone())),
+            Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
+                &stores.execution,
+            )),
+        )
+    } else {
+        engine
+    };
+    (Arc::new(engine), count)
 }
 
 // ── Workflow persistence ──────────────────────────────────────────────────────
 
 async fn save_echo_workflow(stores: &TestStores) -> Arc<ValidatedWorkflow> {
+    save_echo_workflow_scoped(stores, &scope()).await
+}
+
+async fn save_echo_workflow_scoped(stores: &TestStores, scope: &Scope) -> Arc<ValidatedWorkflow> {
     let workflow_id = nebula_core::WorkflowId::new();
     let now = chrono::Utc::now();
     let def = WorkflowDefinition {
@@ -222,14 +250,7 @@ async fn save_echo_workflow(stores: &TestStores) -> Arc<ValidatedWorkflow> {
         connections: Vec::<Connection>::new(),
         variables: HashMap::new(),
         config: WorkflowConfig::default(),
-        trigger_bindings: vec![
-            TriggerBinding::new(
-                node_key!("test.trigger"),
-                TEST_PLUGIN_KEY,
-                "test.trigger.action",
-            )
-            .unwrap(),
-        ],
+        trigger_bindings: Vec::<TriggerBinding>::new(),
         tags: Vec::new(),
         created_at: now,
         updated_at: now,
@@ -242,8 +263,9 @@ async fn save_echo_workflow(stores: &TestStores) -> Arc<ValidatedWorkflow> {
     stores
         .versions
         .create(
-            &scope(),
+            scope,
             nebula_storage_port::dto::WorkflowVersionRecord {
+                activation: None,
                 workflow_id: validated.definition().id.to_string(),
                 number: 0,
                 published: true,
@@ -264,18 +286,96 @@ async fn persist_created(
     input: serde_json::Value,
 ) {
     let mut exec_state = ExecutionState::new(execution_id, workflow_id, &[]);
+    let record = stores
+        .versions
+        .get_published(&scope(), &workflow_id.to_string())
+        .await
+        .unwrap()
+        .unwrap();
+    let workflow: WorkflowDefinition =
+        serde_json::from_str(&serde_json::to_string(&record.definition).unwrap()).unwrap();
+    let registry = frozen_fixture(
+        &[TEST_PLUGIN_KEY.parse().unwrap()],
+        Arc::new(AtomicU32::new(0)),
+    );
+    let plan = registry
+        .compile_graph_v1(nebula_core::WorkflowVersionId::new(), &workflow)
+        .unwrap();
+    nebula_engine::PlanFlavorRevisionInstaller::new(Arc::new(
+        nebula_storage::InMemoryPlanFlavorCatalog::new(&stores.execution),
+    ))
+    .install(&registry, &plan)
+    .await
+    .unwrap();
+    exec_state.set_revision_ids(plan.id(), plan.worker_flavor_revision_id());
+    exec_state.set_workflow_version_number(1);
+    exec_state.set_budget(nebula_execution::ExecutionBudget::default());
     exec_state.set_workflow_input(input);
     let state_json = serde_json::to_value(&exec_state).expect("serialize execution state");
-    stores
-        .execution
-        .create(
-            &scope(),
-            &execution_id.to_string(),
-            &workflow_id.to_string(),
-            state_json,
-        )
+    use nebula_storage_port::{
+        dto::{
+            ContractBundleRecord, ControlMsg, MaterializedStart, NewExecution,
+            PlanFlavorRevisionIds,
+        },
+        store::{ControlQueue, StartAcceptanceStore, StartContractIdentity},
+    };
+    let scope = scope();
+    let bundle = nebula_execution::ExecutionContractBundle::new_graph_v1(
+        nebula_core::ExecutionContractBundleId::new(),
+        scope.org_id.parse().unwrap(),
+        scope.workspace_id.parse().unwrap(),
+        plan.id(),
+        plan.plugin_set_id(),
+        nebula_execution::ExecutionRevisions::new(
+            plan.workflow_version_id(),
+            plan.worker_flavor_revision_id(),
+        ),
+        [],
+    );
+    let record = ContractBundleRecord::v1_json(
+        StartContractIdentity::new(
+            bundle.bundle_id(),
+            PlanFlavorRevisionIds::new(plan.id(), plan.worker_flavor_revision_id()),
+        ),
+        serde_json::to_vec(&bundle).unwrap(),
+    )
+    .unwrap();
+    let execution_key = execution_id.to_string();
+    let workflow_key = workflow_id.to_string();
+    let command = ControlMsg {
+        id: execution_id.as_bytes(),
+        execution_id: execution_key.clone(),
+        command: ControlCommand::Start,
+        scope: scope.clone(),
+        w3c_traceparent: None,
+        reclaim_count: 0,
+        resume_target: None,
+    };
+    let starts = nebula_storage::inmem::InMemoryStartAcceptanceStore::new(&stores.execution);
+    assert!(matches!(
+        starts
+            .materialize_start(&MaterializedStart::new(
+                &scope,
+                None,
+                &execution_key,
+                NewExecution::new(&workflow_key, &state_json),
+                &command,
+                &record
+            ))
+            .await
+            .unwrap(),
+        nebula_storage_port::store::StartMaterialization::Accepted { .. }
+    ));
+    // These tests drive the execution through the job queue; acknowledge the
+    // admission outbox command explicitly before enqueuing their observed job.
+    let queue = InMemoryControlQueue::new(&stores.execution);
+    let claims = queue
+        .claim_pending_for_flavor(&[0x74; 16], 1, plan.worker_flavor_revision_id())
         .await
-        .expect("create execution row");
+        .unwrap();
+    assert_eq!(claims.len(), 1);
+    assert_eq!(claims[0].msg.id, command.id);
+    queue.mark_completed(&claims[0].token).await.unwrap();
 }
 
 async fn read_status(stores: &TestStores, execution_id: ExecutionId) -> Option<ExecutionStatus> {
@@ -296,7 +396,7 @@ async fn read_status(stores: &TestStores, execution_id: ExecutionId) -> Option<E
 /// Full end-to-end proof: `WorkerRuntimeBuilder::build` → `.spawn` →
 /// orchestrator claims a `Start` job → engine drives execution to `Completed`.
 #[tokio::test(start_paused = true)]
-async fn worker_runtime_drives_execution_to_completed() {
+async fn worker_runtime_does_not_poll_the_technical_job_queue() {
     let stores = TestStores::new();
     let (engine, echo_count) = make_engine(&stores).await;
     let workflow = save_echo_workflow(&stores).await;
@@ -335,12 +435,11 @@ async fn worker_runtime_drives_execution_to_completed() {
         scope(),
         serde_json::json!({}),
         None::<String>,
-        "sha-worker-test",
         plugin_key.clone(),
         vec![plugin_key.clone()],
         None::<String>,
         0,
-        None,
+        test_flavor(&[TEST_PLUGIN_KEY.parse().unwrap()]).revision_id(),
     );
     queue.enqueue(&msg).await.expect("enqueue Start job");
 
@@ -349,14 +448,11 @@ async fn worker_runtime_drives_execution_to_completed() {
     let runtime = WorkerRuntimeBuilder::from_wired_engine(
         Arc::clone(&engine),
         execution_stores,
-        Arc::clone(&queue) as Arc<dyn JobDispatchQueue>,
-        vec![plugin_key],
         proc16(0xBB),
     )
     .with_control_queue(Arc::new(InMemoryControlQueue::new(&stores.execution)))
     .with_turn_handoff(stores.turn_handoff())
-    // Use a fast poll interval so virtual-time advance is small.
-    .with_poll_interval(Duration::from_millis(10))
+    .with_turn_recovery(stores.turn_handoff())
     .build()
     .expect("WorkerRuntimeBuilder::build must succeed with non-empty plugin set");
 
@@ -364,23 +460,14 @@ async fn worker_runtime_drives_execution_to_completed() {
     let cancel = CancellationToken::new();
     let handle = runtime.spawn(cancel.clone());
 
-    // Bounded poll loop: drive progress by state, not by a magic sleep budget.
-    // Each iteration yields to let the worker task run, then advances virtual time
-    // by one poll interval (10 ms) so the orchestrator's sleep fires. The loop exits
-    // as soon as the execution reaches Completed, or fails the assertion after 200
-    // iterations (~2 s of virtual time) — a worker that never ticks must FAIL here.
-    let mut completed = false;
-    for _ in 0..200 {
+    for _ in 0..10 {
         tokio::task::yield_now().await;
-        if read_status(&stores, execution_id).await == Some(ExecutionStatus::Completed) {
-            completed = true;
-            break;
-        }
-        tokio::time::advance(Duration::from_millis(10)).await;
+        tokio::time::advance(Duration::from_millis(100)).await;
     }
-    assert!(
-        completed,
-        "worker did not drive the execution to Completed within the poll budget"
+    assert_eq!(
+        read_status(&stores, execution_id).await,
+        Some(ExecutionStatus::Created),
+        "the worker runtime must not consume the standalone job-dispatch contract"
     );
 
     // Cancel the worker and wait for clean shutdown.
@@ -390,15 +477,206 @@ async fn worker_runtime_drives_execution_to_completed() {
         .expect("worker task must not panic")
         .expect("every supervised worker component must stop cleanly");
 
-    // Echo handler must have been invoked exactly once.
     assert_eq!(
         echo_count.load(Ordering::SeqCst),
-        1,
-        "echo handler must be invoked exactly once"
+        0,
+        "a technical job-dispatch row must not invoke the runtime action path"
     );
+    let claimed = queue
+        .claim_pending(
+            &proc16(0xBC),
+            1,
+            std::slice::from_ref(&plugin_key),
+            test_flavor(std::slice::from_ref(&plugin_key)).revision_id(),
+        )
+        .await
+        .expect("technical queue remains independently claimable");
+    assert_eq!(claimed.len(), 1);
 }
 
-/// `WorkerRuntimeBuilder::build` rejects an empty `available_plugins` vec.
+#[tokio::test(start_paused = true)]
+async fn control_start_waits_for_worker_with_retained_exact_flavor() {
+    use nebula_storage_port::store::{ControlQueue, WorkflowStore};
+    fn scope() -> Scope {
+        static SCOPE: OnceLock<Scope> = OnceLock::new();
+        SCOPE
+            .get_or_init(|| {
+                Scope::new(
+                    nebula_core::WorkspaceId::new().to_string(),
+                    nebula_core::OrgId::new().to_string(),
+                )
+            })
+            .clone()
+    }
+    let stores = TestStores::new();
+    let workflow = save_echo_workflow_scoped(&stores, &scope()).await;
+    let workflow_id = workflow.definition().id;
+    stores
+        .workflow
+        .create(
+            &scope(),
+            nebula_storage_port::dto::WorkflowRecord {
+                id: workflow_id.to_string(),
+                scope: scope(),
+                version: 1,
+                slug: "exact-control".into(),
+                deleted: false,
+            },
+        )
+        .await
+        .unwrap();
+    let registry = Arc::new(frozen_fixture(
+        &[TEST_PLUGIN_KEY.parse().unwrap()],
+        Arc::new(AtomicU32::new(0)),
+    ));
+    nebula_engine::WorkflowActivationService::new(
+        stores.workflow.clone(),
+        stores.versions.clone(),
+        registry.clone(),
+        nebula_engine::PlanFlavorRevisionInstaller::new(Arc::new(
+            stores.execution.plan_flavor_catalog(),
+        )),
+        Arc::new(nebula_core::accessor::SystemClock),
+    )
+    .activate(&scope(), workflow_id, 1, workflow.definition().clone())
+    .await
+    .unwrap();
+    let starts = nebula_engine::WorkflowStartService::new(
+        stores.workflow_stores(),
+        stores.execution.clone(),
+        Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
+            &stores.execution,
+        )),
+        nebula_engine::PlanFlavorRevisionLoader::new(Arc::new(
+            stores.execution.plan_flavor_catalog(),
+        )),
+        registry,
+        Arc::new(nebula_core::accessor::SystemClock),
+        nebula_execution::ExecutionBudget::default(),
+    )
+    .unwrap();
+    let receipt = starts
+        .start(
+            &scope(),
+            workflow_id,
+            Some(serde_json::json!({"value":17})),
+            Some("exact-control"),
+            None,
+        )
+        .await
+        .unwrap();
+    let execution_id = receipt.state().execution_id;
+    let before = stores
+        .execution
+        .get(&scope(), &execution_id.to_string())
+        .await
+        .unwrap()
+        .unwrap();
+    let queue = Arc::new(InMemoryControlQueue::new(&stores.execution));
+    let (wrong_engine, wrong_count) = make_engine_with_plugins(
+        &stores,
+        true,
+        &[
+            TEST_PLUGIN_KEY.parse().unwrap(),
+            "test.extra".parse().unwrap(),
+        ],
+    )
+    .await;
+    let wrong = WorkerRuntimeBuilder::from_wired_engine(
+        wrong_engine,
+        stores.execution_stores(),
+        proc16(0xD1),
+    )
+    .with_control_queue(queue.clone())
+    .with_turn_handoff(stores.turn_handoff())
+    .with_turn_recovery(stores.turn_handoff())
+    .build()
+    .unwrap();
+    let cancel = CancellationToken::new();
+    let handle = wrong.spawn(cancel.clone());
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(100)).await;
+    }
+    cancel.cancel();
+    handle.await.unwrap().unwrap();
+    assert_eq!(wrong_count.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        stores
+            .execution
+            .get(&scope(), &execution_id.to_string())
+            .await
+            .unwrap()
+            .unwrap(),
+        before
+    );
+    let (engine, count) = make_engine(&stores).await;
+    let flavor = engine.worker_flavor_context().unwrap().revision_id();
+    let claims = queue
+        .claim_pending_for_flavor(&proc16(0xD2), 1, flavor)
+        .await
+        .unwrap();
+    assert_eq!(claims.len(), 1);
+    assert_eq!(
+        claims[0].token.generation().get(),
+        1,
+        "wrong worker must never claim the Start command"
+    );
+    // Reclaim the deliberate observation claim, then exercise the matching worker.
+    tokio::time::advance(Duration::from_secs(2)).await;
+    queue
+        .reclaim_stuck(Duration::from_secs(1), 10)
+        .await
+        .unwrap();
+    let correct =
+        WorkerRuntimeBuilder::from_wired_engine(engine, stores.execution_stores(), proc16(0xD3))
+            .with_control_queue(queue)
+            .with_turn_handoff(stores.turn_handoff())
+            .with_turn_recovery(stores.turn_handoff())
+            .build()
+            .unwrap();
+    let cancel = CancellationToken::new();
+    let handle = correct.spawn(cancel.clone());
+    let mut completed = false;
+    for _ in 0..200 {
+        tokio::task::yield_now().await;
+        let record = stores
+            .execution
+            .get(&scope(), &execution_id.to_string())
+            .await
+            .unwrap()
+            .unwrap();
+        let state: ExecutionState =
+            serde_json::from_slice(&serde_json::to_vec(&record.state).unwrap()).unwrap();
+        if state.status == ExecutionStatus::Completed {
+            completed = true;
+            break;
+        }
+        tokio::time::advance(Duration::from_millis(100)).await;
+    }
+    cancel.cancel();
+    handle.await.unwrap().unwrap();
+    assert!(
+        completed,
+        "matching worker must consume the retained Start command"
+    );
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn builder_rejects_an_engine_without_exact_runtime_configuration() {
+    let stores = TestStores::new();
+    let (engine, _) = make_engine_with_exact_configuration(&stores, false).await;
+    let result =
+        WorkerRuntimeBuilder::from_wired_engine(engine, stores.execution_stores(), proc16(0x09))
+            .with_control_queue(Arc::new(InMemoryControlQueue::new(&stores.execution)))
+            .with_turn_handoff(stores.turn_handoff())
+            .with_turn_recovery(stores.turn_handoff())
+            .build();
+    let error = result.expect_err("an independently advertised flavor cannot authorize an engine");
+    assert_eq!(error.to_string(), "exact runtime configuration is required");
+}
+
 /// A zero timer-scan interval is rejected rather than deferred to a panic.
 ///
 /// `tokio::time::interval` panics on a zero period, so accepting it would let a
@@ -410,22 +688,13 @@ async fn builder_rejects_a_zero_timer_scan_interval() {
     use nebula_worker::WorkerBuildError;
     let stores = TestStores::new();
     let (engine, _) = make_engine(&stores).await;
-    let queue = Arc::new(InMemoryJobDispatchQueue::new(&stores.execution));
-    let result = WorkerRuntimeBuilder::from_wired_engine(
-        engine,
-        stores.execution_stores(),
-        queue as Arc<dyn JobDispatchQueue>,
-        vec![
-            TEST_PLUGIN_KEY
-                .parse::<PluginKey>()
-                .expect("test plugin key is valid"),
-        ],
-        proc16(0x01),
-    )
-    .with_control_queue(Arc::new(InMemoryControlQueue::new(&stores.execution)))
-    .with_turn_handoff(stores.turn_handoff())
-    .with_timer_scan_interval(Duration::ZERO)
-    .build();
+    let result =
+        WorkerRuntimeBuilder::from_wired_engine(engine, stores.execution_stores(), proc16(0x01))
+            .with_control_queue(Arc::new(InMemoryControlQueue::new(&stores.execution)))
+            .with_turn_handoff(stores.turn_handoff())
+            .with_turn_recovery(stores.turn_handoff())
+            .with_timer_scan_interval(Duration::ZERO)
+            .build();
 
     assert!(
         matches!(result, Err(WorkerBuildError::ZeroTimerScanInterval)),
@@ -433,47 +702,30 @@ async fn builder_rejects_a_zero_timer_scan_interval() {
     );
 }
 
-#[tokio::test]
-async fn builder_rejects_empty_plugins() {
-    use nebula_worker::WorkerBuildError;
-    let stores = TestStores::new();
-    let (engine, _) = make_engine(&stores).await;
-    let queue = Arc::new(InMemoryJobDispatchQueue::new(&stores.execution));
-    let result = WorkerRuntimeBuilder::from_wired_engine(
-        engine,
-        stores.execution_stores(),
-        queue as Arc<dyn JobDispatchQueue>,
-        vec![], // intentionally empty — must be rejected
-        proc16(0x00),
-    )
-    .with_control_queue(Arc::new(InMemoryControlQueue::new(&stores.execution)))
-    .build();
-
+#[test]
+fn empty_plugins_cannot_construct_a_worker_flavor() {
+    let registry = nebula_plugin::PluginRegistry::new();
+    let result = registry.freeze(
+        nebula_core::ArtifactSetDigest::from_bytes([0x31; 32]),
+        "1.0.0".parse().unwrap(),
+    );
     assert!(
-        matches!(result, Err(WorkerBuildError::NoPlugins)),
-        "empty available_plugins must produce WorkerBuildError::NoPlugins; got {result:?}"
+        matches!(
+            result,
+            Err(nebula_plugin::RegistryFreezeError::EmptyRegistry)
+        ),
+        "empty registry must fail before a worker context can be constructed"
     );
 }
 
 // ── Reclaim + re-run tests ────────────────────────────────────────────────────
 
-/// A job-dispatch row that was reclaimed (reset to `Pending`) by a crashed
-/// runner is picked up by a live worker and driven to `Completed` exactly once
-/// through the real `EngineExecutionSink`.
+/// A reclaimed technical job-dispatch row remains outside `WorkerRuntime`.
 ///
-/// Sequence:
-/// 1. Seed a `Created` execution row + enqueue a `Start` job.
-/// 2. Directly claim the row as `proc_a` (simulates a worker that claims but
-///    then crashes before returning).
-/// 3. Advance virtual time past `reclaim_after` and call `reclaim_stuck`
-///    directly — this is the same code the orchestrator's sweep executes.
-///    The row goes back to `Pending` (`reclaim_count` → 1).
-/// 4. Build and spawn a `WorkerRuntime` (proc_b) that claims the reclaimed
-///    row and drives it through the real `EngineExecutionSink`.
-/// 5. Assert execution reaches `Completed` AND the echo handler ran exactly
-///    once — ruling out spurious "already-terminal, idempotent no-op" false-greens.
+/// Queue conformance retains its own reclaim behavior while the first-party
+/// worker graph proves it does not attach a second competing command source.
 #[tokio::test(start_paused = true)]
-async fn reclaim_then_rerun_drives_exactly_once_via_real_sink() {
+async fn reclaimed_job_dispatch_row_remains_outside_worker_runtime() {
     let stores = TestStores::new();
     let (engine, echo_count) = make_engine(&stores).await;
     let workflow = save_echo_workflow(&stores).await;
@@ -501,19 +753,23 @@ async fn reclaim_then_rerun_drives_exactly_once_via_real_sink() {
         scope(),
         serde_json::json!({}),
         None::<String>,
-        "sha-reclaim-test",
         plugin_key.clone(),
         vec![plugin_key.clone()],
         None::<String>,
         0,
-        None,
+        test_flavor(&[TEST_PLUGIN_KEY.parse().unwrap()]).revision_id(),
     );
     queue.enqueue(&msg).await.expect("enqueue Start job");
 
     // Step 2: claim as proc_a (simulates a worker that crashed before dispatching).
     let proc_a = proc16(0xAA);
     let claimed = queue
-        .claim_pending(&proc_a, 1, std::slice::from_ref(&plugin_key))
+        .claim_pending(
+            &proc_a,
+            1,
+            std::slice::from_ref(&plugin_key),
+            test_flavor(std::slice::from_ref(&plugin_key)).revision_id(),
+        )
         .await
         .expect("claim as proc_a");
     assert_eq!(claimed.len(), 1, "proc_a must claim the row");
@@ -545,37 +801,30 @@ async fn reclaim_then_rerun_drives_exactly_once_via_real_sink() {
         "execution row must remain Created after job-dispatch reclaim; got {status_after_reclaim:?}"
     );
 
-    // Step 4: build a worker (proc_b) and let it claim + drive the reclaimed row.
+    // Start the worker runtime and prove it does not claim the standalone row.
     let proc_b = proc16(0xBB);
     let runtime = WorkerRuntimeBuilder::from_wired_engine(
         Arc::clone(&engine),
         stores.execution_stores(),
-        Arc::clone(&queue) as Arc<dyn JobDispatchQueue>,
-        vec![plugin_key],
         proc_b,
     )
     .with_control_queue(Arc::new(InMemoryControlQueue::new(&stores.execution)))
     .with_turn_handoff(stores.turn_handoff())
-    .with_poll_interval(Duration::from_millis(10))
+    .with_turn_recovery(stores.turn_handoff())
     .build()
     .expect("WorkerRuntimeBuilder::build must succeed");
 
     let cancel = CancellationToken::new();
     let handle = runtime.spawn(cancel.clone());
 
-    // Step 5: wait for the execution to reach Completed.
-    let mut completed = false;
-    for _ in 0..200 {
+    for _ in 0..10 {
         tokio::task::yield_now().await;
-        if read_status(&stores, execution_id).await == Some(ExecutionStatus::Completed) {
-            completed = true;
-            break;
-        }
-        tokio::time::advance(Duration::from_millis(10)).await;
+        tokio::time::advance(Duration::from_millis(100)).await;
     }
-    assert!(
-        completed,
-        "reclaimed job was not driven to Completed within the poll budget"
+    assert_eq!(
+        read_status(&stores, execution_id).await,
+        Some(ExecutionStatus::Created),
+        "worker runtime must not consume reclaimed technical job-dispatch rows"
     );
 
     cancel.cancel();
@@ -584,14 +833,21 @@ async fn reclaim_then_rerun_drives_exactly_once_via_real_sink() {
         .expect("worker task must not panic")
         .expect("every supervised worker component must stop cleanly");
 
-    // Echo handler must have fired exactly once — confirms the real sink ran and
-    // did not short-circuit on an idempotent no-op for an already-terminal status.
     assert_eq!(
         echo_count.load(Ordering::SeqCst),
-        1,
-        "echo handler must be invoked exactly once after reclaim+redispatch; got {}",
-        echo_count.load(Ordering::SeqCst)
+        0,
+        "job-dispatch reclaim must not enter the worker action path"
     );
+    let reclaimed = queue
+        .claim_pending(
+            &proc_b,
+            1,
+            std::slice::from_ref(&plugin_key),
+            test_flavor(std::slice::from_ref(&plugin_key)).revision_id(),
+        )
+        .await
+        .expect("reclaimed technical row remains claimable");
+    assert_eq!(reclaimed.len(), 1);
 }
 
 /// A second `EngineExecutionSink::dispatch` of the same `Start` job on an
@@ -631,7 +887,7 @@ async fn redelivered_start_on_running_or_terminal_is_noop() {
     );
 
     // Mint the turn the way the durable handoff does: lease acquired under
-    // this test's driver identity, fence threaded into the sink (#976).
+    // this test's driver identity, with its fence threaded into the sink.
     let fence = stores
         .execution
         .acquire_lease(
@@ -653,12 +909,11 @@ async fn redelivered_start_on_running_or_terminal_is_noop() {
         scope(),
         serde_json::json!({}),
         None::<String>,
-        "sha-idem-test",
         plugin_key.clone(),
         vec![plugin_key],
         None::<String>,
         0,
-        None,
+        test_flavor(&[TEST_PLUGIN_KEY.parse().unwrap()]).revision_id(),
     );
 
     // First dispatch: drives Created → Completed under the handoff fence;
@@ -769,12 +1024,11 @@ async fn job_dispatch_row_exhausted_to_failed_leaves_execution_intact() {
         scope(),
         serde_json::json!({}),
         None::<String>,
-        "sha-exhaust-test",
         plugin_key.clone(),
         vec![plugin_key.clone()],
         None::<String>,
         0,
-        None,
+        test_flavor(&[TEST_PLUGIN_KEY.parse().unwrap()]).revision_id(),
     );
     queue.enqueue(&msg).await.expect("enqueue job");
 
@@ -789,7 +1043,7 @@ async fn job_dispatch_row_exhausted_to_failed_leaves_execution_intact() {
     for i in 0..=max_reclaim_count {
         // Claim (puts row Processing).
         let claimed = queue
-            .claim_pending(&crasher, 1, &tags)
+            .claim_pending(&crasher, 1, &tags, test_flavor(&tags).revision_id())
             .await
             .expect("claim");
         if claimed.is_empty() {
@@ -837,11 +1091,69 @@ async fn job_dispatch_row_exhausted_to_failed_leaves_execution_intact() {
 
     // The exhausted (Failed) row must no longer be returned by claim_pending.
     let leftover = queue
-        .claim_pending(&proc16(0xEE), 8, &tags)
+        .claim_pending(&proc16(0xEE), 8, &tags, test_flavor(&tags).revision_id())
         .await
         .expect("probe claim");
     assert!(
         leftover.is_empty(),
         "exhausted (Failed) job-dispatch row must not be returned by claim_pending"
     );
+}
+
+fn test_flavor(plugins: &[PluginKey]) -> nebula_plugin::WorkerFlavorContext {
+    nebula_plugin::WorkerFlavorContext::from_registry(&frozen_fixture(
+        plugins,
+        Arc::new(AtomicU32::new(0)),
+    ))
+}
+
+fn frozen_fixture(
+    plugins: &[PluginKey],
+    count: Arc<AtomicU32>,
+) -> nebula_plugin::FrozenPluginRegistry {
+    struct FixturePlugin(nebula_plugin::PluginManifest, Arc<AtomicU32>);
+    impl std::fmt::Debug for FixturePlugin {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("FixturePlugin")
+                .field("manifest", &self.0)
+                .finish_non_exhaustive()
+        }
+    }
+    impl nebula_plugin::Plugin for FixturePlugin {
+        fn manifest(&self) -> &nebula_plugin::PluginManifest {
+            &self.0
+        }
+        fn actions(&self) -> Vec<Arc<dyn nebula_action::ActionFactory>> {
+            if self.0.key().as_str() == TEST_PLUGIN_KEY {
+                vec![Arc::new(nebula_action::factory::InstanceFactory::new(
+                    EchoHandler::metadata(),
+                    EchoHandler {
+                        count: self.1.clone(),
+                    },
+                ))]
+            } else {
+                Vec::new()
+            }
+        }
+    }
+    let mut registry = nebula_plugin::PluginRegistry::new();
+    for key in plugins {
+        let plugin = FixturePlugin(
+            nebula_plugin::PluginManifest::builder(key.as_str(), key.as_str())
+                .build()
+                .unwrap(),
+            count.clone(),
+        );
+        registry
+            .register(Arc::new(
+                nebula_plugin::ResolvedPlugin::from(plugin).unwrap(),
+            ))
+            .unwrap();
+    }
+    registry
+        .freeze(
+            nebula_core::ArtifactSetDigest::from_bytes([0x31; 32]),
+            "1.0.0".parse().unwrap(),
+        )
+        .unwrap()
 }

@@ -19,11 +19,6 @@ use nebula_metrics::naming::{
     NEBULA_ACTION_EXECUTIONS_TOTAL, NEBULA_ACTION_FAILURES_TOTAL, dispatch_reject_reason,
 };
 use nebula_metrics::{Counter, Histogram, MetricsError, MetricsRegistry};
-use nebula_storage_port::dto::{
-    AttemptGeneration, EffectSlotBinding, EffectSlotId, KnownOutcome, PrepareOutcome,
-};
-use nebula_storage_port::store::OperationLedger;
-use nebula_storage_port::{OperationLedgerError, Scope};
 use nebula_workflow::NodeDefinition;
 use serde::{Deserialize, Serialize};
 
@@ -144,8 +139,6 @@ pub struct ActionRuntime {
     /// Sum of estimated output bytes per execution for
     /// [`DataPassingPolicy::max_total_execution_bytes`].
     execution_output_totals: Arc<DashMap<ExecutionId, u64>>,
-    /// ADR-0120 operation ledger for durable effect-slot tracking (#978).
-    operation_ledger: Option<Arc<dyn OperationLedger>>,
 }
 
 impl ActionRuntime {
@@ -175,7 +168,6 @@ impl ActionRuntime {
             action_executions_total,
             blob_storage: None,
             execution_output_totals: Arc::new(DashMap::new()),
-            operation_ledger: None,
         })
     }
 
@@ -185,13 +177,6 @@ impl ActionRuntime {
     /// entries do not accumulate forever ([`DataPassingPolicy::max_total_execution_bytes`]).
     pub fn clear_execution_output_totals(&self, execution_id: ExecutionId) {
         self.execution_output_totals.remove(&execution_id);
-    }
-
-    /// Set the ADR-0120 operation ledger for durable effect-slot tracking (#978).
-    #[must_use = "builder methods must be chained or built"]
-    pub fn with_operation_ledger(mut self, ledger: Arc<dyn OperationLedger>) -> Self {
-        self.operation_ledger = Some(ledger);
-        self
     }
 
     /// Access the action registry.
@@ -207,35 +192,6 @@ impl ActionRuntime {
     pub fn with_blob_storage(mut self, storage: Arc<dyn BlobStorage>) -> Self {
         self.blob_storage = Some(storage);
         self
-    }
-
-    /// Prepare a durable effect slot before executing an action (#978).
-    pub async fn prepare_effect(
-        &self,
-        binding: &EffectSlotBinding<'_>,
-    ) -> Option<Result<PrepareOutcome, OperationLedgerError>> {
-        match &self.operation_ledger {
-            Some(ledger) => Some(ledger.prepare(binding).await),
-            None => None,
-        }
-    }
-
-    /// Commit the outcome of a previously prepared effect slot (#978).
-    pub async fn commit_effect(
-        &self,
-        scope: &Scope,
-        slot_id: EffectSlotId,
-        generation: AttemptGeneration,
-        outcome: KnownOutcome,
-    ) -> Option<Result<(), OperationLedgerError>> {
-        match &self.operation_ledger {
-            Some(ledger) => Some(
-                ledger
-                    .commit_outcome(scope, slot_id, generation, outcome)
-                    .await,
-            ),
-            None => None,
-        }
     }
 
     /// Access the data passing policy.
@@ -391,6 +347,28 @@ impl ActionRuntime {
         .await
     }
 
+    /// Execute a factory retained by the engine's exact revision witness.
+    /// This path never consults the mutable action registry.
+    pub(crate) async fn execute_resolved_action(
+        &self,
+        factory: Arc<dyn ActionFactory>,
+        node: &NodeDefinition,
+        input: serde_json::Value,
+        context: &dyn ActionContext,
+    ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
+        let metadata = factory.metadata().clone();
+        self.run_factory(
+            node.action_key.as_str(),
+            metadata,
+            factory,
+            node,
+            input,
+            context,
+            None,
+        )
+        .await
+    }
+
     /// Common dispatch entry — routes all executions through the factory path.
     ///
     /// Looks up the `Arc<dyn ActionFactory>` for the action key, instantiates a
@@ -429,13 +407,16 @@ impl ActionRuntime {
 
     /// Dispatch through the factory path — instantiate a fresh
     /// [`ActionHandle`] for the supplied workflow node and dispatch it.
+    /// Both metadata projections must explicitly declare no external effects,
+    /// and the factory must expose no remote capability. This check precedes
+    /// construction; generic dispatch cannot issue an execution-owner grant.
     ///
     /// Metric contract:
     ///
     /// - Stateless / Stateful / Control variants observe the duration histogram and increment
     ///   executions / failures.
-    /// - Trigger / Resource variants are early-rejected (not executable through `ActionRuntime`)
-    ///   and increment the dispatch-rejected counter only.
+    /// - Trigger / Resource kinds and effects requiring owner admission are
+    ///   rejected before construction and increment the dispatch-rejected counter only.
     ///
     /// `factory.instantiate` returning an error is treated as an action
     /// failure (slot resolution, etc.). The duration histogram is observed
@@ -457,6 +438,34 @@ impl ActionRuntime {
         checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
         let error_counter = &self.action_failures_total;
+        let actual_metadata = factory.metadata();
+        if metadata.kind == nebula_action::ActionKind::Trigger
+            || actual_metadata.kind == nebula_action::ActionKind::Trigger
+        {
+            self.observe_rejected(dispatch_reject_reason::TRIGGER_NOT_EXECUTABLE);
+            return Err(RuntimeError::TriggerNotExecutable {
+                key: action_key.to_owned(),
+            });
+        }
+        if metadata.kind == nebula_action::ActionKind::Resource
+            || actual_metadata.kind == nebula_action::ActionKind::Resource
+        {
+            self.observe_rejected(dispatch_reject_reason::RESOURCE_NOT_EXECUTABLE);
+            return Err(RuntimeError::ResourceNotExecutable {
+                key: action_key.to_owned(),
+            });
+        }
+        if !matches!(
+            metadata.effect_contract,
+            nebula_action::effect::ActionEffectContract::NoExternalEffects
+        ) || !matches!(
+            actual_metadata.effect_contract,
+            nebula_action::effect::ActionEffectContract::NoExternalEffects
+        ) || factory.remote_effect_factory().is_some()
+        {
+            self.observe_rejected("effect_requires_owner");
+            return Err(RuntimeError::EffectRequiresOwner);
+        }
         #[expect(
             clippy::unwrap_or_default,
             reason = "ExecutionId::new() != Default::default()"
@@ -1280,6 +1289,11 @@ mod tests {
 
     use super::*;
 
+    fn pure_metadata(key: nebula_core::ActionKey, name: &str, description: &str) -> ActionMetadata {
+        ActionMetadata::new(key, name, description)
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+    }
+
     /// Echo fixture — Variant A unit struct. Per-test metadata is supplied
     /// via [`ActionRegistry::register_stateless_instance`] (the
     /// R-NEW-7 test escape), so the static `<Self as Action>::metadata()`
@@ -1291,7 +1305,7 @@ mod tests {
         type Output = serde_json::Value;
 
         fn metadata() -> ActionMetadata {
-            ActionMetadata::new(action_key!("test.echo.static"), "Echo", "echoes input")
+            pure_metadata(action_key!("test.echo.static"), "Echo", "echoes input")
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
@@ -1316,7 +1330,7 @@ mod tests {
         type Output = serde_json::Value;
 
         fn metadata() -> ActionMetadata {
-            ActionMetadata::new(action_key!("test.fail.static"), "Fail", "always fails")
+            pure_metadata(action_key!("test.fail.static"), "Fail", "always fails")
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
@@ -1393,10 +1407,189 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn generic_dispatch_rejects_effect_contracts_before_factory_code() {
+        use nebula_action::effect::{
+            ActionEffectContract, EffectPreparationContext, EffectPreparationError,
+            PreparedRemoteEffect, RemoteDestinationGuarantee, RemoteEffectDescriptor,
+            RemoteEffectFactory, RemoteEffectPolicy,
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountedFactory {
+            metadata: ActionMetadata,
+            dependencies: Dependencies,
+            descriptor: RemoteEffectDescriptor,
+            capability: bool,
+            constructions: AtomicUsize,
+            provider_calls: AtomicUsize,
+        }
+        impl ActionFactory for CountedFactory {
+            fn metadata(&self) -> &ActionMetadata {
+                &self.metadata
+            }
+            fn dependencies(&self) -> &Dependencies {
+                &self.dependencies
+            }
+            fn remote_effect_factory(&self) -> Option<&dyn RemoteEffectFactory> {
+                self.capability.then_some(self)
+            }
+            fn instantiate<'a>(
+                &'a self,
+                _: &'a NodeDefinition,
+                _: &'a dyn ActionContext,
+            ) -> std::pin::Pin<
+                Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>,
+            > {
+                self.constructions.fetch_add(1, Ordering::Relaxed);
+                Box::pin(async {
+                    self.provider_calls.fetch_add(1, Ordering::Relaxed);
+                    Err(ActionError::fatal("unadmitted factory code executed"))
+                })
+            }
+        }
+        #[async_trait]
+        impl RemoteEffectFactory for CountedFactory {
+            fn descriptor(&self) -> &RemoteEffectDescriptor {
+                &self.descriptor
+            }
+            async fn prepare(
+                &self,
+                _: serde_json::Value,
+                _: &EffectPreparationContext,
+            ) -> Result<PreparedRemoteEffect, EffectPreparationError> {
+                Err(EffectPreparationError::InvalidRequest)
+            }
+        }
+        let descriptor = RemoteEffectDescriptor::new(
+            "test.remote",
+            1,
+            RemoteEffectPolicy::builder(RemoteDestinationGuarantee::Opaque)
+                .maximum_invocations(1)
+                .maximum_queries(0)
+                .recovery_window(std::time::Duration::from_mins(1))
+                .build()
+                .unwrap(),
+        )
+        .unwrap();
+        for (contract, capability, kind, spoof_metadata) in [
+            (
+                ActionEffectContract::Undeclared,
+                false,
+                nebula_action::ActionKind::Stateless,
+                false,
+            ),
+            (
+                ActionEffectContract::Remote(Box::new(descriptor.clone())),
+                true,
+                nebula_action::ActionKind::Stateless,
+                false,
+            ),
+            (
+                ActionEffectContract::NoExternalEffects,
+                true,
+                nebula_action::ActionKind::Stateless,
+                false,
+            ),
+            (
+                ActionEffectContract::Undeclared,
+                false,
+                nebula_action::ActionKind::Stateless,
+                true,
+            ),
+            (
+                ActionEffectContract::Undeclared,
+                false,
+                nebula_action::ActionKind::Trigger,
+                false,
+            ),
+            (
+                ActionEffectContract::Undeclared,
+                false,
+                nebula_action::ActionKind::Resource,
+                false,
+            ),
+        ] {
+            let factory = Arc::new(CountedFactory {
+                metadata: ActionMetadata::new(
+                    action_key!("test.owner_required"),
+                    "Guard",
+                    "effect gate",
+                )
+                .with_effect_contract(contract)
+                .with_kind(kind),
+                dependencies: Dependencies::new(),
+                descriptor: descriptor.clone(),
+                capability,
+                constructions: AtomicUsize::new(0),
+                provider_calls: AtomicUsize::new(0),
+            });
+            let (runtime, metrics) = make_runtime_with_metrics(Arc::new(ActionRegistry::new()));
+            let node =
+                NodeDefinition::new(node_key!("test"), "Guard", "test", "owner_required").unwrap();
+            let mut metadata = factory.metadata.clone();
+            if spoof_metadata {
+                metadata.effect_contract = ActionEffectContract::NoExternalEffects;
+            }
+            let result = runtime
+                .run_factory(
+                    "test.owner_required",
+                    metadata,
+                    factory.clone(),
+                    &node,
+                    serde_json::Value::Null,
+                    &test_context(),
+                    None,
+                )
+                .await;
+            let reason = match kind {
+                nebula_action::ActionKind::Trigger => {
+                    assert!(matches!(
+                        result,
+                        Err(RuntimeError::TriggerNotExecutable { .. })
+                    ));
+                    dispatch_reject_reason::TRIGGER_NOT_EXECUTABLE
+                },
+                nebula_action::ActionKind::Resource => {
+                    assert!(matches!(
+                        result,
+                        Err(RuntimeError::ResourceNotExecutable { .. })
+                    ));
+                    dispatch_reject_reason::RESOURCE_NOT_EXECUTABLE
+                },
+                _ => {
+                    assert!(matches!(result, Err(RuntimeError::EffectRequiresOwner)));
+                    "effect_requires_owner"
+                },
+            };
+            assert_eq!(factory.constructions.load(Ordering::Relaxed), 0);
+            assert_eq!(factory.provider_calls.load(Ordering::Relaxed), 0);
+            let labels = metrics.interner().label_set(&[("reason", reason)]);
+            assert_eq!(
+                metrics
+                    .counter_labeled(NEBULA_ACTION_DISPATCH_REJECTED_TOTAL, &labels)
+                    .unwrap()
+                    .get(),
+                1
+            );
+            assert_eq!(
+                metrics
+                    .counter(NEBULA_ACTION_EXECUTIONS_TOTAL)
+                    .unwrap()
+                    .get(),
+                0
+            );
+            assert_eq!(
+                metrics.counter(NEBULA_ACTION_FAILURES_TOTAL).unwrap().get(),
+                0
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn max_total_execution_bytes_across_dispatches() {
         let registry = Arc::new(ActionRegistry::new());
         registry.register_stateless_instance(
-            ActionMetadata::new(action_key!("test.echo"), "Echo", "echoes input"),
+            pure_metadata(action_key!("test.echo"), "Echo", "echoes input"),
             EchoAction,
         );
 
@@ -1457,7 +1650,7 @@ mod tests {
     async fn execute_trusted_action() {
         let registry = Arc::new(ActionRegistry::new());
         registry.register_stateless_instance(
-            ActionMetadata::new(action_key!("test.echo"), "Echo", "echoes input"),
+            pure_metadata(action_key!("test.echo"), "Echo", "echoes input"),
             EchoAction,
         );
 
@@ -1489,7 +1682,7 @@ mod tests {
     async fn execute_failing_action_propagates_error() {
         let registry = Arc::new(ActionRegistry::new());
         registry.register_stateless_instance(
-            ActionMetadata::new(action_key!("test.fail"), "Fail", "always fails"),
+            pure_metadata(action_key!("test.fail"), "Fail", "always fails"),
             FailAction,
         );
 
@@ -1505,7 +1698,7 @@ mod tests {
     async fn data_limit_enforcement() {
         let registry = Arc::new(ActionRegistry::new());
         registry.register_stateless_instance(
-            ActionMetadata::new(action_key!("test.big"), "Big", "returns big output"),
+            pure_metadata(action_key!("test.big"), "Big", "returns big output"),
             EchoAction,
         );
 
@@ -1538,7 +1731,7 @@ mod tests {
     async fn metrics_recorded_on_execution() {
         let registry = Arc::new(ActionRegistry::new());
         registry.register_stateless_instance(
-            ActionMetadata::new(action_key!("test.tele"), "Tele", "test"),
+            pure_metadata(action_key!("test.tele"), "Tele", "test"),
             EchoAction,
         );
 
@@ -1606,7 +1799,7 @@ mod tests {
 
         let registry = Arc::new(ActionRegistry::new());
         registry.register_stateless_instance(
-            ActionMetadata::new(action_key!("test.gated"), "Gated", "capability gated")
+            pure_metadata(action_key!("test.gated"), "Gated", "capability gated")
                 .with_isolation_level(IsolationLevel::CapabilityGated),
             EchoAction,
         );
@@ -1633,7 +1826,7 @@ mod tests {
     async fn spill_to_blob_rejects_when_no_storage() {
         let registry = Arc::new(ActionRegistry::new());
         registry.register_stateless_instance(
-            ActionMetadata::new(action_key!("test.spill"), "Spill", "large output"),
+            pure_metadata(action_key!("test.spill"), "Spill", "large output"),
             EchoAction,
         );
 
@@ -1692,7 +1885,7 @@ mod tests {
 
         let registry = Arc::new(ActionRegistry::new());
         registry.register_stateless_instance(
-            ActionMetadata::new(
+            pure_metadata(
                 action_key!("test.spill_ok"),
                 "SpillOk",
                 "large output with storage",
@@ -1757,7 +1950,7 @@ mod tests {
             type Output = serde_json::Value;
 
             fn metadata() -> ActionMetadata {
-                ActionMetadata::new(
+                pure_metadata(
                     action_key!("test.multi_out.static"),
                     "MultiOut",
                     "multi-port fan-out",
@@ -1793,7 +1986,7 @@ mod tests {
 
         let registry = Arc::new(ActionRegistry::new());
         registry.register_stateless_instance(
-            ActionMetadata::new(
+            pure_metadata(
                 action_key!("test.multi_out"),
                 "MultiOut",
                 "multi-port fan-out",
@@ -1843,7 +2036,7 @@ mod tests {
             type Output = serde_json::Value;
 
             fn metadata() -> ActionMetadata {
-                ActionMetadata::new(action_key!("test.branch.static"), "Branch", "static")
+                pure_metadata(action_key!("test.branch.static"), "Branch", "static")
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
@@ -1874,7 +2067,7 @@ mod tests {
 
         let registry = Arc::new(ActionRegistry::new());
         registry.register_stateless_instance(
-            ActionMetadata::new(action_key!("test.branch"), "Branch", "branch with alts"),
+            pure_metadata(action_key!("test.branch"), "Branch", "branch with alts"),
             BranchAction,
         );
 
@@ -1914,7 +2107,7 @@ mod tests {
             type Output = serde_json::Value;
 
             fn metadata() -> ActionMetadata {
-                ActionMetadata::new(action_key!("test.collection.static"), "Coll", "static")
+                pure_metadata(action_key!("test.collection.static"), "Coll", "static")
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
@@ -1940,7 +2133,7 @@ mod tests {
 
         let registry = Arc::new(ActionRegistry::new());
         registry.register_stateless_instance(
-            ActionMetadata::new(
+            pure_metadata(
                 action_key!("test.collection"),
                 "Collection",
                 "nested values",
@@ -1986,7 +2179,7 @@ mod tests {
             type Output = serde_json::Value;
 
             fn metadata() -> ActionMetadata {
-                ActionMetadata::new(action_key!("test.binary.static"), "Bin", "static")
+                pure_metadata(action_key!("test.binary.static"), "Bin", "static")
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
@@ -2012,7 +2205,7 @@ mod tests {
 
         let registry = Arc::new(ActionRegistry::new());
         registry.register_stateless_instance(
-            ActionMetadata::new(action_key!("test.binary"), "Binary", "inline bytes"),
+            pure_metadata(action_key!("test.binary"), "Binary", "inline bytes"),
             BinaryAction,
         );
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
@@ -2051,7 +2244,7 @@ mod tests {
             type Output = serde_json::Value;
 
             fn metadata() -> ActionMetadata {
-                ActionMetadata::new(action_key!("test.ref.static"), "Ref", "static")
+                pure_metadata(action_key!("test.ref.static"), "Ref", "static")
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
@@ -2077,7 +2270,7 @@ mod tests {
 
         let registry = Arc::new(ActionRegistry::new());
         registry.register_stateless_instance(
-            ActionMetadata::new(action_key!("test.ref"), "Reference", "large metadata"),
+            pure_metadata(action_key!("test.ref"), "Reference", "large metadata"),
             RefAction,
         );
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
@@ -2345,7 +2538,7 @@ mod tests {
     async fn dispatched_stateless_observes_histogram_and_counter() {
         let registry = Arc::new(ActionRegistry::new());
         registry.register_stateless_instance(
-            ActionMetadata::new(action_key!("test.dispatched"), "Disp", "dispatched"),
+            pure_metadata(action_key!("test.dispatched"), "Disp", "dispatched"),
             EchoAction,
         );
         let (rt, metrics) = make_runtime_with_metrics(registry);
@@ -2404,7 +2597,7 @@ mod tests {
             type Output = serde_json::Value;
 
             fn metadata() -> ActionMetadata {
-                ActionMetadata::new(
+                pure_metadata(
                     action_key!("test.stream.counting"),
                     "CountingStream",
                     "yields 1,2,3 and sums",
@@ -2487,7 +2680,7 @@ mod tests {
             type Output = serde_json::Value;
 
             fn metadata() -> ActionMetadata {
-                ActionMetadata::new(
+                pure_metadata(
                     action_key!("test.stream.big"),
                     "BigStream",
                     "produces an oversized folded value",
@@ -2602,7 +2795,7 @@ mod tests {
         type Output = serde_json::Value;
 
         fn metadata() -> ActionMetadata {
-            ActionMetadata::new(action_key!("test.count"), "CountTo3", "counts to 3")
+            pure_metadata(action_key!("test.count"), "CountTo3", "counts to 3")
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
@@ -2642,7 +2835,7 @@ mod tests {
         type Output = serde_json::Value;
 
         fn metadata() -> ActionMetadata {
-            ActionMetadata::new(action_key!("test.count5"), "CountTo5", "counts to 5")
+            pure_metadata(action_key!("test.count5"), "CountTo5", "counts to 5")
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
@@ -2682,7 +2875,7 @@ mod tests {
         type Output = serde_json::Value;
 
         fn metadata() -> ActionMetadata {
-            ActionMetadata::new(action_key!("test.count2"), "CountTo2", "counts to 2")
+            pure_metadata(action_key!("test.count2"), "CountTo2", "counts to 2")
         }
         fn dependencies() -> &'static Dependencies {
             static D: OnceLock<Dependencies> = OnceLock::new();
@@ -2723,7 +2916,7 @@ mod tests {
         type Output = serde_json::Value;
 
         fn metadata() -> ActionMetadata {
-            ActionMetadata::new(
+            pure_metadata(
                 action_key!("test.sleepy"),
                 "SleepyStateful",
                 "hangs in execute",
@@ -2976,7 +3169,7 @@ mod tests {
         type Output = serde_json::Value;
 
         fn metadata() -> ActionMetadata {
-            ActionMetadata::new(
+            pure_metadata(
                 action_key!("test.stuck"),
                 "NoProgress",
                 "never advances state",
@@ -3053,7 +3246,7 @@ mod tests {
         type Output = serde_json::Value;
 
         fn metadata() -> ActionMetadata {
-            ActionMetadata::new(
+            pure_metadata(
                 action_key!("test.endless"),
                 "EndlessStateful",
                 "never breaks",

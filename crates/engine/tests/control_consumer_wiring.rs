@@ -1,4 +1,4 @@
-//! A1 wiring tests for `ControlConsumer` (control-queue wiring, ).
+//! Wiring tests for `ControlConsumer`.
 //!
 //! These tests assert the skeleton exists and functions as a durable-outbox
 //! consumer:
@@ -8,9 +8,8 @@
 //! 2. The consumer observes a queued command via the engine-owned `ControlDispatch` trait.
 //! 3. Graceful shutdown via `CancellationToken` completes the spawned task.
 //!
-//! A2 and A3 replace the test `ControlDispatch` mock with real
-//! engine-side dispatch and add assertions about engine state transitions;
-//! A1 only asserts that the wiring plumbing is reachable end-to-end.
+//! Engine behavior is covered separately with the production dispatch;
+//! these tests isolate queue polling, claim ownership, and shutdown.
 
 use std::{
     sync::{Arc, Mutex},
@@ -25,7 +24,7 @@ use nebula_metrics::{
     naming::{NEBULA_ENGINE_CONTROL_RECLAIM_TOTAL, control_reclaim_outcome},
 };
 use nebula_storage::{InMemoryControlQueue, InMemoryExecutionStore};
-use nebula_storage_port::store::ControlQueue;
+use nebula_storage_port::store::{ControlClaim, ControlClaimToken, ControlQueue, ReclaimOutcome};
 use nebula_storage_port::{
     Scope,
     dto::{ControlCommand, ControlMsg, ResumeTarget},
@@ -44,12 +43,110 @@ fn proc16(label: &[u8]) -> [u8; 16] {
     id
 }
 
+fn worker_flavor() -> nebula_core::WorkerFlavorRevisionId {
+    nebula_core::WorkerFlavorRevisionId::from_bytes([0x31; 32])
+}
+
 /// Build a port `InMemoryControlQueue` over a fresh in-memory execution
 /// store. Tests drive only the queue; the store backs its shared core.
-fn port_queue() -> (Arc<InMemoryExecutionStore>, Arc<InMemoryControlQueue>) {
+fn port_queue() -> (Arc<InMemoryExecutionStore>, Arc<TestControlQueue>) {
     let store = Arc::new(InMemoryExecutionStore::new());
-    let queue = Arc::new(InMemoryControlQueue::new(&store));
+    let queue = Arc::new(TestControlQueue {
+        inner: InMemoryControlQueue::new(&store),
+        claimed_flavors: Mutex::new(Vec::new()),
+    });
     (store, queue)
+}
+
+#[derive(Debug)]
+struct TestControlQueue {
+    inner: InMemoryControlQueue,
+    claimed_flavors: Mutex<Vec<nebula_core::WorkerFlavorRevisionId>>,
+}
+
+impl TestControlQueue {
+    fn snapshot_detailed(&self) -> Vec<(ControlMsg, String, Option<String>)> {
+        self.inner.snapshot_detailed()
+    }
+
+    fn seed_processing(
+        &self,
+        message: &ControlMsg,
+        processor: [u8; 16],
+        stale_for: Duration,
+        reclaim_count: u32,
+    ) {
+        self.inner
+            .seed_processing(message, processor, stale_for, reclaim_count);
+    }
+
+    fn claimed_flavors(&self) -> Vec<nebula_core::WorkerFlavorRevisionId> {
+        self.claimed_flavors.lock().expect("poisoned").clone()
+    }
+}
+
+#[async_trait]
+impl ControlQueue for TestControlQueue {
+    async fn enqueue(&self, message: &ControlMsg) -> Result<(), nebula_storage_port::StorageError> {
+        self.inner.enqueue(message).await
+    }
+
+    async fn claim_pending(
+        &self,
+        processor: &[u8; 16],
+        batch_size: u32,
+    ) -> Result<Vec<ControlClaim>, nebula_storage_port::StorageError> {
+        self.inner.claim_pending(processor, batch_size).await
+    }
+
+    async fn claim_pending_for_flavor(
+        &self,
+        processor: &[u8; 16],
+        batch_size: u32,
+        worker_flavor: nebula_core::WorkerFlavorRevisionId,
+    ) -> Result<Vec<ControlClaim>, nebula_storage_port::StorageError> {
+        self.claimed_flavors
+            .lock()
+            .expect("poisoned")
+            .push(worker_flavor);
+        self.inner.claim_pending(processor, batch_size).await
+    }
+
+    async fn mark_completed(
+        &self,
+        claim: &ControlClaimToken,
+    ) -> Result<(), nebula_storage_port::StorageError> {
+        self.inner.mark_completed(claim).await
+    }
+
+    async fn mark_failed(
+        &self,
+        claim: &ControlClaimToken,
+        error: &str,
+    ) -> Result<(), nebula_storage_port::StorageError> {
+        self.inner.mark_failed(claim, error).await
+    }
+
+    async fn release_claim(
+        &self,
+        claim: &ControlClaimToken,
+    ) -> Result<(), nebula_storage_port::StorageError> {
+        self.inner.release_claim(claim).await
+    }
+
+    async fn reclaim_stuck(
+        &self,
+        reclaim_after: Duration,
+        max_reclaim_count: u32,
+    ) -> Result<ReclaimOutcome, nebula_storage_port::StorageError> {
+        self.inner
+            .reclaim_stuck(reclaim_after, max_reclaim_count)
+            .await
+    }
+
+    async fn cleanup(&self, retention: Duration) -> Result<u64, nebula_storage_port::StorageError> {
+        self.inner.cleanup(retention).await
+    }
 }
 
 /// Build a control message with a deterministic 16-byte row id (every
@@ -68,7 +165,7 @@ fn port_msg(execution_id: &ExecutionId, command: ControlCommand, row_id: u8) -> 
 }
 
 /// Build a `Resume` control message carrying an explicit `resume_target`, so a
-/// test can assert the consumer threads it through to `dispatch_resume` (W-S3a).
+/// test can assert the consumer threads it through to `dispatch_resume`.
 fn port_resume_msg(
     execution_id: &ExecutionId,
     row_id: u8,
@@ -90,10 +187,12 @@ fn port_resume_msg(
 /// wiring tests green, so the captured scope is the decisive witness.
 #[derive(Default)]
 struct RecordingDispatch {
+    claimed_outcome: Mutex<Option<nebula_engine::ClaimedControlDispatchOutcome>>,
+    claims: Mutex<Vec<ControlClaimToken>>,
     observations: Mutex<Vec<(ControlCommand, ExecutionId, Scope)>>,
     /// Resume targets observed on `dispatch_resume`, in arrival order. The
     /// decisive witness that `ControlConsumer` threads `ControlMsg.resume_target`
-    /// through to the dispatch (W-S3a) — a regression that drops or hardcodes the
+    /// through to the dispatch — a regression that drops or hardcodes the
     /// target would still leave the command/scope wiring tests green.
     resume_targets: Mutex<Vec<Option<ResumeTarget>>>,
     notify: Notify,
@@ -123,6 +222,52 @@ impl RecordingDispatch {
 
 #[async_trait]
 impl ControlDispatch for RecordingDispatch {
+    async fn dispatch_claimed_resume(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+        target: Option<ResumeTarget>,
+        claim: ControlClaimToken,
+    ) -> nebula_engine::ClaimedControlDispatchOutcome {
+        self.claims.lock().unwrap().push(claim);
+        let outcome = self.claimed_outcome.lock().unwrap().take();
+        let result = self.dispatch_resume(scope, execution_id, target).await;
+        outcome.unwrap_or(nebula_engine::ClaimedControlDispatchOutcome::NotAccepted(
+            result,
+        ))
+    }
+
+    async fn dispatch_claimed_restart(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+        claim: ControlClaimToken,
+    ) -> nebula_engine::ClaimedControlDispatchOutcome {
+        self.claims.lock().unwrap().push(claim);
+        let outcome = self.claimed_outcome.lock().unwrap().take();
+        let result = self.dispatch_restart(scope, execution_id).await;
+        outcome.unwrap_or(nebula_engine::ClaimedControlDispatchOutcome::NotAccepted(
+            result,
+        ))
+    }
+
+    async fn dispatch_claimed_start(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+        _claim: ControlClaimToken,
+    ) -> nebula_engine::ClaimedControlDispatchOutcome {
+        let outcome = self.claimed_outcome.lock().unwrap().take();
+        if let Some(outcome) = outcome {
+            self.record(ControlCommand::Start, execution_id, scope.clone());
+            outcome
+        } else {
+            nebula_engine::ClaimedControlDispatchOutcome::NotAccepted(
+                self.dispatch_start(scope, execution_id).await,
+            )
+        }
+    }
+
     async fn dispatch_start(
         &self,
         scope: &Scope,
@@ -174,6 +319,120 @@ impl ControlDispatch for RecordingDispatch {
     }
 }
 
+/// Isolate consumer acknowledgement discipline from owner implementation.
+/// The mock deliberately leaves the row Processing; only an unauthorized
+/// consumer ack/fail/release could change it before the explicit reclaim below.
+#[tokio::test]
+async fn transferred_or_uncertain_start_never_mutates_delivery_again() {
+    use nebula_engine::ClaimedControlDispatchOutcome as Outcome;
+    for outcome in [
+        Outcome::Accepted(Ok(())),
+        Outcome::Accepted(Err(ControlDispatchError::Internal(
+            "turn failed".to_owned(),
+        ))),
+        Outcome::AcceptanceUnknown(ControlDispatchError::Deferred("commit unknown".to_owned())),
+        Outcome::ClaimSuperseded,
+    ] {
+        let (_store, queue) = port_queue();
+        let recorder = RecordingDispatch::new();
+        *recorder.claimed_outcome.lock().unwrap() = Some(outcome);
+        let execution = ExecutionId::new();
+        queue
+            .enqueue(&port_msg(&execution, ControlCommand::Start, 77))
+            .await
+            .unwrap();
+        let shutdown = CancellationToken::new();
+        let handle = ControlConsumer::for_flavor(
+            queue.clone(),
+            recorder.clone(),
+            proc16(b"handoff"),
+            worker_flavor(),
+        )
+        .with_poll_interval(Duration::from_millis(10))
+        .with_reclaim_interval(Duration::from_hours(1))
+        .spawn(shutdown.clone());
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while recorder.snapshot().is_empty() {
+                recorder.notify.notified().await;
+            }
+        })
+        .await
+        .unwrap();
+        shutdown.cancel();
+        handle.await.unwrap();
+        let reclaimed = queue.reclaim_stuck(Duration::ZERO, 3).await.unwrap();
+        assert_eq!(
+            reclaimed.reclaimed, 1,
+            "consumer must leave the delivery untouched after transfer or uncertain handoff"
+        );
+        let pending = queue.claim_pending(b"fresh-processorr", 1).await.unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].msg.id, [77; 16]);
+    }
+}
+
+#[tokio::test]
+async fn resume_and_restart_handoffs_preserve_claim_and_end_consumer_writes() {
+    use nebula_engine::ClaimedControlDispatchOutcome as Outcome;
+    for command in [ControlCommand::Resume, ControlCommand::Restart] {
+        for outcome in [
+            Outcome::Accepted(Ok(())),
+            Outcome::Accepted(Err(ControlDispatchError::Internal(
+                "turn failed".to_owned(),
+            ))),
+            Outcome::AcceptanceUnknown(ControlDispatchError::Deferred("commit unknown".to_owned())),
+            Outcome::ClaimSuperseded,
+        ] {
+            let (_store, queue) = port_queue();
+            let recorder = RecordingDispatch::new();
+            *recorder.claimed_outcome.lock().unwrap() = Some(outcome);
+            let execution = ExecutionId::new();
+            let message = port_msg(&execution, command, 78);
+            queue.enqueue(&message).await.unwrap();
+            let shutdown = CancellationToken::new();
+            let handle = ControlConsumer::for_flavor(
+                queue.clone(),
+                recorder.clone(),
+                proc16(b"handoff"),
+                worker_flavor(),
+            )
+            .with_poll_interval(Duration::from_millis(10))
+            .with_reclaim_interval(Duration::from_hours(1))
+            .spawn(shutdown.clone());
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while recorder.snapshot().is_empty() {
+                    recorder.notify.notified().await;
+                }
+            })
+            .await
+            .unwrap();
+            shutdown.cancel();
+            handle.await.unwrap();
+            assert_eq!(
+                recorder.snapshot(),
+                vec![(command, execution, message.scope)]
+            );
+            let claims = recorder.claims.lock().unwrap().clone();
+            assert_eq!(claims.len(), 1);
+            assert_eq!(claims[0].row_id(), &[78; 16]);
+            // The test dispatch deliberately leaves Processing intact. Any
+            // consumer ack/fail/release after handoff would change this witness.
+            assert_eq!(
+                queue
+                    .reclaim_stuck(Duration::ZERO, 3)
+                    .await
+                    .unwrap()
+                    .reclaimed,
+                1
+            );
+            let pending = queue.claim_pending(b"fresh-processorr", 1).await.unwrap();
+            assert_eq!(pending.len(), 1);
+            assert_eq!(pending[0].msg.id, [78; 16]);
+            assert!(pending[0].token.generation() > claims[0].generation());
+        }
+    }
+}
+
 /// Dispatch that pretends to crash mid-handling: the first invocation per
 /// `execution_id` blocks forever (simulating a runner that got stuck), the
 /// second and subsequent invocations complete Ok. Pairs with a consumer
@@ -217,6 +476,40 @@ impl FlakyDispatch {
 
 #[async_trait]
 impl ControlDispatch for FlakyDispatch {
+    async fn dispatch_claimed_start(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+        _claim: ControlClaimToken,
+    ) -> nebula_engine::ClaimedControlDispatchOutcome {
+        nebula_engine::ClaimedControlDispatchOutcome::NotAccepted(
+            self.dispatch_start(scope, execution_id).await,
+        )
+    }
+
+    async fn dispatch_claimed_resume(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+        target: Option<ResumeTarget>,
+        _claim: ControlClaimToken,
+    ) -> nebula_engine::ClaimedControlDispatchOutcome {
+        nebula_engine::ClaimedControlDispatchOutcome::NotAccepted(
+            self.dispatch_resume(scope, execution_id, target).await,
+        )
+    }
+
+    async fn dispatch_claimed_restart(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+        _claim: ControlClaimToken,
+    ) -> nebula_engine::ClaimedControlDispatchOutcome {
+        nebula_engine::ClaimedControlDispatchOutcome::NotAccepted(
+            self.dispatch_restart(scope, execution_id).await,
+        )
+    }
+
     async fn dispatch_start(
         &self,
         _scope: &Scope,
@@ -272,7 +565,7 @@ impl ControlDispatch for FlakyDispatch {
 /// Load-bearing compile check: the consumer is constructible using only
 /// engine-public + nebula-core + nebula-storage-port types.
 ///
-/// This proves decision 2 (no `nebula-api` / `nebula-storage`-row
+/// This proves no `nebula-api` or backend row
 /// types leak onto the consumer's public surface) — the `nebula-engine`
 /// crate does not depend on `nebula-api`, so any such leak would have
 /// failed to compile; this test makes the proof explicit.
@@ -281,9 +574,10 @@ async fn control_consumer_public_surface_uses_only_allowed_types() {
     let (_store, queue) = port_queue();
     let dispatch: Arc<dyn ControlDispatch> = RecordingDispatch::new();
 
-    let consumer = ControlConsumer::new(queue, dispatch, proc16(b"test-processor"))
-        .with_batch_size(8)
-        .with_poll_interval(Duration::from_millis(10));
+    let consumer =
+        ControlConsumer::for_flavor(queue, dispatch, proc16(b"test-processor"), worker_flavor())
+            .with_batch_size(8)
+            .with_poll_interval(Duration::from_millis(10));
 
     let shutdown = CancellationToken::new();
     let handle = consumer.spawn(shutdown.clone());
@@ -295,9 +589,15 @@ async fn control_consumer_public_surface_uses_only_allowed_types() {
 async fn consumer_shuts_down_gracefully_on_cancel() {
     let (_store, queue) = port_queue();
     let dispatch: Arc<dyn ControlDispatch> = RecordingDispatch::new();
+    let consumer_queue: Arc<dyn ControlQueue> = queue.clone();
 
-    let consumer = ControlConsumer::new(queue, dispatch, proc16(b"test-processor"))
-        .with_poll_interval(Duration::from_millis(10));
+    let consumer = ControlConsumer::for_flavor(
+        consumer_queue,
+        dispatch,
+        proc16(b"test-processor"),
+        worker_flavor(),
+    )
+    .with_poll_interval(Duration::from_millis(10));
     let shutdown = CancellationToken::new();
     let handle = consumer.spawn(shutdown.clone());
 
@@ -309,6 +609,17 @@ async fn consumer_shuts_down_gracefully_on_cancel() {
         .await
         .expect("graceful shutdown within 1s")
         .expect("spawned task panic-free");
+    let claimed_flavors = queue.claimed_flavors();
+    assert!(
+        !claimed_flavors.is_empty(),
+        "the consumer must poll through the exact-flavor queue method"
+    );
+    assert!(
+        claimed_flavors
+            .into_iter()
+            .all(|flavor| flavor == worker_flavor()),
+        "every poll must preserve the configured worker flavor"
+    );
 }
 
 #[tokio::test]
@@ -344,9 +655,14 @@ async fn consumer_observes_each_command_variant_via_dispatch_trait() {
         .await
         .unwrap();
 
-    let consumer = ControlConsumer::new(queue.clone(), dispatch, proc16(b"test-processor"))
-        .with_batch_size(16)
-        .with_poll_interval(Duration::from_millis(10));
+    let consumer = ControlConsumer::for_flavor(
+        queue.clone(),
+        dispatch,
+        proc16(b"test-processor"),
+        worker_flavor(),
+    )
+    .with_batch_size(16)
+    .with_poll_interval(Duration::from_millis(10));
     let shutdown = CancellationToken::new();
     let handle = consumer.spawn(shutdown.clone());
 
@@ -399,7 +715,7 @@ async fn consumer_observes_each_command_variant_via_dispatch_trait() {
 
     // Every row the consumer observed was acked via `mark_completed`:
     // a second `claim_pending` call from a fresh processor returns nothing
-    // pending. This is the A1 equivalent of "row is drained."
+    // pending, proving the row was drained.
     let leftover = queue.claim_pending(b"fresh-processorr", 16).await.unwrap();
     assert!(
         leftover.is_empty(),
@@ -407,7 +723,7 @@ async fn consumer_observes_each_command_variant_via_dispatch_trait() {
     );
 }
 
-/// **W-S3a — the consumer threads `ControlMsg.resume_target` into
+/// The consumer threads `ControlMsg.resume_target` into
 /// `dispatch_resume`.**
 ///
 /// Enqueue two `Resume` rows: one carrying `resume_target = Some(Webhook { "cb"
@@ -440,9 +756,14 @@ async fn consumer_threads_resume_target_into_dispatch() {
         .await
         .unwrap();
 
-    let consumer = ControlConsumer::new(queue.clone(), dispatch, proc16(b"test-processor"))
-        .with_batch_size(16)
-        .with_poll_interval(Duration::from_millis(10));
+    let consumer = ControlConsumer::for_flavor(
+        queue.clone(),
+        dispatch,
+        proc16(b"test-processor"),
+        worker_flavor(),
+    )
+    .with_batch_size(16)
+    .with_poll_interval(Duration::from_millis(10));
     let shutdown = CancellationToken::new();
     let handle = consumer.spawn(shutdown.clone());
 
@@ -482,8 +803,13 @@ async fn consumer_marks_row_failed_on_malformed_execution_id() {
     poison.execution_id = "not-a-ulid".to_string();
     queue.enqueue(&poison).await.unwrap();
 
-    let consumer = ControlConsumer::new(queue.clone(), dispatch, proc16(b"test-processor"))
-        .with_poll_interval(Duration::from_millis(10));
+    let consumer = ControlConsumer::for_flavor(
+        queue.clone(),
+        dispatch,
+        proc16(b"test-processor"),
+        worker_flavor(),
+    )
+    .with_poll_interval(Duration::from_millis(10));
     let shutdown = CancellationToken::new();
     let handle = consumer.spawn(shutdown.clone());
 
@@ -524,7 +850,7 @@ async fn consumer_marks_row_failed_on_malformed_execution_id() {
 /// through a reclaim sweep, then spin up a fresh consumer and verify it
 /// picks up the redelivered row and drives it to `Completed`.
 ///
-/// This is the B1 acceptance test — liveness guarantee.
+/// This is the reclaim liveness guarantee.
 #[tokio::test]
 async fn reclaim_sweep_recovers_orphaned_processing_row_end_to_end() {
     let (_store, queue) = port_queue();
@@ -537,20 +863,25 @@ async fn reclaim_sweep_recovers_orphaned_processing_row_end_to_end() {
         .await
         .unwrap();
 
-    // Consumer #1 — claims the row, stalls in dispatch, never acks. Use an
+    // The first consumer claims the row, stalls in dispatch, and never acknowledges it. Use an
     // aggressive reclaim_after (50ms) + reclaim_interval (30ms) so the test
     // runs in well under a second. Chrono is wall-clock; tokio time-pause
     // would not advance it — honest short sleeps are the answer here.
-    let consumer1 = ControlConsumer::new(queue.clone(), dispatch1, proc16(b"runner-one"))
-        .with_batch_size(4)
-        .with_poll_interval(Duration::from_millis(5))
-        .with_reclaim_after(Duration::from_millis(50))
-        .with_reclaim_interval(Duration::from_millis(30))
-        .with_max_reclaim_count(3);
+    let consumer1 = ControlConsumer::for_flavor(
+        queue.clone(),
+        dispatch1,
+        proc16(b"runner-one"),
+        worker_flavor(),
+    )
+    .with_batch_size(4)
+    .with_poll_interval(Duration::from_millis(5))
+    .with_reclaim_after(Duration::from_millis(50))
+    .with_reclaim_interval(Duration::from_millis(30))
+    .with_max_reclaim_count(3);
     let shutdown1 = CancellationToken::new();
     let handle1 = consumer1.spawn(shutdown1.clone());
 
-    // Wait for the row to be claimed by consumer #1 (Pending → Processing).
+    // Wait for the row to be claimed by the first consumer (Pending → Processing).
     tokio::time::timeout(Duration::from_secs(1), async {
         loop {
             if queue
@@ -588,16 +919,21 @@ async fn reclaim_sweep_recovers_orphaned_processing_row_end_to_end() {
     // Sleep past the reclaim_after window so the next sweep finds it stale.
     tokio::time::sleep(Duration::from_millis(80)).await;
 
-    // Consumer #2 — clean runner. Its reclaim tick will sweep the stuck row
+    // A fresh consumer reclaims the stuck row
     // back to Pending on startup; then its claim loop picks it up and the
     // non-flaky second-dispatch path returns Ok, which acks the row Completed.
     let dispatch_fresh: Arc<dyn ControlDispatch> = dispatch_flaky.clone();
-    let consumer2 = ControlConsumer::new(queue.clone(), dispatch_fresh, proc16(b"runner-two"))
-        .with_batch_size(4)
-        .with_poll_interval(Duration::from_millis(5))
-        .with_reclaim_after(Duration::from_millis(50))
-        .with_reclaim_interval(Duration::from_millis(30))
-        .with_max_reclaim_count(3);
+    let consumer2 = ControlConsumer::for_flavor(
+        queue.clone(),
+        dispatch_fresh,
+        proc16(b"runner-two"),
+        worker_flavor(),
+    )
+    .with_batch_size(4)
+    .with_poll_interval(Duration::from_millis(5))
+    .with_reclaim_after(Duration::from_millis(50))
+    .with_reclaim_interval(Duration::from_millis(30))
+    .with_max_reclaim_count(3);
     let shutdown2 = CancellationToken::new();
     let handle2 = consumer2.spawn(shutdown2.clone());
 
@@ -675,13 +1011,18 @@ async fn reclaim_sweep_emits_counter_metric_per_outcome() {
 
     let registry = MetricsRegistry::new();
     let dispatch: Arc<dyn ControlDispatch> = RecordingDispatch::new();
-    let consumer = ControlConsumer::new(queue.clone(), dispatch, proc16(b"runner-test"))
-        .with_batch_size(8)
-        .with_poll_interval(Duration::from_millis(20))
-        .with_reclaim_after(Duration::from_millis(50))
-        .with_reclaim_interval(Duration::from_millis(30))
-        .with_max_reclaim_count(3)
-        .with_metrics(registry.clone());
+    let consumer = ControlConsumer::for_flavor(
+        queue.clone(),
+        dispatch,
+        proc16(b"runner-test"),
+        worker_flavor(),
+    )
+    .with_batch_size(8)
+    .with_poll_interval(Duration::from_millis(20))
+    .with_reclaim_after(Duration::from_millis(50))
+    .with_reclaim_interval(Duration::from_millis(30))
+    .with_max_reclaim_count(3)
+    .with_metrics(registry.clone());
 
     let shutdown = CancellationToken::new();
     let handle = consumer.spawn(shutdown.clone());

@@ -33,7 +33,7 @@ handles OS signals.
 
 The profile pre-binds loopback port zero, composes API and the core-flavor
 worker from views over the exact same in-memory core, SQLite pool, or
-PostgreSQL pool, and supervises the HTTP and worker pull-loop siblings under
+PostgreSQL pool, and supervises the HTTP and durable worker siblings under
 one cancellation token. A third supervised, authority-free observer maps only
 typed execution/node lifecycle facts into a state-carrying registry. Scenario
 code can await `NodeStarted`, durable `NodeParked`, `NodeWaitCompleted`, and
@@ -44,12 +44,12 @@ The same `ManualClock` exposed through evidence controls is injected into the
 sealed workflow engine. Its opaque lifecycle still exposes only address,
 readiness, shutdown, and join; observation waits remain on the retained
 harness controls. Current product behavior is deliberately preserved: REST
-start writes the `ControlQueue`, while the worker pulls `JobDispatchQueue`. The
+start writes the `ControlQueue`, while the worker claims exact-flavor commands from it. The
 profile does not bridge that gap or invent a failing sentinel. Genuine
-first-party C0 scenarios therefore reach a bounded lifecycle observation and
-fail with `c0-drive-not-connected`; STARTKEY independently exposes duplicate
+first-party durable-wait scenarios therefore reach a bounded lifecycle observation and
+fail with `durable-wait-control-path-disconnected`; keyed acceptance independently exposes duplicate
 same-fingerprint starts, while cancellation reachability exposes immediate API
-terminalization. The C7 same-processor-ID ABA fixture is deliberately labeled
+terminalization. The same-processor claim-generation fixture is deliberately labeled
 component/storage evidence rather than product-root proof.
 
 File-SQLite configuration retains one opaque path across repeated

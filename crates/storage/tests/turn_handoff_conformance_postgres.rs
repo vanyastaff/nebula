@@ -4,7 +4,7 @@
 //! than a silent substitution: with `NEBULA_REQUIRE_POSTGRES=1` and no
 //! `DATABASE_URL`, every case fails.
 //!
-//! The property NS05 turns on is that an action's duration never extends the
+//! The claim-handoff property is that an action's duration never extends the
 //! dispatch claim. These cases prove the claim is *finished* at handoff, so
 //! there is nothing left to extend.
 
@@ -14,7 +14,10 @@ use std::time::Duration;
 
 use nebula_core::PluginKey;
 
-use nebula_storage::postgres::{PgExecutionStore, PgJobDispatchQueue, PgTurnHandoff, init_schema};
+use nebula_storage::postgres::{
+    PgExecutionStore, PgJobDispatchQueue, PgPlanFlavorCatalog, PgStartAcceptanceStore,
+    PgTurnHandoff, init_schema,
+};
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 use tokio::sync::OnceCell;
@@ -33,14 +36,44 @@ const TTL: Duration = Duration::from_secs(30);
 const PROCESSOR_A: [u8; 16] = [0xa1; 16];
 const PROCESSOR_B: [u8; 16] = [0xb2; 16];
 
+#[path = "support/job_turn_handoff_fixture.rs"]
+mod handoff_fixture;
+
 /// Execution ids unique per process, so cases share one database without
 /// meeting an earlier run's rows.
-fn unique(label: &str) -> String {
-    format!("exe-{label}-{}", uuid::Uuid::new_v4().simple())
+fn unique(_label: &str) -> String {
+    nebula_core::ExecutionId::new().to_string()
+}
+
+#[tokio::test]
+async fn a_queued_flavor_must_match_the_execution_live_reference() {
+    let Some(fixture) = Fixture::new().await else {
+        eprintln!("PostgreSQL unreachable in this environment");
+        return;
+    };
+    let scope = scope();
+    let execution = unique("flavor-mismatch");
+
+    handoff_fixture::assert_mismatched_flavor_refuses_the_turn(
+        handoff_fixture::TurnHandoffPorts {
+            store: &fixture.store,
+            queue: &fixture.queue,
+            handoff: &fixture.handoff,
+            recovery: &fixture.handoff,
+            catalog: &fixture.catalog,
+            starts: &fixture.starts,
+        },
+        &execution,
+        &scope,
+    )
+    .await;
 }
 
 fn scope() -> Scope {
-    Scope::new("ws-handoff", "org-handoff")
+    Scope::new(
+        nebula_core::WorkspaceId::from_bytes([0x11; 16]).to_string(),
+        nebula_core::OrgId::from_bytes([0x22; 16]).to_string(),
+    )
 }
 
 /// Connect to `DATABASE_URL` and apply the ordered migration catalog, or report
@@ -78,6 +111,8 @@ struct Fixture {
     store: PgExecutionStore,
     queue: PgJobDispatchQueue,
     handoff: PgTurnHandoff,
+    catalog: PgPlanFlavorCatalog,
+    starts: PgStartAcceptanceStore,
     pool: PgPool,
 }
 
@@ -87,10 +122,15 @@ impl Fixture {
         let store = PgExecutionStore::new(pool.clone());
         let queue = PgJobDispatchQueue::new(pool.clone());
         let handoff = PgTurnHandoff::new(pool.clone());
+        let catalog =
+            PgPlanFlavorCatalog::new(pool.clone(), &nebula_metrics::MetricsRegistry::new());
+        let starts = PgStartAcceptanceStore::new(pool.clone());
         Some(Self {
             store,
             queue,
             handoff,
+            catalog,
+            starts,
             pool,
         })
     }
@@ -109,10 +149,8 @@ impl Fixture {
     }
 
     async fn seed(&self, execution_id: &str) -> nebula_storage_port::store::JobClaimToken {
-        self.store
-            .create(&scope(), execution_id, "wf", serde_json::json!({}))
-            .await
-            .expect("the execution row is created");
+        handoff_fixture::materialize_execution(&self.catalog, &self.starts, execution_id, &scope())
+            .await;
         let plugin = Self::plugin_for(execution_id);
         let msg = JobDispatchMsg::new(
             *uuid::Uuid::new_v4().as_bytes(),
@@ -121,17 +159,21 @@ impl Fixture {
             scope(),
             serde_json::json!({}),
             None::<String>,
-            "flavor-sha",
             plugin.clone(),
             vec![plugin],
             None::<String>,
             0,
-            None,
+            handoff_fixture::LIVE_FLAVOR,
         );
         self.queue.enqueue(&msg).await.expect("the job enqueues");
         let claimed = self
             .queue
-            .claim_pending(&PROCESSOR_A, 1, &[Self::plugin_for(execution_id)])
+            .claim_pending(
+                &PROCESSOR_A,
+                1,
+                &[Self::plugin_for(execution_id)],
+                handoff_fixture::LIVE_FLAVOR,
+            )
             .await
             .expect("the job is claimable");
         claimed
@@ -148,13 +190,8 @@ impl Fixture {
         holder: &'a str,
         scope_ref: &'a Scope,
     ) -> TurnHandoff<'a> {
-        TurnHandoff {
-            scope: scope_ref,
-            execution_id,
-            claim,
-            holder,
-            lease_ttl: TTL,
-        }
+        TurnHandoff::for_claim(scope_ref, execution_id, claim, handoff_fixture::LIVE_FLAVOR)
+            .lease_to(holder, TTL)
     }
 }
 
@@ -224,7 +261,12 @@ async fn a_superseded_claim_cannot_accept_the_turn() {
         .expect("the sweep runs");
     let fresh = fixture
         .queue
-        .claim_pending(&PROCESSOR_B, 1, &[Fixture::plugin_for(execution)])
+        .claim_pending(
+            &PROCESSOR_B,
+            1,
+            &[Fixture::plugin_for(execution)],
+            nebula_core::WorkerFlavorRevisionId::from_bytes([0x11; 32]),
+        )
         .await
         .expect("the reclaimed job is claimable again");
     assert_eq!(fresh.len(), 1, "the sweep returned the row to the queue");

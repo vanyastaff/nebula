@@ -134,6 +134,7 @@ impl nebula_action::action::Action for Dedupe {
             "Dedupe",
             "Remove duplicate array elements by one or more key fields (first occurrence wins)",
         )
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
 
     fn dependencies() -> &'static nebula_action::Dependencies {

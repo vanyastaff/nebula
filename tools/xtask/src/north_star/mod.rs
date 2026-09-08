@@ -10,14 +10,21 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
+mod external_registry;
+mod runtime_authority;
 mod schema;
+use external_registry::{ActivationCheckpoint, ExternalGateId};
+pub(crate) use runtime_authority::{
+    BundleRequest as RuntimeAuthorityBundleRequest, RunnerIdentity,
+    VerificationError as RuntimeAuthorityError, build_bundle as build_runtime_authority_bundle,
+    verify as verify_runtime_authority,
+};
 
 const REGISTRY_PATH: &str = "tools/xtask/gates/north-star-v1.toml";
 const SCHEMA_PATH: &str = "tools/xtask/schemas/gate-evidence-v1.schema.json";
 const CANONICAL_EVIDENCE: &str = include_str!("../../schemas/gate-evidence-v1.example.json");
 const REGISTRY_VERSION: u16 = 1;
 const SCHEMA_VERSION: u16 = 1;
-const GATE_COUNT: usize = 22;
 
 const ACCOUNTABLE_OWNER_ROLES: [&str; 12] = [
     "api-design-lead",
@@ -126,7 +133,7 @@ struct ValidationContext<'a> {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Gate {
-    id: String,
+    id: ExternalGateId,
     statement: String,
     owner: String,
     state: GateState,
@@ -148,50 +155,18 @@ enum GateState {
     Passed,
 }
 
-impl GateState {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Red => "red",
-            Self::Partial => "partial",
-            Self::Missing => "missing",
-            Self::Passed => "passed",
+impl From<GateState> for &'static str {
+    fn from(state: GateState) -> Self {
+        match state {
+            GateState::Red => "red",
+            GateState::Partial => "partial",
+            GateState::Missing => "missing",
+            GateState::Passed => "passed",
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
-enum ActivationCheckpoint {
-    #[serde(rename = "CP0")]
-    Cp0,
-    #[serde(rename = "CP1")]
-    Cp1,
-    #[serde(rename = "CP2")]
-    Cp2,
-    #[serde(rename = "CP3")]
-    Cp3,
-    #[serde(rename = "CP4")]
-    Cp4,
-    #[serde(rename = "CP5")]
-    Cp5,
-    #[serde(rename = "CP6")]
-    Cp6,
-}
-
-impl ActivationCheckpoint {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Cp0 => "CP0",
-            Self::Cp1 => "CP1",
-            Self::Cp2 => "CP2",
-            Self::Cp3 => "CP3",
-            Self::Cp4 => "CP4",
-            Self::Cp5 => "CP5",
-            Self::Cp6 => "CP6",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Ord, PartialOrd, Eq, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 enum Backend {
     InMemory,
@@ -268,9 +243,10 @@ fn validate_registry(
             "focused working day must have a positive version and duration".to_owned(),
         );
     }
-    if registry.gates.len() != GATE_COUNT {
+    if registry.gates.len() != ExternalGateId::ALL.len() {
         return invalid_registry(format!(
-            "registry must contain {GATE_COUNT} gates, found {}",
+            "registry must contain {} gates, found {}",
+            ExternalGateId::ALL.len(),
             registry.gates.len()
         ));
     }
@@ -284,11 +260,11 @@ fn validate_registry(
         focused_working_day_minutes: focused_working_day.minutes,
         focused_working_day_is_referenced: false,
     };
-    for (index, gate) in registry.gates.iter().enumerate() {
-        if !gate_ids.insert(gate.id.as_str()) {
+    for (index, (gate, expected_id)) in registry.gates.iter().zip(ExternalGateId::ALL).enumerate() {
+        if !gate_ids.insert(gate.id) {
             return invalid_registry(format!("gate id `{}` is duplicated", gate.id));
         }
-        validate_gate(gate, index, &mut context)?;
+        validate_gate(gate, expected_id, index + 1, &mut context)?;
     }
     if !context.focused_working_day_is_referenced {
         return invalid_registry(format!(
@@ -301,15 +277,14 @@ fn validate_registry(
 
 fn validate_gate(
     gate: &Gate,
-    index: usize,
+    expected_id: ExternalGateId,
+    ordinal: usize,
     context: &mut ValidationContext<'_>,
 ) -> Result<(), ValidationError> {
-    let expected_id = format!("NS{:02}", index + 1);
     if gate.id != expected_id {
         return invalid_registry(format!(
             "gate {} must be `{expected_id}`, found `{}`",
-            index + 1,
-            gate.id
+            ordinal, gate.id
         ));
     }
     validate_text(&gate.statement, &format!("{} statement", gate.id), 512)?;
@@ -319,12 +294,14 @@ fn validate_gate(
             gate.id, gate.owner
         ));
     }
+    let activation_checkpoint: &'static str = gate.activation_checkpoint.into();
     validate_text(
-        gate.activation_checkpoint.as_str(),
+        activation_checkpoint,
         &format!("{} activation_checkpoint", gate.id),
         3,
     )?;
-    validate_text(gate.state.as_str(), &format!("{} state", gate.id), 7)?;
+    let state: &'static str = gate.state.into();
+    validate_text(state, &format!("{} state", gate.id), 7)?;
     if matches!(gate.state, GateState::Passed) {
         return invalid_registry(format!(
             "{} state `passed` is unsupported because schema v1 cannot represent trustworthy promotion",
@@ -406,8 +383,9 @@ fn validate_threshold(
     focused_working_day_minutes: u16,
     focused_working_day_is_referenced: &mut bool,
 ) -> Result<(), ValidationError> {
+    let gate_id: &'static str = gate.id.into();
     match &gate.threshold {
-        Threshold::Zero { metrics } => validate_nonempty_unique(metrics, &gate.id, "metrics"),
+        Threshold::Zero { metrics } => validate_nonempty_unique(metrics, gate_id, "metrics"),
         Threshold::Exact { metric, expected } => {
             validate_text(metric, &format!("{} threshold metric", gate.id), 128)?;
             match expected {
@@ -426,14 +404,14 @@ fn validate_threshold(
             required_cases,
         } => {
             validate_text(metric, &format!("{} threshold metric", gate.id), 128)?;
-            validate_nonempty_unique(required_cases, &gate.id, "required_cases")
+            validate_nonempty_unique(required_cases, gate_id, "required_cases")
         },
         Threshold::RequiredSet {
             metric,
             required_values,
         } => {
             validate_text(metric, &format!("{} threshold metric", gate.id), 128)?;
-            validate_nonempty_unique(required_values, &gate.id, "required_values")
+            validate_nonempty_unique(required_values, gate_id, "required_values")
         },
         Threshold::PercentileDuration {
             duration_definition,
@@ -497,7 +475,7 @@ fn validate_threshold(
             if !blocked {
                 return invalid_registry("governance-block must be active".to_owned());
             }
-            validate_nonempty_unique(required_approvals, &gate.id, "required_approvals")
+            validate_nonempty_unique(required_approvals, gate_id, "required_approvals")
         },
     }
 }

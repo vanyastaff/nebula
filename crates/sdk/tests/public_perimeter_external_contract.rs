@@ -23,6 +23,8 @@ const FIXTURE_FILES: &[&str] = &[
     "src/bin/admin_repository.rs",
     "src/bin/runtime_constructor.rs",
     "src/bin/unscoped_resolver.rs",
+    "src/bin/operation_protocol.rs",
+    "src/bin/turn_handoff.rs",
 ];
 
 const FORBIDDEN: &[(&str, &str)] = &[
@@ -32,6 +34,8 @@ const FORBIDDEN: &[(&str, &str)] = &[
     ("admin_repository", "OwnerScopedCredentialRepository"),
     ("runtime_constructor", "CredentialService"),
     ("unscoped_resolver", "CredentialResolver"),
+    ("operation_protocol", "PreparedEffectContract"),
+    ("turn_handoff", "ExecutionTurnHandoff"),
 ];
 
 #[test]
@@ -48,7 +52,7 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
         .collect::<Vec<_>>();
     assert_eq!(
         nebula_dependencies,
-        ["nebula-sdk = { version = \"=0.1.0\", default-features = false }"],
+        ["nebula-sdk = { version = \"=0.2.0\", default-features = false }"],
         "fixture must have exactly one Nebula dependency: nebula-sdk"
     );
 

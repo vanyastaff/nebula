@@ -50,7 +50,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["raw_value"] }
 chrono = { workspace = true }
 rand = { workspace = true }
-# W-S3c: token minting — SHA-256 hash + base64 bearer + zeroizing plaintext.
+# Resume-token minting uses SHA-256 hashes, base64 bearers, and zeroized plaintext.
 sha2 = { workspace = true }
 base64 = { workspace = true }
 secrecy = { workspace = true }
@@ -68,7 +68,9 @@ nebula-schema = { path = "../schema" }
 # unique in-memory SQLite database (`SqliteCredentialPersistence::connect_memory`),
 # so the resolver exercises the same CAS path as production. `sqlite` is enough;
 # the nebula test-util feature was removed from nebula-storage (ADR-0092 step 8).
-nebula-storage = { path = "../storage", features = ["sqlite"] }
+nebula-storage = { path = "../storage", features = ["sqlite", "postgres"] }
+sqlx = { workspace = true, features = ["sqlite", "postgres", "runtime-tokio"] }
+tempfile = { workspace = true }
 # Used by the W-S2b ack-gating tests' fault-injecting `ExecutionStore` wrapper.
 async-trait = { workspace = true }
 chrono = { workspace = true }

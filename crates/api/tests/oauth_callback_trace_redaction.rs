@@ -1,7 +1,10 @@
 //! Regression proof that one-time OAuth callback credentials never enter traces.
 
+mod common;
+
 use axum::{body::Body, http::Request};
-use nebula_api::{ApiConfig, AppState, app};
+use common::build_me_state;
+use nebula_api::{ApiConfig, app};
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
 use tower::ServiceExt;
@@ -24,8 +27,7 @@ async fn oauth_callback_trace_records_route_but_not_query_credentials() {
         .expect("dedicated integration-test process must install its subscriber");
 
     let config = ApiConfig::for_test();
-    let state =
-        AppState::in_memory(config.jwt_secret.clone()).with_public_url(config.public_url.clone());
+    let state = build_me_state().with_public_url(config.public_url.clone());
     let router = app::build_app(state, &config);
     let uri = format!("/api/v1/auth/oauth/github/callback?state={STATE_CANARY}&code={CODE_CANARY}");
     let _callback_response = router

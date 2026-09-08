@@ -267,7 +267,7 @@ fn port_resource_state(api_config: &ApiConfig) -> AppState {
     let journal = InMemoryJournalReader::new(&exec_store);
     let node_results = InMemoryNodeResultStore::new();
     let workflow_versions = InMemoryWorkflowVersionStore::new();
-    let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
+    let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions, &exec_store);
 
     // Raw (undecorated) port handles — the `AppState` accessors apply the
     // per-request tenant scope at call time.
@@ -278,6 +278,8 @@ fn port_resource_state(api_config: &ApiConfig) -> AppState {
         Arc::new(node_results),
         Arc::new(journal),
         Arc::new(control_queue),
+        Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
+        Arc::new(nebula_storage::inmem::InMemoryTurnHandoff::new(&exec_store)),
         Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
         api_config.jwt_secret.clone(),
     )

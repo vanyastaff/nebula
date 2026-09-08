@@ -14,10 +14,7 @@ use tokio_util::sync::CancellationToken;
 use nebula_api::{
     ApiConfig, ApiConfigError, AppState, OAuthIdentityRuntime, OAuthRuntimeBuildError,
     TelemetryGuard, TelemetryInitError,
-    config::{
-        AuthBackendKind, ExecutionBackendKind, IdempotencyBackend, OAuthProvidersConfig,
-        SmtpTlsMode,
-    },
+    config::{AuthBackendKind, IdempotencyBackend, OAuthProvidersConfig, SmtpTlsMode},
     domain::auth::backend::{AuthBackend, InMemoryAuthBackend},
     middleware::{IdempotencyStore, InMemoryIdempotencyStore},
     ports::email::{EchoSink, EmailPort},
@@ -74,6 +71,15 @@ pub(crate) enum ServerRunError {
 /// Transport-specific initialization failure.
 #[derive(Debug, Error)]
 pub(crate) enum TransportInitError {
+    /// The selected worker release cannot establish an exact dispatch flavor.
+    #[error("worker flavor activation failed")]
+    WorkerFlavor(#[from] crate::transport::WorkerFlavorActivationError),
+    /// Webhook dispatch requires the composed runtime start authority.
+    #[error("workflow start is not configured")]
+    MissingWorkflowStart,
+    /// Runtime start admission rejected its deployment budget.
+    #[error("workflow start admission configuration is invalid")]
+    WorkflowStart(#[from] nebula_engine::WorkflowStartBuildError),
     /// Webhook transport was not attached to `AppState`.
     #[error(
         "webhook transport is not configured; attach it with AppState::with_webhook_transport before running nebula-webhook"
@@ -206,61 +212,62 @@ pub(crate) enum TransportInitError {
     ExecutionDatabase(String),
 }
 
-/// The six execution/workflow/control-queue handles wired into `AppState::new`.
+/// The execution, workflow, and control handles wired into `AppState::new`.
 ///
 /// Produced by [`build_execution_stores`] and consumed immediately by
 /// [`default_state`]. The three-backend shape (Memory / SQLite / Postgres)
 /// is resolved once at startup; downstream code sees only the trait objects.
 ///
-/// `trigger_dedup_inbox` is `Some` on ALL backends:
-/// - Memory: shares the same `Arc<Mutex<SharedState>>` as the control queue and journal
-///   (ordering invariant — `new(&exec_store)` before `Arc::new(exec_store)`).
-/// - SQLite: `SqliteTriggerDedupInbox` wraps the WAL pool.
-/// - Postgres: `PgTriggerDedupInbox` wraps the PG pool.
-///
-/// `WebhookIngressTransport::prepare_state` only installs `with_durable_dispatch` when
-/// `trigger_dedup_inbox` is `Some` — returning `None` here silently disables durable
-/// webhook dispatch for that backend, which is the defect this `Some` prevents.
+/// Webhook dispatch uses the composed `WorkflowStartService` and its shared
+/// start-acceptance port on every backend.
 pub(crate) struct ExecutionStoreBundle {
-    workflow_store: Arc<dyn nebula_storage_port::store::WorkflowStore>,
-    workflow_version_store: Arc<dyn nebula_storage_port::store::WorkflowVersionStore>,
-    execution_store: Arc<dyn nebula_storage_port::store::ExecutionStore>,
-    node_result_store: Arc<dyn nebula_storage_port::store::NodeResultStore>,
-    journal_reader: Arc<dyn nebula_storage_port::store::ExecutionJournalReader>,
-    control_queue: Arc<dyn nebula_storage_port::store::ControlQueue>,
+    pub(super) revision_catalog: Arc<dyn nebula_storage_port::PlanFlavorCatalog>,
+    pub(super) revision_installer: Arc<dyn nebula_storage_port::PlanFlavorCatalogWriter>,
+    pub(super) workflow_store: Arc<dyn nebula_storage_port::store::WorkflowStore>,
+    pub(super) workflow_version_store: Arc<dyn nebula_storage_port::store::WorkflowVersionStore>,
+    pub(super) execution_store: Arc<dyn nebula_storage_port::store::ExecutionStore>,
+    pub(super) node_result_store: Arc<dyn nebula_storage_port::store::NodeResultStore>,
+    pub(super) journal_reader: Arc<dyn nebula_storage_port::store::ExecutionJournalReader>,
+    pub(super) control_queue: Arc<dyn nebula_storage_port::store::ControlQueue>,
     /// Owner of keyed start acceptance — the reservation, the execution
     /// aggregate row, and the Start command in one commit. MUST share the
     /// same backend pool / shared state as `execution_store` and
     /// `control_queue`: split across backends it would commit the
     /// reservation somewhere the execution row is not, which is precisely
     /// the atomicity this seam exists to provide.
-    start_acceptance: Arc<dyn nebula_storage_port::store::StartAcceptanceStore>,
-    trigger_dedup_inbox: Option<Arc<dyn nebula_storage_port::store::TriggerDedupInbox>>,
+    pub(super) start_acceptance: Arc<dyn nebula_storage_port::store::StartAcceptanceStore>,
+    /// Atomic accepted-turn authority backed by the same persistence boundary
+    /// as the execution row and control queue.
+    pub(super) turn_handoff: Arc<dyn nebula_storage_port::store::ExecutionTurnHandoff>,
+    /// Process-wide reservation retention authority for the selected backend.
+    pub(super) start_reservation_maintenance:
+        Arc<dyn nebula_storage_port::store::StartReservationMaintenance>,
     /// Resume-token store — must share the same backend pool as `execution_store`
     /// so that tokens minted by the engine (via `TransitionBatch`) are visible to
     /// the `POST /resume` handler's `consume` call.  Using an independent
     /// in-memory store on a durable backend silently breaks the round-trip:
     /// the engine writes to the pool; the producer reads from a different empty store.
-    resume_token_store: Arc<dyn nebula_storage_port::store::ResumeTokenStore>,
+    pub(super) resume_token_store: Arc<dyn nebula_storage_port::store::ResumeTokenStore>,
     /// Resume producer (W-S3d Option B1) — the atomic consume+enqueue seam the
     /// `POST /resume` handler uses. MUST share the SAME backend pool / shared
     /// state as `execution_store` and `control_queue` so the token DELETE and the
     /// `Resume` INSERT commit in one transaction. A mismatched pool would split
     /// the burn and the enqueue across two backends — exactly the durability gap
     /// this seam closes.
-    resume_producer: Arc<dyn nebula_storage_port::store::ResumeProducer>,
+    pub(super) resume_producer: Arc<dyn nebula_storage_port::store::ResumeProducer>,
     #[cfg(feature = "runtime-repair-red")]
-    worker_projection: WorkerStoreProjection,
+    pub(super) worker_projection: WorkerStoreProjection,
     #[cfg(feature = "runtime-repair-red")]
-    backend_lifecycle: ProfileBackendLifecycle,
+    pub(super) backend_lifecycle: ProfileBackendLifecycle,
 }
 
 #[cfg(feature = "runtime-repair-red")]
 #[derive(Clone)]
 pub(crate) struct WorkerStoreProjection {
+    pub(crate) bundles: Arc<dyn nebula_storage_port::store::StartAcceptanceStore>,
+    pub(crate) metrics: MetricsRegistry,
+    pub(crate) revision_catalog: Arc<dyn nebula_storage_port::PlanFlavorCatalog>,
     pub(crate) execution_stores: nebula_engine::ExecutionStores,
-    pub(crate) workflow_stores: nebula_engine::WorkflowStores,
-    pub(crate) job_dispatch_queue: Arc<dyn nebula_storage_port::store::JobDispatchQueue>,
     /// The **same** control queue `AppState` enqueues accepted commands onto.
     ///
     /// One backend selected once, handed to both sides: HTTP acceptance writes
@@ -270,8 +277,10 @@ pub(crate) struct WorkerStoreProjection {
     pub(crate) control_queue: Arc<dyn nebula_storage_port::store::ControlQueue>,
     /// Handoff over the **same** backend the queue and execution store use:
     /// it commits the lease write and the queue acknowledgement in one
-    /// transaction (#976), so it must share their boundary.
+    /// transaction, so it must share their boundary.
     pub(crate) turn_handoff: Arc<dyn nebula_storage_port::store::ExecutionTurnHandoff>,
+    /// Worker-only global discovery and acceptance of abandoned turns.
+    pub(crate) turn_recovery: Arc<dyn nebula_storage_port::store::TurnRecovery>,
 }
 
 #[cfg(feature = "runtime-repair-red")]
@@ -306,414 +315,7 @@ impl ExecutionStoreBundle {
     }
 }
 
-/// Build the execution-store bundle for the configured backend.
-///
-/// `Memory` resolves immediately (same in-memory adapters as `AppState::in_memory`).
-/// `Sqlite` opens a WAL-mode file pool, calls `init_schema`, and wraps the stores.
-/// `Postgres` follows the same pattern behind `#[cfg(feature = "postgres")]`; the
-/// `#[cfg(not(...))]` twin always returns
-/// [`TransportInitError::ExecutionBackendUnavailable`] — never silently falls back
-/// to Memory (fail-closed per the feedback_no_shims invariant).
-///
-/// NodeResult and Checkpoint have no durable implementation and stay in-memory on
-/// all backends — they store transient per-execution data (node output slots,
-/// stateful action checkpoints); durability is provided by the execution-store
-/// state machine's single JSON blob, not by these auxiliary stores. On a crash the
-/// reclaim sweep re-delivers the job and the engine re-executes from the last
-/// persisted state.
-pub(crate) async fn build_execution_stores(
-    api_config: &ApiConfig,
-    explicit_postgres_dsn: Option<&str>,
-) -> Result<ExecutionStoreBundle, TransportInitError> {
-    match api_config.execution.backend {
-        ExecutionBackendKind::Memory => {
-            warn_execution_memory_outside_dev();
-            build_memory_execution_stores()
-        },
-        ExecutionBackendKind::Sqlite => build_sqlite_execution_stores(api_config).await,
-        ExecutionBackendKind::Postgres => {
-            build_pg_execution_stores(api_config, explicit_postgres_dsn).await
-        },
-        // `ExecutionBackendKind` is `#[non_exhaustive]` so a wildcard arm is required
-        // by the compiler even though all three current variants are handled above.
-        // A new variant added to the enum must be explicitly handled here — the panic
-        // ensures the compiler forces an update to this match rather than silently
-        // falling back to a wrong backend.
-        _ => unreachable!(
-            "unrecognised ExecutionBackendKind variant — update build_execution_stores to handle it"
-        ),
-    }
-}
-
-/// In-memory bundle — same wiring as `AppState::in_memory` but returned as a
-/// bundle so `default_state` can call `AppState::new(...)` uniformly regardless
-/// of backend. `AppState::in_memory` itself is NOT called here to avoid
-/// duplicating the trigger-dedup-inbox wiring in the Memory path.
-fn build_memory_execution_stores() -> Result<ExecutionStoreBundle, TransportInitError> {
-    #[cfg(feature = "runtime-repair-red")]
-    use nebula_storage::inmem::{
-        InMemoryCheckpointStore, InMemoryIdempotencyGuard, InMemoryJobDispatchQueue,
-    };
-    use nebula_storage::inmem::{
-        InMemoryControlQueue, InMemoryExecutionStore, InMemoryJournalReader,
-        InMemoryNodeResultStore, InMemoryStartAcceptanceStore, InMemoryTriggerDedupInbox,
-        InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
-    };
-
-    let exec_store = InMemoryExecutionStore::new();
-    let control_queue = InMemoryControlQueue::new(&exec_store);
-    let journal = InMemoryJournalReader::new(&exec_store);
-    // TriggerDedupInbox must share the same `Arc<Mutex<SharedState>>` as the
-    // control queue and journal — `new(&exec_store)` must be called BEFORE
-    // `Arc::new(exec_store)` moves ownership.
-    let trigger_dedup_inbox = InMemoryTriggerDedupInbox::new(&exec_store);
-    // Same shared core as the control queue and journal, so the
-    // reservation, the execution row, and the Start command land in one
-    // critical section.
-    let start_acceptance = InMemoryStartAcceptanceStore::new(&exec_store);
-    // Resume-token store shares the same SharedState as the exec_store so that
-    // tokens committed via TransitionBatch are visible to the POST /resume handler.
-    let resume_token_store = exec_store.resume_token_store();
-    // Resume producer shares the SAME SharedState (token map + control queue) so
-    // the consume + enqueue happen under one lock.
-    let resume_producer = exec_store.resume_producer();
-    let node_results = InMemoryNodeResultStore::new();
-    let workflow_versions = InMemoryWorkflowVersionStore::new();
-    let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
-    // One control-queue handle, handed to both HTTP acceptance and the
-    // worker's control consumer.
-    let shared_control_queue: Arc<dyn nebula_storage_port::store::ControlQueue> =
-        Arc::new(control_queue);
-    #[cfg(feature = "runtime-repair-red")]
-    let worker_projection = {
-        let execution_store: Arc<dyn nebula_storage_port::store::ExecutionStore> =
-            Arc::new(exec_store.clone());
-        let journal_reader: Arc<dyn nebula_storage_port::store::ExecutionJournalReader> =
-            Arc::new(journal.clone());
-        let node_result_store: Arc<dyn nebula_storage_port::store::NodeResultStore> =
-            Arc::new(node_results.clone());
-        let resume_token_store: Arc<dyn nebula_storage_port::store::ResumeTokenStore> =
-            Arc::new(resume_token_store.clone());
-        WorkerStoreProjection {
-            execution_stores: nebula_engine::ExecutionStores {
-                execution: execution_store,
-                journal: journal_reader,
-                node_results: node_result_store,
-                checkpoints: Arc::new(InMemoryCheckpointStore::new()),
-                // The current in-memory idempotency guard is intentionally an
-                // independent local guard; it does not share execution-store
-                // durable state. The RED profile preserves that product gap
-                // as evidence rather than implying atomicity.
-                idempotency: Arc::new(InMemoryIdempotencyGuard::new()),
-                resume_tokens: resume_token_store,
-                operation_ledger: None,
-            },
-            workflow_stores: nebula_engine::WorkflowStores {
-                workflow: Arc::new(workflow_store.clone()),
-                versions: Arc::new(workflow_versions.clone()),
-            },
-            job_dispatch_queue: Arc::new(InMemoryJobDispatchQueue::new(&exec_store)),
-            control_queue: Arc::clone(&shared_control_queue),
-            turn_handoff: Arc::new(nebula_storage::inmem::InMemoryTurnHandoff::new(&exec_store)),
-        }
-    };
-
-    tracing::info!(
-        backend = "memory",
-        "execution-stores: in-memory adapters wired"
-    );
-    Ok(ExecutionStoreBundle {
-        workflow_store: Arc::new(workflow_store),
-        workflow_version_store: Arc::new(workflow_versions),
-        execution_store: Arc::new(exec_store),
-        node_result_store: Arc::new(node_results),
-        journal_reader: Arc::new(journal),
-        control_queue: Arc::clone(&shared_control_queue),
-        start_acceptance: Arc::new(start_acceptance),
-        trigger_dedup_inbox: Some(Arc::new(trigger_dedup_inbox)),
-        resume_token_store: Arc::new(resume_token_store),
-        resume_producer: Arc::new(resume_producer),
-        #[cfg(feature = "runtime-repair-red")]
-        worker_projection,
-        #[cfg(feature = "runtime-repair-red")]
-        backend_lifecycle: ProfileBackendLifecycle::Memory,
-    })
-}
-
-/// SQLite bundle — WAL + single connection + canonical ordered migrations.
-///
-/// Single `max_connections(1)` serialises all writes: `BEGIN IMMEDIATE` CAS +
-/// claim-fencing in the store are only correct when one writer owns the WAL lock.
-/// `busy_timeout(5s)` prevents instant `SQLITE_BUSY` if a CLI probe briefly holds
-/// the write lock. This file is NOT shareable across processes — for multi-process
-/// or multi-host deployments operators must use `API_EXECUTION_BACKEND=postgres`.
-async fn build_sqlite_execution_stores(
-    api_config: &ApiConfig,
-) -> Result<ExecutionStoreBundle, TransportInitError> {
-    use nebula_storage::InMemoryNodeResultStore;
-    use nebula_storage::sqlite::{
-        SqliteControlQueue, SqliteExecutionStore, SqliteJournalReader, SqliteResumeProducer,
-        SqliteResumeTokenStore, SqliteStartAcceptanceStore, SqliteTriggerDedupInbox,
-        SqliteWorkflowStore, SqliteWorkflowVersionStore, init_schema,
-    };
-    #[cfg(feature = "runtime-repair-red")]
-    use nebula_storage::sqlite::{
-        SqliteIdempotencyGuard, SqliteJobDispatchQueue, SqliteTurnHandoff,
-    };
-    use sqlx::sqlite::{
-        SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
-    };
-
-    let db_path = &api_config.execution.db_path;
-    let opts = SqliteConnectOptions::new()
-        .filename(db_path)
-        .create_if_missing(true)
-        .journal_mode(SqliteJournalMode::Wal)
-        .synchronous(SqliteSynchronous::Normal)
-        .busy_timeout(Duration::from_secs(5));
-
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(opts)
-        .await
-        .map_err(|err| {
-            TransportInitError::ExecutionDatabase(format!(
-                "SQLite: failed to open '{db_path}': {err}"
-            ))
-        })?;
-
-    init_schema(&pool).await.map_err(|err| {
-        TransportInitError::ExecutionDatabase(format!(
-            "SQLite: schema init failed for '{db_path}': {err}"
-        ))
-    })?;
-
-    tracing::info!(
-        backend = "sqlite",
-        db_path = %db_path,
-        "execution-stores: SQLite migrations ready"
-    );
-    // NodeResult and Checkpoint have no SQLite implementation — transient,
-    // per-execution data that is re-derived from the authoritative execution row
-    // on crash-recovery via the reclaim sweep.
-    let node_results = Arc::new(InMemoryNodeResultStore::new());
-    tracing::warn!(
-        "node-result and checkpoint stores are in-memory (not persisted across restarts); \
-         crash-recovery re-executes affected nodes via the reclaim sweep — \
-         authoritative execution state is the SQLite execution row"
-    );
-    let workflow_store: Arc<dyn nebula_storage_port::store::WorkflowStore> =
-        Arc::new(SqliteWorkflowStore::new(pool.clone()));
-    let workflow_version_store: Arc<dyn nebula_storage_port::store::WorkflowVersionStore> =
-        Arc::new(SqliteWorkflowVersionStore::new(pool.clone()));
-    let execution_store: Arc<dyn nebula_storage_port::store::ExecutionStore> =
-        Arc::new(SqliteExecutionStore::new(pool.clone()));
-    let journal_reader: Arc<dyn nebula_storage_port::store::ExecutionJournalReader> =
-        Arc::new(SqliteJournalReader::new(pool.clone()));
-    let resume_token_store: Arc<dyn nebula_storage_port::store::ResumeTokenStore> =
-        Arc::new(SqliteResumeTokenStore::new(pool.clone()));
-    // One control-queue handle, handed to both HTTP acceptance and the worker's
-    // control consumer.
-    let shared_control_queue: Arc<dyn nebula_storage_port::store::ControlQueue> =
-        Arc::new(SqliteControlQueue::new(pool.clone()));
-    #[cfg(feature = "runtime-repair-red")]
-    let worker_projection = WorkerStoreProjection {
-        execution_stores: nebula_engine::ExecutionStores {
-            execution: Arc::clone(&execution_store),
-            journal: Arc::clone(&journal_reader),
-            node_results: Arc::clone(&node_results)
-                as Arc<dyn nebula_storage_port::store::NodeResultStore>,
-            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
-            idempotency: Arc::new(SqliteIdempotencyGuard::new(pool.clone())),
-            resume_tokens: Arc::clone(&resume_token_store),
-            operation_ledger: None,
-        },
-        workflow_stores: nebula_engine::WorkflowStores {
-            workflow: Arc::clone(&workflow_store),
-            versions: Arc::clone(&workflow_version_store),
-        },
-        job_dispatch_queue: Arc::new(SqliteJobDispatchQueue::new(pool.clone())),
-        control_queue: Arc::clone(&shared_control_queue),
-        // Same pool as the queue and execution store — see the field docs.
-        turn_handoff: Arc::new(SqliteTurnHandoff::new(pool.clone())),
-    };
-    #[cfg(feature = "runtime-repair-red")]
-    let backend_lifecycle = ProfileBackendLifecycle::Sqlite(pool.clone());
-    Ok(ExecutionStoreBundle {
-        workflow_store,
-        workflow_version_store,
-        execution_store,
-        node_result_store: node_results,
-        journal_reader,
-        control_queue: Arc::clone(&shared_control_queue),
-        // Same pool as the execution store and control queue: the
-        // reservation, the execution row, and the Start command commit in
-        // one transaction only when they share a backend.
-        start_acceptance: Arc::new(SqliteStartAcceptanceStore::new(pool.clone())),
-        // Durable backends wire the storage-backed TriggerDedupInbox so
-        // `WebhookIngressTransport::prepare_state` can install `with_durable_dispatch`.
-        // Without this `Some`, the `if let Some(dedup)` guard in prepare_state is never
-        // taken and webhook rows are spawned without the durable dedup fence — exactly
-        // backwards for a durable backend.
-        trigger_dedup_inbox: Some(Arc::new(SqliteTriggerDedupInbox::new(pool.clone()))),
-        // Same pool as the execution store: tokens minted by TransitionBatch must be
-        // readable by the POST /resume handler's consume call on the same pool.
-        resume_token_store,
-        // Same pool again: the producer's token DELETE and control-queue INSERT
-        // must commit in one transaction against the execution-store backend.
-        resume_producer: Arc::new(SqliteResumeProducer::new(pool)),
-        #[cfg(feature = "runtime-repair-red")]
-        worker_projection,
-        #[cfg(feature = "runtime-repair-red")]
-        backend_lifecycle,
-    })
-}
-
-/// Postgres execution bundle — compiled only with `--features postgres`.
-/// The `#[cfg(not(...))]` twin always fails closed.
-#[cfg(feature = "postgres")]
-async fn build_pg_execution_stores(
-    _api_config: &ApiConfig,
-    explicit_postgres_dsn: Option<&str>,
-) -> Result<ExecutionStoreBundle, TransportInitError> {
-    use nebula_storage::InMemoryNodeResultStore;
-    use nebula_storage::postgres::{
-        PgControlQueue, PgExecutionStore, PgJournalReader, PgResumeProducer, PgResumeTokenStore,
-        PgStartAcceptanceStore, PgTriggerDedupInbox, PgWorkflowStore, PgWorkflowVersionStore,
-        init_schema as pg_init_schema,
-    };
-    #[cfg(feature = "runtime-repair-red")]
-    use nebula_storage::postgres::{PgIdempotencyGuard, PgJobDispatchQueue, PgTurnHandoff};
-    use sqlx::postgres::PgPoolOptions;
-
-    let environment_dsn;
-    let database_dsn = if let Some(explicit_postgres_dsn) = explicit_postgres_dsn {
-        explicit_postgres_dsn
-    } else {
-        environment_dsn = std::env::var("DATABASE_URL").map_err(|_| {
-            TransportInitError::ExecutionBackendUnavailable {
-                requested: "postgres",
-                requirement: "DATABASE_URL must be set when API_EXECUTION_BACKEND=postgres",
-            }
-        })?;
-        &environment_dsn
-    };
-
-    let pool = PgPoolOptions::new()
-        .max_connections(8)
-        .connect(database_dsn)
-        .await
-        .map_err(|err| {
-            TransportInitError::ExecutionDatabase(format!(
-                "Postgres: failed to connect to DATABASE_URL for execution stores: {err}"
-            ))
-        })?;
-
-    pg_init_schema(&pool).await.map_err(|err| {
-        TransportInitError::ExecutionDatabase(format!(
-            "Postgres: execution-store schema init failed: {err}"
-        ))
-    })?;
-
-    tracing::info!(
-        backend = "postgres",
-        "execution-stores: Postgres migrations ready"
-    );
-    tracing::warn!(
-        "node-result and checkpoint stores are in-memory (not persisted across restarts); \
-         crash-recovery re-executes affected nodes via the reclaim sweep — \
-         authoritative execution state is the Postgres execution row"
-    );
-    let workflow_store: Arc<dyn nebula_storage_port::store::WorkflowStore> =
-        Arc::new(PgWorkflowStore::new(pool.clone()));
-    let workflow_version_store: Arc<dyn nebula_storage_port::store::WorkflowVersionStore> =
-        Arc::new(PgWorkflowVersionStore::new(pool.clone()));
-    let execution_store: Arc<dyn nebula_storage_port::store::ExecutionStore> =
-        Arc::new(PgExecutionStore::new(pool.clone()));
-    let node_result_store: Arc<dyn nebula_storage_port::store::NodeResultStore> =
-        Arc::new(InMemoryNodeResultStore::new());
-    let journal_reader: Arc<dyn nebula_storage_port::store::ExecutionJournalReader> =
-        Arc::new(PgJournalReader::new(pool.clone()));
-    let resume_token_store: Arc<dyn nebula_storage_port::store::ResumeTokenStore> =
-        Arc::new(PgResumeTokenStore::new(pool.clone()));
-    // One control-queue handle, handed to both HTTP acceptance and the
-    // worker's control consumer.
-    let shared_control_queue: Arc<dyn nebula_storage_port::store::ControlQueue> =
-        Arc::new(PgControlQueue::new(pool.clone()));
-    #[cfg(feature = "runtime-repair-red")]
-    let worker_projection = WorkerStoreProjection {
-        execution_stores: nebula_engine::ExecutionStores {
-            execution: Arc::clone(&execution_store),
-            journal: Arc::clone(&journal_reader),
-            node_results: Arc::clone(&node_result_store),
-            checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
-            idempotency: Arc::new(PgIdempotencyGuard::new(pool.clone())),
-            resume_tokens: Arc::clone(&resume_token_store),
-            operation_ledger: None,
-        },
-        workflow_stores: nebula_engine::WorkflowStores {
-            workflow: Arc::clone(&workflow_store),
-            versions: Arc::clone(&workflow_version_store),
-        },
-        job_dispatch_queue: Arc::new(PgJobDispatchQueue::new(pool.clone())),
-        control_queue: Arc::clone(&shared_control_queue),
-        // Same pool as the queue and execution store — see the field docs.
-        turn_handoff: Arc::new(PgTurnHandoff::new(pool.clone())),
-    };
-    #[cfg(feature = "runtime-repair-red")]
-    let backend_lifecycle = ProfileBackendLifecycle::Postgres(pool.clone());
-    Ok(ExecutionStoreBundle {
-        workflow_store,
-        workflow_version_store,
-        execution_store,
-        node_result_store,
-        journal_reader,
-        control_queue: Arc::clone(&shared_control_queue),
-        // Same pool again — see the SQLite arm for rationale.
-        start_acceptance: Arc::new(PgStartAcceptanceStore::new(pool.clone())),
-        // Same rationale as the SQLite arm: durable dispatch in
-        // `WebhookIngressTransport::prepare_state` is only installed when `Some`.
-        trigger_dedup_inbox: Some(Arc::new(PgTriggerDedupInbox::new(pool.clone()))),
-        // Same pool as the execution store — see SQLite arm for rationale.
-        resume_token_store,
-        // Same pool again: the producer's DELETE + control-queue INSERT commit
-        // in one transaction against the execution-store backend.
-        resume_producer: Arc::new(PgResumeProducer::new(pool)),
-        #[cfg(feature = "runtime-repair-red")]
-        worker_projection,
-        #[cfg(feature = "runtime-repair-red")]
-        backend_lifecycle,
-    })
-}
-
-/// Fail-closed twin: `API_EXECUTION_BACKEND=postgres` without the `postgres` feature.
-#[cfg(not(feature = "postgres"))]
-async fn build_pg_execution_stores(
-    _api_config: &ApiConfig,
-    _explicit_postgres_dsn: Option<&str>,
-) -> Result<ExecutionStoreBundle, TransportInitError> {
-    Err(TransportInitError::ExecutionBackendUnavailable {
-        requested: "postgres",
-        requirement: "build with `nebula-api/postgres` cargo feature to link sqlx + Pg execution stores",
-    })
-}
-
-fn warn_execution_memory_outside_dev() {
-    let env_mode = std::env::var("NEBULA_ENV").unwrap_or_default();
-    let is_dev = matches!(env_mode.as_str(), "development" | "dev" | "local");
-    if !is_dev {
-        tracing::warn!(
-            backend = "memory",
-            nebula_env = %env_mode,
-            component = "execution-stores",
-            "execution-stores: in-memory adapters selected — execution state is lost \
-             on restart and cannot be shared across processes; \
-             set API_EXECUTION_BACKEND=sqlite (single-process durable) or \
-             API_EXECUTION_BACKEND=postgres (multi-process) for production"
-        );
-    }
-}
-
+pub(crate) use crate::execution_store_backends::build_execution_stores;
 /// Start a server binary for a selected transport profile.
 ///
 /// The caller passes in the [`TelemetryGuard`] returned from `init_api_telemetry`; the
@@ -754,9 +356,16 @@ impl ServerRuntime {
             .map_err(ServerRunError::MetricsExporter)?;
         // Build the execution-store bundle inside the async context so the SQLite and
         // Postgres paths can `await` pool construction.
-        let execution_bundle = build_execution_stores(&api_config, None).await?;
-        let mut state =
-            default_state(&api_config, Arc::clone(&metrics_registry), execution_bundle)?;
+        let execution_bundle = build_execution_stores(&api_config, None, &metrics_registry).await?;
+        let registry =
+            crate::transport::worker_registry(std::env::var("NEBULA_WORKER_ARTIFACT_SET_DIGEST"))
+                .map_err(TransportInitError::from)?;
+        let mut state = default_state(
+            &api_config,
+            Arc::clone(&metrics_registry),
+            execution_bundle,
+            registry,
+        )?;
         let bind_address =
             resolve_bind_address(transport.bind_override_var(), api_config.bind_address)?;
         state = transport.prepare_state(state, bind_address)?;
@@ -832,7 +441,10 @@ impl ServerRuntime {
             .with_email_port(email_port);
         // Captured before `state` is consumed by the router: the sweep needs
         // the same store the start path writes reservations through.
-        let start_acceptance_for_sweep = Arc::clone(&state.start_acceptance);
+        let reservation_sweep = state.start_reservation_sweeper(
+            Duration::from_secs(api_config.idempotency.ttl_secs),
+            Duration::from_secs(api_config.idempotency.sweep_interval_secs),
+        );
         let app = transport.build_router(state, &api_config)?;
 
         let listener = TcpListener::bind(bind_address).await?;
@@ -845,12 +457,7 @@ impl ServerRuntime {
         // to "how long may this be replayed?" would be a discrepancy no
         // operator could see. Owned here so it lives and dies with the
         // process's serving lifecycle rather than running unsupervised.
-        let reservation_sweep = nebula_api::start_reservation_sweep::StartReservationSweeper::new(
-            Arc::clone(&start_acceptance_for_sweep),
-            Duration::from_secs(api_config.idempotency.ttl_secs),
-            Duration::from_secs(api_config.idempotency.sweep_interval_secs),
-        )
-        .map(|sweeper| {
+        let reservation_sweep = reservation_sweep.map(|sweeper| {
             let token = shutdown.clone();
             tokio::spawn(async move { sweeper.run(token).await })
         });
@@ -983,15 +590,11 @@ async fn wait_for_unix_shutdown_signal(
 /// the async context (so the PG arm can `await` the sqlx pool) and
 /// `default_state` no longer wires an unconditional in-memory backend
 /// — the conditional builder owns the slot now.
-///
-/// `AppState::in_memory` is NOT called here: the bundle already holds the
-/// correct store handles (including the shared-core in-memory wiring for the
-/// Memory backend), and calling `in_memory` would build a second independent
-/// store set that the bundle's stores are not connected to.
 pub(crate) fn default_state(
     api_config: &ApiConfig,
     metrics_registry: Arc<MetricsRegistry>,
     execution_bundle: ExecutionStoreBundle,
+    registry: Arc<nebula_plugin::FrozenPluginRegistry>,
 ) -> Result<AppState, TransportInitError> {
     // Plane-A identity backend is wired asynchronously by
     // [`build_auth_backend`] inside [`ServerRuntime::run_transport`]
@@ -1055,12 +658,11 @@ pub(crate) fn default_state(
         nebula_api::transport::webhook::TriggerStoreSpecLookup::new(Arc::clone(&trigger_store) as _),
     );
 
-    // Destructure the bundle so each handle is passed into `AppState::new`
-    // positionally, matching its parameter order. The `trigger_dedup_inbox`
-    // is wired via `with_trigger_dedup_inbox` only when the bundle provides
-    // one (Memory backend); durable backends leave the slot empty (the engine
-    // uses the storage-level IdempotencyGuard instead).
+    // Activation and start admission share these selected backend handles
+    // with AppState and the worker projection.
     let ExecutionStoreBundle {
+        revision_catalog,
+        revision_installer,
         workflow_store,
         workflow_version_store,
         execution_store,
@@ -1068,12 +670,32 @@ pub(crate) fn default_state(
         journal_reader,
         control_queue,
         start_acceptance,
-        trigger_dedup_inbox,
+        turn_handoff,
+        start_reservation_maintenance,
         resume_token_store,
         resume_producer,
         ..
     } = execution_bundle;
 
+    let activation = Arc::new(nebula_engine::WorkflowActivationService::new(
+        Arc::clone(&workflow_store),
+        Arc::clone(&workflow_version_store),
+        Arc::clone(&registry),
+        nebula_engine::PlanFlavorRevisionInstaller::new(revision_installer),
+        Arc::new(nebula_core::accessor::SystemClock),
+    ));
+    let start = Arc::new(nebula_engine::WorkflowStartService::new(
+        nebula_engine::WorkflowStores {
+            workflow: Arc::clone(&workflow_store),
+            versions: Arc::clone(&workflow_version_store),
+        },
+        Arc::clone(&execution_store),
+        Arc::clone(&start_acceptance),
+        nebula_engine::PlanFlavorRevisionLoader::new(revision_catalog),
+        registry,
+        Arc::new(nebula_core::accessor::SystemClock),
+        Default::default(),
+    )?);
     let mut state = AppState::new(
         workflow_store,
         workflow_version_store,
@@ -1082,8 +704,12 @@ pub(crate) fn default_state(
         journal_reader,
         control_queue,
         start_acceptance,
+        turn_handoff,
+        start_reservation_maintenance,
         api_config.jwt_secret.clone(),
     )
+    .with_workflow_activation(activation)
+    .with_workflow_start(start)
     .with_api_keys(api_config.api_keys.clone())
     .with_metrics_registry(metrics_registry)
     // Public URL is required for Plane-A OAuth `redirect_uri`
@@ -1093,10 +719,6 @@ pub(crate) fn default_state(
     .with_public_url(api_config.public_url.clone())
     .with_trigger_store(trigger_store)
     .with_webhook_spec_lookup(trigger_spec_lookup);
-
-    if let Some(inbox) = trigger_dedup_inbox {
-        state = state.with_trigger_dedup_inbox(inbox);
-    }
 
     // W-S3d: wire the resume-token store and rate-limiter components.
     //
@@ -1387,7 +1009,7 @@ pub(crate) async fn health_ok() -> axum::http::StatusCode {
 mod tests {
     use std::net::SocketAddr;
 
-    use super::{ServerRunError, build_execution_stores, parse_bind_address, resolve_bind_address};
+    use super::{ServerRunError, parse_bind_address, resolve_bind_address};
 
     /// Red→green proof that a SIGTERM handler that cannot be registered does
     /// not read as "shutdown requested".
@@ -1413,42 +1035,6 @@ mod tests {
             "a failed SIGTERM registration must degrade to ctrl-c and stay pending, \
              not resolve and cancel the serve future at startup"
         );
-    }
-
-    /// Red→green proof that the SQLite backend wires `trigger_dedup_inbox: Some(...)`.
-    ///
-    /// Without the fix this test fails because `build_sqlite_execution_stores` returned
-    /// `trigger_dedup_inbox: None`, which causes `WebhookIngressTransport::prepare_state`
-    /// to skip `with_durable_dispatch` — breaking prod webhook spawning on a durable backend.
-    #[tokio::test]
-    async fn sqlite_execution_bundle_wires_trigger_dedup_inbox() {
-        use nebula_api::config::{ExecutionBackendKind, ExecutionStoreConfig};
-
-        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
-        let (_, db_path) = tmp.keep().expect("persist tempfile");
-
-        let mut cfg = nebula_api::ApiConfig::for_test();
-        cfg.execution = ExecutionStoreConfig {
-            backend: ExecutionBackendKind::Sqlite,
-            db_path: db_path.to_string_lossy().into_owned(),
-        };
-
-        let bundle = build_execution_stores(&cfg, None)
-            .await
-            .expect("sqlite bundle must build");
-
-        // The inbox MUST be Some so WebhookIngressTransport::prepare_state
-        // installs with_durable_dispatch. A None here silently disables durable
-        // webhook dispatch for operators running API_EXECUTION_BACKEND=sqlite.
-        assert!(
-            bundle.trigger_dedup_inbox.is_some(),
-            "sqlite bundle must provide a TriggerDedupInbox for durable webhook dispatch"
-        );
-
-        // Clean up temp db file.
-        let _ = std::fs::remove_file(&db_path);
-        let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
-        let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
     }
 
     #[test]

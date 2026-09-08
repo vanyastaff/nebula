@@ -31,7 +31,7 @@ fn sdk_only_consumer_uses_payload_free_test_result() {
         .collect::<Vec<_>>();
     assert_eq!(
         nebula_dependencies,
-        ["nebula-sdk = { version = \"=0.1.0\", default-features = false }"],
+        ["nebula-sdk = { version = \"=0.2.0\", default-features = false }"],
         "fixture must have exactly one nebula-* dependency and it must be nebula-sdk"
     );
     assert!(

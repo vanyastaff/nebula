@@ -4,7 +4,10 @@ use nebula_schema::ValidSchema;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
-use crate::port::{self, InputPort, OutputPort};
+use crate::{
+    effect::ActionEffectContract,
+    port::{self, InputPort, OutputPort},
+};
 
 /// How isolated this action's execution should be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -116,6 +119,10 @@ pub enum MetadataCompatibilityError {
     #[error("action ports changed without a major version bump")]
     PortsChangeWithoutMajorBump,
 
+    /// The trusted effect contract changed without a major version bump.
+    #[error("action effect contract changed without a major version bump")]
+    EffectContractChangeWithoutMajorBump,
+
     /// The action's output schema was narrowed (a field required by downstream
     /// consumers was dropped or changed type) without a major version bump.
     ///
@@ -170,6 +177,10 @@ pub struct ActionMetadata {
     /// execution-wide policy.
     #[serde(default)]
     pub checkpoint_policy: CheckpointPolicy,
+    /// Trusted effect declaration, independently of the action's execution shape.
+    /// Missing legacy declarations remain unqualified for durable execution.
+    #[serde(default)]
+    pub effect_contract: ActionEffectContract,
     /// Per-action concurrency throttle hint — **persisted hint, not yet
     /// enforced** as of П1.
     ///
@@ -218,6 +229,7 @@ impl ActionMetadata {
             isolation_level: IsolationLevel::None,
             kind: ActionKind::Stateless,
             checkpoint_policy: CheckpointPolicy::Inherit,
+            effect_contract: ActionEffectContract::Undeclared,
             max_concurrent: None,
             output_schema: ValidSchema::empty(),
         }
@@ -434,6 +446,13 @@ impl ActionMetadata {
         self
     }
 
+    /// Declare the trusted effect contract that compilation must retain exactly.
+    #[must_use = "builder methods must be chained or built"]
+    pub fn with_effect_contract(mut self, contract: ActionEffectContract) -> Self {
+        self.effect_contract = contract;
+        self
+    }
+
     /// Set the per-action concurrency throttle hint.
     ///
     /// **Persisted hint, not yet enforced** as of П1 — see
@@ -470,6 +489,10 @@ impl ActionMetadata {
         nebula_metadata::validate_base_compat(&self.base, &previous.base)?;
 
         let same_major = self.base.version.major == previous.base.version.major;
+
+        if same_major && self.effect_contract != previous.effect_contract {
+            return Err(MetadataCompatibilityError::EffectContractChangeWithoutMajorBump);
+        }
 
         let ports_changed = self.inputs != previous.inputs || self.outputs != previous.outputs;
         if ports_changed && same_major {
@@ -1213,6 +1236,36 @@ mod tests {
         assert!(
             next.validate_compatibility(&prev).is_ok(),
             "identical output schemas must be compatible on a same-major bump"
+        );
+    }
+
+    #[test]
+    fn legacy_metadata_roundtrip_keeps_effect_authority_undeclared() {
+        let metadata = ActionMetadata::new(action_key!("test.legacy"), "Legacy", "Legacy");
+        let mut wire = serde_json::to_value(metadata).unwrap();
+        wire.as_object_mut().unwrap().remove("effect_contract");
+        let encoded = serde_json::to_string(&wire).unwrap();
+        let decoded: ActionMetadata = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(
+            serde_json::to_value(decoded).unwrap()["effect_contract"],
+            serde_json::json!("Undeclared"),
+            "legacy metadata must carry an explicit absence of effect authority"
+        );
+    }
+
+    #[test]
+    fn effect_contract_change_requires_a_major_version_bump() {
+        let previous =
+            ActionMetadata::new(action_key!("test.effect"), "Effect", "Effect").with_version(1, 0);
+        let next = previous
+            .clone()
+            .with_version(1, 1)
+            .with_effect_contract(ActionEffectContract::NoExternalEffects);
+        assert!(next.validate_compatibility(&previous).is_err());
+        assert!(
+            next.with_version(2, 0)
+                .validate_compatibility(&previous)
+                .is_ok()
         );
     }
 }

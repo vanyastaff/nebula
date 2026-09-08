@@ -36,6 +36,11 @@ Actions, Resources, and Credentials need a versioned distribution unit — one t
   `WorkflowVersionId` and `WorkflowDefinition` into an opaque
   `ExecutablePlanRevision`. The compiler selects the registry's own exact plugin set/flavor,
   validates the closed Graph-v1 contract, and leaves resource/credential selectors abstract.
+  New plans use compiler version 3 and canonical hash version 2 inside the unchanged v1
+  record framing. They preserve compiler 2's intrinsic error-edge semantics and pin each
+  action's explicit effect declaration. Compiler 1/2 records retain their original bytes,
+  hashes, and integrity decoders; current runtime admission rejects their absent effect
+  declarations. An undeclared factory cannot produce a new durable plan.
 - `ExecutablePlanRevision` / `RecordedExecutablePlanRevisionV1` — immutable checked plan and its
   persistable v1 projection. A recorded value becomes trusted only through the fallible integrity
   check; `validate_against` separately proves exact compatibility with a frozen registry.
@@ -85,10 +90,16 @@ credential/resource-ID binding, no persistence, and no runtime mutation. The pla
 requirements remain untrusted author selectors for the authenticated runtime-control plane to
 resolve later.
 
-This boundary remains operationally `partial`: compilation plus checked plan and worker-flavor
-recorded loading exist, but there is still zero production consumer until retained exact loading,
-atomic admission, persisted routing, and exact-flavor dispatch consume the closed epoch end to end.
-Until then, the mutable registry remains available to existing composition code.
+First-party activation retains checked plans and worker flavors; runtime start atomically
+materializes their execution bundle, and exact loading checks the retained registry before
+dispatch. The boundary remains `partial`: binding resolution and the complete remote-effect
+execution protocol have separate runtime admission requirements. Compilation grants neither.
+
+The new plan hash domain is `nebula.executable-plan.graph.v2`. It includes the complete
+static effect descriptor and a closed versioned policy projection. Dynamic requests, targets,
+and credentials are not compiler inputs. Snapshot construction and exact compatibility checks
+require a remote declaration to match the actual factory's remote capability before any action
+is instantiated; a no-external-effects declaration must have no remote capability.
 
 The composition root must supply `ArtifactSetDigest` and
 `RuntimeContractVersion` from trusted activation state. Hash derivation does
@@ -123,9 +134,8 @@ See `docs/MATURITY.md` row for `nebula-plugin`.
 
 - API stability: `partial`. `Plugin`, `ResolvedPlugin`, and the mutable registry are implemented.
   Frozen worker-flavor primitives, checked plan/flavor recorded forms, the pure Graph-v1 compiler,
-  and registry compatibility check define a closed contract epoch, but remain operationally
-  partial with zero production consumer until retention, admission, persisted routing, and
-  exact-flavor dispatch adopt them end to end. `PluginManifest` is canonical in
+  and registry compatibility check are consumed by first-party activation and exact execution.
+  Complete binding and remote-effect admission remain separate runtime work. `PluginManifest` is canonical in
   `nebula-metadata` and re-exported here.
 - `#![forbid(unsafe_code)]`, `#![warn(missing_docs)]` enforced.
 - Signing / trust boundary (`[signing]` in `plugin.toml`): `planned` — not enforced at runtime yet. See canon §7.1 and `docs/INTEGRATION_MODEL.md` signing section.

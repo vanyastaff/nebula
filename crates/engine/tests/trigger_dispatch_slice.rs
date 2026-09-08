@@ -1,8 +1,8 @@
 //! ADR-0095 D3/D5 — "first real trigger dispatch" vertical slice.
 //!
 //! Tests verify the full path: trigger fires → `DurableExecutionEmitter` →
-//! `TriggerDedupInbox::claim_and_materialize_start` → `Orchestrator` claims →
-//! `EngineExecutionSink::dispatch` drives `resume_execution` → execution runs.
+//! `WorkflowStartService` atomically materializes the contract → exact-flavor
+//! `ControlConsumer` claims → `EngineControlDispatch` drives the execution.
 //!
 //! ## Test plan
 //!
@@ -18,10 +18,11 @@
 //!
 //! **Acceptance test**
 //! - `trigger_dispatch_end_to_end_real_engine_resume` — trigger fires via adapter → emitter →
-//!   orchestrator → sink → engine runs to Completed; redelivery of same event_id asserts exactly
+//!   control consumer → engine runs to Completed; redelivery of same event_id asserts exactly
 //!   one execution.
 //!
-//! Backend: InMemory ONLY.  Postgres is ROADMAP-M7 (no DATABASE_URL).
+//! This engine integration fixture uses InMemory. Storage's shared materialization
+//! oracle separately runs against SQLite and required live PostgreSQL.
 
 use std::{
     collections::HashMap,
@@ -43,16 +44,17 @@ use nebula_engine::{
 };
 use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_metrics::MetricsRegistry;
-use nebula_orchestrator::{DispatchedTurn, ExecutionSink, Orchestrator};
+use nebula_orchestrator::{DispatchedTurn, ExecutionSink};
+use nebula_storage::inmem::InMemoryTurnHandoff;
 use nebula_storage::{
     InMemoryExecutionStore, InMemoryWorkflowVersionStore,
-    inmem::{InMemoryJobDispatchQueue, InMemoryTriggerDedupInbox, InMemoryTurnHandoff},
+    inmem::{InMemoryJobDispatchQueue, InMemoryTriggerDedupInbox},
 };
 use nebula_storage_port::{
     Scope,
     dto::{ControlCommand, JobDispatchMsg, WorkflowVersionRecord},
     store::{
-        ExecutionStore, ExecutionTurnHandoff, JobDispatchQueue, TriggerDedupInbox,
+        ControlQueue, ExecutionStore, JobDispatchQueue, TriggerDedupInbox, WorkflowStore,
         WorkflowVersionStore,
     },
 };
@@ -64,9 +66,12 @@ use tokio_util::sync::CancellationToken;
 
 // ── shared harness ────────────────────────────────────────────────────────────
 
+mod exact_fixture;
+
 /// In-memory storage adapters for one isolated test tenant.
 #[derive(Clone)]
 struct TestStores {
+    frozen: OnceLock<Arc<nebula_plugin::FrozenPluginRegistry>>,
     execution: Arc<InMemoryExecutionStore>,
     journal: Arc<nebula_storage::InMemoryJournalReader>,
     node_results: Arc<nebula_storage::InMemoryNodeResultStore>,
@@ -81,8 +86,10 @@ impl TestStores {
         let execution = Arc::new(InMemoryExecutionStore::new());
         let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&execution));
         let versions = InMemoryWorkflowVersionStore::new();
-        let workflow = nebula_storage::InMemoryWorkflowStore::new_with_versions(&versions);
+        let workflow =
+            nebula_storage::InMemoryWorkflowStore::new_with_versions(&versions, &execution);
         Self {
+            frozen: OnceLock::new(),
             execution,
             journal,
             node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
@@ -101,7 +108,9 @@ impl TestStores {
             checkpoints: self.checkpoints.clone(),
             idempotency: self.idempotency.clone(),
             resume_tokens: Arc::new(self.execution.resume_token_store()),
-            operation_ledger: None,
+            operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(
+                &self.execution,
+            )),
         }
     }
 
@@ -114,21 +123,91 @@ impl TestStores {
 
     fn attach(&self, engine: WorkflowEngine) -> WorkflowEngine {
         engine
+            .with_plan_flavor_runtime(
+                Arc::new(nebula_engine::PlanFlavorRevisionLoader::new(Arc::new(
+                    self.execution.plan_flavor_catalog(),
+                ))),
+                Arc::clone(self.frozen.get().unwrap()),
+                Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
+                    &self.execution,
+                )),
+            )
             .with_execution_stores(self.execution_stores())
-            .with_workflow_stores(self.workflow_stores())
-    }
-
-    /// Handoff over the SAME shared core the queue and execution store use —
-    /// the lease write and the queue acknowledgement must land under one
-    /// boundary (#976).
-    fn turn_handoff(&self) -> Arc<InMemoryTurnHandoff> {
-        Arc::new(InMemoryTurnHandoff::new(&self.execution))
     }
 }
 
 /// Return the test scope via the public re-export.
 fn scope() -> Scope {
-    nebula_engine::store_seam::single_tenant_scope()
+    static SCOPE: OnceLock<Scope> = OnceLock::new();
+    SCOPE
+        .get_or_init(|| {
+            Scope::new(
+                nebula_core::WorkspaceId::new().to_string(),
+                nebula_core::OrgId::new().to_string(),
+            )
+        })
+        .clone()
+}
+
+/// The test injects trigger events through its emitter; lifecycle has no external resource.
+struct SliceTrigger;
+struct SliceTriggerSource;
+
+impl nebula_action::TriggerSource for SliceTriggerSource {
+    type Event = serde_json::Value;
+}
+
+impl Action for SliceTrigger {
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+    fn metadata() -> ActionMetadata {
+        ActionMetadata::new(
+            action_key!("test.dispatch.plugin.trigger"),
+            "Slice trigger",
+            "Explicit test event source",
+        )
+    }
+    fn dependencies() -> &'static Dependencies {
+        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
+        DEPENDENCIES.get_or_init(Dependencies::new)
+    }
+}
+
+impl nebula_action::FromWorkflowNode for SliceTrigger {
+    type Error = ActionError;
+    async fn from_workflow_node(
+        _: &NodeDefinition,
+        _: &dyn nebula_action::ActionContext,
+    ) -> Result<Self, Self::Error> {
+        Ok(Self)
+    }
+}
+
+impl nebula_action::TriggerAction for SliceTrigger {
+    type Source = SliceTriggerSource;
+    type Error = ActionError;
+    async fn start(
+        &self,
+        _: &(impl nebula_action::TriggerContext + ?Sized),
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+    async fn stop(
+        &self,
+        _: &(impl nebula_action::TriggerContext + ?Sized),
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    async fn handle(
+        &self,
+        _: &(impl nebula_action::TriggerContext + ?Sized),
+        _: serde_json::Value,
+    ) -> Result<nebula_action::TriggerEventOutcome, Self::Error> {
+        Err(ActionError::fatal(
+            "test events enter through the dedicated emitter",
+        ))
+    }
 }
 
 /// One-node echo workflow (StatelessAction that returns its input).
@@ -141,7 +220,7 @@ impl Action for EchoHandler {
     type Output = serde_json::Value;
 
     fn metadata() -> ActionMetadata {
-        ActionMetadata::new(action_key!("test.echo.dispatch_slice"), "Echo", "echo")
+        ActionMetadata::new(action_key!("test.dispatch.plugin.echo"), "Echo", "echo")
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -165,11 +244,21 @@ async fn make_engine(stores: &TestStores) -> (Arc<WorkflowEngine>, Arc<AtomicU32
     let count = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
     registry.register_stateless_instance(
-        ActionMetadata::new(action_key!("test.echo.dispatch_slice"), "Echo", "echo"),
+        ActionMetadata::new(action_key!("test.dispatch.plugin.echo"), "Echo", "echo"),
         EchoHandler {
             count: count.clone(),
         },
     );
+    registry.register_trigger_factory::<SliceTrigger>();
+    stores.frozen.get_or_init(|| {
+        exact_fixture::freeze_registry(
+            &registry,
+            &[
+                (TEST_PLUGIN_KEY, "test.dispatch.plugin.echo"),
+                (TEST_PLUGIN_KEY, "test.dispatch.plugin.trigger"),
+            ],
+        )
+    });
     let executor: ActionExecutor =
         Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
     let runner = Arc::new(InProcessRunner::new(executor));
@@ -212,7 +301,7 @@ async fn save_echo_workflow(stores: &TestStores) -> Arc<ValidatedWorkflow> {
                 node_key!("step"),
                 "Step",
                 TEST_PLUGIN_KEY,
-                "test.echo.dispatch_slice",
+                "test.dispatch.plugin.echo",
             )
             .unwrap(),
         ],
@@ -223,7 +312,7 @@ async fn save_echo_workflow(stores: &TestStores) -> Arc<ValidatedWorkflow> {
             TriggerBinding::new(
                 node_key!("test.trigger"),
                 TEST_PLUGIN_KEY,
-                "test.trigger.action",
+                "test.dispatch.plugin.trigger",
             )
             .unwrap(),
         ],
@@ -241,6 +330,7 @@ async fn save_echo_workflow(stores: &TestStores) -> Arc<ValidatedWorkflow> {
         .create(
             &scope(),
             WorkflowVersionRecord {
+                activation: None,
                 workflow_id: validated.definition().id.to_string(),
                 number: 0,
                 published: true,
@@ -263,17 +353,22 @@ async fn persist_created(
 ) {
     let mut exec_state = ExecutionState::new(execution_id, workflow_id, &[]);
     exec_state.set_workflow_input(input);
-    let state_json = serde_json::to_value(&exec_state).expect("serialize execution state");
-    stores
-        .execution
-        .create(
-            &scope(),
-            &execution_id.to_string(),
-            &workflow_id.to_string(),
-            state_json,
-        )
+    let record = stores
+        .versions
+        .get(&scope(), &workflow_id.to_string(), 0)
         .await
-        .expect("create execution row");
+        .unwrap()
+        .unwrap();
+    let encoded = serde_json::to_string(&record.definition).unwrap();
+    let workflow = serde_json::from_str(&encoded).unwrap();
+    exact_fixture::materialize_state(
+        &stores.execution,
+        &scope(),
+        stores.frozen.get().unwrap(),
+        &workflow,
+        &mut exec_state,
+    )
+    .await;
 }
 
 /// Read the persisted execution status from the store.
@@ -297,7 +392,7 @@ fn proc16(b: u8) -> [u8; 16] {
 
 // ── B-series: EngineExecutionSink unit tests ─────────────────────────────────
 
-/// Mint a turn fence the way the durable handoff does (#976): acquire the
+/// Mint a turn fence the way the durable handoff does: acquire the
 /// execution lease and hand the fence to the sink, which adopts it instead of
 /// acquiring a second lease.
 async fn mint_turn_fence(
@@ -347,12 +442,11 @@ async fn sink_dispatch_drives_resume_execution() {
         scope(),
         serde_json::json!({}),
         None::<String>,
-        "sha-abc",
         test_plugin_key.clone(),
         vec![test_plugin_key],
         None::<String>,
         0,
-        None,
+        test_flavor(&[TEST_PLUGIN_KEY.parse().unwrap()]).revision_id(),
     );
 
     let fence = mint_turn_fence(&stores, execution_id).await;
@@ -401,12 +495,11 @@ async fn sink_dispatch_redelivery_is_idempotent() {
         scope(),
         serde_json::json!({}),
         None::<String>,
-        "sha-abc",
         test_plugin_key.clone(),
         vec![test_plugin_key],
         None::<String>,
         0,
-        None,
+        test_flavor(&[TEST_PLUGIN_KEY.parse().unwrap()]).revision_id(),
     );
 
     // First dispatch — drives execution to Completed under the handoff fence.
@@ -437,7 +530,6 @@ async fn sink_dispatch_redelivery_is_idempotent() {
 // ── C-series: DurableExecutionEmitter unit tests ─────────────────────────────
 
 use nebula_engine::daemon::durable_emitter::DurableExecutionEmitter;
-use nebula_engine::daemon::routing::{DefinitionRoutingResolver, SLICE_FLAVOR_SHA};
 
 const TEST_PLUGIN_KEY: &str = "test.dispatch.plugin";
 
@@ -448,19 +540,75 @@ async fn make_emitter(
 ) -> (
     DurableExecutionEmitter,
     Arc<InMemoryTriggerDedupInbox>,
-    Arc<InMemoryJobDispatchQueue>,
+    Arc<nebula_storage::InMemoryControlQueue>,
 ) {
     let dedup = Arc::new(InMemoryTriggerDedupInbox::new(&stores.execution));
-    let queue = Arc::new(InMemoryJobDispatchQueue::new(&stores.execution));
-    let resolver = Arc::new(DefinitionRoutingResolver::new(SLICE_FLAVOR_SHA));
+    let queue = Arc::new(nebula_storage::InMemoryControlQueue::new(&stores.execution));
+    let service = activated_start_service(stores, &workflow).await;
     let emitter = DurableExecutionEmitter::new(
-        Arc::clone(&dedup) as Arc<dyn TriggerDedupInbox>,
-        resolver,
-        workflow,
+        service,
+        workflow.definition().id,
         node_key!("test.trigger"),
         scope(),
     );
     (emitter, dedup, queue)
+}
+
+async fn activated_start_service(
+    stores: &TestStores,
+    workflow: &ValidatedWorkflow,
+) -> Arc<nebula_engine::WorkflowStartService> {
+    if stores.frozen.get().is_none() {
+        let _ = make_engine(stores).await;
+    }
+    let registry = Arc::clone(stores.frozen.get().unwrap());
+    stores
+        .workflow
+        .create(
+            &scope(),
+            nebula_storage_port::dto::WorkflowRecord {
+                id: workflow.definition().id.to_string(),
+                scope: scope(),
+                version: 1,
+                slug: "trigger-fixture".into(),
+                deleted: false,
+            },
+        )
+        .await
+        .unwrap();
+    nebula_engine::WorkflowActivationService::new(
+        stores.workflow.clone(),
+        stores.versions.clone(),
+        registry.clone(),
+        nebula_engine::PlanFlavorRevisionInstaller::new(Arc::new(
+            stores.execution.plan_flavor_catalog(),
+        )),
+        Arc::new(nebula_core::accessor::SystemClock),
+    )
+    .activate(
+        &scope(),
+        workflow.definition().id,
+        1,
+        workflow.definition().clone(),
+    )
+    .await
+    .unwrap();
+    Arc::new(
+        nebula_engine::WorkflowStartService::new(
+            stores.workflow_stores(),
+            stores.execution.clone(),
+            Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
+                &stores.execution,
+            )),
+            nebula_engine::PlanFlavorRevisionLoader::new(Arc::new(
+                stores.execution.plan_flavor_catalog(),
+            )),
+            registry,
+            Arc::new(nebula_core::accessor::SystemClock),
+            nebula_execution::context::ExecutionBudget::default(),
+        )
+        .unwrap(),
+    )
 }
 
 /// `DurableExecutionEmitter::emit` with `Some(event_id)` produces:
@@ -494,9 +642,13 @@ async fn emitter_dispatched_creates_row_and_enqueues_start() {
     );
 
     // Exactly one Start job in the queue, claimable by the test plugin key.
-    let plugin_key: PluginKey = TEST_PLUGIN_KEY.parse().unwrap();
     let jobs = queue
-        .claim_pending(&proc16(1), 10, &[plugin_key])
+        .claim_pending_for_flavor(
+            &proc16(1),
+            10,
+            nebula_plugin::WorkerFlavorContext::from_registry(stores.frozen.get().unwrap())
+                .revision_id(),
+        )
         .await
         .expect("claim_pending must succeed");
     assert_eq!(
@@ -515,23 +667,35 @@ async fn emitter_dispatched_creates_row_and_enqueues_start() {
         "job command must be Start"
     );
 
-    // The route written into the job must match the exact expected values.
-    // The echo workflow has one trigger binding (TEST_PLUGIN_KEY) and one
-    // enabled node (TEST_PLUGIN_KEY), so required_plugins = [TEST_PLUGIN_KEY]
-    // (deduplicated).
+    // Routing now uses the persisted contract's exact flavor rather than a
+    // separate plugin list copied onto a job. Verify the authoritative pin.
+    let row = stores
+        .execution
+        .get(&scope(), &execution_id.to_string())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
-        jobs[0].msg.required_plugin_key.as_str(),
-        TEST_PLUGIN_KEY,
-        "required_plugin_key on enqueued job must equal TEST_PLUGIN_KEY"
+        row.state["worker_flavor_revision_id"],
+        serde_json::to_value(
+            nebula_plugin::WorkerFlavorContext::from_registry(stores.frozen.get().unwrap())
+                .revision_id()
+        )
+        .unwrap()
     );
-    let expected_key: PluginKey = TEST_PLUGIN_KEY.parse().unwrap();
-    let expected_plugins = vec![expected_key];
-    assert_eq!(
-        jobs[0].msg.required_plugins, expected_plugins,
-        "required_plugins on enqueued job must equal exactly {{TEST_PLUGIN_KEY}}; \
-         trigger and node share the same plugin key so dedup yields one entry. \
-         got: {:?}",
-        jobs[0].msg.required_plugins
+    assert!(
+        InMemoryJobDispatchQueue::new(&stores.execution)
+            .claim_pending(
+                &proc16(9),
+                10,
+                &[TEST_PLUGIN_KEY.parse().unwrap()],
+                nebula_plugin::WorkerFlavorContext::from_registry(stores.frozen.get().unwrap())
+                    .revision_id()
+            )
+            .await
+            .unwrap()
+            .is_empty(),
+        "one drive identity, with no second Job row"
     );
 }
 
@@ -565,9 +729,13 @@ async fn emitter_duplicate_event_id_no_second_row() {
     );
 
     // Only one Start job must be in the queue (the duplicate write is a no-op).
-    let plugin_key2: PluginKey = TEST_PLUGIN_KEY.parse().unwrap();
     let jobs = queue
-        .claim_pending(&proc16(2), 10, &[plugin_key2])
+        .claim_pending_for_flavor(
+            &proc16(2),
+            10,
+            nebula_plugin::WorkerFlavorContext::from_registry(stores.frozen.get().unwrap())
+                .revision_id(),
+        )
         .await
         .expect("claim_pending must succeed");
     assert_eq!(
@@ -602,19 +770,7 @@ async fn trigger_dispatch_end_to_end_real_engine_resume() {
     let (engine, echo_count) = make_engine(&stores).await;
     let workflow = save_echo_workflow(&stores).await;
 
-    // Wire: dedup + queue share the execution store's core so all three writes
-    // (dedup guard + execution row + Start job) are atomic under one lock.
-    let dedup = Arc::new(InMemoryTriggerDedupInbox::new(&stores.execution));
-    let queue = Arc::new(InMemoryJobDispatchQueue::new(&stores.execution));
-
-    let resolver = Arc::new(DefinitionRoutingResolver::new(SLICE_FLAVOR_SHA));
-    let emitter = DurableExecutionEmitter::new(
-        Arc::clone(&dedup) as Arc<dyn TriggerDedupInbox>,
-        resolver,
-        Arc::clone(&workflow),
-        node_key!("test.trigger"),
-        scope(),
-    );
+    let (emitter, _dedup, queue) = make_emitter(&stores, Arc::clone(&workflow)).await;
 
     // 1. Trigger fires → emitter creates Created row + enqueues Start.
     let event_id = IdempotencyKey::new("evt-e2e-001");
@@ -635,18 +791,19 @@ async fn trigger_dispatch_end_to_end_real_engine_resume() {
 
     // 2. Orchestrator: wire sink + handoff, start pull loop, let it claim,
     //    hand off, and dispatch.
-    let sink = Arc::new(EngineExecutionSink::new(
+    let dispatch = Arc::new(nebula_engine::EngineControlDispatch::new(
         Arc::clone(&engine),
         stores.execution.clone() as Arc<dyn ExecutionStore>,
+        Arc::new(InMemoryTurnHandoff::new(&stores.execution)),
+        "trigger-dispatch-control".to_owned(),
+        Duration::from_secs(30),
     ));
     let cancel = CancellationToken::new();
-    let orch_plugin_key: PluginKey = TEST_PLUGIN_KEY.parse().unwrap();
-    let orch = Orchestrator::new(
-        Arc::clone(&queue) as Arc<dyn JobDispatchQueue>,
-        sink as Arc<dyn ExecutionSink>,
-        stores.turn_handoff() as Arc<dyn ExecutionTurnHandoff>,
+    let orch = nebula_engine::ControlConsumer::for_flavor(
+        queue,
+        dispatch,
         proc16(0xAA),
-        vec![orch_plugin_key],
+        engine.worker_flavor_context().unwrap().revision_id(),
     );
 
     let cancel_clone = cancel.clone();
@@ -710,5 +867,101 @@ async fn trigger_dispatch_end_to_end_real_engine_resume() {
         echo_count.load(Ordering::SeqCst),
         1,
         "echo handler must NOT be invoked on duplicate event_id"
+    );
+}
+
+fn test_flavor(plugins: &[PluginKey]) -> nebula_plugin::WorkerFlavorContext {
+    nebula_plugin::WorkerFlavorContext::from_registry(&test_registry(plugins))
+}
+
+fn test_registry(plugins: &[PluginKey]) -> Arc<nebula_plugin::FrozenPluginRegistry> {
+    #[derive(Debug)]
+    struct FixturePlugin(nebula_plugin::PluginManifest);
+    impl nebula_plugin::Plugin for FixturePlugin {
+        fn manifest(&self) -> &nebula_plugin::PluginManifest {
+            &self.0
+        }
+    }
+    let mut registry = nebula_plugin::PluginRegistry::new();
+    for key in plugins {
+        let plugin = FixturePlugin(
+            nebula_plugin::PluginManifest::builder(key.as_str(), key.as_str())
+                .build()
+                .unwrap(),
+        );
+        registry
+            .register(Arc::new(
+                nebula_plugin::ResolvedPlugin::from(plugin).unwrap(),
+            ))
+            .unwrap();
+    }
+    let frozen = registry
+        .freeze(
+            nebula_core::ArtifactSetDigest::from_bytes([0x31; 32]),
+            "1.0.0".parse().unwrap(),
+        )
+        .unwrap();
+    Arc::new(frozen)
+}
+
+#[tokio::test]
+async fn unsupported_selected_flavor_writes_no_execution_dispatch_or_dedup() {
+    let stores = TestStores::new();
+    let workflow = save_echo_workflow(&stores).await;
+    let inbox = Arc::new(InMemoryTriggerDedupInbox::new(&stores.execution));
+    let queue = InMemoryJobDispatchQueue::new(&stores.execution);
+    let _ = activated_start_service(&stores, &workflow).await;
+    let registry = test_registry(&["unrelated.plugin".parse().unwrap()]);
+    let flavor_id = nebula_plugin::WorkerFlavorContext::from_registry(&registry).revision_id();
+    let service = Arc::new(
+        nebula_engine::WorkflowStartService::new(
+            stores.workflow_stores(),
+            stores.execution.clone(),
+            Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
+                &stores.execution,
+            )),
+            nebula_engine::PlanFlavorRevisionLoader::new(Arc::new(
+                stores.execution.plan_flavor_catalog(),
+            )),
+            registry,
+            Arc::new(nebula_core::accessor::SystemClock),
+            nebula_execution::context::ExecutionBudget::default(),
+        )
+        .unwrap(),
+    );
+    let emitter = DurableExecutionEmitter::new(
+        service,
+        workflow.definition().id,
+        node_key!("test.trigger"),
+        scope(),
+    );
+    let result = emitter
+        .emit(
+            serde_json::json!({}),
+            Some(IdempotencyKey::new("unsupported-flavor")),
+        )
+        .await;
+    assert!(
+        result.is_err(),
+        "an unsupported selected flavor must fail before materialization"
+    );
+    assert_eq!(stores.execution.count(&scope(), None).await.unwrap(), 0);
+    assert!(
+        !inbox
+            .exists(&scope(), "test.trigger", "unsupported-flavor")
+            .await
+            .unwrap()
+    );
+    assert!(
+        queue
+            .claim_pending(
+                &proc16(0xAB),
+                10,
+                &[TEST_PLUGIN_KEY.parse().unwrap()],
+                flavor_id
+            )
+            .await
+            .unwrap()
+            .is_empty()
     );
 }

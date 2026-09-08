@@ -3,9 +3,47 @@ use crate::dto::{WorkflowRecord, WorkflowVersionRecord};
 use crate::error::StorageError;
 use crate::scope::Scope;
 
+/// Failure or indeterminate outcome of workflow activation publication.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum WorkflowPublicationError {
+    /// A storage operation failed before the commit was submitted.
+    #[error("workflow publication storage operation failed")]
+    Storage(#[from] StorageError),
+    /// Commit was submitted but its acknowledgement was unavailable.
+    /// Read the exact attempted workflow version and activation identity before retrying.
+    #[error("workflow publication commit outcome is unknown")]
+    OutcomeUnknown,
+    /// The requested exact catalog pair is unavailable or no longer active.
+    #[error("workflow publication revisions are not admitted")]
+    RevisionNotAdmitted,
+    /// Publication identities or version progression disagree.
+    #[error("workflow publication identities do not agree")]
+    InvalidPublication,
+}
+
 /// Workflow aggregate (the workflow row, not its versions).
 #[async_trait::async_trait]
 pub trait WorkflowStore: Send + Sync + std::fmt::Debug {
+    /// CAS-publish a new immutable version and its complete activation identity.
+    ///
+    /// The exact catalog pair must be Active and its recorded workflow identities
+    /// must match. Admission and publication are one backend transaction. Missing
+    /// activation, a wrong tenant/identity, or a CAS miss publishes nothing.
+    /// An unavailable commit acknowledgement returns [`WorkflowPublicationError::OutcomeUnknown`];
+    /// callers must reconcile the original version and identity, never invent a fresh retry identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkflowPublicationError`] when storage fails, acknowledgement
+    /// is unknown, the exact revisions are not admitted, or identities disagree.
+    async fn publish_activated_version(
+        &self,
+        scope: &Scope,
+        row: WorkflowRecord,
+        version: WorkflowVersionRecord,
+        expected_version: u64,
+    ) -> Result<(), WorkflowPublicationError>;
     /// Create a workflow row in `scope`.
     async fn create(&self, scope: &Scope, record: WorkflowRecord) -> Result<(), StorageError>;
 

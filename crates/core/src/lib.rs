@@ -65,6 +65,8 @@ pub mod key_validation;
 pub mod lifecycle;
 /// Observability identity types.
 pub mod obs;
+/// Opaque durable remote-operation identities.
+pub mod operation_id;
 /// Granular permission definitions.
 pub mod permission;
 /// Validated newtype for action port identifiers.
@@ -106,6 +108,7 @@ pub use obs::{
     ParsedTraceparent, SpanId, TRACESTATE_MAX_BYTES, TraceId, W3C_TRACEPARENT, W3C_TRACESTATE,
     W3cTraceContext, W3cTraceContextError, parse_traceparent,
 };
+pub use operation_id::{OperationCallId, OperationId};
 pub use permission::Permission;
 pub use port_key::PortKey;
 pub use role::{OrgRole, WorkspaceRole, effective_workspace_role};

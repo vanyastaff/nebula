@@ -14,8 +14,8 @@ use axum::{
     http::{Method, Request, StatusCode},
 };
 use common::{
-    TEST_CSRF_COOKIE, TEST_CSRF_TOKEN, TEST_ORG, create_state_with_queue, me_support::jwt_for,
-    ws_path,
+    TEST_CSRF_COOKIE, TEST_CSRF_TOKEN, TEST_ORG, build_me_state, create_state_with_queue,
+    me_support::jwt_for, ws_path,
 };
 use nebula_api::{
     ApiConfig, AppState, app,
@@ -205,7 +205,7 @@ async fn plane_a_oauth_routes_remain_mounted_and_fail_closed_without_composition
 #[tokio::test]
 async fn malformed_identity_oauth_callback_is_rejected_before_backend_dispatch() {
     let config = ApiConfig::for_test();
-    let state = AppState::in_memory(config.jwt_secret.clone())
+    let state = build_me_state()
         .with_auth_backend(InMemoryAuthBackend::new().into_arc())
         .with_public_url(config.public_url.clone());
 
@@ -241,7 +241,7 @@ async fn malformed_identity_oauth_callback_is_rejected_before_backend_dispatch()
 async fn oauth_callback_query_rejections_are_fixed_problem_details_without_cookie_clear() {
     const QUERY_CANARY: &str = "DUPLICATE_QUERY_CANARY_DO_NOT_ECHO";
     let config = ApiConfig::for_test();
-    let state = AppState::in_memory(config.jwt_secret.clone())
+    let state = build_me_state()
         .with_auth_backend(InMemoryAuthBackend::new().into_arc())
         .with_public_url(config.public_url.clone());
 

@@ -42,7 +42,9 @@ macro_rules! variant_a_action {
             type Output = serde_json::Value;
 
             fn metadata() -> ActionMetadata {
-                ActionMetadata::new($key, $name, $desc)
+                ActionMetadata::new($key, $name, $desc).with_effect_contract(
+                    nebula_action::effect::ActionEffectContract::NoExternalEffects,
+                )
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
@@ -295,6 +297,7 @@ async fn engine_and_runtime_share_metrics_registry() {
 fn meta(key: ActionKey) -> ActionMetadata {
     let name = key.to_string();
     ActionMetadata::new(key, name, "integration test handler")
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
 }
 
 // ---------------------------------------------------------------------------

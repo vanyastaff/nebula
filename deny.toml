@@ -145,6 +145,8 @@ deny = [
     "nebula-engine",
     "nebula-api",
     "nebula-credential",
+    # Exact compiled action contracts record the shared bounded effect policy.
+    "nebula-plugin",
     # exec-layer consumer of the JobDispatchQueue port (capability-routed dispatch).
     "nebula-orchestrator",
     # nebula-worker assembles the orchestrator + engine over the storage ports.
@@ -190,16 +192,28 @@ deny = [
   # nebula-resource is the runtime resource framework consumed by both business
   # (action) and exec/surface (engine/sdk/plugin) tiers. The allowlist locks the
   # current consumer set so a future PR cannot quietly introduce an upward
-  # dependency from API or core/* without an explicit deny.toml change.
-  # See `docs/adr/0081-m6-resource-credential-integration.md`
-  # (R-040 / SF-1) for the rationale.
+  # dependency from core/* without an explicit deny.toml change.
   { crate = "nebula-resource", wrappers = [
     "nebula-action",
     "nebula-engine",
     "nebula-examples",
     "nebula-plugin",
     "nebula-sdk",
-  ], reason = "Resource framework is shared infra; only the listed business/exec consumers may depend on it (no upward deps from API or core/*); examples demonstrate Resource impls for Pool/Resident topologies (M6.3)" },
+  ], reason = "Resource framework is Business-tier; only the listed business/exec/surface consumers may depend on it; examples demonstrate Resource impls" },
+
+  # nebula-plugin owns trusted plugin registration, frozen registries, and
+  # executable-plan compilation. Only the declared runtime, composition, SDK,
+  # and first-party plugin crates may depend on that business capability.
+  { crate = "nebula-plugin", wrappers = [
+    "nebula-api",
+    "nebula-engine",
+    "nebula-orchestrator",
+    "nebula-plugin-core",
+    "nebula-sdk",
+    "nebula-server",
+    "nebula-worker",
+    "nebula-worker-bin",
+  ], reason = "Plugin is a Business-tier capability; its consumer set is explicit so lower layers cannot acquire registry or plan authority" },
 
   # nebula-credential defines the credential contracts and owns the resolver,
   # refresh, and lease runtime. It is shared infra (not a single-tier Business

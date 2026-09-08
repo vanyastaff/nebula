@@ -55,7 +55,8 @@ impl TestAction {
                 ActionKey::new(key).expect("test action key must be valid"),
                 key,
                 "test action",
-            ),
+            )
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
             dependencies: Dependencies::new(),
             projection_reads: None,
         }

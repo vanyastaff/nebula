@@ -13,6 +13,7 @@
 //! identity seeding.
 
 mod control_queue;
+mod control_turn;
 mod execution;
 mod idempotency_store;
 mod identity;
@@ -23,6 +24,7 @@ mod resume_producer;
 mod resume_token;
 mod start_acceptance;
 mod turn_handoff;
+mod turn_recovery;
 mod workflow;
 
 pub use control_queue::{SqliteControlQueue, SqliteJournalReader};

@@ -15,8 +15,10 @@ mod job_dispatch;
 mod journal;
 mod node_result;
 mod operation_ledger;
+mod operation_protocol;
 pub mod resume_token;
 mod revision_catalog;
+mod start_materialization;
 mod trigger_dedup;
 mod webhook;
 mod workflow;
@@ -45,9 +47,15 @@ pub use job_dispatch::{DispatchKind, DispatchOutcome, JobDispatchMsg};
 pub use journal::JournalEntry;
 pub use node_result::{MAX_SUPPORTED_RESULT_SCHEMA_VERSION, NodeResultRecord};
 pub use operation_ledger::{
-    AttemptGeneration, DestinationCapability, EffectSlotBinding, EffectSlotId, KnownOutcome,
-    OperationId, OperationLedgerError, OperationRecord, OperationState, PrepareOutcome,
-    PreparedOperation, RequestFingerprint,
+    AttemptGeneration, DestinationCapability, DestinationCapabilityParseError, EffectOccurrenceKey,
+    EffectSlotBinding, EffectSlotId, KnownOutcome, OperationLedgerError,
+    OperationProtocolViolation, OperationRecord, OperationState, PrepareOutcome, PreparedOperation,
+    RequestFingerprint,
+};
+pub use operation_protocol::{
+    EffectPhase, FrozenOutcomeEvidence, InvocationDisposition, OperationAdvance, OperationCommand,
+    OperationProtocolRecord, OutcomeEvidenceSource, PreparedEffectContract, PreparedEffectPolicy,
+    PreparedEffectPolicyBuilder,
 };
 pub use resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash, TokenHashLengthError};
 pub use revision_catalog::{
@@ -55,6 +63,10 @@ pub use revision_catalog::{
     PlanFlavorRevisionTarget, RevisionCatalogError, RevisionInsertOutcome, RevisionRecordBytes,
     RevisionReferenceCounts, WorkerFlavorRecordFormat, WorkerFlavorRevisionRecord,
 };
+pub use start_materialization::{
+    ContractBundleFormat, ContractBundleRecord, MAX_CONTRACT_BUNDLE_BYTES, MaterializedStart,
+    StartKey, StartReservation, StoredContractBundle, TriggerStartKey,
+};
 pub use trigger_dedup::TriggerDedupRow;
 pub use webhook::{WebhookActivationRecord, WebhookMode};
-pub use workflow::{WorkflowRecord, WorkflowVersionRecord};
+pub use workflow::{WorkflowActivation, WorkflowRecord, WorkflowVersionRecord};

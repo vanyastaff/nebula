@@ -3,8 +3,8 @@
 //!
 //! Proves this explicit test assembly:
 //!   `compose::build_core_flavor_runtime` (wires CorePlugin + in-memory stores)
-//!   → `WorkerRuntime::spawn` → orchestrator claims a `Start` job
-//!   → `EngineExecutionSink::dispatch` → `WorkflowEngine::resume_execution`
+//!   → owner materializes the execution and exact contract with a `Start` command
+//!   → `WorkerRuntime::spawn` → control consumer → `WorkflowEngine::resume_execution`
 //!   → execution reaches `Completed`.
 //!
 //! The test uses seeded in-memory adapters, so it does not boot the worker
@@ -22,19 +22,18 @@ use chrono::Utc;
 #[cfg(feature = "runtime-repair-red")]
 use nebula_core::accessor::Clock;
 use nebula_core::{WorkflowId, id::ExecutionId, node_key};
-use nebula_execution::{ExecutionState, ExecutionStatus};
+use nebula_execution::ExecutionStatus;
 use nebula_storage::{
-    InMemoryControlQueue, InMemoryExecutionStore, InMemoryWorkflowVersionStore,
-    inmem::InMemoryJobDispatchQueue,
+    InMemoryControlQueue, InMemoryExecutionStore, InMemoryWorkflowStore,
+    InMemoryWorkflowVersionStore,
 };
 use nebula_storage_port::{
     Scope,
-    dto::{ControlCommand, JobDispatchMsg},
-    store::{ExecutionStore, JobDispatchQueue, NodeResultStore, WorkflowVersionStore},
+    store::{ExecutionStore, NodeResultStore, StartAcceptanceStore, WorkflowStore},
 };
 use nebula_workflow::{
-    CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, TriggerBinding, ValidatedWorkflow, Version,
-    WorkflowConfig, WorkflowDefinition,
+    CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, TriggerBinding, Version, WorkflowConfig,
+    WorkflowDefinition,
 };
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
@@ -64,7 +63,10 @@ impl Clock for FixedEvidenceClock {
 // ── Scope used across these tests ─────────────────────────────────────────────
 
 fn scope() -> Scope {
-    Scope::new("nebula", "nebula")
+    Scope::new(
+        nebula_core::WorkspaceId::from_bytes([0x22; 16]).to_string(),
+        nebula_core::OrgId::from_bytes([0x11; 16]).to_string(),
+    )
 }
 
 // ── In-memory store bundle ────────────────────────────────────────────────────
@@ -77,13 +79,28 @@ struct TestStores {
     checkpoints: Arc<nebula_storage::InMemoryCheckpointStore>,
     idempotency: Arc<nebula_storage::InMemoryIdempotencyGuard>,
     versions: Arc<InMemoryWorkflowVersionStore>,
+    workflows: Arc<InMemoryWorkflowStore>,
 }
 
 impl TestStores {
+    fn revision_inputs(&self) -> nebula_worker_bin::compose::CoreFlavorRevisionInputs {
+        nebula_worker_bin::compose::CoreFlavorRevisionInputs {
+            metrics: nebula_metrics::MetricsRegistry::new(),
+            artifact_set_digest: nebula_core::ArtifactSetDigest::from_bytes([0x71; 32]),
+            catalog: Arc::new(nebula_storage::InMemoryPlanFlavorCatalog::new(
+                &self.execution,
+            )),
+            bundles: Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
+                &self.execution,
+            )),
+        }
+    }
+
     fn new() -> Self {
         let execution = Arc::new(InMemoryExecutionStore::new());
         let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&execution));
         let versions = InMemoryWorkflowVersionStore::new();
+        let workflows = InMemoryWorkflowStore::new_with_versions(&versions, &execution);
         Self {
             execution,
             journal,
@@ -91,6 +108,7 @@ impl TestStores {
             checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
             idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
             versions: Arc::new(versions),
+            workflows: Arc::new(workflows),
         }
     }
 
@@ -102,22 +120,22 @@ impl TestStores {
             checkpoints: self.checkpoints.clone(),
             idempotency: self.idempotency.clone(),
             resume_tokens: Arc::new(self.execution.resume_token_store()),
-            operation_ledger: None,
+            operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(
+                &self.execution,
+            )),
         }
     }
 
     fn workflow_stores(&self) -> nebula_engine::WorkflowStores {
         nebula_engine::WorkflowStores {
-            workflow: Arc::new(nebula_storage::InMemoryWorkflowStore::new_with_versions(
-                &self.versions,
-            )),
+            workflow: self.workflows.clone(),
             versions: self.versions.clone(),
         }
     }
 
-    /// Handoff over the SAME shared core the queue and execution store use —
-    /// the lease write and the queue acknowledgement must land under one
-    /// boundary (#976).
+    /// Build a handoff over the same shared core used by the queue and execution store.
+    ///
+    /// The lease write and queue acknowledgement must commit atomically.
     fn turn_handoff(&self) -> Arc<nebula_storage::inmem::InMemoryTurnHandoff> {
         Arc::new(nebula_storage::inmem::InMemoryTurnHandoff::new(
             &self.execution,
@@ -130,12 +148,10 @@ impl TestStores {
 /// Plugin key for the first-party core plugin.
 const CORE_PLUGIN_KEY: &str = "core";
 
-async fn save_set_fields_workflow(stores: &TestStores) -> Arc<ValidatedWorkflow> {
+async fn activate_set_fields_workflow(stores: &TestStores) -> WorkflowId {
     let workflow_id = WorkflowId::new();
     let now = Utc::now();
-    // The trigger binding declares a manual trigger intent under the `core` plugin;
-    // no trigger action needs to be registered for the engine to execute the workflow
-    // node (trigger bindings are metadata for routing, not a registered action dispatch).
+    // This fixture submits Start directly; it declares no trigger adapter.
     let def = WorkflowDefinition {
         id: workflow_id,
         name: "smoke-set-fields".into(),
@@ -153,10 +169,7 @@ async fn save_set_fields_workflow(stores: &TestStores) -> Arc<ValidatedWorkflow>
         connections: Vec::<Connection>::new(),
         variables: HashMap::new(),
         config: WorkflowConfig::default(),
-        trigger_bindings: vec![
-            TriggerBinding::new(node_key!("trigger"), CORE_PLUGIN_KEY, "core.trigger.manual")
-                .expect("TriggerBinding must build for a valid node key"),
-        ],
+        trigger_bindings: Vec::<TriggerBinding>::new(),
         tags: Vec::new(),
         created_at: now,
         updated_at: now,
@@ -164,44 +177,81 @@ async fn save_set_fields_workflow(stores: &TestStores) -> Arc<ValidatedWorkflow>
         ui_metadata: None,
         schema_version: CURRENT_SCHEMA_VERSION,
     };
-    let validated = ValidatedWorkflow::validate(def)
-        .expect("set_fields workflow definition must pass validation");
     stores
-        .versions
+        .workflows
         .create(
             &scope(),
-            nebula_storage_port::dto::WorkflowVersionRecord {
-                workflow_id: validated.definition().id.to_string(),
-                number: 0,
-                published: true,
-                pinned: false,
-                definition: serde_json::to_value(validated.definition())
-                    .expect("serialize workflow definition"),
+            nebula_storage_port::dto::WorkflowRecord {
+                id: workflow_id.to_string(),
+                scope: scope(),
+                version: 0,
+                slug: "smoke-set-fields".into(),
+                deleted: false,
             },
         )
         .await
-        .expect("save workflow version must succeed");
-    Arc::new(validated)
+        .expect("create workflow must succeed");
+    let frozen = Arc::new(core_frozen_registry());
+    nebula_engine::WorkflowActivationService::new(
+        stores.workflows.clone(),
+        stores.versions.clone(),
+        frozen,
+        nebula_engine::PlanFlavorRevisionInstaller::new(Arc::new(
+            stores.execution.plan_flavor_catalog(),
+        )),
+        Arc::new(nebula_core::accessor::SystemClock),
+    )
+    .activate(&scope(), workflow_id, 0, def)
+    .await
+    .expect("activation must compile, install and publish the exact core contract");
+    workflow_id
 }
 
-async fn seed_created_execution(
-    stores: &TestStores,
-    workflow_id: WorkflowId,
-    execution_id: ExecutionId,
-) {
-    let mut state = ExecutionState::new(execution_id, workflow_id, &[]);
-    state.set_workflow_input(json!({"fields": [{"name": "greeting", "value": "hello"}]}));
-    let state_json = serde_json::to_value(&state).expect("serialize execution state");
-    stores
-        .execution
-        .create(
+async fn materialize_start(stores: &TestStores, workflow_id: WorkflowId) -> ExecutionId {
+    let starts = Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
+        &stores.execution,
+    ));
+    let service = nebula_engine::WorkflowStartService::new(
+        stores.workflow_stores(),
+        stores.execution.clone(),
+        starts.clone(),
+        nebula_engine::PlanFlavorRevisionLoader::new(Arc::new(
+            stores.execution.plan_flavor_catalog(),
+        )),
+        Arc::new(core_frozen_registry()),
+        Arc::new(nebula_core::accessor::SystemClock),
+        nebula_execution::ExecutionBudget::default(),
+    )
+    .expect("start owner must accept the deployment budget");
+    let receipt = service
+        .start(
             &scope(),
-            &execution_id.to_string(),
-            &workflow_id.to_string(),
-            state_json,
+            workflow_id,
+            Some(json!({"fields": [{"name": "greeting", "value": "hello"}]})),
+            None,
+            None,
         )
         .await
-        .expect("create execution row must succeed");
+        .expect("start owner must atomically persist the execution and contract");
+    let execution_id = receipt.state().execution_id;
+    assert_eq!(receipt.state().status, ExecutionStatus::Created);
+    let persisted = starts
+        .read_contract_bundle(&scope(), &execution_id.to_string())
+        .await
+        .expect("read persisted bundle")
+        .expect("start must retain its exact bundle");
+    assert_eq!(
+        persisted.record().identity().bundle_id(),
+        receipt.bundle().bundle_id()
+    );
+    let controls = InMemoryControlQueue::new(&stores.execution).snapshot();
+    assert_eq!(controls.len(), 1);
+    assert_eq!(controls[0].0.execution_id, execution_id.to_string());
+    assert_eq!(
+        controls[0].0.command,
+        nebula_storage_port::dto::ControlCommand::Start
+    );
+    execution_id
 }
 
 async fn read_status(stores: &TestStores, execution_id: ExecutionId) -> Option<ExecutionStatus> {
@@ -217,80 +267,58 @@ async fn read_status(stores: &TestStores, execution_id: ExecutionId) -> Option<E
         })
 }
 
+fn core_frozen_registry() -> nebula_plugin::FrozenPluginRegistry {
+    let plugin = nebula_plugin::ResolvedPlugin::from(
+        nebula_plugin_core::CorePlugin::try_new().expect("core manifest"),
+    )
+    .expect("resolve core");
+    let mut registry = nebula_plugin::PluginRegistry::new();
+    registry.register(Arc::new(plugin)).expect("register core");
+    registry
+        .freeze(
+            nebula_core::ArtifactSetDigest::from_bytes([0x71; 32]),
+            "1.0.0".parse().expect("runtime contract"),
+        )
+        .expect("freeze core")
+}
+
 // ── End-to-end smoke test ─────────────────────────────────────────────────────
 
 /// Proves that the in-memory runtime built by `build_core_flavor_runtime`
-/// wires the CorePlugin and processes a seeded Start job to `Completed`.
+/// wires the CorePlugin and processes an owner-materialized Start to `Completed`.
 ///
 /// # Red-ability
 ///
-/// Without the `with_plugin` call inside `build_core_flavor_runtime`, the engine
-/// does not know the `core.set_fields` action key. The orchestrator claims the
-/// job and the sink calls `resume_execution`, but the engine returns an
-/// `ActionNotFound` error for the unknown key. The execution transitions to
-/// `Failed` (or remains `Running` if the engine surfaces an error without a
-/// terminal transition), and the `completed` assertion fires with the message
-/// "core-flavor worker did not drive the execution to Completed within the poll
-/// budget; ensure build_core_flavor_runtime calls engine.with_plugin(core_plugin)".
+/// Without the admitted core factory snapshot or persisted bundle, the worker
+/// cannot execute the exact plan. Completion and the persisted action output
+/// independently prove the owner-created Start reaches the intended action.
 #[tokio::test(start_paused = true)]
-async fn core_flavor_runtime_processes_seeded_start_job() {
+async fn core_flavor_runtime_processes_materialized_start() {
     let stores = TestStores::new();
-
-    // A single shared queue: both the runtime and the seed enqueue share the
-    // same in-memory queue so the worker can actually claim the seeded job.
-    let queue: Arc<dyn JobDispatchQueue> =
-        Arc::new(InMemoryJobDispatchQueue::new(&stores.execution));
 
     // Build the core-flavor runtime builder. `build_core_flavor_runtime` wires
     // CorePlugin via `engine.with_plugin` and returns a pre-configured
     // `WorkerRuntimeBuilder`, the shared `MetricsRegistry`, and the advertised
-    // `PluginKey`. Use a fast poll interval (10 ms) so virtual-time advances fire quickly.
-    let (builder, _metrics, plugin_key) = build_core_flavor_runtime(
+    // `PluginKey`.
+    let (builder, _metrics, _plugin_key) = build_core_flavor_runtime(
         stores.execution_stores(),
-        stores.workflow_stores(),
-        Arc::clone(&queue),
+        stores.turn_handoff(),
         stores.turn_handoff(),
         [0xCCu8; 16],
+        stores.revision_inputs(),
     )
     .expect("build_core_flavor_runtime must succeed");
     let runtime = builder
         // The same shared core the execution store uses, so the consumer drains
         // the queue this test's API-side writes land in.
         .with_control_queue(Arc::new(InMemoryControlQueue::new(&stores.execution)))
-        .with_poll_interval(Duration::from_millis(10))
         .build()
         .expect("WorkerRuntimeBuilder::build must succeed with core plugin");
 
-    // Seed a workflow whose sole node is `core.set_fields`.
-    let workflow = save_set_fields_workflow(&stores).await;
-    let workflow_id = workflow.definition().id;
+    let workflow_id = activate_set_fields_workflow(&stores).await;
+    let execution_id = materialize_start(&stores, workflow_id).await;
 
-    // Seed a `Created` execution row.
-    let execution_id = ExecutionId::new();
-    seed_created_execution(&stores, workflow_id, execution_id).await;
-
-    // Enqueue a `Start` job on the SAME queue the runtime was built with.
-    let job_id = [0xAAu8; 16];
-    let msg = JobDispatchMsg::new(
-        job_id,
-        execution_id.to_string(),
-        ControlCommand::Start,
-        scope(),
-        json!({}),
-        None::<String>,
-        "sha-smoke",
-        plugin_key.clone(),
-        vec![plugin_key],
-        None::<String>,
-        0,
-        None,
-    );
-    queue
-        .enqueue(&msg)
-        .await
-        .expect("enqueue Start job must succeed");
-
-    // Spawn the runtime with a fast poll interval so virtual-time advances fire quickly.
+    // Spawn the runtime and advance virtual time while the control consumer runs.
     let cancel = CancellationToken::new();
     let handle = runtime.spawn(cancel.clone());
 
@@ -360,15 +388,12 @@ async fn core_flavor_runtime_processes_seeded_start_job() {
 #[tokio::test]
 async fn core_flavor_runtime_advertises_core_plugin_key() {
     let stores = TestStores::new();
-    let queue: Arc<dyn JobDispatchQueue> =
-        Arc::new(InMemoryJobDispatchQueue::new(&stores.execution));
-
     let (_builder, _metrics, key) = build_core_flavor_runtime(
         stores.execution_stores(),
-        stores.workflow_stores(),
-        queue,
+        stores.turn_handoff(),
         stores.turn_handoff(),
         [0x01u8; 16],
+        stores.revision_inputs(),
     )
     .expect("build_core_flavor_runtime must succeed with the CorePlugin installed");
 
@@ -385,8 +410,6 @@ async fn core_flavor_runtime_advertises_core_plugin_key() {
 #[test]
 fn runtime_repair_builder_seals_exact_clock_and_event_bus() {
     let stores = TestStores::new();
-    let queue: Arc<dyn JobDispatchQueue> =
-        Arc::new(InMemoryJobDispatchQueue::new(&stores.execution));
     let clock = Arc::new(FixedEvidenceClock {
         wall_time: Utc::now(),
         monotonic: Instant::now(),
@@ -398,12 +421,11 @@ fn runtime_repair_builder_seals_exact_clock_and_event_bus() {
 
     let (builder, _, _) = build_core_flavor_runtime_for_runtime_repair_red(
         stores.execution_stores(),
-        stores.workflow_stores(),
-        queue,
+        stores.turn_handoff(),
         stores.turn_handoff(),
         [0xEEu8; 16],
-        clock,
-        event_bus,
+        stores.revision_inputs(),
+        nebula_worker_bin::compose::RuntimeRepairEvidenceInputs { clock, event_bus },
     )
     .expect("evidence-specific core flavor builds");
     assert!(

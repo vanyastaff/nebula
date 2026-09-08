@@ -54,6 +54,7 @@ use nebula_engine::{
 };
 use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_metrics::MetricsRegistry;
+use nebula_storage::inmem::InMemoryTurnHandoff;
 use nebula_storage::{InMemoryExecutionStore, InMemoryWorkflowVersionStore};
 use nebula_storage_port::{
     FencingToken, Scope, StorageError, TransitionBatch, TransitionOutcome,
@@ -63,6 +64,22 @@ use nebula_storage_port::{
 use nebula_workflow::{
     CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
 };
+
+fn control_dispatch(
+    engine: Arc<WorkflowEngine>,
+    execution: Arc<dyn ExecutionStore>,
+    backing: &InMemoryExecutionStore,
+) -> EngineControlDispatch {
+    EngineControlDispatch::new(
+        engine,
+        execution,
+        Arc::new(InMemoryTurnHandoff::new(backing)),
+        "wait-recovery-control".to_owned(),
+        Duration::from_secs(30),
+    )
+}
+
+mod exact_fixture;
 
 // ── Fault-injecting ExecutionStore wrapper (Codex P2 red test) ───────────────
 
@@ -285,12 +302,12 @@ impl StatelessAction for CountingEchoB {
 
 #[derive(Clone)]
 struct RecoveryStores {
+    frozen: Arc<std::sync::Mutex<Option<Arc<nebula_plugin::FrozenPluginRegistry>>>>,
     execution: Arc<InMemoryExecutionStore>,
     journal: Arc<nebula_storage::InMemoryJournalReader>,
     node_results: Arc<nebula_storage::InMemoryNodeResultStore>,
     checkpoints: Arc<nebula_storage::InMemoryCheckpointStore>,
     idempotency: Arc<nebula_storage::InMemoryIdempotencyGuard>,
-    workflow: Arc<nebula_storage::InMemoryWorkflowStore>,
     versions: Arc<InMemoryWorkflowVersionStore>,
 }
 
@@ -299,14 +316,13 @@ impl RecoveryStores {
         let execution = Arc::new(InMemoryExecutionStore::new());
         let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&execution));
         let versions = InMemoryWorkflowVersionStore::new();
-        let workflow = nebula_storage::InMemoryWorkflowStore::new_with_versions(&versions);
         Self {
+            frozen: Arc::new(std::sync::Mutex::new(None)),
             execution,
             journal,
             node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
             checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
             idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
-            workflow: Arc::new(workflow),
             versions: Arc::new(versions),
         }
     }
@@ -319,21 +335,14 @@ impl RecoveryStores {
             checkpoints: self.checkpoints.clone(),
             idempotency: self.idempotency.clone(),
             resume_tokens: Arc::new(self.execution.resume_token_store()),
-            operation_ledger: None,
-        }
-    }
-
-    fn workflow_stores(&self) -> nebula_engine::WorkflowStores {
-        nebula_engine::WorkflowStores {
-            workflow: self.workflow.clone(),
-            versions: self.versions.clone(),
+            operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(
+                &self.execution,
+            )),
         }
     }
 
     fn attach(&self, engine: WorkflowEngine) -> WorkflowEngine {
-        engine
-            .with_execution_stores(self.execution_stores())
-            .with_workflow_stores(self.workflow_stores())
+        engine.with_execution_stores(self.execution_stores())
     }
 
     async fn save_workflow(&self, wf: &WorkflowDefinition) {
@@ -341,6 +350,7 @@ impl RecoveryStores {
             .create(
                 &nebula_engine::store_seam::single_tenant_scope(),
                 WorkflowVersionRecord {
+                    activation: None,
                     workflow_id: wf.id.to_string(),
                     number: 0,
                     published: true,
@@ -356,15 +366,32 @@ impl RecoveryStores {
         let execution_id = ExecutionId::new();
         let mut exec_state = ExecutionState::new(execution_id, workflow_id, &[]);
         exec_state.set_workflow_input(serde_json::json!(null));
-        self.execution
-            .create(
+        let frozen = self
+            .frozen
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("fixture engine configured before admission");
+        let record = self
+            .versions
+            .get(
                 &nebula_engine::store_seam::single_tenant_scope(),
-                &execution_id.to_string(),
                 &workflow_id.to_string(),
-                serde_json::to_value(&exec_state).unwrap(),
+                0,
             )
             .await
+            .unwrap()
             .unwrap();
+        let workflow =
+            serde_json::from_str(&serde_json::to_string(&record.definition).unwrap()).unwrap();
+        exact_fixture::materialize_state(
+            &self.execution,
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &frozen,
+            &workflow,
+            &mut exec_state,
+        )
+        .await;
         execution_id
     }
 
@@ -398,7 +425,11 @@ impl RecoveryStores {
 
 // ── Engine assembly ──────────────────────────────────────────────────────────
 
-fn make_engine(registry: Arc<ActionRegistry>) -> WorkflowEngine {
+fn make_engine(stores: &RecoveryStores, registry: Arc<ActionRegistry>) -> WorkflowEngine {
+    let keys = registry.keys();
+    let actions: Vec<_> = keys.iter().map(|key| ("test", key.as_str())).collect();
+    let frozen = exact_fixture::freeze_registry(&registry, &actions);
+    *stores.frozen.lock().unwrap() = Some(Arc::clone(&frozen));
     let metrics = MetricsRegistry::new();
     let executor: ActionExecutor =
         Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
@@ -412,7 +443,17 @@ fn make_engine(registry: Arc<ActionRegistry>) -> WorkflowEngine {
         )
         .unwrap(),
     );
-    WorkflowEngine::new(runtime, metrics).unwrap()
+    WorkflowEngine::new(runtime, metrics)
+        .unwrap()
+        .with_plan_flavor_runtime(
+            Arc::new(nebula_engine::PlanFlavorRevisionLoader::new(Arc::new(
+                stores.execution.plan_flavor_catalog(),
+            ))),
+            frozen,
+            Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
+                &stores.execution,
+            )),
+        )
 }
 
 /// Single signal+timeout wait `wait ──main──> downstream`.
@@ -456,9 +497,9 @@ fn make_single_workflow() -> WorkflowDefinition {
         description: None,
         version: Version::new(0, 1, 0),
         nodes: vec![
-            NodeDefinition::new(wait.clone(), "WaitNode", "core", "test.wr.webhook_timeout")
+            NodeDefinition::new(wait.clone(), "WaitNode", "test", "test.wr.webhook_timeout")
                 .unwrap(),
-            NodeDefinition::new(downstream.clone(), "DownstreamNode", "core", "test.wr.echo")
+            NodeDefinition::new(downstream.clone(), "DownstreamNode", "test", "test.wr.echo")
                 .unwrap(),
         ],
         connections: vec![Connection::new(wait, downstream)],
@@ -552,8 +593,11 @@ async fn crashed_owner_resume_recovers_via_expired_lease() {
     let engine_a = Arc::new(
         stores
             .attach(
-                make_engine(build_single_registry("cb-recover", timeout, &downstream))
-                    .with_event_bus(event_bus),
+                make_engine(
+                    &stores,
+                    build_single_registry("cb-recover", timeout, &downstream),
+                )
+                .with_event_bus(event_bus),
             )
             .with_lease_ttl(lease_ttl)
             .with_lease_heartbeat_interval(heartbeat),
@@ -577,15 +621,18 @@ async fn crashed_owner_resume_recovers_via_expired_lease() {
     // A fresh runner B with NO live entry for this execution receives the Resume.
     let engine_b = Arc::new(
         stores
-            .attach(make_engine(build_single_registry(
-                "cb-recover",
-                timeout,
-                &downstream,
-            )))
+            .attach(make_engine(
+                &stores,
+                build_single_registry("cb-recover", timeout, &downstream),
+            ))
             .with_lease_ttl(lease_ttl)
             .with_lease_heartbeat_interval(heartbeat),
     );
-    let dispatch_b = EngineControlDispatch::new(Arc::clone(&engine_b), stores.execution.clone());
+    let dispatch_b = control_dispatch(
+        Arc::clone(&engine_b),
+        stores.execution.clone(),
+        &stores.execution,
+    );
     let scope = nebula_engine::store_seam::single_tenant_scope();
 
     tokio::time::timeout(
@@ -643,8 +690,11 @@ async fn live_owner_elsewhere_resume_defers() {
     let engine_a = Arc::new(
         stores
             .attach(
-                make_engine(build_single_registry("cb-live", timeout, &downstream))
-                    .with_event_bus(event_bus),
+                make_engine(
+                    &stores,
+                    build_single_registry("cb-live", timeout, &downstream),
+                )
+                .with_event_bus(event_bus),
             )
             .with_lease_ttl(lease_ttl)
             .with_lease_heartbeat_interval(heartbeat),
@@ -663,15 +713,18 @@ async fn live_owner_elsewhere_resume_defers() {
     // satisfy_running_signal_waits sees the still-held lease → Leased → Deferred.
     let engine_b = Arc::new(
         stores
-            .attach(make_engine(build_single_registry(
-                "cb-live",
-                timeout,
-                &downstream,
-            )))
+            .attach(make_engine(
+                &stores,
+                build_single_registry("cb-live", timeout, &downstream),
+            ))
             .with_lease_ttl(lease_ttl)
             .with_lease_heartbeat_interval(heartbeat),
     );
-    let dispatch_b = EngineControlDispatch::new(Arc::clone(&engine_b), stores.execution.clone());
+    let dispatch_b = control_dispatch(
+        Arc::clone(&engine_b),
+        stores.execution.clone(),
+        &stores.execution,
+    );
 
     let result = dispatch_b.dispatch_resume(&scope, execution_id, None).await;
     assert!(
@@ -721,12 +774,15 @@ async fn not_found_resume_acks_drops() {
     let stores = RecoveryStores::new();
     // A workflow exists, but we deliver a Resume for an execution id that was
     // never created — there is no row for it.
-    let engine = Arc::new(stores.attach(make_engine(build_single_registry(
-        "cb-absent",
-        Duration::from_hours(1),
-        &downstream,
-    ))));
-    let dispatch = EngineControlDispatch::new(Arc::clone(&engine), stores.execution.clone());
+    let engine = Arc::new(stores.attach(make_engine(
+        &stores,
+        build_single_registry("cb-absent", Duration::from_hours(1), &downstream),
+    )));
+    let dispatch = control_dispatch(
+        Arc::clone(&engine),
+        stores.execution.clone(),
+        &stores.execution,
+    );
     let scope = nebula_engine::store_seam::single_tenant_scope();
 
     let unknown = ExecutionId::new();
@@ -812,12 +868,12 @@ async fn mixed_wait_targeted_recovery_arms_only_match() {
         description: None,
         version: Version::new(0, 1, 0),
         nodes: vec![
-            NodeDefinition::new(wait_a.clone(), "WaitA", "core", "test.wr.webhook_timeout")
+            NodeDefinition::new(wait_a.clone(), "WaitA", "test", "test.wr.webhook_timeout")
                 .unwrap(),
-            NodeDefinition::new(wait_b.clone(), "WaitB", "core", "test.wr.webhook_timeout_b")
+            NodeDefinition::new(wait_b.clone(), "WaitB", "test", "test.wr.webhook_timeout_b")
                 .unwrap(),
-            NodeDefinition::new(down_a.clone(), "DownA", "core", "test.wr.echo").unwrap(),
-            NodeDefinition::new(down_b.clone(), "DownB", "core", "test.wr.echo_b").unwrap(),
+            NodeDefinition::new(down_a.clone(), "DownA", "test", "test.wr.echo").unwrap(),
+            NodeDefinition::new(down_b.clone(), "DownB", "test", "test.wr.echo_b").unwrap(),
         ],
         connections: vec![
             Connection::new(wait_a, down_a),
@@ -841,7 +897,7 @@ async fn mixed_wait_targeted_recovery_arms_only_match() {
     let mut events_rx = event_bus.subscribe();
     let engine_a = Arc::new(
         stores
-            .attach(make_engine(registry).with_event_bus(event_bus))
+            .attach(make_engine(&stores, registry).with_event_bus(event_bus))
             .with_lease_ttl(lease_ttl)
             .with_lease_heartbeat_interval(heartbeat),
     );
@@ -909,11 +965,15 @@ async fn mixed_wait_targeted_recovery_arms_only_match() {
     );
     let engine_b = Arc::new(
         stores
-            .attach(make_engine(registry_b))
+            .attach(make_engine(&stores, registry_b))
             .with_lease_ttl(lease_ttl)
             .with_lease_heartbeat_interval(heartbeat),
     );
-    let dispatch_b = EngineControlDispatch::new(Arc::clone(&engine_b), stores.execution.clone());
+    let dispatch_b = control_dispatch(
+        Arc::clone(&engine_b),
+        stores.execution.clone(),
+        &stores.execution,
+    );
 
     // The targeted recovery arms cb-a and re-drives. Because cb-b (NOT armed)
     // stays `Waiting` with its live 1h timer, the recovery drive parks cb-b and
@@ -1005,8 +1065,11 @@ async fn crash_recovery_redrive_without_resume_does_not_satisfy() {
     let engine_a = Arc::new(
         stores
             .attach(
-                make_engine(build_single_registry("cb-redrive", timeout, &downstream))
-                    .with_event_bus(event_bus),
+                make_engine(
+                    &stores,
+                    build_single_registry("cb-redrive", timeout, &downstream),
+                )
+                .with_event_bus(event_bus),
             )
             .with_lease_ttl(lease_ttl)
             .with_lease_heartbeat_interval(heartbeat),
@@ -1026,11 +1089,10 @@ async fn crash_recovery_redrive_without_resume_does_not_satisfy() {
     // the live timer and exits the synchronous drive once the frontier yields).
     let engine_b = Arc::new(
         stores
-            .attach(make_engine(build_single_registry(
-                "cb-redrive",
-                timeout,
-                &downstream,
-            )))
+            .attach(make_engine(
+                &stores,
+                build_single_registry("cb-redrive", timeout, &downstream),
+            ))
             .with_lease_ttl(lease_ttl)
             .with_lease_heartbeat_interval(heartbeat),
     );
@@ -1113,14 +1175,13 @@ async fn transient_store_error_during_resume_defers_not_drops() {
     // reads go through the fault wrapper.
     let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&inner_execution));
     let versions = InMemoryWorkflowVersionStore::new();
-    let workflow = nebula_storage::InMemoryWorkflowStore::new_with_versions(&versions);
     let stores = RecoveryStores {
+        frozen: Arc::new(std::sync::Mutex::new(None)),
         execution: Arc::clone(&inner_execution),
         journal,
         node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
         checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
         idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
-        workflow: Arc::new(workflow),
         versions: Arc::new(versions),
     };
 
@@ -1132,8 +1193,11 @@ async fn transient_store_error_during_resume_defers_not_drops() {
     let engine_a = Arc::new(
         stores
             .attach(
-                make_engine(build_single_registry("cb-fault", timeout, &downstream))
-                    .with_event_bus(event_bus),
+                make_engine(
+                    &stores,
+                    build_single_registry("cb-fault", timeout, &downstream),
+                )
+                .with_event_bus(event_bus),
             )
             .with_lease_ttl(lease_ttl)
             .with_lease_heartbeat_interval(heartbeat),
@@ -1157,18 +1221,21 @@ async fn transient_store_error_during_resume_defers_not_drops() {
     // `get`-for-status path.
     let engine_b = Arc::new(
         stores
-            .attach(make_engine(build_single_registry(
-                "cb-fault",
-                timeout,
-                &downstream,
-            )))
+            .attach(make_engine(
+                &stores,
+                build_single_registry("cb-fault", timeout, &downstream),
+            ))
             .with_lease_ttl(lease_ttl)
             .with_lease_heartbeat_interval(heartbeat),
     );
     // Wire the fault store into the dispatch (not the engine). The engine's
     // internal store is clean; only `read_status_discriminated` inside the
     // dispatch sees the fault.
-    let dispatch_b = EngineControlDispatch::new(Arc::clone(&engine_b), Arc::clone(&fault_store));
+    let dispatch_b = control_dispatch(
+        Arc::clone(&engine_b),
+        Arc::clone(&fault_store),
+        &stores.execution,
+    );
 
     // Activate the fault AFTER setup so none of the park/persist calls are
     // affected, then deliver the Resume.

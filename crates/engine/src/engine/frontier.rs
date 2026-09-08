@@ -32,6 +32,7 @@ impl WorkflowEngine {
         scope: &Scope,
         graph: &DependencyGraph,
         node_map: &HashMap<NodeKey, &nebula_workflow::NodeDefinition>,
+        factory_dispatch: FactoryDispatch<'_>,
         outputs: &Arc<DashMap<NodeKey, serde_json::Value>>,
         semaphore: &Arc<Semaphore>,
         cancel_token: &CancellationToken,
@@ -44,13 +45,14 @@ impl WorkflowEngine {
         fencing: Option<nebula_storage_port::FencingToken>,
         budget: &ExecutionBudget,
         started: &Instant,
+        elapsed_before_turn: Duration,
         error_strategy: nebula_workflow::ErrorStrategy,
         workflow_retry_policy: Option<nebula_workflow::RetryConfig>,
         seed_nodes: Vec<NodeKey>,
         initial_activated: HashMap<NodeKey, HashSet<NodeKey>>,
         initial_resolved: HashMap<NodeKey, usize>,
-    ) -> Option<(NodeKey, String)> {
-        let total_output_bytes = Arc::new(AtomicU64::new(0));
+    ) -> Result<Option<(NodeKey, String)>, EngineError> {
+        let total_output_bytes = Arc::new(AtomicU64::new(exec_state.total_output_bytes));
         // Precompute how many incoming edges each node has
         let required_count: HashMap<NodeKey, usize> = node_map
             .keys()
@@ -328,6 +330,11 @@ impl WorkflowEngine {
                             scope,
                             execution_id,
                             node_key.clone(),
+                            Some(checkpoint::failure_checkpoint(
+                                FailureOutcome::Fail,
+                                outputs,
+                                &node_key,
+                            )),
                             outputs,
                             exec_state,
                             repo_version,
@@ -337,7 +344,7 @@ impl WorkflowEngine {
                         .await
                     {
                         cancel_token.cancel();
-                        return Some((node_key.clone(), e.to_string()));
+                        return Err(e);
                     }
                     self.emit_event(ExecutionEvent::NodeWaitTimedOut {
                         execution_id,
@@ -358,7 +365,7 @@ impl WorkflowEngine {
                         // `determine_final_status` priority-2 marks the
                         // execution `Failed`.
                         cancel_token.cancel();
-                        return Some((node_key.clone(), err_msg));
+                        return Ok(Some((node_key.clone(), err_msg)));
                     }
                     // OnError-handled / ContinueOnError: the failure was routed
                     // to the error branch / dependents Skipped — the loop
@@ -382,6 +389,15 @@ impl WorkflowEngine {
                                 scope,
                                 execution_id,
                                 node_key.clone(),
+                                Some(nebula_execution::NodeCheckpoint::TimerCompleted {
+                                    partial_output: exec_state
+                                        .checkpoint
+                                        .as_ref()
+                                        .and_then(|checkpoint| checkpoint.nodes().get(&node_key))
+                                        .map(checkpoint::checkpoint_output)
+                                        .transpose()?
+                                        .flatten(),
+                                }),
                                 outputs,
                                 exec_state,
                                 repo_version,
@@ -391,7 +407,7 @@ impl WorkflowEngine {
                             .await
                         {
                             cancel_token.cancel();
-                            return Some((node_key.clone(), e.to_string()));
+                            return Err(e);
                         }
                         self.emit_event(ExecutionEvent::NodeWaitCompleted {
                             execution_id,
@@ -444,18 +460,31 @@ impl WorkflowEngine {
                 && let Some(node_key) = ready_queue.pop_front()
             {
                 // Check budget limits before dispatching
-                if let Some(violation) = check_budget(budget, started, &total_output_bytes) {
+                if let Some(violation) =
+                    check_budget(budget, started, elapsed_before_turn, &total_output_bytes)
+                {
                     cancel_token.cancel();
-                    return Some((node_key, violation));
+                    return Ok(Some((node_key, violation)));
                 }
 
-                // Skip disabled nodes: mark as Skipped and activate outgoing edges
-                // with null output so successors continue normally.
+                // Preserve the explicit disabled-node bypass through the main edge.
                 if node_map.get(&node_key).is_some_and(|nd| !nd.enabled) {
                     mark_node_skipped(exec_state, node_key.clone());
+                    self.checkpoint_node(
+                        scope,
+                        execution_id,
+                        node_key.clone(),
+                        Some(nebula_execution::NodeCheckpoint::Bypassed {}),
+                        outputs,
+                        exec_state,
+                        repo_version,
+                        fencing,
+                        vec![],
+                    )
+                    .await?;
                     process_outgoing_edges(
                         node_key.clone(),
-                        None, // null output — Always edges activate
+                        None,
                         None, // not failed
                         graph,
                         &mut activated_edges,
@@ -470,27 +499,31 @@ impl WorkflowEngine {
                 // Durable idempotency check: if this node was already executed
                 // (e.g., on a previous attempt), load the persisted output and
                 // mark it completed without re-dispatching.
-                if self
-                    .check_and_apply_idempotency(
-                        scope,
-                        execution_id,
-                        node_key.clone(),
-                        outputs,
-                        exec_state,
-                        graph,
-                        &mut activated_edges,
-                        &mut resolved_edges,
-                        &required_count,
-                        &mut ready_queue,
-                    )
-                    .await
+                if matches!(factory_dispatch, FactoryDispatch::DirectRegistry)
+                    && self
+                        .check_and_apply_idempotency(
+                            scope,
+                            execution_id,
+                            node_key.clone(),
+                            outputs,
+                            exec_state,
+                            graph,
+                            &mut activated_edges,
+                            &mut resolved_edges,
+                            &required_count,
+                            &mut ready_queue,
+                        )
+                        .await
                 {
                     continue;
                 }
 
                 let spawned = self.spawn_node(
+                    scope,
+                    fencing,
                     node_key.clone(),
                     node_map,
+                    &factory_dispatch,
                     graph,
                     outputs,
                     semaphore,
@@ -598,6 +631,9 @@ impl WorkflowEngine {
                                 scope,
                                 execution_id,
                                 node_key.clone(),
+                                Some(nebula_execution::NodeCheckpoint::Failed {
+                                    error_port_output: None,
+                                }),
                                 outputs,
                                 exec_state,
                                 repo_version,
@@ -607,7 +643,7 @@ impl WorkflowEngine {
                             .await
                         {
                             cancel_token.cancel();
-                            return Some((node_key, e.to_string()));
+                            return Err(e);
                         }
                         retry_heap.push(Reverse((next_at, node_key.clone())));
                         tracing::info!(
@@ -636,7 +672,7 @@ impl WorkflowEngine {
                     apply_failure_recovery(outcome, node_key.clone(), exec_state, outputs)
                 {
                     cancel_token.cancel();
-                    return Some((node_key, e.to_string()));
+                    return Err(e);
                 }
 
                 // Route BEFORE checkpoint so the OnError input payload
@@ -665,6 +701,7 @@ impl WorkflowEngine {
                         scope,
                         execution_id,
                         node_key.clone(),
+                        Some(checkpoint::failure_checkpoint(outcome, outputs, &node_key)),
                         outputs,
                         exec_state,
                         repo_version,
@@ -674,7 +711,7 @@ impl WorkflowEngine {
                     .await
                 {
                     cancel_token.cancel();
-                    return Some((node_key, e.to_string()));
+                    return Err(e);
                 }
 
                 if exec_state
@@ -693,7 +730,7 @@ impl WorkflowEngine {
 
                 if let Some(err_msg) = abort {
                     cancel_token.cancel();
-                    return Some((node_key, err_msg));
+                    return Ok(Some((node_key, err_msg)));
                 }
             }
 
@@ -742,9 +779,9 @@ impl WorkflowEngine {
             // cannot starve budget enforcement. The Phase 1 check_budget call
             // only fires while ready_queue has work; once everything is in
             // flight, this select is the sole budget guard.
-            let wall_clock_remaining: Option<Duration> = budget
-                .max_duration
-                .map(|max_dur| max_dur.saturating_sub(started.elapsed()));
+            let wall_clock_remaining: Option<Duration> = budget.max_duration.map(|max_dur| {
+                max_dur.saturating_sub(elapsed_before_turn.saturating_add(started.elapsed()))
+            });
             let sleep_fut = async {
                 if let Some(d) = wall_clock_remaining {
                     tokio::time::sleep(d).await;
@@ -810,7 +847,6 @@ impl WorkflowEngine {
             // unit-like timer markers. The size asymmetry is intrinsic
             // to a wake-reason discriminant and acceptable on a path
             // that allocates one value per loop iteration.
-            #[expect(clippy::large_enum_variant)]
             enum WakeReason {
                 Joined(JoinedResult),
                 RetryTimer,
@@ -874,6 +910,54 @@ impl WorkflowEngine {
                     continue;
                 },
                 WakeReason::ResumeSignalled(req) => {
+                    if let Some(control) = req.control {
+                        let Some(fence) = fencing else {
+                            let _ = req.ack.send(ResumeOutcome::Claimed(
+                                ClaimedControlTurnOutcome::NotAccepted(
+                                    EngineError::MissingExactRuntime,
+                                ),
+                            ));
+                            continue;
+                        };
+                        let armed = match self
+                            .commit_claimed_control(
+                                scope,
+                                execution_id,
+                                &control,
+                                exec_state,
+                                repo_version,
+                                fence,
+                            )
+                            .await
+                        {
+                            Ok(armed) => armed,
+                            Err(control_turn::ControlCommitFailure::ClaimSuperseded) => {
+                                let _ = req.ack.send(ResumeOutcome::Claimed(
+                                    ClaimedControlTurnOutcome::ClaimSuperseded,
+                                ));
+                                continue;
+                            },
+                            Err(failure) => {
+                                let _ =
+                                    req.ack.send(ResumeOutcome::Claimed(failure.into_outcome()));
+                                return Err(EngineError::ControlTurnInterrupted);
+                            },
+                        };
+                        let _ = req.ack.send(ResumeOutcome::Claimed(
+                            ClaimedControlTurnOutcome::Accepted(Ok(())),
+                        ));
+                        let now = self.clock.now();
+                        let armed_set: HashSet<&NodeKey> = armed.iter().collect();
+                        let retained: Vec<_> = std::mem::take(&mut wait_heap)
+                            .into_iter()
+                            .filter(|Reverse((_, key))| !armed_set.contains(key))
+                            .collect();
+                        wait_heap.extend(retained);
+                        for node in armed {
+                            wait_heap.push(Reverse((now, node)));
+                        }
+                        continue;
+                    }
                     // A `Resume` command targeted this LIVE execution (W-S2b).
                     // The row stayed `Running` (a signal wait was parked with a
                     // `timeout`, so the loop holds the lease on the timeout
@@ -955,6 +1039,7 @@ impl WorkflowEngine {
                             // No single node owns this multi-node arm; reuse the
                             // first armed node as the checkpoint's attribution key.
                             to_arm[0].clone(),
+                            None,
                             outputs,
                             exec_state,
                             repo_version,
@@ -965,7 +1050,7 @@ impl WorkflowEngine {
                     {
                         let _ = req.ack.send(ResumeOutcome::ArmFailed);
                         cancel_token.cancel();
-                        return Some((to_arm[0].clone(), e.to_string()));
+                        return Err(e);
                     }
                     // The arm is durable: ack `Armed` (the caller may now ack
                     // the control-queue row), strictly after the version
@@ -1030,10 +1115,10 @@ impl WorkflowEngine {
                         exec_state,
                         execution_id,
                     );
-                    return Some((
+                    return Ok(Some((
                         node_key!("_timeout"),
                         "execution budget exceeded: max_duration".to_string(),
-                    ));
+                    )));
                 },
                 WakeReason::Cancel => {
                     join_set.abort_all();
@@ -1054,6 +1139,16 @@ impl WorkflowEngine {
             match join_result {
                 Ok((task_id, (node_key, Ok(action_result)))) => {
                     task_nodes.remove(&task_id);
+                    if let Some(state) = exec_state.node_states.get_mut(&node_key) {
+                        state.current_output = None;
+                    }
+                    // Replace only this owner-processed node's projection. A
+                    // prior Wait partial must not survive an outputless result.
+                    if let Some(output) = extract_primary_output(&action_result) {
+                        outputs.insert(node_key.clone(), output);
+                    } else {
+                        outputs.remove(&node_key);
+                    }
 
                     // Park path: action returned `ActionResult::Wait`.
                     //
@@ -1126,7 +1221,7 @@ impl WorkflowEngine {
                                     );
                                     mark_node_failed(exec_state, node_key.clone(), &engine_err);
                                     cancel_token.cancel();
-                                    return Some((node_key.clone(), engine_err.to_string()));
+                                    return Ok(Some((node_key.clone(), engine_err.to_string())));
                                 }
                                 // FAIL CLOSED on an unrepresentable / overflowing timer
                                 // Duration. Mapping the error to `None` would silently
@@ -1162,7 +1257,7 @@ impl WorkflowEngine {
                                                     "Duration wait not representable: {duration:?}"
                                                 ),
                                             );
-                                            return Some((node_key.clone(), msg));
+                                            return Ok(Some((node_key.clone(), msg)));
                                         };
                                         let Some(when) = now.checked_add_signed(chrono_dur) else {
                                             let msg = fail_unschedulable(
@@ -1170,7 +1265,7 @@ impl WorkflowEngine {
                                                 "Duration wait overflows the scheduler timestamp"
                                                     .to_owned(),
                                             );
-                                            return Some((node_key.clone(), msg));
+                                            return Ok(Some((node_key.clone(), msg)));
                                         };
                                         when
                                     },
@@ -1204,10 +1299,10 @@ impl WorkflowEngine {
                                                 &engine_err,
                                             );
                                             cancel_token.cancel();
-                                            return Some((
+                                            return Ok(Some((
                                                 node_key.clone(),
                                                 engine_err.to_string(),
-                                            ));
+                                            )));
                                         };
                                         let Some(deadline) = now.checked_add_signed(chrono_dur)
                                         else {
@@ -1225,10 +1320,10 @@ impl WorkflowEngine {
                                                 &engine_err,
                                             );
                                             cancel_token.cancel();
-                                            return Some((
+                                            return Ok(Some((
                                                 node_key.clone(),
                                                 engine_err.to_string(),
-                                            ));
+                                            )));
                                         };
                                         (Some(deadline), Some(WaitWake::Timeout))
                                     },
@@ -1260,7 +1355,7 @@ impl WorkflowEngine {
                                 );
                                 mark_node_failed(exec_state, node_key.clone(), &engine_err);
                                 cancel_token.cancel();
-                                return Some((node_key.clone(), engine_err.to_string()));
+                                return Ok(Some((node_key.clone(), engine_err.to_string())));
                             },
                         };
                         let (wake_at, wait_wake) = wake_plan;
@@ -1342,11 +1437,12 @@ impl WorkflowEngine {
                                     &EngineError::BudgetExceeded(budget_err.to_owned()),
                                 );
                                 cancel_token.cancel();
-                                return Some((node_key.clone(), budget_err.to_owned()));
+                                return Ok(Some((node_key.clone(), budget_err.to_owned())));
                             }
+                            exec_state.total_output_bytes = new_total;
                         }
 
-                        // W-S3c: mint a resume token for signal-park conditions
+                        // Mint a resume token for signal-park conditions
                         // that expect an external caller (Webhook, Approval).
                         // `Execution` waits are internal and must NOT mint.
                         // `#[non_exhaustive]` — unknown future variants get no
@@ -1424,11 +1520,11 @@ impl WorkflowEngine {
                                     Some(Ok(pair)) => (Some(pair.0), Some(pair.1)),
                                     Some(Err(mint_err)) => {
                                         cancel_token.cancel();
-                                        return Some((node_key.clone(), mint_err.to_string()));
+                                        return Err(mint_err);
                                     },
                                     None => (None, None),
                                 };
-                                // `_plaintext_bearer` is dropped here (W-S3c):
+                                // `_plaintext_bearer` is dropped here:
                                 // the SecretString zeroizes on drop.  W-S3d
                                 // will route it to the API caller when that
                                 // slice ships.
@@ -1447,6 +1543,7 @@ impl WorkflowEngine {
                                         scope,
                                         execution_id,
                                         node_key.clone(),
+                                        Some(checkpoint::action_checkpoint(&action_result)?),
                                         outputs,
                                         exec_state,
                                         repo_version,
@@ -1456,7 +1553,7 @@ impl WorkflowEngine {
                                     .await
                                 {
                                     cancel_token.cancel();
-                                    return Some((node_key.clone(), e.to_string()));
+                                    return Err(e);
                                 }
                                 // Push onto the wait_heap whenever there is a timer
                                 // (`wake_at == Some`): a timer-driven completion wait
@@ -1497,7 +1594,7 @@ impl WorkflowEngine {
                                     "park_node rejected Running→Waiting; aborting frontier"
                                 );
                                 cancel_token.cancel();
-                                return Some((node_key.clone(), park_err.to_string()));
+                                return Ok(Some((node_key.clone(), park_err.to_string())));
                             },
                         }
                     }
@@ -1510,6 +1607,7 @@ impl WorkflowEngine {
                         output_bytes =
                             serde_json::to_string(output.value()).map_or(0, |s| s.len() as u64);
                         total_output_bytes.fetch_add(output_bytes, Ordering::Relaxed);
+                        exec_state.total_output_bytes = total_output_bytes.load(Ordering::Relaxed);
                     }
                     // Capture an explicit-termination signal BEFORE the
                     // checkpoint so that the same CAS-write durably
@@ -1536,6 +1634,17 @@ impl WorkflowEngine {
                             false
                         };
 
+                    let success_payload = outputs
+                        .get(&node_key)
+                        .map_or_else(|| serde_json::Value::Null, |output| output.value().clone());
+                    let attempt = exec_state.record_node_attempt(
+                        node_key.clone(),
+                        AttemptOutcome::Success {
+                            output: ExecutionOutput::inline(success_payload),
+                            output_bytes,
+                        },
+                    )?;
+
                     // Persist node output + execution state, then record the
                     // idempotency key, before any external observer learns the
                     // node is done. This guarantees durability precedes
@@ -1548,6 +1657,7 @@ impl WorkflowEngine {
                             scope,
                             execution_id,
                             node_key.clone(),
+                            Some(checkpoint::action_checkpoint(&action_result)?),
                             outputs,
                             exec_state,
                             repo_version,
@@ -1581,9 +1691,9 @@ impl WorkflowEngine {
                             exec_state.clear_terminated_by();
                         }
                         cancel_token.cancel();
-                        return Some((node_key.clone(), e.to_string()));
+                        return Err(e);
                     }
-                    self.record_idempotency(scope, exec_state, execution_id, node_key.clone())
+                    self.record_idempotency(scope, execution_id, node_key.clone(), attempt)
                         .await;
 
                     // Persist the full ActionResult alongside the raw
@@ -1593,34 +1703,6 @@ impl WorkflowEngine {
                     // T4 — `attempt_count + 1` is the
                     self.record_node_result(scope, execution_id, node_key.clone(), &action_result)
                         .await;
-
-                    // T4 — push the success attempt
-                    // record AFTER record_idempotency / record_node_result
-                    // so those helpers see the just-finished attempt's
-                    // key (push advances the next-dispatch key). The
-                    // attempt's idempotency key is derived inside
-                    // `record_node_attempt` from the new attempt
-                    // number, so engine code cannot drift the audit
-                    // row out of step with the persisted key.
-                    let success_payload = outputs
-                        .get(&node_key)
-                        .map_or_else(|| serde_json::Value::Null, |v| v.value().clone());
-                    if let Err(e) = exec_state.record_node_attempt(
-                        node_key.clone(),
-                        AttemptOutcome::Success {
-                            output: ExecutionOutput::inline(success_payload),
-                            output_bytes,
-                        },
-                    ) {
-                        tracing::warn!(
-                            target = "engine::frontier",
-                            %execution_id,
-                            %node_key,
-                            error = %e,
-                            "record_node_attempt(success) failed; continuing without \
-                             attempt history (idempotency key may collide on resume)"
-                        );
-                    }
 
                     self.emit_event(ExecutionEvent::NodeCompleted {
                         execution_id,
@@ -1660,6 +1742,17 @@ impl WorkflowEngine {
                 },
                 Ok((task_id, (node_key, Err(ref err)))) => {
                     task_nodes.remove(&task_id);
+                    if let EngineError::Effect(effect) = err
+                        && effect.is_deferred()
+                    {
+                        cancel_token.cancel();
+                        return Err(EngineError::Effect(*effect));
+                    }
+                    outputs.remove(&node_key);
+
+                    if let Some(state) = exec_state.node_states.get_mut(&node_key) {
+                        state.current_output = None;
+                    }
 
                     // Cooperative cancel: the action returned after awaiting the same
                     // `CancellationToken` that control-queue `Cancel` / external cancel trips.
@@ -1750,7 +1843,7 @@ impl WorkflowEngine {
                     // after checkpoint. Nothing external observes a
                     // state the store has not committed.
                     mark_node_failed(exec_state, node_key.clone(), err);
-                    let err_str = err.to_string();
+                    let err_str = durable_error_message(err);
 
                     // Push the failure attempt record so idempotency
                     // key, retry-decision, and post-mortem audit all
@@ -1818,6 +1911,9 @@ impl WorkflowEngine {
                                         scope,
                                         execution_id,
                                         node_key.clone(),
+                                        Some(nebula_execution::NodeCheckpoint::Failed {
+                                            error_port_output: None,
+                                        }),
                                         outputs,
                                         exec_state,
                                         repo_version,
@@ -1827,7 +1923,7 @@ impl WorkflowEngine {
                                     .await
                                 {
                                     cancel_token.cancel();
-                                    return Some((node_key.clone(), e.to_string()));
+                                    return Err(e);
                                 }
                                 retry_heap.push(Reverse((next_at, node_key.clone())));
                                 tracing::info!(
@@ -1874,7 +1970,7 @@ impl WorkflowEngine {
                         apply_failure_recovery(outcome, node_key.clone(), exec_state, outputs)
                     {
                         cancel_token.cancel();
-                        return Some((node_key.clone(), e.to_string()));
+                        return Err(e);
                     }
 
                     let abort = route_failure_edges(
@@ -1896,6 +1992,7 @@ impl WorkflowEngine {
                             scope,
                             execution_id,
                             node_key.clone(),
+                            Some(checkpoint::failure_checkpoint(outcome, outputs, &node_key)),
                             outputs,
                             exec_state,
                             repo_version,
@@ -1905,7 +2002,7 @@ impl WorkflowEngine {
                         .await
                     {
                         cancel_token.cancel();
-                        return Some((node_key.clone(), e.to_string()));
+                        return Err(e);
                     }
 
                     if outcome == FailureOutcome::Fail {
@@ -1921,7 +2018,7 @@ impl WorkflowEngine {
 
                     if let Some(err_msg) = abort {
                         cancel_token.cancel();
-                        return Some((node_key.clone(), err_msg));
+                        return Ok(Some((node_key.clone(), err_msg)));
                     }
                 },
                 Err(join_err) => {
@@ -1950,9 +2047,9 @@ impl WorkflowEngine {
                             repo_version,
                             fencing,
                         )
-                        .await;
+                        .await?;
                         cancel_token.cancel();
-                        return Some((node_key, err_msg));
+                        return Ok(Some((node_key, err_msg)));
                     }
 
                     // No matching task id — this should be unreachable
@@ -1960,15 +2057,15 @@ impl WorkflowEngine {
                     // fall through defensively rather than inventing
                     // a node identity.
                     cancel_token.cancel();
-                    return Some((
+                    return Ok(Some((
                         node_key!("_panicked"),
                         format!("panicked task with unknown id: {err_msg}"),
-                    ));
+                    )));
                 },
             }
         }
 
-        None
+        Ok(None)
     }
 
     /// Spawn a single node into the JoinSet.
@@ -1978,8 +2075,11 @@ impl WorkflowEngine {
     #[expect(clippy::too_many_arguments)]
     fn spawn_node(
         &self,
+        scope: &Scope,
+        fencing: Option<nebula_storage_port::FencingToken>,
         node_key: NodeKey,
         node_map: &HashMap<NodeKey, &nebula_workflow::NodeDefinition>,
+        factory_dispatch: &FactoryDispatch<'_>,
         graph: &DependencyGraph,
         outputs: &Arc<DashMap<NodeKey, serde_json::Value>>,
         semaphore: &Arc<Semaphore>,
@@ -2006,6 +2106,56 @@ impl WorkflowEngine {
             return false;
         };
         let action_key = node_def.action_key.as_str().to_owned();
+        let factory_dispatch = match factory_dispatch {
+            FactoryDispatch::DirectRegistry => NodeFactoryDispatch::DirectRegistry,
+            FactoryDispatch::Frozen { factories, plan } => {
+                let Some(factory) = factories.get(&node_key) else {
+                    let _ = exec_state.mark_setup_failed(
+                        node_key.clone(),
+                        "exact factory witness is missing a graph node".to_owned(),
+                    );
+                    return false;
+                };
+                let effect_contract = match plan.action_effect_contract(&node_def.action_key) {
+                    Ok(nebula_plugin::PlanActionEffectContract::Declared(effect_contract)) => {
+                        effect_contract
+                    },
+                    Ok(nebula_plugin::PlanActionEffectContract::LegacyUndeclared) => {
+                        let _ = exec_state.mark_setup_failed(
+                            node_key.clone(),
+                            "legacy executable plan has no action effect declaration",
+                        );
+                        return false;
+                    },
+                    Ok(nebula_plugin::PlanActionEffectContract::UnknownAction) => {
+                        let _ = exec_state.mark_setup_failed(
+                            node_key.clone(),
+                            "executable plan does not contain the requested action",
+                        );
+                        return false;
+                    },
+                    Err(_) => {
+                        let _ = exec_state.mark_setup_failed(
+                            node_key.clone(),
+                            "recorded action effect declaration failed integrity validation",
+                        );
+                        return false;
+                    },
+                };
+                let Some(action_version) = node_def.interface_version.clone() else {
+                    let _ = exec_state.mark_setup_failed(
+                        node_key.clone(),
+                        "recorded action version is unavailable",
+                    );
+                    return false;
+                };
+                NodeFactoryDispatch::Frozen {
+                    factory: Arc::clone(factory),
+                    effect_contract,
+                    action_version,
+                }
+            },
+        };
         let interface_version = node_def.interface_version.clone();
 
         // Partition incoming connections into flow (to_port=None) and support (to_port=Some)
@@ -2051,6 +2201,16 @@ impl WorkflowEngine {
             return false;
         }
 
+        let Some(attempt_generation) = exec_state
+            .node_states
+            .get(&node_key)
+            .and_then(|state| u64::try_from(state.attempt_count()).ok())
+            .and_then(|count| count.checked_add(1))
+        else {
+            let _ = exec_state
+                .mark_setup_failed(node_key.clone(), "node attempt generation is invalid");
+            return false;
+        };
         let runtime = self.runtime.clone();
         let cancel = cancel_token.clone();
         let sem = semaphore.clone();
@@ -2156,7 +2316,12 @@ impl WorkflowEngine {
 
         let handle = join_set.spawn(
             NodeTask {
+                clock: Arc::clone(&self.clock),
+                attempt_generation,
+                scope: scope.clone(),
+                fencing,
                 runtime,
+                factory_dispatch,
                 cancel,
                 sem,
                 outputs: outputs_ref,
@@ -2175,7 +2340,7 @@ impl WorkflowEngine {
                 operation_ledger: self
                     .stores
                     .as_ref()
-                    .and_then(|s| s.operation_ledger.clone()),
+                    .map(|stores| Arc::clone(&stores.operation_ledger)),
             }
             .run(),
         );

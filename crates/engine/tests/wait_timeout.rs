@@ -35,6 +35,12 @@ use std::{
     time::Duration,
 };
 
+#[expect(
+    dead_code,
+    reason = "this suite freezes its timeout-specific factories locally"
+)]
+mod exact_fixture;
+
 use nebula_action::{
     ActionError,
     action::Action,
@@ -49,15 +55,30 @@ use nebula_engine::{
 };
 use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_metrics::MetricsRegistry;
+use nebula_storage::inmem::InMemoryTurnHandoff;
 use nebula_storage::{InMemoryExecutionStore, InMemoryWorkflowVersionStore};
 use nebula_storage_port::{
     FencingToken, Scope, StorageError, TransitionBatch, TransitionOutcome,
     dto::{ExecutionRecord, WorkflowVersionRecord},
-    store::{ExecutionStore, WorkflowStore, WorkflowVersionStore},
+    store::{ExecutionStore, WorkflowVersionStore},
 };
 use nebula_workflow::{
     CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
 };
+
+fn control_dispatch(
+    engine: Arc<WorkflowEngine>,
+    execution: Arc<dyn ExecutionStore>,
+    backing: &InMemoryExecutionStore,
+) -> EngineControlDispatch {
+    EngineControlDispatch::new(
+        engine,
+        execution,
+        Arc::new(InMemoryTurnHandoff::new(backing)),
+        "wait-timeout-control".to_owned(),
+        Duration::from_secs(30),
+    )
+}
 
 // ── Action stubs ────────────────────────────────────────────────────────────
 
@@ -187,12 +208,12 @@ impl StatelessAction for DurationWaitBlocker {
 
 #[derive(Clone)]
 struct WtStores {
+    frozen: Arc<std::sync::Mutex<Option<Arc<nebula_plugin::FrozenPluginRegistry>>>>,
     execution: Arc<InMemoryExecutionStore>,
     journal: Arc<nebula_storage::InMemoryJournalReader>,
     node_results: Arc<nebula_storage::InMemoryNodeResultStore>,
     checkpoints: Arc<nebula_storage::InMemoryCheckpointStore>,
     idempotency: Arc<nebula_storage::InMemoryIdempotencyGuard>,
-    workflow: Arc<nebula_storage::InMemoryWorkflowStore>,
     versions: Arc<InMemoryWorkflowVersionStore>,
 }
 
@@ -201,14 +222,13 @@ impl WtStores {
         let execution = Arc::new(InMemoryExecutionStore::new());
         let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&execution));
         let versions = InMemoryWorkflowVersionStore::new();
-        let workflow = nebula_storage::InMemoryWorkflowStore::new_with_versions(&versions);
         Self {
+            frozen: Arc::new(std::sync::Mutex::new(None)),
             execution,
             journal,
             node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
             checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
             idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
-            workflow: Arc::new(workflow),
             versions: Arc::new(versions),
         }
     }
@@ -221,21 +241,14 @@ impl WtStores {
             checkpoints: self.checkpoints.clone(),
             idempotency: self.idempotency.clone(),
             resume_tokens: Arc::new(self.execution.resume_token_store()),
-            operation_ledger: None,
-        }
-    }
-
-    fn workflow_stores(&self) -> nebula_engine::WorkflowStores {
-        nebula_engine::WorkflowStores {
-            workflow: self.workflow.clone(),
-            versions: self.versions.clone(),
+            operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(
+                &self.execution,
+            )),
         }
     }
 
     fn attach(&self, engine: WorkflowEngine) -> WorkflowEngine {
-        engine
-            .with_execution_stores(self.execution_stores())
-            .with_workflow_stores(self.workflow_stores())
+        engine.with_execution_stores(self.execution_stores())
     }
 
     async fn save_workflow(&self, wf: &WorkflowDefinition) {
@@ -243,6 +256,7 @@ impl WtStores {
             .create(
                 &nebula_engine::store_seam::single_tenant_scope(),
                 WorkflowVersionRecord {
+                    activation: None,
                     workflow_id: wf.id.to_string(),
                     number: 0,
                     published: true,
@@ -257,16 +271,25 @@ impl WtStores {
     async fn persist_created_execution(&self, workflow_id: nebula_core::WorkflowId) -> ExecutionId {
         let execution_id = ExecutionId::new();
         let mut exec_state = ExecutionState::new(execution_id, workflow_id, &[]);
-        exec_state.set_workflow_input(serde_json::json!(null));
-        self.execution
-            .create(
+        let frozen = self
+            .frozen
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("configure exact fixture before admission");
+        let version = self
+            .versions
+            .get_published(
                 &nebula_engine::store_seam::single_tenant_scope(),
-                &execution_id.to_string(),
                 &workflow_id.to_string(),
-                serde_json::to_value(&exec_state).unwrap(),
             )
             .await
+            .unwrap()
             .unwrap();
+        let workflow: WorkflowDefinition =
+            serde_json::from_str(&serde_json::to_string(&version.definition).unwrap()).unwrap();
+        exec_state.set_workflow_input(serde_json::json!(null));
+        pin_exact_state(&self.execution, &frozen, &workflow, &mut exec_state).await;
         execution_id
     }
 
@@ -315,7 +338,8 @@ fn build_registry(
             action_key!("test.wt.webhook_timeout"),
             "WebhookWaitWithTimeout",
             "wait_timeout stub",
-        ),
+        )
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
         WebhookWaitWithTimeout { timeout },
     );
     registry.register_stateless_instance(
@@ -323,7 +347,8 @@ fn build_registry(
             action_key!("test.wt.main_echo"),
             "CountingEcho",
             "wait_timeout stub",
-        ),
+        )
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
         CountingEcho {
             invocations: Arc::clone(main_count),
         },
@@ -333,7 +358,8 @@ fn build_registry(
             action_key!("test.wt.error_echo"),
             "CountingError",
             "wait_timeout stub",
-        ),
+        )
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
         CountingError {
             invocations: Arc::clone(error_count),
         },
@@ -358,6 +384,80 @@ fn make_engine(registry: Arc<ActionRegistry>) -> WorkflowEngine {
     WorkflowEngine::new(runtime, metrics).unwrap()
 }
 
+fn freeze_fixture(registry: &ActionRegistry) -> Arc<nebula_plugin::FrozenPluginRegistry> {
+    struct FixturePlugin {
+        manifest: nebula_plugin::PluginManifest,
+        actions: Vec<Arc<dyn nebula_action::ActionFactory>>,
+    }
+    impl std::fmt::Debug for FixturePlugin {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("FixturePlugin").finish_non_exhaustive()
+        }
+    }
+    impl nebula_plugin::Plugin for FixturePlugin {
+        fn manifest(&self) -> &nebula_plugin::PluginManifest {
+            &self.manifest
+        }
+        fn actions(&self) -> Vec<Arc<dyn nebula_action::ActionFactory>> {
+            self.actions.clone()
+        }
+    }
+    let plugin = FixturePlugin {
+        manifest: nebula_plugin::PluginManifest::builder("test", "Wait timeout fixture")
+            .build()
+            .unwrap(),
+        actions: registry
+            .keys()
+            .iter()
+            .map(|key| registry.get_factory(key).unwrap().1)
+            .collect(),
+    };
+    let mut plugins = nebula_plugin::PluginRegistry::new();
+    plugins
+        .register(Arc::new(
+            nebula_plugin::ResolvedPlugin::from(plugin).unwrap(),
+        ))
+        .unwrap();
+    Arc::new(
+        plugins
+            .freeze(
+                nebula_core::ArtifactSetDigest::from_bytes([0x83; 32]),
+                "1.0.0".parse().unwrap(),
+            )
+            .unwrap(),
+    )
+}
+
+fn make_durable_engine(registry: Arc<ActionRegistry>, stores: &WtStores) -> WorkflowEngine {
+    let frozen = freeze_fixture(&registry);
+    *stores.frozen.lock().unwrap() = Some(Arc::clone(&frozen));
+    make_engine(registry).with_plan_flavor_runtime(
+        Arc::new(nebula_engine::PlanFlavorRevisionLoader::new(Arc::new(
+            nebula_storage::InMemoryPlanFlavorCatalog::new(&stores.execution),
+        ))),
+        frozen,
+        Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
+            &stores.execution,
+        )),
+    )
+}
+
+async fn pin_exact_state(
+    execution: &InMemoryExecutionStore,
+    frozen: &nebula_plugin::FrozenPluginRegistry,
+    workflow: &WorkflowDefinition,
+    state: &mut ExecutionState,
+) {
+    exact_fixture::materialize_state(
+        execution,
+        &nebula_engine::store_seam::single_tenant_scope(),
+        frozen,
+        workflow,
+        state,
+    )
+    .await;
+}
+
 /// Build a workflow `wait ──main──> main_node` and (optionally) `wait ──error──>
 /// error_node`. `wait` parks on a Webhook signal with a timeout.
 fn make_workflow(with_error_port: bool, timeout: Duration) -> WorkflowDefinition {
@@ -367,8 +467,8 @@ fn make_workflow(with_error_port: bool, timeout: Duration) -> WorkflowDefinition
     let main_node = node_key!("main_node");
     let error_node = node_key!("error_node");
     let mut nodes = vec![
-        NodeDefinition::new(wait.clone(), "WaitNode", "core", "test.wt.webhook_timeout").unwrap(),
-        NodeDefinition::new(main_node.clone(), "MainNode", "core", "test.wt.main_echo").unwrap(),
+        NodeDefinition::new(wait.clone(), "WaitNode", "test", "test.wt.webhook_timeout").unwrap(),
+        NodeDefinition::new(main_node.clone(), "MainNode", "test", "test.wt.main_echo").unwrap(),
     ];
     let mut connections = vec![Connection::new(wait.clone(), main_node)];
     if with_error_port {
@@ -376,7 +476,7 @@ fn make_workflow(with_error_port: bool, timeout: Duration) -> WorkflowDefinition
             NodeDefinition::new(
                 error_node.clone(),
                 "ErrorNode",
-                "core",
+                "test",
                 "test.wt.error_echo",
             )
             .unwrap(),
@@ -425,12 +525,12 @@ fn make_two_wait_workflow() -> WorkflowDefinition {
     let error_a = node_key!("error_a");
     let error_b = node_key!("error_b");
     let nodes = vec![
-        NodeDefinition::new(wait_a.clone(), "WaitA", "core", "test.wt.webhook_timeout").unwrap(),
-        NodeDefinition::new(wait_b.clone(), "WaitB", "core", "test.wt.webhook_timeout").unwrap(),
-        NodeDefinition::new(main_a.clone(), "MainA", "core", "test.wt.main_echo").unwrap(),
-        NodeDefinition::new(main_b.clone(), "MainB", "core", "test.wt.main_echo").unwrap(),
-        NodeDefinition::new(error_a.clone(), "ErrorA", "core", "test.wt.error_echo").unwrap(),
-        NodeDefinition::new(error_b.clone(), "ErrorB", "core", "test.wt.error_echo").unwrap(),
+        NodeDefinition::new(wait_a.clone(), "WaitA", "test", "test.wt.webhook_timeout").unwrap(),
+        NodeDefinition::new(wait_b.clone(), "WaitB", "test", "test.wt.webhook_timeout").unwrap(),
+        NodeDefinition::new(main_a.clone(), "MainA", "test", "test.wt.main_echo").unwrap(),
+        NodeDefinition::new(main_b.clone(), "MainB", "test", "test.wt.main_echo").unwrap(),
+        NodeDefinition::new(error_a.clone(), "ErrorA", "test", "test.wt.error_echo").unwrap(),
+        NodeDefinition::new(error_b.clone(), "ErrorB", "test", "test.wt.error_echo").unwrap(),
     ];
     let connections = vec![
         Connection::new(wait_a.clone(), main_a),
@@ -472,7 +572,8 @@ fn build_registry_with_blocker(
             action_key!("test.wt.duration_blocker"),
             "DurationWaitBlocker",
             "wait_timeout stub",
-        ),
+        )
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
         DurationWaitBlocker {
             duration: blocker_for,
         },
@@ -492,16 +593,16 @@ fn make_workflow_with_blocker() -> WorkflowDefinition {
     let error_node = node_key!("error_node");
     let blocker = node_key!("blocker_node");
     let nodes = vec![
-        NodeDefinition::new(wait.clone(), "WaitNode", "core", "test.wt.webhook_timeout").unwrap(),
-        NodeDefinition::new(main_node.clone(), "MainNode", "core", "test.wt.main_echo").unwrap(),
+        NodeDefinition::new(wait.clone(), "WaitNode", "test", "test.wt.webhook_timeout").unwrap(),
+        NodeDefinition::new(main_node.clone(), "MainNode", "test", "test.wt.main_echo").unwrap(),
         NodeDefinition::new(
             error_node.clone(),
             "ErrorNode",
-            "core",
+            "test",
             "test.wt.error_echo",
         )
         .unwrap(),
-        NodeDefinition::new(blocker, "Blocker", "core", "test.wt.duration_blocker").unwrap(),
+        NodeDefinition::new(blocker, "Blocker", "test", "test.wt.duration_blocker").unwrap(),
     ];
     let connections = vec![
         Connection::new(wait.clone(), main_node),
@@ -828,8 +929,13 @@ async fn resume_before_timeout_completes_main_port_and_cancels_timer() {
     let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
     let mut events_rx = event_bus.subscribe();
     let stores = WtStores::new();
-    let engine = Arc::new(stores.attach(make_engine(registry).with_event_bus(event_bus)));
-    let dispatch = EngineControlDispatch::new(Arc::clone(&engine), stores.execution.clone());
+    let engine =
+        Arc::new(stores.attach(make_durable_engine(registry, &stores).with_event_bus(event_bus)));
+    let dispatch = control_dispatch(
+        Arc::clone(&engine),
+        stores.execution.clone(),
+        &stores.execution,
+    );
 
     let wf = make_workflow(/* with_error_port */ true, timeout);
     stores.save_workflow(&wf).await;
@@ -907,8 +1013,13 @@ async fn resume_to_running_execution_reaches_live_loop() {
     let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
     let mut events_rx = event_bus.subscribe();
     let stores = WtStores::new();
-    let engine = Arc::new(stores.attach(make_engine(registry).with_event_bus(event_bus)));
-    let dispatch = EngineControlDispatch::new(Arc::clone(&engine), stores.execution.clone());
+    let engine =
+        Arc::new(stores.attach(make_durable_engine(registry, &stores).with_event_bus(event_bus)));
+    let dispatch = control_dispatch(
+        Arc::clone(&engine),
+        stores.execution.clone(),
+        &stores.execution,
+    );
 
     let wf = make_workflow(/* with_error_port */ false, timeout);
     stores.save_workflow(&wf).await;
@@ -985,7 +1096,7 @@ async fn crash_mid_wait_with_timeout_recovers_and_can_still_timeout() {
     let engine_a = Arc::new(
         stores
             .attach(
-                make_engine(build_registry(timeout, &main_count, &error_count))
+                make_durable_engine(build_registry(timeout, &main_count, &error_count), &stores)
                     .with_event_bus(event_bus),
             )
             .with_lease_ttl(lease_ttl)
@@ -993,11 +1104,10 @@ async fn crash_mid_wait_with_timeout_recovers_and_can_still_timeout() {
     );
     let engine_b = Arc::new(
         stores
-            .attach(make_engine(build_registry(
-                timeout,
-                &main_count,
-                &error_count,
-            )))
+            .attach(make_durable_engine(
+                build_registry(timeout, &main_count, &error_count),
+                &stores,
+            ))
             .with_lease_ttl(lease_ttl)
             .with_lease_heartbeat_interval(heartbeat),
     );
@@ -1087,7 +1197,6 @@ async fn crash_after_durable_arm_completes_on_recovery() {
 
     let wf = make_workflow(/* with_error_port */ true, timeout);
     stores.save_workflow(&wf).await;
-    let execution_id = stores.persist_created_execution(wf.id).await;
 
     // Runner A parks the signal+timeout wait (Running), then we crash it.
     let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
@@ -1095,12 +1204,13 @@ async fn crash_after_durable_arm_completes_on_recovery() {
     let engine_a = Arc::new(
         stores
             .attach(
-                make_engine(build_registry(timeout, &main_count, &error_count))
+                make_durable_engine(build_registry(timeout, &main_count, &error_count), &stores)
                     .with_event_bus(event_bus),
             )
             .with_lease_ttl(lease_ttl)
             .with_lease_heartbeat_interval(heartbeat),
     );
+    let execution_id = stores.persist_created_execution(wf.id).await;
     let engine_a_h = Arc::clone(&engine_a);
     let scope = nebula_engine::store_seam::single_tenant_scope();
     let task = tokio::spawn(async move { engine_a_h.resume_execution(&scope, execution_id).await });
@@ -1118,11 +1228,10 @@ async fn crash_after_durable_arm_completes_on_recovery() {
     // its `wait_wake = Completion`, Phase-0b COMPLETES the node (does not fail).
     let engine_b = Arc::new(
         stores
-            .attach(make_engine(build_registry(
-                timeout,
-                &main_count,
-                &error_count,
-            )))
+            .attach(make_durable_engine(
+                build_registry(timeout, &main_count, &error_count),
+                &stores,
+            ))
             .with_lease_ttl(lease_ttl)
             .with_lease_heartbeat_interval(heartbeat),
     );
@@ -1253,8 +1362,13 @@ async fn resume_and_timeout_race_reaches_single_terminal_outcome() {
     let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
     let mut events_rx = event_bus.subscribe();
     let stores = WtStores::new();
-    let engine = Arc::new(stores.attach(make_engine(registry).with_event_bus(event_bus)));
-    let dispatch = EngineControlDispatch::new(Arc::clone(&engine), stores.execution.clone());
+    let engine =
+        Arc::new(stores.attach(make_durable_engine(registry, &stores).with_event_bus(event_bus)));
+    let dispatch = control_dispatch(
+        Arc::clone(&engine),
+        stores.execution.clone(),
+        &stores.execution,
+    );
 
     let wf = make_workflow_with_blocker();
     stores.save_workflow(&wf).await;
@@ -1352,7 +1466,7 @@ async fn timeout_does_not_count_against_retry_budget() {
     let registry = build_registry(timeout, &main_count, &error_count);
 
     let stores = WtStores::new();
-    let engine = Arc::new(stores.attach(make_engine(registry)));
+    let engine = Arc::new(stores.attach(make_durable_engine(registry, &stores)));
 
     // No error port: a top-level FailFast timeout fails the execution.
     let wf = make_workflow(/* with_error_port */ false, timeout);
@@ -1427,8 +1541,13 @@ async fn redelivered_start_restart_do_not_satisfy_live_signal_timeout_wait() {
     let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
     let mut events_rx = event_bus.subscribe();
     let stores = WtStores::new();
-    let engine = Arc::new(stores.attach(make_engine(registry).with_event_bus(event_bus)));
-    let dispatch = EngineControlDispatch::new(Arc::clone(&engine), stores.execution.clone());
+    let engine =
+        Arc::new(stores.attach(make_durable_engine(registry, &stores).with_event_bus(event_bus)));
+    let dispatch = control_dispatch(
+        Arc::clone(&engine),
+        stores.execution.clone(),
+        &stores.execution,
+    );
 
     let wf = make_workflow(/* with_error_port */ false, timeout);
     stores.save_workflow(&wf).await;
@@ -1530,8 +1649,13 @@ async fn one_resume_arms_multiple_parallel_signal_timeout_waits() {
     let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
     let mut events_rx = event_bus.subscribe();
     let stores = WtStores::new();
-    let engine = Arc::new(stores.attach(make_engine(registry).with_event_bus(event_bus)));
-    let dispatch = EngineControlDispatch::new(Arc::clone(&engine), stores.execution.clone());
+    let engine =
+        Arc::new(stores.attach(make_durable_engine(registry, &stores).with_event_bus(event_bus)));
+    let dispatch = control_dispatch(
+        Arc::clone(&engine),
+        stores.execution.clone(),
+        &stores.execution,
+    );
 
     let wf = make_two_wait_workflow();
     stores.save_workflow(&wf).await;
@@ -1618,8 +1742,13 @@ async fn resume_acks_only_after_successful_checkpoint() {
     let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
     let mut events_rx = event_bus.subscribe();
     let stores = WtStores::new();
-    let engine = Arc::new(stores.attach(make_engine(registry).with_event_bus(event_bus)));
-    let dispatch = EngineControlDispatch::new(Arc::clone(&engine), stores.execution.clone());
+    let engine =
+        Arc::new(stores.attach(make_durable_engine(registry, &stores).with_event_bus(event_bus)));
+    let dispatch = control_dispatch(
+        Arc::clone(&engine),
+        stores.execution.clone(),
+        &stores.execution,
+    );
 
     let wf = make_workflow(/* with_error_port */ true, timeout);
     stores.save_workflow(&wf).await;
@@ -1713,14 +1842,20 @@ async fn fenced_out_self_arm_sends_arm_failed_then_deferred() {
     let fenced = Arc::new(FenceArmStore::new(Arc::clone(&inner)));
     let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&inner));
     let versions = Arc::new(InMemoryWorkflowVersionStore::new());
-    let workflow = Arc::new(nebula_storage::InMemoryWorkflowStore::new_with_versions(
-        &versions,
-    ));
+    let frozen = freeze_fixture(&registry);
+    let catalog = Arc::new(nebula_storage::InMemoryPlanFlavorCatalog::new(&inner));
 
     let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
     let mut events_rx = event_bus.subscribe();
     let engine = Arc::new(
         make_engine(registry)
+            .with_plan_flavor_runtime(
+                Arc::new(nebula_engine::PlanFlavorRevisionLoader::new(catalog)),
+                Arc::clone(&frozen),
+                Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
+                    &inner,
+                )),
+            )
             .with_event_bus(event_bus)
             .with_execution_stores(nebula_engine::ExecutionStores {
                 execution: Arc::clone(&fenced) as Arc<dyn ExecutionStore>,
@@ -1729,16 +1864,17 @@ async fn fenced_out_self_arm_sends_arm_failed_then_deferred() {
                 checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
                 idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
                 resume_tokens: Arc::new(inner.resume_token_store()),
-                operation_ledger: None,
-            })
-            .with_workflow_stores(nebula_engine::WorkflowStores {
-                workflow: workflow as Arc<dyn WorkflowStore>,
-                versions: Arc::clone(&versions) as Arc<dyn WorkflowVersionStore>,
+                operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(
+                    &inner,
+                )),
             }),
     );
     let dispatch = EngineControlDispatch::new(
         Arc::clone(&engine),
         Arc::clone(&fenced) as Arc<dyn ExecutionStore>,
+        Arc::new(InMemoryTurnHandoff::new(&inner)),
+        "wait-timeout-fenced-control".to_owned(),
+        Duration::from_secs(30),
     );
 
     // Persist + save the workflow through the same scope the engine reads.
@@ -1748,6 +1884,7 @@ async fn fenced_out_self_arm_sends_arm_failed_then_deferred() {
         .create(
             &scope,
             WorkflowVersionRecord {
+                activation: None,
                 workflow_id: wf.id.to_string(),
                 number: 0,
                 published: true,
@@ -1761,15 +1898,7 @@ async fn fenced_out_self_arm_sends_arm_failed_then_deferred() {
     {
         let mut exec_state = ExecutionState::new(execution_id, wf.id, &[]);
         exec_state.set_workflow_input(serde_json::json!(null));
-        fenced
-            .create(
-                &scope,
-                &execution_id.to_string(),
-                &wf.id.to_string(),
-                serde_json::to_value(&exec_state).unwrap(),
-            )
-            .await
-            .unwrap();
+        pin_exact_state(&inner, &frozen, &wf, &mut exec_state).await;
     }
 
     let engine_h = Arc::clone(&engine);
@@ -1832,10 +1961,14 @@ async fn duplicate_resume_to_armed_node_is_noop() {
     let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
     let mut events_rx = event_bus.subscribe();
     let stores = WtStores::new();
-    let engine = Arc::new(stores.attach(make_engine(registry).with_event_bus(event_bus)));
+    let engine =
+        Arc::new(stores.attach(make_durable_engine(registry, &stores).with_event_bus(event_bus)));
     let dispatch = Arc::new(EngineControlDispatch::new(
         Arc::clone(&engine),
         stores.execution.clone(),
+        Arc::new(InMemoryTurnHandoff::new(&stores.execution)),
+        "wait-timeout-duplicate-control".to_owned(),
+        Duration::from_secs(30),
     ));
 
     let wf = make_workflow(/* with_error_port */ true, timeout);

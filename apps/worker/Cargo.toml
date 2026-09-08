@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
-description = "Core-flavor worker binary — statically links the first-party core plugin and runs the durable claim-loop over SQLite job-dispatch (ADR-0095 D1). Note: node-result and checkpoint stores are in-process (per-execution lifetime); durability lives in the SQLite execution-state row."
+description = "Core-flavor worker binary for durable control, recovery, and timer processing"
 
 # `doc = false`: the binary target's rustdoc output dir (`nebula_worker`) would
 # collide with the `nebula-worker` library crate's, silently clobbering one set
@@ -18,7 +18,7 @@ path = "src/main.rs"
 doc = false
 
 [dependencies]
-# Generic worker runtime — the claim-loop over the job-dispatch queue.
+# Generic durable worker runtime.
 nebula-worker = { path = "../../crates/worker" }
 # Engine wiring (with_plugin) and ActionRuntime construction.
 nebula-engine = { path = "../../crates/engine" }
@@ -28,19 +28,19 @@ nebula-action = { path = "../../crates/action" }
 nebula-plugin-core = { path = "../../crates/plugin-core" }
 # ResolvedPlugin::from wraps the concrete plugin for the engine.
 nebula-plugin = { path = "../../crates/plugin" }
-# SQLite-backed stores (ExecutionStore, WorkflowVersionStore, JobDispatchQueue).
+# SQLite-backed durable stores.
 # The `postgres` feature (below) adds `nebula-storage/postgres` at feature-selection time,
 # which transitively enables `sqlx/postgres` + `sqlx/tls-rustls-ring-native-roots` in the
 # workspace crate so `compose_main.rs` can use `sqlx::postgres::PgPoolOptions` without
 # declaring those features directly here.
 nebula-storage = { path = "../../crates/storage", features = ["sqlite"] }
-# Metrics registry shared across ActionRuntime and WorkerRuntime.
+# Metrics registry shared across the action runtime and storage instrumentation.
 nebula-metrics = { path = "../../crates/metrics" }
-# JobDispatchQueue trait used in build_core_flavor_runtime signature.
+# Durable store contracts used by composition.
 nebula-storage-port = { path = "../../crates/storage-port" }
 # Evidence-only engine inputs. These stay absent from the ordinary worker
 # feature graph and are enabled only by the app-owned runtime-repair profile.
-nebula-core = { path = "../../crates/core", optional = true }
+nebula-core = { path = "../../crates/core" }
 nebula-eventbus = { path = "../../crates/eventbus", optional = true }
 
 # sqlx for SqlitePool construction; features forwarded to match nebula-storage/sqlite.
@@ -67,7 +67,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "ansi"
 postgres = ["nebula-storage/postgres"]
 # Private app-to-app composition seam for the server-owned RED evidence
 # profile. This is not a deployment or SDK surface.
-runtime-repair-red = ["dep:nebula-core", "dep:nebula-eventbus"]
+runtime-repair-red = ["dep:nebula-eventbus"]
 
 [dev-dependencies]
 # In-memory adapters for the smoke test (avoids SQLite file I/O in tests).

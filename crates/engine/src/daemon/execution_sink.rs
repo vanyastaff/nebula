@@ -296,12 +296,11 @@ mod tests {
             scope_b, // wrong tenant: row lives under single_tenant, not scope_b
             serde_json::Value::Null,
             None::<String>,
-            "sha",
             plugin_key.clone(),
             vec![plugin_key],
             None::<String>,
             0,
-            None,
+            nebula_core::WorkerFlavorRevisionId::from_bytes([0x11; 32]),
         );
 
         // The fence never matters here: read_status short-circuits with

@@ -1,0 +1,22 @@
+{
+  "contract": "required-postgresql",
+  "producer_version": 2,
+  "scenario_inventory_version": 1,
+  "scenarios": [
+    {
+      "events": [
+        {
+          "exit_code": 101,
+          "kind": "process_exited",
+          "postgres_feature": false,
+          "required_postgres": true,
+          "sequence": 0,
+          "stderr": "\nthread 'create_get_roundtrip::case_3_postgres' (1039940) panicked at crates/storage/tests/conformance/mod.rs:585:5:\nNEBULA_REQUIRE_POSTGRES is set but the postgres feature is disabled\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+          "stdout": "\nrunning 1 test\ntest create_get_roundtrip::case_3_postgres ... FAILED\n\nfailures:\n\nfailures:\n    create_get_roundtrip::case_3_postgres\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 186 filtered out; finished in 0.00s\n\n",
+          "test_case": "create_get_roundtrip::case_3_postgres"
+        }
+      ],
+      "scenario": "disabled_feature"
+    }
+  ]
+}

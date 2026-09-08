@@ -9,6 +9,7 @@
 //! cross-tenant denial is proven uniformly across backends.
 
 mod control_queue;
+mod control_turn;
 mod execution;
 mod idempotency_store;
 mod identity;
@@ -21,6 +22,7 @@ mod resume_producer;
 mod resume_token;
 mod start_acceptance;
 mod turn_handoff;
+mod turn_recovery;
 mod workflow;
 
 pub use control_queue::InMemoryControlQueue;
@@ -41,5 +43,5 @@ pub use resume_token::InMemoryResumeTokenStore;
 pub use start_acceptance::InMemoryStartAcceptanceStore;
 pub use turn_handoff::InMemoryTurnHandoff;
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
-pub(crate) use turn_handoff::acceptance_label;
+pub(crate) use turn_handoff::{acceptance_label, control_acceptance_label};
 pub use workflow::{InMemoryWorkflowStore, InMemoryWorkflowVersionStore};

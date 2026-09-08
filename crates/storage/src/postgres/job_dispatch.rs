@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 use hex;
-use nebula_core::PluginKey;
+use nebula_core::{PluginKey, WorkerFlavorRevisionId};
 use nebula_storage_port::dto::{
     DispatchKind, DispatchOutcome, JobDispatchMsg, NewExecution, TriggerDedupRow,
 };
@@ -149,14 +149,21 @@ fn row_to_msg(row: &sqlx::postgres::PgRow) -> Result<JobDispatchMsg, StorageErro
         row.try_get("payload").map_err(conn_err)?,
         row.try_get::<Option<String>, _>("event_id")
             .map_err(conn_err)?,
-        row.try_get::<String, _>("target_flavor_sha")
-            .map_err(conn_err)?,
         required_plugin_key,
         required_plugins,
         row.try_get::<Option<String>, _>("w3c_traceparent")
             .map_err(conn_err)?,
         row.try_get::<i32, _>("reclaim_count").map_err(conn_err)? as u32,
-        None,
+        WorkerFlavorRevisionId::from_bytes(
+            row.try_get::<Vec<u8>, _>("required_worker_flavor_id")
+                .map_err(conn_err)?
+                .try_into()
+                .map_err(|_| {
+                    StorageError::Serialization(
+                        "job dispatch worker flavor identity must be 32 bytes".to_owned(),
+                    )
+                })?,
+        ),
     ))
 }
 
@@ -211,8 +218,8 @@ impl JobDispatchQueue for PgJobDispatchQueue {
         sqlx::query(
             "INSERT INTO port_job_dispatch_queue \
              (id, execution_id, workspace_id, org_id, command, status, \
-              payload, event_id, target_flavor_sha, required_plugin_key, \
-              required_plugins, w3c_traceparent, reclaim_count) \
+              payload, event_id, required_plugin_key, \
+              required_plugins, w3c_traceparent, reclaim_count, required_worker_flavor_id) \
              VALUES ($1, $2, $3, $4, $5, 'Pending', $6, $7, $8, $9, $10, $11, $12)",
         )
         .bind(msg.id.as_slice())
@@ -222,11 +229,11 @@ impl JobDispatchQueue for PgJobDispatchQueue {
         .bind(msg.command.as_str())
         .bind(&msg.payload)
         .bind(msg.event_id.as_deref())
-        .bind(&msg.target_flavor_sha)
         .bind(msg.required_plugin_key.as_str())
         .bind(&plugins)
         .bind(msg.w3c_traceparent.as_deref())
         .bind(i32::try_from(msg.reclaim_count).unwrap_or(i32::MAX))
+        .bind(msg.required_worker_flavor_id.as_bytes().as_slice())
         .execute(&self.pool)
         .await
         .map_err(conn_err)?;
@@ -234,12 +241,13 @@ impl JobDispatchQueue for PgJobDispatchQueue {
         Ok(())
     }
 
-    #[tracing::instrument(level = "debug", skip(self, available_plugins), fields(batch_size))]
+    #[tracing::instrument(level = "debug", skip(self, available_plugins), fields(batch_size, advertised_worker_flavor_id = %worker_flavor_id))]
     async fn claim_pending(
         &self,
         processor: &[u8; 16],
         batch_size: u32,
         available_plugins: &[PluginKey],
+        worker_flavor_id: WorkerFlavorRevisionId,
     ) -> Result<Vec<JobClaim>, StorageError> {
         if available_plugins.is_empty() {
             return Ok(Vec::new());
@@ -255,13 +263,14 @@ impl JobDispatchQueue for PgJobDispatchQueue {
         // helper `enqueue` uses — so `$3` (text[]) and `$4` (jsonb) are always
         // derived from the same source and can never diverge.
         let available_jsonb = plugins_to_jsonb(available_plugins);
+        let mut tx = self.pool.begin().await.map_err(conn_err)?;
         let rows = sqlx::query(
             "UPDATE port_job_dispatch_queue \
              SET status = 'Processing', processed_by = $1, processed_at_ms = $2, \
                  claim_generation = claim_generation + 1 \
              WHERE id IN ( \
                  SELECT id FROM port_job_dispatch_queue \
-                 WHERE status = 'Pending' \
+                 WHERE status = 'Pending' AND required_worker_flavor_id = $6 \
                    AND required_plugin_key = ANY($3) \
                    AND required_plugins <@ $4 \
                  ORDER BY id \
@@ -269,8 +278,8 @@ impl JobDispatchQueue for PgJobDispatchQueue {
                  FOR UPDATE SKIP LOCKED \
              ) \
              RETURNING id, execution_id, workspace_id, org_id, command, \
-                       payload, event_id, target_flavor_sha, required_plugin_key, \
-                       required_plugins, w3c_traceparent, reclaim_count, \
+                       payload, event_id, required_plugin_key, \
+                       required_plugins, w3c_traceparent, reclaim_count, required_worker_flavor_id, \
                        claim_generation",
         )
         .bind(processor.as_slice())
@@ -278,13 +287,15 @@ impl JobDispatchQueue for PgJobDispatchQueue {
         .bind(&plugin_strs)
         .bind(&available_jsonb)
         .bind(i64::from(batch_size))
-        .fetch_all(&self.pool)
+        .bind(worker_flavor_id.as_bytes().as_slice())
+        .fetch_all(&mut *tx)
         .await
         .map_err(conn_err)?;
         let claimed = rows
             .iter()
             .map(row_to_claim)
             .collect::<Result<Vec<_>, _>>()?;
+        tx.commit().await.map_err(conn_err)?;
         tracing::debug!(
             target: "nebula_storage::postgres",
             claimed = claimed.len(),
@@ -503,8 +514,8 @@ impl TriggerDedupInbox for PgTriggerDedupInbox {
         sqlx::query(
             "INSERT INTO port_job_dispatch_queue \
              (id, execution_id, workspace_id, org_id, command, status, \
-              payload, event_id, target_flavor_sha, required_plugin_key, \
-              required_plugins, w3c_traceparent, reclaim_count) \
+              payload, event_id, required_plugin_key, \
+              required_plugins, w3c_traceparent, reclaim_count, required_worker_flavor_id) \
              VALUES ($1, $2, $3, $4, $5, 'Pending', $6, $7, $8, $9, $10, $11, $12)",
         )
         .bind(start.id.as_slice())
@@ -514,11 +525,11 @@ impl TriggerDedupInbox for PgTriggerDedupInbox {
         .bind(start.command.as_str())
         .bind(&start.payload)
         .bind(start.event_id.as_deref())
-        .bind(&start.target_flavor_sha)
         .bind(start.required_plugin_key.as_str())
         .bind(&plugins)
         .bind(start.w3c_traceparent.as_deref())
         .bind(i32::try_from(start.reclaim_count).unwrap_or(i32::MAX))
+        .bind(start.required_worker_flavor_id.as_bytes().as_slice())
         .execute(&mut *tx)
         .await
         .map_err(conn_err)?;

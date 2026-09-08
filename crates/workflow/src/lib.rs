@@ -39,7 +39,7 @@ pub mod validate;
 pub mod version;
 
 pub use builder::WorkflowBuilder;
-pub use connection::Connection;
+pub use connection::{Connection, ErrorPortPayload};
 pub use definition::{
     Annotation, CURRENT_SCHEMA_VERSION, CheckpointingConfig, ErrorStrategy, NodePosition,
     RetryConfig, TriggerBinding, UiMetadata, Viewport, WorkflowConfig, WorkflowDefinition,

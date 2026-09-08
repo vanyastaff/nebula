@@ -62,7 +62,9 @@
 // Testing harness — context builder, spy emitter/logger/scheduler.
 // Action traits and types
 pub use nebula_action::{
-    Action, ActionContext, ActionError, ActionResult, Field, PollTriggerAdapter, Schema,
+    Action, ActionContext, ActionEffectContract, ActionError, ActionResult, Field,
+    PollTriggerAdapter, RemoteDestinationGuarantee, RemoteEffectDescriptor, RemoteEffectFactory,
+    RemoteEffectPolicy, RemoteEffectPolicyBuilder, RemoteEffectPolicyError, Schema,
     StatefulActionAdapter, StatelessAction, StatelessActionAdapter, StreamAction, TriggerContext,
     TriggerEvent, TriggerEventOutcome, ValidSchema, WebhookRequest, WebhookTriggerAdapter,
     field_key,
@@ -83,8 +85,8 @@ pub use nebula_action::{impl_batch_action, impl_paginated_action};
 pub use nebula_core::AuthScheme as AuthSchemeContract;
 pub use nebula_core::auth::NoAuthFamily;
 pub use nebula_core::{
-    ActionKey, AuthPattern, ExecutionId, NodeKey, PluginKey, ResourceKey, ScopeLevel, WorkflowId,
-    action_key, resource_key,
+    ActionKey, AuthPattern, ExecutionId, NodeKey, OperationCallId, OperationId, PluginKey,
+    ResourceKey, ScopeLevel, WorkflowId, action_key, resource_key,
 };
 // Credential types (v2)
 pub use nebula_credential::{

@@ -172,50 +172,29 @@ impl WorkflowEngine {
     pub(super) async fn record_idempotency(
         &self,
         scope: &Scope,
-        exec_state: &ExecutionState,
         execution_id: ExecutionId,
         node_key: NodeKey,
+        attempt: u32,
     ) {
-        // Dual-dispatch. The port guard is check-and-mark on
-        // `{scope}:{exec}:{node}:{attempt}`; the attempt is derived the
-        // same way as `idempotency_key_for_node` (
-        // `attempt_count + 1`) so the guard key stays in lockstep with
-        // the persisted output/result rows.
-        if let Some(stores) = &self.stores {
-            let attempt = exec_state
-                .node_states
-                .get(&node_key)
-                .map_or(1, |ns| (ns.attempt_count() as u32).saturating_add(1));
-            if let Err(e) = stores
+        // The execution owner returned this number when recording the attempt
+        // in the same checkpoint; the technical mark cannot drift to attempt N+1.
+        if let Some(stores) = &self.stores
+            && let Err(e) = stores
                 .idempotency
                 .check_and_mark(scope, &execution_id.to_string(), node_key.as_str(), attempt)
                 .await
-            {
-                tracing::warn!(
-                    %execution_id,
-                    %node_key,
-                    error = %e,
-                    "failed to mark node as idempotent"
-                );
-            }
+        {
+            tracing::warn!(
+                %execution_id,
+                %node_key,
+                error = %e,
+                "failed to mark node as idempotent"
+            );
         }
     }
 
-    /// Persist node output and execution state to the repository.
-    ///
-    /// Returns `Err(EngineError::CheckpointFailed)` when the store cannot
-    /// durably commit — `save_node_output` failure, `transition()` error,
-    /// or CAS mismatch (the row moved beneath the engine). Callers in
-    /// `run_frontier` MUST abort the node's progression (no edge routing,
-    /// no event emission) on `Err` so that observers and the frontier
-    /// never act on an unpersisted transition (, #297).
-    /// Persist final Failed state + emit NodeFailed for a panicked task.
-    ///
-    /// Best-effort: checkpoint failures are logged at `warn!` level (not
-    /// propagated) so that the engine still returns a cohesive panic
-    /// error to `run_frontier`'s caller. The real durability gap —
-    /// `save_node_output` after panic — is already logged by
-    /// `checkpoint_node` itself.
+    /// Commit a panicked node's failure before announcing it. A failed
+    /// checkpoint aborts the turn without a later final-state write.
     #[expect(
         clippy::too_many_arguments,
         reason = "mirrors checkpoint_node's arity; the fencing token is required by the \
@@ -231,29 +210,24 @@ impl WorkflowEngine {
         exec_state: &mut ExecutionState,
         repo_version: &mut u64,
         fencing: Option<nebula_storage_port::FencingToken>,
-    ) {
+    ) -> Result<(), EngineError> {
         let panic_err = EngineError::TaskPanicked(err_msg.to_owned());
         mark_node_failed(exec_state, node_key.clone(), &panic_err);
-        let checkpoint_result = self
-            .checkpoint_node(
-                scope,
-                execution_id,
-                node_key.clone(),
-                outputs,
-                exec_state,
-                repo_version,
-                fencing,
-                vec![],
-            )
-            .await;
-        if let Err(e) = checkpoint_result {
-            tracing::warn!(
-                %execution_id,
-                %node_key,
-                error = %e,
-                "failed to checkpoint panicked node state"
-            );
-        }
+        outputs.remove(&node_key);
+        self.checkpoint_node(
+            scope,
+            execution_id,
+            node_key.clone(),
+            Some(nebula_execution::NodeCheckpoint::Failed {
+                error_port_output: None,
+            }),
+            outputs,
+            exec_state,
+            repo_version,
+            fencing,
+            vec![],
+        )
+        .await?;
         self.emit_event(ExecutionEvent::NodeFailed {
             execution_id,
             node_key,
@@ -262,6 +236,7 @@ impl WorkflowEngine {
                 display_message: err_msg.to_owned(),
             },
         });
+        Ok(())
     }
 
     // Private helper — `scope` carries the originating message's tenant so
@@ -275,8 +250,9 @@ impl WorkflowEngine {
         scope: &Scope,
         execution_id: ExecutionId,
         node_key: NodeKey,
+        candidate: Option<nebula_execution::NodeCheckpoint>,
         outputs: &Arc<DashMap<NodeKey, serde_json::Value>>,
-        exec_state: &ExecutionState,
+        exec_state: &mut ExecutionState,
         repo_version: &mut u64,
         fencing: Option<nebula_storage_port::FencingToken>,
         resume_tokens: Vec<ResumeTokenRow>,
@@ -310,22 +286,23 @@ impl WorkflowEngine {
             repo_version,
             token,
             resume_tokens,
+            candidate,
         )
         .await
     }
 
-    /// Spec-16 port variant of [`Self::checkpoint_node`]: save the node
-    /// output through [`nebula_storage_port::store::NodeResultStore`] and
-    /// commit the state snapshot through a fencing-gated
-    /// [`nebula_storage_port::TransitionBatch`]. A superseded fencing
+    /// Commit the processed node's result and execution state in one fenced
+    /// [`nebula_storage_port::TransitionBatch`]. The node-result cache is
+    /// updated only after success and does not supply exact replay. A superseded fencing
     /// token yields [`EngineError::CasConflict`] (the new holder owns the
     /// canonical state — ADR 0008, ); a CAS version mismatch follows
     /// the same #333 refetch-and-abort contract as the legacy path.
     ///
-    /// `resume_tokens` is non-empty only on signal-park commits (W-S3c);
+    /// `resume_tokens` is non-empty only on signal-park commits;
     /// the batch builder defaults to empty so non-park checkpoints are
     /// unaffected.
     #[expect(clippy::too_many_arguments)]
+    #[tracing::instrument(level = "debug", skip_all, fields(%execution_id, %node_key, outcome = tracing::field::Empty))]
     async fn checkpoint_node_port(
         &self,
         scope: &Scope,
@@ -333,32 +310,38 @@ impl WorkflowEngine {
         execution_id: ExecutionId,
         node_key: NodeKey,
         outputs: &Arc<DashMap<NodeKey, serde_json::Value>>,
-        exec_state: &ExecutionState,
+        exec_state: &mut ExecutionState,
         repo_version: &mut u64,
         token: nebula_storage_port::FencingToken,
         resume_tokens: Vec<ResumeTokenRow>,
+        candidate: Option<nebula_execution::NodeCheckpoint>,
     ) -> Result<(), EngineError> {
         let id = execution_id.to_string();
 
-        if let Some(output) = outputs.get(&node_key) {
-            let record = crate::store_seam::node_output_record(output.value().clone());
-            if let Err(e) = stores
-                .node_results
-                .save_node_output(scope, &id, node_key.as_str(), record)
-                .await
-            {
-                return Err(EngineError::CheckpointFailed {
-                    node_key,
-                    reason: format!("save_node_output: {e}"),
-                });
+        let checkpoint = exec_state
+            .checkpoint
+            .get_or_insert_with(nebula_execution::ExecutionCheckpoint::empty_v1);
+        let previous = candidate.map(|candidate| checkpoint.insert(node_key.clone(), candidate));
+        let encoded = (|| {
+            checkpoint::validate_checkpoint_size(exec_state)?;
+            serde_json::to_value(&*exec_state).map_err(|_| EngineError::InvalidRecordedCheckpoint)
+        })();
+        // Restore the last committed evidence before any fallible await. Only
+        // the execution owner's successful CAS installs this candidate.
+        let candidate = if let Some(previous) = previous {
+            let checkpoint = exec_state
+                .checkpoint
+                .as_mut()
+                .ok_or(EngineError::InvalidRecordedCheckpoint)?;
+            let candidate = checkpoint.remove(&node_key);
+            if let Some(previous) = previous {
+                checkpoint.insert(node_key.clone(), previous);
             }
-        }
-
-        let state_json =
-            serde_json::to_value(exec_state).map_err(|e| EngineError::CheckpointFailed {
-                node_key: node_key.clone(),
-                reason: format!("serialize state: {e}"),
-            })?;
+            candidate
+        } else {
+            None
+        };
+        let state_json = encoded?;
 
         let batch = nebula_storage_port::TransitionBatch::builder()
             .scope(scope.clone())
@@ -375,7 +358,26 @@ impl WorkflowEngine {
 
         match stores.execution.commit(batch).await {
             Ok(nebula_storage_port::TransitionOutcome::Applied { new_version }) => {
+                tracing::Span::current().record("outcome", "committed");
                 *repo_version = new_version;
+                if let Some(candidate) = candidate
+                    && let Some(checkpoint) = exec_state.checkpoint.as_mut()
+                {
+                    checkpoint.insert(node_key.clone(), candidate);
+                }
+                // Technical read models are populated only after the authoritative
+                // execution snapshot commits. Exact replay never reads this cache.
+                let output = outputs.get(&node_key).map(|output| output.value().clone());
+                if let Some(output) = output {
+                    let record = crate::store_seam::node_output_record(output);
+                    if let Err(error) = stores
+                        .node_results
+                        .save_node_output(scope, &id, node_key.as_str(), record)
+                        .await
+                    {
+                        tracing::warn!(%execution_id, %node_key, %error, "node output cache update failed");
+                    }
+                }
                 Ok(())
             },
             Ok(nebula_storage_port::TransitionOutcome::FencedOut) => {
@@ -514,6 +516,7 @@ impl WorkflowEngine {
         token: nebula_storage_port::FencingToken,
     ) -> Result<Option<ExecutionStatus>, EngineError> {
         let id = execution_id.to_string();
+        checkpoint::validate_checkpoint_size(exec_state)?;
 
         let build_batch = |version: u64,
                            json: serde_json::Value|

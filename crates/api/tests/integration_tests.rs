@@ -926,6 +926,8 @@ async fn test_execute_workflow() {
     let created_workflow: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let workflow_id = created_workflow["id"].as_str().unwrap();
 
+    activate_workflow_for_start(&state, workflow_id).await;
+
     // Execute the workflow with input data
     let execute_request = serde_json::json!({
         "input": {
@@ -1277,6 +1279,8 @@ async fn test_execution_start() {
         .unwrap();
     let created_workflow: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let workflow_id = created_workflow["id"].as_str().unwrap();
+
+    activate_workflow_for_start(&state, workflow_id).await;
 
     // Start an execution
     let start_request = serde_json::json!({
@@ -2264,7 +2268,7 @@ async fn activate_invalid_returns_422() {
                 path.starts_with('/'),
                 "a logical path names an element, never the whole document"
             );
-            // An activation rejection is only actionable with all five NS14
+            // An activation rejection is only actionable with all five diagnostic
             // fields, so the wire must carry the other three too.
             for field in ["expected", "actual", "remediation"] {
                 assert!(
@@ -2674,6 +2678,8 @@ async fn test_issue_327_start_execution_persists_canonical_execution_state() {
     let workflow_id_str = created_workflow["id"].as_str().unwrap().to_string();
     let workflow_id = nebula_core::WorkflowId::parse(&workflow_id_str).unwrap();
 
+    activate_workflow_for_start(&state, &workflow_id_str).await;
+
     // POST /api/v1/workflows/:id/executions with a real input.
     let input = serde_json::json!({ "knife_key": "knife_value" });
     let app = app::build_app(state.clone(), &api_config);
@@ -2848,6 +2854,8 @@ async fn test_issue_332_start_execution_enqueues_control_start() {
     let created_workflow: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let workflow_id_str = created_workflow["id"].as_str().unwrap().to_string();
 
+    activate_workflow_for_start(&state, &workflow_id_str).await;
+
     // Pre-condition: queue is empty — no other path has written to it.
     assert!(
         handles.control_queue.snapshot().is_empty(),
@@ -2958,6 +2966,8 @@ async fn test_issue_332_execute_workflow_enqueues_control_start() {
         handles.control_queue.snapshot().is_empty(),
         "#332: control queue must be empty before execute"
     );
+
+    activate_workflow_for_start(&state, &workflow_id_str).await;
 
     // POST /api/v1/workflows/:id/execute — the second audit-cited failure site.
     let execute_request = serde_json::json!({ "input": { "k": "v" } });
@@ -3136,13 +3146,9 @@ async fn test_start_execution_rejects_invalid_definition() {
     );
 }
 
-// budget-justified: parallel /execute + /executions rejection test data covering the 422 and 400 dispatch-gate branches
-/// Shift-left validation gate (M3.6): `POST /workflows/{id}/execute` must
-/// reject a stored definition that cannot be parsed as a `WorkflowDefinition`
-/// with 400 (request-level parse failure, distinct from the 422 structural
-/// path) and enqueue no Start signal.
+/// Runtime admission rejects an unactivated workflow without materializing an execution.
 #[tokio::test]
-async fn test_execute_workflow_rejects_unparseable_definition() {
+async fn execute_workflow_rejects_unactivated_workflow() {
     use axum::{
         body::Body,
         http::{Request, StatusCode},
@@ -3179,9 +3185,10 @@ async fn test_execute_workflow_rejects_unparseable_definition() {
 
     assert_eq!(
         response.status(),
-        StatusCode::BAD_REQUEST,
-        "unparseable stored definition must be rejected with 400 before dispatch"
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "an unactivated workflow must be rejected before runtime dispatch"
     );
+    handles.assert_no_materialized_starts().await;
     let content_type = response
         .headers()
         .get("content-type")
@@ -3198,11 +3205,9 @@ async fn test_execute_workflow_rejects_unparseable_definition() {
     );
 }
 
-/// Shift-left validation gate (M3.6): `POST /workflows/{id}/executions` must
-/// reject a stored definition that cannot be parsed as a `WorkflowDefinition`
-/// with 400 and enqueue no Start signal.
+/// The canonical start route rejects an unactivated workflow before materialization.
 #[tokio::test]
-async fn test_start_execution_rejects_unparseable_definition() {
+async fn start_execution_rejects_unactivated_workflow() {
     use axum::{
         body::Body,
         http::{Request, StatusCode},
@@ -3239,9 +3244,10 @@ async fn test_start_execution_rejects_unparseable_definition() {
 
     assert_eq!(
         response.status(),
-        StatusCode::BAD_REQUEST,
-        "unparseable stored definition must be rejected with 400 before dispatch"
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "an unactivated workflow must be rejected before runtime dispatch"
     );
+    handles.assert_no_materialized_starts().await;
     let content_type = response
         .headers()
         .get("content-type")
@@ -3255,5 +3261,59 @@ async fn test_start_execution_rejects_unparseable_definition() {
     assert!(
         handles.running_executions().await.is_empty(),
         "rejected start must not create a running execution"
+    );
+}
+
+/// Runtime admission uses the definition compiled at activation, so later corruption of the
+/// authoring JSON cannot change or bypass the exact executable contract.
+#[tokio::test]
+async fn execute_workflow_uses_activated_plan_when_authoring_definition_is_corrupt() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let (state, handles) = create_state_with_port_handles().await;
+    let api_config = ApiConfig::for_test();
+    let token = create_test_jwt();
+
+    let workflow_id = nebula_core::WorkflowId::new();
+    handles
+        .seed_workflow(workflow_id, make_valid_workflow_definition(&workflow_id))
+        .await;
+    activate_workflow_for_start(&state, &workflow_id.to_string()).await;
+    handles.replace_activated_definition(make_malformed_workflow_definition(&workflow_id));
+
+    let app = app::build_app(state, &api_config);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(ws_path(&format!("/workflows/{workflow_id}/execute")))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .header("x-csrf-token", TEST_CSRF_TOKEN)
+                .header("cookie", TEST_CSRF_COOKIE)
+                .body(Body::from(r#"{"input":{}}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::ACCEPTED,
+        "the activated plan remains authoritative after authoring JSON corruption"
+    );
+    assert_eq!(
+        handles.control_queue.snapshot().len(),
+        1,
+        "one accepted start must be durably enqueued"
+    );
+    assert_eq!(
+        handles.running_executions().await.len(),
+        1,
+        "one accepted start must materialize one running execution"
     );
 }

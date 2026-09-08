@@ -1,6 +1,6 @@
 //! Dispatch-claim → execution-turn handoff conformance (in-memory reference).
 //!
-//! The property NS05 turns on is that an action's duration never extends the
+//! The claim-handoff property is that an action's duration never extends the
 //! dispatch claim. These cases prove the claim is *finished* at handoff, so
 //! there is nothing left to extend.
 
@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use nebula_core::PluginKey;
 use nebula_storage::inmem::{
-    InMemoryExecutionStore, InMemoryJobDispatchQueue, InMemoryTurnHandoff,
+    InMemoryExecutionStore, InMemoryJobDispatchQueue, InMemoryPlanFlavorCatalog,
+    InMemoryStartAcceptanceStore, InMemoryTurnHandoff,
 };
 use nebula_storage_port::dto::{ControlCommand, JobDispatchMsg};
 use nebula_storage_port::store::{
@@ -23,14 +24,43 @@ const TTL: Duration = Duration::from_secs(30);
 const PROCESSOR_A: [u8; 16] = [0xa1; 16];
 const PROCESSOR_B: [u8; 16] = [0xb2; 16];
 
+#[path = "support/job_turn_handoff_fixture.rs"]
+mod handoff_fixture;
+
 fn scope() -> Scope {
-    Scope::new("ws-handoff", "org-handoff")
+    Scope::new(
+        nebula_core::WorkspaceId::from_bytes([0x11; 16]).to_string(),
+        nebula_core::OrgId::from_bytes([0x22; 16]).to_string(),
+    )
+}
+
+#[tokio::test]
+async fn a_queued_flavor_must_match_the_execution_live_reference() {
+    let fixture = Fixture::new();
+    let scope = scope();
+    let execution = nebula_core::ExecutionId::new().to_string();
+
+    handoff_fixture::assert_mismatched_flavor_refuses_the_turn(
+        handoff_fixture::TurnHandoffPorts {
+            store: &fixture.store,
+            queue: &fixture.queue,
+            handoff: &fixture.handoff,
+            recovery: &fixture.handoff,
+            catalog: &fixture.catalog,
+            starts: &fixture.starts,
+        },
+        &execution,
+        &scope,
+    )
+    .await;
 }
 
 struct Fixture {
     store: InMemoryExecutionStore,
     queue: InMemoryJobDispatchQueue,
     handoff: InMemoryTurnHandoff,
+    catalog: InMemoryPlanFlavorCatalog,
+    starts: InMemoryStartAcceptanceStore,
 }
 
 impl Fixture {
@@ -38,18 +68,20 @@ impl Fixture {
         let store = InMemoryExecutionStore::new();
         let queue = InMemoryJobDispatchQueue::new(&store);
         let handoff = InMemoryTurnHandoff::new(&store);
+        let catalog = InMemoryPlanFlavorCatalog::new(&store);
+        let starts = InMemoryStartAcceptanceStore::new(&store);
         Self {
             store,
             queue,
             handoff,
+            catalog,
+            starts,
         }
     }
 
     async fn seed(&self, execution_id: &str) -> nebula_storage_port::store::JobClaimToken {
-        self.store
-            .create(&scope(), execution_id, "wf", serde_json::json!({}))
-            .await
-            .expect("the execution row is created");
+        handoff_fixture::materialize_execution(&self.catalog, &self.starts, execution_id, &scope())
+            .await;
         let plugin: PluginKey = "demo".parse().expect("the fixture plugin key is valid");
         let msg = JobDispatchMsg::new(
             *uuid::Uuid::new_v4().as_bytes(),
@@ -58,18 +90,17 @@ impl Fixture {
             scope(),
             serde_json::json!({}),
             None::<String>,
-            "flavor-sha",
             plugin.clone(),
             vec![plugin],
             None::<String>,
             0,
-            None,
+            handoff_fixture::LIVE_FLAVOR,
         );
         self.queue.enqueue(&msg).await.expect("the job enqueues");
         let plugin: PluginKey = "demo".parse().expect("the fixture plugin key is valid");
         let claimed = self
             .queue
-            .claim_pending(&PROCESSOR_A, 1, &[plugin])
+            .claim_pending(&PROCESSOR_A, 1, &[plugin], handoff_fixture::LIVE_FLAVOR)
             .await
             .expect("the job is claimable");
         claimed
@@ -86,13 +117,8 @@ impl Fixture {
         holder: &'a str,
         scope_ref: &'a Scope,
     ) -> TurnHandoff<'a> {
-        TurnHandoff {
-            scope: scope_ref,
-            execution_id,
-            claim,
-            holder,
-            lease_ttl: TTL,
-        }
+        TurnHandoff::for_claim(scope_ref, execution_id, claim, handoff_fixture::LIVE_FLAVOR)
+            .lease_to(holder, TTL)
     }
 }
 
@@ -101,12 +127,12 @@ impl Fixture {
 async fn accepting_a_turn_acknowledges_the_claim_in_one_commit() {
     let fixture = Fixture::new();
     let scope = scope();
-    let execution = "exe-accept";
-    let claim = fixture.seed(execution).await;
+    let execution = nebula_core::ExecutionId::new().to_string();
+    let claim = fixture.seed(&execution).await;
 
     let accepted = fixture
         .handoff
-        .accept_turn(&fixture.request(execution, claim, "worker-a", &scope))
+        .accept_turn(&fixture.request(&execution, claim, "worker-a", &scope))
         .await
         .expect("a fresh claim on an unleased execution hands off");
     let TurnAcceptance::Accepted { fence } = accepted else {
@@ -130,8 +156,8 @@ async fn accepting_a_turn_acknowledges_the_claim_in_one_commit() {
 async fn a_superseded_claim_cannot_accept_the_turn() {
     let fixture = Fixture::new();
     let scope = scope();
-    let execution = "exe-superseded";
-    let stale = fixture.seed(execution).await;
+    let execution = nebula_core::ExecutionId::new().to_string();
+    let stale = fixture.seed(&execution).await;
 
     // A reclaim sweep hands the row to someone else, bumping the generation.
     fixture
@@ -142,7 +168,12 @@ async fn a_superseded_claim_cannot_accept_the_turn() {
     let plugin: PluginKey = "demo".parse().expect("the fixture plugin key is valid");
     let fresh = fixture
         .queue
-        .claim_pending(&PROCESSOR_B, 1, &[plugin])
+        .claim_pending(
+            &PROCESSOR_B,
+            1,
+            &[plugin],
+            nebula_core::WorkerFlavorRevisionId::from_bytes([0x11; 32]),
+        )
         .await
         .expect("the reclaimed job is claimable again");
     assert_eq!(fresh.len(), 1, "the sweep returned the row to the queue");
@@ -150,7 +181,7 @@ async fn a_superseded_claim_cannot_accept_the_turn() {
     assert_eq!(
         fixture
             .handoff
-            .accept_turn(&fixture.request(execution, stale, "worker-a", &scope))
+            .accept_turn(&fixture.request(&execution, stale, "worker-a", &scope))
             .await
             .expect("a superseded claim is a typed outcome, not an error"),
         TurnAcceptance::ClaimSuperseded
@@ -161,7 +192,7 @@ async fn a_superseded_claim_cannot_accept_the_turn() {
     let taken = fixture
         .handoff
         .accept_turn(&fixture.request(
-            execution,
+            &execution,
             fresh.into_iter().next().expect("one job").token,
             "worker-b",
             &scope,
@@ -180,12 +211,12 @@ async fn a_superseded_claim_cannot_accept_the_turn() {
 async fn a_live_foreign_lease_blocks_the_turn_without_acknowledging_the_row() {
     let fixture = Fixture::new();
     let scope = scope();
-    let execution = "exe-contended";
-    let claim = fixture.seed(execution).await;
+    let execution = nebula_core::ExecutionId::new().to_string();
+    let claim = fixture.seed(&execution).await;
 
     fixture
         .store
-        .acquire_lease(&scope, execution, "worker-z", TTL)
+        .acquire_lease(&scope, &execution, "worker-z", TTL)
         .await
         .expect("the competing lease is acquirable")
         .expect("no lease existed yet");
@@ -193,7 +224,7 @@ async fn a_live_foreign_lease_blocks_the_turn_without_acknowledging_the_row() {
     assert_eq!(
         fixture
             .handoff
-            .accept_turn(&fixture.request(execution, claim, "worker-a", &scope))
+            .accept_turn(&fixture.request(&execution, claim, "worker-a", &scope))
             .await
             .expect("contention is a typed outcome, not an error"),
         TurnAcceptance::TurnHeldByAnotherOwner
@@ -213,8 +244,8 @@ async fn a_live_foreign_lease_blocks_the_turn_without_acknowledging_the_row() {
 async fn a_foreign_tenant_cannot_accept_the_turn() {
     let fixture = Fixture::new();
     let scope = scope();
-    let execution = "exe-tenant";
-    let claim = fixture.seed(execution).await;
+    let execution = nebula_core::ExecutionId::new().to_string();
+    let claim = fixture.seed(&execution).await;
     let intruder = Scope::new("ws-other", "org-other");
 
     // The claim predicate carries the tenant, so a foreign scope fails there
@@ -224,7 +255,7 @@ async fn a_foreign_tenant_cannot_accept_the_turn() {
     assert_eq!(
         fixture
             .handoff
-            .accept_turn(&fixture.request(execution, claim, "worker-a", &intruder))
+            .accept_turn(&fixture.request(&execution, claim, "worker-a", &intruder))
             .await
             .expect("a foreign tenant is a typed outcome, not an error"),
         TurnAcceptance::ClaimSuperseded
@@ -235,7 +266,7 @@ async fn a_foreign_tenant_cannot_accept_the_turn() {
     // execution was not leased under the foreign scope.
     let taken = fixture
         .handoff
-        .accept_turn(&fixture.request(execution, claim, "worker-a", &scope))
+        .accept_turn(&fixture.request(&execution, claim, "worker-a", &scope))
         .await
         .expect("the original handoff still runs after the foreign refusal");
     assert!(
@@ -253,19 +284,19 @@ async fn a_foreign_tenant_cannot_accept_the_turn() {
 async fn a_claim_token_cannot_be_paired_with_another_execution() {
     let fixture = Fixture::new();
     let scope = scope();
-    let claimed = "exe-claimed";
-    let other = "exe-other";
-    let claim = fixture.seed(claimed).await;
+    let claimed = nebula_core::ExecutionId::new().to_string();
+    let other = nebula_core::ExecutionId::new().to_string();
+    let claim = fixture.seed(&claimed).await;
     fixture
         .store
-        .create(&scope, other, "wf", serde_json::json!({}))
+        .create(&scope, &other, "wf", serde_json::json!({}))
         .await
         .expect("the second execution row is created");
 
     assert_eq!(
         fixture
             .handoff
-            .accept_turn(&fixture.request(other, claim, "worker-a", &scope))
+            .accept_turn(&fixture.request(&other, claim, "worker-a", &scope))
             .await
             .expect("a mismatched pairing is a typed outcome, not an error"),
         TurnAcceptance::ClaimSuperseded,
@@ -281,7 +312,7 @@ async fn a_claim_token_cannot_be_paired_with_another_execution() {
         .expect("the claimed row is untouched");
     fixture
         .store
-        .acquire_lease(&scope, other, "worker-b", TTL)
+        .acquire_lease(&scope, &other, "worker-b", TTL)
         .await
         .expect("the unrelated execution is reachable")
         .expect("the unrelated execution was never leased");

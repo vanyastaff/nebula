@@ -93,6 +93,14 @@ pub trait ActionFactory: Send + Sync + 'static {
     /// Declared resource and credential dependencies for the produced action.
     fn dependencies(&self) -> &Dependencies;
 
+    /// Separate preparation capability for an explicitly declared remote effect.
+    ///
+    /// Its descriptor must exactly match metadata before any instantiation.
+    /// Durable remote execution never calls the generic `instantiate` path.
+    fn remote_effect_factory(&self) -> Option<&dyn crate::effect::RemoteEffectFactory> {
+        None
+    }
+
     /// Build an [`ActionHandle`] for the given workflow node + context.
     #[must_use = "the instantiated action handle must be dispatched, not discarded"]
     fn instantiate<'a>(

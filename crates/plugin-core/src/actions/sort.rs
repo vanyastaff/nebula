@@ -205,6 +205,7 @@ impl nebula_action::action::Action for Sort {
             "Sort",
             "Sort an array of objects by one or more fields (asc/desc)",
         )
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
 
     fn dependencies() -> &'static nebula_action::Dependencies {

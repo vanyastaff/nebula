@@ -49,21 +49,27 @@
 
 mod compatibility;
 mod compiler;
+mod compiler_validation;
 mod dependency;
 mod error;
+mod execution_graph;
 mod flavor;
 mod flavor_context;
 mod manifest;
 mod plan;
+mod plan_effect;
 mod plugin;
 pub mod plugin_toml;
 mod registry;
 mod resolved_plugin;
+#[cfg(feature = "test-util")]
+pub mod testing;
 
 // ── Public re-exports ─────────────────────────────────────────────────────────
 
 pub use dependency::PluginDependencyError;
 pub use error::{ComponentKind, PluginError};
+pub use execution_graph::{ExecutableGraph, ExecutionGraphProjectionError};
 pub use flavor::{
     PluginContractDescriptor, PluginSet, RecordedWorkerFlavorRevisionV1, RuntimeContractVersion,
     RuntimeContractVersionError, WorkerFlavorIntegrityError, WorkerFlavorRevision,
@@ -76,8 +82,8 @@ pub use nebula_core::PluginKey;
 pub use nebula_metadata::PluginDependency;
 pub use nebula_plugin_macros::Plugin;
 pub use plan::{
-    ExecutablePlanIntegrityError, ExecutablePlanRevision, PlanBindingContract,
-    PlanBindingRequirement, PlanBindingSite, PlanCompilationError,
+    ExecutablePlanIntegrityError, ExecutablePlanRevision, PlanActionEffectContract,
+    PlanBindingContract, PlanBindingRequirement, PlanBindingSite, PlanCompilationError,
     RecordedExecutablePlanRevisionV1,
 };
 pub use plugin::Plugin;

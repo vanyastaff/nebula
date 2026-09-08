@@ -116,6 +116,7 @@ impl nebula_action::action::Action for SetFields {
             "Set Fields",
             "Merges a list of named field assignments onto a JSON object",
         )
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
 
     fn dependencies() -> &'static nebula_action::Dependencies {

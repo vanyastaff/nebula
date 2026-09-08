@@ -9,7 +9,8 @@ pub use nebula_core::id::{
     WorkspaceId,
 };
 pub use nebula_core::{
-    ExecutablePlanRevisionId, ExecutionContractBundleId, WorkerFlavorRevisionId,
+    ExecutablePlanRevisionId, ExecutionContractBundleId, OperationCallId, OperationId,
+    WorkerFlavorRevisionId,
 };
 
 /// Monotone lease fencing token.

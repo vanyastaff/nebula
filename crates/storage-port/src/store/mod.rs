@@ -50,10 +50,16 @@ pub use resume_producer::ResumeProducer;
 pub use resume_token::ResumeTokenStore;
 pub use revision_catalog::{PlanFlavorCatalog, PlanFlavorCatalogAdmin, PlanFlavorCatalogWriter};
 pub use start_acceptance::{
-    FingerprintVersion, KeyedStart, MaterializedKeyedStart, StartAcceptance, StartAcceptanceStore,
-    StartContractIdentity, StartFingerprint, StartMaterialization, StartRevisionRejection,
+    FingerprintVersion, StartAcceptanceStore, StartContractIdentity, StartFingerprint,
+    StartMaterialization, StartMaterializationError, StartReservationMaintenance,
+    StartRevisionRejection,
 };
 pub use trigger_dedup::TriggerDedupInbox;
-pub use turn_handoff::{ExecutionTurnHandoff, TurnAcceptance, TurnHandoff};
+pub use turn_handoff::{
+    ControlStartAcceptance, ControlStartHandoff, ControlTurnCommand, ControlTurnCommit,
+    ControlTurnCommitOutcome, ControlTurnTransition, ExecutionTurnHandoff, RecoverableTurn,
+    RecoverableTurnPage, RecoveryTurnAcceptance, RecoveryTurnHandoff, TurnAcceptance, TurnHandoff,
+    TurnRecovery,
+};
 pub use webhook::WebhookActivationStore;
-pub use workflow::{WorkflowStore, WorkflowVersionStore};
+pub use workflow::{WorkflowPublicationError, WorkflowStore, WorkflowVersionStore};

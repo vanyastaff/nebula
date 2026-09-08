@@ -137,9 +137,9 @@ architecture change, not a refactor.
   resource/binding/fan-out state. Cross-aggregate commands and facts use durable
   persisted seams; `nebula-eventbus` may only wake or observe their owners.
 - **Every first-party deployment composition root lives under `apps/`.** `nebula-worker`
-  (Exec) is reusable assembly wiring the engine into the `nebula-orchestrator` pull-loop
-  (ADR-0095); `apps/worker` selects concrete adapters, configuration, and process
-  lifecycle. A downstream host becomes a supported composition root only through the
+  (Exec) is reusable assembly for exact-flavor control consumption and accepted-turn
+  recovery; `apps/worker` selects concrete adapters, configuration, and process lifecycle.
+  A downstream host becomes a supported composition root only through the
   curated `nebula_sdk::embedded::RuntimeBuilder`; until that façade ships, downstream
   embedding is not a supported deployment surface. It cannot replace or bypass aggregate
   ownership, admission, or tenant authority.

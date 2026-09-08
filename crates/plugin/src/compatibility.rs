@@ -24,6 +24,13 @@ use crate::{
 #[derive(Debug, thiserror::Error, nebula_error::Classify)]
 #[non_exhaustive]
 pub enum PlanRegistryCompatibilityError {
+    /// A readable legacy plan does not declare effect behavior required for execution.
+    #[classify(
+        category = "validation",
+        code = "PLUGIN_PLAN_COMPATIBILITY:UNSUPPORTED_EFFECT_PROTOCOL"
+    )]
+    #[error("executable plan does not declare a supported effect protocol")]
+    UnsupportedEffectProtocol,
     /// The plan was compiled against another logical plugin set.
     #[classify(
         category = "validation",
@@ -110,6 +117,15 @@ fn validate_recorded_contracts(
     record: &RecordedExecutablePlanRevisionV1,
     registry: &FrozenPluginRegistry,
 ) -> Result<(), PlanRegistryCompatibilityError> {
+    if record.compiler_version != crate::plan::COMPILER_VERSION_GRAPH_V3
+        || record
+            .content
+            .actions
+            .iter()
+            .any(|action| action.effect_contract.is_none())
+    {
+        return Err(PlanRegistryCompatibilityError::UnsupportedEffectProtocol);
+    }
     for plugin in &record.content.plugins {
         validate_plugin(plugin, registry)?;
     }
@@ -126,6 +142,17 @@ fn validate_recorded_contracts(
         if &projected != action {
             return Err(mismatch("actions"));
         }
+        let factory = plugin
+            .action(&action_key)
+            .ok_or_else(|| mismatch("action_effects"))?;
+        let declared = action
+            .effect_contract
+            .as_ref()
+            .ok_or_else(|| mismatch("action_effects"))?
+            .checked_contract()
+            .map_err(|_| mismatch("action_effects"))?;
+        crate::plan_effect::validate_factory_effect(&declared, factory.as_ref())
+            .map_err(|_| mismatch("action_effects"))?;
         let dependencies = plugin
             .action_contract(&action_key)
             .map(ActionContractSnapshot::dependencies)
@@ -365,6 +392,13 @@ fn diagnostic(
 impl ActivationDiagnostics for PlanRegistryCompatibilityError {
     fn activation_diagnostics(&self) -> Vec<ActivationDiagnostic> {
         let single = match self {
+            Self::UnsupportedEffectProtocol => diagnostic(
+                "PLUGIN_PLAN_COMPATIBILITY:UNSUPPORTED_EFFECT_PROTOCOL",
+                "/plan/compiler_version",
+                "compiler 3 with explicit effect declarations".to_owned(),
+                "legacy plan without effect declarations".to_owned(),
+                "activate a new workflow version using declared action effects",
+            ),
             Self::PluginSetMismatch { plan, registry } => diagnostic(
                 "PLUGIN_PLAN_COMPATIBILITY:PLUGIN_SET_MISMATCH",
                 "/plan/plugin_set_id",
@@ -410,6 +444,7 @@ mod activation_diagnostic_tests {
         let flavor_registry = WorkerFlavorRevisionId::from_bytes([0x44; 32]);
 
         let rejections = [
+            PlanRegistryCompatibilityError::UnsupportedEffectProtocol,
             PlanRegistryCompatibilityError::PluginSetMismatch {
                 plan: plan_set,
                 registry: registry_set,
@@ -435,7 +470,10 @@ mod activation_diagnostic_tests {
                     reported.actual(),
                     reported.remediation(),
                 ] {
-                    assert!(!field.trim().is_empty(), "NS14 requires all five fields");
+                    assert!(
+                        !field.trim().is_empty(),
+                        "activation diagnostics require all five fields"
+                    );
                 }
             }
         }

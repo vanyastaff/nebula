@@ -4,4 +4,5 @@
 //! writing integrations. Their paths do not expose Nebula's internal crate
 //! topology as part of the supported SDK contract.
 
+pub mod action;
 pub mod credential;

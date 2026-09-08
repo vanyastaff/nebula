@@ -82,6 +82,13 @@ pub enum StorageError {
     /// Backend connectivity failure.
     #[error("connection: {0}")]
     Connection(String),
+    /// A commit may have succeeded but its acknowledgement was lost.
+    /// Reading persisted identity does not mint the lost write authority.
+    #[error("{operation}: commit acknowledgement is unknown")]
+    AcknowledgementUnknown {
+        /// Bounded static operation name, never backend error text.
+        operation: &'static str,
+    },
     /// Misconfiguration (fail-closed — never proceed on a misconfigured path).
     #[error("configuration: {0}")]
     Configuration(String),

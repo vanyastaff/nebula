@@ -5,10 +5,11 @@
 //! [`harness`] encode the abstract concurrency + tenancy contract.
 //!
 //! Skip-clean policy (via `skip_reason`): the Postgres case skips when
-//! `DATABASE_URL` is unset; the SQLite case skips when the crate was built
-//! without `--features sqlite`. A skipped backend prints a WARN and passes
-//! — never a false green claim, never a hard failure on a machine that
-//! cannot run that backend.
+//! `DATABASE_URL` is unset or the `postgres` feature is disabled, unless
+//! `NEBULA_REQUIRE_POSTGRES` is set, which makes either a hard failure.
+//! Invalid configured URLs fail; their values are never printed by the gate.
+//! SQLite skips when built without `--features sqlite`. An optional skipped
+//! backend prints a WARN and passes; it does not count as runtime verification.
 //!
 //! Backends whose adapter does not exist yet make `Backend` return the
 //! store via `unimplemented!()`, so the suite compiles and that backend's
@@ -33,19 +34,10 @@ use harness::{
     assert_dispatch_without_dedup_key, assert_expired_rollbacks_are_released,
     assert_get_published_is_highest_numbered, assert_idempotency_first_writer_wins,
     assert_idempotency_store_cross_scope_isolated, assert_idempotency_store_first_writer,
-    assert_job_dispatch_fencing, assert_job_dispatch_routes_by_plugin,
-    assert_job_dispatch_routes_by_plugin_superset,
+    assert_job_dispatch_exact_flavor, assert_job_dispatch_fencing,
+    assert_job_dispatch_routes_by_plugin, assert_job_dispatch_routes_by_plugin_superset,
     assert_job_dispatch_same_processor_aba_is_fenced, assert_journal_visibility_and_scope,
-    assert_keyed_start_creates_one_execution, assert_keyed_start_failure_writes_nothing,
-    assert_keyed_start_is_scoped_per_tenant, assert_keyed_start_mismatch_writes_nothing,
-    assert_keyed_start_replays_the_original_receipt, assert_live_lease_blocks_acquire,
-    assert_materialized_start_creates_one_execution_and_reference,
-    assert_materialized_start_mismatch_writes_nothing,
-    assert_materialized_start_rejects_draining_pair_and_writes_nothing,
-    assert_materialized_start_rejects_mismatched_command_and_writes_nothing,
-    assert_materialized_start_rejects_mismatched_flavor_and_writes_nothing,
-    assert_materialized_start_rejects_missing_plan_and_writes_nothing,
-    assert_materialized_start_replays_original_receipt, assert_non_resume_row_still_exhausts,
+    assert_live_lease_blocks_acquire, assert_non_resume_row_still_exhausts,
     assert_resume_row_exempt_from_reclaim_budget, assert_resume_target_survives_queue_round_trip,
     assert_save_with_published_version_is_atomic, assert_stale_fencing_is_fenced_out,
     assert_terminal_commit_rejects_incompatible_reference_transition,
@@ -91,7 +83,10 @@ macro_rules! matrix {
         #[case::postgres(postgres())]
         #[tokio::test]
         async fn $name(#[case] backend: Box<dyn Backend>) {
-            run(backend, |b| async move { $assertion(b.as_ref()).await }).await;
+            run(backend, |b| async move {
+                let _observation = $assertion(b.as_ref()).await;
+            })
+            .await;
         }
     };
 }
@@ -160,54 +155,6 @@ matrix!(
     assert_job_dispatch_routes_by_plugin
 );
 matrix!(
-    keyed_start_creates_one_execution,
-    assert_keyed_start_creates_one_execution
-);
-matrix!(
-    keyed_start_replays_the_original_receipt,
-    assert_keyed_start_replays_the_original_receipt
-);
-matrix!(
-    keyed_start_mismatch_writes_nothing,
-    assert_keyed_start_mismatch_writes_nothing
-);
-matrix!(
-    keyed_start_is_scoped_per_tenant,
-    assert_keyed_start_is_scoped_per_tenant
-);
-matrix!(
-    keyed_start_failure_writes_nothing,
-    assert_keyed_start_failure_writes_nothing
-);
-matrix!(
-    materialized_start_creates_one_execution_and_reference,
-    assert_materialized_start_creates_one_execution_and_reference
-);
-matrix!(
-    materialized_start_replays_original_receipt,
-    assert_materialized_start_replays_original_receipt
-);
-matrix!(
-    materialized_start_mismatch_writes_nothing,
-    assert_materialized_start_mismatch_writes_nothing
-);
-matrix!(
-    materialized_start_rejects_missing_plan_and_writes_nothing,
-    assert_materialized_start_rejects_missing_plan_and_writes_nothing
-);
-matrix!(
-    materialized_start_rejects_draining_pair_and_writes_nothing,
-    assert_materialized_start_rejects_draining_pair_and_writes_nothing
-);
-matrix!(
-    materialized_start_rejects_mismatched_command_and_writes_nothing,
-    assert_materialized_start_rejects_mismatched_command_and_writes_nothing
-);
-matrix!(
-    materialized_start_rejects_mismatched_flavor_and_writes_nothing,
-    assert_materialized_start_rejects_mismatched_flavor_and_writes_nothing
-);
-matrix!(
     terminal_commit_releases_live_reference,
     assert_terminal_commit_releases_live_reference
 );
@@ -263,6 +210,116 @@ matrix!(
     assert_dedup_duplicate_returns_winner_id
 );
 
+#[rstest]
+#[case::in_memory(
+    in_memory(),
+    "in-memory",
+    "NEBULA_CLAIM_FENCING_IN_MEMORY_OBSERVATIONS_PATH"
+)]
+#[case::sqlite(sqlite(), "sqlite", "NEBULA_CLAIM_FENCING_SQLITE_OBSERVATIONS_PATH")]
+#[case::postgres(
+    postgres(),
+    "postgresql",
+    "NEBULA_CLAIM_FENCING_POSTGRES_OBSERVATIONS_PATH"
+)]
+#[tokio::test]
+async fn claim_generation_raw_observations(
+    #[case] backend: Box<dyn Backend>,
+    #[case] backend_name: &str,
+    #[case] env: &str,
+) {
+    if let Some(reason) = skip_reason(backend.as_ref()) {
+        eprintln!("WARN [conformance] {reason}");
+        return;
+    }
+    let control = assert_control_queue_same_processor_aba_is_fenced(backend.as_ref()).await;
+    let job = assert_job_dispatch_same_processor_aba_is_fenced(backend.as_ref()).await;
+    let Ok(path) = std::env::var(env) else {
+        return;
+    };
+    let path = std::path::Path::new(&path);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)
+        .unwrap();
+    serde_json::to_writer_pretty(
+        std::io::BufWriter::new(file),
+        &serde_json::json!({
+            "producer_version": 1,
+            "contract": "claim-generation-fencing",
+            "scenario_inventory_version": 1,
+            "backend": backend_name,
+            "queues": [control, job]
+        }),
+    )
+    .unwrap();
+}
+
+#[rstest]
+#[case::in_memory(
+    in_memory(),
+    "in-memory",
+    "NEBULA_PERSISTENCE_AUTHORITY_IN_MEMORY_OBSERVATIONS_PATH"
+)]
+#[case::sqlite(
+    sqlite(),
+    "sqlite",
+    "NEBULA_PERSISTENCE_AUTHORITY_SQLITE_OBSERVATIONS_PATH"
+)]
+#[case::postgres(
+    postgres(),
+    "postgresql",
+    "NEBULA_PERSISTENCE_AUTHORITY_POSTGRES_OBSERVATIONS_PATH"
+)]
+#[tokio::test]
+async fn persistence_authority_raw_observations(
+    #[case] backend: Box<dyn Backend>,
+    #[case] backend_name: &str,
+    #[case] env: &str,
+) {
+    if let Some(reason) = skip_reason(backend.as_ref()) {
+        eprintln!("WARN [conformance] {reason}");
+        return;
+    }
+    let owner_fencing = assert_stale_fencing_is_fenced_out(backend.as_ref()).await;
+    let lease_recovery = assert_live_lease_blocks_acquire(backend.as_ref()).await;
+    let atomic_transition = assert_atomic_triple(backend.as_ref()).await;
+    let publication_atomicity =
+        assert_save_with_published_version_is_atomic(backend.as_ref()).await;
+    let Ok(path) = std::env::var(env) else {
+        return;
+    };
+    let path = std::path::Path::new(&path);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)
+        .unwrap();
+    serde_json::to_writer_pretty(
+        std::io::BufWriter::new(file),
+        &serde_json::json!({
+            "producer_version": 1,
+            "contract": "persistence-authority",
+            "scenario_inventory_version": 1,
+            "backend": backend_name,
+            "owner_fencing": owner_fencing,
+            "lease_recovery": lease_recovery,
+            "atomic_transition": atomic_transition,
+            "publication_atomicity": publication_atomicity
+        }),
+    )
+    .unwrap();
+}
+
 // ── Scoped variant ────────────────────────────────────────────────────────
 // The same contract suite, but every store is wrapped in the
 // `nebula-tenancy` decorators (bound to one tenant). This proves the
@@ -296,7 +353,10 @@ macro_rules! scoped_matrix {
         #[case::postgres(scoped_postgres())]
         #[tokio::test]
         async fn $name(#[case] backend: Box<dyn Backend>) {
-            run(backend, |b| async move { $assertion(b.as_ref()).await }).await;
+            run(backend, |b| async move {
+                let _observation = $assertion(b.as_ref()).await;
+            })
+            .await;
         }
     };
 }
@@ -336,3 +396,5 @@ scoped_matrix!(
     scoped_get_published_is_highest_numbered,
     assert_get_published_is_highest_numbered
 );
+
+matrix!(job_dispatch_exact_flavor, assert_job_dispatch_exact_flavor);

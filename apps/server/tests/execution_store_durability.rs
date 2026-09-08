@@ -155,7 +155,7 @@ async fn sqlite_control_queue_survives_restart() {
 /// non-vacuous.
 #[tokio::test]
 async fn in_memory_control_queue_does_not_survive_recreation() {
-    // Build the first pair of stores (same shared-core pattern as AppState::in_memory).
+    // Build the first pair of stores over one shared in-memory core.
     let exec_store_1 = InMemoryExecutionStore::new();
     let queue_1 = Arc::new(InMemoryControlQueue::new(&exec_store_1));
 

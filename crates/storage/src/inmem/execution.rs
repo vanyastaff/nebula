@@ -79,6 +79,11 @@ pub(super) struct QueuedJob {
 
 #[derive(Debug, Default)]
 pub(super) struct State {
+    pub(super) accepted_turns:
+        std::collections::BTreeMap<String, super::turn_recovery::AcceptedTurn>,
+    pub(super) operation_ledger: super::operation_ledger::LedgerState,
+    pub(super) materialized_starts: HashMap<String, crate::start_materialization::StoredStart>,
+    pub(super) materialized_bundle_owners: HashMap<nebula_core::ExecutionContractBundleId, String>,
     pub(super) rows: HashMap<String, Row>,
     /// Control-queue rows keyed by the message's 16-byte id.
     pub(super) queue: HashMap<[u8; 16], QueuedMsg>,
@@ -90,7 +95,7 @@ pub(super) struct State {
     /// winner execution_id.  The value enables Duplicate read-back without a
     /// separate store lookup.
     pub(super) dedup: HashMap<(String, String, String, String), String>,
-    /// Resume-token store (W-S3c): keyed by raw 32-byte hash.
+    /// Resume-token store keyed by raw 32-byte hash.
     /// Held in the same `State` so `commit` can INSERT token rows
     /// atomically with the state snapshot under one lock.
     pub(super) resume_tokens: HashMap<Vec<u8>, ResumeTokenRow>,
@@ -134,7 +139,7 @@ pub struct InMemoryExecutionStore {
     /// process — so it is the correct place to hand time-travelling tests
     /// (`tokio::time::pause`, injected clocks) a lever, without letting a
     /// production worker's skewed clock fence out a healthy peer.
-    clock: Arc<dyn nebula_core::accessor::Clock>,
+    pub(super) clock: Arc<dyn nebula_core::accessor::Clock>,
 }
 
 impl std::fmt::Debug for InMemoryExecutionStore {
@@ -188,7 +193,7 @@ impl InMemoryExecutionStore {
 
     /// Build a [`super::resume_token::InMemoryResumeTokenStore`] backed by
     /// this store's shared state so `commit` and `consume` operate on the
-    /// same mutex-guarded map (W-S3c atomicity invariant).
+    /// same mutex-guarded map to preserve atomicity.
     #[must_use]
     pub fn resume_token_store(&self) -> super::resume_token::InMemoryResumeTokenStore {
         super::resume_token::InMemoryResumeTokenStore::new(Arc::clone(&self.inner))
@@ -226,6 +231,7 @@ pub(super) fn insert_created_row(
     workflow_id: &str,
     initial_state: &serde_json::Value,
 ) -> Result<(), StorageError> {
+    crate::execution_state::ensure_execution_state_size(initial_state)?;
     if st.rows.contains_key(id) {
         return Err(StorageError::Duplicate {
             entity: "execution",
@@ -291,124 +297,7 @@ impl ExecutionStore for InMemoryExecutionStore {
     }
 
     async fn commit(&self, batch: TransitionBatch) -> Result<TransitionOutcome, StorageError> {
-        let mut st = self.inner.lock();
-        let id = batch.execution_id().to_string();
-        let Some(row) = st.rows.get(&id) else {
-            // Unknown id (or invisible cross-tenant): treat as a CAS miss
-            // — never Apply.
-            return Ok(TransitionOutcome::VersionConflict { actual: 0 });
-        };
-        let row_scope = row.scope.clone();
-        let current_version = row.version;
-        let current_generation = row.fencing_generation;
-        let _ = row;
-        // Cross-scope commit: the row is invisible to this tenant. Surface
-        // it exactly like the unknown-id path above (`actual: 0`), never
-        // an Apply. Echoing the real `row.version` here would be a
-        // cross-tenant version oracle — a caller in scope B could probe
-        // scope A's row by observing the conflict's `actual` counter. A
-        // cross-tenant row must be indistinguishable from a missing one.
-        if &row_scope != batch.scope() {
-            return Ok(TransitionOutcome::VersionConflict { actual: 0 });
-        }
-        // Fencing gate: a superseded/older generation is rejected even if
-        // the version matches (closes the zombie-runner hole, spec §4.1).
-        if batch.fencing().generation() != current_generation {
-            tracing::warn!(
-                target: "nebula_storage::inmem",
-                execution_id = %id,
-                caller_generation = batch.fencing().generation(),
-                current_generation,
-                "commit fenced out: caller token superseded"
-            );
-            return Ok(TransitionOutcome::FencedOut);
-        }
-        if current_version != batch.expected_version() {
-            return Ok(TransitionOutcome::VersionConflict {
-                actual: current_version,
-            });
-        }
-        // CAS + fencing held — apply the fallible reference transition before
-        // mutating any aggregate state. The in-memory adapter has no rollback,
-        // so an incompatible terminal reference change must fail before any
-        // durable in-memory write lands.
-        if let Some(transition) = batch.reference_transition()
-            && let Ok(execution_id) = id.parse::<nebula_core::id::ExecutionId>()
-        {
-            super::plan_flavor_catalog::apply_reference_transition_locked(
-                &mut st,
-                execution_id,
-                transition,
-            )?;
-        }
-
-        // CAS + fencing held — apply state, outbox, journal atomically
-        // under the single lock.
-        let new_version = current_version + 1;
-        let new_state = batch.new_state().clone();
-        let outbox: Vec<ControlMsg> = batch.outbox().to_vec();
-        let journal_payloads: Vec<serde_json::Value> =
-            batch.journal().iter().map(|j| j.payload.clone()).collect();
-
-        let mut seq = st.next_seq.get(&id).copied().unwrap_or(1);
-        {
-            // guard-justified: the row's presence was asserted earlier in
-            // this same function under the *same* `st` lock guard (the CAS
-            // + fencing check above borrows `row`); the lock is never
-            // released between, so the entry cannot vanish here.
-            let row = st
-                .rows
-                .get_mut(&id)
-                .unwrap_or_else(|| unreachable!("row presence checked under the same lock"));
-            row.version = new_version;
-            row.state = new_state;
-            for payload in journal_payloads {
-                row.journal.push((seq, payload));
-                seq += 1;
-            }
-        }
-        st.next_seq.insert(id.clone(), seq);
-        for msg in outbox {
-            st.queue.insert(
-                msg.id,
-                QueuedMsg {
-                    msg,
-                    status: "Pending".to_string(),
-                    processed_by: None,
-                    processed_at: None,
-                    reclaim_count: 0,
-                    error_message: None,
-                    claim_generation: 0,
-                },
-            );
-        }
-        // W-S3c: insert resume-token rows atomically in the same lock scope
-        // as the state/outbox/journal writes above.  ON CONFLICT DO NOTHING
-        // semantics: if a row with the same (execution_id, node_key) already
-        // exists, the new row is silently discarded (crash-re-drive safety).
-        for token_row in batch.resume_tokens() {
-            // Mirror the SQL schema: PRIMARY KEY (token_hash) and
-            // UNIQUE (execution_id, node_key) are both first-writer-wins.
-            // Check both invariants: skip the insert if the PK hash is already
-            // present (idempotent re-park with a different bearer) OR if the
-            // (execution_id, node_key) pair is already live (crash re-drive).
-            let hash_key = token_row.token_hash.as_bytes().to_vec();
-            let hash_already_present = st.resume_tokens.contains_key(&hash_key);
-            let node_already_present = st.resume_tokens.values().any(|existing| {
-                existing.execution_id == token_row.execution_id
-                    && existing.node_key == token_row.node_key
-            });
-            if !hash_already_present && !node_already_present {
-                st.resume_tokens.insert(hash_key, token_row.clone());
-            }
-        }
-        tracing::debug!(
-            target: "nebula_storage::inmem",
-            execution_id = %id,
-            new_version,
-            "commit applied (state + outbox + journal + resume_tokens + reference_transition)"
-        );
-        Ok(TransitionOutcome::Applied { new_version })
+        commit_locked(&mut self.inner.lock(), &batch)
     }
 
     async fn acquire_lease(
@@ -598,6 +487,128 @@ impl InMemoryIdempotencyGuard {
         );
         self.marked.lock().contains(&key)
     }
+}
+
+pub(super) fn commit_locked(
+    st: &mut State,
+    batch: &TransitionBatch,
+) -> Result<TransitionOutcome, StorageError> {
+    crate::execution_state::ensure_execution_state_size(batch.new_state())?;
+    let id = batch.execution_id().to_string();
+    let Some(row) = st.rows.get(&id) else {
+        // Unknown id (or invisible cross-tenant): treat as a CAS miss
+        // — never Apply.
+        return Ok(TransitionOutcome::VersionConflict { actual: 0 });
+    };
+    let row_scope = row.scope.clone();
+    let current_version = row.version;
+    let current_generation = row.fencing_generation;
+    let _ = row;
+    // Cross-scope commit: the row is invisible to this tenant. Surface
+    // it exactly like the unknown-id path above (`actual: 0`), never
+    // an Apply. Echoing the real `row.version` here would be a
+    // cross-tenant version oracle — a caller in scope B could probe
+    // scope A's row by observing the conflict's `actual` counter. A
+    // cross-tenant row must be indistinguishable from a missing one.
+    if &row_scope != batch.scope() {
+        return Ok(TransitionOutcome::VersionConflict { actual: 0 });
+    }
+    // Fencing gate: a superseded/older generation is rejected even if
+    // the version matches (closes the zombie-runner hole, spec §4.1).
+    if batch.fencing().generation() != current_generation {
+        tracing::warn!(
+            target: "nebula_storage::inmem",
+            execution_id = %id,
+            caller_generation = batch.fencing().generation(),
+            current_generation,
+            "commit fenced out: caller token superseded"
+        );
+        return Ok(TransitionOutcome::FencedOut);
+    }
+    if current_version != batch.expected_version() {
+        return Ok(TransitionOutcome::VersionConflict {
+            actual: current_version,
+        });
+    }
+    let new_version = current_version
+        .checked_add(1)
+        .filter(|value| i64::try_from(*value).is_ok())
+        .ok_or_else(|| StorageError::Internal("execution version exhausted".into()))?;
+    // CAS + fencing held — apply the fallible reference transition before
+    // mutating any aggregate state. The in-memory adapter has no rollback,
+    // so an incompatible terminal reference change must fail before any
+    // durable in-memory write lands.
+    if let Some(transition) = batch.reference_transition()
+        && let Ok(execution_id) = id.parse::<nebula_core::id::ExecutionId>()
+    {
+        super::plan_flavor_catalog::apply_reference_transition_locked(
+            st,
+            execution_id,
+            transition,
+        )?;
+    }
+
+    // CAS + fencing held — apply state, outbox, journal atomically
+    // under the single lock.
+    let new_state = batch.new_state().clone();
+    let outbox: Vec<ControlMsg> = batch.outbox().to_vec();
+    let journal_payloads: Vec<serde_json::Value> =
+        batch.journal().iter().map(|j| j.payload.clone()).collect();
+
+    let mut seq = st.next_seq.get(&id).copied().unwrap_or(1);
+    {
+        let row = st.rows.get_mut(&id).ok_or_else(|| {
+            StorageError::Internal("execution disappeared during atomic commit".into())
+        })?;
+        row.version = new_version;
+        row.state = new_state;
+        for payload in journal_payloads {
+            row.journal.push((seq, payload));
+            seq += 1;
+        }
+    }
+    st.next_seq.insert(id.clone(), seq);
+    for msg in outbox {
+        st.queue.insert(
+            msg.id,
+            QueuedMsg {
+                msg,
+                status: "Pending".to_string(),
+                processed_by: None,
+                processed_at: None,
+                reclaim_count: 0,
+                error_message: None,
+                claim_generation: 0,
+            },
+        );
+    }
+    // Insert resume-token rows atomically in the same lock scope
+    // as the state/outbox/journal writes above.  ON CONFLICT DO NOTHING
+    // semantics: if a row with the same (execution_id, node_key) already
+    // exists, the new row is silently discarded (crash-re-drive safety).
+    for token_row in batch.resume_tokens() {
+        // Mirror the SQL schema: PRIMARY KEY (token_hash) and
+        // UNIQUE (execution_id, node_key) are both first-writer-wins.
+        // Check both invariants: skip the insert if the PK hash is already
+        // present (idempotent re-park with a different bearer) OR if the
+        // (execution_id, node_key) pair is already live (crash re-drive).
+        let hash_key = token_row.token_hash.as_bytes().to_vec();
+        let hash_already_present = st.resume_tokens.contains_key(&hash_key);
+        let node_already_present = st.resume_tokens.values().any(|existing| {
+            existing.execution_id == token_row.execution_id
+                && existing.node_key == token_row.node_key
+        });
+        if !hash_already_present && !node_already_present {
+            st.resume_tokens.insert(hash_key, token_row.clone());
+        }
+    }
+    tracing::debug!(
+        target: "nebula_storage::inmem",
+        execution_id = %id,
+        new_version,
+        "commit applied (state + outbox + journal + resume_tokens + reference_transition)"
+    );
+    Ok(TransitionOutcome::Applied { new_version })
 }
 
 #[async_trait::async_trait]

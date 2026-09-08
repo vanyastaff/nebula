@@ -8,9 +8,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nebula_storage::sqlite::{
-    SqliteControlQueue, SqliteExecutionStore, SqliteIdempotencyGuard, SqliteJobDispatchQueue,
-    SqliteJournalReader, SqliteResumeTokenStore, SqliteTurnHandoff, SqliteWorkflowStore,
-    SqliteWorkflowVersionStore, init_schema,
+    SqliteControlQueue, SqliteExecutionStore, SqliteIdempotencyGuard, SqliteJournalReader,
+    SqliteOperationLedger, SqliteResumeTokenStore, SqliteTurnHandoff, init_schema,
 };
 use nebula_storage::{InMemoryCheckpointStore, InMemoryNodeResultStore};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
@@ -18,8 +17,8 @@ use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{EnvFilter, fmt};
 
-use nebula_engine::{ExecutionStores, WorkflowStores};
-use nebula_storage_port::store::{ControlQueue, ExecutionTurnHandoff, JobDispatchQueue};
+use nebula_engine::ExecutionStores;
+use nebula_storage_port::store::{ControlQueue, ExecutionTurnHandoff, TurnRecovery};
 use nebula_worker_bin::compose::{
     ComposeError, WorkerConfig, WorkerConfigError, build_core_flavor_runtime,
 };
@@ -39,10 +38,17 @@ pub(crate) enum WorkerRunError {
     /// A supervised worker component ended abnormally.
     ///
     /// Surfaced as a non-zero exit rather than logged and swallowed: a worker
-    /// whose control consumer or claim loop died is no longer draining work,
-    /// and an orchestrator that sees a clean exit will not restart it.
+    /// whose control consumer died is no longer draining work.
     #[error("worker runtime ended abnormally: {0}")]
     RuntimeStopped(#[from] nebula_worker::WorkerRuntimeError),
+
+    /// The Tokio task hosting the supervised runtime panicked or was cancelled.
+    #[error("worker runtime task ended abnormally: {0}")]
+    RuntimeTask(#[source] tokio::task::JoinError),
+
+    /// The runtime stopped without a shutdown request or a reported failure.
+    #[error("worker runtime stopped before a shutdown signal")]
+    RuntimeExited,
 
     /// SQLite pool construction or `connect()` failed.
     ///
@@ -111,111 +117,73 @@ pub(crate) enum WorkerRunError {
 /// environment). SQLite is the default and the tested path.
 async fn build_stores(
     config: &WorkerConfig,
+    metrics: &nebula_metrics::MetricsRegistry,
 ) -> Result<
     (
         ExecutionStores,
-        WorkflowStores,
-        Arc<dyn JobDispatchQueue>,
         Arc<dyn ControlQueue>,
         Arc<dyn ExecutionTurnHandoff>,
+        Arc<dyn TurnRecovery>,
+        Arc<dyn nebula_storage_port::PlanFlavorCatalog>,
+        Arc<dyn nebula_storage_port::store::StartAcceptanceStore>,
     ),
     WorkerRunError,
 > {
-    if config.database_url.is_none() {
-        // ── SQLite path (default, CI-tested) ─────────────────────────────────
-        //
-        // `BEGIN IMMEDIATE` CAS + claim-fencing in the store are only correct
-        // when a single connection serialises all writes. WAL + NORMAL
-        // synchronous gives read/write concurrency without fsync on every
-        // commit; busy_timeout prevents instant SQLITE_BUSY errors if another
-        // tool (e.g. a CLI probe) briefly holds the WAL write lock.
-        //
-        // **This SQLite file is not shareable across processes or hosts.** For
-        // multi-worker deployments, configure the Postgres backend and share
-        // the connection string via NEBULA_WORKER_DATABASE_URL.
-        let opts = SqliteConnectOptions::new()
-            .filename(&config.db_path)
-            .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal)
-            .synchronous(SqliteSynchronous::Normal)
-            .busy_timeout(Duration::from_secs(5));
-
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(opts)
-            .await
-            .map_err(WorkerRunError::SqliteDatabase)?;
-
-        // Admit the canonical prefix and apply the ordered SQLite migrations.
-        init_schema(&pool).await?;
-
-        tracing::info!(db_path = %config.db_path, "SQLite migrations ready");
-
-        // Every store clone holds the same `SqlitePool` `Arc`; single
-        // max_connections serialises writes at the connection level.
-        let execution_store = Arc::new(SqliteExecutionStore::new(pool.clone()));
-        let journal_reader = Arc::new(SqliteJournalReader::new(pool.clone()));
-        // NodeResultStore and CheckpointStore have no SQLite-backed
-        // implementation yet; both store transient in-process data (node
-        // output slots and stateful checkpoints) that are written and read
-        // within a single execution lifetime. Durability is provided by the
-        // ExecutionStore single-JSON-blob state machine, not by these auxiliary
-        // stores. On a crash, the reclaim sweep re-delivers the job and the
-        // engine re-executes the affected nodes from the last persisted state.
-        let node_results = Arc::new(InMemoryNodeResultStore::new());
-        let checkpoints = Arc::new(InMemoryCheckpointStore::new());
-        tracing::warn!(
-            "node-result and checkpoint stores are in-memory (not persisted across restarts); \
-             crash-recovery re-executes affected nodes via the reclaim sweep — \
-             authoritative execution state is the SQLite execution row"
-        );
-        let idempotency = Arc::new(SqliteIdempotencyGuard::new(pool.clone()));
-        let resume_tokens = Arc::new(SqliteResumeTokenStore::new(pool.clone()));
-        let workflow_store = Arc::new(SqliteWorkflowStore::new(pool.clone()));
-        let versions_store = Arc::new(SqliteWorkflowVersionStore::new(pool.clone()));
-        let queue = Arc::new(SqliteJobDispatchQueue::new(pool.clone()));
-        // Same pool as the execution store and the queue: the handoff commits
-        // the lease acquisition and the queue acknowledgement in one
-        // transaction, so it must share the boundary both are written under
-        // (#976).
-        let turn_handoff = Arc::new(SqliteTurnHandoff::new(pool.clone()));
-        // Same pool as the execution store: the consumer must drain the
-        // queue the API writes to, not a second one.
-        let control_queue = Arc::new(SqliteControlQueue::new(pool));
-
-        let execution_stores = ExecutionStores {
-            execution: execution_store,
-            journal: journal_reader,
-            node_results,
-            checkpoints,
-            idempotency,
-            resume_tokens,
-            operation_ledger: None,
-        };
-        let workflow_stores = WorkflowStores {
-            workflow: workflow_store,
-            versions: versions_store,
-        };
-
-        return Ok((
-            execution_stores,
-            workflow_stores,
-            queue,
-            control_queue,
-            turn_handoff,
-        ));
+    if let Some(dsn) = config.database_url.as_deref() {
+        return build_pg_stores(dsn, metrics).await;
     }
 
-    // ── Postgres path (opt-in; compile-verified but not CI-integration-tested) ──
-    //
-    // `database_url` is `Some` here — the `is_none()` early-return above means
-    // this branch is only reached when a DSN was supplied. Extract it once and
-    // pass the `&str` in so `build_pg_stores` never needs to touch `Option`.
-    let dsn = config
-        .database_url
-        .as_deref()
-        .unwrap_or_else(|| unreachable!("database_url is Some — checked above"));
-    build_pg_stores(dsn).await
+    // SQLite is the single-process default. One connection serializes writes;
+    // multi-process deployments select Postgres above.
+    let options = SqliteConnectOptions::new()
+        .filename(&config.db_path)
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal)
+        .busy_timeout(Duration::from_secs(5));
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .map_err(WorkerRunError::SqliteDatabase)?;
+    init_schema(&pool).await?;
+    tracing::info!(db_path = %config.db_path, "SQLite migrations ready");
+
+    let execution_store = Arc::new(SqliteExecutionStore::new(pool.clone()));
+    let journal_reader = Arc::new(SqliteJournalReader::new(pool.clone()));
+    let node_results = Arc::new(InMemoryNodeResultStore::new());
+    let checkpoints = Arc::new(InMemoryCheckpointStore::new());
+    tracing::warn!(
+        "node-result and checkpoint stores are in-memory; authoritative execution state is SQLite"
+    );
+    let idempotency = Arc::new(SqliteIdempotencyGuard::new(pool.clone()));
+    let resume_tokens = Arc::new(SqliteResumeTokenStore::new(pool.clone()));
+    let turn_handoff = Arc::new(SqliteTurnHandoff::new(pool.clone()));
+    let catalog = Arc::new(nebula_storage::sqlite::SqlitePlanFlavorCatalog::new(
+        pool.clone(),
+        metrics,
+    ));
+    let bundles = Arc::new(nebula_storage::sqlite::SqliteStartAcceptanceStore::new(
+        pool.clone(),
+    ));
+    let control_queue = Arc::new(SqliteControlQueue::new(pool.clone()));
+    let execution_stores = ExecutionStores {
+        execution: execution_store,
+        journal: journal_reader,
+        node_results,
+        checkpoints,
+        idempotency,
+        resume_tokens,
+        operation_ledger: Arc::new(SqliteOperationLedger::new(pool.clone())),
+    };
+    Ok((
+        execution_stores,
+        control_queue,
+        turn_handoff.clone(),
+        turn_handoff,
+        catalog,
+        bundles,
+    ))
 }
 
 /// Postgres store assembly — compiled only when `--features postgres` is
@@ -231,20 +199,21 @@ async fn build_stores(
 #[cfg(feature = "postgres")]
 async fn build_pg_stores(
     dsn: &str,
+    metrics: &nebula_metrics::MetricsRegistry,
 ) -> Result<
     (
         ExecutionStores,
-        WorkflowStores,
-        Arc<dyn JobDispatchQueue>,
         Arc<dyn ControlQueue>,
         Arc<dyn ExecutionTurnHandoff>,
+        Arc<dyn TurnRecovery>,
+        Arc<dyn nebula_storage_port::PlanFlavorCatalog>,
+        Arc<dyn nebula_storage_port::store::StartAcceptanceStore>,
     ),
     WorkerRunError,
 > {
     use nebula_storage::postgres::{
-        PgControlQueue, PgExecutionStore, PgIdempotencyGuard, PgJobDispatchQueue, PgJournalReader,
-        PgResumeTokenStore, PgTurnHandoff, PgWorkflowStore, PgWorkflowVersionStore,
-        init_schema as pg_init_schema,
+        PgControlQueue, PgExecutionStore, PgIdempotencyGuard, PgJournalReader, PgOperationLedger,
+        PgResumeTokenStore, PgTurnHandoff, init_schema as pg_init_schema,
     };
     use sqlx::postgres::PgPoolOptions;
 
@@ -257,7 +226,7 @@ async fn build_pg_stores(
     // Admit the canonical prefix and apply the ordered PostgreSQL migrations.
     pg_init_schema(&pool).await?;
 
-    tracing::info!("Postgres migrations ready (ADR-0095 D3/D5 durable backend)");
+    tracing::info!("Postgres migrations ready");
 
     // Every store clone shares the same `PgPool` `Arc`; the pool manages
     // connections internally (max_connections(8)).
@@ -275,13 +244,17 @@ async fn build_pg_stores(
     );
     let idempotency = Arc::new(PgIdempotencyGuard::new(pool.clone()));
     let resume_tokens = Arc::new(PgResumeTokenStore::new(pool.clone()));
-    let workflow_store = Arc::new(PgWorkflowStore::new(pool.clone()));
-    let versions_store = Arc::new(PgWorkflowVersionStore::new(pool.clone()));
-    let queue = Arc::new(PgJobDispatchQueue::new(pool.clone()));
-    // Same pool as the execution store and the queue — see the SQLite arm.
+    // Same pool as the execution store and control queue — see the SQLite arm.
     let turn_handoff = Arc::new(PgTurnHandoff::new(pool.clone()));
     // Same pool as the execution store — see the SQLite arm.
-    let control_queue = Arc::new(PgControlQueue::new(pool));
+    let catalog = Arc::new(nebula_storage::postgres::PgPlanFlavorCatalog::new(
+        pool.clone(),
+        metrics,
+    ));
+    let bundles = Arc::new(nebula_storage::postgres::PgStartAcceptanceStore::new(
+        pool.clone(),
+    ));
+    let control_queue = Arc::new(PgControlQueue::new(pool.clone()));
 
     let execution_stores = ExecutionStores {
         execution: execution_store,
@@ -290,19 +263,15 @@ async fn build_pg_stores(
         checkpoints,
         idempotency,
         resume_tokens,
-        operation_ledger: None,
+        operation_ledger: Arc::new(PgOperationLedger::new(pool.clone())),
     };
-    let workflow_stores = WorkflowStores {
-        workflow: workflow_store,
-        versions: versions_store,
-    };
-
     Ok((
         execution_stores,
-        workflow_stores,
-        queue,
         control_queue,
+        turn_handoff.clone(),
         turn_handoff,
+        catalog,
+        bundles,
     ))
 }
 
@@ -316,20 +285,22 @@ async fn build_pg_stores(
 #[cfg(not(feature = "postgres"))]
 async fn build_pg_stores(
     _dsn: &str,
+    _metrics: &nebula_metrics::MetricsRegistry,
 ) -> Result<
     (
         ExecutionStores,
-        WorkflowStores,
-        Arc<dyn JobDispatchQueue>,
         Arc<dyn ControlQueue>,
         Arc<dyn ExecutionTurnHandoff>,
+        Arc<dyn TurnRecovery>,
+        Arc<dyn nebula_storage_port::PlanFlavorCatalog>,
+        Arc<dyn nebula_storage_port::store::StartAcceptanceStore>,
     ),
     WorkerRunError,
 > {
     Err(WorkerRunError::PostgresFeatureNotEnabled)
 }
 
-/// Async startup, claim-loop, and graceful shutdown.
+/// Async startup, durable worker processing, and graceful shutdown.
 ///
 /// All errors are returned as [`WorkerRunError`]; `main` converts them to
 /// stderr lines + `process::exit(1)`.
@@ -351,80 +322,67 @@ pub(crate) async fn run() -> Result<(), WorkerRunError> {
     // Postgres path it is the ignored default "nebula-worker.db" and emitting
     // it would mislead operators into thinking the file is in use.
     if config.database_url.is_some() {
-        tracing::info!(
-            backend = "postgres",
-            batch_size = ?config.batch_size,
-            poll_interval_ms = ?config.poll_interval_ms,
-            "worker config loaded"
-        );
+        tracing::info!(backend = "postgres", "worker config loaded");
     } else {
         tracing::info!(
             backend = "sqlite",
             db_path = %config.db_path,
-            batch_size = ?config.batch_size,
-            poll_interval_ms = ?config.poll_interval_ms,
             "worker config loaded"
         );
     }
 
     // Build the store bundle — SQLite or Postgres depending on config.
-    let (execution_stores, workflow_stores, queue, control_queue, turn_handoff) =
-        build_stores(&config).await?;
+    let metrics = nebula_metrics::MetricsRegistry::new();
+    let (execution_stores, control_queue, turn_handoff, turn_recovery, catalog, bundles) =
+        build_stores(&config, &metrics).await?;
 
     // Assemble the core-flavor builder (boots CorePlugin + wires into engine).
-    // The returned MetricsRegistry is the same instance the engine's ActionRuntime
-    // uses; forwarding it into the worker builder ensures orchestrator dispatch and
-    // reclaim counters land in the same registry as engine counters so a single
-    // scraper sees all telemetry.
-    let (mut builder, metrics, plugin_key) = build_core_flavor_runtime(
+    let (builder, _metrics, plugin_key) = build_core_flavor_runtime(
         execution_stores,
-        workflow_stores,
-        queue,
         turn_handoff,
+        turn_recovery,
         config.processor_id,
+        nebula_worker_bin::compose::CoreFlavorRevisionInputs {
+            metrics,
+            artifact_set_digest: config.artifact_set_digest,
+            catalog,
+            bundles,
+        },
     )?;
 
-    // Apply optional env-driven tuning before materialising the runtime.
-    // The same control queue the API enqueues accepted commands onto. A
-    // worker without it drains job-dispatch rows only, leaving every
-    // accepted execution parked with an unconsumed `Start`.
-    builder = builder
-        .with_control_queue(control_queue)
-        .with_metrics(metrics);
-    if let Some(n) = config.batch_size {
-        builder = builder.with_batch_size(n);
-    }
-    if let Some(ms) = config.poll_interval_ms {
-        builder = builder.with_poll_interval(Duration::from_millis(ms));
-    }
-
-    let runtime = builder.build()?;
+    let runtime = builder.with_control_queue(control_queue).build()?;
 
     tracing::info!(
         plugin = %plugin_key,
-        "core-flavor runtime ready — starting claim-loop"
+        "core-flavor runtime ready"
     );
 
     // Wire graceful shutdown: SIGINT (Ctrl-C) and SIGTERM on Unix.
     let cancel = CancellationToken::new();
-    let handle = runtime.spawn(cancel.clone());
+    let mut handle = runtime.spawn(cancel.clone());
 
-    wait_for_shutdown_signal(cancel).await?;
-
-    tracing::info!(
-        "shutdown signal received; waiting for the claim-loop task to exit — \
-         claimed-but-not-yet-acked jobs are recovered by the reclaim sweep on next boot"
-    );
-    handle.await.expect(
-        "worker task must not panic: a panic here indicates a bug in the claim-loop implementation",
-    )?;
+    tokio::select! {
+        signal = wait_for_shutdown_signal() => {
+            signal?;
+            cancel.cancel();
+            tracing::info!(
+                "shutdown signal received; waiting for the worker runtime to exit"
+            );
+            handle.await.map_err(WorkerRunError::RuntimeTask)??;
+        },
+        runtime_result = &mut handle => {
+            cancel.cancel();
+            runtime_result.map_err(WorkerRunError::RuntimeTask)??;
+            return Err(WorkerRunError::RuntimeExited);
+        },
+    }
     tracing::info!("nebula-worker (core flavor) stopped cleanly");
 
     Ok(())
 }
 
 /// Wait for SIGINT (Ctrl-C) or SIGTERM, then cancel `token`.
-async fn wait_for_shutdown_signal(token: CancellationToken) -> Result<(), std::io::Error> {
+async fn wait_for_shutdown_signal() -> Result<(), std::io::Error> {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
@@ -438,7 +396,6 @@ async fn wait_for_shutdown_signal(token: CancellationToken) -> Result<(), std::i
     {
         tokio::signal::ctrl_c().await?;
     }
-    token.cancel();
     Ok(())
 }
 
@@ -469,15 +426,14 @@ mod tests {
         use super::{WorkerConfig, WorkerRunError, build_stores};
 
         let config = WorkerConfig {
+            artifact_set_digest: nebula_core::ArtifactSetDigest::from_bytes([0x71; 32]),
             database_url: Some("postgres://localhost/nebula_test".to_owned()),
             // A file name that would be obviously wrong if SQLite opened it.
             db_path: "nebula-worker-MUST-NOT-BE-OPENED.db".to_owned(),
             processor_id: [0u8; 16],
-            batch_size: None,
-            poll_interval_ms: None,
         };
 
-        let result = build_stores(&config).await;
+        let result = build_stores(&config, &nebula_metrics::MetricsRegistry::new()).await;
 
         assert!(
             matches!(result, Err(WorkerRunError::PostgresFeatureNotEnabled)),

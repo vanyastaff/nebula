@@ -58,6 +58,17 @@ impl ControlQueue for ScopedControlQueue {
         self.inner.claim_pending(processor, batch_size).await
     }
 
+    async fn claim_pending_for_flavor(
+        &self,
+        processor: &[u8; 16],
+        batch_size: u32,
+        worker_flavor: nebula_core::WorkerFlavorRevisionId,
+    ) -> Result<Vec<ControlClaim>, StorageError> {
+        self.inner
+            .claim_pending_for_flavor(processor, batch_size, worker_flavor)
+            .await
+    }
+
     // Acknowledgement carries a storage-minted token, which already names its
     // own row; there is no scope to substitute and nothing to rebind.
     async fn mark_completed(&self, claim: &ControlClaimToken) -> Result<(), StorageError> {

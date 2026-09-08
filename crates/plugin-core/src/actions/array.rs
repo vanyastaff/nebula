@@ -226,6 +226,7 @@ impl nebula_action::action::Action for ArrayAction {
             "Array",
             "Shape a JSON array with chunk/flatten/take/skip operations applied left-to-right",
         )
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
 
     fn dependencies() -> &'static nebula_action::Dependencies {

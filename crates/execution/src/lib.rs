@@ -44,6 +44,7 @@
 
 pub mod attempt;
 pub mod bundle;
+pub mod checkpoint;
 pub mod context;
 pub mod error;
 pub mod idempotency;
@@ -62,6 +63,7 @@ pub use bundle::{
     ExecutionContractBundle, ExecutionContractBundleIntegrityError, ExecutionProfile,
     RecordedExecutionContractBundleV1,
 };
+pub use checkpoint::{ExecutionCheckpoint, NodeCheckpoint};
 pub use context::{ExecutionBudget, ExecutionContext};
 pub use error::ExecutionError;
 pub use idempotency::IdempotencyKey;

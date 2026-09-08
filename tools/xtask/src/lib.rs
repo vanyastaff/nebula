@@ -63,6 +63,60 @@ enum CiPlanCommand {
 enum NorthStarGatesCommand {
     /// Validate the registry, evidence schema, and required-CI bindings.
     Validate,
+    /// Verify bounded runtime-authority artifacts; fails closed until semantic policy is complete.
+    VerifyRuntimeAuthority {
+        /// Immutable directory containing observation artifacts.
+        #[arg(long)]
+        artifact_root: PathBuf,
+        /// Trusted runner-supplied provenance, kept outside the artifact directory.
+        #[arg(long)]
+        expected_provenance: PathBuf,
+        /// Exact 40-character revision this verifying job is running.
+        #[arg(long)]
+        source_revision: String,
+        /// Repository identity of this verifying job.
+        #[arg(long)]
+        repository: String,
+        /// Numeric workflow run identity of this verifying job.
+        #[arg(long)]
+        run_id: String,
+        /// Positive workflow attempt of this verifying job.
+        #[arg(long)]
+        run_attempt: u32,
+    },
+    /// Build and verify provenance-bound runtime-authority artifacts from raw reports.
+    BuildRuntimeAuthorityBundle {
+        /// Directory containing raw behavior reports from the required jobs.
+        #[arg(long)]
+        observation_root: PathBuf,
+        /// New directory that will receive the immutable verification artifacts.
+        #[arg(long)]
+        artifact_root: PathBuf,
+        /// New trusted provenance manifest outside the artifact directory.
+        #[arg(long)]
+        expected_provenance: PathBuf,
+        /// Exact 40-character source revision tested by the runner.
+        #[arg(long)]
+        source_revision: String,
+        /// Repository identity supplied by the trusted runner.
+        #[arg(long)]
+        repository: String,
+        /// Workflow path supplied by the trusted runner.
+        #[arg(long)]
+        workflow_path: String,
+        /// Producer job identity supplied by the trusted runner.
+        #[arg(long)]
+        job_id: String,
+        /// Numeric workflow run identity supplied by the trusted runner.
+        #[arg(long)]
+        run_id: String,
+        /// Positive workflow attempt supplied by the trusted runner.
+        #[arg(long)]
+        run_attempt: u32,
+        /// Exact compiler/toolchain description used to build the producers.
+        #[arg(long)]
+        toolchain: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -140,6 +194,58 @@ fn execute_in(cwd: &std::path::Path, cli: Cli) -> Result<Vec<u8>, XtaskError> {
         } => north_star::validate(&find_root(cwd)?)?
             .to_json_line()
             .map_err(XtaskError::Json),
+        TopLevelCommand::NorthStarGates {
+            command:
+                NorthStarGatesCommand::VerifyRuntimeAuthority {
+                    artifact_root,
+                    expected_provenance,
+                    source_revision,
+                    repository,
+                    run_id,
+                    run_attempt,
+                },
+        } => north_star::verify_runtime_authority(
+            &find_root(cwd)?,
+            &artifact_root,
+            &expected_provenance,
+            &north_star::RunnerIdentity {
+                source_revision,
+                repository,
+                run_id,
+                run_attempt,
+            },
+        )
+        .map_err(XtaskError::RuntimeAuthority),
+        TopLevelCommand::NorthStarGates {
+            command:
+                NorthStarGatesCommand::BuildRuntimeAuthorityBundle {
+                    observation_root,
+                    artifact_root,
+                    expected_provenance,
+                    source_revision,
+                    repository,
+                    workflow_path,
+                    job_id,
+                    run_id,
+                    run_attempt,
+                    toolchain,
+                },
+        } => {
+            north_star::build_runtime_authority_bundle(&north_star::RuntimeAuthorityBundleRequest {
+                workspace_root: find_root(cwd)?,
+                observation_root,
+                artifact_root,
+                expected_provenance,
+                source_revision,
+                repository,
+                workflow_path,
+                job_id,
+                run_id,
+                run_attempt,
+                toolchain,
+            })
+            .map_err(XtaskError::RuntimeAuthority)
+        },
         TopLevelCommand::RuntimeRepairRed { command } => {
             let workspace_root = find_root(cwd)?;
             match command {
@@ -207,6 +313,8 @@ pub enum XtaskError {
     WorkspaceRootNotFound(PathBuf),
     #[error(transparent)]
     NorthStarGates(#[from] north_star::ValidationError),
+    #[error(transparent)]
+    RuntimeAuthority(#[from] north_star::RuntimeAuthorityError),
     #[error("{0}")]
     RuntimeRepairRed(String),
 }

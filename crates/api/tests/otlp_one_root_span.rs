@@ -129,7 +129,7 @@ async fn otlp_one_root_span_across_api_control_queue_engine_action() {
     );
 
     // ── 3. Build state + engine seam ────────────────────────────────────────────────────────
-    let (mut state, _control_queue) = create_state_with_port_queue().await;
+    let (mut state, handles) = create_state_with_port_handles().await;
     state = state.with_metrics_registry(Arc::clone(&metrics_registry));
 
     let api_config = ApiConfig::for_test();
@@ -140,7 +140,7 @@ async fn otlp_one_root_span_across_api_control_queue_engine_action() {
     // control queue, dispatches the node, the action notifies via `slow_started`, then we
     // terminate to drive the execution to a terminal state.
     let workflow_id = engine_seam::persist_slow_workflow(&state).await;
-    let engine_seam = engine_seam::spawn_engine_consumer(&state);
+    let engine_seam = engine_seam::spawn_engine_consumer(&state, &handles);
 
     // Activate so the start path validates against the published version row.
     let app_router = app::build_app(state.clone(), &api_config);

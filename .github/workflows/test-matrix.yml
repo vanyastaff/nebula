@@ -158,6 +158,10 @@ jobs:
           TEST_FEATURES: ${{ join(matrix.test_features, ',') }}
         run: |
           set -euo pipefail
+          if [[ "$PKG" == "nebula-api" ]]; then
+            mkdir -p target/activation-diagnostics
+            export NEBULA_ACTIVATION_DIAGNOSTICS_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/activation-diagnostics/report.json
+          fi
           command=(cargo nextest run -p "$PKG")
           if [[ -n "$TEST_FEATURES" ]]; then
             command+=(--features "$TEST_FEATURES")
@@ -182,15 +186,15 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
-      # The NS14 diagnostic-contract report names which rejections report which
+      # The activation-diagnostic report names which rejections report which
       # fields. A green exit code proves the suite ran; the report is what says
       # what it found, so it is retained rather than re-derived.
-      - name: Upload NS14 diagnostic-contract report
+      - name: Upload activation-diagnostic contract report
         if: always() && matrix.package == 'nebula-api'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: ns14-diagnostic-contract
-          path: target/ns14/diagnostic-contract.json
+          name: activation-diagnostic-contract
+          path: target/activation-diagnostics/report.json
           if-no-files-found: error
           retention-days: 14
 
@@ -243,6 +247,28 @@ jobs:
         run: |
           set -euo pipefail
 
+          mkdir -p \
+            target/runtime-authority/start-authority \
+            target/runtime-authority/claim-fencing \
+            target/runtime-authority/claim-handoff \
+            target/runtime-authority/persistence-authority \
+            target/runtime-authority/required-postgresql \
+            target/runtime-authority/ordered-migrations \
+            target/runtime-authority/remote-effects \
+            target/runtime-authority/checkpoint-reconnect
+          export NEBULA_POSTGRES_REQUIREMENT_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/required-postgresql/enabled.json
+          export NEBULA_ORDERED_MIGRATIONS_SQLITE_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/ordered-migrations/sqlite.json
+          export NEBULA_ORDERED_MIGRATIONS_POSTGRES_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/ordered-migrations/postgresql.json
+          export NEBULA_CLAIM_HANDOFF_IN_MEMORY_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/claim-handoff/in-memory.json
+          export NEBULA_CLAIM_HANDOFF_SQLITE_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/claim-handoff/sqlite.json
+          export NEBULA_CLAIM_HANDOFF_POSTGRES_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/claim-handoff/postgresql.json
+          export NEBULA_REMOTE_EFFECT_IN_MEMORY_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/remote-effects/in-memory.json
+          export NEBULA_REMOTE_EFFECT_SQLITE_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/remote-effects/sqlite.json
+          export NEBULA_REMOTE_EFFECT_POSTGRES_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/remote-effects/postgresql.json
+          export NEBULA_CHECKPOINT_RECONNECT_IN_MEMORY_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/checkpoint-reconnect/in-memory.json
+          export NEBULA_CHECKPOINT_RECONNECT_SQLITE_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/checkpoint-reconnect/sqlite.json
+          export NEBULA_CHECKPOINT_RECONNECT_POSTGRES_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/checkpoint-reconnect/postgresql.json
+
           common=(
             -p nebula-storage
             --no-default-features
@@ -290,6 +316,7 @@ jobs:
             credential_lifecycle_postgres \
             credential_migration_postgres \
             credential_schema_admission_postgres \
+            execution_state_bounds \
             operation_ledger_conformance_postgres \
             refresh_claim_pg_integration \
             revision_catalog_conformance_postgres \
@@ -299,6 +326,67 @@ jobs:
           do
             cargo nextest run "${common[@]}" --test "$suite"
           done
+
+          NEBULA_POSTGRES_REQUIREMENT_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/required-postgresql/disabled.json \
+            cargo nextest run -p nebula-storage --no-default-features --test conformance \
+            -E 'test(required_postgres_feature_absence_observations)' --profile ci
+
+          NEBULA_START_AUTHORITY_IN_MEMORY_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/start-authority/in-memory.json \
+          NEBULA_START_AUTHORITY_SQLITE_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/start-authority/sqlite.json \
+          NEBULA_START_AUTHORITY_POSTGRES_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/start-authority/postgresql.json \
+            cargo nextest run -p nebula-storage --features sqlite,postgres \
+            --test start_materialization --profile ci
+
+          NEBULA_CLAIM_FENCING_IN_MEMORY_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/claim-fencing/in-memory.json \
+          NEBULA_CLAIM_FENCING_SQLITE_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/claim-fencing/sqlite.json \
+          NEBULA_CLAIM_FENCING_POSTGRES_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/claim-fencing/postgresql.json \
+          NEBULA_PERSISTENCE_AUTHORITY_IN_MEMORY_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/persistence-authority/in-memory.json \
+          NEBULA_PERSISTENCE_AUTHORITY_SQLITE_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/persistence-authority/sqlite.json \
+          NEBULA_PERSISTENCE_AUTHORITY_POSTGRES_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/persistence-authority/postgresql.json \
+            cargo nextest run -p nebula-storage --features sqlite,postgres \
+            --test conformance \
+            -E 'test(claim_generation_raw_observations) | test(persistence_authority_raw_observations)' \
+            --profile ci
+
+          cargo nextest run -p nebula-storage --features sqlite,postgres \
+            --test ordered_migration_observations --profile ci
+
+          cargo nextest run -p nebula-engine --profile ci \
+            --test durable_checkpoint_reconnect --test effect_protocol
+          cargo nextest run -p nebula-worker --profile ci --test accepted_turn_recovery
+
+          NEBULA_ACTIVATION_DIAGNOSTICS_OBSERVATIONS_PATH="$GITHUB_WORKSPACE"/target/runtime-authority/activation-diagnostics/report.json \
+            cargo nextest run -p nebula-api --profile ci \
+            --test activation_diagnostic_contract \
+            -E 'test(records_actual_compiler_and_http_diagnostics)'
+
+      - name: Assemble producer-owned runtime-authority candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo xtask north-star-gates build-runtime-authority-bundle \
+            --observation-root target/runtime-authority \
+            --artifact-root target/runtime-authority-bundle \
+            --expected-provenance target/runtime-authority-expected.json \
+            --source-revision "${{ github.sha }}" \
+            --repository "${{ github.repository }}" \
+            --workflow-path ".github/workflows/test-matrix.yml" \
+            --job-id "postgres-conformance" \
+            --run-id "${{ github.run_id }}" \
+            --run-attempt "${{ github.run_attempt }}" \
+            --toolchain "rustc 1.97.1"
+
+      - name: Upload PostgreSQL and migration observations
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: runtime-authority-candidate
+          path: |
+            target/runtime-authority
+            target/runtime-authority-bundle
+            target/runtime-authority-expected.json
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Test summary
         if: always()
@@ -317,10 +405,57 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
+  runtime-authority:
+    name: Runtime authority evidence
+    needs: [postgres-conformance]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: 1.97.1
+
+      - name: Download producer-owned evidence candidate
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: runtime-authority-candidate
+          path: target/runtime-authority-candidate
+
+      - name: Verify producer-owned runtime-authority bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The identity comes from this job's own runner context, never from
+          # the downloaded artifact: provenance that is recorded but compared
+          # to nothing admits a bundle produced anywhere.
+          cargo xtask north-star-gates verify-runtime-authority \
+            --artifact-root target/runtime-authority-candidate/runtime-authority-bundle \
+            --expected-provenance target/runtime-authority-candidate/runtime-authority-expected.json \
+            --source-revision "${{ github.sha }}" \
+            --repository "${{ github.repository }}" \
+            --run-id "${{ github.run_id }}" \
+            --run-attempt "${{ github.run_attempt }}"
+
+      - name: Retain verified runtime-authority bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: runtime-authority-bundle
+          path: |
+            target/runtime-authority-candidate/runtime-authority-bundle
+            target/runtime-authority-candidate/runtime-authority-expected.json
+          if-no-files-found: error
+          retention-days: 14
+
   # Branch protection points at this stable required check.
   tests:
     name: Tests
-    needs: [select-matrix, test-crates, postgres-conformance]
+    needs: [select-matrix, test-crates, postgres-conformance, runtime-authority]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -333,6 +468,7 @@ jobs:
           SELECTED_COUNT: ${{ needs.select-matrix.outputs.count }}
           STORAGE_SELECTED: ${{ needs.select-matrix.outputs.storage_selected }}
           POSTGRES_CONFORMANCE_RESULT: ${{ needs.postgres-conformance.result }}
+          RUNTIME_AUTHORITY_RESULT: ${{ needs.runtime-authority.result }}
         run: |
           set -euo pipefail
 
@@ -352,6 +488,10 @@ jobs:
             echo "PostgreSQL storage conformance passed."
           else
             echo "::error::postgres-conformance result: $POSTGRES_CONFORMANCE_RESULT"
+            exit 1
+          fi
+          if [[ "$RUNTIME_AUTHORITY_RESULT" != "success" ]]; then
+            echo "::error::runtime-authority result: $RUNTIME_AUTHORITY_RESULT"
             exit 1
           fi
           if [[ "$SELECTED_COUNT" == "0" ]]; then

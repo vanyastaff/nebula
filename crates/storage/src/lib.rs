@@ -64,9 +64,11 @@
 #![warn(clippy::all)]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
+mod control_turn;
 /// Credential persistence (encryption, audit, refresh claims, pending state).
 pub mod credential;
 mod error;
+mod execution_state;
 /// Serialization format abstraction (JSON / MessagePack).
 pub mod format;
 /// Plane-A identity-secret envelopes and rotation-aware decryption.
@@ -119,13 +121,10 @@ pub mod session_token;
 /// (dev / edge single-writer; spec §5 SQLite parity boundary).
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
-
-/// Backend-independent start-key replay decision, shared by every
-/// `StartAcceptanceStore` so the accept/replay/mismatch fork cannot drift
-/// between adapters.
-mod start_acceptance;
+mod start_materialization;
 #[cfg(test)]
 pub mod test_support;
+mod workflow_activation;
 
 pub use error::StorageError;
 pub use format::StorageFormat;

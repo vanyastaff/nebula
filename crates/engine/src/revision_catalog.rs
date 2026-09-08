@@ -520,6 +520,9 @@ mod tests {
         let key = ActionKey::new("demo.run").expect("fixture action key is valid");
         let action = Arc::new(TestActionFactory {
             metadata: ActionMetadata::new(key, "Run", "exact revision fixture")
+                .with_effect_contract(
+                    nebula_action::effect::ActionEffectContract::NoExternalEffects,
+                )
                 .with_kind(ActionKind::Stateless)
                 .with_schema(ValidSchema::empty())
                 .with_output_schema(ValidSchema::empty()),

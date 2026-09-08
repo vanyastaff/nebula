@@ -10,7 +10,7 @@
 use std::time::Duration;
 
 use chrono::Utc;
-use nebula_storage_port::dto::{ControlMsg, JournalEntry, ResumeTarget};
+use nebula_storage_port::dto::{ControlMsg, JournalEntry};
 use nebula_storage_port::store::{
     ClaimGeneration, ControlClaim, ControlClaimToken, ControlQueue, ExecutionJournalReader,
     ReclaimOutcome,
@@ -19,6 +19,33 @@ use nebula_storage_port::{Scope, StorageError};
 use sqlx::{PgPool, Row};
 
 use super::execution::conn_err;
+
+fn decode_claim(row: sqlx::postgres::PgRow) -> Result<ControlClaim, StorageError> {
+    let id = decode_id(&row.try_get::<Vec<u8>, _>("id").map_err(conn_err)?)?;
+    let generation = row.try_get("claim_generation").map_err(conn_err)?;
+    let resume_target = row
+        .try_get::<Option<String>, _>("resume_target")
+        .map_err(conn_err)?
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|error| StorageError::Serialization(error.to_string()))?;
+    Ok(ControlClaim {
+        msg: ControlMsg {
+            id,
+            execution_id: row.try_get("execution_id").map_err(conn_err)?,
+            scope: Scope::new(
+                row.try_get::<String, _>("workspace_id").map_err(conn_err)?,
+                row.try_get::<String, _>("org_id").map_err(conn_err)?,
+            ),
+            command: decode_command(&row.try_get::<String, _>("command").map_err(conn_err)?)?,
+            w3c_traceparent: row.try_get("w3c_traceparent").map_err(conn_err)?,
+            reclaim_count: row.try_get::<i32, _>("reclaim_count").map_err(conn_err)? as u32,
+            resume_target,
+        },
+        token: ControlClaimToken::new(id, decode_generation(generation, &id)?),
+    })
+}
 
 /// Postgres-backed durable-outbox handle.
 #[derive(Clone, Debug)]
@@ -182,42 +209,51 @@ impl ControlQueue for PgControlQueue {
         )
         .bind(processor.as_slice())
         .bind(now_ms)
-        .bind(i64::from(batch_size))
+        .bind(i64::from(batch_size.clamp(1, 256)))
         .fetch_all(&self.pool)
         .await
         .map_err(conn_err)?;
-        rows.into_iter()
-            .map(|row| {
-                let id_bytes: Vec<u8> = row.try_get("id").map_err(conn_err)?;
-                let resume_target: Option<ResumeTarget> = row
-                    .try_get::<Option<String>, _>("resume_target")
-                    .map_err(conn_err)?
-                    .as_deref()
-                    .map(serde_json::from_str)
-                    .transpose()
-                    .map_err(|e| StorageError::Serialization(e.to_string()))?;
-                let id = decode_id(&id_bytes)?;
-                let generation: i64 = row.try_get("claim_generation").map_err(conn_err)?;
-                let msg = ControlMsg {
-                    id,
-                    execution_id: row.try_get("execution_id").map_err(conn_err)?,
-                    command: decode_command(
-                        &row.try_get::<String, _>("command").map_err(conn_err)?,
-                    )?,
-                    scope: Scope::new(
-                        row.try_get::<String, _>("workspace_id").map_err(conn_err)?,
-                        row.try_get::<String, _>("org_id").map_err(conn_err)?,
-                    ),
-                    w3c_traceparent: row.try_get("w3c_traceparent").map_err(conn_err)?,
-                    reclaim_count: row.try_get::<i32, _>("reclaim_count").map_err(conn_err)? as u32,
-                    resume_target,
-                };
-                Ok(ControlClaim {
-                    msg,
-                    token: ControlClaimToken::new(id, decode_generation(generation, &id)?),
-                })
-            })
-            .collect()
+        rows.into_iter().map(decode_claim).collect()
+    }
+
+    async fn claim_pending_for_flavor(
+        &self,
+        processor: &[u8; 16],
+        batch_size: u32,
+        worker_flavor: nebula_core::WorkerFlavorRevisionId,
+    ) -> Result<Vec<ControlClaim>, StorageError> {
+        let rows = sqlx::query(
+            "UPDATE port_control_queue SET status = 'Processing', \
+                 processed_by = $1, processed_at_ms = $2, \
+                 claim_generation = claim_generation + 1 \
+             WHERE id IN ( \
+                 SELECT c.id FROM port_control_queue c \
+                 WHERE c.status = 'Pending' AND EXISTS ( \
+                     SELECT 1 FROM port_execution_revision_refs r \
+                     JOIN port_executions e ON e.id = r.execution_id \
+                     WHERE r.execution_id = c.execution_id \
+                       AND e.workspace_id = c.workspace_id AND e.org_id = c.org_id \
+                       AND r.worker_flavor_id = $4 AND r.reference_state = 'live' \
+                 ) ORDER BY c.id LIMIT $3 FOR UPDATE OF c SKIP LOCKED \
+             ) RETURNING id, execution_id, workspace_id, org_id, command, \
+                 w3c_traceparent, reclaim_count, resume_target, claim_generation",
+        )
+        .bind(processor.as_slice())
+        .bind(Utc::now().timestamp_millis())
+        .bind(i64::from(batch_size.clamp(1, 256)))
+        .bind(worker_flavor.as_bytes().as_slice())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(conn_err)?;
+        let claims = rows
+            .into_iter()
+            .map(decode_claim)
+            .collect::<Result<Vec<_>, StorageError>>()?;
+        tracing::debug!(
+            claimed = claims.len(),
+            "claimed exact-flavor control commands"
+        );
+        Ok(claims)
     }
 
     async fn mark_completed(&self, claim: &ControlClaimToken) -> Result<(), StorageError> {

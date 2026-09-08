@@ -17,10 +17,28 @@
 //! missing, expired, or served by a process that never saw the first request.
 //! The reservation has to live in the same transaction as the aggregate write.
 
-use crate::dto::{ControlMsg, NewExecution, PlanFlavorRevisionIds};
+use crate::dto::PlanFlavorRevisionIds;
 use crate::error::StorageError;
 use crate::ids::ExecutionContractBundleId;
 use crate::scope::Scope;
+
+/// A complete start failed before commit, or its commit acknowledgement is unknown.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum StartMaterializationError {
+    /// The proposed fresh aggregate, command or bundle identities disagree.
+    #[error("start materialization envelope is invalid")]
+    InvalidEnvelope,
+    /// An execution identity already names a different original materialization.
+    #[error("execution identity is bound to another materialization")]
+    MaterializationConflict,
+    /// Backend operation failed before commit submission.
+    #[error("start materialization storage operation failed")]
+    Storage(#[from] StorageError),
+    /// Commit was submitted but not authoritatively acknowledged.
+    #[error("start materialization commit outcome is unknown")]
+    OutcomeUnknown,
+}
 
 /// Version of the request-canonicalization rules a fingerprint was computed
 /// under.
@@ -61,27 +79,7 @@ impl StartFingerprint {
     }
 }
 
-/// Everything one keyed start acceptance must write, in one transaction.
-///
-/// `execution` and `command` are the aggregate row and the Start control row;
-/// both are written only when this request wins the reservation.
-#[derive(Debug)]
-pub struct KeyedStart<'a> {
-    /// Tenant that owns the reservation. Two tenants never share a start key.
-    pub scope: &'a Scope,
-    /// Caller-supplied key identifying this accepted command.
-    pub start_key: &'a str,
-    /// Fingerprint of the canonicalized request behind this key.
-    pub fingerprint: StartFingerprint,
-    /// Execution identity to materialize when this request wins.
-    pub execution_id: &'a str,
-    /// Workflow identity and initial state for the new aggregate.
-    pub execution: NewExecution<'a>,
-    /// The Start control row to enqueue in the same transaction.
-    pub command: &'a ControlMsg,
-}
-
-/// The exact contract identity every materialized execution carries (NS01).
+/// The exact contract identity every materialized execution carries.
 ///
 /// Bundle, executable-plan revision, and worker-flavor revision are pinned
 /// together: the bundle carries the workflow revision inside it, so this
@@ -120,22 +118,6 @@ impl StartContractIdentity {
     }
 }
 
-/// Everything one **materialized** keyed start must write, in one transaction.
-///
-/// A superset of [`KeyedStart`]: besides the reservation, the execution
-/// aggregate, and the Start command, the execution's live plan/flavor
-/// reference is admitted and persisted under the same commit. Until a caller
-/// can supply a real [`StartContractIdentity`], the transitional
-/// [`StartAcceptanceStore::accept_keyed_start`] remains the keyed path.
-#[derive(Debug)]
-pub struct MaterializedKeyedStart<'a> {
-    /// The keyed acceptance identity: reservation, aggregate, Start command.
-    pub keyed: KeyedStart<'a>,
-    /// The exact contract identity to admit and persist as the execution's
-    /// live reference.
-    pub identity: StartContractIdentity,
-}
-
 /// Why an exact plan/flavor pair was refused at start materialization.
 ///
 /// Every variant is fail-closed and payload-redacted: nothing was written,
@@ -152,6 +134,16 @@ pub enum StartRevisionRejection {
     /// The exact pair exists but is not admissible: it is draining or
     /// deleted, or the plan is pinned to a different worker flavor.
     PairNotAdmitted,
+}
+
+impl From<StartRevisionRejection> for &'static str {
+    fn from(rejection: StartRevisionRejection) -> Self {
+        match rejection {
+            StartRevisionRejection::PlanUnavailable => "plan-unavailable",
+            StartRevisionRejection::WorkerFlavorUnavailable => "worker-flavor-unavailable",
+            StartRevisionRejection::PairNotAdmitted => "pair-not-admitted",
+        }
+    }
 }
 
 /// What a materialized keyed start did.
@@ -173,35 +165,12 @@ pub enum StartMaterialization {
     },
     /// The key is reserved for a *different* request. Nothing was written.
     ///
-    /// Carries no execution id for the same reason
-    /// [`StartAcceptance::FingerprintMismatch`] does: the caller proved
-    /// knowledge of a key, not of the execution behind it.
+    /// Carries no execution id because the caller proved knowledge of a key,
+    /// not of the execution behind it.
     FingerprintMismatch,
     /// The exact revisions were not admitted. Nothing was written — no
     /// reservation, execution, command, or reference row survived.
     RevisionRejected(StartRevisionRejection),
-}
-
-/// What a keyed start acceptance did.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum StartAcceptance {
-    /// This request reserved the key and created the execution.
-    Accepted {
-        /// Durable identity of the execution this request created.
-        execution_id: String,
-    },
-    /// The key was already reserved for an identical request. This is the
-    /// original acceptance receipt; no new rows were written.
-    Replayed {
-        /// Durable identity of the execution the original request created.
-        execution_id: String,
-    },
-    /// The key is reserved for a *different* request. Nothing was written.
-    ///
-    /// Deliberately carries no execution id: the caller proved knowledge of a
-    /// key, not of the execution behind it, and echoing the id would turn a
-    /// guessed key into a cross-request identity oracle.
-    FingerprintMismatch,
 }
 
 /// Durable owner of keyed start acceptance.
@@ -212,64 +181,66 @@ pub enum StartAcceptance {
 /// connections and would break the single-commit contract.
 #[async_trait::async_trait]
 pub trait StartAcceptanceStore: Send + Sync + std::fmt::Debug {
-    /// Reserve `(scope, start_key)`, materialize the execution, and enqueue
-    /// the Start command — committing exactly once.
+    /// Read the original winner in the existing scoped trigger-event namespace.
+    /// Legacy winners may have no contract bundle; this method never invents one.
     ///
-    /// **Ordering (all backends), inside one transaction:**
-    ///
-    /// 1. Insert the reservation with `ON CONFLICT DO NOTHING`.
-    ///    - Inserted: continue to 2.
-    ///    - Conflicted: read the stored fingerprint back *in the same
-    ///      transaction* and return [`StartAcceptance::Replayed`] when it
-    ///      matches, [`StartAcceptance::FingerprintMismatch`] when it does
-    ///      not. Either way, no further writes.
-    /// 2. Insert the execution aggregate row.
-    /// 3. Insert the Start control row.
-    /// 4. Commit, returning [`StartAcceptance::Accepted`].
-    ///
-    /// A failure at 2 or 3 rolls the reservation back with everything else, so
-    /// a key is never left reserved for an execution that does not exist.
-    async fn accept_keyed_start(
+    /// # Errors
+    /// Returns a storage failure when the scoped reservation cannot be read.
+    async fn lookup_trigger_start(
         &self,
-        start: &KeyedStart<'_>,
-    ) -> Result<StartAcceptance, StorageError>;
-
-    /// Reserve the start key, admit the exact revisions, and materialize the
-    /// execution, its Start command, and its live revision reference —
-    /// committing exactly once (NS01).
+        scope: &Scope,
+        key: &crate::dto::TriggerStartKey<'_>,
+    ) -> Result<Option<String>, StorageError>;
+    /// Atomically materialize state, Start, immutable bundle, and live references.
+    /// Existing keyed reservation replay precedes new-envelope validation/admission.
+    /// An unkeyed request creates no synthetic reservation. Retrying the same
+    /// execution ID compares the entire original materialization, not merely row existence.
     ///
-    /// **Ordering (all backends), inside one transaction:**
+    /// # Errors
     ///
-    /// 1. If `(scope, start_key)` is already reserved, read the stored
-    ///    fingerprint back *in the same transaction* and return
-    ///    [`StartMaterialization::Replayed`] when it matches or
-    ///    [`StartMaterialization::FingerprintMismatch`] when it does not.
-    ///    Either way, no further writes — a replay converges on the original
-    ///    receipt regardless of the retry's contract identity.
-    /// 2. Admit the exact plan/flavor pair: both revisions must exist and be
-    ///    Active, and the plan must be pinned to the requested flavor. A pair
-    ///    that is missing, draining, deleted, or mismatched returns
-    ///    [`StartMaterialization::RevisionRejected`] with zero durable delta —
-    ///    on SQL backends the tentative reservation insert rolls back with the
-    ///    transaction; in-memory backends validate before writing.
-    /// 3. Insert the execution aggregate row.
-    /// 4. Insert the Start control row.
-    /// 5. Insert the execution's live revision reference under the admitted
-    ///    pair and the supplied bundle identity.
-    /// 6. Commit, returning [`StartMaterialization::Accepted`].
-    ///
-    /// The reservation, the reference admission, and the aggregate writes are
-    /// one commit: a crash cannot leave a key reserved for a missing
-    /// execution, an execution without a Start command, or a live reference
-    /// whose execution does not exist.
-    async fn materialize_keyed_start(
+    /// Returns [`StartMaterializationError`] when the envelope is invalid, an
+    /// identity conflicts, storage fails, or commit acknowledgement is unknown.
+    async fn materialize_start(
         &self,
-        start: &MaterializedKeyedStart<'_>,
-    ) -> Result<StartMaterialization, StorageError>;
+        start: &crate::dto::MaterializedStart<'_>,
+    ) -> Result<StartMaterialization, StartMaterializationError>;
 
+    /// Read a tenant-qualified original keyed acceptance. This grants no authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the scoped reservation cannot be read.
+    async fn lookup_start(
+        &self,
+        scope: &Scope,
+        key: &str,
+    ) -> Result<Option<crate::dto::StartReservation>, StorageError>;
+
+    /// Read the execution's immutable bundle within its owning tenant.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the scoped bundle cannot be read.
+    async fn read_contract_bundle(
+        &self,
+        scope: &Scope,
+        execution_id: &str,
+    ) -> Result<Option<crate::dto::StoredContractBundle>, StorageError>;
+}
+
+/// Process-wide maintenance authority for keyed-start reservations.
+///
+/// This port is deliberately separate from [`StartAcceptanceStore`]: eviction
+/// spans every tenant and must never be reachable through a scope-bound store.
+#[async_trait::async_trait]
+pub trait StartReservationMaintenance: Send + Sync + std::fmt::Debug {
     /// Drop reservations older than `retention`; returns the count deleted.
     ///
     /// A reservation only has to outlive the retries that could still race it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the global retention operation fails.
     async fn evict_reservations_older_than(
         &self,
         retention: std::time::Duration,

@@ -8,7 +8,7 @@
 //! [`PluginKey`]: nebula_core::PluginKey
 use std::time::Duration;
 
-use nebula_core::PluginKey;
+use nebula_core::{PluginKey, WorkerFlavorRevisionId};
 
 use crate::dto::JobDispatchMsg;
 use crate::error::StorageError;
@@ -94,7 +94,8 @@ pub struct JobClaim {
 
 /// Durable capability-routed job-dispatch queue.
 ///
-/// The routing predicate is `required_plugins ⊆ available_plugins`: a worker
+/// The routing predicate requires exact `required_worker_flavor_id = worker_flavor_id`
+/// and `required_plugins ⊆ available_plugins`: a worker
 /// may claim a job only if its advertised plugin set is a superset of every
 /// plugin the job requires.  The DTO invariant guarantees
 /// `required_plugins ⊇ {required_plugin_key}`, so the superset predicate
@@ -109,7 +110,8 @@ pub trait JobDispatchQueue: Send + Sync + std::fmt::Debug {
     /// Durably enqueue a job-dispatch message.
     async fn enqueue(&self, msg: &JobDispatchMsg) -> Result<(), StorageError>;
 
-    /// Claim up to `batch_size` pending jobs whose `required_plugins ⊆
+    /// Claim up to `batch_size` pending jobs with the exact advertised flavor
+    /// and whose `required_plugins ⊆
     /// available_plugins` (the worker's advertised plugin set must be a
     /// superset of every plugin the job requires).
     ///
@@ -135,6 +137,7 @@ pub trait JobDispatchQueue: Send + Sync + std::fmt::Debug {
         processor: &[u8; 16],
         batch_size: u32,
         available_plugins: &[PluginKey],
+        worker_flavor_id: WorkerFlavorRevisionId,
     ) -> Result<Vec<JobClaim>, StorageError>;
 
     /// Mark a claimed job dispatched (terminal success).

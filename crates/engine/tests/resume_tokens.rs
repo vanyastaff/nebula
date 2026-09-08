@@ -1,4 +1,4 @@
-//! Engine integration test for W-S3c — mint-on-park resume-token.
+//! Engine integration tests for mint-on-park resume tokens.
 //!
 //! Drives a `WebhookWaitNode` to a park (via `dispatch_start`), then asserts
 //! that the `InMemoryResumeTokenStore` shared with the engine holds exactly
@@ -19,9 +19,14 @@
 //! inside the engine's frontier loop → no token is inserted → `revoke_on_terminal`
 //! returns 0 → `assert_eq!(revoked, 1)` fails → RED.
 
+mod exact_fixture;
+#[path = "exact_fixture/qualified_runtime.rs"]
+mod qualified_runtime;
+
 use std::{
     collections::HashMap,
     sync::{Arc, OnceLock},
+    time::Duration,
 };
 
 use chrono::Utc;
@@ -39,10 +44,11 @@ use nebula_engine::{
 };
 use nebula_execution::ExecutionState;
 use nebula_metrics::MetricsRegistry;
+use nebula_storage::inmem::InMemoryTurnHandoff;
 use nebula_storage::{InMemoryExecutionStore, InMemoryWorkflowVersionStore};
 use nebula_storage_port::{
     dto::WorkflowVersionRecord,
-    store::{ExecutionStore, ResumeTokenStore, WorkflowVersionStore},
+    store::{ResumeTokenStore, WorkflowVersionStore},
 };
 use nebula_workflow::{
     CURRENT_SCHEMA_VERSION, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
@@ -61,7 +67,7 @@ impl Action for WebhookParkNode {
         ActionMetadata::new(
             action_key!("test.w_s3c.webhook_park"),
             "WebhookParkNode",
-            "W-S3c token-mint integration test stub",
+            "resume-token mint integration test stub",
         )
     }
 
@@ -91,6 +97,7 @@ impl StatelessAction for WebhookParkNode {
 
 /// Minimal store set for the token-mint integration test.
 struct MintHarness {
+    exact: qualified_runtime::QualifiedRuntime,
     dispatch: EngineControlDispatch,
     execution: Arc<InMemoryExecutionStore>,
     versions: Arc<InMemoryWorkflowVersionStore>,
@@ -103,11 +110,12 @@ impl MintHarness {
             ActionMetadata::new(
                 action_key!("test.w_s3c.webhook_park"),
                 "WebhookParkNode",
-                "W-S3c token-mint integration test stub",
+                "resume-token mint integration test stub",
             ),
             WebhookParkNode,
         );
 
+        let exact = qualified_runtime::QualifiedRuntime::new(&registry);
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
         });
@@ -126,9 +134,6 @@ impl MintHarness {
         let execution = Arc::new(InMemoryExecutionStore::new());
         let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&execution));
         let versions = Arc::new(InMemoryWorkflowVersionStore::new());
-        let workflow = Arc::new(nebula_storage::InMemoryWorkflowStore::new_with_versions(
-            &versions,
-        ));
 
         let execution_stores = nebula_engine::ExecutionStores {
             execution: execution.clone(),
@@ -137,22 +142,28 @@ impl MintHarness {
             checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
             idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
             resume_tokens: Arc::new(execution.resume_token_store()),
-            operation_ledger: None,
+            operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(
+                &execution,
+            )),
         };
-        let workflow_stores = nebula_engine::WorkflowStores {
-            workflow,
-            versions: versions.clone(),
-        };
-
         let engine = Arc::new(
-            WorkflowEngine::new(runtime, metrics)
-                .unwrap()
-                .with_execution_stores(execution_stores)
-                .with_workflow_stores(workflow_stores),
+            exact.attach(
+                WorkflowEngine::new(runtime, metrics)
+                    .unwrap()
+                    .with_execution_stores(execution_stores),
+                &execution,
+            ),
         );
-        let dispatch = EngineControlDispatch::new(Arc::clone(&engine), execution.clone());
+        let dispatch = EngineControlDispatch::new(
+            Arc::clone(&engine),
+            execution.clone(),
+            Arc::new(InMemoryTurnHandoff::new(&execution)),
+            "resume-token-control".to_owned(),
+            Duration::from_secs(30),
+        );
 
         Self {
+            exact,
             dispatch,
             execution,
             versions,
@@ -193,6 +204,7 @@ impl MintHarness {
             .create(
                 &nebula_engine::store_seam::single_tenant_scope(),
                 WorkflowVersionRecord {
+                    activation: None,
                     workflow_id: workflow_id.to_string(),
                     number: 0,
                     published: true,
@@ -210,23 +222,21 @@ impl MintHarness {
         let execution_id = ExecutionId::new();
         let mut exec_state = ExecutionState::new(execution_id, workflow_id, &[]);
         exec_state.set_workflow_input(serde_json::json!(null));
-        let state_json = serde_json::to_value(&exec_state).unwrap();
-        self.execution
-            .create(
+        self.exact
+            .pin(
+                &self.execution,
+                self.versions.as_ref(),
                 &nebula_engine::store_seam::single_tenant_scope(),
-                &execution_id.to_string(),
-                &workflow_id.to_string(),
-                state_json,
+                &mut exec_state,
             )
-            .await
-            .unwrap();
+            .await;
         execution_id
     }
 }
 
 // ── Test ──────────────────────────────────────────────────────────────────────
 
-/// Engine integration test for W-S3c: the engine mints a resume token when a
+/// The engine mints a resume token when a
 /// `Webhook`-wait node parks, and the token is visible in the shared store.
 ///
 /// Proof strategy: call `revoke_on_terminal` after park — it removes all tokens

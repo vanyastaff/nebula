@@ -20,9 +20,9 @@ use nebula_workflow::{
 use semver::{BuildMetadata, Version};
 
 use crate::plan::{
-    CANONICAL_HASH_VERSION_V1, COMPILER_VERSION_GRAPH_V1, ExecutablePlanRevision,
-    PlanCompilationError, RECORD_VERSION_V1, RecordedActionKindV1, RecordedActionV1,
-    RecordedAuthPatternV1, RecordedBindingContractV1, RecordedBindingSiteV1, RecordedBindingV1,
+    DEFAULT_OUTPUT_PORT, ExecutablePlanRevision, INTRINSIC_ERROR_PORT, PlanCompilationError,
+    PlanEpoch, RECORD_VERSION_V1, RecordedActionKindV1, RecordedActionV1, RecordedAuthPatternV1,
+    RecordedBindingContractV1, RecordedBindingSiteV1, RecordedBindingV1,
     RecordedCheckpointPolicyV1, RecordedCheckpointingV1, RecordedConnectionV1, RecordedConverterV1,
     RecordedCredentialV1, RecordedDependenciesV1, RecordedDependencyV1, RecordedDurationV1,
     RecordedErrorStrategyV1, RecordedExecutablePlanRevisionV1, RecordedFlowKindV1,
@@ -32,19 +32,24 @@ use crate::plan::{
     RecordedRetryV1, RecordedSchemaV1, RecordedSemverV1, RecordedSlotV1, RecordedTriggerV1,
     RecordedVariableV1, RecordedWorkflowConfigV1, RecordedWorkflowVersionV1,
     SCHEMA_WIRE_VERSION_GRAPH_V1, validate_node_parameters, validate_parameter,
-    validate_parameter_contract, validate_reference_contract, validate_trigger_configuration,
+    validate_parameter_contract, validate_trigger_configuration,
 };
 use crate::resolved_plugin::{
     ActionContractSnapshot, CredentialContractSnapshot, ResourceContractSnapshot,
 };
 use nebula_error::ActivationDiagnostic;
 
+use crate::compiler_validation::{
+    RecordedReferenceViolationReason, authored_connection_key, binding_sort_key,
+    connection_record_key, graph_has_cycle, normalize_reference_path,
+    support_cardinality_violations, validate_recorded_references,
+};
 use crate::{FrozenPluginRegistry, ResolvedPlugin};
-
-const DEFAULT_OUTPUT_PORT: &str = "out";
 
 #[derive(Debug, Clone, Copy)]
 enum DiagnosticCode {
+    UndeclaredEffects,
+    UnsupportedEffectKind,
     UnsupportedWorkflowSchema,
     DuplicateNode,
     DuplicateTrigger,
@@ -80,6 +85,8 @@ enum DiagnosticCode {
 impl DiagnosticCode {
     const fn reason(self) -> &'static str {
         match self {
+            Self::UndeclaredEffects => "UNDECLARED_EFFECTS",
+            Self::UnsupportedEffectKind => "UNSUPPORTED_EFFECT_KIND",
             Self::UnsupportedWorkflowSchema => "UNSUPPORTED_WORKFLOW_SCHEMA",
             Self::DuplicateNode => "DUPLICATE_NODE",
             Self::DuplicateTrigger => "DUPLICATE_TRIGGER",
@@ -120,6 +127,8 @@ impl DiagnosticCode {
 
 #[derive(Debug, Clone, Copy)]
 enum DiagnosticValue<'a> {
+    DeclaredEffects,
+    UndeclaredEffects,
     CurrentWorkflowSchema,
     WorkflowSchema(u32),
     RegisteredPlugin,
@@ -168,6 +177,8 @@ enum DiagnosticValue<'a> {
 impl DiagnosticValue<'_> {
     fn render(self) -> String {
         match self {
+            Self::DeclaredEffects => "<declared-effect-contract>".to_owned(),
+            Self::UndeclaredEffects => "<undeclared-effects>".to_owned(),
             Self::CurrentWorkflowSchema => nebula_workflow::CURRENT_SCHEMA_VERSION.to_string(),
             Self::WorkflowSchema(version) => version.to_string(),
             Self::RegisteredPlugin => "<registered-plugin>".to_owned(),
@@ -217,6 +228,8 @@ impl DiagnosticValue<'_> {
 
 #[derive(Debug, Clone, Copy)]
 enum Remediation {
+    DeclareEffects,
+    SelectStatelessEffect,
     UpgradeWorkflowSchema,
     UseUniqueIdentity,
     RegisterPlugin,
@@ -228,6 +241,7 @@ enum Remediation {
     RepairConnection,
     UseMainOutput,
     UseDefaultOrSupportInput,
+    UseDefaultFlowInput,
     RemoveTagFilter,
     SelectAllowedNodeType,
     AlignSchemas,
@@ -250,6 +264,10 @@ enum Remediation {
 impl Remediation {
     const fn text(self) -> &'static str {
         match self {
+            Self::DeclareEffects => {
+                "declare reviewed external-effect behavior on the action factory"
+            },
+            Self::SelectStatelessEffect => "use a stateless action for one terminal remote effect",
             Self::UpgradeWorkflowSchema => "migrate the workflow to the current schema version",
             Self::UseUniqueIdentity => "use a unique stable identifier",
             Self::RegisterPlugin => "freeze a registry containing the referenced plugin",
@@ -264,6 +282,9 @@ impl Remediation {
             Self::UseMainOutput => "connect from the main out port in Graph-v1",
             Self::UseDefaultOrSupportInput => {
                 "use the default flow input or a supported support port"
+            },
+            Self::UseDefaultFlowInput => {
+                "connect the intrinsic error output to the default flow input"
             },
             Self::RemoveTagFilter => "remove the tag-filtered edge until tag authority is ratified",
             Self::SelectAllowedNodeType => "connect an action allowed by the support-port contract",
@@ -382,6 +403,7 @@ impl JsonPointer {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ContractProjectionError {
+    InvalidEffectDeclaration,
     ActionKind,
     Isolation,
     CheckpointPolicy,
@@ -459,6 +481,10 @@ fn project_action_snapshot(
         input_schema: record_schema(metadata.base.schema.clone()),
         output_schema: record_schema(metadata.output_schema.clone()),
         dependencies: project_dependencies(snapshot.dependencies()),
+        effect_contract: Some(
+            crate::plan_effect::RecordedActionEffectV1::project(&metadata.effect_contract)
+                .map_err(|_| ContractProjectionError::InvalidEffectDeclaration)?,
+        ),
     })
 }
 
@@ -750,27 +776,6 @@ fn qualify_action_key(plugin_key: &PluginKey, authored: &ActionKey) -> Option<Ac
     ActionKey::new(format!("{prefix}{}", authored.as_str())).ok()
 }
 
-fn normalize_reference_path(path: &str) -> Option<String> {
-    let normalized = match path {
-        "$" => "",
-        value if value.starts_with("$.") => &value[2..],
-        value if value.starts_with('$') => return None,
-        value => value,
-    };
-    if normalized.is_empty() {
-        return Some(String::new());
-    }
-    normalized
-        .split('.')
-        .all(|segment| {
-            !segment.is_empty()
-                && (!segment.bytes().all(|byte| byte.is_ascii_digit())
-                    || segment == "0"
-                    || !segment.starts_with('0'))
-        })
-        .then(|| normalized.to_owned())
-}
-
 struct GraphCompiler<'a> {
     registry: &'a FrozenPluginRegistry,
     workflow_version_id: WorkflowVersionId,
@@ -862,8 +867,8 @@ impl<'a> GraphCompiler<'a> {
             .sort_by(|left, right| binding_sort_key(left).cmp(&binding_sort_key(right)));
         let mut record = RecordedExecutablePlanRevisionV1 {
             record_version: RECORD_VERSION_V1,
-            compiler_version: COMPILER_VERSION_GRAPH_V1,
-            canonical_hash_version: CANONICAL_HASH_VERSION_V1,
+            compiler_version: PlanEpoch::CURRENT.compiler_version(),
+            canonical_hash_version: PlanEpoch::CURRENT.canonical_hash_version(),
             profile: RecordedPlanProfileV1::GraphV1,
             claimed_id: ExecutablePlanRevisionId::from_bytes([0; 32]),
             workflow_version_id: self.workflow_version_id,
@@ -1215,6 +1220,37 @@ impl<'a> GraphCompiler<'a> {
             );
             return None;
         }
+        if matches!(
+            snapshot.metadata().effect_contract,
+            nebula_action::effect::ActionEffectContract::Undeclared
+        ) {
+            self.diagnostics.push(
+                DiagnosticCode::UndeclaredEffects,
+                JsonPointer::root(path_root)
+                    .child(site_id)
+                    .child("action_key"),
+                DiagnosticValue::DeclaredEffects,
+                DiagnosticValue::UndeclaredEffects,
+                Remediation::DeclareEffects,
+            );
+            return None;
+        }
+        if matches!(
+            snapshot.metadata().effect_contract,
+            nebula_action::effect::ActionEffectContract::Remote(_)
+        ) && kind != ActionKind::Stateless
+        {
+            self.diagnostics.push(
+                DiagnosticCode::UnsupportedEffectKind,
+                JsonPointer::root(path_root)
+                    .child(site_id)
+                    .child("action_key"),
+                DiagnosticValue::StatelessKind,
+                action_kind_value(kind),
+                Remediation::SelectStatelessEffect,
+            );
+            return None;
+        }
         let projection = project_action_contract(plugin.as_ref(), &full_key);
         let snapshot_dependencies = snapshot.dependencies().clone();
         let action = match projection {
@@ -1553,35 +1589,48 @@ impl<'a> GraphCompiler<'a> {
                 continue;
             };
             let from_port = connection.effective_from_port().to_string();
-            let Some(source_port) = source_action
-                .outputs
-                .iter()
-                .find(|port| output_port_key(port) == from_port)
-            else {
+            let intrinsic_error = from_port == INTRINSIC_ERROR_PORT;
+            if intrinsic_error && connection.to_port.is_some() {
                 self.diagnostics.push(
-                    DiagnosticCode::UnsupportedSourcePort,
-                    path.clone().child("from_port"),
-                    DiagnosticValue::MainOutput,
-                    DiagnosticValue::Missing,
-                    Remediation::UseMainOutput,
-                );
-                continue;
-            };
-            if !matches!(
-                source_port,
-                RecordedOutputPortV1::Flow {
-                    key,
-                    flow_kind: RecordedFlowKindV1::Main,
-                } if key == DEFAULT_OUTPUT_PORT
-            ) {
-                self.diagnostics.push(
-                    DiagnosticCode::UnsupportedSourcePort,
-                    path.clone().child("from_port"),
-                    DiagnosticValue::MainOutput,
+                    DiagnosticCode::UnsupportedTargetPort,
+                    path.clone().child("to_port"),
+                    DiagnosticValue::DefaultFlowInput,
                     DiagnosticValue::UnsupportedVariant,
-                    Remediation::UseMainOutput,
+                    Remediation::UseDefaultFlowInput,
                 );
                 continue;
+            }
+            if !intrinsic_error {
+                let Some(source_port) = source_action
+                    .outputs
+                    .iter()
+                    .find(|port| output_port_key(port) == from_port)
+                else {
+                    self.diagnostics.push(
+                        DiagnosticCode::UnsupportedSourcePort,
+                        path.clone().child("from_port"),
+                        DiagnosticValue::MainOutput,
+                        DiagnosticValue::Missing,
+                        Remediation::UseMainOutput,
+                    );
+                    continue;
+                };
+                if !matches!(
+                    source_port,
+                    RecordedOutputPortV1::Flow {
+                        key,
+                        flow_kind: RecordedFlowKindV1::Main,
+                    } if key == DEFAULT_OUTPUT_PORT
+                ) {
+                    self.diagnostics.push(
+                        DiagnosticCode::UnsupportedSourcePort,
+                        path.clone().child("from_port"),
+                        DiagnosticValue::MainOutput,
+                        DiagnosticValue::UnsupportedVariant,
+                        Remediation::UseMainOutput,
+                    );
+                    continue;
+                }
             }
             let to_port = connection.to_port.as_ref().map(ToString::to_string);
             match to_port.as_deref() {
@@ -1601,7 +1650,11 @@ impl<'a> GraphCompiler<'a> {
                         );
                         continue;
                     }
-                    let producer = OutputSchema::new(source_action.output_schema.schema.clone());
+                    let producer = OutputSchema::new(if intrinsic_error {
+                        nebula_schema::schema_of::<nebula_workflow::ErrorPortPayload>()
+                    } else {
+                        source_action.output_schema.schema.clone()
+                    });
                     let consumer = InputSchema::new(target_action.input_schema.schema.clone());
                     if !matches!(explain_assignable(&producer, &consumer), Assignability::Yes) {
                         self.diagnostics.push(
@@ -1708,81 +1761,34 @@ impl<'a> GraphCompiler<'a> {
     }
 
     fn validate_support_cardinality(&mut self, connections: &[RecordedConnectionV1]) {
-        for node in self.nodes.values() {
-            let Some(action) = self.actions.get(&node.action_key) else {
-                continue;
-            };
-            for input in &action.inputs {
-                let RecordedInputPortV1::Support {
-                    key,
-                    required,
-                    multi,
-                    ..
-                } = input
-                else {
-                    continue;
-                };
-                let count = connections
-                    .iter()
-                    .filter(|connection| {
-                        connection.to_node == node.id
-                            && connection.to_port.as_deref() == Some(key.as_str())
-                    })
-                    .count();
-                if (*required && count == 0) || (!*multi && count > 1) {
-                    self.diagnostics.push(
-                        DiagnosticCode::SupportCardinality,
-                        JsonPointer::root("nodes")
-                            .child(node.id.as_str())
-                            .child("inputs")
-                            .child(key),
-                        DiagnosticValue::ValidCardinality,
-                        DiagnosticValue::UnsupportedVariant,
-                        Remediation::RepairSupportCardinality,
-                    );
-                }
-            }
+        for (node_id, input_key) in
+            support_cardinality_violations(&self.nodes, &self.actions, connections)
+        {
+            self.diagnostics.push(
+                DiagnosticCode::SupportCardinality,
+                JsonPointer::root("nodes")
+                    .child(&node_id)
+                    .child("inputs")
+                    .child(&input_key),
+                DiagnosticValue::ValidCardinality,
+                DiagnosticValue::UnsupportedVariant,
+                Remediation::RepairSupportCardinality,
+            );
         }
     }
 
     fn validate_references(&mut self, connections: &[RecordedConnectionV1]) {
-        let actions = self
-            .actions
-            .values()
-            .map(|action| (action.key.as_str(), action))
-            .collect::<HashMap<_, _>>();
-        let mut failures = Vec::new();
-        for consumer in self.nodes.values() {
-            for parameter in &consumer.parameters {
-                let RecordedParameterValueV1::Reference {
-                    node_key,
-                    output_path,
-                } = &parameter.value
-                else {
-                    continue;
-                };
-                let path = JsonPointer::root("nodes")
-                    .child(consumer.id.as_str())
-                    .child("parameters")
-                    .child(parameter.key.as_str());
-                let Some(source) = self.nodes.get(node_key) else {
-                    failures.push((path, DiagnosticValue::Missing));
-                    continue;
-                };
-                if !connections.iter().any(|connection| {
-                    connection.from_node == *node_key && connection.to_node == consumer.id
-                }) {
-                    failures.push((path, DiagnosticValue::Missing));
-                    continue;
-                }
-                if validate_reference_contract(parameter, output_path, source, consumer, &actions)
-                    .is_err()
-                {
-                    failures.push((path, DiagnosticValue::IncompatibleSchema));
-                }
-            }
-        }
-        for (path, actual) in failures {
+        for violation in validate_recorded_references(&self.nodes, &self.actions, connections) {
+            let path = JsonPointer::root("nodes")
+                .child(&violation.consumer_node)
+                .child("parameters")
+                .child(&violation.parameter_key);
+            let actual = match violation.reason {
+                RecordedReferenceViolationReason::MissingSource => DiagnosticValue::Missing,
+                RecordedReferenceViolationReason::IncompatibleSchema => {
+                    DiagnosticValue::IncompatibleSchema
+                },
+            };
             self.diagnostics.push(
                 DiagnosticCode::InvalidReferenceContract,
                 path,
@@ -2161,26 +2167,6 @@ fn semver_from_record(recorded: &RecordedSemverV1) -> Option<Version> {
     Some(version)
 }
 
-fn authored_connection_key(connection: &Connection) -> (String, String, String, Option<String>) {
-    (
-        connection.from_node.to_string(),
-        connection.effective_from_port().to_string(),
-        connection.to_node.to_string(),
-        connection.to_port.as_ref().map(ToString::to_string),
-    )
-}
-
-fn connection_record_key(
-    connection: &RecordedConnectionV1,
-) -> (String, String, String, Option<String>) {
-    (
-        connection.from_node.clone(),
-        connection.from_port.clone(),
-        connection.to_node.clone(),
-        connection.to_port.clone(),
-    )
-}
-
 fn connection_path(connection: &Connection) -> JsonPointer {
     JsonPointer::root("connections")
         .child(connection.from_node.as_str())
@@ -2192,59 +2178,6 @@ fn connection_path(connection: &Connection) -> JsonPointer {
                 .as_ref()
                 .map_or("<default>", nebula_core::PortKey::as_str),
         )
-}
-
-fn graph_has_cycle<'a>(
-    nodes: impl Iterator<Item = &'a String>,
-    adjacency: &HashMap<String, Vec<String>>,
-) -> bool {
-    let nodes = nodes.map(String::as_str).collect::<Vec<_>>();
-    let node_set = nodes.iter().copied().collect::<HashSet<_>>();
-    let mut indegree = nodes
-        .iter()
-        .copied()
-        .map(|node| (node, 0_usize))
-        .collect::<HashMap<_, _>>();
-    for targets in adjacency.values() {
-        for target in targets {
-            if node_set.contains(target.as_str())
-                && let Some(count) = indegree.get_mut(target.as_str())
-            {
-                *count = count.saturating_add(1);
-            }
-        }
-    }
-    let mut ready = indegree
-        .iter()
-        .filter_map(|(node, count)| (*count == 0).then_some(*node))
-        .collect::<Vec<_>>();
-    let mut visited = 0_usize;
-    while let Some(node) = ready.pop() {
-        visited = visited.saturating_add(1);
-        if let Some(targets) = adjacency.get(node) {
-            for target in targets {
-                if let Some(count) = indegree.get_mut(target.as_str()) {
-                    *count = count.saturating_sub(1);
-                    if *count == 0 {
-                        ready.push(target);
-                    }
-                }
-            }
-        }
-    }
-    visited != nodes.len()
-}
-
-fn binding_sort_key(binding: &RecordedBindingV1) -> (u8, &str, &str, u8) {
-    let (site_tag, site) = match &binding.site {
-        RecordedBindingSiteV1::Node(node) => (0, node.as_str()),
-        RecordedBindingSiteV1::Trigger(trigger) => (1, trigger.as_str()),
-    };
-    let contract_tag = match binding.contract {
-        RecordedBindingContractV1::Resource { .. } => 0,
-        RecordedBindingContractV1::Credential { .. } => 1,
-    };
-    (site_tag, site, binding.slot_key.as_str(), contract_tag)
 }
 
 impl FrozenPluginRegistry {
@@ -2331,438 +2264,5 @@ impl FrozenPluginRegistry {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::future::Future;
-    use std::pin::Pin;
-    use std::sync::Arc;
-
-    use nebula_action::{ActionContext, ActionError, ActionFactory, ActionHandle, ActionMetadata};
-    use nebula_core::{
-        ArtifactSetDigest, Dependencies, PluginKey, WorkflowId, WorkflowVersionId, node_key,
-    };
-    use nebula_metadata::PluginManifest;
-    use nebula_schema::{Field, ObjectField, Schema, SecretField, ValidSchema, field_key};
-    use nebula_workflow::{NodeDefinition, ParamValue, WorkflowBuilder};
-    use serde_json::json;
-
-    use super::*;
-
-    const SECRET_PAYLOAD: &str = "compiler-secret-that-must-not-leak";
-
-    /// Red→green proof that provider selection does not depend on hash order.
-    ///
-    /// `PluginKey` permits `.`, so `acme` and `acme.storage` can both
-    /// namespace-own `acme.storage.bucket`. The winner's key is hashed into the
-    /// content-addressed revision id, so picking whichever provider the
-    /// registry's `HashMap` yielded first made two replicas compile the same
-    /// registry and workflow to different `ExecutablePlanRevisionId`s.
-    #[test]
-    fn provider_selection_is_lowest_key_regardless_of_iteration_order() {
-        let forward =
-            lowest_keyed_provider([("acme.storage", "namespaced"), ("acme", "root")].into_iter());
-        let reverse =
-            lowest_keyed_provider([("acme", "root"), ("acme.storage", "namespaced")].into_iter());
-
-        assert_eq!(
-            forward, reverse,
-            "the same provider set must resolve identically whatever order it is walked in"
-        );
-        assert_eq!(
-            forward,
-            Some("root"),
-            "the lowest plugin key is the deterministic winner"
-        );
-        assert_eq!(
-            lowest_keyed_provider(std::iter::empty::<(&str, &str)>()),
-            None,
-            "no provider still means no provider"
-        );
-    }
-
-    /// Red→green proof that a deny-all connection filter is never inverted.
-    ///
-    /// `None` is "unfiltered" and a present list is "only these", so an
-    /// explicitly empty list means "accept nothing". Canonicalizing it to
-    /// `None` admitted every source node onto the port — the exact opposite of
-    /// what the plugin declared — and produced a record the plan validator
-    /// rejects as noncanonical anyway.
-    #[test]
-    fn empty_connection_filter_is_refused_not_collapsed_to_unfiltered() {
-        let empty: &[String] = &[];
-        assert!(
-            matches!(
-                canonical_optional_strings(Some(empty)),
-                Err(ContractProjectionError::EmptyConnectionFilter)
-            ),
-            "an explicitly empty filter must be refused, never read as unfiltered"
-        );
-
-        assert!(
-            matches!(canonical_optional_strings(None), Ok(None)),
-            "an absent filter is genuinely unfiltered"
-        );
-
-        let projected =
-            canonical_optional_strings(Some(&["b".to_owned(), "a".to_owned(), "b".to_owned()]))
-                .expect("a non-empty filter must project")
-                .expect("a present filter must stay present");
-        assert_eq!(
-            &*projected,
-            ["a".to_owned(), "b".to_owned()],
-            "a present filter is sorted and deduplicated, and stays present"
-        );
-    }
-
-    struct TestActionFactory {
-        metadata: ActionMetadata,
-        dependencies: Dependencies,
-    }
-
-    impl ActionFactory for TestActionFactory {
-        fn metadata(&self) -> &ActionMetadata {
-            &self.metadata
-        }
-
-        fn dependencies(&self) -> &Dependencies {
-            &self.dependencies
-        }
-
-        fn instantiate<'a>(
-            &'a self,
-            _node: &'a NodeDefinition,
-            _context: &'a dyn ActionContext,
-        ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
-            Box::pin(async {
-                Err(ActionError::fatal(
-                    "the pure compiler test factory is never instantiated",
-                ))
-            })
-        }
-    }
-
-    struct TestPlugin {
-        manifest: PluginManifest,
-        actions: Vec<Arc<dyn ActionFactory>>,
-    }
-
-    impl std::fmt::Debug for TestPlugin {
-        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            formatter
-                .debug_struct("TestPlugin")
-                .field("key", self.manifest.key())
-                .finish()
-        }
-    }
-
-    impl crate::Plugin for TestPlugin {
-        fn manifest(&self) -> &PluginManifest {
-            &self.manifest
-        }
-
-        fn actions(&self) -> Vec<Arc<dyn ActionFactory>> {
-            self.actions.clone()
-        }
-    }
-
-    fn action_metadata(
-        local_key: &str,
-        kind: ActionKind,
-        input_schema: ValidSchema,
-        output_schema: ValidSchema,
-    ) -> ActionMetadata {
-        ActionMetadata::new(
-            ActionKey::new(format!("demo.{local_key}")).expect("fixture action key is valid"),
-            local_key,
-            "compiler contract fixture",
-        )
-        .with_kind(kind)
-        .with_schema(input_schema)
-        .with_output_schema(output_schema)
-    }
-
-    fn frozen(actions: Vec<ActionMetadata>) -> FrozenPluginRegistry {
-        let plugin = TestPlugin {
-            manifest: PluginManifest::builder("demo", "Demo")
-                .build()
-                .expect("fixture manifest is valid"),
-            actions: actions
-                .into_iter()
-                .map(|metadata| {
-                    Arc::new(TestActionFactory {
-                        metadata,
-                        dependencies: Dependencies::new(),
-                    }) as Arc<dyn ActionFactory>
-                })
-                .collect(),
-        };
-        let resolved =
-            Arc::new(ResolvedPlugin::from(plugin).expect("fixture plugin contracts resolve"));
-        let mut registry = crate::PluginRegistry::new();
-        registry
-            .register(resolved)
-            .expect("fixture plugin registers once");
-        registry
-            .freeze(
-                ArtifactSetDigest::from_bytes([0x61; 32]),
-                "1.0.0"
-                    .parse()
-                    .expect("fixture runtime contract version is valid"),
-            )
-            .expect("fixture registry freezes")
-    }
-
-    fn one_node_workflow(node: NodeDefinition) -> WorkflowDefinition {
-        WorkflowBuilder::new("Compiler contract")
-            .id(WorkflowId::from_bytes([0x62; 16]))
-            .add_node(node)
-            .build()
-            .expect("fixture workflow is structurally valid")
-    }
-
-    fn compile_error(
-        registry: &FrozenPluginRegistry,
-        workflow: &WorkflowDefinition,
-    ) -> PlanCompilationError {
-        registry
-            .compile_graph_v1(WorkflowVersionId::from_bytes([0x63; 16]), workflow)
-            .expect_err("fixture must fail Graph-v1 compilation")
-    }
-
-    #[test]
-    fn reference_paths_normalize_only_ratified_aliases() {
-        assert_eq!(normalize_reference_path("$").as_deref(), Some(""));
-        assert_eq!(
-            normalize_reference_path("$.payload.0").as_deref(),
-            Some("payload.0")
-        );
-        assert_eq!(
-            normalize_reference_path("payload.0").as_deref(),
-            Some("payload.0")
-        );
-        assert!(normalize_reference_path("$payload").is_none());
-        assert!(normalize_reference_path("payload..name").is_none());
-        assert!(normalize_reference_path("payload.00").is_none());
-    }
-
-    #[test]
-    fn json_pointer_escapes_dynamic_identifier_segments() {
-        assert_eq!(
-            JsonPointer::root("nodes")
-                .child("a/b~c")
-                .child("parameters")
-                .into_string(),
-            "/nodes/a~1b~0c/parameters"
-        );
-    }
-
-    #[test]
-    fn diagnostics_are_stably_sorted_and_payload_free() {
-        let mut diagnostics = Diagnostics::default();
-        let plugin = PluginKey::new("sample").unwrap();
-        diagnostics.push(
-            DiagnosticCode::MissingPlugin,
-            JsonPointer::root("nodes").child("b"),
-            DiagnosticValue::RegisteredPlugin,
-            DiagnosticValue::Plugin(&plugin),
-            Remediation::RegisterPlugin,
-        );
-        diagnostics.push(
-            DiagnosticCode::MissingPlugin,
-            JsonPointer::root("nodes").child("a"),
-            DiagnosticValue::RegisteredPlugin,
-            DiagnosticValue::Plugin(&plugin),
-            Remediation::RegisterPlugin,
-        );
-        let error = diagnostics.into_error().unwrap();
-        assert_eq!(error.diagnostics().len(), 2);
-        assert_eq!(error.diagnostics()[0].path(), "/nodes/a");
-        assert_eq!(
-            error.diagnostics()[0].code(),
-            "PLUGIN_PLAN_GRAPH_V1:MISSING_PLUGIN"
-        );
-        assert!(!format!("{error:?}").contains("credential-value"));
-    }
-
-    #[test]
-    fn tagged_literal_is_not_reclassified_but_expression_is_rejected() {
-        let input_schema = Schema::builder()
-            .add(Field::string(field_key!("value")).no_expression())
-            .build()
-            .expect("fixture schema is valid");
-        let registry = frozen(vec![action_metadata(
-            "literal",
-            ActionKind::Stateless,
-            input_schema,
-            ValidSchema::empty(),
-        )]);
-        let literal = NodeDefinition::new(node_key!("run"), "Run", "demo", "literal")
-            .expect("fixture node is valid")
-            .with_parameter("value", ParamValue::literal(json!("{{ $workflow.input }}")));
-        registry
-            .compile_graph_v1(
-                WorkflowVersionId::from_bytes([0x64; 16]),
-                &one_node_workflow(literal),
-            )
-            .expect("the explicitly tagged literal remains a literal");
-
-        let expression = NodeDefinition::new(node_key!("run"), "Run", "demo", "literal")
-            .expect("fixture node is valid")
-            .with_parameter("value", ParamValue::expression("{{ $workflow.input }}"));
-        let error = compile_error(&registry, &one_node_workflow(expression));
-        assert!(error.diagnostics().iter().any(|diagnostic| {
-            diagnostic.code() == "PLUGIN_PLAN_GRAPH_V1:INVALID_PARAMETER_CONTRACT"
-                && diagnostic.path() == "/nodes/run/parameters/value"
-        }));
-    }
-
-    #[test]
-    fn nested_secret_parameter_is_rejected_without_payload_disclosure() {
-        let input_schema = Schema::builder()
-            .add(ObjectField::new(field_key!("auth")).add(SecretField::new(field_key!("token"))))
-            .build()
-            .expect("fixture schema is valid");
-        let registry = frozen(vec![action_metadata(
-            "secret",
-            ActionKind::Stateless,
-            input_schema,
-            ValidSchema::empty(),
-        )]);
-        let node = NodeDefinition::new(node_key!("run"), "Run", "demo", "secret")
-            .expect("fixture node is valid")
-            .with_parameter(
-                "auth",
-                ParamValue::literal(json!({"token": SECRET_PAYLOAD})),
-            );
-        let error = compile_error(&registry, &one_node_workflow(node));
-        let diagnostic = error
-            .diagnostics()
-            .iter()
-            .find(|diagnostic| {
-                diagnostic.code() == "PLUGIN_PLAN_GRAPH_V1:INVALID_PARAMETER_CONTRACT"
-                    && diagnostic.path() == "/nodes/run/parameters/auth"
-            })
-            .expect("secret parameter has an exact safe diagnostic");
-        for field in [
-            diagnostic.code(),
-            diagnostic.path(),
-            diagnostic.expected(),
-            diagnostic.actual(),
-            diagnostic.remediation(),
-        ] {
-            assert!(!field.contains(SECRET_PAYLOAD));
-        }
-        assert!(!error.to_string().contains(SECRET_PAYLOAD));
-        assert!(!format!("{error:?}").contains(SECRET_PAYLOAD));
-    }
-
-    #[test]
-    fn trigger_secret_configuration_is_rejected_at_exact_path() {
-        let trigger_schema = Schema::builder()
-            .add(SecretField::new(field_key!("token")))
-            .build()
-            .expect("fixture schema is valid");
-        let registry = frozen(vec![
-            action_metadata(
-                "run",
-                ActionKind::Stateless,
-                ValidSchema::empty(),
-                ValidSchema::empty(),
-            ),
-            action_metadata(
-                "start",
-                ActionKind::Trigger,
-                trigger_schema,
-                ValidSchema::empty(),
-            ),
-        ]);
-        let node = NodeDefinition::new(node_key!("run"), "Run", "demo", "run")
-            .expect("fixture node is valid");
-        let workflow = WorkflowBuilder::new("Compiler trigger contract")
-            .id(WorkflowId::from_bytes([0x65; 16]))
-            .add_node(node)
-            .add_trigger(
-                node_key!("hook"),
-                PluginKey::new("demo").expect("fixture plugin key is valid"),
-                ActionKey::new("start").expect("fixture action key is valid"),
-                json!({"token": SECRET_PAYLOAD}),
-            )
-            .build()
-            .expect("fixture workflow is structurally valid");
-        let error = compile_error(&registry, &workflow);
-        assert!(error.diagnostics().iter().any(|diagnostic| {
-            diagnostic.code() == "PLUGIN_PLAN_GRAPH_V1:INVALID_TRIGGER_CONFIGURATION"
-                && diagnostic.path() == "/trigger_bindings/hook/config"
-        }));
-        assert!(!format!("{error:?}").contains(SECRET_PAYLOAD));
-    }
-
-    #[test]
-    fn reference_alias_is_normalized_and_bad_contract_has_exact_path() {
-        let value_schema = Schema::builder()
-            .add(Field::string(field_key!("value")))
-            .build()
-            .expect("fixture schema is valid");
-        let registry = frozen(vec![
-            action_metadata(
-                "source",
-                ActionKind::Stateless,
-                ValidSchema::empty(),
-                value_schema.clone(),
-            ),
-            action_metadata(
-                "target",
-                ActionKind::Stateless,
-                value_schema,
-                ValidSchema::empty(),
-            ),
-        ]);
-        let source = NodeDefinition::new(node_key!("source"), "Source", "demo", "source")
-            .expect("fixture source node is valid");
-        let target = NodeDefinition::new(node_key!("target"), "Target", "demo", "target")
-            .expect("fixture target node is valid")
-            .with_parameter(
-                "value",
-                ParamValue::reference(node_key!("source"), "$.value"),
-            );
-        let workflow = WorkflowBuilder::new("Compiler reference contract")
-            .id(WorkflowId::from_bytes([0x66; 16]))
-            .add_node(source.clone())
-            .add_node(target)
-            .connect(node_key!("source"), node_key!("target"))
-            .build()
-            .expect("fixture workflow is structurally valid");
-        let plan = registry
-            .compile_graph_v1(WorkflowVersionId::from_bytes([0x67; 16]), &workflow)
-            .expect("the ratified reference alias compiles");
-        let recorded = RecordedExecutablePlanRevisionV1::from(&plan);
-        let target = recorded
-            .content
-            .nodes
-            .iter()
-            .find(|node| node.id == "target")
-            .expect("target node is recorded");
-        assert!(matches!(
-            &target.parameters[0].value,
-            RecordedParameterValueV1::Reference { output_path, .. } if output_path == "value"
-        ));
-
-        let bad_target = NodeDefinition::new(node_key!("target"), "Target", "demo", "target")
-            .expect("fixture target node is valid")
-            .with_parameter(
-                "value",
-                ParamValue::reference(node_key!("source"), "$.missing"),
-            );
-        let bad_workflow = WorkflowBuilder::new("Compiler bad reference contract")
-            .id(WorkflowId::from_bytes([0x68; 16]))
-            .add_node(source)
-            .add_node(bad_target)
-            .connect(node_key!("source"), node_key!("target"))
-            .build()
-            .expect("fixture workflow is structurally valid");
-        let error = compile_error(&registry, &bad_workflow);
-        assert!(error.diagnostics().iter().any(|diagnostic| {
-            diagnostic.code() == "PLUGIN_PLAN_GRAPH_V1:INVALID_REFERENCE_CONTRACT"
-                && diagnostic.path() == "/nodes/target/parameters/value"
-        }));
-    }
-}
+#[path = "compiler_tests.rs"]
+mod tests;
