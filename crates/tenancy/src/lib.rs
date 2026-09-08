@@ -25,7 +25,7 @@ mod error;
 mod resolver;
 
 pub use decorator::{
-    ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore,
+    ScopedCheckpointStore, ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore,
     ScopedExecutionTurnHandoff, ScopedIdempotencyGuard, ScopedIdempotencyStore,
     ScopedNodeResultStore, ScopedOperationLedger, ScopedOperationLedgerAdjudicator,
     ScopedResourceStore, ScopedResumeTokenStore, ScopedStartAcceptanceStore, ScopedTriggerStore,

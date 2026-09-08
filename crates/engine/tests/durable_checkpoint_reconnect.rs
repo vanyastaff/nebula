@@ -693,14 +693,14 @@ async fn control_start_preflight_and_unknown_acceptance_never_invoke_actions() {
     assert_eq!(claims.len(), 1);
     let uncertain = LostHandoffAcknowledgement(ports.handoff);
     let request = nebula_engine::ClaimedStartRequest {
-        claim: claims[0].token,
+        claim: claims[0].token.clone(),
         handoff: &uncertain,
         holder: "unknown-ack-worker",
         lease_ttl: Duration::from_secs(30),
     };
     assert!(matches!(
         engine
-            .resume_control_start(&admitted.scope, admitted.id, request)
+            .resume_control_start(&admitted.scope, admitted.id, request.clone())
             .await,
         nebula_engine::ClaimedStartOutcome::NotAccepted(
             nebula_engine::EngineError::MissingExactRuntime
@@ -809,7 +809,7 @@ async fn claimed_control_ends_delivery_before_action(
             ports.bundles,
         );
     let request = nebula_engine::ClaimedControlTurnRequest {
-        claim: claim[0].token,
+        claim: claim[0].token.clone(),
         handoff: ports.handoff,
         command: match command {
             ControlCommand::Resume => {

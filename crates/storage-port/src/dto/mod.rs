@@ -19,7 +19,6 @@ mod operation_protocol;
 pub mod resume_token;
 mod revision_catalog;
 mod start_materialization;
-mod trigger_dedup;
 mod webhook;
 mod workflow;
 
@@ -43,7 +42,7 @@ pub use identity::{
     AuditLogRow, BlobRow, MembershipRow, OrgRow, PrincipalKind, QuotaRow, ResourceRow, ScopeKind,
     TriggerRow, UserRow, WorkspaceRow,
 };
-pub use job_dispatch::{DispatchKind, DispatchOutcome, JobDispatchMsg};
+pub use job_dispatch::JobDispatchMsg;
 pub use journal::JournalEntry;
 pub use node_result::{MAX_SUPPORTED_RESULT_SCHEMA_VERSION, NodeResultRecord};
 pub use operation_ledger::{
@@ -67,6 +66,5 @@ pub use start_materialization::{
     ContractBundleFormat, ContractBundleRecord, MAX_CONTRACT_BUNDLE_BYTES, MaterializedStart,
     StartKey, StartReservation, StoredContractBundle, TriggerStartKey,
 };
-pub use trigger_dedup::TriggerDedupRow;
 pub use webhook::{WebhookActivationRecord, WebhookMode};
 pub use workflow::{WorkflowActivation, WorkflowRecord, WorkflowVersionRecord};

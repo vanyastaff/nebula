@@ -179,13 +179,13 @@ pub(super) async fn assert_mismatched_flavor_refuses_the_turn(
         1,
         "the mismatch fixture owns exactly one claim"
     );
-    let claim = claims[0].token;
+    let claim = claims[0].token.clone();
 
     assert_eq!(
         ports
             .handoff
             .accept_turn(
-                &TurnHandoff::for_claim(scope, execution_id, claim, OTHER_FLAVOR)
+                &TurnHandoff::for_claim(scope, execution_id, claim.clone(), OTHER_FLAVOR)
                     .lease_to("wrong-flavor-worker", Duration::from_secs(30)),
             )
             .await

@@ -7,7 +7,7 @@ mod recovery;
 pub use error::EffectExecutionError;
 
 use std::panic::AssertUnwindSafe;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::FutureExt;
 use nebula_action::{
@@ -247,8 +247,16 @@ struct Driver<'a, 'turn> {
 }
 
 enum GrantedCall {
-    Invocation(OperationCallId),
-    Reconciliation(OperationCallId),
+    Invocation {
+        call: OperationCallId,
+        authorized_at_ms: i64,
+        request_started: Instant,
+    },
+    Reconciliation {
+        call: OperationCallId,
+        authorized_at_ms: i64,
+        request_started: Instant,
+    },
 }
 
 enum CallPurpose {
@@ -301,6 +309,7 @@ impl Driver<'_, '_> {
         let revision = previous.revision();
         let invocations = previous.invocations();
         let queries = previous.queries();
+        let request_started = self.turn.clock.monotonic();
         let advance = self
             .turn
             .ledger
@@ -312,7 +321,11 @@ impl Driver<'_, '_> {
             )
             .await?;
         match advance {
-            OperationAdvance::Granted { call, record } => {
+            OperationAdvance::Granted {
+                call,
+                authorized_at_ms,
+                record,
+            } => {
                 let protocol = record
                     .protocol()
                     .ok_or(EffectExecutionError::InvalidEvidence)?;
@@ -326,9 +339,17 @@ impl Driver<'_, '_> {
                     return Err(EffectExecutionError::InvalidEvidence);
                 }
                 self.accept(record)?;
-                Ok(Some(GrantedCall::Invocation(call)))
+                Ok(Some(GrantedCall::Invocation {
+                    call,
+                    authorized_at_ms,
+                    request_started,
+                }))
             },
-            OperationAdvance::ReconciliationGranted { call, record } => {
+            OperationAdvance::ReconciliationGranted {
+                call,
+                authorized_at_ms,
+                record,
+            } => {
                 let protocol = record
                     .protocol()
                     .ok_or(EffectExecutionError::InvalidEvidence)?;
@@ -341,7 +362,11 @@ impl Driver<'_, '_> {
                     return Err(EffectExecutionError::InvalidEvidence);
                 }
                 self.accept(record)?;
-                Ok(Some(GrantedCall::Reconciliation(call)))
+                Ok(Some(GrantedCall::Reconciliation {
+                    call,
+                    authorized_at_ms,
+                    request_started,
+                }))
             },
             OperationAdvance::Recorded(record) => {
                 let recorded_revision = record
@@ -382,6 +407,23 @@ impl Driver<'_, '_> {
             .ok_or(EffectExecutionError::InvalidEvidence)
     }
 
+    fn call_timing(
+        &self,
+        purpose: CallPurpose,
+        authorized_at_ms: i64,
+        request_started: Instant,
+    ) -> Result<(i64, Duration), EffectExecutionError> {
+        let deadline = self.deadline(purpose)?;
+        let remaining = remaining_call_budget(
+            deadline,
+            authorized_at_ms,
+            request_started,
+            self.turn.clock.monotonic(),
+        )
+        .ok_or(EffectExecutionError::InvalidEvidence)?;
+        Ok((deadline, remaining))
+    }
+
     async fn mark_unknown(&mut self) -> Result<(), EffectExecutionError> {
         let revision = self.protocol()?.revision();
         self.advance(&OperationCommand::MarkUnknown {
@@ -420,16 +462,23 @@ impl Driver<'_, '_> {
                             expected_revision: revision,
                         })
                         .await?;
-                    let Some(GrantedCall::Invocation(call)) = grant else {
+                    let Some(GrantedCall::Invocation {
+                        call,
+                        authorized_at_ms,
+                        request_started,
+                    }) = grant
+                    else {
                         if grant.is_some() {
                             return Err(EffectExecutionError::InvalidEvidence);
                         }
                         continue;
                     };
-                    let deadline = self.deadline(CallPurpose::Invocation)?;
-                    let remaining =
-                        deadline.saturating_sub(self.turn.clock.now().timestamp_millis());
-                    if remaining <= 0 {
+                    let (deadline, timeout) = self.call_timing(
+                        CallPurpose::Invocation,
+                        authorized_at_ms,
+                        request_started,
+                    )?;
+                    if timeout.is_zero() {
                         self.mark_unknown().await?;
                         continue;
                     }
@@ -439,10 +488,6 @@ impl Driver<'_, '_> {
                         deadline,
                         cancellation: self.turn.cancellation.child_token(),
                     };
-                    let timeout = Duration::from_millis(
-                        u64::try_from(remaining)
-                            .map_err(|_| EffectExecutionError::InvalidEvidence)?,
-                    );
                     let outcome = tokio::select! {
                         biased;
                         () = self.turn.cancellation.cancelled() => EffectInvocationOutcome::Ambiguous,
@@ -504,6 +549,18 @@ impl Driver<'_, '_> {
     }
 }
 
+fn remaining_call_budget(
+    deadline_ms: i64,
+    authorized_at_ms: i64,
+    request_started: Instant,
+    grant_received: Instant,
+) -> Option<Duration> {
+    let backend_budget_ms = deadline_ms.checked_sub(authorized_at_ms)?;
+    let backend_budget = Duration::from_millis(u64::try_from(backend_budget_ms).ok()?);
+    let storage_round_trip = grant_received.checked_duration_since(request_started)?;
+    Some(backend_budget.saturating_sub(storage_round_trip))
+}
+
 fn recorded_revision_is_valid(
     command: &OperationCommand,
     previous_revision: u64,
@@ -545,6 +602,27 @@ impl EffectInvocationContext for InvocationGrant {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_timeout_uses_backend_budget_and_monotonic_elapsed() {
+        let request_started = Instant::now();
+        let grant_received = request_started + Duration::from_millis(100);
+
+        assert_eq!(
+            remaining_call_budget(2_000, 1_000, request_started, grant_received),
+            Some(Duration::from_millis(900)),
+        );
+    }
+
+    #[test]
+    fn expired_backend_grant_has_no_provider_call_budget() {
+        let request_started = Instant::now();
+
+        assert_eq!(
+            remaining_call_budget(1_000, 1_000, request_started, request_started),
+            Some(Duration::ZERO),
+        );
+    }
 
     #[test]
     fn recorded_grant_must_advance_the_protocol_revision() {

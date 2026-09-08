@@ -221,6 +221,10 @@ struct TestStores {
 impl TestStores {
     fn new() -> Self {
         let execution = Arc::new(nebula_storage::InMemoryExecutionStore::new());
+        Self::with_execution(execution)
+    }
+
+    fn with_execution(execution: Arc<nebula_storage::InMemoryExecutionStore>) -> Self {
         let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&execution));
         let versions = nebula_storage::InMemoryWorkflowVersionStore::new();
         Self {
@@ -412,7 +416,7 @@ async fn single_node_workflow() {
     );
 
     let result = engine
-        .execute_workflow(
+        .execute_unit_fixture(
             &crate::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!("hello"),
@@ -446,7 +450,7 @@ async fn linear_two_node_workflow() {
     );
 
     let result = engine
-        .execute_workflow(
+        .execute_unit_fixture(
             &crate::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!(42),
@@ -491,7 +495,7 @@ async fn diamond_workflow() {
     );
 
     let result = engine
-        .execute_workflow(
+        .execute_unit_fixture(
             &crate::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!("start"),
@@ -540,7 +544,7 @@ async fn failing_node_stops_execution() {
     );
 
     let result = engine
-        .execute_workflow(
+        .execute_unit_fixture(
             &crate::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!("input"),
@@ -567,7 +571,7 @@ async fn missing_action_key_returns_error() {
     );
 
     let result = engine
-        .execute_workflow(
+        .execute_unit_fixture(
             &crate::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!(null),
@@ -587,7 +591,7 @@ async fn empty_workflow_returns_planning_error() {
 
     let wf = make_workflow(vec![], vec![]);
     let result = engine
-        .execute_workflow(
+        .execute_unit_fixture(
             &crate::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!(null),
@@ -615,7 +619,7 @@ async fn telemetry_events_emitted() {
     );
 
     engine
-        .execute_workflow(
+        .execute_unit_fixture(
             &crate::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!("test"),
@@ -657,7 +661,7 @@ async fn metrics_recorded_on_failure() {
     );
 
     let result = engine
-        .execute_workflow(
+        .execute_unit_fixture(
             &crate::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!(null),
@@ -806,7 +810,7 @@ async fn branch_workflow_only_selected_path_executes() {
     );
 
     let result = engine
-        .execute_workflow(
+        .execute_unit_fixture(
             &crate::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!("input"),
@@ -857,7 +861,7 @@ async fn skip_propagation() {
     );
 
     let result = engine
-        .execute_workflow(
+        .execute_unit_fixture(
             &crate::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!("input"),
@@ -907,7 +911,7 @@ async fn error_routing_with_handler() {
     );
 
     let result = engine
-        .execute_workflow(
+        .execute_unit_fixture(
             &crate::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!("input"),
@@ -958,7 +962,7 @@ async fn error_without_handler_fails_fast() {
     );
 
     let result = engine
-        .execute_workflow(
+        .execute_unit_fixture(
             &crate::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!("input"),
@@ -995,7 +999,7 @@ async fn conditional_edge_on_result() {
     );
 
     let result = engine
-        .execute_workflow(
+        .execute_unit_fixture(
             &crate::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!("hello"),
@@ -1042,7 +1046,7 @@ async fn diamond_with_mixed_conditions() {
     );
 
     let result = engine
-        .execute_workflow(
+        .execute_unit_fixture(
             &crate::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!("start"),
@@ -1073,7 +1077,6 @@ async fn persists_execution_state_on_success() {
 
     let stores = TestStores::new();
     let (engine, _) = make_engine(registry);
-    let engine = stores.attach(engine);
 
     let n = node_key!("n");
     let wf = make_workflow(
@@ -1081,9 +1084,9 @@ async fn persists_execution_state_on_success() {
         vec![],
     );
 
-    let result = engine
-        .execute_workflow(
-            &crate::store_seam::single_tenant_scope(),
+    let result = stores
+        .execute_accepted_fixture(
+            engine,
             &wf,
             serde_json::json!("hello"),
             ExecutionBudget::default(),
@@ -1121,7 +1124,6 @@ async fn persists_execution_state_on_failure() {
 
     let stores = TestStores::new();
     let (engine, _) = make_engine(registry);
-    let engine = stores.attach(engine);
 
     let n = node_key!("n");
     let wf = make_workflow(
@@ -1129,9 +1131,9 @@ async fn persists_execution_state_on_failure() {
         vec![],
     );
 
-    let result = engine
-        .execute_workflow(
-            &crate::store_seam::single_tenant_scope(),
+    let result = stores
+        .execute_accepted_fixture(
+            engine,
             &wf,
             serde_json::json!(null),
             ExecutionBudget::default(),
@@ -1158,7 +1160,6 @@ async fn persists_node_outputs_for_multi_node_workflow() {
 
     let stores = TestStores::new();
     let (engine, _) = make_engine(registry);
-    let engine = stores.attach(engine);
 
     let n1 = node_key!("n1");
     let n2 = node_key!("n2");
@@ -1170,9 +1171,9 @@ async fn persists_node_outputs_for_multi_node_workflow() {
         vec![Connection::new(n1.clone(), n2.clone())],
     );
 
-    let result = engine
-        .execute_workflow(
-            &crate::store_seam::single_tenant_scope(),
+    let result = stores
+        .execute_accepted_fixture(
+            engine,
             &wf,
             serde_json::json!(42),
             ExecutionBudget::default(),
@@ -1229,7 +1230,7 @@ async fn budget_max_duration_exceeded() {
     let budget = ExecutionBudget::default().with_max_duration(Duration::from_millis(1));
 
     let result = engine
-        .execute_workflow(
+        .execute_unit_fixture(
             &crate::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!("data"),
@@ -1268,7 +1269,7 @@ async fn budget_max_output_bytes_exceeded() {
     let budget = ExecutionBudget::default().with_max_output_bytes(5);
 
     let result = engine
-        .execute_workflow(
+        .execute_unit_fixture(
             &crate::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!("hello"),
@@ -1326,7 +1327,7 @@ async fn error_strategy_continue_on_error_skips_dependents() {
     );
 
     let result = engine
-        .execute_workflow(
+        .execute_unit_fixture(
             &crate::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!("data"),
@@ -1379,7 +1380,7 @@ async fn error_strategy_ignore_errors_continues_downstream() {
     );
 
     let result = engine
-        .execute_workflow(
+        .execute_unit_fixture(
             &crate::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!("data"),
@@ -1455,6 +1456,48 @@ impl nebula_plugin::Plugin for QualifiedFixturePlugin {
 }
 
 impl TestStores {
+    async fn execute_accepted_fixture(
+        &self,
+        engine: WorkflowEngine,
+        workflow: &WorkflowDefinition,
+        input: serde_json::Value,
+        budget: ExecutionBudget,
+    ) -> Result<ExecutionResult, EngineError> {
+        let (engine, execution_id) = self
+            .accepted_engine_fixture(engine, workflow, input, budget)
+            .await;
+        engine
+            .resume_execution(&crate::store_seam::single_tenant_scope(), execution_id)
+            .await
+    }
+
+    async fn accepted_engine_fixture(
+        &self,
+        engine: WorkflowEngine,
+        workflow: &WorkflowDefinition,
+        input: serde_json::Value,
+        budget: ExecutionBudget,
+    ) -> (WorkflowEngine, ExecutionId) {
+        let execution_id = ExecutionId::new();
+        let node_ids = workflow
+            .nodes
+            .iter()
+            .map(|node| node.id.clone())
+            .collect::<Vec<_>>();
+        let mut state = ExecutionState::new(execution_id, workflow.id, &node_ids);
+        state.set_workflow_input(input);
+        state.budget = Some(budget.clone());
+        let accepted_engine = self
+            .attach_exact_with_admission_budget(
+                engine,
+                workflow,
+                serde_json::to_value(state).expect("execution fixture serializes"),
+                Some(budget),
+            )
+            .await;
+        (accepted_engine, execution_id)
+    }
+
     /// Install a real compiled revision for legacy-shaped test factories. The
     /// wrapper only supplies the plugin namespace their technical registry lacks;
     /// instantiation and action behavior still delegate to the original factory.
@@ -1773,16 +1816,18 @@ async fn resume_returns_error_for_terminal_execution() {
         vec![],
     );
     stores.save_workflow(&wf).await;
-    let engine = stores.attach(engine);
-
-    // Run to completion first.
-    let result = engine
-        .execute_workflow(
-            &crate::store_seam::single_tenant_scope(),
+    let (engine, execution_id) = stores
+        .accepted_engine_fixture(
+            engine,
             &wf,
             serde_json::json!("hi"),
             ExecutionBudget::default(),
         )
+        .await;
+
+    // Run to completion first.
+    let result = engine
+        .resume_execution(&crate::store_seam::single_tenant_scope(), execution_id)
         .await
         .unwrap();
     assert!(result.is_success());
@@ -2328,11 +2373,10 @@ async fn setup_failure_persists_before_final_checkpoint() {
     let stores1 = TestStores::new();
     stores1.save_workflow(&wf).await;
     let (engine1, _) = make_engine(registry.clone());
-    let engine1 = stores1.attach(engine1);
 
-    let result = engine1
-        .execute_workflow(
-            &crate::store_seam::single_tenant_scope(),
+    let result = stores1
+        .execute_accepted_fixture(
+            engine1,
             &wf,
             serde_json::json!(null),
             ExecutionBudget::default(),
@@ -2602,13 +2646,12 @@ async fn runtime_failure_checkpoint_error_aborts_before_edge_routing() {
             ..WorkflowConfig::default()
         },
     );
-    let stores = TestStores::new();
-    stores.save_workflow(&wf).await;
-
     // First commit() call corresponds to the checkpoint_node
     // invocation after A's runtime failure (`create` is not a
     // commit). Fail it.
     let base = Arc::new(nebula_storage::InMemoryExecutionStore::new());
+    let stores = TestStores::with_execution(base.clone());
+    stores.save_workflow(&wf).await;
     let failing = Arc::new(FailAtCommitN::new(base.clone(), 1));
     let execution_stores = crate::store_seam::ExecutionStores {
         execution: failing.clone(),
@@ -2623,17 +2666,20 @@ async fn runtime_failure_checkpoint_error_aborts_before_edge_routing() {
     let (engine, _) = make_engine(registry);
     let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
     let mut event_rx = event_bus.subscribe();
+    let (engine, execution_id) = stores
+        .accepted_engine_fixture(
+            engine,
+            &wf,
+            serde_json::json!(null),
+            ExecutionBudget::default(),
+        )
+        .await;
     let engine = engine
         .with_execution_stores(execution_stores)
         .with_event_bus(event_bus);
 
     let result = engine
-        .execute_workflow(
-            &crate::store_seam::single_tenant_scope(),
-            &wf,
-            serde_json::json!(null),
-            ExecutionBudget::default(),
-        )
+        .resume_execution(&crate::store_seam::single_tenant_scope(), execution_id)
         .await;
 
     assert!(
@@ -2710,11 +2756,10 @@ async fn ignore_errors_persists_recovered_completed_state() {
     stores.save_workflow(&wf).await;
 
     let (engine, _) = make_engine(registry);
-    let engine = stores.attach(engine);
 
-    let result = engine
-        .execute_workflow(
-            &crate::store_seam::single_tenant_scope(),
+    let result = stores
+        .execute_accepted_fixture(
+            engine,
             &wf,
             serde_json::json!(null),
             ExecutionBudget::default(),
@@ -2772,7 +2817,14 @@ async fn setup_failure_checkpoint_error_aborts_before_edge_routing() {
     use nebula_workflow::ParamValue;
     let registry = Arc::new(ActionRegistry::new());
     registry.register_stateless_instance(
-        ActionMetadata::new(action_key!("echo"), "Echo", "echoes"),
+        ActionMetadata::new(action_key!("echo"), "Echo", "echoes").with_schema(
+            nebula_schema::Schema::builder()
+                .add(nebula_schema::Field::string(nebula_schema::field_key!(
+                    "bad"
+                )))
+                .build()
+                .unwrap(),
+        ),
         EchoHandler,
     );
 
@@ -2782,7 +2834,7 @@ async fn setup_failure_checkpoint_error_aborts_before_edge_routing() {
         vec![
             NodeDefinition::new(a.clone(), "A", "core", "echo")
                 .unwrap()
-                .with_parameter("bad", ParamValue::template("Hello {{ unclosed")),
+                .with_parameter("bad", ParamValue::expression("1 / 0")),
             NodeDefinition::new(b.clone(), "B", "core", "echo").unwrap(),
         ],
         vec![Connection::new(a.clone(), b.clone()).with_from_port(port_key!("error"))],
@@ -2791,10 +2843,9 @@ async fn setup_failure_checkpoint_error_aborts_before_edge_routing() {
             ..WorkflowConfig::default()
         },
     );
-    let stores = TestStores::new();
-    stores.save_workflow(&wf).await;
-
     let base = Arc::new(nebula_storage::InMemoryExecutionStore::new());
+    let stores = TestStores::with_execution(base.clone());
+    stores.save_workflow(&wf).await;
     let failing = Arc::new(FailAtCommitN::new(base.clone(), 1));
     let execution_stores = crate::store_seam::ExecutionStores {
         execution: failing,
@@ -2809,17 +2860,20 @@ async fn setup_failure_checkpoint_error_aborts_before_edge_routing() {
     let (engine, _) = make_engine(registry);
     let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
     let mut event_rx = event_bus.subscribe();
+    let (engine, execution_id) = stores
+        .accepted_engine_fixture(
+            engine,
+            &wf,
+            serde_json::json!(null),
+            ExecutionBudget::default(),
+        )
+        .await;
     let engine = engine
         .with_execution_stores(execution_stores)
         .with_event_bus(event_bus);
 
     let _ = engine
-        .execute_workflow(
-            &crate::store_seam::single_tenant_scope(),
-            &wf,
-            serde_json::json!(null),
-            ExecutionBudget::default(),
-        )
+        .resume_execution(&crate::store_seam::single_tenant_scope(), execution_id)
         .await;
 
     drop(engine);
@@ -2876,11 +2930,10 @@ async fn on_error_payload_is_persisted_before_checkpoint_commits() {
     stores.save_workflow(&wf).await;
 
     let (engine, _) = make_engine(registry);
-    let engine = stores.attach(engine);
 
-    let result = engine
-        .execute_workflow(
-            &crate::store_seam::single_tenant_scope(),
+    let result = stores
+        .execute_accepted_fixture(
+            engine,
             &wf,
             serde_json::json!(null),
             ExecutionBudget::default(),
@@ -2968,7 +3021,6 @@ async fn successful_execution_records_idempotency_mark_and_output() {
 
     let stores = TestStores::new();
     let (engine, _) = make_engine(registry);
-    let engine = engine.with_execution_stores(stores.execution_stores());
 
     let n = node_key!("n");
     let wf = make_workflow(
@@ -2978,9 +3030,9 @@ async fn successful_execution_records_idempotency_mark_and_output() {
 
     // Run the workflow once — node should execute and its idempotency key
     // should be recorded.
-    let result1 = engine
-        .execute_workflow(
-            &crate::store_seam::single_tenant_scope(),
+    let result1 = stores
+        .execute_accepted_fixture(
+            engine,
             &wf,
             serde_json::json!("payload"),
             ExecutionBudget::default(),
@@ -3131,7 +3183,7 @@ async fn version_pinned_node_uses_specified_handler() {
     );
 
     let result = engine
-        .execute_workflow(
+        .execute_unit_fixture(
             &crate::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!(null),
@@ -3196,7 +3248,7 @@ async fn credential_refresh_hook_is_called_before_node_dispatch() {
     );
 
     let result = engine
-        .execute_workflow(
+        .execute_unit_fixture(
             &crate::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!("x"),
@@ -3264,7 +3316,7 @@ async fn multi_edge_from_same_source_executes_target() {
     );
 
     let result = engine
-        .execute_workflow(
+        .execute_unit_fixture(
             &crate::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!("payload"),
@@ -3699,7 +3751,7 @@ async fn credential_refresh_failure_surfaces_as_typed_error() {
     );
 
     let result = engine
-        .execute_workflow(
+        .execute_unit_fixture(
             &crate::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!("x"),
@@ -3894,7 +3946,7 @@ async fn credential_access_denied_without_declaration() {
 
     let wf = probe_workflow("probe", "api_key");
     let result = engine
-        .execute_workflow(
+        .execute_unit_fixture(
             &crate::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!(null),
@@ -3946,7 +3998,7 @@ async fn credential_access_allowed_with_declaration() {
 
     let wf = probe_workflow("probe", "api_key");
     let result = engine
-        .execute_workflow(
+        .execute_unit_fixture(
             &crate::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!(null),
@@ -3979,7 +4031,7 @@ async fn credential_access_denied_for_mismatched_key() {
 
     let wf = probe_workflow("probe", "cred_b");
     let result = engine
-        .execute_workflow(
+        .execute_unit_fixture(
             &crate::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!(null),
@@ -4025,7 +4077,7 @@ async fn credential_declaration_is_per_action_key() {
     // probe_b tries shared_key → must fail even though probe_a has it declared.
     let wf = probe_workflow("probe_b", "shared_key");
     let result = engine
-        .execute_workflow(
+        .execute_unit_fixture(
             &crate::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!(null),
@@ -4059,7 +4111,7 @@ async fn action_credentials_merge_across_builder_calls() {
     // Probing "second" must succeed — the second call adds, not replaces.
     let wf = probe_workflow("probe", "second");
     let result = engine
-        .execute_workflow(
+        .execute_unit_fixture(
             &crate::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!(null),
@@ -4088,32 +4140,34 @@ async fn setup_failure_checkpoints_execution_state() {
     // that has no output in the shared outputs map.
     let registry = Arc::new(ActionRegistry::new());
     registry.register_stateless_instance(
-        ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+        ActionMetadata::new(action_key!("echo"), "Echo", "echoes input").with_schema(
+            nebula_schema::Schema::builder()
+                .add(nebula_schema::Field::string(nebula_schema::field_key!(
+                    "input"
+                )))
+                .build()
+                .unwrap(),
+        ),
         EchoHandler,
     );
 
     let stores = TestStores::new();
     let (engine, _) = make_engine(registry);
-    let engine = engine.with_execution_stores(stores.execution_stores());
 
     let n1 = node_key!("n1");
-    let ghost = node_key!("ghost");
     let mut params: HashMap<String, nebula_workflow::ParamValue> = HashMap::new();
     params.insert(
         "input".into(),
-        nebula_workflow::ParamValue::Reference {
-            node_key: ghost,
-            output_path: String::new(),
-        },
+        nebula_workflow::ParamValue::expression("1 / 0"),
     );
     let mut node = NodeDefinition::new(n1.clone(), "A", "core", "echo").unwrap();
     node.parameters = params;
 
     let wf = make_workflow(vec![node], vec![]);
 
-    let result = engine
-        .execute_workflow(
-            &crate::store_seam::single_tenant_scope(),
+    let result = stores
+        .execute_accepted_fixture(
+            engine,
             &wf,
             serde_json::json!("hello"),
             ExecutionBudget::default(),
@@ -4413,7 +4467,6 @@ async fn panicked_task_reports_real_node_id() {
 
     let stores = TestStores::new();
     let (engine, _) = make_engine(registry);
-    let engine = engine.with_execution_stores(stores.execution_stores());
 
     let n1 = node_key!("n1");
     let wf = make_workflow(
@@ -4421,9 +4474,9 @@ async fn panicked_task_reports_real_node_id() {
         vec![],
     );
 
-    let result = engine
-        .execute_workflow(
-            &crate::store_seam::single_tenant_scope(),
+    let result = stores
+        .execute_accepted_fixture(
+            engine,
             &wf,
             serde_json::json!("ignored"),
             ExecutionBudget::default(),
@@ -4460,21 +4513,15 @@ async fn panicked_task_reports_real_node_id() {
     );
 }
 
-/// A first execution persists the exact `ActionResult::Branch` selector used
-/// to route the selected edge.
+/// An accepted execution persists the exact `ActionResult::Branch` selector
+/// used to route its declared output.
 #[tokio::test]
-async fn branch_result_persistence_preserves_selected_route() {
+async fn branch_result_persistence_preserves_selected_port() {
     let registry = Arc::new(ActionRegistry::new());
     registry.register_stateless_instance(
-        // Declares the "true"/"false" branch ports it actually routes on —
-        // required since W0 U2's undeclared-output-port pre-flight now
-        // rejects connections wired to a flow-only action's undeclared port.
-        ActionMetadata::new(action_key!("branch"), "Branch", "branches").with_outputs(vec![
-            OutputPort::flow(port_key!("true")),
-            OutputPort::flow(port_key!("false")),
-        ]),
+        ActionMetadata::new(action_key!("branch"), "Branch", "branches"),
         BranchHandler {
-            selected: nebula_action::branch_key!("true"),
+            selected: nebula_action::branch_key!("out"),
         },
     );
     registry.register_stateless_instance(
@@ -4484,28 +4531,22 @@ async fn branch_result_persistence_preserves_selected_route() {
 
     let stores = TestStores::new();
     let (engine, _) = make_engine(registry);
-    let engine = engine.with_execution_stores(stores.execution_stores());
 
-    // A → B (branch_key="true") / C (branch_key="false")
+    // Graph-v1 durable plans admit the declared main output.
     let a = node_key!("a");
     let b = node_key!("b");
-    let c = node_key!("c");
     let wf = make_workflow(
         vec![
             NodeDefinition::new(a.clone(), "A", "core", "branch").unwrap(),
             NodeDefinition::new(b.clone(), "B", "core", "echo").unwrap(),
-            NodeDefinition::new(c.clone(), "C", "core", "echo").unwrap(),
         ],
-        vec![
-            Connection::new(a.clone(), b.clone()).with_from_port(port_key!("true")),
-            Connection::new(a.clone(), c.clone()).with_from_port(port_key!("false")),
-        ],
+        vec![Connection::new(a.clone(), b.clone())],
     );
 
-    // First run: A emits Branch{selected=true}. Only B fires.
-    let first = engine
-        .execute_workflow(
-            &crate::store_seam::single_tenant_scope(),
+    // A emits Branch{selected=out}; B consumes that selected port.
+    let first = stores
+        .execute_accepted_fixture(
+            engine,
             &wf,
             serde_json::json!("payload"),
             ExecutionBudget::default(),
@@ -4516,11 +4557,7 @@ async fn branch_result_persistence_preserves_selected_route() {
     assert!(first.is_success());
     assert!(
         first.node_output(&b).is_some(),
-        "B should run on first pass"
-    );
-    assert!(
-        first.node_output(&c).is_none(),
-        "C should NOT run on first pass (false branch)"
+        "the selected main output must route to B"
     );
 
     // Verify the persisted ActionResult encodes a Branch variant
@@ -4540,7 +4577,7 @@ async fn branch_result_persistence_preserves_selected_route() {
             .json
             .get("selected")
             .and_then(|v| v.as_str()),
-        Some("true"),
+        Some("out"),
         "Branch selector should be persisted verbatim"
     );
 }
@@ -4720,15 +4757,14 @@ async fn final_cas_conflict_with_external_cancel_honors_external_status() {
         vec![NodeDefinition::new(a.clone(), "A", "core", "echo").unwrap()],
         vec![],
     );
-    let stores = TestStores::new();
-    stores.save_workflow(&wf).await;
-
     // `create()` seeds version=0 without a commit() call. The engine
     // then issues two commit() calls: #1 is the node checkpoint
     // (v=0 → v=1) and #2 is the final state write (v=1 → v=2).
     // Inject the external mutation before call #2 so the FINAL CAS
     // misses.
     let inner = Arc::new(nebula_storage::InMemoryExecutionStore::new());
+    let stores = TestStores::with_execution(inner.clone());
+    stores.save_workflow(&wf).await;
     let mutating = Arc::new(ExternalMutateBeforeN::new(
         inner.clone(),
         2,
@@ -4745,15 +4781,18 @@ async fn final_cas_conflict_with_external_cancel_honors_external_status() {
     };
 
     let (engine, _) = make_engine(registry);
-    let engine = engine.with_execution_stores(execution_stores);
-
-    let result = engine
-        .execute_workflow(
-            &crate::store_seam::single_tenant_scope(),
+    let (engine, execution_id) = stores
+        .accepted_engine_fixture(
+            engine,
             &wf,
             serde_json::json!(null),
             ExecutionBudget::default(),
         )
+        .await;
+    let engine = engine.with_execution_stores(execution_stores);
+
+    let result = engine
+        .resume_execution(&crate::store_seam::single_tenant_scope(), execution_id)
         .await
         .expect("execute_workflow should return Ok on external terminal override (§11.5, #333)");
 
@@ -4806,15 +4845,14 @@ async fn node_checkpoint_cas_conflict_surfaces_observed_status() {
         vec![NodeDefinition::new(a.clone(), "A", "core", "echo").unwrap()],
         vec![],
     );
-    let stores = TestStores::new();
-    stores.save_workflow(&wf).await;
-
     // Inject the external mutation before commit #1 — the first
     // call after `create()` is the node-level checkpoint
     // (v=0 → v=1 expected). The external bump flips status to
     // `cancelling` and moves the row to v=1 so the engine's
     // checkpoint_node CAS lands stale.
     let inner = Arc::new(nebula_storage::InMemoryExecutionStore::new());
+    let stores = TestStores::with_execution(inner.clone());
+    stores.save_workflow(&wf).await;
     let mutating = Arc::new(ExternalMutateBeforeN::new(
         inner.clone(),
         1,
@@ -4831,6 +4869,14 @@ async fn node_checkpoint_cas_conflict_surfaces_observed_status() {
     };
 
     let (engine, _) = make_engine(registry);
+    let (engine, execution_id) = stores
+        .accepted_engine_fixture(
+            engine,
+            &wf,
+            serde_json::json!(null),
+            ExecutionBudget::default(),
+        )
+        .await;
     let engine = engine.with_execution_stores(execution_stores);
 
     // The final result is not the focus here — what matters is
@@ -4840,12 +4886,7 @@ async fn node_checkpoint_cas_conflict_surfaces_observed_status() {
     // Failed (node checkpoint aborted) or Cancelled (external).
     // Either way it MUST NOT claim Completed.
     let result = engine
-        .execute_workflow(
-            &crate::store_seam::single_tenant_scope(),
-            &wf,
-            serde_json::json!(null),
-            ExecutionBudget::default(),
-        )
+        .resume_execution(&crate::store_seam::single_tenant_scope(), execution_id)
         .await;
 
     let execution_id_opt = match &result {
@@ -5361,16 +5402,18 @@ async fn lease_is_released_after_terminal_completion_so_next_runner_can_acquire(
         vec![],
     );
     stores.save_workflow(&wf).await;
-    let engine = stores.attach(engine);
-
-    // First run acquires + releases the lease on completion.
-    let first = engine
-        .execute_workflow(
-            &crate::store_seam::single_tenant_scope(),
+    let (engine, execution_id) = stores
+        .accepted_engine_fixture(
+            engine,
             &wf,
             serde_json::json!("v1"),
             ExecutionBudget::default(),
         )
+        .await;
+
+    // First run acquires + releases the lease on completion.
+    let first = engine
+        .resume_execution(&crate::store_seam::single_tenant_scope(), execution_id)
         .await
         .unwrap();
     assert!(first.is_success());
@@ -5408,23 +5451,34 @@ async fn execute_workflow_produces_independent_lease_per_execution_id() {
         vec![],
     );
     stores.save_workflow(&wf).await;
-    let engine = stores.attach(engine);
-
-    let first = engine
-        .execute_workflow(
-            &crate::store_seam::single_tenant_scope(),
+    let (engine, first_execution_id) = stores
+        .accepted_engine_fixture(
+            engine,
             &wf,
             serde_json::json!("v1"),
             ExecutionBudget::default(),
         )
-        .await
-        .unwrap();
-    let second = engine
-        .execute_workflow(
-            &crate::store_seam::single_tenant_scope(),
+        .await;
+    let (engine, second_execution_id) = stores
+        .accepted_engine_fixture(
+            engine,
             &wf,
             serde_json::json!("v2"),
             ExecutionBudget::default(),
+        )
+        .await;
+
+    let first = engine
+        .resume_execution(
+            &crate::store_seam::single_tenant_scope(),
+            first_execution_id,
+        )
+        .await
+        .unwrap();
+    let second = engine
+        .resume_execution(
+            &crate::store_seam::single_tenant_scope(),
+            second_execution_id,
         )
         .await
         .unwrap();
@@ -5516,7 +5570,7 @@ async fn workflow_node_dispatches_through_factory_path() {
     );
 
     let result = engine
-        .execute_workflow(
+        .execute_unit_fixture(
             &crate::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!({"hello": "factory"}),
@@ -6075,7 +6129,11 @@ async fn claimed_resume_timeout_preserves_late_acceptance_and_refuses_redelivery
     let execution_id = ExecutionId::new();
     let handoff = Arc::new(OneShotControlHandoff::default());
     let request = ClaimedControlTurnRequest {
-        claim: ControlClaimToken::new([8; 16], ClaimGeneration::new(1)),
+        claim: ControlClaimToken::new(
+            [8; 16],
+            ClaimGeneration::new(1),
+            Scope::new("workspace", "organization"),
+        ),
         handoff: handoff.clone(),
         command: ControlTurnCommand::Resume { target: None },
     };
@@ -6354,7 +6412,7 @@ async fn undeclared_flow_port_rejected_before_execution() {
     );
 
     let result = engine
-        .execute_workflow(
+        .execute_unit_fixture(
             &crate::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!("input"),
@@ -6387,15 +6445,10 @@ async fn undeclared_flow_port_rejected_before_execution() {
     );
 }
 
-/// Regression guard for a placement bug caught in review: an earlier version
-/// of the pre-flight ran after `stores.execution.create` and
-/// `acquire_and_heartbeat_lease`, so its `?` early-return skipped
-/// `execute_workflow_scoped`'s only `persist_final_state`/`guard.shutdown()`
-/// call sites — orphaning the execution row permanently `Running` under a
-/// held-but-unrenewed lease. A rejection must leave zero durable trace: no
-/// execution row created, no lease taken out.
+/// A persistent engine cannot enter the fresh-start executor directly. The
+/// rejection happens before any execution row or lease can exist.
 #[tokio::test]
-async fn undeclared_flow_port_rejection_persists_no_row_and_takes_no_lease() {
+async fn persistent_direct_start_rejection_leaves_no_row_or_lease() {
     let registry = Arc::new(ActionRegistry::new());
     registry.register_stateless_instance(
         ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
@@ -6424,27 +6477,19 @@ async fn undeclared_flow_port_rejection_persists_no_row_and_takes_no_lease() {
             ExecutionBudget::default(),
         )
         .await;
-    assert!(
-        matches!(result, Err(EngineError::UndeclaredOutputPort { .. })),
-        "expected UndeclaredOutputPort, got {result:?}"
-    );
+    std::assert_matches!(result, Err(EngineError::PersistentStartRequiresAcceptance));
 
     let scope = crate::store_seam::single_tenant_scope();
     let row_count = stores.execution.count(&scope, None).await.unwrap();
     assert_eq!(
         row_count, 0,
-        "a pre-flight rejection must run before `stores.execution.create` — \
-         no execution row may exist afterward"
+        "a rejected direct persistent start must not create an execution row"
     );
 
-    // `acquire_lease` requires an existing row (`Err(not_found)` otherwise —
-    // see `InMemoryExecutionStore::acquire_lease`), so `row_count == 0`
-    // already implies no lease was taken out. `list_all_running` double-checks
-    // directly: no row means nothing can appear as leased/Running.
     let running = stores.execution.list_all_running().await.unwrap();
     assert!(
         running.is_empty(),
-        "a pre-flight rejection must not leave any row leased or Running"
+        "a rejected direct persistent start must not leave a running lease"
     );
 }
 
@@ -6484,7 +6529,7 @@ async fn switch_dynamic_port_wire_not_rejected() {
     );
 
     let result = engine
-        .execute_workflow(
+        .execute_unit_fixture(
             &crate::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!("input"),
@@ -6538,7 +6583,7 @@ async fn if_true_false_declared_routes() {
     );
 
     let result = engine
-        .execute_workflow(
+        .execute_unit_fixture(
             &crate::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!("input"),
@@ -6587,7 +6632,7 @@ async fn error_port_allowed_without_declaration() {
     );
 
     let result = engine
-        .execute_workflow(
+        .execute_unit_fixture(
             &crate::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!("input"),
@@ -6751,7 +6796,7 @@ async fn preflight_rejects_a_port_the_pinned_version_lacks_even_if_latest_declar
     );
 
     let result = engine
-        .execute_workflow(
+        .execute_unit_fixture(
             &crate::store_seam::single_tenant_scope(),
             &wf,
             serde_json::json!("input"),

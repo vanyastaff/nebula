@@ -31,7 +31,7 @@ pub(super) async fn command(
         .unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].msg.id, msg.id);
-    rows[0].token
+    rows[0].token.clone()
 }
 
 pub(super) async fn run(ports: &Ports) {
@@ -79,7 +79,7 @@ pub(super) async fn run(ports: &Ports) {
         .build()
         .unwrap();
     let mut request = ControlTurnCommit::new(
-        claim,
+        claim.clone(),
         seed.flavor,
         ControlTurnCommand::Resume {
             target: Some(target.clone()),
@@ -320,7 +320,7 @@ pub(super) async fn run(ports: &Ports) {
         .unwrap()
         .unwrap();
     let request = ControlTurnCommit::new(
-        claim,
+        claim.clone(),
         seed.flavor,
         ControlTurnCommand::Restart,
         ControlTurnTransition::Unchanged {

@@ -47,14 +47,13 @@ use nebula_metrics::MetricsRegistry;
 use nebula_orchestrator::{DispatchedTurn, ExecutionSink};
 use nebula_storage::inmem::InMemoryTurnHandoff;
 use nebula_storage::{
-    InMemoryExecutionStore, InMemoryWorkflowVersionStore,
-    inmem::{InMemoryJobDispatchQueue, InMemoryTriggerDedupInbox},
+    InMemoryExecutionStore, InMemoryWorkflowVersionStore, inmem::InMemoryJobDispatchQueue,
 };
 use nebula_storage_port::{
     Scope,
-    dto::{ControlCommand, JobDispatchMsg, WorkflowVersionRecord},
+    dto::{ControlCommand, JobDispatchMsg, TriggerStartKey, WorkflowVersionRecord},
     store::{
-        ControlQueue, ExecutionStore, JobDispatchQueue, TriggerDedupInbox, WorkflowStore,
+        ControlQueue, ExecutionStore, JobDispatchQueue, StartAcceptanceStore, WorkflowStore,
         WorkflowVersionStore,
     },
 };
@@ -533,16 +532,14 @@ use nebula_engine::daemon::durable_emitter::DurableExecutionEmitter;
 
 const TEST_PLUGIN_KEY: &str = "test.dispatch.plugin";
 
-/// Build InMemory dedup + queue + emitter sharing one execution-store core.
+/// Build an emitter and control queue sharing one execution-store core.
 async fn make_emitter(
     stores: &TestStores,
     workflow: Arc<ValidatedWorkflow>,
 ) -> (
     DurableExecutionEmitter,
-    Arc<InMemoryTriggerDedupInbox>,
     Arc<nebula_storage::InMemoryControlQueue>,
 ) {
-    let dedup = Arc::new(InMemoryTriggerDedupInbox::new(&stores.execution));
     let queue = Arc::new(nebula_storage::InMemoryControlQueue::new(&stores.execution));
     let service = activated_start_service(stores, &workflow).await;
     let emitter = DurableExecutionEmitter::new(
@@ -551,7 +548,7 @@ async fn make_emitter(
         node_key!("test.trigger"),
         scope(),
     );
-    (emitter, dedup, queue)
+    (emitter, queue)
 }
 
 async fn activated_start_service(
@@ -612,15 +609,14 @@ async fn activated_start_service(
 }
 
 /// `DurableExecutionEmitter::emit` with `Some(event_id)` produces:
-///  - `DispatchKind::Dispatched` (returned as Ok(execution_id))
-///  - A `Created` execution row in the store
-///  - Exactly one Start row in the job-dispatch queue with the correct routing
-///    fields (`required_plugin_key` and exact `required_plugins`)
+///  - the accepted execution id
+///  - a `Created` execution row in the store
+///  - exactly one Start row in the control queue
 #[tokio::test(start_paused = true)]
 async fn emitter_dispatched_creates_row_and_enqueues_start() {
     let stores = TestStores::new();
     let workflow = save_echo_workflow(&stores).await;
-    let (emitter, _dedup, queue) = make_emitter(&stores, Arc::clone(&workflow)).await;
+    let (emitter, queue) = make_emitter(&stores, Arc::clone(&workflow)).await;
 
     let event_id = IdempotencyKey::new("evt-001");
     let execution_id = emitter
@@ -701,13 +697,13 @@ async fn emitter_dispatched_creates_row_and_enqueues_start() {
 
 /// A second `emit` with the same `event_id` returns the WINNER's id (same as
 /// `id1`), writes NO second `Created` row, and enqueues NO second Start job.
-/// The dedup-inbox read-back contract: `Duplicate` returns the original
-/// winner's id in-transaction, so callers always hold a valid execution id.
+/// Atomic start acceptance returns the original winner's id in-transaction,
+/// so duplicate callers always hold a valid execution id.
 #[tokio::test(start_paused = true)]
 async fn emitter_duplicate_event_id_no_second_row() {
     let stores = TestStores::new();
     let workflow = save_echo_workflow(&stores).await;
-    let (emitter, _dedup, queue) = make_emitter(&stores, Arc::clone(&workflow)).await;
+    let (emitter, queue) = make_emitter(&stores, Arc::clone(&workflow)).await;
 
     let event_id = IdempotencyKey::new("evt-dup");
 
@@ -721,8 +717,8 @@ async fn emitter_duplicate_event_id_no_second_row() {
         .await
         .expect("second emit (Duplicate) must succeed");
 
-    // On Duplicate the emitter returns the WINNER's id (id1), read back
-    // from the dedup inbox in-transaction.  Both calls return the same id.
+    // On duplicate acceptance the emitter returns the winner's id from the
+    // same transaction. Both calls therefore return the same id.
     assert_eq!(
         id1, id2,
         "Duplicate emit must return the original winner's id — both calls must return the same id"
@@ -758,19 +754,17 @@ async fn emitter_duplicate_event_id_no_second_row() {
     );
 }
 
-// ── Acceptance test ───────────────────────────────────────────────────────────
-
-/// Full vertical slice: trigger fires → `DurableExecutionEmitter` → dedup inbox
-/// → orchestrator claims → `EngineExecutionSink` drives `resume_execution` →
-/// execution reaches `Completed`.  Redelivery of the same `event_id` produces
-/// exactly one execution (dedup guard).
+/// Full vertical slice: trigger fires, atomic start acceptance persists the
+/// execution and control delivery, then `ControlConsumer` claims and drives
+/// `resume_execution` to completion. Redelivery of the same `event_id`
+/// produces exactly one execution.
 #[tokio::test(start_paused = true)]
 async fn trigger_dispatch_end_to_end_real_engine_resume() {
     let stores = TestStores::new();
     let (engine, echo_count) = make_engine(&stores).await;
     let workflow = save_echo_workflow(&stores).await;
 
-    let (emitter, _dedup, queue) = make_emitter(&stores, Arc::clone(&workflow)).await;
+    let (emitter, queue) = make_emitter(&stores, Arc::clone(&workflow)).await;
 
     // 1. Trigger fires → emitter creates Created row + enqueues Start.
     let event_id = IdempotencyKey::new("evt-e2e-001");
@@ -782,15 +776,15 @@ async fn trigger_dispatch_end_to_end_real_engine_resume() {
     // Assert Created row seeded correctly.
     let status_before = read_status(&stores, execution_id)
         .await
-        .expect("Created row must exist before orchestrator runs");
+        .expect("Created row must exist before the control consumer runs");
     assert_eq!(
         status_before,
         ExecutionStatus::Created,
-        "row must be Created before orchestrator claims it; got {status_before:?}"
+        "row must be Created before the control consumer claims it; got {status_before:?}"
     );
 
-    // 2. Orchestrator: wire sink + handoff, start pull loop, let it claim,
-    //    hand off, and dispatch.
+    // 2. Wire the execution dispatch and let the control consumer claim,
+    //    hand off, and dispatch the accepted start.
     let dispatch = Arc::new(nebula_engine::EngineControlDispatch::new(
         Arc::clone(&engine),
         stores.execution.clone() as Arc<dyn ExecutionStore>,
@@ -799,7 +793,7 @@ async fn trigger_dispatch_end_to_end_real_engine_resume() {
         Duration::from_secs(30),
     ));
     let cancel = CancellationToken::new();
-    let orch = nebula_engine::ControlConsumer::for_flavor(
+    let consumer = nebula_engine::ControlConsumer::for_flavor(
         queue,
         dispatch,
         proc16(0xAA),
@@ -807,9 +801,9 @@ async fn trigger_dispatch_end_to_end_real_engine_resume() {
     );
 
     let cancel_clone = cancel.clone();
-    let orch_handle = tokio::spawn(async move { orch.run(cancel_clone).await });
+    let consumer_handle = tokio::spawn(async move { consumer.run(cancel_clone).await });
 
-    // Yield so the orchestrator spawns and enters its poll loop, then advance
+    // Yield so the consumer spawns and enters its poll loop, then advance
     // virtual time past the poll interval so it claims the pending job.
     for _ in 0..5 {
         tokio::task::yield_now().await;
@@ -820,12 +814,14 @@ async fn trigger_dispatch_end_to_end_real_engine_resume() {
     }
 
     cancel.cancel();
-    orch_handle.await.expect("orchestrator task must not panic");
+    consumer_handle
+        .await
+        .expect("control consumer task must not panic");
 
     // 3. Assert execution reached Completed.
     let status_after = read_status(&stores, execution_id)
         .await
-        .expect("execution row must exist after orchestrator ran");
+        .expect("execution row must exist after the control consumer ran");
     assert_eq!(
         status_after,
         ExecutionStatus::Completed,
@@ -908,7 +904,7 @@ fn test_registry(plugins: &[PluginKey]) -> Arc<nebula_plugin::FrozenPluginRegist
 async fn unsupported_selected_flavor_writes_no_execution_dispatch_or_dedup() {
     let stores = TestStores::new();
     let workflow = save_echo_workflow(&stores).await;
-    let inbox = Arc::new(InMemoryTriggerDedupInbox::new(&stores.execution));
+    let starts = nebula_storage::inmem::InMemoryStartAcceptanceStore::new(&stores.execution);
     let queue = InMemoryJobDispatchQueue::new(&stores.execution);
     let _ = activated_start_service(&stores, &workflow).await;
     let registry = test_registry(&["unrelated.plugin".parse().unwrap()]);
@@ -947,10 +943,14 @@ async fn unsupported_selected_flavor_writes_no_execution_dispatch_or_dedup() {
     );
     assert_eq!(stores.execution.count(&scope(), None).await.unwrap(), 0);
     assert!(
-        !inbox
-            .exists(&scope(), "test.trigger", "unsupported-flavor")
+        starts
+            .lookup_trigger_start(
+                &scope(),
+                &TriggerStartKey::new("test.trigger", "unsupported-flavor")
+            )
             .await
             .unwrap()
+            .is_none()
     );
     assert!(
         queue

@@ -1,24 +1,16 @@
-//! In-memory `JobDispatchQueue` + `TriggerDedupInbox` over the shared
-//! execution-store core.
-//!
-//! Both adapters wrap the same [`SharedState`] as the execution store and
-//! control queue, so `claim_and_materialize_start` writes the dedup guard,
-//! the execution row, and the Start job atomically in one critical section —
-//! mirroring how `InMemoryControlQueue` shares `InMemoryExecutionStore`'s core.
+//! In-memory [`JobDispatchQueue`] over the shared execution-store core.
 
 use std::time::Duration;
 
 use nebula_core::{PluginKey, WorkerFlavorRevisionId};
-use nebula_storage_port::dto::{
-    DispatchKind, DispatchOutcome, JobDispatchMsg, NewExecution, TriggerDedupRow,
-};
+use nebula_storage_port::StorageError;
+use nebula_storage_port::dto::JobDispatchMsg;
 use nebula_storage_port::store::{
-    ClaimGeneration, JobClaim, JobClaimToken, JobDispatchQueue, ReclaimOutcome, TriggerDedupInbox,
+    ClaimGeneration, JobClaim, JobClaimToken, JobDispatchQueue, ReclaimOutcome,
 };
-use nebula_storage_port::{Scope, StorageError};
 use tokio::time::Instant;
 
-use super::execution::{QueuedJob, SharedState, insert_created_row};
+use super::execution::{QueuedJob, SharedState};
 
 /// Format a raw 16-byte ULID as lowercase hex for `StorageError` ids. Uses
 /// std formatting so the `inmem` module does not need the optional `hex` crate
@@ -51,6 +43,12 @@ fn acknowledge(
             id: ulid_hex(id),
         });
     };
+    if job.msg.scope != *claim.scope() {
+        return Err(StorageError::NotFound {
+            entity: "job_dispatch",
+            id: ulid_hex(id),
+        });
+    }
     if job.status != "Processing" || job.claim_generation != claim.generation().get() {
         return Err(StorageError::FencedOut {
             entity: "job_dispatch",
@@ -58,6 +56,7 @@ fn acknowledge(
         });
     }
     terminal_status.clone_into(&mut job.status);
+    job.processed_at = Some(Instant::now());
     if let Some(error) = error {
         job.error_message = Some(error.to_owned());
     }
@@ -68,9 +67,7 @@ fn acknowledge(
 
 /// In-memory job-dispatch queue handle.
 ///
-/// Shares the execution store's core so `claim_and_materialize_start` (on the
-/// dedup inbox side) operates in one critical section with the execution row
-/// and job inserts.
+/// Shares the execution store's core with the execution aggregate and control queue.
 #[derive(Debug, Clone)]
 pub struct InMemoryJobDispatchQueue {
     inner: SharedState,
@@ -91,6 +88,12 @@ impl JobDispatchQueue for InMemoryJobDispatchQueue {
     #[tracing::instrument(level = "debug", skip(self, msg), fields(id = ?msg.id, command = msg.command.as_str()))]
     async fn enqueue(&self, msg: &JobDispatchMsg) -> Result<(), StorageError> {
         let mut st = self.inner.lock();
+        if st.jobs.contains_key(&msg.id) {
+            return Err(StorageError::Duplicate {
+                entity: "job_dispatch",
+                detail: ulid_hex(&msg.id),
+            });
+        }
         st.jobs.insert(
             msg.id,
             QueuedJob {
@@ -127,14 +130,16 @@ impl JobDispatchQueue for InMemoryJobDispatchQueue {
         // Superset predicate: the worker may claim a job only when its
         // available plugins cover every plugin in `required_plugins`.  The
         // check is inside the parking_lot Mutex so the predicate + status flip
-        // are atomic (no TOCTOU window).  Empty `required_plugins` ⇒ `all()`
-        // is vacuously true ⇒ claimable by any non-empty available set.
+        // are atomic (no TOCTOU window). The primary plugin remains an
+        // independent requirement even if malformed metadata omits it from
+        // `required_plugins`.
         let mut ids: Vec<[u8; 16]> = st
             .jobs
             .iter()
             .filter(|(_, q)| {
                 q.status == "Pending"
                     && q.msg.required_worker_flavor_id == worker_flavor_id
+                    && available_plugins.contains(&q.msg.required_plugin_key)
                     && q.msg
                         .required_plugins
                         .iter()
@@ -167,7 +172,11 @@ impl JobDispatchQueue for InMemoryJobDispatchQueue {
                 q.msg.reclaim_count = q.reclaim_count;
                 claimed.push(JobClaim {
                     msg: q.msg.clone(),
-                    token: JobClaimToken::new(id, ClaimGeneration::new(generation)),
+                    token: JobClaimToken::new(
+                        id,
+                        ClaimGeneration::new(generation),
+                        q.msg.scope.clone(),
+                    ),
                 });
             }
         }
@@ -210,6 +219,7 @@ impl JobDispatchQueue for InMemoryJobDispatchQueue {
             }
             if q.reclaim_count >= max_reclaim_count {
                 "Failed".clone_into(&mut q.status);
+                q.processed_at = Some(now);
                 q.error_message = Some(format!(
                     "reclaim exhausted: presumed dead after {} reclaims",
                     q.reclaim_count
@@ -229,161 +239,23 @@ impl JobDispatchQueue for InMemoryJobDispatchQueue {
         Ok(outcome)
     }
 
-    async fn cleanup(&self, _retention: Duration) -> Result<u64, StorageError> {
-        // In-memory rows carry monotonic `Instant`s, not wall-clock
-        // timestamps, so age-based pruning is a no-op (parity with
-        // `InMemoryControlQueue`).
-        Ok(0)
-    }
-}
-
-// ── TriggerDedupInbox ────────────────────────────────────────────────────────
-
-/// In-memory trigger-dedup inbox handle.
-///
-/// Shares the execution store's core with [`InMemoryJobDispatchQueue`] so
-/// `claim_and_materialize_start` writes all three rows atomically under one
-/// lock.
-#[derive(Debug, Clone)]
-pub struct InMemoryTriggerDedupInbox {
-    inner: SharedState,
-}
-
-impl InMemoryTriggerDedupInbox {
-    /// Build a trigger-dedup inbox over an execution store's shared core.
-    #[must_use]
-    pub fn new(store: &super::InMemoryExecutionStore) -> Self {
-        Self {
-            inner: store.shared(),
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl TriggerDedupInbox for InMemoryTriggerDedupInbox {
-    #[tracing::instrument(level = "debug", skip(self, row, start, execution), fields(
-        trigger_id = row.as_ref().map(|r| r.trigger_id.as_str()),
-        event_id   = row.as_ref().map(|r| r.event_id.as_str()),
-        job_id     = ?start.id,
-        execution_id = start.execution_id.as_str(),
-    ))]
-    async fn claim_and_materialize_start(
-        &self,
-        row: Option<&TriggerDedupRow>,
-        start: &JobDispatchMsg,
-        execution: &NewExecution<'_>,
-    ) -> Result<DispatchOutcome, StorageError> {
-        let mut st = self.inner.lock();
-
-        // All three writes are inside one critical section (the parking_lot
-        // Mutex guard).
-        //
-        // Write order is important: `insert_created_row` MUST succeed before we
-        // write to `st.dedup`.  The Mutex is not a database transaction — there
-        // is no rollback.  If we inserted the dedup key first and then
-        // `insert_created_row` failed (id collision), the dedup entry would stay
-        // permanently, making the trigger permanently stuck as a "duplicate".
-        //
-        // Correct order:
-        //  1. Duplicate check (read-only)
-        //  2. insert_created_row — return Err immediately on failure; dedup untouched
-        //  3. st.dedup.insert — only reachable on success
-        //  4. st.jobs.insert
-
-        // Step 1: check for an existing dedup winner and return early.
-        let dedup_key = row.as_ref().map(|r| {
-            (
-                r.scope.workspace_id.clone(),
-                r.scope.org_id.clone(),
-                r.trigger_id.clone(),
-                r.event_id.clone(),
-            )
+    async fn cleanup(&self, retention: Duration) -> Result<u64, StorageError> {
+        let mut state = self.inner.lock();
+        let now = Instant::now();
+        let rows_before_cleanup = state.jobs.len();
+        state.jobs.retain(|_, job| {
+            let is_terminal = matches!(job.status.as_str(), "Dispatched" | "Failed");
+            let has_expired = job
+                .processed_at
+                .is_some_and(|processed_at| now.duration_since(processed_at) > retention);
+            !(is_terminal && has_expired)
         });
-        if let (Some(r), Some(key)) = (row, &dedup_key)
-            && let Some(winner_id) = st.dedup.get(key)
-        {
-            let winner_id = winner_id.clone();
-            tracing::debug!(
-                target: "nebula_storage::inmem",
-                trigger_id = %r.trigger_id,
-                event_id   = %r.event_id,
-                winner_execution_id = %winner_id,
-                "trigger_dedup: duplicate — returning winner id"
-            );
-            return Ok(DispatchOutcome::new(winner_id, DispatchKind::Duplicate));
-        }
-
-        // Step 1b: reject a colliding job-dispatch id BEFORE materializing
-        // anything. The SQL backends hit the job-dispatch primary key and roll
-        // the whole transaction back, so the in-memory backend must fail closed
-        // here too — otherwise the unconditional `st.jobs.insert` below would
-        // silently overwrite the already-queued job and still report
-        // `Dispatched`, diverging from SQL and losing the original job.
-        if st.jobs.contains_key(&start.id) {
-            return Err(StorageError::Duplicate {
-                entity: "job_dispatch",
-                detail: format!("job-dispatch id {:?} already queued", start.id),
-            });
-        }
-
-        // Step 2: insert the execution row — fail-closed before touching dedup.
-        // An id collision returns Err; neither dedup nor job maps are modified.
-        insert_created_row(
-            &mut st,
-            &start.scope,
-            &start.execution_id,
-            execution.workflow_id,
-            execution.initial_state,
-        )?;
-
-        // Step 3: claim the dedup slot (only reachable on success).
-        if let Some(key) = dedup_key {
-            st.dedup.insert(key, start.execution_id.clone());
-        }
-
-        st.jobs.insert(
-            start.id,
-            QueuedJob {
-                msg: start.clone(),
-                status: "Pending".to_owned(),
-                processed_by: None,
-                processed_at: None,
-                reclaim_count: 0,
-                error_message: None,
-                claim_generation: 0,
-            },
-        );
-        tracing::debug!(
-            target: "nebula_storage::inmem",
-            job_id = ?start.id,
-            execution_id = %start.execution_id,
-            "trigger_dedup: materialized (dedup guard + execution row + Start job)"
-        );
-        Ok(DispatchOutcome::new(
-            start.execution_id.clone(),
-            DispatchKind::Dispatched,
-        ))
-    }
-
-    async fn exists(
-        &self,
-        scope: &Scope,
-        trigger_id: &str,
-        event_id: &str,
-    ) -> Result<bool, StorageError> {
-        let st = self.inner.lock();
-        let key = (
-            scope.workspace_id.clone(),
-            scope.org_id.clone(),
-            trigger_id.to_owned(),
-            event_id.to_owned(),
-        );
-        Ok(st.dedup.contains_key(&key))
-    }
-
-    async fn cleanup(&self, _retention: Duration) -> Result<u64, StorageError> {
-        // No-op stub — TTL sweep wired later without a trait break.
-        Ok(0)
+        let deleted = rows_before_cleanup.saturating_sub(state.jobs.len());
+        u64::try_from(deleted).map_err(|error| {
+            StorageError::Internal(format!(
+                "job-dispatch cleanup count cannot be represented as u64: {error}"
+            ))
+        })
     }
 }
 
@@ -404,6 +276,7 @@ mod job_ownership_tests {
 
     use super::InMemoryJobDispatchQueue;
     use crate::inmem::InMemoryExecutionStore;
+    use std::time::Duration;
 
     fn make_queue() -> InMemoryJobDispatchQueue {
         let store = InMemoryExecutionStore::new();
@@ -424,6 +297,94 @@ mod job_ownership_tests {
             0,
             nebula_core::WorkerFlavorRevisionId::from_bytes([0x11; 32]),
         )
+    }
+
+    #[tokio::test]
+    async fn duplicate_enqueue_preserves_the_active_claim() {
+        let queue = make_queue();
+        let message = sample_msg([9; 16]);
+        queue.enqueue(&message).await.unwrap();
+        let claim = queue
+            .claim_pending(
+                &[2; 16],
+                1,
+                &["plugin-a".parse().unwrap()],
+                nebula_core::WorkerFlavorRevisionId::from_bytes([0x11; 32]),
+            )
+            .await
+            .unwrap()
+            .remove(0);
+
+        assert!(matches!(
+            queue.enqueue(&message).await,
+            Err(SE::Duplicate {
+                entity: "job_dispatch",
+                ..
+            })
+        ));
+        queue.mark_dispatched(&claim.token).await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cleanup_removes_only_expired_terminal_rows() {
+        let queue = make_queue();
+        let terminal = sample_msg([11; 16]);
+        let pending = sample_msg([12; 16]);
+        queue.enqueue(&terminal).await.unwrap();
+        queue.enqueue(&pending).await.unwrap();
+        let claim = queue
+            .claim_pending(
+                &[2; 16],
+                1,
+                &["plugin-a".parse().unwrap()],
+                nebula_core::WorkerFlavorRevisionId::from_bytes([0x11; 32]),
+            )
+            .await
+            .unwrap()
+            .remove(0);
+        queue.mark_dispatched(&claim.token).await.unwrap();
+
+        assert_eq!(queue.cleanup(Duration::from_secs(1)).await.unwrap(), 0);
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert_eq!(queue.cleanup(Duration::from_secs(1)).await.unwrap(), 0);
+        tokio::time::advance(Duration::from_nanos(1)).await;
+        assert_eq!(queue.cleanup(Duration::from_secs(1)).await.unwrap(), 1);
+
+        let remaining = queue
+            .claim_pending(
+                &[2; 16],
+                1,
+                &["plugin-a".parse().unwrap()],
+                nebula_core::WorkerFlavorRevisionId::from_bytes([0x11; 32]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].msg.id, pending.id);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cleanup_retention_starts_when_a_long_running_claim_becomes_terminal() {
+        let queue = make_queue();
+        let message = sample_msg([13; 16]);
+        queue.enqueue(&message).await.unwrap();
+        let claim = queue
+            .claim_pending(
+                &[2; 16],
+                1,
+                &["plugin-a".parse().unwrap()],
+                nebula_core::WorkerFlavorRevisionId::from_bytes([0x11; 32]),
+            )
+            .await
+            .unwrap()
+            .remove(0);
+
+        tokio::time::advance(Duration::from_secs(10)).await;
+        queue.mark_dispatched(&claim.token).await.unwrap();
+
+        assert_eq!(queue.cleanup(Duration::from_secs(1)).await.unwrap(), 0);
+        tokio::time::advance(Duration::from_secs(2)).await;
+        assert_eq!(queue.cleanup(Duration::from_secs(1)).await.unwrap(), 1);
     }
 
     #[tokio::test]
@@ -456,7 +417,11 @@ mod job_ownership_tests {
     #[tokio::test]
     async fn mark_dispatched_returns_not_found_for_unknown_job() {
         let queue = make_queue();
-        let unknown = JobClaimToken::new([0xABu8; 16], ClaimGeneration::new(1));
+        let unknown = JobClaimToken::new(
+            [0xABu8; 16],
+            ClaimGeneration::new(1),
+            Scope::new("ws-1", "org-1"),
+        );
 
         let result = queue.mark_dispatched(&unknown).await;
         assert!(
@@ -488,15 +453,15 @@ mod job_ownership_tests {
             .await
             .unwrap();
         assert_eq!(claimed.len(), 1);
-        let stale = claimed[0].token;
+        let stale = claimed[0].token.clone();
 
         // The sweep hands the row back; the same worker claims it again. The
         // processor id is identical across both attempts, so only the
         // generation distinguishes them.
         tokio::time::pause();
-        tokio::time::advance(std::time::Duration::from_secs(2)).await;
+        tokio::time::advance(Duration::from_secs(2)).await;
         let outcome = queue
-            .reclaim_stuck(std::time::Duration::from_secs(1), 5)
+            .reclaim_stuck(Duration::from_secs(1), 5)
             .await
             .unwrap();
         assert_eq!(outcome.reclaimed, 1, "the stuck row must be reclaimed");
@@ -550,9 +515,12 @@ mod job_ownership_tests {
             )
             .await
             .unwrap();
-        let current = claimed[0].token;
-        let superseded =
-            JobClaimToken::new(job_id, ClaimGeneration::new(current.generation().get() - 1));
+        let current = &claimed[0].token;
+        let superseded = JobClaimToken::new(
+            job_id,
+            ClaimGeneration::new(current.generation().get() - 1),
+            current.scope().clone(),
+        );
 
         let result = queue.mark_failed(&superseded, "some error").await;
         assert!(

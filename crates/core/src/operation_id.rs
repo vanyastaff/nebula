@@ -7,7 +7,11 @@ use core::fmt;
 pub struct OperationId([u8; 16]);
 
 impl OperationId {
-    /// Reconstruct an identity from its durable representation.
+    /// Reconstruct an identity read from the durable operation ledger.
+    ///
+    /// This constructor does not grant effect authority. Runtime adapters must
+    /// accept an identity only through a ledger-authorized invocation context,
+    /// and the ledger re-validates the durable row on every use.
     #[must_use]
     pub const fn from_bytes(bytes: [u8; 16]) -> Self {
         Self(bytes)
@@ -26,12 +30,6 @@ impl fmt::Display for OperationId {
             write!(formatter, "{byte:02x}")?;
         }
         Ok(())
-    }
-}
-
-impl From<[u8; 16]> for OperationId {
-    fn from(bytes: [u8; 16]) -> Self {
-        Self(bytes)
     }
 }
 
@@ -67,12 +65,6 @@ impl fmt::Display for OperationCallId {
             write!(formatter, "{byte:02x}")?;
         }
         Ok(())
-    }
-}
-
-impl From<[u8; 16]> for OperationCallId {
-    fn from(bytes: [u8; 16]) -> Self {
-        Self(bytes)
     }
 }
 

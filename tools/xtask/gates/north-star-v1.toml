@@ -1,4 +1,4 @@
-registry_version = 1
+registry_version = 2
 evidence_schema_version = 1
 evidence_schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
 
@@ -24,7 +24,7 @@ required_ci = [
 kind = "conformance-report"
 schema_version = 1
 schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
-artifact_path = "artifacts/runtime-authority/execution-identity.json"
+artifact_name = "execution-identity"
 
 [gates.threshold]
 kind = "required-set"
@@ -49,7 +49,7 @@ required_ci = [
 kind = "conformance-report"
 schema_version = 1
 schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
-artifact_path = "artifacts/runtime-authority/exact-revision-routing.json"
+artifact_name = "exact-revision-routing"
 
 [gates.threshold]
 kind = "all"
@@ -74,7 +74,7 @@ required_ci = [
 kind = "conformance-report"
 schema_version = 1
 schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
-artifact_path = "artifacts/runtime-authority/claim-generation-fencing.json"
+artifact_name = "claim-generation-fencing"
 
 [gates.threshold]
 kind = "zero"
@@ -98,7 +98,7 @@ required_ci = [
 kind = "conformance-report"
 schema_version = 1
 schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
-artifact_path = "artifacts/runtime-authority/keyed-acceptance.json"
+artifact_name = "keyed-acceptance"
 
 [gates.threshold]
 kind = "exact"
@@ -123,12 +123,15 @@ required_ci = [
 kind = "conformance-report"
 schema_version = 1
 schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
-artifact_path = "artifacts/runtime-authority/claim-handoff.json"
+artifact_name = "claim-handoff"
 
 [gates.threshold]
-kind = "exact"
-metric = "dispatch_claim_extended_by_action_duration"
-expected = false
+kind = "zero"
+metrics = [
+  "claim_reclaimed_while_action_blocked",
+  "claim_exhausted_while_action_blocked",
+  "competing_claim_count",
+]
 
 [[gates]]
 id = "NS06"
@@ -147,7 +150,7 @@ required_ci = [
 kind = "measurement-report"
 schema_version = 1
 schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
-artifact_path = "artifacts/north-star/v1/ns06.json"
+artifact_name = "admission-saturation"
 
 [gates.threshold]
 kind = "configured-fairness"
@@ -174,7 +177,7 @@ required_ci = [
 kind = "conformance-report"
 schema_version = 1
 schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
-artifact_path = "artifacts/runtime-authority/persistence-conformance.json"
+artifact_name = "persistence-conformance"
 
 [gates.threshold]
 kind = "all"
@@ -211,7 +214,7 @@ required_ci = [
 kind = "ci-contract-report"
 schema_version = 1
 schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
-artifact_path = "artifacts/runtime-authority/required-postgresql.json"
+artifact_name = "required-postgresql"
 
 [gates.threshold]
 kind = "exact"
@@ -236,7 +239,7 @@ required_ci = [
 kind = "migration-report"
 schema_version = 1
 schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
-artifact_path = "artifacts/runtime-authority/ordered-migrations.json"
+artifact_name = "ordered-migrations"
 
 [gates.threshold]
 kind = "all"
@@ -260,7 +263,7 @@ required_ci = [
 kind = "resilience-report"
 schema_version = 1
 schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
-artifact_path = "artifacts/north-star/v1/ns10.json"
+artifact_name = "resource-lifecycle-convergence"
 
 [gates.threshold]
 kind = "all"
@@ -284,7 +287,7 @@ required_ci = [
 kind = "security-report"
 schema_version = 1
 schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
-artifact_path = "artifacts/north-star/v1/ns11.json"
+artifact_name = "tenant-isolation"
 
 [gates.threshold]
 kind = "zero"
@@ -308,7 +311,7 @@ required_ci = [".github/workflows/ci.yml#required"]
 kind = "measurement-report"
 schema_version = 1
 schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
-artifact_path = "artifacts/north-star/v1/ns12.json"
+artifact_name = "typed-action-first-success"
 
 [gates.threshold]
 kind = "percentile-duration"
@@ -330,7 +333,7 @@ required_ci = [".github/workflows/ci.yml#required"]
 kind = "measurement-report"
 schema_version = 1
 schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
-artifact_path = "artifacts/north-star/v1/ns13.json"
+artifact_name = "credential-resource-first-success"
 
 [gates.threshold]
 kind = "percentile-duration"
@@ -359,7 +362,7 @@ required_ci = [
 kind = "diagnostic-contract-report"
 schema_version = 1
 schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
-artifact_path = "artifacts/runtime-authority/activation-diagnostics.json"
+artifact_name = "activation-diagnostics"
 
 [gates.threshold]
 kind = "required-set"
@@ -380,7 +383,7 @@ required_ci = [".github/workflows/ci.yml#required"]
 kind = "compatibility-report"
 schema_version = 1
 schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
-artifact_path = "artifacts/north-star/v1/ns15.json"
+artifact_name = "openapi-runtime-compatibility"
 
 [gates.threshold]
 kind = "zero"
@@ -400,7 +403,7 @@ required_ci = [".github/workflows/ci.yml#required"]
 kind = "measurement-report"
 schema_version = 1
 schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
-artifact_path = "artifacts/north-star/v1/ns16.json"
+artifact_name = "incident-explanation"
 
 [gates.threshold]
 kind = "percentile-duration"
@@ -425,7 +428,7 @@ required_ci = [
 kind = "conformance-report"
 schema_version = 1
 schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
-artifact_path = "artifacts/runtime-authority/remote-effects.json"
+artifact_name = "remote-effects"
 
 [gates.threshold]
 kind = "zero"
@@ -445,7 +448,7 @@ required_ci = [".github/workflows/ci.yml#required"]
 kind = "packaging-report"
 schema_version = 1
 schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
-artifact_path = "artifacts/north-star/v1/ns18.json"
+artifact_name = "sdk-only-project"
 
 [gates.threshold]
 kind = "all"
@@ -466,7 +469,7 @@ required_ci = [".github/workflows/ci.yml#required"]
 kind = "packaging-report"
 schema_version = 1
 schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
-artifact_path = "artifacts/north-star/v1/ns19.json"
+artifact_name = "published-manifest-precision"
 
 [gates.threshold]
 kind = "required-set"
@@ -487,7 +490,7 @@ required_ci = [".github/workflows/ci.yml#required"]
 kind = "release-matrix-report"
 schema_version = 1
 schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
-artifact_path = "artifacts/north-star/v1/ns20.json"
+artifact_name = "sdk-release-quality"
 
 [gates.threshold]
 kind = "all"
@@ -517,7 +520,7 @@ required_ci = [
 kind = "observability-report"
 schema_version = 1
 schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
-artifact_path = "artifacts/north-star/v1/ns21.json"
+artifact_name = "operator-outcome-identification"
 
 [gates.threshold]
 kind = "required-set"
@@ -538,7 +541,7 @@ required_ci = [".github/workflows/ci.yml#required"]
 kind = "governance-report"
 schema_version = 1
 schema_path = "tools/xtask/schemas/gate-evidence-v1.schema.json"
-artifact_path = "artifacts/north-star/v1/ns22.json"
+artifact_name = "hybrid-persistence-governance"
 
 [gates.threshold]
 kind = "governance-block"

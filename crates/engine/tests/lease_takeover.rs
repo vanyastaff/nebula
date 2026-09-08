@@ -353,7 +353,6 @@ async fn engine_b_takes_over_after_engine_a_runner_dies() {
             invocations: Arc::clone(&park_invocations),
         },
     );
-
     // Runner B — same action_keys, but "park" is a fast-completing
     // handler so the resumed workflow can finish.
     let registry_b = Arc::new(ActionRegistry::new());
@@ -877,6 +876,8 @@ async fn replay_does_not_contend_for_held_lease() {
             invocations: Arc::clone(&park_invocations),
         },
     );
+    let frozen_a =
+        exact_fixture::freeze_registry(&registry_a, &[("core", "echo"), ("core", "park")]);
 
     // engine_b — only needs the echo handler for its replay workflow.
     let registry_b = Arc::new(ActionRegistry::new());
@@ -893,6 +894,15 @@ async fn replay_does_not_contend_for_held_lease() {
     let engine_a = Arc::new(
         make_engine(registry_a)
             .with_execution_stores(stores.execution_stores())
+            .with_plan_flavor_runtime(
+                Arc::new(nebula_engine::PlanFlavorRevisionLoader::new(Arc::new(
+                    stores.execution.plan_flavor_catalog(),
+                ))),
+                Arc::clone(&frozen_a),
+                Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
+                    &stores.execution,
+                )),
+            )
             .with_lease_ttl(lease_ttl)
             .with_lease_heartbeat_interval(heartbeat_interval)
             .with_event_bus(event_bus),
@@ -927,18 +937,17 @@ async fn replay_does_not_contend_for_held_lease() {
         vec![NodeDefinition::new(x_b.clone(), "RX", "core", "echo").unwrap()],
         vec![],
     );
+    stores.save_workflow(&wf_a).await;
+    let admitted_id = stores.admit(&wf_a, &frozen_a).await;
 
     // Start runner A so it holds the lease.
     let task_a = {
         let engine_a = Arc::clone(&engine_a);
-        let wf_a = wf_a.clone();
         tokio::spawn(async move {
             engine_a
-                .execute_workflow(
+                .resume_execution(
                     &nebula_engine::store_seam::single_tenant_scope(),
-                    &wf_a,
-                    serde_json::json!("a"),
-                    ExecutionBudget::default(),
+                    admitted_id,
                 )
                 .await
         })

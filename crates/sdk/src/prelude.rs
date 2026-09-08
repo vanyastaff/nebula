@@ -85,8 +85,8 @@ pub use nebula_action::{impl_batch_action, impl_paginated_action};
 pub use nebula_core::AuthScheme as AuthSchemeContract;
 pub use nebula_core::auth::NoAuthFamily;
 pub use nebula_core::{
-    ActionKey, AuthPattern, ExecutionId, NodeKey, OperationCallId, OperationId, PluginKey,
-    ResourceKey, ScopeLevel, WorkflowId, action_key, resource_key,
+    ActionKey, AuthPattern, ExecutionId, NodeKey, OperationCallId, PluginKey, ResourceKey,
+    ScopeLevel, WorkflowId, action_key, resource_key,
 };
 // Credential types (v2)
 pub use nebula_credential::{

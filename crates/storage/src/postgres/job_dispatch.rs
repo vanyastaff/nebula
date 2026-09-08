@@ -1,5 +1,4 @@
-//! Postgres `JobDispatchQueue` + `TriggerDedupInbox` over the port-scoped
-//! schema.
+//! Postgres [`JobDispatchQueue`] over the port-scoped schema.
 //!
 //! `claim_pending` uses `FOR UPDATE SKIP LOCKED` so multiple consumers can
 //! drain the queue concurrently without double-dispatch.  The routing
@@ -27,16 +26,14 @@ use std::time::Duration;
 use chrono::Utc;
 use hex;
 use nebula_core::{PluginKey, WorkerFlavorRevisionId};
-use nebula_storage_port::dto::{
-    DispatchKind, DispatchOutcome, JobDispatchMsg, NewExecution, TriggerDedupRow,
-};
+use nebula_storage_port::dto::JobDispatchMsg;
 use nebula_storage_port::store::{
-    ClaimGeneration, JobClaim, JobClaimToken, JobDispatchQueue, ReclaimOutcome, TriggerDedupInbox,
+    ClaimGeneration, JobClaim, JobClaimToken, JobDispatchQueue, ReclaimOutcome,
 };
 use nebula_storage_port::{Scope, StorageError};
 use sqlx::{PgPool, Row};
 
-use super::execution::{conn_err, insert_created_execution};
+use super::execution::conn_err;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -77,10 +74,12 @@ fn plugins_to_jsonb(plugins: &[PluginKey]) -> serde_json::Value {
 fn row_to_claim(row: &sqlx::postgres::PgRow) -> Result<JobClaim, StorageError> {
     let msg = row_to_msg(row)?;
     let generation: i64 = row.try_get("claim_generation").map_err(conn_err)?;
-    Ok(JobClaim {
-        token: JobClaimToken::new(msg.id, decode_generation(generation, &msg.id)?),
-        msg,
-    })
+    let token = JobClaimToken::new(
+        msg.id,
+        decode_generation(generation, &msg.id)?,
+        msg.scope.clone(),
+    );
+    Ok(JobClaim { token, msg })
 }
 
 /// Widen a persisted generation to the port's `u64`.
@@ -190,12 +189,16 @@ impl PgJobDispatchQueue {
     /// The follow-up read is on the failure path only, so the acknowledged
     /// path stays a single statement.
     async fn unacknowledgeable(&self, claim: &JobClaimToken) -> Result<StorageError, StorageError> {
-        let exists: Option<i32> =
-            sqlx::query_scalar("SELECT 1 FROM port_job_dispatch_queue WHERE id = $1")
-                .bind(claim.row_id().as_slice())
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(conn_err)?;
+        let exists: Option<i32> = sqlx::query_scalar(
+            "SELECT 1 FROM port_job_dispatch_queue \
+                 WHERE id = $1 AND workspace_id = $2 AND org_id = $3",
+        )
+        .bind(claim.row_id().as_slice())
+        .bind(&claim.scope().workspace_id)
+        .bind(&claim.scope().org_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(conn_err)?;
         Ok(if exists.is_some() {
             StorageError::FencedOut {
                 entity: "job_dispatch",
@@ -305,11 +308,17 @@ impl JobDispatchQueue for PgJobDispatchQueue {
     }
 
     async fn mark_dispatched(&self, claim: &JobClaimToken) -> Result<(), StorageError> {
+        let terminal_at_ms = Utc::now().timestamp_millis();
         let rows_updated = sqlx::query(
-            "UPDATE port_job_dispatch_queue SET status = 'Dispatched' \
-             WHERE id = $1 AND status = 'Processing' AND claim_generation = $2",
+            "UPDATE port_job_dispatch_queue \
+             SET status = 'Dispatched', processed_at_ms = $1 \
+             WHERE id = $2 AND workspace_id = $3 AND org_id = $4 \
+               AND status = 'Processing' AND claim_generation = $5",
         )
+        .bind(terminal_at_ms)
         .bind(claim.row_id().as_slice())
+        .bind(&claim.scope().workspace_id)
+        .bind(&claim.scope().org_id)
         .bind(generation_bind(claim)?)
         .execute(&self.pool)
         .await
@@ -322,13 +331,18 @@ impl JobDispatchQueue for PgJobDispatchQueue {
     }
 
     async fn mark_failed(&self, claim: &JobClaimToken, error: &str) -> Result<(), StorageError> {
+        let terminal_at_ms = Utc::now().timestamp_millis();
         let rows_updated = sqlx::query(
             "UPDATE port_job_dispatch_queue \
-             SET status = 'Failed', error_message = $1 \
-             WHERE id = $2 AND status = 'Processing' AND claim_generation = $3",
+             SET status = 'Failed', error_message = $1, processed_at_ms = $2 \
+             WHERE id = $3 AND workspace_id = $4 AND org_id = $5 \
+               AND status = 'Processing' AND claim_generation = $6",
         )
         .bind(error)
+        .bind(terminal_at_ms)
         .bind(claim.row_id().as_slice())
+        .bind(&claim.scope().workspace_id)
+        .bind(&claim.scope().org_id)
         .bind(generation_bind(claim)?)
         .execute(&self.pool)
         .await
@@ -348,16 +362,18 @@ impl JobDispatchQueue for PgJobDispatchQueue {
         // `processed_at_ms` is epoch-millis (BIGINT) — same representation and
         // cutoff arithmetic as `port_control_queue`, so reclaim fires at the
         // identical instant on both dialects.
-        let cutoff_ms = Utc::now()
-            .timestamp_millis()
+        let terminal_at_ms = Utc::now().timestamp_millis();
+        let cutoff_ms = terminal_at_ms
             .saturating_sub(i64::try_from(reclaim_after.as_millis()).unwrap_or(i64::MAX));
         let exhausted = sqlx::query(
             "UPDATE port_job_dispatch_queue \
              SET status = 'Failed', \
-                 error_message = 'reclaim exhausted: presumed dead' \
-             WHERE status = 'Processing' AND processed_at_ms < $1 \
-               AND reclaim_count >= $2",
+                 error_message = 'reclaim exhausted: presumed dead', \
+                 processed_at_ms = $1 \
+             WHERE status = 'Processing' AND processed_at_ms < $2 \
+               AND reclaim_count >= $3",
         )
+        .bind(terminal_at_ms)
         .bind(cutoff_ms)
         .bind(i32::try_from(max_reclaim_count).unwrap_or(i32::MAX))
         .execute(&self.pool)
@@ -401,175 +417,5 @@ impl JobDispatchQueue for PgJobDispatchQueue {
         .map_err(conn_err)?
         .rows_affected();
         Ok(deleted)
-    }
-}
-
-// ── TriggerDedupInbox ────────────────────────────────────────────────────────
-
-/// Postgres-backed trigger-dedup inbox handle.
-#[derive(Clone, Debug)]
-pub struct PgTriggerDedupInbox {
-    pool: PgPool,
-}
-
-impl PgTriggerDedupInbox {
-    /// Wrap a pool whose schema was installed via [`super::init_schema`].
-    #[must_use]
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
-    }
-}
-
-#[async_trait::async_trait]
-impl TriggerDedupInbox for PgTriggerDedupInbox {
-    #[tracing::instrument(level = "debug", skip(self, row, start, execution), fields(
-        trigger_id   = row.as_ref().map(|r| r.trigger_id.as_str()),
-        event_id     = row.as_ref().map(|r| r.event_id.as_str()),
-        job_id       = ?start.id,
-        execution_id = start.execution_id.as_str(),
-    ))]
-    async fn claim_and_materialize_start(
-        &self,
-        row: Option<&TriggerDedupRow>,
-        start: &JobDispatchMsg,
-        execution: &NewExecution<'_>,
-    ) -> Result<DispatchOutcome, StorageError> {
-        let plugins = plugins_to_jsonb(&start.required_plugins);
-
-        // All three writes live inside one transaction — atomicity by
-        // construction.  An error from any write propagates via `?` and rolls
-        // back the whole transaction.
-        let mut tx = self.pool.begin().await.map_err(conn_err)?;
-
-        if let Some(r) = row {
-            // INSERT … ON CONFLICT(workspace_id, org_id, trigger_id, event_id) DO NOTHING
-            // is the CAS.  The scope columns are inside the conflict target so two tenants
-            // sharing the same (trigger_id, event_id) never collide.
-            // First writer wins; second writer gets affected == 0.
-            let affected = sqlx::query(
-                "INSERT INTO port_trigger_dedup_inbox \
-                 (workspace_id, org_id, trigger_id, event_id, execution_id, created_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6) \
-                 ON CONFLICT (workspace_id, org_id, trigger_id, event_id) DO NOTHING",
-            )
-            .bind(&r.scope.workspace_id)
-            .bind(&r.scope.org_id)
-            .bind(&r.trigger_id)
-            .bind(&r.event_id)
-            // Bind `start.execution_id`, not `r.execution_id` — the dedup guard must
-            // record the id that the Start job uses so the SELECT read-back on the
-            // Duplicate path returns the first writer's effective execution id.
-            .bind(&start.execution_id)
-            .bind(&r.created_at)
-            .execute(&mut *tx)
-            .await
-            .map_err(conn_err)?
-            .rows_affected();
-
-            if affected == 0 {
-                // Duplicate: read the winner's execution_id back in the same
-                // transaction so the caller has the canonical id without a
-                // second connection.
-                let winner_id: String = sqlx::query(
-                    "SELECT execution_id FROM port_trigger_dedup_inbox \
-                     WHERE workspace_id = $1 AND org_id = $2 \
-                       AND trigger_id = $3 AND event_id = $4",
-                )
-                .bind(&r.scope.workspace_id)
-                .bind(&r.scope.org_id)
-                .bind(&r.trigger_id)
-                .bind(&r.event_id)
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(conn_err)?
-                .try_get("execution_id")
-                .map_err(conn_err)?;
-
-                tx.commit().await.map_err(conn_err)?;
-                tracing::debug!(
-                    target: "nebula_storage::postgres",
-                    trigger_id = %r.trigger_id,
-                    event_id   = %r.event_id,
-                    winner_execution_id = %winner_id,
-                    "trigger_dedup: duplicate — returning winner id"
-                );
-                return Ok(DispatchOutcome::new(winner_id, DispatchKind::Duplicate));
-            }
-        }
-
-        // Insert the execution row (status='Created', version=0,
-        // fencing_generation=0).  Id + scope come from `start`.
-        // A unique-violation here rolls back the whole transaction — no dedup
-        // row, no job row.
-        insert_created_execution(
-            &mut tx,
-            &start.scope,
-            &start.execution_id,
-            execution.workflow_id,
-            execution.initial_state,
-        )
-        .await?;
-
-        // Insert the Start job (same transaction).
-        sqlx::query(
-            "INSERT INTO port_job_dispatch_queue \
-             (id, execution_id, workspace_id, org_id, command, status, \
-              payload, event_id, required_plugin_key, \
-              required_plugins, w3c_traceparent, reclaim_count, required_worker_flavor_id) \
-             VALUES ($1, $2, $3, $4, $5, 'Pending', $6, $7, $8, $9, $10, $11, $12)",
-        )
-        .bind(start.id.as_slice())
-        .bind(&start.execution_id)
-        .bind(&start.scope.workspace_id)
-        .bind(&start.scope.org_id)
-        .bind(start.command.as_str())
-        .bind(&start.payload)
-        .bind(start.event_id.as_deref())
-        .bind(start.required_plugin_key.as_str())
-        .bind(&plugins)
-        .bind(start.w3c_traceparent.as_deref())
-        .bind(i32::try_from(start.reclaim_count).unwrap_or(i32::MAX))
-        .bind(start.required_worker_flavor_id.as_bytes().as_slice())
-        .execute(&mut *tx)
-        .await
-        .map_err(conn_err)?;
-
-        tx.commit().await.map_err(conn_err)?;
-        tracing::debug!(
-            target: "nebula_storage::postgres",
-            job_id = ?start.id,
-            execution_id = %start.execution_id,
-            "trigger_dedup: materialized (dedup guard + execution row + Start job)"
-        );
-        Ok(DispatchOutcome::new(
-            start.execution_id.clone(),
-            DispatchKind::Dispatched,
-        ))
-    }
-
-    async fn exists(
-        &self,
-        scope: &Scope,
-        trigger_id: &str,
-        event_id: &str,
-    ) -> Result<bool, StorageError> {
-        let row = sqlx::query(
-            "SELECT 1 AS ok FROM port_trigger_dedup_inbox \
-             WHERE trigger_id = $1 AND event_id = $2 \
-               AND workspace_id = $3 AND org_id = $4",
-        )
-        .bind(trigger_id)
-        .bind(event_id)
-        .bind(&scope.workspace_id)
-        .bind(&scope.org_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(conn_err)?;
-        Ok(row.is_some())
-    }
-
-    async fn cleanup(&self, _retention: Duration) -> Result<u64, StorageError> {
-        // No-op stub — TTL sweep wired later without a trait break.
-        Ok(0)
     }
 }

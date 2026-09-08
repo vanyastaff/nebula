@@ -149,7 +149,7 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@481c34c1cf3a84c68b5e46f4eccfc82af798415a # v2.75.23
         with:
-          tool: cargo-nextest
+          tool: cargo-nextest@0.9.143
 
       - name: Run tests for ${{ matrix.package }}
         shell: bash
@@ -240,7 +240,7 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@481c34c1cf3a84c68b5e46f4eccfc82af798415a # v2.75.23
         with:
-          tool: cargo-nextest
+          tool: cargo-nextest@0.9.143
 
       - name: Run PostgreSQL storage conformance
         shell: bash
@@ -318,6 +318,7 @@ jobs:
             credential_schema_admission_postgres \
             execution_state_bounds \
             operation_ledger_conformance_postgres \
+            postgres_control_queue_atomicity \
             refresh_claim_pg_integration \
             revision_catalog_conformance_postgres \
             revision_catalog_migration_postgres \
@@ -440,7 +441,8 @@ jobs:
             --source-revision "${{ github.sha }}" \
             --repository "${{ github.repository }}" \
             --run-id "${{ github.run_id }}" \
-            --run-attempt "${{ github.run_attempt }}"
+            --run-attempt "${{ github.run_attempt }}" \
+            > target/runtime-authority-effective-states.json
 
       - name: Retain verified runtime-authority bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -449,6 +451,7 @@ jobs:
           path: |
             target/runtime-authority-candidate/runtime-authority-bundle
             target/runtime-authority-candidate/runtime-authority-expected.json
+            target/runtime-authority-effective-states.json
           if-no-files-found: error
           retention-days: 14
 

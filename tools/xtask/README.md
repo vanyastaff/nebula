@@ -130,16 +130,22 @@ The verifier admits only provenance-bound artifacts and recomputes their
 runtime-authority predicates from raw observations. Missing, malformed,
 skipped, stale, or semantically failing evidence exits nonzero without a partial
 result. A registry label alone does not establish its semantic oracle. A
-successful result contains a stable ordered `derived_states` list and no
-repository-authored state reason. The command covers the runtime-authority gates
-recorded in the registry, including the activation and remote-effect contracts;
-unrelated gates are outside this scope.
+successful result contains a stable ordered `effective_states` list. Each entry
+is derived as `partial` only after the verifier proves that gate's complete
+backend and case inventory. Runtime evidence alone never emits `passed`, which
+also requires independently trusted policy provenance. The command covers the
+runtime-authority gates recorded in the registry, including the activation and
+remote-effect contracts; unrelated gates are outside this scope.
 
 The producer supplies `expected.json` as a separate file outside the immutable artifact
-directory in the retained candidate. Its closed object contains `provenance_version: 1`,
+directory in the retained candidate. This prevents artifact-path substitution; it is not an
+independent attestation because both files come from the same job. The verifier compares the
+recorded repository, revision, run, and attempt with its own runner context to reject cross-run
+replay. Its closed object contains `provenance_version: 1`,
 `registry_sha256`, `verifier_policy_sha256`, `input`, and `artifacts`. The verifier
 policy digest is SHA-256 of the UTF-8 concatenation of
 `nebula-runtime-authority-structural-policy-v1`, NUL,
+`backend.rs`, NUL, `external_registry.rs`, NUL,
 `runtime_authority/mod.rs`, NUL, `runtime_authority/bundle.rs`, NUL,
 `runtime_authority/loader.rs`, NUL, and
 `runtime_authority/json.rs`, followed by every semantic policy module in

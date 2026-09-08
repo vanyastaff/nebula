@@ -44,9 +44,14 @@ struct Seed {
 }
 impl Seed {
     fn request(&self) -> ControlStartHandoff<'_> {
-        ControlStartHandoff::for_claim(&self.scope, &self.execution, self.claim, self.flavor)
-            .at_version(0)
-            .lease_to("accepted-worker", Duration::from_secs(30))
+        ControlStartHandoff::for_claim(
+            &self.scope,
+            &self.execution,
+            self.claim.clone(),
+            self.flavor,
+        )
+        .at_version(0)
+        .lease_to("accepted-worker", Duration::from_secs(30))
     }
 }
 
@@ -133,7 +138,7 @@ async fn seed(ports: &Ports) -> Seed {
         scope,
         execution: execution.to_string(),
         flavor,
-        claim: claims[0].token,
+        claim: claims[0].token.clone(),
     }
 }
 
@@ -210,6 +215,7 @@ async fn oracle(ports: Ports) {
             let claim = ControlClaimToken::new(
                 *request.claim().row_id(),
                 nebula_storage_port::store::ClaimGeneration::new(u64::MAX),
+                request.claim().scope().clone(),
             );
             request = request.with_claim(claim);
         } else {
@@ -356,7 +362,7 @@ async fn oracle(ports: Ports) {
             .unwrap(),
         before
     );
-    stale.claim = fresh[0].token;
+    stale.claim = fresh[0].token.clone();
     accepted(&ports, &stale).await;
 
     let racing = seed(&ports).await;
@@ -412,7 +418,8 @@ async fn oracle(ports: Ports) {
         .claim_pending_for_flavor(&[0x65; 16], 1, wrong_command.flavor)
         .await
         .unwrap()[0]
-        .token;
+        .token
+        .clone();
     let before = ports
         .execution
         .get(&wrong_command.scope, &wrong_command.execution)
@@ -464,12 +471,14 @@ async fn oracle(ports: Ports) {
         resume_target: None,
     };
     ports.queue.enqueue(&command).await.unwrap();
-    let claim = ports.queue.claim_pending(&[0x66; 16], 1).await.unwrap()[0].token;
+    let claim = ports.queue.claim_pending(&[0x66; 16], 1).await.unwrap()[0]
+        .token
+        .clone();
     let missing_reference = Seed {
         scope,
         execution,
         flavor: WorkerFlavorRevisionId::from_bytes([0x67; 32]),
-        claim,
+        claim: claim.clone(),
     };
     let before = ports
         .execution
@@ -513,7 +522,8 @@ async fn oracle(ports: Ports) {
                 .claim_pending_for_flavor(&[0x68; 16], 1, seed.flavor)
                 .await
                 .unwrap()[0]
-                .token;
+                .token
+                .clone();
             accepted(&ports, &seed).await;
         },
         outcome => panic!("handoff/reclaim must have exactly one winner: {outcome:?}"),

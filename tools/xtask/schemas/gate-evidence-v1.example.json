@@ -1,7 +1,7 @@
 {
   "gate_id": "NS07",
   "gate_version": 1,
-  "registry_version": 1,
+  "registry_version": 2,
   "evidence_schema_version": 1,
   "input": {
     "fixture_revision": "north-star-fixture@v1",

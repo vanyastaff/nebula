@@ -1,4 +1,4 @@
-//! SQLite `JobDispatchQueue` + `TriggerDedupInbox` over the port-scoped schema.
+//! SQLite [`JobDispatchQueue`] over the port-scoped schema.
 //!
 //! Single-consumer status flip (no `FOR UPDATE SKIP LOCKED` equivalent —
 //! spec §5 SQLite boundary, documented not hidden).  Ids are the raw 16-byte
@@ -16,16 +16,14 @@
 use std::time::Duration;
 
 use nebula_core::{PluginKey, WorkerFlavorRevisionId};
-use nebula_storage_port::dto::{
-    DispatchKind, DispatchOutcome, JobDispatchMsg, NewExecution, TriggerDedupRow,
-};
+use nebula_storage_port::dto::JobDispatchMsg;
 use nebula_storage_port::store::{
-    ClaimGeneration, JobClaim, JobClaimToken, JobDispatchQueue, ReclaimOutcome, TriggerDedupInbox,
+    ClaimGeneration, JobClaim, JobClaimToken, JobDispatchQueue, ReclaimOutcome,
 };
 use nebula_storage_port::{Scope, StorageError};
 use sqlx::{Row, SqlitePool};
 
-use crate::sqlite::execution::{conn_err, insert_created_execution};
+use crate::sqlite::execution::conn_err;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -38,7 +36,6 @@ fn ulid_hex(id: &[u8; 16]) -> String {
         s
     })
 }
-
 fn decode_id(bytes: &[u8]) -> Result<[u8; 16], StorageError> {
     <[u8; 16]>::try_from(bytes).map_err(|_| {
         StorageError::Serialization(format!(
@@ -138,12 +135,16 @@ impl SqliteJobDispatchQueue {
     /// The follow-up read is on the failure path only, so the acknowledged
     /// path stays a single statement.
     async fn unacknowledgeable(&self, claim: &JobClaimToken) -> Result<StorageError, StorageError> {
-        let exists: Option<i64> =
-            sqlx::query_scalar("SELECT 1 FROM port_job_dispatch_queue WHERE id = ?")
-                .bind(claim.row_id().as_slice())
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(conn_err)?;
+        let exists: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM port_job_dispatch_queue \
+                 WHERE id = ? AND workspace_id = ? AND org_id = ?",
+        )
+        .bind(claim.row_id().as_slice())
+        .bind(&claim.scope().workspace_id)
+        .bind(&claim.scope().org_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(conn_err)?;
         Ok(if exists.is_some() {
             StorageError::FencedOut {
                 entity: "job_dispatch",
@@ -250,9 +251,8 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
         //
         // `NOT EXISTS` reads: "no element in json_each(required_plugins) is
         // absent from the available set", i.e. every required plugin is covered.
-        // An empty `required_plugins` JSON array yields no rows from json_each
-        // ⇒ NOT EXISTS is vacuously true ⇒ claimable by anyone (consistent
-        // with the InMemory backend).
+        // The primary-plugin pre-filter remains an independent requirement
+        // when malformed metadata omits it from `required_plugins`.
         let available_json = plugins_to_json(available_plugins);
         let rows = sqlx::query(
             "WITH available(plugin) AS (SELECT value FROM json_each(?1)) \
@@ -303,10 +303,10 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
             .map_err(conn_err)?;
             if let Some(generation) = minted {
                 let id = decode_id(&id_bytes)?;
-                claimed.push(JobClaim {
-                    msg: row_to_msg(row)?,
-                    token: JobClaimToken::new(id, decode_generation(generation, &id)?),
-                });
+                let msg = row_to_msg(row)?;
+                let token =
+                    JobClaimToken::new(id, decode_generation(generation, &id)?, msg.scope.clone());
+                claimed.push(JobClaim { msg, token });
             }
         }
         tx.commit().await.map_err(conn_err)?;
@@ -319,11 +319,17 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
     }
 
     async fn mark_dispatched(&self, claim: &JobClaimToken) -> Result<(), StorageError> {
+        let terminal_at_ms = chrono::Utc::now().timestamp_millis();
         let rows_updated = sqlx::query(
-            "UPDATE port_job_dispatch_queue SET status = 'Dispatched' \
-             WHERE id = ? AND status = 'Processing' AND claim_generation = ?",
+            "UPDATE port_job_dispatch_queue \
+             SET status = 'Dispatched', processed_at_ms = ? \
+             WHERE id = ? AND workspace_id = ? AND org_id = ? \
+               AND status = 'Processing' AND claim_generation = ?",
         )
+        .bind(terminal_at_ms)
         .bind(claim.row_id().as_slice())
+        .bind(&claim.scope().workspace_id)
+        .bind(&claim.scope().org_id)
         .bind(generation_bind(claim)?)
         .execute(&self.pool)
         .await
@@ -336,13 +342,18 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
     }
 
     async fn mark_failed(&self, claim: &JobClaimToken, error: &str) -> Result<(), StorageError> {
+        let terminal_at_ms = chrono::Utc::now().timestamp_millis();
         let rows_updated = sqlx::query(
             "UPDATE port_job_dispatch_queue \
-             SET status = 'Failed', error_message = ? \
-             WHERE id = ? AND status = 'Processing' AND claim_generation = ?",
+             SET status = 'Failed', error_message = ?, processed_at_ms = ? \
+             WHERE id = ? AND workspace_id = ? AND org_id = ? \
+               AND status = 'Processing' AND claim_generation = ?",
         )
         .bind(error)
+        .bind(terminal_at_ms)
         .bind(claim.row_id().as_slice())
+        .bind(&claim.scope().workspace_id)
+        .bind(&claim.scope().org_id)
         .bind(generation_bind(claim)?)
         .execute(&self.pool)
         .await
@@ -361,16 +372,18 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
     ) -> Result<ReclaimOutcome, StorageError> {
         // `processed_at_ms` is epoch-millis (INTEGER) — same representation
         // as `port_control_queue`, so reclaim cutoff arithmetic is identical.
-        let cutoff = chrono::Utc::now().timestamp_millis()
-            - i64::try_from(reclaim_after.as_millis()).unwrap_or(i64::MAX);
+        let terminal_at_ms = chrono::Utc::now().timestamp_millis();
+        let cutoff = terminal_at_ms - i64::try_from(reclaim_after.as_millis()).unwrap_or(i64::MAX);
         let mut tx = self.pool.begin().await.map_err(conn_err)?;
         let exhausted = sqlx::query(
             "UPDATE port_job_dispatch_queue \
              SET status = 'Failed', \
-                 error_message = 'reclaim exhausted: presumed dead' \
+                 error_message = 'reclaim exhausted: presumed dead', \
+                 processed_at_ms = ? \
              WHERE status = 'Processing' AND processed_at_ms < ? \
                AND reclaim_count >= ?",
         )
+        .bind(terminal_at_ms)
         .bind(cutoff)
         .bind(i64::from(max_reclaim_count))
         .execute(&mut *tx)
@@ -414,176 +427,5 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
         .map_err(conn_err)?
         .rows_affected();
         Ok(deleted)
-    }
-}
-
-// ── TriggerDedupInbox ────────────────────────────────────────────────────────
-
-/// SQLite-backed trigger-dedup inbox handle.
-#[derive(Clone, Debug)]
-pub struct SqliteTriggerDedupInbox {
-    pool: SqlitePool,
-}
-
-impl SqliteTriggerDedupInbox {
-    /// Wrap a pool whose schema was installed via [`super::init_schema`].
-    #[must_use]
-    pub fn new(pool: SqlitePool) -> Self {
-        Self { pool }
-    }
-}
-
-#[async_trait::async_trait]
-impl TriggerDedupInbox for SqliteTriggerDedupInbox {
-    #[tracing::instrument(level = "debug", skip(self, row, start, execution), fields(
-        trigger_id   = row.as_ref().map(|r| r.trigger_id.as_str()),
-        event_id     = row.as_ref().map(|r| r.event_id.as_str()),
-        job_id       = ?start.id,
-        execution_id = start.execution_id.as_str(),
-    ))]
-    async fn claim_and_materialize_start(
-        &self,
-        row: Option<&TriggerDedupRow>,
-        start: &JobDispatchMsg,
-        execution: &NewExecution<'_>,
-    ) -> Result<DispatchOutcome, StorageError> {
-        let payload = serde_json::to_string(&start.payload)
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
-        let plugins = plugins_to_json(&start.required_plugins);
-
-        // All three writes live inside one transaction — atomicity by
-        // construction.  An error from any write propagates via `?` and rolls
-        // back the whole transaction (sqlx drops the connection on error).
-        let mut tx = self.pool.begin().await.map_err(conn_err)?;
-
-        if let Some(r) = row {
-            // INSERT OR IGNORE: first-writer-wins by
-            // PRIMARY KEY(workspace_id, org_id, trigger_id, event_id).
-            // The scope columns are inside the key so two tenants sharing the
-            // same (trigger_id, event_id) never collide.
-            let affected = sqlx::query(
-                "INSERT OR IGNORE INTO port_trigger_dedup_inbox \
-                 (workspace_id, org_id, trigger_id, event_id, execution_id, created_at) \
-                 VALUES (?, ?, ?, ?, ?, ?)",
-            )
-            .bind(&r.scope.workspace_id)
-            .bind(&r.scope.org_id)
-            .bind(&r.trigger_id)
-            .bind(&r.event_id)
-            // Bind `start.execution_id`, not `r.execution_id` — the dedup guard must
-            // record the id that the Start job uses so the SELECT read-back on the
-            // Duplicate path returns the first writer's effective execution id.
-            .bind(&start.execution_id)
-            .bind(&r.created_at)
-            .execute(&mut *tx)
-            .await
-            .map_err(conn_err)?
-            .rows_affected();
-
-            if affected == 0 {
-                // Duplicate: read the winner's execution_id back in the same
-                // transaction so the caller has the canonical id without a
-                // second connection.
-                let winner_id: String = sqlx::query(
-                    "SELECT execution_id FROM port_trigger_dedup_inbox \
-                     WHERE workspace_id = ? AND org_id = ? \
-                       AND trigger_id = ? AND event_id = ?",
-                )
-                .bind(&r.scope.workspace_id)
-                .bind(&r.scope.org_id)
-                .bind(&r.trigger_id)
-                .bind(&r.event_id)
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(conn_err)?
-                .try_get("execution_id")
-                .map_err(conn_err)?;
-
-                tx.commit().await.map_err(conn_err)?;
-                tracing::debug!(
-                    target: "nebula_storage::sqlite",
-                    trigger_id = %r.trigger_id,
-                    event_id   = %r.event_id,
-                    winner_execution_id = %winner_id,
-                    "trigger_dedup: duplicate — returning winner id"
-                );
-                return Ok(DispatchOutcome::new(winner_id, DispatchKind::Duplicate));
-            }
-        }
-
-        // Insert the execution row (status='Created', version=0,
-        // fencing_generation=0).  Id + scope come from `start`.
-        // A unique-violation here rolls back the whole transaction — no dedup
-        // row, no job row.
-        insert_created_execution(
-            &mut tx,
-            &start.scope,
-            &start.execution_id,
-            execution.workflow_id,
-            execution.initial_state,
-        )
-        .await?;
-
-        // Insert the Start job (same transaction).
-        sqlx::query(
-            "INSERT INTO port_job_dispatch_queue \
-             (id, execution_id, workspace_id, org_id, command, status, \
-              payload, event_id, required_plugin_key, \
-              required_plugins, w3c_traceparent, reclaim_count, required_worker_flavor_id) \
-             VALUES (?, ?, ?, ?, ?, 'Pending', ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(start.id.as_slice())
-        .bind(&start.execution_id)
-        .bind(&start.scope.workspace_id)
-        .bind(&start.scope.org_id)
-        .bind(start.command.as_str())
-        .bind(&payload)
-        .bind(start.event_id.as_deref())
-        .bind(start.required_plugin_key.as_str())
-        .bind(&plugins)
-        .bind(start.w3c_traceparent.as_deref())
-        .bind(i64::from(start.reclaim_count))
-        .bind(start.required_worker_flavor_id.as_bytes().as_slice())
-        .execute(&mut *tx)
-        .await
-        .map_err(conn_err)?;
-
-        tx.commit().await.map_err(conn_err)?;
-        tracing::debug!(
-            target: "nebula_storage::sqlite",
-            job_id = ?start.id,
-            execution_id = %start.execution_id,
-            "trigger_dedup: materialized (dedup guard + execution row + Start job)"
-        );
-        Ok(DispatchOutcome::new(
-            start.execution_id.clone(),
-            DispatchKind::Dispatched,
-        ))
-    }
-
-    async fn exists(
-        &self,
-        scope: &Scope,
-        trigger_id: &str,
-        event_id: &str,
-    ) -> Result<bool, StorageError> {
-        let row = sqlx::query(
-            "SELECT 1 AS ok FROM port_trigger_dedup_inbox \
-             WHERE trigger_id = ? AND event_id = ? \
-               AND workspace_id = ? AND org_id = ?",
-        )
-        .bind(trigger_id)
-        .bind(event_id)
-        .bind(&scope.workspace_id)
-        .bind(&scope.org_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(conn_err)?;
-        Ok(row.is_some())
-    }
-
-    async fn cleanup(&self, _retention: Duration) -> Result<u64, StorageError> {
-        // No-op stub — TTL sweep wired later without a trait break.
-        Ok(0)
     }
 }

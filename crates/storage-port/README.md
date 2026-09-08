@@ -34,10 +34,9 @@ does **not** implement any backend.
   retains its original execution ID and full attempt; commit acknowledgement loss
   is explicitly `OutcomeUnknown`. Stored bundles survive terminal reference release.
   The runtime validates full domain integrity and authorization before this seam.
-  Trigger-origin starts share the existing scoped trigger/event dedup namespace
-  with `TriggerDedupInbox`. Their natural-key replay returns the original
-  execution regardless of later payload changes, independently of caller keys.
-  Legacy winners remain legacy receipts; storage never fabricates a bundle for them.
+  Trigger-origin starts use the same transaction and a scoped trigger/event
+  key. Their natural-key replay returns the original execution regardless of
+  later payload changes, independently of caller keys.
 - **Exact control routing.** `ControlQueue::claim_pending_for_flavor` matches the
   retained execution reference and execution scope before applying the batch limit.
   Unpinned and incompatible commands remain pending. Draining catalogs and released

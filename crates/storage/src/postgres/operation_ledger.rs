@@ -119,11 +119,14 @@ async fn load_by_natural_key(
     key: &EffectOccurrenceKey<'_>,
 ) -> Result<Option<OperationRecord>, OperationLedgerError> {
     let row = sqlx::query(
-        "SELECT slot_id, operation_id, attempt_generation, destination, \
-                fingerprint_version, fingerprint, state \
-         FROM port_operation_ledger \
-         WHERE workspace_id = $1 AND org_id = $2 AND execution_id = $3 \
-           AND node_key = $4 AND occurrence = $5",
+        "SELECT l.slot_id, l.operation_id, l.attempt_generation, l.destination, \
+                l.fingerprint_version, l.fingerprint, l.state, \
+                (SELECT p.payload FROM port_operation_protocol p \
+                 WHERE p.slot_id = l.slot_id AND p.workspace_id = l.workspace_id \
+                   AND p.org_id = l.org_id) AS protocol_payload \
+         FROM port_operation_ledger l \
+         WHERE l.workspace_id = $1 AND l.org_id = $2 AND l.execution_id = $3 \
+           AND l.node_key = $4 AND l.occurrence = $5",
     )
     .bind(&key.scope().workspace_id)
     .bind(&key.scope().org_id)
@@ -134,10 +137,13 @@ async fn load_by_natural_key(
     .await
     .map_err(driver_did_not_commit)?;
 
-    match row.as_ref().map(decode_row).transpose()? {
-        Some(record) => attach_protocol(tx, key.scope(), record).await.map(Some),
-        None => Ok(None),
-    }
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let payload = row
+        .try_get::<Option<String>, _>("protocol_payload")
+        .map_err(driver_did_not_commit)?;
+    attach_decoded_protocol(decode_row(&row)?, payload.as_deref()).map(Some)
 }
 
 /// Read one slot a tenant is allowed to see.
@@ -159,16 +165,22 @@ async fn load_visible(
 ) -> Result<OperationRecord, OperationLedgerError> {
     let statement = match access {
         LedgerRowAccess::Read => {
-            "SELECT slot_id, operation_id, attempt_generation, destination, \
-                    fingerprint_version, fingerprint, state \
-             FROM port_operation_ledger \
-             WHERE slot_id = $1 AND workspace_id = $2 AND org_id = $3"
+            "SELECT l.slot_id, l.operation_id, l.attempt_generation, l.destination, \
+                    l.fingerprint_version, l.fingerprint, l.state, \
+                    (SELECT p.payload FROM port_operation_protocol p \
+                     WHERE p.slot_id = l.slot_id AND p.workspace_id = l.workspace_id \
+                       AND p.org_id = l.org_id) AS protocol_payload \
+             FROM port_operation_ledger l \
+             WHERE l.slot_id = $1 AND l.workspace_id = $2 AND l.org_id = $3"
         },
         LedgerRowAccess::Write => {
-            "SELECT slot_id, operation_id, attempt_generation, destination, \
-                    fingerprint_version, fingerprint, state \
-             FROM port_operation_ledger \
-             WHERE slot_id = $1 AND workspace_id = $2 AND org_id = $3 FOR UPDATE"
+            "SELECT l.slot_id, l.operation_id, l.attempt_generation, l.destination, \
+                    l.fingerprint_version, l.fingerprint, l.state, \
+                    (SELECT p.payload FROM port_operation_protocol p \
+                     WHERE p.slot_id = l.slot_id AND p.workspace_id = l.workspace_id \
+                       AND p.org_id = l.org_id) AS protocol_payload \
+             FROM port_operation_ledger l \
+             WHERE l.slot_id = $1 AND l.workspace_id = $2 AND l.org_id = $3 FOR UPDATE OF l"
         },
     };
     let row = sqlx::query(statement)
@@ -180,7 +192,10 @@ async fn load_visible(
         .map_err(driver_did_not_commit)?
         .ok_or(OperationLedgerError::SlotUnprepared { slot_id })?;
 
-    attach_protocol(tx, scope, decode_row(&row)?).await
+    let payload = row
+        .try_get::<Option<String>, _>("protocol_payload")
+        .map_err(driver_did_not_commit)?;
+    attach_decoded_protocol(decode_row(&row)?, payload.as_deref())
 }
 
 async fn backend_now(tx: &mut Transaction<'_, Postgres>) -> Result<i64, OperationLedgerError> {
@@ -190,15 +205,11 @@ async fn backend_now(tx: &mut Transaction<'_, Postgres>) -> Result<i64, Operatio
         .map_err(driver_did_not_commit)
 }
 
-async fn attach_protocol(
-    tx: &mut Transaction<'_, Postgres>,
-    scope: &Scope,
+fn attach_decoded_protocol(
     record: OperationRecord,
+    payload: Option<&str>,
 ) -> Result<OperationRecord, OperationLedgerError> {
-    let payload: Option<String> = sqlx::query_scalar("SELECT payload FROM port_operation_protocol WHERE slot_id = $1 AND workspace_id = $2 AND org_id = $3")
-        .bind(record.operation().slot_id().as_bytes().as_slice()).bind(&scope.workspace_id).bind(&scope.org_id)
-        .fetch_optional(&mut **tx).await.map_err(driver_did_not_commit)?;
-    match crate::operation_ledger::decode_protocol(payload.as_deref())? {
+    match crate::operation_ledger::decode_protocol(payload)? {
         Some(protocol) => {
             let record = record.with_protocol(protocol);
             crate::operation_ledger::validate_record(&record)?;
@@ -545,4 +556,32 @@ async fn lock_slot_owner(
         .bind(slot_id.as_bytes().as_slice()).bind(&scope.workspace_id).bind(&scope.org_id).fetch_optional(&mut **tx).await.map_err(driver_did_not_commit)?
         .ok_or(OperationLedgerError::SlotUnprepared { slot_id })?;
     lock_execution(tx, scope, &execution, fencing).await
+}
+
+#[cfg(test)]
+mod snapshot_query_tests {
+    #[test]
+    fn occurrence_snapshot_is_fetched_in_one_database_round_trip() {
+        let source = include_str!("operation_ledger.rs");
+        let start = source
+            .find("async fn load_by_natural_key(")
+            .expect("natural-key loader remains present");
+        let function = &source[start..];
+        let end = function
+            .find("\n/// Read one slot")
+            .expect("the following loader documentation remains present");
+        let function = &function[..end];
+
+        assert_eq!(
+            function.matches(".fetch_").count(),
+            1,
+            "ledger state and protocol payload must use one PostgreSQL snapshot"
+        );
+        assert!(
+            function.contains("port_operation_ledger")
+                && function.contains("port_operation_protocol")
+                && function.contains("protocol_payload"),
+            "the single query must project both ledger state and protocol payload"
+        );
+    }
 }

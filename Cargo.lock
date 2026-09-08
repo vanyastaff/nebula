@@ -3780,6 +3780,7 @@ dependencies = [
  "nebula-core",
  "nebula-storage-port",
  "serde_json",
+ "syn 3.0.3",
  "thiserror",
  "tokio",
 ]

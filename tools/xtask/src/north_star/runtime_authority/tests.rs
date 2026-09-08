@@ -219,7 +219,7 @@ fn structurally_complete_synthetic_evidence_fails_semantic_policy() {
 }
 
 #[test]
-fn failed_provenance_and_semantics_produce_no_derived_state_output() {
+fn failed_provenance_and_semantics_produce_no_effective_state_output() {
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
 
     let semantic_failure = Fixture::new();
@@ -304,26 +304,50 @@ fn semantic_failure_identifies_a_backend_independent_artifact() {
 }
 
 #[test]
-fn verified_artifacts_emit_the_exact_ordered_derived_state_set() {
+fn complete_verified_inventory_derives_partial_gate_states() {
     let fixture = Fixture::with_verified_observations();
     let expected_path = fixture.expected_path();
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let output = verify(&workspace, &fixture.root, &expected_path, &runner()).unwrap();
     let summary: Value = serde_json::from_slice(&output).unwrap();
-    let expected = RuntimeAuthorityGate::ALL
-        .into_iter()
-        .map(|gate| json!({"gate": ExternalGateId::from(gate), "state": "partial"}))
-        .collect::<Vec<_>>();
+    let expected = vec![
+        json!({"gate": ExternalGateId::ExecutionIdentity, "state": "partial"}),
+        json!({"gate": ExternalGateId::ExactRevisionRouting, "state": "partial"}),
+        json!({"gate": ExternalGateId::ClaimGenerationFencing, "state": "partial"}),
+        json!({"gate": ExternalGateId::KeyedAcceptance, "state": "partial"}),
+        json!({"gate": ExternalGateId::ClaimHandoff, "state": "partial"}),
+        json!({"gate": ExternalGateId::PersistenceConformance, "state": "partial"}),
+        json!({"gate": ExternalGateId::RequiredPostgresql, "state": "partial"}),
+        json!({"gate": ExternalGateId::OrderedMigrations, "state": "partial"}),
+        json!({"gate": ExternalGateId::ActivationDiagnostics, "state": "partial"}),
+        json!({"gate": ExternalGateId::RemoteEffects, "state": "partial"}),
+    ];
 
     assert_eq!(
         summary,
         json!({
             "status": "verified",
             "contract": "runtime-authority",
-            "derived_states": Value::Array(expected),
+            "effective_states": Value::Array(expected),
         })
     );
     assert_eq!(output.last(), Some(&b'\n'));
+}
+
+#[test]
+fn obsolete_claim_handoff_metric_is_rejected_by_executable_policy() {
+    let obsolete = Threshold::Exact {
+        metric: "dispatch_claim_extended_by_action_duration".to_owned(),
+        expected: toml::Value::Boolean(false),
+    };
+    assert_eq!(
+        validate_runtime_threshold(RuntimeAuthorityGate::ClaimHandoff, &obsolete),
+        Err(VerificationError::PolicyMismatch)
+    );
+    assert!(
+        policy().is_ok(),
+        "the checked-in thresholds must match policy"
+    );
 }
 
 #[test]

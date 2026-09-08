@@ -24,19 +24,26 @@ pub struct ReclaimOutcome {
 /// command the second attempt is still dispatching. The generation makes the
 /// two attempts distinguishable.
 ///
-/// Only a storage backend mints these, and only from a row it just transitioned
-/// to `Processing`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// Storage backends construct this value from the row they transition to
+/// `Processing`. Acknowledgement still validates the row id, tenant scope, and
+/// generation against durable state, so constructing a value does not bypass
+/// the fence.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ControlClaimToken {
     row_id: [u8; 16],
     generation: ClaimGeneration,
+    scope: crate::Scope,
 }
 
 impl ControlClaimToken {
-    /// Mint a token for a row a backend just claimed.
+    /// Construct a token from a claimed row's durable identity.
     #[must_use]
-    pub const fn new(row_id: [u8; 16], generation: ClaimGeneration) -> Self {
-        Self { row_id, generation }
+    pub const fn new(row_id: [u8; 16], generation: ClaimGeneration, scope: crate::Scope) -> Self {
+        Self {
+            row_id,
+            generation,
+            scope,
+        }
     }
 
     /// The row this claim is for.
@@ -49,6 +56,12 @@ impl ControlClaimToken {
     #[must_use]
     pub const fn generation(&self) -> ClaimGeneration {
         self.generation
+    }
+
+    /// Tenant scope bound to the claimed row.
+    #[must_use]
+    pub const fn scope(&self) -> &crate::Scope {
+        &self.scope
     }
 }
 
