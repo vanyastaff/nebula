@@ -76,6 +76,38 @@ changes are expected between minor releases — call them out here.
 
 ### Added
 
+- **Durable runtime authority.** Exact bundle, plan, and flavor identity now
+  governs the whole execution lifecycle rather than being merely recorded. A
+  workflow activation binds a compiled executable plan to a compatible frozen
+  worker flavor; start materialization creates the execution aggregate, its
+  contract bundle, its live revision references and the durable `Start` command
+  in one execution-owner transaction, so a lost-ack retry converges on the
+  original receipt and a differing fingerprint is refused with no durable
+  delta. Start, Resume, Restart, recovery and job dispatch load only the pinned
+  pair — there is no reachable latest-revision or implicit-recompile fallback.
+  `ExecutionTurnHandoff` ends the dispatch claim and accepts the turn under the
+  aggregate fence in the same transaction, so an action's duration can no
+  longer extend a queue claim, and durable checkpoints restore state and output
+  across a reconnect. Effecting actions run under a storage-minted
+  `OperationId` with a durable outcome ledger: prepare is acknowledged before
+  an adapter can observe the identity, stable-key recovery is bounded and
+  capability-gated, reconciliation is read-only, and exhausted guarantees
+  converge to a durable `OutcomeUnknown`. Five new paired migrations (0046–0050)
+  carry the schema on SQLite and PostgreSQL.
+
+- **Provenance-bound runtime-authority evidence.** The required CI jobs emit raw
+  behaviour observations that `cargo xtask north-star-gates
+  build-runtime-authority-bundle` assembles into an immutable artifact tree
+  bound to the runner's own identity, and `verify-runtime-authority`
+  recomputes the semantic policy over it. The verifier refuses a bundle naming
+  a revision, repository or run other than the one it is itself running, and
+  accepts only the job that actually produces the bundle as an artifact's
+  source — membership in a gate's `required_ci` set is not a producer claim.
+  Checked-in gate state remains a conservative baseline. Only a successful
+  provenance and semantic verification emits the deterministic effective
+  `partial` state for the covered runtime gates; a failed verification emits no
+  effective-state result.
+
 - **Authenticated credential command boundary.** API handlers now submit a
   middleware-created `AuthenticatedPrincipal`, resolved tenant `Scope`, and
   public intent through the object-safe `CredentialCommandGateway`. The
@@ -143,6 +175,25 @@ changes are expected between minor releases — call them out here.
   finalizer records the MFA-required outcome and challenge atomically with its
   identity decision, and `POST /api/v1/auth/login/mfa` consumes the challenge
   to complete login and mint the session.
+
+### Breaking
+
+- The workspace advances from `0.1` to `0.2`. Durable runtime ports now require
+  exact revision and fencing data: implementers of `JobDispatchQueue` and
+  `ControlQueue` must accept the worker-flavor selector, and execution owners
+  must use `ExecutionTurnHandoff` for atomic claim-to-turn transfer.
+- `StartAcceptanceStore` now accepts a complete `MaterializedStart` and returns
+  `StartMaterialization`; process-wide reservation eviction moved to the
+  separate `StartReservationMaintenance` capability. Composition roots must
+  wire both capabilities explicitly.
+- The operation ledger replaces direct outcome writes with the finite
+  `prepare` / `read_occurrence` / `advance` protocol and separates privileged
+  `OperationLedgerAdjudicator`. Effect policy, operation identities, records,
+  and outcomes use validated constructors and accessors instead of public
+  fields.
+- `Orchestrator::new` now takes `WorkerFlavorContext` in place of
+  `Vec<PluginKey>`, binding job claims and execution handoff to one exact
+  worker-flavor revision.
 
 ### Security
 
@@ -278,6 +329,20 @@ changes are expected between minor releases — call them out here.
   classifications map to wire code `other`.
 
 ### Changed
+
+- **Breaking: the storage seam and the runtime crates that ride it.** This milestone is a
+  `feat!` across six crates. `nebula-storage-port` replaces
+  `OperationLedger::commit_outcome` with a command-driven `advance`, retypes
+  `OperationLedgerAdjudicator::adjudicate` to take frozen outcome evidence,
+  adds a required worker-flavor argument to `JobDispatchQueue::claim_pending`
+  and a required `ControlQueue::claim_pending_for_flavor`, and turns
+  `JobDispatchMsg::required_worker_flavor_id` from an `Option` into a required
+  field. `nebula-engine` gains required plan/flavor pins on `ExecutionState`
+  and a non-optional operation ledger in `ExecutionStores`; `nebula-execution`
+  gains public checkpoint state; `nebula-plugin`, `nebula-api` and
+  `nebula-orchestrator` shift with them. The workspace release train advances
+  from `0.1.0` to `0.2.0`, including the constructor retype that automated
+  semver analysis does not detect when arity stays unchanged.
 
 - **tower-http 0.7 and the OpenTelemetry family 0.32 / 0.33.** These are
   semver-major bumps, so the previous `cargo update` pass could not take them

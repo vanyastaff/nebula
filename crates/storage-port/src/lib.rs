@@ -37,21 +37,23 @@ pub use dto::credential::{
 };
 pub use dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash, TokenHashLengthError};
 pub use dto::{
-    AttemptGeneration, BeginDrainOutcome, DestinationCapability, EffectSlotBinding, EffectSlotId,
-    ExecutablePlanRecordFormat, KnownOutcome, OperationId, OperationLedgerError, OperationRecord,
-    OperationState, PlanFlavorRevisionIds, PlanFlavorRevisionRecord, PlanFlavorRevisionTarget,
-    PrepareOutcome, PreparedOperation, RefreshRetryAdmission, RefreshRetryBlock, RefreshRetryDelay,
-    RefreshRetryDelayError, RefreshRetryDiagnosticCode, RefreshRetryDiagnosticCodeError,
-    RefreshRetryEvidence, RefreshRetryGate, RefreshRetryKind, RefreshRetryPhase,
-    RefreshRetrySnapshot, RefreshRetryTransition, RequestFingerprint, RevisionCatalogError,
-    RevisionInsertOutcome, RevisionRecordBytes, RevisionReferenceCounts, WorkerFlavorRecordFormat,
+    AttemptGeneration, BeginDrainOutcome, DestinationCapability, DestinationCapabilityParseError,
+    EffectOccurrenceKey, EffectSlotBinding, EffectSlotId, ExecutablePlanRecordFormat, KnownOutcome,
+    OperationLedgerError, OperationProtocolViolation, OperationRecord, OperationState,
+    PlanFlavorRevisionIds, PlanFlavorRevisionRecord, PlanFlavorRevisionTarget, PrepareOutcome,
+    PreparedEffectContract, PreparedEffectPolicy, PreparedEffectPolicyBuilder, PreparedOperation,
+    RefreshRetryAdmission, RefreshRetryBlock, RefreshRetryDelay, RefreshRetryDelayError,
+    RefreshRetryDiagnosticCode, RefreshRetryDiagnosticCodeError, RefreshRetryEvidence,
+    RefreshRetryGate, RefreshRetryKind, RefreshRetryPhase, RefreshRetrySnapshot,
+    RefreshRetryTransition, RequestFingerprint, RevisionCatalogError, RevisionInsertOutcome,
+    RevisionRecordBytes, RevisionReferenceCounts, WorkerFlavorRecordFormat,
     WorkerFlavorRevisionRecord,
 };
 pub use error::StorageError;
-pub use ids::{CredentialId, FencingToken};
+pub use ids::{CredentialId, FencingToken, OperationCallId, OperationId};
 pub use scope::Scope;
 pub use store::{
     CredentialAlreadyExistsKey, CredentialPersistence, CredentialPersistenceError,
     ExecutionTurnHandoff, OperationLedger, OperationLedgerAdjudicator, PlanFlavorCatalog,
-    PlanFlavorCatalogAdmin, PlanFlavorCatalogWriter, TurnAcceptance, TurnHandoff,
+    PlanFlavorCatalogAdmin, PlanFlavorCatalogWriter, TurnAcceptance, TurnHandoff, TurnRecovery,
 };

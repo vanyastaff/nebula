@@ -1,7 +1,8 @@
-//! # nebula-worker-bin — core-flavor worker binary (ADR-0095 D1)
+//! # nebula-worker-bin — core-flavor worker binary
 //!
 //! This crate is the runnable process that statically links the first-party
-//! [`CorePlugin`] and runs the durable claim-loop via [`nebula_worker`].
+//! [`CorePlugin`] and runs durable control, recovery, and timer processing via
+//! [`nebula_worker`].
 //!
 //! The `compose` module is public so integration tests can drive the
 //! composition root directly with in-memory adapters, proving the full

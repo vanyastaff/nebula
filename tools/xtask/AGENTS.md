@@ -31,11 +31,11 @@ product crate and does not participate in the product layer map.
   schema, canonical multi-run evidence, and checked-in workflow job IDs only.
   It is post-selection gate policy: it never selects packages or changes the
   `ci-plan` result.
-- North Star registry v1 rejects `passed`. Evidence schema v1 records a
-  bounded, versioned policy/evidence shape, but its CI identity is not a
-  trusted attestation and its threshold result is not recomputed from raw
-  observations. Registry state remains `red`, `partial`, or `missing` until a
-  later schema can represent trustworthy promotion.
+- North Star registry v1 rejects `passed`; its checked-in state is only the
+  baseline. The runtime-authority verifier accepts a complete immutable
+  artifact inventory only when runner provenance and every semantic threshold
+  match, then emits the deterministic effective `partial` state for each
+  covered gate. A failed verification emits no effective-state result.
 - `runtime-repair-red verify` is expected-failure evidence policy, not a test
   runner. It accepts only the raw nextest test-failure exit, exact manifest
   identities, ordinary failures, and exact reason markers from bounded JUnit.

@@ -1,10 +1,11 @@
 //! Periodic eviction of expired keyed-start reservations.
 //!
-//! [`StartAcceptanceStore::accept_keyed_start`] records a reservation per
+//! [`StartAcceptanceStore::materialize_start`](nebula_storage_port::store::StartAcceptanceStore::materialize_start)
+//! records a reservation per
 //! `(scope, start_key)` so a replayed start returns the original receipt
 //! instead of launching a second execution. Nothing ever removed those rows:
-//! the port has exposed
-//! [`evict_reservations_older_than`](StartAcceptanceStore::evict_reservations_older_than)
+//! the maintenance port has exposed
+//! [`evict_reservations_older_than`](StartReservationMaintenance::evict_reservations_older_than)
 //! and all three adapters implement it, but no caller existed, so the table
 //! grew for the life of the deployment. A cleanup contract with no caller is
 //! not a retention policy — it only looks like one.
@@ -25,12 +26,12 @@
 
 use std::{sync::Arc, time::Duration};
 
-use nebula_storage_port::store::StartAcceptanceStore;
+use nebula_storage_port::store::StartReservationMaintenance;
 use tokio_util::sync::CancellationToken;
 
 /// An app-owned sweep that expires keyed-start reservations on a fixed cadence.
 pub struct StartReservationSweeper {
-    store: Arc<dyn StartAcceptanceStore>,
+    maintenance: Arc<dyn StartReservationMaintenance>,
     retention: Duration,
     interval: Duration,
 }
@@ -45,7 +46,7 @@ impl StartReservationSweeper {
     /// inside a loop that quietly does nothing.
     #[must_use]
     pub fn new(
-        store: Arc<dyn StartAcceptanceStore>,
+        maintenance: Arc<dyn StartReservationMaintenance>,
         retention: Duration,
         interval: Duration,
     ) -> Option<Self> {
@@ -53,7 +54,7 @@ impl StartReservationSweeper {
             return None;
         }
         Some(Self {
-            store,
+            maintenance,
             retention,
             interval,
         })
@@ -85,7 +86,7 @@ impl StartReservationSweeper {
                     return;
                 }
                 _ = ticker.tick() => {
-                    match self.store.evict_reservations_older_than(self.retention).await {
+                    match self.maintenance.evict_reservations_older_than(self.retention).await {
                         Ok(0) => {
                             tracing::debug!("start-key reservation sweep: nothing expired");
                         },
@@ -116,10 +117,7 @@ mod tests {
         atomic::{AtomicU64, AtomicUsize, Ordering},
     };
 
-    use nebula_storage_port::{
-        StorageError,
-        store::{KeyedStart, MaterializedKeyedStart, StartAcceptance, StartMaterialization},
-    };
+    use nebula_storage_port::StorageError;
 
     use super::*;
 
@@ -132,21 +130,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl StartAcceptanceStore for RecordingStore {
-        async fn accept_keyed_start(
-            &self,
-            _start: &KeyedStart<'_>,
-        ) -> Result<StartAcceptance, StorageError> {
-            unreachable!("the sweep never accepts starts")
-        }
-
-        async fn materialize_keyed_start(
-            &self,
-            _start: &MaterializedKeyedStart<'_>,
-        ) -> Result<StartMaterialization, StorageError> {
-            unreachable!("the sweep never materializes starts")
-        }
-
+    impl StartReservationMaintenance for RecordingStore {
         async fn evict_reservations_older_than(
             &self,
             retention: Duration,
@@ -185,7 +169,7 @@ mod tests {
             last_retention_secs: AtomicU64::new(0),
         });
         let sweeper = StartReservationSweeper::new(
-            Arc::clone(&store) as Arc<dyn StartAcceptanceStore>,
+            Arc::clone(&store) as Arc<dyn StartReservationMaintenance>,
             Duration::from_hours(24),
             Duration::from_mins(1),
         )

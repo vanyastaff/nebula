@@ -290,6 +290,13 @@ impl ResolvedPlugin {
                     kind: ComponentKind::Action,
                 });
             }
+            crate::plan_effect::validate_factory_effect(
+                &action.contract.metadata.effect_contract,
+                action.factory.as_ref(),
+            )
+            .map_err(|_| PluginError::InvalidEffectContract {
+                action: key.clone(),
+            })?;
             index.insert(key, action);
         }
         Ok(index)

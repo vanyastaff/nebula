@@ -23,6 +23,7 @@
 use std::collections::BTreeSet;
 
 use nebula_core::{NodeKey, PluginKey};
+use nebula_plugin::WorkerFlavorContext;
 use nebula_workflow::ValidatedWorkflow;
 
 // ── types ─────────────────────────────────────────────────────────────────────
@@ -40,27 +41,31 @@ use nebula_workflow::ValidatedWorkflow;
 /// is the superset check `job.required_plugins ⊆ worker.available_plugins`;
 /// `required_plugin_key` is kept as an index-friendly pre-filter (sound
 /// because `required_plugins ⊇ {required_plugin_key}` by construction).
-///
-/// `target_flavor_sha` is a version-pin guard written into the message but
-/// not yet used for routing.
 #[must_use = "a DispatchRoute must be written into the JobDispatchMsg; dropping it yields an un-claimable job"]
 #[derive(Debug, Clone)]
 pub struct DispatchRoute {
     /// The primary required plugin (the trigger's plugin); an element of
     /// `required_plugins`; used as the index pre-filter.
     pub required_plugin_key: PluginKey,
+    /// Exact immutable worker flavor selected by the pinned routing context.
+    pub required_worker_flavor_id: nebula_core::WorkerFlavorRevisionId,
     /// Full set of plugin keys the workflow needs (trigger binding + enabled
     /// nodes, deduplicated and sorted).  Superset of `{required_plugin_key}`.
     pub required_plugins: Vec<PluginKey>,
-    /// SHA of the plugin flavor this message targets (version-pin guard; not
-    /// yet used for routing).
-    pub target_flavor_sha: String,
 }
 
 /// Errors returned by [`RoutingResolver::resolve`].
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum RoutingError {
+    /// The selected frozen flavor cannot execute a required plugin.
+    #[error("worker flavor `{worker_flavor_id}` does not provide required plugin `{plugin_key}`")]
+    PluginUnavailable {
+        /// Immutable selected flavor identity.
+        worker_flavor_id: nebula_core::WorkerFlavorRevisionId,
+        /// Required plugin absent from that activation.
+        plugin_key: PluginKey,
+    },
     /// The fired trigger id is not present in the workflow's `trigger_bindings`.
     ///
     /// Fail-closed: a trigger absent from the validated definition can never
@@ -94,8 +99,9 @@ pub trait RoutingResolver: Send + Sync + std::fmt::Debug {
     ///
     /// # Errors
     ///
-    /// Returns [`RoutingError::TriggerNotOnWorkflow`] when `fired_trigger_id`
-    /// is not present in `workflow.definition().trigger_bindings`.
+    /// Returns [`RoutingError::TriggerNotOnWorkflow`] when the trigger is absent,
+    /// or [`RoutingError::PluginUnavailable`] when the selected frozen flavor
+    /// cannot serve a required plugin. Neither error materializes durable work.
     fn resolve(
         &self,
         workflow: &ValidatedWorkflow,
@@ -104,12 +110,6 @@ pub trait RoutingResolver: Send + Sync + std::fmt::Debug {
 }
 
 // ── DefinitionRoutingResolver ─────────────────────────────────────────────────
-
-/// Pinned flavor SHA used by the slice harness.
-///
-/// A single constant avoids a freshly minted random value per call (which
-/// would defeat version-pin guards in integration tests).
-pub const SLICE_FLAVOR_SHA: &str = "slice-flavor-0000000000000000000000000000000000000001";
 
 /// Registry-free routing resolver that reads plugin routing data directly from
 /// the validated workflow definition.
@@ -134,29 +134,14 @@ pub const SLICE_FLAVOR_SHA: &str = "slice-flavor-0000000000000000000000000000000
 /// [`NodeDefinition`]: nebula_workflow::NodeDefinition
 #[derive(Debug, Clone)]
 pub struct DefinitionRoutingResolver {
-    flavor_sha: String,
+    flavor: WorkerFlavorContext,
 }
 
 impl DefinitionRoutingResolver {
-    /// Build a resolver pinned to the given flavor SHA.
-    ///
-    /// # Panics
-    ///
-    /// Panics in debug builds when `flavor_sha` is empty (an empty SHA would
-    /// make the version-pin guard trivially match any job, defeating its
-    /// purpose).
+    /// Build a resolver pinned to a frozen flavor context.
     #[must_use]
-    pub fn new(flavor_sha: impl Into<String>) -> Self {
-        let sha = flavor_sha.into();
-        debug_assert!(!sha.is_empty(), "flavor_sha must not be empty");
-        Self { flavor_sha: sha }
-    }
-}
-
-impl Default for DefinitionRoutingResolver {
-    /// Returns a resolver pinned to [`SLICE_FLAVOR_SHA`].
-    fn default() -> Self {
-        Self::new(SLICE_FLAVOR_SHA)
+    pub fn new(flavor: WorkerFlavorContext) -> Self {
+        Self { flavor }
     }
 }
 
@@ -212,6 +197,16 @@ impl RoutingResolver for DefinitionRoutingResolver {
         // The required key is always present: we just resolved it from the
         // trigger bindings, which are unconditionally added above.
         let required_plugins: Vec<PluginKey> = keys.into_iter().cloned().collect();
+        if let Some(plugin_key) = required_plugins
+            .iter()
+            .find(|key| !self.flavor.plugin_keys().contains(key))
+        {
+            tracing::warn!(worker_flavor_id = %self.flavor.revision_id(), %plugin_key, "selected worker flavor lacks required plugin");
+            return Err(RoutingError::PluginUnavailable {
+                worker_flavor_id: self.flavor.revision_id(),
+                plugin_key: plugin_key.clone(),
+            });
+        }
         tracing::debug!(
             required_plugin_count = required_plugins.len(),
             "resolved required plugins"
@@ -219,14 +214,44 @@ impl RoutingResolver for DefinitionRoutingResolver {
 
         Ok(DispatchRoute {
             required_plugin_key,
+            required_worker_flavor_id: self.flavor.revision_id(),
             required_plugins,
-            target_flavor_sha: self.flavor_sha.clone(),
         })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    fn test_flavor(plugins: &[nebula_core::PluginKey]) -> WorkerFlavorContext {
+        #[derive(Debug)]
+        struct FixturePlugin(nebula_plugin::PluginManifest);
+        impl nebula_plugin::Plugin for FixturePlugin {
+            fn manifest(&self) -> &nebula_plugin::PluginManifest {
+                &self.0
+            }
+        }
+        let mut registry = nebula_plugin::PluginRegistry::new();
+        for key in plugins {
+            let plugin = FixturePlugin(
+                nebula_plugin::PluginManifest::builder(key.as_str(), key.as_str())
+                    .build()
+                    .unwrap(),
+            );
+            registry
+                .register(std::sync::Arc::new(
+                    nebula_plugin::ResolvedPlugin::from(plugin).unwrap(),
+                ))
+                .unwrap();
+        }
+        let frozen = registry
+            .freeze(
+                nebula_core::ArtifactSetDigest::from_bytes([0x31; 32]),
+                "1.0.0".parse().unwrap(),
+            )
+            .unwrap();
+        WorkerFlavorContext::from_registry(&frozen)
+    }
+
     use std::collections::HashMap;
 
     use nebula_core::{PluginKey, WorkflowId, node_key, plugin_key};
@@ -287,11 +312,32 @@ mod tests {
     }
 
     #[test]
+    fn selected_flavor_missing_required_plugin_is_rejected() {
+        let workflow = make_validated("t", "p.trig", &[("p.a", true)]);
+        let flavor = test_flavor(&[plugin_key!("p.trig")]);
+        let selected = flavor.revision_id();
+        let resolver = DefinitionRoutingResolver::new(flavor);
+        assert!(matches!(resolver.resolve(&workflow, &node_key!("t")),
+            Err(RoutingError::PluginUnavailable { worker_flavor_id, plugin_key })
+                if worker_flavor_id == selected && plugin_key == plugin_key!("p.a")));
+    }
+
+    #[test]
     fn fail_closed_when_trigger_not_in_bindings() {
         // Verifies the fail-closed path: a fired trigger id absent from
         // trigger_bindings must return TriggerNotOnWorkflow.
         let workflow = make_validated("real.trigger", "p.trig", &[("p.a", true)]);
-        let resolver = DefinitionRoutingResolver::default();
+        let resolver = DefinitionRoutingResolver::new(test_flavor(
+            &[
+                "p.trig",
+                "p.a",
+                "p.b",
+                "p.enabled",
+                "p.shared",
+                "some.plugin",
+            ]
+            .map(|key| key.parse().unwrap()),
+        ));
         let absent = node_key!("absent.trigger");
         let err = resolver
             .resolve(&workflow, &absent)
@@ -303,7 +349,10 @@ mod tests {
         let RoutingError::TriggerNotOnWorkflow {
             trigger_id,
             workflow_id: _,
-        } = err;
+        } = err
+        else {
+            panic!("expected missing trigger");
+        };
         assert_eq!(trigger_id, "absent.trigger");
     }
 
@@ -312,14 +361,27 @@ mod tests {
         // trigger plugin = "p.trig", node plugins = [("p.a", true), ("p.b", true)]
         // expected required_plugins = sorted { "p.a", "p.b", "p.trig" }
         let workflow = make_validated("test.trigger", "p.trig", &[("p.a", true), ("p.b", true)]);
-        let resolver = DefinitionRoutingResolver::new(SLICE_FLAVOR_SHA);
+        let resolver = DefinitionRoutingResolver::new(test_flavor(
+            &[
+                "p.trig",
+                "p.a",
+                "p.b",
+                "p.enabled",
+                "p.shared",
+                "some.plugin",
+            ]
+            .map(|key| key.parse().unwrap()),
+        ));
         let fired = node_key!("test.trigger");
         let route = resolver
             .resolve(&workflow, &fired)
             .expect("trigger present in bindings must resolve");
 
         assert_eq!(route.required_plugin_key, plugin_key!("p.trig"));
-        assert_eq!(route.target_flavor_sha, SLICE_FLAVOR_SHA);
+        assert_eq!(
+            route.required_worker_flavor_id,
+            resolver.flavor.revision_id()
+        );
 
         let plugins: Vec<&str> = route
             .required_plugins
@@ -346,7 +408,17 @@ mod tests {
             "p.trig",
             &[("p.enabled", true), ("p.disabled", false)],
         );
-        let resolver = DefinitionRoutingResolver::default();
+        let resolver = DefinitionRoutingResolver::new(test_flavor(
+            &[
+                "p.trig",
+                "p.a",
+                "p.b",
+                "p.enabled",
+                "p.shared",
+                "some.plugin",
+            ]
+            .map(|key| key.parse().unwrap()),
+        ));
         let route = resolver
             .resolve(&workflow, &node_key!("test.trigger"))
             .unwrap();
@@ -375,7 +447,17 @@ mod tests {
     fn required_plugins_deduplicated_when_trigger_and_node_share_plugin() {
         // trigger plugin = "p.shared", node plugin = "p.shared" — only one entry.
         let workflow = make_validated("test.trigger", "p.shared", &[("p.shared", true)]);
-        let resolver = DefinitionRoutingResolver::default();
+        let resolver = DefinitionRoutingResolver::new(test_flavor(
+            &[
+                "p.trig",
+                "p.a",
+                "p.b",
+                "p.enabled",
+                "p.shared",
+                "some.plugin",
+            ]
+            .map(|key| key.parse().unwrap()),
+        ));
         let fired = node_key!("test.trigger");
         let route = resolver.resolve(&workflow, &fired).unwrap();
 
@@ -384,10 +466,23 @@ mod tests {
     }
 
     #[test]
-    fn default_uses_slice_flavor_sha() {
+    fn preserves_pinned_flavor_identity() {
         let workflow = make_validated("t", "some.plugin", &[("some.plugin", true)]);
-        let resolver = DefinitionRoutingResolver::default();
+        let resolver = DefinitionRoutingResolver::new(test_flavor(
+            &[
+                "p.trig",
+                "p.a",
+                "p.b",
+                "p.enabled",
+                "p.shared",
+                "some.plugin",
+            ]
+            .map(|key| key.parse().unwrap()),
+        ));
         let route = resolver.resolve(&workflow, &node_key!("t")).unwrap();
-        assert_eq!(route.target_flavor_sha, SLICE_FLAVOR_SHA);
+        assert_eq!(
+            route.required_worker_flavor_id,
+            resolver.flavor.revision_id()
+        );
     }
 }

@@ -7,8 +7,8 @@
 
 #![cfg(feature = "runtime-repair-red")]
 
-#[path = "runtime_repair_red_scenarios/component_c7.rs"]
-mod component_c7;
+#[path = "runtime_repair_red_scenarios/same_processor_aba_fencing.rs"]
+mod same_processor_aba_fencing;
 
 use std::{net::SocketAddr, time::Duration};
 
@@ -140,7 +140,7 @@ impl AuthenticatedClient {
             .mutation(self.client.post(self.url("/workflows")))
             .json(&json!({
                 "name": format!("runtime-repair-{scenario}"),
-                "description": "Task 7 deterministic park/restart scenario",
+                "description": "Deterministic park/restart scenario",
                 "definition": {
                     "nodes": [{
                         "id": DELAY_NODE,
@@ -301,10 +301,8 @@ async fn expect_json_status(response: Response, expected: StatusCode, operation:
         .await
         .expect("SETUP: API response is valid JSON");
     assert_eq!(
-        actual,
-        expected,
-        "SETUP: {operation} returned an unexpected status with problem code {:?}",
-        body.get("code").and_then(Value::as_str)
+        actual, expected,
+        "SETUP: {operation} returned an unexpected response: {body:#}",
     );
     body
 }
@@ -402,23 +400,23 @@ async fn startkey_scenario(backend: Backend) {
     running.shutdown().await;
 }
 
-async fn c0_park_restart_resume_scenario(backend: Backend) {
+async fn durable_wait_reconnect_scenario(backend: Backend) {
     let harness = backend.harness();
     let running = RunningProfile::launch(&harness).await;
     let workflow_id = running
         .http
-        .create_delay_workflow(&format!("c0-{}", backend.label()))
+        .create_delay_workflow(&format!("durable-wait-reconnect-{}", backend.label()))
         .await;
     let started = running
         .http
         .start(
             &workflow_id,
-            &format!("runtime-repair-c0-{workflow_id}"),
-            json!({"scenario": "c0", "revision": 1}),
+            &format!("runtime-repair-durable-wait-{workflow_id}"),
+            json!({"scenario": "durable-wait-reconnect", "revision": 1}),
         )
         .await;
-    let started = expect_json_status(started, StatusCode::ACCEPTED, "C0 start").await;
-    let execution_text = required_text(&started, "id", "C0 execution id").to_owned();
+    let started = expect_json_status(started, StatusCode::ACCEPTED, "durable wait start").await;
+    let execution_text = required_text(&started, "id", "durable wait execution id").to_owned();
     let execution_id =
         ExecutionId::parse(&execution_text).expect("SETUP: API returned a valid execution id");
     let node_key = NodeKey::new(DELAY_NODE).expect("SETUP: delay node key is valid");
@@ -431,11 +429,13 @@ async fn c0_park_restart_resume_scenario(backend: Backend) {
     {
         Ok(()) => {},
         Err(EvidenceIntegrityError::ObservationTimedOut) => {
-            running.expected_red("c0-drive-not-connected").await;
+            running
+                .expected_red("durable-wait-drive-not-connected")
+                .await;
         },
         Err(error) => {
             running.shutdown().await;
-            panic!("SETUP: lifecycle observer failed before C0 park: {error}");
+            panic!("SETUP: lifecycle observer failed before durable wait park: {error}");
         },
     }
 
@@ -455,11 +455,13 @@ async fn c0_park_restart_resume_scenario(backend: Backend) {
     {
         Ok(()) => {},
         Err(EvidenceIntegrityError::ObservationTimedOut) => {
-            running.expected_red("c0-resume-not-connected").await;
+            running
+                .expected_red("durable-wait-resume-not-connected")
+                .await;
         },
         Err(error) => {
             running.shutdown().await;
-            panic!("SETUP: lifecycle observer failed before C0 resume: {error}");
+            panic!("SETUP: lifecycle observer failed before durable wait resume: {error}");
         },
     }
 
@@ -471,17 +473,21 @@ async fn c0_park_restart_resume_scenario(backend: Backend) {
     {
         Ok(_) => {},
         Err(EvidenceIntegrityError::ObservationTimedOut) => {
-            running.expected_red("c0-completion-not-observed").await;
+            running
+                .expected_red("durable-wait-completion-not-observed")
+                .await;
         },
         Err(error) => {
             running.shutdown().await;
-            panic!("SETUP: lifecycle observer failed before C0 completion: {error}");
+            panic!("SETUP: lifecycle observer failed before durable wait completion: {error}");
         },
     }
 
     let execution = running.http.get_execution(&execution_text).await;
     if execution.get("status").and_then(Value::as_str) != Some("completed") {
-        running.expected_red("c0-wrong-terminal-state").await;
+        running
+            .expected_red("durable-wait-wrong-terminal-state")
+            .await;
     }
     running.shutdown().await;
 }
@@ -565,13 +571,13 @@ async fn startkey_live_postgresql() {
 }
 
 #[tokio::test]
-async fn c0_file_sqlite_park_restart_resume() {
-    c0_park_restart_resume_scenario(Backend::FileSqlite).await;
+async fn durable_wait_file_sqlite_park_restart_resume() {
+    durable_wait_reconnect_scenario(Backend::FileSqlite).await;
 }
 
 #[tokio::test]
-async fn c0_live_postgresql_park_restart_resume() {
-    c0_park_restart_resume_scenario(Backend::LivePostgres).await;
+async fn durable_wait_live_postgresql_park_restart_resume() {
+    durable_wait_reconnect_scenario(Backend::LivePostgres).await;
 }
 
 #[tokio::test]

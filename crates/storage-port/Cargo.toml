@@ -17,6 +17,7 @@ async-trait = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 # RefreshClaimStore (ADR-0041) is re-homed shape-unchanged from the adapter;
 # its loom-verified contract uses wall-clock instants and a per-claim UUID.
 # No sqlx — the port carries no database driver.

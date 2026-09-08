@@ -46,7 +46,7 @@ use nebula_metrics::naming::{
     NEBULA_WORKFLOW_EXECUTIONS_STARTED_TOTAL, engine_lease_contention_reason,
 };
 use nebula_metrics::{Counter, Histogram, MetricsRegistry};
-use nebula_plugin::PluginRegistry;
+use nebula_plugin::{FrozenPluginRegistry, PluginRegistry};
 use nebula_workflow::{DependencyGraph, NodeState, WorkflowDefinition};
 use tokio::{
     sync::{Semaphore, mpsc, oneshot},
@@ -58,7 +58,7 @@ use nebula_storage_port::Scope;
 use nebula_storage_port::dto::ResumeTarget;
 use nebula_storage_port::dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
 
-// W-S3c: token minting — SHA-256 hash-at-rest, base64 bearer, zeroizing plaintext.
+// Resume-token minting stores only SHA-256 hashes and zeroizes plaintext bearers.
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use rand::Rng as _;
@@ -194,16 +194,35 @@ type CredentialResolveFn = Arc<
         + Sync,
 >;
 
+struct PlanFlavorRuntime {
+    loader: Arc<crate::revision_catalog::PlanFlavorRevisionLoader>,
+    registry: Arc<FrozenPluginRegistry>,
+    bundles: Arc<dyn nebula_storage_port::store::StartAcceptanceStore>,
+}
+
+enum FactoryDispatch<'a> {
+    DirectRegistry,
+    Frozen {
+        factories: &'a HashMap<NodeKey, Arc<dyn nebula_action::ActionFactory>>,
+        plan: &'a nebula_plugin::ExecutablePlanRevision,
+    },
+}
+
+enum NodeFactoryDispatch {
+    DirectRegistry,
+    Frozen {
+        factory: Arc<dyn nebula_action::ActionFactory>,
+        effect_contract: nebula_action::effect::ActionEffectContract,
+        action_version: semver::Version,
+    },
+}
+
 /// The workflow execution engine.
 ///
-/// Orchestrates end-to-end execution of workflow definitions by:
-///
-/// 1. Building a dependency graph from the workflow
-/// 2. Executing nodes frontier-by-frontier with bounded concurrency
-/// 3. Evaluating edge conditions to determine which successors to activate
-/// 4. Resolving each node's input from activated predecessor outputs
-/// 5. Delegating action execution to the [`ActionRuntime`]
-/// 6. Tracking execution state and recording metrics
+/// Orchestrates graph execution with bounded concurrency, predecessor input
+/// resolution, action dispatch, durable state transitions and metrics.
+/// Durable turns use a checked recorded graph and frozen factories; direct
+/// definition execution remains a separate technical path.
 pub struct WorkflowEngine {
     runtime: Arc<ActionRuntime>,
     metrics: MetricsRegistry,
@@ -287,13 +306,12 @@ pub struct WorkflowEngine {
     /// Frozen slot-identity map per execution (snapshot at run start).
     resource_slot_identities_by_execution:
         DashMap<ExecutionId, Arc<HashMap<ResourceKey, nebula_resource::SlotIdentity>>>,
-    /// Optional spec-16 port bundle (execution-state / lease / journal /
+    /// Optional storage-port bundle (execution-state / lease / journal /
     /// node-result / idempotency / checkpoint). `None` puts the engine in
     /// single-process library mode (no coordination seam, no lease).
     stores: Option<crate::store_seam::ExecutionStores>,
-    /// Optional spec-16 workflow-definition port bundle for the resume
-    /// path (workflow-row + version stores).
-    workflow_stores: Option<crate::store_seam::WorkflowStores>,
+    /// Exact catalog and immutable factory snapshot are configured together.
+    plan_flavor_runtime: Option<PlanFlavorRuntime>,
     /// Optional credential resolver function for providing credentials to actions.
     credential_resolver: Option<CredentialResolveFn>,
     /// Optional proactive credential refresh hook.
@@ -411,6 +429,8 @@ static NEXT_REGISTRATION_ID: AtomicU64 = AtomicU64::new(1);
 /// checkpoints the self-arm (or learns the arm failed), plus the
 /// `resume_target` that selects which parked signal wait(s) to arm (W-S3a).
 struct ResumeRequest {
+    /// First-party claim; absent only on the technical signal API.
+    control: Option<ClaimedControlTurnRequest>,
     /// The loop sends exactly one [`ResumeOutcome`] here once the self-arm
     /// has durably landed or failed. A dropped sender (the loop exited
     /// before replying) resolves the awaiting receiver to `Err`, which
@@ -429,6 +449,8 @@ struct ResumeRequest {
 /// a "the loop woke up" signal.
 #[derive(Debug)]
 pub(crate) enum ResumeOutcome {
+    /// Command and any arm were committed by the current execution owner.
+    Claimed(ClaimedControlTurnOutcome),
     /// The loop armed `count` signal waits and the arm checkpoint landed
     /// durably. The control-queue row may be acked.
     Armed {
@@ -517,13 +539,19 @@ impl Drop for RunningRegistration {
     }
 }
 
+mod checkpoint;
 mod frontier;
 mod outcome;
 mod persistence;
 mod resume;
 mod timer_scan;
 use outcome::*;
+pub use resume::{
+    ClaimedStartOutcome, ClaimedStartRequest, RecoveryTurnOutcome, RecoveryTurnRequest,
+};
 pub use timer_scan::DEFAULT_TIMER_SCAN_INTERVAL;
+mod control_turn;
+pub use control_turn::{ClaimedControlTurnOutcome, ClaimedControlTurnRequest};
 
 impl WorkflowEngine {
     /// Create a new engine with the given components.
@@ -568,7 +596,7 @@ impl WorkflowEngine {
             resource_slot_identities: RwLock::new(HashMap::new()),
             resource_slot_identities_by_execution: DashMap::new(),
             stores: None,
-            workflow_stores: None,
+            plan_flavor_runtime: None,
             credential_resolver: None,
             credential_refresh: None,
             action_credentials: HashMap::new(),
@@ -675,6 +703,7 @@ impl WorkflowEngine {
                 .try_send(ResumeRequest {
                     ack: ack_tx,
                     resume_target,
+                    control: None,
                 })
                 .is_err()
             {
@@ -729,8 +758,9 @@ impl WorkflowEngine {
     ///
     /// Primarily for tests that need sub-second heartbeats under
     /// `tokio::time::pause()`. Production callers should leave this at
-    /// [`DEFAULT_EXECUTION_LEASE_HEARTBEAT_INTERVAL`]; setting it too
-    /// large relative to `lease_ttl` makes heartbeats skippable.
+    /// [`DEFAULT_EXECUTION_LEASE_HEARTBEAT_INTERVAL`]. The effective interval
+    /// is bounded to one third of the backend-normalized TTL and at least
+    /// one millisecond, so overrides cannot disable lease renewal.
     #[must_use = "builder methods must be chained or built"]
     pub fn with_lease_heartbeat_interval(mut self, interval: Duration) -> Self {
         self.lease_heartbeat_interval = interval;
@@ -1395,7 +1425,7 @@ impl WorkflowEngine {
         self
     }
 
-    /// Set the spec-16 storage-port bundle for persistent execution state.
+    /// Set the storage-port bundle for persistent execution state.
     ///
     /// When set, the engine persists execution state after creation and
     /// after each node completes through these scoped port handles (state
@@ -1409,15 +1439,29 @@ impl WorkflowEngine {
         self
     }
 
-    /// Set the spec-16 workflow-definition port bundle for the resume
-    /// path. Required for [`resume_execution`]; when not set,
-    /// `resume_execution` returns an error.
-    ///
-    /// [`resume_execution`]: Self::resume_execution
+    /// Configure exact revisions, retained factories, and execution-owned bundles.
+    /// The bundle reader must use the same backend as the execution stores.
     #[must_use = "builder methods must be chained or built"]
-    pub fn with_workflow_stores(mut self, stores: crate::store_seam::WorkflowStores) -> Self {
-        self.workflow_stores = Some(stores);
+    pub fn with_plan_flavor_runtime(
+        mut self,
+        loader: Arc<crate::revision_catalog::PlanFlavorRevisionLoader>,
+        registry: Arc<FrozenPluginRegistry>,
+        bundles: Arc<dyn nebula_storage_port::store::StartAcceptanceStore>,
+    ) -> Self {
+        self.plan_flavor_runtime = Some(PlanFlavorRuntime {
+            loader,
+            registry,
+            bundles,
+        });
         self
+    }
+
+    /// Worker routing identity derived from the exact configured factory snapshot.
+    #[must_use]
+    pub fn worker_flavor_context(&self) -> Option<nebula_plugin::WorkerFlavorContext> {
+        self.plan_flavor_runtime
+            .as_ref()
+            .map(|runtime| nebula_plugin::WorkerFlavorContext::from_registry(&runtime.registry))
     }
 
     /// Attach an event bus for real-time execution monitoring.
@@ -1627,6 +1671,7 @@ impl WorkflowEngine {
                 scope,
                 &graph,
                 &node_map,
+                FactoryDispatch::DirectRegistry,
                 &outputs,
                 &semaphore,
                 &cancel_token,
@@ -1641,6 +1686,7 @@ impl WorkflowEngine {
                 None,
                 &budget,
                 &started,
+                Duration::ZERO,
                 error_strategy,
                 workflow_retry_policy,
                 seed_nodes,
@@ -1651,6 +1697,7 @@ impl WorkflowEngine {
 
         self.runtime.clear_execution_output_totals(execution_id);
 
+        let failed_node = failed_node?;
         let elapsed = started.elapsed();
         let FinalStatusDecision {
             status: final_status,
@@ -1737,8 +1784,7 @@ impl WorkflowEngine {
         frontier_cancel: CancellationToken,
     ) -> Result<Option<LeaseGuard>, EngineError> {
         let holder = self.instance_id.to_string();
-        let ttl = self.lease_ttl;
-        let heartbeat_interval = self.lease_heartbeat_interval;
+        let (ttl, heartbeat_interval) = self.execution_lease_policy();
 
         // Dual-dispatch lease acquisition: spec-16 port (returns the
         // fencing token threaded into every commit) when stores are
@@ -1807,7 +1853,9 @@ impl WorkflowEngine {
     /// Returns [`EngineError::PlanningFailed`] when no execution stores are
     /// configured: a handoff fence without a storage seam is a wiring bug,
     /// not a library-mode fallback.
-    fn adopt_handoff_lease(
+    /// Returns [`EngineError::Leased`] if the fence has expired or been replaced,
+    /// and [`EngineError::LeaseAdoption`] if its initial renewal cannot be confirmed.
+    async fn adopt_handoff_lease(
         &self,
         scope: &Scope,
         execution_id: ExecutionId,
@@ -1818,17 +1866,43 @@ impl WorkflowEngine {
             EngineError::PlanningFailed("handoff lease adoption requires execution stores".into())
         })?;
         let holder = self.instance_id.to_string();
+        let (ttl, heartbeat_interval) = self.execution_lease_policy();
+        // The handoff may have granted a much shorter TTL than this engine's
+        // heartbeat period. Establish the engine's renewal window synchronously
+        // under the acknowledged fence before allowing any action to run.
+        let renewed = stores
+            .execution
+            .renew_lease(scope, &execution_id.to_string(), fence, ttl)
+            .await
+            .map_err(|source| EngineError::LeaseAdoption { source })?;
+        if !renewed {
+            return Err(EngineError::Leased {
+                execution_id,
+                holder: "another runtime owner or expired lease".to_owned(),
+            });
+        }
         tracing::debug!(
             %execution_id,
             %holder,
             fence_generation = fence.generation(),
-            ttl_secs = self.lease_ttl.as_secs(),
-            heartbeat_secs = self.lease_heartbeat_interval.as_secs(),
+            ttl_secs = ttl.as_secs(),
+            heartbeat_ms = heartbeat_interval.as_millis(),
             "adopting handoff-minted execution lease (#976)"
         );
         let backend =
             crate::store_seam::LeaseBackend::new(stores.execution.clone(), scope.clone(), fence);
         Ok(self.spawn_lease_guard(backend, execution_id, holder, frontier_cancel))
+    }
+
+    fn execution_lease_policy(&self) -> (Duration, Duration) {
+        let ttl = self
+            .lease_ttl
+            .clamp(Duration::from_secs(1), Duration::from_hours(24));
+        let heartbeat = self
+            .lease_heartbeat_interval
+            .min(ttl / 3)
+            .max(Duration::from_millis(1));
+        (ttl, heartbeat)
     }
 
     /// Spawn the lease heartbeat task and assemble the [`LeaseGuard`] around
@@ -1845,8 +1919,7 @@ impl WorkflowEngine {
         holder: String,
         frontier_cancel: CancellationToken,
     ) -> LeaseGuard {
-        let ttl = self.lease_ttl;
-        let heartbeat_interval = self.lease_heartbeat_interval;
+        let (ttl, heartbeat_interval) = self.execution_lease_policy();
 
         // Spawn a heartbeat task. A shared `heartbeat_lost` token
         // trips when a renew returns `Ok(false)` (stolen or expired) or
@@ -1952,69 +2025,33 @@ impl WorkflowEngine {
         }
     }
 
-    /// Pre-flight: reject any `Connection` whose `from_port` the source
-    /// action never declares.
-    ///
-    /// Called from two sites, both strictly *before* their caller creates
-    /// the execution row or acquires the execution lease — the placement is
-    /// load-bearing at both, not incidental: it is what makes a rejection
-    /// have zero execution side effects (nothing persisted, nothing leased,
-    /// no node dispatched) rather than orphaning a row under a held lease
-    /// that nothing ever tears down.
-    ///
-    /// - [`execute_workflow_scoped`](Self::execute_workflow_scoped), immediately
-    ///   after [`DependencyGraph::from_definition`] — before that function's
-    ///   `stores.execution.create` / `acquire_and_heartbeat_lease`. Reachable
-    ///   only from tests and direct-embed callers; production dispatch never
-    ///   calls it.
-    /// - [`resume_execution`](Self::resume_execution), gated on
-    ///   `is_first_attempt` (i.e. only on the cold-start branch where
-    ///   `node_states` was empty before seeding — see that function's `W0 U2`
-    ///   comment), immediately after that function's `node_map` is built —
-    ///   before its `acquire_and_heartbeat_lease`. This is production's ONLY
-    ///   path for validating a brand-new execution: `EngineControlDispatch`'s
-    ///   `dispatch_start` / `dispatch_resume` / `dispatch_restart` all
-    ///   converge on `resume_execution`, never on `execute_workflow_scoped`.
-    ///
-    /// Do not move either call site to after its lease acquisition.
-    ///
-    /// Deliberately **not** run on a genuine resume (non-empty `node_states`
-    /// on entry to `resume_execution`): that path reloads the *latest
-    /// published* workflow version rather than the version the execution
-    /// actually started under (a separate, pre-existing bug), so validating
-    /// there risks hard-failing an already in-flight execution over a
-    /// version mismatch its operator never had a chance to see. A true first
-    /// attempt carries no such risk — there is no prior in-flight state to
-    /// conflict with, and the loaded workflow version IS the version the
-    /// execution is starting under. The version-skew bug itself remains a
-    /// follow-up, not solved here.
-    ///
-    /// Three deliberate fail-open carve-outs (this is a strict improvement
-    /// over today's silent no-op, not full protection):
-    /// - An unregistered source action skips validation — the registry has
-    ///   nothing to check the wire against.
-    /// - A node pinning `interface_version` to a version with no matching
-    ///   registered entry skips validation the same way, for the same
-    ///   reason — an actually-unresolvable pinned version still fails later,
-    ///   at dispatch, through `get_factory_versioned`'s own not-found error.
-    /// - A source action that declares any `OutputPort::Dynamic` port
-    ///   skips validation for **all** of its outgoing connections. Dynamic
-    ///   ports (e.g. `core.switch`) emit config-derived keys (`"a"`, `"b"`,
-    ///   `"default"`, ...) that no static check here can enumerate; a
-    ///   uniform check would hard-reject every legitimate Switch/Router
-    ///   wire. Real protection for dynamic ports is the `DynamicPort`
-    ///   concrete-key-expansion follow-up, not this pre-flight.
-    ///
-    /// Checks the SAME action version `ActionRegistry::get_factory_versioned`
-    /// will actually dispatch for a version-pinned node — via
-    /// `ActionRegistry::output_ports_versioned`, threaded through
-    /// `node.interface_version` — rather than always the latest registered
-    /// version. Checking against the wrong version could wrongly reject a
-    /// wire the pinned version supports, or wrongly pass one it doesn't.
+    /// Reject a connection whose source port is absent from the metadata of
+    /// the factory that will execute it. Exact resume supplies factories from
+    /// the retained plan snapshot on every turn; direct embedded execution
+    /// resolves the explicitly pinned registry version before creating state.
+    /// Dynamic output declarations remain open by definition.
     fn validate_declared_output_ports(
         &self,
         graph: &DependencyGraph,
         node_map: &HashMap<NodeKey, &nebula_workflow::NodeDefinition>,
+    ) -> Result<(), EngineError> {
+        self.validate_declared_output_ports_with(graph, node_map, None)
+    }
+
+    fn validate_declared_output_ports_exact(
+        &self,
+        graph: &DependencyGraph,
+        node_map: &HashMap<NodeKey, &nebula_workflow::NodeDefinition>,
+        factories: &HashMap<NodeKey, Arc<dyn nebula_action::ActionFactory>>,
+    ) -> Result<(), EngineError> {
+        self.validate_declared_output_ports_with(graph, node_map, Some(factories))
+    }
+
+    fn validate_declared_output_ports_with(
+        &self,
+        graph: &DependencyGraph,
+        node_map: &HashMap<NodeKey, &nebula_workflow::NodeDefinition>,
+        factories: Option<&HashMap<NodeKey, Arc<dyn nebula_action::ActionFactory>>>,
     ) -> Result<(), EngineError> {
         // `(from_node, to_node, port, declared)` per offending connection.
         // Collected as plain data (not yet wrapped in `EngineError`) so it
@@ -2029,11 +2066,21 @@ impl WorkflowEngine {
                 continue;
             }
 
-            let Some(declared) = self
-                .runtime
-                .registry()
-                .output_ports_versioned(&node.action_key, node.interface_version.as_ref())
-            else {
+            let ports = match factories {
+                None => self
+                    .runtime
+                    .registry()
+                    .output_ports_versioned(&node.action_key, node.interface_version.as_ref()),
+                Some(factories) => Some(
+                    factories
+                        .get(source_id)
+                        .ok_or(EngineError::ExactFactoryUnavailable)?
+                        .metadata()
+                        .outputs
+                        .clone(),
+                ),
+            };
+            let Some(declared) = ports else {
                 tracing::warn!(
                     %source_id,
                     action_key = %node.action_key,
@@ -2339,6 +2386,7 @@ impl WorkflowEngine {
                 scope,
                 &graph,
                 &node_map,
+                FactoryDispatch::DirectRegistry,
                 &outputs,
                 &semaphore,
                 &cancel_token,
@@ -2351,6 +2399,7 @@ impl WorkflowEngine {
                 fencing,
                 &budget,
                 &started,
+                Duration::ZERO,
                 error_strategy,
                 workflow_retry_policy,
                 seed_nodes,
@@ -2387,6 +2436,15 @@ impl WorkflowEngine {
 
         self.runtime.clear_execution_output_totals(execution_id);
 
+        let failed_node = match failed_node {
+            Ok(failed_node) => failed_node,
+            Err(error) => {
+                if let Some(guard) = lease {
+                    guard.shutdown().await;
+                }
+                return Err(error);
+            },
+        };
         let elapsed = started.elapsed();
 
         // 10. Determine final status and emit events
@@ -2548,6 +2606,7 @@ impl WorkflowEngine {
 /// Bundled parameters for a single node execution task.
 struct NodeTask {
     runtime: Arc<ActionRuntime>,
+    factory_dispatch: NodeFactoryDispatch,
     cancel: CancellationToken,
     sem: Arc<Semaphore>,
     outputs: Arc<DashMap<NodeKey, serde_json::Value>>,
@@ -2581,11 +2640,20 @@ struct NodeTask {
     /// credential ID. The caller (engine builder) controls the mapping from
     /// action key to credential IDs — this is a best-effort pre-dispatch hint.
     ///
-    /// TODO: when per-node credential declarations are populated from action
-    /// dependency metadata, pass the actual credential ID(s) instead.
+    /// Per-node credential declarations are not part of the recorded action
+    /// dependency metadata yet, so this hook receives the action key.
     credential_refresh: Option<CredentialRefreshFn>,
     /// Optional rate limiter shared with other nodes using the same ActionKey.
     rate_limiter: Option<Arc<nebula_resilience::rate_limiter::TokenBucket>>,
+    /// Authenticated execution scope and lease acquired by the driving turn.
+    scope: Scope,
+    fencing: Option<nebula_storage_port::FencingToken>,
+    /// ADR-0120 operation ledger for durable effect-slot tracking (#978).
+    operation_ledger: Option<Arc<dyn nebula_storage_port::store::OperationLedger>>,
+    /// Clock used to bound a granted provider call by its pinned lifetime.
+    clock: Arc<dyn Clock>,
+    /// Attempt provenance; never part of the logical effect occurrence address.
+    attempt_generation: u64,
 }
 
 impl NodeTask {
@@ -2694,16 +2762,90 @@ impl NodeTask {
         // `factory.instantiate(node, ctx)` to build a fresh erased
         // action, then dispatches the matching variant. The factory
         // spine is the sole dispatch path as of ADR-0098 D0 PR3.
-        let result = self
-            .runtime
-            .execute_action_with_node(
-                &self.node,
-                self.interface_version.as_ref(),
-                self.input,
-                &action_ctx,
-                None,
-            )
-            .await;
+
+        let result = match self.factory_dispatch {
+            NodeFactoryDispatch::DirectRegistry => self
+                .runtime
+                .execute_action_with_node(
+                    &self.node,
+                    self.interface_version.as_ref(),
+                    self.input,
+                    &action_ctx,
+                    None,
+                )
+                .await
+                .map_err(EngineError::Runtime),
+            NodeFactoryDispatch::Frozen {
+                factory,
+                effect_contract,
+                action_version,
+            } => {
+                use nebula_action::effect::ActionEffectContract;
+                if factory.metadata().effect_contract != effect_contract
+                    || factory.metadata().base.version != action_version
+                {
+                    return (
+                        self.node_key,
+                        Err(crate::EffectExecutionError::InvalidContract.into()),
+                    );
+                }
+                match &effect_contract {
+                    ActionEffectContract::NoExternalEffects
+                        if factory.remote_effect_factory().is_none() =>
+                    {
+                        self.runtime
+                            .execute_resolved_action(factory, &self.node, self.input, &action_ctx)
+                            .await
+                            .map_err(EngineError::Runtime)
+                    },
+                    ActionEffectContract::Remote(descriptor) => {
+                        let Some(remote) = factory.remote_effect_factory() else {
+                            return (
+                                self.node_key,
+                                Err(crate::EffectExecutionError::MissingAuthority.into()),
+                            );
+                        };
+                        if factory.metadata().kind != nebula_action::ActionKind::Stateless {
+                            return (
+                                self.node_key,
+                                Err(crate::EffectExecutionError::InvalidContract.into()),
+                            );
+                        }
+                        let (Some(ledger), Some(fencing)) =
+                            (self.operation_ledger.as_ref(), self.fencing)
+                        else {
+                            return (
+                                self.node_key,
+                                Err(crate::EffectExecutionError::MissingAuthority.into()),
+                            );
+                        };
+                        let turn = crate::effect_driver::EffectTurn {
+                            ledger: ledger.as_ref(),
+                            scope: &self.scope,
+                            fencing,
+                            execution_id: self.execution_id,
+                            workflow_id: self.workflow_id,
+                            node_key: &self.node_key,
+                            action_key: &self.action_key,
+                            action_version: &action_version,
+                            attempt_generation: self.attempt_generation,
+                            clock: self.clock.as_ref(),
+                            cancellation: &self.cancel,
+                        };
+                        turn.execute(remote, descriptor, self.input)
+                            .await
+                            .map_err(|error| {
+                                if error == crate::EffectExecutionError::Cancelled {
+                                    EngineError::Cancelled
+                                } else {
+                                    EngineError::Effect(error)
+                                }
+                            })
+                    },
+                    _ => Err(crate::EffectExecutionError::MissingAuthority.into()),
+                }
+            },
+        };
 
         match result {
             Ok(action_result) => {
@@ -2713,7 +2855,7 @@ impl NodeTask {
                 }
                 (self.node_key, Ok(action_result))
             },
-            Err(e) => (self.node_key, Err(EngineError::Runtime(e))),
+            Err(e) => (self.node_key, Err(e)),
         }
     }
 }
@@ -2909,10 +3051,11 @@ fn propagate_skip(
 fn check_budget(
     budget: &ExecutionBudget,
     started: &Instant,
+    elapsed_before_turn: Duration,
     total_output_bytes: &AtomicU64,
 ) -> Option<String> {
     if let Some(max_dur) = budget.max_duration
-        && started.elapsed() > max_dur
+        && elapsed_before_turn.saturating_add(started.elapsed()) > max_dur
     {
         return Some("execution budget exceeded: max_duration".into());
     }
@@ -3214,7 +3357,7 @@ fn mark_node_failed(exec_state: &mut ExecutionState, node_key: NodeKey, err: &En
         .is_ok()
     {
         if let Some(ns) = exec_state.node_states.get_mut(&node_key) {
-            ns.error_message = Some(err.to_string());
+            ns.error_message = Some(durable_error_message(err));
         }
     } else {
         tracing::warn!(
@@ -3224,6 +3367,64 @@ fn mark_node_failed(exec_state: &mut ExecutionState, node_key: NodeKey, err: &En
             "mark_node_failed: transition to Failed rejected; error_message not written"
         );
     }
+}
+
+const MAX_DURABLE_ERROR_MESSAGE_BYTES: usize = 4 * 1024;
+const MAX_DURABLE_ERROR_SOURCE_DEPTH: usize = 8;
+
+/// Render one bounded diagnostic from an error and its typed source chain.
+///
+/// Each error controls its own redacted `Display` representation. Wrapper
+/// messages that already end with their source are skipped so a cause appears
+/// once even when an outer error includes it for context.
+fn durable_error_message(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut message = String::new();
+    if !append_error_component(&mut message, &error.to_string()) {
+        return message;
+    }
+
+    let mut source = error.source();
+    for _ in 0..MAX_DURABLE_ERROR_SOURCE_DEPTH {
+        let Some(current) = source else {
+            break;
+        };
+        let current_message = current.to_string();
+        if !current_message.is_empty()
+            && !message.ends_with(&current_message)
+            && !append_error_component(&mut message, &current_message)
+        {
+            break;
+        }
+        source = current.source();
+    }
+    message
+}
+
+fn append_error_component(message: &mut String, component: &str) -> bool {
+    let separator = if message.is_empty() { "" } else { ": " };
+    let available = MAX_DURABLE_ERROR_MESSAGE_BYTES.saturating_sub(message.len());
+    if separator.len() + component.len() <= available {
+        message.push_str(separator);
+        message.push_str(component);
+        return true;
+    }
+
+    if available <= separator.len() {
+        return false;
+    }
+    message.push_str(separator);
+    let available = MAX_DURABLE_ERROR_MESSAGE_BYTES.saturating_sub(message.len());
+    let ellipsis = "…";
+    if available <= ellipsis.len() {
+        return false;
+    }
+    let mut end = (available - ellipsis.len()).min(component.len());
+    while !component.is_char_boundary(end) {
+        end -= 1;
+    }
+    message.push_str(&component[..end]);
+    message.push_str(ellipsis);
+    false
 }
 
 /// Mint a single-use resume token for a signal-park and return the minted row

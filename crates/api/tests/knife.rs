@@ -167,6 +167,16 @@ async fn knife_api_producer_boundary_via_scoped_port() {
         StatusCode::OK,
         "API producer boundary, step 2: activate valid workflow must return 200"
     );
+    let activated = state
+        .workflow_version_store
+        .get_published(&port_scope(), &workflow_id)
+        .await
+        .expect("read the persisted activation")
+        .expect("activation must publish a version");
+    assert!(
+        activated.activation.is_some(),
+        "successful HTTP activation must persist exact workflow, plan and flavor identities"
+    );
 
     // ── Step 3: start an execution → 202, created, started_at>0 ──────────────
     let app = app::build_app(state.clone(), &api_config);
@@ -197,6 +207,27 @@ async fn knife_api_producer_boundary_via_scoped_port() {
         .as_str()
         .expect("execution must have an id")
         .to_string();
+    let bundle = state
+        .start_acceptance_scoped(&port_scope())
+        .read_contract_bundle(&port_scope(), &execution_id)
+        .await
+        .expect("start receipt bundle read must succeed")
+        .expect("HTTP start must atomically persist its exact contract bundle");
+    assert_eq!(bundle.execution_id(), execution_id);
+    let execution = state
+        .execution_store
+        .get(&port_scope(), &execution_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        execution.state["executable_plan_revision_id"],
+        serde_json::json!(bundle.record().identity().revisions().plan())
+    );
+    assert_eq!(
+        execution.state["worker_flavor_revision_id"],
+        serde_json::json!(bundle.record().identity().revisions().worker_flavor())
+    );
     assert_eq!(
         started["status"].as_str(),
         Some("created"),
@@ -442,7 +473,7 @@ async fn knife_step3_manually_composed_consumer_dispatches_start() {
     use nebula_core::action_key;
     use nebula_engine::{
         ActionExecutor, ActionRegistry, ActionRuntime, ControlConsumer, DataPassingPolicy,
-        EngineControlDispatch, ExecutionStores, InProcessRunner, WorkflowEngine, WorkflowStores,
+        EngineControlDispatch, ExecutionStores, InProcessRunner, WorkflowEngine,
     };
     use nebula_execution::ExecutionStatus;
     use nebula_workflow::{
@@ -451,7 +482,7 @@ async fn knife_step3_manually_composed_consumer_dispatches_start() {
     };
     use tokio_util::sync::CancellationToken;
 
-    let (state, _control_queue) = create_state_with_queue().await;
+    let (state, handles) = create_state_with_port_handles().await;
     let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
@@ -508,6 +539,7 @@ async fn knife_step3_manually_composed_consumer_dispatches_start() {
             .create(
                 &scope,
                 nebula_storage_port::dto::WorkflowVersionRecord {
+                    activation: None,
                     workflow_id: id_str,
                     number: 1,
                     published: true,
@@ -518,6 +550,14 @@ async fn knife_step3_manually_composed_consumer_dispatches_start() {
             .await
             .unwrap();
     }
+
+    state
+        .workflow_activation
+        .as_ref()
+        .unwrap()
+        .activate(&knife_scope(), workflow_id, 1, wf)
+        .await
+        .unwrap();
 
     // ── Build the engine bound to the same scoped port handles the API
     // wrote to ──────────────────────────────────────────────────────────────
@@ -564,6 +604,11 @@ async fn knife_step3_manually_composed_consumer_dispatches_start() {
     let engine = Arc::new(
         WorkflowEngine::new(runtime, metrics)
             .unwrap()
+            .with_plan_flavor_runtime(
+                Arc::clone(&handles.runtime.loader),
+                Arc::clone(&handles.runtime.registry),
+                state.start_acceptance_scoped(&s),
+            )
             .with_execution_stores(ExecutionStores {
                 execution: Arc::clone(&scoped_exec),
                 journal: Arc::new(nebula_tenancy::ScopedExecutionJournalReader::new(
@@ -577,28 +622,26 @@ async fn knife_step3_manually_composed_consumer_dispatches_start() {
                 checkpoints: Arc::new(nebula_storage::inmem::InMemoryCheckpointStore::new()),
                 idempotency: Arc::new(nebula_storage::inmem::InMemoryIdempotencyGuard::new()),
                 resume_tokens: Arc::new(nebula_storage::InMemoryResumeTokenStore::standalone()),
-            })
-            .with_workflow_stores(WorkflowStores {
-                workflow: Arc::new(nebula_tenancy::ScopedWorkflowStore::new(
-                    Arc::clone(&state.workflow_store),
-                    s.clone(),
-                )),
-                versions: Arc::new(nebula_tenancy::ScopedWorkflowVersionStore::new(
-                    Arc::clone(&state.workflow_version_store),
-                    s.clone(),
-                )),
+                operation_ledger: handles.operation_ledger(),
             }),
     );
 
     // ── Spawn the consumer so `Start` rows are drained continuously ──────────
-    let dispatch = Arc::new(EngineControlDispatch::new(engine, Arc::clone(&scoped_exec)));
-    let consumer = ControlConsumer::new(
+    let dispatch = Arc::new(EngineControlDispatch::new(
+        engine,
+        Arc::clone(&scoped_exec),
+        state.turn_handoff_scoped(&s),
+        "knife-control".to_owned(),
+        Duration::from_secs(30),
+    ));
+    let consumer = ControlConsumer::for_flavor(
         Arc::new(nebula_tenancy::ScopedControlQueue::new(
             Arc::clone(&state.control_queue),
             s,
         )),
         dispatch,
         proc16(b"knife-a2"),
+        handles.runtime.registry.revision().id(),
     )
     .with_poll_interval(Duration::from_millis(10));
     let shutdown = CancellationToken::new();
@@ -710,7 +753,8 @@ async fn knife_step5_api_submits_cancel_intent_without_writing_the_execution() {
     use nebula_execution::ExecutionStatus;
     use nebula_storage_port::dto::ControlCommand;
 
-    let (state, control_queue) = create_state_with_queue().await;
+    let (state, handles) = create_state_with_port_handles().await;
+    let control_queue = handles.control_queue.clone();
     let api_config = ApiConfig::for_test();
     let token = create_test_jwt();
 
@@ -722,7 +766,7 @@ async fn knife_step5_api_submits_cancel_intent_without_writing_the_execution() {
     // The shared harness exposes `slow_started` but deliberately no exit
     // signal; this test uses it only to establish that cancellation races with
     // active work.
-    let seam = engine_seam::spawn_engine_consumer(&state);
+    let seam = engine_seam::spawn_engine_consumer(&state, &handles);
 
     // ── Start the execution via the API producer path ───────────────────────
     let start_request = serde_json::json!({ "input": { "knife_e2e": "a3" } });

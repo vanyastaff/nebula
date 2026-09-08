@@ -40,6 +40,23 @@ use serde::{Deserialize, Serialize};
 /// Default source output port for a [`Connection`] when `from_port` is `None`.
 static DEFAULT_FROM_PORT: LazyLock<PortKey> = LazyLock::new(|| port_key!("out"));
 
+/// Runtime-generated payload carried by the intrinsic `error` output port.
+///
+/// This contract is independent of a source action's successful output schema.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, nebula_schema::Schema)]
+pub struct ErrorPortPayload {
+    /// Runtime diagnostic delivered to the configured error handler.
+    pub error: String,
+    /// Canonical source node identifier in its string representation.
+    pub node_id: String,
+}
+
+impl std::fmt::Debug for ErrorPortPayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ErrorPortPayload").finish_non_exhaustive()
+    }
+}
+
 /// A directed edge from one node's output port to another node's input port.
 ///
 /// Edges are pure wires — they do not carry conditions, matchers, or
@@ -117,6 +134,27 @@ mod tests {
     use nebula_core::node_key;
 
     use super::*;
+
+    #[test]
+    fn intrinsic_error_payload_matches_its_schema_and_redacts_debug() {
+        let payload = ErrorPortPayload {
+            error: "diagnostic-canary".into(),
+            node_id: "source".into(),
+        };
+        let encoded = serde_json::to_value(&payload).unwrap();
+        assert_eq!(
+            encoded,
+            serde_json::json!({"error": "diagnostic-canary", "node_id": "source"})
+        );
+        nebula_schema::schema_of::<ErrorPortPayload>()
+            .validate(&nebula_schema::FieldValues::from_json(encoded.clone()).unwrap())
+            .unwrap();
+        assert_eq!(
+            serde_json::from_value::<ErrorPortPayload>(encoded).unwrap(),
+            payload
+        );
+        assert!(!format!("{payload:?}").contains("diagnostic-canary"));
+    }
 
     #[test]
     fn connection_new_defaults_to_out_port() {

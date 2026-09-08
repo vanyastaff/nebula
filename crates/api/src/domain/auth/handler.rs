@@ -1013,7 +1013,7 @@ mod oauth_transaction_tests {
         validate_oauth_request_authority,
     };
     use crate::{
-        ApiConfig, AppState, OAuthIdentityRuntime,
+        AppState, OAuthIdentityRuntime,
         config::{OAuthProviderConfig, OAuthProvidersConfig},
         domain::auth::backend::{
             AuthBackend, CSRF_COOKIE, InMemoryAuthBackend, MfaLoginCompleteRequest, OAuthProvider,
@@ -1093,7 +1093,7 @@ mod oauth_transaction_tests {
         .expect("configured test provider must enable OAuth");
         let backend = Arc::new(InMemoryAuthBackend::new().with_oauth_runtime(Arc::new(runtime)));
         let auth_backend: Arc<dyn AuthBackend> = Arc::clone(&backend) as _;
-        let state = AppState::in_memory(ApiConfig::for_test().jwt_secret)
+        let state = crate::state::test_state_with_in_memory_stores()
             .with_auth_backend(auth_backend)
             .with_public_url(PUBLIC_URL);
         (state, backend)

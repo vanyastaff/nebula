@@ -144,6 +144,41 @@ impl std::fmt::Debug for DisplayError {
 
 impl std::error::Error for DisplayError {}
 
+/// Cloneable owner for an action error's concrete source.
+///
+/// This pointer deliberately implements [`std::ops::Deref`] without
+/// implementing [`std::error::Error`] itself. That lets `thiserror` follow
+/// the pointer to the original `dyn Error`, so [`std::error::Error::source`]
+/// exposes the concrete cause directly while [`ActionError`] remains cloneable.
+#[derive(Clone)]
+pub struct ActionErrorSource(Arc<dyn std::error::Error + Send + Sync>);
+
+impl ActionErrorSource {
+    fn new(source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self(Arc::new(source))
+    }
+}
+
+impl std::ops::Deref for ActionErrorSource {
+    type Target = dyn std::error::Error + Send + Sync;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref()
+    }
+}
+
+impl std::fmt::Display for ActionErrorSource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.0.as_ref(), formatter)
+    }
+}
+
+impl std::fmt::Debug for ActionErrorSource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self.0.as_ref(), formatter)
+    }
+}
+
 /// Error type for all action operations.
 ///
 /// Distinguishes retryable from fatal errors so the engine can decide
@@ -156,10 +191,11 @@ pub enum ActionError {
     ///
     /// The `backoff_hint` is a suggestion from the action; the engine
     /// may ignore it in favor of its own retry configuration.
-    #[error("retryable: {error}")]
+    #[error("retryable action failure")]
     Retryable {
         /// Full error chain wrapped in `Arc` for `Clone` support.
-        error: Arc<dyn std::error::Error + Send + Sync>,
+        #[source]
+        error: ActionErrorSource,
         /// Machine-readable error code for engine decisions.
         code: Option<RetryHintCode>,
         /// Suggested delay before retry (engine may override).
@@ -171,10 +207,11 @@ pub enum ActionError {
     /// Permanent failure — never retry.
     ///
     /// Invalid credentials, schema mismatch, business logic rejection.
-    #[error("fatal: {error}")]
+    #[error("fatal action failure")]
     Fatal {
         /// Full error chain wrapped in `Arc` for `Clone` support.
-        error: Arc<dyn std::error::Error + Send + Sync>,
+        #[source]
+        error: ActionErrorSource,
         /// Machine-readable error code for engine decisions.
         code: Option<RetryHintCode>,
         /// Optional structured details about the failure.
@@ -199,7 +236,7 @@ pub enum ActionError {
     /// user input.
     #[error("validation ({}): field `{field}`{}",
         reason.as_str(),
-        detail.as_deref().map(|d| format!(" — {d}")).unwrap_or_default()
+        detail.as_deref().map(|detail| format!(" — {detail}")).unwrap_or_default()
     )]
     Validation {
         /// The field or input area that failed validation. Must be a
@@ -251,7 +288,7 @@ pub enum ActionError {
     /// not exist).
     ///
     /// [`execute_action_versioned`]: https://docs.rs/nebula-runtime
-    #[error("credential refresh failed for action '{action_key}': {source}")]
+    #[error("credential refresh failed for action '{action_key}'")]
     CredentialRefreshFailed {
         /// Action key identifying the dispatch target that was waiting on
         /// the refresh. Free-form string (not typed) to avoid a back-edge
@@ -261,7 +298,7 @@ pub enum ActionError {
         /// `ActionError` stays `Clone` (consistent with the other variants
         /// that wrap `dyn Error` in `Arc`).
         #[source]
-        source: Arc<dyn std::error::Error + Send + Sync>,
+        source: ActionErrorSource,
     },
 }
 
@@ -360,7 +397,7 @@ impl ActionError {
         error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
     ) -> Self {
         Self::Retryable {
-            error: Arc::new(DisplayError::new(error)),
+            error: ActionErrorSource::new(DisplayError::new(error)),
             code: None,
             backoff_hint: None,
             partial_output: None,
@@ -371,7 +408,7 @@ impl ActionError {
     #[must_use]
     pub fn retryable_from(error: impl std::error::Error + Send + Sync + 'static) -> Self {
         Self::Retryable {
-            error: Arc::new(error),
+            error: ActionErrorSource::new(error),
             code: None,
             backoff_hint: None,
             partial_output: None,
@@ -385,7 +422,7 @@ impl ActionError {
         backoff: Duration,
     ) -> Self {
         Self::Retryable {
-            error: Arc::new(DisplayError::new(error)),
+            error: ActionErrorSource::new(DisplayError::new(error)),
             code: None,
             backoff_hint: Some(backoff),
             partial_output: None,
@@ -399,7 +436,7 @@ impl ActionError {
         hint: RetryHintCode,
     ) -> Self {
         Self::Retryable {
-            error: Arc::new(DisplayError::new(error)),
+            error: ActionErrorSource::new(DisplayError::new(error)),
             code: Some(hint),
             backoff_hint: None,
             partial_output: None,
@@ -413,7 +450,7 @@ impl ActionError {
         partial: serde_json::Value,
     ) -> Self {
         Self::Retryable {
-            error: Arc::new(DisplayError::new(error)),
+            error: ActionErrorSource::new(DisplayError::new(error)),
             code: None,
             backoff_hint: None,
             partial_output: Some(partial),
@@ -427,7 +464,7 @@ impl ActionError {
     #[must_use]
     pub fn fatal(error: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static) -> Self {
         Self::Fatal {
-            error: Arc::new(DisplayError::new(error)),
+            error: ActionErrorSource::new(DisplayError::new(error)),
             code: None,
             details: None,
         }
@@ -437,7 +474,7 @@ impl ActionError {
     #[must_use]
     pub fn fatal_from(error: impl std::error::Error + Send + Sync + 'static) -> Self {
         Self::Fatal {
-            error: Arc::new(error),
+            error: ActionErrorSource::new(error),
             code: None,
             details: None,
         }
@@ -450,7 +487,7 @@ impl ActionError {
         details: serde_json::Value,
     ) -> Self {
         Self::Fatal {
-            error: Arc::new(DisplayError::new(error)),
+            error: ActionErrorSource::new(DisplayError::new(error)),
             code: None,
             details: Some(details),
         }
@@ -467,7 +504,7 @@ impl ActionError {
         hint: RetryHintCode,
     ) -> Self {
         Self::Fatal {
-            error: Arc::new(DisplayError::new(error)),
+            error: ActionErrorSource::new(DisplayError::new(error)),
             code: Some(hint),
             details: None,
         }
@@ -580,7 +617,7 @@ impl ActionError {
     ) -> Self {
         Self::CredentialRefreshFailed {
             action_key: action_key.into(),
-            source: Arc::new(source),
+            source: ActionErrorSource::new(source),
         }
     }
 }
@@ -767,10 +804,18 @@ mod tests {
     #[test]
     fn display_formatting() {
         let err = ActionError::retryable("timeout");
-        assert_eq!(err.to_string(), "retryable: timeout");
+        assert_eq!(err.to_string(), "retryable action failure");
+        assert_eq!(
+            std::error::Error::source(&err).map(ToString::to_string),
+            Some("timeout".to_owned())
+        );
 
         let err = ActionError::fatal("bad schema");
-        assert_eq!(err.to_string(), "fatal: bad schema");
+        assert_eq!(err.to_string(), "fatal action failure");
+        assert_eq!(
+            std::error::Error::source(&err).map(ToString::to_string),
+            Some("bad schema".to_owned())
+        );
 
         let err = ActionError::validation("email", ValidationReason::MissingField, None::<String>);
         assert_eq!(err.to_string(), "validation (missing_field): field `email`");
@@ -807,8 +852,39 @@ mod tests {
     fn retryable_from_preserves_error_chain() {
         let io_err = std::io::Error::new(std::io::ErrorKind::TimedOut, "timeout");
         let err = ActionError::retryable_from(io_err);
-        assert!(err.to_string().contains("timeout"));
+        assert_eq!(err.to_string(), "retryable action failure");
         assert!(err.is_retryable());
+        assert_eq!(
+            std::error::Error::source(&err).map(ToString::to_string),
+            Some("timeout".to_owned())
+        );
+        assert_eq!(
+            std::error::Error::source(&err)
+                .and_then(|source| source.downcast_ref::<std::io::Error>())
+                .map(std::io::Error::kind),
+            Some(std::io::ErrorKind::TimedOut)
+        );
+    }
+
+    #[test]
+    fn fatal_from_preserves_typed_source_after_clone() {
+        let original = ActionError::fatal_from(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "denied",
+        ));
+        let cloned = original.clone();
+        for error in [original, cloned] {
+            assert_eq!(
+                std::error::Error::source(&error).map(ToString::to_string),
+                Some("denied".to_owned())
+            );
+            assert_eq!(
+                std::error::Error::source(&error)
+                    .and_then(|source| source.downcast_ref::<std::io::Error>())
+                    .map(std::io::Error::kind),
+                Some(std::io::ErrorKind::PermissionDenied)
+            );
+        }
     }
 
     #[test]
@@ -854,7 +930,10 @@ mod tests {
         ));
         let err = result.retryable().unwrap_err();
         assert!(err.is_retryable());
-        assert!(err.to_string().contains("connection refused"));
+        assert_eq!(
+            std::error::Error::source(&err).map(ToString::to_string),
+            Some("connection refused".to_owned())
+        );
     }
 
     #[test]
@@ -904,7 +983,10 @@ mod tests {
         }
         let err = do_work().unwrap_err();
         assert!(err.is_retryable());
-        assert!(err.to_string().contains("missing"));
+        assert_eq!(
+            std::error::Error::source(&err).map(ToString::to_string),
+            Some("missing".to_owned())
+        );
     }
 
     // ── ValidationReason + structured Validation (L7) ──────────────────────
@@ -1025,7 +1107,11 @@ mod tests {
         );
         let msg = err.to_string();
         assert!(msg.contains("http.fetch"), "{msg}");
-        assert!(msg.contains("store down"), "{msg}");
+        assert!(!msg.contains("store down"), "{msg}");
+        assert_eq!(
+            std::error::Error::source(&err).map(ToString::to_string),
+            Some("store down".to_owned())
+        );
     }
 
     #[test]

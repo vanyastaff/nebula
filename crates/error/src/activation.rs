@@ -283,12 +283,12 @@ mod tests {
     }
 }
 
-/// Version of the NS14 diagnostic-contract report shape.
+/// Version of the activation-diagnostic report shape.
 ///
 /// Bumped when the report gains or loses a field, so a consumer that stored an
 /// older bundle can tell it is reading a different shape rather than silently
 /// missing an entry.
-pub const DIAGNOSTIC_CONTRACT_REPORT_VERSION: u16 = 1;
+pub const DIAGNOSTIC_CONTRACT_REPORT_VERSION: u16 = 2;
 
 /// One rejection's compliance with the five-field contract.
 ///
@@ -338,7 +338,7 @@ impl DiagnosticContractEntry {
     }
 }
 
-/// The versioned NS14 diagnostic-contract report.
+/// The versioned activation-diagnostic report.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DiagnosticContractReport {
@@ -359,7 +359,7 @@ impl DiagnosticContractReport {
         });
         Self {
             report_version: DIAGNOSTIC_CONTRACT_REPORT_VERSION,
-            contract: "ns14".to_owned(),
+            contract: "activation-diagnostic-v1".to_owned(),
             entries,
         }
     }
@@ -395,7 +395,7 @@ mod report_tests {
         )]);
 
         assert_eq!(report.report_version, DIAGNOSTIC_CONTRACT_REPORT_VERSION);
-        assert_eq!(report.contract, "ns14");
+        assert_eq!(report.contract, "activation-diagnostic-v1");
         assert!(report.incomplete().is_empty());
     }
 

@@ -22,26 +22,25 @@
 use std::sync::Arc;
 
 use nebula_core::{
-    ExecutablePlanRevisionId, ExecutionContractBundleId, ExecutionId, PluginKey,
-    WorkerFlavorRevisionId,
+    ExecutablePlanRevisionId, ExecutionContractBundleId, ExecutionId, OrgId, PluginKey,
+    PluginSetId, WorkerFlavorRevisionId, WorkflowId, WorkflowVersionId, WorkspaceId,
 };
 use nebula_storage_port::dto::{
-    CachedRecord, ControlCommand, ControlMsg, DispatchKind, JobDispatchMsg, JournalEntry,
-    NewExecution, ResumeTarget, TriggerDedupRow, WebhookActivationRecord, WebhookMode,
-    WorkflowRecord, WorkflowVersionRecord,
+    CachedRecord, ContractBundleRecord, ControlCommand, ControlMsg, DispatchKind, JobDispatchMsg,
+    JournalEntry, MaterializedStart, NewExecution, ResumeTarget, TriggerDedupRow,
+    WebhookActivationRecord, WebhookMode, WorkflowRecord, WorkflowVersionRecord,
 };
 use nebula_storage_port::store::{
     ClaimGeneration, ControlClaimToken, ControlQueue, ExecutionJournalReader, ExecutionStore,
-    IdempotencyGuard, IdempotencyStore, JobClaimToken, JobDispatchQueue, KeyedStart,
-    MaterializedKeyedStart, StartAcceptance, StartAcceptanceStore, StartContractIdentity,
-    StartFingerprint, StartMaterialization, StartRevisionRejection, TriggerDedupInbox,
-    WebhookActivationStore, WorkflowStore, WorkflowVersionStore,
+    IdempotencyGuard, IdempotencyStore, JobClaimToken, JobDispatchQueue, StartAcceptanceStore,
+    StartContractIdentity, StartMaterialization, TriggerDedupInbox, WebhookActivationStore,
+    WorkflowStore, WorkflowVersionStore,
 };
 use nebula_storage_port::{
     BeginDrainOutcome, ExecutionReferenceTransition, FencingToken, PlanFlavorCatalogAdmin,
-    PlanFlavorCatalogWriter, PlanFlavorRevisionIds, PlanFlavorRevisionRecord,
-    PlanFlavorRevisionTarget, RevisionInsertOutcome, RevisionRecordBytes, Scope, StorageError,
-    TransitionBatch, TransitionOutcome, WorkerFlavorRevisionRecord,
+    PlanFlavorCatalogWriter, PlanFlavorRevisionRecord, PlanFlavorRevisionTarget,
+    RevisionInsertOutcome, RevisionRecordBytes, Scope, StorageError, TransitionBatch,
+    TransitionOutcome, WorkerFlavorRevisionRecord,
 };
 
 /// A storage backend under conformance test. Returns port handles built on
@@ -79,7 +78,7 @@ pub(crate) trait Backend: Send + Sync {
     async fn trigger_dedup_inbox(&self) -> Arc<dyn TriggerDedupInbox>;
     /// A keyed-start acceptance store backed by this backend, sharing the same
     /// core as [`Backend::execution_store`] and [`Backend::control_queue`] so
-    /// `accept_keyed_start` commits all three of its writes together.
+    /// `materialize_start` commits every start-owned write together.
     async fn start_acceptance_store(&self) -> Arc<dyn StartAcceptanceStore>;
     /// The exact plan/flavor catalog writer backed by this backend, sharing
     /// the same store as [`Backend::start_acceptance_store`] so a materialized
@@ -112,10 +111,13 @@ impl Default for InMemoryBackend {
         // core) so `save_with_published_version` is genuinely atomic
         // across the pair under the conformance matrix.
         let workflow_version = nebula_storage::inmem::InMemoryWorkflowVersionStore::new();
-        let workflow =
-            nebula_storage::inmem::InMemoryWorkflowStore::new_with_versions(&workflow_version);
+        let store = nebula_storage::inmem::InMemoryExecutionStore::new();
+        let workflow = nebula_storage::inmem::InMemoryWorkflowStore::new_with_versions(
+            &workflow_version,
+            &store,
+        );
         Self {
-            store: nebula_storage::inmem::InMemoryExecutionStore::new(),
+            store,
             guard: nebula_storage::inmem::InMemoryIdempotencyGuard::new(),
             idem_store: nebula_storage::inmem::InMemoryIdempotencyStore::new(),
             webhook: nebula_storage::inmem::InMemoryWebhookActivationStore::new(),
@@ -551,30 +553,38 @@ impl Backend for PostgresBackend {
     }
 }
 
-/// True when a Postgres URL is configured. `DATABASE_URL` set-but-invalid
-/// is a hard error elsewhere (pool construction); here we only gate
-/// presence so the case skips cleanly when unset. Only compiled with the
-/// `postgres` feature (the sole caller is `postgres_skip`).
-#[cfg(feature = "postgres")]
-#[must_use]
-fn postgres_available() -> bool {
-    std::env::var("DATABASE_URL").is_ok()
-}
+mod requirements;
 
 /// Postgres skip decision, resolved by feature flag so there is exactly
 /// one match arm for the `"Postgres"` literal (avoids overlapping-pattern
 /// lint when the feature is off).
 #[cfg(feature = "postgres")]
 fn postgres_skip() -> Option<&'static str> {
-    if postgres_available() {
-        None
-    } else {
-        Some("DATABASE_URL unset; skipping Postgres case")
+    match std::env::var("DATABASE_URL") {
+        Ok(_) => None,
+        Err(error) => {
+            assert!(
+                std::env::var_os("NEBULA_REQUIRE_POSTGRES").is_none(),
+                "NEBULA_REQUIRE_POSTGRES is set but DATABASE_URL is absent or non-Unicode"
+            );
+            match error {
+                std::env::VarError::NotPresent => {
+                    Some("DATABASE_URL unset; skipping Postgres case")
+                },
+                std::env::VarError::NotUnicode(_) => {
+                    panic!("DATABASE_URL must be valid Unicode")
+                },
+            }
+        },
     }
 }
 
 #[cfg(not(feature = "postgres"))]
 fn postgres_skip() -> Option<&'static str> {
+    assert!(
+        std::env::var_os("NEBULA_REQUIRE_POSTGRES").is_none(),
+        "NEBULA_REQUIRE_POSTGRES is set but the postgres feature is disabled"
+    );
     Some("built without --features postgres; skipping Postgres case")
 }
 
@@ -593,6 +603,7 @@ fn sqlite_skip() -> Option<&'static str> {
 /// Returns a skip reason for a backend whose prerequisites are not met, or
 /// `None` if the case should run. Postgres skips without `DATABASE_URL` or
 /// the `postgres` feature; SQLite skips without the `sqlite` feature.
+/// Setting `NEBULA_REQUIRE_POSTGRES` makes unavailable Postgres a hard failure.
 #[must_use]
 pub(crate) fn skip_reason(backend: &dyn Backend) -> Option<&'static str> {
     match backend.name() {
@@ -657,14 +668,14 @@ pub(crate) async fn assert_cas_conflict(backend: &dyn Backend) {
 }
 
 /// A commit carrying a superseded fencing token returns `FencedOut`.
-pub(crate) async fn assert_stale_fencing_is_fenced_out(backend: &dyn Backend) {
+pub(crate) async fn assert_stale_fencing_is_fenced_out(backend: &dyn Backend) -> serde_json::Value {
     let store = backend.execution_store().await;
     let s = scope_a();
     store
         .create(&s, "exe_fence", "wf_1", serde_json::json!({}))
         .await
         .expect("create");
-    let _live = store
+    let live = store
         .acquire_lease(
             &s,
             "exe_fence",
@@ -672,7 +683,13 @@ pub(crate) async fn assert_stale_fencing_is_fenced_out(backend: &dyn Backend) {
             std::time::Duration::from_secs(30),
         )
         .await
-        .expect("acquire_lease");
+        .expect("acquire_lease")
+        .unwrap_or_else(|| panic!("[{}] live fence", backend.name()));
+    let before = store
+        .get(&s, "exe_fence")
+        .await
+        .expect("get before")
+        .unwrap();
     // A token from an older generation than whatever the store now holds.
     let stale = FencingToken::from_generation(0);
     let batch = TransitionBatch::builder()
@@ -692,6 +709,22 @@ pub(crate) async fn assert_stale_fencing_is_fenced_out(backend: &dyn Backend) {
         "[{}] a stale fencing token must not Apply, got {outcome:?}",
         backend.name()
     );
+    let after = store
+        .get(&s, "exe_fence")
+        .await
+        .expect("get after")
+        .unwrap();
+    assert_eq!(before, after, "stale fenced commit must make zero changes");
+    serde_json::json!({
+        "live_generation": live.generation(),
+        "stale_generation": stale.generation(),
+        "outcome": format!("{outcome:?}"),
+        "version_before": before.version,
+        "version_after": after.version,
+        "state_before": before.state,
+        "state_after": after.state,
+        "stale_mutation_count": 0
+    })
 }
 
 /// A live lease blocks every further `acquire_lease` — including a second
@@ -701,7 +734,7 @@ pub(crate) async fn assert_stale_fencing_is_fenced_out(backend: &dyn Backend) {
 /// two concurrent runners must see exactly one winner, and a
 /// crashed-then-restarted runner reusing its holder id cannot revive its
 /// pre-crash token.
-pub(crate) async fn assert_live_lease_blocks_acquire(backend: &dyn Backend) {
+pub(crate) async fn assert_live_lease_blocks_acquire(backend: &dyn Backend) -> serde_json::Value {
     let store = backend.execution_store().await;
     let s = scope_a();
     store
@@ -790,11 +823,18 @@ pub(crate) async fn assert_live_lease_blocks_acquire(backend: &dyn Backend) {
         "[{}] generations monotone",
         backend.name()
     );
+    serde_json::json!({
+        "first_generation": g1,
+        "same_holder_live_reacquire_granted": contended.is_some(),
+        "expired_generation": z1,
+        "recovered_generation": z2,
+        "recovered_generation_advanced": z2 > z1
+    })
 }
 
 /// The atomic triple commits state + outbox + journal together; a reader
 /// observes all three after a successful commit.
-pub(crate) async fn assert_atomic_triple(backend: &dyn Backend) {
+pub(crate) async fn assert_atomic_triple(backend: &dyn Backend) -> serde_json::Value {
     let store = backend.execution_store().await;
     let s = scope_a();
     store
@@ -851,6 +891,40 @@ pub(crate) async fn assert_atomic_triple(backend: &dyn Backend) {
         "[{}] state must reflect the committed transition",
         backend.name()
     );
+    let journal = backend
+        .journal_reader()
+        .await
+        .get_journal(&s, "exe_triple")
+        .await
+        .expect("read committed journal");
+    assert_eq!(journal.len(), 1);
+    assert_eq!(
+        journal[0].payload,
+        serde_json::json!({"event": "transition"})
+    );
+    let queue = backend.control_queue().await;
+    let claims = queue
+        .claim_pending(&[0xA1; 16], 1)
+        .await
+        .expect("claim committed outbox");
+    assert_eq!(claims.len(), 1);
+    assert_eq!(claims[0].msg.command, ControlCommand::Cancel);
+    let command_id = claims[0].msg.id;
+    queue
+        .mark_completed(&claims[0].token)
+        .await
+        .expect("complete observed outbox");
+    serde_json::json!({
+        "transition_outcome": format!("{outcome:?}"),
+        "execution_version": rec.version,
+        "state": rec.state,
+        "journal_entry_count": journal.len(),
+        "journal_payload": journal[0].payload,
+        "outbox_claim_count": claims.len(),
+        "outbox_command": format!("{:?}", claims[0].msg.command),
+        "outbox_command_id": command_id,
+        "owner_fence_generation": token.generation()
+    })
 }
 
 /// Idempotency key shape `{execution_id}:{node_id}:{attempt}` is
@@ -1095,6 +1169,7 @@ pub(crate) async fn assert_workflow_store_contract(backend: &dyn Backend) {
         ver.create(
             &s,
             WorkflowVersionRecord {
+                activation: None,
                 workflow_id: "wf_v".into(),
                 number: n,
                 published: false,
@@ -1109,6 +1184,7 @@ pub(crate) async fn assert_workflow_store_contract(backend: &dyn Backend) {
         .create(
             &s,
             WorkflowVersionRecord {
+                activation: None,
                 workflow_id: "wf_v".into(),
                 number: 2,
                 published: false,
@@ -1149,7 +1225,9 @@ pub(crate) async fn assert_workflow_store_contract(backend: &dyn Backend) {
 /// orphan-row invariant (a workflow row with no published version is
 /// invisible to readers — "the workflow vanished") that the previous
 /// two-await sequence could violate on a partial failure.
-pub(crate) async fn assert_save_with_published_version_is_atomic(backend: &dyn Backend) {
+pub(crate) async fn assert_save_with_published_version_is_atomic(
+    backend: &dyn Backend,
+) -> serde_json::Value {
     let wf = backend.workflow_store().await;
     let ver = backend.workflow_version_store().await;
     let s = scope_a();
@@ -1165,6 +1243,7 @@ pub(crate) async fn assert_save_with_published_version_is_atomic(backend: &dyn B
             deleted: false,
         },
         WorkflowVersionRecord {
+            activation: None,
             workflow_id: "wf_atomic".into(),
             number: 1,
             published: true,
@@ -1205,6 +1284,7 @@ pub(crate) async fn assert_save_with_published_version_is_atomic(backend: &dyn B
                 deleted: false,
             },
             WorkflowVersionRecord {
+                activation: None,
                 workflow_id: "wf_atomic".into(),
                 number: 2,
                 published: true,
@@ -1253,6 +1333,7 @@ pub(crate) async fn assert_save_with_published_version_is_atomic(backend: &dyn B
                 deleted: false,
             },
             WorkflowVersionRecord {
+                activation: None,
                 // Collides with wf_atomic's existing version #1.
                 workflow_id: "wf_atomic".into(),
                 number: 1,
@@ -1274,6 +1355,15 @@ pub(crate) async fn assert_save_with_published_version_is_atomic(backend: &dyn B
          (row insert rolled back with the version failure)",
         backend.name()
     );
+    serde_json::json!({
+        "created_workflow_version": row_after.version,
+        "published_version": pub1.number,
+        "stale_cas_outcome": "Conflict",
+        "row_version_after_stale_cas": row_after.version,
+        "candidate_version_after_stale_cas": null,
+        "duplicate_version_outcome": "Duplicate",
+        "orphan_workflow_after_duplicate": false
+    })
 }
 
 /// `get_published` returns the **highest-numbered** published version when
@@ -1290,6 +1380,7 @@ pub(crate) async fn assert_get_published_is_highest_numbered(backend: &dyn Backe
         ver.create(
             &s,
             WorkflowVersionRecord {
+                activation: None,
                 workflow_id: "wf_pub".into(),
                 number: n,
                 published,
@@ -2263,7 +2354,7 @@ impl<B: Backend> Backend for ScopedBackend<B> {
     }
 
     // Start acceptance is not wrapped by the tenancy decorator: the scope is
-    // already an explicit field of `KeyedStart`, so there is no ambient scope
+    // is already an explicit field of the materialization, so no ambient scope
     // for a decorator to substitute.
     async fn start_acceptance_store(&self) -> Arc<dyn StartAcceptanceStore> {
         self.inner.start_acceptance_store().await
@@ -2288,7 +2379,9 @@ impl<B: Backend> Backend for ScopedBackend<B> {
 /// `processed_by` fence and therefore the same defect. Here the stakes are a
 /// Cancel or Terminate being marked completed by a consumer that no longer owns
 /// it, while the attempt that does own it is still dispatching.
-pub(crate) async fn assert_control_queue_same_processor_aba_is_fenced(backend: &dyn Backend) {
+pub(crate) async fn assert_control_queue_same_processor_aba_is_fenced(
+    backend: &dyn Backend,
+) -> serde_json::Value {
     let store = backend.execution_store().await;
     let queue = backend.control_queue().await;
     let scope = scope_a();
@@ -2382,333 +2475,20 @@ pub(crate) async fn assert_control_queue_same_processor_aba_is_fenced(backend: &
         .mark_completed(&current)
         .await
         .expect("generation N+1 still owns the row after the fenced acknowledgements");
+    serde_json::json!({
+        "queue": "control",
+        "row_id": current.row_id(),
+        "superseded_generation": superseded.generation().get(),
+        "current_generation": current.generation().get(),
+        "same_processor": true,
+        "late_ack_fenced": true,
+        "late_nack_fenced": true,
+        "stale_generation_mutation_count": 0,
+        "current_owner_completed_after_stale_attempts": true
+    })
 }
 
-// ── keyed start acceptance conformance assertions ─────────────────────────
-
-/// Canonicalization version used by these assertions. Real callers own their
-/// own; the value only has to be stable within one comparison.
-const START_FINGERPRINT_VERSION: u16 = 1;
-
-fn start_command(id: u8, execution_id: &str) -> ControlMsg {
-    ControlMsg {
-        id: [id; 16],
-        execution_id: execution_id.to_owned(),
-        command: ControlCommand::Start,
-        scope: scope_a(),
-        w3c_traceparent: None,
-        reclaim_count: 0,
-        resume_target: None,
-    }
-}
-
-/// An absent start key creates exactly one execution and one Start command.
-pub(crate) async fn assert_keyed_start_creates_one_execution(backend: &dyn Backend) {
-    let acceptance = backend.start_acceptance_store().await;
-    let queue = backend.control_queue().await;
-    let executions = backend.execution_store().await;
-    let scope = scope_a();
-    let (workflow_id, initial_state) = make_new_execution();
-    let command = start_command(0x40, "exe_start_fresh");
-
-    let outcome = acceptance
-        .accept_keyed_start(&KeyedStart {
-            scope: &scope,
-            start_key: "key-fresh",
-            fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [1u8; 32]),
-            execution_id: "exe_start_fresh",
-            execution: NewExecution::new(&workflow_id, &initial_state),
-            command: &command,
-        })
-        .await
-        .expect("accept a fresh keyed start");
-    assert_eq!(
-        outcome,
-        StartAcceptance::Accepted {
-            execution_id: "exe_start_fresh".to_owned()
-        },
-        "[{}] a fresh key must be accepted",
-        backend.name()
-    );
-
-    assert!(
-        executions
-            .get(&scope, "exe_start_fresh")
-            .await
-            .expect("read the execution back")
-            .is_some(),
-        "[{}] acceptance must have created the execution aggregate",
-        backend.name()
-    );
-    let claimed = queue
-        .claim_pending(&[9u8; 16], 16)
-        .await
-        .expect("claim the Start command");
-    assert_eq!(
-        claimed
-            .iter()
-            .filter(|claim| claim.msg.execution_id == "exe_start_fresh")
-            .count(),
-        1,
-        "[{}] acceptance must have enqueued exactly one Start command",
-        backend.name()
-    );
-}
-
-/// A keyed start that cannot complete leaves **nothing** behind.
-///
-/// The in-memory adapter has no rollback, so its ordering has to do what a
-/// transaction does for the SQL backends: validate every collision before the
-/// first mutation. It previously inserted the execution row and only then
-/// rejected a duplicate command id, so a failed acceptance still created an
-/// execution — on one backend only, which is exactly the divergence a shared
-/// oracle exists to catch.
-pub(crate) async fn assert_keyed_start_failure_writes_nothing(backend: &dyn Backend) {
-    let acceptance = backend.start_acceptance_store().await;
-    let executions = backend.execution_store().await;
-    let scope = scope_a();
-    let (workflow_id, initial_state) = make_new_execution();
-
-    // Occupy the command id the second acceptance will try to use.
-    let first_command = start_command(0x47, "exe_start_conflict_first");
-    acceptance
-        .accept_keyed_start(&KeyedStart {
-            scope: &scope,
-            start_key: "key-conflict-first",
-            fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [7u8; 32]),
-            execution_id: "exe_start_conflict_first",
-            execution: NewExecution::new(&workflow_id, &initial_state),
-            command: &first_command,
-        })
-        .await
-        .expect("seed the colliding command id");
-
-    // A fresh key and a fresh execution id, but the command id is taken.
-    let colliding_command = start_command(0x47, "exe_start_conflict_second");
-    let outcome = acceptance
-        .accept_keyed_start(&KeyedStart {
-            scope: &scope,
-            start_key: "key-conflict-second",
-            fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [8u8; 32]),
-            execution_id: "exe_start_conflict_second",
-            execution: NewExecution::new(&workflow_id, &initial_state),
-            command: &colliding_command,
-        })
-        .await;
-    assert!(
-        outcome.is_err(),
-        "[{}] a colliding command id must fail the acceptance, got {outcome:?}",
-        backend.name()
-    );
-
-    assert!(
-        executions
-            .get(&scope, "exe_start_conflict_second")
-            .await
-            .expect("read the failed candidate back")
-            .is_none(),
-        "[{}] a failed acceptance must not leave an execution behind",
-        backend.name()
-    );
-}
-
-/// The same key with the same fingerprint returns the original receipt and
-/// writes nothing new — the lost-response retry converging.
-pub(crate) async fn assert_keyed_start_replays_the_original_receipt(backend: &dyn Backend) {
-    let acceptance = backend.start_acceptance_store().await;
-    let queue = backend.control_queue().await;
-    let scope = scope_a();
-    let (workflow_id, initial_state) = make_new_execution();
-    let fingerprint = StartFingerprint::new(START_FINGERPRINT_VERSION, [2u8; 32]);
-
-    let first_command = start_command(0x41, "exe_start_replay");
-    let first = acceptance
-        .accept_keyed_start(&KeyedStart {
-            scope: &scope,
-            start_key: "key-replay",
-            fingerprint,
-            execution_id: "exe_start_replay",
-            execution: NewExecution::new(&workflow_id, &initial_state),
-            command: &first_command,
-        })
-        .await
-        .expect("first keyed start");
-    assert_eq!(
-        first,
-        StartAcceptance::Accepted {
-            execution_id: "exe_start_replay".to_owned()
-        },
-        "[{}] the first request must be accepted",
-        backend.name()
-    );
-
-    // The retry carries a *different* candidate execution id and command id —
-    // exactly what a caller that never saw the first response would generate.
-    // The reservation, not the caller, decides the durable identity.
-    let retry_command = start_command(0x42, "exe_start_replay_retry");
-    let replay = acceptance
-        .accept_keyed_start(&KeyedStart {
-            scope: &scope,
-            start_key: "key-replay",
-            fingerprint,
-            execution_id: "exe_start_replay_retry",
-            execution: NewExecution::new(&workflow_id, &initial_state),
-            command: &retry_command,
-        })
-        .await
-        .expect("retry of the same keyed start");
-    assert_eq!(
-        replay,
-        StartAcceptance::Replayed {
-            execution_id: "exe_start_replay".to_owned()
-        },
-        "[{}] a same-fingerprint retry must return the original receipt",
-        backend.name()
-    );
-
-    let claimed = queue
-        .claim_pending(&[9u8; 16], 32)
-        .await
-        .expect("claim Start commands");
-    assert_eq!(
-        claimed
-            .iter()
-            .filter(|claim| claim.msg.execution_id.starts_with("exe_start_replay"))
-            .count(),
-        1,
-        "[{}] the retry must not enqueue a second Start command",
-        backend.name()
-    );
-    let executions = backend.execution_store().await;
-    assert!(
-        executions
-            .get(&scope, "exe_start_replay_retry")
-            .await
-            .expect("read the retry candidate back")
-            .is_none(),
-        "[{}] the retry must not create a second execution",
-        backend.name()
-    );
-}
-
-/// The same key with a different fingerprint is refused with **no durable
-/// delta** — not silently accepted, and not accepted-then-compensated.
-pub(crate) async fn assert_keyed_start_mismatch_writes_nothing(backend: &dyn Backend) {
-    let acceptance = backend.start_acceptance_store().await;
-    let queue = backend.control_queue().await;
-    let executions = backend.execution_store().await;
-    let scope = scope_a();
-    let (workflow_id, initial_state) = make_new_execution();
-
-    let original_command = start_command(0x43, "exe_start_mismatch");
-    acceptance
-        .accept_keyed_start(&KeyedStart {
-            scope: &scope,
-            start_key: "key-mismatch",
-            fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [3u8; 32]),
-            execution_id: "exe_start_mismatch",
-            execution: NewExecution::new(&workflow_id, &initial_state),
-            command: &original_command,
-        })
-        .await
-        .expect("original keyed start");
-
-    let conflicting_command = start_command(0x44, "exe_start_mismatch_other");
-    let mismatch = acceptance
-        .accept_keyed_start(&KeyedStart {
-            scope: &scope,
-            start_key: "key-mismatch",
-            fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [4u8; 32]),
-            execution_id: "exe_start_mismatch_other",
-            execution: NewExecution::new(&workflow_id, &initial_state),
-            command: &conflicting_command,
-        })
-        .await
-        .expect("mismatched keyed start must be a typed outcome, not an error");
-    assert_eq!(
-        mismatch,
-        StartAcceptance::FingerprintMismatch,
-        "[{}] a different request under the same key must be refused",
-        backend.name()
-    );
-
-    assert!(
-        executions
-            .get(&scope, "exe_start_mismatch_other")
-            .await
-            .expect("read the refused candidate back")
-            .is_none(),
-        "[{}] a refused start must leave no execution behind",
-        backend.name()
-    );
-    let claimed = queue
-        .claim_pending(&[9u8; 16], 32)
-        .await
-        .expect("claim Start commands");
-    assert_eq!(
-        claimed
-            .iter()
-            .filter(|claim| claim.msg.execution_id.starts_with("exe_start_mismatch"))
-            .count(),
-        1,
-        "[{}] a refused start must leave no extra Start command",
-        backend.name()
-    );
-}
-
-/// Two tenants using the same key text never collide, and neither can observe
-/// the other's reservation.
-pub(crate) async fn assert_keyed_start_is_scoped_per_tenant(backend: &dyn Backend) {
-    let acceptance = backend.start_acceptance_store().await;
-    let (workflow_id, initial_state) = make_new_execution();
-    let shared_key = "key-shared-across-tenants";
-
-    let command_a = start_command(0x45, "exe_start_tenant_a");
-    let accepted_a = acceptance
-        .accept_keyed_start(&KeyedStart {
-            scope: &scope_a(),
-            start_key: shared_key,
-            fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [5u8; 32]),
-            execution_id: "exe_start_tenant_a",
-            execution: NewExecution::new(&workflow_id, &initial_state),
-            command: &command_a,
-        })
-        .await
-        .expect("tenant A keyed start");
-
-    // Tenant B reuses the key text with a *different* fingerprint. If the
-    // reservation were not scope-qualified this would read as a mismatch and
-    // leak the existence of tenant A's key.
-    let mut command_b = start_command(0x46, "exe_start_tenant_b");
-    command_b.scope = scope_b();
-    let accepted_b = acceptance
-        .accept_keyed_start(&KeyedStart {
-            scope: &scope_b(),
-            start_key: shared_key,
-            fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [6u8; 32]),
-            execution_id: "exe_start_tenant_b",
-            execution: NewExecution::new(&workflow_id, &initial_state),
-            command: &command_b,
-        })
-        .await
-        .expect("tenant B keyed start");
-
-    assert_eq!(
-        (accepted_a, accepted_b),
-        (
-            StartAcceptance::Accepted {
-                execution_id: "exe_start_tenant_a".to_owned()
-            },
-            StartAcceptance::Accepted {
-                execution_id: "exe_start_tenant_b".to_owned()
-            }
-        ),
-        "[{}] a start key is scoped to one tenant",
-        backend.name()
-    );
-}
-
-// ── materialized keyed start conformance assertions ─────────────────────────
+// ── execution revision reference fixtures ───────────────────────────────────
 
 fn materialized_plan_id(seed: u8) -> ExecutablePlanRevisionId {
     let mut bytes = [0_u8; 32];
@@ -2725,25 +2505,30 @@ fn materialized_flavor_id(seed: u8) -> WorkerFlavorRevisionId {
 }
 
 fn materialized_pair(seed: u8) -> PlanFlavorRevisionRecord {
+    let workflow_id = WorkflowId::from_bytes([seed; 16]);
+    let workflow_revision_id = WorkflowVersionId::from_bytes([seed.wrapping_add(1); 16]);
+    let plugin_set_id = PluginSetId::from_bytes([seed.wrapping_add(2); 32]);
+    let plan_id = materialized_plan_id(seed);
+    let flavor_id = materialized_flavor_id(seed);
     let flavor = WorkerFlavorRevisionRecord::v1_json(
-        materialized_flavor_id(seed),
+        flavor_id,
         RevisionRecordBytes::try_from_vec(format!(r#"{{"flavor":"{seed}"}}"#).into_bytes())
             .expect("materialized flavor record body is non-empty"),
     );
     PlanFlavorRevisionRecord::graph_v1_json(
-        materialized_plan_id(seed),
-        RevisionRecordBytes::try_from_vec(format!(r#"{{"plan":"{seed}"}}"#).into_bytes())
-            .expect("materialized plan record body is non-empty"),
+        plan_id,
+        RevisionRecordBytes::try_from_vec(
+            serde_json::to_vec(&serde_json::json!({
+                "claimed_id": plan_id,
+                "workflow_version_id": workflow_revision_id,
+                "worker_flavor_revision_id": flavor_id,
+                "plugin_set_id": plugin_set_id,
+                "manifest": { "workflow_id": workflow_id }
+            }))
+            .expect("revision fixture must serialize"),
+        )
+        .expect("materialized plan record body is non-empty"),
         flavor,
-    )
-}
-
-fn materialized_identity(seed: u8) -> StartContractIdentity {
-    let mut bundle = [0_u8; 16];
-    bundle[0] = seed;
-    StartContractIdentity::new(
-        ExecutionContractBundleId::from_bytes(bundle),
-        materialized_pair(seed).ids(),
     )
 }
 
@@ -2759,519 +2544,82 @@ async fn install_materialized_pair(backend: &dyn Backend, seed: u8) -> PlanFlavo
     record
 }
 
-async fn assert_live_reference_count(
+async fn materialize_execution_reference(
     backend: &dyn Backend,
+    scope: &Scope,
+    execution_id: &str,
     record: &PlanFlavorRevisionRecord,
-    expected: u64,
-) {
-    let admin = backend.plan_flavor_catalog_admin().await;
-    let outcome = admin
-        .begin_drain(PlanFlavorRevisionTarget::ExecutablePlan(
-            record.ids().plan(),
-        ))
-        .await;
-    match outcome {
-        Ok(BeginDrainOutcome::Started(counts) | BeginDrainOutcome::AlreadyDraining(counts)) => {
-            assert_eq!(
-                counts.live_executions(),
-                expected,
-                "[{}] live reference count after materialization",
-                backend.name()
-            );
-        },
-        Err(error) => panic!(
-            "[{}] begin_drain failed while counting live references: {error:?}",
-            backend.name()
-        ),
-    }
-}
-
-/// A materialized start admits an active exact pair, creates one execution and
-/// one Start command, and persists one live revision reference in the same
-/// commit.
-pub(crate) async fn assert_materialized_start_creates_one_execution_and_reference(
-    backend: &dyn Backend,
-) {
-    let acceptance = backend.start_acceptance_store().await;
-    let queue = backend.control_queue().await;
-    let executions = backend.execution_store().await;
-    let scope = scope_a();
-    let (workflow_id, initial_state) = make_new_execution();
-    let execution_id = ExecutionId::new().to_string();
-    let record = install_materialized_pair(backend, 0x60).await;
-    let command = start_command(0x60, &execution_id);
-
-    let outcome = acceptance
-        .materialize_keyed_start(&MaterializedKeyedStart {
-            keyed: KeyedStart {
-                scope: &scope,
-                start_key: "mat-key-fresh",
-                fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [0x20; 32]),
-                execution_id: &execution_id,
-                execution: NewExecution::new(&workflow_id, &initial_state),
-                command: &command,
-            },
-            identity: materialized_identity(0x60),
-        })
+    seed: u8,
+) -> StartMaterialization {
+    let workflow_id = WorkflowId::from_bytes([seed; 16]);
+    let workflow_revision_id = WorkflowVersionId::from_bytes([seed.wrapping_add(1); 16]);
+    let plugin_set_id = PluginSetId::from_bytes([seed.wrapping_add(2); 32]);
+    let mut bundle_bytes = [0_u8; 16];
+    bundle_bytes[0] = seed;
+    let identity = StartContractIdentity::new(
+        ExecutionContractBundleId::from_bytes(bundle_bytes),
+        record.ids(),
+    );
+    let bundle = ContractBundleRecord::v1_json(
+        identity,
+        serde_json::to_vec(&serde_json::json!({
+            "bundle_id": identity.bundle_id(),
+            "org_id": &scope.org_id,
+            "workspace_id": &scope.workspace_id,
+            "executable_plan_revision_id": record.ids().plan(),
+            "plugin_set_id": plugin_set_id,
+            "revisions": {
+                "workflow": workflow_revision_id,
+                "worker_flavor": record.ids().worker_flavor()
+            }
+        }))
+        .expect("contract fixture must serialize"),
+    )
+    .expect("contract fixture must be bounded");
+    let state = serde_json::json!({
+        "execution_id": execution_id,
+        "workflow_id": workflow_id,
+        "workflow_version_number": 1,
+        "executable_plan_revision_id": record.ids().plan(),
+        "worker_flavor_revision_id": record.ids().worker_flavor(),
+        "status": "created",
+        "version": 0,
+        "node_states": {},
+        "created_at": "2026-09-06T00:00:00Z",
+        "updated_at": "2026-09-06T00:00:00Z",
+        "started_at": null,
+        "completed_at": null,
+        "total_output_bytes": 0,
+        "total_retries": 0,
+        "terminated_by": null,
+        "workflow_input": {}
+    });
+    let command = ControlMsg {
+        id: execution_id
+            .parse::<ExecutionId>()
+            .expect("execution fixture identity must be typed")
+            .as_bytes(),
+        execution_id: execution_id.to_owned(),
+        command: ControlCommand::Start,
+        scope: scope.clone(),
+        w3c_traceparent: None,
+        reclaim_count: 0,
+        resume_target: None,
+    };
+    let workflow_id = workflow_id.to_string();
+    backend
+        .start_acceptance_store()
         .await
-        .expect("materialize a fresh keyed start");
-    assert_eq!(
-        outcome,
-        StartMaterialization::Accepted {
-            execution_id: execution_id.clone()
-        },
-        "[{}] a fresh materialized key must be accepted",
-        backend.name()
-    );
-
-    assert!(
-        executions
-            .get(&scope, &execution_id)
-            .await
-            .expect("read the materialized execution back")
-            .is_some(),
-        "[{}] materialization must have created the execution aggregate",
-        backend.name()
-    );
-    let claimed = queue
-        .claim_pending(&[9u8; 16], 16)
-        .await
-        .expect("claim the materialized Start command");
-    assert_eq!(
-        claimed
-            .iter()
-            .filter(|claim| claim.msg.execution_id == execution_id)
-            .count(),
-        1,
-        "[{}] materialization must have enqueued exactly one Start command",
-        backend.name()
-    );
-    assert_live_reference_count(backend, &record, 1).await;
-}
-
-/// A same-fingerprint retry of a materialized start returns the original
-/// receipt and deliberately ignores the retry's contract identity: no second
-/// execution, command, or reference row is written.
-pub(crate) async fn assert_materialized_start_replays_original_receipt(backend: &dyn Backend) {
-    let acceptance = backend.start_acceptance_store().await;
-    let queue = backend.control_queue().await;
-    let executions = backend.execution_store().await;
-    let scope = scope_a();
-    let (workflow_id, initial_state) = make_new_execution();
-    let execution_id = ExecutionId::new().to_string();
-    let retry_execution_id = ExecutionId::new().to_string();
-    let record = install_materialized_pair(backend, 0x61).await;
-    let fingerprint = StartFingerprint::new(START_FINGERPRINT_VERSION, [0x21; 32]);
-    let first_command = start_command(0x61, &execution_id);
-
-    let first = acceptance
-        .materialize_keyed_start(&MaterializedKeyedStart {
-            keyed: KeyedStart {
-                scope: &scope,
-                start_key: "mat-key-replay",
-                fingerprint,
-                execution_id: &execution_id,
-                execution: NewExecution::new(&workflow_id, &initial_state),
-                command: &first_command,
-            },
-            identity: materialized_identity(0x61),
-        })
-        .await
-        .expect("first materialized start");
-    assert_eq!(
-        first,
-        StartMaterialization::Accepted {
-            execution_id: execution_id.clone()
-        },
-        "[{}] the first materialized request must be accepted",
-        backend.name()
-    );
-
-    // The retry uses a different execution id, command id, and a different
-    // contract identity. None of that matters: the key and fingerprint define
-    // convergence, and the original live reference stays authoritative.
-    let retry_command = start_command(0x62, &retry_execution_id);
-    let replay = acceptance
-        .materialize_keyed_start(&MaterializedKeyedStart {
-            keyed: KeyedStart {
-                scope: &scope,
-                start_key: "mat-key-replay",
-                fingerprint,
-                execution_id: &retry_execution_id,
-                execution: NewExecution::new(&workflow_id, &initial_state),
-                command: &retry_command,
-            },
-            identity: materialized_identity(0x62),
-        })
-        .await
-        .expect("retry of the same materialized start");
-    assert_eq!(
-        replay,
-        StartMaterialization::Replayed {
-            execution_id: execution_id.clone()
-        },
-        "[{}] a same-fingerprint materialized retry must return the original receipt",
-        backend.name()
-    );
-
-    assert!(
-        executions
-            .get(&scope, &retry_execution_id)
-            .await
-            .expect("read the retry candidate back")
-            .is_none(),
-        "[{}] the materialized retry must not create a second execution",
-        backend.name()
-    );
-    let claimed = queue
-        .claim_pending(&[9u8; 16], 32)
-        .await
-        .expect("claim materialized Start commands");
-    assert_eq!(
-        claimed
-            .iter()
-            .filter(|claim| claim.msg.execution_id == execution_id)
-            .count(),
-        1,
-        "[{}] the materialized retry must not enqueue a second Start command",
-        backend.name()
-    );
-    assert_live_reference_count(backend, &record, 1).await;
-}
-
-/// A different fingerprint under an already-reserved materialized key is
-/// refused with no durable delta.
-pub(crate) async fn assert_materialized_start_mismatch_writes_nothing(backend: &dyn Backend) {
-    let acceptance = backend.start_acceptance_store().await;
-    let queue = backend.control_queue().await;
-    let executions = backend.execution_store().await;
-    let scope = scope_a();
-    let (workflow_id, initial_state) = make_new_execution();
-    let execution_id = ExecutionId::new().to_string();
-    let other_execution_id = ExecutionId::new().to_string();
-    let record = install_materialized_pair(backend, 0x63).await;
-    let original_command = start_command(0x63, &execution_id);
-
-    acceptance
-        .materialize_keyed_start(&MaterializedKeyedStart {
-            keyed: KeyedStart {
-                scope: &scope,
-                start_key: "mat-key-mismatch",
-                fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [0x23; 32]),
-                execution_id: &execution_id,
-                execution: NewExecution::new(&workflow_id, &initial_state),
-                command: &original_command,
-            },
-            identity: materialized_identity(0x63),
-        })
-        .await
-        .expect("original materialized start");
-
-    let conflicting_command = start_command(0x64, &other_execution_id);
-    let mismatch = acceptance
-        .materialize_keyed_start(&MaterializedKeyedStart {
-            keyed: KeyedStart {
-                scope: &scope,
-                start_key: "mat-key-mismatch",
-                fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [0x24; 32]),
-                execution_id: &other_execution_id,
-                execution: NewExecution::new(&workflow_id, &initial_state),
-                command: &conflicting_command,
-            },
-            identity: materialized_identity(0x64),
-        })
-        .await
-        .expect("mismatched materialized start must be a typed outcome, not an error");
-    assert_eq!(
-        mismatch,
-        StartMaterialization::FingerprintMismatch,
-        "[{}] a different request under the same materialized key must be refused",
-        backend.name()
-    );
-
-    assert!(
-        executions
-            .get(&scope, &other_execution_id)
-            .await
-            .expect("read the refused candidate back")
-            .is_none(),
-        "[{}] a refused materialized start must leave no execution behind",
-        backend.name()
-    );
-    let claimed = queue
-        .claim_pending(&[9u8; 16], 32)
-        .await
-        .expect("claim materialized Start commands");
-    assert_eq!(
-        claimed
-            .iter()
-            .filter(|claim| claim.msg.execution_id == execution_id)
-            .count(),
-        1,
-        "[{}] a refused materialized start must not enqueue a second Start command",
-        backend.name()
-    );
-    assert_live_reference_count(backend, &record, 1).await;
-}
-
-/// A missing executable-plan revision is refused before any durable write;
-/// after the same pair is installed, the same key can be accepted, proving the
-/// rejection left no reservation behind.
-pub(crate) async fn assert_materialized_start_rejects_missing_plan_and_writes_nothing(
-    backend: &dyn Backend,
-) {
-    let acceptance = backend.start_acceptance_store().await;
-    let queue = backend.control_queue().await;
-    let executions = backend.execution_store().await;
-    let scope = scope_a();
-    let (workflow_id, initial_state) = make_new_execution();
-    let execution_id = ExecutionId::new().to_string();
-    let command = start_command(0x65, &execution_id);
-    let fingerprint = StartFingerprint::new(START_FINGERPRINT_VERSION, [0x25; 32]);
-
-    let rejected = acceptance
-        .materialize_keyed_start(&MaterializedKeyedStart {
-            keyed: KeyedStart {
-                scope: &scope,
-                start_key: "mat-key-missing",
-                fingerprint,
-                execution_id: &execution_id,
-                execution: NewExecution::new(&workflow_id, &initial_state),
-                command: &command,
-            },
-            identity: materialized_identity(0x65),
-        })
-        .await
-        .expect("missing-plan materialized start must be a typed outcome");
-    assert_eq!(
-        rejected,
-        StartMaterialization::RevisionRejected(StartRevisionRejection::PlanUnavailable),
-        "[{}] an unknown plan must be refused",
-        backend.name()
-    );
-    assert!(
-        executions
-            .get(&scope, &execution_id)
-            .await
-            .expect("read the rejected candidate back")
-            .is_none(),
-        "[{}] a rejected materialized start must leave no execution behind",
-        backend.name()
-    );
-
-    // Install the exact pair and retry with the same key. If the rejection had
-    // left a reservation behind, this would replay or mismatch instead of
-    // accepting the same request.
-    let record = install_materialized_pair(backend, 0x65).await;
-    let accepted = acceptance
-        .materialize_keyed_start(&MaterializedKeyedStart {
-            keyed: KeyedStart {
-                scope: &scope,
-                start_key: "mat-key-missing",
-                fingerprint,
-                execution_id: &execution_id,
-                execution: NewExecution::new(&workflow_id, &initial_state),
-                command: &command,
-            },
-            identity: materialized_identity(0x65),
-        })
-        .await
-        .expect("retry after installing the missing plan");
-    assert_eq!(
-        accepted,
-        StartMaterialization::Accepted {
-            execution_id: execution_id.clone()
-        },
-        "[{}] a rejected materialized start must have left no reservation",
-        backend.name()
-    );
-    assert_live_reference_count(backend, &record, 1).await;
-
-    let claimed = queue
-        .claim_pending(&[9u8; 16], 16)
-        .await
-        .expect("claim the accepted retry Start command");
-    assert_eq!(
-        claimed
-            .iter()
-            .filter(|claim| claim.msg.execution_id == execution_id)
-            .count(),
-        1,
-        "[{}] the accepted retry must enqueue exactly one Start command",
-        backend.name()
-    );
-}
-
-/// A draining exact pair is refused and writes nothing.
-pub(crate) async fn assert_materialized_start_rejects_draining_pair_and_writes_nothing(
-    backend: &dyn Backend,
-) {
-    let acceptance = backend.start_acceptance_store().await;
-    let queue = backend.control_queue().await;
-    let executions = backend.execution_store().await;
-    let scope = scope_a();
-    let (workflow_id, initial_state) = make_new_execution();
-    let execution_id = ExecutionId::new().to_string();
-    let record = install_materialized_pair(backend, 0x66).await;
-    let admin = backend.plan_flavor_catalog_admin().await;
-    admin
-        .begin_drain(PlanFlavorRevisionTarget::ExecutablePlan(
-            record.ids().plan(),
+        .materialize_start(&MaterializedStart::new(
+            scope,
+            None,
+            execution_id,
+            NewExecution::new(&workflow_id, &state),
+            &command,
+            &bundle,
         ))
         .await
-        .expect("begin drain on the installed plan");
-
-    let command = start_command(0x66, &execution_id);
-    let rejected = acceptance
-        .materialize_keyed_start(&MaterializedKeyedStart {
-            keyed: KeyedStart {
-                scope: &scope,
-                start_key: "mat-key-draining",
-                fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [0x26; 32]),
-                execution_id: &execution_id,
-                execution: NewExecution::new(&workflow_id, &initial_state),
-                command: &command,
-            },
-            identity: materialized_identity(0x66),
-        })
-        .await
-        .expect("draining materialized start must be a typed outcome");
-    assert_eq!(
-        rejected,
-        StartMaterialization::RevisionRejected(StartRevisionRejection::PairNotAdmitted),
-        "[{}] a draining pair must be refused",
-        backend.name()
-    );
-    assert!(
-        executions
-            .get(&scope, &execution_id)
-            .await
-            .expect("read the draining candidate back")
-            .is_none(),
-        "[{}] a draining rejection must leave no execution behind",
-        backend.name()
-    );
-    let claimed = queue
-        .claim_pending(&[9u8; 16], 16)
-        .await
-        .expect("claim Start commands after a draining rejection");
-    assert!(
-        claimed.is_empty(),
-        "[{}] a draining rejection must leave no Start command behind",
-        backend.name()
-    );
-}
-
-/// A plan pinned to a different worker flavor is refused as a non-admissible
-/// pair and writes nothing.
-pub(crate) async fn assert_materialized_start_rejects_mismatched_flavor_and_writes_nothing(
-    backend: &dyn Backend,
-) {
-    let acceptance = backend.start_acceptance_store().await;
-    let queue = backend.control_queue().await;
-    let executions = backend.execution_store().await;
-    let scope = scope_a();
-    let (workflow_id, initial_state) = make_new_execution();
-    let execution_id = ExecutionId::new().to_string();
-    let record = install_materialized_pair(backend, 0x67).await;
-    let mismatched_identity = StartContractIdentity::new(
-        ExecutionContractBundleId::from_bytes([0x67; 16]),
-        PlanFlavorRevisionIds::new(record.ids().plan(), materialized_flavor_id(0x68)),
-    );
-
-    let command = start_command(0x67, &execution_id);
-    let rejected = acceptance
-        .materialize_keyed_start(&MaterializedKeyedStart {
-            keyed: KeyedStart {
-                scope: &scope,
-                start_key: "mat-key-mismatched-flavor",
-                fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [0x27; 32]),
-                execution_id: &execution_id,
-                execution: NewExecution::new(&workflow_id, &initial_state),
-                command: &command,
-            },
-            identity: mismatched_identity,
-        })
-        .await
-        .expect("mismatched-flavor materialized start must be a typed outcome");
-    assert_eq!(
-        rejected,
-        StartMaterialization::RevisionRejected(StartRevisionRejection::PairNotAdmitted),
-        "[{}] a plan pinned to a different worker flavor must be refused",
-        backend.name()
-    );
-    assert!(
-        executions
-            .get(&scope, &execution_id)
-            .await
-            .expect("read the mismatched candidate back")
-            .is_none(),
-        "[{}] a mismatched-flavor rejection must leave no execution behind",
-        backend.name()
-    );
-    let claimed = queue
-        .claim_pending(&[9u8; 16], 16)
-        .await
-        .expect("claim Start commands after a mismatched-flavor rejection");
-    assert!(
-        claimed.is_empty(),
-        "[{}] a mismatched-flavor rejection must leave no Start command behind",
-        backend.name()
-    );
-}
-
-/// A materialized start refuses a control command that does not belong to the
-/// keyed execution/tenant and writes nothing.
-pub(crate) async fn assert_materialized_start_rejects_mismatched_command_and_writes_nothing(
-    backend: &dyn Backend,
-) {
-    let acceptance = backend.start_acceptance_store().await;
-    let queue = backend.control_queue().await;
-    let executions = backend.execution_store().await;
-    let scope = scope_a();
-    let (workflow_id, initial_state) = make_new_execution();
-    let execution_id = ExecutionId::new().to_string();
-    install_materialized_pair(backend, 0x69).await;
-    let mut command = start_command(0x69, &execution_id);
-    command.command = ControlCommand::Cancel;
-
-    let outcome = acceptance
-        .materialize_keyed_start(&MaterializedKeyedStart {
-            keyed: KeyedStart {
-                scope: &scope,
-                start_key: "mat-key-bad-command",
-                fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [0x29; 32]),
-                execution_id: &execution_id,
-                execution: NewExecution::new(&workflow_id, &initial_state),
-                command: &command,
-            },
-            identity: materialized_identity(0x69),
-        })
-        .await;
-    assert!(
-        matches!(outcome, Err(StorageError::Internal(_))),
-        "[{}] a non-Start command must be refused before any write, got {outcome:?}",
-        backend.name()
-    );
-
-    assert!(
-        executions
-            .get(&scope, &execution_id)
-            .await
-            .expect("read the bad-command candidate back")
-            .is_none(),
-        "[{}] a bad-command rejection must leave no execution behind",
-        backend.name()
-    );
-    let claimed = queue
-        .claim_pending(&[9u8; 16], 16)
-        .await
-        .expect("claim Start commands after a bad-command rejection");
-    assert!(
-        claimed.is_empty(),
-        "[{}] a bad-command rejection must leave no Start command behind",
-        backend.name()
-    );
+        .expect("materialize execution reference")
 }
 
 // ── terminal reference transition conformance assertions ─────────────────
@@ -3313,28 +2661,12 @@ async fn assert_reference_counts(
 /// A terminal commit with `ReleaseLive` releases the materialized execution's
 /// live revision reference atomically with the aggregate state change.
 pub(crate) async fn assert_terminal_commit_releases_live_reference(backend: &dyn Backend) {
-    let acceptance = backend.start_acceptance_store().await;
     let executions = backend.execution_store().await;
-    let scope = scope_a();
-    let (workflow_id, initial_state) = make_new_execution();
+    let scope = Scope::new(WorkspaceId::new().to_string(), OrgId::new().to_string());
     let execution_id = ExecutionId::new().to_string();
     let record = install_materialized_pair(backend, 0x70).await;
-    let command = start_command(0x70, &execution_id);
-
-    let accepted = acceptance
-        .materialize_keyed_start(&MaterializedKeyedStart {
-            keyed: KeyedStart {
-                scope: &scope,
-                start_key: "mat-key-term-release",
-                fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [0x30; 32]),
-                execution_id: &execution_id,
-                execution: NewExecution::new(&workflow_id, &initial_state),
-                command: &command,
-            },
-            identity: materialized_identity(0x70),
-        })
-        .await
-        .expect("materialize execution for terminal release");
+    let accepted =
+        materialize_execution_reference(backend, &scope, &execution_id, &record, 0x70).await;
     assert!(matches!(accepted, StartMaterialization::Accepted { .. }));
 
     let token = executions
@@ -3372,28 +2704,12 @@ pub(crate) async fn assert_terminal_commit_releases_live_reference(backend: &dyn
 /// A terminal commit with `RetainRollback` moves the live reference into a
 /// rollback window in the same transaction.
 pub(crate) async fn assert_terminal_commit_retains_rollback_window(backend: &dyn Backend) {
-    let acceptance = backend.start_acceptance_store().await;
     let executions = backend.execution_store().await;
-    let scope = scope_a();
-    let (workflow_id, initial_state) = make_new_execution();
+    let scope = Scope::new(WorkspaceId::new().to_string(), OrgId::new().to_string());
     let execution_id = ExecutionId::new().to_string();
     let record = install_materialized_pair(backend, 0x71).await;
-    let command = start_command(0x71, &execution_id);
-
-    let accepted = acceptance
-        .materialize_keyed_start(&MaterializedKeyedStart {
-            keyed: KeyedStart {
-                scope: &scope,
-                start_key: "mat-key-term-rollback",
-                fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [0x31; 32]),
-                execution_id: &execution_id,
-                execution: NewExecution::new(&workflow_id, &initial_state),
-                command: &command,
-            },
-            identity: materialized_identity(0x71),
-        })
-        .await
-        .expect("materialize execution for rollback retention");
+    let accepted =
+        materialize_execution_reference(backend, &scope, &execution_id, &record, 0x71).await;
     assert!(matches!(accepted, StartMaterialization::Accepted { .. }));
 
     let token = executions
@@ -3436,28 +2752,12 @@ pub(crate) async fn assert_terminal_commit_retains_rollback_window(backend: &dyn
 pub(crate) async fn assert_terminal_commit_rejects_incompatible_reference_transition(
     backend: &dyn Backend,
 ) {
-    let acceptance = backend.start_acceptance_store().await;
     let executions = backend.execution_store().await;
-    let scope = scope_a();
-    let (workflow_id, initial_state) = make_new_execution();
+    let scope = Scope::new(WorkspaceId::new().to_string(), OrgId::new().to_string());
     let execution_id = ExecutionId::new().to_string();
-    install_materialized_pair(backend, 0x72).await;
-    let command = start_command(0x72, &execution_id);
-
-    let accepted = acceptance
-        .materialize_keyed_start(&MaterializedKeyedStart {
-            keyed: KeyedStart {
-                scope: &scope,
-                start_key: "mat-key-term-incompatible",
-                fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [0x32; 32]),
-                execution_id: &execution_id,
-                execution: NewExecution::new(&workflow_id, &initial_state),
-                command: &command,
-            },
-            identity: materialized_identity(0x72),
-        })
-        .await
-        .expect("materialize execution for incompatible transition");
+    let record = install_materialized_pair(backend, 0x72).await;
+    let accepted =
+        materialize_execution_reference(backend, &scope, &execution_id, &record, 0x72).await;
     assert!(matches!(accepted, StartMaterialization::Accepted { .. }));
 
     let token = executions
@@ -3529,28 +2829,12 @@ pub(crate) async fn assert_terminal_commit_rejects_incompatible_reference_transi
 /// Expired rollback windows are released by the cleanup primitive and no
 /// longer count as references.
 pub(crate) async fn assert_expired_rollbacks_are_released(backend: &dyn Backend) {
-    let acceptance = backend.start_acceptance_store().await;
     let executions = backend.execution_store().await;
-    let scope = scope_a();
-    let (workflow_id, initial_state) = make_new_execution();
+    let scope = Scope::new(WorkspaceId::new().to_string(), OrgId::new().to_string());
     let execution_id = ExecutionId::new().to_string();
     let record = install_materialized_pair(backend, 0x73).await;
-    let command = start_command(0x73, &execution_id);
-
-    let accepted = acceptance
-        .materialize_keyed_start(&MaterializedKeyedStart {
-            keyed: KeyedStart {
-                scope: &scope,
-                start_key: "mat-key-expired-rollback",
-                fingerprint: StartFingerprint::new(START_FINGERPRINT_VERSION, [0x33; 32]),
-                execution_id: &execution_id,
-                execution: NewExecution::new(&workflow_id, &initial_state),
-                command: &command,
-            },
-            identity: materialized_identity(0x73),
-        })
-        .await
-        .expect("materialize execution for expired rollback");
+    let accepted =
+        materialize_execution_reference(backend, &scope, &execution_id, &record, 0x73).await;
     assert!(matches!(accepted, StartMaterialization::Accepted { .. }));
 
     let token = executions
@@ -3633,11 +2917,11 @@ fn make_job(id: u8, required_plugin_key: &str, tags: &[&str]) -> JobDispatchMsg 
         scope_a(),
         serde_json::json!({}),
         None::<&str>,
-        "sha256:abc",
         key,
         required_plugins,
         None::<&str>,
         0,
+        WorkerFlavorRevisionId::from_bytes([0x11; 32]),
     )
 }
 
@@ -3654,7 +2938,12 @@ pub(crate) async fn assert_job_dispatch_routes_by_plugin(backend: &dyn Backend) 
     let proc = [9u8; 16];
     // Advertise only alpha — must NOT receive beta.
     let claimed = q
-        .claim_pending(&proc, 16, &["plugin.alpha".parse::<PluginKey>().unwrap()])
+        .claim_pending(
+            &proc,
+            16,
+            &["plugin.alpha".parse::<PluginKey>().unwrap()],
+            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
+        )
         .await
         .expect("claim");
     assert_eq!(
@@ -3672,14 +2961,24 @@ pub(crate) async fn assert_job_dispatch_routes_by_plugin(backend: &dyn Backend) 
 
     // Advertise only beta — beta row is still Pending (alpha took none).
     let claimed_b = q
-        .claim_pending(&proc, 16, &["plugin.beta".parse::<PluginKey>().unwrap()])
+        .claim_pending(
+            &proc,
+            16,
+            &["plugin.beta".parse::<PluginKey>().unwrap()],
+            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
+        )
         .await
         .expect("claim beta");
     assert_eq!(claimed_b.len(), 1, "[{}] beta row claimed", backend.name());
 
     // Advertise an unrelated tag — nothing claimed.
     let nothing = q
-        .claim_pending(&proc, 16, &["plugin.gamma".parse::<PluginKey>().unwrap()])
+        .claim_pending(
+            &proc,
+            16,
+            &["plugin.gamma".parse::<PluginKey>().unwrap()],
+            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
+        )
         .await
         .expect("claim gamma");
     assert!(
@@ -3703,7 +3002,12 @@ pub(crate) async fn assert_job_dispatch_fencing(backend: &dyn Backend) {
     q.enqueue(&job_d).await.expect("enqueue job_d");
 
     let claimed = q
-        .claim_pending(&runner_a, 16, plugin_tags)
+        .claim_pending(
+            &runner_a,
+            16,
+            plugin_tags,
+            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
+        )
         .await
         .expect("claim");
     assert_eq!(claimed.len(), 1, "[{}] claimed one row", backend.name());
@@ -3733,7 +3037,12 @@ pub(crate) async fn assert_job_dispatch_fencing(backend: &dyn Backend) {
 
     // After mark_dispatched, a fresh claim should find no pending rows.
     let after_dispatch = q
-        .claim_pending(&runner_a, 16, plugin_tags)
+        .claim_pending(
+            &runner_a,
+            16,
+            plugin_tags,
+            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
+        )
         .await
         .expect("claim after dispatch");
     assert!(
@@ -3747,7 +3056,12 @@ pub(crate) async fn assert_job_dispatch_fencing(backend: &dyn Backend) {
     q.enqueue(&job_f).await.expect("enqueue job_f");
 
     let claimed_f = q
-        .claim_pending(&runner_a, 16, plugin_tags)
+        .claim_pending(
+            &runner_a,
+            16,
+            plugin_tags,
+            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
+        )
         .await
         .expect("claim job_f");
     assert_eq!(claimed_f.len(), 1, "[{}] claimed job_f", backend.name());
@@ -3772,7 +3086,12 @@ pub(crate) async fn assert_job_dispatch_fencing(backend: &dyn Backend) {
 
     // After mark_failed the row is terminal; fresh claim yields nothing.
     let after_failed = q
-        .claim_pending(&runner_a, 16, plugin_tags)
+        .claim_pending(
+            &runner_a,
+            16,
+            plugin_tags,
+            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
+        )
         .await
         .expect("claim after failed");
     assert!(
@@ -3792,7 +3111,7 @@ const ABA_RECLAIM_HORIZON: std::time::Duration = std::time::Duration::from_milli
 const ABA_CLAIM_AGE: std::time::Duration = std::time::Duration::from_millis(60);
 
 /// A stable processor identity cannot acknowledge a claim that a reclaim
-/// already superseded — the same-processor ABA (C7).
+/// already superseded by a newer claim from the same processor.
 ///
 /// One processor claims a row, the sweep hands the row back, and the *same*
 /// processor claims it again. Every `processed_by`-based fence accepts an
@@ -3800,7 +3119,9 @@ const ABA_CLAIM_AGE: std::time::Duration = std::time::Duration::from_millis(60);
 /// recorded processor still matches: the late acknowledgement terminalises a
 /// row the second attempt is still working. Only a per-attempt generation
 /// tells the two apart.
-pub(crate) async fn assert_job_dispatch_same_processor_aba_is_fenced(backend: &dyn Backend) {
+pub(crate) async fn assert_job_dispatch_same_processor_aba_is_fenced(
+    backend: &dyn Backend,
+) -> serde_json::Value {
     let q = backend.job_dispatch_queue().await;
     let plugin_tags = &["plugin.aba".parse::<PluginKey>().unwrap()];
     // One identity for both attempts — that is the whole point.
@@ -3810,7 +3131,12 @@ pub(crate) async fn assert_job_dispatch_same_processor_aba_is_fenced(backend: &d
     q.enqueue(&job).await.expect("enqueue aba job");
 
     let first = q
-        .claim_pending(&processor, 16, plugin_tags)
+        .claim_pending(
+            &processor,
+            16,
+            plugin_tags,
+            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
+        )
         .await
         .expect("first claim");
     assert_eq!(
@@ -3834,7 +3160,12 @@ pub(crate) async fn assert_job_dispatch_same_processor_aba_is_fenced(backend: &d
     );
 
     let second = q
-        .claim_pending(&processor, 16, plugin_tags)
+        .claim_pending(
+            &processor,
+            16,
+            plugin_tags,
+            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
+        )
         .await
         .expect("second claim");
     assert_eq!(
@@ -3879,6 +3210,17 @@ pub(crate) async fn assert_job_dispatch_same_processor_aba_is_fenced(backend: &d
     q.mark_dispatched(&current)
         .await
         .expect("generation N+1 still owns the row after the fenced acknowledgements");
+    serde_json::json!({
+        "queue": "job",
+        "row_id": current.row_id(),
+        "superseded_generation": superseded.generation().get(),
+        "current_generation": current.generation().get(),
+        "same_processor": true,
+        "late_ack_fenced": true,
+        "late_nack_fenced": true,
+        "stale_generation_mutation_count": 0,
+        "current_owner_completed_after_stale_attempts": true
+    })
 }
 
 /// `claim_and_materialize_start` is first-writer-wins when a `TriggerDedupRow`
@@ -3936,7 +3278,12 @@ pub(crate) async fn assert_trigger_dedup_first_writer(backend: &dyn Backend) {
     // Only one job row must have been enqueued.
     let proc = [7u8; 16];
     let claimed = q
-        .claim_pending(&proc, 16, &["plugin.y".parse::<PluginKey>().unwrap()])
+        .claim_pending(
+            &proc,
+            16,
+            &["plugin.y".parse::<PluginKey>().unwrap()],
+            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
+        )
         .await
         .expect("claim");
     assert_eq!(
@@ -3986,7 +3333,12 @@ pub(crate) async fn assert_dispatch_without_dedup_key(backend: &dyn Backend) {
 
     let proc = [8u8; 16];
     let claimed = q
-        .claim_pending(&proc, 16, &["plugin.z".parse::<PluginKey>().unwrap()])
+        .claim_pending(
+            &proc,
+            16,
+            &["plugin.z".parse::<PluginKey>().unwrap()],
+            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
+        )
         .await
         .expect("claim");
     assert_eq!(
@@ -4089,7 +3441,12 @@ pub(crate) async fn assert_dedup_compose_is_atomic(backend: &dyn Backend) {
     //    to enqueue the Start job would still pass the two checks above.
     let proc = [0xA0u8; 16];
     let claimed = q
-        .claim_pending(&proc, 16, &["plugin.q".parse::<PluginKey>().unwrap()])
+        .claim_pending(
+            &proc,
+            16,
+            &["plugin.q".parse::<PluginKey>().unwrap()],
+            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
+        )
         .await
         .expect("claim_pending after compose");
     assert_eq!(
@@ -4132,7 +3489,12 @@ pub(crate) async fn assert_job_dispatch_routes_by_plugin_superset(backend: &dyn 
     // 1. Alpha-only worker: pre-filter passes (required_plugin_key = alpha) but
     //    superset check fails — beta is required and not advertised.
     let claimed_by_alpha_only = q
-        .claim_pending(&proc, 16, &["plugin.alpha".parse::<PluginKey>().unwrap()])
+        .claim_pending(
+            &proc,
+            16,
+            &["plugin.alpha".parse::<PluginKey>().unwrap()],
+            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
+        )
         .await
         .expect("claim alpha-only");
     assert!(
@@ -4145,7 +3507,12 @@ pub(crate) async fn assert_job_dispatch_routes_by_plugin_superset(backend: &dyn 
     // 2. Beta-only worker: pre-filter rejects (required_plugin_key = alpha not
     //    in advertised) and the superset check would also fail independently.
     let claimed_by_beta_only = q
-        .claim_pending(&proc, 16, &["plugin.beta".parse::<PluginKey>().unwrap()])
+        .claim_pending(
+            &proc,
+            16,
+            &["plugin.beta".parse::<PluginKey>().unwrap()],
+            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
+        )
         .await
         .expect("claim beta-only");
     assert!(
@@ -4164,6 +3531,7 @@ pub(crate) async fn assert_job_dispatch_routes_by_plugin_superset(backend: &dyn 
                 "plugin.alpha".parse::<PluginKey>().unwrap(),
                 "plugin.beta".parse::<PluginKey>().unwrap(),
             ],
+            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
         )
         .await
         .expect("claim alpha+beta");
@@ -4192,6 +3560,7 @@ pub(crate) async fn assert_job_dispatch_routes_by_plugin_superset(backend: &dyn 
                 "plugin.beta".parse::<PluginKey>().unwrap(),
                 "plugin.gamma".parse::<PluginKey>().unwrap(),
             ],
+            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
         )
         .await
         .expect("claim strict superset");
@@ -4223,7 +3592,12 @@ pub(crate) async fn assert_job_dispatch_routes_by_plugin_superset(backend: &dyn 
         .await
         .expect("enqueue job for empty-advertised check");
     let claimed_empty_adv = q
-        .claim_pending(&proc, 16, &[])
+        .claim_pending(
+            &proc,
+            16,
+            &[],
+            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
+        )
         .await
         .expect("claim with empty advertised");
     assert!(
@@ -4403,7 +3777,12 @@ pub(crate) async fn assert_dedup_compose_rolls_back_on_id_collision(backend: &dy
     // No Start job must have been enqueued (rollback).
     let proc = [0x9Au8; 16];
     let enqueued = q
-        .claim_pending(&proc, 16, &["plugin.rb".parse::<PluginKey>().unwrap()])
+        .claim_pending(
+            &proc,
+            16,
+            &["plugin.rb".parse::<PluginKey>().unwrap()],
+            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
+        )
         .await
         .expect("claim_pending after failed compose");
     assert!(
@@ -4457,7 +3836,12 @@ pub(crate) async fn assert_dedup_compose_rejects_duplicate_job_id(backend: &dyn 
     //    queued job, still carrying the first execution id.
     let proc = [0xB1u8; 16];
     let claimed = q
-        .claim_pending(&proc, 16, &["plugin.jid".parse::<PluginKey>().unwrap()])
+        .claim_pending(
+            &proc,
+            16,
+            &["plugin.jid".parse::<PluginKey>().unwrap()],
+            WorkerFlavorRevisionId::from_bytes([0x11; 32]),
+        )
         .await
         .expect("claim after failed compose");
     assert_eq!(
@@ -4638,4 +4022,84 @@ pub(crate) async fn assert_control_queue_release_returns_row_for_redelivery(back
         "[{}] the fenced-out release must have changed nothing",
         backend.name()
     );
+}
+
+/// Exact flavor is persisted by both insert routes, filters before the batch
+/// limit, and survives reclaim without giving an old claim ABA authority.
+pub(crate) async fn assert_job_dispatch_exact_flavor(backend: &dyn Backend) {
+    use std::time::Duration;
+    let queue = backend.job_dispatch_queue().await;
+    let inbox = backend.trigger_dedup_inbox().await;
+    let matching_flavor = WorkerFlavorRevisionId::from_bytes([0x61; 32]);
+    let other_flavor = WorkerFlavorRevisionId::from_bytes([0x62; 32]);
+    let plugins = ["exact.flavor".parse::<PluginKey>().unwrap()];
+    let processor = [0x63; 16];
+    let mut wrong = make_job(0x61, "exact.flavor", &["exact.flavor"]);
+    wrong.required_worker_flavor_id = other_flavor;
+    let mut matching = make_job(0x62, "exact.flavor", &["exact.flavor"]);
+    matching.required_worker_flavor_id = matching_flavor;
+    queue.enqueue(&wrong).await.unwrap();
+    let (workflow_id, state) = make_new_execution();
+    let execution = NewExecution::new(&workflow_id, &state);
+    let outcome = inbox
+        .claim_and_materialize_start(None, &matching, &execution)
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.execution_id, matching.execution_id);
+    assert_eq!(outcome.kind, DispatchKind::Dispatched);
+
+    let claims = queue
+        .claim_pending(&processor, 1, &plugins, matching_flavor)
+        .await
+        .unwrap();
+    assert_eq!(claims.len(), 1);
+    assert_eq!(
+        claims[0].msg, matching,
+        "compose must persist exact identity and filter before LIMIT"
+    );
+    let stale = claims[0].token;
+    assert!(
+        queue
+            .claim_pending(&processor, 1, &plugins, matching_flavor)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // Both wall-clock SQL backends and the monotonic reference backend cross
+    // the strict reclaim cutoff. Only this uniquely scoped queue is reclaimed.
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    assert_eq!(
+        queue
+            .reclaim_stuck(Duration::ZERO, 3)
+            .await
+            .unwrap()
+            .reclaimed,
+        1
+    );
+    let reclaimed = queue
+        .claim_pending(&processor, 1, &plugins, matching_flavor)
+        .await
+        .unwrap();
+    assert_eq!(reclaimed.len(), 1);
+    assert_eq!(reclaimed[0].msg.required_worker_flavor_id, matching_flavor);
+    assert_eq!(reclaimed[0].msg.reclaim_count, 1);
+    assert!(reclaimed[0].token.generation() > stale.generation());
+    assert!(matches!(
+        queue.mark_dispatched(&stale).await,
+        Err(StorageError::FencedOut { .. })
+    ));
+    queue.mark_dispatched(&reclaimed[0].token).await.unwrap();
+
+    let other = queue
+        .claim_pending(&processor, 1, &plugins, other_flavor)
+        .await
+        .unwrap();
+    assert_eq!(other.len(), 1);
+    assert_eq!(
+        other[0].msg, wrong,
+        "ordinary enqueue must preserve exact identity"
+    );
+    queue.mark_dispatched(&other[0].token).await.unwrap();
 }

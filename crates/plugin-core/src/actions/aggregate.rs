@@ -686,6 +686,7 @@ impl nebula_action::action::Action for Aggregate {
             "Reduce an array of objects to grouped/scalar summaries \
              (sum/count/avg/min/max/collect/join)",
         )
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
 
     fn dependencies() -> &'static nebula_action::Dependencies {

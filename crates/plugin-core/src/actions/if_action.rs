@@ -174,6 +174,7 @@ impl nebula_action::action::Action for CoreIf {
             OutputPort::flow(port_key!("true")),
             OutputPort::flow(port_key!("false")),
         ])
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
 
     fn dependencies() -> &'static nebula_action::Dependencies {

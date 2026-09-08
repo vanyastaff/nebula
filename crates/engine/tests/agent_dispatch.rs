@@ -70,6 +70,7 @@ impl Action for TwoTurnAgent {
             "TwoTurnAgent",
             "continues twice then breaks",
         )
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -154,6 +155,7 @@ impl Action for StubbornContinueAgent {
             "StubbornContinueAgent",
             "continues N times without mutating turn state, then breaks",
         )
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -229,6 +231,7 @@ impl Action for LoopForeverAgent {
             "LoopForeverAgent",
             "loops until budget is exceeded",
         )
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -297,6 +300,7 @@ impl Action for SlowTurnAgent {
             "SlowTurnAgent",
             "sleeps per turn to exercise the per-turn timeout",
         )
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -354,6 +358,7 @@ impl Action for FastTurnAgent {
             "FastTurnAgent",
             "completes instantly — per-turn timeout must NOT fire",
         )
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -416,6 +421,7 @@ impl Action for WaitReturningAgent {
             "WaitReturningAgent",
             "returns Wait — engine must reject with AgentWaitNotSupported",
         )
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
 
     fn dependencies() -> &'static Dependencies {

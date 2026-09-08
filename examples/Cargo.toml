@@ -21,8 +21,6 @@ nebula-expression = { path = "../crates/expression" }
 nebula-core = { path = "../crates/core" }
 nebula-resource = { path = "../crates/resource" }
 nebula-schema = { path = "../crates/schema" }
-nebula-api = { path = "../crates/api" }
-nebula-storage = { path = "../crates/storage", features = ["credential-in-memory"] }
 nebula-engine = { path = "../crates/engine" }
 nebula-workflow = { path = "../crates/workflow" }
 nebula-plugin-core = { path = "../crates/plugin-core" }
@@ -56,10 +54,6 @@ path = "examples/expression_template_advanced.rs"
 [[example]]
 name = "expression_template_rendering"
 path = "examples/expression_template_rendering.rs"
-
-[[example]]
-name = "api_simple_server"
-path = "examples/api_simple_server.rs"
 
 [[example]]
 name = "resource_postgres_pool"

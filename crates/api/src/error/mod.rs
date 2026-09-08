@@ -179,10 +179,7 @@ pub enum ApiError {
     /// invalid per `nebula_workflow::validate_workflow` (RFC 9457 **422**).
     ///
     /// Distinct from [`Self::Validation`] (400), which covers request-level
-    /// parse/format errors. Returned by `activate_workflow` and by the
-    /// shift-left dispatch gate (`execute_workflow` / `start_execution`, via
-    /// `validate_for_dispatch`) after the stored definition fails structural
-    /// DAG/schema checks (ROADMAP M3.6).
+    /// parse/format errors. Carries structured definition validation diagnostics.
     #[classify(category = "validation", code = "API:INVALID_WORKFLOW")]
     #[error("Invalid workflow definition: {detail}")]
     InvalidWorkflowDefinition {
@@ -191,10 +188,55 @@ pub enum ApiError {
         /// One entry per `WorkflowError` returned by `validate_workflow`.
         ///
         /// The typed errors are carried rather than pre-rendered so
-        /// `to_problem_details` can emit each rejection's own NS14 diagnostic —
+        /// `to_problem_details` can emit each rejection's activation diagnostic —
         /// its code, the element it is about, the contract it required, what
         /// was found, and how to fix it.
         errors: Vec<nebula_workflow::WorkflowError>,
+    },
+
+    /// Exact compilation rejected a workflow; preserve its structured diagnostics.
+    #[classify(category = "validation", code = "API:WORKFLOW_COMPILATION")]
+    #[error("Workflow compilation failed")]
+    WorkflowCompilation(#[source] nebula_plugin::PlanCompilationError),
+
+    /// Publication may have committed; these identify the original attempt.
+    #[classify(category = "internal", code = "API:WORKFLOW_PUBLICATION_INDETERMINATE")]
+    #[error("Workflow publication outcome is indeterminate")]
+    WorkflowPublicationIndeterminate {
+        /// Workflow in the authenticated request scope.
+        workflow_id: String,
+        /// Exact version attempted, not the current version.
+        version: u32,
+        /// Immutable compiler identity allocated for this attempt.
+        workflow_revision: String,
+    },
+
+    /// Runtime admission rejected an inactive or unsupported workflow contract.
+    #[classify(category = "validation", code = "API:WORKFLOW_START_REJECTED")]
+    #[error("Workflow start was rejected: {reason}")]
+    WorkflowStartRejected {
+        /// Fixed, payload-free admission explanation.
+        reason: &'static str,
+    },
+
+    /// Acceptance is known, but a checked persisted receipt could not be read.
+    #[classify(category = "internal", code = "API:WORKFLOW_START_RECEIPT_UNAVAILABLE")]
+    #[error("Accepted workflow start receipt is unavailable")]
+    WorkflowStartReceiptUnavailable {
+        /// Known accepted execution in the authenticated scope.
+        execution_id: String,
+    },
+
+    /// The original start transaction may have committed.
+    #[classify(category = "internal", code = "API:WORKFLOW_START_INDETERMINATE")]
+    #[error("Workflow start outcome is indeterminate")]
+    WorkflowStartIndeterminate {
+        /// Execution identity allocated for the original attempt.
+        execution_id: String,
+        /// Original workflow selection.
+        workflow_id: String,
+        /// Original immutable contract bundle identity.
+        bundle_id: String,
     },
 
     /// Session has expired — caller must re-authenticate (401).
@@ -374,309 +416,372 @@ impl ApiError {
         }
     }
 
-    /// Convert to ProblemDetails
+    /// Convert this error to its RFC 9457 representation.
     pub fn to_problem_details(&self) -> (StatusCode, ProblemDetails) {
         match self {
-            ApiError::Validation { detail, errors } => (
-                StatusCode::BAD_REQUEST,
-                ProblemDetails::new(
-                    "https://nebula.dev/problems/validation-error",
-                    "Validation Error",
-                    StatusCode::BAD_REQUEST,
-                )
-                .with_detail(detail)
-                .with_errors(errors.clone()),
-            ),
-            ApiError::Unauthorized(msg) => (
+            Self::Validation { detail, errors } => validation_problem(detail, errors),
+            Self::Unauthorized(message) => standard_problem(
                 StatusCode::UNAUTHORIZED,
-                ProblemDetails::new(
-                    "https://nebula.dev/problems/unauthorized",
-                    "Unauthorized",
-                    StatusCode::UNAUTHORIZED,
-                )
-                .with_detail(msg),
+                "unauthorized",
+                "Unauthorized",
+                Some(message),
             ),
-            ApiError::Forbidden(msg) => (
+            Self::Forbidden(message) => standard_problem(
                 StatusCode::FORBIDDEN,
-                ProblemDetails::new(
-                    "https://nebula.dev/problems/forbidden",
-                    "Forbidden",
-                    StatusCode::FORBIDDEN,
-                )
-                .with_detail(msg),
+                "forbidden",
+                "Forbidden",
+                Some(message),
             ),
-            ApiError::NotFound(msg) => (
+            Self::NotFound(message) => standard_problem(
                 StatusCode::NOT_FOUND,
-                ProblemDetails::new(
-                    "https://nebula.dev/problems/not-found",
-                    "Not Found",
-                    StatusCode::NOT_FOUND,
-                )
-                .with_detail(msg),
+                "not-found",
+                "Not Found",
+                Some(message),
             ),
-            ApiError::Conflict(msg) => (
-                StatusCode::CONFLICT,
-                ProblemDetails::new(
-                    "https://nebula.dev/problems/conflict",
-                    "Conflict",
-                    StatusCode::CONFLICT,
-                )
-                .with_detail(msg),
-            ),
-            ApiError::StartConflict => (
-                StatusCode::CONFLICT,
-                ProblemDetails::new(
-                    "https://nebula.dev/problems/start-conflict",
-                    "Start Key Conflict",
-                    StatusCode::CONFLICT,
-                )
-                .with_detail(
-                    "This start key was already accepted for a different request. \
-                     Retry with the original request body, or use a new key.",
-                )
-                // `code` is the machine-readable discriminator clients branch
-                // on; the type URI is for humans and the title is prose.
-                .with_extensions(serde_json::json!({"code": "operation_mismatch"})),
-            ),
-            ApiError::AlreadyExists(msg) => (
-                StatusCode::CONFLICT,
-                ProblemDetails::new(
-                    "https://nebula.dev/problems/already-exists",
-                    "Already Exists",
-                    StatusCode::CONFLICT,
-                )
-                .with_detail(msg),
-            ),
-            ApiError::VersionExhausted(msg) => (
-                StatusCode::CONFLICT,
-                ProblemDetails::new(
-                    "https://nebula.dev/problems/version-exhausted",
-                    "Version Exhausted",
-                    StatusCode::CONFLICT,
-                )
-                .with_detail(msg),
-            ),
-            ApiError::OutcomeUnknown(msg) => (
-                StatusCode::CONFLICT,
-                ProblemDetails::new(
-                    "https://nebula.dev/problems/outcome-unknown",
-                    "Operation Outcome Unknown",
-                    StatusCode::CONFLICT,
-                )
-                .with_detail(msg),
-            ),
-            ApiError::CredentialReauthRequired => (
-                StatusCode::CONFLICT,
-                ProblemDetails::new(
-                    "https://nebula.dev/problems/credential-reauth-required",
-                    "Credential Reauthentication Required",
-                    StatusCode::CONFLICT,
-                )
-                .with_detail(
-                    "Reconnect the integration credential before retrying this operation.",
-                ),
-            ),
-            ApiError::CredentialRefreshNotAppliedNever => (
-                StatusCode::CONFLICT,
-                ProblemDetails::new(
-                    "https://nebula.dev/problems/credential-refresh-not-applied",
-                    "Credential Refresh Not Applied",
-                    StatusCode::CONFLICT,
-                )
-                .with_detail(
-                    "The credential refresh was not applied for the current credential state.",
-                ),
-            ),
-            ApiError::CredentialRefreshNotAppliedAfter { .. } => (
-                StatusCode::CONFLICT,
-                ProblemDetails::new(
-                    "https://nebula.dev/problems/credential-refresh-not-applied",
-                    "Credential Refresh Not Applied",
-                    StatusCode::CONFLICT,
-                )
-                .with_detail(
-                    "The credential refresh was not applied. Retry only after the Retry-After delay."
-                ),
-            ),
-            ApiError::CredentialRefreshReconciliationRequired => (
-                StatusCode::CONFLICT,
-                ProblemDetails::new(
-                    "https://nebula.dev/problems/credential-refresh-reconciliation-required",
-                    "Credential Refresh Reconciliation Required",
-                    StatusCode::CONFLICT,
-                )
-                .with_detail(
-                    "The refresh outcome is known, but durable local finalization definitely failed. Do not retry automatically; reconcile or reconnect the integration credential."
-                ),
-            ),
-            ApiError::CredentialRevokeReconciliationRequired => (
-                StatusCode::CONFLICT,
-                ProblemDetails::new(
-                    "https://nebula.dev/problems/credential-revoke-reconciliation-required",
-                    "Credential Revoke Reconciliation Required",
-                    StatusCode::CONFLICT,
-                )
-                .with_detail(
-                    "The revoke outcome is known, but durable local finalization definitely failed. Do not retry automatically; reconcile credential state."
-                ),
-            ),
-            ApiError::RateLimitExceeded => (
+            Self::Conflict(message) => conflict_problem("conflict", "Conflict", message),
+            Self::AlreadyExists(message) => {
+                conflict_problem("already-exists", "Already Exists", message)
+            },
+            Self::StartConflict => start_conflict_problem(),
+            Self::VersionExhausted(message) => {
+                conflict_problem("version-exhausted", "Version Exhausted", message)
+            },
+            Self::OutcomeUnknown(message) => {
+                conflict_problem("outcome-unknown", "Operation Outcome Unknown", message)
+            },
+            Self::CredentialReauthRequired => {
+                credential_problem(CredentialProblem::ReauthenticationRequired)
+            },
+            Self::CredentialRefreshNotAppliedNever => {
+                credential_problem(CredentialProblem::RefreshNotApplied)
+            },
+            Self::CredentialRefreshNotAppliedAfter { .. } => {
+                credential_problem(CredentialProblem::RefreshRetryDelayed)
+            },
+            Self::CredentialRefreshReconciliationRequired => {
+                credential_problem(CredentialProblem::RefreshReconciliationRequired)
+            },
+            Self::CredentialRevokeReconciliationRequired => {
+                credential_problem(CredentialProblem::RevokeReconciliationRequired)
+            },
+            Self::RateLimitExceeded => standard_problem(
                 StatusCode::TOO_MANY_REQUESTS,
-                ProblemDetails::new(
-                    "https://nebula.dev/problems/rate-limit",
-                    "Rate Limit Exceeded",
-                    StatusCode::TOO_MANY_REQUESTS,
-                ),
+                "rate-limit",
+                "Rate Limit Exceeded",
+                None,
             ),
-            ApiError::Internal(msg) => {
-                // Security: don't reveal internal details to client
-                tracing::error!("Internal error: {}", msg);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    ProblemDetails::new(
-                        "about:blank",
-                        "Internal Server Error",
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                    ),
-                )
-            },
-            ApiError::ServiceUnavailable(msg) => (
+            Self::Internal(message) => internal_problem(message),
+            Self::ServiceUnavailable(message) => standard_problem(
                 StatusCode::SERVICE_UNAVAILABLE,
-                ProblemDetails::new(
-                    "https://nebula.dev/problems/service-unavailable",
-                    "Service Unavailable",
-                    StatusCode::SERVICE_UNAVAILABLE,
-                )
-                .with_detail(msg),
+                "service-unavailable",
+                "Service Unavailable",
+                Some(message),
             ),
-            ApiError::Storage(err) => {
-                tracing::error!("Storage error: {}", err);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    ProblemDetails::new(
-                        "https://nebula.dev/problems/storage-error",
-                        "Internal Server Error",
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                    ),
-                )
+            Self::Storage(error) => storage_problem(error),
+            Self::InvalidWorkflowDefinition { detail, errors } => {
+                invalid_workflow_problem(detail, activation_field_errors(errors))
             },
-            ApiError::InvalidWorkflowDefinition { detail, errors } => (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                ProblemDetails::new(
-                    "https://nebula.dev/problems/invalid-workflow-definition",
-                    "Invalid Workflow Definition",
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                )
-                .with_detail(detail)
-                // Every rejection contributes its own NS14 diagnostic rather
-                // than one shared `workflow_definition_invalid` code and a
-                // prose sentence. A client can now tell which rule fired, a UI
-                // can point at the element, and an author is told what to
-                // change — none of which survived being flattened into text.
-                .with_errors(activation_field_errors(errors)),
+            Self::WorkflowCompilation(error) => invalid_workflow_problem(
+                "The workflow cannot be compiled for the selected worker release.",
+                error
+                    .diagnostics()
+                    .iter()
+                    .map(ValidationFieldError::from)
+                    .collect(),
             ),
-            ApiError::SessionExpired => (
+            Self::WorkflowPublicationIndeterminate {
+                workflow_id,
+                version,
+                workflow_revision,
+            } => workflow_publication_problem(workflow_id, *version, workflow_revision),
+            Self::WorkflowStartRejected { reason } => workflow_start_rejected_problem(reason),
+            Self::WorkflowStartReceiptUnavailable { execution_id } => {
+                workflow_start_receipt_problem(execution_id)
+            },
+            Self::WorkflowStartIndeterminate {
+                execution_id,
+                workflow_id,
+                bundle_id,
+            } => workflow_start_indeterminate_problem(execution_id, workflow_id, bundle_id),
+            Self::SessionExpired => standard_problem(
                 StatusCode::UNAUTHORIZED,
-                ProblemDetails::new(
-                    "https://nebula.dev/problems/session-expired",
-                    "Session Expired",
-                    StatusCode::UNAUTHORIZED,
-                ),
+                "session-expired",
+                "Session Expired",
+                None,
             ),
-            ApiError::MfaRequired => (
+            Self::MfaRequired => standard_problem(
                 StatusCode::UNAUTHORIZED,
-                ProblemDetails::new(
-                    "https://nebula.dev/problems/mfa-required",
-                    "MFA Required",
-                    StatusCode::UNAUTHORIZED,
-                ),
+                "mfa-required",
+                "MFA Required",
+                None,
             ),
-            ApiError::InsufficientRole {
+            Self::InsufficientRole {
                 required_role,
                 current_role,
-            } => (
+            } => insufficient_role_problem(required_role, current_role),
+            Self::QuotaExceeded(message) => standard_problem(
                 StatusCode::FORBIDDEN,
-                ProblemDetails::new(
-                    "https://nebula.dev/problems/insufficient-role",
-                    "Insufficient Role",
-                    StatusCode::FORBIDDEN,
-                )
-                .with_detail(format!(
-                    "{required_role} required, current role {current_role}"
-                )),
+                "quota-exceeded",
+                "Quota Exceeded",
+                Some(message),
             ),
-            ApiError::QuotaExceeded(msg) => (
-                StatusCode::FORBIDDEN,
-                ProblemDetails::new(
-                    "https://nebula.dev/problems/quota-exceeded",
-                    "Quota Exceeded",
-                    StatusCode::FORBIDDEN,
-                )
-                .with_detail(msg),
-            ),
-            ApiError::VersionMismatch(msg) => (
-                StatusCode::CONFLICT,
-                ProblemDetails::new(
-                    "https://nebula.dev/problems/version-mismatch",
-                    "Version Mismatch",
-                    StatusCode::CONFLICT,
-                )
-                .with_detail(msg),
-            ),
-            ApiError::Gone(msg) => (
-                StatusCode::GONE,
-                ProblemDetails::new("https://nebula.dev/problems/gone", "Gone", StatusCode::GONE)
-                    .with_detail(msg),
-            ),
-            ApiError::Unprocessable(msg) => (
+            Self::VersionMismatch(message) => {
+                conflict_problem("version-mismatch", "Version Mismatch", message)
+            },
+            Self::Gone(message) => {
+                standard_problem(StatusCode::GONE, "gone", "Gone", Some(message))
+            },
+            Self::Unprocessable(message) => standard_problem(
                 StatusCode::UNPROCESSABLE_ENTITY,
-                ProblemDetails::new(
-                    "https://nebula.dev/problems/unprocessable",
-                    "Unprocessable Entity",
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                )
-                .with_detail(msg),
+                "unprocessable",
+                "Unprocessable Entity",
+                Some(message),
             ),
-            ApiError::AccountLocked(msg) => (
-                StatusCode::from_u16(423).unwrap_or(StatusCode::FORBIDDEN),
-                ProblemDetails::new(
-                    "https://nebula.dev/problems/account-locked",
-                    "Account Locked",
-                    StatusCode::from_u16(423).unwrap_or(StatusCode::FORBIDDEN),
-                )
-                .with_detail(msg),
+            Self::AccountLocked(message) => standard_problem(
+                StatusCode::LOCKED,
+                "account-locked",
+                "Account Locked",
+                Some(message),
             ),
-            ApiError::UpstreamError(msg) => (
+            Self::UpstreamError(message) => standard_problem(
                 StatusCode::BAD_GATEWAY,
-                ProblemDetails::new(
-                    "https://nebula.dev/problems/upstream-error",
-                    "Upstream Error",
-                    StatusCode::BAD_GATEWAY,
-                )
-                .with_detail(msg),
+                "upstream-error",
+                "Upstream Error",
+                Some(message),
             ),
-            ApiError::StorageFull => (
+            Self::StorageFull => standard_problem(
                 StatusCode::INSUFFICIENT_STORAGE,
-                ProblemDetails::new(
-                    "https://nebula.dev/problems/storage-full",
-                    "Storage Full",
-                    StatusCode::INSUFFICIENT_STORAGE,
-                ),
+                "storage-full",
+                "Storage Full",
+                None,
             ),
-            ApiError::NotImplemented(reason) => (
+            Self::NotImplemented(reason) => standard_problem(
                 StatusCode::NOT_IMPLEMENTED,
-                ProblemDetails::new(
-                    "https://nebula.dev/problems/not-implemented",
-                    "Not Implemented",
-                    StatusCode::NOT_IMPLEMENTED,
-                )
-                .with_detail(reason),
+                "not-implemented",
+                "Not Implemented",
+                Some(reason),
             ),
         }
     }
 }
 
-/// Render typed workflow rejections as NS14 problem-details entries.
+fn standard_problem(
+    status: StatusCode,
+    problem_type: &'static str,
+    title: &'static str,
+    detail: Option<&str>,
+) -> (StatusCode, ProblemDetails) {
+    let problem = ProblemDetails::new(
+        format!("https://nebula.dev/problems/{problem_type}"),
+        title,
+        status,
+    );
+    let problem = if let Some(value) = detail {
+        problem.with_detail(value)
+    } else {
+        problem
+    };
+    (status, problem)
+}
+
+fn conflict_problem(
+    problem_type: &'static str,
+    title: &'static str,
+    detail: &str,
+) -> (StatusCode, ProblemDetails) {
+    standard_problem(StatusCode::CONFLICT, problem_type, title, Some(detail))
+}
+
+fn validation_problem(
+    detail: &str,
+    errors: &[ValidationFieldError],
+) -> (StatusCode, ProblemDetails) {
+    let (status, problem) = standard_problem(
+        StatusCode::BAD_REQUEST,
+        "validation-error",
+        "Validation Error",
+        Some(detail),
+    );
+    (status, problem.with_errors(errors.to_vec()))
+}
+
+fn start_conflict_problem() -> (StatusCode, ProblemDetails) {
+    let (status, problem) = standard_problem(
+        StatusCode::CONFLICT,
+        "start-conflict",
+        "Start Key Conflict",
+        Some(
+            "This start key was already accepted for a different request. \
+             Retry with the original request body, or use a new key.",
+        ),
+    );
+    (
+        status,
+        problem.with_extensions(serde_json::json!({"code": "operation_mismatch"})),
+    )
+}
+
+enum CredentialProblem {
+    ReauthenticationRequired,
+    RefreshNotApplied,
+    RefreshRetryDelayed,
+    RefreshReconciliationRequired,
+    RevokeReconciliationRequired,
+}
+
+fn credential_problem(error: CredentialProblem) -> (StatusCode, ProblemDetails) {
+    let (problem_type, title, detail) = match error {
+        CredentialProblem::ReauthenticationRequired => (
+            "credential-reauth-required",
+            "Credential Reauthentication Required",
+            "Reconnect the integration credential before retrying this operation.",
+        ),
+        CredentialProblem::RefreshNotApplied => (
+            "credential-refresh-not-applied",
+            "Credential Refresh Not Applied",
+            "The credential refresh was not applied for the current credential state.",
+        ),
+        CredentialProblem::RefreshRetryDelayed => (
+            "credential-refresh-not-applied",
+            "Credential Refresh Not Applied",
+            "The credential refresh was not applied. Retry only after the Retry-After delay.",
+        ),
+        CredentialProblem::RefreshReconciliationRequired => (
+            "credential-refresh-reconciliation-required",
+            "Credential Refresh Reconciliation Required",
+            "The refresh outcome is known, but durable local finalization definitely failed. Do not retry automatically; reconcile or reconnect the integration credential.",
+        ),
+        CredentialProblem::RevokeReconciliationRequired => (
+            "credential-revoke-reconciliation-required",
+            "Credential Revoke Reconciliation Required",
+            "The revoke outcome is known, but durable local finalization definitely failed. Do not retry automatically; reconcile credential state.",
+        ),
+    };
+    conflict_problem(problem_type, title, detail)
+}
+
+fn internal_problem(message: &str) -> (StatusCode, ProblemDetails) {
+    tracing::error!(error = message, "internal API error");
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        ProblemDetails::new(
+            "about:blank",
+            "Internal Server Error",
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ),
+    )
+}
+
+fn storage_problem(error: &nebula_storage_port::StorageError) -> (StatusCode, ProblemDetails) {
+    tracing::error!(error = %error, "storage error at API boundary");
+    standard_problem(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "storage-error",
+        "Internal Server Error",
+        None,
+    )
+}
+
+fn invalid_workflow_problem(
+    detail: &str,
+    errors: Vec<ValidationFieldError>,
+) -> (StatusCode, ProblemDetails) {
+    let (status, problem) = standard_problem(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "invalid-workflow-definition",
+        "Invalid Workflow Definition",
+        Some(detail),
+    );
+    (status, problem.with_errors(errors))
+}
+
+fn workflow_publication_problem(
+    workflow_id: &str,
+    version: u32,
+    workflow_revision: &str,
+) -> (StatusCode, ProblemDetails) {
+    let (status, problem) = standard_problem(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "workflow-publication-indeterminate",
+        "Workflow Publication Indeterminate",
+        Some(
+            "Publication may have committed. Reconcile the original version before submitting another activation.",
+        ),
+    );
+    (
+        status,
+        problem.with_extensions(serde_json::json!({
+            "workflow_id": workflow_id,
+            "version": version,
+            "workflow_revision": workflow_revision,
+        })),
+    )
+}
+
+fn workflow_start_rejected_problem(reason: &str) -> (StatusCode, ProblemDetails) {
+    standard_problem(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "workflow-start-rejected",
+        "Workflow Start Rejected",
+        Some(reason),
+    )
+}
+
+fn workflow_start_receipt_problem(execution_id: &str) -> (StatusCode, ProblemDetails) {
+    let (status, problem) = standard_problem(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "workflow-start-receipt-unavailable",
+        "Workflow Start Receipt Unavailable",
+        Some(
+            "The start was accepted. Read this execution to recover its receipt; submitting another unkeyed start creates a different execution.",
+        ),
+    );
+    (
+        status,
+        problem.with_extensions(serde_json::json!({
+            "execution_id": execution_id,
+            "accepted": true,
+        })),
+    )
+}
+
+fn workflow_start_indeterminate_problem(
+    execution_id: &str,
+    workflow_id: &str,
+    bundle_id: &str,
+) -> (StatusCode, ProblemDetails) {
+    let (status, problem) = standard_problem(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "workflow-start-indeterminate",
+        "Workflow Start Indeterminate",
+        Some(
+            "The start may have committed. Reconcile the original execution before submitting another start.",
+        ),
+    );
+    (
+        status,
+        problem.with_extensions(serde_json::json!({
+            "execution_id": execution_id,
+            "workflow_id": workflow_id,
+            "bundle_id": bundle_id,
+        })),
+    )
+}
+
+fn insufficient_role_problem(
+    required_role: &str,
+    current_role: &str,
+) -> (StatusCode, ProblemDetails) {
+    let detail = format!("{required_role} required, current role {current_role}");
+    standard_problem(
+        StatusCode::FORBIDDEN,
+        "insufficient-role",
+        "Insufficient Role",
+        Some(&detail),
+    )
+}
+
+/// Render typed workflow rejections as activation problem-details entries.
 ///
 /// Ordering is canonical, so the same invalid workflow always produces the
 /// same response body: a client diffing two responses sees only real changes,
@@ -696,6 +801,105 @@ fn activation_field_errors(errors: &[nebula_workflow::WorkflowError]) -> Vec<Val
             .collect(),
     );
     diagnostics.iter().map(ValidationFieldError::from).collect()
+}
+
+impl From<nebula_engine::WorkflowActivationError> for ApiError {
+    fn from(error: nebula_engine::WorkflowActivationError) -> Self {
+        use nebula_engine::WorkflowActivationError;
+        match error {
+            WorkflowActivationError::MissingWorkflow => Self::NotFound("Workflow not found".into()),
+            WorkflowActivationError::CasConflict => {
+                Self::Conflict("Workflow version conflict".into())
+            },
+            WorkflowActivationError::InvalidDefinition => {
+                Self::validation_message("Invalid workflow definition")
+            },
+            WorkflowActivationError::Compilation(error) => Self::WorkflowCompilation(error),
+            WorkflowActivationError::UnresolvedBindings => Self::validation_message(
+                "Workflow contains unresolved resource or credential bindings",
+            ),
+            WorkflowActivationError::UnsupportedRecordedSemantics => {
+                Self::validation_message("Workflow uses runtime semantics that cannot be recorded")
+            },
+            WorkflowActivationError::PublicationIndeterminate(attempt) => {
+                Self::WorkflowPublicationIndeterminate {
+                    workflow_id: attempt.workflow_id().to_string(),
+                    version: attempt.number(),
+                    workflow_revision: attempt.activation().workflow_version_id().to_string(),
+                }
+            },
+            WorkflowActivationError::RevisionNotAdmitted => {
+                Self::Conflict("Workflow revisions are not admitted".into())
+            },
+            _ => Self::ServiceUnavailable("Workflow activation is unavailable".into()),
+        }
+    }
+}
+
+impl From<nebula_engine::WorkflowStartError> for ApiError {
+    fn from(error: nebula_engine::WorkflowStartError) -> Self {
+        Self::from(&error)
+    }
+}
+
+impl From<&nebula_engine::WorkflowStartError> for ApiError {
+    fn from(error: &nebula_engine::WorkflowStartError) -> Self {
+        use nebula_engine::WorkflowStartError;
+        match error {
+            WorkflowStartError::InvalidScope
+            | WorkflowStartError::InvalidKey
+            | WorkflowStartError::InvalidInput => {
+                Self::validation_message("Invalid workflow start request")
+            },
+            WorkflowStartError::MissingWorkflow => Self::NotFound("Workflow not found".into()),
+            WorkflowStartError::WorkflowNotActivated => Self::WorkflowStartRejected {
+                reason: "The workflow has no exact activation.",
+            },
+            WorkflowStartError::UnsupportedBindings => Self::WorkflowStartRejected {
+                reason: "The workflow requires bindings that cannot be admitted.",
+            },
+            WorkflowStartError::UnsupportedRecordedSemantics => Self::WorkflowStartRejected {
+                reason: "The workflow contains unsupported runtime semantics.",
+            },
+            WorkflowStartError::FingerprintMismatch => Self::StartConflict,
+            WorkflowStartError::RevisionNotAdmitted(_) => {
+                Self::Conflict("Workflow revisions are not admitted".into())
+            },
+            WorkflowStartError::RevisionUnavailable(source) => match source.as_ref() {
+                nebula_engine::PlanFlavorRevisionBridgeError::Catalog {
+                    source:
+                        nebula_storage_port::dto::RevisionCatalogError::CorruptRecord { .. }
+                        | nebula_storage_port::dto::RevisionCatalogError::UnsupportedRecordFormat {
+                            ..
+                        }
+                        | nebula_storage_port::dto::RevisionCatalogError::EmptyRecord,
+                    ..
+                } => Self::Internal("Stored workflow revisions are inconsistent".into()),
+                nebula_engine::PlanFlavorRevisionBridgeError::Catalog { .. } => {
+                    Self::ServiceUnavailable("Exact workflow revisions are unavailable".into())
+                },
+                _ => Self::Internal("Stored workflow revisions are inconsistent".into()),
+            },
+            WorkflowStartError::ReceiptUnavailable { execution_id } => {
+                Self::WorkflowStartReceiptUnavailable {
+                    execution_id: execution_id.to_string(),
+                }
+            },
+            WorkflowStartError::MaterializationIndeterminate(attempt) => {
+                Self::WorkflowStartIndeterminate {
+                    execution_id: attempt.execution_id().to_string(),
+                    workflow_id: attempt.workflow_id().to_string(),
+                    bundle_id: attempt.bundle_id().to_string(),
+                }
+            },
+            WorkflowStartError::InvalidActivation
+            | WorkflowStartError::InvalidReceipt
+            | WorkflowStartError::MaterializationRejected => {
+                Self::Internal("Stored workflow start contract is inconsistent".into())
+            },
+            _ => Self::ServiceUnavailable("Workflow start is unavailable".into()),
+        }
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -735,6 +939,40 @@ pub type ApiResult<T> = Result<T, ApiError>;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn emitter_admission_source_maps_to_the_same_transport_error() {
+        let error = nebula_action::ActionError::fatal_from(
+            nebula_engine::WorkflowStartError::MissingWorkflow,
+        );
+        let source = std::error::Error::source(&error).expect("typed emitter error retains source");
+        let admission = source
+            .downcast_ref::<nebula_engine::WorkflowStartError>()
+            .expect("source is the original runtime admission error");
+        assert_eq!(
+            ApiError::from(admission).to_problem_details().0,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[test]
+    fn accepted_receipt_failure_retains_identity_without_a_retry_hint() {
+        let execution_id = nebula_core::ExecutionId::new();
+        let error =
+            ApiError::from(&nebula_engine::WorkflowStartError::ReceiptUnavailable { execution_id });
+        let (status, problem) = error.to_problem_details();
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        let encoded = serde_json::to_value(problem).unwrap();
+        assert_eq!(encoded["execution_id"], execution_id.to_string());
+        assert_eq!(encoded["accepted"], true);
+        assert!(
+            error
+                .into_response()
+                .headers()
+                .get(header::RETRY_AFTER)
+                .is_none()
+        );
+    }
+
     use axum::{
         http::{StatusCode, header},
         response::IntoResponse,
@@ -819,7 +1057,7 @@ mod tests {
         assert_eq!(errors.len(), 1);
 
         // Structural rejections used to collapse to the RFC 6901 root pointer
-        // (the empty string). NS14 requires a non-empty path on every
+        // (the empty string). Activation diagnostics require a non-empty path on every
         // diagnostic, and a cycle is always a property of the connections, so
         // pointing there is both required and strictly more useful than
         // pointing at the whole document.

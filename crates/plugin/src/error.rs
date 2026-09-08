@@ -27,6 +27,13 @@ impl core::fmt::Display for ComponentKind {
 #[derive(Debug, thiserror::Error, nebula_error::Classify)]
 #[non_exhaustive]
 pub enum PluginError {
+    /// Static effect metadata disagrees with the retained factory capability.
+    #[classify(category = "validation", code = "PLUGIN:INVALID_EFFECT_CONTRACT")]
+    #[error("action '{action}' has an incoherent effect contract")]
+    InvalidEffectContract {
+        /// Registered action whose declaration cannot be trusted.
+        action: nebula_core::ActionKey,
+    },
     /// Plugin not found in the registry.
     #[classify(category = "not_found", code = "PLUGIN:NOT_FOUND")]
     #[error("plugin not found: {0}")]

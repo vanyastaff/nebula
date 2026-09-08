@@ -15,7 +15,7 @@
 
 use std::time::Duration;
 
-use nebula_core::PluginKey;
+use nebula_core::{PluginKey, WorkerFlavorRevisionId};
 use nebula_storage_port::dto::{
     DispatchKind, DispatchOutcome, JobDispatchMsg, NewExecution, TriggerDedupRow,
 };
@@ -97,13 +97,21 @@ fn row_to_msg(row: &sqlx::sqlite::SqliteRow) -> Result<JobDispatchMsg, StorageEr
             .map_err(|e| StorageError::Serialization(e.to_string()))?,
         row.try_get::<Option<String>, _>("event_id")
             .map_err(conn_err)?,
-        row.try_get::<String, _>("target_flavor_sha")
-            .map_err(conn_err)?,
         required_plugin_key,
         required_plugins,
         row.try_get::<Option<String>, _>("w3c_traceparent")
             .map_err(conn_err)?,
         row.try_get::<i64, _>("reclaim_count").map_err(conn_err)? as u32,
+        WorkerFlavorRevisionId::from_bytes(
+            row.try_get::<Vec<u8>, _>("required_worker_flavor_id")
+                .map_err(conn_err)?
+                .try_into()
+                .map_err(|_| {
+                    StorageError::Serialization(
+                        "job dispatch worker flavor identity must be 32 bytes".to_owned(),
+                    )
+                })?,
+        ),
     ))
 }
 
@@ -190,8 +198,8 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
         sqlx::query(
             "INSERT INTO port_job_dispatch_queue \
              (id, execution_id, workspace_id, org_id, command, status, \
-              payload, event_id, target_flavor_sha, required_plugin_key, \
-              required_plugins, w3c_traceparent, reclaim_count) \
+              payload, event_id, required_plugin_key, \
+              required_plugins, w3c_traceparent, reclaim_count, required_worker_flavor_id) \
              VALUES (?, ?, ?, ?, ?, 'Pending', ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(msg.id.as_slice())
@@ -201,11 +209,11 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
         .bind(msg.command.as_str())
         .bind(&payload)
         .bind(msg.event_id.as_deref())
-        .bind(&msg.target_flavor_sha)
         .bind(msg.required_plugin_key.as_str())
         .bind(&plugins)
         .bind(msg.w3c_traceparent.as_deref())
         .bind(i64::from(msg.reclaim_count))
+        .bind(msg.required_worker_flavor_id.as_bytes().as_slice())
         .execute(&self.pool)
         .await
         .map_err(conn_err)?;
@@ -213,12 +221,13 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
         Ok(())
     }
 
-    #[tracing::instrument(level = "debug", skip(self, available_plugins), fields(batch_size))]
+    #[tracing::instrument(level = "debug", skip(self, available_plugins), fields(batch_size, advertised_worker_flavor_id = %worker_flavor_id))]
     async fn claim_pending(
         &self,
         processor: &[u8; 16],
         batch_size: u32,
         available_plugins: &[PluginKey],
+        worker_flavor_id: WorkerFlavorRevisionId,
     ) -> Result<Vec<JobClaim>, StorageError> {
         if available_plugins.is_empty() {
             return Ok(Vec::new());
@@ -248,10 +257,10 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
         let rows = sqlx::query(
             "WITH available(plugin) AS (SELECT value FROM json_each(?1)) \
              SELECT id, execution_id, workspace_id, org_id, command, \
-                    payload, event_id, target_flavor_sha, required_plugin_key, \
-                    required_plugins, w3c_traceparent, reclaim_count \
+                    payload, event_id, required_plugin_key, \
+                    required_plugins, w3c_traceparent, reclaim_count, required_worker_flavor_id \
              FROM port_job_dispatch_queue \
-             WHERE status = 'Pending' \
+             WHERE status = 'Pending' AND required_worker_flavor_id = ?3 \
                AND required_plugin_key IN (SELECT plugin FROM available) \
                AND NOT EXISTS ( \
                    SELECT 1 FROM json_each(required_plugins) je \
@@ -261,6 +270,7 @@ impl JobDispatchQueue for SqliteJobDispatchQueue {
         )
         .bind(&available_json)
         .bind(i64::from(batch_size))
+        .bind(worker_flavor_id.as_bytes().as_slice())
         .fetch_all(&mut *tx)
         .await
         .map_err(conn_err)?;
@@ -518,8 +528,8 @@ impl TriggerDedupInbox for SqliteTriggerDedupInbox {
         sqlx::query(
             "INSERT INTO port_job_dispatch_queue \
              (id, execution_id, workspace_id, org_id, command, status, \
-              payload, event_id, target_flavor_sha, required_plugin_key, \
-              required_plugins, w3c_traceparent, reclaim_count) \
+              payload, event_id, required_plugin_key, \
+              required_plugins, w3c_traceparent, reclaim_count, required_worker_flavor_id) \
              VALUES (?, ?, ?, ?, ?, 'Pending', ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(start.id.as_slice())
@@ -529,11 +539,11 @@ impl TriggerDedupInbox for SqliteTriggerDedupInbox {
         .bind(start.command.as_str())
         .bind(&payload)
         .bind(start.event_id.as_deref())
-        .bind(&start.target_flavor_sha)
         .bind(start.required_plugin_key.as_str())
         .bind(&plugins)
         .bind(start.w3c_traceparent.as_deref())
         .bind(i64::from(start.reclaim_count))
+        .bind(start.required_worker_flavor_id.as_bytes().as_slice())
         .execute(&mut *tx)
         .await
         .map_err(conn_err)?;

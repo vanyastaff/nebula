@@ -146,6 +146,7 @@ impl nebula_action::action::Action for MapAction {
             "Reshape each element of a JSON array of objects (per-element \
              pick/omit/rename/flatten)",
         )
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
 
     fn dependencies() -> &'static nebula_action::Dependencies {
@@ -487,7 +488,9 @@ mod tests {
         );
         // The shared `apply_operations` must name the CALLING action: a rename
         // failure inside `core.map` must say `map:`, never `json_transform:`.
-        let message = err.to_string();
+        let message = std::error::Error::source(&err)
+            .map(ToString::to_string)
+            .expect("fatal map error must retain its source");
         assert!(
             message.contains("map:") && !message.contains("json_transform"),
             "rename-missing error must be prefixed `map:`, not `json_transform:`; got: {message}"

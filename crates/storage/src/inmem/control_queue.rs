@@ -23,6 +23,27 @@ use nebula_storage_port::store::{
 
 use super::execution::{QueuedMsg, SharedState};
 
+fn matches_flavor(
+    state: &super::execution::State,
+    message: &ControlMsg,
+    flavor: nebula_core::WorkerFlavorRevisionId,
+) -> bool {
+    let Some(execution) = state.rows.get(&message.execution_id) else {
+        return false;
+    };
+    if execution.scope != message.scope {
+        return false;
+    }
+    let Ok(execution_id) = message.execution_id.parse() else {
+        return false;
+    };
+    super::plan_flavor_catalog::execution_matches_live_flavor(
+        &state.revision_catalog,
+        execution_id,
+        flavor,
+    )
+}
+
 /// Format a raw 16-byte ULID as lowercase hex for `StorageError` ids, without
 /// the optional `hex` crate the `inmem` module deliberately avoids.
 fn ulid_hex(id: &[u8; 16]) -> String {
@@ -73,6 +94,59 @@ pub struct InMemoryControlQueue {
 }
 
 impl InMemoryControlQueue {
+    fn claim_filtered(
+        &self,
+        processor: &[u8; 16],
+        batch_size: u32,
+        worker_flavor: Option<nebula_core::WorkerFlavorRevisionId>,
+    ) -> Result<Vec<ControlClaim>, StorageError> {
+        let mut state = self.inner.lock();
+        let mut ids: Vec<_> = state
+            .queue
+            .iter()
+            .filter(|(_, queued)| {
+                queued.status == "Pending"
+                    && worker_flavor
+                        .is_none_or(|flavor| matches_flavor(&state, &queued.msg, flavor))
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        ids.sort_unstable();
+        ids.truncate(batch_size.clamp(1, 256) as usize);
+        for id in &ids {
+            if state.queue[id].claim_generation == u64::MAX {
+                return Err(StorageError::Internal(format!(
+                    "control_queue claim generation overflowed for row {}",
+                    ulid_hex(id),
+                )));
+            }
+        }
+        let now = Instant::now();
+        let mut claimed = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(queued) = state.queue.get_mut(&id) {
+                queued.claim_generation += 1;
+                "Processing".clone_into(&mut queued.status);
+                queued.processed_by = Some(*processor);
+                queued.processed_at = Some(now);
+                queued.msg.reclaim_count = queued.reclaim_count;
+                claimed.push(ControlClaim {
+                    msg: queued.msg.clone(),
+                    token: ControlClaimToken::new(
+                        id,
+                        ClaimGeneration::new(queued.claim_generation),
+                    ),
+                });
+            }
+        }
+        tracing::debug!(
+            exact_flavor = worker_flavor.is_some(),
+            claimed = claimed.len(),
+            "claimed control commands"
+        );
+        Ok(claimed)
+    }
+
     /// Build a control queue over an execution store's shared core.
     #[must_use]
     pub fn new(store: &super::InMemoryExecutionStore) -> Self {
@@ -187,47 +261,16 @@ impl ControlQueue for InMemoryControlQueue {
         processor: &[u8; 16],
         batch_size: u32,
     ) -> Result<Vec<ControlClaim>, StorageError> {
-        let mut st = self.inner.lock();
-        let now = Instant::now();
-        let mut claimed = Vec::new();
-        // Deterministic order so a bounded batch is stable across calls.
-        let mut ids: Vec<[u8; 16]> = st
-            .queue
-            .iter()
-            .filter(|(_, q)| q.status == "Pending")
-            .map(|(id, _)| *id)
-            .collect();
-        ids.sort_unstable();
-        for id in ids.into_iter().take(batch_size as usize) {
-            if let Some(q) = st.queue.get_mut(&id) {
-                // Mint the generation in the same critical section that flips
-                // Pending -> Processing, so no other claimer can observe the
-                // row as claimed under a generation that was not minted yet.
-                let Some(generation) = q.claim_generation.checked_add(1) else {
-                    // Fail closed: a wrapped generation would let a superseded
-                    // token match a future claim.
-                    return Err(StorageError::Internal(format!(
-                        "control_queue claim generation overflowed for row {}",
-                        ulid_hex(&id)
-                    )));
-                };
-                q.claim_generation = generation;
-                q.status = "Processing".to_string();
-                q.processed_by = Some(*processor);
-                q.processed_at = Some(now);
-                // Surface the post-reclaim count on the delivered message,
-                // matching the SQL backends (which read the `reclaim_count`
-                // column back into `ControlMsg` on claim). A consumer that
-                // re-claims a reclaimed row therefore observes the bumped
-                // count — the cross-runner-redeliver invariant relies on it.
-                q.msg.reclaim_count = q.reclaim_count;
-                claimed.push(ControlClaim {
-                    msg: q.msg.clone(),
-                    token: ControlClaimToken::new(id, ClaimGeneration::new(generation)),
-                });
-            }
-        }
-        Ok(claimed)
+        self.claim_filtered(processor, batch_size, None)
+    }
+
+    async fn claim_pending_for_flavor(
+        &self,
+        processor: &[u8; 16],
+        batch_size: u32,
+        worker_flavor: nebula_core::WorkerFlavorRevisionId,
+    ) -> Result<Vec<ControlClaim>, StorageError> {
+        self.claim_filtered(processor, batch_size, Some(worker_flavor))
     }
 
     async fn mark_completed(&self, claim: &ControlClaimToken) -> Result<(), StorageError> {

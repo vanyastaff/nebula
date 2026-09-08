@@ -17,6 +17,20 @@ fn _assert_object_safe(
 ) {
 }
 
+// Runtime authority crosses these object-safe ports through durable handoff, start
+// materialization and effect ledger, and the engine holds every one of them
+// as `Arc<dyn _>`, so dyn-compatibility is a contract and not an accident.
+fn _assert_runtime_authority_object_safe(
+    _a: &dyn ExecutionTurnHandoff,
+    _b: &dyn StartAcceptanceStore,
+    _c: &dyn JobDispatchQueue,
+    _d: &dyn OperationLedger,
+    _e: &dyn OperationLedgerAdjudicator,
+    _f: &dyn TurnRecovery,
+    _g: &dyn StartReservationMaintenance,
+) {
+}
+
 // Compile-time object-safety probe over the identity zoo: it is never
 // called, so the argument count is not an ergonomics concern.
 #[expect(clippy::too_many_arguments)]

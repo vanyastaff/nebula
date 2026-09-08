@@ -6,21 +6,28 @@
 use std::sync::Arc;
 
 use nebula_action::result::ActionResult;
+use nebula_core::ArtifactSetDigest;
 use nebula_engine::{
     ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, EngineError, ExecutionStores,
     InProcessRunner, Plugin, PluginKey, PluginWiringError, ResolvedPlugin, WorkflowEngine,
-    WorkflowStores,
 };
 use nebula_metrics::MetricsRegistry;
-use nebula_plugin::{ManifestError, PluginError};
+use nebula_plugin::{ManifestError, PluginError, PluginRegistry};
 use nebula_plugin_core::CorePlugin;
-use nebula_storage_port::store::{ExecutionTurnHandoff, JobDispatchQueue};
+use nebula_storage_port::store::{ExecutionTurnHandoff, TurnRecovery};
 use nebula_worker::{WorkerBuildError, WorkerRuntimeBuilder};
+
+#[cfg(feature = "runtime-repair-red")]
+pub use nebula_worker::WorkerRuntimeError;
 
 /// Typed errors emitted by the composition root.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ComposeError {
+    /// The linked registry cannot establish an exact deployment flavor.
+    #[error("worker registry could not be frozen")]
+    Freeze(#[from] nebula_plugin::RegistryFreezeError),
+
     /// The core plugin manifest or key is structurally invalid.
     ///
     /// In practice this should never fire — the `core` key is a compile-time
@@ -47,37 +54,37 @@ pub enum ComposeError {
 
     /// `WorkerRuntimeBuilder::build` rejected the assembled configuration.
     ///
-    /// `WorkerRuntimeBuilder` construction failed. The only current cause is
-    /// `NoPlugins`, which cannot occur here because `build_core_flavor_runtime`
-    /// always supplies at least `[core_key]`. The variant is retained so callers
-    /// can distinguish a logic regression from the other failure paths.
+    /// Required worker wiring or timing configuration is incomplete.
     #[error("worker runtime builder construction failed: {0}")]
     Worker(#[from] WorkerBuildError),
 }
 
-/// Assemble a core-flavor `WorkerRuntime` from the supplied stores and queue.
+/// Assemble a core-flavor `WorkerRuntime` from the supplied durable stores.
 ///
 /// Steps performed:
 /// 1. Construct and resolve [`CorePlugin`] into a [`ResolvedPlugin`].
 /// 2. Build a [`WorkflowEngine`] with an [`ActionRuntime`] and attach the
-///    execution + workflow stores.
+///    durable execution stores.
 /// 3. Wire the resolved plugin via [`WorkflowEngine::with_plugin`] so the
 ///    engine can dispatch `core.*` actions.
-/// 4. Build a `WorkerRuntime` via [`WorkerRuntimeBuilder`] with the derived
-///    `available_plugins` set.
+/// 4. Freeze the registered plugins with the deployment artifact identity and
+///    retain that registry with the exact catalog loader in the engine. The
+///    [`WorkerRuntimeBuilder`] derives its routing context from this configuration.
 ///
 /// Returns a ready-to-configure [`WorkerRuntimeBuilder`], the shared
-/// [`MetricsRegistry`] (pass it to `builder.with_metrics` so orchestrator
-/// counters land in the same registry as engine counters), and the [`PluginKey`]
+/// [`MetricsRegistry`], and the [`PluginKey`]
 /// advertised by this flavor (`"core"`). The engine is captured inside the
 /// builder's `Arc<WorkflowEngine>`; callers apply optional tuning via the
 /// builder's `with_*` methods and then call `.build()` to materialise the
 /// `WorkerRuntime`.
 ///
-/// Returning the builder (not the already-built runtime) lets the caller — most
-/// importantly `main` — apply env-driven overrides (`batch_size`,
-/// `poll_interval`) before `.build()` without needing to thread extra parameters
-/// through this function.
+/// Returning the builder lets the caller attach the deployment's control queue
+/// and runtime cadence before materialising the runtime.
+///
+/// `artifact_set_digest` identifies the worker artifact set selected by the
+/// trusted deployment manifest. It is not a hash of plugin metadata or the
+/// processor identity. The frozen registry combines it with the linked plugin
+/// contracts and runtime contract version; this does not verify authenticity.
 ///
 /// # Errors
 ///
@@ -85,17 +92,17 @@ pub enum ComposeError {
 /// fail-closed: the process must not start with a mis-wired engine.
 pub fn build_core_flavor_runtime(
     execution_stores: ExecutionStores,
-    workflow_stores: WorkflowStores,
-    queue: Arc<dyn JobDispatchQueue>,
     turn_handoff: Arc<dyn ExecutionTurnHandoff>,
+    turn_recovery: Arc<dyn TurnRecovery>,
     processor_id: [u8; 16],
+    revisions: CoreFlavorRevisionInputs,
 ) -> Result<(WorkerRuntimeBuilder, MetricsRegistry, PluginKey), ComposeError> {
     build_core_flavor_runtime_impl(
         execution_stores,
-        workflow_stores,
-        queue,
         turn_handoff,
+        turn_recovery,
         processor_id,
+        revisions,
         EngineEvidenceInputs::Ordinary,
     )
 }
@@ -118,46 +125,63 @@ pub fn build_core_flavor_runtime(
 #[cfg(feature = "runtime-repair-red")]
 pub fn build_core_flavor_runtime_for_runtime_repair_red(
     execution_stores: ExecutionStores,
-    workflow_stores: WorkflowStores,
-    queue: Arc<dyn JobDispatchQueue>,
     turn_handoff: Arc<dyn ExecutionTurnHandoff>,
+    turn_recovery: Arc<dyn TurnRecovery>,
     processor_id: [u8; 16],
-    clock: Arc<dyn nebula_core::accessor::Clock>,
-    event_bus: nebula_eventbus::EventBus<nebula_engine::ExecutionEvent>,
+    revisions: CoreFlavorRevisionInputs,
+    evidence: RuntimeRepairEvidenceInputs,
 ) -> Result<(WorkerRuntimeBuilder, MetricsRegistry, PluginKey), ComposeError> {
     build_core_flavor_runtime_impl(
         execution_stores,
-        workflow_stores,
-        queue,
         turn_handoff,
+        turn_recovery,
         processor_id,
-        EngineEvidenceInputs::RuntimeRepair { clock, event_bus },
+        revisions,
+        EngineEvidenceInputs::RuntimeRepair(evidence),
     )
+}
+
+/// Deterministic clock and observations supplied by the server evidence profile.
+#[cfg(feature = "runtime-repair-red")]
+pub struct RuntimeRepairEvidenceInputs {
+    /// Clock shared with the evidence scenario controls.
+    pub clock: Arc<dyn nebula_core::accessor::Clock>,
+    /// Ephemeral execution observations collected by the evidence scenario.
+    pub event_bus: nebula_eventbus::EventBus<nebula_engine::ExecutionEvent>,
+}
+
+/// Exact revision storage and deployment identity used by the worker engine.
+pub struct CoreFlavorRevisionInputs {
+    /// Shared registry used by catalog and execution instrumentation.
+    pub metrics: MetricsRegistry,
+    /// Worker artifact identity from the trusted deployment manifest.
+    pub artifact_set_digest: ArtifactSetDigest,
+    /// Catalog on the same persistence backend as admitted executions.
+    pub catalog: Arc<dyn nebula_storage_port::PlanFlavorCatalog>,
+    /// Contract reader on the same persistence backend as admitted executions.
+    pub bundles: Arc<dyn nebula_storage_port::store::StartAcceptanceStore>,
 }
 
 enum EngineEvidenceInputs {
     Ordinary,
     #[cfg(feature = "runtime-repair-red")]
-    RuntimeRepair {
-        clock: Arc<dyn nebula_core::accessor::Clock>,
-        event_bus: nebula_eventbus::EventBus<nebula_engine::ExecutionEvent>,
-    },
+    RuntimeRepair(RuntimeRepairEvidenceInputs),
 }
 
 fn build_core_flavor_runtime_impl(
     execution_stores: ExecutionStores,
-    workflow_stores: WorkflowStores,
-    queue: Arc<dyn JobDispatchQueue>,
     turn_handoff: Arc<dyn ExecutionTurnHandoff>,
+    turn_recovery: Arc<dyn TurnRecovery>,
     processor_id: [u8; 16],
+    revisions: CoreFlavorRevisionInputs,
     evidence_inputs: EngineEvidenceInputs,
 ) -> Result<(WorkerRuntimeBuilder, MetricsRegistry, PluginKey), ComposeError> {
-    // Step 1 — boot and resolve the CorePlugin.
+    // Boot and resolve the statically linked core plugin.
     let core_plugin = CorePlugin::try_new()?;
     let plugin_key = core_plugin.key().clone();
     let resolved = Arc::new(ResolvedPlugin::from(core_plugin)?);
 
-    // Step 2 — build the ActionRuntime and WorkflowEngine.
+    // Build the action runtime and workflow engine.
     //
     // `InProcessRunner` + a no-op executor are the structural boilerplate required
     // by `ActionRuntime::try_new`. The factory-dispatch path (reached via
@@ -166,7 +190,7 @@ fn build_core_flavor_runtime_impl(
     // own dispatch machinery. The no-op executor is present only to satisfy the
     // `ActionRuntime` constructor, which requires it even when all actions arrive
     // via `register_*_factory` / `with_plugin`.
-    let metrics = MetricsRegistry::new();
+    let metrics = revisions.metrics;
     let registry = Arc::new(ActionRegistry::new());
     let executor: ActionExecutor =
         Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
@@ -185,42 +209,49 @@ fn build_core_flavor_runtime_impl(
     );
 
     let engine = WorkflowEngine::new(action_runtime, metrics.clone())?
-        .with_execution_stores(execution_stores.clone())
-        .with_workflow_stores(workflow_stores);
+        .with_execution_stores(execution_stores.clone());
     let engine = match evidence_inputs {
         EngineEvidenceInputs::Ordinary => engine,
         #[cfg(feature = "runtime-repair-red")]
-        EngineEvidenceInputs::RuntimeRepair { clock, event_bus } => {
-            engine.with_clock(clock).with_event_bus(event_bus)
-        },
+        EngineEvidenceInputs::RuntimeRepair(evidence) => engine
+            .with_clock(evidence.clock)
+            .with_event_bus(evidence.event_bus),
     };
 
-    // Step 3 — wire the CorePlugin into the engine.
-    let engine = Arc::new(engine.with_plugin(Arc::clone(&resolved))?);
+    // Wire the core plugin into the engine.
+    let engine = engine.with_plugin(Arc::clone(&resolved))?;
+    let mut activation_registry = PluginRegistry::new();
+    for (_, plugin) in engine.plugin_registry().iter() {
+        activation_registry.register(Arc::clone(plugin))?;
+    }
+    let frozen = Arc::new(activation_registry.freeze(
+        revisions.artifact_set_digest,
+        nebula_plugin::RuntimeContractVersion::current(),
+    )?);
+    let engine = Arc::new(engine.with_plan_flavor_runtime(
+        Arc::new(nebula_engine::PlanFlavorRevisionLoader::new(
+            revisions.catalog,
+        )),
+        frozen,
+        revisions.bundles,
+    ));
 
-    // Step 4 — construct the WorkerRuntimeBuilder.
+    // Construct the worker runtime builder.
     //
-    // The builder is returned to the caller rather than materialised here so
-    // `main` can apply env-driven overrides (`batch_size`, `poll_interval`)
-    // before calling `.build()`. Integration tests call `.build()` directly
-    // on the returned builder, optionally adding a fast poll interval first.
-    //
-    // The turn handoff is wired here (not left to the caller) because it is a
-    // build-time requirement — an orchestrator without it cannot end dispatch
-    // claims at the durable runtime handoff (#976).
+    // The turn handoff and global recovery capability are deployment-owned
+    // durable boundaries, so composition wires them before returning the builder.
     let builder = WorkerRuntimeBuilder::from_wired_engine(
         Arc::clone(&engine),
         execution_stores,
-        queue,
-        vec![plugin_key.clone()],
         processor_id,
     )
-    .with_turn_handoff(turn_handoff);
+    .with_turn_handoff(turn_handoff)
+    .with_turn_recovery(turn_recovery);
 
     tracing::info!(
         plugin = %plugin_key,
         processor = %hex_id(&processor_id),
-        "core-flavor: plugin wired, worker runtime builder ready (ADR-0095 D1)"
+        "core-flavor plugin wired; worker runtime builder ready"
     );
 
     Ok((builder, metrics, plugin_key))
@@ -240,9 +271,14 @@ fn hex_id(bytes: &[u8]) -> String {
 
 /// Worker config read from environment variables.
 ///
-/// All fields are optional with sensible defaults for local/dev runs.
+/// Artifact identity comes from the trusted deployment manifest; storage and
+/// polling settings have local defaults.
 #[derive(Debug)]
 pub struct WorkerConfig {
+    /// Digest of the selected worker artifact set from the deployment manifest.
+    /// `NEBULA_WORKER_ARTIFACT_SET_DIGEST` is required (64 lowercase hex digits).
+    /// Parsing this value does not authenticate the deployed artifacts.
+    pub artifact_set_digest: ArtifactSetDigest,
     /// Postgres connection URL.
     ///
     /// Set `NEBULA_WORKER_DATABASE_URL` to a `postgres://` DSN to use the
@@ -273,27 +309,21 @@ pub struct WorkerConfig {
     /// tokens across restarts (e.g. for observability / log correlation).
     ///
     /// **Every process must use a distinct value** — two workers sharing the
-    /// same processor id can ack each other's claimed jobs (at-least-once
+    /// same processor id can acknowledge each other's claimed commands (at-least-once
     /// violation).
     pub processor_id: [u8; 16],
-
-    /// Claim batch size (number of jobs claimed per poll).
-    ///
-    /// Read from `NEBULA_WORKER_BATCH_SIZE`. Defaults to the orchestrator's
-    /// built-in default (32).
-    pub batch_size: Option<u32>,
-
-    /// Poll interval in milliseconds.
-    ///
-    /// Read from `NEBULA_WORKER_POLL_INTERVAL_MS`. Defaults to the
-    /// orchestrator's built-in default (100 ms).
-    pub poll_interval_ms: Option<u64>,
 }
 
 /// Errors produced while loading [`WorkerConfig`] from the environment.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum WorkerConfigError {
+    /// No trusted worker artifact identity was supplied.
+    #[error("NEBULA_WORKER_ARTIFACT_SET_DIGEST is required from the deployment manifest")]
+    MissingArtifactSetDigest,
+    /// The supplied artifact identity is not a canonical transport digest.
+    #[error("NEBULA_WORKER_ARTIFACT_SET_DIGEST must contain 64 lowercase hexadecimal characters")]
+    InvalidArtifactSetDigest,
     /// `NEBULA_WORKER_PROCESSOR_ID` is set but is not exactly 32 hex characters.
     #[error(
         "NEBULA_WORKER_PROCESSOR_ID must be exactly 32 hex characters (16 bytes); got {len} chars"
@@ -317,45 +347,6 @@ pub enum WorkerConfigError {
         #[source]
         source: std::num::ParseIntError,
     },
-    /// `NEBULA_WORKER_BATCH_SIZE` is set but cannot be parsed as an integer.
-    #[error("NEBULA_WORKER_BATCH_SIZE must be a positive integer; got {raw:?}: {source}")]
-    BatchSize {
-        /// Raw environment value that failed to parse.
-        raw: String,
-        /// Underlying parse error.
-        #[source]
-        source: std::num::ParseIntError,
-    },
-    /// `NEBULA_WORKER_BATCH_SIZE` parsed successfully but the value is zero.
-    ///
-    /// A batch size of zero makes the orchestrator issue `LIMIT 0` claims, so
-    /// the worker appears healthy but never claims any job.
-    #[error(
-        "NEBULA_WORKER_BATCH_SIZE must be ≥ 1; got 0 — a zero batch size \
-         causes the orchestrator to claim no jobs (silent stall)"
-    )]
-    BatchSizeNotPositive,
-    /// `NEBULA_WORKER_POLL_INTERVAL_MS` is set but cannot be parsed as an integer.
-    #[error(
-        "NEBULA_WORKER_POLL_INTERVAL_MS must be a positive integer (milliseconds); got {raw:?}: {source}"
-    )]
-    PollInterval {
-        /// Raw environment value that failed to parse.
-        raw: String,
-        /// Underlying parse error.
-        #[source]
-        source: std::num::ParseIntError,
-    },
-    /// `NEBULA_WORKER_POLL_INTERVAL_MS` parsed successfully but the value is zero.
-    ///
-    /// A poll interval of zero produces a tight busy-loop that hammers the
-    /// SQLite store on every empty-queue tick.
-    #[error(
-        "NEBULA_WORKER_POLL_INTERVAL_MS must be ≥ 1 ms; got 0 — a zero interval \
-         causes a tight busy-loop hammering the job-dispatch store"
-    )]
-    PollIntervalNotPositive,
-
     /// `NEBULA_WORKER_DATABASE_URL` is set but its value is not valid UTF-8.
     ///
     /// `.ok()` would silently swallow this as `None` and fall back to SQLite —
@@ -372,11 +363,11 @@ impl WorkerConfig {
     ///
     /// Returns [`WorkerConfigError`] when a set environment variable is present
     /// but structurally invalid (wrong format, not parseable as the expected
-    /// type, or out of the valid range). Absent variables fall back to defaults
-    /// and do not error. Zero is rejected for `NEBULA_WORKER_BATCH_SIZE` and
-    /// `NEBULA_WORKER_POLL_INTERVAL_MS` at parse time — both would silently
-    /// break the claim-loop at runtime.
+    /// type, or out of the valid range). The artifact-set digest is mandatory;
+    /// absent storage variables use defaults.
     pub fn from_env() -> Result<Self, WorkerConfigError> {
+        let artifact_set_digest =
+            parse_artifact_set_digest(std::env::var("NEBULA_WORKER_ARTIFACT_SET_DIGEST"))?;
         let database_url = parse_database_url(std::env::var("NEBULA_WORKER_DATABASE_URL"))?;
 
         let db_path = std::env::var("NEBULA_WORKER_DB_PATH")
@@ -387,31 +378,24 @@ impl WorkerConfig {
             Err(_) => generate_ephemeral_processor_id(),
         };
 
-        let batch_size = parse_optional_u32("NEBULA_WORKER_BATCH_SIZE", |raw, source| {
-            WorkerConfigError::BatchSize {
-                raw: raw.to_owned(),
-                source,
-            }
-        })?;
-        let batch_size = reject_zero_u32(batch_size, WorkerConfigError::BatchSizeNotPositive)?;
-
-        let poll_interval_ms =
-            parse_optional_u64("NEBULA_WORKER_POLL_INTERVAL_MS", |raw, source| {
-                WorkerConfigError::PollInterval {
-                    raw: raw.to_owned(),
-                    source,
-                }
-            })?;
-        let poll_interval_ms =
-            reject_zero_u64(poll_interval_ms, WorkerConfigError::PollIntervalNotPositive)?;
-
         Ok(Self {
+            artifact_set_digest,
             database_url,
             db_path,
             processor_id,
-            batch_size,
-            poll_interval_ms,
         })
+    }
+}
+
+fn parse_artifact_set_digest(
+    raw: Result<String, std::env::VarError>,
+) -> Result<ArtifactSetDigest, WorkerConfigError> {
+    match raw {
+        Ok(value) => value
+            .parse()
+            .map_err(|_| WorkerConfigError::InvalidArtifactSetDigest),
+        Err(std::env::VarError::NotPresent) => Err(WorkerConfigError::MissingArtifactSetDigest),
+        Err(std::env::VarError::NotUnicode(_)) => Err(WorkerConfigError::InvalidArtifactSetDigest),
     }
 }
 
@@ -460,56 +444,6 @@ fn parse_processor_id(raw: &str) -> Result<[u8; 16], WorkerConfigError> {
     Ok(out)
 }
 
-/// Parse an optional `u32` from the named env var, mapping errors with `make_err`.
-fn parse_optional_u32(
-    var: &str,
-    make_err: impl Fn(&str, std::num::ParseIntError) -> WorkerConfigError,
-) -> Result<Option<u32>, WorkerConfigError> {
-    match std::env::var(var) {
-        Ok(raw) => raw.parse::<u32>().map(Some).map_err(|e| make_err(&raw, e)),
-        Err(_) => Ok(None),
-    }
-}
-
-/// Parse an optional `u64` from the named env var, mapping errors with `make_err`.
-fn parse_optional_u64(
-    var: &str,
-    make_err: impl Fn(&str, std::num::ParseIntError) -> WorkerConfigError,
-) -> Result<Option<u64>, WorkerConfigError> {
-    match std::env::var(var) {
-        Ok(raw) => raw.parse::<u64>().map(Some).map_err(|e| make_err(&raw, e)),
-        Err(_) => Ok(None),
-    }
-}
-
-/// Reject `Some(0)` from a parsed `Option<u32>`, mapping it to `err`.
-///
-/// Used to fail-closed at startup when a config value is structurally valid
-/// but semantically invalid (zero batch size causes silent stall; zero poll
-/// interval causes a tight busy-loop).
-fn reject_zero_u32(
-    value: Option<u32>,
-    err: WorkerConfigError,
-) -> Result<Option<u32>, WorkerConfigError> {
-    if value == Some(0) {
-        Err(err)
-    } else {
-        Ok(value)
-    }
-}
-
-/// Reject `Some(0)` from a parsed `Option<u64>`, mapping it to `err`.
-fn reject_zero_u64(
-    value: Option<u64>,
-    err: WorkerConfigError,
-) -> Result<Option<u64>, WorkerConfigError> {
-    if value == Some(0) {
-        Err(err)
-    } else {
-        Ok(value)
-    }
-}
-
 /// Generate a fresh random 16-byte processor id from a UUID v4 and warn.
 ///
 /// Called when `NEBULA_WORKER_PROCESSOR_ID` is not set. The ephemeral id is
@@ -532,6 +466,29 @@ fn generate_ephemeral_processor_id() -> [u8; 16] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn artifact_activation_requires_canonical_deployment_identity() {
+        assert!(matches!(
+            parse_artifact_set_digest(Err(std::env::VarError::NotPresent)),
+            Err(WorkerConfigError::MissingArtifactSetDigest)
+        ));
+        for malformed in [
+            String::new(),
+            "ff".repeat(31),
+            "FF".repeat(32),
+            "secret-canary".to_owned(),
+        ] {
+            let error = parse_artifact_set_digest(Ok(malformed)).expect_err("invalid identity");
+            assert!(matches!(error, WorkerConfigError::InvalidArtifactSetDigest));
+            assert!(!format!("{error:?} {error}").contains("secret-canary"));
+        }
+        let digest = ArtifactSetDigest::from_bytes([0x71; 32]);
+        assert_eq!(
+            parse_artifact_set_digest(Ok(digest.to_string())).unwrap(),
+            digest
+        );
+    }
 
     #[test]
     fn parse_processor_id_accepts_32_hex_chars() {
@@ -665,70 +622,6 @@ mod tests {
         assert_ne!(
             a, b,
             "two ephemeral processor ids must be distinct (UUID v4)"
-        );
-    }
-
-    // ── NEBULA_WORKER_BATCH_SIZE zero-rejection ───────────────────────────────
-    //
-    // These tests call `reject_zero_u32` / `reject_zero_u64` directly — no
-    // env-var mutation, no `unsafe`. The helpers are the sole zero-enforcement
-    // site in `from_env`; testing them directly gives the same coverage without
-    // environment side-effects.
-    //
-    // Red-able: without the zero-check helper, `from_env` would return
-    // `Ok(Some(0))` for a zero value. These tests call the helper that
-    // `from_env` delegates to; removing the helper (or the call) makes them
-    // panic on an `Ok` where they expect an `Err`.
-
-    #[test]
-    fn batch_size_zero_is_rejected() {
-        let err = reject_zero_u32(Some(0), WorkerConfigError::BatchSizeNotPositive).unwrap_err();
-        assert!(
-            matches!(err, WorkerConfigError::BatchSizeNotPositive),
-            "expected BatchSizeNotPositive, got: {err}"
-        );
-    }
-
-    #[test]
-    fn batch_size_positive_is_accepted() {
-        let result = reject_zero_u32(Some(16), WorkerConfigError::BatchSizeNotPositive);
-        assert_eq!(result.unwrap(), Some(16));
-    }
-
-    #[test]
-    fn batch_size_none_is_accepted() {
-        let result = reject_zero_u32(None, WorkerConfigError::BatchSizeNotPositive);
-        assert_eq!(
-            result.unwrap(),
-            None,
-            "absent batch_size must pass through as None"
-        );
-    }
-
-    // ── NEBULA_WORKER_POLL_INTERVAL_MS zero-rejection ─────────────────────────
-
-    #[test]
-    fn poll_interval_zero_is_rejected() {
-        let err = reject_zero_u64(Some(0), WorkerConfigError::PollIntervalNotPositive).unwrap_err();
-        assert!(
-            matches!(err, WorkerConfigError::PollIntervalNotPositive),
-            "expected PollIntervalNotPositive, got: {err}"
-        );
-    }
-
-    #[test]
-    fn poll_interval_positive_is_accepted() {
-        let result = reject_zero_u64(Some(100), WorkerConfigError::PollIntervalNotPositive);
-        assert_eq!(result.unwrap(), Some(100));
-    }
-
-    #[test]
-    fn poll_interval_none_is_accepted() {
-        let result = reject_zero_u64(None, WorkerConfigError::PollIntervalNotPositive);
-        assert_eq!(
-            result.unwrap(),
-            None,
-            "absent poll_interval_ms must pass through as None"
         );
     }
 }

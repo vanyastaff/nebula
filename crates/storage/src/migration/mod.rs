@@ -759,13 +759,29 @@ mod tests {
         assert!(!is_transient_sqlite_lock(&sqlx::Error::WorkerCrashed));
     }
 
+    /// Head 0050 creates accepted-turn markers with the complete set of command
+    /// sources used by the runtime owner. It neither infers historical acceptance
+    /// nor rewrites aggregate state. Recovery guarantees start with marker-writing
+    /// acceptors; deployments must quiesce older acceptors or reconcile their work
+    /// through its runtime owner. Head 0049 adds an empty protocol child table and a redundant unique owner
+    /// index; it neither upgrades legacy ledger rows nor grants effect authority.
+    /// Head 0048 adds an empty immutable bundle table and tenant parent index,
+    /// without fabricating contracts for existing executions. Head 0047 adds
+    /// nullable activation metadata without rewriting legacy workflow identities.
+    /// The preceding 0046 is aggregate-neutral only when
+    /// the dispatch queue is empty.
+    /// Its SQL preflight rejects every legacy row before any schema change;
+    /// successful setup introduces no aggregate mutation or invented identity.
+    /// Nonempty deployments must remain at their prior schema until runtime
+    /// owners have drained and retired the legacy rows through their own ports.
+    /// The rejection is terminal and atomic; it is never classified as a lock.
     #[test]
     fn new_catalog_head_requires_explicit_admission_policy_review() {
         assert_eq!(GENERAL_CATALOG_SUPPORTED_FLOOR, 40);
         #[cfg(feature = "sqlite")]
-        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 45);
+        assert_eq!(catalog::catalog_head(&super::SQLITE_MIGRATOR), 50);
         #[cfg(feature = "postgres")]
-        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 45);
+        assert_eq!(catalog::catalog_head(&super::POSTGRES_MIGRATOR), 50);
     }
 
     /// The setup guard must never hold a descriptor on the database file.

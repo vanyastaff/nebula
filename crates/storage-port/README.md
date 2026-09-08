@@ -27,6 +27,44 @@ does **not** implement any backend.
   readers and contract installers receive no destructive lifecycle capability.
   The port stores non-empty opaque recorded-form bytes and never decodes
   plugin-owned descriptors.
+- **Atomic execution materialization.** `StartAcceptanceStore::materialize_start`
+  accepts a complete initial execution, Start command, and bounded contract bundle.
+  Optional idempotency reservations replay before new catalog admission. Execution,
+  command, bundle, reservation, and live references commit together. An unkeyed retry
+  retains its original execution ID and full attempt; commit acknowledgement loss
+  is explicitly `OutcomeUnknown`. Stored bundles survive terminal reference release.
+  The runtime validates full domain integrity and authorization before this seam.
+  Trigger-origin starts share the existing scoped trigger/event dedup namespace
+  with `TriggerDedupInbox`. Their natural-key replay returns the original
+  execution regardless of later payload changes, independently of caller keys.
+  Legacy winners remain legacy receipts; storage never fabricates a bundle for them.
+- **Exact control routing.** `ControlQueue::claim_pending_for_flavor` matches the
+  retained execution reference and execution scope before applying the batch limit.
+  Unpinned and incompatible commands remain pending. Draining catalogs and released
+  terminal references remain routable for retained work and duplicate delivery.
+- **Atomic Control Start handoff.** `ExecutionTurnHandoff::accept_control_start`
+  rechecks the scoped Start claim, exact retained flavor and execution version,
+  then completes the command and acquires the execution lease in one transaction.
+  A lost commit acknowledgement grants no execution authority. Rejected claims,
+  version conflicts and live-owner contention leave both rows unchanged.
+- **Accepted-turn recovery.** Both dispatch handoffs retain an execution-owned
+  acceptance marker independently of queue retention. Exact-flavor discovery
+  advances a bounded cursor past live leases; runtime checks execution eligibility
+  and its exact contract before a fresh atomic recovery grant. Marker and lease
+  generations advance together. Historical leases and completed queue rows are
+  never backfilled into acceptance: guarantees start with marker-writing acceptors.
+  Older acceptors must be quiesced or their work reconciled through its runtime owner.
+- **Execution-fenced operation ledger.** Prepare and outcome writes validate the
+  execution's current live lease atomically, including idempotent recommits.
+  Attempt counters record provenance and grant no authority. Natural occurrence
+  reads recover a preparation whose slot identity was never acknowledged.
+  Privileged adjudication serializes under the same execution owner and retains
+  its audit evidence; it remains a separate capability from ordinary effect calls.
+- **Bounded effect protocol.** `OperationLedger::advance` grants explicit invocation
+  and read-only query attempts under persisted policy limits and backend-clock
+  deadlines. Lost grant acknowledgements never reconstruct egress authority from
+  reads. Exact outcome bytes, integrity digest, terminal state and owner journal
+  commit atomically. Legacy ledger rows remain readable without invocation authority.
 - **Plain-data `Scope`.** `Scope { workspace_id, org_id }` is a value type
   with no policy. Resolving a `Scope` from a principal and enforcing
   cross-tenant denial for general Scope-taking stores is the job of

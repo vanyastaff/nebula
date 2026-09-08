@@ -13,10 +13,10 @@
 //!    unauthenticated churn never hits the DB (ADR-0096 security fix)
 //! 5. Construct [`WebhookRequest`] → 400 / 413
 //! 6. Signature enforcement ([`super::signature::enforce_signature`]) → 401 / 500
-//! 7. Extract `webhook-id` header → `event_id: Option<IdempotencyKey>` (Commit 3)
+//! 7. Extract `webhook-id` header → `event_id: Option<IdempotencyKey>`
 //! 8. Dispatch via [`TriggerHandler::handle_event`](nebula_action::TriggerHandler::handle_event) with timeout → 504 / 500 / handler response
-//! 9. Mode-gate: Prod rows with `durable_dispatch` wired call
-//!    [`DurableExecutionEmitter::emit`] before acking the HTTP response (Commit 4)
+//! 9. Prod rows with `durable_dispatch` wired call
+//!    [`DurableExecutionEmitter::emit`] before acking the HTTP response
 
 use std::sync::Arc;
 
@@ -37,9 +37,6 @@ use nebula_metrics::{
     webhook_signature_failure_reason,
 };
 use nebula_storage_port::dto::WebhookMode;
-use nebula_storage_port::store::WorkflowVersionStore;
-use nebula_tenancy::ScopedWorkflowVersionStore;
-use nebula_workflow::{ValidatedWorkflow, WorkflowDefinition};
 use tokio::sync::oneshot;
 use tracing::{debug, warn};
 
@@ -104,7 +101,7 @@ pub(super) async fn webhook_handler(
 /// 7. extract `webhook-id` header → `event_id: Option<IdempotencyKey>`
 /// 8. dispatch via [`TriggerHandler::handle_event`](nebula_action::TriggerHandler::handle_event) with a response
 ///    timeout → 504 / 500 / handler response
-/// 9. mode-gate: Prod rows call [`DurableExecutionEmitter::emit`] BEFORE
+/// 9. Prod rows call [`DurableExecutionEmitter::emit`] before
 ///    returning the ack; emit failure → 5xx so the sender retries.
 pub(super) async fn dispatch_inner(
     transport: WebhookTransport,
@@ -152,7 +149,7 @@ pub(super) async fn dispatch_inner(
         }
     }
 
-    // 4.5. Token resolution via the B-world port store (ADR-0096 commit 2b).
+    // Resolve the capability token through the durable activation store.
     //
     // Placed AFTER route-lookup (step 3) and rate-limit (step 4) so an
     // unauthenticated attacker hitting an unregistered path or a rate-limited
@@ -162,9 +159,8 @@ pub(super) async fn dispatch_inner(
     // nonce / hash are deliberately excluded from all log fields — the nonce
     // is the bearer token and must never appear in log aggregators or traces.
     //
-    // U-D1.4b: when the row is Prod and `durable_dispatch` is wired, `durable`
-    // is set to `Some(DurableTarget { ... })` below.  Test mode and missing rows
-    // leave it `None` (no durable spawn, preserve today's behaviour).
+    // Prod rows use the durable target when runtime dispatch is wired. Test
+    // mode and missing rows continue without spawning an execution.
     let mut durable: Option<DurableTarget> = None;
 
     if let Some(store) = transport.inner.activation_store.as_deref() {
@@ -180,7 +176,7 @@ pub(super) async fn dispatch_inner(
                     "capability token resolved to durable row"
                 );
 
-                // 4.5 — Per-tenant-aggregate rate limit (post-resolution).
+                // Enforce the tenant aggregate limit after resolving its scope.
                 //
                 // Placed here — after token resolution yielded the scope —
                 // so the stable tenant key is available without a second DB
@@ -195,8 +191,7 @@ pub(super) async fn dispatch_inner(
                     return resp;
                 }
 
-                // Mode gate: only Prod rows with a wired inbox spawn durable
-                // executions.  Fail-closed when inbox absent in Prod mode.
+                // Only Prod rows with a wired runtime spawn durable executions.
                 if row.mode == WebhookMode::Prod {
                     if let Some(components) = transport.inner.durable_dispatch.as_ref() {
                         durable = Some(DurableTarget {
@@ -235,8 +230,7 @@ pub(super) async fn dispatch_inner(
                 // sender retries; on store recovery the retry resolves and
                 // `claim_and_materialize_start` dedups by `event_id`. If durable
                 // dispatch is NOT wired there is no durable contract to protect —
-                // fall through to in-memory for availability (Codex P1, refined
-                // to gate on `durable_dispatch` per CodeRabbit).
+                // fall through to in-memory for availability.
                 let durable_wired = transport.inner.durable_dispatch.is_some();
                 warn!(
                     error = %err,
@@ -262,7 +256,7 @@ pub(super) async fn dispatch_inner(
     let path = uri.path().to_string();
     let query = uri.query().map(String::from);
 
-    // Step 7 (Commit 3): extract `webhook-id` header before consuming `headers`
+    // Extract `webhook-id` before consuming `headers`
     // into `WebhookRequest`.  The header is NOT a secret (Standard Webhooks spec
     // §4 — "webhook-id must be a unique identifier per message delivery") and
     // may be logged as a tracing field.
@@ -271,7 +265,7 @@ pub(super) async fn dispatch_inner(
     // (the dedup key). The requirement is enforced AFTER dispatch, only on an
     // `Emit` outcome — a provider verification probe (Slack `url_verification`,
     // Stripe `pending_webhook`) returns `Skip` and needs no delivery id, so the
-    // header must NOT be required before the outcome is known (Codex P2).
+    // header must not be required before the outcome is known.
     // Test mode / no-row → `event_id = None` is fine.
     // Bound the delivery-id length at the edge: an over-long `webhook-id`
     // would flow into the dedup-key PK and surface as a backend-dependent
@@ -283,7 +277,7 @@ pub(super) async fn dispatch_inner(
     const MAX_WEBHOOK_ID_LEN: usize = 256;
     // Reject DUPLICATE `webhook-id` headers: `HeaderMap::get` silently returns
     // one of several values, which would let two conflicting delivery ids slip
-    // past dedup. Exactly one (or zero) is permitted (Codex/CodeRabbit).
+    // past dedup. Exactly one or zero is permitted.
     let mut webhook_id_values = headers.get_all(&WEBHOOK_ID_HEADER).iter();
     let first_webhook_id = webhook_id_values.next();
     if webhook_id_values.next().is_some() {
@@ -324,7 +318,7 @@ pub(super) async fn dispatch_inner(
 
     // 5.5. Signature enforcement.
     //
-    // B2 split-brain guard: a Prod-mode row (durable dispatch will spawn)
+    // A Prod row that can spawn a durable execution must require a signature.
     // MUST NOT be verifiable under `OptionalAcceptUnsigned`.  An unsigned
     // Prod activation is an operator/composition-root misconfiguration — it
     // would let an unverified caller spawn durable executions.  Fail closed
@@ -457,8 +451,6 @@ pub(super) async fn dispatch_inner(
     }
 }
 
-// ── Durable dispatch ─────────────────────────────────────────────────────────
-
 /// Bundle carrying all data needed for the Prod-mode durable emit path.
 struct DurableTarget {
     row: nebula_storage_port::dto::WebhookActivationRecord,
@@ -473,9 +465,6 @@ struct DurableTarget {
 ///   — one `event_id` cannot safely fan-out to N executions).
 /// - `Skip` → no emit; return the adapter's HTTP response.
 ///
-/// The `event_id` is guaranteed `Some` here: the `Emit` arm in
-/// `dispatch_durable` rejects a missing `webhook-id` with 400 before calling
-/// this fn (an emitting outcome requires a dedup key; `Skip` does not).
 async fn dispatch_durable(
     target: DurableTarget,
     outcome: TriggerEventOutcome,
@@ -486,11 +475,7 @@ async fn dispatch_durable(
 
     match outcome {
         TriggerEventOutcome::Emit(payload) => {
-            // An emitting outcome needs a dedup key. The requirement applies
-            // ONLY here (not before dispatch): a verification probe returns
-            // `Skip` and never reaches this arm, so it is not rejected for a
-            // missing `webhook-id` it does not need (Codex P2).
-            if event_id.is_none() {
+            let Some(event_id) = event_id.as_ref() else {
                 warn!(
                     trigger_id = %row.trigger_id,
                     mode = "Prod",
@@ -502,27 +487,11 @@ async fn dispatch_durable(
                     "missing webhook-id header for Prod-mode emit",
                 )
                     .into_response();
-            }
-            let emit_result = do_emit_prod(&row, &components, payload, event_id.as_ref()).await;
-            match emit_result {
-                Ok(()) => {
-                    // Emit succeeded — ack the HTTP response the adapter sent.
-                    if let Ok(http) = rx.await {
-                        http_response_to_axum(http)
-                    } else {
-                        warn!("durable emit ok but oneshot sender was dropped");
-                        (StatusCode::INTERNAL_SERVER_ERROR, "").into_response()
-                    }
-                },
-                Err(err_response) => {
-                    // Emit failed — return the 5xx so the sender retries.
-                    // The adapter's oneshot response is discarded; the HTTP
-                    // ack is replaced with our 5xx.
-                    //
-                    // Retry delivers the same `webhook-id` → same `event_id`
-                    // → `claim_and_materialize_start` deduplicates.
-                    err_response
-                },
+            };
+
+            match emit_durable_execution(&row, &components, payload, event_id).await {
+                Ok(()) => receive_adapter_response(rx, "durable emit completed").await,
+                Err(status) => bare_response(status),
             }
         },
         TriggerEventOutcome::EmitMany(_) => {
@@ -537,16 +506,10 @@ async fn dispatch_durable(
                  (one event_id cannot safely fan-out to N executions; \
                  action must not return EmitMany in Prod mode)"
             );
-            (StatusCode::INTERNAL_SERVER_ERROR, "").into_response()
+            bare_response(StatusCode::INTERNAL_SERVER_ERROR)
         },
         TriggerEventOutcome::Skip => {
-            // Skip — no emit.  Return the adapter's HTTP response.
-            if let Ok(http) = rx.await {
-                http_response_to_axum(http)
-            } else {
-                warn!("webhook handler Skip but oneshot sender was dropped");
-                (StatusCode::INTERNAL_SERVER_ERROR, "").into_response()
-            }
+            receive_adapter_response(rx, "webhook handler skipped execution").await
         },
         // `TriggerEventOutcome` is #[non_exhaustive] — any future variant
         // whose semantics are unknown MUST be refused fail-closed.
@@ -557,40 +520,54 @@ async fn dispatch_durable(
                 "Prod-mode webhook: unknown TriggerEventOutcome variant; \
                  fail-closed — no execution spawned"
             );
-            (StatusCode::INTERNAL_SERVER_ERROR, "").into_response()
+            bare_response(StatusCode::INTERNAL_SERVER_ERROR)
         },
     }
 }
 
-/// Core Prod-mode emit path.
-///
-/// 1. Validates that `workflow_id` is present and parseable (fail-closed on
-///    `None` or malformed ULID — inv #5: single-row resolution must fully
-///    resolve the workflow).
-/// 2. Parses `trigger_id` as a [`NodeKey`] (fail-closed on parse failure).
-/// 3. Loads and validates the `ValidatedWorkflow` under `row.scope` via a
-///    freshly-bound `ScopedWorkflowVersionStore` (confused-deputy boundary is
-///    the scope carried in the row, never request-derived — inv #5).
-/// 4. Constructs [`DurableExecutionEmitter`] and calls `emit`.
-///
-/// Returns `Ok(())` on successful dispatch or `Err(Response)` with a 5xx
-/// response ready to return to the caller.
-///
-/// # Performance note
-///
-/// The per-delivery `ValidatedWorkflow` load+validate is on the request hot
-/// path; canonical webhook senders time out as low as ~3 s (Slack).  If this
-/// storage round-trip grows costly, cache `Arc<ValidatedWorkflow>` per
-/// activation or add a thinner raw-delivery inbox.  v1 ships the direct path.
-async fn do_emit_prod(
+struct DurableExecutionIdentity {
+    workflow_id: nebula_core::WorkflowId,
+    trigger_node_key: NodeKey,
+}
+
+async fn emit_durable_execution(
     row: &nebula_storage_port::dto::WebhookActivationRecord,
     components: &DurableDispatchComponents,
     payload: serde_json::Value,
-    event_id: Option<&IdempotencyKey>,
-) -> Result<(), Response> {
+    event_id: &IdempotencyKey,
+) -> Result<(), StatusCode> {
     let scope = &row.scope;
+    let identity = durable_execution_identity(row)?;
+    let emitter = DurableExecutionEmitter::new(
+        Arc::clone(&components.start),
+        identity.workflow_id,
+        identity.trigger_node_key,
+        scope.clone(),
+    );
 
-    // Step 1a — workflow_id must be present (inv #5).
+    emitter
+        .emit(payload, Some(event_id.clone()))
+        .await
+        .map(|_execution_id| ())
+        .map_err(|error| {
+            warn!(
+                trigger_id = %row.trigger_id,
+                scope = ?scope,
+                workflow_id = %identity.workflow_id,
+                error = %error,
+                "Prod-mode webhook: durable start did not return a checked receipt"
+            );
+            workflow_start_error(&error).map_or(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                webhook_start_failure_status,
+            )
+        })
+}
+
+fn durable_execution_identity(
+    row: &nebula_storage_port::dto::WebhookActivationRecord,
+) -> Result<DurableExecutionIdentity, StatusCode> {
+    let scope = &row.scope;
     let workflow_id_str = if let Some(wid) = &row.workflow_id {
         wid.as_str()
     } else {
@@ -601,10 +578,9 @@ async fn do_emit_prod(
             "Prod-mode webhook: activation row has no workflow_id; \
              fail-closed — no execution spawned"
         );
-        return Err((StatusCode::INTERNAL_SERVER_ERROR, "").into_response());
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
     };
 
-    // Step 1b — workflow_id must parse as a valid ULID WorkflowId (correction C).
     use nebula_core::id::WorkflowId;
     let workflow_id: WorkflowId = match workflow_id_str.parse() {
         Ok(id) => id,
@@ -617,11 +593,10 @@ async fn do_emit_prod(
                 "Prod-mode webhook: activation row workflow_id is not a valid WorkflowId; \
                  fail-closed — no execution spawned"
             );
-            return Err((StatusCode::INTERNAL_SERVER_ERROR, "").into_response());
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
         },
     };
 
-    // Step 2 — trigger_id must parse as a NodeKey (fail-closed on invalid key).
     let trigger_node_key = match NodeKey::new(&row.trigger_id) {
         Ok(k) => k,
         Err(e) => {
@@ -632,108 +607,74 @@ async fn do_emit_prod(
                 "Prod-mode webhook: activation row trigger_id is not a valid NodeKey; \
                  fail-closed — no execution spawned"
             );
-            return Err((StatusCode::INTERNAL_SERVER_ERROR, "").into_response());
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
         },
     };
 
-    // Step 3 — load and validate the workflow under the row's scope (inv #5).
-    // The confused-deputy boundary is the decorator: `ScopedWorkflowVersionStore`
-    // pins the scope to `row.scope`; no cross-scope lookup is possible.
-    let scoped_versions =
-        ScopedWorkflowVersionStore::new(Arc::clone(&components.version_store), scope.clone());
-    let version_record = scoped_versions
-        .get_published(scope, &workflow_id.to_string())
-        .await
-        .map_err(|e| {
-            warn!(
-                trigger_id = %row.trigger_id,
-                scope = ?scope,
-                workflow_id = %workflow_id,
-                error = %e,
-                "Prod-mode webhook: storage error loading workflow version; \
-                 fail-closed — no execution spawned"
-            );
-            (StatusCode::INTERNAL_SERVER_ERROR, "storage error").into_response()
-        })?;
-
-    let version_record = if let Some(v) = version_record {
-        v
-    } else {
-        warn!(
-            trigger_id = %row.trigger_id,
-            scope = ?scope,
-            workflow_id = %workflow_id,
-            "Prod-mode webhook: workflow_id not found under row scope; \
-             fail-closed — no cross-scope lookup (inv #5)"
-        );
-        return Err((StatusCode::INTERNAL_SERVER_ERROR, "").into_response());
-    };
-
-    // Deserialize via the JSON string path (not `from_value`) to allow
-    // `domain-key`'s serde impl to borrow `&str` slices from the input
-    // buffer.  `serde_json::from_value` runs through an owning `Value`
-    // deserializer that cannot satisfy `<&str>::deserialize` — the
-    // `is_human_readable()` branch in `domain-key` v0.6 uses zero-copy
-    // `&str` deserialization that requires a slice-backed reader.
-    let def_json = serde_json::to_string(&version_record.definition).map_err(|e| {
-        warn!(
-            trigger_id = %row.trigger_id,
-            scope = ?scope,
-            workflow_id = %workflow_id,
-            error = %e,
-            "Prod-mode webhook: workflow definition failed to serialize to JSON string; \
-             fail-closed — no execution spawned"
-        );
-        (StatusCode::INTERNAL_SERVER_ERROR, "").into_response()
-    })?;
-    let def: WorkflowDefinition = serde_json::from_str(&def_json).map_err(|e| {
-        warn!(
-            trigger_id = %row.trigger_id,
-            scope = ?scope,
-            workflow_id = %workflow_id,
-            error = %e,
-            "Prod-mode webhook: workflow definition failed to deserialize; \
-             fail-closed — no execution spawned"
-        );
-        (StatusCode::INTERNAL_SERVER_ERROR, "").into_response()
-    })?;
-
-    let validated = ValidatedWorkflow::validate(def).map_err(|errors| {
-        warn!(
-            trigger_id = %row.trigger_id,
-            scope = ?scope,
-            workflow_id = %workflow_id,
-            errors = ?errors,
-            "Prod-mode webhook: workflow definition failed validation; \
-             fail-closed — no execution spawned"
-        );
-        (StatusCode::INTERNAL_SERVER_ERROR, "").into_response()
-    })?;
-
-    // Step 4 — construct emitter and call emit.
-    let emitter = DurableExecutionEmitter::new(
-        Arc::clone(&components.dedup),
-        Arc::clone(&components.resolver),
-        Arc::new(validated),
+    Ok(DurableExecutionIdentity {
+        workflow_id,
         trigger_node_key,
-        scope.clone(),
-    )
-    .with_workflow_version_number(version_record.number);
+    })
+}
 
-    emitter
-        .emit(payload, event_id.cloned())
-        .await
-        .map(|_execution_id| ())
-        .map_err(|e| {
-            warn!(
-                trigger_id = %row.trigger_id,
-                scope = ?scope,
-                workflow_id = %workflow_id,
-                error = %e,
-                "Prod-mode webhook: durable emit failed; returning 5xx so sender retries"
-            );
-            (StatusCode::INTERNAL_SERVER_ERROR, "").into_response()
-        })
+fn workflow_start_error<'a>(
+    mut error: &'a (dyn std::error::Error + 'static),
+) -> Option<&'a nebula_engine::WorkflowStartError> {
+    loop {
+        if let Some(start_error) = error.downcast_ref() {
+            return Some(start_error);
+        }
+        error = error.source()?;
+    }
+}
+
+#[cfg(test)]
+fn webhook_start_failure_response(error: &nebula_engine::WorkflowStartError) -> Response {
+    bare_response(webhook_start_failure_status(error))
+}
+
+/// Map runtime-owned start failures to retryable, payload-free webhook responses.
+///
+/// The webhook sender cannot repair activation or persisted-contract failures.
+/// Reporting them as client errors would make most providers drop the delivery,
+/// while returning structured API errors would disclose internal identifiers.
+fn webhook_start_failure_status(error: &nebula_engine::WorkflowStartError) -> StatusCode {
+    use nebula_engine::{PlanFlavorRevisionBridgeError, WorkflowStartError};
+    use nebula_storage_port::dto::RevisionCatalogError;
+
+    match error {
+        WorkflowStartError::BackendUnavailable
+        | WorkflowStartError::MaterializationIndeterminate(_)
+        | WorkflowStartError::ReceiptUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
+        WorkflowStartError::RevisionUnavailable(source)
+            if matches!(
+                source.as_ref(),
+                PlanFlavorRevisionBridgeError::Catalog {
+                    source: RevisionCatalogError::Unavailable,
+                    ..
+                }
+            ) =>
+        {
+            StatusCode::SERVICE_UNAVAILABLE
+        },
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+async fn receive_adapter_response(
+    response: oneshot::Receiver<WebhookHttpResponse>,
+    completed_operation: &'static str,
+) -> Response {
+    if let Ok(http) = response.await {
+        http_response_to_axum(http)
+    } else {
+        warn!(completed_operation, "webhook response channel closed");
+        bare_response(StatusCode::INTERNAL_SERVER_ERROR)
+    }
+}
+
+fn bare_response(status: StatusCode) -> Response {
+    (status, "").into_response()
 }
 
 /// Convert a `nebula-action` `WebhookHttpResponse` into an axum
@@ -822,7 +763,7 @@ fn record_rate_limit_rejection(
 
 #[cfg(test)]
 mod tests {
-    //! Integration tests for the durable dispatch path introduced in U-D1.4b.
+    //! Integration tests for durable webhook dispatch.
     //!
     //! Each test drives `dispatch_inner` directly — the same code path the
     //! axum handler calls — so the assertions cover the real dispatch logic.
@@ -832,10 +773,10 @@ mod tests {
     //! `Fixture` wires a complete in-memory stack:
     //! - `WebhookTransport` with `activation_store` + `durable_dispatch`
     //! - `InMemoryWebhookActivationStore` (token resolution)
-    //! - `InMemoryTriggerDedupInbox` (atomic dedup + Start enqueue)
+    //! - `WorkflowStartService` (atomic trigger dedup + ControlStart + bundle)
     //! - `InMemoryWorkflowVersionStore` (workflow load)
-    //! - `InMemoryExecutionStore` (execution rows + job queue)
-    //! - `DefinitionRoutingResolver` (plugin-routing)
+    //! - `InMemoryExecutionStore` (execution rows + control queue + exact references)
+    //! - frozen registry and explicitly activated workflow revisions
     //! - `ConfigurableWebhookAction` — a `WebhookAction` whose outcome
     //!   is set per-test via `Arc<Mutex<TriggerEventOutcome>>`.
 
@@ -853,13 +794,12 @@ mod tests {
         BaseContext, Dependencies, NodeKey, WorkflowId, action_key, node_key, scope::Principal,
     };
     use nebula_storage::inmem::{
-        InMemoryExecutionStore, InMemoryTriggerDedupInbox, InMemoryWebhookActivationStore,
-        InMemoryWorkflowVersionStore,
+        InMemoryExecutionStore, InMemoryWebhookActivationStore, InMemoryWorkflowVersionStore,
     };
     use nebula_storage_port::{
         Scope,
-        dto::{WebhookMode, WorkflowVersionRecord},
-        store::{ExecutionStore, TriggerDedupInbox, WebhookActivationStore, WorkflowVersionStore},
+        dto::WebhookMode,
+        store::{ExecutionStore, WebhookActivationStore, WorkflowStore},
     };
     use nebula_workflow::{WorkflowBuilder, WorkflowDefinition, node::NodeDefinition};
     use parking_lot::Mutex;
@@ -871,6 +811,176 @@ mod tests {
         DEFAULT_PER_TOKEN_RPM, PersistParams, WebhookTransport, WebhookTransportConfig,
         activate_and_persist,
     };
+
+    fn tenant_scope() -> Scope {
+        Scope::new(
+            nebula_core::WorkspaceId::new().to_string(),
+            nebula_core::OrgId::new().to_string(),
+        )
+    }
+
+    #[tokio::test]
+    async fn start_failures_are_payload_free_and_preserve_retryability() {
+        let unavailable =
+            webhook_start_failure_response(&nebula_engine::WorkflowStartError::BackendUnavailable);
+        assert_eq!(unavailable.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let unavailable_body = axum::body::to_bytes(unavailable.into_body(), 1)
+            .await
+            .expect("empty response body is readable");
+        assert!(unavailable_body.is_empty());
+
+        let invalid_scope =
+            webhook_start_failure_response(&nebula_engine::WorkflowStartError::InvalidScope);
+        assert_eq!(invalid_scope.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let invalid_scope_body = axum::body::to_bytes(invalid_scope.into_body(), 1)
+            .await
+            .expect("empty response body is readable");
+        assert!(invalid_scope_body.is_empty());
+    }
+
+    struct FixtureFactory {
+        metadata: ActionMetadata,
+        dependencies: Dependencies,
+    }
+    impl nebula_action::ActionFactory for FixtureFactory {
+        fn metadata(&self) -> &ActionMetadata {
+            &self.metadata
+        }
+        fn dependencies(&self) -> &Dependencies {
+            &self.dependencies
+        }
+        fn instantiate<'a>(
+            &'a self,
+            _: &'a NodeDefinition,
+            _: &'a dyn nebula_action::ActionContext,
+        ) -> std::pin::Pin<
+            Box<
+                dyn Future<Output = Result<nebula_action::ActionHandle, nebula_action::ActionError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { panic!("webhook admission must not execute workflow actions") })
+        }
+    }
+    #[derive(Debug)]
+    struct FixturePlugin {
+        manifest: nebula_plugin::PluginManifest,
+        action: &'static str,
+        kind: nebula_action::ActionKind,
+    }
+    impl nebula_plugin::Plugin for FixturePlugin {
+        fn manifest(&self) -> &nebula_plugin::PluginManifest {
+            &self.manifest
+        }
+        fn actions(&self) -> Vec<Arc<dyn nebula_action::ActionFactory>> {
+            vec![Arc::new(FixtureFactory {
+                metadata: ActionMetadata::new(
+                    self.action.parse().unwrap(),
+                    "Webhook fixture",
+                    "Admission fixture",
+                )
+                .with_effect_contract(
+                    nebula_action::effect::ActionEffectContract::NoExternalEffects,
+                )
+                .with_kind(self.kind)
+                .with_schema(nebula_action::ValidSchema::empty())
+                .with_output_schema(nebula_action::ValidSchema::empty()),
+                dependencies: Dependencies::new(),
+            })]
+        }
+    }
+    struct RuntimeFixture {
+        starts: Arc<nebula_engine::WorkflowStartService>,
+        activation: nebula_engine::WorkflowActivationService,
+        workflows: Arc<nebula_storage::InMemoryWorkflowStore>,
+    }
+    impl RuntimeFixture {
+        fn new(
+            executions: &InMemoryExecutionStore,
+            versions: &Arc<InMemoryWorkflowVersionStore>,
+        ) -> Self {
+            let mut registry = nebula_plugin::PluginRegistry::new();
+            for (plugin, action, kind) in [
+                ("core", "core.echo", nebula_action::ActionKind::Stateless),
+                ("test", "test.webhook", nebula_action::ActionKind::Trigger),
+            ] {
+                registry
+                    .register(Arc::new(
+                        nebula_plugin::ResolvedPlugin::from(FixturePlugin {
+                            manifest: nebula_plugin::PluginManifest::builder(plugin, plugin)
+                                .build()
+                                .unwrap(),
+                            action,
+                            kind,
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap();
+            }
+            let registry = Arc::new(
+                registry
+                    .freeze(
+                        nebula_core::ArtifactSetDigest::from_bytes([0x31; 32]),
+                        "1.0.0".parse().unwrap(),
+                    )
+                    .unwrap(),
+            );
+            let workflows = Arc::new(nebula_storage::InMemoryWorkflowStore::new_with_versions(
+                versions, executions,
+            ));
+            let catalog = Arc::new(executions.plan_flavor_catalog());
+            let clock = Arc::new(nebula_core::accessor::SystemClock);
+            let activation = nebula_engine::WorkflowActivationService::new(
+                workflows.clone(),
+                versions.clone(),
+                registry.clone(),
+                nebula_engine::PlanFlavorRevisionInstaller::new(catalog.clone()),
+                clock.clone(),
+            );
+            let starts = Arc::new(
+                nebula_engine::WorkflowStartService::new(
+                    nebula_engine::WorkflowStores {
+                        workflow: workflows.clone(),
+                        versions: versions.clone(),
+                    },
+                    Arc::new(executions.clone()),
+                    Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
+                        executions,
+                    )),
+                    nebula_engine::PlanFlavorRevisionLoader::new(catalog),
+                    registry,
+                    clock,
+                    Default::default(),
+                )
+                .unwrap(),
+            );
+            Self {
+                starts,
+                activation,
+                workflows,
+            }
+        }
+        async fn activate(&self, scope: &Scope, definition: WorkflowDefinition) {
+            self.workflows
+                .create(
+                    scope,
+                    nebula_storage_port::dto::WorkflowRecord {
+                        id: definition.id.to_string(),
+                        scope: scope.clone(),
+                        version: 1,
+                        slug: definition.id.to_string(),
+                        deleted: false,
+                    },
+                )
+                .await
+                .unwrap();
+            self.activation
+                .activate(scope, definition.id, 1, definition)
+                .await
+                .unwrap();
+        }
+    }
 
     // ── Standard Webhooks test signing ────────────────────────────────────────
 
@@ -984,7 +1094,7 @@ mod tests {
 
     /// Activation store that delegates everything to an in-memory store EXCEPT
     /// `resolve_by_token`, which errors — simulating a transient store outage on
-    /// the durable read path (Codex P1: must fail closed 503, not downgrade).
+    /// the durable read path, which must fail closed with 503.
     #[derive(Debug)]
     struct FailingResolveStore(InMemoryWebhookActivationStore);
 
@@ -1069,15 +1179,15 @@ mod tests {
             mode: WebhookMode,
             activation_store: Arc<dyn WebhookActivationStore>,
         ) -> Self {
-            let scope = Scope::new("test-org", "test-ws");
+            let scope = tenant_scope();
             let workflow_id = WorkflowId::new();
             let trigger_id_key = node_key!("webhook_trigger");
             let trigger_id = trigger_id_key.as_str().to_string();
 
             let exec_store = InMemoryExecutionStore::new();
-            let dedup = Arc::new(InMemoryTriggerDedupInbox::new(&exec_store));
             let exec_store = Arc::new(exec_store);
             let version_store = Arc::new(InMemoryWorkflowVersionStore::new());
+            let runtime = RuntimeFixture::new(&exec_store, &version_store);
 
             let outcome_cell = Arc::new(Mutex::new(TriggerEventOutcome::emit(json!({"ok": true}))));
 
@@ -1097,13 +1207,9 @@ mod tests {
 
             let transport = WebhookTransport::new(WebhookTransportConfig::default())
                 .with_activation_store(Arc::clone(&activation_store))
-                .with_durable_dispatch(
-                    dedup as Arc<dyn TriggerDedupInbox>,
-                    WebhookTransport::default_resolver(),
-                    Arc::clone(&version_store) as Arc<dyn WorkflowVersionStore>,
-                );
+                .with_durable_dispatch(runtime.starts.clone());
 
-            // Prod rows must carry `Required`+SWH (B2 split-brain guard).
+            // Prod rows must carry the required Standard Webhooks policy.
             // Test rows can remain unsigned for simplicity.
             let sig_policy = if mode == WebhookMode::Prod {
                 swh_required_policy()
@@ -1130,19 +1236,7 @@ mod tests {
 
             // Publish a valid workflow definition
             let def = minimal_workflow_def(workflow_id, trigger_id.clone());
-            version_store
-                .create(
-                    &scope,
-                    WorkflowVersionRecord {
-                        workflow_id: workflow_id.to_string(),
-                        number: 1,
-                        published: true,
-                        pinned: false,
-                        definition: serde_json::to_value(&def).unwrap(),
-                    },
-                )
-                .await
-                .expect("version store create");
+            runtime.activate(&scope, def).await;
 
             let trigger_uuid = handle.trigger_uuid;
             let nonce = handle.nonce.clone();
@@ -1166,9 +1260,75 @@ mod tests {
         /// The durable side effect: execution rows materialized under the
         /// fixture's tenant scope. Asserting this (not just the HTTP status)
         /// proves Prod Emit spawns exactly one, Test/Skip spawn zero, and
-        /// redelivery dedups to one (CodeRabbit).
+        /// redelivery deduplicates to one.
         async fn execution_count(&self) -> u64 {
             self.exec_store.count(&self.scope, None).await.unwrap()
+        }
+
+        async fn assert_exact_start(&self, delivery_id: &str) {
+            use nebula_storage_port::store::{
+                ControlQueue, JobDispatchQueue, StartAcceptanceStore,
+            };
+
+            let starts = nebula_storage::inmem::InMemoryStartAcceptanceStore::new(&self.exec_store);
+            let trigger =
+                nebula_storage_port::dto::TriggerStartKey::new("webhook_trigger", delivery_id);
+            let execution_id = starts
+                .lookup_trigger_start(&self.scope, &trigger)
+                .await
+                .unwrap()
+                .unwrap();
+            let bundle = starts
+                .read_contract_bundle(&self.scope, &execution_id)
+                .await
+                .unwrap()
+                .unwrap();
+            let revisions = bundle.record().identity().revisions();
+            let execution = self
+                .exec_store
+                .get(&self.scope, &execution_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                execution.state["executable_plan_revision_id"],
+                json!(revisions.plan())
+            );
+            assert_eq!(
+                execution.state["worker_flavor_revision_id"],
+                json!(revisions.worker_flavor())
+            );
+            let controls = nebula_storage::InMemoryControlQueue::new(&self.exec_store)
+                .claim_pending_for_flavor(&[7; 16], 10, revisions.worker_flavor())
+                .await
+                .unwrap();
+            assert_eq!(
+                controls.len(),
+                1,
+                "one Start backed by the persisted exact flavor reference"
+            );
+            assert_eq!(controls[0].msg.execution_id, execution_id);
+            assert_eq!(controls[0].msg.scope, self.scope);
+            assert_eq!(
+                controls[0].msg.command,
+                nebula_storage_port::dto::ControlCommand::Start
+            );
+            let jobs = nebula_storage::inmem::InMemoryJobDispatchQueue::new(&self.exec_store)
+                .claim_pending(
+                    &[8; 16],
+                    10,
+                    &[
+                        nebula_core::plugin_key!("core"),
+                        nebula_core::plugin_key!("test"),
+                    ],
+                    revisions.worker_flavor(),
+                )
+                .await
+                .unwrap();
+            assert!(
+                jobs.is_empty(),
+                "webhook admission must not also enqueue a Job"
+            );
         }
 
         /// Dispatch with a fully-signed SWH request including `webhook-id`.
@@ -1195,7 +1355,7 @@ mod tests {
         ///
         /// With StandardWebhooks, the absence of `webhook-id` means the
         /// signed content cannot be constructed → `SignatureOutcome::Missing`
-        /// → 401 (not 400 as in the pre-B2 dedup-key guard).
+        /// → 401 because signature validation runs before durable emission.
         async fn dispatch_without_id(&self) -> Response {
             // Only timestamp + signature, no id — SWH will return Missing → 401.
             let ts = now_secs();
@@ -1273,16 +1433,13 @@ mod tests {
             .expect("minimal workflow must be valid")
     }
 
-    // ── Test 1: Prod-mode Emit spawns exactly one execution ───────────────────
+    // ── Prod-mode emission ────────────────────────────────────────────────────
 
     /// Prod-mode activation + valid SWH `webhook-id` header → emitter is
     /// called. Verify the response is 200 OK and one execution was spawned.
     ///
-    /// This is the nominal happy-path test (B1 + B2).  The fixture is wired
-    /// with `SignaturePolicy::Required(StandardWebhooks)` and the request
-    /// carries a valid HMAC signature.  Removing the mode gate, the
-    /// `durable_dispatch` wiring, OR the signature policy would break the
-    /// behavioral assertion (execution_count == 1 AND 200).
+    /// The fixture requires a Standard Webhooks signature and wires durable
+    /// dispatch, so both the acknowledgement and persisted execution are checked.
     #[tokio::test]
     async fn prod_mode_emit_returns_200() {
         let fix = TestFixture::prod(WebhookMode::Prod).await;
@@ -1297,15 +1454,16 @@ mod tests {
             1,
             "Prod Emit must materialize exactly one execution (durable side effect, not just 200)"
         );
+        fix.assert_exact_start("delivery-001").await;
     }
 
-    // ── Test 2: Test mode spawns nothing, returns 200 (existing behaviour) ────
+    // ── Test-mode dispatch ────────────────────────────────────────────────────
 
     /// mode=Test → the durable path is NEVER taken even when `durable_dispatch`
     /// is wired.  The fallthrough in-memory path returns 200.
     ///
-    /// Test-mode activations use `OptionalAcceptUnsigned` (the B2 guard only
-    /// fires for Prod rows), so requests can be sent bare (no signature).
+    /// Test-mode activations use `OptionalAcceptUnsigned`, so requests can be
+    /// sent without a signature.
     ///
     /// Red-on-revert: removing the `row.mode == WebhookMode::Prod` guard would
     /// cause Test-mode activations to take the durable path, which would
@@ -1313,7 +1471,7 @@ mod tests {
     #[tokio::test]
     async fn test_mode_skips_durable_dispatch_returns_200() {
         let fix = TestFixture::prod(WebhookMode::Test).await;
-        // Test-mode: OptionalAcceptUnsigned → no B2 guard, no sig check.
+        // Test mode permits an unsigned request.
         let resp = fix.dispatch_bare().await;
         assert_eq!(
             resp.status(),
@@ -1327,7 +1485,7 @@ mod tests {
         );
     }
 
-    // ── Test 3: Same webhook-id twice → second is deduplicated ────────────────
+    // ── Redelivery deduplication ──────────────────────────────────────────────
 
     /// Delivering the same `webhook-id` twice with valid SWH signatures: the
     /// first call spawns the execution; the second is deduplicated by the inbox.
@@ -1351,24 +1509,17 @@ mod tests {
             1,
             "redelivery with the same webhook-id must dedup to exactly ONE execution, not two"
         );
+        fix.assert_exact_start("delivery-003").await;
     }
 
-    // ── Test 4: Missing webhook-id in Prod → 401 (SWH requires id for sig) ────
+    // ── Delivery identity validation ──────────────────────────────────────────
 
     /// Prod-mode activation without `webhook-id` header → 401 (SWH signature
     /// missing, because the id is part of the signed content and cannot be
     /// constructed without it).
     ///
-    /// Pre-B2 behaviour: the dedup-key guard returned 400 ("missing
-    /// webhook-id").  Post-B2: the SWH signature check fires first at step
-    /// 5.5 — no id means no signed content → `SignatureOutcome::Missing` → 401.
-    /// The dedup invariant is still protected: a request that fails sig
-    /// verification never reaches the emit path.
-    ///
-    /// Red-on-revert (B1): removing `SignatureScheme::StandardWebhooks` from
-    /// the required-policy arm causes `verify_standard_webhooks` to be
-    /// unreachable; the request would fall through to the old path and return
-    /// a different status.
+    /// Signature validation runs first: without the delivery id there is no
+    /// signed content, so the request never reaches durable emission.
     #[tokio::test]
     async fn prod_mode_missing_webhook_id_returns_401() {
         let fix = TestFixture::prod(WebhookMode::Prod).await;
@@ -1440,17 +1591,11 @@ mod tests {
 
     /// A Prod verification probe (`Skip` outcome) with a valid SWH signature
     /// must return 200 — the dedup key (`webhook-id`) is present (SWH requires
-    /// it for signing), and the `Emit` guard fires only on `Emit` outcomes
-    /// (Codex P2).
-    ///
-    /// Post-B2: Prod rows require `Required`+SWH.  A verification probe from a
+    /// it for signing), and the dedup requirement applies only to `Emit` outcomes.
+    /// A verification probe from a
     /// well-behaved provider will include a valid SWH signature; the probe's
     /// `Skip` outcome does NOT hit the "missing webhook-id" dedup guard because
     /// that guard is in the `Emit` arm of `dispatch_durable`, not before.
-    ///
-    /// Red-on-revert (B2): removing the split-brain guard and reverting to
-    /// `OptionalAcceptUnsigned` for Prod rows would cause the B2 500 to
-    /// disappear from the split-brain test (separate test below).
     #[tokio::test]
     async fn prod_mode_skip_with_signed_id_returns_200() {
         let fix = TestFixture::prod(WebhookMode::Prod).await;
@@ -1471,8 +1616,8 @@ mod tests {
 
     /// A transient activation-store outage on the durable read path must fail
     /// closed with 503 (sender retries) rather than silently downgrade a Prod
-    /// trigger to the Noop path and return 2xx (Codex P1 — that would lose the
-    /// event with no retry).
+    /// trigger to the Noop path and return 2xx, which would lose the event
+    /// without a retry.
     ///
     /// Red-on-revert: the old `Err(_) => fall-through` arm returned the
     /// handler's 200, hiding the store failure.
@@ -1489,7 +1634,7 @@ mod tests {
         );
     }
 
-    // ── Test 5: EmitMany in Prod → 500 ────────────────────────────────────────
+    // ── Unsupported fan-out ───────────────────────────────────────────────────
 
     /// `EmitMany` outcome in Prod mode → fail-closed 500 (with valid SWH sig).
     ///
@@ -1511,7 +1656,7 @@ mod tests {
         );
     }
 
-    // ── Test 6: Skip in Prod → 200, no execution ──────────────────────────────
+    // ── Skipped delivery ──────────────────────────────────────────────────────
 
     /// `Skip` outcome in Prod mode → no execution spawned, HTTP 200.
     ///
@@ -1535,7 +1680,7 @@ mod tests {
         );
     }
 
-    // ── Test 7: workflow_id None on activation row → 500 ─────────────────────
+    // ── Corrupt activation identity ───────────────────────────────────────────
 
     /// Prod-mode activation with `workflow_id = None` on the row → fail-closed 500.
     ///
@@ -1544,14 +1689,14 @@ mod tests {
     #[tokio::test]
     async fn prod_mode_no_workflow_id_returns_500() {
         // Build a transport with a Prod-mode row that has workflow_id = None.
-        let scope = Scope::new("test-org", "test-ws");
+        let scope = tenant_scope();
         let workflow_id = WorkflowId::new();
         let trigger_id = node_key!("webhook_trigger").as_str().to_string();
 
         let exec_store = InMemoryExecutionStore::new();
-        let dedup = Arc::new(InMemoryTriggerDedupInbox::new(&exec_store));
-        let version_store: Arc<dyn WorkflowVersionStore> =
+        let version_store: Arc<InMemoryWorkflowVersionStore> =
             Arc::new(InMemoryWorkflowVersionStore::new());
+        let runtime = RuntimeFixture::new(&exec_store, &version_store);
         let activation_store: Arc<dyn WebhookActivationStore> =
             Arc::new(InMemoryWebhookActivationStore::new());
 
@@ -1568,11 +1713,7 @@ mod tests {
 
         let transport = WebhookTransport::new(WebhookTransportConfig::default())
             .with_activation_store(Arc::clone(&activation_store))
-            .with_durable_dispatch(
-                dedup as Arc<dyn TriggerDedupInbox>,
-                WebhookTransport::default_resolver(),
-                Arc::clone(&version_store),
-            );
+            .with_durable_dispatch(runtime.starts.clone());
 
         let handle = activate_and_persist(
             &transport,
@@ -1613,29 +1754,29 @@ mod tests {
         );
     }
 
-    // ── Test 8: Tenant isolation — workflow in wrong scope → 500 ─────────────
+    // ── Tenant isolation ──────────────────────────────────────────────────────
 
-    /// Prod-mode activation whose activation-row scope is scope_A, but the
-    /// workflow version was stored under scope_B.
+    /// Prod-mode activation whose activation-row scope is scope_A, while the
+    /// workflow version exists only under scope_B.
     ///
-    /// `ScopedWorkflowVersionStore` pins the lookup to `row.scope` (scope_A),
-    /// so the version stored under scope_B is invisible → 500.
+    /// `WorkflowStartService` pins the lookup to `row.scope` (scope_A), so the
+    /// activated workflow under scope_B remains invisible. The webhook surface
+    /// deliberately collapses that internal admission failure to a payload-free
+    /// 5xx so the sender retries without learning whether the workflow exists.
     ///
-    /// This is the confused-deputy test (invariant #5).
-    ///
-    /// Red-on-revert: passing the request-derived scope (or no scoping) to
-    /// `get_published` would let a cross-scope lookup succeed, violating the
+    /// Passing the request-derived scope or omitting scoping from
+    /// workflow lookup would let a cross-scope lookup succeed, violating the
     /// tenant boundary.
     #[tokio::test]
-    async fn tenant_isolation_wrong_scope_returns_500() {
-        let scope_a = Scope::new("org-a", "ws-a");
-        let scope_b = Scope::new("org-b", "ws-b");
+    async fn tenant_isolation_wrong_scope_is_hidden_behind_retryable_failure() {
+        let scope_a = tenant_scope();
+        let scope_b = tenant_scope();
         let workflow_id = WorkflowId::new();
         let trigger_id = node_key!("webhook_trigger").as_str().to_string();
 
         let exec_store = InMemoryExecutionStore::new();
-        let dedup = Arc::new(InMemoryTriggerDedupInbox::new(&exec_store));
         let version_store = Arc::new(InMemoryWorkflowVersionStore::new());
+        let runtime = RuntimeFixture::new(&exec_store, &version_store);
         let activation_store: Arc<dyn WebhookActivationStore> =
             Arc::new(InMemoryWebhookActivationStore::new());
 
@@ -1652,11 +1793,7 @@ mod tests {
 
         let transport = WebhookTransport::new(WebhookTransportConfig::default())
             .with_activation_store(Arc::clone(&activation_store))
-            .with_durable_dispatch(
-                dedup as Arc<dyn TriggerDedupInbox>,
-                WebhookTransport::default_resolver(),
-                Arc::clone(&version_store) as Arc<dyn WorkflowVersionStore>,
-            );
+            .with_durable_dispatch(runtime.starts.clone());
 
         // Activation row registered under scope_a, with SWH policy (Prod).
         let handle = activate_and_persist(
@@ -1679,19 +1816,7 @@ mod tests {
 
         // Workflow stored under scope_b — should NOT be visible to scope_a lookup.
         let def = minimal_workflow_def(workflow_id, trigger_id);
-        version_store
-            .create(
-                &scope_b,
-                WorkflowVersionRecord {
-                    workflow_id: workflow_id.to_string(),
-                    number: 1,
-                    published: true,
-                    pinned: false,
-                    definition: serde_json::to_value(&def).unwrap(),
-                },
-            )
-            .await
-            .expect("version create");
+        runtime.activate(&scope_b, def).await;
 
         let key = WebhookKey::programmatic(handle.trigger_uuid, handle.nonce.clone());
         let body = b"{}";
@@ -1706,11 +1831,43 @@ mod tests {
         )
         .await;
 
+        let status = resp.status();
+        let response_body = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
         assert_eq!(
-            resp.status(),
+            status,
             StatusCode::INTERNAL_SERVER_ERROR,
-            "workflow stored in wrong scope must be invisible → 500"
+            "workflow stored in another scope must stay hidden behind a bare retryable failure: {}",
+            String::from_utf8_lossy(&response_body)
         );
+        assert!(
+            response_body.is_empty(),
+            "internal identifiers must not be returned"
+        );
+        assert_eq!(exec_store.count(&scope_a, None).await.unwrap(), 0);
+        assert_eq!(exec_store.count(&scope_b, None).await.unwrap(), 0);
+        use nebula_storage_port::store::{ControlQueue, StartAcceptanceStore};
+        let controls = nebula_storage::InMemoryControlQueue::new(&exec_store);
+        assert!(
+            controls
+                .claim_pending(&[9; 16], 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let starts = nebula_storage::inmem::InMemoryStartAcceptanceStore::new(&exec_store);
+        let trigger =
+            nebula_storage_port::dto::TriggerStartKey::new("webhook_trigger", "delivery-007");
+        for scope in [&scope_a, &scope_b] {
+            assert!(
+                starts
+                    .lookup_trigger_start(scope, &trigger)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
     }
 
     // ── Rate-limit tier tests ─────────────────────────────────────────────────
@@ -1728,12 +1885,12 @@ mod tests {
         WebhookKey,
         Arc<dyn WebhookActivationStore>,
     ) {
-        let scope = Scope::new("same-org", "same-ws");
+        let scope = tenant_scope();
         let activation_store: Arc<dyn WebhookActivationStore> =
             Arc::new(InMemoryWebhookActivationStore::new());
         let exec_store = InMemoryExecutionStore::new();
-        let dedup = Arc::new(InMemoryTriggerDedupInbox::new(&exec_store));
         let version_store = Arc::new(InMemoryWorkflowVersionStore::new());
+        let runtime = RuntimeFixture::new(&exec_store, &version_store);
 
         // Build transport with explicit tight limits so the test is deterministic.
         let cfg = WebhookTransportConfig {
@@ -1743,11 +1900,7 @@ mod tests {
         };
         let transport = WebhookTransport::new(cfg)
             .with_activation_store(Arc::clone(&activation_store))
-            .with_durable_dispatch(
-                dedup as Arc<dyn TriggerDedupInbox>,
-                WebhookTransport::default_resolver(),
-                Arc::clone(&version_store) as Arc<dyn WorkflowVersionStore>,
-            );
+            .with_durable_dispatch(runtime.starts.clone());
 
         // Register activation A under the shared scope.
         let outcome_a = Arc::new(Mutex::new(TriggerEventOutcome::skip()));
@@ -1832,7 +1985,7 @@ mod tests {
     /// second request — from token B, a DIFFERENT token, so per-token is
     /// fresh — must be rate-limited at the per-tenant tier and return 429.
     ///
-    /// RED-on-revert: before the per-tenant limiter exists, both requests
+    /// Without the per-tenant limiter, both requests
     /// succeed (200) because each token is within its own per-token quota.
     #[tokio::test]
     async fn per_tenant_aggregate_429() {
@@ -1859,17 +2012,17 @@ mod tests {
     /// Two tokens in DIFFERENT scopes each start with a fresh per-token window
     /// and a fresh per-tenant aggregate — no cross-contamination.
     ///
-    /// RED-on-revert: a bug that keys the per-tenant limiter by a constant
+    /// Keying the per-tenant limiter by a constant
     /// or by the trigger UUID would cause cross-scope contamination.
     #[tokio::test]
     async fn per_token_independent_scopes() {
-        let scope_x = Scope::new("org-x", "ws-x");
-        let scope_y = Scope::new("org-y", "ws-y");
+        let scope_x = tenant_scope();
+        let scope_y = tenant_scope();
         let activation_store: Arc<dyn WebhookActivationStore> =
             Arc::new(InMemoryWebhookActivationStore::new());
         let exec_store = InMemoryExecutionStore::new();
-        let dedup = Arc::new(InMemoryTriggerDedupInbox::new(&exec_store));
         let version_store = Arc::new(InMemoryWorkflowVersionStore::new());
+        let runtime = RuntimeFixture::new(&exec_store, &version_store);
 
         // 1 req/min per-tenant; 1 000 per-token — tight enough to prove isolation.
         let cfg = WebhookTransportConfig {
@@ -1879,11 +2032,7 @@ mod tests {
         };
         let transport = WebhookTransport::new(cfg)
             .with_activation_store(Arc::clone(&activation_store))
-            .with_durable_dispatch(
-                dedup as Arc<dyn TriggerDedupInbox>,
-                WebhookTransport::default_resolver(),
-                Arc::clone(&version_store) as Arc<dyn WorkflowVersionStore>,
-            );
+            .with_durable_dispatch(runtime.starts.clone());
 
         // Register one activation in scope_x.
         let outcome_x = Arc::new(Mutex::new(TriggerEventOutcome::skip()));
@@ -1953,26 +2102,22 @@ mod tests {
         );
     }
 
-    /// Structural coupling proof (anti-discipline, RED-on-revert).
+    /// Structural check that durable dispatch installs both limiters.
     ///
     /// A transport built from a `None`-rate-limit config and then passed to
     /// `with_durable_dispatch` must have BOTH `rate_limiter` and
     /// `tenant_rate_limiter` populated — the defaults are installed
     /// automatically by the builder, not by composition-root discipline.
     ///
-    /// RED-on-revert: removing the `if i.rate_limiter.is_none()` /
+    /// Removing the `if i.rate_limiter.is_none()` /
     /// `if i.tenant_rate_limiter.is_none()` installs in `with_durable_dispatch`
     /// causes both `is_some()` assertions to fail.
     #[tokio::test]
     async fn structural_coupling_durable_dispatch_installs_both_limiters() {
-        use nebula_storage::inmem::{InMemoryTriggerDedupInbox, InMemoryWorkflowVersionStore};
-        use nebula_storage_port::store::{TriggerDedupInbox, WorkflowVersionStore};
-
         let exec_store = InMemoryExecutionStore::new();
-        let dedup: Arc<dyn TriggerDedupInbox> =
-            Arc::new(InMemoryTriggerDedupInbox::new(&exec_store));
-        let version_store: Arc<dyn WorkflowVersionStore> =
+        let version_store: Arc<InMemoryWorkflowVersionStore> =
             Arc::new(InMemoryWorkflowVersionStore::new());
+        let runtime = RuntimeFixture::new(&exec_store, &version_store);
 
         // Config with both rate limits as None — no explicit operator override.
         let cfg = WebhookTransportConfig {
@@ -1980,11 +2125,7 @@ mod tests {
             tenant_rate_limit_per_minute: None,
             ..WebhookTransportConfig::default()
         };
-        let transport = WebhookTransport::new(cfg).with_durable_dispatch(
-            dedup,
-            WebhookTransport::default_resolver(),
-            version_store,
-        );
+        let transport = WebhookTransport::new(cfg).with_durable_dispatch(runtime.starts);
 
         assert!(
             transport.inner.rate_limiter.is_some(),
@@ -2005,7 +2146,7 @@ mod tests {
     // transport with `rate_limit_per_minute = Some(2)` allows exactly 2 requests then
     // rejects the 3rd with 429.
     //
-    // RED-on-revert: set `rate_limit_per_minute: None` without the structural guarantee
+    // An absent default limiter would make the second request succeed.
     // → no limiter → all requests succeed → 429 assertion fails.
 
     /// The per-token limiter installed by `with_durable_dispatch` actually
@@ -2016,9 +2157,6 @@ mod tests {
     /// The constant value is verified by a separate assertion to pin the default.
     #[tokio::test]
     async fn structural_coupling_per_token_limiter_is_behaviorally_active() {
-        use nebula_storage::inmem::{InMemoryTriggerDedupInbox, InMemoryWorkflowVersionStore};
-        use nebula_storage_port::store::{TriggerDedupInbox, WorkflowVersionStore};
-
         // Pin the default value so a silent change is caught here.
         assert_eq!(
             DEFAULT_PER_TOKEN_RPM, 600,
@@ -2026,10 +2164,9 @@ mod tests {
         );
 
         let exec_store = InMemoryExecutionStore::new();
-        let dedup: Arc<dyn TriggerDedupInbox> =
-            Arc::new(InMemoryTriggerDedupInbox::new(&exec_store));
-        let version_store: Arc<dyn WorkflowVersionStore> =
+        let version_store: Arc<InMemoryWorkflowVersionStore> =
             Arc::new(InMemoryWorkflowVersionStore::new());
+        let runtime = RuntimeFixture::new(&exec_store, &version_store);
         let activation_store: Arc<dyn WebhookActivationStore> =
             Arc::new(InMemoryWebhookActivationStore::new());
 
@@ -2041,7 +2178,7 @@ mod tests {
         };
         let transport = WebhookTransport::new(cfg)
             .with_activation_store(Arc::clone(&activation_store))
-            .with_durable_dispatch(dedup, WebhookTransport::default_resolver(), version_store);
+            .with_durable_dispatch(runtime.starts.clone());
 
         // Register one Test-mode activation (OptionalAcceptUnsigned, no SWH needed).
         let outcome = Arc::new(Mutex::new(TriggerEventOutcome::skip()));
@@ -2062,7 +2199,7 @@ mod tests {
                 ctx_template: ctx,
                 trigger_id: node_key!("trigger_rl").as_str().to_string(),
                 spec_trigger_id: "trg_test_trigger_rl".to_string(),
-                scope: Scope::new("rl-org", "rl-ws"),
+                scope: tenant_scope(),
                 workflow_id: Some(wf.to_string()),
                 mode: WebhookMode::Test,
             },
@@ -2087,7 +2224,7 @@ mod tests {
             dispatch_skip(&transport, key).await,
             StatusCode::TOO_MANY_REQUESTS,
             "third request over per-token quota must return 429 \
-             (RED-on-revert: structural guarantee missing → no limiter → 200)"
+             (the second request must remain rate limited)"
         );
     }
 
@@ -2103,10 +2240,10 @@ mod tests {
     // The slow path is guarded by `debug_assert!(false, …)` so it cannot be
     // triggered in test/debug builds without a panic.  This test verifies the
     // structural invariant instead: the normal fast-path composition
-    // `.with_durable_dispatch(...).with_activation_store(...)` must leave BOTH
+    // `.with_durable_dispatch(runtime.starts.clone()).with_activation_store(...)` must leave BOTH
     // limiters populated, and must enforce them behaviorally.
     //
-    // RED-on-revert of the fast path: the fast path preserves limiters because
+    // The fast path preserves limiters because
     // `with_activation_store` mutates the existing `TransportInner` field —
     // it does NOT construct a new one, so there is nothing to revert on the fast
     // path.  The slow-path fix is a code-level defence for the rare misuse case
@@ -2116,14 +2253,10 @@ mod tests {
     /// both rate limiters intact and behaviorally enforced.
     #[tokio::test]
     async fn with_activation_store_fast_path_preserves_both_rate_limiters() {
-        use nebula_storage::inmem::{InMemoryTriggerDedupInbox, InMemoryWorkflowVersionStore};
-        use nebula_storage_port::store::{TriggerDedupInbox, WorkflowVersionStore};
-
-        let exec_store_inner = InMemoryExecutionStore::new();
-        let dedup: Arc<dyn TriggerDedupInbox> =
-            Arc::new(InMemoryTriggerDedupInbox::new(&exec_store_inner));
-        let version_store: Arc<dyn WorkflowVersionStore> =
+        let exec_store = InMemoryExecutionStore::new();
+        let version_store: Arc<InMemoryWorkflowVersionStore> =
             Arc::new(InMemoryWorkflowVersionStore::new());
+        let runtime = RuntimeFixture::new(&exec_store, &version_store);
         let activation_store: Arc<dyn WebhookActivationStore> =
             Arc::new(InMemoryWebhookActivationStore::new());
 
@@ -2134,7 +2267,7 @@ mod tests {
             ..WebhookTransportConfig::default()
         };
         let transport = WebhookTransport::new(cfg)
-            .with_durable_dispatch(dedup, WebhookTransport::default_resolver(), version_store)
+            .with_durable_dispatch(runtime.starts.clone())
             .with_activation_store(Arc::clone(&activation_store));
 
         // Both limiters must be present.
@@ -2168,7 +2301,7 @@ mod tests {
                 ctx_template: ctx,
                 trigger_id: node_key!("trigger_e").as_str().to_string(),
                 spec_trigger_id: "trg_test_trigger_e".to_string(),
-                scope: Scope::new("e-org", "e-ws"),
+                scope: tenant_scope(),
                 workflow_id: Some(wf.to_string()),
                 mode: WebhookMode::Test,
             },
@@ -2192,32 +2325,29 @@ mod tests {
         );
     }
 
-    // ── G: Prod + SWH per-tenant 429 — step 4.5 fires before B2 at step 5.5 ──
+    // ── Tenant rate limiting before signature enforcement ────────────────────
     //
     // Two Prod-mode activations share the same tenant scope, both using
     // `SignaturePolicy::Required` + StandardWebhooks.  The per-tenant quota is 1
     // req/min.  The first signed request succeeds.  The second signed request —
     // from a different token (fresh per-token quota) but the same tenant — must
-    // return 429 at step 4.5 (tenant rate limit), NOT 500 from the B2 guard
+    // return 429 from the tenant rate limit, before the signature policy check
     // at step 5.5, and NOT 200 (both exhausted).
     //
     // This proves the ordering: tenant-rate-limit check (step 4.5) comes before
-    // signature enforcement (step 5.5 B2 guard) and before durable dispatch.
+    // and before durable dispatch.
 
     /// Two Prod+SWH activations under the same tenant: per-tenant aggregate
-    /// 429 fires correctly before the B2 guard.
+    /// The tenant limit returns 429 before signature enforcement.
     #[tokio::test]
     async fn prod_swh_per_tenant_429_fires_before_b2_guard() {
-        use nebula_storage::inmem::{InMemoryTriggerDedupInbox, InMemoryWorkflowVersionStore};
-        use nebula_storage_port::store::{TriggerDedupInbox, WorkflowVersionStore};
-
-        let scope = Scope::new("tenant-org", "tenant-ws");
+        let scope = tenant_scope();
         let activation_store: Arc<dyn WebhookActivationStore> =
             Arc::new(InMemoryWebhookActivationStore::new());
         let exec_store = InMemoryExecutionStore::new();
-        let dedup = Arc::new(InMemoryTriggerDedupInbox::new(&exec_store));
         let exec_store = Arc::new(exec_store);
         let version_store = Arc::new(InMemoryWorkflowVersionStore::new());
+        let runtime = RuntimeFixture::new(&exec_store, &version_store);
 
         let cfg = WebhookTransportConfig {
             rate_limit_per_minute: Some(1_000),    // generous per-token
@@ -2226,11 +2356,7 @@ mod tests {
         };
         let transport = WebhookTransport::new(cfg)
             .with_activation_store(Arc::clone(&activation_store))
-            .with_durable_dispatch(
-                dedup as Arc<dyn TriggerDedupInbox>,
-                WebhookTransport::default_resolver(),
-                Arc::clone(&version_store) as Arc<dyn WorkflowVersionStore>,
-            );
+            .with_durable_dispatch(runtime.starts.clone());
 
         // Register two Prod activations under the same scope.
         let mut handles = vec![];
@@ -2249,19 +2375,7 @@ mod tests {
             // Both must carry the published workflow so if the rate-limit check
             // somehow fails the emit would succeed — proving it's the 429 stopping it.
             let def = minimal_workflow_def(wf_id, trig.as_str().to_string());
-            version_store
-                .create(
-                    &scope,
-                    WorkflowVersionRecord {
-                        workflow_id: wf_id.to_string(),
-                        number: 1,
-                        published: true,
-                        pinned: false,
-                        definition: serde_json::to_value(&def).unwrap(),
-                    },
-                )
-                .await
-                .unwrap();
+            runtime.activate(&scope, def).await;
 
             let handle = activate_and_persist(
                 &transport,
@@ -2307,7 +2421,7 @@ mod tests {
 
         // Request 2 — token B (fresh per-token window), signed, same tenant.
         // Per-tenant aggregate is now exhausted → must return 429.
-        // Must NOT return 500 (B2 guard) or 200 (emit).
+        // The request must be rejected before signature enforcement or emission.
         let headers_2 = swh_headers(msg_id_2, body);
         let key_2 = WebhookKey::programmatic(handles[1].0.trigger_uuid, handles[1].0.nonce.clone());
         let r2 = dispatch_inner(
@@ -2323,7 +2437,7 @@ mod tests {
             r2.status(),
             StatusCode::TOO_MANY_REQUESTS,
             "second Prod+SWH request same tenant must be per-tenant 429 \
-             (step 4.5 before B2 at 5.5 and before durable emit)"
+             before signature enforcement and durable emit)"
         );
 
         // Zero executions spawned for the rejected request.
@@ -2336,12 +2450,12 @@ mod tests {
         );
     }
 
-    // ── B1: SWH tampered body → 401 ──────────────────────────────────────────
+    // ── Standard Webhooks tamper detection ───────────────────────────────────
 
     /// A Prod request with a valid SWH signature over the ORIGINAL body, but
     /// the body has been tampered with in transit → 401 (SignatureInvalid).
     ///
-    /// Red-on-revert (B1): removing `SignatureScheme::StandardWebhooks` from
+    /// Removing `SignatureScheme::StandardWebhooks` from
     /// `verify_with` reverts to the default `Sha256Hex` scheme, which checks a
     /// different header and different content — the tampered body would slip
     /// through whatever the routing-entry config says.
@@ -2391,19 +2505,19 @@ mod tests {
         );
     }
 
-    // ── B2: Split-brain guard — Prod + OptionalAcceptUnsigned → 500 ──────────
+    // ── Production signature policy consistency ──────────────────────────────
 
     /// A Prod-mode activation whose **in-memory routing entry** carries
     /// `SignaturePolicy::OptionalAcceptUnsigned` → 500 (misconfiguration
     /// detected at dispatch time, no execution spawned).
     ///
-    /// This is the B2 split-brain guard: `durable.is_some()` (Prod row that
+    /// A durable Prod row
     /// will spawn) AND `OptionalAcceptUnsigned` is a composition-root
     /// misconfiguration.  The invariant is enforced at the transport layer,
     /// not only at activation time, so a stale in-memory routing entry cannot
     /// silently downgrade a durable Prod path to unsigned acceptance.
     ///
-    /// RED-on-revert: removing the B2 guard (the `if durable.is_some() &&
+    /// Removing the policy consistency check (`if durable.is_some() &&
     /// matches!(…OptionalAcceptUnsigned)` block in `dispatch_inner`) causes the
     /// unsigned request to pass sig enforcement (`OptionalAcceptUnsigned →
     /// Pass`) and the action to emit, materializing an execution.  The
@@ -2413,15 +2527,15 @@ mod tests {
         // Build a Prod-mode fixture that DELIBERATELY uses OptionalAcceptUnsigned.
         // This is the misconfiguration scenario: the activation row is Prod but
         // the in-memory routing entry's action_config has no sig policy.
-        let scope = Scope::new("test-org", "test-ws");
+        let scope = tenant_scope();
         let workflow_id = WorkflowId::new();
         let trigger_id_key = node_key!("webhook_trigger");
         let trigger_id = trigger_id_key.as_str().to_string();
 
         let exec_store = InMemoryExecutionStore::new();
-        let dedup = Arc::new(InMemoryTriggerDedupInbox::new(&exec_store));
         let exec_store = Arc::new(exec_store);
         let version_store = Arc::new(InMemoryWorkflowVersionStore::new());
+        let runtime = RuntimeFixture::new(&exec_store, &version_store);
         let activation_store: Arc<dyn WebhookActivationStore> =
             Arc::new(InMemoryWebhookActivationStore::new());
 
@@ -2435,11 +2549,7 @@ mod tests {
 
         let transport = WebhookTransport::new(WebhookTransportConfig::default())
             .with_activation_store(Arc::clone(&activation_store))
-            .with_durable_dispatch(
-                dedup as Arc<dyn TriggerDedupInbox>,
-                WebhookTransport::default_resolver(),
-                Arc::clone(&version_store) as Arc<dyn WorkflowVersionStore>,
-            );
+            .with_durable_dispatch(runtime.starts.clone());
 
         // Deliberately misconfiguged: Prod mode row + OptionalAcceptUnsigned.
         let handle = activate_and_persist(
@@ -2463,19 +2573,7 @@ mod tests {
         // Publish a valid workflow definition (so if the guard were missing,
         // the emit would succeed — proving the guard is what stops it).
         let def = minimal_workflow_def(workflow_id, trigger_id);
-        version_store
-            .create(
-                &scope,
-                WorkflowVersionRecord {
-                    workflow_id: workflow_id.to_string(),
-                    number: 1,
-                    published: true,
-                    pinned: false,
-                    definition: serde_json::to_value(&def).unwrap(),
-                },
-            )
-            .await
-            .expect("version store create");
+        runtime.activate(&scope, def).await;
 
         let key = WebhookKey::programmatic(handle.trigger_uuid, handle.nonce.clone());
 
@@ -2485,14 +2583,14 @@ mod tests {
         //
         // Why `webhook-id` is mandatory here: without it the request hits the
         // 400-missing-dedup-key guard in `dispatch_durable`, and `execution_count`
-        // stays 0 on revert for the wrong reason — masking the B2 spawn-prevention
-        // property.  With `webhook-id` present, on revert: `OptionalAcceptUnsigned`
-        // → sig-enforcement Pass → handler emits → `do_emit_prod` spawns →
+        // stays 0 for the wrong reason, masking the spawn-prevention property.
+        // With `webhook-id` present, `OptionalAcceptUnsigned`
+        // → sig-enforcement Pass → handler emits → durable execution spawns →
         // `execution_count == 1` → the count assertion below goes RED.
         let mut headers_with_id = HeaderMap::new();
         headers_with_id.insert(
             WEBHOOK_ID_HEADER,
-            HeaderValue::from_static("b2-revert-probe-001"),
+            HeaderValue::from_static("unsigned-prod-probe-001"),
         );
         let resp = dispatch_inner(
             transport,
@@ -2505,18 +2603,17 @@ mod tests {
         .await;
 
         // Count checked FIRST so both assertions are visible in revert runs.
-        // RED-on-revert: without B2, `OptionalAcceptUnsigned`→Pass, handler
-        // emits, `do_emit_prod` materializes one execution → count == 1 → FAIL.
+        // Without the consistency check, the unsigned handler emits and
+        // materializes one execution.
         assert_eq!(
             exec_store.count(&scope, None).await.unwrap(),
             0,
-            "B2 guard must prevent ANY execution from being spawned \
-             (RED-on-revert: execution_count becomes 1 without the guard)"
+            "an unsigned Prod activation must not spawn an execution"
         );
         assert_eq!(
             resp.status(),
             StatusCode::INTERNAL_SERVER_ERROR,
-            "Prod row with OptionalAcceptUnsigned must return 500 (B2 split-brain guard)"
+            "Prod row with OptionalAcceptUnsigned must return 500"
         );
     }
 }

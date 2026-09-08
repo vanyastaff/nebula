@@ -1,30 +1,24 @@
 //! Durable control-queue consumer — control-queue wiring.
 //!
-//! The `ControlConsumer` drains `execution_control_queue` (the spec-16
+//! The `ControlConsumer` drains `execution_control_queue` through the
 //! [`nebula_storage_port::store::ControlQueue`] port) and hands typed
 //! commands to an engine-owned [`ControlDispatch`] implementation.
 //! Wiring decisions: polling loop + claim/ack, engine-owned dispatch trait
 //! (no `nebula-api` / `nebula-storage` row types leak into the public
 //! surface), at-least-once delivery with idempotent consumer semantics.
 //!
-//! ## Status
-//!
-//! - construction, spawning, graceful shutdown, polling, claim/ack plumbing — **implemented**;
-//! - dispatch of `Start` / `Resume` / `Restart` to the engine start/resume path — **implemented**
-//!   (A2, closes #332 / #327). The engine-owned implementation lives in
-//!   [`crate::control_dispatch::EngineControlDispatch`];
-//! - dispatch of `Cancel` / `Terminate` to the engine cancel path — **implemented** (A3, closes
-//!   #330). The `Cancel` command now reaches the live frontier loop via
+//! `Start`, `Resume`, and `Restart` transfer their storage-minted claims to
+//! the execution owner. `Cancel` and `Terminate` reach the live frontier via
 //!   [`crate::WorkflowEngine::cancel_execution`]; `Terminate` shares the cooperative-cancel body
 //!   until a distinct forced-shutdown path is wired.
-//! - reclaim sweep for stuck `Processing` rows after a crashed runner — **implemented** (B1).
+//! A reclaim sweep recovers `Processing` rows left behind by a crashed runner.
 //!   A periodic `tokio::time::interval` arm calls `ControlQueue::reclaim_stuck`
 //!   every [`DEFAULT_RECLAIM_INTERVAL`]; rows whose `processed_at` is older than
 //!   [`DEFAULT_RECLAIM_AFTER`] are moved back to `Pending` (retry budget
 //!   [`DEFAULT_MAX_RECLAIM_COUNT`]) or to `Failed` once the budget is exhausted. Each sweep emits
 //!   the `nebula_engine_control_reclaim_total{outcome}` counter — wire the shared
 //!   registry via [`ControlConsumer::with_metrics`].
-//! - M3.5 — before each dispatch, optional `w3c_trace_context` on the row is attached as the
+//! Before each dispatch, optional `w3c_trace_context` on the row is attached as the
 //!   OpenTelemetry parent of an `engine.control_queue.dispatch` span (`.instrument` across await).
 //!   Redelivery reuses the **same** carrier from the row — no nested synthetic roots.
 //!
@@ -96,9 +90,7 @@ pub const DEFAULT_MAX_RECLAIM_COUNT: u32 = 3;
 ///
 /// Kept dedicated (rather than reusing [`crate::EngineError`]) so the
 /// dispatch surface can evolve independently of the engine's per-node
-/// execution errors. A2 and A3 may extend this with typed variants for
-/// "execution not found", "execution already terminal", etc. — for A1
-/// only the catch-all exists because no dispatch yet happens.
+/// execution errors.
 #[derive(Debug, thiserror::Error)]
 pub enum ControlDispatchError {
     /// A dispatch path rejected the command. The attached message is
@@ -113,7 +105,7 @@ pub enum ControlDispatchError {
     Internal(String),
 
     /// A retriable dispatch condition prevented a safe ack/fail decision — the
-    /// control-queue row should be left in `Processing` so the B1 reclaim sweep
+    /// control-queue row should be left in `Processing` so the reclaim sweep
     /// redelivers it once the condition clears or the state can be re-checked.
     ///
     /// Unlike `Rejected` and `Internal` (which call `mark_failed`), this
@@ -127,6 +119,20 @@ pub enum ControlDispatchError {
     Deferred(String),
 }
 
+/// Whether a driving control command still belongs to the dispatch queue.
+#[derive(Debug)]
+pub enum ClaimedControlDispatchOutcome {
+    /// No handoff committed; the consumer must finish or release its claim.
+    NotAccepted(Result<(), ControlDispatchError>),
+    /// A newer claim superseded this delivery; the consumer must not write it.
+    ClaimSuperseded,
+    /// The handoff may have committed; persisted ownership must resolve it.
+    AcceptanceUnknown(ControlDispatchError),
+    /// The owner atomically acknowledged delivery before driving the action.
+    /// Recovery after any error uses execution state, never another queue write.
+    Accepted(Result<(), ControlDispatchError>),
+}
+
 /// Engine-owned dispatch surface for control commands.
 ///
 /// Implementors translate a typed command + `ExecutionId` into engine
@@ -136,30 +142,22 @@ pub enum ControlDispatchError {
 /// Implementations must be **idempotent per `(execution_id, command)`
 /// pair**: receiving the same command twice (e.g. after an at-least-once
 /// redelivery) for a terminal execution must return `Ok(())`, not an
-/// error. This is a load-bearing contract for decision 5.
-///
-/// ## Status
-///
-/// Method stubs return `Ok(())` in A1 because no real dispatch happens
-/// yet; A2 / A3 replace each method's body with a call into the engine's
-/// start / cancel path. The trait shape (typed `ExecutionId` argument,
-/// no storage / api types) is stabilised by A1's public-surface test.
+/// error. Every implementation must handle claimed commands explicitly;
+/// silently falling back to an unclaimed dispatch would split acknowledgement
+/// authority between the consumer and execution owner.
 #[async_trait::async_trait]
 pub trait ControlDispatch: Send + Sync {
-    /// Deliver a `Start` command to a newly-created execution (control-queue wiring,
-    /// , #332).
+    /// Deliver a `Start` command to a newly created execution.
     ///
     /// `scope` is the per-message tenant scope sourced from `ControlMsg.scope`;
     /// it scopes the idempotency status read and the engine's resume path so
     /// that execution rows from a different tenant are never visible.
     ///
     /// Enqueued by the API `start_execution` / `execute_workflow` handlers
-    /// once the `ExecutionState::Created` row has been persisted. A2 wired
-    /// the canonical engine-side body in
-    /// [`crate::control_dispatch::EngineControlDispatch`] — no default
+    /// once the `ExecutionState::Created` row has been persisted. The canonical body lives in
+    /// [`crate::control_dispatch::EngineControlDispatch`]. No default
     /// implementation is provided, so every `ControlDispatch` implementor
-    /// must supply a real dispatch (the A2 merge-checklist
-    /// requirement).
+    /// must supply a real dispatch.
     ///
     /// **Idempotency (critical):** double-start re-runs the workflow twice.
     /// Implementations must guard via CAS on `ExecutionRepo::transition` —
@@ -171,21 +169,49 @@ pub trait ControlDispatch: Send + Sync {
         execution_id: ExecutionId,
     ) -> Result<(), ControlDispatchError>;
 
+    /// Deliver a storage-minted Start claim to an execution owner.
+    ///
+    /// The execution owner decides whether the claim was accepted; the consumer
+    /// must never infer acceptance from an interrupted dispatch future.
+    async fn dispatch_claimed_start(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+        claim: ControlClaimToken,
+    ) -> ClaimedControlDispatchOutcome;
+
+    /// Deliver a Resume claim, preserving its exact persisted target.
+    /// Durable implementations acknowledge only with the owner's arm checkpoint.
+    async fn dispatch_claimed_resume(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+        target: Option<ResumeTarget>,
+        claim: ControlClaimToken,
+    ) -> ClaimedControlDispatchOutcome;
+
+    /// Deliver a supported Restart claim to the durable execution owner.
+    async fn dispatch_claimed_restart(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+        claim: ControlClaimToken,
+    ) -> ClaimedControlDispatchOutcome;
+
     /// Deliver a `Cancel` command to a running execution.
     ///
     /// `scope` is the per-message tenant scope from `ControlMsg.scope`.
     ///
-    /// A3 wired this into the engine's cooperative-cancel path (closes
-    /// #330). The canonical engine-owned body lives in
+    /// The canonical engine-owned body lives in
     /// [`crate::control_dispatch::EngineControlDispatch`] and signals
     /// [`crate::WorkflowEngine::cancel_execution`] on every non-orphan
     /// delivery, regardless of persisted status.
     ///
-    /// **Idempotency (load-bearing, ):** The underlying
+    /// **Idempotency:** The underlying
     /// `CancellationToken::cancel` is idempotent per token, and a missing
     /// registry entry (cross-runner case, or this runner has already
     /// cleaned up) is a no-op. The consumer's ack path (`mark_completed`)
-    /// can fail after a successful dispatch, and the reclaim path (B1)
+    /// can fail after a successful dispatch, and the reclaim path
     /// will redeliver; because the signal itself is idempotent, re-delivery
     /// is safe without a short-circuit on persisted status.
     async fn dispatch_cancel(
@@ -198,13 +224,10 @@ pub trait ControlDispatch: Send + Sync {
     ///
     /// `scope` is the per-message tenant scope from `ControlMsg.scope`.
     ///
-    /// calls this "forced termination", but there is no distinct
-    /// forced-shutdown path in the engine today — cooperative cancel via
-    /// the same [`tokio_util::sync::CancellationToken`] is the honest A3
-    /// minimum . The canonical
+    /// There is no distinct forced-shutdown path in the engine today. The canonical
     /// [`crate::control_dispatch::EngineControlDispatch`] body delegates
     /// to [`dispatch_cancel`](Self::dispatch_cancel) until a process-level
-    /// kill / `JoinSet` abort is wired as a separate chip.
+    /// process abort is implemented.
     ///
     /// **Idempotency:** same contract as [`dispatch_cancel`](Self::dispatch_cancel).
     async fn dispatch_terminate(
@@ -217,12 +240,9 @@ pub trait ControlDispatch: Send + Sync {
     ///
     /// `scope` is the per-message tenant scope from `ControlMsg.scope`.
     /// `resume_target` is the per-message resume target from
-    /// `ControlMsg.resume_target` (W-S3a): `Some(target)` arms only the parked
+    /// `ControlMsg.resume_target`: `Some(target)` arms only the parked
     /// signal wait whose persisted identity matches the target by kind +
-    /// identity; `None` arms every signal wait (the untargeted W-S2b behavior).
-    ///
-    /// A2 wired the canonical body in
-    /// [`crate::control_dispatch::EngineControlDispatch`].
+    /// identity; `None` arms every signal wait.
     ///
     /// **Idempotency (critical):** double-resume starts the workflow twice.
     /// Implementations must guard via CAS on `ExecutionRepo::transition` —
@@ -239,12 +259,10 @@ pub trait ControlDispatch: Send + Sync {
     ///
     /// `scope` is the per-message tenant scope from `ControlMsg.scope`.
     ///
-    /// A2 wired the canonical body in
-    /// [`crate::control_dispatch::EngineControlDispatch`]. Full
+    /// The canonical body lives in [`crate::control_dispatch::EngineControlDispatch`]. Full
     /// rewind-from-input semantics require durable output purge and a
-    /// monotonic restart counter — both are tracked as follow-ups under
-    /// ; the A2 body honors idempotency for non-terminal states
-    /// and surfaces a typed [`ControlDispatchError::Rejected`] for
+    /// monotonic restart counter. The current body honors idempotency for non-terminal states
+    /// and returns [`ControlDispatchError::Rejected`] for
     /// already-terminal executions until the rewind path is wired.
     ///
     /// **Idempotency:** same `Resume` contract applies — double-restart
@@ -282,11 +300,11 @@ struct ClaimedRow {
     /// Tenant scope this message belongs to (from `ControlMsg.scope`).
     ///
     /// Threaded into every `dispatch_*` call so the engine reads and drives
-    /// the execution under the correct tenant — cross-tenant isolation invariant #7.
+    /// the execution under the tenant carried by the queue message.
     scope: Scope,
     /// W3C `traceparent` carrier captured at enqueue, if any.
     w3c: Option<nebula_core::W3cTraceContext>,
-    /// Which parked signal wait a `Resume` targets (W-S3a). Threaded into
+    /// Which parked signal wait a `Resume` targets. Threaded into
     /// `dispatch_resume` so the engine arms only the matching wait; `None` is an
     /// untargeted Resume. Ignored for non-`Resume` commands.
     resume_target: Option<ResumeTarget>,
@@ -310,7 +328,7 @@ impl RawClaimed {
     ///
     /// `scope` is taken directly from `ControlMsg.scope` — it is the
     /// tenant this message belongs to and must be threaded into every
-    /// dispatch call (cross-tenant isolation invariant #7).
+    /// dispatch call so storage access remains tenant-bound.
     fn normalize(self) -> Result<ClaimedRow, String> {
         let token = self.0.token;
         let m = self.0.msg;
@@ -356,14 +374,14 @@ impl RawClaimed {
 /// Drains `execution_control_queue` and hands typed commands to a
 /// [`ControlDispatch`] implementation.
 ///
-/// See the module docs and for wiring, atomicity, and idempotency
-/// rules.
+/// See the module docs for wiring, atomicity, and idempotency rules.
 pub struct ControlConsumer {
-    /// Scoped spec-16 [`ControlQueue`] port the consumer drains. The
+    /// Scoped [`ControlQueue`] port the consumer drains. The
     /// execution id is carried as the opaque string form (no "UTF-8 of
     /// the ULID string" decode).
     queue: Arc<dyn ControlQueue>,
     dispatch: Arc<dyn ControlDispatch>,
+    worker_flavor: nebula_core::WorkerFlavorRevisionId,
     /// Fixed 16-byte fence token recorded in `processed_by` and matched
     /// on `mark_completed`/`mark_failed`. Stored as `[u8; 16]` end-to-end
     /// so two distinct workers can never silently collapse to the same
@@ -377,8 +395,8 @@ pub struct ControlConsumer {
     reclaim_interval: Duration,
     max_reclaim_count: u32,
     /// Registry the reclaim sweep increments
-    /// `nebula_engine_control_reclaim_total{outcome}` against (
-    /// Seam). Defaults to a private fresh [`MetricsRegistry`] so the
+    /// `nebula_engine_control_reclaim_total{outcome}` against. Defaults to a
+    /// private fresh [`MetricsRegistry`] so the
     /// consumer is always emit-safe; production composition roots inject
     /// the shared registry via [`Self::with_metrics`] so the counter
     /// reaches the Prometheus scrape endpoint.
@@ -386,23 +404,22 @@ pub struct ControlConsumer {
 }
 
 impl ControlConsumer {
-    /// Construct a consumer draining the spec-16 [`ControlQueue`] port.
+    /// Drain only commands pinned to the engine's retained worker flavor.
     ///
-    /// `processor_id` is the fixed 16-byte fence token recorded in the
-    /// row's `processed_by` (and matched on `mark_completed` /
-    /// `mark_failed` for the stale-worker fence). It is `[u8; 16]` by
-    /// type — the caller supplies the full id (e.g. a ULID/UUID's 16
-    /// bytes); there is deliberately no truncate/pad of an arbitrary-
-    /// length id, which would let two distinct workers collapse to the
-    /// same token and ack each other's rows.
-    pub fn new(
+    /// `processor_id` is the fixed-width observation and fencing identity
+    /// recorded with each claim. `worker_flavor` is mandatory so no consumer
+    /// can accidentally claim work for an execution whose exact runtime is
+    /// unavailable in this process.
+    pub fn for_flavor(
         queue: Arc<dyn ControlQueue>,
         dispatch: Arc<dyn ControlDispatch>,
         processor_id: [u8; 16],
+        worker_flavor: nebula_core::WorkerFlavorRevisionId,
     ) -> Self {
         Self {
             queue,
             dispatch,
+            worker_flavor,
             processor_id,
             batch_size: DEFAULT_BATCH_SIZE,
             poll_interval: DEFAULT_POLL_INTERVAL,
@@ -528,7 +545,7 @@ impl ControlConsumer {
         // Deadline at which the next `claim_pending` is allowed to fire. Held
         // in scope across the `tokio::select!` below so that a reclaim
         // interruption does not reset the backoff / poll_interval clock —
-        // see the review finding for PR #483 and.
+        // Reclaim work must not reset a pending claim backoff deadline.
         let mut claim_deadline = tokio::time::Instant::now();
 
         loop {
@@ -666,10 +683,11 @@ impl ControlConsumer {
         // Claim raw rows. A malformed `execution_id` must fail only
         // *that* row (mark it failed, continue) — not the whole batch —
         // so the decode happens per row in `handle_entry`, not here.
-        let claimed: Result<Vec<RawClaimed>, String> = self
+        let claimed = self
             .queue
-            .claim_pending(&self.processor_id, self.batch_size)
-            .await
+            .claim_pending_for_flavor(&self.processor_id, self.batch_size, self.worker_flavor)
+            .await;
+        let claimed: Result<Vec<RawClaimed>, String> = claimed
             .map(|claims| claims.into_iter().map(RawClaimed).collect())
             .map_err(|e| e.to_string());
 
@@ -749,32 +767,37 @@ impl ControlConsumer {
                 execution_id = %execution_id,
                 command = command.as_str(),
                 queue_row_has_w3c = has_carrier,
-                "control-queue: dispatch command (span carries M3.5 parent when row had carrier)"
+                "control-queue: dispatch command with persisted trace parent when available"
             );
-            match command {
+            let result = match command {
                 ControlCommand::Start => {
-                    tracing::debug!(%execution_id, "control-queue: dispatching Start (A2)");
-                    dispatch.dispatch_start(&scope, execution_id).await
+                    tracing::debug!(%execution_id, "control-queue: dispatching Start");
+                    return dispatch
+                        .dispatch_claimed_start(&scope, execution_id, token)
+                        .await;
                 },
                 ControlCommand::Cancel => {
-                    tracing::debug!(%execution_id, "control-queue: dispatching Cancel (A3)");
+                    tracing::debug!(%execution_id, "control-queue: dispatching Cancel");
                     dispatch.dispatch_cancel(&scope, execution_id).await
                 },
                 ControlCommand::Terminate => {
-                    tracing::debug!(%execution_id, "control-queue: dispatching Terminate (A3)");
+                    tracing::debug!(%execution_id, "control-queue: dispatching Terminate");
                     dispatch.dispatch_terminate(&scope, execution_id).await
                 },
                 ControlCommand::Resume => {
-                    tracing::debug!(%execution_id, "control-queue: dispatching Resume (A2)");
-                    dispatch
-                        .dispatch_resume(&scope, execution_id, resume_target)
-                        .await
+                    tracing::debug!(%execution_id, "control-queue: dispatching Resume");
+                    return dispatch
+                        .dispatch_claimed_resume(&scope, execution_id, resume_target, token)
+                        .await;
                 },
                 ControlCommand::Restart => {
-                    tracing::debug!(%execution_id, "control-queue: dispatching Restart (A2)");
-                    dispatch.dispatch_restart(&scope, execution_id).await
+                    tracing::debug!(%execution_id, "control-queue: dispatching Restart");
+                    return dispatch
+                        .dispatch_claimed_restart(&scope, execution_id, token)
+                        .await;
                 },
-            }
+            };
+            ClaimedControlDispatchOutcome::NotAccepted(result)
         }
         .instrument(span);
 
@@ -789,9 +812,9 @@ impl ControlConsumer {
         //
         // So: keep draining after cancellation, but only within
         // [`SHUTDOWN_DISPATCH_GRACE`]. Past that the row is abandoned to the
-        // documented recovery path — it stays `Processing` and the reclaim
-        // sweep redelivers it. Acknowledging it either way would be the unsafe
-        // choice: the command was interrupted, not completed and not rejected.
+        // documented recovery path: an unaccepted claim is redelivered, while
+        // an accepted Start recovers from its execution lease and checkpoint.
+        // This caller cannot infer that boundary from an interrupted future.
         tokio::pin!(dispatch_result);
         let dispatch_result = tokio::select! {
             biased;
@@ -806,7 +829,7 @@ impl ControlConsumer {
                         command = command.as_str(),
                         grace_ms = SHUTDOWN_DISPATCH_GRACE.as_millis() as u64,
                         "control-queue: dispatch did not drain within the shutdown grace; \
-                         leaving the row Processing for reclaim"
+                         leaving recovery to persisted claim and execution ownership"
                     );
                     return;
                 };
@@ -814,6 +837,23 @@ impl ControlConsumer {
             }
         };
 
+        let dispatch_result = match dispatch_result {
+            ClaimedControlDispatchOutcome::NotAccepted(result) => result,
+            ClaimedControlDispatchOutcome::ClaimSuperseded => {
+                tracing::info!(%execution_id, "control Start claim was superseded before handoff");
+                return;
+            },
+            ClaimedControlDispatchOutcome::AcceptanceUnknown(error) => {
+                tracing::warn!(%execution_id, %error, "control Start handoff acknowledgement unknown; leaving persisted ownership for recovery");
+                return;
+            },
+            ClaimedControlDispatchOutcome::Accepted(result) => {
+                if let Err(error) = result {
+                    tracing::warn!(%execution_id, %error, "accepted control Start stopped; recovery belongs to execution owner");
+                }
+                return;
+            },
+        };
         match dispatch_result {
             Ok(()) => self.ack_completed(&token).await,
             Err(ControlDispatchError::Deferred(ref reason)) => {
@@ -837,7 +877,7 @@ impl ControlConsumer {
                         %execution_id,
                         %error,
                         "control-queue: releasing a deferred claim failed; leaving the row \
-                         in Processing for B1 reclaim"
+                         in Processing for reclaim"
                     );
                 }
                 tracing::warn!(
@@ -864,7 +904,7 @@ impl ControlConsumer {
 
     async fn ack_completed(&self, claim: &ControlClaimToken) {
         // NOTE: dispatch already ran successfully at this point. If
-        // `mark_completed` fails, the row stays in `Processing` and the B1
+        // `mark_completed` fails, the row stays in `Processing` and the
         // reclaim path redelivers the
         // command. Correctness under redelivery depends entirely on
         // `ControlDispatch` impls being idempotent per `(execution_id, command)`

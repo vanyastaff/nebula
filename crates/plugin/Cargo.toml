@@ -13,8 +13,10 @@ documentation.workspace = true
 
 [features]
 default = []
+test-util = ["dep:async-trait"]
 
 [dependencies]
+async-trait = { workspace = true, optional = true }
 nebula-plugin-macros = { path = "macros" }
 nebula-core = { path = "../core" }
 nebula-error = { workspace = true, features = ["derive"] }
@@ -35,6 +37,7 @@ toml = "1"
 tracing = { workspace = true }
 
 [dev-dependencies]
+async-trait.workspace = true
 insta = { workspace = true }
 pretty_assertions = { workspace = true }
 proptest = { workspace = true }

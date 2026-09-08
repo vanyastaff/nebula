@@ -51,7 +51,9 @@ macro_rules! placeholder_action_impl {
             type Output = serde_json::Value;
 
             fn metadata() -> ActionMetadata {
-                ActionMetadata::new($key, $name, $desc)
+                ActionMetadata::new($key, $name, $desc).with_effect_contract(
+                    nebula_action::effect::ActionEffectContract::NoExternalEffects,
+                )
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
@@ -247,7 +249,8 @@ async fn retry_succeeds_on_attempt_2() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
     registry.register_stateless_instance(
-        ActionMetadata::new(action_key!("flaky"), "Flaky", "fails once"),
+        ActionMetadata::new(action_key!("flaky"), "Flaky", "fails once")
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
         FlakyHandler {
             fail_count: 1,
             invocations: Arc::clone(&invocations),
@@ -282,7 +285,8 @@ async fn retry_exhausts_max_attempts() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
     registry.register_stateless_instance(
-        ActionMetadata::new(action_key!("doomed"), "Doomed", "always fails"),
+        ActionMetadata::new(action_key!("doomed"), "Doomed", "always fails")
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
         AlwaysFailingHandler {
             invocations: Arc::clone(&invocations),
         },
@@ -365,7 +369,8 @@ async fn cancel_during_retry_wait() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
     registry.register_stateless_instance(
-        ActionMetadata::new(action_key!("flaky_long"), "FlakyLong", "fails forever"),
+        ActionMetadata::new(action_key!("flaky_long"), "FlakyLong", "fails forever")
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
         AlwaysFailingHandler {
             invocations: Arc::clone(&invocations),
         },
@@ -443,13 +448,15 @@ async fn terminate_during_retry_wait() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
     registry.register_stateless_instance(
-        ActionMetadata::new(action_key!("flaky_t"), "FlakyT", "fails forever"),
+        ActionMetadata::new(action_key!("flaky_t"), "FlakyT", "fails forever")
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
         AlwaysFailingHandler {
             invocations: Arc::clone(&invocations),
         },
     );
     registry.register_stateless_instance(
-        ActionMetadata::new(action_key!("term"), "Term", "terminates"),
+        ActionMetadata::new(action_key!("term"), "Term", "terminates")
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
         TerminateHandler,
     );
 
@@ -518,7 +525,8 @@ async fn execution_budget_max_total_retries_caps_globally() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
     registry.register_stateless_instance(
-        ActionMetadata::new(action_key!("doomed_g"), "DoomedG", "always fails"),
+        ActionMetadata::new(action_key!("doomed_g"), "DoomedG", "always fails")
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
         AlwaysFailingHandler {
             invocations: Arc::clone(&invocations),
         },
@@ -557,7 +565,8 @@ async fn idempotency_key_differentiates_attempts() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
     registry.register_stateless_instance(
-        ActionMetadata::new(action_key!("flaky_idem"), "FlakyIdem", "fails once"),
+        ActionMetadata::new(action_key!("flaky_idem"), "FlakyIdem", "fails once")
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
         FlakyHandler {
             fail_count: 1,
             invocations: Arc::clone(&invocations),
@@ -575,6 +584,9 @@ async fn idempotency_key_differentiates_attempts() {
         checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
         idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
         resume_tokens: Arc::new(execution.resume_token_store()),
+        operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(
+            &execution,
+        )),
     };
     let engine = make_engine(registry).with_execution_stores(stores);
 
@@ -632,7 +644,8 @@ async fn per_node_retry_policy_overrides_workflow_default() {
             action_key!("flaky_o"),
             "FlakyO",
             "fails twice then succeeds",
-        ),
+        )
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
         FlakyHandler {
             fail_count: 2,
             invocations: Arc::clone(&invocations),
@@ -674,7 +687,8 @@ async fn workflow_default_applies_when_node_has_none() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
     registry.register_stateless_instance(
-        ActionMetadata::new(action_key!("flaky_d"), "FlakyD", "fails once"),
+        ActionMetadata::new(action_key!("flaky_d"), "FlakyD", "fails once")
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
         FlakyHandler {
             fail_count: 1,
             invocations: Arc::clone(&invocations),
@@ -716,7 +730,8 @@ async fn no_retry_policy_means_one_shot_failure() {
     let invocations = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
     registry.register_stateless_instance(
-        ActionMetadata::new(action_key!("oneshot"), "OneShot", "fails"),
+        ActionMetadata::new(action_key!("oneshot"), "OneShot", "fails")
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
         AlwaysFailingHandler {
             invocations: Arc::clone(&invocations),
         },

@@ -220,6 +220,7 @@ impl Action for NoopHandler {
 
     fn metadata() -> ActionMetadata {
         ActionMetadata::new(action_key!("test.noop.static"), "Noop", "static")
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
     fn dependencies() -> &'static Dependencies {
         use std::sync::OnceLock;
@@ -241,7 +242,8 @@ impl StatelessAction for NoopHandler {
 fn build_engine(registrars: ResourceActivatorRegistry) -> WorkflowEngine {
     let registry = Arc::new(ActionRegistry::new());
     registry.register_stateless_instance(
-        ActionMetadata::new(action_key!("test.noop"), "Noop", "noop"),
+        ActionMetadata::new(action_key!("test.noop"), "Noop", "noop")
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
         NoopHandler,
     );
     let executor: ActionExecutor =

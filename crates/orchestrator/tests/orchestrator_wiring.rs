@@ -11,13 +11,13 @@
 //! 1. `routes_by_tag` — alpha + beta jobs, worker advertises [alpha]; spy sees only alpha.
 //! 2. `claim_route_sink_mark_dispatched` — sink Ok once; row terminal-dispatched; counter=1.
 //! 3. `dispatched_row_not_reclaimed` — terminal row is not re-served by a second claim.
-//! 4. `blocked_action_outlives_claim_without_renewal_or_duplicates` — the NS05
+//! 4. `blocked_action_outlives_claim_without_renewal_or_duplicates` — the claim-handoff
 //!    acceptance: a deliberately blocked action outlives the dispatch claim with
 //!    no claim renewal and no second live owner.
 //! 5. `invalid_execution_id_marks_failed` — validation terminalises rows that can
 //!    never be dispatched before the handoff writes anything.
-//! 6. `orphaned_execution_marks_failed` — a valid id with no execution row is an
-//!    orphaned dispatch and is terminalised at the handoff.
+//! 6. `orphaned_execution_is_refused_and_exhausted` — a valid id with no live
+//!    execution contract is never dispatched and reaches bounded reclaim exhaustion.
 //! 7. `post_handoff_sink_failure_keeps_row_terminal` — a sink error after the
 //!    handoff records `failed` without touching the acknowledged row; the lease
 //!    governs recovery.
@@ -38,7 +38,10 @@ use std::{
 };
 
 use async_trait::async_trait;
-use nebula_core::{PluginKey, id::ExecutionId};
+use nebula_core::{
+    ExecutablePlanRevisionId, ExecutionContractBundleId, OrgId, PluginKey, PluginSetId, WorkflowId,
+    WorkflowVersionId, WorkspaceId, id::ExecutionId,
+};
 use nebula_metrics::{
     MetricsRegistry,
     naming::{
@@ -49,12 +52,20 @@ use nebula_metrics::{
 };
 use nebula_orchestrator::{DispatchedTurn, ExecutionSink, ExecutionSinkError, Orchestrator};
 use nebula_storage::inmem::{
-    InMemoryExecutionStore, InMemoryJobDispatchQueue, InMemoryTurnHandoff,
+    InMemoryExecutionStore, InMemoryJobDispatchQueue, InMemoryPlanFlavorCatalog,
+    InMemoryStartAcceptanceStore, InMemoryTurnHandoff,
 };
 use nebula_storage_port::{
     Scope,
-    dto::{ControlCommand, JobDispatchMsg},
-    store::{ExecutionStore, ExecutionTurnHandoff, JobDispatchQueue},
+    dto::{
+        ContractBundleRecord, ControlCommand, ControlMsg, JobDispatchMsg, MaterializedStart,
+        NewExecution, PlanFlavorRevisionIds, PlanFlavorRevisionRecord, RevisionRecordBytes,
+        WorkerFlavorRevisionRecord,
+    },
+    store::{
+        ExecutionStore, ExecutionTurnHandoff, JobDispatchQueue, PlanFlavorCatalogWriter,
+        StartAcceptanceStore, StartContractIdentity, StartMaterialization,
+    },
 };
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -72,7 +83,10 @@ fn proc16(label: &[u8]) -> [u8; 16] {
 }
 
 fn scope() -> Scope {
-    Scope::new("ws_test", "org_test")
+    Scope::new(
+        "ws_00000000000000000000000001",
+        "org_00000000000000000000000001",
+    )
 }
 
 /// One shared in-memory core: execution store, job-dispatch queue, and turn
@@ -83,6 +97,8 @@ struct TestCore {
     store: Arc<InMemoryExecutionStore>,
     queue: Arc<InMemoryJobDispatchQueue>,
     handoff: Arc<InMemoryTurnHandoff>,
+    catalog: InMemoryPlanFlavorCatalog,
+    starts: InMemoryStartAcceptanceStore,
 }
 
 impl TestCore {
@@ -90,28 +106,129 @@ impl TestCore {
         let store = Arc::new(InMemoryExecutionStore::new());
         let queue = Arc::new(InMemoryJobDispatchQueue::new(&store));
         let handoff = Arc::new(InMemoryTurnHandoff::new(&store));
+        let catalog = store.plan_flavor_catalog();
+        let starts = InMemoryStartAcceptanceStore::new(&store);
         Self {
             store,
             queue,
             handoff,
+            catalog,
+            starts,
         }
     }
 
-    /// Seed a `Created` execution row and return the parseable execution id
-    /// string the queue row carries. A queue row without one is an orphan:
-    /// the handoff terminalises it instead of dispatching.
-    async fn seed_execution(&self) -> String {
-        let id = ExecutionId::new().to_string();
-        self.store
-            .create(
-                &scope(),
-                &id,
-                "wf_test",
-                serde_json::json!({"status": "Created"}),
+    /// Materialize the exact execution contract used by the handoff and
+    /// return the parseable execution id carried by its job row.
+    async fn seed_execution(&self, required_plugin_key: &str) -> String {
+        let execution = ExecutionId::new();
+        let workflow = WorkflowId::new();
+        let workflow_revision = WorkflowVersionId::new();
+        let plan = ExecutablePlanRevisionId::from_bytes(std::array::from_fn(|index| {
+            execution.as_bytes()[index % execution.as_bytes().len()]
+        }));
+        let flavor = test_flavor(&[required_plugin_key
+            .parse::<PluginKey>()
+            .expect("test plugin key must be valid")])
+        .revision_id();
+        let plugin_set = PluginSetId::from_bytes([0x33; 32]);
+        let revisions = PlanFlavorRevisionIds::new(plan, flavor);
+        let revision_record = PlanFlavorRevisionRecord::graph_v1_json(
+            plan,
+            RevisionRecordBytes::try_from_vec(
+                serde_json::to_vec(&serde_json::json!({
+                    "claimed_id": plan,
+                    "workflow_version_id": workflow_revision,
+                    "worker_flavor_revision_id": flavor,
+                    "plugin_set_id": plugin_set,
+                    "manifest": { "workflow_id": workflow }
+                }))
+                .expect("revision fixture must serialize"),
             )
+            .expect("revision fixture must be non-empty"),
+            WorkerFlavorRevisionRecord::v1_json(
+                flavor,
+                RevisionRecordBytes::try_from_vec(b"{}".to_vec())
+                    .expect("flavor fixture must be non-empty"),
+            ),
+        );
+        self.catalog
+            .insert(&revision_record)
             .await
-            .expect("seed execution row");
-        id
+            .expect("exact plan and flavor must install");
+
+        let contract = StartContractIdentity::new(ExecutionContractBundleId::new(), revisions);
+        let tenant_scope = scope();
+        let workspace = tenant_scope
+            .workspace_id
+            .parse::<WorkspaceId>()
+            .expect("fixture workspace id must be valid");
+        let org = tenant_scope
+            .org_id
+            .parse::<OrgId>()
+            .expect("fixture org id must be valid");
+        let bundle = ContractBundleRecord::v1_json(
+            contract,
+            serde_json::to_vec(&serde_json::json!({
+                "bundle_id": contract.bundle_id(),
+                "org_id": org,
+                "workspace_id": workspace,
+                "executable_plan_revision_id": plan,
+                "plugin_set_id": plugin_set,
+                "revisions": {
+                    "workflow": workflow_revision,
+                    "worker_flavor": flavor
+                }
+            }))
+            .expect("bundle fixture must serialize"),
+        )
+        .expect("bundle fixture must be bounded");
+        let execution_state = serde_json::json!({
+            "execution_id": execution,
+            "workflow_id": workflow,
+            "workflow_version_number": 1,
+            "executable_plan_revision_id": plan,
+            "worker_flavor_revision_id": flavor,
+            "status": "created",
+            "version": 0,
+            "node_states": {},
+            "created_at": "2026-09-06T00:00:00Z",
+            "updated_at": "2026-09-06T00:00:00Z",
+            "started_at": null,
+            "completed_at": null,
+            "total_output_bytes": 0,
+            "total_retries": 0,
+            "terminated_by": null
+        });
+        let execution_id = execution.to_string();
+        let workflow_id = workflow.to_string();
+        let command = ControlMsg {
+            id: execution.as_bytes(),
+            execution_id: execution_id.clone(),
+            command: ControlCommand::Start,
+            scope: tenant_scope.clone(),
+            w3c_traceparent: None,
+            reclaim_count: 0,
+            resume_target: None,
+        };
+        let materialization = self
+            .starts
+            .materialize_start(&MaterializedStart::new(
+                &tenant_scope,
+                None,
+                &execution_id,
+                NewExecution::new(&workflow_id, &execution_state),
+                &command,
+                &bundle,
+            ))
+            .await
+            .expect("start fixture must materialize");
+        assert_eq!(
+            materialization,
+            StartMaterialization::Accepted {
+                execution_id: execution_id.clone(),
+            }
+        );
+        execution_id
     }
 }
 
@@ -130,11 +247,11 @@ fn make_msg(row_id: u8, required_plugin_key: &str, execution_id: &str) -> JobDis
         scope(),
         serde_json::json!({}),
         None::<String>,
-        "sha-abc",
         key.clone(),
         vec![key],
         None::<String>,
         0,
+        test_flavor(&[required_plugin_key.parse().unwrap()]).revision_id(),
     )
 }
 
@@ -218,7 +335,7 @@ impl ExecutionSink for StalledSink {
 // ── StalledRecordingSink ──────────────────────────────────────────────────────
 
 /// Sink that counts every dispatch entry, records every completed dispatch,
-/// and blocks until `release` is notified. Used by the NS05 acceptance test to
+/// and blocks until `release` is notified. Used by the claim-handoff test to
 /// hold the orchestrator inside dispatch long past `reclaim_after` and prove
 /// the claim neither renewed nor redelivered the row.
 ///
@@ -347,8 +464,8 @@ async fn routes_by_tag() {
     let core = TestCore::new();
     let spy = RecordingSink::new();
 
-    let alpha_id = core.seed_execution().await;
-    let beta_id = core.seed_execution().await;
+    let alpha_id = core.seed_execution("alpha").await;
+    let beta_id = core.seed_execution("beta").await;
     core.queue
         .enqueue(&make_msg(1, "alpha", &alpha_id))
         .await
@@ -364,7 +481,7 @@ async fn routes_by_tag() {
         spy.clone() as Arc<dyn ExecutionSink>,
         core.handoff.clone() as Arc<dyn ExecutionTurnHandoff>,
         proc16(b"proc-alpha"),
-        vec!["alpha".parse::<PluginKey>().unwrap()],
+        test_flavor(&["alpha".parse::<PluginKey>().unwrap()]),
     )
     .with_batch_size(8)
     .with_poll_interval(Duration::from_millis(10));
@@ -398,7 +515,12 @@ async fn routes_by_tag() {
     let beta_tags = vec!["beta".parse::<PluginKey>().unwrap()];
     let leftover = core
         .queue
-        .claim_pending(&proc16(b"beta-worker-"), 8, &beta_tags)
+        .claim_pending(
+            &proc16(b"beta-worker-"),
+            8,
+            &beta_tags,
+            test_flavor(&beta_tags).revision_id(),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -420,7 +542,7 @@ async fn claim_route_sink_mark_dispatched() {
     let spy = RecordingSink::new();
     let registry = MetricsRegistry::new();
 
-    let exec_id = core.seed_execution().await;
+    let exec_id = core.seed_execution("plugin-a").await;
     core.queue
         .enqueue(&make_msg(10, "plugin-a", &exec_id))
         .await
@@ -432,7 +554,7 @@ async fn claim_route_sink_mark_dispatched() {
         spy.clone() as Arc<dyn ExecutionSink>,
         core.handoff.clone() as Arc<dyn ExecutionTurnHandoff>,
         proc16(b"proc-1"),
-        vec!["plugin-a".parse::<PluginKey>().unwrap()],
+        test_flavor(&["plugin-a".parse::<PluginKey>().unwrap()]),
     )
     .with_batch_size(4)
     .with_poll_interval(Duration::from_millis(10))
@@ -477,7 +599,12 @@ async fn claim_route_sink_mark_dispatched() {
     let tags = vec!["plugin-a".parse::<PluginKey>().unwrap()];
     let leftover = core
         .queue
-        .claim_pending(&proc16(b"fresh-proc--"), 8, &tags)
+        .claim_pending(
+            &proc16(b"fresh-proc--"),
+            8,
+            &tags,
+            test_flavor(&tags).revision_id(),
+        )
         .await
         .unwrap();
     assert!(
@@ -496,7 +623,7 @@ async fn dispatched_row_not_reclaimed() {
     let core = TestCore::new();
     let spy = RecordingSink::new();
 
-    let exec_id = core.seed_execution().await;
+    let exec_id = core.seed_execution("plugin-b").await;
     core.queue
         .enqueue(&make_msg(20, "plugin-b", &exec_id))
         .await
@@ -508,7 +635,7 @@ async fn dispatched_row_not_reclaimed() {
         spy.clone() as Arc<dyn ExecutionSink>,
         core.handoff.clone() as Arc<dyn ExecutionTurnHandoff>,
         proc16(b"proc-nd"),
-        vec!["plugin-b".parse::<PluginKey>().unwrap()],
+        test_flavor(&["plugin-b".parse::<PluginKey>().unwrap()]),
     )
     .with_batch_size(4)
     .with_poll_interval(Duration::from_millis(10));
@@ -539,7 +666,12 @@ async fn dispatched_row_not_reclaimed() {
     let tags = vec!["plugin-b".parse::<PluginKey>().unwrap()];
     let second = core
         .queue
-        .claim_pending(&proc16(b"proc-nd-2---"), 8, &tags)
+        .claim_pending(
+            &proc16(b"proc-nd-2---"),
+            8,
+            &tags,
+            test_flavor(&tags).revision_id(),
+        )
         .await
         .unwrap();
     assert!(
@@ -550,7 +682,7 @@ async fn dispatched_row_not_reclaimed() {
 
 // ── test 4: blocked_action_outlives_claim_without_renewal_or_duplicates ───────
 
-/// The NS05 acceptance criterion (#976): **action duration must not extend
+/// The claim-handoff invariant: **action duration must not extend
 /// dispatch-queue claim ownership.**
 ///
 /// 1. The orchestrator claims the row and blocks inside `StalledRecordingSink`
@@ -574,14 +706,14 @@ async fn blocked_action_outlives_claim_without_renewal_or_duplicates() {
     let entered = sink.entered_notify();
     let release = sink.release_notify();
 
-    let exec_id = core.seed_execution().await;
+    let exec_id = core.seed_execution("plugin-claim-handoff").await;
     core.queue
-        .enqueue(&make_msg(21, "plugin-ns5", &exec_id))
+        .enqueue(&make_msg(21, "plugin-claim-handoff", &exec_id))
         .await
         .unwrap();
 
-    let tags = vec!["plugin-ns5".parse::<PluginKey>().unwrap()];
-    let proc_a = proc16(b"proc-ns5-a--");
+    let tags = vec!["plugin-claim-handoff".parse::<PluginKey>().unwrap()];
+    let proc_a = proc16(b"claim-owner-a---");
 
     let shutdown = CancellationToken::new();
 
@@ -594,7 +726,7 @@ async fn blocked_action_outlives_claim_without_renewal_or_duplicates() {
         sink.clone() as Arc<dyn ExecutionSink>,
         core.handoff.clone() as Arc<dyn ExecutionTurnHandoff>,
         proc_a,
-        tags.clone(),
+        test_flavor(&tags),
     )
     .with_batch_size(1)
     // Very short reclaim window: the blocked action will outlive it many
@@ -648,7 +780,12 @@ async fn blocked_action_outlives_claim_without_renewal_or_duplicates() {
     // that is already running.
     let second = core
         .queue
-        .claim_pending(&proc16(b"proc-ns5-b--"), 8, &tags)
+        .claim_pending(
+            &proc16(b"claim-owner-b---"),
+            8,
+            &tags,
+            test_flavor(&tags).revision_id(),
+        )
         .await
         .unwrap();
     assert!(
@@ -720,7 +857,7 @@ async fn invalid_execution_id_marks_failed() {
         spy.clone() as Arc<dyn ExecutionSink>,
         core.handoff.clone() as Arc<dyn ExecutionTurnHandoff>,
         proc16(b"proc-fail---"),
-        vec!["plugin-c".parse::<PluginKey>().unwrap()],
+        test_flavor(&["plugin-c".parse::<PluginKey>().unwrap()]),
     )
     .with_batch_size(4)
     .with_poll_interval(Duration::from_millis(10))
@@ -769,7 +906,12 @@ async fn invalid_execution_id_marks_failed() {
     let tags = vec!["plugin-c".parse::<PluginKey>().unwrap()];
     let leftover = core
         .queue
-        .claim_pending(&proc16(b"other-proc--"), 8, &tags)
+        .claim_pending(
+            &proc16(b"other-proc--"),
+            8,
+            &tags,
+            test_flavor(&tags).revision_id(),
+        )
         .await
         .unwrap();
     assert!(
@@ -778,14 +920,15 @@ async fn invalid_execution_id_marks_failed() {
     );
 }
 
-// ── test 6: orphaned_execution_marks_failed ───────────────────────────────────
+// ── test 6: orphaned_execution_is_refused_and_exhausted ───────────────────────
 
 /// A valid execution id with no execution row is an orphaned dispatch: the
 /// emitter materialises both rows atomically, so a missing execution will not
-/// appear later. The handoff reports NotFound and the orchestrator
-/// terminalises the row instead of redelivering forever.
+/// appear later. The exact-contract handoff refuses it without distinguishing
+/// a stale claim from a missing aggregate. The row remains recoverable and the
+/// bounded reclaim policy eventually terminalises it without invoking the sink.
 #[tokio::test(start_paused = true)]
-async fn orphaned_execution_marks_failed() {
+async fn orphaned_execution_is_refused_and_exhausted() {
     let core = TestCore::new();
     let spy = RecordingSink::new();
     let registry = MetricsRegistry::new();
@@ -803,7 +946,7 @@ async fn orphaned_execution_marks_failed() {
         spy.clone() as Arc<dyn ExecutionSink>,
         core.handoff.clone() as Arc<dyn ExecutionTurnHandoff>,
         proc16(b"proc-orphan-"),
-        vec!["plugin-orp".parse::<PluginKey>().unwrap()],
+        test_flavor(&["plugin-orp".parse::<PluginKey>().unwrap()]),
     )
     .with_batch_size(4)
     .with_poll_interval(Duration::from_millis(10))
@@ -811,38 +954,35 @@ async fn orphaned_execution_marks_failed() {
 
     let handle = orch.spawn(shutdown.clone());
 
-    let failed_labels = registry
+    let superseded_labels = registry
         .interner()
-        .single("outcome", orchestrator_dispatch_outcome::FAILED);
+        .single("outcome", orchestrator_handoff_outcome::CLAIM_SUPERSEDED);
 
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            let f = registry
-                .counter_labeled(NEBULA_ORCHESTRATOR_DISPATCH_TOTAL, &failed_labels)
+            let superseded = registry
+                .counter_labeled(NEBULA_ORCHESTRATOR_HANDOFF_TOTAL, &superseded_labels)
                 .unwrap()
                 .get();
-            if f >= 1 {
+            if superseded >= 1 {
                 break;
             }
             tokio::time::advance(Duration::from_millis(20)).await;
         }
     })
     .await
-    .expect("failed counter reached 1 within timeout");
+    .expect("superseded handoff counter reached 1 within timeout");
 
     shutdown.cancel();
     handle.await.expect("graceful shutdown");
 
-    let handoff_error_labels = registry
-        .interner()
-        .single("outcome", orchestrator_handoff_outcome::ERROR);
-    let handoff_errors = registry
-        .counter_labeled(NEBULA_ORCHESTRATOR_HANDOFF_TOTAL, &handoff_error_labels)
-        .unwrap()
-        .get();
     assert_eq!(
-        handoff_errors, 1,
-        "the handoff must report the missing execution once"
+        registry
+            .counter_labeled(NEBULA_ORCHESTRATOR_HANDOFF_TOTAL, &superseded_labels)
+            .unwrap()
+            .get(),
+        1,
+        "the exact-contract handoff must refuse the orphan once"
     );
     assert_eq!(
         accepted_count(&registry),
@@ -854,15 +994,32 @@ async fn orphaned_execution_marks_failed() {
         "an orphaned execution must never reach the sink"
     );
 
+    tokio::time::advance(Duration::from_millis(20)).await;
+    let exhausted = core
+        .queue
+        .reclaim_stuck(Duration::from_millis(1), 0)
+        .await
+        .expect("orphaned claim must remain eligible for bounded recovery");
+    assert_eq!(exhausted.reclaimed, 0);
+    assert_eq!(
+        exhausted.exhausted, 1,
+        "the bounded reclaim policy must terminalise the orphan"
+    );
+
     let tags = vec!["plugin-orp".parse::<PluginKey>().unwrap()];
     let leftover = core
         .queue
-        .claim_pending(&proc16(b"probe-orphan"), 8, &tags)
+        .claim_pending(
+            &proc16(b"probe-orphan"),
+            8,
+            &tags,
+            test_flavor(&tags).revision_id(),
+        )
         .await
         .unwrap();
     assert!(
         leftover.is_empty(),
-        "orphaned row must be terminal after mark_failed"
+        "orphaned row must be terminal after reclaim exhaustion"
     );
 }
 
@@ -879,7 +1036,7 @@ async fn post_handoff_sink_failure_keeps_row_terminal() {
     spy.set_fail_next();
     let registry = MetricsRegistry::new();
 
-    let exec_id = core.seed_execution().await;
+    let exec_id = core.seed_execution("plugin-pf").await;
     core.queue
         .enqueue(&make_msg(32, "plugin-pf", &exec_id))
         .await
@@ -891,7 +1048,7 @@ async fn post_handoff_sink_failure_keeps_row_terminal() {
         spy.clone() as Arc<dyn ExecutionSink>,
         core.handoff.clone() as Arc<dyn ExecutionTurnHandoff>,
         proc16(b"proc-pf-----"),
-        vec!["plugin-pf".parse::<PluginKey>().unwrap()],
+        test_flavor(&["plugin-pf".parse::<PluginKey>().unwrap()]),
     )
     .with_batch_size(4)
     .with_poll_interval(Duration::from_millis(10))
@@ -931,7 +1088,12 @@ async fn post_handoff_sink_failure_keeps_row_terminal() {
     let tags = vec!["plugin-pf".parse::<PluginKey>().unwrap()];
     let leftover = core
         .queue
-        .claim_pending(&proc16(b"probe-pf----"), 8, &tags)
+        .claim_pending(
+            &proc16(b"probe-pf----"),
+            8,
+            &tags,
+            test_flavor(&tags).revision_id(),
+        )
         .await
         .unwrap();
     assert!(
@@ -968,7 +1130,7 @@ async fn reclaim_recovers_crashed() {
     let spy = RecordingSink::new();
     let registry = MetricsRegistry::new();
 
-    let exec_id = core.seed_execution().await;
+    let exec_id = core.seed_execution("plugin-d").await;
     core.queue
         .enqueue(&make_msg(40, "plugin-d", &exec_id))
         .await
@@ -978,7 +1140,12 @@ async fn reclaim_recovers_crashed() {
     let tags = vec!["plugin-d".parse::<PluginKey>().unwrap()];
     let claimed = core
         .queue
-        .claim_pending(&proc16(b"crashed-proc"), 1, &tags)
+        .claim_pending(
+            &proc16(b"crashed-proc"),
+            1,
+            &tags,
+            test_flavor(&tags).revision_id(),
+        )
         .await
         .unwrap();
     assert_eq!(claimed.len(), 1, "row must be claimed into Processing");
@@ -992,7 +1159,7 @@ async fn reclaim_recovers_crashed() {
         spy.clone() as Arc<dyn ExecutionSink>,
         core.handoff.clone() as Arc<dyn ExecutionTurnHandoff>,
         proc16(b"fresh-proc--"),
-        tags.clone(),
+        test_flavor(&tags),
     )
     .with_batch_size(4)
     .with_poll_interval(Duration::from_millis(10))
@@ -1049,7 +1216,7 @@ async fn reclaim_recovers_crashed() {
     let registry2 = MetricsRegistry::new();
     let tags2 = vec!["plugin-d2".parse::<PluginKey>().unwrap()];
 
-    let exec_id2 = core2.seed_execution().await;
+    let exec_id2 = core2.seed_execution("plugin-x").await;
     core2
         .queue
         .enqueue(&make_msg(41, "plugin-d2", &exec_id2))
@@ -1058,7 +1225,12 @@ async fn reclaim_recovers_crashed() {
     // Claim without marking — crashed runner simulation.
     let claimed2 = core2
         .queue
-        .claim_pending(&proc16(b"crash-proc2-"), 1, &tags2)
+        .claim_pending(
+            &proc16(b"crash-proc2-"),
+            1,
+            &tags2,
+            test_flavor(&tags2).revision_id(),
+        )
         .await
         .unwrap();
     assert_eq!(claimed2.len(), 1, "row must be claimed into Processing");
@@ -1070,7 +1242,7 @@ async fn reclaim_recovers_crashed() {
         spy2.clone() as Arc<dyn ExecutionSink>,
         core2.handoff.clone() as Arc<dyn ExecutionTurnHandoff>,
         proc16(b"exhaust-proc"),
-        tags2.clone(),
+        test_flavor(&tags2),
     )
     .with_batch_size(4)
     .with_poll_interval(Duration::from_millis(10))
@@ -1151,7 +1323,7 @@ async fn graceful_shutdown_flushes_in_flight_dispatch() {
         release: release.clone(),
     });
 
-    let exec_id = core.seed_execution().await;
+    let exec_id = core.seed_execution("plugin-e").await;
     core.queue
         .enqueue(&make_msg(50, "plugin-e", &exec_id))
         .await
@@ -1171,7 +1343,7 @@ async fn graceful_shutdown_flushes_in_flight_dispatch() {
         sink,
         core.handoff.clone() as Arc<dyn ExecutionTurnHandoff>,
         proc16(b"proc-sd-----"),
-        tags.clone(),
+        test_flavor(&tags),
     )
     .with_batch_size(1)
     .with_poll_interval(Duration::from_millis(5));
@@ -1199,7 +1371,12 @@ async fn graceful_shutdown_flushes_in_flight_dispatch() {
     // Row is terminal — a fresh claim returns empty.
     let leftover = core
         .queue
-        .claim_pending(&proc16(b"recovery----"), 4, &tags)
+        .claim_pending(
+            &proc16(b"recovery----"),
+            4,
+            &tags,
+            test_flavor(&tags).revision_id(),
+        )
         .await
         .unwrap();
     assert!(
@@ -1257,8 +1434,8 @@ async fn graceful_shutdown_flushes_multi_row_batch() {
     ));
 
     // Enqueue 2 rows with the same tag so both are claimed in one batch.
-    let exec_id1 = core.seed_execution().await;
-    let exec_id2 = core.seed_execution().await;
+    let exec_id1 = core.seed_execution("plugin-f").await;
+    let exec_id2 = core.seed_execution("plugin-f").await;
     core.queue
         .enqueue(&make_msg(60, "plugin-f", &exec_id1))
         .await
@@ -1282,7 +1459,7 @@ async fn graceful_shutdown_flushes_multi_row_batch() {
         sink,
         core.handoff.clone() as Arc<dyn ExecutionTurnHandoff>,
         proc16(b"proc-mra----"),
-        tags.clone(),
+        test_flavor(&tags),
     )
     // batch_size=2: both rows are claimed in a single tick() call.
     .with_batch_size(2)
@@ -1324,7 +1501,12 @@ async fn graceful_shutdown_flushes_multi_row_batch() {
 
     let leftover = core
         .queue
-        .claim_pending(&proc16(b"recovery-mr-"), 8, &tags)
+        .claim_pending(
+            &proc16(b"recovery-mr-"),
+            8,
+            &tags,
+            test_flavor(&tags).revision_id(),
+        )
         .await
         .unwrap();
     assert!(
@@ -1332,4 +1514,34 @@ async fn graceful_shutdown_flushes_multi_row_batch() {
         "all rows must be terminal after multi-row batch flush; \
          none must be left Pending or Processing"
     );
+}
+
+fn test_flavor(plugins: &[PluginKey]) -> nebula_plugin::WorkerFlavorContext {
+    #[derive(Debug)]
+    struct FixturePlugin(nebula_plugin::PluginManifest);
+    impl nebula_plugin::Plugin for FixturePlugin {
+        fn manifest(&self) -> &nebula_plugin::PluginManifest {
+            &self.0
+        }
+    }
+    let mut registry = nebula_plugin::PluginRegistry::new();
+    for key in plugins {
+        let plugin = FixturePlugin(
+            nebula_plugin::PluginManifest::builder(key.as_str(), key.as_str())
+                .build()
+                .unwrap(),
+        );
+        registry
+            .register(Arc::new(
+                nebula_plugin::ResolvedPlugin::from(plugin).unwrap(),
+            ))
+            .unwrap();
+    }
+    let frozen = registry
+        .freeze(
+            nebula_core::ArtifactSetDigest::from_bytes([0x31; 32]),
+            "1.0.0".parse().unwrap(),
+        )
+        .unwrap();
+    nebula_plugin::WorkerFlavorContext::from_registry(&frozen)
 }

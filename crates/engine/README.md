@@ -20,12 +20,21 @@ under `apps/`; this crate does not select adapters or own process lifecycle.
 Canon §12.2 places the durable control-queue consumer implementation here.
 `ControlConsumer` provides polling, claim/ack, and graceful shutdown, while
 `EngineControlDispatch` implements `Start` / `Resume` / `Restart` and
-`Cancel` / `Terminate`. Those five command paths are manually composed in
-integration tests. No non-test first-party composition root currently
-constructs `ControlConsumer` with `EngineControlDispatch`, so the deployed
-server/worker path is not yet an end-to-end control consumer. `Terminate`
+`Cancel` / `Terminate`. `nebula-worker::WorkerRuntimeBuilder` installs that
+pairing and derives its exact-flavor claim filter from the engine's retained
+registry. The worker app selects the concrete queue and execution adapters. `Terminate`
 also shares the cooperative-cancel body until a distinct forced-shutdown path
 is wired (ADR-0016).
+
+For Start, the configured dispatch validates the exact stored contract and
+checkpoint before the execution owner atomically completes the control claim
+and grants its lease. Action duration therefore does not retain Start delivery.
+The typed acceptance phase prevents a second queue write after acceptance or
+an uncertain commit acknowledgement. Worker startup and periodic discovery
+find accepted turns through durable markers independent of queue retention.
+Recovery checks the exact snapshot and obtains a fresh owner fence; unarmed
+paused waits remain parked. Resume and Restart still use their existing
+delivery lifecycle.
 
 ## Role
 
@@ -39,11 +48,38 @@ configuration, and process lifecycle.
 - `WorkflowEngine` — entry point: executes workflows level-by-level with bounded concurrency.
   Exposes `cancel_execution(id) -> bool` so control-queue `Cancel` signals reach the live
   frontier loop (ADR-0008 A3; ADR-0016).
-- `ControlConsumer` — durable control-queue consumer drained via `ControlQueueRepo`
+  Durable turns require `with_plan_flavor_runtime(loader, frozen_registry, bundles)`
+  and an execution-owned immutable contract bundle from the same backend as the
+  execution stores. State pins, tenant, workflow revision and plugin set must agree
+  with that checked bundle and the retained plan before any factory is instantiated.
+  They load and execute only the checked recorded
+  graph with factories retained from that frozen snapshot; replacing authoring
+  JSON or the mutable action registry cannot change an admitted turn.
+  Each processed node commits its complete routing outcome and payload inside
+  the fenced execution-state checkpoint. Resume reconstructs outputs and live
+  edges from that snapshot; auxiliary node-result stores are technical caches.
+  Unsupported or incomplete warm checkpoints fail before factory instantiation.
+  `worker_flavor_context()` derives dispatch routing from the same snapshot.
+  The direct-definition execution methods remain separate technical entry points.
+  Recorded variables, per-node timeouts, non-default checkpoint cadence and
+  unresolved binding requirements currently fail closed before instantiation.
+- `WorkflowActivationService` — compiles against one frozen registry, installs
+  the exact revisions and atomically publishes their workflow activation.
+- `WorkflowStartService` — admits an activated workflow and persists its execution,
+  contract bundle, live revision references and Start command in one owner transaction.
+  Caller keys and trigger event identities occupy separate durable namespaces.
+  Replays read the original acceptance before consulting the current workflow;
+  an unknown commit permits one retry of the identical original envelope.
+- `DurableExecutionEmitter` — delegates trigger fan-out to `WorkflowStartService`.
+  It creates one Control Start command; it does not also enqueue a Job Start.
+  Unkeyed uncertain acceptance is non-retryable at the action boundary because
+  re-entering the emitter would allocate another execution identity.
+- `ControlConsumer` — durable control-queue consumer drained via `ControlQueue`
   (canon §12.2, ADR-0008). Its dispatch implementation supports all five
   commands — `Start` / `Resume` / `Restart` / `Cancel` / `Terminate` — via
-  `EngineControlDispatch` (A2 + A3), but current first-party app roots do not
-  install that pairing. Optional
+  `EngineControlDispatch`. First-party workers use `for_flavor`, which
+  selects persisted exact revision references before applying the claim limit.
+  Optional
   `ControlQueueEntry::w3c_trace_context` restores an OpenTelemetry parent on the
   dispatch span (`control_trace`, ADR-0050).
 - `ControlDispatch` — engine-owned trait implementors provide to deliver typed commands
@@ -70,6 +106,12 @@ configuration, and process lifecycle.
   14A/13B/20.
 - `EngineError` — typed engine-layer error (includes `Telemetry` when metric registration fails at
   `WorkflowEngine::new` time).
+- `EffectExecutionError` — bounded remote-effect failures including durable unknown
+  outcome and known applied output unavailability. The private execution-owned driver
+  binds canonical requests to the admitted effect contract, tenant, node and operation
+  slot. Only acknowledged ledger grants reach the adapter; outcome acknowledgement
+  recovery uses database reads and exact evidence recommits. Generic `ActionRuntime`
+  accepts only explicitly declared `NoExternalEffects` factories.
 - `ExecutionEvent` — broadcast event type emitted via `nebula-eventbus`.
 - `EngineCredentialAccessor` — scoped credential accessor injected into action contexts.
 - `credential` module — **bridge + test-harness only** (ADR-0092). The runtime

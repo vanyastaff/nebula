@@ -158,6 +158,7 @@ impl ExecutionSink for EngineExecutionSink {
             execution_id = %turn.msg.execution_id,
             command      = turn.msg.command.as_str(),
             reclaim      = turn.msg.reclaim_count,
+            None,
             fence_generation = turn.fence.generation(),
         )
     )]
@@ -295,11 +296,11 @@ mod tests {
             scope_b, // wrong tenant: row lives under single_tenant, not scope_b
             serde_json::Value::Null,
             None::<String>,
-            "sha",
             plugin_key.clone(),
             vec![plugin_key],
             None::<String>,
             0,
+            nebula_core::WorkerFlavorRevisionId::from_bytes([0x11; 32]),
         );
 
         // The fence never matters here: read_status short-circuits with

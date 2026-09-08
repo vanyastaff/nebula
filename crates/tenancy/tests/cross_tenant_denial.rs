@@ -26,17 +26,28 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use nebula_core::WorkerFlavorRevisionId;
 use nebula_storage_port::dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
 use nebula_storage_port::dto::{
-    CachedRecord, ControlCommand, ControlMsg, ExecutionRecord, ResourceRow, TriggerRow,
+    CachedRecord, ControlCommand, ControlMsg, EffectOccurrenceKey, EffectSlotBinding, EffectSlotId,
+    ExecutionRecord, FrozenOutcomeEvidence, KnownOutcome, MaterializedStart, OperationAdvance,
+    OperationCommand, OperationLedgerError, OperationRecord, OutcomeEvidenceSource, PrepareOutcome,
+    ResourceRow, StartReservation, StoredContractBundle, TriggerRow,
 };
 use nebula_storage_port::store::{
-    ControlQueue, ExecutionStore, IdempotencyStore, ReclaimOutcome, ResourceStore, TriggerStore,
+    ClaimGeneration, ControlQueue, ControlStartAcceptance, ControlStartHandoff, ControlTurnCommit,
+    ControlTurnCommitOutcome, ExecutionStore, ExecutionTurnHandoff, IdempotencyStore,
+    JobClaimToken, OperationLedger, OperationLedgerAdjudicator, ReclaimOutcome, ResourceStore,
+    StartAcceptanceStore, StartMaterialization, StartMaterializationError, TriggerStore,
+    TurnAcceptance, TurnHandoff,
 };
-use nebula_storage_port::{FencingToken, Scope, StorageError, TransitionBatch, TransitionOutcome};
+use nebula_storage_port::{
+    FencingToken, OperationCallId, Scope, StorageError, TransitionBatch, TransitionOutcome,
+};
 use nebula_tenancy::{
-    ScopedControlQueue, ScopedExecutionStore, ScopedIdempotencyStore, ScopedResourceStore,
-    ScopedTriggerStore,
+    ScopedControlQueue, ScopedExecutionStore, ScopedExecutionTurnHandoff, ScopedIdempotencyStore,
+    ScopedOperationLedger, ScopedOperationLedgerAdjudicator, ScopedResourceStore,
+    ScopedStartAcceptanceStore, ScopedTriggerStore,
 };
 
 fn scope_a() -> Scope {
@@ -242,6 +253,7 @@ impl IdempotencyStore for MockIdemStore {
 #[derive(Default)]
 struct MockControlQueue {
     enqueued: Mutex<Vec<ControlMsg>>,
+    exact_claims: Mutex<Vec<([u8; 16], u32, WorkerFlavorRevisionId)>>,
 }
 
 impl std::fmt::Debug for MockControlQueue {
@@ -272,11 +284,25 @@ impl ControlQueue for MockControlQueue {
             .map(|msg| nebula_storage_port::store::ControlClaim {
                 token: nebula_storage_port::store::ControlClaimToken::new(
                     msg.id,
-                    nebula_storage_port::store::ClaimGeneration::new(1),
+                    ClaimGeneration::new(1),
                 ),
                 msg: msg.clone(),
             })
             .collect())
+    }
+
+    async fn claim_pending_for_flavor(
+        &self,
+        processor: &[u8; 16],
+        batch_size: u32,
+        worker_flavor: WorkerFlavorRevisionId,
+    ) -> Result<Vec<nebula_storage_port::store::ControlClaim>, StorageError> {
+        // This enqueue-only mock has no persisted execution revision references.
+        self.exact_claims
+            .lock()
+            .unwrap()
+            .push((*processor, batch_size, worker_flavor));
+        Ok(Vec::new())
     }
 
     async fn mark_completed(
@@ -448,6 +474,24 @@ async fn cross_tenant_idempotency_keys_are_isolated() {
 }
 
 // ── Abuse case 3: control-queue confused deputy ───────────────────────────
+
+#[tokio::test]
+async fn scoped_control_claim_preserves_exact_worker_flavor() {
+    let mock = Arc::new(MockControlQueue::default());
+    let queue = ScopedControlQueue::new(mock.clone(), scope_a());
+    let flavor = WorkerFlavorRevisionId::from_bytes([91; 32]);
+    assert!(
+        queue
+            .claim_pending_for_flavor(&[7; 16], 3, flavor)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        *mock.exact_claims.lock().unwrap(),
+        vec![([7; 16], 3, flavor)]
+    );
+}
 
 #[tokio::test]
 async fn cross_tenant_control_enqueue_is_stamped_with_bound_scope() {
@@ -1085,5 +1129,280 @@ async fn scoped_execution_store_rebind_carries_resume_tokens() {
     assert_eq!(
         committed_tokens[0].token_hash, token_hash,
         "rebind must not alter the token hash"
+    );
+}
+
+#[derive(Default)]
+struct ScopeRecordingLedger {
+    observed: Mutex<Vec<Scope>>,
+}
+
+impl std::fmt::Debug for ScopeRecordingLedger {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ScopeRecordingLedger")
+    }
+}
+
+#[async_trait::async_trait]
+impl OperationLedger for ScopeRecordingLedger {
+    async fn read_occurrence(
+        &self,
+        key: &EffectOccurrenceKey<'_>,
+    ) -> Result<Option<OperationRecord>, OperationLedgerError> {
+        self.observed
+            .lock()
+            .expect("recording lock")
+            .push(key.scope().clone());
+        Ok(None)
+    }
+
+    async fn prepare(
+        &self,
+        binding: &EffectSlotBinding<'_>,
+        _fencing: FencingToken,
+    ) -> Result<PrepareOutcome, OperationLedgerError> {
+        self.observed
+            .lock()
+            .expect("recording lock")
+            .push(binding.scope.clone());
+        Err(OperationLedgerError::Unavailable)
+    }
+
+    async fn read_exact(
+        &self,
+        scope: &Scope,
+        _slot_id: EffectSlotId,
+    ) -> Result<OperationRecord, OperationLedgerError> {
+        self.observed
+            .lock()
+            .expect("recording lock")
+            .push(scope.clone());
+        Err(OperationLedgerError::Unavailable)
+    }
+
+    async fn advance(
+        &self,
+        scope: &Scope,
+        _slot_id: EffectSlotId,
+        _fencing: FencingToken,
+        _command: &OperationCommand,
+    ) -> Result<OperationAdvance, OperationLedgerError> {
+        self.observed
+            .lock()
+            .expect("recording lock")
+            .push(scope.clone());
+        Err(OperationLedgerError::Unavailable)
+    }
+}
+
+#[async_trait::async_trait]
+impl OperationLedgerAdjudicator for ScopeRecordingLedger {
+    async fn adjudicate(
+        &self,
+        scope: &Scope,
+        _slot_id: EffectSlotId,
+        _outcome: &FrozenOutcomeEvidence,
+        _evidence: &str,
+    ) -> Result<(), OperationLedgerError> {
+        self.observed
+            .lock()
+            .expect("recording lock")
+            .push(scope.clone());
+        Err(OperationLedgerError::Unavailable)
+    }
+}
+
+#[tokio::test]
+async fn operation_ledger_substitutes_the_bound_scope() {
+    let inner = Arc::new(ScopeRecordingLedger::default());
+    let scoped = ScopedOperationLedger::new(inner.clone(), scope_a());
+    let foreign_scope = scope_b();
+    let foreign = EffectOccurrenceKey::new(&foreign_scope, "execution", "node", "effect");
+
+    assert!(scoped.read_occurrence(&foreign).await.unwrap().is_none());
+    assert_eq!(
+        inner.observed.lock().expect("recording lock").as_slice(),
+        &[scope_a()]
+    );
+}
+
+#[tokio::test]
+async fn operation_adjudication_substitutes_the_bound_scope() {
+    let inner = Arc::new(ScopeRecordingLedger::default());
+    let scoped = ScopedOperationLedgerAdjudicator::new(inner.clone(), scope_a());
+    let outcome = FrozenOutcomeEvidence::v1_json(
+        OutcomeEvidenceSource::Adjudication(OperationCallId::from_bytes([8; 16])),
+        KnownOutcome::Succeeded,
+        br#"{"result":true}"#.to_vec(),
+    )
+    .unwrap();
+
+    std::assert_matches!(
+        scoped
+            .adjudicate(
+                &scope_b(),
+                EffectSlotId::from_storage_bytes([7; 16]),
+                &outcome,
+                "reviewed"
+            )
+            .await,
+        Err(OperationLedgerError::Unavailable)
+    );
+    assert_eq!(
+        inner.observed.lock().expect("recording lock").as_slice(),
+        &[scope_a()]
+    );
+}
+
+#[derive(Default)]
+struct ScopeRecordingStarts {
+    observed: Mutex<Vec<Scope>>,
+}
+
+impl std::fmt::Debug for ScopeRecordingStarts {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ScopeRecordingStarts")
+    }
+}
+
+#[async_trait::async_trait]
+impl StartAcceptanceStore for ScopeRecordingStarts {
+    async fn lookup_trigger_start(
+        &self,
+        scope: &Scope,
+        _key: &nebula_storage_port::dto::TriggerStartKey<'_>,
+    ) -> Result<Option<String>, StorageError> {
+        self.observed
+            .lock()
+            .expect("recording lock")
+            .push(scope.clone());
+        Ok(None)
+    }
+
+    async fn materialize_start(
+        &self,
+        start: &MaterializedStart<'_>,
+    ) -> Result<StartMaterialization, StartMaterializationError> {
+        self.observed
+            .lock()
+            .expect("recording lock")
+            .push(start.scope().clone());
+        Err(StartMaterializationError::InvalidEnvelope)
+    }
+
+    async fn lookup_start(
+        &self,
+        scope: &Scope,
+        _key: &str,
+    ) -> Result<Option<StartReservation>, StorageError> {
+        self.observed
+            .lock()
+            .expect("recording lock")
+            .push(scope.clone());
+        Ok(None)
+    }
+
+    async fn read_contract_bundle(
+        &self,
+        scope: &Scope,
+        _execution_id: &str,
+    ) -> Result<Option<StoredContractBundle>, StorageError> {
+        self.observed
+            .lock()
+            .expect("recording lock")
+            .push(scope.clone());
+        Ok(None)
+    }
+}
+
+#[tokio::test]
+async fn start_acceptance_reads_substitute_the_bound_scope() {
+    let inner = Arc::new(ScopeRecordingStarts::default());
+    let scoped = ScopedStartAcceptanceStore::new(inner.clone(), scope_a());
+
+    assert!(
+        scoped
+            .lookup_start(&scope_b(), "start")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        scoped
+            .read_contract_bundle(&scope_b(), "execution")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        inner.observed.lock().expect("recording lock").as_slice(),
+        &[scope_a(), scope_a()]
+    );
+}
+
+#[derive(Default)]
+struct ScopeRecordingHandoff {
+    observed: Mutex<Vec<Scope>>,
+}
+
+impl std::fmt::Debug for ScopeRecordingHandoff {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ScopeRecordingHandoff")
+    }
+}
+
+#[async_trait::async_trait]
+impl ExecutionTurnHandoff for ScopeRecordingHandoff {
+    async fn commit_control_turn(
+        &self,
+        commit: &ControlTurnCommit<'_>,
+    ) -> Result<ControlTurnCommitOutcome, StorageError> {
+        self.observed
+            .lock()
+            .expect("recording lock")
+            .push(commit.transition().scope().clone());
+        Ok(ControlTurnCommitOutcome::ClaimSuperseded)
+    }
+
+    async fn accept_control_start(
+        &self,
+        handoff: &ControlStartHandoff<'_>,
+    ) -> Result<ControlStartAcceptance, StorageError> {
+        self.observed
+            .lock()
+            .expect("recording lock")
+            .push(handoff.scope().clone());
+        Ok(ControlStartAcceptance::ClaimSuperseded)
+    }
+
+    async fn accept_turn(&self, handoff: &TurnHandoff<'_>) -> Result<TurnAcceptance, StorageError> {
+        self.observed
+            .lock()
+            .expect("recording lock")
+            .push(handoff.scope().clone());
+        Ok(TurnAcceptance::ClaimSuperseded)
+    }
+}
+
+#[tokio::test]
+async fn execution_turn_handoff_substitutes_the_bound_scope() {
+    let inner = Arc::new(ScopeRecordingHandoff::default());
+    let scoped = ScopedExecutionTurnHandoff::new(inner.clone(), scope_a());
+    let foreign_scope = scope_b();
+    let request = TurnHandoff::for_claim(
+        &foreign_scope,
+        "execution",
+        JobClaimToken::new([7; 16], ClaimGeneration::new(1)),
+        WorkerFlavorRevisionId::from_bytes([9; 32]),
+    )
+    .lease_to("worker", Duration::from_secs(30));
+
+    assert_eq!(
+        scoped.accept_turn(&request).await.unwrap(),
+        TurnAcceptance::ClaimSuperseded
+    );
+    assert_eq!(
+        inner.observed.lock().expect("recording lock").as_slice(),
+        &[scope_a()]
     );
 }

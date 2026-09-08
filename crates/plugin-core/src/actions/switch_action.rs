@@ -134,6 +134,7 @@ impl nebula_action::action::Action for CoreSwitch {
             label_field: Some("port".into()),
             include_fallback: true,
         })])
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
 
     fn dependencies() -> &'static nebula_action::Dependencies {

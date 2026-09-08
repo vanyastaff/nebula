@@ -11,8 +11,9 @@ use nebula_core::{
 use nebula_credential::Capabilities;
 use nebula_error::ActivationDiagnostic;
 use nebula_schema::{
-    Assignability, Field, FieldKey, FieldValue, FieldValues, InputSchema, OutputSchema, PathWalk,
-    RequiredMode, Schema, SchemaKind, ValidSchema, explain_assignable, explain_field_assignable,
+    Assignability, Field, FieldKey, FieldValue, FieldValues, InputSchema, OutputSchema,
+    PathSegment, PathWalk, RequiredMode, Schema, SchemaKind, ValidSchema, VisibilityMode,
+    explain_assignable, explain_field_assignable,
 };
 use semver::{BuildMetadata, Prerelease, Version};
 use serde::{Deserialize, Serialize};
@@ -21,12 +22,57 @@ use sha2::{Digest, Sha256};
 
 pub(crate) const RECORD_VERSION_V1: u16 = 1;
 pub(crate) const COMPILER_VERSION_GRAPH_V1: u16 = 1;
+pub(crate) const COMPILER_VERSION_GRAPH_V3: u16 = 3;
 pub(crate) const CANONICAL_HASH_VERSION_V1: u16 = 1;
+pub(crate) const CANONICAL_HASH_VERSION_V2: u16 = 2;
+pub(crate) const DEFAULT_OUTPUT_PORT: &str = "out";
+pub(crate) const INTRINSIC_ERROR_PORT: &str = "error";
 const EXECUTABLE_PLAN_GRAPH_V1_DOMAIN: &[u8] = b"nebula.executable-plan.graph.v1";
+const EXECUTABLE_PLAN_GRAPH_V2_DOMAIN: &[u8] = b"nebula.executable-plan.graph.v2";
 const VALUE_CANON_VERSION_GRAPH_V1: u16 = 1;
 pub(crate) const SCHEMA_WIRE_VERSION_GRAPH_V1: u16 = 1;
 const _: () = assert!(nebula_schema::VALUE_CANON_VERSION == VALUE_CANON_VERSION_GRAPH_V1);
 const _: () = assert!(nebula_schema::SCHEMA_WIRE_VERSION == SCHEMA_WIRE_VERSION_GRAPH_V1);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlanEpoch {
+    GraphV1,
+    GraphV3,
+}
+
+impl PlanEpoch {
+    pub(crate) const CURRENT: Self = Self::GraphV3;
+
+    const fn from_record(compiler_version: u16, canonical_hash_version: u16) -> Option<Self> {
+        match (compiler_version, canonical_hash_version) {
+            (COMPILER_VERSION_GRAPH_V1, CANONICAL_HASH_VERSION_V1) => Some(Self::GraphV1),
+            (COMPILER_VERSION_GRAPH_V3, CANONICAL_HASH_VERSION_V2) => Some(Self::GraphV3),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn compiler_version(self) -> u16 {
+        match self {
+            Self::GraphV1 => COMPILER_VERSION_GRAPH_V1,
+            Self::GraphV3 => COMPILER_VERSION_GRAPH_V3,
+        }
+    }
+
+    pub(crate) const fn canonical_hash_version(self) -> u16 {
+        match self {
+            Self::GraphV1 => CANONICAL_HASH_VERSION_V1,
+            Self::GraphV3 => CANONICAL_HASH_VERSION_V2,
+        }
+    }
+
+    const fn records_effect_contract(self) -> bool {
+        matches!(self, Self::GraphV3)
+    }
+
+    const fn supports_intrinsic_error_port(self) -> bool {
+        matches!(self, Self::GraphV3)
+    }
+}
 
 /// A non-empty, canonically ordered set of plan-activation diagnostics.
 #[derive(thiserror::Error)]
@@ -399,6 +445,8 @@ pub(crate) struct RecordedActionV1 {
     pub(crate) input_schema: RecordedSchemaV1,
     pub(crate) output_schema: RecordedSchemaV1,
     pub(crate) dependencies: RecordedDependenciesV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) effect_contract: Option<crate::plan_effect::RecordedActionEffectV1>,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -680,7 +728,12 @@ impl RecordedExecutablePlanRevisionV1 {
             .map_err(|_| ExecutablePlanIntegrityError::CanonicalEncoding)?;
 
         let mut hasher = Sha256::new();
-        hash_field(&mut hasher, 1, EXECUTABLE_PLAN_GRAPH_V1_DOMAIN);
+        let domain = match self.canonical_hash_version {
+            CANONICAL_HASH_VERSION_V1 => EXECUTABLE_PLAN_GRAPH_V1_DOMAIN,
+            CANONICAL_HASH_VERSION_V2 => EXECUTABLE_PLAN_GRAPH_V2_DOMAIN,
+            _ => return Err(ExecutablePlanIntegrityError::UnsupportedFormat),
+        };
+        hash_field(&mut hasher, 1, domain);
         hash_field(&mut hasher, 2, &canonical);
         let digest: [u8; 32] = hasher.finalize().into();
         Ok(ExecutablePlanRevisionId::from_bytes(digest))
@@ -835,7 +888,31 @@ pub struct ExecutablePlanRevision {
     bindings: Box<[PlanBindingRequirement]>,
 }
 
+/// Effect declaration lookup in an exact plan without conflating old data and bad keys.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlanActionEffectContract {
+    /// The plan records the complete checked declaration.
+    Declared(nebula_action::effect::ActionEffectContract),
+    /// The action exists in a readable legacy plan without an effect declaration.
+    LegacyUndeclared,
+    /// The requested action key is absent from the exact plan.
+    UnknownAction,
+}
+
 impl ExecutablePlanRevision {
+    /// Project recorded node execution semantics without a registry or compiler lookup.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::ExecutionGraphProjectionError`] if a recorded value cannot
+    /// be represented on this runtime platform. This grants no tenant authority.
+    #[tracing::instrument(skip_all, fields(plan_revision_id = %self.id()), err)]
+    pub fn execution_graph(
+        &self,
+    ) -> Result<crate::ExecutableGraph, crate::ExecutionGraphProjectionError> {
+        crate::ExecutableGraph::project(self)
+    }
+
     /// Validate a recorded Graph-v1 plan and create an immutable structural view.
     ///
     /// This check proves record canonicality and content identity only. It does
@@ -874,6 +951,12 @@ impl ExecutablePlanRevision {
         self.record.claimed_id
     }
 
+    /// Workflow identity recorded by compilation into this exact plan.
+    #[must_use]
+    pub const fn workflow_id(&self) -> WorkflowId {
+        self.record.manifest.workflow_id
+    }
+
     /// Exact workflow revision compiled into this plan.
     #[must_use]
     pub const fn workflow_version_id(&self) -> WorkflowVersionId {
@@ -896,6 +979,32 @@ impl ExecutablePlanRevision {
     #[must_use]
     pub fn bindings(&self) -> &[PlanBindingRequirement] {
         &self.bindings
+    }
+
+    /// Read the checked static effect declaration for an exact action key.
+    ///
+    /// # Errors
+    /// Returns a bounded integrity error if a recorded declaration is unsupported.
+    pub fn action_effect_contract(
+        &self,
+        action_key: &ActionKey,
+    ) -> Result<PlanActionEffectContract, ExecutablePlanIntegrityError> {
+        let Some(action) = self
+            .record
+            .content
+            .actions
+            .iter()
+            .find(|action| action.key == action_key.as_str())
+        else {
+            return Ok(PlanActionEffectContract::UnknownAction);
+        };
+        let Some(effect) = action.effect_contract.as_ref() else {
+            return Ok(PlanActionEffectContract::LegacyUndeclared);
+        };
+        effect
+            .checked_contract()
+            .map(PlanActionEffectContract::Declared)
+            .map_err(|_| noncanonical("actions.effects"))
     }
 
     pub(crate) const fn recorded(&self) -> &RecordedExecutablePlanRevisionV1 {
@@ -1016,11 +1125,32 @@ fn validate_record(
     record: &RecordedExecutablePlanRevisionV1,
 ) -> Result<(), ExecutablePlanIntegrityError> {
     if record.record_version != RECORD_VERSION_V1
-        || record.compiler_version != COMPILER_VERSION_GRAPH_V1
-        || record.canonical_hash_version != CANONICAL_HASH_VERSION_V1
         || record.profile != RecordedPlanProfileV1::GraphV1
     {
         return Err(ExecutablePlanIntegrityError::UnsupportedFormat);
+    }
+    let Some(epoch) =
+        PlanEpoch::from_record(record.compiler_version, record.canonical_hash_version)
+    else {
+        return Err(ExecutablePlanIntegrityError::UnsupportedFormat);
+    };
+    for action in &record.content.actions {
+        match (&action.effect_contract, epoch.records_effect_contract()) {
+            (None, false) => {},
+            (Some(contract), true) => {
+                let declared = contract
+                    .checked_contract()
+                    .map_err(|_| noncanonical("actions.effects"))?;
+                if matches!(
+                    declared,
+                    nebula_action::effect::ActionEffectContract::Remote(_)
+                ) && action.kind != RecordedActionKindV1::Stateless
+                {
+                    return Err(noncanonical("actions.effects"));
+                }
+            },
+            _ => return Err(noncanonical("actions.effects")),
+        }
     }
 
     validate_manifest(&record.manifest)?;
@@ -1036,7 +1166,7 @@ fn validate_record(
     let nodes = validate_nodes(&record.content.nodes, &actions)?;
     let triggers = validate_triggers(&record.content.triggers, &actions)?;
     validate_variables(&record.content.variables)?;
-    validate_connections(&record.content.connections, &nodes, &actions)?;
+    validate_connections(&record.content.connections, &nodes, &actions, epoch)?;
     validate_component_closure(
         &plugins,
         &actions,
@@ -1515,6 +1645,9 @@ pub(crate) fn validate_parameter_contract(
     parameter: &RecordedParameterV1,
     action: &RecordedActionV1,
 ) -> Result<(), ExecutablePlanIntegrityError> {
+    if action.input_schema.schema.kind() == SchemaKind::Any {
+        return typed_parameter_value(&parameter.value).map(|_| ());
+    }
     let key = FieldKey::new(&parameter.key).map_err(|_| noncanonical("nodes.parameters"))?;
     let field = action
         .input_schema
@@ -1529,6 +1662,9 @@ pub(crate) fn validate_parameter_contract(
     let Some(typed) = typed_parameter_value(&parameter.value)? else {
         return Ok(());
     };
+    if field_contains_contextual_policy(field) {
+        return Ok(());
+    }
     let one_field_schema = Schema::builder()
         .add(field.clone())
         .build()
@@ -1560,6 +1696,12 @@ pub(crate) fn validate_node_parameters(
     parameters: &[RecordedParameterV1],
     action: &RecordedActionV1,
 ) -> Result<(), ExecutablePlanIntegrityError> {
+    if action.input_schema.schema.kind() == SchemaKind::Any {
+        for parameter in parameters {
+            typed_parameter_value(&parameter.value)?;
+        }
+        return Ok(());
+    }
     if !action.input_schema.schema.root_rules().is_empty() {
         return Err(noncanonical("nodes.parameters.root_rules"));
     }
@@ -1568,23 +1710,21 @@ pub(crate) fn validate_node_parameters(
         .iter()
         .map(|parameter| parameter.key.as_str())
         .collect::<HashSet<_>>();
-    let has_reference = parameters
+    let referenced = parameters
         .iter()
-        .any(|parameter| matches!(parameter.value, RecordedParameterValueV1::Reference { .. }));
+        .filter(|parameter| matches!(parameter.value, RecordedParameterValueV1::Reference { .. }))
+        .map(|parameter| parameter.key.as_str())
+        .collect::<HashSet<_>>();
     for field in action.input_schema.schema.fields() {
         match field.required() {
             RequiredMode::Always if !supplied.contains(field.key().as_str()) => {
                 return Err(noncanonical("nodes.parameters.required"));
             },
-            RequiredMode::When(_) if has_reference && !supplied.contains(field.key().as_str()) => {
-                return Err(noncanonical("nodes.parameters.conditional_required"));
-            },
             _ => {},
         }
-    }
-
-    if has_reference {
-        return Ok(());
+        if field_context_depends_on_reference(field, &referenced) {
+            return Err(noncanonical("nodes.parameters.conditional_reference"));
+        }
     }
 
     let mut values = FieldValues::new();
@@ -1592,7 +1732,7 @@ pub(crate) fn validate_node_parameters(
         let key =
             FieldKey::new(&parameter.key).map_err(|_| noncanonical("nodes.parameters.schema"))?;
         let Some(value) = typed_parameter_value(&parameter.value)? else {
-            return Err(noncanonical("nodes.parameters.schema"));
+            continue;
         };
         values.set(key, value);
     }
@@ -1604,12 +1744,96 @@ pub(crate) fn validate_node_parameters(
     {
         return Err(noncanonical("nodes.parameters.schema"));
     }
-    action
-        .input_schema
-        .schema
-        .validate(&values)
-        .map(|_| ())
-        .map_err(|_| noncanonical("nodes.parameters.schema"))
+    match action.input_schema.schema.validate(&values) {
+        Ok(_) => Ok(()),
+        Err(report)
+            if report.errors().all(|error| {
+                error.code == "required"
+                    && error.path.segments().first().is_some_and(|segment| {
+                        matches!(segment, PathSegment::Key(key) if referenced.contains(key.as_str()))
+                    })
+            }) =>
+        {
+            Ok(())
+        },
+        Err(_) => Err(noncanonical("nodes.parameters.schema")),
+    }
+}
+
+fn field_context_depends_on_reference(field: &Field, referenced: &HashSet<&str>) -> bool {
+    let contextual_rules = match (field.required(), field.visible()) {
+        (RequiredMode::When(required), VisibilityMode::When(visible)) => {
+            [Some(required), Some(visible)]
+        },
+        (RequiredMode::When(required), _) => [Some(required), None],
+        (_, VisibilityMode::When(visible)) => [Some(visible), None],
+        _ => [None, None],
+    };
+    if contextual_rules
+        .into_iter()
+        .flatten()
+        .any(|rule| rule_depends_on_reference(rule, referenced))
+    {
+        return true;
+    }
+
+    match field {
+        Field::Object(object) => object
+            .fields
+            .iter()
+            .any(|child| field_context_depends_on_reference(child, referenced)),
+        Field::List(list) => list
+            .item
+            .as_deref()
+            .is_some_and(|item| field_context_depends_on_reference(item, referenced)),
+        Field::Mode(mode) => mode
+            .variants
+            .iter()
+            .any(|variant| field_context_depends_on_reference(variant.field.as_ref(), referenced)),
+        Field::Unknown(_) => !referenced.is_empty(),
+        _ => false,
+    }
+}
+
+fn field_contains_contextual_policy(field: &Field) -> bool {
+    if matches!(field.required(), RequiredMode::When(_))
+        || matches!(field.visible(), VisibilityMode::When(_))
+    {
+        return true;
+    }
+
+    match field {
+        Field::Object(object) => object.fields.iter().any(field_contains_contextual_policy),
+        Field::List(list) => list
+            .item
+            .as_deref()
+            .is_some_and(field_contains_contextual_policy),
+        Field::Mode(mode) => mode
+            .variants
+            .iter()
+            .any(|variant| field_contains_contextual_policy(variant.field.as_ref())),
+        _ => false,
+    }
+}
+
+fn rule_depends_on_reference(rule: &nebula_schema::Rule, referenced: &HashSet<&str>) -> bool {
+    if referenced.is_empty() {
+        return false;
+    }
+    let mut field_references = Vec::new();
+    rule.field_references(&mut field_references);
+    field_references.into_iter().any(|reference| {
+        let reference = reference.strip_prefix('#').unwrap_or(reference);
+        let root = reference
+            .strip_prefix('/')
+            .and_then(|path| path.split('/').next())
+            .or_else(|| {
+                reference
+                    .strip_prefix("$root.")
+                    .and_then(|path| path.split('.').next())
+            });
+        root.is_none_or(|key| referenced.contains(key))
+    })
 }
 
 fn typed_literal(value: Value) -> Result<FieldValue, ExecutablePlanIntegrityError> {
@@ -1829,6 +2053,7 @@ fn validate_connections(
     connections: &[RecordedConnectionV1],
     nodes: &HashMap<&str, &RecordedNodeV1>,
     actions: &HashMap<&str, &RecordedActionV1>,
+    epoch: PlanEpoch,
 ) -> Result<(), ExecutablePlanIntegrityError> {
     if connections
         .windows(2)
@@ -1861,19 +2086,26 @@ fn validate_connections(
         let target_action = actions
             .get(target.action_key.as_str())
             .ok_or_else(|| noncanonical("connections.to_action"))?;
-        let source_port = source_action
-            .outputs
-            .iter()
-            .find(|port| output_port_key(port) == connection.from_port)
-            .ok_or_else(|| noncanonical("connections.from_port"))?;
-        if !matches!(
-            source_port,
-            RecordedOutputPortV1::Flow {
-                key,
-                flow_kind: RecordedFlowKindV1::Main,
-            } if key == "out"
-        ) {
-            return Err(noncanonical("connections.from_port"));
+        let intrinsic_error =
+            epoch.supports_intrinsic_error_port() && connection.from_port == INTRINSIC_ERROR_PORT;
+        if intrinsic_error && connection.to_port.is_some() {
+            return Err(noncanonical("connections.to_port"));
+        }
+        if !intrinsic_error {
+            let source_port = source_action
+                .outputs
+                .iter()
+                .find(|port| output_port_key(port) == connection.from_port)
+                .ok_or_else(|| noncanonical("connections.from_port"))?;
+            if !matches!(
+                source_port,
+                RecordedOutputPortV1::Flow {
+                    key,
+                    flow_kind: RecordedFlowKindV1::Main,
+                } if key == DEFAULT_OUTPUT_PORT
+            ) {
+                return Err(noncanonical("connections.from_port"));
+            }
         }
         match connection.to_port.as_deref() {
             Some(port) => {
@@ -1912,7 +2144,11 @@ fn validate_connections(
             },
         }
         if connection.to_port.is_none() {
-            let producer = OutputSchema::new(source_action.output_schema.schema.clone());
+            let producer = OutputSchema::new(if intrinsic_error {
+                nebula_schema::schema_of::<nebula_workflow::ErrorPortPayload>()
+            } else {
+                source_action.output_schema.schema.clone()
+            });
             let consumer = InputSchema::new(target_action.input_schema.schema.clone());
             if !matches!(explain_assignable(&producer, &consumer), Assignability::Yes) {
                 return Err(noncanonical("connections.schema"));
@@ -1942,7 +2178,15 @@ fn validate_connections(
                 }) {
                     return Err(noncanonical("nodes.parameters.reference"));
                 }
-                validate_reference_contract(parameter, output_path, source, node, actions)?;
+                validate_reference_contract(
+                    parameter,
+                    output_path,
+                    source,
+                    node,
+                    actions,
+                    connections,
+                    epoch,
+                )?;
             }
         }
     }
@@ -1989,13 +2233,54 @@ pub(crate) fn validate_reference_contract(
     source: &RecordedNodeV1,
     consumer: &RecordedNodeV1,
     actions: &HashMap<&str, &RecordedActionV1>,
+    connections: &[RecordedConnectionV1],
+    epoch: PlanEpoch,
 ) -> Result<(), ExecutablePlanIntegrityError> {
     let source_action = actions
         .get(source.action_key.as_str())
         .ok_or_else(|| noncanonical("nodes.parameters.reference"))?;
+    let mut found = false;
+    for edge in connections
+        .iter()
+        .filter(|edge| edge.from_node == source.id && edge.to_node == consumer.id)
+    {
+        found = true;
+        let producer_schema =
+            if epoch.supports_intrinsic_error_port() && edge.from_port == INTRINSIC_ERROR_PORT {
+                nebula_schema::schema_of::<nebula_workflow::ErrorPortPayload>()
+            } else {
+                source_action.output_schema.schema.clone()
+            };
+        validate_reference_schema(parameter, output_path, &producer_schema, consumer, actions)?;
+    }
+    if !found {
+        return Err(noncanonical("nodes.parameters.reference"));
+    }
+    Ok(())
+}
+
+fn validate_reference_schema(
+    parameter: &RecordedParameterV1,
+    output_path: &str,
+    producer_schema: &ValidSchema,
+    consumer: &RecordedNodeV1,
+    actions: &HashMap<&str, &RecordedActionV1>,
+) -> Result<(), ExecutablePlanIntegrityError> {
     let consumer_action = actions
         .get(consumer.action_key.as_str())
         .ok_or_else(|| noncanonical("nodes.parameters.reference"))?;
+    if consumer_action.input_schema.schema.kind() == SchemaKind::Any {
+        if output_path.is_empty() || output_path == "$" {
+            return Ok(());
+        }
+        return match producer_schema.walk_authored_path(output_path) {
+            PathWalk::Resolved(_) => Ok(()),
+            PathWalk::Unresolved(_) | PathWalk::Opaque => {
+                Err(noncanonical("nodes.parameters.reference.path"))
+            },
+            _ => Err(noncanonical("nodes.parameters.reference.path")),
+        };
+    }
     let consumer_key =
         FieldKey::new(&parameter.key).map_err(|_| noncanonical("nodes.parameters.reference"))?;
     let consumer_field = consumer_action
@@ -2014,18 +2299,14 @@ pub(crate) fn validate_reference_contract(
             .add_many(object.fields.clone())
             .build()
             .map_err(|_| noncanonical("nodes.parameters.reference.root"))?;
-        let producer = OutputSchema::new(source_action.output_schema.schema.clone());
+        let producer = OutputSchema::new(producer_schema.clone());
         let consumer = InputSchema::new(consumer_schema);
         if !matches!(explain_assignable(&producer, &consumer), Assignability::Yes) {
             return Err(noncanonical("nodes.parameters.reference.schema"));
         }
         return Ok(());
     }
-    let producer_field = match source_action
-        .output_schema
-        .schema
-        .walk_authored_path(output_path)
-    {
+    let producer_field = match producer_schema.walk_authored_path(output_path) {
         PathWalk::Resolved(field) => field,
         PathWalk::Unresolved(_) | PathWalk::Opaque => {
             return Err(noncanonical("nodes.parameters.reference.path"));
@@ -2404,1011 +2685,5 @@ fn binding_site_slot_key(binding: &RecordedBindingV1) -> (u8, &str, &str) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use nebula_core::{
-        ExecutablePlanRevisionId, PluginSetId, WorkerFlavorRevisionId, WorkflowId,
-        WorkflowVersionId,
-    };
-    use nebula_schema::{ModeField, ObjectField, Schema, SecretField, field_key};
-    use serde_json::{Value, json};
-
-    const SECRET_PAYLOAD: &str = "credential-value-that-must-not-leak";
-    const ACTUAL_CONTRACT_DETAIL: &str = "registered-contract-v2";
-
-    fn diagnostic(
-        code: &str,
-        path: &str,
-        expected: &str,
-        actual: &str,
-        remediation: &str,
-    ) -> ActivationDiagnostic {
-        ActivationDiagnostic::new(code, path, expected, actual, remediation)
-            .expect("the fixture uses non-empty diagnostic fields")
-    }
-
-    #[test]
-    fn activation_diagnostics_reject_empty_fields_sort_dedupe_and_redact() {
-        assert!(ActivationDiagnostic::new("", "graph.node", "expected", "actual", "fix").is_none());
-        assert!(ActivationDiagnostic::new("E002", "graph.node", "expected", "", "fix").is_none());
-
-        let later = diagnostic(
-            "E002",
-            "graph.node[2]",
-            "registered action",
-            ACTUAL_CONTRACT_DETAIL,
-            "install the action",
-        );
-        let earlier = diagnostic(
-            "E001",
-            "graph.node[1]",
-            "compatible schema",
-            ACTUAL_CONTRACT_DETAIL,
-            "update the parameter",
-        );
-        let error = PlanCompilationError::new(vec![later, earlier.clone(), earlier.clone()])
-            .expect("the fixture has diagnostics");
-
-        assert_eq!(
-            error.diagnostics(),
-            &[
-                earlier.clone(),
-                diagnostic(
-                    "E002",
-                    "graph.node[2]",
-                    "registered action",
-                    ACTUAL_CONTRACT_DETAIL,
-                    "install the action",
-                )
-            ]
-        );
-        assert!(!format!("{error}").contains(ACTUAL_CONTRACT_DETAIL));
-        assert!(!format!("{error:?}").contains(ACTUAL_CONTRACT_DETAIL));
-        assert!(!format!("{earlier}").contains(ACTUAL_CONTRACT_DETAIL));
-        assert!(!format!("{earlier:?}").contains(ACTUAL_CONTRACT_DETAIL));
-        assert!(PlanCompilationError::new(Vec::new()).is_none());
-    }
-
-    /// Every integrity rejection reports all five NS14 fields.
-    ///
-    /// The list is exhaustive by construction: `activation_diagnostics` matches
-    /// the enum without a wildcard, so a new variant fails to compile there
-    /// before it can reach a caller with a missing field.
-    #[test]
-    fn every_plan_integrity_rejection_reports_all_five_fields() {
-        use nebula_error::ActivationDiagnostics;
-
-        let rejections = [
-            ExecutablePlanIntegrityError::UnsupportedFormat,
-            ExecutablePlanIntegrityError::NonCanonical {
-                section: "bindings",
-            },
-            ExecutablePlanIntegrityError::ConvertersUnsupported,
-            ExecutablePlanIntegrityError::UnknownCredentialCapability,
-            ExecutablePlanIntegrityError::CanonicalEncoding,
-            ExecutablePlanIntegrityError::RevisionIdMismatch {
-                claimed: ExecutablePlanRevisionId::from_bytes([0x11; 32]),
-                computed: ExecutablePlanRevisionId::from_bytes([0x22; 32]),
-            },
-        ];
-
-        for rejection in &rejections {
-            let diagnostics = rejection.activation_diagnostics();
-            assert!(
-                !diagnostics.is_empty(),
-                "a rejection with nothing to report is not actionable"
-            );
-            for reported in diagnostics {
-                for field in [
-                    reported.code(),
-                    reported.path(),
-                    reported.expected(),
-                    reported.actual(),
-                    reported.remediation(),
-                ] {
-                    assert!(!field.trim().is_empty(), "NS14 requires all five fields");
-                }
-            }
-        }
-    }
-
-    /// A compilation rejection hands its diagnostics through already canonical,
-    /// so two runs over the same workflow report the same sequence.
-    #[test]
-    fn compilation_diagnostics_come_through_canonically_ordered() {
-        use nebula_error::ActivationDiagnostics;
-
-        let later = diagnostic("E002", "/nodes/b", "a contract", "second", "fix it");
-        let earlier = diagnostic("E001", "/nodes/a", "a contract", "first", "fix it");
-        let error =
-            PlanCompilationError::new(vec![later.clone(), earlier.clone(), earlier.clone()])
-                .expect("the fixture has diagnostics");
-
-        assert_eq!(error.activation_diagnostics(), vec![earlier, later]);
-    }
-
-    fn recorded_semver(major: u64, minor: u64, patch: u64) -> RecordedSemverV1 {
-        RecordedSemverV1 {
-            major,
-            minor,
-            patch,
-            pre: String::new(),
-            build: String::new(),
-        }
-    }
-
-    fn recorded_schema(schema: ValidSchema) -> RecordedSchemaV1 {
-        RecordedSchemaV1 {
-            schema_wire_version: SCHEMA_WIRE_VERSION_GRAPH_V1,
-            schema,
-        }
-    }
-
-    fn empty_dependencies() -> RecordedDependenciesV1 {
-        RecordedDependenciesV1 {
-            credentials: Vec::new().into_boxed_slice(),
-            resources: Vec::new().into_boxed_slice(),
-            slots: Vec::new().into_boxed_slice(),
-        }
-    }
-
-    fn minimal_action(dependencies: RecordedDependenciesV1) -> RecordedActionV1 {
-        RecordedActionV1 {
-            key: "demo.echo".into(),
-            plugin_key: "demo".into(),
-            version: recorded_semver(1, 0, 0),
-            kind: RecordedActionKindV1::Stateless,
-            isolation: RecordedIsolationV1::None,
-            checkpoint_policy: RecordedCheckpointPolicyV1::Inherit,
-            max_concurrent: None,
-            inputs: vec![RecordedInputPortV1::Flow { key: "in".into() }].into_boxed_slice(),
-            outputs: vec![RecordedOutputPortV1::Flow {
-                key: "out".into(),
-                flow_kind: RecordedFlowKindV1::Main,
-            }]
-            .into_boxed_slice(),
-            input_schema: recorded_schema(ValidSchema::empty()),
-            output_schema: recorded_schema(ValidSchema::empty()),
-            dependencies,
-        }
-    }
-
-    fn minimal_node(id: &str) -> RecordedNodeV1 {
-        RecordedNodeV1 {
-            id: id.into(),
-            plugin_key: "demo".into(),
-            action_key: "demo.echo".into(),
-            action_version: recorded_semver(1, 0, 0),
-            parameters: Vec::new().into_boxed_slice(),
-            retry_policy: None,
-            timeout: None,
-            rate_limit: None,
-            enabled: true,
-        }
-    }
-
-    fn workflow_config() -> RecordedWorkflowConfigV1 {
-        RecordedWorkflowConfigV1 {
-            timeout: None,
-            max_parallel_nodes: 1,
-            checkpointing: RecordedCheckpointingV1 {
-                enabled: true,
-                interval: None,
-            },
-            retry_policy: None,
-            error_strategy: RecordedErrorStrategyV1::FailFast,
-        }
-    }
-
-    fn resource_binding(slot_key: &str, selector: &str) -> RecordedBindingV1 {
-        RecordedBindingV1 {
-            site: RecordedBindingSiteV1::Node("fetch".into()),
-            slot_key: slot_key.into(),
-            selector: selector.into(),
-            contract: RecordedBindingContractV1::Resource {
-                key: "demo.client".into(),
-                version: recorded_semver(1, 0, 0),
-            },
-            required: true,
-            lazy: false,
-        }
-    }
-
-    fn credential_binding(
-        slot_key: &str,
-        selector: &str,
-        capability_bits: u8,
-    ) -> RecordedBindingV1 {
-        RecordedBindingV1 {
-            site: RecordedBindingSiteV1::Node("fetch".into()),
-            slot_key: slot_key.into(),
-            selector: selector.into(),
-            contract: RecordedBindingContractV1::Credential {
-                key: "demo.oauth".into(),
-                version: recorded_semver(2, 1, 0),
-                required_capability_bits: capability_bits,
-            },
-            required: true,
-            lazy: true,
-        }
-    }
-
-    fn reseal(record: &mut RecordedExecutablePlanRevisionV1) {
-        record.claimed_id = record
-            .recomputed_id()
-            .expect("the fixture is canonical and hashable");
-    }
-
-    fn fixture_record() -> RecordedExecutablePlanRevisionV1 {
-        let mut record = RecordedExecutablePlanRevisionV1 {
-            record_version: RECORD_VERSION_V1,
-            compiler_version: COMPILER_VERSION_GRAPH_V1,
-            canonical_hash_version: CANONICAL_HASH_VERSION_V1,
-            profile: RecordedPlanProfileV1::GraphV1,
-            claimed_id: ExecutablePlanRevisionId::from_bytes([0; 32]),
-            workflow_version_id: WorkflowVersionId::from_bytes([1; 16]),
-            plugin_set_id: PluginSetId::from_bytes([2; 32]),
-            worker_flavor_revision_id: WorkerFlavorRevisionId::from_bytes([3; 32]),
-            manifest: RecordedPlanManifestV1 {
-                workflow_definition_schema_version: nebula_workflow::CURRENT_SCHEMA_VERSION,
-                workflow_id: WorkflowId::from_bytes([4; 16]),
-                workflow_semantic_version: RecordedWorkflowVersionV1 {
-                    major: 1,
-                    minor: 2,
-                    patch: 3,
-                    pre: None,
-                    build: None,
-                },
-            },
-            content: RecordedGraphContentV1 {
-                plugins: vec![RecordedPluginV1 {
-                    key: "demo".into(),
-                    version: recorded_semver(1, 0, 0),
-                }]
-                .into_boxed_slice(),
-                nodes: vec![minimal_node("fetch")].into_boxed_slice(),
-                connections: Vec::new().into_boxed_slice(),
-                actions: vec![minimal_action(empty_dependencies())].into_boxed_slice(),
-                resources: Vec::new().into_boxed_slice(),
-                credentials: Vec::new().into_boxed_slice(),
-                triggers: Vec::new().into_boxed_slice(),
-                variables: Vec::new().into_boxed_slice(),
-                workflow_config: workflow_config(),
-                converters: Vec::new().into_boxed_slice(),
-            },
-            bindings: Vec::new().into_boxed_slice(),
-        };
-        reseal(&mut record);
-        record
-    }
-
-    fn resource_binding_record(selector: &str) -> RecordedExecutablePlanRevisionV1 {
-        let mut record = fixture_record();
-        record.content.resources = vec![RecordedResourceV1 {
-            key: "demo.client".into(),
-            plugin_key: "demo".into(),
-            version: recorded_semver(1, 0, 0),
-            configuration_schema: recorded_schema(ValidSchema::empty()),
-            dependencies: empty_dependencies(),
-        }]
-        .into_boxed_slice();
-        record.content.actions[0].dependencies.slots = vec![RecordedSlotV1::Resource {
-            slot_key: "client".into(),
-            default_selector: "primary".into(),
-            contract_key: "demo.client".into(),
-            required: true,
-            lazy: false,
-        }]
-        .into_boxed_slice();
-        record.bindings = vec![resource_binding("client", selector)].into_boxed_slice();
-        reseal(&mut record);
-        record
-    }
-
-    fn credential_binding_record(
-        selector: &str,
-        required_capability_bits: u8,
-    ) -> RecordedExecutablePlanRevisionV1 {
-        let mut record = fixture_record();
-        record.content.credentials = vec![RecordedCredentialV1 {
-            key: "demo.oauth".into(),
-            plugin_key: "demo".into(),
-            version: recorded_semver(2, 1, 0),
-            pattern: RecordedAuthPatternV1::OAuth2,
-            properties_schema: recorded_schema(ValidSchema::empty()),
-            capability_bits: Capabilities::REFRESHABLE.bits(),
-        }]
-        .into_boxed_slice();
-        record.content.actions[0].dependencies.slots = vec![RecordedSlotV1::Credential {
-            slot_key: "auth".into(),
-            default_selector: "primary".into(),
-            contract_key: "demo.oauth".into(),
-            required: true,
-            lazy: true,
-        }]
-        .into_boxed_slice();
-        record.bindings = vec![credential_binding(
-            "auth",
-            selector,
-            required_capability_bits,
-        )]
-        .into_boxed_slice();
-        reseal(&mut record);
-        record
-    }
-
-    fn object_with_secret_default(default: Value) -> ValidSchema {
-        Schema::builder()
-            .add(
-                ObjectField::new(field_key!("auth"))
-                    .add(SecretField::new(field_key!("token")))
-                    .default(default),
-            )
-            .build()
-            .expect("the object default is accepted by the general schema contract")
-    }
-
-    fn mode_with_secret_default(default: Value) -> ValidSchema {
-        Schema::builder()
-            .add(
-                ModeField::new(field_key!("auth"))
-                    .variant("token", "Token", SecretField::new(field_key!("token")))
-                    .default(default),
-            )
-            .build()
-            .expect("the mode default is accepted by the general schema contract")
-    }
-
-    #[test]
-    fn checked_record_rejects_forged_id_and_unknown_fields() {
-        let record = fixture_record();
-        let mut forged = record.clone();
-        forged.claimed_id = ExecutablePlanRevisionId::from_bytes([9; 32]);
-
-        assert!(matches!(
-            ExecutablePlanRevision::try_from_recorded_v1(forged),
-            Err(ExecutablePlanIntegrityError::RevisionIdMismatch { .. })
-        ));
-
-        let mut encoded = serde_json::to_value(record).expect("the record serializes");
-        encoded
-            .as_object_mut()
-            .expect("a record is a JSON object")
-            .insert("future_field".into(), json!(true));
-        let error = serde_json::from_value::<RecordedExecutablePlanRevisionV1>(encoded)
-            .expect_err("unknown top-level record fields must fail closed");
-        assert!(error.to_string().contains("unknown field"));
-    }
-
-    #[test]
-    fn minimal_typed_record_is_integrity_valid() {
-        let record = fixture_record();
-        let plan = ExecutablePlanRevision::try_from(record)
-            .expect("the fixture is a fully closed Graph-v1 record");
-        assert!(plan.bindings().is_empty());
-    }
-
-    #[test]
-    fn graph_v1_hash_matches_literal_golden_and_independent_record_projection() {
-        let record = fixture_record();
-        assert_eq!(
-            record.claimed_id.to_string(),
-            "f1e5fa3021749835b3bea5848df1d517d405e5a26b95d5ec597f872fd1ae8f79"
-        );
-
-        let mut projected = serde_json::to_value(&record).expect("record serializes");
-        projected
-            .as_object_mut()
-            .expect("record is an object")
-            .remove("claimed_id");
-        let canonical = FieldValue::Literal(projected)
-            .canonical_bytes()
-            .expect("record projection is canonical");
-        let mut independent = Sha256::new();
-        independent.update([1]);
-        independent.update((EXECUTABLE_PLAN_GRAPH_V1_DOMAIN.len() as u64).to_be_bytes());
-        independent.update(EXECUTABLE_PLAN_GRAPH_V1_DOMAIN);
-        independent.update([2]);
-        independent.update((canonical.len() as u64).to_be_bytes());
-        independent.update(canonical);
-        let digest: [u8; 32] = independent.finalize().into();
-        assert_eq!(
-            record.claimed_id,
-            ExecutablePlanRevisionId::from_bytes(digest)
-        );
-    }
-
-    #[test]
-    fn json_object_order_is_invariant_but_array_order_and_included_fields_are_not() {
-        let mut object_a_then_b = fixture_record();
-        object_a_then_b.content.variables = vec![RecordedVariableV1 {
-            name: "value".into(),
-            value: serde_json::from_str(r#"{"a":1,"b":2}"#).expect("fixture JSON is valid"),
-        }]
-        .into_boxed_slice();
-        reseal(&mut object_a_then_b);
-
-        let mut object_b_then_a = fixture_record();
-        object_b_then_a.content.variables = vec![RecordedVariableV1 {
-            name: "value".into(),
-            value: serde_json::from_str(r#"{"b":2,"a":1}"#).expect("fixture JSON is valid"),
-        }]
-        .into_boxed_slice();
-        reseal(&mut object_b_then_a);
-        assert_eq!(object_a_then_b.claimed_id, object_b_then_a.claimed_id);
-
-        let mut array_a_then_b = fixture_record();
-        array_a_then_b.content.variables = vec![RecordedVariableV1 {
-            name: "value".into(),
-            value: json!(["a", "b"]),
-        }]
-        .into_boxed_slice();
-        reseal(&mut array_a_then_b);
-        let mut array_b_then_a = fixture_record();
-        array_b_then_a.content.variables = vec![RecordedVariableV1 {
-            name: "value".into(),
-            value: json!(["b", "a"]),
-        }]
-        .into_boxed_slice();
-        reseal(&mut array_b_then_a);
-        assert_ne!(array_a_then_b.claimed_id, array_b_then_a.claimed_id);
-
-        let mut changed_schema_version = fixture_record();
-        changed_schema_version
-            .manifest
-            .workflow_definition_schema_version += 1;
-        reseal(&mut changed_schema_version);
-        assert_ne!(
-            fixture_record().claimed_id,
-            changed_schema_version.claimed_id
-        );
-    }
-
-    #[test]
-    fn unsupported_versions_and_profile_fail_closed() {
-        for mutate in [
-            |record: &mut RecordedExecutablePlanRevisionV1| record.record_version += 1,
-            |record: &mut RecordedExecutablePlanRevisionV1| record.compiler_version += 1,
-            |record: &mut RecordedExecutablePlanRevisionV1| record.canonical_hash_version += 1,
-        ] {
-            let mut record = fixture_record();
-            mutate(&mut record);
-            assert!(matches!(
-                ExecutablePlanRevision::try_from(record),
-                Err(ExecutablePlanIntegrityError::UnsupportedFormat)
-            ));
-        }
-
-        let mut encoded = serde_json::to_value(fixture_record()).expect("record serializes");
-        encoded
-            .as_object_mut()
-            .expect("record is an object")
-            .insert("profile".into(), json!("future-profile"));
-        assert!(
-            serde_json::from_value::<RecordedExecutablePlanRevisionV1>(encoded).is_err(),
-            "an unknown execution profile must fail during record decoding"
-        );
-    }
-
-    #[test]
-    fn collection_and_converter_canonicality_fail_closed() {
-        let mut unsorted = fixture_record();
-        unsorted.content.nodes = vec![minimal_node("b"), minimal_node("a")].into_boxed_slice();
-        assert!(matches!(
-            ExecutablePlanRevision::try_from(unsorted),
-            Err(ExecutablePlanIntegrityError::NonCanonical { section: "nodes" })
-        ));
-
-        let mut duplicate = fixture_record();
-        duplicate.content.nodes = vec![minimal_node("a"), minimal_node("a")].into_boxed_slice();
-        assert!(matches!(
-            ExecutablePlanRevision::try_from(duplicate),
-            Err(ExecutablePlanIntegrityError::NonCanonical { section: "nodes" })
-        ));
-
-        let mut converter = fixture_record();
-        converter.content.converters = vec![RecordedConverterV1 {
-            key: "implicit".into(),
-        }]
-        .into_boxed_slice();
-        assert!(matches!(
-            ExecutablePlanRevision::try_from(converter),
-            Err(ExecutablePlanIntegrityError::ConvertersUnsupported)
-        ));
-    }
-
-    #[test]
-    fn explicit_literals_are_not_reclassified_as_expressions() {
-        let mut literal = fixture_record();
-        literal.content.actions[0].input_schema = recorded_schema(
-            Schema::builder()
-                .add(Field::string(field_key!("value")).no_expression())
-                .build()
-                .expect("fixture schema is valid"),
-        );
-        literal.content.nodes[0].parameters = vec![RecordedParameterV1 {
-            key: "value".into(),
-            value: RecordedParameterValueV1::Literal {
-                value: json!("{{ $workflow.input }}"),
-            },
-        }]
-        .into_boxed_slice();
-        reseal(&mut literal);
-        ExecutablePlanRevision::try_from(literal.clone())
-            .expect("the tagged literal must remain a literal");
-
-        literal.content.nodes[0].parameters[0].value = RecordedParameterValueV1::Expression {
-            expression: "{{ $workflow.input }}".into(),
-        };
-        reseal(&mut literal);
-        assert!(matches!(
-            ExecutablePlanRevision::try_from(literal),
-            Err(ExecutablePlanIntegrityError::NonCanonical {
-                section: "nodes.parameters.schema"
-            })
-        ));
-    }
-
-    #[test]
-    fn parameter_validation_rejects_invalid_nested_values_and_secret_literals() {
-        let mut nested = fixture_record();
-        nested.content.actions[0].input_schema = recorded_schema(
-            Schema::builder()
-                .add(
-                    ObjectField::new(field_key!("config"))
-                        .add(Field::string(field_key!("name")).required()),
-                )
-                .build()
-                .expect("fixture schema is valid"),
-        );
-        nested.content.nodes[0].parameters = vec![RecordedParameterV1 {
-            key: "config".into(),
-            value: RecordedParameterValueV1::Literal { value: json!({}) },
-        }]
-        .into_boxed_slice();
-        reseal(&mut nested);
-        assert!(matches!(
-            ExecutablePlanRevision::try_from(nested),
-            Err(ExecutablePlanIntegrityError::NonCanonical {
-                section: "nodes.parameters.schema"
-            })
-        ));
-
-        let mut secret = fixture_record();
-        secret.content.actions[0].input_schema = recorded_schema(
-            Schema::builder()
-                .add(
-                    ObjectField::new(field_key!("auth")).add(SecretField::new(field_key!("token"))),
-                )
-                .build()
-                .expect("fixture schema is valid"),
-        );
-        secret.content.nodes[0].parameters = vec![RecordedParameterV1 {
-            key: "auth".into(),
-            value: RecordedParameterValueV1::Literal {
-                value: json!({"token": SECRET_PAYLOAD}),
-            },
-        }]
-        .into_boxed_slice();
-        reseal(&mut secret);
-        let error = ExecutablePlanRevision::try_from(secret)
-            .expect_err("an executable plan cannot persist credential material");
-        assert!(matches!(
-            error,
-            ExecutablePlanIntegrityError::NonCanonical {
-                section: "nodes.parameters.secret"
-            }
-        ));
-        assert!(!format!("{error:?}").contains(SECRET_PAYLOAD));
-    }
-
-    #[test]
-    fn node_parameter_set_cannot_bypass_required_fields_or_root_rules() {
-        let mut missing = fixture_record();
-        missing.content.actions[0].input_schema = recorded_schema(
-            Schema::builder()
-                .add(Field::string(field_key!("name")).required())
-                .build()
-                .expect("fixture schema is valid"),
-        );
-        reseal(&mut missing);
-        assert!(matches!(
-            ExecutablePlanRevision::try_from(missing),
-            Err(ExecutablePlanIntegrityError::NonCanonical {
-                section: "nodes.parameters.required"
-            })
-        ));
-
-        let mut root_rules = fixture_record();
-        root_rules.content.actions[0].input_schema = recorded_schema(
-            Schema::builder()
-                .add(Field::string(field_key!("name")))
-                .root_rule(nebula_schema::Rule::predicate(
-                    nebula_schema::Predicate::eq("name", json!("expected"))
-                        .expect("fixture predicate is valid"),
-                ))
-                .build()
-                .expect("fixture schema is valid"),
-        );
-        reseal(&mut root_rules);
-        assert!(matches!(
-            ExecutablePlanRevision::try_from(root_rules),
-            Err(ExecutablePlanIntegrityError::NonCanonical {
-                section: "nodes.parameters.root_rules"
-            })
-        ));
-    }
-
-    #[test]
-    fn reference_paths_have_one_canonical_spelling() {
-        for path in ["", "value", "items.0.name", "184467440737095516160"] {
-            assert!(is_canonical_reference_path(path), "{path:?} is canonical");
-        }
-        for alias in [
-            "$",
-            "$.value",
-            ".value",
-            "value.",
-            "value..name",
-            "items.00",
-        ] {
-            assert!(
-                !is_canonical_reference_path(alias),
-                "{alias:?} must be normalized before persistence"
-            );
-        }
-    }
-
-    #[test]
-    fn graph_cycle_check_is_iterative_for_deep_dags() {
-        let nodes = (0..10_000)
-            .map(|index| index.to_string())
-            .collect::<Vec<_>>();
-        let mut adjacency = HashMap::with_capacity(nodes.len());
-        for pair in nodes.windows(2) {
-            adjacency.insert(pair[0].as_str(), vec![pair[1].as_str()]);
-        }
-        assert!(!graph_has_cycle(
-            nodes.iter().map(String::as_str),
-            &adjacency
-        ));
-        adjacency
-            .entry(nodes.last().expect("the fixture is not empty").as_str())
-            .or_default()
-            .push(nodes[0].as_str());
-        assert!(graph_has_cycle(
-            nodes.iter().map(String::as_str),
-            &adjacency
-        ));
-    }
-
-    #[test]
-    fn only_replayable_connection_contracts_are_certified() {
-        let mut dynamic_declaration = fixture_record();
-        dynamic_declaration.content.actions[0].outputs = vec![
-            RecordedOutputPortV1::Dynamic {
-                key: "branch".into(),
-                source_field: "route".into(),
-                label_field: None,
-                include_fallback: true,
-            },
-            RecordedOutputPortV1::Flow {
-                key: "out".into(),
-                flow_kind: RecordedFlowKindV1::Main,
-            },
-        ]
-        .into_boxed_slice();
-        reseal(&mut dynamic_declaration);
-        ExecutablePlanRevision::try_from(dynamic_declaration.clone())
-            .expect("an unused dynamic declaration does not claim routing semantics");
-
-        dynamic_declaration.content.nodes =
-            vec![minimal_node("source"), minimal_node("target")].into_boxed_slice();
-        dynamic_declaration.content.connections = vec![RecordedConnectionV1 {
-            from_node: "source".into(),
-            from_port: "branch".into(),
-            to_node: "target".into(),
-            to_port: None,
-        }]
-        .into_boxed_slice();
-        reseal(&mut dynamic_declaration);
-        assert!(matches!(
-            ExecutablePlanRevision::try_from(dynamic_declaration),
-            Err(ExecutablePlanIntegrityError::NonCanonical {
-                section: "connections.from_port"
-            })
-        ));
-
-        let mut error_flow = fixture_record();
-        error_flow.content.actions[0].outputs[0] = RecordedOutputPortV1::Flow {
-            key: "out".into(),
-            flow_kind: RecordedFlowKindV1::Error,
-        };
-        error_flow.content.nodes =
-            vec![minimal_node("source"), minimal_node("target")].into_boxed_slice();
-        error_flow.content.connections = vec![RecordedConnectionV1 {
-            from_node: "source".into(),
-            from_port: "out".into(),
-            to_node: "target".into(),
-            to_port: None,
-        }]
-        .into_boxed_slice();
-        reseal(&mut error_flow);
-        assert!(matches!(
-            ExecutablePlanRevision::try_from(error_flow),
-            Err(ExecutablePlanIntegrityError::NonCanonical {
-                section: "connections.from_port"
-            })
-        ));
-    }
-
-    #[test]
-    fn tag_filtered_support_ports_are_recordable_but_not_certifiable_edges() {
-        let mut record = fixture_record();
-        record.content.actions[0].inputs = vec![
-            RecordedInputPortV1::Flow { key: "in".into() },
-            RecordedInputPortV1::Support {
-                key: "model".into(),
-                required: false,
-                multi: false,
-                allowed_node_types: None,
-                allowed_tags: Some(vec!["llm".into()].into_boxed_slice()),
-            },
-        ]
-        .into_boxed_slice();
-        reseal(&mut record);
-        ExecutablePlanRevision::try_from(record.clone())
-            .expect("unused tag-filter declarations remain an exact contract fact");
-
-        record.content.nodes =
-            vec![minimal_node("source"), minimal_node("target")].into_boxed_slice();
-        record.content.connections = vec![RecordedConnectionV1 {
-            from_node: "source".into(),
-            from_port: "out".into(),
-            to_node: "target".into(),
-            to_port: Some("model".into()),
-        }]
-        .into_boxed_slice();
-        reseal(&mut record);
-        assert!(matches!(
-            ExecutablePlanRevision::try_from(record),
-            Err(ExecutablePlanIntegrityError::NonCanonical {
-                section: "connections.to_port.tag_filter"
-            })
-        ));
-    }
-
-    #[test]
-    fn binding_integrity_rejects_unknown_bits_and_duplicate_site_slot() {
-        let unknown_bits = credential_binding_record("primary", 0b1000_0000);
-        assert!(matches!(
-            ExecutablePlanRevision::try_from(unknown_bits),
-            Err(ExecutablePlanIntegrityError::UnknownCredentialCapability)
-        ));
-
-        let mut duplicate_site_slot = resource_binding_record("primary");
-        duplicate_site_slot.bindings = vec![
-            resource_binding("client", "primary"),
-            resource_binding("client", "secondary"),
-        ]
-        .into_boxed_slice();
-        assert!(matches!(
-            ExecutablePlanRevision::try_from(duplicate_site_slot),
-            Err(ExecutablePlanIntegrityError::NonCanonical {
-                section: "bindings"
-            })
-        ));
-    }
-
-    #[test]
-    fn typed_schema_rejects_unknown_fields_and_any_secret_bearing_default() {
-        let mut unknown_wire = serde_json::to_value(fixture_record()).expect("record serializes");
-        let schema = unknown_wire
-            .pointer_mut("/content/actions/0/input_schema/schema")
-            .expect("fixture action input schema exists");
-        schema.as_object_mut().expect("schema is an object").insert(
-            "fields".into(),
-            json!([{
-                "type": "future_secret",
-                "key": "future",
-                "payload": SECRET_PAYLOAD
-            }]),
-        );
-        let mut unknown = serde_json::from_value::<RecordedExecutablePlanRevisionV1>(unknown_wire)
-            .expect("unknown schema field kinds are preserved by the schema wire");
-        reseal(&mut unknown);
-        let error = ExecutablePlanRevision::try_from(unknown)
-            .expect_err("Graph-v1 must reject opaque future schema fields");
-        assert!(matches!(
-            error,
-            ExecutablePlanIntegrityError::NonCanonical {
-                section: "actions.input_schema"
-            }
-        ));
-        assert!(!format!("{error:?}").contains(SECRET_PAYLOAD));
-
-        for secret_schema in [
-            object_with_secret_default(json!({"token": SECRET_PAYLOAD})),
-            object_with_secret_default(Value::Null),
-            mode_with_secret_default(json!({"mode": "token", "value": SECRET_PAYLOAD})),
-            mode_with_secret_default(Value::Null),
-        ] {
-            let mut record = fixture_record();
-            record.content.actions[0].input_schema = recorded_schema(secret_schema);
-            reseal(&mut record);
-            assert!(matches!(
-                ExecutablePlanRevision::try_from(record),
-                Err(ExecutablePlanIntegrityError::NonCanonical {
-                    section: "actions.input_schema"
-                })
-            ));
-        }
-    }
-
-    #[test]
-    fn malformed_schema_decode_is_secret_free_and_fail_closed() {
-        let mut encoded = serde_json::to_value(fixture_record()).expect("record serializes");
-        let schema = encoded
-            .pointer_mut("/content/actions/0/input_schema/schema")
-            .expect("fixture action input schema exists");
-        *schema = json!({
-            "fields": [{
-                "type": "string",
-                "key": format!("{SECRET_PAYLOAD} invalid")
-            }]
-        });
-
-        let error = serde_json::from_value::<RecordedExecutablePlanRevisionV1>(encoded)
-            .expect_err("a malformed typed schema must fail during decoding");
-        assert!(error.to_string().contains("invalid Graph-v1 schema wire"));
-        assert!(!error.to_string().contains(SECRET_PAYLOAD));
-        assert!(!format!("{error:?}").contains(SECRET_PAYLOAD));
-    }
-
-    #[test]
-    fn exact_component_build_metadata_is_kept_but_plugin_build_metadata_is_rejected() {
-        let mut component = fixture_record();
-        component.content.actions[0].version.build = "linux.1".into();
-        component.content.nodes[0].action_version.build = "linux.1".into();
-        reseal(&mut component);
-        ExecutablePlanRevision::try_from(component)
-            .expect("exact component versions retain valid build metadata");
-
-        let mut plugin = fixture_record();
-        plugin.content.plugins[0].version.build = "linux.1".into();
-        reseal(&mut plugin);
-        assert!(matches!(
-            ExecutablePlanRevision::try_from(plugin),
-            Err(ExecutablePlanIntegrityError::NonCanonical {
-                section: "plugins.version"
-            })
-        ));
-    }
-
-    #[test]
-    fn empty_reference_path_means_whole_output_and_requires_a_durable_edge() {
-        let mut record = fixture_record();
-        record.content.actions[0].input_schema = recorded_schema(
-            Schema::builder()
-                .add(
-                    ObjectField::new(field_key!("payload")).add(Field::string(field_key!("value"))),
-                )
-                .build()
-                .expect("fixture consumer schema is valid"),
-        );
-        record.content.actions[0].output_schema = recorded_schema(
-            Schema::builder()
-                .add(Field::string(field_key!("value")))
-                .build()
-                .expect("fixture producer schema is valid"),
-        );
-        record.content.actions[0].inputs = vec![
-            RecordedInputPortV1::Flow { key: "in".into() },
-            RecordedInputPortV1::Support {
-                key: "support".into(),
-                required: false,
-                multi: false,
-                allowed_node_types: None,
-                allowed_tags: None,
-            },
-        ]
-        .into_boxed_slice();
-        record.content.nodes =
-            vec![minimal_node("source"), minimal_node("target")].into_boxed_slice();
-        record.content.nodes[1].parameters = vec![RecordedParameterV1 {
-            key: "payload".into(),
-            value: RecordedParameterValueV1::Reference {
-                node_key: "source".into(),
-                output_path: String::new(),
-            },
-        }]
-        .into_boxed_slice();
-        record.content.connections = vec![RecordedConnectionV1 {
-            from_node: "source".into(),
-            from_port: "out".into(),
-            to_node: "target".into(),
-            to_port: Some("support".into()),
-        }]
-        .into_boxed_slice();
-        reseal(&mut record);
-        ExecutablePlanRevision::try_from(record)
-            .expect("an empty reference path selects the producer's whole output");
-    }
-
-    #[test]
-    fn component_closure_and_binding_references_fail_closed() {
-        let mut unused = fixture_record();
-        unused.content.credentials = vec![RecordedCredentialV1 {
-            key: "demo.oauth".into(),
-            plugin_key: "demo".into(),
-            version: recorded_semver(1, 0, 0),
-            pattern: RecordedAuthPatternV1::OAuth2,
-            properties_schema: recorded_schema(ValidSchema::empty()),
-            capability_bits: Capabilities::REFRESHABLE.bits(),
-        }]
-        .into_boxed_slice();
-        reseal(&mut unused);
-        assert!(matches!(
-            ExecutablePlanRevision::try_from(unused),
-            Err(ExecutablePlanIntegrityError::NonCanonical {
-                section: "components.unused"
-            })
-        ));
-
-        let mut dangling = resource_binding_record("primary");
-        dangling.bindings[0].site = RecordedBindingSiteV1::Node("missing".into());
-        reseal(&mut dangling);
-        assert!(matches!(
-            ExecutablePlanRevision::try_from(dangling),
-            Err(ExecutablePlanIntegrityError::NonCanonical {
-                section: "bindings.site"
-            })
-        ));
-    }
-
-    #[test]
-    fn nested_unknown_fields_fail_closed() {
-        let record = resource_binding_record("primary");
-        let mut encoded = serde_json::to_value(record).expect("record serializes");
-        encoded
-            .get_mut("bindings")
-            .and_then(Value::as_array_mut)
-            .and_then(|bindings| bindings.first_mut())
-            .and_then(Value::as_object_mut)
-            .expect("fixture binding is an object")
-            .insert("future_field".into(), json!(true));
-        let wire = serde_json::to_string(&encoded).expect("mutated record serializes");
-        let error = serde_json::from_str::<RecordedExecutablePlanRevisionV1>(&wire)
-            .expect_err("unknown nested record fields must fail closed");
-        assert!(
-            error.to_string().contains("unknown field"),
-            "unexpected nested decode error: {error}"
-        );
-    }
-
-    #[test]
-    fn checked_plan_roundtrips_record_and_redacts_debug_surfaces() {
-        let record = credential_binding_record(SECRET_PAYLOAD, Capabilities::REFRESHABLE.bits());
-        assert!(!format!("{record:?}").contains(SECRET_PAYLOAD));
-
-        let wire_value = serde_json::to_value(&record).expect("record serializes");
-        let decoded = serde_json::from_value::<RecordedExecutablePlanRevisionV1>(wire_value)
-            .expect("record deserializes from an owned JSON value");
-        let plan = ExecutablePlanRevision::try_from(decoded).expect("record is integrity-valid");
-        assert_eq!(plan.bindings().len(), 1);
-        assert_eq!(plan.bindings()[0].selector(), SECRET_PAYLOAD);
-        assert!(!format!("{:?}", plan.bindings()[0]).contains(SECRET_PAYLOAD));
-        assert!(!format!("{plan:?}").contains(SECRET_PAYLOAD));
-
-        let projected = RecordedExecutablePlanRevisionV1::from(&plan);
-        let reloaded =
-            ExecutablePlanRevision::try_from(projected).expect("roundtrip remains valid");
-        assert_eq!(reloaded.id(), plan.id());
-        assert_eq!(reloaded.workflow_version_id(), plan.workflow_version_id());
-        assert_eq!(reloaded.plugin_set_id(), plan.plugin_set_id());
-        assert_eq!(
-            reloaded.worker_flavor_revision_id(),
-            plan.worker_flavor_revision_id()
-        );
-    }
-}
+#[path = "plan_record_contract_tests.rs"]
+mod plan_record_contract_tests;

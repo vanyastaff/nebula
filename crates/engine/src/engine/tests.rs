@@ -1,6 +1,6 @@
 use std::{
     sync::{
-        OnceLock,
+        Arc, OnceLock,
         atomic::{AtomicU32, Ordering},
     },
     time::Duration,
@@ -17,6 +17,7 @@ use nebula_workflow::{
     CURRENT_SCHEMA_VERSION, Connection, ErrorStrategy, NodeDefinition, Version, WorkflowConfig,
     WorkflowDefinition,
 };
+use tokio::sync::Notify;
 
 use super::*;
 use crate::runtime::{
@@ -159,6 +160,19 @@ fn make_workflow_with_config(
 }
 
 fn make_engine(registry: Arc<ActionRegistry>) -> (WorkflowEngine, MetricsRegistry) {
+    // These local engine fixtures perform no provider operations. Preserve any
+    // explicit declaration and wrap legacy metadata before runtime validation.
+    for key in registry.keys() {
+        let (mut metadata, inner) = registry.get_factory(&key).unwrap();
+        if metadata.effect_contract == nebula_action::effect::ActionEffectContract::Undeclared {
+            metadata.effect_contract =
+                nebula_action::effect::ActionEffectContract::NoExternalEffects;
+            registry.register_factory(
+                metadata.clone(),
+                Arc::new(QualifiedFixtureFactory { metadata, inner }),
+            );
+        }
+    }
     let executor: ActionExecutor =
         Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
     let runner = Arc::new(InProcessRunner::new(executor));
@@ -178,12 +192,11 @@ fn make_engine(registry: Arc<ActionRegistry>) -> (WorkflowEngine, MetricsRegistr
     (engine, metrics)
 }
 
-/// Test-only bundle of the spec-16 in-memory adapters.
+/// Test-only bundle of in-memory storage adapters.
 ///
 /// Wires one `InMemoryExecutionStore` (plus the journal reader sharing
-/// its core), node-result, checkpoint, idempotency, workflow, and
-/// workflow-version adapters into the engine's [`ExecutionStores`] /
-/// [`WorkflowStores`] bundles. It additionally exposes legacy-shaped
+/// its core), node-result, checkpoint, idempotency, and workflow-version
+/// adapters. It additionally exposes test-oriented
 /// read/seed accessors (`get_state` / `load_node_output` /
 /// `load_node_result` / `acquire_lease` / `is_idempotency_marked` /
 /// `inject_state` / `inject_node_output` / `save_workflow`) so
@@ -202,7 +215,6 @@ struct TestStores {
     node_results: Arc<nebula_storage::InMemoryNodeResultStore>,
     checkpoints: Arc<nebula_storage::InMemoryCheckpointStore>,
     idempotency: Arc<nebula_storage::InMemoryIdempotencyGuard>,
-    workflow: Arc<nebula_storage::InMemoryWorkflowStore>,
     versions: Arc<nebula_storage::InMemoryWorkflowVersionStore>,
 }
 
@@ -210,18 +222,13 @@ impl TestStores {
     fn new() -> Self {
         let execution = Arc::new(nebula_storage::InMemoryExecutionStore::new());
         let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&execution));
-        // The workflow-row store shares the version store's map so
-        // `save_with_published_version` commits the pair atomically
-        // and the version-read path observes the same data.
         let versions = nebula_storage::InMemoryWorkflowVersionStore::new();
-        let workflow = nebula_storage::InMemoryWorkflowStore::new_with_versions(&versions);
         Self {
             execution,
             journal,
             node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
             checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
             idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
-            workflow: Arc::new(workflow),
             versions: Arc::new(versions),
         }
     }
@@ -235,25 +242,19 @@ impl TestStores {
             checkpoints: self.checkpoints.clone(),
             idempotency: self.idempotency.clone(),
             resume_tokens: Arc::new(self.execution.resume_token_store()),
+            operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(
+                &self.execution,
+            )),
         }
     }
 
     /// The engine's workflow-store bundle over these adapters.
-    fn workflow_stores(&self) -> crate::store_seam::WorkflowStores {
-        crate::store_seam::WorkflowStores {
-            workflow: self.workflow.clone(),
-            versions: self.versions.clone(),
-        }
-    }
-
     /// Attach both bundles to `engine` (mirrors the production
     /// composition root, minus the tenancy decorator — every engine
     /// call uses the same placeholder scope so the raw adapters
     /// behave as one coherent tenant).
     fn attach(&self, engine: WorkflowEngine) -> WorkflowEngine {
-        engine
-            .with_execution_stores(self.execution_stores())
-            .with_workflow_stores(self.workflow_stores())
+        engine.with_execution_stores(self.execution_stores())
     }
 
     /// Persist a workflow definition as the published version 0 so the
@@ -274,6 +275,7 @@ impl TestStores {
                     number,
                     published,
                     pinned: false,
+                    activation: None,
                     definition,
                 },
             )
@@ -370,7 +372,7 @@ impl TestStores {
         &self,
         id: ExecutionId,
         holder: &str,
-        ttl: std::time::Duration,
+        ttl: Duration,
     ) -> Result<bool, StorageError> {
         let scope = crate::store_seam::single_tenant_scope();
         Ok(self
@@ -692,11 +694,7 @@ async fn trigger_context_construction_is_usable_in_engine() {
     );
     let ctx = nebula_action::TriggerRuntimeContext::new(base, WorkflowId::new(), node_key!("test"));
     assert!(!ctx.has_credential_id("missing").await);
-    assert!(
-        ctx.schedule_after(std::time::Duration::from_millis(1))
-            .await
-            .is_err()
-    );
+    assert!(ctx.schedule_after(Duration::from_millis(1)).await.is_err());
     assert!(
         ctx.emit_execution(serde_json::json!({"event":"tick"}), None)
             .await
@@ -1399,7 +1397,292 @@ async fn error_strategy_ignore_errors_continues_downstream() {
     assert_eq!(result.node_output(&b), Some(&serde_json::json!(null)));
 }
 
-// -- resume_execution tests --
+#[path = "exact_revision_fixtures.rs"]
+mod exact_revision_fixtures;
+use exact_revision_fixtures::*;
+
+#[path = "durable_resume_tests.rs"]
+mod durable_resume_tests;
+
+#[path = "contract_tests.rs"]
+mod contract_tests;
+
+#[path = "checkpoint_tests.rs"]
+mod checkpoint_tests;
+
+struct QualifiedFixtureFactory {
+    metadata: ActionMetadata,
+    inner: Arc<dyn nebula_action::ActionFactory>,
+}
+
+impl nebula_action::ActionFactory for QualifiedFixtureFactory {
+    fn metadata(&self) -> &ActionMetadata {
+        &self.metadata
+    }
+    fn dependencies(&self) -> &Dependencies {
+        self.inner.dependencies()
+    }
+    fn instantiate<'a>(
+        &'a self,
+        node: &'a NodeDefinition,
+        context: &'a dyn nebula_action::ActionContext,
+    ) -> Pin<Box<dyn Future<Output = Result<nebula_action::ActionHandle, ActionError>> + Send + 'a>>
+    {
+        self.inner.instantiate(node, context)
+    }
+}
+
+struct QualifiedFixturePlugin {
+    manifest: nebula_plugin::PluginManifest,
+    factories: Vec<Arc<dyn nebula_action::ActionFactory>>,
+}
+
+impl std::fmt::Debug for QualifiedFixturePlugin {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("QualifiedFixturePlugin")
+            .finish_non_exhaustive()
+    }
+}
+
+impl nebula_plugin::Plugin for QualifiedFixturePlugin {
+    fn manifest(&self) -> &nebula_plugin::PluginManifest {
+        &self.manifest
+    }
+    fn actions(&self) -> Vec<Arc<dyn nebula_action::ActionFactory>> {
+        self.factories.clone()
+    }
+}
+
+impl TestStores {
+    /// Install a real compiled revision for legacy-shaped test factories. The
+    /// wrapper only supplies the plugin namespace their technical registry lacks;
+    /// instantiation and action behavior still delegate to the original factory.
+    async fn attach_exact(
+        &self,
+        engine: WorkflowEngine,
+        workflow: &WorkflowDefinition,
+        state: serde_json::Value,
+    ) -> WorkflowEngine {
+        self.attach_exact_with_admission_budget(
+            engine,
+            workflow,
+            state,
+            Some(ExecutionBudget::default()),
+        )
+        .await
+    }
+
+    async fn attach_exact_with_admission_budget(
+        &self,
+        engine: WorkflowEngine,
+        workflow: &WorkflowDefinition,
+        state: serde_json::Value,
+        admitted_budget: Option<ExecutionBudget>,
+    ) -> WorkflowEngine {
+        let mut plugins: HashMap<
+            String,
+            HashMap<ActionKey, Arc<dyn nebula_action::ActionFactory>>,
+        > = HashMap::new();
+        for node in &workflow.nodes {
+            let (mut metadata, inner) = match node.interface_version.as_ref() {
+                Some(version) => engine
+                    .runtime
+                    .registry()
+                    .get_factory_versioned(&node.action_key, version),
+                None => engine.runtime.registry().get_factory(&node.action_key),
+            }
+            .expect("fixture registers every compiled action");
+            let plugin_key = node.plugin_key.to_string();
+            let qualified = if node.action_key.as_str().contains('.') {
+                node.action_key.clone()
+            } else {
+                ActionKey::new(format!("{plugin_key}.{}", node.action_key)).unwrap()
+            };
+            metadata.base.key = qualified.clone();
+            // These resume fixtures only echo, branch, wait, fail, or observe
+            // local test counters; none performs a provider operation.
+            metadata.effect_contract =
+                nebula_action::effect::ActionEffectContract::NoExternalEffects;
+            plugins
+                .entry(plugin_key)
+                .or_default()
+                .entry(qualified)
+                .or_insert_with(|| Arc::new(QualifiedFixtureFactory { metadata, inner }));
+        }
+        let mut registry = PluginRegistry::new();
+        for (key, factories) in plugins {
+            let plugin = QualifiedFixturePlugin {
+                manifest: nebula_plugin::PluginManifest::builder(&key, &key)
+                    .build()
+                    .unwrap(),
+                factories: factories.into_values().collect(),
+            };
+            registry
+                .register(Arc::new(
+                    nebula_plugin::ResolvedPlugin::from(plugin).unwrap(),
+                ))
+                .unwrap();
+        }
+        let frozen = Arc::new(
+            registry
+                .freeze(
+                    nebula_core::ArtifactSetDigest::from_bytes([0x94; 32]),
+                    "1.0.0".parse().unwrap(),
+                )
+                .unwrap(),
+        );
+        let plan = frozen
+            .compile_graph_v1(nebula_core::WorkflowVersionId::new(), workflow)
+            .unwrap_or_else(|error| {
+                panic!("fixture compilation diagnostics: {:?}", error.diagnostics())
+            });
+        let catalog = Arc::new(self.execution.plan_flavor_catalog());
+        crate::PlanFlavorRevisionInstaller::new(catalog.clone())
+            .install(&frozen, &plan)
+            .await
+            .unwrap();
+        let mut state: ExecutionState =
+            serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+        state.set_revision_ids(plan.id(), frozen.revision().id());
+        if state.budget.is_none() {
+            state.budget = admitted_budget;
+        }
+        self.materialize_exact_state(&plan, state).await;
+        self.attach(engine).with_plan_flavor_runtime(
+            Arc::new(crate::PlanFlavorRevisionLoader::new(catalog)),
+            frozen,
+            Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
+                &self.execution,
+            )),
+        )
+    }
+
+    async fn materialize_exact_state(
+        &self,
+        plan: &nebula_plugin::ExecutablePlanRevision,
+        mut state: ExecutionState,
+    ) {
+        use nebula_storage_port::{
+            dto::{
+                ContractBundleRecord, ControlCommand, ControlMsg, MaterializedStart, NewExecution,
+                PlanFlavorRevisionIds,
+            },
+            store::{ControlQueue, StartAcceptanceStore, StartContractIdentity},
+        };
+        let scope = crate::store_seam::single_tenant_scope();
+        state.set_revision_ids(plan.id(), plan.worker_flavor_revision_id());
+        state.workflow_version_number = Some(
+            state
+                .workflow_version_number
+                .filter(|number| *number != 0)
+                .unwrap_or(1),
+        );
+        let bundle = nebula_execution::ExecutionContractBundle::new_graph_v1(
+            nebula_core::ExecutionContractBundleId::new(),
+            scope.org_id.parse().unwrap(),
+            scope.workspace_id.parse().unwrap(),
+            plan.id(),
+            plan.plugin_set_id(),
+            nebula_execution::ExecutionRevisions::new(
+                plan.workflow_version_id(),
+                plan.worker_flavor_revision_id(),
+            ),
+            [],
+        );
+        let record = ContractBundleRecord::v1_json(
+            StartContractIdentity::new(
+                bundle.bundle_id(),
+                PlanFlavorRevisionIds::new(plan.id(), plan.worker_flavor_revision_id()),
+            ),
+            serde_json::to_vec(&bundle).unwrap(),
+        )
+        .unwrap();
+        let mut initial = ExecutionState::new(state.execution_id, state.workflow_id, &[]);
+        initial.set_revision_ids(plan.id(), plan.worker_flavor_revision_id());
+        initial.workflow_version_number = state.workflow_version_number;
+        initial.budget = Some(state.budget.clone().unwrap_or_default());
+        initial.workflow_input = state.workflow_input.clone();
+        initial.created_at = state.created_at;
+        initial.updated_at = state.created_at;
+        let execution_id = state.execution_id.to_string();
+        let workflow_id = state.workflow_id.to_string();
+        let command = ControlMsg {
+            id: state.execution_id.as_bytes(),
+            execution_id: execution_id.clone(),
+            command: ControlCommand::Start,
+            scope: scope.clone(),
+            w3c_traceparent: None,
+            reclaim_count: 0,
+            resume_target: None,
+        };
+        let initial_json = serde_json::to_value(&initial).unwrap();
+        let starts = nebula_storage::inmem::InMemoryStartAcceptanceStore::new(&self.execution);
+        assert!(matches!(
+            starts
+                .materialize_start(&MaterializedStart::new(
+                    &scope,
+                    None,
+                    &execution_id,
+                    NewExecution::new(&workflow_id, &initial_json),
+                    &command,
+                    &record
+                ))
+                .await
+                .unwrap(),
+            nebula_storage_port::store::StartMaterialization::Accepted { .. }
+        ));
+        let queue = nebula_storage::InMemoryControlQueue::new(&self.execution);
+        let claims = queue
+            .claim_pending_for_flavor(&[0x74; 16], 1, plan.worker_flavor_revision_id())
+            .await
+            .unwrap();
+        assert_eq!(claims.len(), 1);
+        assert_eq!(claims[0].msg.id, command.id);
+        queue.mark_completed(&claims[0].token).await.unwrap();
+        if serde_json::to_value(&state).unwrap() != initial_json {
+            self.replace_exact_state(state).await;
+        }
+    }
+
+    async fn replace_exact_state(&self, state: ExecutionState) {
+        let scope = crate::store_seam::single_tenant_scope();
+        let execution_id = state.execution_id.to_string();
+        let record = self
+            .execution
+            .get(&scope, &execution_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let fence = self
+            .execution
+            .acquire_lease(
+                &scope,
+                &execution_id,
+                "fixture-snapshot",
+                Duration::from_secs(30),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let batch = nebula_storage_port::TransitionBatch::builder()
+            .scope(scope.clone())
+            .execution_id(execution_id.clone())
+            .expected_version(record.version)
+            .fencing(fence)
+            .new_state(serde_json::to_value(state).unwrap())
+            .build()
+            .unwrap();
+        assert!(matches!(
+            self.execution.commit(batch).await.unwrap(),
+            nebula_storage_port::TransitionOutcome::Applied { .. }
+        ));
+        self.execution
+            .release_lease(&scope, &execution_id, fence)
+            .await
+            .unwrap();
+    }
+}
 
 #[tokio::test]
 async fn resume_requires_execution_repo() {
@@ -1420,26 +1703,32 @@ async fn resume_requires_execution_repo() {
 }
 
 #[tokio::test]
-async fn resume_requires_workflow_repo() {
+async fn resume_uses_exact_catalog_without_workflow_repo() {
     let registry = Arc::new(ActionRegistry::new());
+    let frozen = snapshot_registry(&registry, "exact-without-authoring-store");
     let (engine, _) = make_engine(registry);
     let stores = TestStores::new();
-    let execution_id = ExecutionId::new();
-    let workflow_id = WorkflowId::new();
-    let exec_state = ExecutionState::new(execution_id, workflow_id, &[]);
-    let state_json = serde_json::to_value(&exec_state).unwrap();
-    stores
-        .inject_state(execution_id, workflow_id, state_json)
-        .await;
-    let engine = engine.with_execution_stores(stores.execution_stores());
+    let (execution_id, _) = install_snapshot_execution(&stores, &frozen).await;
+    let engine = engine
+        .with_execution_stores(stores.execution_stores())
+        .with_plan_flavor_runtime(
+            Arc::new(crate::PlanFlavorRevisionLoader::new(Arc::new(
+                stores.execution.plan_flavor_catalog(),
+            ))),
+            frozen,
+            Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
+                &stores.execution,
+            )),
+        );
     // No workflow store attached.
-    let err = engine
+    let result = engine
         .resume_execution(&crate::store_seam::single_tenant_scope(), execution_id)
         .await
-        .unwrap_err();
-    assert!(
-        matches!(err, EngineError::PlanningFailed(ref msg) if msg.contains("workflow_repo")),
-        "expected no-workflow_repo error, got: {err}"
+        .unwrap();
+    assert_eq!(result.status, ExecutionStatus::Completed);
+    assert_eq!(
+        result.node_output(&node_key!("run")),
+        Some(&serde_json::json!("exact-without-authoring-store"))
     );
 }
 
@@ -1570,15 +1859,18 @@ async fn resume_continues_from_injected_partial_state() {
         .transition_to(NodeState::Completed)
         .unwrap();
 
+    exec_state.checkpoint.as_mut().unwrap().insert(
+        n1.clone(),
+        checkpoint::action_checkpoint(&ActionResult::success(serde_json::json!("from_n1")))
+            .unwrap(),
+    );
     let state_json = serde_json::to_value(&exec_state).unwrap();
-    stores.inject_state(execution_id, wf.id, state_json).await;
-
-    // Persist n1's output.
+    // Populate the technical cache too; resume must use the owner snapshot.
     stores
         .inject_node_output(execution_id, n1.clone(), serde_json::json!("from_n1"))
         .await;
 
-    let engine = stores.attach(engine);
+    let engine = stores.attach_exact(engine, &wf, state_json).await;
 
     let scope = crate::store_seam::single_tenant_scope();
     let result = engine.resume_execution(&scope, execution_id).await.unwrap();
@@ -1632,11 +1924,7 @@ async fn resume_uses_persisted_workflow_version_number_not_latest_published() {
         .unwrap();
 
     let state_json = serde_json::to_value(&exec_state).unwrap();
-    stores
-        .inject_state(execution_id, wf_v1.id, state_json)
-        .await;
-
-    let engine = stores.attach(engine);
+    let engine = stores.attach_exact(engine, &wf_v1, state_json).await;
     let scope = crate::store_seam::single_tenant_scope();
     let result = engine.resume_execution(&scope, execution_id).await.unwrap();
 
@@ -1644,24 +1932,13 @@ async fn resume_uses_persisted_workflow_version_number_not_latest_published() {
     assert_eq!(result.node_output(&n), Some(&serde_json::json!("from-v1")));
 }
 
-/// Production's ONLY entry point for validating a brand-new execution is
-/// `resume_execution`'s first-attempt branch — `execute_workflow_scoped` is
-/// never reached from production dispatch (`EngineControlDispatch::dispatch_start`
-/// always calls `resume_execution`, not `execute_workflow_scoped`). This
-/// exercises that real path directly: a `Created` row with empty
-/// `node_states` (the exact cold-start shape the API's start handler
-/// persists) wired with an undeclared, non-error output port must be
-/// rejected before any node dispatches.
-///
-/// Unlike `execute_workflow_scoped` (which rejects *before* it creates its
-/// own row, so a rejection there requires zero teardown), `resume_execution`
-/// never creates this row itself — the API start handler already did. A
-/// rejection here must therefore durably transition that pre-existing row to
-/// `Failed` (the W0 U2 orphaned-row fix) rather than leave it stranded in
-/// `Created` forever with no visible failure anywhere. The lease taken to
-/// perform that transition must not be left held afterward.
+/// Directly exercise the owner preflight failure transition. The compiler now
+/// rejects this malformed wire before a durable plan can be installed, so this
+/// fixture tests the defensive transition helper rather than fabricating a plan.
+/// The original persisted node failure, version bump and lease release assertions
+/// remain; corrupt-catalog tests separately cover the durable resume boundary.
 #[tokio::test]
-async fn resume_execution_rejects_undeclared_port_on_genuine_first_attempt() {
+async fn graph_preflight_rejection_terminalizes_created_execution() {
     let registry = Arc::new(ActionRegistry::new());
     registry.register_stateless_instance(
         ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
@@ -1695,7 +1972,26 @@ async fn resume_execution_rejects_undeclared_port_on_genuine_first_attempt() {
     stores.inject_state(execution_id, wf.id, state_json).await;
 
     let scope = crate::store_seam::single_tenant_scope();
-    let result = engine.resume_execution(&scope, execution_id).await;
+    let graph = DependencyGraph::from_definition(&wf).unwrap();
+    let node_map = wf
+        .nodes
+        .iter()
+        .map(|node| (node.id.clone(), node))
+        .collect();
+    let reject = engine
+        .validate_declared_output_ports(&graph, &node_map)
+        .unwrap_err();
+    let mut exec_state = exec_state;
+    for node in &wf.nodes {
+        exec_state.set_node_state(
+            node.id.clone(),
+            nebula_execution::state::NodeExecutionState::new(),
+        );
+    }
+    engine
+        .fail_cold_start_preflight(&scope, execution_id, exec_state, 0, &reject, None)
+        .await;
+    let result: Result<ExecutionResult, EngineError> = Err(reject);
 
     assert!(
         matches!(result, Err(EngineError::UndeclaredOutputPort { .. })),
@@ -1749,13 +2045,7 @@ async fn resume_execution_rejects_undeclared_port_on_genuine_first_attempt() {
     );
 }
 
-/// The adopt path (#976) must not lose the cold-start pre-flight's durable
-/// failure write. Mirrors
-/// `resume_execution_rejects_undeclared_port_on_genuine_first_attempt`, but
-/// the lease is already held when `resume_execution_leased` starts — exactly
-/// the shape the orchestrator's handoff produces: the queue row is
-/// acknowledged and the execution lease minted before the sink drives the
-/// turn.
+/// A preflight failure must use an already-adopted lease for its durable write.
 ///
 /// Red-ability: if `fail_cold_start_preflight` tried to `acquire_lease` on
 /// this path, the live handoff lease would block it (even for the same
@@ -1763,7 +2053,7 @@ async fn resume_execution_rejects_undeclared_port_on_genuine_first_attempt() {
 /// `Created` — orphaned, because the acknowledged queue row is never
 /// redelivered. The `Failed`-status assertion below is the one that fires.
 #[tokio::test]
-async fn resume_execution_leased_rejects_undeclared_port_and_still_marks_failed() {
+async fn graph_preflight_rejection_uses_adopted_fence_and_terminalizes_execution() {
     let registry = Arc::new(ActionRegistry::new());
     registry.register_stateless_instance(
         ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
@@ -1807,9 +2097,26 @@ async fn resume_execution_leased_rejects_undeclared_port_and_still_marks_failed(
         .unwrap()
         .expect("no lease existed yet");
 
-    let result = engine
-        .resume_execution_leased(&scope, execution_id, fence)
+    let graph = DependencyGraph::from_definition(&wf).unwrap();
+    let node_map = wf
+        .nodes
+        .iter()
+        .map(|node| (node.id.clone(), node))
+        .collect();
+    let reject = engine
+        .validate_declared_output_ports(&graph, &node_map)
+        .unwrap_err();
+    let mut exec_state = exec_state;
+    for node in &wf.nodes {
+        exec_state.set_node_state(
+            node.id.clone(),
+            nebula_execution::state::NodeExecutionState::new(),
+        );
+    }
+    engine
+        .fail_cold_start_preflight(&scope, execution_id, exec_state, 0, &reject, Some(fence))
         .await;
+    let result: Result<ExecutionResult, EngineError> = Err(reject);
 
     assert!(
         matches!(result, Err(EngineError::UndeclaredOutputPort { .. })),
@@ -1854,18 +2161,10 @@ async fn resume_execution_leased_rejects_undeclared_port_and_still_marks_failed(
     );
 }
 
-/// The `is_first_attempt` gate must not retroactively enforce the W0 U2
-/// pre-flight on a genuine resume. Mirrors
-/// `resume_execution_rejects_undeclared_port_on_genuine_first_attempt`'s
-/// workflow (same undeclared `"typo_port"` wire) but with a real
-/// crash-resume shape — node A already `Completed` in the injected state,
-/// which is the `node_states.is_empty() == false` case the gate must skip.
-/// B still runs here via `resume_execution`'s own documented port-blind edge
-/// rebuild (every outgoing edge from a terminal node activates, regardless
-/// of port name) — proving the new gate adds no new rejection on this path,
-/// not merely that the workflow happens to succeed.
+/// Warm execution state does not exempt the exact factory preflight. A completed
+/// predecessor with an invalid output wire cannot dispatch its downstream node.
 #[tokio::test]
-async fn resume_execution_does_not_validate_ports_on_genuine_resume() {
+async fn graph_preflight_rejects_undeclared_ports_for_warm_execution() {
     let registry = Arc::new(ActionRegistry::new());
     registry.register_stateless_instance(
         ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
@@ -1928,13 +2227,43 @@ async fn resume_execution_does_not_validate_ports_on_genuine_resume() {
         .await;
 
     let scope = crate::store_seam::single_tenant_scope();
-    let result = engine.resume_execution(&scope, execution_id).await.unwrap();
-
-    assert!(result.is_success());
+    let graph = DependencyGraph::from_definition(&wf).unwrap();
+    let node_map = wf
+        .nodes
+        .iter()
+        .map(|node| (node.id.clone(), node))
+        .collect();
+    let factories = wf
+        .nodes
+        .iter()
+        .map(|node| {
+            (
+                node.id.clone(),
+                engine
+                    .runtime
+                    .registry()
+                    .get_factory(&node.action_key)
+                    .unwrap()
+                    .1,
+            )
+        })
+        .collect();
+    let reject = engine
+        .validate_declared_output_ports_exact(&graph, &node_map, &factories)
+        .unwrap_err();
+    assert!(matches!(reject, EngineError::UndeclaredOutputPort { .. }));
+    engine
+        .fail_cold_start_preflight(&scope, execution_id, exec_state, 0, &reject, None)
+        .await;
+    let (_, persisted) = stores.get_state(execution_id).await.unwrap().unwrap();
+    assert_eq!(persisted["status"], "failed");
     assert!(
-        result.node_output(&b).is_some(),
-        "B must still run on a genuine resume — the pre-flight gate must not \
-         retroactively enforce on an already-in-progress execution"
+        stores
+            .node_results
+            .load_node_output(&scope, &execution_id.to_string(), b.as_str())
+            .await
+            .unwrap()
+            .is_none()
     );
 }
 
@@ -1961,11 +2290,17 @@ async fn resume_execution_does_not_validate_ports_on_genuine_resume() {
 ///      the node from scratch.
 #[tokio::test]
 async fn setup_failure_persists_before_final_checkpoint() {
+    use nebula_schema::{Field, Schema, field_key};
     use nebula_workflow::ParamValue;
 
     let registry = Arc::new(ActionRegistry::new());
     registry.register_stateless_instance(
-        ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
+        ActionMetadata::new(action_key!("echo"), "Echo", "echoes input").with_schema(
+            Schema::builder()
+                .add(Field::string(field_key!("bad")))
+                .build()
+                .unwrap(),
+        ),
         EchoHandler,
     );
 
@@ -1980,7 +2315,7 @@ async fn setup_failure_persists_before_final_checkpoint() {
         vec![
             NodeDefinition::new(b.clone(), "B", "core", "echo")
                 .unwrap()
-                .with_parameter("bad", ParamValue::template("Hello {{ unclosed")),
+                .with_parameter("bad", ParamValue::expression("1 / 0")),
         ],
         vec![],
         WorkflowConfig {
@@ -2058,19 +2393,19 @@ async fn setup_failure_persists_before_final_checkpoint() {
     if let Some(ns) = crashed_state.node_states.get_mut(&b) {
         ns.error_message = Some("parameter resolution failed: template parse error".into());
     }
+    crashed_state.checkpoint.as_mut().unwrap().insert(
+        b.clone(),
+        nebula_execution::NodeCheckpoint::Failed {
+            error_port_output: None,
+        },
+    );
 
     let stores2 = TestStores::new();
     stores2.save_workflow(&wf).await;
-    stores2
-        .inject_state(
-            execution_id,
-            wf.id,
-            serde_json::to_value(&crashed_state).unwrap(),
-        )
-        .await;
-
     let (engine2, _) = make_engine(registry);
-    let engine2 = stores2.attach(engine2);
+    let engine2 = stores2
+        .attach_exact(engine2, &wf, serde_json::to_value(&crashed_state).unwrap())
+        .await;
     let scope = crate::store_seam::single_tenant_scope();
     let resumed = engine2
         .resume_execution(&scope, execution_id)
@@ -2274,14 +2609,15 @@ async fn runtime_failure_checkpoint_error_aborts_before_edge_routing() {
     // invocation after A's runtime failure (`create` is not a
     // commit). Fail it.
     let base = Arc::new(nebula_storage::InMemoryExecutionStore::new());
-    let failing = Arc::new(FailAtCommitN::new(base, 1));
+    let failing = Arc::new(FailAtCommitN::new(base.clone(), 1));
     let execution_stores = crate::store_seam::ExecutionStores {
-        execution: failing,
+        execution: failing.clone(),
         journal: stores.journal.clone(),
         node_results: stores.node_results.clone(),
         checkpoints: stores.checkpoints.clone(),
         idempotency: stores.idempotency.clone(),
         resume_tokens: Arc::new(nebula_storage::InMemoryResumeTokenStore::standalone()),
+        operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(&base)),
     };
 
     let (engine, _) = make_engine(registry);
@@ -2289,10 +2625,9 @@ async fn runtime_failure_checkpoint_error_aborts_before_edge_routing() {
     let mut event_rx = event_bus.subscribe();
     let engine = engine
         .with_execution_stores(execution_stores)
-        .with_workflow_stores(stores.workflow_stores())
         .with_event_bus(event_bus);
 
-    let _ = engine
+    let result = engine
         .execute_workflow(
             &crate::store_seam::single_tenant_scope(),
             &wf,
@@ -2300,6 +2635,16 @@ async fn runtime_failure_checkpoint_error_aborts_before_edge_routing() {
             ExecutionBudget::default(),
         )
         .await;
+
+    assert!(
+        result.is_err(),
+        "checkpoint failure must remain a typed execution error"
+    );
+    assert_eq!(
+        failing.calls.load(Ordering::SeqCst),
+        1,
+        "final persistence must not retry uncommitted node state after checkpoint failure"
+    );
 
     // Drop engine so the event channel closes; drain.
     drop(engine);
@@ -2450,7 +2795,7 @@ async fn setup_failure_checkpoint_error_aborts_before_edge_routing() {
     stores.save_workflow(&wf).await;
 
     let base = Arc::new(nebula_storage::InMemoryExecutionStore::new());
-    let failing = Arc::new(FailAtCommitN::new(base, 1));
+    let failing = Arc::new(FailAtCommitN::new(base.clone(), 1));
     let execution_stores = crate::store_seam::ExecutionStores {
         execution: failing,
         journal: stores.journal.clone(),
@@ -2458,6 +2803,7 @@ async fn setup_failure_checkpoint_error_aborts_before_edge_routing() {
         checkpoints: stores.checkpoints.clone(),
         idempotency: stores.idempotency.clone(),
         resume_tokens: Arc::new(nebula_storage::InMemoryResumeTokenStore::standalone()),
+        operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(&base)),
     };
 
     let (engine, _) = make_engine(registry);
@@ -2465,7 +2811,6 @@ async fn setup_failure_checkpoint_error_aborts_before_edge_routing() {
     let mut event_rx = event_bus.subscribe();
     let engine = engine
         .with_execution_stores(execution_stores)
-        .with_workflow_stores(stores.workflow_stores())
         .with_event_bus(event_bus);
 
     let _ = engine
@@ -2758,6 +3103,7 @@ async fn version_pinned_node_uses_specified_handler() {
     // Register v1 first; v2 will become the "latest" (handlers map entry).
     registry.register_stateless_instance(
         ActionMetadata::new(action_key!("versioned"), "V1", "v1 handler")
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
             .with_version_full(v1.clone()),
         V1Handler,
     );
@@ -3431,7 +3777,7 @@ fn error_is_terminal_classification() {
         RuntimeError::AgentTurnTimeout {
             key: "a".into(),
             turn: 0,
-            timeout: std::time::Duration::from_millis(10),
+            timeout: Duration::from_millis(10),
         }
     )));
 
@@ -3840,9 +4186,7 @@ async fn resume_restores_original_workflow_input() {
         .unwrap();
     exec_state.set_workflow_input(serde_json::json!({"trigger": "webhook-payload"}));
     let state_json = serde_json::to_value(&exec_state).unwrap();
-    stores.inject_state(execution_id, wf.id, state_json).await;
-
-    let engine = stores.attach(engine);
+    let engine = stores.attach_exact(engine, &wf, state_json).await;
 
     let scope = crate::store_seam::single_tenant_scope();
     let result = engine.resume_execution(&scope, execution_id).await.unwrap();
@@ -3904,12 +4248,10 @@ async fn resume_restores_persisted_budget() {
         .unwrap();
     exec_state.set_budget(configured.clone());
     let state_json = serde_json::to_value(&exec_state).unwrap();
-    stores.inject_state(execution_id, wf.id, state_json).await;
-
     // Resume on a fresh engine ("engine B" — new runner, new
     // instance, no memory of the original budget).
     let (engine, _) = make_engine(registry);
-    let engine = stores.attach(engine);
+    let engine = stores.attach_exact(engine, &wf, state_json).await;
     let scope = crate::store_seam::single_tenant_scope();
     let result = engine.resume_execution(&scope, execution_id).await.unwrap();
     assert!(result.is_success());
@@ -3942,12 +4284,9 @@ async fn resume_restores_persisted_budget() {
     );
 }
 
-/// Issue #289 — legacy persisted states that predate budget
-/// persistence must still resume (falling back to
-/// `ExecutionBudget::default()` with a warning log), so the fix
-/// does not break old rows.
+/// Missing persisted limits fail closed; a durable turn cannot invent a budget.
 #[tokio::test]
-async fn resume_falls_back_to_default_budget_on_legacy_state() {
+async fn resume_rejects_missing_budget_without_dispatch() {
     let registry = Arc::new(ActionRegistry::new());
     registry.register_stateless_instance(
         ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
@@ -3979,16 +4318,27 @@ async fn resume_falls_back_to_default_budget_on_legacy_state() {
     if let Some(obj) = state_json.as_object_mut() {
         obj.remove("budget");
     }
-    stores.inject_state(execution_id, wf.id, state_json).await;
-
     let (engine, _) = make_engine(registry);
-    let engine = stores.attach(engine);
+    let engine = stores
+        .attach_exact_with_admission_budget(engine, &wf, state_json, None)
+        .await;
 
-    // Resume must succeed despite the missing budget — the engine
-    // logs a warning and falls back to the default.
     let scope = crate::store_seam::single_tenant_scope();
-    let result = engine.resume_execution(&scope, execution_id).await.unwrap();
-    assert!(result.is_success());
+    let before = stores.get_state(execution_id).await.unwrap();
+    let error = engine
+        .resume_execution(&scope, execution_id)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, EngineError::InvalidRecordedBudget));
+    assert_eq!(stores.get_state(execution_id).await.unwrap(), before);
+    assert!(
+        stores
+            .node_results
+            .load_all_node_outputs(&scope, &execution_id.to_string())
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 /// Issue #300 — spawn_node must NOT silently spawn a task on a
@@ -4391,12 +4741,11 @@ async fn final_cas_conflict_with_external_cancel_honors_external_status() {
         checkpoints: stores.checkpoints.clone(),
         idempotency: stores.idempotency.clone(),
         resume_tokens: Arc::new(inner.resume_token_store()),
+        operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(&inner)),
     };
 
     let (engine, _) = make_engine(registry);
-    let engine = engine
-        .with_execution_stores(execution_stores)
-        .with_workflow_stores(stores.workflow_stores());
+    let engine = engine.with_execution_stores(execution_stores);
 
     let result = engine
         .execute_workflow(
@@ -4478,12 +4827,11 @@ async fn node_checkpoint_cas_conflict_surfaces_observed_status() {
         checkpoints: stores.checkpoints.clone(),
         idempotency: stores.idempotency.clone(),
         resume_tokens: Arc::new(inner.resume_token_store()),
+        operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(&inner)),
     };
 
     let (engine, _) = make_engine(registry);
-    let engine = engine
-        .with_execution_stores(execution_stores)
-        .with_workflow_stores(stores.workflow_stores());
+    let engine = engine.with_execution_stores(execution_stores);
 
     // The final result is not the focus here — what matters is
     // that the persisted row shows the engine observed the
@@ -4809,14 +5157,17 @@ async fn two_concurrent_resume_runners_are_fenced_by_lease() {
     let node_ids = vec![n.clone()];
     let exec_state = ExecutionState::new(execution_id, wf.id, &node_ids);
     let state_json = serde_json::to_value(&exec_state).unwrap();
-    stores.inject_state(execution_id, wf.id, state_json).await;
-
     // Two independent engines, each with its own InstanceId, sharing
     // the same storage. One of them should win the lease.
     let (engine_a, _) = make_engine(registry.clone());
-    let engine_a = stores.attach(engine_a);
+    let engine_a = stores.attach_exact(engine_a, &wf, state_json).await;
     let (engine_b, _) = make_engine(registry);
-    let engine_b = stores.attach(engine_b);
+    let exact = engine_a.plan_flavor_runtime.as_ref().unwrap();
+    let engine_b = stores.attach(engine_b).with_plan_flavor_runtime(
+        exact.loader.clone(),
+        exact.registry.clone(),
+        exact.bundles.clone(),
+    );
 
     assert_ne!(
         engine_a.instance_id(),
@@ -4913,20 +5264,16 @@ async fn overlapping_resume_losers_do_not_clobber_winners_registry_entry() {
     let execution_id = ExecutionId::new();
     let node_ids = vec![n.clone()];
     let exec_state = ExecutionState::new(execution_id, wf.id, &node_ids);
-    stores
-        .inject_state(
-            execution_id,
-            wf.id,
-            serde_json::to_value(&exec_state).unwrap(),
-        )
-        .await;
-
     // Single engine, so both calls share the same `running` registry —
     // this is the path the Copilot review flagged. Wrap in `Arc` so we
     // can drive the second call from a background task and still
     // observe the registry from the test thread.
     let (engine, _) = make_engine(registry);
-    let engine = Arc::new(stores.attach(engine));
+    let engine = Arc::new(
+        stores
+            .attach_exact(engine, &wf, serde_json::to_value(&exec_state).unwrap())
+            .await,
+    );
 
     // Winner: drive the workflow in the background. Its frontier loop
     // will be live (500ms sleep) long enough for the loser to race.
@@ -5587,6 +5934,19 @@ fn mark_node_failed_does_not_stamp_error_on_a_non_failed_node() {
     );
 }
 
+#[test]
+fn durable_error_message_includes_each_source_once_and_stays_bounded() {
+    let error = EngineError::Action(ActionError::fatal(
+        "x".repeat(MAX_DURABLE_ERROR_MESSAGE_BYTES * 2),
+    ));
+
+    let message = durable_error_message(&error);
+
+    assert!(message.len() <= MAX_DURABLE_ERROR_MESSAGE_BYTES);
+    assert_eq!(message.matches("fatal action failure").count(), 1);
+    assert!(message.ends_with('…'));
+}
+
 // ── P1#1 resume_live channel mechanics (ADR-0099 W-S2b) ──────────────────
 //
 // These exercise `resume_live`'s request/reply channel directly, without a
@@ -5618,6 +5978,141 @@ fn publish_running_entry(
         registration_id,
     };
     (resume_rx, guard)
+}
+
+#[derive(Debug, Default)]
+struct OneShotControlHandoff {
+    accepted: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl nebula_storage_port::store::ExecutionTurnHandoff for OneShotControlHandoff {
+    async fn commit_control_turn(
+        &self,
+        commit: &nebula_storage_port::store::ControlTurnCommit<'_>,
+    ) -> Result<nebula_storage_port::store::ControlTurnCommitOutcome, StorageError> {
+        if self.accepted.swap(true, Ordering::SeqCst) {
+            return Ok(nebula_storage_port::store::ControlTurnCommitOutcome::ClaimSuperseded);
+        }
+        Ok(
+            nebula_storage_port::store::ControlTurnCommitOutcome::Accepted {
+                fence: commit.transition().fence(),
+                new_version: commit.transition().expected_version(),
+            },
+        )
+    }
+
+    async fn accept_control_start(
+        &self,
+        _: &nebula_storage_port::store::ControlStartHandoff<'_>,
+    ) -> Result<nebula_storage_port::store::ControlStartAcceptance, StorageError> {
+        Err(StorageError::Internal(
+            "control Start is outside this test boundary".to_owned(),
+        ))
+    }
+
+    async fn accept_turn(
+        &self,
+        _: &nebula_storage_port::store::TurnHandoff<'_>,
+    ) -> Result<nebula_storage_port::store::TurnAcceptance, StorageError> {
+        Err(StorageError::Internal(
+            "job handoff is outside this test boundary".to_owned(),
+        ))
+    }
+}
+
+async fn process_claimed_resume(
+    mut receiver: mpsc::Receiver<ResumeRequest>,
+    observed: Option<Arc<Notify>>,
+    release: Option<Arc<Notify>>,
+) {
+    let request = receiver.recv().await.expect("claimed Resume must arrive");
+    if let Some(observed) = observed {
+        observed.notify_one();
+    }
+    if let Some(release) = release {
+        release.notified().await;
+    }
+    let control = request
+        .control
+        .expect("claimed Resume carries its authority");
+    let scope = Scope::new("workspace", "organization");
+    let execution_id = ExecutionId::new().to_string();
+    let transition = nebula_storage_port::store::ControlTurnTransition::Unchanged {
+        scope: &scope,
+        execution_id: &execution_id,
+        expected_version: 4,
+        fence: nebula_storage_port::FencingToken::from_generation(9),
+    };
+    let decision = control
+        .handoff
+        .commit_control_turn(&nebula_storage_port::store::ControlTurnCommit::new(
+            control.claim,
+            nebula_core::WorkerFlavorRevisionId::from_bytes([3; 32]),
+            control.command,
+            transition,
+        ))
+        .await
+        .expect("test handoff remains available");
+    let outcome = match decision {
+        nebula_storage_port::store::ControlTurnCommitOutcome::Accepted { .. } => {
+            ClaimedControlTurnOutcome::Accepted(Ok(()))
+        },
+        nebula_storage_port::store::ControlTurnCommitOutcome::ClaimSuperseded => {
+            ClaimedControlTurnOutcome::ClaimSuperseded
+        },
+        other => panic!("unexpected test handoff outcome: {other:?}"),
+    };
+    let _ = request.ack.send(ResumeOutcome::Claimed(outcome));
+}
+
+#[tokio::test(start_paused = true)]
+async fn claimed_resume_timeout_preserves_late_acceptance_and_refuses_redelivery() {
+    use nebula_storage_port::store::{ClaimGeneration, ControlClaimToken, ControlTurnCommand};
+
+    let (engine, _) = make_engine(Arc::new(ActionRegistry::new()));
+    let engine = Arc::new(engine);
+    let execution_id = ExecutionId::new();
+    let handoff = Arc::new(OneShotControlHandoff::default());
+    let request = ClaimedControlTurnRequest {
+        claim: ControlClaimToken::new([8; 16], ClaimGeneration::new(1)),
+        handoff: handoff.clone(),
+        command: ControlTurnCommand::Resume { target: None },
+    };
+    let (receiver, first_registration) = publish_running_entry(&engine, execution_id);
+    let observed = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let first_loop = tokio::spawn(process_claimed_resume(
+        receiver,
+        Some(observed.clone()),
+        Some(release.clone()),
+    ));
+    let first_engine = Arc::clone(&engine);
+    let first_request = request.clone();
+    let first_delivery = tokio::spawn(async move {
+        first_engine
+            .deliver_claimed_control(execution_id, &first_request)
+            .await
+    });
+    observed.notified().await;
+    tokio::time::advance(RESUME_ACK_TIMEOUT + Duration::from_secs(1)).await;
+    assert!(matches!(
+        first_delivery.await.unwrap(),
+        Some(ClaimedControlTurnOutcome::AcceptanceUnknown(_))
+    ));
+
+    release.notify_one();
+    first_loop.await.unwrap();
+    assert!(handoff.accepted.load(Ordering::SeqCst));
+    drop(first_registration);
+
+    let (receiver, _second_registration) = publish_running_entry(&engine, execution_id);
+    let second_loop = tokio::spawn(process_claimed_resume(receiver, None, None));
+    assert!(matches!(
+        engine.deliver_claimed_control(execution_id, &request).await,
+        Some(ClaimedControlTurnOutcome::ClaimSuperseded)
+    ));
+    second_loop.await.unwrap();
 }
 
 /// `resume_live` returns `NoLiveEntry` when no `RunningEntry` exists for the
@@ -5697,7 +6192,7 @@ fn next_retry_at_computes_deadline_from_injected_now() {
 
     // Epoch-pinned fixed instant — wall time is irrelevant.
     let pinned_now = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
-    let delay = std::time::Duration::from_secs(30);
+    let delay = Duration::from_secs(30);
 
     let execution_id = ExecutionId::new();
     let node = nebula_core::node_key!("retry-test");
@@ -5718,7 +6213,7 @@ fn next_retry_at_clamps_overflow_delay() {
     // next_retry_at must clamp to DateTime::<Utc>::MAX_UTC rather than panicking.
     // (A naive `now + chrono::Duration::MAX` overflows for any `now` > epoch.)
     let pinned_now = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
-    let overflow_delay = std::time::Duration::from_secs(u64::MAX / 2);
+    let overflow_delay = Duration::from_secs(u64::MAX / 2);
 
     let execution_id = ExecutionId::new();
     let node = nebula_core::node_key!("retry-overflow");

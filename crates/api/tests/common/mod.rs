@@ -6,6 +6,8 @@
 
 #![allow(dead_code)]
 
+mod exact_runtime;
+
 use std::sync::Arc;
 
 use nebula_api::{
@@ -18,6 +20,10 @@ use nebula_storage::inmem::{
     InMemoryControlQueue, InMemoryExecutionStore, InMemoryStartAcceptanceStore,
 };
 use nebula_storage_port::Scope;
+use nebula_storage_port::{
+    StorageError as PortStorageError, dto::WorkflowVersionRecord as StoredWorkflowVersion,
+    store::WorkflowVersionStore,
+};
 
 // ── Shared constants ─────────────────────────────────────────────────────────
 
@@ -82,7 +88,7 @@ impl WorkspaceResolver for TestWorkspaceResolver {
 // ── Workflow definition builders ──────────────────────────────────────────────
 
 /// Build a minimal, structurally valid `WorkflowDefinition` JSON that passes
-/// `nebula_workflow::validate_workflow` (single node, no cycles, schema_version=1).
+/// `nebula_workflow::validate_workflow` (single node, no cycles, current schema).
 pub(crate) fn make_valid_workflow_definition(
     workflow_id: &nebula_core::WorkflowId,
 ) -> serde_json::Value {
@@ -96,7 +102,7 @@ pub(crate) fn make_valid_workflow_definition(
         "connections": [],
         "created_at": "2024-01-01T00:00:00Z",
         "updated_at": "2024-01-01T00:00:00Z",
-        "schema_version": 1
+        "schema_version": nebula_workflow::CURRENT_SCHEMA_VERSION
     })
 }
 
@@ -120,7 +126,7 @@ pub(crate) fn make_cyclic_workflow_definition(
         ],
         "created_at": "2024-01-01T00:00:00Z",
         "updated_at": "2024-01-01T00:00:00Z",
-        "schema_version": 1
+        "schema_version": nebula_workflow::CURRENT_SCHEMA_VERSION
     })
 }
 
@@ -197,14 +203,109 @@ pub(crate) fn create_test_jwt() -> String {
 /// tenancy decorators. The seed/read helpers below wrap the port-store
 /// API with the ergonomics the pre-port `state.execution_repo` /
 /// `state.workflow_repo` calls had, so a test body is a one-line change.
+#[derive(Debug, Clone)]
+struct CorruptibleWorkflowVersionStore {
+    inner: nebula_storage::inmem::InMemoryWorkflowVersionStore,
+    replacement_definition: Arc<parking_lot::RwLock<Option<serde_json::Value>>>,
+}
+
+impl CorruptibleWorkflowVersionStore {
+    fn new(inner: nebula_storage::inmem::InMemoryWorkflowVersionStore) -> Self {
+        Self {
+            inner,
+            replacement_definition: Arc::new(parking_lot::RwLock::new(None)),
+        }
+    }
+
+    fn replace_activated_definition(&self, definition: serde_json::Value) {
+        *self.replacement_definition.write() = Some(definition);
+    }
+
+    fn replace_definition_if_activated(
+        &self,
+        mut record: StoredWorkflowVersion,
+    ) -> StoredWorkflowVersion {
+        if record.activation.is_some()
+            && let Some(definition) = self.replacement_definition.read().as_ref()
+        {
+            record.definition = definition.clone();
+        }
+        record
+    }
+}
+
+#[async_trait::async_trait]
+impl WorkflowVersionStore for CorruptibleWorkflowVersionStore {
+    async fn create(
+        &self,
+        scope: &Scope,
+        record: StoredWorkflowVersion,
+    ) -> Result<(), PortStorageError> {
+        self.inner.create(scope, record).await
+    }
+
+    async fn get(
+        &self,
+        scope: &Scope,
+        workflow_id: &str,
+        number: u32,
+    ) -> Result<Option<StoredWorkflowVersion>, PortStorageError> {
+        Ok(self
+            .inner
+            .get(scope, workflow_id, number)
+            .await?
+            .map(|record| self.replace_definition_if_activated(record)))
+    }
+
+    async fn get_published(
+        &self,
+        scope: &Scope,
+        workflow_id: &str,
+    ) -> Result<Option<StoredWorkflowVersion>, PortStorageError> {
+        Ok(self
+            .inner
+            .get_published(scope, workflow_id)
+            .await?
+            .map(|record| self.replace_definition_if_activated(record)))
+    }
+
+    async fn list(
+        &self,
+        scope: &Scope,
+        workflow_id: &str,
+    ) -> Result<Vec<StoredWorkflowVersion>, PortStorageError> {
+        Ok(self
+            .inner
+            .list(scope, workflow_id)
+            .await?
+            .into_iter()
+            .map(|record| self.replace_definition_if_activated(record))
+            .collect())
+    }
+}
+
 pub(crate) struct PortHandles {
+    pub(crate) runtime: exact_runtime::RuntimeFixture,
     /// Durable control-queue outbox (non-consuming `snapshot()` for
     /// asserting enqueued Start/Cancel rows).
     pub control_queue: InMemoryControlQueue,
     exec_store: InMemoryExecutionStore,
     journal: nebula_storage::inmem::InMemoryJournalReader,
     workflow_store: nebula_storage::inmem::InMemoryWorkflowStore,
-    workflow_versions: nebula_storage::inmem::InMemoryWorkflowVersionStore,
+    workflow_versions: CorruptibleWorkflowVersionStore,
+}
+
+impl PortHandles {
+    pub(crate) fn operation_ledger(&self) -> Arc<dyn nebula_storage_port::store::OperationLedger> {
+        Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(
+            &self.exec_store,
+        ))
+    }
+
+    pub(crate) fn replace_activated_definition(&self, definition: serde_json::Value) {
+        self.workflow_versions
+            .replace_activated_definition(definition);
+    }
 }
 
 /// The single tenant scope this harness operates under — exactly the
@@ -224,6 +325,35 @@ pub(crate) fn port_scope() -> Scope {
     Scope::new(TEST_WS, TEST_ORG)
 }
 
+pub(crate) async fn activate_workflow_for_start(state: &AppState, workflow_id: &str) {
+    let scope = port_scope();
+    let version = state
+        .workflow_version_store
+        .get_published(&scope, workflow_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let definition = serde_json::from_str(&version.definition.to_string()).unwrap();
+    let row = state
+        .workflow_store
+        .get(&scope, workflow_id)
+        .await
+        .unwrap()
+        .unwrap();
+    state
+        .workflow_activation
+        .as_ref()
+        .unwrap()
+        .activate(
+            &scope,
+            workflow_id.parse().unwrap(),
+            row.version,
+            definition,
+        )
+        .await
+        .unwrap();
+}
+
 /// Widen a short test label into the fixed 16-byte `ControlConsumer`
 /// processor id. Explicit padding at the test boundary — the production
 /// type is `[u8; 16]` so distinct workers can no longer silently
@@ -236,6 +366,11 @@ pub(crate) fn proc16(label: &[u8]) -> [u8; 16] {
 }
 
 impl PortHandles {
+    pub(crate) async fn assert_no_materialized_starts(&self) {
+        use nebula_storage_port::store::ExecutionStore;
+        assert_eq!(self.exec_store.count(&port_scope(), None).await.unwrap(), 0);
+        assert!(self.control_queue.snapshot().is_empty());
+    }
     /// Seed an execution row directly (port equivalent of the old
     /// `state.execution_repo.create(id, workflow_id, state_json)`).
     pub(crate) async fn seed_execution(
@@ -286,6 +421,7 @@ impl PortHandles {
             &self.workflow_versions,
             &scope,
             nebula_storage_port::dto::WorkflowVersionRecord {
+                activation: None,
                 workflow_id: id_str,
                 number: 1,
                 published: true,
@@ -353,10 +489,18 @@ async fn build_port_state_with(with_credential_port: bool) -> (AppState, PortHan
     let control_queue = InMemoryControlQueue::new(&exec_store);
     let journal = InMemoryJournalReader::new(&exec_store);
     let node_results = InMemoryNodeResultStore::new();
-    let workflow_versions = InMemoryWorkflowVersionStore::new();
-    let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
+    let stored_workflow_versions = InMemoryWorkflowVersionStore::new();
+    let workflow_store =
+        InMemoryWorkflowStore::new_with_versions(&stored_workflow_versions, &exec_store);
+    let workflow_versions = CorruptibleWorkflowVersionStore::new(stored_workflow_versions);
 
     let api_config = ApiConfig::for_test();
+
+    let (activation, start, runtime) = exact_runtime::services(
+        &workflow_store,
+        Arc::new(workflow_versions.clone()),
+        &exec_store,
+    );
 
     // Raw (undecorated) port handles: the `AppState` accessors apply the
     // per-request tenant scope at call time. `PortHandles` keeps clones of
@@ -370,8 +514,12 @@ async fn build_port_state_with(with_credential_port: bool) -> (AppState, PortHan
         Arc::new(journal.clone()),
         Arc::new(control_queue.clone()),
         Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
+        Arc::new(nebula_storage::inmem::InMemoryTurnHandoff::new(&exec_store)),
+        Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
         api_config.jwt_secret,
     )
+    .with_workflow_activation(activation)
+    .with_workflow_start(start)
     .with_org_resolver(Arc::new(TestOrgResolver))
     .with_workspace_resolver(Arc::new(TestWorkspaceResolver))
     .with_insecure_tenant_rbac_bypass_for_tests();
@@ -400,6 +548,7 @@ async fn build_port_state_with(with_credential_port: bool) -> (AppState, PortHan
     (
         state,
         PortHandles {
+            runtime,
             control_queue,
             exec_store,
             journal,
@@ -435,7 +584,7 @@ pub(crate) fn build_me_state() -> AppState {
     let journal = InMemoryJournalReader::new(&exec_store);
     let node_results = InMemoryNodeResultStore::new();
     let workflow_versions = InMemoryWorkflowVersionStore::new();
-    let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
+    let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions, &exec_store);
 
     let api_config = ApiConfig::for_test();
 
@@ -448,6 +597,8 @@ pub(crate) fn build_me_state() -> AppState {
         Arc::new(node_results),
         Arc::new(journal),
         Arc::new(control_queue),
+        Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
+        Arc::new(nebula_storage::inmem::InMemoryTurnHandoff::new(&exec_store)),
         Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
         api_config.jwt_secret,
     )
@@ -739,6 +890,15 @@ pub(crate) struct AlwaysFailControlQueue;
 
 #[async_trait::async_trait]
 impl nebula_storage_port::store::ControlQueue for AlwaysFailControlQueue {
+    async fn claim_pending_for_flavor(
+        &self,
+        processor: &[u8; 16],
+        batch_size: u32,
+        _: nebula_core::WorkerFlavorRevisionId,
+    ) -> Result<Vec<nebula_storage_port::store::ControlClaim>, nebula_storage_port::StorageError>
+    {
+        self.claim_pending(processor, batch_size).await
+    }
     async fn enqueue(
         &self,
         _msg: &nebula_storage_port::dto::ControlMsg,
@@ -814,7 +974,7 @@ pub(crate) async fn create_state_with_failing_queue() -> (AppState, InMemoryExec
     let journal = InMemoryJournalReader::new(&exec_store);
     let node_results = InMemoryNodeResultStore::new();
     let workflow_versions = InMemoryWorkflowVersionStore::new();
-    let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
+    let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions, &exec_store);
 
     let api_config = ApiConfig::for_test();
 
@@ -828,6 +988,8 @@ pub(crate) async fn create_state_with_failing_queue() -> (AppState, InMemoryExec
         Arc::new(node_results),
         Arc::new(journal),
         Arc::new(AlwaysFailControlQueue),
+        Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
+        Arc::new(nebula_storage::inmem::InMemoryTurnHandoff::new(&exec_store)),
         Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
         api_config.jwt_secret,
     )
@@ -864,14 +1026,13 @@ pub(crate) mod engine_seam {
     use std::{sync::Arc, time::Duration};
 
     use nebula_api::AppState;
-    use nebula_core::action_key;
     use nebula_engine::{
         ActionExecutor, ActionRegistry, ActionRuntime, ControlConsumer, DataPassingPolicy,
         EngineControlDispatch, InProcessRunner, WorkflowEngine,
     };
     use nebula_tenancy::{
         ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore,
-        ScopedNodeResultStore, ScopedWorkflowStore, ScopedWorkflowVersionStore,
+        ScopedNodeResultStore,
     };
     use nebula_workflow::{
         CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, Version, WorkflowConfig,
@@ -885,6 +1046,7 @@ pub(crate) mod engine_seam {
     /// The shared harness exposes only the `started` notification. Its API
     /// tests do not observe which branch exits, so their terminal-row
     /// assertions prove producer persistence rather than handler interruption.
+    #[derive(Debug)]
     pub(crate) struct SlowAction {
         pub(crate) started: Arc<tokio::sync::Notify>,
     }
@@ -895,10 +1057,12 @@ pub(crate) mod engine_seam {
 
         fn metadata() -> nebula_action::metadata::ActionMetadata {
             nebula_action::metadata::ActionMetadata::new(
-                nebula_core::action_key!("seam.slow.static"),
+                nebula_core::action_key!("core.slow"),
                 "SlowAction",
                 "static",
             )
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+            .with_kind(nebula_action::ActionKind::Stateless)
         }
         fn dependencies() -> &'static nebula_core::Dependencies {
             static D: std::sync::OnceLock<nebula_core::Dependencies> = std::sync::OnceLock::new();
@@ -978,6 +1142,7 @@ pub(crate) mod engine_seam {
             .create(
                 &scope,
                 nebula_storage_port::dto::WorkflowVersionRecord {
+                    activation: None,
                     workflow_id: id_str,
                     number: 1,
                     published: true,
@@ -985,6 +1150,13 @@ pub(crate) mod engine_seam {
                     definition: serde_json::to_value(&wf).unwrap(),
                 },
             )
+            .await
+            .unwrap();
+        state
+            .workflow_activation
+            .as_ref()
+            .unwrap()
+            .activate(&scope, workflow_id, 1, wf)
             .await
             .unwrap();
         workflow_id
@@ -1022,19 +1194,12 @@ pub(crate) mod engine_seam {
     /// wiring: same action key (`"slow"`), same `ActionExecutor` closure,
     /// `InProcessRunner`, `ActionRuntime`, 10ms poll interval, and the
     /// `b"knife-a3"` processor id.
-    pub(crate) fn spawn_engine_consumer(state: &AppState) -> EngineSeam {
-        let slow_started = Arc::new(tokio::sync::Notify::new());
+    pub(crate) fn spawn_engine_consumer(
+        state: &AppState,
+        handles: &super::PortHandles,
+    ) -> EngineSeam {
+        let slow_started = Arc::clone(&handles.runtime.slow_started);
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless_instance(
-            nebula_action::metadata::ActionMetadata::new(
-                action_key!("slow"),
-                "slow",
-                "engine-seam cancellable handler",
-            ),
-            SlowAction {
-                started: Arc::clone(&slow_started),
-            },
-        );
 
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(nebula_action::result::ActionResult::success(input)) })
@@ -1073,6 +1238,11 @@ pub(crate) mod engine_seam {
         let engine = Arc::new(
             WorkflowEngine::new(runtime, metrics)
                 .unwrap()
+                .with_plan_flavor_runtime(
+                    Arc::clone(&handles.runtime.loader),
+                    Arc::clone(&handles.runtime.registry),
+                    state.start_acceptance_scoped(&s),
+                )
                 .with_execution_stores(nebula_engine::ExecutionStores {
                     execution: Arc::clone(&scoped_exec),
                     journal: Arc::new(ScopedExecutionJournalReader::new(
@@ -1086,27 +1256,22 @@ pub(crate) mod engine_seam {
                     checkpoints: Arc::new(nebula_storage::inmem::InMemoryCheckpointStore::new()),
                     idempotency: Arc::new(nebula_storage::inmem::InMemoryIdempotencyGuard::new()),
                     resume_tokens: Arc::new(nebula_storage::InMemoryResumeTokenStore::standalone()),
-                })
-                .with_workflow_stores(nebula_engine::WorkflowStores {
-                    workflow: Arc::new(ScopedWorkflowStore::new(
-                        Arc::clone(&state.workflow_store),
-                        s.clone(),
-                    )),
-                    versions: Arc::new(ScopedWorkflowVersionStore::new(
-                        Arc::clone(&state.workflow_version_store),
-                        s.clone(),
-                    )),
+                    operation_ledger: handles.operation_ledger(),
                 }),
         );
 
         let dispatch = Arc::new(EngineControlDispatch::new(
             Arc::clone(&engine),
             Arc::clone(&scoped_exec),
+            state.turn_handoff_scoped(&s),
+            "api-test-control".to_owned(),
+            Duration::from_secs(30),
         ));
-        let consumer = ControlConsumer::new(
+        let consumer = ControlConsumer::for_flavor(
             Arc::new(ScopedControlQueue::new(Arc::clone(&state.control_queue), s)),
             dispatch,
             super::proc16(b"knife-a3"),
+            handles.runtime.registry.revision().id(),
         )
         .with_poll_interval(Duration::from_millis(10));
         let shutdown = CancellationToken::new();

@@ -14,7 +14,7 @@
 //! more than one row is left marked published.
 
 use nebula_storage_port::dto::{WorkflowRecord, WorkflowVersionRecord};
-use nebula_storage_port::store::{WorkflowStore, WorkflowVersionStore};
+use nebula_storage_port::store::{WorkflowPublicationError, WorkflowStore, WorkflowVersionStore};
 use nebula_storage_port::{Scope, StorageError};
 use sqlx::{PgPool, Row};
 
@@ -36,6 +36,74 @@ impl PgWorkflowStore {
 
 #[async_trait::async_trait]
 impl WorkflowStore for PgWorkflowStore {
+    #[tracing::instrument(skip_all, fields(workflow_id = %row.id, expected_version), err)]
+    async fn publish_activated_version(
+        &self,
+        scope: &Scope,
+        row: WorkflowRecord,
+        version: WorkflowVersionRecord,
+        expected_version: u64,
+    ) -> Result<(), WorkflowPublicationError> {
+        let activation = crate::workflow_activation::validate_publication(
+            scope,
+            &row,
+            &version,
+            expected_version,
+        )?;
+        let next =
+            i64::try_from(row.version).map_err(|_| WorkflowPublicationError::InvalidPublication)?;
+        let expected = i64::try_from(expected_version)
+            .map_err(|_| WorkflowPublicationError::InvalidPublication)?;
+        let definition = version.definition.clone();
+        let activation_json = serde_json::to_value(activation).map_err(StorageError::from)?;
+        let mut transaction = self.pool.begin().await.map_err(conn_err)?;
+        let changed = sqlx::query("UPDATE port_workflows SET version = $1, slug = $2 WHERE id = $3 AND workspace_id = $4 AND org_id = $5 AND version = $6 AND deleted = FALSE")
+            .bind(next).bind(&row.slug).bind(&row.id).bind(&scope.workspace_id).bind(&scope.org_id).bind(expected)
+            .execute(&mut *transaction).await.map_err(conn_err)?.rows_affected();
+        if changed != 1 {
+            let actual = sqlx::query_scalar::<_, i64>("SELECT version FROM port_workflows WHERE id = $1 AND workspace_id = $2 AND org_id = $3 AND deleted = FALSE")
+                .bind(&row.id).bind(&scope.workspace_id).bind(&scope.org_id)
+                .fetch_optional(&mut *transaction).await.map_err(conn_err)?;
+            return Err(match actual {
+                Some(actual) => StorageError::Conflict {
+                    entity: "workflow",
+                    id: row.id,
+                    expected: expected_version,
+                    actual: actual
+                        .try_into()
+                        .map_err(|_| WorkflowPublicationError::InvalidPublication)?,
+                },
+                None => StorageError::not_found("workflow", row.id),
+            }
+            .into());
+        }
+        let ids = activation.revisions();
+        let plan: Option<Vec<u8>> = sqlx::query_scalar("SELECT p.record_bytes FROM port_executable_plan_revisions p JOIN port_worker_flavor_revisions f ON f.worker_flavor_id = p.worker_flavor_id WHERE p.executable_plan_id = $1 AND p.worker_flavor_id = $2 AND p.lifecycle = 'active' AND f.lifecycle = 'active' FOR SHARE OF p, f")
+            .bind(ids.plan().as_bytes().as_slice()).bind(ids.worker_flavor().as_bytes().as_slice())
+            .fetch_optional(&mut *transaction).await.map_err(conn_err)?;
+        let plan = plan.ok_or(WorkflowPublicationError::RevisionNotAdmitted)?;
+        crate::workflow_activation::validate_plan_identity(&plan, &row.id, activation)?;
+        let reused: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM port_workflow_versions WHERE workspace_id = $1 AND org_id = $2 AND workflow_id = $3 AND activation->>'workflow_version_id' = $4")
+            .bind(&scope.workspace_id).bind(&scope.org_id).bind(&row.id).bind(activation.workflow_version_id().to_string())
+            .fetch_one(&mut *transaction).await.map_err(conn_err)?;
+        if reused != 0 {
+            return Err(WorkflowPublicationError::InvalidPublication);
+        }
+        sqlx::query("INSERT INTO port_workflow_versions (workspace_id, org_id, workflow_id, number, published, pinned, definition, activation) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)")
+            .bind(&scope.workspace_id).bind(&scope.org_id).bind(&version.workflow_id).bind(i64::from(version.number))
+            .bind(version.published).bind(version.pinned).bind(definition).bind(activation_json)
+            .execute(&mut *transaction).await.map_err(|error| match error {
+                sqlx::Error::Database(database) if database.is_unique_violation() =>
+                    StorageError::Duplicate { entity: "workflow_version", detail: "workflow version already exists".into() },
+                other => conn_err(other),
+            })?;
+        transaction
+            .commit()
+            .await
+            .map_err(|_| WorkflowPublicationError::OutcomeUnknown)?;
+        Ok(())
+    }
+
     async fn create(&self, scope: &Scope, record: WorkflowRecord) -> Result<(), StorageError> {
         let res = sqlx::query(
             "INSERT INTO port_workflows \
@@ -178,6 +246,11 @@ impl WorkflowStore for PgWorkflowStore {
         version: WorkflowVersionRecord,
         expected_version: Option<u64>,
     ) -> Result<(), StorageError> {
+        if version.activation.is_some() {
+            return Err(StorageError::Internal(
+                "activated versions require publication admission".into(),
+            ));
+        }
         // One transaction so the row write and the version write commit
         // (or roll back) together — no orphan-row window.
         let mut tx = self.pool.begin().await.map_err(conn_err)?;
@@ -374,6 +447,11 @@ impl PgWorkflowVersionStore {
 /// to `serde_json::Value` by sqlx.
 fn version_from_row(row: &sqlx::postgres::PgRow) -> Result<WorkflowVersionRecord, StorageError> {
     Ok(WorkflowVersionRecord {
+        activation: row
+            .try_get::<Option<serde_json::Value>, _>("activation")
+            .map_err(conn_err)?
+            .map(serde_json::from_value)
+            .transpose()?,
         workflow_id: row.try_get("workflow_id").map_err(conn_err)?,
         number: row.try_get::<i64, _>("number").map_err(conn_err)? as u32,
         published: row.try_get("published").map_err(conn_err)?,
@@ -389,6 +467,11 @@ impl WorkflowVersionStore for PgWorkflowVersionStore {
         scope: &Scope,
         record: WorkflowVersionRecord,
     ) -> Result<(), StorageError> {
+        if record.activation.is_some() {
+            return Err(StorageError::Internal(
+                "activated versions require publication admission".into(),
+            ));
+        }
         let res = sqlx::query(
             "INSERT INTO port_workflow_versions \
              (workspace_id, org_id, workflow_id, number, published, pinned, definition) \
@@ -425,7 +508,7 @@ impl WorkflowVersionStore for PgWorkflowVersionStore {
         number: u32,
     ) -> Result<Option<WorkflowVersionRecord>, StorageError> {
         let row = sqlx::query(
-            "SELECT workflow_id, number, published, pinned, definition \
+            "SELECT workflow_id, number, published, pinned, definition, activation \
              FROM port_workflow_versions \
              WHERE workspace_id = $1 AND org_id = $2 AND workflow_id = $3 AND number = $4",
         )
@@ -447,7 +530,7 @@ impl WorkflowVersionStore for PgWorkflowVersionStore {
         // Highest-numbered published version wins (deterministic even if a
         // stale publish was left set on an older version).
         let row = sqlx::query(
-            "SELECT workflow_id, number, published, pinned, definition \
+            "SELECT workflow_id, number, published, pinned, definition, activation \
              FROM port_workflow_versions \
              WHERE workspace_id = $1 AND org_id = $2 AND workflow_id = $3 \
                AND published = TRUE \
@@ -469,7 +552,7 @@ impl WorkflowVersionStore for PgWorkflowVersionStore {
     ) -> Result<Vec<WorkflowVersionRecord>, StorageError> {
         // Newest first (highest version number first).
         let rows = sqlx::query(
-            "SELECT workflow_id, number, published, pinned, definition \
+            "SELECT workflow_id, number, published, pinned, definition, activation \
              FROM port_workflow_versions \
              WHERE workspace_id = $1 AND org_id = $2 AND workflow_id = $3 \
              ORDER BY number DESC",

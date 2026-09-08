@@ -1,4 +1,4 @@
-//! C7 component-only expected-RED probe for same-processor-ID ABA fencing.
+//! Component-only expected-RED probe for same-processor-ID ABA fencing.
 //!
 //! This is deliberately not a product-root scenario: it exercises the
 //! `JobDispatchQueue` component contract directly. Raw SQL is fixture-only and
@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 const RECLAIM_AFTER: Duration = Duration::from_secs(1);
 const MAX_RECLAIM_COUNT: u32 = 2;
-const EXPECTED_RED_REASON: &str = "c7-same-processor-aba-accepted";
+const EXPECTED_RED_REASON: &str = "same-processor-aba-accepted";
 
 struct Scenario {
     processor_id: [u8; 16],
@@ -30,14 +30,17 @@ impl Scenario {
         let nonce = Uuid::new_v4().simple().to_string();
         let ack_id = *Uuid::new_v4().as_bytes();
         let nack_id = *Uuid::new_v4().as_bytes();
-        assert_ne!(ack_id, nack_id, "SETUP: C7 job ids must be unique");
+        assert_ne!(ack_id, nack_id, "SETUP: job ids must be unique");
 
-        let scope = Scope::new(format!("c7_workspace_{nonce}"), format!("c7_org_{nonce}"));
-        let plugin = PluginKey::new(format!("c7_plugin_{nonce}"))
-            .expect("SETUP: unique C7 plugin key must be valid");
+        let scope = Scope::new(
+            format!("aba_fencing_workspace_{nonce}"),
+            format!("aba_fencing_org_{nonce}"),
+        );
+        let plugin = PluginKey::new(format!("aba_fencing_plugin_{nonce}"))
+            .expect("SETUP: unique plugin key must be valid");
         let ack = make_job(
             ack_id,
-            &format!("c7_ack_execution_{nonce}"),
+            &format!("aba_fencing_ack_execution_{nonce}"),
             scope.clone(),
             plugin.clone(),
             "late-ack",
@@ -45,7 +48,7 @@ impl Scenario {
         );
         let nack = make_job(
             nack_id,
-            &format!("c7_nack_execution_{nonce}"),
+            &format!("aba_fencing_nack_execution_{nonce}"),
             scope,
             plugin.clone(),
             "late-nack",
@@ -77,13 +80,13 @@ fn make_job(
         execution_id,
         ControlCommand::Start,
         scope,
-        serde_json::json!({"component": "c7", "role": role, "nonce": nonce}),
-        Some(format!("c7_event_{role}_{nonce}")),
-        format!("c7_flavor_{nonce}"),
+        serde_json::json!({"component": "same-processor-aba-fencing", "role": role, "nonce": nonce}),
+        Some(format!("aba_fencing_event_{role}_{nonce}")),
         plugin.clone(),
         vec![plugin],
         None::<String>,
         0,
+        nebula_core::WorkerFlavorRevisionId::from_bytes([0x11; 32]),
     )
 }
 
@@ -99,7 +102,7 @@ async fn enqueue_and_claim_generation_n(
         queue
             .enqueue(job)
             .await
-            .expect("SETUP: enqueue C7 job through the component port");
+            .expect("SETUP: enqueue job through the component port");
     }
 
     let claimed = queue
@@ -107,6 +110,7 @@ async fn enqueue_and_claim_generation_n(
             &scenario.processor_id,
             2,
             std::slice::from_ref(&scenario.plugin),
+            nebula_core::WorkerFlavorRevisionId::from_bytes([0x11; 32]),
         )
         .await
         .expect("SETUP: same processor claims logical generation N");
@@ -121,7 +125,7 @@ fn tokens_for(claimed: &[JobClaim], scenario: &Scenario) -> [JobClaimToken; 2] {
         claimed
             .iter()
             .find(|claim| claim.msg.id == job.id)
-            .unwrap_or_else(|| panic!("SETUP: claim batch is missing C7 job {:?}", job.id))
+            .unwrap_or_else(|| panic!("SETUP: claim batch is missing job {:?}", job.id))
             .token
     })
 }
@@ -133,14 +137,14 @@ async fn reclaim_and_claim_generation_n_plus_one(
     let outcome = queue
         .reclaim_stuck(RECLAIM_AFTER, MAX_RECLAIM_COUNT)
         .await
-        .expect("SETUP: reclaim C7 generation N");
+        .expect("SETUP: reclaim stale generation");
     assert_eq!(
         outcome.reclaimed, 2,
-        "SETUP: both exact C7 jobs must be reclaimed"
+        "SETUP: both exact jobs must be reclaimed"
     );
     assert_eq!(
         outcome.exhausted, 0,
-        "SETUP: neither C7 job may exhaust its reclaim budget"
+        "SETUP: neither job may exhaust its reclaim budget"
     );
 
     let reclaimed = queue
@@ -148,6 +152,7 @@ async fn reclaim_and_claim_generation_n_plus_one(
             &scenario.processor_id,
             2,
             std::slice::from_ref(&scenario.plugin),
+            nebula_core::WorkerFlavorRevisionId::from_bytes([0x11; 32]),
         )
         .await
         .expect("SETUP: same processor claims logical generation N+1");
@@ -167,7 +172,7 @@ fn assert_claimed(
     assert_eq!(
         actual_ids,
         expected_ids.as_slice(),
-        "SETUP: {generation} must contain both exact C7 job ids"
+        "SETUP: {generation} must contain both exact job ids"
     );
     assert!(
         claimed
@@ -202,25 +207,25 @@ fn assert_fenced_or_emit_expected_red(
 ) {
     assert!(
         late_ack.is_ok() || matches!(&late_ack, Err(StorageError::FencedOut { .. })),
-        "SETUP: C7 stale mark_dispatched returned an unrelated storage error: {late_ack:?}"
+        "SETUP: stale mark_dispatched returned an unrelated storage error: {late_ack:?}"
     );
     assert!(
         late_nack.is_ok() || matches!(&late_nack, Err(StorageError::FencedOut { .. })),
-        "SETUP: C7 stale mark_failed returned an unrelated storage error: {late_nack:?}"
+        "SETUP: stale mark_failed returned an unrelated storage error: {late_nack:?}"
     );
 
     if late_ack.is_ok() || late_nack.is_ok() {
         eprintln!("EXPECTED_RED:{EXPECTED_RED_REASON}");
-        panic!("C7 same-processor-ID ABA behavioral oracle is expected to be RED");
+        panic!("same-processor-ID ABA behavioral oracle is expected to be RED");
     }
 
     assert!(
         matches!(late_ack, Err(StorageError::FencedOut { .. })),
-        "C7 stale logical generation N mark_dispatched must be FencedOut; got {late_ack:?}"
+        "stale logical generation mark_dispatched must be FencedOut; got {late_ack:?}"
     );
     assert!(
         matches!(late_nack, Err(StorageError::FencedOut { .. })),
-        "C7 stale logical generation N mark_failed must be FencedOut; got {late_nack:?}"
+        "stale logical generation mark_failed must be FencedOut; got {late_nack:?}"
     );
 }
 
@@ -243,8 +248,8 @@ async fn same_processor_id_aba_in_memory() {
 #[tokio::test]
 async fn same_processor_id_aba_file_sqlite() {
     let scenario = Scenario::unique();
-    let tempdir = tempfile::tempdir().expect("SETUP: create isolated C7 SQLite directory");
-    let database_path = tempdir.path().join("component-c7.sqlite");
+    let tempdir = tempfile::tempdir().expect("SETUP: create isolated SQLite directory");
+    let database_path = tempdir.path().join("same-processor-aba-fencing.sqlite");
     let options = SqliteConnectOptions::new()
         .filename(&database_path)
         .create_if_missing(true);
@@ -252,10 +257,10 @@ async fn same_processor_id_aba_file_sqlite() {
         .max_connections(1)
         .connect_with(options)
         .await
-        .expect("SETUP: connect C7 file SQLite pool");
+        .expect("SETUP: connect file SQLite pool");
     sqlite_init_schema(&pool)
         .await
-        .expect("SETUP: install C7 SQLite component schema");
+        .expect("SETUP: install SQLite component schema");
     let queue = SqliteJobDispatchQueue::new(pool.clone());
 
     let generation_n = enqueue_and_claim_generation_n(&queue, &scenario).await;
@@ -269,11 +274,11 @@ async fn same_processor_id_aba_file_sqlite() {
     .bind(ids[1].as_slice())
     .execute(&pool)
     .await
-    .expect("SETUP: exact-ID SQLite C7 stale barrier")
+    .expect("SETUP: exact-ID SQLite stale barrier")
     .rows_affected();
     assert_eq!(
         backdated, 2,
-        "SETUP: SQLite C7 stale barrier must backdate both exact ids"
+        "SETUP: SQLite stale barrier must backdate both exact ids"
     );
 
     let _generation_n_plus_one = reclaim_and_claim_generation_n_plus_one(&queue, &scenario).await;
@@ -284,18 +289,19 @@ async fn same_processor_id_aba_file_sqlite() {
         .bind(ids[1].as_slice())
         .execute(&pool)
         .await
-        .expect("SETUP: clean exact C7 SQLite fixture rows")
+        .expect("SETUP: clean exact SQLite fixture rows")
         .rows_affected();
-    assert_eq!(deleted, 2, "SETUP: clean both C7 SQLite fixture rows");
+    assert_eq!(deleted, 2, "SETUP: clean both SQLite fixture rows");
     drop(queue);
     pool.close().await;
     tempdir
         .close()
-        .expect("SETUP: remove isolated C7 SQLite files");
+        .expect("SETUP: remove isolated SQLite files");
 
     assert_fenced_or_emit_expected_red(late_ack, late_nack);
 }
 
+#[cfg(feature = "postgres")]
 #[tokio::test]
 async fn same_processor_id_aba_live_postgres() {
     use nebula_storage::postgres::{PgJobDispatchQueue, init_schema as postgres_init_schema};
@@ -308,10 +314,10 @@ async fn same_processor_id_aba_live_postgres() {
         .max_connections(2)
         .connect(&database_url)
         .await
-        .expect("SETUP: connect live PostgreSQL for C7");
+        .expect("SETUP: connect live PostgreSQL for ABA fencing");
     postgres_init_schema(&pool)
         .await
-        .expect("SETUP: install C7 PostgreSQL component schema");
+        .expect("SETUP: install PostgreSQL component schema");
     let queue = PgJobDispatchQueue::new(pool.clone());
 
     let generation_n = enqueue_and_claim_generation_n(&queue, &scenario).await;
@@ -325,11 +331,11 @@ async fn same_processor_id_aba_live_postgres() {
     .bind(ids[1].as_slice())
     .execute(&pool)
     .await
-    .expect("SETUP: exact-ID PostgreSQL C7 stale barrier")
+    .expect("SETUP: exact-ID PostgreSQL stale barrier")
     .rows_affected();
     assert_eq!(
         backdated, 2,
-        "SETUP: PostgreSQL C7 stale barrier must backdate both exact ids"
+        "SETUP: PostgreSQL stale barrier must backdate both exact ids"
     );
 
     let _generation_n_plus_one = reclaim_and_claim_generation_n_plus_one(&queue, &scenario).await;
@@ -340,9 +346,9 @@ async fn same_processor_id_aba_live_postgres() {
         .bind(ids[1].as_slice())
         .execute(&pool)
         .await
-        .expect("SETUP: clean exact C7 PostgreSQL fixture rows")
+        .expect("SETUP: clean exact PostgreSQL fixture rows")
         .rows_affected();
-    assert_eq!(deleted, 2, "SETUP: clean both C7 PostgreSQL fixture rows");
+    assert_eq!(deleted, 2, "SETUP: clean both PostgreSQL fixture rows");
     drop(queue);
     pool.close().await;
 

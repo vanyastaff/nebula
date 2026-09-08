@@ -25,10 +25,11 @@ mod error;
 mod resolver;
 
 pub use decorator::{
-    ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore, ScopedIdempotencyGuard,
-    ScopedIdempotencyStore, ScopedNodeResultStore, ScopedResourceStore, ScopedResumeTokenStore,
-    ScopedTriggerStore, ScopedWebhookActivationStore, ScopedWorkflowStore,
-    ScopedWorkflowVersionStore,
+    ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore,
+    ScopedExecutionTurnHandoff, ScopedIdempotencyGuard, ScopedIdempotencyStore,
+    ScopedNodeResultStore, ScopedOperationLedger, ScopedOperationLedgerAdjudicator,
+    ScopedResourceStore, ScopedResumeTokenStore, ScopedStartAcceptanceStore, ScopedTriggerStore,
+    ScopedWebhookActivationStore, ScopedWorkflowStore, ScopedWorkflowVersionStore,
 };
 pub use error::TenancyError;
 pub use resolver::{BindingScopeResolver, Principal, ScopeResolver, request_scope};

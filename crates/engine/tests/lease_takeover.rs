@@ -7,33 +7,20 @@
 //! after the lease TTL expires, and the resume path respects per-node
 //! terminal status (no double-execution of completed work).
 //!
-//! ## Invariant-equivalence note (port migration)
-//!
-//! These tests originally drove the engine through the legacy
-//! `nebula_storage::{ExecutionRepo, WorkflowRepo}` + `repos::ControlQueueRepo`
-//! god-traits. They now drive the spec-16 scoped port
-//! (`ExecutionStore` + `WorkflowVersionStore` + `ControlQueue`, bundled
-//! via `WorkflowEngine::with_execution_stores`/`with_workflow_stores`,
-//! `EngineControlDispatch::new_port`, `ControlConsumer::new_port`). The
-//! engine threads the per-message scope from the DTO on the production
-//! path; test wiring uses `single_tenant_scope()` so the raw in-memory adapters
-//! behave as one coherent tenant — identical observable behaviour to the old single-tenant
-//! repos. The §M2.2 lease-handoff guarantees are unchanged and asserted
-//! verbatim:
+//! The tests exercise the scoped storage ports used by production. Test wiring
+//! uses `single_tenant_scope()` so the in-memory adapters share one tenant.
+//! The lease-handoff guarantees are:
 //! - heartbeat-loss → TTL-expiry takeover by a second runner with no
 //!   double-execution of terminal work (per-node idempotency);
 //! - durable Cancel survives runner death and is redelivered to the new
 //!   runner via the control-queue reclaim sweep;
 //! - lease-less `replay_execution` never contends for a held lease.
 //!
-//! Two semantic refinements the port path makes explicit (both
-//! strengthen, not weaken, the guarantee): the engine now threads a
-//! `FencingToken` into every committed transition, so a superseded holder
-//! is rejected even on a matching CAS version; and the durable-Cancel
-//! reclaim shape is reproduced via the port `ControlQueue` (claim by a
-//! dead processor, then the new runner's reclaim sweep redelivers it)
-//! rather than by pre-seeding a wall-clock-stale `Processing` row, since
-//! the port in-memory queue tracks staleness with a monotonic `Instant`.
+//! The engine threads a `FencingToken` into every committed transition, so a
+//! superseded holder is rejected even on a matching CAS version. The durable
+//! cancel test claims the command with a stopped processor and lets the new
+//! runner's reclaim sweep redeliver it because the in-memory queue tracks
+//! staleness with a monotonic `Instant`.
 //! The redelivery invariant (Cancel reaches runner B, row ends
 //! `Completed`, `reclaim_count >= 1`) is asserted unchanged.
 
@@ -57,6 +44,7 @@ use nebula_engine::{
 };
 use nebula_execution::{ExecutionStatus, context::ExecutionBudget};
 use nebula_metrics::MetricsRegistry;
+use nebula_storage::inmem::InMemoryTurnHandoff;
 use nebula_storage::{InMemoryControlQueue, InMemoryExecutionStore, InMemoryWorkflowVersionStore};
 use nebula_storage_port::dto::{ControlCommand, ControlMsg, WorkflowVersionRecord};
 use nebula_storage_port::store::{ControlQueue, ExecutionStore, WorkflowVersionStore};
@@ -64,6 +52,8 @@ use nebula_workflow::{
     CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
 };
 use tokio_util::sync::CancellationToken;
+
+mod exact_fixture;
 
 /// Widen a short test label into the fixed 16-byte `ControlConsumer`
 /// processor id. Explicit padding at the test boundary — the production
@@ -86,7 +76,6 @@ struct LeaseStores {
     node_results: Arc<nebula_storage::InMemoryNodeResultStore>,
     checkpoints: Arc<nebula_storage::InMemoryCheckpointStore>,
     idempotency: Arc<nebula_storage::InMemoryIdempotencyGuard>,
-    workflow: Arc<nebula_storage::InMemoryWorkflowStore>,
     versions: Arc<InMemoryWorkflowVersionStore>,
 }
 
@@ -102,14 +91,12 @@ impl LeaseStores {
         )));
         let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&execution));
         let versions = InMemoryWorkflowVersionStore::new();
-        let workflow = nebula_storage::InMemoryWorkflowStore::new_with_versions(&versions);
         Self {
             execution,
             journal,
             node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
             checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
             idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
-            workflow: Arc::new(workflow),
             versions: Arc::new(versions),
         }
     }
@@ -122,22 +109,35 @@ impl LeaseStores {
             checkpoints: self.checkpoints.clone(),
             idempotency: self.idempotency.clone(),
             resume_tokens: Arc::new(self.execution.resume_token_store()),
-        }
-    }
-
-    fn workflow_stores(&self) -> nebula_engine::WorkflowStores {
-        nebula_engine::WorkflowStores {
-            workflow: self.workflow.clone(),
-            versions: self.versions.clone(),
+            operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(
+                &self.execution,
+            )),
         }
     }
 
     /// Attach both bundles to `engine` (mirrors the production
     /// composition root minus the tenancy decorator).
     fn attach(&self, engine: WorkflowEngine) -> WorkflowEngine {
-        engine
-            .with_execution_stores(self.execution_stores())
-            .with_workflow_stores(self.workflow_stores())
+        engine.with_execution_stores(self.execution_stores())
+    }
+
+    async fn admit(
+        &self,
+        workflow: &WorkflowDefinition,
+        frozen: &nebula_plugin::FrozenPluginRegistry,
+    ) -> nebula_core::ExecutionId {
+        let execution_id = nebula_core::ExecutionId::new();
+        let mut state = nebula_execution::ExecutionState::new(execution_id, workflow.id, &[]);
+        state.set_workflow_input(serde_json::json!("payload"));
+        exact_fixture::materialize_state(
+            &self.execution,
+            &nebula_engine::store_seam::single_tenant_scope(),
+            frozen,
+            workflow,
+            &mut state,
+        )
+        .await;
+        execution_id
     }
 
     /// Persist a workflow definition as published version 0 so the
@@ -153,6 +153,7 @@ impl LeaseStores {
                     number: 0,
                     published: true,
                     pinned: false,
+                    activation: None,
                     definition,
                 },
             )
@@ -185,7 +186,9 @@ macro_rules! placeholder_action_impl {
             type Output = serde_json::Value;
 
             fn metadata() -> ActionMetadata {
-                ActionMetadata::new($key, $name, $desc)
+                ActionMetadata::new($key, $name, $desc).with_effect_contract(
+                    nebula_action::effect::ActionEffectContract::NoExternalEffects,
+                )
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
@@ -257,6 +260,7 @@ impl StatelessAction for ParkHandler {
 fn meta(key: ActionKey) -> ActionMetadata {
     let name = key.to_string();
     ActionMetadata::new(key, name, "lease-takeover test handler")
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
 }
 
 fn make_workflow(nodes: Vec<NodeDefinition>, connections: Vec<Connection>) -> WorkflowDefinition {
@@ -371,9 +375,23 @@ async fn engine_b_takes_over_after_engine_a_runner_dies() {
     let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
     let mut events_rx = event_bus.subscribe();
 
+    let frozen_a =
+        exact_fixture::freeze_registry(&registry_a, &[("core", "echo"), ("core", "park")]);
+    let frozen_b =
+        exact_fixture::freeze_registry(&registry_b, &[("core", "echo"), ("core", "park")]);
+
     let engine_a = Arc::new(
         stores
             .attach(make_engine(registry_a))
+            .with_plan_flavor_runtime(
+                Arc::new(nebula_engine::PlanFlavorRevisionLoader::new(Arc::new(
+                    stores.execution.plan_flavor_catalog(),
+                ))),
+                Arc::clone(&frozen_a),
+                Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
+                    &stores.execution,
+                )),
+            )
             .with_lease_ttl(lease_ttl)
             .with_lease_heartbeat_interval(heartbeat_interval)
             .with_event_bus(event_bus),
@@ -381,6 +399,15 @@ async fn engine_b_takes_over_after_engine_a_runner_dies() {
     let engine_b = Arc::new(
         stores
             .attach(make_engine(registry_b))
+            .with_plan_flavor_runtime(
+                Arc::new(nebula_engine::PlanFlavorRevisionLoader::new(Arc::new(
+                    stores.execution.plan_flavor_catalog(),
+                ))),
+                Arc::clone(&frozen_b),
+                Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
+                    &stores.execution,
+                )),
+            )
             .with_lease_ttl(lease_ttl)
             .with_lease_heartbeat_interval(heartbeat_interval),
     );
@@ -398,18 +425,16 @@ async fn engine_b_takes_over_after_engine_a_runner_dies() {
 
     // Persist workflow definition so `resume_execution` can reload it.
     stores.save_workflow(&wf).await;
+    let admitted_id = stores.admit(&wf, &frozen_a).await;
 
     // Start runner A.
     let task_a = {
         let engine_a = Arc::clone(&engine_a);
-        let wf = wf.clone();
         tokio::spawn(async move {
             engine_a
-                .execute_workflow(
+                .resume_execution(
                     &nebula_engine::store_seam::single_tenant_scope(),
-                    &wf,
-                    serde_json::json!("payload"),
-                    ExecutionBudget::default(),
+                    admitted_id,
                 )
                 .await
         })
@@ -587,6 +612,10 @@ async fn engine_b_cancels_execution_after_runner_a_death_via_reclaim_redeliver()
             invocations: Arc::clone(&park_invocations),
         },
     );
+    let frozen_a =
+        exact_fixture::freeze_registry(&registry_a, &[("core", "echo"), ("core", "park")]);
+    let frozen_b =
+        exact_fixture::freeze_registry(&registry_b, &[("core", "echo"), ("core", "park")]);
 
     let event_bus = nebula_eventbus::EventBus::<ExecutionEvent>::new(64);
     let mut events_rx = event_bus.subscribe();
@@ -594,6 +623,15 @@ async fn engine_b_cancels_execution_after_runner_a_death_via_reclaim_redeliver()
     let engine_a = Arc::new(
         stores
             .attach(make_engine(registry_a))
+            .with_plan_flavor_runtime(
+                Arc::new(nebula_engine::PlanFlavorRevisionLoader::new(Arc::new(
+                    stores.execution.plan_flavor_catalog(),
+                ))),
+                Arc::clone(&frozen_a),
+                Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
+                    &stores.execution,
+                )),
+            )
             .with_lease_ttl(lease_ttl)
             .with_lease_heartbeat_interval(heartbeat_interval)
             .with_event_bus(event_bus),
@@ -601,6 +639,15 @@ async fn engine_b_cancels_execution_after_runner_a_death_via_reclaim_redeliver()
     let engine_b = Arc::new(
         stores
             .attach(make_engine(registry_b))
+            .with_plan_flavor_runtime(
+                Arc::new(nebula_engine::PlanFlavorRevisionLoader::new(Arc::new(
+                    stores.execution.plan_flavor_catalog(),
+                ))),
+                Arc::clone(&frozen_b),
+                Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
+                    &stores.execution,
+                )),
+            )
             .with_lease_ttl(lease_ttl)
             .with_lease_heartbeat_interval(heartbeat_interval),
     );
@@ -616,18 +663,16 @@ async fn engine_b_cancels_execution_after_runner_a_death_via_reclaim_redeliver()
         vec![Connection::new(x.clone(), y.clone())],
     );
     stores.save_workflow(&wf).await;
+    let admitted_id = stores.admit(&wf, &frozen_a).await;
 
     // Start runner A.
     let task_a = {
         let engine_a = Arc::clone(&engine_a);
-        let wf = wf.clone();
         tokio::spawn(async move {
             engine_a
-                .execute_workflow(
+                .resume_execution(
                     &nebula_engine::store_seam::single_tenant_scope(),
-                    &wf,
-                    serde_json::json!("payload"),
-                    ExecutionBudget::default(),
+                    admitted_id,
                 )
                 .await
         })
@@ -716,13 +761,21 @@ async fn engine_b_cancels_execution_after_runner_a_death_via_reclaim_redeliver()
     let dispatch_b: Arc<dyn ControlDispatch> = Arc::new(EngineControlDispatch::new(
         Arc::clone(&engine_b),
         stores.execution.clone(),
+        Arc::new(InMemoryTurnHandoff::new(&stores.execution)),
+        "lease-takeover-control".to_owned(),
+        Duration::from_secs(30),
     ));
-    let consumer = ControlConsumer::new(queue.clone(), dispatch_b, proc16(b"runner-b"))
-        .with_batch_size(4)
-        .with_poll_interval(Duration::from_millis(50))
-        .with_reclaim_after(Duration::from_millis(100))
-        .with_reclaim_interval(Duration::from_millis(80))
-        .with_max_reclaim_count(3);
+    let consumer = ControlConsumer::for_flavor(
+        queue.clone(),
+        dispatch_b,
+        proc16(b"runner-b"),
+        frozen_b.revision().id(),
+    )
+    .with_batch_size(4)
+    .with_poll_interval(Duration::from_millis(50))
+    .with_reclaim_after(Duration::from_millis(100))
+    .with_reclaim_interval(Duration::from_millis(80))
+    .with_max_reclaim_count(3);
     let consumer_shutdown = CancellationToken::new();
     let consumer_handle = consumer.spawn(consumer_shutdown.clone());
 
@@ -840,7 +893,6 @@ async fn replay_does_not_contend_for_held_lease() {
     let engine_a = Arc::new(
         make_engine(registry_a)
             .with_execution_stores(stores.execution_stores())
-            .with_workflow_stores(stores.workflow_stores())
             .with_lease_ttl(lease_ttl)
             .with_lease_heartbeat_interval(heartbeat_interval)
             .with_event_bus(event_bus),
@@ -854,7 +906,6 @@ async fn replay_does_not_contend_for_held_lease() {
     // shared `stores.execution` directly — that is what the invariant
     // cares about.
     let engine_b = make_engine(registry_b)
-        .with_workflow_stores(stores.workflow_stores())
         .with_lease_ttl(lease_ttl)
         .with_lease_heartbeat_interval(heartbeat_interval);
 

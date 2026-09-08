@@ -23,6 +23,7 @@ use std::{
         Arc, OnceLock,
         atomic::{AtomicU32, Ordering},
     },
+    time::Duration,
 };
 
 use chrono::Utc;
@@ -40,6 +41,7 @@ use nebula_engine::{
 };
 use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_metrics::MetricsRegistry;
+use nebula_storage::inmem::InMemoryTurnHandoff;
 use nebula_storage::{InMemoryExecutionStore, InMemoryWorkflowVersionStore};
 use nebula_storage_port::{
     dto::WorkflowVersionRecord,
@@ -185,13 +187,17 @@ impl StatelessAction for CountingEchoB {
 
 // ── Stores ──────────────────────────────────────────────────────────────────
 
+mod exact_fixture;
+#[path = "exact_fixture/qualified_runtime.rs"]
+mod qualified_runtime;
+
 struct Stores {
+    exact: OnceLock<qualified_runtime::QualifiedRuntime>,
     execution: Arc<InMemoryExecutionStore>,
     journal: Arc<nebula_storage::InMemoryJournalReader>,
     node_results: Arc<nebula_storage::InMemoryNodeResultStore>,
     checkpoints: Arc<nebula_storage::InMemoryCheckpointStore>,
     idempotency: Arc<nebula_storage::InMemoryIdempotencyGuard>,
-    workflow: Arc<nebula_storage::InMemoryWorkflowStore>,
     versions: Arc<InMemoryWorkflowVersionStore>,
 }
 
@@ -200,14 +206,13 @@ impl Stores {
         let execution = Arc::new(InMemoryExecutionStore::new());
         let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&execution));
         let versions = InMemoryWorkflowVersionStore::new();
-        let workflow = nebula_storage::InMemoryWorkflowStore::new_with_versions(&versions);
         Self {
+            exact: OnceLock::new(),
             execution,
             journal,
             node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
             checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
             idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
-            workflow: Arc::new(workflow),
             versions: Arc::new(versions),
         }
     }
@@ -220,20 +225,17 @@ impl Stores {
             checkpoints: self.checkpoints.clone(),
             idempotency: self.idempotency.clone(),
             resume_tokens: Arc::new(self.execution.resume_token_store()),
-        }
-    }
-
-    fn workflow_stores(&self) -> nebula_engine::WorkflowStores {
-        nebula_engine::WorkflowStores {
-            workflow: self.workflow.clone(),
-            versions: self.versions.clone(),
+            operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(
+                &self.execution,
+            )),
         }
     }
 
     fn attach(&self, engine: WorkflowEngine) -> WorkflowEngine {
-        engine
-            .with_execution_stores(self.execution_stores())
-            .with_workflow_stores(self.workflow_stores())
+        self.exact.get().unwrap().attach(
+            engine.with_execution_stores(self.execution_stores()),
+            &self.execution,
+        )
     }
 
     async fn save_workflow(&self, wf: &WorkflowDefinition) {
@@ -241,6 +243,7 @@ impl Stores {
             .create(
                 &nebula_engine::store_seam::single_tenant_scope(),
                 WorkflowVersionRecord {
+                    activation: None,
                     workflow_id: wf.id.to_string(),
                     number: 0,
                     published: true,
@@ -256,16 +259,16 @@ impl Stores {
         let execution_id = ExecutionId::new();
         let mut exec_state = ExecutionState::new(execution_id, workflow_id, &[]);
         exec_state.set_workflow_input(serde_json::json!(null));
-        let state_json = serde_json::to_value(&exec_state).unwrap();
-        self.execution
-            .create(
+        self.exact
+            .get()
+            .unwrap()
+            .pin(
+                &self.execution,
+                self.versions.as_ref(),
                 &nebula_engine::store_seam::single_tenant_scope(),
-                &execution_id.to_string(),
-                &workflow_id.to_string(),
-                state_json,
+                &mut exec_state,
             )
-            .await
-            .unwrap();
+            .await;
         execution_id
     }
 
@@ -286,6 +289,9 @@ impl Stores {
 /// Wire an engine + dispatch over a fresh registry. The caller registers the
 /// action keys it needs first.
 fn build(registry: Arc<ActionRegistry>, stores: &Stores) -> EngineControlDispatch {
+    stores
+        .exact
+        .get_or_init(|| qualified_runtime::QualifiedRuntime::new(&registry));
     let executor: ActionExecutor =
         Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
     let runner = Arc::new(InProcessRunner::new(executor));
@@ -300,7 +306,13 @@ fn build(registry: Arc<ActionRegistry>, stores: &Stores) -> EngineControlDispatc
         .unwrap(),
     );
     let engine = Arc::new(stores.attach(WorkflowEngine::new(runtime, metrics).unwrap()));
-    EngineControlDispatch::new(Arc::clone(&engine), stores.execution.clone())
+    EngineControlDispatch::new(
+        Arc::clone(&engine),
+        stores.execution.clone(),
+        Arc::new(InMemoryTurnHandoff::new(&stores.execution)),
+        "resume-targeting-control".to_owned(),
+        Duration::from_secs(30),
+    )
 }
 
 /// Register a stateless action instance under the metadata its `Action` impl

@@ -89,6 +89,26 @@ pub trait ControlQueue: Send + Sync + std::fmt::Debug {
         batch_size: u32,
     ) -> Result<Vec<ControlClaim>, StorageError>;
 
+    /// Claim only commands whose persisted execution reference has this exact flavor.
+    ///
+    /// The execution must agree with the message's scope and retain a live
+    /// reference to the exact flavor. Apply this predicate before
+    /// ordering/limiting and minting claims. Catalog drain does not invalidate
+    /// an existing live reference, while a terminally released reference cannot
+    /// admit a new delivery. Missing or released references never fall back to
+    /// unfiltered claiming or fields decoded from execution JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] when the exact-flavor claim cannot be read or
+    /// durably acquired.
+    async fn claim_pending_for_flavor(
+        &self,
+        processor: &[u8; 16],
+        batch_size: u32,
+        worker_flavor: nebula_core::WorkerFlavorRevisionId,
+    ) -> Result<Vec<ControlClaim>, StorageError>;
+
     /// Mark a claimed command completed.
     ///
     /// Fenced on `(row id, status = Processing, claim generation)`. A token

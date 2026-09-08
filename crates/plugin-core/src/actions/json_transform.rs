@@ -295,6 +295,7 @@ impl nebula_action::action::Action for JsonTransform {
             "JSON Transform",
             "Applies a sequence of pick/omit/rename/flatten operations to a JSON object",
         )
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
 
     fn dependencies() -> &'static nebula_action::Dependencies {

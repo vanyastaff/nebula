@@ -1,19 +1,16 @@
-//! Engine-owned [`ControlDispatch`] implementation — follow-ups A2
-//! (Start / Resume / Restart) and A3 (Cancel / Terminate).
+//! Engine-owned [`ControlDispatch`] implementation for every durable command.
 //!
-//! The [`ControlConsumer`] (skeleton landed in A1) drains
-//! `execution_control_queue` rows and hands each typed command to an
+//! The [`ControlConsumer`] drains `execution_control_queue` rows and hands each typed command to an
 //! implementation of [`ControlDispatch`]. [`EngineControlDispatch`] wires the
 //! `Start` / `Resume` / `Restart` paths into the engine so that a POST to
-//! `/executions` actually causes node execution — closing the gap named
-//! in #332. The `Cancel` / `Terminate` path closes the symmetric cancel gap named in #330: the durable `Cancel` signal the API's
+//! `/executions` causes node execution. The durable `Cancel` signal the API's
 //! `cancel_execution` handler enqueues now reaches the live frontier loop
 //! via [`WorkflowEngine::cancel_execution`].
 //!
 //! ## Idempotency contract
 //!
 //! Control-queue delivery is at-least-once: the ack path on `mark_completed`
-//! may fail after a successful dispatch, and the reclaim path (B1) will
+//! may fail after a successful dispatch, and the queue reclaim path will
 //! redeliver. Each dispatch method guards against re-delivery through one of
 //! two mechanisms:
 //!
@@ -27,18 +24,18 @@
 //! - **Resume** splits by persisted status. For a `Paused` execution it calls
 //!   `satisfy_signal_waits` before re-driving (the no-live-runner path). Because
 //!   `satisfy_signal_waits` holds the execution lease for its CAS, errors split by effect:
-//!   `Leased` returns `Deferred` (B1 reclaim redelivers); any other error (CAS conflict,
+//!   `Leased` returns `Deferred` (queue reclaim redelivers); any other error (CAS conflict,
 //!   checkpoint failure) re-reads the persisted status — terminal / `Cancelling` → ack; still
 //!   non-terminal → `Deferred`. This ensures the Resume is never silently dropped when the
 //!   satisfy did not durably land. For a `Running` execution (a signal wait parked with a
 //!   `timeout`, so the row never reached `Paused`) it delivers the Resume to the live frontier
-//!   loop's resume channel via `WorkflowEngine::resume_live` (W-S2b) and gates the ack on the
-//!   loop's DURABLE self-arm (P1#1): the loop checkpoints the arm under its own lease and replies
+//!   loop's resume channel via `WorkflowEngine::resume_live` and gates the ack on the loop's
+//!   durable self-arm: the loop checkpoints the arm under its own lease and replies
 //!   with the outcome. The row is acked only when the arm durably landed (`Armed`) or there was
 //!   nothing to arm (`NothingToArm`); a failed arm checkpoint, a gone loop, or an ack timeout →
-//!   `Deferred` for B1 reclaim, each with a distinct `ResumeDeferred` reason. No live entry on
+//!   `Deferred` for queue reclaim, each with a distinct `ResumeDeferred` reason. No live entry on
 //!   this runner (`NoLiveEntry` — a crashed parking runner with a TTL-expired lease, or
-//!   cross-runner) is RECOVERED via `recover_running_resume` (W-S3b): the execution lease is the
+//!   cross-runner) is recovered via `recover_running_resume`: the execution lease is the
 //!   dead-vs-live oracle — `satisfy_running_signal_waits` arms the matching wait under a
 //!   free/expired lease and re-drives, or `Deferred`s when a live owner holds the lease elsewhere;
 //!   a recovery against an absent/corrupt row is ack-dropped (no forever-redelivery). Redelivery
@@ -69,7 +66,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use nebula_core::id::ExecutionId;
 use nebula_execution::ExecutionStatus;
-use nebula_storage_port::{Scope, dto::ResumeTarget, store::ExecutionStore};
+use nebula_storage_port::{Scope, StorageError, dto::ResumeTarget, store::ExecutionStore};
 
 use crate::{
     WorkflowEngine,
@@ -111,6 +108,14 @@ enum StatusRead {
 pub struct EngineControlDispatch {
     engine: Arc<WorkflowEngine>,
     execution: Arc<dyn ExecutionStore>,
+    control_start: ControlStartOwner,
+}
+
+#[derive(Clone)]
+struct ControlStartOwner {
+    handoff: Arc<dyn nebula_storage_port::store::ExecutionTurnHandoff>,
+    holder: String,
+    lease_ttl: std::time::Duration,
 }
 
 impl EngineControlDispatch {
@@ -124,8 +129,102 @@ impl EngineControlDispatch {
     ///
     /// [`WorkflowEngine::with_execution_stores`]: crate::WorkflowEngine::with_execution_stores
     #[must_use]
-    pub fn new(engine: Arc<WorkflowEngine>, execution: Arc<dyn ExecutionStore>) -> Self {
-        Self { engine, execution }
+    pub fn new(
+        engine: Arc<WorkflowEngine>,
+        execution: Arc<dyn ExecutionStore>,
+        handoff: Arc<dyn nebula_storage_port::store::ExecutionTurnHandoff>,
+        holder: String,
+        lease_ttl: std::time::Duration,
+    ) -> Self {
+        Self {
+            engine,
+            execution,
+            control_start: ControlStartOwner {
+                handoff,
+                holder,
+                lease_ttl,
+            },
+        }
+    }
+
+    async fn dispatch_owned_control(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+        owner: &ControlStartOwner,
+        claim: nebula_storage_port::store::ControlClaimToken,
+        command: nebula_storage_port::store::ControlTurnCommand,
+    ) -> crate::ClaimedControlDispatchOutcome {
+        use crate::{
+            ClaimedControlDispatchOutcome as Dispatch, ClaimedControlTurnOutcome as Owner,
+        };
+        use nebula_error::Classify as _;
+        let restart = matches!(
+            command,
+            nebula_storage_port::store::ControlTurnCommand::Restart
+        );
+        match self.read_status_discriminated(scope, execution_id).await {
+            Ok(StatusRead::Present(status)) if status.is_terminal() => {
+                return Dispatch::NotAccepted(if restart {
+                    Err(ControlDispatchError::Rejected(
+                        "terminal execution restart requires unsupported rewind semantics"
+                            .to_owned(),
+                    ))
+                } else {
+                    Ok(())
+                });
+            },
+            Ok(StatusRead::Present(ExecutionStatus::Cancelling)) => {
+                return Dispatch::NotAccepted(Ok(()));
+            },
+            Ok(StatusRead::Absent | StatusRead::Corrupt) => {
+                return Dispatch::NotAccepted(if restart {
+                    Err(ControlDispatchError::Rejected(
+                        "control Restart has no valid execution".to_owned(),
+                    ))
+                } else {
+                    // Preserve the existing moot Resume policy for orphaned
+                    // callbacks; this does not dispatch any action.
+                    Ok(())
+                });
+            },
+            Err(error) => return Dispatch::NotAccepted(Err(error)),
+            Ok(StatusRead::Present(_)) => {},
+        }
+        match self
+            .engine
+            .resume_claimed_control_turn(
+                scope,
+                execution_id,
+                crate::ClaimedControlTurnRequest {
+                    claim,
+                    handoff: Arc::clone(&owner.handoff),
+                    command,
+                },
+            )
+            .await
+        {
+            Owner::ClaimSuperseded => Dispatch::ClaimSuperseded,
+            Owner::AcceptanceUnknown(error) => {
+                Dispatch::AcceptanceUnknown(ControlDispatchError::Deferred(error.to_string()))
+            },
+            Owner::Accepted(result) => Dispatch::Accepted(result.map_err(|error| {
+                ControlDispatchError::Internal(format!(
+                    "accepted execution {execution_id}: {error}"
+                ))
+            })),
+            Owner::NotAccepted(error) => {
+                let permanent = matches!(
+                    error.category(),
+                    nebula_error::ErrorCategory::Validation | nebula_error::ErrorCategory::NotFound
+                );
+                Dispatch::NotAccepted(Err(if permanent {
+                    ControlDispatchError::Rejected(error.to_string())
+                } else {
+                    ControlDispatchError::Deferred(error.to_string())
+                }))
+            },
+        }
     }
 
     /// Read the persisted [`ExecutionStatus`] for an execution under the given
@@ -169,22 +268,14 @@ impl EngineControlDispatch {
     /// Like [`Self::read_status`] but returns a [`StatusRead`] discriminant
     /// instead of collapsing all failures into `Err`.
     ///
-    /// The returned `Err` means a **transient** backend failure: the
-    /// `ExecutionStore::get` call itself returned an error (network blip,
-    /// lock timeout, connection pool exhausted, etc.). The caller MUST NOT
-    /// ack-drop on `Err`; it should defer the command so B1 reclaim can
-    /// redeliver once the store recovers.
+    /// The returned `Err` means a transient backend failure such as a
+    /// connection or lock failure. The caller defers the command so queue
+    /// reclaim can redeliver it after the store recovers.
     ///
     /// `Ok(StatusRead::Absent)` and `Ok(StatusRead::Corrupt)` are PERMANENT:
     /// no amount of redelivery will change the outcome. Ack-dropping them is
     /// safe (and correct — it prevents forever-redelivery on a moot command).
     ///
-    /// This is intentionally NOT used by `dispatch_start` / `dispatch_restart`
-    /// / `dispatch_cancel`, which propagate the read error via `?` so a
-    /// transient store failure on those paths surfaces in the consumer's
-    /// `mark_failed` (the right outcome for a non-Resume orphan or restart).
-    /// Only the Resume path (where the command is attacker-facing and an
-    /// absent/corrupt id must not be retried forever) uses this discriminant.
     async fn read_status_discriminated(
         &self,
         scope: &Scope,
@@ -193,13 +284,7 @@ impl EngineControlDispatch {
         let record = match self.execution.get(scope, &execution_id.to_string()).await {
             Ok(Some(r)) => r,
             Ok(None) => return Ok(StatusRead::Absent),
-            Err(e) => {
-                // Transient backend error — the caller must Defer, not ack-drop.
-                return Err(ControlDispatchError::Deferred(format!(
-                    "execution {execution_id}: transient store read error during Resume dispatch: \
-                     {e}"
-                )));
-            },
+            Err(error) => return Self::classify_status_read_error(execution_id, error),
         };
         match record.state.get("status") {
             Some(s) => match serde_json::from_value::<ExecutionStatus>(s.clone()) {
@@ -210,6 +295,27 @@ impl EngineControlDispatch {
         }
     }
 
+    fn classify_status_read_error(
+        execution_id: ExecutionId,
+        error: StorageError,
+    ) -> Result<StatusRead, ControlDispatchError> {
+        match error {
+            error
+            @ (StorageError::Serialization(_) | StorageError::UnknownSchemaVersion { .. }) => {
+                tracing::error!(
+                    %execution_id,
+                    error = %error,
+                    "persisted execution status cannot be decoded"
+                );
+                Ok(StatusRead::Corrupt)
+            },
+            error => Err(ControlDispatchError::Deferred(format!(
+                "execution {execution_id}: transient store read error during control dispatch: \
+                 {error}"
+            ))),
+        }
+    }
+
     /// Emit a typed [`ExecutionEvent::ResumeDeferred`], log a warning, and
     /// return [`ControlDispatchError::Deferred`] for a `Running` execution
     /// whose live-frontier Resume did not durably arm.
@@ -217,7 +323,7 @@ impl EngineControlDispatch {
     /// Centralises the not-durable arm of [`Self::dispatch_resume`]'s
     /// `Running` branch so each cause (arm-checkpoint failed, loop gone, ack
     /// timeout, no live entry) carries a distinct, observable `reason` while
-    /// the row stays un-acked in `Processing` for B1 reclaim. Deferring is
+    /// the row stays un-acked in `Processing` for queue reclaim. Deferring is
     /// always safe: Resume redelivery is idempotent.
     fn defer_running_resume(
         engine: &WorkflowEngine,
@@ -227,14 +333,14 @@ impl EngineControlDispatch {
         tracing::warn!(
             %execution_id,
             reason,
-            "dispatch_resume: live-frontier Resume not durably armed; deferring for B1 reclaim"
+            "dispatch_resume: live-frontier Resume not durably armed; deferring for queue reclaim"
         );
         engine.emit_event(ExecutionEvent::ResumeDeferred {
             execution_id,
             reason: reason.to_owned(),
         });
         Err(ControlDispatchError::Deferred(format!(
-            "execution {execution_id} Resume deferred for B1 reclaim: {reason}"
+            "execution {execution_id} Resume deferred for queue reclaim: {reason}"
         )))
     }
 
@@ -256,6 +362,12 @@ impl EngineControlDispatch {
             // the consumer from marking the row `Failed`; the lease holder
             // owns the terminal transition.
             Err(EngineError::Leased { .. }) => Ok(()),
+            Err(EngineError::Effect(error)) if error.is_deferred() => Err(
+                ControlDispatchError::Deferred(format!("execution {execution_id}: {error}")),
+            ),
+            Err(EngineError::ContractBundleRead { .. }) => Err(ControlDispatchError::Deferred(
+                format!("execution {execution_id}: persisted contract temporarily unavailable"),
+            )),
             Err(e) => {
                 // Last-ditch idempotency guard: re-read the row in case a
                 // sibling dispatcher drove it to a terminal state between our
@@ -286,7 +398,7 @@ impl EngineControlDispatch {
     /// control-queue row here would strand the paused execution when the lease
     /// holder is a crashed/stalled runner whose TTL has not expired yet (it
     /// never completes the armed wait, and no redelivery remains). Deferring
-    /// leaves the row in `Processing` for the B1 reclaim sweep to redeliver
+    /// leaves the row in `Processing` for the queue reclaim sweep to redeliver
     /// once the lease frees, and a later drive completes the armed wait.
     ///
     /// The Resume is acked ONLY when a post-error status re-read shows the
@@ -325,18 +437,18 @@ impl EngineControlDispatch {
                         drive_error = %e,
                         "dispatch_resume: post-satisfy drive did not complete and execution is \
                          not terminal ({status_desc}); deferring Resume (armed wait still \
-                         pending) for B1 reclaim"
+                         pending) for queue reclaim"
                     );
                     self.engine.emit_event(ExecutionEvent::ResumeDeferred {
                         execution_id,
                         reason: format!(
                             "post-satisfy drive did not complete ({e}); status={status_desc}; \
-                                 armed wait deferred for B1 reclaim"
+                                 armed wait deferred for queue reclaim"
                         ),
                     });
                     Err(ControlDispatchError::Deferred(format!(
                         "execution {execution_id}: post-satisfy drive did not complete ({e}); \
-                             status={status_desc}; armed wait deferred for B1 reclaim"
+                             status={status_desc}; armed wait deferred for queue reclaim"
                     )))
                 },
             },
@@ -344,7 +456,7 @@ impl EngineControlDispatch {
     }
 
     /// Recover a no-live-owner `Running` execution whose `Resume` reached
-    /// [`Self::dispatch_resume`]'s `NoLiveEntry` arm (ADR-0099 W-S3b).
+    /// [`Self::dispatch_resume`]'s `NoLiveEntry` arm.
     ///
     /// `NoLiveEntry` means the live-frontier resume channel found no
     /// `RunningEntry` on this runner — either the parking runner crashed with a
@@ -354,7 +466,7 @@ impl EngineControlDispatch {
     /// lease (free / TTL-expired ⇒ crashed, no owner) and arms the matching
     /// signal wait(s) under it, or returns [`EngineError::Leased`] (a real owner
     /// is alive elsewhere ⇒ defer). On a successful arm we re-drive via
-    /// [`Self::drive_armed_resume`], whose Phase-0b completes the armed wait and
+    /// [`Self::drive_armed_resume`], which completes the armed wait and
     /// which itself Defers on a non-terminal drive (keeping the Resume
     /// redeliverable when the lease holder is a still-crashed runner).
     ///
@@ -366,17 +478,17 @@ impl EngineControlDispatch {
     ///   armed / completed / a different node) — an idempotent no-op.
     /// - `ExecutionNotResumable` → ack: a concurrent cancel/terminate moved the
     ///   execution off a resumable status under the lease; the Resume is moot.
-    /// - `Leased` → `Deferred`: a live owner elsewhere — B1 reclaim redelivers.
+    /// - `Leased` → `Deferred`: a live owner elsewhere, so queue reclaim redelivers.
     /// - any other error → re-read the persisted status:
     ///   - row missing (`Ok(None)`) → **ack-drop**: a forged / garbage / corrupt
     ///     id, or a row deleted mid-recovery, is moot. Acking (not `Deferred`)
     ///     closes the only forever-redeliver leak (the row would otherwise cycle
-    ///     through B1 reclaim forever against a non-existent execution).
+    ///     through queue reclaim forever against a non-existent execution).
     ///   - status unreadable / unparseable (`Err`) → **ack-drop** for the same
     ///     reason: a corrupt row can never be recovered, so redelivering it
     ///     forever is pure churn.
     ///   - terminal / `Cancelling` → ack: a concurrent actor owns the outcome.
-    ///   - still non-terminal → `Deferred`: the wait may still be pending; B1
+    ///   - still non-terminal → `Deferred`: the wait may still be pending; queue
     ///     reclaim redelivers.
     async fn recover_running_resume(
         &self,
@@ -396,8 +508,8 @@ impl EngineControlDispatch {
                     "dispatch_resume: no-live-owner recovery armed the signal wait(s) under a \
                      dead/expired lease; driving the recovered execution"
                 );
-                // Phase-0b completes the armed wait; a non-terminal drive Defers
-                // (keeps the Resume redeliverable for B1 reclaim).
+                // This drive completes the armed wait; a non-terminal outcome keeps
+                // the Resume available for queue reclaim.
                 self.drive_armed_resume(scope, execution_id).await
             },
             Ok(SatisfyOutcome::NothingToSatisfy) => {
@@ -420,20 +532,19 @@ impl EngineControlDispatch {
             },
             Err(EngineError::Leased { ref holder, .. }) => {
                 // A live owner holds the lease elsewhere — this is NOT a crashed
-                // runner. Do not double-drive; defer so B1 reclaim redelivers
+                // runner. Do not double-drive; defer so queue reclaim redelivers
                 // once the lease frees (or the owner's own resume channel
                 // handles it). Mirrors the `Paused` Leased arm.
                 // Distinct, machine-greppable target so an operator can alert on
                 // a HIGH RATE of recovery deferrals for one `execution_id` — the
                 // budget-blind, non-resolving Resume the reclaim exemption made
-                // invisible to the bulk sweep counts (ADR-0099 W-S3b
-                // observability).
+                // invisible to the bulk sweep counts.
                 tracing::warn!(
                     target: "engine::wait::resume_recovery",
                     %execution_id,
                     %holder,
                     "dispatch_resume: no-live-owner recovery deferred — execution lease held \
-                     by a live owner elsewhere; leaving control-queue row for B1 reclaim"
+                     by a live owner elsewhere; leaving control-queue row for queue reclaim"
                 );
                 self.engine.emit_event(ExecutionEvent::ResumeDeferred {
                     execution_id,
@@ -441,7 +552,7 @@ impl EngineControlDispatch {
                 });
                 Err(ControlDispatchError::Deferred(format!(
                     "execution {execution_id} no-live-owner recovery: lease held by live owner \
-                     {holder}; Resume deferred for B1 reclaim"
+                     {holder}; Resume deferred for queue reclaim"
                 )))
             },
             Err(e) => match self.read_status_discriminated(scope, execution_id).await {
@@ -481,7 +592,7 @@ impl EngineControlDispatch {
                         %status,
                         recovery_error = %e,
                         "dispatch_resume: no-live-owner recovery did not land and execution is \
-                         still non-terminal ({status}); deferring Resume for B1 reclaim"
+                         still non-terminal ({status}); deferring Resume for queue reclaim"
                     );
                     self.engine.emit_event(ExecutionEvent::ResumeDeferred {
                         execution_id,
@@ -489,7 +600,7 @@ impl EngineControlDispatch {
                     });
                     Err(ControlDispatchError::Deferred(format!(
                         "execution {execution_id} no-live-owner recovery did not land ({e}); \
-                         status={status}; Resume deferred for B1 reclaim"
+                         status={status}; Resume deferred for queue reclaim"
                     )))
                 },
                 // Permanent corruption — ack-DROP to close the forever-redeliver
@@ -506,7 +617,7 @@ impl EngineControlDispatch {
                     Ok(())
                 },
                 // Transient backend read error on the re-read — the execution may
-                // still be valid and non-terminal. Defer so B1 reclaim redelivers
+                // still be valid and non-terminal. Defer so queue reclaim redelivers
                 // once the store recovers; do NOT ack-drop a valid Resume.
                 Err(deferred) => {
                     tracing::warn!(
@@ -516,7 +627,7 @@ impl EngineControlDispatch {
                         re_read_error = %deferred,
                         "dispatch_resume: no-live-owner recovery failed and the status re-read \
                          also hit a transient store error; deferring Resume conservatively for \
-                         B1 reclaim"
+                         queue reclaim"
                     );
                     self.engine.emit_event(ExecutionEvent::ResumeDeferred {
                         execution_id,
@@ -527,7 +638,7 @@ impl EngineControlDispatch {
                     Err(ControlDispatchError::Deferred(format!(
                         "execution {execution_id} no-live-owner recovery did not land ({e}); \
                          status re-read transient error ({deferred}); Resume deferred \
-                         conservatively for B1 reclaim"
+                         conservatively for queue reclaim"
                     )))
                 },
             },
@@ -537,6 +648,110 @@ impl EngineControlDispatch {
 
 #[async_trait]
 impl ControlDispatch for EngineControlDispatch {
+    async fn dispatch_claimed_resume(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+        target: Option<ResumeTarget>,
+        claim: nebula_storage_port::store::ControlClaimToken,
+    ) -> crate::ClaimedControlDispatchOutcome {
+        let owner = &self.control_start;
+        self.dispatch_owned_control(
+            scope,
+            execution_id,
+            owner,
+            claim,
+            nebula_storage_port::store::ControlTurnCommand::Resume { target },
+        )
+        .await
+    }
+
+    async fn dispatch_claimed_restart(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+        claim: nebula_storage_port::store::ControlClaimToken,
+    ) -> crate::ClaimedControlDispatchOutcome {
+        let owner = &self.control_start;
+        self.dispatch_owned_control(
+            scope,
+            execution_id,
+            owner,
+            claim,
+            nebula_storage_port::store::ControlTurnCommand::Restart,
+        )
+        .await
+    }
+
+    async fn dispatch_claimed_start(
+        &self,
+        scope: &Scope,
+        execution_id: ExecutionId,
+        claim: nebula_storage_port::store::ControlClaimToken,
+    ) -> crate::ClaimedControlDispatchOutcome {
+        use crate::{ClaimedControlDispatchOutcome as Dispatch, ClaimedStartOutcome as Owner};
+        let owner = &self.control_start;
+        match self.read_status_discriminated(scope, execution_id).await {
+            Ok(StatusRead::Present(status))
+                if status.is_terminal() || matches!(status, ExecutionStatus::Cancelling) =>
+            {
+                return Dispatch::NotAccepted(Ok(()));
+            },
+            Ok(StatusRead::Absent | StatusRead::Corrupt) => {
+                return Dispatch::NotAccepted(Err(ControlDispatchError::Rejected(
+                    "control Start has no valid execution".to_owned(),
+                )));
+            },
+            Err(error) => return Dispatch::NotAccepted(Err(error)),
+            Ok(StatusRead::Present(_)) => {},
+        }
+        match self
+            .engine
+            .resume_control_start(
+                scope,
+                execution_id,
+                crate::ClaimedStartRequest {
+                    claim,
+                    handoff: owner.handoff.as_ref(),
+                    holder: &owner.holder,
+                    lease_ttl: owner.lease_ttl,
+                },
+            )
+            .await
+        {
+            Owner::ClaimSuperseded => Dispatch::ClaimSuperseded,
+            Owner::AcceptanceUnknown(error) => {
+                Dispatch::AcceptanceUnknown(ControlDispatchError::Deferred(error.to_string()))
+            },
+            Owner::Accepted(result) => Dispatch::Accepted(result.map(|_| ()).map_err(|error| {
+                ControlDispatchError::Internal(format!(
+                    "accepted execution {execution_id}: {error}"
+                ))
+            })),
+            Owner::NotAccepted(error) => {
+                let transient = matches!(
+                    error,
+                    EngineError::Leased { .. }
+                        | EngineError::CasConflict { .. }
+                        | EngineError::ControlStartHandoff { .. }
+                        | EngineError::ControlStartVersionConflict { .. }
+                        | EngineError::ExecutionRead { .. }
+                        | EngineError::ContractBundleRead { .. }
+                ) || matches!(&error, EngineError::Effect(effect) if effect.is_deferred())
+                    || matches!(&error, EngineError::ExactRevision { source }
+                    if matches!(source.as_ref(), crate::PlanFlavorRevisionBridgeError::Catalog {
+                        source: nebula_storage_port::RevisionCatalogError::Unavailable
+                            | nebula_storage_port::RevisionCatalogError::OutcomeUnknown
+                    }));
+                Dispatch::NotAccepted(Err(if transient {
+                    ControlDispatchError::Deferred(error.to_string())
+                } else {
+                    ControlDispatchError::Rejected(error.to_string())
+                }))
+            },
+        }
+    }
+
     async fn dispatch_start(
         &self,
         scope: &Scope,
@@ -576,12 +791,12 @@ impl ControlDispatch for EngineControlDispatch {
         // id can never resume anything. Ack-DROP it (`Ok(())`, the row is
         // consumed) rather than `Rejected` (which would record a noisy Failed
         // row) or any error that redelivers — this closes the only
-        // forever-redeliver leak on the Resume path (ADR-0099 W-S3b).
+        // forever-redeliver leak on the Resume path.
         //
         // IMPORTANT: only `StatusRead::Absent` (no row) and `StatusRead::Corrupt`
         // (permanent bad state) are ack-dropped. A transient backend read error
         // (`Err`) propagates as `Deferred` — a store blip during a VALID Resume
-        // must never be silently discarded (Codex P2, ADR-0099 W-S3b).
+        // must never be silently discarded.
         let status = match self.read_status_discriminated(scope, execution_id).await {
             Ok(StatusRead::Present(status)) => status,
             Ok(StatusRead::Absent) => {
@@ -602,12 +817,12 @@ impl ControlDispatch for EngineControlDispatch {
             },
             Err(deferred) => {
                 // Transient backend read error — the execution may be VALID.
-                // Defer so B1 reclaim redelivers once the store recovers.
+                // Defer so queue reclaim redelivers once the store recovers.
                 tracing::warn!(
                     %execution_id,
                     deferred_reason = %deferred,
                     "dispatch_resume: transient store error reading execution status; \
-                     deferring Resume for B1 reclaim (not ack-dropping — may be a valid Resume)"
+                     deferring Resume for queue reclaim (not ack-dropping — may be a valid Resume)"
                 );
                 self.engine.emit_event(ExecutionEvent::ResumeDeferred {
                     execution_id,
@@ -618,20 +833,20 @@ impl ControlDispatch for EngineControlDispatch {
         };
         match status {
             // `Running`: a signal wait parked with a `timeout` keeps the row
-            // `Running` with a LIVE frontier loop on the timeout timer (W-S2b).
+            // `Running` with a live frontier loop on the timeout timer.
             // The durable satisfy-CAS path cannot be used here — it would
             // acquire the lease the live loop already holds. Instead deliver
             // the Resume to the live loop's resume channel; the loop self-arms
             // its signal wait under its own lease, DURABLY checkpoints the arm,
             // and replies with the outcome.
             //
-            // P1#1 ack-gating: the control-queue row is acked ONLY when the
+            // The control-queue row is acknowledged only when the
             // self-arm checkpoint durably landed (`Armed`) or there was nothing
             // to arm (`NothingToArm` — an idempotent duplicate). Every
             // not-durable outcome — the arm checkpoint failed (the loop lost its
             // lease mid-iteration), the loop exited before replying, the ack
             // timed out, or no live loop exists on this runner — leaves the row
-            // un-acked (`Deferred`) for B1 reclaim, with a distinct
+            // un-acked (`Deferred`) for queue reclaim, with a distinct
             // `ResumeDeferred` reason so the cause is observable. Deferring is
             // always safe: Resume redelivery is idempotent.
             //
@@ -644,7 +859,7 @@ impl ControlDispatch for EngineControlDispatch {
             // genuine Resume reaches this arm and recovers; a plain
             // crash-recovery re-drive (worker sink / `dispatch_start` /
             // `dispatch_restart`) re-enters `resume_execution` WITHOUT arming,
-            // so it re-parks rather than auto-completing (ADR-0099 W-S3b).
+            // so it re-parks rather than auto-completing.
             ExecutionStatus::Running => {
                 match self
                     .engine
@@ -672,6 +887,11 @@ impl ControlDispatch for EngineControlDispatch {
                         execution_id,
                         "live frontier self-arm checkpoint failed (lease lost mid-iteration)",
                     ),
+                    ResumeDelivery::Acked(ResumeOutcome::Claimed(_)) => Self::defer_running_resume(
+                        &self.engine,
+                        execution_id,
+                        "claimed control response arrived on the technical Resume path",
+                    ),
                     ResumeDelivery::LoopGone => Self::defer_running_resume(
                         &self.engine,
                         execution_id,
@@ -686,7 +906,7 @@ impl ControlDispatch for EngineControlDispatch {
                         // No live loop on this runner. Recover via the lease
                         // dead-vs-live oracle (crashed parking runner with a
                         // TTL-expired lease, OR cross-runner) instead of an
-                        // unconditional defer (ADR-0099 W-S3b).
+                        // unconditional defer.
                         self.recover_running_resume(scope, execution_id, resume_target)
                             .await
                     },
@@ -702,7 +922,7 @@ impl ControlDispatch for EngineControlDispatch {
             // `Paused`: the execution is suspended awaiting an external signal.
             // Arm all signal-driven waits (Waiting{next_attempt_at == None}
             // → Waiting{next_attempt_at = now}) via durable CAS BEFORE re-driving;
-            // Phase-0b then completes each armed wait through PORT-AWARE edge
+            // The next drive completes each armed wait through port-aware edge
             // routing (completing it here would route port-blind). This is the
             // only code path that
             // calls `satisfy_signal_waits`; Start / Restart / worker re-drives do not,
@@ -716,14 +936,14 @@ impl ControlDispatch for EngineControlDispatch {
             // - `Leased` → another runner holds the lease and is actively driving this
             //   execution. The control-queue row must NOT be acked — returning
             //   `ControlDispatchError::Deferred` leaves the row in `Processing` so the
-            //   B1 reclaim sweep redelivers it once the lease expires.
+            //   Queue reclaim redelivers it once the lease expires.
             //
             // - Any other error (`CasConflict` / `CheckpointFailed` / etc.) → the
             //   satisfy did NOT durably land.  The correct action depends on the
             //   *current* persisted status (re-read after the error):
             //   · terminal / Cancelling → concurrent actor owns the transition → ack.
             //   · still non-terminal (Paused / Running) → the wait may still be
-            //     pending → `Deferred` so B1 reclaim redelivers the Resume.
+            //     pending → `Deferred` so queue reclaim redelivers the Resume.
             //   Acking unconditionally here would permanently drop the Resume when a
             //   lease TTL-expiry causes a FencedOut (surfaced as CasConflict) while
             //   the execution is still Paused — bounded lost-Resume.
@@ -765,7 +985,7 @@ impl ControlDispatch for EngineControlDispatch {
                     Err(EngineError::Leased { ref holder, .. }) => {
                         // Transient lease contention — another runner is actively
                         // driving this execution. Leave the control-queue row in
-                        // `Processing` for B1 reclaim to redeliver.
+                        // `Processing` for queue reclaim to redeliver.
                         //
                         // Observable: typed `ResumeDeferred` event + `tracing::warn`
                         // let operators distinguish expected transient contention (low
@@ -774,7 +994,7 @@ impl ControlDispatch for EngineControlDispatch {
                             %execution_id,
                             %holder,
                             "dispatch_resume: satisfy_signal_waits deferred — execution lease \
-                             held by another runner; leaving control-queue row for B1 reclaim"
+                             held by another runner; leaving control-queue row for queue reclaim"
                         );
                         self.engine.emit_event(ExecutionEvent::ResumeDeferred {
                             execution_id,
@@ -782,7 +1002,7 @@ impl ControlDispatch for EngineControlDispatch {
                         });
                         return Err(ControlDispatchError::Deferred(format!(
                             "execution {execution_id} lease held by {holder}; \
-                             Resume deferred for B1 reclaim"
+                             Resume deferred for queue reclaim"
                         )));
                     },
                     Err(e) => {
@@ -819,7 +1039,7 @@ impl ControlDispatch for EngineControlDispatch {
                             Ok(status) => {
                                 // Execution is not yet terminal (Paused / Running / Created
                                 // or row missing): the wait may still be pending.
-                                // Defer so B1 reclaim redelivers the Resume.
+                                // Defer so queue reclaim redelivers the Resume.
                                 let status_desc = status
                                     .map(|s| s.to_string())
                                     .unwrap_or_else(|| "not found".to_owned());
@@ -829,7 +1049,7 @@ impl ControlDispatch for EngineControlDispatch {
                                     satisfy_error = %e,
                                     "dispatch_resume: satisfy_signal_waits did not land and \
                                      execution is still non-terminal ({status_desc}); \
-                                     deferring Resume for B1 reclaim"
+                                     deferring Resume for queue reclaim"
                                 );
                                 self.engine.emit_event(ExecutionEvent::ResumeDeferred {
                                     execution_id,
@@ -840,12 +1060,12 @@ impl ControlDispatch for EngineControlDispatch {
                                 return Err(ControlDispatchError::Deferred(format!(
                                     "execution {execution_id}: satisfy_signal_waits did not \
                                      durably commit ({e}); status={status_desc}; \
-                                     Resume deferred for B1 reclaim"
+                                     Resume deferred for queue reclaim"
                                 )));
                             },
                             Err(read_err) => {
                                 // Status re-read itself failed — conservative: Defer so
-                                // B1 reclaim redelivers; don't ack an unverified state.
+                                // Queue reclaim redelivers; don't ack an unverified state.
                                 tracing::warn!(
                                     %execution_id,
                                     satisfy_error = %e,
@@ -863,7 +1083,7 @@ impl ControlDispatch for EngineControlDispatch {
                                 return Err(ControlDispatchError::Deferred(format!(
                                     "execution {execution_id}: satisfy_signal_waits did not land \
                                      ({e}) and status re-read failed ({read_err}); \
-                                     Resume deferred conservatively for B1 reclaim"
+                                     Resume deferred conservatively for queue reclaim"
                                 )));
                             },
                         }
@@ -963,7 +1183,7 @@ impl ControlDispatch for EngineControlDispatch {
                 // owner observes the API's durable `Cancelled` write via its next
                 // checkpoint CAS and tears its own frontier down — so we ACK
                 // (below) rather than Defer. Deferring would churn the
-                // control-queue row through untargeted, budget-capped B1 reclaim
+                // control-queue row through untargeted, budget-capped queue reclaim
                 // (which cannot route to the lease holder) until it is marked
                 // failed, while never delivering anything to the owner. A
                 // genuinely no-live-runner Paused execution has a FREE lease, so
@@ -1007,17 +1227,17 @@ impl ControlDispatch for EngineControlDispatch {
                     Err(e) => {
                         // The cleanup did not durably land; the execution is
                         // already `Cancelled` but its parked nodes are still
-                        // non-terminal. Defer so B1 reclaim retries — never ack a
+                        // non-terminal. Defer so queue reclaim retries — never ack a
                         // cleanup whose effect did not land.
                         tracing::warn!(
                             %execution_id,
                             error = %e,
                             "dispatch_cancel: dangling-node cleanup did not land; deferring for \
-                             B1 reclaim"
+                             queue reclaim"
                         );
                         Err(ControlDispatchError::Deferred(format!(
                             "execution {execution_id} cancel dangling-node cleanup did not land \
-                             ({e}); deferred for B1 reclaim"
+                             ({e}); deferred for queue reclaim"
                         )))
                     },
                 }
@@ -1044,5 +1264,37 @@ impl ControlDispatch for EngineControlDispatch {
         // the design rationale and the upgrade path to a true forced-shutdown
         // distinction.
         self.dispatch_cancel(scope, execution_id).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_read_errors_distinguish_corruption_from_retryable_failures() {
+        let execution_id = ExecutionId::new();
+
+        std::assert_matches!(
+            EngineControlDispatch::classify_status_read_error(
+                execution_id,
+                StorageError::Serialization("oversized state".to_owned()),
+            ),
+            Ok(StatusRead::Corrupt)
+        );
+        std::assert_matches!(
+            EngineControlDispatch::classify_status_read_error(
+                execution_id,
+                StorageError::UnknownSchemaVersion { found: 2, max: 1 },
+            ),
+            Ok(StatusRead::Corrupt)
+        );
+        std::assert_matches!(
+            EngineControlDispatch::classify_status_read_error(
+                execution_id,
+                StorageError::Connection("database unavailable".to_owned()),
+            ),
+            Err(ControlDispatchError::Deferred(_))
+        );
     }
 }

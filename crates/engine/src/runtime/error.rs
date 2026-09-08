@@ -96,6 +96,15 @@ pub enum RuntimeError {
         cap: u32,
     },
 
+    /// Generic dispatch cannot grant external-effect invocation authority.
+    #[classify(
+        category = "unsupported",
+        code = "RUNTIME:EFFECT_REQUIRES_OWNER",
+        retryable = false
+    )]
+    #[error("action effect contract requires execution-owner admission")]
+    EffectRequiresOwner,
+
     /// The action key resolves to a trigger, which has its own start/stop
     /// lifecycle and is not executable via `ActionRuntime::execute_action`.
     /// Triggers run via the trigger runtime (separate from action execution).

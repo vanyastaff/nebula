@@ -48,7 +48,6 @@
 
 use std::{sync::Arc, time::Duration};
 
-use nebula_core::PluginKey;
 use nebula_core::id::ExecutionId;
 use nebula_metrics::{
     MetricsRegistry,
@@ -58,6 +57,7 @@ use nebula_metrics::{
         orchestrator_handoff_outcome, orchestrator_reclaim_outcome,
     },
 };
+use nebula_plugin::WorkerFlavorContext;
 use nebula_storage_port::StorageError;
 use nebula_storage_port::store::{
     ExecutionTurnHandoff, JobClaim, JobClaimToken, JobDispatchQueue, ReclaimOutcome,
@@ -173,7 +173,7 @@ pub struct Orchestrator {
     /// `processor_id` so contention diagnostics name the processor, but the
     /// lease authority is the fence, not this string.
     lease_holder: String,
-    available_plugins: Vec<PluginKey>,
+    flavor: WorkerFlavorContext,
     batch_size: u32,
     poll_interval: Duration,
     reclaim_after: Duration,
@@ -197,7 +197,7 @@ impl Orchestrator {
     /// `handoff` is the durable owner of the dispatch-claim → execution-turn
     /// handoff and MUST share the backend the queue and the engine's
     /// execution store use — see the field docs. An orchestrator without a
-    /// handoff would hold claims for whole action durations (NS05), so none
+    /// handoff would hold claims for whole action durations, so none
     /// can be constructed.
     ///
     /// `processor_id` is the fixed 16-byte fence token recorded in the row's
@@ -208,7 +208,7 @@ impl Orchestrator {
         sink: Arc<dyn ExecutionSink>,
         handoff: Arc<dyn ExecutionTurnHandoff>,
         processor_id: [u8; 16],
-        available_plugins: Vec<PluginKey>,
+        flavor: WorkerFlavorContext,
     ) -> Self {
         let lease_holder = format!("orchestrator:{}", hex_display(&processor_id));
         Self {
@@ -217,7 +217,7 @@ impl Orchestrator {
             handoff,
             processor_id,
             lease_holder,
-            available_plugins,
+            flavor,
             batch_size: DEFAULT_BATCH_SIZE,
             poll_interval: DEFAULT_POLL_INTERVAL,
             reclaim_after: DEFAULT_RECLAIM_AFTER,
@@ -311,7 +311,8 @@ impl Orchestrator {
             reclaim_after_ms = self.reclaim_after.as_millis() as u64,
             reclaim_interval_ms = self.reclaim_interval.as_millis() as u64,
             max_reclaim_count = self.max_reclaim_count,
-            available_plugins = ?self.available_plugins.iter().map(PluginKey::as_str).collect::<Vec<_>>(),
+            worker_flavor_id = %self.flavor.revision_id(),
+            available_plugins = ?self.flavor.plugin_keys().iter().map(nebula_core::PluginKey::as_str).collect::<Vec<_>>(),
             "orchestrator started (ADR-0095)"
         );
 
@@ -425,7 +426,12 @@ impl Orchestrator {
     ) -> Option<Duration> {
         let claimed: Result<Vec<JobClaim>, String> = self
             .queue
-            .claim_pending(&self.processor_id, self.batch_size, &self.available_plugins)
+            .claim_pending(
+                &self.processor_id,
+                self.batch_size,
+                self.flavor.plugin_keys(),
+                self.flavor.revision_id(),
+            )
             .await
             .map_err(|e| e.to_string());
 
@@ -465,10 +471,16 @@ impl Orchestrator {
         // `required_plugin_key ∈ required_plugins` by the DTO invariant) in
         // debug builds only — it is not a release guard.
         debug_assert!(
-            self.available_plugins.contains(&msg.required_plugin_key),
+            self.flavor.plugin_keys().contains(&msg.required_plugin_key),
             "claim routing invariant violated: required_plugin_key {:?} not in available_plugins {:?}",
             msg.required_plugin_key,
-            self.available_plugins
+            self.flavor.plugin_keys()
+        );
+
+        debug_assert_eq!(
+            msg.required_worker_flavor_id,
+            self.flavor.revision_id(),
+            "claim must match the advertised exact worker flavor"
         );
 
         let row_id = msg.id;
@@ -525,13 +537,13 @@ impl Orchestrator {
         // execution lease and acknowledges the queue row in one transaction.
         // Past this commit the action's duration is governed by the lease,
         // and the queue can never redeliver this row.
-        let turn_handoff = TurnHandoff {
-            scope: &msg.scope,
-            execution_id: &msg.execution_id,
-            claim: token,
-            holder: &self.lease_holder,
-            lease_ttl: self.handoff_lease_ttl,
-        };
+        let turn_handoff = TurnHandoff::for_claim(
+            &msg.scope,
+            &msg.execution_id,
+            token,
+            msg.required_worker_flavor_id,
+        )
+        .lease_to(&self.lease_holder, self.handoff_lease_ttl);
         let acceptance = self.handoff.accept_turn(&turn_handoff).await;
         let fence = match acceptance {
             Ok(TurnAcceptance::Accepted { fence }) => {
@@ -559,6 +571,16 @@ impl Orchestrator {
                     row_id = %hex_display(&row_id),
                     execution_id = %msg.execution_id,
                     "turn already owned by another holder; leaving the row claimable for redelivery (#976)"
+                );
+                return;
+            },
+            Ok(_) => {
+                self.inc_handoff(orchestrator_handoff_outcome::ERROR);
+                tracing::error!(
+                    row_id = %hex_display(&row_id),
+                    execution_id = %msg.execution_id,
+                    claim_generation = %token.generation(),
+                    "storage returned an unsupported handoff outcome"
                 );
                 return;
             },

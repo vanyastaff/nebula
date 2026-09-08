@@ -8,8 +8,9 @@ const EXPECTED_RED_WORKFLOW: &str =
     include_str!("../../../../.github/workflows/runtime-repair-red.yml");
 const SCENARIO_TARGET: &str =
     include_str!("../../../../apps/server/tests/runtime_repair_red_scenarios.rs");
-const COMPONENT_C7_TARGET: &str =
-    include_str!("../../../../apps/server/tests/runtime_repair_red_scenarios/component_c7.rs");
+const ABA_FENCING_TARGET: &str = include_str!(
+    "../../../../apps/server/tests/runtime_repair_red_scenarios/same_processor_aba_fencing.rs"
+);
 
 const EMPTY_TEST_MANIFEST: &str = r#"
 manifest_version = 1
@@ -28,12 +29,12 @@ feature = "runtime-repair-red"
 test_binary = "runtime_repair_red_scenarios"
 
 [[expected_failures]]
-test_name = "c0::restart_resume"
-reason_code = "c0-split-control-path"
+test_name = "cancellation_authority::same_key_cancel"
+reason_code = "cancellation-acceptance-ambiguous"
 
 [[expected_failures]]
-test_name = "c1::same_key_cancel"
-reason_code = "c1-ambiguous-acceptance"
+test_name = "durable_wait_reconnect::restart_resume"
+reason_code = "durable-wait-control-path-disconnected"
 "#;
 
 // Test-only parser fixture. It is synthetic verifier input and is never
@@ -43,10 +44,13 @@ fn positive_junit_fixture() -> String {
         Counts::new(2, 2, 0, 0),
         Counts::new(2, 2, 0, 0),
         &[
-            failing_case("c0::restart_resume", "EXPECTED_RED:c0-split-control-path"),
             failing_case(
-                "c1::same_key_cancel",
-                "EXPECTED_RED:c1-ambiguous-acceptance",
+                "durable_wait_reconnect::restart_resume",
+                "EXPECTED_RED:durable-wait-control-path-disconnected",
+            ),
+            failing_case(
+                "cancellation_authority::same_key_cancel",
+                "EXPECTED_RED:cancellation-acceptance-ambiguous",
             ),
         ],
     )
@@ -64,11 +68,11 @@ fn active_profile_manifest_is_valid_and_names_all_genuine_cases() {
     for expected in &manifest.expected_failures {
         assert!(
             SCENARIO_TARGET.contains(&format!("async fn {}", expected.test_name))
-                || COMPONENT_C7_TARGET.contains(&format!(
+                || ABA_FENCING_TARGET.contains(&format!(
                     "async fn {}",
                     expected
                         .test_name
-                        .strip_prefix("component_c7::")
+                        .strip_prefix("same_processor_aba_fencing::")
                         .unwrap_or(&expected.test_name)
                 )),
             "manifest case `{}` must name a real test",
@@ -121,7 +125,7 @@ fn workflow_does_not_force_ignored_or_mask_infrastructure_failures() {
 
 #[test]
 fn active_target_contains_no_fake_or_suppressed_test() {
-    for source in [SCENARIO_TARGET, COMPONENT_C7_TARGET] {
+    for source in [SCENARIO_TARGET, ABA_FENCING_TARGET] {
         for forbidden_source in [
             "#[ignore]",
             "#[should_panic]",
@@ -149,7 +153,7 @@ fn active_target_contains_no_fake_or_suppressed_test() {
     // ran. Each entry is separately checked to name a real test in
     // `active_profile_manifest_is_valid_and_names_all_genuine_cases`.
     let selected_tests = SCENARIO_TARGET.matches("#[tokio::test]").count()
-        + COMPONENT_C7_TARGET.matches("#[tokio::test").count();
+        + ABA_FENCING_TARGET.matches("#[tokio::test").count();
     assert!(
         manifest.expected_failures.len() <= selected_tests,
         "manifest names {} cases but the target defines {selected_tests} tests",
@@ -161,7 +165,7 @@ fn active_target_contains_no_fake_or_suppressed_test() {
         "one product-root helper owns its exact marker emission"
     );
     assert_eq!(
-        COMPONENT_C7_TARGET.matches("EXPECTED_RED:").count(),
+        ABA_FENCING_TARGET.matches("EXPECTED_RED:").count(),
         1,
         "one component-only helper owns its exact marker emission"
     );
@@ -246,8 +250,11 @@ fn passing_case_is_rejected_even_when_counts_are_self_consistent() {
         Counts::new(2, 1, 0, 0),
         Counts::new(2, 1, 0, 0),
         &[
-            failing_case("c0::restart_resume", "EXPECTED_RED:c0-split-control-path"),
-            CaseFixture::new("c1::same_key_cancel", ""),
+            failing_case(
+                "durable_wait_reconnect::restart_resume",
+                "EXPECTED_RED:durable-wait-control-path-disconnected",
+            ),
+            CaseFixture::new("cancellation_authority::same_key_cancel", ""),
         ],
     );
     assert_invalid_junit(&report);
@@ -268,10 +275,13 @@ fn a_promoted_case_that_fails_again_is_rejected() {
         Counts::new(3, 2, 0, 0),
         Counts::new(3, 2, 0, 0),
         &[
-            failing_case("c0::restart_resume", "EXPECTED_RED:c0-split-control-path"),
             failing_case(
-                "c1::same_key_cancel",
-                "EXPECTED_RED:c1-ambiguous-acceptance",
+                "durable_wait_reconnect::restart_resume",
+                "EXPECTED_RED:durable-wait-control-path-disconnected",
+            ),
+            failing_case(
+                "cancellation_authority::same_key_cancel",
+                "EXPECTED_RED:cancellation-acceptance-ambiguous",
             ),
             failing_case("promoted::already_repaired", "EXPECTED_RED:some-reason"),
         ],
@@ -291,10 +301,13 @@ fn a_promoted_passing_case_reconciles_with_the_expected_failures() {
         Counts::new(3, 2, 0, 0),
         Counts::new(3, 2, 0, 0),
         &[
-            failing_case("c0::restart_resume", "EXPECTED_RED:c0-split-control-path"),
             failing_case(
-                "c1::same_key_cancel",
-                "EXPECTED_RED:c1-ambiguous-acceptance",
+                "durable_wait_reconnect::restart_resume",
+                "EXPECTED_RED:durable-wait-control-path-disconnected",
+            ),
+            failing_case(
+                "cancellation_authority::same_key_cancel",
+                "EXPECTED_RED:cancellation-acceptance-ambiguous",
             ),
             CaseFixture::new("promoted::already_repaired", ""),
         ],
@@ -313,8 +326,11 @@ fn skipped_case_is_rejected() {
         Counts::new(2, 1, 0, 1),
         Counts::new(2, 1, 0, 1),
         &[
-            failing_case("c0::restart_resume", "EXPECTED_RED:c0-split-control-path"),
-            CaseFixture::new("c1::same_key_cancel", "<skipped/>"),
+            failing_case(
+                "durable_wait_reconnect::restart_resume",
+                "EXPECTED_RED:durable-wait-control-path-disconnected",
+            ),
+            CaseFixture::new("cancellation_authority::same_key_cancel", "<skipped/>"),
         ],
     );
     assert_invalid_junit(&report);
@@ -326,9 +342,12 @@ fn execution_error_case_is_rejected() {
         Counts::new(2, 1, 1, 0),
         Counts::new(2, 1, 1, 0),
         &[
-            failing_case("c0::restart_resume", "EXPECTED_RED:c0-split-control-path"),
+            failing_case(
+                "durable_wait_reconnect::restart_resume",
+                "EXPECTED_RED:durable-wait-control-path-disconnected",
+            ),
             CaseFixture::new(
-                "c1::same_key_cancel",
+                "cancellation_authority::same_key_cancel",
                 "<error type=\"execution error\">could not start test</error>",
             ),
         ],
@@ -343,13 +362,13 @@ fn timeout_failure_marker_is_rejected() {
         Counts::new(2, 2, 0, 0),
         &[
             CaseFixture::new(
-                "c0::restart_resume",
+                "durable_wait_reconnect::restart_resume",
                 "<failure type=\"test timeout\">terminated after 120s</failure>\
-                 <system-err>EXPECTED_RED:c0-split-control-path</system-err>",
+                 <system-err>EXPECTED_RED:durable-wait-control-path-disconnected</system-err>",
             ),
             failing_case(
-                "c1::same_key_cancel",
-                "EXPECTED_RED:c1-ambiguous-acceptance",
+                "cancellation_authority::same_key_cancel",
+                "EXPECTED_RED:cancellation-acceptance-ambiguous",
             ),
         ],
     );
@@ -371,14 +390,14 @@ fn genuine_failure_whose_message_mentions_a_timeout_is_still_accepted() {
         Counts::new(2, 2, 0, 0),
         &[
             CaseFixture::new(
-                "c0::restart_resume",
+                "durable_wait_reconnect::restart_resume",
                 "<failure type=\"test failure\" message=\"resume timed out waiting for \
                  the control queue\">expected product gap</failure>\
-                 <system-err>EXPECTED_RED:c0-split-control-path</system-err>",
+                 <system-err>EXPECTED_RED:durable-wait-control-path-disconnected</system-err>",
             ),
             failing_case(
-                "c1::same_key_cancel",
-                "EXPECTED_RED:c1-ambiguous-acceptance",
+                "cancellation_authority::same_key_cancel",
+                "EXPECTED_RED:cancellation-acceptance-ambiguous",
             ),
         ],
     );
@@ -396,14 +415,14 @@ fn failure_body_cannot_supply_the_expected_red_marker() {
         Counts::new(2, 2, 0, 0),
         &[
             CaseFixture::new(
-                "c0::restart_resume",
+                "durable_wait_reconnect::restart_resume",
                 "<failure type=\"test failure\">\
-                 EXPECTED_RED:c0-split-control-path\
+                 EXPECTED_RED:durable-wait-control-path-disconnected\
                  </failure>",
             ),
             failing_case(
-                "c1::same_key_cancel",
-                "EXPECTED_RED:c1-ambiguous-acceptance",
+                "cancellation_authority::same_key_cancel",
+                "EXPECTED_RED:cancellation-acceptance-ambiguous",
             ),
         ],
     );
@@ -424,16 +443,16 @@ fn retry_rerun_and_flaky_elements_are_rejected() {
             Counts::new(2, 2, 0, 0),
             &[
                 CaseFixture::new(
-                    "c0::restart_resume",
+                    "durable_wait_reconnect::restart_resume",
                     format!(
                         "<failure type=\"test failure\">expected</failure>\
                          {forbidden_element}\
-                         <system-err>EXPECTED_RED:c0-split-control-path</system-err>"
+                         <system-err>EXPECTED_RED:durable-wait-control-path-disconnected</system-err>"
                     ),
                 ),
                 failing_case(
-                    "c1::same_key_cancel",
-                    "EXPECTED_RED:c1-ambiguous-acceptance",
+                    "cancellation_authority::same_key_cancel",
+                    "EXPECTED_RED:cancellation-acceptance-ambiguous",
                 ),
             ],
         );
@@ -446,16 +465,16 @@ fn wrong_missing_and_duplicate_reason_markers_are_rejected() {
     for marker_output in [
         "EXPECTED_RED:wrong-reason",
         "ordinary panic without a marker",
-        "EXPECTED_RED:c0-split-control-path\nEXPECTED_RED:c0-split-control-path",
+        "EXPECTED_RED:durable-wait-control-path-disconnected\nEXPECTED_RED:durable-wait-control-path-disconnected",
     ] {
         let report = junit_report(
             Counts::new(2, 2, 0, 0),
             Counts::new(2, 2, 0, 0),
             &[
-                failing_case("c0::restart_resume", marker_output),
+                failing_case("durable_wait_reconnect::restart_resume", marker_output),
                 failing_case(
-                    "c1::same_key_cancel",
-                    "EXPECTED_RED:c1-ambiguous-acceptance",
+                    "cancellation_authority::same_key_cancel",
+                    "EXPECTED_RED:cancellation-acceptance-ambiguous",
                 ),
             ],
         );
@@ -469,8 +488,8 @@ fn missing_extra_and_duplicate_test_identities_are_rejected() {
         Counts::new(1, 1, 0, 0),
         Counts::new(1, 1, 0, 0),
         &[failing_case(
-            "c0::restart_resume",
-            "EXPECTED_RED:c0-split-control-path",
+            "durable_wait_reconnect::restart_resume",
+            "EXPECTED_RED:durable-wait-control-path-disconnected",
         )],
     );
     assert_invalid_junit(&missing);
@@ -479,10 +498,13 @@ fn missing_extra_and_duplicate_test_identities_are_rejected() {
         Counts::new(3, 3, 0, 0),
         Counts::new(3, 3, 0, 0),
         &[
-            failing_case("c0::restart_resume", "EXPECTED_RED:c0-split-control-path"),
             failing_case(
-                "c1::same_key_cancel",
-                "EXPECTED_RED:c1-ambiguous-acceptance",
+                "durable_wait_reconnect::restart_resume",
+                "EXPECTED_RED:durable-wait-control-path-disconnected",
+            ),
+            failing_case(
+                "cancellation_authority::same_key_cancel",
+                "EXPECTED_RED:cancellation-acceptance-ambiguous",
             ),
             failing_case("c2::unexpected", "EXPECTED_RED:unexpected-case"),
         ],
@@ -493,8 +515,14 @@ fn missing_extra_and_duplicate_test_identities_are_rejected() {
         Counts::new(2, 2, 0, 0),
         Counts::new(2, 2, 0, 0),
         &[
-            failing_case("c0::restart_resume", "EXPECTED_RED:c0-split-control-path"),
-            failing_case("c0::restart_resume", "EXPECTED_RED:c0-split-control-path"),
+            failing_case(
+                "durable_wait_reconnect::restart_resume",
+                "EXPECTED_RED:durable-wait-control-path-disconnected",
+            ),
+            failing_case(
+                "durable_wait_reconnect::restart_resume",
+                "EXPECTED_RED:durable-wait-control-path-disconnected",
+            ),
         ],
     );
     assert_invalid_junit(&duplicate);
@@ -506,10 +534,13 @@ fn root_aggregate_and_suite_testcase_counts_are_reconciled() {
         Counts::new(3, 2, 0, 0),
         Counts::new(2, 2, 0, 0),
         &[
-            failing_case("c0::restart_resume", "EXPECTED_RED:c0-split-control-path"),
             failing_case(
-                "c1::same_key_cancel",
-                "EXPECTED_RED:c1-ambiguous-acceptance",
+                "durable_wait_reconnect::restart_resume",
+                "EXPECTED_RED:durable-wait-control-path-disconnected",
+            ),
+            failing_case(
+                "cancellation_authority::same_key_cancel",
+                "EXPECTED_RED:cancellation-acceptance-ambiguous",
             ),
         ],
     );
@@ -519,10 +550,13 @@ fn root_aggregate_and_suite_testcase_counts_are_reconciled() {
         Counts::new(3, 2, 0, 0),
         Counts::new(3, 2, 0, 0),
         &[
-            failing_case("c0::restart_resume", "EXPECTED_RED:c0-split-control-path"),
             failing_case(
-                "c1::same_key_cancel",
-                "EXPECTED_RED:c1-ambiguous-acceptance",
+                "durable_wait_reconnect::restart_resume",
+                "EXPECTED_RED:durable-wait-control-path-disconnected",
+            ),
+            failing_case(
+                "cancellation_authority::same_key_cancel",
+                "EXPECTED_RED:cancellation-acceptance-ambiguous",
             ),
         ],
     );
@@ -531,16 +565,18 @@ fn root_aggregate_and_suite_testcase_counts_are_reconciled() {
 
 #[test]
 fn manifest_requires_sorted_unique_exact_test_identities() {
+    // The fixture is sorted, so the first entry is the one to rename: a name
+    // that sorts after the second entry is what makes the pair unsorted.
     let unsorted = ACTIVE_TEST_MANIFEST.replace(
-        "test_name = \"c0::restart_resume\"",
-        "test_name = \"c9::restart_resume\"",
+        "test_name = \"cancellation_authority::same_key_cancel\"",
+        "test_name = \"unexpected_case::same_key_cancel\"",
     );
     let error = validate_manifest_source(&unsorted).expect_err("unsorted names are invalid");
     assert!(matches!(error, VerificationError::InvalidManifest { .. }));
 
     let duplicate = ACTIVE_TEST_MANIFEST.replace(
-        "test_name = \"c1::same_key_cancel\"",
-        "test_name = \"c0::restart_resume\"",
+        "test_name = \"cancellation_authority::same_key_cancel\"",
+        "test_name = \"durable_wait_reconnect::restart_resume\"",
     );
     let error = validate_manifest_source(&duplicate).expect_err("duplicate names are invalid");
     assert!(matches!(error, VerificationError::InvalidManifest { .. }));

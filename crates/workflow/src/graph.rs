@@ -8,7 +8,9 @@ use petgraph::{
     graph::{DiGraph, NodeIndex},
 };
 
-use crate::{connection::Connection, definition::WorkflowDefinition, error::WorkflowError};
+use crate::{
+    NodeDefinition, connection::Connection, definition::WorkflowDefinition, error::WorkflowError,
+};
 
 /// A directed acyclic graph representing the execution dependencies between workflow nodes.
 #[derive(Debug)]
@@ -22,10 +24,24 @@ impl DependencyGraph {
     ///
     /// Returns an error if a connection references an unknown node or creates a self-loop.
     pub fn from_definition(definition: &WorkflowDefinition) -> Result<Self, WorkflowError> {
+        Self::from_parts(&definition.nodes, &definition.connections)
+    }
+
+    /// Build dependency topology directly from scheduler nodes and connections.
+    ///
+    /// # Errors
+    ///
+    /// Rejects duplicate node keys, unknown endpoints, and self-loops. As with
+    /// [`Self::from_definition`], cycle detection remains in [`Self::validate`]
+    /// and the topological traversal methods.
+    pub fn from_parts(
+        nodes: &[NodeDefinition],
+        connections: &[Connection],
+    ) -> Result<Self, WorkflowError> {
         let mut graph = DiGraph::new();
         let mut index_map = HashMap::new();
 
-        for node in &definition.nodes {
+        for node in nodes {
             let idx = graph.add_node(node.id.clone());
             // `validate_workflow` also checks duplicates, but plan builders
             // call this constructor directly without that pass, so an
@@ -37,7 +53,7 @@ impl DependencyGraph {
             }
         }
 
-        for conn in &definition.connections {
+        for conn in connections {
             let from_idx = index_map
                 .get(&conn.from_node)
                 .ok_or(WorkflowError::UnknownNode(conn.from_node.clone()))?;
@@ -479,5 +495,51 @@ mod tests {
         let graph = DependencyGraph::from_definition(&def).unwrap();
         let err = graph.validate().unwrap_err();
         assert!(matches!(err, WorkflowError::CycleDetected));
+    }
+}
+
+#[cfg(test)]
+mod parts_tests {
+    use super::*;
+    use crate::NodeDefinition;
+    use nebula_core::node_key;
+
+    #[test]
+    fn from_parts_preserves_edges_and_rejects_invalid_structure() {
+        let a = NodeDefinition::new(node_key!("a"), "A", "core", "echo").unwrap();
+        let b = NodeDefinition::new(node_key!("b"), "B", "core", "echo").unwrap();
+        let edge = Connection::new(a.id.clone(), b.id.clone());
+        let graph =
+            DependencyGraph::from_parts(&[a.clone(), b.clone()], std::slice::from_ref(&edge))
+                .unwrap();
+        assert_eq!(
+            graph.topological_sort().unwrap(),
+            vec![a.id.clone(), b.id.clone()]
+        );
+        assert_eq!(graph.outgoing_connections(a.id.clone()), vec![&edge]);
+        assert!(matches!(
+            DependencyGraph::from_parts(&[a.clone(), a.clone()], &[]),
+            Err(WorkflowError::DuplicateNodeKey(_))
+        ));
+        assert!(matches!(
+            DependencyGraph::from_parts(std::slice::from_ref(&a), std::slice::from_ref(&edge)),
+            Err(WorkflowError::UnknownNode(_))
+        ));
+        assert!(matches!(
+            DependencyGraph::from_parts(
+                std::slice::from_ref(&a),
+                &[Connection::new(a.id.clone(), a.id.clone())]
+            ),
+            Err(WorkflowError::SelfLoop(_))
+        ));
+        let cycle = DependencyGraph::from_parts(
+            &[a.clone(), b.clone()],
+            &[edge, Connection::new(b.id, a.id)],
+        )
+        .unwrap();
+        assert!(matches!(
+            cycle.validate(),
+            Err(WorkflowError::CycleDetected)
+        ));
     }
 }

@@ -9,6 +9,132 @@ use nebula_workflow::NodeState;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum EngineError {
+    /// The command's acceptance could not be confirmed by its execution owner.
+    #[error("execution control handoff could not be established")]
+    ControlTurnHandoff {
+        /// Typed storage cause, excluded from the boundary message.
+        #[source]
+        source: nebula_storage_port::StorageError,
+    },
+    /// Execution changed while the command was prepared.
+    #[error("execution control version changed during preflight")]
+    ControlTurnVersionConflict {
+        /// Validated version.
+        expected: u64,
+        /// Version observed by the execution owner.
+        actual: u64,
+    },
+    /// Stop a turn after its control checkpoint or acknowledgement was lost.
+    #[error("execution control acceptance was interrupted")]
+    ControlTurnInterrupted,
+    /// The acknowledged lease could not be renewed before action dispatch.
+    #[error("execution lease adoption could not be confirmed")]
+    LeaseAdoption {
+        /// Typed storage diagnosis, excluded from the boundary message.
+        #[source]
+        source: nebula_storage_port::StorageError,
+    },
+    /// The validated recovery snapshot changed before the owner grant.
+    #[error("execution recovery version changed during preflight")]
+    RecoveryVersionConflict {
+        /// Validated execution version.
+        expected: u64,
+        /// Execution version observed by its owner.
+        actual: u64,
+    },
+    /// The execution owner could not confirm recovery authority.
+    #[error("execution recovery handoff could not be established")]
+    RecoveryHandoff {
+        /// Typed storage cause, excluded from the boundary message.
+        #[source]
+        source: nebula_storage_port::StorageError,
+    },
+    /// The execution owner's snapshot could not be read.
+    #[error("persisted execution could not be read")]
+    ExecutionRead {
+        /// Typed storage cause, excluded from the boundary message.
+        #[source]
+        source: nebula_storage_port::StorageError,
+    },
+    /// Atomic control delivery handoff could not be established.
+    #[error("control Start handoff could not be established")]
+    ControlStartHandoff {
+        /// Typed storage diagnosis; boundary messages remain payload-free.
+        #[source]
+        source: nebula_storage_port::StorageError,
+    },
+    /// The validated execution snapshot changed before ownership transfer.
+    #[error("control Start execution version changed during preflight")]
+    ControlStartVersionConflict {
+        /// Version validated before handoff.
+        expected: u64,
+        /// Version observed atomically by the execution owner.
+        actual: u64,
+    },
+    /// Durable remote-effect protocol failure, with no provider payload in diagnostics.
+    #[error(transparent)]
+    Effect(#[from] crate::EffectExecutionError),
+    /// A durable turn lacks a paired catalog and frozen factory snapshot.
+    #[error("exact durable runtime is not configured")]
+    MissingExactRuntime,
+    /// Both exact plan and worker flavor pins are mandatory for durable turns.
+    #[error("durable execution is missing exact revision pins")]
+    MissingRevisionPins,
+    /// Exact catalog integrity or registry compatibility failed.
+    #[error("exact durable revision could not be loaded: {source}")]
+    ExactRevision {
+        /// Redacted catalog/compatibility diagnosis.
+        #[source]
+        source: Box<crate::revision_catalog::PlanFlavorRevisionBridgeError>,
+    },
+    /// The recorded plan could not be represented by the scheduler.
+    #[error("exact graph projection failed: {source}")]
+    ExactGraphProjection {
+        /// Typed, value-free projection error.
+        #[source]
+        source: nebula_plugin::ExecutionGraphProjectionError,
+    },
+    /// Recorded state does not match the pinned graph.
+    #[error("persisted execution does not match its exact graph")]
+    InvalidRecordedExecution,
+    /// Durable execution has no execution-owned immutable contract.
+    #[error("persisted execution contract is missing")]
+    MissingContractBundle,
+    /// Stored contract identities disagree with the execution or exact plan.
+    #[error("persisted execution contract is invalid")]
+    InvalidRecordedContract,
+    /// Replay evidence is missing, malformed, or inconsistent with recorded state.
+    #[error("persisted node checkpoint is invalid")]
+    InvalidRecordedCheckpoint,
+    /// Full retained replay evidence exceeds the admitted output limit.
+    #[error("node checkpoint exceeds the admitted output limit")]
+    CheckpointPayloadLimit,
+    /// Recorded contract fingerprint or wire protocol integrity failed.
+    #[error("persisted execution contract integrity failed")]
+    ContractBundleIntegrity {
+        /// Typed structural diagnosis, containing no workflow payload.
+        #[source]
+        source: nebula_execution::ExecutionContractBundleIntegrityError,
+    },
+    /// The execution owner's contract could not be read.
+    #[error("persisted execution contract could not be read")]
+    ContractBundleRead {
+        /// Storage diagnosis retained for the error chain.
+        #[source]
+        source: nebula_storage_port::StorageError,
+    },
+    /// An exact graph factory or version is unavailable.
+    #[error("exact graph action factory is unavailable")]
+    ExactFactoryUnavailable,
+    /// Graph bindings require owner-authenticated resolution.
+    #[error("exact graph requires authenticated binding admission")]
+    UnresolvedPlanBindings,
+    /// Recorded semantics are not implemented by this runtime.
+    #[error("exact graph requests unsupported runtime semantics")]
+    UnsupportedRecordedSemantics,
+    /// Durable execution limits are absent or invalid.
+    #[error("persisted execution budget is missing or invalid")]
+    InvalidRecordedBudget,
     /// A referenced node was not found in the workflow.
     #[error("node not found: {node_key}")]
     NodeNotFound {
@@ -261,6 +387,28 @@ impl EngineError {
 impl nebula_error::Classify for EngineError {
     fn category(&self) -> nebula_error::ErrorCategory {
         match self {
+            Self::Effect(error) if error.is_deferred() => nebula_error::ErrorCategory::Unavailable,
+            Self::Effect(_) => nebula_error::ErrorCategory::External,
+            Self::MissingExactRuntime
+            | Self::ControlTurnHandoff { .. }
+            | Self::ControlTurnInterrupted
+            | Self::LeaseAdoption { .. }
+            | Self::RecoveryHandoff { .. }
+            | Self::ExecutionRead { .. }
+            | Self::ControlStartHandoff { .. }
+            | Self::ExactFactoryUnavailable
+            | Self::ContractBundleRead { .. }
+            | Self::ExactRevision { .. } => nebula_error::ErrorCategory::Unavailable,
+            Self::MissingRevisionPins
+            | Self::ExactGraphProjection { .. }
+            | Self::InvalidRecordedExecution
+            | Self::MissingContractBundle
+            | Self::InvalidRecordedContract
+            | Self::InvalidRecordedCheckpoint
+            | Self::ContractBundleIntegrity { .. }
+            | Self::UnresolvedPlanBindings
+            | Self::UnsupportedRecordedSemantics
+            | Self::InvalidRecordedBudget => nebula_error::ErrorCategory::Validation,
             Self::NodeNotFound { .. } => nebula_error::ErrorCategory::NotFound,
             Self::PlanningFailed(_)
             | Self::ParameterResolution { .. }
@@ -273,11 +421,16 @@ impl nebula_error::Classify for EngineError {
             | Self::CheckpointFailed { .. }
             | Self::CasConflict { .. } => nebula_error::ErrorCategory::Internal,
             Self::Cancelled => nebula_error::ErrorCategory::Cancelled,
-            Self::BudgetExceeded(_) => nebula_error::ErrorCategory::Exhausted,
+            Self::BudgetExceeded(_) | Self::CheckpointPayloadLimit => {
+                nebula_error::ErrorCategory::Exhausted
+            },
             // Leased is a transient coordination conflict — a second
             // runner saw the execution already in flight. Conflict
             // matches HTTP 409 at the API edge.
-            Self::Leased { .. } => nebula_error::ErrorCategory::Conflict,
+            Self::Leased { .. }
+            | Self::ControlTurnVersionConflict { .. }
+            | Self::ControlStartVersionConflict { .. }
+            | Self::RecoveryVersionConflict { .. } => nebula_error::ErrorCategory::Conflict,
             // Nothing is wrong with the execution — this runner simply stopped
             // first. Unavailable, so the caller retries against a live runner
             // rather than reporting a workflow fault.
@@ -291,6 +444,31 @@ impl nebula_error::Classify for EngineError {
 
     fn code(&self) -> nebula_error::ErrorCode {
         nebula_error::ErrorCode::new(match self {
+            Self::Effect(error) => error.code(),
+            Self::ControlTurnHandoff { .. } => "ENGINE:CONTROL_TURN_HANDOFF",
+            Self::ControlTurnVersionConflict { .. } => "ENGINE:CONTROL_TURN_VERSION_CONFLICT",
+            Self::ControlTurnInterrupted => "ENGINE:CONTROL_TURN_INTERRUPTED",
+            Self::LeaseAdoption { .. } => "ENGINE:LEASE_ADOPTION",
+            Self::RecoveryHandoff { .. } => "ENGINE:RECOVERY_HANDOFF",
+            Self::RecoveryVersionConflict { .. } => "ENGINE:RECOVERY_VERSION_CONFLICT",
+            Self::ExecutionRead { .. } => "ENGINE:EXECUTION_READ",
+            Self::ControlStartHandoff { .. } => "ENGINE:CONTROL_START_HANDOFF",
+            Self::ControlStartVersionConflict { .. } => "ENGINE:CONTROL_START_VERSION_CONFLICT",
+            Self::MissingExactRuntime => "ENGINE:MISSING_EXACT_RUNTIME",
+            Self::MissingRevisionPins => "ENGINE:MISSING_REVISION_PINS",
+            Self::ExactRevision { .. } => "ENGINE:EXACT_REVISION",
+            Self::ExactGraphProjection { .. } => "ENGINE:EXACT_GRAPH_PROJECTION",
+            Self::InvalidRecordedExecution => "ENGINE:INVALID_RECORDED_EXECUTION",
+            Self::MissingContractBundle => "ENGINE:MISSING_CONTRACT_BUNDLE",
+            Self::InvalidRecordedContract => "ENGINE:INVALID_RECORDED_CONTRACT",
+            Self::InvalidRecordedCheckpoint => "ENGINE:INVALID_RECORDED_CHECKPOINT",
+            Self::CheckpointPayloadLimit => "ENGINE:CHECKPOINT_PAYLOAD_LIMIT",
+            Self::ContractBundleIntegrity { .. } => "ENGINE:CONTRACT_BUNDLE_INTEGRITY",
+            Self::ContractBundleRead { .. } => "ENGINE:CONTRACT_BUNDLE_READ",
+            Self::ExactFactoryUnavailable => "ENGINE:EXACT_FACTORY_UNAVAILABLE",
+            Self::UnresolvedPlanBindings => "ENGINE:UNRESOLVED_PLAN_BINDINGS",
+            Self::UnsupportedRecordedSemantics => "ENGINE:UNSUPPORTED_RECORDED_SEMANTICS",
+            Self::InvalidRecordedBudget => "ENGINE:INVALID_RECORDED_BUDGET",
             Self::NodeNotFound { .. } => "ENGINE:NODE_NOT_FOUND",
             Self::PlanningFailed(_) => "ENGINE:PLANNING_FAILED",
             Self::NodeFailed { .. } => "ENGINE:NODE_FAILED",

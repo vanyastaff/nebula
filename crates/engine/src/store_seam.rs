@@ -1,6 +1,6 @@
 //! The engine's bundled view of the segregated storage port.
 //!
-//! The spec-16 storage port splits execution state CAS, the journal,
+//! The storage port splits execution state CAS, the journal,
 //! leases, node outputs/results, idempotency, and stateful checkpoints
 //! into ISP-segregated object-safe traits. The engine legitimately needs
 //! several of them together for one execution, so it holds them as a
@@ -14,7 +14,7 @@
 //! is threaded in from the per-message scope on the production path
 //! (control-queue / job-dispatch row). On the worker path there is no
 //! tenancy decorator, so the scope the engine passes is the real tenant
-//! scope from the message DTO — cross-tenant isolation invariant #7.
+//! scope from the message DTO, preserving tenant isolation.
 //!
 //! Tests use raw in-memory adapters (no decorator) and call
 //! [`single_tenant_scope`] explicitly so every engine call observes one coherent fake tenant.
@@ -31,7 +31,7 @@ use std::sync::Arc;
 use nebula_storage_port::dto::NodeResultRecord;
 use nebula_storage_port::store::{
     CheckpointStore, ExecutionJournalReader, ExecutionStore, IdempotencyGuard, NodeResultStore,
-    ResumeTokenStore, WorkflowStore, WorkflowVersionStore,
+    OperationLedger, ResumeTokenStore, WorkflowStore, WorkflowVersionStore,
 };
 use nebula_storage_port::{FencingToken, Scope, StorageError};
 
@@ -83,8 +83,8 @@ pub fn workflow_input_record(json: serde_json::Value) -> NodeResultRecord {
     }
 }
 
-/// The conventional single-tenant scope for embedded/library-mode and test
-/// callers that have no multi-tenant context.
+/// Deterministic typed tenant identities for technical tests and examples.
+/// This helper grants no tenant authority and is not a deployment default.
 ///
 /// Callers pass it **explicitly** — no engine method manufactures a scope
 /// internally. This keeps the contract honest: any future multi-tenant caller
@@ -107,7 +107,10 @@ pub fn workflow_input_record(json: serde_json::Value) -> NodeResultRecord {
 /// member.
 #[must_use]
 pub fn single_tenant_scope() -> Scope {
-    Scope::new("nebula", "nebula")
+    Scope::new(
+        nebula_core::WorkspaceId::from_bytes([0x11; 16]).to_string(),
+        nebula_core::OrgId::from_bytes([0x12; 16]).to_string(),
+    )
 }
 
 /// The engine's bundle of the storage-port traits it consumes for execution
@@ -129,9 +132,12 @@ pub struct ExecutionStores {
     pub checkpoints: Arc<dyn CheckpointStore>,
     /// Per-attempt idempotency guard.
     pub idempotency: Arc<dyn IdempotencyGuard>,
-    /// Mint-on-park resume tokens: atomic insert at park time (W-S3c),
+    /// Mint-on-park resume tokens: atomic insert at park time,
     /// consume at resume time (W-S3d), revoke on terminal (W-S3e).
     pub resume_tokens: Arc<dyn ResumeTokenStore>,
+    /// Durable effect-slot authority used for preparation, invocation grants,
+    /// reconciliation, and terminal outcome commits.
+    pub operation_ledger: Arc<dyn OperationLedger>,
 }
 
 impl std::fmt::Debug for ExecutionStores {
@@ -140,19 +146,20 @@ impl std::fmt::Debug for ExecutionStores {
     }
 }
 
-/// The engine's bundle of the workflow-definition port traits used by the
-/// resume path to reload a persisted workflow.
+/// Workflow-definition ports used while materializing a new execution.
 #[derive(Clone)]
 pub struct WorkflowStores {
-    /// Workflow-row aggregate (slug / soft-delete / CAS version).
+    /// Workflow aggregate containing publication state.
     pub workflow: Arc<dyn WorkflowStore>,
-    /// Workflow-version aggregate (carries the opaque definition payload).
+    /// Immutable workflow-version definitions.
     pub versions: Arc<dyn WorkflowVersionStore>,
 }
 
 impl std::fmt::Debug for WorkflowStores {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WorkflowStores").finish_non_exhaustive()
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("WorkflowStores")
+            .finish_non_exhaustive()
     }
 }
 
@@ -165,7 +172,7 @@ pub(crate) enum LeaseBackendError {
     Storage(#[from] StorageError),
 }
 
-/// The engine's held execution lease, backed by the spec-16 port.
+/// The engine's held execution lease, backed by the storage port.
 ///
 /// A [`FencingToken`] is threaded into every committed transition batch
 /// so a superseded holder is rejected even on a matching CAS version

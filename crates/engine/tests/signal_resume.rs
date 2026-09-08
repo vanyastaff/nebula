@@ -44,6 +44,7 @@ use nebula_engine::{
 };
 use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_metrics::MetricsRegistry;
+use nebula_storage::inmem::InMemoryTurnHandoff;
 use nebula_storage::{InMemoryExecutionStore, InMemoryWorkflowVersionStore};
 use nebula_storage_port::{
     FencingToken, Scope, StorageError, TransitionBatch, TransitionOutcome,
@@ -53,6 +54,20 @@ use nebula_storage_port::{
 use nebula_workflow::{
     CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
 };
+
+fn control_dispatch(
+    engine: Arc<WorkflowEngine>,
+    execution: Arc<dyn ExecutionStore>,
+    backing: &InMemoryExecutionStore,
+) -> EngineControlDispatch {
+    EngineControlDispatch::new(
+        engine,
+        execution,
+        Arc::new(InMemoryTurnHandoff::new(backing)),
+        "signal-resume-control".to_owned(),
+        Duration::from_secs(30),
+    )
+}
 
 // ── Action stubs ──────────────────────────────────────────────────────────────
 
@@ -177,14 +192,18 @@ impl StatelessAction for CountingErrorNode {
 // ── Shared harness ────────────────────────────────────────────────────────────
 
 /// In-memory port adapters wired to one store-backed `WorkflowEngine`.
+mod exact_fixture;
+#[path = "exact_fixture/qualified_runtime.rs"]
+mod qualified_runtime;
+
 /// Mirrors the `DispatchStores` pattern from `control_dispatch.rs`.
 struct SignalStores {
+    exact: OnceLock<qualified_runtime::QualifiedRuntime>,
     execution: Arc<InMemoryExecutionStore>,
     journal: Arc<nebula_storage::InMemoryJournalReader>,
     node_results: Arc<nebula_storage::InMemoryNodeResultStore>,
     checkpoints: Arc<nebula_storage::InMemoryCheckpointStore>,
     idempotency: Arc<nebula_storage::InMemoryIdempotencyGuard>,
-    workflow: Arc<nebula_storage::InMemoryWorkflowStore>,
     versions: Arc<InMemoryWorkflowVersionStore>,
 }
 
@@ -193,14 +212,13 @@ impl SignalStores {
         let execution = Arc::new(InMemoryExecutionStore::new());
         let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&execution));
         let versions = InMemoryWorkflowVersionStore::new();
-        let workflow = nebula_storage::InMemoryWorkflowStore::new_with_versions(&versions);
         Self {
+            exact: OnceLock::new(),
             execution,
             journal,
             node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
             checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
             idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
-            workflow: Arc::new(workflow),
             versions: Arc::new(versions),
         }
     }
@@ -213,20 +231,32 @@ impl SignalStores {
             checkpoints: self.checkpoints.clone(),
             idempotency: self.idempotency.clone(),
             resume_tokens: Arc::new(self.execution.resume_token_store()),
+            operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(
+                &self.execution,
+            )),
         }
     }
 
-    fn workflow_stores(&self) -> nebula_engine::WorkflowStores {
-        nebula_engine::WorkflowStores {
-            workflow: self.workflow.clone(),
-            versions: self.versions.clone(),
-        }
+    fn attach(&self, engine: WorkflowEngine, registry: &ActionRegistry) -> WorkflowEngine {
+        self.exact
+            .get_or_init(|| qualified_runtime::QualifiedRuntime::new(registry))
+            .attach(
+                engine.with_execution_stores(self.execution_stores()),
+                &self.execution,
+            )
     }
 
-    fn attach(&self, engine: WorkflowEngine) -> WorkflowEngine {
-        engine
-            .with_execution_stores(self.execution_stores())
-            .with_workflow_stores(self.workflow_stores())
+    async fn pin(&self, state: &mut ExecutionState) {
+        self.exact
+            .get()
+            .unwrap()
+            .pin(
+                &self.execution,
+                self.versions.as_ref(),
+                &nebula_engine::store_seam::single_tenant_scope(),
+                state,
+            )
+            .await;
     }
 
     async fn save_workflow(&self, wf: &WorkflowDefinition) {
@@ -234,6 +264,7 @@ impl SignalStores {
             .create(
                 &nebula_engine::store_seam::single_tenant_scope(),
                 WorkflowVersionRecord {
+                    activation: None,
                     workflow_id: wf.id.to_string(),
                     number: 0,
                     published: true,
@@ -287,7 +318,7 @@ impl SignalHarness {
         let metrics = MetricsRegistry::new();
         let runtime = Arc::new(
             ActionRuntime::try_new(
-                registry,
+                registry.clone(),
                 runner,
                 DataPassingPolicy::default(),
                 metrics.clone(),
@@ -296,8 +327,13 @@ impl SignalHarness {
         );
 
         let stores = SignalStores::new();
-        let engine = Arc::new(stores.attach(WorkflowEngine::new(runtime, metrics).unwrap()));
-        let dispatch = EngineControlDispatch::new(Arc::clone(&engine), stores.execution.clone());
+        let engine =
+            Arc::new(stores.attach(WorkflowEngine::new(runtime, metrics).unwrap(), &registry));
+        let dispatch = control_dispatch(
+            Arc::clone(&engine),
+            stores.execution.clone(),
+            &stores.execution,
+        );
 
         Self {
             dispatch,
@@ -357,17 +393,7 @@ impl SignalHarness {
         let execution_id = ExecutionId::new();
         let mut exec_state = ExecutionState::new(execution_id, workflow_id, &[]);
         exec_state.set_workflow_input(serde_json::json!(null));
-        let state_json = serde_json::to_value(&exec_state).unwrap();
-        self.stores
-            .execution
-            .create(
-                &nebula_engine::store_seam::single_tenant_scope(),
-                &execution_id.to_string(),
-                &workflow_id.to_string(),
-                state_json,
-            )
-            .await
-            .unwrap();
+        self.stores.pin(&mut exec_state).await;
         execution_id
     }
 
@@ -712,7 +738,7 @@ async fn dispatch_resume_satisfies_all_signal_waits_in_one_pass() {
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(
-            registry,
+            registry.clone(),
             runner,
             DataPassingPolicy::default(),
             metrics.clone(),
@@ -721,8 +747,12 @@ async fn dispatch_resume_satisfies_all_signal_waits_in_one_pass() {
     );
 
     let stores = SignalStores::new();
-    let engine = Arc::new(stores.attach(WorkflowEngine::new(runtime, metrics).unwrap()));
-    let dispatch = EngineControlDispatch::new(Arc::clone(&engine), stores.execution.clone());
+    let engine = Arc::new(stores.attach(WorkflowEngine::new(runtime, metrics).unwrap(), &registry));
+    let dispatch = control_dispatch(
+        Arc::clone(&engine),
+        stores.execution.clone(),
+        &stores.execution,
+    );
 
     // Workflow: `wait_a` and `wait_b` both feed into one `downstream` node.
     // The downstream has `required_count == 2`; both incoming edges must resolve
@@ -775,17 +805,7 @@ async fn dispatch_resume_satisfies_all_signal_waits_in_one_pass() {
     let execution_id = ExecutionId::new();
     let mut exec_state = ExecutionState::new(execution_id, workflow_id, &[]);
     exec_state.set_workflow_input(serde_json::json!(null));
-    let state_json = serde_json::to_value(&exec_state).unwrap();
-    stores
-        .execution
-        .create(
-            &nebula_engine::store_seam::single_tenant_scope(),
-            &execution_id.to_string(),
-            &workflow_id.to_string(),
-            state_json,
-        )
-        .await
-        .unwrap();
+    stores.pin(&mut exec_state).await;
 
     // Park both wait nodes.  drive() is synchronous — Paused is persisted on return.
     dispatch
@@ -1418,7 +1438,7 @@ async fn dispatch_resume_defers_when_satisfy_commit_is_fenced_out_and_execution_
         ActionMetadata::new(
             action_key!("test.signal.webhook_wait"),
             "WebhookWaitNode",
-            "signal_resume deferred test stub",
+            "signal_resume integration test stub",
         ),
         WebhookWaitNode,
     );
@@ -1426,7 +1446,7 @@ async fn dispatch_resume_defers_when_satisfy_commit_is_fenced_out_and_execution_
         ActionMetadata::new(
             action_key!("test.signal.counting_echo"),
             "CountingEchoNode",
-            "signal_resume deferred test stub",
+            "signal_resume integration test stub",
         ),
         CountingEchoNode {
             invocation_count: Arc::clone(&downstream_invocations_2),
@@ -1438,7 +1458,7 @@ async fn dispatch_resume_defers_when_satisfy_commit_is_fenced_out_and_execution_
     let metrics2 = MetricsRegistry::new();
     let runtime2 = Arc::new(
         ActionRuntime::try_new(
-            registry2,
+            registry2.clone(),
             runner2,
             DataPassingPolicy::default(),
             metrics2.clone(),
@@ -1453,17 +1473,26 @@ async fn dispatch_resume_defers_when_satisfy_commit_is_fenced_out_and_execution_
         checkpoints: harness.stores.checkpoints.clone(),
         idempotency: harness.stores.idempotency.clone(),
         resume_tokens: Arc::new(harness.stores.execution.resume_token_store()),
+        operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(
+            &harness.stores.execution,
+        )),
     };
 
     let engine2 = Arc::new(
-        WorkflowEngine::new(runtime2, metrics2)
-            .unwrap()
-            .with_execution_stores(execution_stores_with_interceptor)
-            .with_workflow_stores(harness.stores.workflow_stores()),
+        qualified_runtime::QualifiedRuntime::new(&registry2).attach(
+            WorkflowEngine::new(runtime2, metrics2)
+                .unwrap()
+                .with_execution_stores(execution_stores_with_interceptor),
+            &harness.stores.execution,
+        ),
     );
     // The dispatch must read status via the same raw inner store so the
     // post-error re-read sees the real (still-Paused) row.
-    let dispatch2 = EngineControlDispatch::new(Arc::clone(&engine2), interceptor_as_store.clone());
+    let dispatch2 = control_dispatch(
+        Arc::clone(&engine2),
+        interceptor_as_store.clone(),
+        &harness.stores.execution,
+    );
 
     // ── Phase 3: arm the interceptor and call dispatch_resume ─────────────────
     interceptor.arm();
@@ -1729,7 +1758,7 @@ async fn satisfy_signal_waits_skips_when_execution_cancelled_under_lease() {
     let metrics2 = MetricsRegistry::new();
     let runtime2 = Arc::new(
         ActionRuntime::try_new(
-            registry2,
+            registry2.clone(),
             runner2,
             DataPassingPolicy::default(),
             metrics2.clone(),
@@ -1744,15 +1773,24 @@ async fn satisfy_signal_waits_skips_when_execution_cancelled_under_lease() {
         checkpoints: harness.stores.checkpoints.clone(),
         idempotency: harness.stores.idempotency.clone(),
         resume_tokens: Arc::new(harness.stores.execution.resume_token_store()),
+        operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(
+            &harness.stores.execution,
+        )),
     };
 
     let engine2 = Arc::new(
-        WorkflowEngine::new(runtime2, metrics2)
-            .unwrap()
-            .with_execution_stores(execution_stores_with_interceptor)
-            .with_workflow_stores(harness.stores.workflow_stores()),
+        qualified_runtime::QualifiedRuntime::new(&registry2).attach(
+            WorkflowEngine::new(runtime2, metrics2)
+                .unwrap()
+                .with_execution_stores(execution_stores_with_interceptor),
+            &harness.stores.execution,
+        ),
     );
-    let dispatch2 = EngineControlDispatch::new(Arc::clone(&engine2), interceptor_as_store.clone());
+    let dispatch2 = control_dispatch(
+        Arc::clone(&engine2),
+        interceptor_as_store.clone(),
+        &harness.stores.execution,
+    );
 
     // ── Phase 3: arm the injection and call dispatch_resume ───────────────────
     interceptor.arm();
@@ -1864,15 +1902,19 @@ async fn satisfied_signal_wait_activates_main_port_only_not_error_branch() {
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(
-            registry,
+            registry.clone(),
             runner,
             DataPassingPolicy::default(),
             metrics.clone(),
         )
         .unwrap(),
     );
-    let engine = Arc::new(stores.attach(WorkflowEngine::new(runtime, metrics).unwrap()));
-    let dispatch = EngineControlDispatch::new(Arc::clone(&engine), stores.execution.clone());
+    let engine = Arc::new(stores.attach(WorkflowEngine::new(runtime, metrics).unwrap(), &registry));
+    let dispatch = control_dispatch(
+        Arc::clone(&engine),
+        stores.execution.clone(),
+        &stores.execution,
+    );
 
     // Workflow: wait_node ──main──> main_node
     //                    └─error──> error_node
@@ -1931,16 +1973,7 @@ async fn satisfied_signal_wait_activates_main_port_only_not_error_branch() {
     let execution_id = ExecutionId::new();
     let mut exec_state = ExecutionState::new(execution_id, workflow_id, &[]);
     exec_state.set_workflow_input(serde_json::json!(null));
-    stores
-        .execution
-        .create(
-            &scope,
-            &execution_id.to_string(),
-            &workflow_id.to_string(),
-            serde_json::to_value(&exec_state).unwrap(),
-        )
-        .await
-        .unwrap();
+    stores.pin(&mut exec_state).await;
 
     // Park the signal node.
     dispatch
@@ -2178,7 +2211,7 @@ async fn armed_signal_wait_is_completed_by_reclaim_drive_not_lost() {
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(
-            registry,
+            registry.clone(),
             runner,
             DataPassingPolicy::default(),
             metrics.clone(),
@@ -2193,14 +2226,26 @@ async fn armed_signal_wait_is_completed_by_reclaim_drive_not_lost() {
         checkpoints: stores.checkpoints.clone(),
         idempotency: stores.idempotency.clone(),
         resume_tokens: Arc::new(stores.execution.resume_token_store()),
+        operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(
+            &stores.execution,
+        )),
     };
     let engine = Arc::new(
-        WorkflowEngine::new(runtime, metrics)
-            .unwrap()
-            .with_execution_stores(execution_stores)
-            .with_workflow_stores(stores.workflow_stores()),
+        stores
+            .exact
+            .get_or_init(|| qualified_runtime::QualifiedRuntime::new(&registry))
+            .attach(
+                WorkflowEngine::new(runtime, metrics)
+                    .unwrap()
+                    .with_execution_stores(execution_stores),
+                &stores.execution,
+            ),
     );
-    let dispatch = EngineControlDispatch::new(Arc::clone(&engine), interceptor_as_store.clone());
+    let dispatch = control_dispatch(
+        Arc::clone(&engine),
+        interceptor_as_store.clone(),
+        &stores.execution,
+    );
 
     // Two-node workflow: webhook_wait → counting_echo.
     let workflow_id = nebula_core::WorkflowId::new();
@@ -2244,16 +2289,7 @@ async fn armed_signal_wait_is_completed_by_reclaim_drive_not_lost() {
     let execution_id = ExecutionId::new();
     let mut exec_state = ExecutionState::new(execution_id, workflow_id, &[]);
     exec_state.set_workflow_input(serde_json::json!(null));
-    stores
-        .execution
-        .create(
-            &scope,
-            &execution_id.to_string(),
-            &workflow_id.to_string(),
-            serde_json::to_value(&exec_state).unwrap(),
-        )
-        .await
-        .unwrap();
+    stores.pin(&mut exec_state).await;
 
     // Park (interceptor not armed → normal lease behaviour).
     dispatch
@@ -2493,7 +2529,7 @@ async fn signal_park_persists_paused_atomically_no_running_waiting_window() {
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(
-            registry,
+            registry.clone(),
             runner,
             DataPassingPolicy::default(),
             metrics.clone(),
@@ -2508,14 +2544,26 @@ async fn signal_park_persists_paused_atomically_no_running_waiting_window() {
         checkpoints: stores.checkpoints.clone(),
         idempotency: stores.idempotency.clone(),
         resume_tokens: Arc::new(stores.execution.resume_token_store()),
+        operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(
+            &stores.execution,
+        )),
     };
     let engine = Arc::new(
-        WorkflowEngine::new(runtime, metrics)
-            .unwrap()
-            .with_execution_stores(execution_stores)
-            .with_workflow_stores(stores.workflow_stores()),
+        stores
+            .exact
+            .get_or_init(|| qualified_runtime::QualifiedRuntime::new(&registry))
+            .attach(
+                WorkflowEngine::new(runtime, metrics)
+                    .unwrap()
+                    .with_execution_stores(execution_stores),
+                &stores.execution,
+            ),
     );
-    let dispatch = EngineControlDispatch::new(Arc::clone(&engine), recorder_as_store.clone());
+    let dispatch = control_dispatch(
+        Arc::clone(&engine),
+        recorder_as_store.clone(),
+        &stores.execution,
+    );
 
     // Single signal-wait node — the park is the last (and only) frontier work.
     let workflow_id = nebula_core::WorkflowId::new();
@@ -2546,16 +2594,7 @@ async fn signal_park_persists_paused_atomically_no_running_waiting_window() {
     let execution_id = ExecutionId::new();
     let mut exec_state = ExecutionState::new(execution_id, workflow_id, &[]);
     exec_state.set_workflow_input(serde_json::json!(null));
-    stores
-        .execution
-        .create(
-            &scope,
-            &execution_id.to_string(),
-            &workflow_id.to_string(),
-            serde_json::to_value(&exec_state).unwrap(),
-        )
-        .await
-        .unwrap();
+    stores.pin(&mut exec_state).await;
 
     dispatch
         .dispatch_start(&scope, execution_id)

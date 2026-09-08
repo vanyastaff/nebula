@@ -75,7 +75,7 @@ async fn terminate_records_intent_without_terminalizing_a_running_handler() {
     let workflow_id = engine_seam::persist_slow_workflow(&state).await;
 
     // ── Start a handler through the manually composed engine harness ────────
-    let seam = engine_seam::spawn_engine_consumer(&state);
+    let seam = engine_seam::spawn_engine_consumer(&state, &handles);
 
     // ── Start the execution via the producer path ───────────────────────────
     let start_request = serde_json::json!({ "input": { "terminate_e2e": true } });

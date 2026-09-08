@@ -9,18 +9,17 @@
 use axum::{
     Extension, Json,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
 };
 use chrono::Utc;
-use nebula_core::{ExecutionId, TenantContext, WorkflowId};
-use nebula_execution::ExecutionState;
+use nebula_core::{TenantContext, WorkflowId};
 use serde_json::Value;
 
 use crate::{
     domain::{
         execution::{
             dto::{ExecutionResponse, StartExecutionRequest},
-            handler::{enqueue_start_scoped, validate_for_dispatch},
+            handler::start_workflow,
         },
         shared::PaginationParams,
         workflow::dto::{
@@ -506,8 +505,9 @@ pub async fn delete_workflow(
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Workflow does not exist.", body = ProblemDetails),
         (status = 409, description = "Concurrent modification detected.", body = ProblemDetails),
-        (status = 422, description = "Workflow definition fails structural validation.", body = ProblemDetails),
+        (status = 422, description = "Workflow definition cannot be compiled for the selected worker release.", body = ProblemDetails),
         (status = 500, description = "Workflow repository unavailable.", body = ProblemDetails),
+        (status = 503, description = "Activation is unavailable or publication outcome is indeterminate. An indeterminate outcome identifies the original attempt for reconciliation.", body = ProblemDetails),
     ),
 )]
 pub async fn activate_workflow(
@@ -522,16 +522,11 @@ pub async fn activate_workflow(
 
     // Get current workflow with version for optimistic concurrency,
     // scoped to the tenant.
-    let (version, mut definition) = state
+    let (version, definition) = state
         .workflow_with_version_scoped(&scope, workflow_id)
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("Workflow {id} not found")))?;
 
-    // documentation honesty step 2: validate the workflow definition before flipping the
-    // active flag.  Invalid definitions are rejected with RFC 9457 422
-    // (Unprocessable Entity) — activation must never silently enable a
-    // workflow that cannot pass structural validation.
-    //
     // NOTE: `serde_json::from_value` cannot zero-copy borrow `&str` from a
     // `Value::String`, which causes failures for types like `domain_key::Key<T>`
     // that use `<&str>::deserialize` on human-readable formats.  Round-tripping
@@ -539,74 +534,27 @@ pub async fn activate_workflow(
     // deserializer that does support `visit_borrowed_str`, so all key types
     // parse correctly.
     let raw_json = serde_json::to_string(&definition)
-        .map_err(|e| ApiError::Internal(format!("Failed to serialize workflow definition: {e}")))?;
+        .map_err(|_| ApiError::Internal("Invalid stored workflow definition".into()))?;
     let workflow_def: nebula_workflow::WorkflowDefinition = serde_json::from_str(&raw_json)
-        .map_err(|e| {
-            ApiError::validation_message(format!(
-                "Workflow definition cannot be parsed as WorkflowDefinition: {e}"
-            ))
-        })?;
+        .map_err(|_| ApiError::validation_message("Workflow definition cannot be parsed"))?;
 
-    let schema_resolver =
-        super::resolver::CatalogSchemaResolver::new(state.action_registry.clone());
-    let validation_errors =
-        nebula_workflow::validate_workflow_with_resolver(&workflow_def, &schema_resolver);
-    if !validation_errors.is_empty() {
-        let detail = format!(
-            "Workflow definition is invalid ({} error(s))",
-            validation_errors.len()
-        );
-        return Err(ApiError::InvalidWorkflowDefinition {
-            detail,
-            errors: validation_errors,
-        });
-    }
-
-    // Current timestamp — `chrono::Utc::now()` is monotonic through time
-    // shifts and does not panic on clocks set before 1970, unlike
-    // `SystemTime::duration_since(UNIX_EPOCH).unwrap()`. Persist the
-    // RFC 3339 form so the re-saved definition stays a parseable
-    // `WorkflowDefinition` for the next activate/validate round-trip
-    // (see `create_workflow`).
-    let now_rfc3339 = Utc::now().to_rfc3339();
-
-    // Update definition to set active flag
-    if let Some(obj) = definition.as_object_mut() {
-        obj.insert("active".to_string(), serde_json::json!(true));
-        obj.insert("updated_at".to_string(), serde_json::json!(now_rfc3339));
-    } else {
-        return Err(ApiError::Internal(
-            "Invalid workflow definition format".to_string(),
-        ));
-    }
-
-    // Save with optimistic concurrency control via the accessor (a CAS
-    // miss is mapped to the same 409 message the legacy path produced).
-    state
-        .workflow_save_scoped(&scope, workflow_id, version, definition.clone())
+    let service = state.workflow_activation.as_ref().ok_or_else(|| {
+        ApiError::ServiceUnavailable("Workflow activation is not configured".into())
+    })?;
+    let receipt = service
+        .activate(&scope, workflow_id, version, workflow_def)
         .await?;
-
-    // Extract fields for response
-    let name = definition
-        .get("name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("Unnamed Workflow")
-        .to_string();
-
-    let description = definition
-        .get("description")
-        .and_then(|v| v.as_str())
-        .map(ToString::to_string);
-
-    let created_at = extract_timestamp(&definition, "created_at").unwrap_or(0);
-    let updated_at = extract_timestamp(&definition, "updated_at").unwrap_or(0);
+    let persisted = serde_json::to_vec(&receipt.version().definition)
+        .map_err(|_| ApiError::Internal("Invalid persisted activation receipt".into()))?;
+    let persisted: nebula_workflow::WorkflowDefinition = serde_json::from_slice(&persisted)
+        .map_err(|_| ApiError::Internal("Invalid persisted activation receipt".into()))?;
 
     Ok(Json(WorkflowResponse {
         id,
-        name,
-        description,
-        created_at,
-        updated_at,
+        name: persisted.name,
+        description: persisted.description,
+        created_at: persisted.created_at.timestamp(),
+        updated_at: persisted.updated_at.timestamp(),
     }))
 }
 
@@ -621,23 +569,26 @@ pub async fn activate_workflow(
         ("org" = String, Path, description = "Organisation slug or `org_<ULID>`."),
         ("ws" = String, Path, description = "Workspace slug or `ws_<ULID>`."),
         ("wf" = String, Path, description = "Workflow identifier (`wf_<ULID>`)."),
+        ("Idempotency-Key" = Option<String>, Header, description = "Caller start identity, shared with /executions. Replays retain the original execution across workflow republication."),
     ),
     request_body = StartExecutionRequest,
     responses(
-        (status = 202, description = "Execution accepted; engine dispatch in flight.", body = ExecutionResponse),
-        (status = 400, description = "Invalid workflow identifier, or the stored workflow definition cannot be parsed as a workflow.", body = ProblemDetails),
+        (status = 202, description = "Execution, exact contract bundle and Start command committed atomically. A keyed replay reports the original execution's persisted state.", body = ExecutionResponse),
+        (status = 400, description = "Invalid workflow identifier, start key or input.", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Workflow does not exist.", body = ProblemDetails),
-        (status = 422, description = "Workflow definition fails structural validation (shift-left gate).", body = ProblemDetails),
-        (status = 500, description = "Workflow repository or execution repository unavailable.", body = ProblemDetails),
-        (status = 503, description = "Control queue is unavailable; the engine cannot pick up the dispatch signal.", body = ProblemDetails),
+        (status = 409, description = "Start key mismatch or exact revision admission conflict; nothing was written.", body = ProblemDetails),
+        (status = 422, description = "The workflow is not activated or its recorded runtime requirements cannot be admitted.", body = ProblemDetails),
+        (status = 500, description = "Stored workflow or receipt identities are inconsistent.", body = ProblemDetails),
+        (status = 503, description = "Start admission is unavailable, its outcome is indeterminate, or an accepted execution's receipt cannot be read. Reconcile any returned original execution identity before submitting another start.", body = ProblemDetails),
     ),
 )]
 pub async fn execute_workflow(
     State(state): State<AppState>,
     Extension(tenant): Extension<TenantContext>,
     Path((_org, _ws, id)): Path<(String, String, String)>,
+    headers: HeaderMap,
     Json(payload): Json<StartExecutionRequest>,
 ) -> ApiResult<(StatusCode, Json<ExecutionResponse>)> {
     let scope = crate::middleware::tenancy::request_scope(&tenant)?;
@@ -645,68 +596,7 @@ pub async fn execute_workflow(
     let workflow_id = WorkflowId::parse(&id)
         .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {e}")))?;
 
-    // Verify the workflow exists in the caller's tenant, then run the
-    // shift-left validation gate (ROADMAP M3.6 / canon §10): a structurally
-    // invalid definition is rejected with RFC 9457 *before* any execution
-    // state is created or any Start signal is enqueued. `enqueue_start_scoped`
-    // requires the `ValidatedWorkflow` witness produced here, so the dispatch
-    // path is type-prevented from skipping validation.
-    let version = state
-        .workflow_published_version_scoped(&scope, workflow_id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound(format!("Workflow {id} not found")))?;
-    let definition = version.definition.clone();
-    let validated = validate_for_dispatch(&definition)?;
-
-    // Generate new execution ID
-    let execution_id = ExecutionId::new();
-
-    // Build the canonical execution state — same rationale as
-    // `start_execution` in `handlers/execution.rs` (#327, honest capability contract): the
-    // persisted row must match `ExecutionState` so the engine's
-    // `resume_execution` can deserialize it, and the status must be the
-    // canonical `Created`, not the non-existent `"pending"` that the
-    // storage `list_running` filter would also drop.
-    let mut exec_state = ExecutionState::new(execution_id, workflow_id, &[]);
-    exec_state.set_workflow_version_number(version.number);
-    if let Some(input) = payload.input.clone() {
-        exec_state.set_workflow_input(input);
-    }
-
-    let state_json = serde_json::to_value(&exec_state)
-        .map_err(|e| ApiError::Internal(format!("serialize execution state: {e}")))?;
-
-    // Create the execution record scoped to the caller's tenant.
-    // `transition` is a CAS UPDATE and would hit zero rows for a
-    // brand-new id, so this is `create`, not a transition.
-    state
-        .create_execution_scoped(&scope, execution_id, workflow_id, state_json)
-        .await?;
-
-    // Enqueue the Start signal on the durable control queue — closes the
-    // honest capability gap where the API advertised dispatch but never reached the
-    // engine (#332). Shared with `start_execution` via the
-    // `enqueue_start_scoped` helper so the create + enqueue contract lives
-    // in one place. M3.5: it stamps optional W3C trace context on the row
-    // when the HTTP span is OTel-linked.
-    enqueue_start_scoped(&state, &scope, execution_id, &validated).await?;
-
-    // Report `created_at` as the observable timestamp — the engine has not
-    // transitioned `started_at` yet (that happens at dispatch time). See
-    // the parallel comment in `handlers::execution::start_execution` for
-    // the full rationale.
-    let created_at = exec_state.created_at.timestamp();
-    let response = ExecutionResponse {
-        id: execution_id.to_string(),
-        workflow_id: id,
-        status: exec_state.status.to_string(),
-        started_at: created_at,
-        finished_at: None,
-        input: payload.input,
-        output: None,
-    };
-
-    Ok((StatusCode::ACCEPTED, Json(response)))
+    start_workflow(&state, &scope, workflow_id, &headers, payload).await
 }
 
 /// Validate workflow
@@ -757,16 +647,9 @@ pub async fn validate_workflow_handler(
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("Workflow {id} not found")))?;
 
-    // Deserialise the stored JSON into a WorkflowDefinition through the
-    // SAME `to_string` → `from_str` path `activate_workflow` uses (not
-    // `serde_json::from_value`): `from_value` cannot zero-copy borrow
-    // `&str` from a `Value::String`, so types like `domain_key::Key<T>`
-    // that use `<&str>::deserialize` fail under `from_value` but parse
-    // under the streaming `from_str` deserializer. Using `from_value`
-    // here while activate uses `from_str` made validate and activate
-    // accept *different* definitions — a workflow could validate-OK yet
-    // fail to activate (same inconsistency class as the #343 timestamp
-    // bug). Both paths now accept identically.
+    // Use the same streaming decode and frozen compiler snapshot as activation.
+    // A mutable authoring registry can otherwise accept a definition that the
+    // exact activation compiler rejects.
     let raw_json = serde_json::to_string(&definition)
         .map_err(|e| ApiError::Internal(format!("Failed to serialize workflow definition: {e}")))?;
     let workflow_def: nebula_workflow::WorkflowDefinition = serde_json::from_str(&raw_json)
@@ -776,21 +659,21 @@ pub async fn validate_workflow_handler(
             ))
         })?;
 
-    let schema_resolver =
-        super::resolver::CatalogSchemaResolver::new(state.action_registry.clone());
-    let errors = nebula_workflow::validate_workflow_with_resolver(&workflow_def, &schema_resolver);
-    if errors.is_empty() {
-        Ok(Json(WorkflowValidateResponse {
-            valid: true,
-            errors: vec![],
-        }))
-    } else {
-        let error_messages: Vec<String> = errors.iter().map(ToString::to_string).collect();
-        Ok(Json(WorkflowValidateResponse {
-            valid: false,
-            errors: error_messages,
-        }))
-    }
+    let service = state.workflow_activation.as_ref().ok_or_else(|| {
+        ApiError::ServiceUnavailable("Workflow activation is not configured".into())
+    })?;
+    let errors = match service.validate_definition(&workflow_def) {
+        Ok(()) => Vec::new(),
+        Err(error) => error
+            .diagnostics()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+    };
+    Ok(Json(WorkflowValidateResponse {
+        valid: errors.is_empty(),
+        errors,
+    }))
 }
 
 #[cfg(test)]

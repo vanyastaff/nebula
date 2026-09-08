@@ -39,7 +39,6 @@ nebula-credential = { path = "../credential" }
 # the API port, never a schema implementation type.
 nebula-schema = { path = "../schema", optional = true, features = ["schemars"] }
 nebula-eventbus = { path = "../eventbus" }
-semver = { workspace = true }
 
 opentelemetry = { workspace = true }
 opentelemetry-otlp = { workspace = true }
@@ -128,6 +127,8 @@ utoipa-swagger-ui = { workspace = true }
 
 [dev-dependencies]
 nebula-api = { path = ".", features = ["test-util"] }
+nebula-plugin = { path = "../plugin", features = ["test-util"] }
+semver = { workspace = true }
 # Dev-only: api tests build a `CredentialService` over a unique in-memory SQLite
 # database via `SqliteCredentialPersistence::connect_memory`; `test-util` exposes that
 # constructor. `sqlite`/`credential-in-memory` already come from the normal dep;

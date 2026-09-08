@@ -6,9 +6,8 @@ use axum::{
     http::{HeaderMap, StatusCode},
 };
 use nebula_core::{ExecutionId, TenantContext, WorkflowId};
-use nebula_execution::{ExecutionState, ExecutionStatus};
+use nebula_execution::ExecutionStatus;
 use nebula_storage_port::dto::ControlCommand;
-use nebula_storage_port::store::{StartAcceptance, StartFingerprint};
 
 use crate::{
     domain::{
@@ -278,22 +277,23 @@ pub async fn get_execution(
             Header,
             description = "Start key identifying one accepted command, 1..=255 printable ASCII \
                            characters. Retrying with the same key and an identical request \
-                           returns the original acceptance receipt — same execution id, same \
-                           timestamp — and creates nothing new; reusing it for a request that \
+                           returns the original execution's current persisted state with the same \
+                           execution id and creates nothing new; reusing it for a request that \
                            differs is refused with 409 and no durable change. Omitting it means \
                            every request creates its own execution.",
         ),
     ),
     request_body = StartExecutionRequest,
     responses(
-        (status = 202, description = "Execution accepted; engine dispatch in flight. A replayed keyed start returns the original receipt with this same status.", body = ExecutionResponse),
-        (status = 400, description = "Invalid workflow identifier, or the stored workflow definition cannot be parsed as a workflow.", body = ProblemDetails),
+        (status = 202, description = "Execution, exact contract bundle and Start command committed atomically. A keyed replay reports the original execution's persisted state.", body = ExecutionResponse),
+        (status = 400, description = "Invalid workflow identifier, start key or input.", body = ProblemDetails),
         (status = 401, description = "Authentication required.", body = ProblemDetails),
         (status = 403, description = "Caller does not have access to this workspace.", body = ProblemDetails),
         (status = 404, description = "Workflow does not exist.", body = ProblemDetails),
-        (status = 409, description = "The `Idempotency-Key` is already reserved for a request that canonicalizes differently (`code: operation_mismatch`). Nothing was written.", body = ProblemDetails),
-        (status = 422, description = "Workflow definition fails structural validation (shift-left gate).", body = ProblemDetails),
-        (status = 503, description = "Control queue is unavailable; the engine cannot pick up the dispatch signal.", body = ProblemDetails),
+        (status = 409, description = "Start key mismatch or exact revision admission conflict; nothing was written.", body = ProblemDetails),
+        (status = 422, description = "The workflow is not activated or its recorded runtime requirements cannot be admitted.", body = ProblemDetails),
+        (status = 500, description = "Stored workflow or receipt identities are inconsistent.", body = ProblemDetails),
+        (status = 503, description = "Start admission is unavailable, its outcome is indeterminate, or an accepted execution's receipt cannot be read. Reconcile any returned original execution identity before submitting another start.", body = ProblemDetails),
     ),
 )]
 pub async fn start_execution(
@@ -308,145 +308,48 @@ pub async fn start_execution(
     let workflow_id_parsed = WorkflowId::parse(&workflow_id)
         .map_err(|e| ApiError::validation_message(format!("Invalid workflow ID: {e}")))?;
 
-    // Verify the workflow exists in the caller's tenant, then run the
-    // shift-left validation gate (ROADMAP M3.6 / canon §10): a structurally
-    // invalid definition is rejected with RFC 9457 *before* any execution
-    // state is created or any Start signal is enqueued. `enqueue_start_scoped`
-    // requires the `ValidatedWorkflow` witness produced here, so the dispatch
-    // path is type-prevented from skipping validation.
-    let version = state
-        .workflow_published_version_scoped(&scope, workflow_id_parsed)
-        .await?
-        .ok_or_else(|| ApiError::NotFound(format!("Workflow {workflow_id} not found")))?;
-    let definition = version.definition.clone();
-    let validated = validate_for_dispatch(&definition)?;
+    start_workflow(&state, &scope, workflow_id_parsed, &headers, payload).await
+}
 
-    // Generate new execution ID
-    let execution_id = ExecutionId::new();
-
-    // Build the canonical execution state directly from the typed enum so
-    // that the persisted row matches the schema the engine's
-    // `resume_execution` reads (honest capability contract: public surface must be honored
-    // end-to-end). The legacy hand-rolled JSON with `status: "pending"` was
-    // a false capability — `ExecutionStatus` has no `Pending` variant, and
-    // neither `list_running` (storage filter) nor `ExecutionState::deserialize`
-    // (engine resume path) would accept it (#327).
-    //
-    // `ExecutionState::new` seeds with `ExecutionStatus::Created` — the only
-    // correct initial state per the transition table. The node map is empty
-    // at API-start time: the dispatcher will populate per-node rows once the
-    // workflow is loaded and a plan is built. The workflow input (trigger
-    // payload) is attached so resume can feed entry nodes the same value
-    // (#311).
-    let mut exec_state = ExecutionState::new(execution_id, workflow_id_parsed, &[]);
-    exec_state.set_workflow_version_number(version.number);
-    if let Some(input) = payload.input.clone() {
-        exec_state.set_workflow_input(input);
-    }
-
-    let state_json = serde_json::to_value(&exec_state)
-        .map_err(|e| ApiError::Internal(format!("serialize execution state: {e}")))?;
-
-    let created_at = exec_state.created_at.timestamp();
-    let w3c = w3c_trace_context_for_control_queue();
-
-    // A start key makes this request one *accepted command* rather than one
-    // delivery of it. Without a key there is nothing to converge on, so an
-    // unkeyed request creates its own execution every time — that is the
-    // caller's choice, not a defect.
-    // Both the durable identity *and* the acceptance timestamp come from
-    // whichever request actually created the execution — see the replay arm.
-    let accepted_execution_id = if let Some(start_key) = start_key(&headers)? {
-        let fingerprint = start_fingerprint(workflow_id_parsed, version.number, &payload);
-        match state
-            .accept_keyed_start_scoped(
-                &scope,
-                &start_key,
-                fingerprint,
-                execution_id,
-                workflow_id_parsed,
-                &state_json,
-                w3c,
-            )
-            .await?
-        {
-            StartAcceptance::Accepted { execution_id } => {
-                tracing::debug!(
-                    execution_id = %execution_id,
-                    node_count = validated.definition().nodes.len(),
-                    "execution: keyed start accepted (reservation + aggregate + Start committed)"
-                );
-                execution_id
-            },
-            StartAcceptance::Replayed { execution_id } => {
-                // The *original* receipt, which means every field comes from
-                // the persisted execution — not just its id. Building the rest
-                // from the state constructed above would report `created` and
-                // this retry's timestamp for an execution that may already be
-                // running or finished: a receipt that describes a request that
-                // was never accepted.
-                let replayed = ExecutionId::parse(&execution_id).map_err(|e| {
-                    ApiError::Internal(format!("replayed execution id is not parseable: {e}"))
-                })?;
-                let (_, persisted) = state
-                    .execution_state_scoped(&scope, replayed, "load the replayed receipt")
-                    .await?
-                    .ok_or_else(|| {
-                        // The reservation names an execution that is not there:
-                        // report it rather than answer with a fabricated state.
-                        ApiError::Internal(
-                            "start key reserved for an execution that no longer exists".to_owned(),
-                        )
-                    })?;
-                tracing::info!(
-                    execution_id = %execution_id,
-                    "execution: keyed start replayed; returning the original receipt"
-                );
-                return Ok((
-                    StatusCode::ACCEPTED,
-                    Json(ExecutionResponse {
-                        workflow_id,
-                        ..execution_receipt(execution_id, &persisted)
-                    }),
-                ));
-            },
-            // Deliberately no execution id in the error: the caller proved
-            // knowledge of a key, not of the execution behind it.
-            StartAcceptance::FingerprintMismatch => return Err(ApiError::StartConflict),
-        }
-    } else {
-        state
-            .create_execution_scoped(&scope, execution_id, workflow_id_parsed, state_json)
-            .await?;
-        enqueue_start_scoped(&state, &scope, execution_id, &validated).await?;
-        execution_id.to_string()
-    };
-
-    // Build response. `started_at` is omitted on a Created execution —
-    // integration seam step 3 forbids synthetic timestamps for fields the engine
-    // has not actually populated yet. `ExecutionState::started_at` is
-    // `None` until the engine transitions the status to `Running`, and the
-    // API response must reflect that.
-    //
-    // The legacy response returned `chrono::Utc::now().timestamp()` as a
-    // placeholder, which conflated "row was created" with "engine started
-    // the run" — two different events under lifecycle authority. Downstream tools
-    // that graphed `started_at` therefore measured API-enqueue latency, not
-    // engine dispatch latency. The DTO field stays `i64` (wire-compatible),
-    // but we now return `created_at` as the observable timestamp so clients
-    // still get a real time for "when did this execution exist?" — which
-    // is what `started_at` was used for in practice pre-fix.
-    let response = ExecutionResponse {
-        id: accepted_execution_id,
-        workflow_id,
-        status: exec_state.status.to_string(),
-        started_at: created_at,
-        finished_at: None,
-        input: payload.input,
-        output: None,
-    };
-
-    Ok((StatusCode::ACCEPTED, Json(response)))
+/// Translate HTTP caller intent into the runtime owner's complete start operation.
+pub(crate) async fn start_workflow(
+    state: &AppState,
+    scope: &nebula_storage_port::Scope,
+    workflow_id: WorkflowId,
+    headers: &HeaderMap,
+    payload: StartExecutionRequest,
+) -> ApiResult<(StatusCode, Json<ExecutionResponse>)> {
+    let key = start_key(headers)?;
+    let service = state
+        .workflow_start
+        .as_ref()
+        .ok_or_else(|| ApiError::ServiceUnavailable("Workflow start is not configured".into()))?;
+    let receipt = service
+        .start(
+            scope,
+            workflow_id,
+            payload.input,
+            key,
+            w3c_trace_context_for_control_queue(),
+        )
+        .await?;
+    let persisted = receipt.state();
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(ExecutionResponse {
+            id: persisted.execution_id.to_string(),
+            workflow_id: persisted.workflow_id.to_string(),
+            status: persisted.status.to_string(),
+            // The existing DTO uses creation time until the engine starts the run.
+            started_at: persisted
+                .started_at
+                .unwrap_or(persisted.created_at)
+                .timestamp(),
+            finished_at: persisted.completed_at.map(|time| time.timestamp()),
+            input: persisted.workflow_input.clone(),
+            output: None,
+        }),
+    ))
 }
 
 /// Read the caller's start key from `Idempotency-Key`.
@@ -454,7 +357,7 @@ pub async fn start_execution(
 /// Bounded and charset-checked here rather than at the storage boundary: the
 /// key becomes a primary-key component, and an unbounded or non-ASCII value is
 /// a request defect, not a storage failure.
-fn start_key(headers: &HeaderMap) -> ApiResult<Option<String>> {
+fn start_key(headers: &HeaderMap) -> ApiResult<Option<&str>> {
     /// Long enough for a UUID, a ULID, or a caller's composite key; short
     /// enough that the reservation index stays small.
     const MAX_START_KEY_LEN: usize = 255;
@@ -475,138 +378,7 @@ fn start_key(headers: &HeaderMap) -> ApiResult<Option<String>> {
             "Idempotency-Key must be printable ASCII without spaces".to_owned(),
         ));
     }
-    Ok(Some(key.to_owned()))
-}
-
-/// Canonicalization version for [`start_fingerprint`].
-///
-/// Bump this whenever the canonical form below changes. Two digests are only
-/// comparable when they were produced under the same version, so a bump reads
-/// as a mismatch rather than as a false match — the fail-closed direction.
-const START_FINGERPRINT_VERSION: u16 = 1;
-
-/// Fingerprint what makes two start requests "the same command".
-///
-/// Covers the workflow identity, the exact published version the request
-/// resolved to, and the caller's input. The version is inside the fingerprint
-/// on purpose: replaying a key after the workflow was republished is a
-/// *different* command, and silently returning the old receipt would hide that.
-///
-/// The digest is over `serde_json::to_vec` of a canonical array. `Value`
-/// serializes maps in sorted key order (`serde_json` uses a `BTreeMap` unless
-/// `preserve_order` is on, and this workspace does not enable it), so two
-/// requests whose JSON objects differ only in key order agree here.
-fn start_fingerprint(
-    workflow_id: WorkflowId,
-    version_number: u32,
-    payload: &StartExecutionRequest,
-) -> StartFingerprint {
-    use sha2::{Digest as _, Sha256};
-
-    let canonical = serde_json::json!([
-        "start",
-        workflow_id.to_string(),
-        version_number,
-        payload.input,
-    ]);
-    let mut digest = Sha256::new();
-    // `Value` is always serializable; a failure here would be a serde defect,
-    // not a request defect, so feed the debug form rather than fail the
-    // request on an impossible branch.
-    if let Ok(bytes) = serde_json::to_vec(&canonical) {
-        digest.update(&bytes);
-    } else {
-        digest.update(format!("{canonical:?}").as_bytes());
-    }
-    StartFingerprint::new(START_FINGERPRINT_VERSION, digest.finalize().into())
-}
-
-/// Enqueue a `ControlCommand::Start` onto the durable control queue for
-/// the caller's tenant (durable control queue, integration seam step 3, #332).
-///
-/// Shared by `start_execution` (this module) and `execute_workflow`
-/// (`handlers::workflow`) so the dispatch contract lives in exactly one
-/// place. Any future start-path entry point MUST route through this
-/// helper to preserve the honest capability invariant that "persist a row" and
-/// "dispatch to the engine" travel together. Stamps the Start control
-/// row with the request tenant `scope` via `enqueue_control_scoped`.
-///
-/// Returns `ApiError::ServiceUnavailable` when the control-queue backend
-/// is down (mirrors the 503 contract in `cancel_execution` — integration seam
-/// step 6) and `ApiError::Internal` for other write failures so the
-/// caller can retry. The engine-side consumer guards against
-/// double-start via CAS (control-queue CAS), so a retry after a partial
-/// failure is safe.
-///
-/// M3.5: stamps optional [`nebula_core::W3cTraceContext`] on the row from the active HTTP span
-/// when the global propagator yields a valid carrier; otherwise enqueues without one (never
-/// fails the request for trace stamping alone).
-///
-/// M3.6: takes a [`nebula_workflow::ValidatedWorkflow`] witness by reference.
-/// The witness can only be produced by [`validate_for_dispatch`] (which runs
-/// `validate_workflow`), so the type system forbids reaching dispatch with an
-/// unvalidated definition — this is the structural "lint gate" against a
-/// future start-path handler that forgets to shift-left validate.
-pub(crate) async fn enqueue_start_scoped(
-    state: &AppState,
-    scope: &nebula_storage_port::Scope,
-    execution_id: ExecutionId,
-    validated: &nebula_workflow::ValidatedWorkflow,
-) -> ApiResult<()> {
-    let w3c_trace_context = w3c_trace_context_for_control_queue();
-    tracing::debug!(
-        execution_id = %execution_id,
-        command = ControlCommand::Start.as_str(),
-        has_trace_context = w3c_trace_context.is_some(),
-        node_count = validated.definition().nodes.len(),
-        "execution: enqueue Start on control queue (shift-left validated)"
-    );
-    state
-        .enqueue_control_scoped(
-            scope,
-            ControlCommand::Start,
-            execution_id,
-            w3c_trace_context,
-        )
-        .await
-}
-
-/// Parse a stored workflow definition blob and run the shift-left structural
-/// validation gate, returning a [`nebula_workflow::ValidatedWorkflow`] dispatch
-/// witness or an RFC 9457 error (canon §10 / §12.2, ROADMAP M3.6).
-///
-/// Every start-path handler (`execute_workflow`, `start_execution`) MUST turn
-/// the stored definition into a `ValidatedWorkflow` via this helper *before* it
-/// creates an execution row or enqueues a Start signal. Because
-/// [`enqueue_start_scoped`] requires the witness, the compiler rejects any
-/// dispatch path that skips this call.
-///
-/// Error mapping:
-/// - A blob that cannot be parsed as a `WorkflowDefinition` → **400** via
-///   [`ApiError::validation_message`] (a request-level / format error), using
-///   the same `to_string`→`from_str` round-trip `activate_workflow` relies on
-///   (`from_value` cannot zero-copy-borrow `&str` for `Key<T>` fields, #343).
-/// - A parseable-but-structurally-invalid definition → **422**
-///   [`ApiError::InvalidWorkflowDefinition`], carrying every typed
-///   [`nebula_workflow::WorkflowError`] so the problem+json body gets
-///   field-level RFC 6901 pointers.
-pub(crate) fn validate_for_dispatch(
-    definition: &serde_json::Value,
-) -> ApiResult<nebula_workflow::ValidatedWorkflow> {
-    let raw_json = serde_json::to_string(definition)
-        .map_err(|e| ApiError::Internal(format!("Failed to serialize workflow definition: {e}")))?;
-    let workflow_def: nebula_workflow::WorkflowDefinition = serde_json::from_str(&raw_json)
-        .map_err(|e| {
-            ApiError::validation_message(format!(
-                "Workflow definition cannot be parsed as WorkflowDefinition: {e}"
-            ))
-        })?;
-    nebula_workflow::ValidatedWorkflow::validate(workflow_def).map_err(|errors| {
-        ApiError::InvalidWorkflowDefinition {
-            detail: format!("Workflow definition is invalid ({} error(s))", errors.len()),
-            errors,
-        }
-    })
+    Ok(Some(key))
 }
 
 /// Cancel execution

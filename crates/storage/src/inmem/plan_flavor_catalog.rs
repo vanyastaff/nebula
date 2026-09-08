@@ -113,6 +113,20 @@ pub(super) struct RevisionCatalogState {
     references: HashMap<RevisionReferenceOwner, RevisionReferenceRow>,
 }
 
+pub(super) fn execution_matches_live_flavor(
+    catalog: &RevisionCatalogState,
+    execution_id: ExecutionId,
+    flavor: WorkerFlavorRevisionId,
+) -> bool {
+    catalog
+        .references
+        .get(&RevisionReferenceOwner::for_execution(execution_id))
+        .is_some_and(|row| {
+            row.reference.ids.worker_flavor() == flavor
+                && matches!(row.state, RevisionReferenceState::Live)
+        })
+}
+
 trait RevisionClock: fmt::Debug + Send + Sync {
     fn now(&self) -> DateTime<Utc>;
 }
@@ -317,7 +331,7 @@ fn insert_pair(
     Ok(RevisionInsertOutcome::Inserted)
 }
 
-fn load_pair(
+pub(super) fn load_pair(
     catalog: &RevisionCatalogState,
     ids: PlanFlavorRevisionIds,
 ) -> Result<PlanFlavorRevisionRecord, RevisionCatalogError> {
@@ -689,7 +703,7 @@ pub(super) enum InternalRevisionError {
     ReferenceUnavailable,
 }
 
-fn require_active_pair(
+pub(super) fn require_active_pair(
     catalog: &RevisionCatalogState,
     ids: PlanFlavorRevisionIds,
 ) -> Result<(), InternalRevisionError> {

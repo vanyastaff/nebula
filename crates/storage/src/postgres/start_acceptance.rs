@@ -1,19 +1,13 @@
 //! Postgres [`StartAcceptanceStore`] over the port-scoped schema.
 //!
-//! The reservation, the execution aggregate row, and the Start control row are
-//! three statements in **one** transaction, so a start key can never be
-//! reserved for an execution that does not exist, and an execution can never
-//! exist without the Start command that drives it. The materialized path
-//! composes the revision admission and the live reference row into the same
-//! transaction.
+//! The reservation, execution, immutable contract bundle, Start command, and
+//! live revision reference are committed in one transaction.
 
 use std::time::Duration;
 
-use nebula_core::id::ExecutionId;
 use nebula_storage_port::StorageError;
 use nebula_storage_port::store::{
-    KeyedStart, MaterializedKeyedStart, StartAcceptance, StartAcceptanceStore,
-    StartMaterialization, StartRevisionRejection,
+    StartAcceptanceStore, StartMaterialization, StartReservationMaintenance, StartRevisionRejection,
 };
 use sqlx::{PgPool, Row};
 
@@ -36,300 +30,218 @@ impl PgStartAcceptanceStore {
 
 #[async_trait::async_trait]
 impl StartAcceptanceStore for PgStartAcceptanceStore {
-    #[tracing::instrument(
-        level = "debug",
-        skip(self, start),
-        fields(
-            execution_id = start.execution_id,
-            fingerprint_version = start.fingerprint.version(),
-        )
-    )]
-    async fn accept_keyed_start(
+    #[tracing::instrument(skip_all, err)]
+    async fn lookup_trigger_start(
         &self,
-        start: &KeyedStart<'_>,
-    ) -> Result<StartAcceptance, StorageError> {
-        let now_ms = chrono::Utc::now().timestamp_millis();
-        let mut tx = self.pool.begin().await.map_err(conn_err)?;
-
-        // First writer wins by PRIMARY KEY(workspace_id, org_id, start_key).
-        // The scope columns are inside the key, so one tenant can neither
-        // collide with nor probe another's reservations.
-        let reserved = sqlx::query(
-            "INSERT INTO port_start_key_reservations \
-             (workspace_id, org_id, start_key, fingerprint_version, fingerprint, \
-              execution_id, created_at_ms) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7) \
-             ON CONFLICT (workspace_id, org_id, start_key) DO NOTHING",
-        )
-        .bind(&start.scope.workspace_id)
-        .bind(&start.scope.org_id)
-        .bind(start.start_key)
-        .bind(i32::from(start.fingerprint.version()))
-        .bind(start.fingerprint.digest().as_slice())
-        .bind(start.execution_id)
-        .bind(now_ms)
-        .execute(&mut *tx)
-        .await
-        .map_err(conn_err)?
-        .rows_affected()
-            == 1;
-
-        if !reserved {
-            // Read the incumbent back inside the same transaction: a separate
-            // connection could observe a reservation this transaction has not
-            // committed against, or miss one it has.
-            //
-            // `FOR SHARE` holds the row against a concurrent retention sweep
-            // for the rest of this transaction, so the receipt cannot be
-            // decided against a row that is being deleted underneath it.
-            let row = sqlx::query(
-                "SELECT fingerprint_version, fingerprint, execution_id \
-                 FROM port_start_key_reservations \
-                 WHERE workspace_id = $1 AND org_id = $2 AND start_key = $3 \
-                 FOR SHARE",
-            )
-            .bind(&start.scope.workspace_id)
-            .bind(&start.scope.org_id)
-            .bind(start.start_key)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(conn_err)?;
-
-            let stored_version: i32 = row.try_get("fingerprint_version").map_err(conn_err)?;
-            let stored_digest: Vec<u8> = row.try_get("fingerprint").map_err(conn_err)?;
-            let execution_id: String = row.try_get("execution_id").map_err(conn_err)?;
-            // Nothing was written on this path; commit only releases the read
-            // transaction.
-            tx.commit().await.map_err(conn_err)?;
-
-            return Ok(crate::start_acceptance::replay_outcome(
-                start,
-                i64::from(stored_version),
-                &stored_digest,
-                execution_id,
-            ));
-        }
-
-        insert_created_execution(
-            &mut tx,
-            start.scope,
-            start.execution_id,
-            start.execution.workflow_id,
-            start.execution.initial_state,
-        )
-        .await?;
-
-        let resume_target_json = start
-            .command
-            .resume_target
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
-        sqlx::query(
-            "INSERT INTO port_control_queue \
-             (id, execution_id, workspace_id, org_id, command, status, \
-              w3c_traceparent, reclaim_count, resume_target) \
-             VALUES ($1, $2, $3, $4, $5, 'Pending', $6, $7, $8)",
-        )
-        .bind(start.command.id.as_slice())
-        .bind(&start.command.execution_id)
-        .bind(&start.command.scope.workspace_id)
-        .bind(&start.command.scope.org_id)
-        .bind(start.command.command.as_str())
-        .bind(start.command.w3c_traceparent.as_deref())
-        .bind(i32::try_from(start.command.reclaim_count).unwrap_or(i32::MAX))
-        .bind(resume_target_json)
-        .execute(&mut *tx)
-        .await
-        .map_err(conn_err)?;
-
-        tx.commit().await.map_err(conn_err)?;
-        tracing::debug!(
-            target: "nebula_storage::postgres",
-            "start_acceptance: reserved key, created execution, enqueued Start"
-        );
-        Ok(StartAcceptance::Accepted {
-            execution_id: start.execution_id.to_owned(),
-        })
+        scope: &nebula_storage_port::Scope,
+        key: &nebula_storage_port::dto::TriggerStartKey<'_>,
+    ) -> Result<Option<String>, StorageError> {
+        sqlx::query_scalar("SELECT execution_id FROM port_trigger_dedup_inbox WHERE workspace_id = $1 AND org_id = $2 AND trigger_id = $3 AND event_id = $4").bind(&scope.workspace_id).bind(&scope.org_id).bind(key.trigger_id()).bind(key.event_id()).fetch_optional(&self.pool).await.map_err(conn_err)
     }
 
-    #[tracing::instrument(
-        level = "debug",
-        skip(self, start),
-        fields(
-            execution_id = start.keyed.execution_id,
-            fingerprint_version = start.keyed.fingerprint.version(),
-        )
-    )]
-    async fn materialize_keyed_start(
+    #[tracing::instrument(skip_all, fields(execution_id = %start.execution_id()), err)]
+    async fn materialize_start(
         &self,
-        start: &MaterializedKeyedStart<'_>,
-    ) -> Result<StartMaterialization, StorageError> {
-        let keyed = &start.keyed;
-        crate::start_acceptance::validate_materialized_start(start)?;
-        // The reference row's CHECK admits only typed `exe_` ids; validate up
-        // front so a malformed id fails closed before the transaction starts.
-        keyed.execution_id.parse::<ExecutionId>().map_err(|_| {
-            StorageError::Internal(
-                "materialize_keyed_start: execution id is not a typed ExecutionId".to_owned(),
-            )
-        })?;
+        start: &nebula_storage_port::dto::MaterializedStart<'_>,
+    ) -> Result<StartMaterialization, nebula_storage_port::store::StartMaterializationError> {
+        use crate::start_materialization::sql_error;
+        use nebula_storage_port::store::StartMaterializationError;
+        let mut transaction = self.pool.begin().await.map_err(sql_error)?;
 
-        let now_ms = chrono::Utc::now().timestamp_millis();
-        let mut tx = self.pool.begin().await.map_err(conn_err)?;
-
-        // First writer wins by PRIMARY KEY(workspace_id, org_id, start_key).
-        let reserved = sqlx::query(
-            "INSERT INTO port_start_key_reservations \
-             (workspace_id, org_id, start_key, fingerprint_version, fingerprint, \
-              execution_id, created_at_ms) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7) \
-             ON CONFLICT (workspace_id, org_id, start_key) DO NOTHING",
-        )
-        .bind(&keyed.scope.workspace_id)
-        .bind(&keyed.scope.org_id)
-        .bind(keyed.start_key)
-        .bind(i32::from(keyed.fingerprint.version()))
-        .bind(keyed.fingerprint.digest().as_slice())
-        .bind(keyed.execution_id)
-        .bind(now_ms)
-        .execute(&mut *tx)
-        .await
-        .map_err(conn_err)?
-        .rows_affected()
-            == 1;
-
-        if !reserved {
-            // Read the incumbent back inside the same transaction. `FOR SHARE`
-            // holds the row against a concurrent retention sweep for the rest
-            // of this transaction.
-            let row = sqlx::query(
-                "SELECT fingerprint_version, fingerprint, execution_id \
-                 FROM port_start_key_reservations \
-                 WHERE workspace_id = $1 AND org_id = $2 AND start_key = $3 \
-                 FOR SHARE",
-            )
-            .bind(&keyed.scope.workspace_id)
-            .bind(&keyed.scope.org_id)
-            .bind(keyed.start_key)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(conn_err)?;
-
-            let stored_version: i32 = row.try_get("fingerprint_version").map_err(conn_err)?;
-            let stored_digest: Vec<u8> = row.try_get("fingerprint").map_err(conn_err)?;
-            let execution_id: String = row.try_get("execution_id").map_err(conn_err)?;
-            tx.commit().await.map_err(conn_err)?;
-
-            return Ok(
-                match crate::start_acceptance::replay_outcome(
-                    keyed,
-                    i64::from(stored_version),
-                    &stored_digest,
-                    execution_id,
-                ) {
-                    StartAcceptance::Replayed { execution_id } => {
+        if let Some(key) = start.trigger() {
+            let inserted = sqlx::query("INSERT INTO port_trigger_dedup_inbox (workspace_id, org_id, trigger_id, event_id, execution_id, created_at) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (workspace_id, org_id, trigger_id, event_id) DO NOTHING")
+                .bind(&start.scope().workspace_id).bind(&start.scope().org_id).bind(key.trigger_id()).bind(key.event_id()).bind(start.execution_id()).bind(chrono::Utc::now().to_rfc3339())
+                .execute(&mut *transaction).await.map_err(sql_error)?.rows_affected();
+            if inserted == 0 {
+                let execution_id = sqlx::query_scalar("SELECT execution_id FROM port_trigger_dedup_inbox WHERE workspace_id = $1 AND org_id = $2 AND trigger_id = $3 AND event_id = $4 FOR SHARE")
+                    .bind(&start.scope().workspace_id).bind(&start.scope().org_id).bind(key.trigger_id()).bind(key.event_id()).fetch_one(&mut *transaction).await.map_err(sql_error)?;
+                return Ok(StartMaterialization::Replayed { execution_id });
+            }
+        }
+        if let Some(key) = start.idempotency() {
+            let inserted = sqlx::query("INSERT INTO port_start_key_reservations (workspace_id, org_id, start_key, fingerprint_version, fingerprint, execution_id, created_at_ms) VALUES ($1, $2, $3, $4, $5, $6, (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint) ON CONFLICT (workspace_id, org_id, start_key) DO NOTHING")
+                .bind(&start.scope().workspace_id).bind(&start.scope().org_id).bind(key.key())
+                .bind(i32::from(key.fingerprint().version())).bind(key.fingerprint().digest().as_slice())
+                .bind(start.execution_id())
+                .execute(&mut *transaction).await.map_err(sql_error)?.rows_affected();
+            if inserted == 0 {
+                let stored = sqlx::query("SELECT fingerprint_version, fingerprint, execution_id FROM port_start_key_reservations WHERE workspace_id = $1 AND org_id = $2 AND start_key = $3 FOR SHARE")
+                    .bind(&start.scope().workspace_id).bind(&start.scope().org_id).bind(key.key())
+                    .fetch_one(&mut *transaction).await.map_err(sql_error)?;
+                let version: i32 = stored.try_get("fingerprint_version").map_err(sql_error)?;
+                let fingerprint: Vec<u8> = stored.try_get("fingerprint").map_err(sql_error)?;
+                let execution_id = stored.try_get("execution_id").map_err(sql_error)?;
+                return Ok(
+                    if version == i32::from(key.fingerprint().version())
+                        && fingerprint == key.fingerprint().digest().as_slice()
+                    {
                         StartMaterialization::Replayed { execution_id }
-                    },
-                    StartAcceptance::FingerprintMismatch => {
+                    } else {
                         StartMaterialization::FingerprintMismatch
                     },
-                    StartAcceptance::Accepted { .. } => {
-                        unreachable!("a stored reservation can never replay as a fresh acceptance")
-                    },
-                },
-            );
+                );
+            }
         }
-
-        // Admit the exact pair under the commit lock. A revision that began
-        // draining before this transaction committed loses the race: the
-        // tentative reservation insert rolls back with everything else.
-        let revisions = start.identity.revisions();
+        let header = crate::start_materialization::validate_envelope(start)?;
+        let commitment = crate::start_materialization::commitment(start)?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(crate::start_materialization::execution_lock_id(
+                start.execution_id(),
+            ))
+            .execute(&mut *transaction)
+            .await
+            .map_err(sql_error)?;
+        if let Some(stored) = sqlx::query("SELECT workspace_id, org_id, commitment_format, commitment FROM port_execution_contract_bundles WHERE execution_id = $1")
+            .bind(start.execution_id()).fetch_optional(&mut *transaction).await.map_err(sql_error)? {
+            let workspace: String = stored.try_get("workspace_id").map_err(sql_error)?;
+            let org: String = stored.try_get("org_id").map_err(sql_error)?;
+            let format: String = stored.try_get("commitment_format").map_err(sql_error)?;
+            let original: Vec<u8> = stored.try_get("commitment").map_err(sql_error)?;
+            return if workspace == start.scope().workspace_id && org == start.scope().org_id && format == "v1_sha256" && original == commitment.as_slice() {
+                Ok(StartMaterialization::Replayed { execution_id: start.execution_id().to_owned() })
+            } else { Err(StartMaterializationError::MaterializationConflict) };
+        }
+        let ids = start.bundle().identity().revisions();
         if let Some(rejection) =
-            admit_exact_pair(&mut tx, revisions.plan(), revisions.worker_flavor()).await?
+            admit_exact_pair(&mut transaction, ids.plan(), ids.worker_flavor()).await?
         {
-            tx.rollback().await.map_err(conn_err)?;
-            tracing::debug!(
-                target: "nebula_storage::postgres",
-                rejection = ?rejection,
-                "start_acceptance: exact revisions not admitted; nothing written"
-            );
             return Ok(StartMaterialization::RevisionRejected(rejection));
         }
-
+        let plan: Vec<u8> = sqlx::query_scalar(
+            "SELECT record_bytes FROM port_executable_plan_revisions WHERE executable_plan_id = $1",
+        )
+        .bind(ids.plan().as_bytes().as_slice())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(sql_error)?;
+        crate::start_materialization::validate_catalog_header(start, &header, &plan)?;
         insert_created_execution(
-            &mut tx,
-            keyed.scope,
-            keyed.execution_id,
-            keyed.execution.workflow_id,
-            keyed.execution.initial_state,
+            &mut transaction,
+            start.scope(),
+            start.execution_id(),
+            start.execution().workflow_id,
+            start.execution().initial_state,
         )
-        .await?;
-
-        let resume_target_json = keyed
-            .command
-            .resume_target
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()
-            .map_err(|e| StorageError::Serialization(e.to_string()))?;
-        sqlx::query(
-            "INSERT INTO port_control_queue \
-             (id, execution_id, workspace_id, org_id, command, status, \
-              w3c_traceparent, reclaim_count, resume_target) \
-             VALUES ($1, $2, $3, $4, $5, 'Pending', $6, $7, $8)",
-        )
-        .bind(keyed.command.id.as_slice())
-        .bind(&keyed.command.execution_id)
-        .bind(&keyed.command.scope.workspace_id)
-        .bind(&keyed.command.scope.org_id)
-        .bind(keyed.command.command.as_str())
-        .bind(keyed.command.w3c_traceparent.as_deref())
-        .bind(i32::try_from(keyed.command.reclaim_count).unwrap_or(i32::MAX))
-        .bind(resume_target_json)
-        .execute(&mut *tx)
         .await
-        .map_err(conn_err)?;
-
-        sqlx::query(
-            "INSERT INTO port_execution_revision_refs \
-             (execution_id, execution_contract_bundle_id, executable_plan_id, \
-              worker_flavor_id, reference_state) \
-             VALUES ($1, $2, $3, $4, 'live')",
-        )
-        .bind(keyed.execution_id)
-        .bind(start.identity.bundle_id().as_bytes().as_slice())
-        .bind(revisions.plan().as_bytes().as_slice())
-        .bind(revisions.worker_flavor().as_bytes().as_slice())
-        .execute(&mut *tx)
-        .await
-        .map_err(conn_err)?;
-
-        tx.commit().await.map_err(conn_err)?;
-        tracing::debug!(
-            target: "nebula_storage::postgres",
-            "start_acceptance: materialized start with a live revision reference"
-        );
+        .map_err(|error| match error {
+            StorageError::Duplicate { .. } => StartMaterializationError::MaterializationConflict,
+            other => StartMaterializationError::Storage(other),
+        })?;
+        sqlx::query("INSERT INTO port_control_queue (id, execution_id, workspace_id, org_id, command, status, w3c_traceparent, reclaim_count, resume_target) VALUES ($1, $2, $3, $4, 'Start', 'Pending', $5, 0, NULL)")
+            .bind(start.command().id.as_slice()).bind(start.execution_id()).bind(&start.scope().workspace_id).bind(&start.scope().org_id)
+            .bind(start.command().w3c_traceparent.as_deref()).execute(&mut *transaction).await.map_err(sql_error)?;
+        sqlx::query("INSERT INTO port_execution_contract_bundles (execution_id, workspace_id, org_id, bundle_id, executable_plan_id, worker_flavor_id, record_format, record_bytes, commitment_format, commitment) VALUES ($1, $2, $3, $4, $5, $6, 'v1_json', $7, 'v1_sha256', $8)")
+            .bind(start.execution_id()).bind(&start.scope().workspace_id).bind(&start.scope().org_id)
+            .bind(start.bundle().identity().bundle_id().as_bytes().as_slice()).bind(ids.plan().as_bytes().as_slice()).bind(ids.worker_flavor().as_bytes().as_slice())
+            .bind(start.bundle().bytes()).bind(commitment.as_slice()).execute(&mut *transaction).await.map_err(sql_error)?;
+        sqlx::query("INSERT INTO port_execution_revision_refs (execution_id, execution_contract_bundle_id, executable_plan_id, worker_flavor_id, reference_state) VALUES ($1, $2, $3, $4, 'live')")
+            .bind(start.execution_id()).bind(start.bundle().identity().bundle_id().as_bytes().as_slice())
+            .bind(ids.plan().as_bytes().as_slice()).bind(ids.worker_flavor().as_bytes().as_slice())
+            .execute(&mut *transaction).await.map_err(sql_error)?;
+        transaction
+            .commit()
+            .await
+            .map_err(|_| StartMaterializationError::OutcomeUnknown)?;
         Ok(StartMaterialization::Accepted {
-            execution_id: keyed.execution_id.to_owned(),
+            execution_id: start.execution_id().to_owned(),
         })
     }
 
+    async fn lookup_start(
+        &self,
+        scope: &nebula_storage_port::Scope,
+        key: &str,
+    ) -> Result<Option<nebula_storage_port::dto::StartReservation>, StorageError> {
+        let row = sqlx::query("SELECT fingerprint_version, fingerprint, execution_id FROM port_start_key_reservations WHERE workspace_id = $1 AND org_id = $2 AND start_key = $3")
+            .bind(&scope.workspace_id).bind(&scope.org_id).bind(key).fetch_optional(&self.pool).await.map_err(conn_err)?;
+        row.map(|row| {
+            let version = row
+                .try_get::<i32, _>("fingerprint_version")
+                .map_err(conn_err)?
+                .try_into()
+                .map_err(|_| {
+                    StorageError::Internal("invalid stored start fingerprint version".into())
+                })?;
+            let digest = row
+                .try_get::<Vec<u8>, _>("fingerprint")
+                .map_err(conn_err)?
+                .try_into()
+                .map_err(|_| {
+                    StorageError::Internal("invalid stored start fingerprint size".into())
+                })?;
+            Ok(nebula_storage_port::dto::StartReservation::new(
+                nebula_storage_port::store::StartFingerprint::new(version, digest),
+                row.try_get("execution_id").map_err(conn_err)?,
+            ))
+        })
+        .transpose()
+    }
+
+    async fn read_contract_bundle(
+        &self,
+        scope: &nebula_storage_port::Scope,
+        execution_id: &str,
+    ) -> Result<Option<nebula_storage_port::dto::StoredContractBundle>, StorageError> {
+        let row = sqlx::query("SELECT bundle_id, executable_plan_id, worker_flavor_id, record_format, record_bytes FROM port_execution_contract_bundles WHERE execution_id = $1 AND workspace_id = $2 AND org_id = $3")
+            .bind(execution_id).bind(&scope.workspace_id).bind(&scope.org_id).fetch_optional(&self.pool).await.map_err(conn_err)?;
+        row.map(|row| {
+            let invalid =
+                || StorageError::Internal("invalid stored execution contract bundle".into());
+            let format: String = row.try_get("record_format").map_err(conn_err)?;
+            if format != "v1_json" {
+                return Err(invalid());
+            }
+            let bundle: [u8; 16] = row
+                .try_get::<Vec<u8>, _>("bundle_id")
+                .map_err(conn_err)?
+                .try_into()
+                .map_err(|_| invalid())?;
+            let plan: [u8; 32] = row
+                .try_get::<Vec<u8>, _>("executable_plan_id")
+                .map_err(conn_err)?
+                .try_into()
+                .map_err(|_| invalid())?;
+            let flavor: [u8; 32] = row
+                .try_get::<Vec<u8>, _>("worker_flavor_id")
+                .map_err(conn_err)?
+                .try_into()
+                .map_err(|_| invalid())?;
+            let bytes = row.try_get("record_bytes").map_err(conn_err)?;
+            let identity = nebula_storage_port::store::StartContractIdentity::new(
+                nebula_core::ExecutionContractBundleId::from_bytes(bundle),
+                nebula_storage_port::PlanFlavorRevisionIds::new(
+                    nebula_core::ExecutablePlanRevisionId::from_bytes(plan),
+                    nebula_core::WorkerFlavorRevisionId::from_bytes(flavor),
+                ),
+            );
+            let record = nebula_storage_port::dto::ContractBundleRecord::v1_json(identity, bytes)
+                .map_err(|_| invalid())?;
+            Ok(nebula_storage_port::dto::StoredContractBundle::new(
+                scope.clone(),
+                execution_id.to_owned(),
+                record,
+            ))
+        })
+        .transpose()
+    }
+}
+
+#[async_trait::async_trait]
+impl StartReservationMaintenance for PgStartAcceptanceStore {
     async fn evict_reservations_older_than(
         &self,
         retention: Duration,
     ) -> Result<u64, StorageError> {
-        let cutoff_ms = chrono::Utc::now()
-            .timestamp_millis()
-            .saturating_sub(i64::try_from(retention.as_millis()).unwrap_or(i64::MAX));
-        let deleted =
-            sqlx::query("DELETE FROM port_start_key_reservations WHERE created_at_ms < $1")
-                .bind(cutoff_ms)
-                .execute(&self.pool)
-                .await
-                .map_err(conn_err)?
-                .rows_affected();
+        let retention_ms = i64::try_from(retention.as_millis()).unwrap_or(i64::MAX);
+        let deleted = sqlx::query(
+            "DELETE FROM port_start_key_reservations \
+             WHERE created_at_ms < ((EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint - $1)",
+        )
+        .bind(retention_ms)
+        .execute(&self.pool)
+        .await
+        .map_err(conn_err)?
+        .rows_affected();
         Ok(deleted)
     }
 }

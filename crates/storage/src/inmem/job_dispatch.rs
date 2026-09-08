@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use nebula_core::PluginKey;
+use nebula_core::{PluginKey, WorkerFlavorRevisionId};
 use nebula_storage_port::dto::{
     DispatchKind, DispatchOutcome, JobDispatchMsg, NewExecution, TriggerDedupRow,
 };
@@ -107,12 +107,13 @@ impl JobDispatchQueue for InMemoryJobDispatchQueue {
         Ok(())
     }
 
-    #[tracing::instrument(level = "debug", skip(self, available_plugins), fields(batch_size))]
+    #[tracing::instrument(level = "debug", skip(self, available_plugins), fields(batch_size, advertised_worker_flavor_id = %worker_flavor_id))]
     async fn claim_pending(
         &self,
         processor: &[u8; 16],
         batch_size: u32,
         available_plugins: &[PluginKey],
+        worker_flavor_id: WorkerFlavorRevisionId,
     ) -> Result<Vec<JobClaim>, StorageError> {
         // Parity with SQLite + Postgres: an empty advertised set claims nothing.
         if available_plugins.is_empty() {
@@ -133,6 +134,7 @@ impl JobDispatchQueue for InMemoryJobDispatchQueue {
             .iter()
             .filter(|(_, q)| {
                 q.status == "Pending"
+                    && q.msg.required_worker_flavor_id == worker_flavor_id
                     && q.msg
                         .required_plugins
                         .iter()
@@ -416,12 +418,39 @@ mod job_ownership_tests {
             Scope::new("ws-1", "org-1"),
             serde_json::Value::Null,
             None::<String>,
-            String::new(),
             "plugin-a".parse().unwrap(),
             vec!["plugin-a".parse().unwrap()],
             None::<String>,
             0,
+            nebula_core::WorkerFlavorRevisionId::from_bytes([0x11; 32]),
         )
+    }
+
+    #[tokio::test]
+    async fn exact_flavor_mismatch_cannot_hide_matching_job_in_bounded_batch() {
+        let queue = make_queue();
+        let advertised = nebula_core::WorkerFlavorRevisionId::from_bytes([0x11; 32]);
+        let mut wrong = sample_msg([1; 16]);
+        wrong.required_worker_flavor_id =
+            nebula_core::WorkerFlavorRevisionId::from_bytes([0x22; 32]);
+        let mut matching = sample_msg([2; 16]);
+        matching.required_worker_flavor_id = advertised;
+        queue.enqueue(&wrong).await.unwrap();
+        queue.enqueue(&matching).await.unwrap();
+        let claimed = queue
+            .claim_pending(
+                &[3; 16],
+                1,
+                &["plugin-a".parse().unwrap()],
+                nebula_core::WorkerFlavorRevisionId::from_bytes([0x11; 32]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(
+            claimed[0].msg.id, matching.id,
+            "exact revision must filter before the batch limit"
+        );
     }
 
     #[tokio::test]
@@ -450,7 +479,12 @@ mod job_ownership_tests {
 
         queue.enqueue(&sample_msg(job_id)).await.unwrap();
         let claimed = queue
-            .claim_pending(&worker_a, 1, &["plugin-a".parse().unwrap()])
+            .claim_pending(
+                &worker_a,
+                1,
+                &["plugin-a".parse().unwrap()],
+                nebula_core::WorkerFlavorRevisionId::from_bytes([0x11; 32]),
+            )
             .await
             .unwrap();
         assert_eq!(claimed.len(), 1);
@@ -467,7 +501,12 @@ mod job_ownership_tests {
             .unwrap();
         assert_eq!(outcome.reclaimed, 1, "the stuck row must be reclaimed");
         let reclaimed = queue
-            .claim_pending(&worker_a, 1, &["plugin-a".parse().unwrap()])
+            .claim_pending(
+                &worker_a,
+                1,
+                &["plugin-a".parse().unwrap()],
+                nebula_core::WorkerFlavorRevisionId::from_bytes([0x11; 32]),
+            )
             .await
             .unwrap();
         assert_eq!(reclaimed.len(), 1);
@@ -503,7 +542,12 @@ mod job_ownership_tests {
 
         queue.enqueue(&sample_msg(job_id)).await.unwrap();
         let claimed = queue
-            .claim_pending(&worker_a, 1, &["plugin-a".parse().unwrap()])
+            .claim_pending(
+                &worker_a,
+                1,
+                &["plugin-a".parse().unwrap()],
+                nebula_core::WorkerFlavorRevisionId::from_bytes([0x11; 32]),
+            )
             .await
             .unwrap();
         let current = claimed[0].token;
@@ -531,7 +575,12 @@ mod job_ownership_tests {
 
         queue.enqueue(&sample_msg(job_id)).await.unwrap();
         let claimed = queue
-            .claim_pending(&worker_a, 1, &["plugin-a".parse().unwrap()])
+            .claim_pending(
+                &worker_a,
+                1,
+                &["plugin-a".parse().unwrap()],
+                nebula_core::WorkerFlavorRevisionId::from_bytes([0x11; 32]),
+            )
             .await
             .unwrap();
 

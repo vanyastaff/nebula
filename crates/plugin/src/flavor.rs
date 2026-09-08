@@ -47,6 +47,15 @@ impl RuntimeContractVersionError {
 }
 
 impl RuntimeContractVersion {
+    /// Runtime contract implemented by this Nebula release line.
+    ///
+    /// Deployment roots use one constructor so activation and workers cannot
+    /// drift through duplicated version literals.
+    #[must_use]
+    pub fn current() -> Self {
+        Self(Version::new(1, 0, 0))
+    }
+
     /// Borrows the semantic version.
     #[must_use]
     pub const fn as_version(&self) -> &Version {
@@ -645,7 +654,10 @@ mod activation_diagnostic_tests {
                     reported.actual(),
                     reported.remediation(),
                 ] {
-                    assert!(!field.trim().is_empty(), "NS14 requires all five fields");
+                    assert!(
+                        !field.trim().is_empty(),
+                        "activation diagnostics require all five fields"
+                    );
                 }
             }
         }

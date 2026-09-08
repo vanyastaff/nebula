@@ -11,18 +11,16 @@
 //! choose a slot identity could merge two intended occurrences into one.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
+use nebula_core::{OperationCallId, OperationId};
 use nebula_storage_port::store::{OperationLedger, OperationLedgerAdjudicator};
 use nebula_storage_port::{
-    AttemptGeneration, EffectSlotBinding, EffectSlotId, KnownOutcome, OperationId,
-    OperationLedgerError, OperationRecord, OperationState, PrepareOutcome, Scope,
+    EffectOccurrenceKey, EffectSlotBinding, EffectSlotId, FencingToken, OperationLedgerError,
+    OperationRecord, OperationState, PrepareOutcome, Scope,
 };
-use parking_lot::Mutex;
 
 use crate::operation_ledger::{
-    CommitDecision, compose_record, decide_adjudication, decide_commit, decide_prepare,
-    prepare_label, read_label, write_label,
+    compose_record, decide_prepare, prepare_label, read_label, write_label,
 };
 
 /// The natural key a caller can rebuild without having seen the slot.
@@ -53,11 +51,29 @@ impl SlotKey {
 #[derive(Debug, Clone)]
 struct LedgerRow {
     scope: Scope,
+    execution_id: String,
     record: OperationRecord,
+    adjudication: Option<AdjudicationAudit>,
+}
+
+#[derive(Clone)]
+struct AdjudicationAudit {
+    evidence: String,
+    recorded_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl std::fmt::Debug for AdjudicationAudit {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AdjudicationAudit")
+            .field("evidence_bytes", &self.evidence.len())
+            .field("recorded_at", &self.recorded_at)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Default)]
-struct LedgerState {
+pub(super) struct LedgerState {
     /// Slots addressed by the key a caller can rebuild.
     by_key: HashMap<SlotKey, EffectSlotId>,
     /// Slots addressed by the identity a caller carries afterwards.
@@ -65,16 +81,18 @@ struct LedgerState {
 }
 
 /// In-memory reference implementation of the durable operation ledger.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct InMemoryOperationLedger {
-    inner: Arc<Mutex<LedgerState>>,
+    execution: super::InMemoryExecutionStore,
 }
 
 impl InMemoryOperationLedger {
-    /// Build an empty ledger.
+    /// Share the execution owner's atomic state and clock.
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(execution: &super::InMemoryExecutionStore) -> Self {
+        Self {
+            execution: execution.clone(),
+        }
     }
 }
 
@@ -100,6 +118,39 @@ fn visible_row<'state>(
 
 #[async_trait::async_trait]
 impl OperationLedger for InMemoryOperationLedger {
+    #[tracing::instrument(level = "debug", skip_all, name = "operation_ledger.read_occurrence", fields(backend = "in_memory", outcome = tracing::field::Empty))]
+    async fn read_occurrence(
+        &self,
+        key: &EffectOccurrenceKey<'_>,
+    ) -> Result<Option<OperationRecord>, OperationLedgerError> {
+        let result = {
+            let state = self.execution.inner.lock();
+            let key = SlotKey {
+                workspace_id: key.scope().workspace_id.clone(),
+                org_id: key.scope().org_id.clone(),
+                execution_id: key.execution_id().to_owned(),
+                node_key: key.node_key().to_owned(),
+                occurrence: key.occurrence().to_owned(),
+            };
+            state
+                .operation_ledger
+                .by_key
+                .get(&key)
+                .map(|slot| {
+                    state
+                        .operation_ledger
+                        .rows
+                        .get(slot)
+                        .map(|row| row.record.clone())
+                        .ok_or(OperationLedgerError::CorruptRecord { slot_id: *slot })
+                })
+                .transpose()
+        };
+        let outcome = crate::operation_ledger::occurrence_read_label(&result);
+        tracing::Span::current().record("outcome", outcome);
+        result
+    }
+
     #[tracing::instrument(
         level = "debug",
         name = "operation_ledger.prepare",
@@ -114,9 +165,23 @@ impl OperationLedger for InMemoryOperationLedger {
     async fn prepare(
         &self,
         binding: &EffectSlotBinding<'_>,
+        fencing: FencingToken,
     ) -> Result<PrepareOutcome, OperationLedgerError> {
-        let result = {
-            let mut state = self.inner.lock();
+        let result = (|| {
+            crate::operation_ledger::stored_attempt_generation(binding.attempt_generation)?;
+            let protocol = crate::operation_ledger::initial_protocol(
+                binding,
+                self.execution.clock.now().timestamp_millis(),
+            )?;
+            let mut state = self.execution.inner.lock();
+            validate_execution(
+                &state,
+                binding.scope,
+                binding.execution_id,
+                Some(fencing),
+                self.execution.clock.now(),
+            )?;
+            let state = &mut state.operation_ledger;
             let key = SlotKey::of(binding);
 
             if let Some(slot_id) = state.by_key.get(&key).copied() {
@@ -129,8 +194,7 @@ impl OperationLedger for InMemoryOperationLedger {
                 decide_prepare(slot_id, &row.record, binding)
             } else {
                 let slot_id = EffectSlotId::from_storage_bytes(*uuid::Uuid::new_v4().as_bytes());
-                let operation_id =
-                    OperationId::from_storage_bytes(*uuid::Uuid::new_v4().as_bytes());
+                let operation_id = OperationId::from_bytes(*uuid::Uuid::new_v4().as_bytes());
                 let record = compose_record(
                     slot_id,
                     operation_id,
@@ -138,18 +202,22 @@ impl OperationLedger for InMemoryOperationLedger {
                     binding.destination,
                     binding.fingerprint,
                     OperationState::Prepared,
-                );
+                )
+                .with_protocol(protocol);
+                let prepared = record.operation();
                 state.by_key.insert(key, slot_id);
                 state.rows.insert(
                     slot_id,
                     LedgerRow {
                         scope: binding.scope.clone(),
+                        execution_id: binding.execution_id.to_owned(),
                         record,
+                        adjudication: None,
                     },
                 );
-                Ok(PrepareOutcome::Prepared(record.operation()))
+                Ok(PrepareOutcome::Prepared(prepared))
             }
-        };
+        })();
 
         let outcome = prepare_label(&result);
         tracing::Span::current().record("outcome", outcome);
@@ -169,8 +237,8 @@ impl OperationLedger for InMemoryOperationLedger {
         slot_id: EffectSlotId,
     ) -> Result<OperationRecord, OperationLedgerError> {
         let result = {
-            let state = self.inner.lock();
-            visible_row(&state, scope, slot_id).map(|row| row.record)
+            let state = self.execution.inner.lock();
+            visible_row(&state.operation_ledger, scope, slot_id).map(|row| row.record.clone())
         };
 
         let outcome = read_label(&result);
@@ -181,38 +249,59 @@ impl OperationLedger for InMemoryOperationLedger {
 
     #[tracing::instrument(
         level = "debug",
-        name = "operation_ledger.commit_outcome",
-        skip(self),
+        name = "operation_ledger.advance",
+        skip_all,
         fields(backend = "in_memory", outcome = tracing::field::Empty)
     )]
-    async fn commit_outcome(
+    async fn advance(
         &self,
         scope: &Scope,
         slot_id: EffectSlotId,
-        attempt_generation: AttemptGeneration,
-        outcome: KnownOutcome,
-    ) -> Result<(), OperationLedgerError> {
-        let result = {
-            let mut state = self.inner.lock();
-            let stored = visible_row(&state, scope, slot_id)?.record;
-            match decide_commit(slot_id, &stored, attempt_generation, outcome)? {
-                CommitDecision::AlreadyRecorded => Ok(()),
-                CommitDecision::Apply(target) => {
-                    let row = state
-                        .rows
-                        .get_mut(&slot_id)
-                        .ok_or(OperationLedgerError::CorruptRecord { slot_id })?;
-                    row.record = OperationRecord::new(
-                        row.record.operation(),
-                        row.record.fingerprint(),
-                        target,
-                    );
-                    Ok(())
-                },
+        fencing: FencingToken,
+        command: &nebula_storage_port::dto::OperationCommand,
+    ) -> Result<nebula_storage_port::dto::OperationAdvance, OperationLedgerError> {
+        let result = (|| {
+            let mut state = self.execution.inner.lock();
+            let row = visible_row(&state.operation_ledger, scope, slot_id)?;
+            validate_execution(
+                &state,
+                scope,
+                &row.execution_id,
+                Some(fencing),
+                self.execution.clock.now(),
+            )?;
+            let execution_id = row.execution_id.clone();
+            let decision = crate::operation_ledger::decide_advance(
+                &row.record,
+                command,
+                self.execution.clock.now().timestamp_millis(),
+                OperationCallId::from_bytes(*uuid::Uuid::new_v4().as_bytes()),
+            )?;
+            let sequence = state.next_seq.get(&execution_id).copied().unwrap_or(1);
+            if decision.journal.is_some() && sequence.checked_add(1).is_none() {
+                return Err(OperationLedgerError::InvalidProtocol);
             }
-        };
+            if decision.changed {
+                state
+                    .operation_ledger
+                    .rows
+                    .get_mut(&slot_id)
+                    .ok_or(OperationLedgerError::CorruptRecord { slot_id })?
+                    .record = decision.record;
+                if let Some(journal) = decision.journal {
+                    state
+                        .rows
+                        .get_mut(&execution_id)
+                        .ok_or(OperationLedgerError::ExecutionLeaseRejected)?
+                        .journal
+                        .push((sequence, journal));
+                    state.next_seq.insert(execution_id, sequence + 1);
+                }
+            }
+            Ok(decision.response)
+        })();
 
-        let label = write_label(&result);
+        let label = crate::operation_ledger::advance_label(&result);
         tracing::Span::current().record("outcome", label);
         tracing::debug!(
             target: "nebula_storage::inmem",
@@ -230,41 +319,185 @@ impl OperationLedgerAdjudicator for InMemoryOperationLedger {
         name = "operation_ledger.adjudicate",
         // `evidence` is operator prose and is deliberately not a span field:
         // it is persisted for review, not broadcast to every trace consumer.
-        skip(self, evidence),
+        skip_all,
         fields(backend = "in_memory", outcome = tracing::field::Empty)
     )]
     async fn adjudicate(
         &self,
         scope: &Scope,
         slot_id: EffectSlotId,
-        outcome: KnownOutcome,
+        outcome: &nebula_storage_port::dto::FrozenOutcomeEvidence,
         evidence: &str,
     ) -> Result<(), OperationLedgerError> {
-        let result = {
-            let mut state = self.inner.lock();
-            let stored = visible_row(&state, scope, slot_id)?.record;
-            let target = decide_adjudication(slot_id, &stored, outcome)?;
-            if evidence.trim().is_empty() {
-                // An adjudication without a reason is not reviewable, which is
-                // the only thing that makes a hand-decided outcome acceptable.
-                return Err(OperationLedgerError::CorruptRecord { slot_id });
+        let result = (|| {
+            let mut state = self.execution.inner.lock();
+            let row = visible_row(&state.operation_ledger, scope, slot_id)?;
+            validate_execution(
+                &state,
+                scope,
+                &row.execution_id,
+                None,
+                self.execution.clock.now(),
+            )?;
+            let execution_id = row.execution_id.clone();
+            let decision = crate::operation_ledger::decide_adjudicate_protocol(
+                &row.record,
+                outcome,
+                evidence,
+            )?;
+            let sequence = state.next_seq.get(&execution_id).copied().unwrap_or(1);
+            if decision.journal.is_some() && sequence.checked_add(1).is_none() {
+                return Err(OperationLedgerError::InvalidProtocol);
             }
-            let row = state
-                .rows
-                .get_mut(&slot_id)
-                .ok_or(OperationLedgerError::CorruptRecord { slot_id })?;
-            row.record =
-                OperationRecord::new(row.record.operation(), row.record.fingerprint(), target);
+            if decision.changed {
+                let row = state
+                    .operation_ledger
+                    .rows
+                    .get_mut(&slot_id)
+                    .ok_or(OperationLedgerError::CorruptRecord { slot_id })?;
+                row.record = decision.record;
+                row.adjudication = Some(AdjudicationAudit {
+                    evidence: evidence.to_owned(),
+                    recorded_at: self.execution.clock.now(),
+                });
+                if let Some(journal) = decision.journal {
+                    state
+                        .rows
+                        .get_mut(&execution_id)
+                        .ok_or(OperationLedgerError::ExecutionLeaseRejected)?
+                        .journal
+                        .push((sequence, journal));
+                    state.next_seq.insert(execution_id, sequence + 1);
+                }
+            }
             Ok(())
-        };
-
-        let label = write_label(&result);
-        tracing::Span::current().record("outcome", label);
-        tracing::debug!(
-            target: "nebula_storage::inmem",
-            outcome = label,
-            "operation ledger adjudication"
-        );
+        })();
+        tracing::Span::current().record("outcome", write_label(&result));
         result
+    }
+}
+
+fn validate_execution(
+    state: &super::execution::State,
+    scope: &Scope,
+    execution_id: &str,
+    fencing: Option<FencingToken>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<(), OperationLedgerError> {
+    let row = state
+        .rows
+        .get(execution_id)
+        .filter(|row| row.scope == *scope)
+        .ok_or(OperationLedgerError::ExecutionLeaseRejected)?;
+    if let Some(fencing) = fencing {
+        crate::operation_ledger::require_live_lease(
+            fencing,
+            row.fencing_generation,
+            row.lease_holder.is_some()
+                && row.lease_expires_at.is_some_and(|deadline| deadline > now),
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nebula_storage_port::dto::{
+        FrozenOutcomeEvidence, OperationCommand, OutcomeEvidenceSource, PreparedEffectContract,
+        PreparedEffectPolicy,
+    };
+    use nebula_storage_port::store::ExecutionStore;
+    use nebula_storage_port::{
+        AttemptGeneration, DestinationCapability, KnownOutcome, RequestFingerprint,
+    };
+
+    #[tokio::test]
+    async fn adjudication_retains_original_audit_without_debug_payload() {
+        let execution = super::super::InMemoryExecutionStore::new();
+        let scope = Scope::new("workspace", "org");
+        execution
+            .create(&scope, "execution", "workflow", serde_json::json!({}))
+            .await
+            .unwrap();
+        let fencing = execution
+            .acquire_lease(
+                &scope,
+                "execution",
+                "runner",
+                std::time::Duration::from_secs(30),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let ledger = InMemoryOperationLedger::new(&execution);
+        let contract = PreparedEffectContract::new(
+            RequestFingerprint::new(1, [9; 32]),
+            PreparedEffectPolicy::builder(DestinationCapability::Opaque)
+                .maximum_invocations(1)
+                .maximum_queries(0)
+                .recovery_window(std::time::Duration::from_mins(1))
+                .build()
+                .unwrap(),
+        )
+        .unwrap();
+        let binding = EffectSlotBinding {
+            scope: &scope,
+            execution_id: "execution",
+            node_key: "node",
+            occurrence: "once",
+            attempt_generation: AttemptGeneration::new(1),
+            fingerprint: RequestFingerprint::new(1, [1; 32]),
+            destination: DestinationCapability::Opaque,
+            contract: &contract,
+        };
+        let slot = ledger
+            .prepare(&binding, fencing)
+            .await
+            .unwrap()
+            .operation()
+            .slot_id();
+        ledger
+            .advance(
+                &scope,
+                slot,
+                fencing,
+                &OperationCommand::MarkUnknown {
+                    expected_revision: 0,
+                },
+            )
+            .await
+            .unwrap();
+        let before = execution.clock.now();
+        let success = FrozenOutcomeEvidence::v1_json(
+            OutcomeEvidenceSource::Adjudication(OperationCallId::from_bytes([3; 16])),
+            KnownOutcome::Succeeded,
+            b"{}".to_vec(),
+        )
+        .unwrap();
+        let failure = FrozenOutcomeEvidence::v1_json(
+            OutcomeEvidenceSource::Adjudication(OperationCallId::from_bytes([4; 16])),
+            KnownOutcome::Failed,
+            b"{}".to_vec(),
+        )
+        .unwrap();
+        ledger
+            .adjudicate(&scope, slot, &success, "audit-canary")
+            .await
+            .unwrap();
+        assert!(
+            ledger
+                .adjudicate(&scope, slot, &failure, "replacement")
+                .await
+                .is_err()
+        );
+        assert!(!format!("{ledger:?}").contains("audit-canary"));
+        let state = execution.inner.lock();
+        let audit = state.operation_ledger.rows[&slot]
+            .adjudication
+            .as_ref()
+            .unwrap();
+        assert_eq!(audit.evidence, "audit-canary");
+        assert!(audit.recorded_at >= before);
     }
 }

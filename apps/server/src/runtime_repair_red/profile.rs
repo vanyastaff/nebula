@@ -157,7 +157,7 @@ impl RuntimeRepairProfileConfig {
 /// `nebula-worker` currently starts its durable timer scanner internally and
 /// drops that nested `JoinHandle`. The profile's single cancellation tree does
 /// stop the scanner, but a scanner-only panic cannot yet be surfaced by this
-/// app supervisor. HTTP, the worker pull-loop, and the sanitized lifecycle
+/// app supervisor. HTTP, the durable worker runtime, and the sanitized lifecycle
 /// observer are fully owned and joined; making the nested scanner join-visible
 /// requires a later worker-runtime API change and is recorded as a residual
 /// integrity limitation.
@@ -230,15 +230,23 @@ impl RuntimeRepairHarness {
             },
         };
 
-        let execution_bundle = compose::build_execution_stores(&api_config, explicit_postgres_dsn)
-            .await
-            .map_err(ProfileErrorKind::Composition)?;
+        let metrics_registry = Arc::new(nebula_metrics::MetricsRegistry::new());
+        let execution_bundle =
+            compose::build_execution_stores(&api_config, explicit_postgres_dsn, &metrics_registry)
+                .await
+                .map_err(ProfileErrorKind::Composition)?;
         let worker_projection = execution_bundle.worker_projection();
         let backend_lifecycle = execution_bundle.backend_lifecycle();
-        let metrics_registry = Arc::new(nebula_metrics::MetricsRegistry::new());
-        let mut state =
-            compose::default_state(&api_config, Arc::clone(&metrics_registry), execution_bundle)
-                .map_err(ProfileErrorKind::Composition)?;
+        let registry = crate::transport::worker_registry(Ok("71".repeat(32)))
+            .map_err(TransportInitError::from)
+            .map_err(ProfileErrorKind::Composition)?;
+        let mut state = compose::default_state(
+            &api_config,
+            Arc::clone(&metrics_registry),
+            execution_bundle,
+            registry,
+        )
+        .map_err(ProfileErrorKind::Composition)?;
         state = compose_closed_identity(state, &api_config).await?;
         let bind_address = SocketAddr::from(([127, 0, 0, 1], 0));
         state = ApiTransport
@@ -251,25 +259,28 @@ impl RuntimeRepairHarness {
         let execution_event_bus = EventBus::<ExecutionEvent>::new(EXECUTION_EVENT_BUFFER);
         let execution_event_subscriber = execution_event_bus.subscribe();
         let engine_clock: Arc<dyn Clock> = self.evidence_controls.clock();
-        let (worker_builder, worker_metrics, _) =
+        let (worker_builder, _worker_metrics, _) =
             nebula_worker_bin::compose::build_core_flavor_runtime_for_runtime_repair_red(
                 worker_projection.execution_stores,
-                worker_projection.workflow_stores,
-                worker_projection.job_dispatch_queue,
                 worker_projection.turn_handoff,
+                worker_projection.turn_recovery,
                 PROFILE_PROCESSOR_ID,
-                engine_clock,
-                execution_event_bus,
+                nebula_worker_bin::compose::CoreFlavorRevisionInputs {
+                    metrics: worker_projection.metrics,
+                    artifact_set_digest: nebula_core::ArtifactSetDigest::from_bytes([0x71; 32]),
+                    catalog: worker_projection.revision_catalog,
+                    bundles: worker_projection.bundles,
+                },
+                nebula_worker_bin::compose::RuntimeRepairEvidenceInputs {
+                    clock: engine_clock,
+                    event_bus: execution_event_bus,
+                },
             )
             .map_err(ProfileErrorKind::WorkerComposition)?;
         // The same control queue `AppState` enqueues accepted commands onto.
-        // Without this the profile drains job-dispatch rows only, and an
-        // execution accepted over HTTP sits `Created` with a `Start` command no
-        // component consumes — the run never begins.
         let worker_runtime = worker_builder
             .with_control_queue(worker_projection.control_queue)
             .with_timer_scan_interval(PROFILE_TIMER_SCAN_INTERVAL)
-            .with_metrics(worker_metrics)
             .build()
             .map_err(|_| ProfileErrorKind::WorkerBuild)?;
 
@@ -282,14 +293,7 @@ impl RuntimeRepairHarness {
         let supervisor_shutdown = shutdown.clone();
         let worker_shutdown = shutdown.clone();
         let observations = self.evidence_controls.observation_registry();
-        let worker_future = async move {
-            // A component death inside the worker is reported, not swallowed:
-            // a runtime whose control consumer stopped is no longer draining
-            // accepted commands and must not read as healthy.
-            if let Err(error) = worker_runtime.run(worker_shutdown).await {
-                tracing::error!(%error, "profile worker runtime ended abnormally");
-            }
-        };
+        let worker_future = async move { worker_runtime.run(worker_shutdown).await };
         let supervisor = tokio::spawn(async move {
             supervise_profile(ProfileSupervisorInputs {
                 router,
@@ -417,7 +421,7 @@ enum ComponentSignal {
 #[derive(Debug)]
 enum ComponentExit {
     Http(Result<(), std::io::Error>),
-    Worker,
+    Worker(Result<(), nebula_worker_bin::compose::WorkerRuntimeError>),
     Observer(Result<(), EvidenceIntegrityError>),
     /// Shutdown arrived before the supervisor opened the start gate, so this
     /// component ended without ever entering its run phase.
@@ -439,7 +443,9 @@ async fn supervise_profile<WorkerFuture>(
     inputs: ProfileSupervisorInputs<WorkerFuture>,
 ) -> Result<(), RuntimeRepairProfileError>
 where
-    WorkerFuture: Future<Output = ()> + Send + 'static,
+    WorkerFuture: Future<Output = Result<(), nebula_worker_bin::compose::WorkerRuntimeError>>
+        + Send
+        + 'static,
 {
     let ProfileSupervisorInputs {
         router,
@@ -478,8 +484,7 @@ where
             return ComponentExit::NeverStarted;
         }
         let _ = worker_signals.send(ComponentSignal::Started(Component::Worker));
-        worker_future.await;
-        ComponentExit::Worker
+        ComponentExit::Worker(worker_future.await)
     });
 
     let observer_signals = component_signals.clone();
@@ -661,15 +666,18 @@ fn classify_component_exit(
         Ok(ComponentExit::Observer(Err(source))) => {
             Some(ProfileErrorKind::ObservationComponent(source).into())
         },
+        Ok(ComponentExit::Worker(Err(source))) => {
+            Some(ProfileErrorKind::WorkerComponent(source).into())
+        },
         Ok(
             ComponentExit::Http(Ok(()))
-            | ComponentExit::Worker
+            | ComponentExit::Worker(Ok(()))
             | ComponentExit::Observer(Ok(()))
             | ComponentExit::NeverStarted,
         ) if !is_shutting_down => Some(ProfileErrorKind::ComponentExited.into()),
         Ok(
             ComponentExit::Http(Ok(()))
-            | ComponentExit::Worker
+            | ComponentExit::Worker(Ok(()))
             | ComponentExit::Observer(Ok(()))
             | ComponentExit::NeverStarted,
         ) => None,
@@ -816,6 +824,8 @@ enum ProfileErrorKind {
     HttpComponent(#[source] std::io::Error),
     #[error("profile lifecycle observation component failed")]
     ObservationComponent(#[source] EvidenceIntegrityError),
+    #[error("profile worker component failed")]
+    WorkerComponent(#[source] nebula_worker_bin::compose::WorkerRuntimeError),
     #[error("a profile component panicked")]
     ComponentPanicked(#[source] JoinError),
     #[error("profile supervisor panicked")]

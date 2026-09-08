@@ -28,12 +28,14 @@ pub(super) async fn insert_created_execution(
     workflow_id: &str,
     initial_state: &serde_json::Value,
 ) -> Result<(), StorageError> {
+    crate::execution_state::ensure_execution_state_size(initial_state)?;
     let now = Utc::now();
     let res = sqlx::query(
         "INSERT INTO port_executions \
          (id, workspace_id, org_id, workflow_id, status, state, version, \
           fencing_generation, created_at, updated_at) \
-         VALUES ($1, $2, $3, $4, 'Created', $5, 0, 0, $6, $6)",
+         SELECT $1, $2, $3, $4, 'Created', $5, 0, 0, $6, $6 \
+         WHERE octet_length($5::jsonb::text) <= $7",
     )
     .bind(id)
     .bind(&scope.workspace_id)
@@ -41,10 +43,12 @@ pub(super) async fn insert_created_execution(
     .bind(workflow_id)
     .bind(initial_state)
     .bind(now)
+    .bind(crate::execution_state::MAX_PERSISTED_EXECUTION_STATE_BYTES)
     .execute(&mut **tx)
     .await;
     match res {
-        Ok(_) => Ok(()),
+        Ok(result) if result.rows_affected() == 1 => Ok(()),
+        Ok(_) => Err(crate::execution_state::oversized_execution_state()),
         Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
             Err(StorageError::Duplicate {
                 entity: "execution",
@@ -106,7 +110,9 @@ impl ExecutionStore for PgExecutionStore {
 
     async fn get(&self, scope: &Scope, id: &str) -> Result<Option<ExecutionRecord>, StorageError> {
         let row = sqlx::query(
-            "SELECT workflow_id, status, state, version, lease_holder, \
+            "SELECT workflow_id, status, \
+                    CASE WHEN octet_length(state::text) <= $4 THEN state END AS state, \
+                    version, lease_holder, \
                     fencing_generation, created_at, updated_at \
              FROM port_executions \
              WHERE id = $1 AND workspace_id = $2 AND org_id = $3",
@@ -114,6 +120,7 @@ impl ExecutionStore for PgExecutionStore {
         .bind(id)
         .bind(&scope.workspace_id)
         .bind(&scope.org_id)
+        .bind(crate::execution_state::MAX_PERSISTED_EXECUTION_STATE_BYTES)
         .fetch_optional(&self.pool)
         .await
         .map_err(conn_err)?;
@@ -128,7 +135,10 @@ impl ExecutionStore for PgExecutionStore {
             scope: scope.clone(),
             version: row.try_get::<i64, _>("version").map_err(conn_err)? as u64,
             status: row.try_get("status").map_err(conn_err)?,
-            state: row.try_get("state").map_err(conn_err)?,
+            state: row
+                .try_get::<Option<serde_json::Value>, _>("state")
+                .map_err(conn_err)?
+                .ok_or_else(crate::execution_state::oversized_execution_state)?,
             lease_holder: row.try_get("lease_holder").map_err(conn_err)?,
             fencing: Some(
                 row.try_get::<i64, _>("fencing_generation")
@@ -140,259 +150,10 @@ impl ExecutionStore for PgExecutionStore {
     }
 
     async fn commit(&self, batch: TransitionBatch) -> Result<TransitionOutcome, StorageError> {
-        let id = batch.execution_id().to_string();
         let mut tx = self.pool.begin().await.map_err(conn_err)?;
-
-        // Lock the row for the duration of the tx so the CAS + fencing +
-        // write triple is serializable against concurrent committers.
-        let row = sqlx::query(
-            "SELECT version, fencing_generation FROM port_executions \
-             WHERE id = $1 AND workspace_id = $2 AND org_id = $3 FOR UPDATE",
-        )
-        .bind(&id)
-        .bind(&batch.scope().workspace_id)
-        .bind(&batch.scope().org_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(conn_err)?;
-
-        let Some(row) = row else {
-            tx.rollback().await.map_err(conn_err)?;
-            return Ok(TransitionOutcome::VersionConflict { actual: 0 });
-        };
-        let cur_version = row.try_get::<i64, _>("version").map_err(conn_err)? as u64;
-        let cur_gen = row
-            .try_get::<i64, _>("fencing_generation")
-            .map_err(conn_err)? as u64;
-
-        if batch.fencing().generation() != cur_gen {
-            tx.rollback().await.map_err(conn_err)?;
-            tracing::warn!(
-                target: "nebula_storage::postgres",
-                execution_id = %id,
-                caller_generation = batch.fencing().generation(),
-                current_generation = cur_gen,
-                "commit fenced out: caller token superseded"
-            );
-            return Ok(TransitionOutcome::FencedOut);
-        }
-        if cur_version != batch.expected_version() {
-            tx.rollback().await.map_err(conn_err)?;
-            return Ok(TransitionOutcome::VersionConflict {
-                actual: cur_version,
-            });
-        }
-
-        let new_version = cur_version + 1;
-        let now = Utc::now();
-        sqlx::query(
-            "UPDATE port_executions SET state = $1, version = $2, updated_at = $3 \
-             WHERE id = $4 AND workspace_id = $5 AND org_id = $6",
-        )
-        .bind(batch.new_state())
-        .bind(new_version as i64)
-        .bind(now)
-        .bind(&id)
-        .bind(&batch.scope().workspace_id)
-        .bind(&batch.scope().org_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(conn_err)?;
-
-        let next_seq: i64 = sqlx::query(
-            "SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM port_execution_journal \
-             WHERE execution_id = $1",
-        )
-        .bind(&id)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(conn_err)?
-        .try_get("next")
-        .map_err(conn_err)?;
-        for (offset, je) in batch.journal().iter().enumerate() {
-            sqlx::query(
-                "INSERT INTO port_execution_journal (execution_id, seq, payload) \
-                 VALUES ($1, $2, $3)",
-            )
-            .bind(&id)
-            .bind(next_seq + offset as i64)
-            .bind(&je.payload)
-            .execute(&mut *tx)
-            .await
-            .map_err(conn_err)?;
-        }
-
-        for msg in batch.outbox() {
-            let resume_target_json: Option<String> = msg
-                .resume_target
-                .as_ref()
-                .map(serde_json::to_string)
-                .transpose()
-                .map_err(|e| StorageError::Serialization(e.to_string()))?;
-            sqlx::query(
-                "INSERT INTO port_control_queue \
-                 (id, execution_id, workspace_id, org_id, command, status, \
-                  w3c_traceparent, reclaim_count, resume_target) \
-                 VALUES ($1, $2, $3, $4, $5, 'Pending', $6, $7, $8)",
-            )
-            .bind(msg.id.as_slice())
-            .bind(&msg.execution_id)
-            .bind(&msg.scope.workspace_id)
-            .bind(&msg.scope.org_id)
-            .bind(msg.command.as_str())
-            .bind(msg.w3c_traceparent.as_deref())
-            .bind(i32::try_from(msg.reclaim_count).unwrap_or(i32::MAX))
-            .bind(resume_target_json)
-            .execute(&mut *tx)
-            .await
-            .map_err(conn_err)?;
-        }
-
-        // W-S3c: insert resume-token rows in the same transaction as the
-        // state/outbox/journal writes.  ON CONFLICT(execution_id, node_key)
-        // DO NOTHING ensures a crash re-drive that re-parks the same node
-        // does NOT mint a duplicate live token.
-        for token_row in batch.resume_tokens() {
-            let wait_kind_str = serde_json::to_value(&token_row.wait_kind)
-                .map_err(|e| StorageError::Serialization(e.to_string()))?
-                .as_str()
-                .ok_or_else(|| {
-                    StorageError::Serialization("wait_kind serialized to non-string".into())
-                })?
-                .to_owned();
-            // Postgres TIMESTAMPTZ: parse the RFC 3339 string the engine
-            // produced and bind as a typed DateTime<Utc>.
-            let created_at = DateTime::parse_from_rfc3339(&token_row.created_at)
-                .map(|dt| dt.with_timezone(&Utc))
-                .map_err(|e| StorageError::Serialization(format!("created_at parse error: {e}")))?;
-            let expires_at = token_row
-                .expires_at
-                .as_deref()
-                .map(DateTime::parse_from_rfc3339)
-                .transpose()
-                .map_err(|e| StorageError::Serialization(format!("expires_at parse error: {e}")))?
-                .map(|dt| dt.with_timezone(&Utc));
-
-            sqlx::query(
-                "INSERT INTO port_resume_tokens \
-                 (token_hash, workspace_id, org_id, execution_id, node_key, \
-                  wait_kind, callback_label, created_at, expires_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
-                 ON CONFLICT (execution_id, node_key) DO NOTHING",
-            )
-            .bind(token_row.token_hash.as_bytes())
-            .bind(&token_row.scope.workspace_id)
-            .bind(&token_row.scope.org_id)
-            .bind(&token_row.execution_id)
-            .bind(&token_row.node_key)
-            .bind(&wait_kind_str)
-            .bind(&token_row.callback_label)
-            .bind(created_at)
-            .bind(expires_at)
-            .execute(&mut *tx)
-            .await
-            .map_err(conn_err)?;
-        }
-
-        if let Some(transition) = batch.reference_transition() {
-            let reference_row = sqlx::query(
-                "SELECT reference_state, rollback_window_id, retain_until_ms \
-                 FROM port_execution_revision_refs WHERE execution_id = $1",
-            )
-            .bind(&id)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(conn_err)?;
-
-            // A missing row is a legacy execution that predates materialized
-            // starts; terminal transitions on it are a no-op. An existing row
-            // in an incompatible lifecycle must fail the whole commit.
-            if let Some(reference_row) = reference_row {
-                let state: String = reference_row.try_get("reference_state").map_err(conn_err)?;
-                match transition {
-                    nebula_storage_port::ExecutionReferenceTransition::ReleaseLive => {
-                        match state.as_str() {
-                            "live" => {
-                                sqlx::query(
-                                    "UPDATE port_execution_revision_refs \
-                                     SET reference_state = 'released', rollback_window_id = NULL, \
-                                         retain_until_ms = NULL \
-                                     WHERE execution_id = $1 AND reference_state = 'live'",
-                                )
-                                .bind(&id)
-                                .execute(&mut *tx)
-                                .await
-                                .map_err(conn_err)?;
-                            },
-                            "released" => {
-                                let window: Option<Vec<u8>> = reference_row
-                                    .try_get("rollback_window_id")
-                                    .map_err(conn_err)?;
-                                if window.is_some() {
-                                    tx.rollback().await.map_err(conn_err)?;
-                                    return Err(StorageError::Internal(format!(
-                                        "terminal dereference: execution {id} reference is \
-                                         released from a rollback window"
-                                    )));
-                                }
-                            },
-                            _ => {
-                                tx.rollback().await.map_err(conn_err)?;
-                                return Err(StorageError::Internal(format!(
-                                    "terminal dereference: execution {id} reference is in \
-                                     incompatible state {state}"
-                                )));
-                            },
-                        }
-                    },
-                    nebula_storage_port::ExecutionReferenceTransition::RetainRollback {
-                        window_id,
-                        retain_until,
-                    } => {
-                        let stored_window: Option<Vec<u8>> = reference_row
-                            .try_get("rollback_window_id")
-                            .map_err(conn_err)?;
-                        let stored_until: Option<i64> =
-                            reference_row.try_get("retain_until_ms").map_err(conn_err)?;
-                        match state.as_str() {
-                            "live" => {
-                                sqlx::query(
-                                    "UPDATE port_execution_revision_refs \
-                                     SET reference_state = 'rollback', rollback_window_id = $1, \
-                                         retain_until_ms = $2 \
-                                     WHERE execution_id = $3 AND reference_state = 'live'",
-                                )
-                                .bind(window_id.as_slice())
-                                .bind(retain_until.timestamp_millis())
-                                .bind(&id)
-                                .execute(&mut *tx)
-                                .await
-                                .map_err(conn_err)?;
-                            },
-                            "rollback"
-                                if stored_window.as_deref() == Some(window_id.as_slice())
-                                    && stored_until == Some(retain_until.timestamp_millis()) => {},
-                            _ => {
-                                tx.rollback().await.map_err(conn_err)?;
-                                return Err(StorageError::Internal(format!(
-                                    "terminal dereference: execution {id} reference is in \
-                                     incompatible state {state}"
-                                )));
-                            },
-                        }
-                    },
-                }
-            }
-        }
-
+        let outcome = commit_locked(&mut tx, &batch).await?;
         tx.commit().await.map_err(conn_err)?;
-        tracing::debug!(
-            target: "nebula_storage::postgres",
-            execution_id = %id,
-            new_version,
-            "commit applied (state + outbox + journal + resume_tokens + reference_transition in one tx)"
-        );
-        Ok(TransitionOutcome::Applied { new_version })
+        Ok(outcome)
     }
 
     async fn acquire_lease(
@@ -527,10 +288,12 @@ impl ExecutionStore for PgExecutionStore {
 
     async fn list_all_running(&self) -> Result<Vec<ExecutionRecord>, StorageError> {
         let rows = sqlx::query(
-            "SELECT id, workspace_id, org_id, workflow_id, status, state, version, \
+            "SELECT id, workspace_id, org_id, workflow_id, status, \
+                    CASE WHEN octet_length(state::text) <= $1 THEN state END AS state, version, \
                     lease_holder, fencing_generation, created_at, updated_at \
              FROM port_executions",
         )
+        .bind(crate::execution_state::MAX_PERSISTED_EXECUTION_STATE_BYTES)
         .fetch_all(&self.pool)
         .await
         .map_err(conn_err)?;
@@ -547,7 +310,10 @@ impl ExecutionStore for PgExecutionStore {
                     ),
                     version: row.try_get::<i64, _>("version").map_err(conn_err)? as u64,
                     status: row.try_get("status").map_err(conn_err)?,
-                    state: row.try_get("state").map_err(conn_err)?,
+                    state: row
+                        .try_get::<Option<serde_json::Value>, _>("state")
+                        .map_err(conn_err)?
+                        .ok_or_else(crate::execution_state::oversized_execution_state)?,
                     lease_holder: row.try_get("lease_holder").map_err(conn_err)?,
                     fencing: Some(
                         row.try_get::<i64, _>("fencing_generation")
@@ -636,6 +402,274 @@ impl PgIdempotencyGuard {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
+}
+
+async fn apply_reference_transition(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    id: &str,
+    transition: nebula_storage_port::ExecutionReferenceTransition,
+) -> Result<(), StorageError> {
+    let reference_row = sqlx::query(
+        "SELECT reference_state, rollback_window_id, retain_until_ms \
+         FROM port_execution_revision_refs WHERE execution_id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(conn_err)?;
+
+    // A missing row is a legacy execution that predates materialized
+    // starts; terminal transitions on it are a no-op. An existing row
+    // in an incompatible lifecycle must fail the whole commit.
+    if let Some(reference_row) = reference_row {
+        let state: String = reference_row.try_get("reference_state").map_err(conn_err)?;
+        match transition {
+            nebula_storage_port::ExecutionReferenceTransition::ReleaseLive => {
+                match state.as_str() {
+                    "live" => {
+                        sqlx::query(
+                            "UPDATE port_execution_revision_refs \
+                             SET reference_state = 'released', rollback_window_id = NULL, \
+                                 retain_until_ms = NULL \
+                             WHERE execution_id = $1 AND reference_state = 'live'",
+                        )
+                        .bind(id)
+                        .execute(&mut **tx)
+                        .await
+                        .map_err(conn_err)?;
+                    },
+                    "released" => {
+                        let window: Option<Vec<u8>> = reference_row
+                            .try_get("rollback_window_id")
+                            .map_err(conn_err)?;
+                        if window.is_some() {
+                            return Err(StorageError::Internal(format!(
+                                "terminal dereference: execution {id} reference is \
+                                 released from a rollback window"
+                            )));
+                        }
+                    },
+                    _ => {
+                        return Err(StorageError::Internal(format!(
+                            "terminal dereference: execution {id} reference is in \
+                             incompatible state {state}"
+                        )));
+                    },
+                }
+            },
+            nebula_storage_port::ExecutionReferenceTransition::RetainRollback {
+                window_id,
+                retain_until,
+            } => {
+                let stored_window: Option<Vec<u8>> = reference_row
+                    .try_get("rollback_window_id")
+                    .map_err(conn_err)?;
+                let stored_until: Option<i64> =
+                    reference_row.try_get("retain_until_ms").map_err(conn_err)?;
+                match state.as_str() {
+                    "live" => {
+                        sqlx::query(
+                            "UPDATE port_execution_revision_refs \
+                             SET reference_state = 'rollback', rollback_window_id = $1, \
+                                 retain_until_ms = $2 \
+                             WHERE execution_id = $3 AND reference_state = 'live'",
+                        )
+                        .bind(window_id.as_slice())
+                        .bind(retain_until.timestamp_millis())
+                        .bind(id)
+                        .execute(&mut **tx)
+                        .await
+                        .map_err(conn_err)?;
+                    },
+                    "rollback"
+                        if stored_window.as_deref() == Some(window_id.as_slice())
+                            && stored_until == Some(retain_until.timestamp_millis()) => {},
+                    _ => {
+                        return Err(StorageError::Internal(format!(
+                            "terminal dereference: execution {id} reference is in \
+                             incompatible state {state}"
+                        )));
+                    },
+                }
+            },
+        }
+    }
+
+    Ok(())
+}
+
+pub(super) async fn commit_locked(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    batch: &TransitionBatch,
+) -> Result<TransitionOutcome, StorageError> {
+    crate::execution_state::ensure_execution_state_size(batch.new_state())?;
+    let id = batch.execution_id().to_string();
+
+    let row = sqlx::query(
+        "SELECT version, fencing_generation FROM port_executions \
+         WHERE id = $1 AND workspace_id = $2 AND org_id = $3 FOR UPDATE",
+    )
+    .bind(&id)
+    .bind(&batch.scope().workspace_id)
+    .bind(&batch.scope().org_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(conn_err)?;
+
+    let Some(row) = row else {
+        return Ok(TransitionOutcome::VersionConflict { actual: 0 });
+    };
+    let cur_version = row.try_get::<i64, _>("version").map_err(conn_err)? as u64;
+    let cur_gen = row
+        .try_get::<i64, _>("fencing_generation")
+        .map_err(conn_err)? as u64;
+
+    if batch.fencing().generation() != cur_gen {
+        tracing::warn!(
+            target: "nebula_storage::postgres",
+            execution_id = %id,
+            caller_generation = batch.fencing().generation(),
+            current_generation = cur_gen,
+            "commit fenced out: caller token superseded"
+        );
+        return Ok(TransitionOutcome::FencedOut);
+    }
+    if cur_version != batch.expected_version() {
+        return Ok(TransitionOutcome::VersionConflict {
+            actual: cur_version,
+        });
+    }
+
+    let new_version = cur_version
+        .checked_add(1)
+        .filter(|value| i64::try_from(*value).is_ok())
+        .ok_or_else(|| StorageError::Internal("execution version exhausted".into()))?;
+    let now = Utc::now();
+    let update = sqlx::query(
+        "UPDATE port_executions SET state = $1, version = $2, updated_at = $3 \
+         WHERE id = $4 AND workspace_id = $5 AND org_id = $6 \
+           AND octet_length($1::jsonb::text) <= $7",
+    )
+    .bind(batch.new_state())
+    .bind(new_version as i64)
+    .bind(now)
+    .bind(&id)
+    .bind(&batch.scope().workspace_id)
+    .bind(&batch.scope().org_id)
+    .bind(crate::execution_state::MAX_PERSISTED_EXECUTION_STATE_BYTES)
+    .execute(&mut **tx)
+    .await
+    .map_err(conn_err)?;
+    if update.rows_affected() != 1 {
+        return Err(crate::execution_state::oversized_execution_state());
+    }
+
+    let next_seq: i64 = sqlx::query(
+        "SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM port_execution_journal \
+         WHERE execution_id = $1",
+    )
+    .bind(&id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(conn_err)?
+    .try_get("next")
+    .map_err(conn_err)?;
+    for (offset, je) in batch.journal().iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO port_execution_journal (execution_id, seq, payload) \
+             VALUES ($1, $2, $3)",
+        )
+        .bind(&id)
+        .bind(next_seq + offset as i64)
+        .bind(&je.payload)
+        .execute(&mut **tx)
+        .await
+        .map_err(conn_err)?;
+    }
+
+    for msg in batch.outbox() {
+        let resume_target_json: Option<String> = msg
+            .resume_target
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| StorageError::Serialization(e.to_string()))?;
+        sqlx::query(
+            "INSERT INTO port_control_queue \
+             (id, execution_id, workspace_id, org_id, command, status, \
+              w3c_traceparent, reclaim_count, resume_target) \
+             VALUES ($1, $2, $3, $4, $5, 'Pending', $6, $7, $8)",
+        )
+        .bind(msg.id.as_slice())
+        .bind(&msg.execution_id)
+        .bind(&msg.scope.workspace_id)
+        .bind(&msg.scope.org_id)
+        .bind(msg.command.as_str())
+        .bind(msg.w3c_traceparent.as_deref())
+        .bind(i32::try_from(msg.reclaim_count).unwrap_or(i32::MAX))
+        .bind(resume_target_json)
+        .execute(&mut **tx)
+        .await
+        .map_err(conn_err)?;
+    }
+
+    // Insert resume-token rows in the same transaction as the
+    // state/outbox/journal writes.  ON CONFLICT(execution_id, node_key)
+    // DO NOTHING ensures a crash re-drive that re-parks the same node
+    // does NOT mint a duplicate live token.
+    for token_row in batch.resume_tokens() {
+        let wait_kind_str = serde_json::to_value(&token_row.wait_kind)
+            .map_err(|e| StorageError::Serialization(e.to_string()))?
+            .as_str()
+            .ok_or_else(|| {
+                StorageError::Serialization("wait_kind serialized to non-string".into())
+            })?
+            .to_owned();
+        // Postgres TIMESTAMPTZ: parse the RFC 3339 string the engine
+        // produced and bind as a typed DateTime<Utc>.
+        let created_at = DateTime::parse_from_rfc3339(&token_row.created_at)
+            .map(|dt| dt.with_timezone(&Utc))
+            .map_err(|e| StorageError::Serialization(format!("created_at parse error: {e}")))?;
+        let expires_at = token_row
+            .expires_at
+            .as_deref()
+            .map(DateTime::parse_from_rfc3339)
+            .transpose()
+            .map_err(|e| StorageError::Serialization(format!("expires_at parse error: {e}")))?
+            .map(|dt| dt.with_timezone(&Utc));
+
+        sqlx::query(
+            "INSERT INTO port_resume_tokens \
+             (token_hash, workspace_id, org_id, execution_id, node_key, \
+              wait_kind, callback_label, created_at, expires_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+             ON CONFLICT (execution_id, node_key) DO NOTHING",
+        )
+        .bind(token_row.token_hash.as_bytes())
+        .bind(&token_row.scope.workspace_id)
+        .bind(&token_row.scope.org_id)
+        .bind(&token_row.execution_id)
+        .bind(&token_row.node_key)
+        .bind(&wait_kind_str)
+        .bind(&token_row.callback_label)
+        .bind(created_at)
+        .bind(expires_at)
+        .execute(&mut **tx)
+        .await
+        .map_err(conn_err)?;
+    }
+
+    if let Some(transition) = batch.reference_transition() {
+        apply_reference_transition(tx, &id, transition).await?;
+    }
+
+    tracing::debug!(
+        target: "nebula_storage::postgres",
+        execution_id = %id,
+        new_version,
+        "commit applied (state + outbox + journal + resume_tokens + reference_transition in one tx)"
+    );
+    Ok(TransitionOutcome::Applied { new_version })
 }
 
 #[async_trait::async_trait]

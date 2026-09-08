@@ -10,12 +10,12 @@
 //! arbitrary `&Scope` — a cross-tenant read on `get`/`list` and a
 //! cross-tenant write on `create`/`update`/`soft_delete` (BOLA / IDOR).
 //!
-//! The single defence against *regression* is a static enumeration: this
-//! file binds every `&Scope`-keyed trait to its decorator via a generic
+//! This hand-maintained audit list binds each known `&Scope`-keyed trait
+//! to its decorator via a generic
 //! `assert_scoped::<Decorator, dyn PortTrait>()` that only type-checks
-//! when the decorator implements that exact port trait. Adding a new
-//! `&Scope`-keyed port without a decorator makes this test fail to
-//! compile — the regression cannot land silently.
+//! when the decorator implements that exact port trait. Rust cannot
+//! enumerate traits from another crate, so reviewers must update this list
+//! whenever a storage-port capability changes.
 //!
 //! Parent-id-keyed identity stores (no `&Scope` in the signature) are a
 //! *different* authorization model and are deliberately enumerated in the
@@ -25,14 +25,17 @@
 use std::sync::Arc;
 
 use nebula_storage_port::store::{
-    ControlQueue, ExecutionJournalReader, ExecutionStore, IdempotencyStore, NodeResultStore,
-    ResourceStore, ResumeTokenStore, TriggerStore, WebhookActivationStore, WorkflowStore,
+    ControlQueue, ExecutionJournalReader, ExecutionStore, ExecutionTurnHandoff, IdempotencyStore,
+    NodeResultStore, OperationLedger, OperationLedgerAdjudicator, ResourceStore, ResumeTokenStore,
+    StartAcceptanceStore, TriggerStore, WebhookActivationStore, WorkflowStore,
     WorkflowVersionStore,
 };
 use nebula_storage_port::{Scope, StorageError};
 use nebula_tenancy::{
-    ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore, ScopedIdempotencyStore,
-    ScopedNodeResultStore, ScopedResourceStore, ScopedResumeTokenStore, ScopedTriggerStore,
+    ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore,
+    ScopedExecutionTurnHandoff, ScopedIdempotencyStore, ScopedNodeResultStore,
+    ScopedOperationLedger, ScopedOperationLedgerAdjudicator, ScopedResourceStore,
+    ScopedResumeTokenStore, ScopedStartAcceptanceStore, ScopedTriggerStore,
     ScopedWebhookActivationStore, ScopedWorkflowStore, ScopedWorkflowVersionStore,
 };
 
@@ -93,13 +96,16 @@ scope_decorator!(ScopedWebhookActivationStore, WebhookActivationStore);
 scope_decorator!(ScopedResourceStore, ResourceStore);
 scope_decorator!(ScopedResumeTokenStore, ResumeTokenStore);
 scope_decorator!(ScopedTriggerStore, TriggerStore);
+scope_decorator!(ScopedOperationLedger, OperationLedger);
+scope_decorator!(ScopedOperationLedgerAdjudicator, OperationLedgerAdjudicator);
+scope_decorator!(ScopedStartAcceptanceStore, StartAcceptanceStore);
+scope_decorator!(ScopedExecutionTurnHandoff, ExecutionTurnHandoff);
 
-/// Static enumeration of **every** `&Scope`-keyed port trait. Each line
-/// is a compile-time assertion that the firewall covers that trait. To
-/// add a new `&Scope`-keyed port you MUST add it here *and* ship its
-/// decorator, or this test will not compile.
+/// Reviewed inventory of known `&Scope`-keyed port traits. Each line is a
+/// compile-time assertion that the listed port has its scope decorator.
+/// Reviewers must add newly introduced scoped ports to this inventory.
 #[test]
-fn every_scope_keyed_port_has_a_decorator() {
+fn listed_scope_keyed_ports_have_decorators() {
     // Atomic execution unit (§12.2): create/get/lease/commit all `&Scope`.
     assert_scoped::<ScopedExecutionStore, dyn ExecutionStore>();
     // Workflow + version split: row carries an embedded `Scope` (rebound).
@@ -121,6 +127,10 @@ fn every_scope_keyed_port_has_a_decorator() {
     // Resume-token revocation is scope-keyed (`revoke_on_terminal` takes
     // `&Scope`); consume has no scope parameter by design (hash = only key).
     assert_scoped::<ScopedResumeTokenStore, dyn ResumeTokenStore>();
+    assert_scoped::<ScopedOperationLedger, dyn OperationLedger>();
+    assert_scoped::<ScopedOperationLedgerAdjudicator, dyn OperationLedgerAdjudicator>();
+    assert_scoped::<ScopedStartAcceptanceStore, dyn StartAcceptanceStore>();
+    assert_scoped::<ScopedExecutionTurnHandoff, dyn ExecutionTurnHandoff>();
 }
 
 /// Decision record for the identity-zoo traits that are **not**

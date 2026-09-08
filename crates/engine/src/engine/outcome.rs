@@ -85,6 +85,11 @@ pub(super) enum RetryDecision {
 /// shadow the inner action error's real retryability and stop a legitimately
 /// retryable action error from retrying.
 pub(super) fn error_is_terminal(err: &EngineError) -> bool {
+    if matches!(err, EngineError::Effect(_)) {
+        // The effect driver owns bounded retries under the original operation.
+        // A generic node retry cannot create additional invocation authority.
+        return true;
+    }
     match err.as_action_error() {
         Some(action_err) => action_err.is_fatal(),
         None => !nebula_error::Classify::is_retryable(err),
@@ -255,6 +260,9 @@ pub(super) fn apply_failure_recovery(
     exec_state: &mut ExecutionState,
     outputs: &Arc<DashMap<NodeKey, serde_json::Value>>,
 ) -> Result<(), EngineError> {
+    if let Some(state) = exec_state.node_states.get_mut(&node_key) {
+        state.current_output = None;
+    }
     if outcome == FailureOutcome::Recover {
         exec_state.override_node_state(node_key.clone(), NodeState::Completed)?;
         if let Some(ns) = exec_state.node_states.get_mut(&node_key) {
@@ -312,6 +320,7 @@ pub(super) fn route_failure_edges(
             None
         },
         FailureOutcome::Fail => {
+            outputs.remove(&node_key);
             // Evaluate outgoing edges as a failure: OnError handlers,
             // if any, are activated; otherwise edges are resolved
             // without activation so dependents get Skipped.
@@ -333,13 +342,15 @@ pub(super) fn route_failure_edges(
                 // payload is durably captured so a resumed OnError
                 // successor can read it from persisted state via
                 // `load_all_outputs` (#297 review / Copilot).
-                outputs.insert(
-                    node_key.clone(),
-                    serde_json::json!({
-                        "error": error_msg,
-                        "node_id": node_key.to_string(),
-                    }),
-                );
+                let payload = nebula_workflow::ErrorPortPayload {
+                    error: error_msg.to_owned(),
+                    node_id: node_key.to_string(),
+                };
+                let encoded = match serde_json::to_value(payload) {
+                    Ok(encoded) => encoded,
+                    Err(_) => return Some("error port payload encoding failed".to_owned()),
+                };
+                outputs.insert(node_key, encoded);
                 return None;
             }
 

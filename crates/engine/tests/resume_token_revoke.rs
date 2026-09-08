@@ -1,7 +1,7 @@
 //! Engine integration tests for W-S3e — revoke resume tokens on terminal
 //! transition (ADR-0099).
 //!
-//! W-S3c mints a resume token, atomically, in the same `TransitionBatch` that
+//! The engine mints a resume token atomically in the same `TransitionBatch` that
 //! writes a node's `Waiting` snapshot (mint-on-park). W-S3e wires the
 //! *cleanup* side: when the parked execution reaches a terminal state, the
 //! engine calls [`ResumeTokenStore::revoke_on_terminal`] at both terminal
@@ -28,6 +28,10 @@
 //! purged on terminal → the post-terminal `token_count_for_test == 0`
 //! assertion fails (count stays 1) → RED.
 
+mod exact_fixture;
+#[path = "exact_fixture/qualified_runtime.rs"]
+mod qualified_runtime;
+
 use std::{
     collections::HashMap,
     sync::{
@@ -53,6 +57,7 @@ use nebula_engine::{
 };
 use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_metrics::MetricsRegistry;
+use nebula_storage::inmem::InMemoryTurnHandoff;
 use nebula_storage::{
     InMemoryExecutionStore, InMemoryResumeTokenStore, InMemoryWorkflowVersionStore,
 };
@@ -380,6 +385,7 @@ impl ResumeTokenStore for FailingRevokeStore {
 /// tokens the engine mints at park are observable from the test via
 /// [`InMemoryResumeTokenStore::token_count_for_test`].
 struct RevokeHarness {
+    exact: qualified_runtime::QualifiedRuntime,
     dispatch: EngineControlDispatch,
     execution: Arc<InMemoryExecutionStore>,
     versions: Arc<InMemoryWorkflowVersionStore>,
@@ -408,6 +414,7 @@ impl RevokeHarness {
             EchoNode,
         );
 
+        let exact = qualified_runtime::QualifiedRuntime::new(&registry);
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
         });
@@ -426,9 +433,6 @@ impl RevokeHarness {
         let execution = Arc::new(InMemoryExecutionStore::new());
         let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&execution));
         let versions = Arc::new(InMemoryWorkflowVersionStore::new());
-        let workflow = Arc::new(nebula_storage::InMemoryWorkflowStore::new_with_versions(
-            &versions,
-        ));
 
         let resume_tokens =
             resume_tokens.unwrap_or_else(|| Arc::new(execution.resume_token_store()));
@@ -440,21 +444,28 @@ impl RevokeHarness {
             checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
             idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
             resume_tokens,
+            operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(
+                &execution,
+            )),
         };
-        let workflow_stores = nebula_engine::WorkflowStores {
-            workflow,
-            versions: versions.clone(),
-        };
-
         let engine = Arc::new(
-            WorkflowEngine::new(runtime, metrics)
-                .unwrap()
-                .with_execution_stores(execution_stores)
-                .with_workflow_stores(workflow_stores),
+            exact.attach(
+                WorkflowEngine::new(runtime, metrics)
+                    .unwrap()
+                    .with_execution_stores(execution_stores),
+                &execution,
+            ),
         );
-        let dispatch = EngineControlDispatch::new(Arc::clone(&engine), execution.clone());
+        let dispatch = EngineControlDispatch::new(
+            Arc::clone(&engine),
+            execution.clone(),
+            Arc::new(InMemoryTurnHandoff::new(&execution)),
+            "resume-token-revoke-control".to_owned(),
+            Duration::from_secs(30),
+        );
 
         Self {
+            exact,
             dispatch,
             execution,
             versions,
@@ -485,6 +496,7 @@ impl RevokeHarness {
             EchoNode,
         );
 
+        let exact = qualified_runtime::QualifiedRuntime::new(&registry);
         let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
             Box::pin(async move { Ok(ActionResult::success(input)) })
         });
@@ -503,9 +515,6 @@ impl RevokeHarness {
         let execution = Arc::new(InMemoryExecutionStore::new());
         let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&execution));
         let versions = Arc::new(InMemoryWorkflowVersionStore::new());
-        let workflow = Arc::new(nebula_storage::InMemoryWorkflowStore::new_with_versions(
-            &versions,
-        ));
 
         let interceptor = Arc::new(ArmableConflictStore::new(Arc::clone(&execution)));
         let resume_tokens = Arc::new(execution.resume_token_store());
@@ -518,26 +527,30 @@ impl RevokeHarness {
             checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
             idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
             resume_tokens,
+            operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(
+                &execution,
+            )),
         };
-        let workflow_stores = nebula_engine::WorkflowStores {
-            workflow,
-            versions: versions.clone(),
-        };
-
         let engine = Arc::new(
-            WorkflowEngine::new(runtime, metrics)
-                .unwrap()
-                .with_execution_stores(execution_stores)
-                .with_workflow_stores(workflow_stores),
+            exact.attach(
+                WorkflowEngine::new(runtime, metrics)
+                    .unwrap()
+                    .with_execution_stores(execution_stores),
+                &execution,
+            ),
         );
         // EngineControlDispatch reads status from the interceptor so it sees the
         // same row version the engine CAS'd against.
         let dispatch = EngineControlDispatch::new(
             Arc::clone(&engine),
             Arc::clone(&interceptor) as Arc<dyn ExecutionStore>,
+            Arc::new(InMemoryTurnHandoff::new(&execution)),
+            "resume-token-conflict-control".to_owned(),
+            Duration::from_secs(30),
         );
 
         let harness = Self {
+            exact,
             dispatch,
             execution,
             versions,
@@ -586,6 +599,7 @@ impl RevokeHarness {
             .create(
                 &nebula_engine::store_seam::single_tenant_scope(),
                 WorkflowVersionRecord {
+                    activation: None,
                     workflow_id: workflow_id.to_string(),
                     number: 0,
                     published: true,
@@ -603,16 +617,14 @@ impl RevokeHarness {
         let execution_id = ExecutionId::new();
         let mut exec_state = ExecutionState::new(execution_id, workflow_id, &[]);
         exec_state.set_workflow_input(serde_json::json!(null));
-        let state_json = serde_json::to_value(&exec_state).unwrap();
-        self.execution
-            .create(
+        self.exact
+            .pin(
+                &self.execution,
+                self.versions.as_ref(),
                 &nebula_engine::store_seam::single_tenant_scope(),
-                &execution_id.to_string(),
-                &workflow_id.to_string(),
-                state_json,
+                &mut exec_state,
             )
-            .await
-            .unwrap();
+            .await;
         execution_id
     }
 

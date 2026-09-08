@@ -3,7 +3,9 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
-use nebula_core::{ExecutionId, NodeKey, WorkflowId};
+use nebula_core::{
+    ExecutablePlanRevisionId, ExecutionId, NodeKey, WorkerFlavorRevisionId, WorkflowId,
+};
 use nebula_workflow::NodeState;
 use serde::{Deserialize, Serialize};
 
@@ -353,18 +355,36 @@ impl Default for NodeExecutionState {
 /// The complete execution state of a running workflow.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionState {
+    /// Owner-processed replay evidence, committed atomically with this state.
+    /// Missing legacy evidence is distinct from a supported empty checkpoint.
+    #[serde(default)]
+    pub checkpoint: Option<crate::ExecutionCheckpoint>,
     /// Unique identifier for this execution.
     pub execution_id: ExecutionId,
     /// The workflow being executed.
     pub workflow_id: WorkflowId,
     /// Published workflow version number this execution started under.
     ///
-    /// Persisted so resume/re-drive reloads the same definition even if a
-    /// newer version is published while the execution is parked or crashed.
-    /// Legacy rows that predate this field fall back to the currently
-    /// published version.
+    /// Historical publication number. Durable turns execute the exact recorded
+    /// plan selected by the revision pins below, not an authoring definition
+    /// selected by this number. Legacy absence does not permit latest-version
+    /// fallback.
     #[serde(default)]
     pub workflow_version_number: Option<u32>,
+    /// Exact executable-plan revision this execution is pinned to (#974).
+    ///
+    /// Persisted so resume/re-drive loads the same plan even if the
+    /// registry is replaced. Legacy rows that predate this field deserialize
+    /// as `None`; durable turns reject missing pins before instantiating actions.
+    #[serde(default)]
+    pub executable_plan_revision_id: Option<ExecutablePlanRevisionId>,
+    /// Exact worker-flavor revision this execution is pinned to (#974).
+    ///
+    /// Persisted so resume/re-drive validates the same flavor even if the
+    /// registry is replaced. Legacy rows that predate this field
+    /// deserialize as `None`.
+    #[serde(default)]
+    pub worker_flavor_revision_id: Option<WorkerFlavorRevisionId>,
     /// Current execution status.
     pub status: ExecutionStatus,
     /// Per-node execution states.
@@ -454,7 +474,10 @@ impl ExecutionState {
         Self {
             execution_id,
             workflow_id,
+            checkpoint: Some(crate::ExecutionCheckpoint::empty_v1()),
             workflow_version_number: None,
+            executable_plan_revision_id: None,
+            worker_flavor_revision_id: None,
             status: ExecutionStatus::Created,
             node_states,
             version: 0,
@@ -469,6 +492,18 @@ impl ExecutionState {
             terminated_by: None,
             total_retries: 0,
         }
+    }
+
+    /// Attach the exact plan/flavor revision pair this execution is pinned to.
+    ///
+    /// Call once at start time, before the execution is persisted (#974).
+    pub fn set_revision_ids(
+        &mut self,
+        plan_id: ExecutablePlanRevisionId,
+        flavor_id: WorkerFlavorRevisionId,
+    ) {
+        self.executable_plan_revision_id = Some(plan_id);
+        self.worker_flavor_revision_id = Some(flavor_id);
     }
 
     /// Attach the published workflow version number this execution starts under.
@@ -1247,9 +1282,9 @@ mod tests {
         let (mut state, n1, n2) = make_state();
         // n1: a parked wait carrying a wake timer; n2: a blocked Pending node.
         {
-            let ns1 = state.node_states.get_mut(&n1).unwrap();
-            ns1.state = NodeState::Waiting;
-            ns1.next_attempt_at = Some(Utc::now());
+            let first_node_state = state.node_states.get_mut(&n1).unwrap();
+            first_node_state.state = NodeState::Waiting;
+            first_node_state.next_attempt_at = Some(Utc::now());
         }
         // n2 stays Pending (its upstream is the parked wait).
 

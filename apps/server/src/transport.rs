@@ -140,13 +140,11 @@ impl ServerTransport for WebhookIngressTransport {
         } else {
             transport
         };
-        let transport = if let Some(dedup) = state.trigger_dedup_inbox.clone() {
-            let resolver = nebula_api::transport::webhook::WebhookTransport::default_resolver();
-            let version_store = Arc::clone(&state.workflow_version_store);
-            transport.with_durable_dispatch(dedup, resolver, version_store)
-        } else {
-            transport
-        };
+        let start = state
+            .workflow_start
+            .as_ref()
+            .ok_or(TransportInitError::MissingWorkflowStart)?;
+        let transport = transport.with_durable_dispatch(Arc::clone(start));
         Ok(state.with_webhook_transport(transport))
     }
 
@@ -163,6 +161,83 @@ impl ServerTransport for WebhookIngressTransport {
             .route("/health", get(health_ok))
             .route("/ready", get(health_ok))
             .merge(webhook_transport.router()))
+    }
+}
+
+/// Activation inputs are supplied by the trusted worker deployment manifest.
+/// The server identifies the selected worker artifact set, not its own binary.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum WorkerFlavorActivationError {
+    #[error("NEBULA_WORKER_ARTIFACT_SET_DIGEST is required from the deployment manifest")]
+    MissingArtifactDigest,
+    #[error("NEBULA_WORKER_ARTIFACT_SET_DIGEST must contain 64 lowercase hexadecimal characters")]
+    InvalidArtifactDigest,
+    #[error("core plugin manifest is invalid")]
+    Manifest(#[from] nebula_plugin::ManifestError),
+    #[error("core plugin registration failed")]
+    Plugin(#[from] nebula_plugin::PluginError),
+    #[error("worker registry could not be frozen")]
+    Freeze(#[from] nebula_plugin::RegistryFreezeError),
+}
+
+pub(crate) fn worker_registry(
+    artifact_digest: Result<String, std::env::VarError>,
+) -> Result<Arc<nebula_plugin::FrozenPluginRegistry>, WorkerFlavorActivationError> {
+    let artifact_digest = match artifact_digest {
+        Ok(value) => value
+            .parse::<nebula_core::ArtifactSetDigest>()
+            .map_err(|_| WorkerFlavorActivationError::InvalidArtifactDigest)?,
+        Err(std::env::VarError::NotPresent) => {
+            return Err(WorkerFlavorActivationError::MissingArtifactDigest);
+        },
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(WorkerFlavorActivationError::InvalidArtifactDigest);
+        },
+    };
+    let plugin = nebula_plugin::ResolvedPlugin::from(nebula_plugin_core::CorePlugin::try_new()?)?;
+    let mut registry = nebula_plugin::PluginRegistry::new();
+    registry.register(Arc::new(plugin))?;
+    let frozen = registry.freeze(
+        artifact_digest,
+        nebula_plugin::RuntimeContractVersion::current(),
+    )?;
+    Ok(Arc::new(frozen))
+}
+
+#[cfg(test)]
+fn worker_flavor(
+    artifact_digest: Result<String, std::env::VarError>,
+) -> Result<nebula_plugin::WorkerFlavorContext, WorkerFlavorActivationError> {
+    let registry = worker_registry(artifact_digest)?;
+    Ok(nebula_plugin::WorkerFlavorContext::from_registry(&registry))
+}
+
+#[cfg(test)]
+mod activation_tests {
+    use super::*;
+
+    #[test]
+    fn worker_release_changes_exact_flavor_without_changing_plugin_keys() {
+        let original = worker_flavor(Ok("71".repeat(32))).expect("original release");
+        let replay = worker_flavor(Ok("71".repeat(32))).expect("same release");
+        let replacement = worker_flavor(Ok("72".repeat(32))).expect("replacement release");
+        assert_eq!(original, replay);
+        assert_eq!(original.plugin_keys(), replacement.plugin_keys());
+        assert_ne!(original.revision_id(), replacement.revision_id());
+    }
+
+    #[test]
+    fn missing_or_malformed_worker_artifact_identity_cannot_activate_dispatch() {
+        assert!(matches!(
+            worker_flavor(Err(std::env::VarError::NotPresent)),
+            Err(WorkerFlavorActivationError::MissingArtifactDigest)
+        ));
+        let error = worker_flavor(Ok("secret-canary".to_owned())).expect_err("invalid digest");
+        assert!(matches!(
+            error,
+            WorkerFlavorActivationError::InvalidArtifactDigest
+        ));
+        assert!(!format!("{error:?} {error}").contains("secret-canary"));
     }
 }
 

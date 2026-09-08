@@ -1,22 +1,24 @@
-//! NS14 diagnostic-contract evidence.
+//! Activation-diagnostic contract evidence.
 //!
 //! Every activation rejection the workspace can raise must report all five
 //! fields. Each producing crate already asserts that for its own variants; this
 //! suite is the cross-crate half — it enumerates the rejections from the
 //! workflow validator, the plan compiler, and the registry-compatibility check
-//! together, and emits one versioned report covering all of them.
+//! together. Variant fixtures exercise formatting; the observations module
+//! separately records actual inputs and boundary diagnostics.
 //!
-//! The report is written to `target/ns14/diagnostic-contract.json` so CI can
-//! retain it as evidence rather than re-deriving the claim from a passing exit
-//! code. A test that only returned green would prove the suite ran, not what it
-//! found.
+//! Raw observations are written only when the activation-diagnostics output
+//! variable names a runner-managed file. Synthetic variant checks are never
+//! emitted as evidence of an executed rejection path.
 //!
 //! This lives in `nebula-api` because it is the only crate that depends on all
 //! three producers *and* on the RFC 9457 boundary the diagnostics travel over,
 //! so a gap between what a producer reports and what a client receives fails
 //! here rather than in three places that each see one half.
 
-use std::{fs, path::PathBuf};
+mod common;
+#[path = "activation_diagnostic_contract/observations.rs"]
+mod observations;
 
 use nebula_error::{
     ActivationDiagnostics, DIAGNOSTIC_CONTRACT_REPORT_VERSION, DiagnosticContractEntry,
@@ -189,13 +191,7 @@ fn plugin_rejections() -> Vec<(&'static str, Box<dyn ActivationDiagnostics>)> {
     ]
 }
 
-fn report_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/ns14")
-        .join("diagnostic-contract.json")
-}
-
-/// Emit the versioned report and fail if any rejection is missing a field.
+/// Fail if any enumerated variant is missing a field.
 #[test]
 fn every_activation_rejection_satisfies_the_five_field_contract() {
     let mut entries = Vec::new();
@@ -209,22 +205,10 @@ fn every_activation_rejection_satisfies_the_five_field_contract() {
     let report = DiagnosticContractReport::new(entries);
     assert_eq!(report.report_version, DIAGNOSTIC_CONTRACT_REPORT_VERSION);
 
-    // Write before asserting, so a failing run still leaves the evidence that
-    // shows *which* rejections fell short.
-    let path = report_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("the report directory is creatable");
-    }
-    fs::write(
-        &path,
-        serde_json::to_vec_pretty(&report).expect("the report serializes"),
-    )
-    .expect("the report is writable");
-
     let gaps = report.incomplete();
     assert!(
         gaps.is_empty(),
-        "these rejections do not satisfy the NS14 five-field contract: {:?}",
+        "these rejections do not satisfy the five-field diagnostic contract: {:?}",
         gaps.iter()
             .map(|entry| &entry.rejection)
             .collect::<Vec<_>>()

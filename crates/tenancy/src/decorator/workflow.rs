@@ -51,6 +51,18 @@ impl ScopedWorkflowStore {
 
 #[async_trait::async_trait]
 impl WorkflowStore for ScopedWorkflowStore {
+    async fn publish_activated_version(
+        &self,
+        _scope: &Scope,
+        row: WorkflowRecord,
+        version: WorkflowVersionRecord,
+        expected_version: u64,
+    ) -> Result<(), nebula_storage_port::store::WorkflowPublicationError> {
+        self.inner
+            .publish_activated_version(&self.bound, self.rebind(row), version, expected_version)
+            .await
+    }
+
     async fn create(&self, _scope: &Scope, record: WorkflowRecord) -> Result<(), StorageError> {
         self.inner.create(&self.bound, self.rebind(record)).await
     }

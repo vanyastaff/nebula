@@ -62,6 +62,8 @@ use nebula_workflow::{
     CURRENT_SCHEMA_VERSION, Connection, NodeDefinition, Version, WorkflowConfig, WorkflowDefinition,
 };
 
+mod exact_fixture;
+
 // ── Action stubs ─────────────────────────────────────────────────────────────
 
 macro_rules! static_action_impl {
@@ -137,12 +139,12 @@ impl StatelessAction for CountingDownstream {
 // ── Shared store bundle ───────────────────────────────────────────────────────
 
 struct CrashRecoveryStores {
+    frozen: std::sync::Mutex<Option<Arc<nebula_plugin::FrozenPluginRegistry>>>,
     execution: Arc<InMemoryExecutionStore>,
     journal: Arc<nebula_storage::InMemoryJournalReader>,
     node_results: Arc<nebula_storage::InMemoryNodeResultStore>,
     checkpoints: Arc<nebula_storage::InMemoryCheckpointStore>,
     idempotency: Arc<nebula_storage::InMemoryIdempotencyGuard>,
-    workflow: Arc<nebula_storage::InMemoryWorkflowStore>,
     versions: Arc<InMemoryWorkflowVersionStore>,
 }
 
@@ -151,14 +153,13 @@ impl CrashRecoveryStores {
         let execution = Arc::new(InMemoryExecutionStore::new());
         let journal = Arc::new(nebula_storage::InMemoryJournalReader::new(&execution));
         let versions = InMemoryWorkflowVersionStore::new();
-        let workflow = nebula_storage::InMemoryWorkflowStore::new_with_versions(&versions);
         Self {
+            frozen: std::sync::Mutex::new(None),
             execution,
             journal,
             node_results: Arc::new(nebula_storage::InMemoryNodeResultStore::new()),
             checkpoints: Arc::new(nebula_storage::InMemoryCheckpointStore::new()),
             idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
-            workflow: Arc::new(workflow),
             versions: Arc::new(versions),
         }
     }
@@ -171,20 +172,14 @@ impl CrashRecoveryStores {
             checkpoints: self.checkpoints.clone(),
             idempotency: self.idempotency.clone(),
             resume_tokens: Arc::new(self.execution.resume_token_store()),
-        }
-    }
-
-    fn workflow_stores(&self) -> nebula_engine::WorkflowStores {
-        nebula_engine::WorkflowStores {
-            workflow: self.workflow.clone(),
-            versions: self.versions.clone(),
+            operation_ledger: Arc::new(nebula_storage::inmem::InMemoryOperationLedger::new(
+                &self.execution,
+            )),
         }
     }
 
     fn attach(&self, engine: WorkflowEngine) -> WorkflowEngine {
-        engine
-            .with_execution_stores(self.execution_stores())
-            .with_workflow_stores(self.workflow_stores())
+        engine.with_execution_stores(self.execution_stores())
     }
 
     async fn save_workflow(&self, wf: &WorkflowDefinition) {
@@ -192,6 +187,7 @@ impl CrashRecoveryStores {
             .create(
                 &nebula_engine::store_seam::single_tenant_scope(),
                 WorkflowVersionRecord {
+                    activation: None,
                     workflow_id: wf.id.to_string(),
                     number: 0,
                     published: true,
@@ -207,15 +203,32 @@ impl CrashRecoveryStores {
         let execution_id = ExecutionId::new();
         let mut exec_state = ExecutionState::new(execution_id, workflow_id, &[]);
         exec_state.set_workflow_input(serde_json::json!(null));
-        self.execution
-            .create(
+        let frozen = self
+            .frozen
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("fixture engine configured before admission");
+        let record = self
+            .versions
+            .get(
                 &nebula_engine::store_seam::single_tenant_scope(),
-                &execution_id.to_string(),
                 &workflow_id.to_string(),
-                serde_json::to_value(&exec_state).unwrap(),
+                0,
             )
             .await
+            .unwrap()
             .unwrap();
+        let workflow =
+            serde_json::from_str(&serde_json::to_string(&record.definition).unwrap()).unwrap();
+        exact_fixture::materialize_state(
+            &self.execution,
+            &nebula_engine::store_seam::single_tenant_scope(),
+            &frozen,
+            &workflow,
+            &mut exec_state,
+        )
+        .await;
         execution_id
     }
 
@@ -277,7 +290,11 @@ fn build_registry(
     registry
 }
 
-fn make_engine(registry: Arc<ActionRegistry>) -> WorkflowEngine {
+fn make_engine(stores: &CrashRecoveryStores, registry: Arc<ActionRegistry>) -> WorkflowEngine {
+    let keys = registry.keys();
+    let actions: Vec<_> = keys.iter().map(|key| ("test", key.as_str())).collect();
+    let frozen = exact_fixture::freeze_registry(&registry, &actions);
+    *stores.frozen.lock().unwrap() = Some(Arc::clone(&frozen));
     let metrics = MetricsRegistry::new();
     let executor: ActionExecutor =
         Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
@@ -291,7 +308,17 @@ fn make_engine(registry: Arc<ActionRegistry>) -> WorkflowEngine {
         )
         .unwrap(),
     );
-    WorkflowEngine::new(runtime, metrics).unwrap()
+    WorkflowEngine::new(runtime, metrics)
+        .unwrap()
+        .with_plan_flavor_runtime(
+            Arc::new(nebula_engine::PlanFlavorRevisionLoader::new(Arc::new(
+                stores.execution.plan_flavor_catalog(),
+            ))),
+            frozen,
+            Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
+                &stores.execution,
+            )),
+        )
 }
 
 /// Workflow: `timer_node ──main──> downstream_node`.
@@ -309,14 +336,14 @@ fn build_workflow() -> WorkflowDefinition {
             NodeDefinition::new(
                 timer_node.clone(),
                 "TimerNode",
-                "core",
+                "test",
                 "test.twcr.timer_wait",
             )
             .unwrap(),
             NodeDefinition::new(
                 downstream_node.clone(),
                 "DownstreamNode",
-                "core",
+                "test",
                 "test.twcr.downstream",
             )
             .unwrap(),
@@ -365,8 +392,11 @@ async fn park_timer_then_crash(
     let engine_a = Arc::new(
         stores
             .attach(
-                make_engine(build_registry(TIMER_DURATION, downstream_invocations))
-                    .with_event_bus(event_bus),
+                make_engine(
+                    stores,
+                    build_registry(TIMER_DURATION, downstream_invocations),
+                )
+                .with_event_bus(event_bus),
             )
             .with_lease_ttl(LEASE_TTL)
             .with_lease_heartbeat_interval(HEARTBEAT),
@@ -461,10 +491,10 @@ async fn resume_execution_redrive_fires_overdue_timer() {
     // Fresh runner B (no in-process RunningEntry) re-drives directly.
     let engine_b = Arc::new(
         stores
-            .attach(make_engine(build_registry(
-                TIMER_DURATION,
-                &downstream_invocations,
-            )))
+            .attach(make_engine(
+                &stores,
+                build_registry(TIMER_DURATION, &downstream_invocations),
+            ))
             .with_lease_ttl(LEASE_TTL)
             .with_lease_heartbeat_interval(HEARTBEAT),
     );
@@ -520,10 +550,10 @@ async fn durable_timer_scanner_recovers_crashed_timer_without_resume() {
     // Waiting timer, sees the lease is free (crashed owner), and re-drives.
     let engine_b = Arc::new(
         stores
-            .attach(make_engine(build_registry(
-                TIMER_DURATION,
-                &downstream_invocations,
-            )))
+            .attach(make_engine(
+                &stores,
+                build_registry(TIMER_DURATION, &downstream_invocations),
+            ))
             .with_lease_ttl(LEASE_TTL)
             .with_lease_heartbeat_interval(HEARTBEAT),
     );

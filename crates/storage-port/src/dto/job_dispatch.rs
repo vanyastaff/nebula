@@ -2,12 +2,12 @@
 //!
 //! `JobDispatchMsg` is the durable unit of work enqueued by the emitter and
 //! pulled by the orchestrator.  The routing predicate is
-//! `required_plugins ⊆ available_plugins`: a worker may claim a job only
+//! exact flavor equality AND `required_plugins ⊆ available_plugins`: a worker may claim a job only
 //! when its advertised set is a superset of the job's `required_plugins`.
 //! `required_plugin_key` is kept as an index-friendly pre-filter (sound
 //! because the DTO invariant guarantees `required_plugins ⊇ {required_plugin_key}`).
-//! `target_flavor_sha` is a version-pin guard and is never used for routing.
 use nebula_core::PluginKey;
+use nebula_core::WorkerFlavorRevisionId;
 
 use crate::Scope;
 use crate::dto::ControlCommand;
@@ -81,8 +81,6 @@ pub struct JobDispatchMsg {
     /// A fresh ULID is never the right value here — it would defeat the dedup
     /// invariant.
     pub event_id: Option<String>,
-    /// Version-pin guard (SHA of the plugin flavor).  Not a routing key.
-    pub target_flavor_sha: String,
     /// The primary required plugin (the trigger's plugin); an element of
     /// `required_plugins`; used as the index pre-filter.
     ///
@@ -97,6 +95,10 @@ pub struct JobDispatchMsg {
     pub w3c_traceparent: Option<String>,
     /// Times this row was reclaimed back to `Pending` after a crashed runner.
     pub reclaim_count: u32,
+    /// Exact worker-flavor revision required to claim this job.
+    ///
+    /// A worker whose exact flavor does not match cannot claim the row.
+    pub required_worker_flavor_id: WorkerFlavorRevisionId,
 }
 
 impl JobDispatchMsg {
@@ -119,11 +121,11 @@ impl JobDispatchMsg {
         scope: Scope,
         payload: serde_json::Value,
         event_id: Option<impl Into<String>>,
-        target_flavor_sha: impl Into<String>,
         required_plugin_key: PluginKey,
         required_plugins: Vec<PluginKey>,
         w3c_traceparent: Option<impl Into<String>>,
         reclaim_count: u32,
+        required_worker_flavor_id: WorkerFlavorRevisionId,
     ) -> Self {
         debug_assert!(
             required_plugins.contains(&required_plugin_key),
@@ -139,11 +141,60 @@ impl JobDispatchMsg {
             scope,
             payload,
             event_id: event_id.map(Into::into),
-            target_flavor_sha: target_flavor_sha.into(),
             required_plugin_key,
             required_plugins,
             w3c_traceparent: w3c_traceparent.map(Into::into),
             reclaim_count,
+            required_worker_flavor_id,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serialized_dispatch_requires_exact_well_formed_flavor_identity() {
+        let message = JobDispatchMsg::new(
+            [1; 16],
+            "execution",
+            ControlCommand::Start,
+            Scope::new("workspace", "org"),
+            serde_json::Value::Null,
+            None::<String>,
+            "plugin".parse().unwrap(),
+            vec!["plugin".parse().unwrap()],
+            None::<String>,
+            0,
+            WorkerFlavorRevisionId::from_bytes([0x22; 32]),
+        );
+        let encoded = serde_json::to_value(&message).unwrap();
+        assert_eq!(
+            serde_json::from_str::<JobDispatchMsg>(&serde_json::to_string(&encoded).unwrap())
+                .unwrap(),
+            message
+        );
+        for invalid in [
+            serde_json::Value::Null,
+            serde_json::json!("ab"),
+            serde_json::json!("GG".repeat(32)),
+        ] {
+            let mut altered = encoded.clone();
+            altered["required_worker_flavor_id"] = invalid;
+            assert!(
+                serde_json::from_str::<JobDispatchMsg>(&serde_json::to_string(&altered).unwrap())
+                    .is_err()
+            );
+        }
+        let mut missing = encoded;
+        missing
+            .as_object_mut()
+            .unwrap()
+            .remove("required_worker_flavor_id");
+        assert!(
+            serde_json::from_str::<JobDispatchMsg>(&serde_json::to_string(&missing).unwrap())
+                .is_err()
+        );
     }
 }

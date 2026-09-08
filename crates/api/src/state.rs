@@ -13,11 +13,13 @@ use nebula_plugin::PluginRegistry;
 use nebula_storage_port::Scope;
 use nebula_storage_port::dto::WorkflowVersionRecord;
 use nebula_storage_port::store::{
-    ControlQueue, ExecutionJournalReader, ExecutionStore, NodeResultStore, StartAcceptanceStore,
-    TriggerDedupInbox, TriggerStore, WebhookActivationStore, WorkflowStore, WorkflowVersionStore,
+    ControlQueue, ExecutionJournalReader, ExecutionStore, ExecutionTurnHandoff, NodeResultStore,
+    StartAcceptanceStore, StartReservationMaintenance, TriggerStore, WebhookActivationStore,
+    WorkflowStore, WorkflowVersionStore,
 };
 use nebula_tenancy::{
-    ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore, ScopedNodeResultStore,
+    ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore,
+    ScopedExecutionTurnHandoff, ScopedNodeResultStore, ScopedStartAcceptanceStore,
     ScopedWorkflowStore, ScopedWorkflowVersionStore,
 };
 use tokio::sync::RwLock;
@@ -26,6 +28,17 @@ use crate::{
     config::JwtSecret, domain::auth::backend::AuthBackend, error::ApiError,
     middleware::IdempotencyStore, transport::webhook::WebhookTransport,
 };
+
+fn classify_workflow_read_error(error: nebula_storage_port::StorageError) -> ApiError {
+    tracing::error!(%error, "workflow storage read failed");
+    match error {
+        nebula_storage_port::StorageError::Connection(_)
+        | nebula_storage_port::StorageError::Internal(_) => {
+            ApiError::ServiceUnavailable("Workflow storage is unavailable".into())
+        },
+        _ => ApiError::Internal("Workflow storage read failed".into()),
+    }
+}
 
 // ── Port traits ──────────────────────────────────────────────────────────────
 
@@ -323,7 +336,7 @@ pub struct AppState {
     /// `format!("{}/api/v1/auth/oauth/{}/callback", public_url, provider)`.
     ///
     /// Defaults to an empty string when constructed via
-    /// [`Self::in_memory`]; the composition root (`build_state`) sets
+    /// [`Self::new`]; the composition root (`build_state`) sets
     /// it from the parsed `ApiConfig`. Empty / relative values are
     /// rejected at boot when `auth.oauth.providers` is non-empty (T2.8
     /// REQ-compose-001 Invariant 1).
@@ -382,18 +395,6 @@ pub struct AppState {
     /// When `None`, the fallback is the in-memory routing map only (tokens lost
     /// on restart — pre-ADR-0096 behaviour).
     pub webhook_activation_store: Option<Arc<dyn WebhookActivationStore>>,
-
-    /// Trigger dedup inbox for durable webhook dispatch (ADR-0095 D1, U-D1.4b).
-    ///
-    /// Shared with the orchestrator's `JobDispatchQueue` — both must wrap the
-    /// **same** underlying store so `claim_and_materialize_start` is atomic
-    /// across the dedup-guard, Created-execution-row, and Start-job writes.
-    ///
-    /// When `Some` and the activation row is `mode=Prod`, incoming webhook
-    /// events spawn durable executions via `DurableExecutionEmitter`.
-    /// When `None`, Prod-mode webhooks are rejected fail-closed (5xx) rather
-    /// than silently spawning dedup-blind.
-    pub trigger_dedup_inbox: Option<Arc<dyn TriggerDedupInbox>>,
 
     /// Optional lifecycle event bus (webhook activation — E2).
     ///
@@ -458,7 +459,17 @@ pub struct AppState {
     /// command atomic, and leave a retry free to mint a second execution. This
     /// handle owns all three writes in one commit. It must be backed by the
     /// same backend as `execution_store` and `control_queue`.
-    pub start_acceptance: Arc<dyn StartAcceptanceStore>,
+    pub(crate) start_acceptance: Arc<dyn StartAcceptanceStore>,
+    /// Atomic control-turn owner, always rebound to the authenticated tenant.
+    turn_handoff: Arc<dyn ExecutionTurnHandoff>,
+    /// Process-wide retention authority, kept separate from tenant-scoped start access.
+    start_reservation_maintenance: Arc<dyn StartReservationMaintenance>,
+
+    /// Runtime-owned compilation, exact catalog installation and atomic publication.
+    /// Activation is unavailable until the composition root supplies this capability.
+    pub workflow_activation: Option<Arc<nebula_engine::WorkflowActivationService>>,
+    /// Runtime-owned atomic start admission and original-command replay.
+    pub workflow_start: Option<Arc<nebula_engine::WorkflowStartService>>,
 
     /// Spec-16 scoped node-result port handle (per-node output reads on
     /// the outputs endpoint).
@@ -550,6 +561,39 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Bind start acceptance to one authenticated tenant.
+    #[must_use]
+    pub fn start_acceptance_scoped(&self, scope: &Scope) -> Arc<dyn StartAcceptanceStore> {
+        Arc::new(ScopedStartAcceptanceStore::new(
+            Arc::clone(&self.start_acceptance),
+            scope.clone(),
+        ))
+    }
+
+    /// Bind atomic control-turn acceptance to one authenticated tenant.
+    #[must_use]
+    pub fn turn_handoff_scoped(&self, scope: &Scope) -> Arc<dyn ExecutionTurnHandoff> {
+        Arc::new(ScopedExecutionTurnHandoff::new(
+            Arc::clone(&self.turn_handoff),
+            scope.clone(),
+        ))
+    }
+
+    /// Build the process-wide reservation retention task without exposing the
+    /// raw storage capability to request handlers.
+    #[must_use]
+    pub fn start_reservation_sweeper(
+        &self,
+        retention: std::time::Duration,
+        interval: std::time::Duration,
+    ) -> Option<crate::start_reservation_sweep::StartReservationSweeper> {
+        crate::start_reservation_sweep::StartReservationSweeper::new(
+            Arc::clone(&self.start_reservation_maintenance),
+            retention,
+            interval,
+        )
+    }
+
     /// Create new AppState with provided dependencies.
     ///
     /// `jwt_secret` is a validated [`JwtSecret`]. Obtain one from
@@ -576,6 +620,8 @@ impl AppState {
         journal_reader: Arc<dyn ExecutionJournalReader>,
         control_queue: Arc<dyn ControlQueue>,
         start_acceptance: Arc<dyn StartAcceptanceStore>,
+        turn_handoff: Arc<dyn ExecutionTurnHandoff>,
+        start_reservation_maintenance: Arc<dyn StartReservationMaintenance>,
         jwt_secret: JwtSecret,
     ) -> Self {
         Self {
@@ -597,7 +643,6 @@ impl AppState {
             idempotency_store: None,
             trigger_store: None,
             webhook_activation_store: None,
-            trigger_dedup_inbox: None,
             trigger_lifecycle_bus: None,
             webhook_secret_resolver: None,
             webhook_ctx_factory_b: None,
@@ -608,6 +653,10 @@ impl AppState {
             workflow_store,
             control_queue,
             start_acceptance,
+            turn_handoff,
+            start_reservation_maintenance,
+            workflow_activation: None,
+            workflow_start: None,
             node_result_store,
             journal_reader,
             resource_repo: None,
@@ -617,80 +666,6 @@ impl AppState {
             resume_producer: None,
             resume_handler_components: None,
         }
-    }
-
-    /// Build an `AppState` whose execution / workflow / control-queue
-    /// surface is the **in-memory storage port**: the raw
-    /// [`nebula_storage::inmem`] adapters, stored undecorated.
-    ///
-    /// This is the single source of truth for the local-first port
-    /// wiring (the composition root's `default_state` and the runnable
-    /// `api_simple_server` example both build on it, instead of each
-    /// re-deriving the six-handle stack). One shared execution-store core
-    /// backs the control queue and journal so a `commit`/`enqueue` is
-    /// observable through every reader; one workflow-version store
-    /// instance is shared between the workflow-CRUD path and the
-    /// resume/definition path so a version published via the workflow
-    /// handlers is readable through the execution accessor.
-    ///
-    /// The handles are stored **without** a `nebula-tenancy` scope
-    /// decorator: the per-request tenant `Scope` is applied by the
-    /// `AppState` accessors at call time (a fresh request-scoped
-    /// decorator per call), not baked in once at construction — the
-    /// previous "bind a fixed placeholder scope here" wiring collapsed
-    /// every tenant into one shared bucket.
-    ///
-    /// `jwt_secret` is a validated [`JwtSecret`] — this constructor adds
-    /// **no** auth bypass (it is not behind `test-util`); it only owns
-    /// the in-memory persistence wiring. Identity/credential ports
-    /// (`auth_backend`, `credential_schema`, …) are left unset and are
-    /// wired by the caller via the `with_*` builders, exactly as with
-    /// [`AppState::new`].
-    #[must_use]
-    pub fn in_memory(jwt_secret: JwtSecret) -> Self {
-        use nebula_storage::inmem::{
-            InMemoryControlQueue, InMemoryExecutionStore, InMemoryJournalReader,
-            InMemoryNodeResultStore, InMemoryStartAcceptanceStore, InMemoryTriggerDedupInbox,
-            InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
-        };
-
-        let exec_store = InMemoryExecutionStore::new();
-        let control_queue = InMemoryControlQueue::new(&exec_store);
-        let journal = InMemoryJournalReader::new(&exec_store);
-        // TriggerDedupInbox must wrap the same shared core as the control
-        // queue and journal: `claim_and_materialize_start` writes the dedup
-        // guard, the Created execution row, and the Start job atomically in
-        // one critical section — only possible when all three share the same
-        // `Arc<Mutex<SharedState>>` (atomicity contract, durable_emitter.rs:106-108).
-        // `new(&exec_store)` must be called BEFORE `Arc::new(exec_store)` moves
-        // ownership — same ordering as `InMemoryControlQueue::new` and
-        // `InMemoryJournalReader::new` above.
-        let trigger_dedup_inbox = InMemoryTriggerDedupInbox::new(&exec_store);
-        // Same shared-core requirement: `accept_keyed_start` writes the
-        // reservation, the execution row, and the Start command in one
-        // critical section, which only holds when it wraps the very core the
-        // control queue and journal read from.
-        let start_acceptance = InMemoryStartAcceptanceStore::new(&exec_store);
-        let node_results = InMemoryNodeResultStore::new();
-        // The workflow-row store shares the version store's map so
-        // `workflow_save`'s atomic `save_with_published_version` commits
-        // the row + version as one unit and the version-read path
-        // observes the same data (mirrors the shared execution core
-        // backing the control queue / journal above).
-        let workflow_versions = InMemoryWorkflowVersionStore::new();
-        let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
-
-        Self::new(
-            Arc::new(workflow_store),
-            Arc::new(workflow_versions),
-            Arc::new(exec_store),
-            Arc::new(node_results),
-            Arc::new(journal),
-            Arc::new(control_queue),
-            Arc::new(start_acceptance),
-            jwt_secret,
-        )
-        .with_trigger_dedup_inbox(Arc::new(trigger_dedup_inbox))
     }
 
     /// Read a workflow's stored definition for the caller's tenant, or
@@ -723,14 +698,14 @@ impl AppState {
         let Some(_row) = rows
             .get(scope, &id_str)
             .await
-            .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {e}")))?
+            .map_err(classify_workflow_read_error)?
         else {
             return Ok(None);
         };
         versions
             .get_published(scope, &id_str)
             .await
-            .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {e}")))
+            .map_err(classify_workflow_read_error)
     }
 
     /// Read a workflow's `(version, definition)`, or `None` if absent,
@@ -751,7 +726,7 @@ impl AppState {
         let Some(row) = rows
             .get(scope, &id_str)
             .await
-            .map_err(|e| ApiError::Internal(format!("Failed to get workflow: {e}")))?
+            .map_err(classify_workflow_read_error)?
         else {
             return Ok(None);
         };
@@ -816,6 +791,7 @@ impl AppState {
                 deleted: false,
             },
             WorkflowVersionRecord {
+                activation: None,
                 workflow_id: id_str,
                 number: ver_number,
                 published: true,
@@ -1034,8 +1010,7 @@ impl AppState {
             scope: scope.clone(),
             w3c_traceparent: w3c.as_ref().map(|c| c.traceparent().to_owned()),
             reclaim_count: 0,
-            // Untargeted Resume — the W-S3d targeted `/resume` producer builds
-            // its own targeted `ControlMsg` via
+            // The targeted `/resume` producer builds its own `ControlMsg` via
             // `ResumeProducer::consume_and_enqueue_resume` instead.
             resume_target: None,
         };
@@ -1044,88 +1019,6 @@ impl AppState {
             let unavailable = matches!(e, StorageError::Internal(_) | StorageError::Connection(_));
             to_api_err(unavailable, e.to_string())
         })
-    }
-
-    /// Accept a keyed start for the caller's tenant: reserve the key,
-    /// materialize the execution, and enqueue its Start command in one commit.
-    ///
-    /// `scope` comes from the authenticated request, so the reservation is
-    /// tenant-qualified and one tenant's key can neither collide with nor
-    /// probe another's.
-    ///
-    /// Storage failures follow the same 503-vs-500 split the control-queue
-    /// path uses — an absent or unreachable backend is infrastructure down,
-    /// anything else is a logic bug. Unlike the old split path there is no
-    /// "persisted but not dispatched" middle state to describe: the commit is
-    /// all-or-nothing, so a failure means nothing was written.
-    // guard-justified: the parameters are the acceptance's identity, its
-    // fingerprint, and the aggregate it materializes — each independent, and
-    // each already constructed separately by the single caller.
-    #[expect(clippy::too_many_arguments)]
-    pub(crate) async fn accept_keyed_start_scoped(
-        &self,
-        scope: &Scope,
-        start_key: &str,
-        fingerprint: nebula_storage_port::store::StartFingerprint,
-        execution_id: ExecutionId,
-        workflow_id: nebula_core::id::WorkflowId,
-        state_json: &serde_json::Value,
-        w3c: Option<nebula_core::W3cTraceContext>,
-    ) -> Result<nebula_storage_port::store::StartAcceptance, ApiError> {
-        let execution_text = execution_id.to_string();
-        let workflow_text = workflow_id.to_string();
-        let command = nebula_storage_port::dto::ControlMsg {
-            id: *uuid::Uuid::new_v4().as_bytes(),
-            execution_id: execution_text.clone(),
-            command: nebula_storage_port::dto::ControlCommand::Start,
-            scope: scope.clone(),
-            w3c_traceparent: w3c.as_ref().map(|c| c.traceparent().to_owned()),
-            reclaim_count: 0,
-            resume_target: None,
-        };
-        let start = nebula_storage_port::store::KeyedStart {
-            scope,
-            start_key,
-            fingerprint,
-            execution_id: &execution_text,
-            execution: nebula_storage_port::dto::NewExecution::new(&workflow_text, state_json),
-            command: &command,
-        };
-        self.start_acceptance
-            .accept_keyed_start(&start)
-            .await
-            .map_err(|e| {
-                use nebula_storage_port::StorageError;
-                if matches!(e, StorageError::Internal(_) | StorageError::Connection(_)) {
-                    ApiError::ServiceUnavailable(format!(
-                        "Start acceptance backend is unavailable; nothing was written: {e}"
-                    ))
-                } else {
-                    ApiError::Internal(format!("Failed to accept start: {e}"))
-                }
-            })
-    }
-
-    /// Create a fresh execution row for the caller's tenant — created
-    /// through a freshly bound `ScopedExecutionStore`, so it lands in
-    /// that tenant.
-    pub(crate) async fn create_execution_scoped(
-        &self,
-        scope: &Scope,
-        execution_id: ExecutionId,
-        workflow_id: nebula_core::id::WorkflowId,
-        state_json: serde_json::Value,
-    ) -> Result<(), ApiError> {
-        let store = ScopedExecutionStore::new(Arc::clone(&self.execution_store), scope.clone());
-        store
-            .create(
-                scope,
-                &execution_id.to_string(),
-                &workflow_id.to_string(),
-                state_json,
-            )
-            .await
-            .map_err(|e| ApiError::Internal(format!("Failed to create execution: {e}")))
     }
 
     /// Load all persisted per-node *outputs* for an execution within the
@@ -1190,6 +1083,26 @@ impl AppState {
     #[must_use = "builder methods must be chained or built"]
     pub fn with_action_registry(mut self, registry: Arc<ActionRegistry>) -> Self {
         self.action_registry = Some(registry);
+        self
+    }
+
+    /// Install the runtime-owned workflow activation capability.
+    #[must_use]
+    pub fn with_workflow_activation(
+        mut self,
+        service: Arc<nebula_engine::WorkflowActivationService>,
+    ) -> Self {
+        self.workflow_activation = Some(service);
+        self
+    }
+
+    /// Install the runtime owner of keyed and unkeyed starts.
+    #[must_use]
+    pub fn with_workflow_start(
+        mut self,
+        service: Arc<nebula_engine::WorkflowStartService>,
+    ) -> Self {
+        self.workflow_start = Some(service);
         self
     }
 
@@ -1348,28 +1261,6 @@ impl AppState {
         self
     }
 
-    /// Attach the trigger-dedup inbox for durable webhook dispatch (ADR-0095 D1,
-    /// U-D1.4b).
-    ///
-    /// **Atomicity requirement:** the inbox MUST share its underlying store with
-    /// the orchestrator's `JobDispatchQueue` — both must wrap the same
-    /// `Arc<Mutex<SharedState>>` (or equivalent transaction boundary) so
-    /// `claim_and_materialize_start` can write the dedup guard, the Created
-    /// execution row, and the Start job in one atomic critical section.
-    ///
-    /// [`AppState::in_memory`] wires this automatically via
-    /// `InMemoryTriggerDedupInbox::new(&exec_store)` before the exec-store is
-    /// moved into `Arc<dyn ExecutionStore>`.  Production composition roots must
-    /// supply the same atomic wiring over their chosen backend (SQLite / PG).
-    ///
-    /// When `None`, Prod-mode webhook dispatches are rejected fail-closed (5xx)
-    /// so dedup-blind spawns can never occur.
-    #[must_use = "builder methods must be chained or built"]
-    pub fn with_trigger_dedup_inbox(mut self, inbox: Arc<dyn TriggerDedupInbox>) -> Self {
-        self.trigger_dedup_inbox = Some(inbox);
-        self
-    }
-
     /// Attach a [`crate::transport::webhook::TriggerLifecycleBus`]
     /// for slug-routed activation lifecycle events (webhook activation).
     #[must_use = "builder methods must be chained or built"]
@@ -1524,12 +1415,36 @@ impl AppState {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) fn test_state_with_in_memory_stores() -> AppState {
     use nebula_storage::inmem::{
         InMemoryControlQueue, InMemoryExecutionStore, InMemoryJournalReader,
-        InMemoryNodeResultStore, InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
+        InMemoryNodeResultStore, InMemoryStartAcceptanceStore, InMemoryTurnHandoff,
+        InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
     };
 
+    let execution_store = InMemoryExecutionStore::new();
+    let control_queue = InMemoryControlQueue::new(&execution_store);
+    let journal_reader = InMemoryJournalReader::new(&execution_store);
+    let workflow_versions = InMemoryWorkflowVersionStore::new();
+    let workflow_store =
+        InMemoryWorkflowStore::new_with_versions(&workflow_versions, &execution_store);
+
+    AppState::new(
+        Arc::new(workflow_store),
+        Arc::new(workflow_versions),
+        Arc::new(execution_store.clone()),
+        Arc::new(InMemoryNodeResultStore::new()),
+        Arc::new(journal_reader),
+        Arc::new(control_queue),
+        Arc::new(InMemoryStartAcceptanceStore::new(&execution_store)),
+        Arc::new(InMemoryTurnHandoff::new(&execution_store)),
+        Arc::new(InMemoryStartAcceptanceStore::new(&execution_store)),
+        crate::ApiConfig::for_test().jwt_secret,
+    )
+}
+
+#[cfg(test)]
+mod tests {
     use super::*;
 
     /// Minimal fake that satisfies `Arc<dyn ResourceRepo>` inside the test module.
@@ -1588,28 +1503,7 @@ mod tests {
     }
 
     fn base_state() -> AppState {
-        let jwt = JwtSecret::new("test-secret-for-state-module-tests-0123456789")
-            .expect("static test secret is valid");
-        // These tests only assert builder-slot wiring (no storage rows),
-        // so fresh raw in-memory port adapters — exactly the production
-        // composition shape post-decorator-removal — suffice.
-        let exec_store = InMemoryExecutionStore::new();
-        let control_queue = InMemoryControlQueue::new(&exec_store);
-        let journal = InMemoryJournalReader::new(&exec_store);
-        let workflow_versions = InMemoryWorkflowVersionStore::new();
-        let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
-        AppState::new(
-            Arc::new(workflow_store),
-            Arc::new(workflow_versions),
-            Arc::new(exec_store.clone()),
-            Arc::new(InMemoryNodeResultStore::new()),
-            Arc::new(journal),
-            Arc::new(control_queue),
-            Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
-                &exec_store,
-            )),
-            jwt,
-        )
+        test_state_with_in_memory_stores()
     }
 
     #[test]
@@ -1629,5 +1523,21 @@ mod tests {
             st.resource_repo.is_none(),
             "resource_repo must default to None"
         );
+    }
+
+    #[test]
+    fn workflow_read_errors_preserve_retryability() {
+        assert!(matches!(
+            classify_workflow_read_error(nebula_storage_port::StorageError::Connection(
+                "offline".into()
+            )),
+            ApiError::ServiceUnavailable(_)
+        ));
+        assert!(matches!(
+            classify_workflow_read_error(nebula_storage_port::StorageError::Serialization(
+                "malformed row".into()
+            )),
+            ApiError::Internal(message) if message == "Workflow storage read failed"
+        ));
     }
 }

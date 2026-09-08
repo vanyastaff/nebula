@@ -111,7 +111,7 @@ fn sparse_evidence_instance_is_rejected() {
     let schema_document: Value =
         serde_json::from_str(VALID_SCHEMA).expect("checked-in schema is JSON");
     let sparse_evidence = json!({
-        "gate_id": "NS07",
+        "gate_id": super::external_registry::ExternalGateId::PersistenceConformance,
         "registry_version": 1,
         "evidence_schema_version": 1,
         "result_status": "passed",
@@ -224,9 +224,8 @@ fn sampling_policy_schema_cannot_be_widened() {
 
 #[test]
 fn malformed_gate_id_is_rejected() {
-    let registry = VALID_REGISTRY.replacen("id = \"NS01\"", "id = \"NX01\"", 1);
-
-    assert_validation_error(&registry, VALID_SCHEMA, "gate 1 must be `NS01`");
+    let registry = VALID_REGISTRY.replacen("id = \"NS01\"", "id = \"invalid-gate\"", 1);
+    assert_validation_error(&registry, VALID_SCHEMA, "unknown variant `invalid-gate`");
 }
 
 #[test]
@@ -330,15 +329,13 @@ fn validate_fixture(
 
 /// A registry whose first gate claims the unsupported `passed` state.
 ///
-/// Targets the first `state = "red"` line rather than one gate's prose so the
-/// fixture keeps testing schema-v1 promotion no matter which gates are red on
-/// any given day — keying it to a specific `state_reason` made the guard
-/// silently vacuous the moment that gate's reason was reworded.
+/// Targets the first non-passed state line rather than one gate's prose so the
+/// fixture keeps testing schema-v1 promotion as gate descriptions evolve.
 fn passed_state_registry() -> String {
-    let promoted = VALID_REGISTRY.replacen("state = \"red\"", "state = \"passed\"", 1);
+    let promoted = VALID_REGISTRY.replacen("state = \"partial\"", "state = \"passed\"", 1);
     assert_ne!(
         promoted, VALID_REGISTRY,
-        "the registry must contain a red gate for this fixture to promote"
+        "the registry must contain a non-passed gate for this fixture to promote"
     );
     promoted
 }
@@ -349,7 +346,7 @@ fn validation_fixture() -> TempDir {
     fs::create_dir_all(&workflows).expect("workflow fixture directory is created");
     fs::write(
         workflows.join("test-matrix.yml"),
-        "name: Test matrix\njobs:\n  tests:\n    runs-on: fixture\n  postgres-conformance:\n    runs-on: fixture\n",
+        "name: Test matrix\njobs:\n  tests:\n    runs-on: fixture\n  postgres-conformance:\n    runs-on: fixture\n  runtime-authority:\n    runs-on: fixture\n",
     )
     .expect("test-matrix fixture is written");
     fs::write(

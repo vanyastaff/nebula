@@ -32,7 +32,7 @@
 - `src/transport/webhook/` — single converged inbound webhook transport (programmatic + slug-routed)
 
 ## Conventions & never-do
-- Pure library — ships NO binary/composition root; wiring lives in `apps/server` + `examples/examples/api_simple_server.rs`. Do not add a `main`.
+- Pure library — ships NO binary/composition root; wiring lives in `apps/server`. Do not add a `main`.
 - No SQL driver / storage-schema knowledge here — inject spec-16 storage ports via `AppState::new` (`nebula-storage` owns adapters).
 - DTOs MUST NOT embed `nebula-core`/`-storage`/`-engine`/`-credential` types (ADR-0047 §3); wrap cross-layer types (`OrgRoleDto`/`WorkspaceRoleDto`). DTOs carry only `serde_json::Value`/wrappers.
 - All errors are RFC 9457 `application/problem+json` via a typed `ApiError` variant — never a new ad-hoc 500 for business failures.

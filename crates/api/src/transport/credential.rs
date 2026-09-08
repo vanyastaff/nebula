@@ -811,7 +811,8 @@ mod tests {
         let journal = InMemoryJournalReader::new(&exec_store);
         let jwt = crate::config::ApiConfig::for_test().jwt_secret;
         let workflow_versions = InMemoryWorkflowVersionStore::new();
-        let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
+        let workflow_store =
+            InMemoryWorkflowStore::new_with_versions(&workflow_versions, &exec_store);
         AppState::new(
             Arc::new(workflow_store),
             Arc::new(workflow_versions),
@@ -819,6 +820,10 @@ mod tests {
             Arc::new(InMemoryNodeResultStore::new()),
             Arc::new(journal),
             Arc::new(control_queue),
+            Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
+                &exec_store,
+            )),
+            Arc::new(nebula_storage::inmem::InMemoryTurnHandoff::new(&exec_store)),
             Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
                 &exec_store,
             )),

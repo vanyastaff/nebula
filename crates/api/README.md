@@ -91,12 +91,17 @@ a typed `ApiError` variant. Seam: `crates/api/src/error/mod.rs`.
 to `WorkflowRepo::create`. Seam: `crates/api/src/domain/workflow/handler.rs` —
 `create_workflow`.
 - **[L2-§13 step 2]** Workflow activation (`POST /api/v1/workflows/:id/activate`)
-runs `nebula_workflow::validate_workflow` and rejects invalid definitions
-with structured RFC 9457 errors — it does not silently flip a flag. Seam:
+delegates to `WorkflowActivationService`, compiles against the frozen plugin registry,
+installs exact plan/flavor revisions, and publishes the immutable version by CAS.
+Invalid definitions return structured RFC 9457 diagnostics. Seam:
 `crates/api/src/domain/workflow/handler.rs` — `activate_workflow`.
 - **[L2-§13 step 3]** Execution start (`POST /api/v1/workflows/:id/executions`)
-returns 202 Accepted, creates the execution row, and enqueues a Start command;
-it does not block on engine completion. The current server root does not install
+and `/execute` delegate to `WorkflowStartService`. A successful start atomically
+persists the execution, exact contract bundle, and Start command, then returns
+202 with its checked persisted receipt. Both routes share the `Idempotency-Key`
+namespace; replay returns the original execution even after workflow republishing.
+Unknown commit outcomes retain the original execution identity in a 503 response.
+The current server root does not install
 the engine `ControlConsumer`, so 202 proves the durable producer write, not deployed
 consumption.
 Seam: `crates/api/src/domain/execution/handler.rs` — `start_execution`.
@@ -941,12 +946,9 @@ src/
 ### Startup example
 
 `nebula-api` is a **pure library** — it ships no composition root and no
-binary. The canonical wiring lives outside this crate:
-
-- `examples/examples/api_simple_server.rs` — the minimal runnable startup
-  (run: `cargo run -p nebula-examples --example api_simple_server`).
-- `apps/server` — the production composition root (the single
-  `nebula-server` binary; see the **Transport binaries** section below).
+binary. The canonical wiring lives in `apps/server`, the production
+composition root and single `nebula-server` binary; see the **Transport
+binaries** section below.
 
 `AppState::new` takes the **spec-16 storage-port** handles
 (`WorkflowStore` + `WorkflowVersionStore` + `ExecutionStore` +
@@ -1040,7 +1042,7 @@ above for the enforcement guarantee.
 | `GET`    | `/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}`                       | Get workflow by ID                                                         |
 | `PUT`    | `/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}`                       | Update workflow                                                            |
 | `DELETE` | `/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}`                       | Delete workflow                                                            |
-| `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/activate`              | Activate workflow — runs validation (§13 step 2)                           |
+| `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/activate`              | Compile, install exact revisions, and publish by CAS (§13 step 2)           |
 | `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/execute`               | Trigger workflow execution — 202 Accepted (§13 step 3)                     |
 | `GET`    | `/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/executions`            | List executions for a workflow                                             |
 | `POST`   | `/api/v1/orgs/{org}/workspaces/{ws}/workflows/{wf}/executions`            | Start execution — 202 Accepted (§13 step 3)                                |

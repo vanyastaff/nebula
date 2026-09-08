@@ -40,6 +40,8 @@ nebula-storage-port = { path = "../../crates/storage-port" }
 # crosses into API handlers or wire DTOs.
 nebula-credential = { path = "../../crates/credential" }
 nebula-engine = { path = "../../crates/engine" }
+nebula-plugin = { path = "../../crates/plugin" }
+nebula-plugin-core = { path = "../../crates/plugin-core" }
 nebula-tenancy = { path = "../../crates/tenancy" }
 nebula-core = { path = "../../crates/core" }
 nebula-schema = { path = "../../crates/schema", features = ["schemars"] }

@@ -160,6 +160,16 @@ mod tests {
 
     #[async_trait]
     impl WorkflowStore for AlwaysFailWorkflowStore {
+        async fn publish_activated_version(
+            &self,
+            _: &Scope,
+            _: WorkflowRecord,
+            _: WorkflowVersionRecord,
+            _: u64,
+        ) -> Result<(), nebula_storage_port::store::WorkflowPublicationError> {
+            unreachable!("readiness does not publish workflow versions")
+        }
+
         // guard-justified: readiness probe only calls `is_reachable`;
         // this op is unreachable on the probe path.
         async fn create(&self, _: &Scope, _: WorkflowRecord) -> Result<(), StorageError> {
@@ -225,6 +235,16 @@ mod tests {
 
     #[async_trait]
     impl WorkflowStore for SlowWorkflowStore {
+        async fn publish_activated_version(
+            &self,
+            _: &Scope,
+            _: WorkflowRecord,
+            _: WorkflowVersionRecord,
+            _: u64,
+        ) -> Result<(), nebula_storage_port::store::WorkflowPublicationError> {
+            unreachable!("readiness does not publish workflow versions")
+        }
+
         // guard-justified: readiness probe only calls `is_reachable`;
         // this op is unreachable on the probe path.
         async fn create(&self, _: &Scope, _: WorkflowRecord) -> Result<(), StorageError> {
@@ -304,6 +324,8 @@ mod tests {
             Arc::new(journal),
             Arc::new(control_queue),
             Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
+            Arc::new(nebula_storage::inmem::InMemoryTurnHandoff::new(&exec_store)),
+            Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
             config.jwt_secret,
         )
     }
@@ -316,7 +338,9 @@ mod tests {
         // pair anyway so the store is wired exactly as production builds
         // it.
         let workflow_versions = InMemoryWorkflowVersionStore::new();
-        let workflow_store = InMemoryWorkflowStore::new_with_versions(&workflow_versions);
+        let execution = InMemoryExecutionStore::new();
+        let workflow_store =
+            InMemoryWorkflowStore::new_with_versions(&workflow_versions, &execution);
         let state = app_state_with_workflow_store(Arc::new(workflow_store));
         let (status, Json(body)) = readiness_check(State(state)).await;
         assert_eq!(status, StatusCode::OK);

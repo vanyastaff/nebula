@@ -1,17 +1,16 @@
 //! Core-flavor worker binary.
 //!
 //! Boots the first-party [`CorePlugin`], wires it into a [`WorkflowEngine`],
-//! and runs the durable claim-loop via [`nebula_worker`].
+//! and runs durable control, recovery, and timer processing via [`nebula_worker`].
 //!
 //! ## Configuration (environment variables)
 //!
 //! | Variable | Default | Description |
 //! |---|---|---|
+//! | `NEBULA_WORKER_ARTIFACT_SET_DIGEST` | required | 64 lowercase hex digits identifying the worker artifact set; supplied by the trusted release/deployment manifest, not derived from plugin metadata |
 //! | `NEBULA_WORKER_DATABASE_URL` | unset | Postgres DSN; when set, uses Postgres backend (requires `--features postgres`). Unset = SQLite default. |
 //! | `NEBULA_WORKER_DB_PATH` | `nebula-worker.db` | SQLite database file path (ignored when `NEBULA_WORKER_DATABASE_URL` is set) |
 //! | `NEBULA_WORKER_PROCESSOR_ID` | random UUID v4 per boot | 32 hex chars (16 bytes); set explicitly for stable fence identity |
-//! | `NEBULA_WORKER_BATCH_SIZE` | orchestrator default (32) | Jobs per claim batch |
-//! | `NEBULA_WORKER_POLL_INTERVAL_MS` | 100 | Idle poll interval (ms) |
 //! | `RUST_LOG` | `info` | `tracing` subscriber filter |
 //!
 //! [`CorePlugin`]: nebula_plugin_core::CorePlugin

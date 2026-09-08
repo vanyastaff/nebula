@@ -148,7 +148,18 @@ impl WorkflowEngine {
                         return;
                     }
                     _ = ticker.tick() => {
-                        match self.sweep_overdue_timers().await {
+                        let sweep = tokio::select! {
+                            biased;
+                            () = shutdown.cancelled() => {
+                                tracing::info!(
+                                    target = "engine::timer_scan",
+                                    "durable-timer scanner shutting down"
+                                );
+                                return;
+                            }
+                            result = self.sweep_overdue_timers() => result,
+                        };
+                        match sweep {
                             Ok(n) if n > 0 => tracing::info!(
                                 target = "engine::timer_scan",
                                 redriven = n,

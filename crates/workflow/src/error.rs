@@ -784,7 +784,7 @@ mod activation_diagnostic_tests {
                 ] {
                     assert!(
                         !field.trim().is_empty(),
-                        "NS14 requires all five fields; `{name}` was blank for {rejection:?}"
+                        "activation diagnostics require all five fields; `{name}` was blank for {rejection:?}"
                     );
                 }
             }

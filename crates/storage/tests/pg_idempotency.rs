@@ -167,14 +167,13 @@ async fn ttl_expiry_drops_row_after_evict_expired() {
         eprintln!("DATABASE_URL not set — skipping");
         return;
     };
-    let repo = PgIdempotencyStore::new(pool);
+    let repo = PgIdempotencyStore::new(pool.clone());
     let key = random_cache_key("ttl");
 
-    // Tiny TTL so we don't have to wait long.
     repo.put(
         key.clone(),
         record(b"transient", 0x33),
-        Duration::from_millis(50),
+        Duration::from_mins(1),
     )
     .await
     .expect("put");
@@ -183,7 +182,17 @@ async fn ttl_expiry_drops_row_after_evict_expired() {
     let got = repo.get(&key).await.expect("get");
     assert!(got.is_some(), "row must be present before TTL");
 
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    let changed = sqlx::query(
+        "UPDATE api_idempotency_dedup \
+         SET expires_at = NOW() - INTERVAL '1 second' \
+         WHERE cache_key = $1",
+    )
+    .bind(&key)
+    .execute(&pool)
+    .await
+    .expect("move the fixture expiry into the past")
+    .rows_affected();
+    assert_eq!(changed, 1, "the fixture row must be expired exactly once");
 
     // After the deadline `get` filters by `expires_at > NOW()` — read is None.
     let got = repo.get(&key).await.expect("get");

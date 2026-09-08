@@ -324,9 +324,11 @@ async fn build_full_state() -> (
 
     // Workflow stores — needed for the ownership check.
     let workflow_versions = Arc::new(InMemoryWorkflowVersionStore::new());
-    let workflow_store = Arc::new(InMemoryWorkflowStore::new_with_versions(&workflow_versions));
-
     let exec_store = InMemoryExecutionStore::new();
+    let workflow_store = Arc::new(InMemoryWorkflowStore::new_with_versions(
+        &workflow_versions,
+        &exec_store,
+    ));
     let control_queue = InMemoryControlQueue::new(&exec_store);
     let journal = nebula_storage::inmem::InMemoryJournalReader::new(&exec_store);
     let node_results = InMemoryNodeResultStore::new();
@@ -364,6 +366,8 @@ async fn build_full_state() -> (
         Arc::new(node_results),
         Arc::new(journal),
         Arc::new(control_queue),
+        Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
+        Arc::new(nebula_storage::inmem::InMemoryTurnHandoff::new(&exec_store)),
         Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
         config.jwt_secret,
     )
@@ -417,6 +421,7 @@ async fn seed_workflow(
         workflow_versions.as_ref(),
         scope,
         WorkflowVersionRecord {
+            activation: None,
             workflow_id: id_str,
             number: 1,
             published: true,
@@ -887,9 +892,11 @@ async fn register_without_transport_returns_503() {
     let trigger_store = Arc::new(InMemoryTriggerStore::new());
     let activation_store = Arc::new(InMemoryWebhookActivationStore::new());
     let workflow_versions = Arc::new(InMemoryWorkflowVersionStore::new());
-    let workflow_store = Arc::new(InMemoryWorkflowStore::new_with_versions(&workflow_versions));
-
     let exec_store = InMemoryExecutionStore::new();
+    let workflow_store = Arc::new(InMemoryWorkflowStore::new_with_versions(
+        &workflow_versions,
+        &exec_store,
+    ));
     let control_queue = InMemoryControlQueue::new(&exec_store);
     let journal = nebula_storage::inmem::InMemoryJournalReader::new(&exec_store);
     let node_results = InMemoryNodeResultStore::new();
@@ -904,6 +911,8 @@ async fn register_without_transport_returns_503() {
         Arc::new(node_results),
         Arc::new(journal),
         Arc::new(control_queue),
+        Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
+        Arc::new(nebula_storage::inmem::InMemoryTurnHandoff::new(&exec_store)),
         Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
         config.jwt_secret,
     )
@@ -998,9 +1007,11 @@ async fn register_compensation_cleans_up_on_activation_failure() {
     let trigger_store = Arc::new(InMemoryTriggerStore::new());
     let activation_store = Arc::new(InMemoryWebhookActivationStore::new());
     let workflow_versions = Arc::new(InMemoryWorkflowVersionStore::new());
-    let workflow_store = Arc::new(InMemoryWorkflowStore::new_with_versions(&workflow_versions));
-
     let exec_store = InMemoryExecutionStore::new();
+    let workflow_store = Arc::new(InMemoryWorkflowStore::new_with_versions(
+        &workflow_versions,
+        &exec_store,
+    ));
     let control_queue = InMemoryControlQueue::new(&exec_store);
     let journal = nebula_storage::inmem::InMemoryJournalReader::new(&exec_store);
     let node_results = InMemoryNodeResultStore::new();
@@ -1033,6 +1044,8 @@ async fn register_compensation_cleans_up_on_activation_failure() {
         Arc::new(node_results),
         Arc::new(journal),
         Arc::new(control_queue),
+        Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
+        Arc::new(nebula_storage::inmem::InMemoryTurnHandoff::new(&exec_store)),
         Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
         config.jwt_secret,
     )
@@ -1401,9 +1414,11 @@ async fn register_factory_invalid_spec_returns_422() {
     let trigger_store = Arc::new(InMemoryTriggerStore::new());
     let activation_store = Arc::new(InMemoryWebhookActivationStore::new());
     let workflow_versions = Arc::new(InMemoryWorkflowVersionStore::new());
-    let workflow_store = Arc::new(InMemoryWorkflowStore::new_with_versions(&workflow_versions));
-
     let exec_store = InMemoryExecutionStore::new();
+    let workflow_store = Arc::new(InMemoryWorkflowStore::new_with_versions(
+        &workflow_versions,
+        &exec_store,
+    ));
     let control_queue = InMemoryControlQueue::new(&exec_store);
     let journal = nebula_storage::inmem::InMemoryJournalReader::new(&exec_store);
     let node_results = InMemoryNodeResultStore::new();
@@ -1438,6 +1453,8 @@ async fn register_factory_invalid_spec_returns_422() {
         Arc::new(node_results),
         Arc::new(journal),
         Arc::new(control_queue),
+        Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
+        Arc::new(nebula_storage::inmem::InMemoryTurnHandoff::new(&exec_store)),
         Arc::new(InMemoryStartAcceptanceStore::new(&exec_store)),
         config.jwt_secret,
     )

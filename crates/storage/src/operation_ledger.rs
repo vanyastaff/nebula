@@ -4,26 +4,19 @@
 //! ledger question identically, so the questions are answered once here. Row
 //! plumbing stays in each adapter; the decisions do not.
 //!
-//! Durable state and destination text is the same vocabulary ordered migration
-//! 0045 constrains with `CHECK` clauses. The constants below are the single
-//! Rust-side definition of that vocabulary.
+//! Durable state text is the vocabulary ordered migration 0045 constrains with
+//! `CHECK` clauses. Destination text conversions live with the typed value.
 
+use nebula_core::{OperationCallId, OperationId};
+use nebula_storage_port::dto::{
+    EffectPhase, FrozenOutcomeEvidence, InvocationDisposition, OperationAdvance, OperationCommand,
+    OperationProtocolRecord, OutcomeEvidenceSource,
+};
 use nebula_storage_port::{
     AttemptGeneration, DestinationCapability, EffectSlotBinding, EffectSlotId, KnownOutcome,
-    OperationId, OperationLedgerError, OperationRecord, OperationState, PrepareOutcome,
-    PreparedOperation, RequestFingerprint,
+    OperationLedgerError, OperationRecord, OperationState, PrepareOutcome, PreparedOperation,
+    RequestFingerprint,
 };
-
-/// Durable text of each destination guarantee.
-///
-/// Only a SQL backend spells these; the in-memory reference model holds the
-/// typed values directly.
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
-pub(crate) const DESTINATION_STABLE_KEY: &str = "stable_key";
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
-pub(crate) const DESTINATION_RECONCILABLE: &str = "reconcilable";
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
-pub(crate) const DESTINATION_OPAQUE: &str = "opaque";
 
 /// Durable text of each operation state.
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
@@ -34,31 +27,6 @@ pub(crate) const STATE_SUCCEEDED: &str = "succeeded";
 pub(crate) const STATE_FAILED: &str = "failed";
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) const STATE_OUTCOME_UNKNOWN: &str = "outcome_unknown";
-
-/// Render a destination guarantee as the text migration 0045 admits.
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
-pub(crate) const fn destination_text(destination: DestinationCapability) -> &'static str {
-    match destination {
-        DestinationCapability::StableKey => DESTINATION_STABLE_KEY,
-        DestinationCapability::Reconcilable => DESTINATION_RECONCILABLE,
-        // A destination this build does not recognise offers no guarantee, so
-        // it is treated as opaque rather than as the nearest known one:
-        // guessing upward would authorize a re-invocation the destination
-        // never promised to deduplicate.
-        _ => DESTINATION_OPAQUE,
-    }
-}
-
-/// Parse durable destination text, rejecting vocabulary outside the schema.
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
-pub(crate) fn destination_from_text(text: &str) -> Option<DestinationCapability> {
-    match text {
-        DESTINATION_STABLE_KEY => Some(DestinationCapability::StableKey),
-        DESTINATION_RECONCILABLE => Some(DestinationCapability::Reconcilable),
-        DESTINATION_OPAQUE => Some(DestinationCapability::Opaque),
-        _ => None,
-    }
-}
 
 /// Render an operation state as the text migration 0045 admits.
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
@@ -121,6 +89,11 @@ pub(crate) fn decide_prepare(
     if !fingerprints_match(stored.fingerprint(), binding.fingerprint) {
         return Err(OperationLedgerError::OperationMismatch { slot_id });
     }
+    if let Some(protocol) = stored.protocol()
+        && protocol.contract() != binding.contract
+    {
+        return Err(OperationLedgerError::OperationMismatch { slot_id });
+    }
     // The original binding is returned wholesale — including the attempt
     // generation and destination recorded at prepare time. A later attempt
     // re-preparing the same slot inherits the first attempt's operation
@@ -129,78 +102,485 @@ pub(crate) fn decide_prepare(
     Ok(PrepareOutcome::Replayed(stored.operation()))
 }
 
-/// Decide what committing `outcome` against an existing record must do.
-///
-/// # Errors
-///
-/// Returns [`OperationLedgerError::StaleFence`] when the caller's attempt is
-/// behind the durable binding, and
-/// [`OperationLedgerError::OutcomeAlreadyRecorded`] when a *different* terminal
-/// outcome exists.
-pub(crate) fn decide_commit(
-    slot_id: EffectSlotId,
-    stored: &OperationRecord,
-    attempt_generation: AttemptGeneration,
-    outcome: KnownOutcome,
-) -> Result<CommitDecision, OperationLedgerError> {
-    let bound = stored.operation().attempt_generation();
-    if attempt_generation < bound {
-        return Err(OperationLedgerError::StaleFence {
-            slot_id,
-            current: bound,
-        });
+/// Bounded version-one protocol initialized only for newly inserted operations.
+pub(crate) fn initial_protocol(
+    binding: &EffectSlotBinding<'_>,
+    now_ms: i64,
+) -> Result<OperationProtocolRecord, OperationLedgerError> {
+    binding.contract.validate()?;
+    if binding.destination != binding.contract.policy().capability() {
+        return Err(OperationLedgerError::InvalidProtocol);
+    }
+    now_ms
+        .checked_add(
+            i64::try_from(binding.contract.policy().recovery_window_ms())
+                .map_err(|_| OperationLedgerError::InvalidProtocol)?,
+        )
+        .ok_or(OperationLedgerError::InvalidProtocol)?;
+    OperationProtocolRecord::prepared(binding.contract.clone(), now_ms).build()
+}
+
+/// One fully decided transition, ready for infallible in-memory writes or SQL.
+#[derive(Debug)]
+pub(crate) struct ProtocolDecision {
+    pub record: OperationRecord,
+    pub response: OperationAdvance,
+    pub changed: bool,
+    pub journal: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum GrantedCall {
+    Invocation,
+    Reconciliation,
+}
+
+struct ProtocolTransition {
+    original: OperationProtocolRecord,
+    revision: u64,
+    phase: EffectPhase,
+    invocations: u32,
+    queries: u32,
+    invocation: Option<OperationCallId>,
+    disposition: Option<InvocationDisposition>,
+    query: Option<OperationCallId>,
+    outcome_evidence: Option<FrozenOutcomeEvidence>,
+    target_state: OperationState,
+    granted_call: Option<GrantedCall>,
+}
+
+impl ProtocolTransition {
+    fn new(protocol: OperationProtocolRecord, target_state: OperationState) -> Self {
+        Self {
+            revision: protocol.revision(),
+            phase: protocol.phase(),
+            invocations: protocol.invocations(),
+            queries: protocol.queries(),
+            invocation: protocol.invocation(),
+            disposition: protocol.disposition(),
+            query: protocol.query(),
+            outcome_evidence: protocol.evidence().cloned(),
+            original: protocol,
+            target_state,
+            granted_call: None,
+        }
     }
 
-    let target = outcome_state(outcome);
-    match stored.state() {
-        OperationState::Prepared => Ok(CommitDecision::Apply(target)),
-        // Committing the same outcome again is idempotent, which is what lets
-        // a caller whose acknowledgement was lost recommit the same frozen
-        // evidence without inventing a second answer.
-        current if current == target => Ok(CommitDecision::AlreadyRecorded),
-        current => Err(OperationLedgerError::OutcomeAlreadyRecorded {
-            slot_id,
-            recorded: current,
-        }),
+    const fn is_terminal(&self) -> bool {
+        matches!(self.phase, EffectPhase::Resolved)
+    }
+
+    fn is_within_window(&self, window_ms: u64, now_ms: i64) -> bool {
+        i64::try_from(window_ms)
+            .ok()
+            .and_then(|window_ms| self.original.prepared_at_ms().checked_add(window_ms))
+            .is_some_and(|deadline_ms| now_ms < deadline_ms)
+    }
+
+    fn has_changes(&self) -> bool {
+        self.phase != self.original.phase()
+            || self.invocations != self.original.invocations()
+            || self.queries != self.original.queries()
+            || self.invocation != self.original.invocation()
+            || self.disposition != self.original.disposition()
+            || self.query != self.original.query()
+            || self.outcome_evidence.as_ref() != self.original.evidence()
     }
 }
 
-/// What a fenced outcome commit must write.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CommitDecision {
-    /// Move the record to this state.
-    Apply(OperationState),
-    /// The record already holds this outcome; write nothing.
-    AlreadyRecorded,
+fn grant_invocation(
+    transition: &mut ProtocolTransition,
+    expected_revision: u64,
+    now_ms: i64,
+    fresh_call: OperationCallId,
+) -> Result<(), OperationLedgerError> {
+    if expected_revision != transition.revision
+        || transition.is_terminal()
+        || transition.query.is_some()
+        || !matches!(
+            transition.phase,
+            EffectPhase::Prepared | EffectPhase::BeforeBoundary | EffectPhase::Ambiguous
+        )
+    {
+        return Err(OperationLedgerError::ProtocolConflict);
+    }
+
+    let policy = transition.original.contract().policy();
+    let stable_key_is_valid = match policy.capability() {
+        DestinationCapability::StableKey => policy
+            .stable_window_ms()
+            .is_some_and(|window_ms| transition.is_within_window(window_ms, now_ms)),
+        _ => transition.phase != EffectPhase::Ambiguous,
+    };
+    if transition.invocations >= policy.max_invocations()
+        || !transition.is_within_window(policy.recovery_window_ms(), now_ms)
+        || !stable_key_is_valid
+    {
+        transition.phase = EffectPhase::OutcomeUnknown;
+        transition.target_state = OperationState::OutcomeUnknown;
+        return Ok(());
+    }
+
+    transition.invocations += 1;
+    transition.invocation = Some(fresh_call);
+    transition.disposition = None;
+    transition.phase = EffectPhase::InvocationOutstanding;
+    transition.granted_call = Some(GrantedCall::Invocation);
+    Ok(())
 }
 
-/// Decide whether `outcome` may be adjudicated onto an existing record.
-///
-/// # Errors
-///
-/// Returns [`OperationLedgerError::OutcomeAlreadyRecorded`] when the operation
-/// is not `OutcomeUnknown`. Adjudication resolves uncertainty; it never
-/// overrules an answer the system determined for itself, and it cannot leave
-/// the record still unknown.
-pub(crate) fn decide_adjudication(
-    slot_id: EffectSlotId,
+fn record_invocation_disposition(
+    transition: &mut ProtocolTransition,
+    reported_invocation: OperationCallId,
+    reported_disposition: InvocationDisposition,
+) -> Result<(), OperationLedgerError> {
+    if transition.is_terminal() || transition.invocation != Some(reported_invocation) {
+        return Err(OperationLedgerError::ProtocolConflict);
+    }
+    if let Some(recorded_disposition) = transition.disposition {
+        if recorded_disposition != reported_disposition {
+            return Err(OperationLedgerError::ProtocolConflict);
+        }
+        return Ok(());
+    }
+    if transition.phase != EffectPhase::InvocationOutstanding {
+        return Err(OperationLedgerError::ProtocolConflict);
+    }
+
+    let next_phase = match reported_disposition {
+        InvocationDisposition::BeforeBoundary => EffectPhase::BeforeBoundary,
+        InvocationDisposition::Ambiguous
+            if transition.original.contract().policy().capability()
+                == DestinationCapability::StableKey =>
+        {
+            EffectPhase::Ambiguous
+        },
+        InvocationDisposition::Ambiguous => {
+            transition.target_state = OperationState::OutcomeUnknown;
+            EffectPhase::OutcomeUnknown
+        },
+        _ => return Err(OperationLedgerError::ProtocolConflict),
+    };
+    transition.disposition = Some(reported_disposition);
+    transition.phase = next_phase;
+    Ok(())
+}
+
+fn grant_reconciliation(
+    transition: &mut ProtocolTransition,
+    expected_revision: u64,
+    now_ms: i64,
+    fresh_call: OperationCallId,
+) -> Result<(), OperationLedgerError> {
+    if expected_revision != transition.revision
+        || transition.phase != EffectPhase::OutcomeUnknown
+        || transition.query.is_some()
+    {
+        return Err(OperationLedgerError::ProtocolConflict);
+    }
+
+    let policy = transition.original.contract().policy();
+    if transition.queries >= policy.max_queries()
+        || !transition.is_within_window(policy.recovery_window_ms(), now_ms)
+    {
+        return Err(OperationLedgerError::RecoveryExhausted);
+    }
+    transition.queries += 1;
+    transition.query = Some(fresh_call);
+    transition.granted_call = Some(GrantedCall::Reconciliation);
+    Ok(())
+}
+
+fn record_reconciliation_inconclusive(
+    transition: &mut ProtocolTransition,
+    completed_query: OperationCallId,
+) -> Result<(), OperationLedgerError> {
+    if transition.is_terminal() || transition.query != Some(completed_query) {
+        return Err(OperationLedgerError::ProtocolConflict);
+    }
+    transition.query = None;
+    transition.phase = EffectPhase::OutcomeUnknown;
+    transition.target_state = OperationState::OutcomeUnknown;
+    Ok(())
+}
+
+fn record_outcome(
+    transition: &mut ProtocolTransition,
     stored: &OperationRecord,
-    outcome: KnownOutcome,
-) -> Result<OperationState, OperationLedgerError> {
-    if stored.state() != OperationState::OutcomeUnknown {
+    reported_evidence: &FrozenOutcomeEvidence,
+) -> Result<(), OperationLedgerError> {
+    reported_evidence.validate()?;
+    if let Some(recorded_evidence) = &transition.outcome_evidence {
+        if recorded_evidence == reported_evidence {
+            return Ok(());
+        }
+        if outcome_state(reported_evidence.outcome()) != stored.state() {
+            return Err(OperationLedgerError::OutcomeAlreadyRecorded {
+                slot_id: stored.operation().slot_id(),
+                recorded: stored.state(),
+            });
+        }
+        return Err(OperationLedgerError::ProtocolConflict);
+    }
+    if transition.is_terminal() {
+        return Err(OperationLedgerError::ProtocolConflict);
+    }
+
+    let evidence_is_permitted = match reported_evidence.source() {
+        OutcomeEvidenceSource::Invocation(call) => {
+            transition.invocation == Some(call)
+                && transition.phase == EffectPhase::InvocationOutstanding
+                && transition.disposition.is_none()
+        },
+        OutcomeEvidenceSource::Reconciliation(call) => transition.query == Some(call),
+        OutcomeEvidenceSource::Adjudication(_) => false,
+        _ => false,
+    };
+    if !evidence_is_permitted {
+        return Err(OperationLedgerError::ProtocolConflict);
+    }
+
+    transition.outcome_evidence = Some(reported_evidence.clone());
+    transition.phase = EffectPhase::Resolved;
+    transition.target_state = outcome_state(reported_evidence.outcome());
+    Ok(())
+}
+
+fn mark_outcome_unknown(
+    transition: &mut ProtocolTransition,
+    expected_revision: u64,
+) -> Result<(), OperationLedgerError> {
+    if expected_revision != transition.revision || transition.is_terminal() {
+        return Err(OperationLedgerError::ProtocolConflict);
+    }
+    transition.phase = EffectPhase::OutcomeUnknown;
+    transition.target_state = OperationState::OutcomeUnknown;
+    Ok(())
+}
+
+fn finalize_transition(
+    stored: &OperationRecord,
+    mut transition: ProtocolTransition,
+    fresh_call: OperationCallId,
+) -> Result<ProtocolDecision, OperationLedgerError> {
+    let changed = transition.has_changes();
+    if changed {
+        transition.revision = transition
+            .revision
+            .checked_add(1)
+            .ok_or(OperationLedgerError::InvalidProtocol)?;
+    }
+    let adjudication_audit_digest = transition.original.adjudication_audit_digest().copied();
+    let protocol = transition
+        .original
+        .rebuild()
+        .revision(transition.revision)
+        .phase(transition.phase)
+        .invocations(transition.invocations, transition.invocation)
+        .queries(transition.queries, transition.query)
+        .disposition(transition.disposition)
+        .evidence(transition.outcome_evidence, adjudication_audit_digest)
+        .build()?;
+    let journal = (changed && transition.target_state != stored.state()).then(|| serde_json::json!({
+        "kind":"operation_outcome", "version":1, "slot_id":stored.operation().slot_id().to_string(),
+        "operation_id":stored.operation().operation_id().to_string(), "protocol_revision":protocol.revision(),
+        "outcome": match transition.target_state { OperationState::Succeeded => "succeeded", OperationState::Failed => "failed", _ => "outcome_unknown" }
+    }));
+    let record = OperationRecord::new(
+        stored.operation(),
+        stored.fingerprint(),
+        transition.target_state,
+    )
+    .with_protocol(protocol);
+    let response = match transition.granted_call {
+        Some(GrantedCall::Invocation) => OperationAdvance::Granted {
+            call: fresh_call,
+            record: record.clone(),
+        },
+        Some(GrantedCall::Reconciliation) => OperationAdvance::ReconciliationGranted {
+            call: fresh_call,
+            record: record.clone(),
+        },
+        None => OperationAdvance::Recorded(record.clone()),
+    };
+    Ok(ProtocolDecision {
+        record,
+        response,
+        changed,
+        journal,
+    })
+}
+
+/// Shared finite protocol; the adapter must hold the actual live execution fence.
+pub(crate) fn decide_advance(
+    stored: &OperationRecord,
+    command: &OperationCommand,
+    now_ms: i64,
+    fresh_call: OperationCallId,
+) -> Result<ProtocolDecision, OperationLedgerError> {
+    let protocol = stored
+        .protocol()
+        .cloned()
+        .ok_or(OperationLedgerError::ProtocolConflict)?;
+    validate_record(stored)?;
+    let mut transition = ProtocolTransition::new(protocol, stored.state());
+    match command {
+        OperationCommand::GrantInvocation { expected_revision } => {
+            grant_invocation(&mut transition, *expected_revision, now_ms, fresh_call)?;
+        },
+        OperationCommand::RecordDisposition {
+            invocation: reported_invocation,
+            disposition: reported_disposition,
+        } => {
+            record_invocation_disposition(
+                &mut transition,
+                *reported_invocation,
+                *reported_disposition,
+            )?;
+        },
+        OperationCommand::GrantReconciliation { expected_revision } => {
+            grant_reconciliation(&mut transition, *expected_revision, now_ms, fresh_call)?;
+        },
+        OperationCommand::RecordReconciliationInconclusive {
+            query: completed_query,
+        } => {
+            record_reconciliation_inconclusive(&mut transition, *completed_query)?;
+        },
+        OperationCommand::RecordOutcome(reported_evidence) => {
+            record_outcome(&mut transition, stored, reported_evidence)?;
+        },
+        OperationCommand::MarkUnknown { expected_revision } => {
+            mark_outcome_unknown(&mut transition, *expected_revision)?;
+        },
+        _ => return Err(OperationLedgerError::ProtocolConflict),
+    }
+    finalize_transition(stored, transition, fresh_call)
+}
+
+pub(crate) fn validate_protocol(
+    protocol: &OperationProtocolRecord,
+) -> Result<(), OperationLedgerError> {
+    protocol.validate()
+}
+
+pub(crate) fn validate_record(record: &OperationRecord) -> Result<(), OperationLedgerError> {
+    use nebula_storage_port::dto::EffectPhase;
+    if let Some(protocol) = record.protocol() {
+        validate_protocol(protocol)?;
+        let expected = match protocol.phase() {
+            EffectPhase::OutcomeUnknown => OperationState::OutcomeUnknown,
+            EffectPhase::Resolved => outcome_state(
+                protocol
+                    .evidence()
+                    .ok_or(OperationLedgerError::InvalidProtocol)?
+                    .outcome(),
+            ),
+            _ => OperationState::Prepared,
+        };
+        if expected != record.state()
+            || protocol.contract().policy().capability() != record.operation().destination()
+        {
+            return Err(OperationLedgerError::CorruptRecord {
+                slot_id: record.operation().slot_id(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Privileged adjudication uses the same immutable evidence rules, never a grant.
+pub(crate) fn decide_adjudicate_protocol(
+    stored: &OperationRecord,
+    evidence: &FrozenOutcomeEvidence,
+    audit: &str,
+) -> Result<ProtocolDecision, OperationLedgerError> {
+    use nebula_storage_port::dto::{EffectPhase, OperationAdvance, OutcomeEvidenceSource};
+    use sha2::{Digest as _, Sha256};
+    evidence.validate()?;
+    if audit.trim().is_empty()
+        || audit.len() > 4096
+        || !matches!(evidence.source(), OutcomeEvidenceSource::Adjudication(_))
+    {
+        return Err(OperationLedgerError::InvalidProtocol);
+    }
+    let protocol = stored
+        .protocol()
+        .cloned()
+        .ok_or(OperationLedgerError::ProtocolConflict)?;
+    validate_record(stored)?;
+    let audit_digest: [u8; 32] = Sha256::digest(audit.as_bytes()).into();
+    if let Some(recorded) = protocol.evidence() {
+        if recorded == evidence && protocol.adjudication_audit_digest() == Some(&audit_digest) {
+            return Ok(ProtocolDecision {
+                record: stored.clone(),
+                response: OperationAdvance::Recorded(stored.clone()),
+                changed: false,
+                journal: None,
+            });
+        }
         return Err(OperationLedgerError::OutcomeAlreadyRecorded {
-            slot_id,
+            slot_id: stored.operation().slot_id(),
             recorded: stored.state(),
         });
     }
-    let target = outcome_state(outcome);
-    if target == OperationState::OutcomeUnknown {
-        return Err(OperationLedgerError::OutcomeAlreadyRecorded {
-            slot_id,
-            recorded: OperationState::OutcomeUnknown,
-        });
+    if protocol.phase() != EffectPhase::OutcomeUnknown {
+        return Err(OperationLedgerError::ProtocolConflict);
     }
-    Ok(target)
+    let revision = protocol
+        .revision()
+        .checked_add(1)
+        .ok_or(OperationLedgerError::InvalidProtocol)?;
+    let protocol = protocol
+        .rebuild()
+        .revision(revision)
+        .phase(EffectPhase::Resolved)
+        .evidence(Some(evidence.clone()), Some(audit_digest))
+        .build()?;
+    let journal = serde_json::json!({"kind":"operation_adjudicated", "version":1,
+        "slot_id":stored.operation().slot_id().to_string(), "operation_id":stored.operation().operation_id().to_string(),
+        "protocol_revision":protocol.revision(), "outcome":if evidence.outcome() == KnownOutcome::Succeeded {"succeeded"} else {"failed"}});
+    let record = OperationRecord::new(
+        stored.operation(),
+        stored.fingerprint(),
+        outcome_state(evidence.outcome()),
+    )
+    .with_protocol(protocol);
+    Ok(ProtocolDecision {
+        record: record.clone(),
+        response: OperationAdvance::Recorded(record),
+        changed: true,
+        journal: Some(journal),
+    })
+}
+
+/// Decode only a bounded protocol; legacy rows retain their absence.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+pub(crate) fn decode_protocol(
+    bytes: Option<&str>,
+) -> Result<Option<OperationProtocolRecord>, OperationLedgerError> {
+    bytes
+        .map(|bytes| {
+            if bytes.len() > 5_300_000 {
+                return Err(OperationLedgerError::InvalidProtocol);
+            }
+            let protocol =
+                serde_json::from_str(bytes).map_err(|_| OperationLedgerError::InvalidProtocol)?;
+            validate_protocol(&protocol)?;
+            Ok(protocol)
+        })
+        .transpose()
+}
+
+/// Called under the execution owner's lock using its authoritative clock.
+pub(crate) fn require_live_lease(
+    fencing: nebula_storage_port::FencingToken,
+    current: u64,
+    live: bool,
+) -> Result<(), OperationLedgerError> {
+    if fencing.generation() != current || !live {
+        return Err(OperationLedgerError::ExecutionLeaseRejected);
+    }
+    Ok(())
 }
 
 /// Compose a record projection from decoded durable columns.
@@ -223,9 +603,13 @@ pub(crate) fn compose_record(
 /// outcome vocabulary on its spans and counters.
 pub(crate) const fn error_label(error: &OperationLedgerError) -> &'static str {
     match *error {
+        OperationLedgerError::InvalidProtocol => "invalid_protocol",
+        OperationLedgerError::ProtocolConflict => "protocol_conflict",
+        OperationLedgerError::RecoveryExhausted => "recovery_exhausted",
+        OperationLedgerError::InvalidAttemptGeneration => "invalid_attempt_generation",
+        OperationLedgerError::ExecutionLeaseRejected => "execution_lease_rejected",
         OperationLedgerError::OperationMismatch { .. } => "operation_mismatch",
         OperationLedgerError::SlotUnprepared { .. } => "slot_unprepared",
-        OperationLedgerError::StaleFence { .. } => "stale_fence",
         OperationLedgerError::TenantDenied => "tenant_denied",
         OperationLedgerError::OutcomeAlreadyRecorded { .. } => "outcome_already_recorded",
         OperationLedgerError::CorruptRecord { .. } => "corrupt_record",
@@ -239,6 +623,20 @@ pub(crate) const fn error_label(error: &OperationLedgerError) -> &'static str {
     }
 }
 
+/// Stable transition labels distinguish fresh grants from durable result replay.
+pub(crate) fn advance_label(
+    result: &Result<OperationAdvance, OperationLedgerError>,
+) -> &'static str {
+    use nebula_storage_port::dto::OperationAdvance;
+    match result {
+        Ok(OperationAdvance::Granted { .. }) => "invocation_granted",
+        Ok(OperationAdvance::ReconciliationGranted { .. }) => "reconciliation_granted",
+        Ok(OperationAdvance::Recorded(_)) => "recorded",
+        Ok(_) => "unclassified",
+        Err(error) => error_label(error),
+    }
+}
+
 /// Stable outcome label for one prepare.
 pub(crate) const fn prepare_label(
     result: &Result<PrepareOutcome, OperationLedgerError>,
@@ -247,6 +645,24 @@ pub(crate) const fn prepare_label(
         Ok(PrepareOutcome::Prepared(_)) => "prepared",
         Ok(PrepareOutcome::Replayed(_)) => "replayed",
         Err(ref error) => error_label(error),
+    }
+}
+
+/// Checked portable representation; attempt provenance never grants authority.
+pub(crate) fn stored_attempt_generation(
+    generation: AttemptGeneration,
+) -> Result<i64, OperationLedgerError> {
+    i64::try_from(generation.get()).map_err(|_| OperationLedgerError::InvalidAttemptGeneration)
+}
+
+/// Stable outcome label for one natural-key read.
+pub(crate) const fn occurrence_read_label(
+    result: &Result<Option<OperationRecord>, OperationLedgerError>,
+) -> &'static str {
+    match result {
+        Ok(Some(_)) => "read",
+        Ok(None) => "absent",
+        Err(error) => error_label(error),
     }
 }
 
@@ -272,6 +688,22 @@ pub(crate) const fn write_label(result: &Result<(), OperationLedgerError>) -> &'
 mod tests {
     use super::*;
 
+    fn contract() -> nebula_storage_port::dto::PreparedEffectContract {
+        nebula_storage_port::dto::PreparedEffectContract::new(
+            RequestFingerprint::new(1, [9; 32]),
+            nebula_storage_port::dto::PreparedEffectPolicy::builder(
+                DestinationCapability::StableKey,
+            )
+            .maximum_invocations(3)
+            .maximum_queries(3)
+            .recovery_window(std::time::Duration::from_mins(1))
+            .stable_key_window(std::time::Duration::from_mins(1))
+            .build()
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
     fn slot() -> EffectSlotId {
         EffectSlotId::from_storage_bytes([0x11; 16])
     }
@@ -279,7 +711,7 @@ mod tests {
     fn record(state: OperationState, generation: u64) -> OperationRecord {
         compose_record(
             slot(),
-            OperationId::from_storage_bytes([0x22; 16]),
+            OperationId::from_bytes([0x22; 16]),
             AttemptGeneration::new(generation),
             DestinationCapability::StableKey,
             RequestFingerprint::new(1, [0x33; 32]),
@@ -297,8 +729,8 @@ mod tests {
             DestinationCapability::Opaque,
         ] {
             assert_eq!(
-                destination_from_text(destination_text(destination)),
-                Some(destination)
+                DestinationCapability::try_from(<&'static str>::from(destination)),
+                Ok(destination)
             );
         }
         for state in [
@@ -309,7 +741,7 @@ mod tests {
         ] {
             assert_eq!(state_from_text(state_text(state)), Some(state));
         }
-        assert_eq!(destination_from_text("best_effort"), None);
+        assert!(DestinationCapability::try_from("best_effort").is_err());
         assert_eq!(state_from_text("maybe"), None);
     }
 
@@ -345,6 +777,7 @@ mod tests {
             attempt_generation: AttemptGeneration::new(7),
             fingerprint: RequestFingerprint::new(1, [0x33; 32]),
             destination: DestinationCapability::Opaque,
+            contract: &contract(),
         };
 
         let outcome = decide_prepare(slot(), &stored, &binding)
@@ -373,6 +806,7 @@ mod tests {
             attempt_generation: AttemptGeneration::new(0),
             fingerprint: RequestFingerprint::new(1, [0x99; 32]),
             destination: DestinationCapability::StableKey,
+            contract: &contract(),
         };
 
         assert_eq!(
@@ -383,73 +817,87 @@ mod tests {
 
     #[test]
     fn a_superseded_attempt_cannot_decide_the_current_one() {
-        let stored = record(OperationState::Prepared, 5);
         assert_eq!(
-            decide_commit(
-                slot(),
-                &stored,
-                AttemptGeneration::new(4),
-                KnownOutcome::Succeeded
+            require_live_lease(
+                nebula_storage_port::FencingToken::from_generation(4),
+                5,
+                true
             ),
-            Err(OperationLedgerError::StaleFence {
-                slot_id: slot(),
-                current: AttemptGeneration::new(5),
-            })
+            Err(OperationLedgerError::ExecutionLeaseRejected)
         );
     }
 
     #[test]
-    fn recommitting_the_same_outcome_is_idempotent_but_a_different_one_is_refused() {
-        let stored = record(OperationState::Succeeded, 5);
-        assert_eq!(
-            decide_commit(
-                slot(),
-                &stored,
-                AttemptGeneration::new(5),
-                KnownOutcome::Succeeded
-            ),
-            Ok(CommitDecision::AlreadyRecorded),
-            "a lost acknowledgement is reconciled by recommitting the same evidence"
+    fn legacy_projection_cannot_grant_invocation_authority() {
+        let legacy = record(OperationState::Prepared, 1);
+        let result = decide_advance(
+            &legacy,
+            &OperationCommand::GrantInvocation {
+                expected_revision: 0,
+            },
+            0,
+            OperationCallId::from_bytes([1; 16]),
         );
-        assert_eq!(
-            decide_commit(
-                slot(),
-                &stored,
-                AttemptGeneration::new(5),
-                KnownOutcome::Failed
-            ),
-            Err(OperationLedgerError::OutcomeAlreadyRecorded {
-                slot_id: slot(),
-                recorded: OperationState::Succeeded,
-            }),
-            "the ledger must never hold two answers for one effect"
-        );
+        assert!(matches!(
+            result,
+            Err(OperationLedgerError::ProtocolConflict)
+        ));
+        assert_eq!(legacy.protocol(), None);
     }
 
     #[test]
-    fn adjudication_resolves_uncertainty_and_nothing_else() {
-        let unknown = record(OperationState::OutcomeUnknown, 1);
-        assert_eq!(
-            decide_adjudication(slot(), &unknown, KnownOutcome::Succeeded),
-            Ok(OperationState::Succeeded)
-        );
-        assert_eq!(
-            decide_adjudication(slot(), &unknown, KnownOutcome::OutcomeUnknown),
-            Err(OperationLedgerError::OutcomeAlreadyRecorded {
-                slot_id: slot(),
-                recorded: OperationState::OutcomeUnknown,
-            }),
-            "adjudication must leave the record determined, not still unknown"
+    fn reconciliation_requires_unknown_outcome_without_an_outstanding_query() {
+        use nebula_core::OperationCallId;
+        use nebula_storage_port::dto::{EffectPhase, OperationCommand};
+
+        let call = OperationCallId::from_bytes([1; 16]);
+        let protocol = OperationProtocolRecord::prepared(contract(), 0)
+            .revision(1)
+            .phase(EffectPhase::InvocationOutstanding)
+            .invocations(1, Some(call))
+            .build()
+            .unwrap();
+        let outstanding_invocation =
+            record(OperationState::Prepared, 0).with_protocol(protocol.clone());
+        std::assert_matches!(
+            decide_advance(
+                &outstanding_invocation,
+                &OperationCommand::GrantReconciliation {
+                    expected_revision: 1,
+                },
+                1,
+                OperationCallId::from_bytes([2; 16]),
+            ),
+            Err(OperationLedgerError::ProtocolConflict)
         );
 
-        let determined = record(OperationState::Failed, 1);
-        assert_eq!(
-            decide_adjudication(slot(), &determined, KnownOutcome::Succeeded),
-            Err(OperationLedgerError::OutcomeAlreadyRecorded {
-                slot_id: slot(),
-                recorded: OperationState::Failed,
-            }),
-            "adjudication never overrules an answer the system determined itself"
+        let protocol = protocol
+            .rebuild()
+            .revision(2)
+            .phase(EffectPhase::OutcomeUnknown)
+            .queries(1, Some(OperationCallId::from_bytes([3; 16])))
+            .build()
+            .unwrap();
+        let outstanding_query =
+            record(OperationState::OutcomeUnknown, 0).with_protocol(protocol.clone());
+        std::assert_matches!(
+            decide_advance(
+                &outstanding_query,
+                &OperationCommand::GrantReconciliation {
+                    expected_revision: 2,
+                },
+                1,
+                OperationCallId::from_bytes([4; 16]),
+            ),
+            Err(OperationLedgerError::ProtocolConflict)
+        );
+
+        std::assert_matches!(
+            protocol
+                .rebuild()
+                .phase(EffectPhase::InvocationOutstanding)
+                .build(),
+            Err(OperationLedgerError::ProtocolViolation { .. })
         );
     }
 }

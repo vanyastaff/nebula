@@ -48,6 +48,8 @@ pub mod context;
 /// public contract for flow-control nodes (If, Switch, Router, Filter,
 /// NoOp, Stop, Fail).
 pub mod control;
+/// Trusted remote-effect preparation and invocation contracts.
+pub mod effect;
 /// Error types distinguishing retryable from fatal failures.
 pub mod error;
 /// `ActionFactory` — engine-side per-execution factory that produces an
@@ -114,6 +116,13 @@ pub use context::{
     HasTriggerScheduling, HasWebhookEndpoint, TriggerContext, TriggerRuntimeContext,
 };
 pub use control::{ControlAction, ControlActionAdapter, ControlInput, ControlOutcome};
+pub use effect::{
+    ActionEffectContract, EffectContractError, EffectFailureCode, EffectInvocationContext,
+    EffectInvocationOutcome, EffectPreparationContext, EffectPreparationError, EffectQueryContext,
+    EffectReconciliationOutcome, PreparedEffectAdapter, PreparedRemoteEffect, ReadOnlyEffectQuery,
+    RemoteDestinationGuarantee, RemoteEffectDescriptor, RemoteEffectFactory, RemoteEffectPolicy,
+    RemoteEffectPolicyBuilder, RemoteEffectPolicyError, StableKeyGuarantee,
+};
 pub use error::{
     ActionError, ActionErrorExt, MAX_VALIDATION_DETAIL, RetryHintCode, ValidationReason,
 };
@@ -138,6 +147,7 @@ pub use nebula_core::{
     accessor::{EventEmitter, LogLevel, Logger, MetricsEmitter, ResourceAccessor},
     context::{HasCredentials, HasEventBus, HasLogger, HasMetrics, HasResources},
 };
+pub use nebula_core::{OperationCallId, OperationId};
 pub use nebula_credential::{CredentialGuard, CredentialRef};
 pub use nebula_resource::ResourceRef;
 pub use nebula_schema::{Field, Schema, ValidSchema, field_key};

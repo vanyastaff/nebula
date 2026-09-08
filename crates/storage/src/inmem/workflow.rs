@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use nebula_storage_port::dto::{WorkflowRecord, WorkflowVersionRecord};
-use nebula_storage_port::store::{WorkflowStore, WorkflowVersionStore};
+use nebula_storage_port::store::{WorkflowPublicationError, WorkflowStore, WorkflowVersionStore};
 use nebula_storage_port::{Scope, StorageError};
 use parking_lot::Mutex;
 
@@ -63,6 +63,7 @@ type SharedVersions = Arc<Mutex<HashMap<WfVerKey, WorkflowVersionRecord>>>;
 /// caller discipline.
 #[derive(Debug, Clone)]
 pub struct InMemoryWorkflowStore {
+    catalog: super::execution::SharedState,
     inner: Arc<Mutex<HashMap<WfKey, WorkflowRecord>>>,
     /// The *same* map the paired [`InMemoryWorkflowVersionStore`]
     /// reads/writes (an `Arc` clone of its `inner`), so the atomic save
@@ -77,9 +78,15 @@ impl InMemoryWorkflowStore {
     /// [`InMemoryWorkflowVersionStore`] observes the same data (the
     /// composition-root wiring — mirrors
     /// [`super::InMemoryControlQueue::new`] over a shared execution core).
+    /// `execution` supplies the shared revision catalog lock so activation
+    /// admission and publication linearize against drain/delete operations.
     #[must_use]
-    pub fn new_with_versions(versions: &InMemoryWorkflowVersionStore) -> Self {
+    pub fn new_with_versions(
+        versions: &InMemoryWorkflowVersionStore,
+        execution: &super::InMemoryExecutionStore,
+    ) -> Self {
         Self {
+            catalog: Arc::clone(&execution.inner),
             inner: Arc::new(Mutex::new(HashMap::new())),
             versions: Arc::clone(&versions.inner),
         }
@@ -88,6 +95,75 @@ impl InMemoryWorkflowStore {
 
 #[async_trait::async_trait]
 impl WorkflowStore for InMemoryWorkflowStore {
+    #[tracing::instrument(skip_all, fields(workflow_id = %row.id, expected_version), err)]
+    async fn publish_activated_version(
+        &self,
+        scope: &Scope,
+        row: WorkflowRecord,
+        version: WorkflowVersionRecord,
+        expected_version: u64,
+    ) -> Result<(), WorkflowPublicationError> {
+        let activation = crate::workflow_activation::validate_publication(
+            scope,
+            &row,
+            &version,
+            expected_version,
+        )?;
+        // Fixed lock order: catalog, workflows, versions. Drain takes catalog only.
+        let catalog = self.catalog.lock();
+        let mut rows = self.inner.lock();
+        let mut versions = self.versions.lock();
+        let row_key = wf_key(scope, &row.id);
+        let current = rows
+            .get(&row_key)
+            .filter(|row| !row.deleted)
+            .ok_or_else(|| StorageError::not_found("workflow", row.id.clone()))?;
+        if current.version != expected_version {
+            return Err(StorageError::Conflict {
+                entity: "workflow",
+                id: row.id,
+                expected: expected_version,
+                actual: current.version,
+            }
+            .into());
+        }
+        let version_key = wf_ver_key(scope, &version.workflow_id, version.number);
+        if versions.contains_key(&version_key) {
+            return Err(StorageError::Duplicate {
+                entity: "workflow_version",
+                detail: "workflow version already exists".into(),
+            }
+            .into());
+        }
+        super::plan_flavor_catalog::require_active_pair(
+            &catalog.revision_catalog,
+            activation.revisions(),
+        )
+        .map_err(|_| WorkflowPublicationError::RevisionNotAdmitted)?;
+        let plan = super::plan_flavor_catalog::load_pair(
+            &catalog.revision_catalog,
+            activation.revisions(),
+        )
+        .map_err(|_| WorkflowPublicationError::RevisionNotAdmitted)?;
+        crate::workflow_activation::validate_plan_identity(plan.plan_bytes(), &row.id, activation)?;
+        if versions
+            .iter()
+            .any(|((workspace, org, workflow, _), existing)| {
+                workspace == &scope.workspace_id
+                    && org == &scope.org_id
+                    && workflow == &row.id
+                    && existing.activation.is_some_and(|identity| {
+                        identity.workflow_version_id() == activation.workflow_version_id()
+                    })
+            })
+        {
+            return Err(WorkflowPublicationError::InvalidPublication);
+        }
+        rows.insert(row_key, row);
+        versions.insert(version_key, version);
+        Ok(())
+    }
+
     async fn create(&self, scope: &Scope, record: WorkflowRecord) -> Result<(), StorageError> {
         let key = wf_key(scope, &record.id);
         let mut map = self.inner.lock();
@@ -160,6 +236,11 @@ impl WorkflowStore for InMemoryWorkflowStore {
         version: WorkflowVersionRecord,
         expected_version: Option<u64>,
     ) -> Result<(), StorageError> {
+        if version.activation.is_some() {
+            return Err(StorageError::Internal(
+                "activated versions require publication admission".into(),
+            ));
+        }
         let row_key = wf_key(scope, &row.id);
         let ver_key = wf_ver_key(scope, &version.workflow_id, version.number);
         // Lock the row map and the version map together so the pair is
@@ -288,6 +369,11 @@ impl WorkflowVersionStore for InMemoryWorkflowVersionStore {
         scope: &Scope,
         record: WorkflowVersionRecord,
     ) -> Result<(), StorageError> {
+        if record.activation.is_some() {
+            return Err(StorageError::Internal(
+                "activated versions require publication admission".into(),
+            ));
+        }
         let key = wf_ver_key(scope, &record.workflow_id, record.number);
         let mut map = self.inner.lock();
         if map.contains_key(&key) {

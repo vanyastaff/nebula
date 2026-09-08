@@ -154,7 +154,10 @@ async fn poll_adapter_rejects_concurrent_start() {
         .await
         .expect_err("second start must fail while first is running");
     assert!(err.is_fatal());
-    assert!(err.to_string().contains("already started"));
+    assert!(
+        std::error::Error::source(&err)
+            .is_some_and(|source| source.to_string().contains("already started"))
+    );
 
     cancel.cancel();
     let result = handle.await.unwrap();
@@ -500,7 +503,10 @@ async fn poll_adapter_validate_failure_prevents_start() {
 
     let err = adapter.start(&ctx).await.expect_err("start must fail");
     assert!(err.is_fatal());
-    assert!(err.to_string().contains("bad credentials"));
+    assert!(
+        std::error::Error::source(&err)
+            .is_some_and(|source| source.to_string().contains("bad credentials"))
+    );
 }
 
 // ── Initial cursor ────────────────────────────────────────────────────────

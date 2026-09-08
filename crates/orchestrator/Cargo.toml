@@ -13,6 +13,7 @@ documentation.workspace = true
 keywords.workspace = true
 
 [dependencies]
+nebula-plugin = { path = "../plugin" }
 nebula-storage-port = { path = "../storage-port" }
 nebula-core = { path = "../core" }
 nebula-metrics = { path = "../metrics" }
