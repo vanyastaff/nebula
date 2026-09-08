@@ -279,7 +279,11 @@ impl InMemoryTurnHandoff {
                         .jobs
                         .get_mut(handoff.claim().row_id())
                         .ok_or_else(|| StorageError::not_found("job_dispatch", "claimed row"))?;
+                    // Retention runs from the terminal transition, and this is
+                    // one: leaving `processed_at` at the claim time would make
+                    // a long preflight expire the row the moment it lands.
                     "Dispatched".clone_into(&mut job.status);
+                    job.processed_at = Some(tokio::time::Instant::now());
                     state.accepted_turns.insert(
                         handoff.execution_id().to_owned(),
                         super::turn_recovery::AcceptedTurn {

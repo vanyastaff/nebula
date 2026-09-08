@@ -258,12 +258,14 @@ fn collect_port_traits(
                 "module-level macros are not allowed in storage-port store modules because they can hide public port traits from the tenancy inventory"
             ),
             Item::Mod(module) => {
-                let Some((_, nested_items)) = &module.content else {
-                    panic!(
-                        "nested storage-port modules must be inline so the tenancy inventory can inspect them"
-                    );
-                };
-                collect_port_traits(nested_items, &scope_names, traits);
+                // An inline module is inspected here; a file-backed one is
+                // reached by the directory walk, which visits every `.rs` file
+                // under `store/` including `mod.rs`. Rejecting `mod x;` would
+                // now reject the ordinary module layout rather than close a
+                // hole, since nothing can hide behind a file the walk opens.
+                if let Some((_, nested_items)) = &module.content {
+                    collect_port_traits(nested_items, &scope_names, traits);
+                }
             },
             Item::Trait(port) if matches!(port.vis, syn::Visibility::Public(_)) => {
                 let has_scope_reference = port.items.iter().any(|item| match item {
@@ -281,19 +283,32 @@ fn declared_port_traits() -> Vec<(String, bool)> {
     let store_root =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../storage-port/src/store");
     let mut traits = Vec::new();
-    for entry in std::fs::read_dir(store_root).expect("storage-port store directory exists") {
+    collect_port_traits_in_dir(&store_root, &mut traits);
+    traits.sort_unstable();
+    traits
+}
+
+/// Walk the whole module tree, `mod.rs` included.
+///
+/// A non-recursive scan that also skipped `mod.rs` left two ways for a port to
+/// escape a test whose entire purpose is completeness: declare the trait in
+/// `store/mod.rs`, or in `store/<submodule>/`. Either one kept the inventory
+/// green while the port shipped without a decorator.
+fn collect_port_traits_in_dir(dir: &std::path::Path, traits: &mut Vec<(String, bool)>) {
+    let entries = std::fs::read_dir(dir).expect("storage-port store directory exists");
+    for entry in entries {
         let path = entry.expect("store entry is readable").path();
-        if path.extension().and_then(std::ffi::OsStr::to_str) != Some("rs")
-            || path.file_name().and_then(std::ffi::OsStr::to_str) == Some("mod.rs")
-        {
+        if path.is_dir() {
+            collect_port_traits_in_dir(&path, traits);
+            continue;
+        }
+        if path.extension().and_then(std::ffi::OsStr::to_str) != Some("rs") {
             continue;
         }
         let source = std::fs::read_to_string(&path).expect("store source is readable");
         let syntax = syn::parse_file(&source).expect("storage-port store source parses as Rust");
-        collect_port_traits(&syntax.items, &["Scope".to_owned()], &mut traits);
+        collect_port_traits(&syntax.items, &["Scope".to_owned()], traits);
     }
-    traits.sort_unstable();
-    traits
 }
 
 /// The source-derived inventory fails when a new port is not classified.
