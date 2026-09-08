@@ -140,7 +140,7 @@ impl AuthenticatedClient {
             .mutation(self.client.post(self.url("/workflows")))
             .json(&json!({
                 "name": format!("runtime-repair-{scenario}"),
-                "description": "Task 7 deterministic park/restart scenario",
+                "description": "Deterministic park/restart scenario",
                 "definition": {
                     "nodes": [{
                         "id": DELAY_NODE,
@@ -301,10 +301,8 @@ async fn expect_json_status(response: Response, expected: StatusCode, operation:
         .await
         .expect("SETUP: API response is valid JSON");
     assert_eq!(
-        actual,
-        expected,
-        "SETUP: {operation} returned an unexpected status with problem code {:?}",
-        body.get("code").and_then(Value::as_str)
+        actual, expected,
+        "SETUP: {operation} returned an unexpected response: {body:#}",
     );
     body
 }

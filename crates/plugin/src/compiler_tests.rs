@@ -9,7 +9,7 @@ use nebula_core::{
 use nebula_metadata::PluginManifest;
 use nebula_schema::{Field, ObjectField, Schema, SecretField, ValidSchema, field_key};
 use nebula_workflow::{NodeDefinition, ParamValue, WorkflowBuilder};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::*;
 
@@ -147,6 +147,78 @@ fn action_metadata(
     .with_output_schema(output_schema)
 }
 
+fn mode_equals(expected: &str) -> nebula_schema::Rule {
+    nebula_schema::Rule::predicate(
+        nebula_schema::Predicate::eq("mode", expected)
+            .expect("the static fixture predicate path is valid"),
+    )
+}
+
+fn conditional_input_schema() -> ValidSchema {
+    let for_mode = mode_equals("for");
+    Schema::builder()
+        .add(
+            Field::select(field_key!("mode"))
+                .option("for", "For a duration")
+                .option("until", "Until an instant")
+                .required(),
+        )
+        .add(
+            Field::integer(field_key!("amount"))
+                .min_int(1)
+                .required_when(for_mode.clone()),
+        )
+        .add(
+            Field::select(field_key!("unit"))
+                .option("milliseconds", "Milliseconds")
+                .option("seconds", "Seconds")
+                .required_when(for_mode),
+        )
+        .build()
+        .expect("fixture input schema is valid")
+}
+
+fn reference_discriminator_error(
+    input_schema: ValidSchema,
+    nested_key: &str,
+    nested_value: Value,
+    identity_byte: u8,
+) -> PlanCompilationError {
+    let mode_output = Schema::builder()
+        .add(Field::string(field_key!("mode")))
+        .build()
+        .expect("fixture output schema is valid");
+    let registry = frozen(vec![
+        action_metadata(
+            "source",
+            ActionKind::Stateless,
+            ValidSchema::empty(),
+            mode_output,
+        ),
+        action_metadata(
+            "conditional",
+            ActionKind::Stateless,
+            input_schema,
+            ValidSchema::empty(),
+        ),
+    ]);
+    let source = NodeDefinition::new(node_key!("source"), "Source", "demo", "source")
+        .expect("fixture source node is valid");
+    let target = NodeDefinition::new(node_key!("target"), "Target", "demo", "conditional")
+        .expect("fixture target node is valid")
+        .with_parameter("mode", ParamValue::reference(node_key!("source"), "$.mode"))
+        .with_parameter(nested_key, ParamValue::literal(nested_value));
+    let workflow = WorkflowBuilder::new("Reference-backed nested condition")
+        .id(WorkflowId::from_bytes([identity_byte; 16]))
+        .add_node(source)
+        .add_node(target)
+        .connect(node_key!("source"), node_key!("target"))
+        .build()
+        .expect("fixture workflow is structurally valid");
+
+    compile_error(&registry, &workflow)
+}
+
 fn frozen(actions: Vec<ActionMetadata>) -> FrozenPluginRegistry {
     let plugin = TestPlugin {
         manifest: PluginManifest::builder("demo", "Demo")
@@ -279,6 +351,235 @@ fn tagged_literal_is_not_reclassified_but_expression_is_rejected() {
     assert!(error.diagnostics().iter().any(|diagnostic| {
         diagnostic.code() == "PLUGIN_PLAN_GRAPH_V1:INVALID_PARAMETER_CONTRACT"
             && diagnostic.path() == "/nodes/run/parameters/value"
+    }));
+}
+
+#[test]
+fn gradual_any_accepts_canonical_arbitrary_parameters() {
+    let registry = frozen(vec![action_metadata(
+        "dynamic",
+        ActionKind::Stateless,
+        ValidSchema::any(),
+        ValidSchema::empty(),
+    )]);
+    let node = NodeDefinition::new(node_key!("run"), "Run", "demo", "dynamic")
+        .expect("fixture node is valid")
+        .with_parameter("mode", ParamValue::literal(json!("for")))
+        .with_parameter(
+            "payload",
+            ParamValue::literal(json!({"nested": [true, 7, null]})),
+        );
+
+    registry
+        .compile_graph_v1(
+            WorkflowVersionId::from_bytes([0x68; 16]),
+            &one_node_workflow(node),
+        )
+        .expect("a gradual Any input accepts a canonical parameter bag");
+}
+
+#[test]
+fn gradual_any_accepts_a_whole_output_reference_under_an_arbitrary_key() {
+    let output_schema = Schema::builder()
+        .add(Field::string(field_key!("value")))
+        .build()
+        .expect("fixture output schema is valid");
+    let registry = frozen(vec![
+        action_metadata(
+            "source",
+            ActionKind::Stateless,
+            ValidSchema::empty(),
+            output_schema,
+        ),
+        action_metadata(
+            "dynamic",
+            ActionKind::Stateless,
+            ValidSchema::any(),
+            ValidSchema::empty(),
+        ),
+    ]);
+    let source = NodeDefinition::new(node_key!("source"), "Source", "demo", "source")
+        .expect("fixture source node is valid");
+    let target = NodeDefinition::new(node_key!("target"), "Target", "demo", "dynamic")
+        .expect("fixture target node is valid")
+        .with_parameter(
+            "arbitrary_payload",
+            ParamValue::reference(node_key!("source"), "$"),
+        );
+    let workflow = WorkflowBuilder::new("Gradual whole-output reference")
+        .id(WorkflowId::from_bytes([0x69; 16]))
+        .add_node(source)
+        .add_node(target)
+        .connect(node_key!("source"), node_key!("target"))
+        .build()
+        .expect("fixture workflow is structurally valid");
+
+    registry
+        .compile_graph_v1(WorkflowVersionId::from_bytes([0x6a; 16]), &workflow)
+        .expect("a gradual Any input accepts a whole-output reference");
+}
+
+#[test]
+fn gradual_any_accepts_an_existing_authored_path_under_an_arbitrary_key() {
+    let output_schema = Schema::builder()
+        .add(Field::string(field_key!("value")))
+        .build()
+        .expect("fixture output schema is valid");
+    let registry = frozen(vec![
+        action_metadata(
+            "source",
+            ActionKind::Stateless,
+            ValidSchema::empty(),
+            output_schema,
+        ),
+        action_metadata(
+            "dynamic",
+            ActionKind::Stateless,
+            ValidSchema::any(),
+            ValidSchema::empty(),
+        ),
+    ]);
+    let source = NodeDefinition::new(node_key!("source"), "Source", "demo", "source")
+        .expect("fixture source node is valid");
+    let target = NodeDefinition::new(node_key!("target"), "Target", "demo", "dynamic")
+        .expect("fixture target node is valid")
+        .with_parameter(
+            "arbitrary_value",
+            ParamValue::reference(node_key!("source"), "$.value"),
+        );
+    let workflow = WorkflowBuilder::new("Gradual authored-path reference")
+        .id(WorkflowId::from_bytes([0x6b; 16]))
+        .add_node(source)
+        .add_node(target)
+        .connect(node_key!("source"), node_key!("target"))
+        .build()
+        .expect("fixture workflow is structurally valid");
+
+    registry
+        .compile_graph_v1(WorkflowVersionId::from_bytes([0x6c; 16]), &workflow)
+        .expect("a gradual Any input accepts an existing authored path");
+}
+
+#[test]
+fn conditional_parameter_contract_is_checked_with_the_complete_parameter_bag() {
+    let registry = frozen(vec![action_metadata(
+        "conditional",
+        ActionKind::Stateless,
+        conditional_input_schema(),
+        ValidSchema::empty(),
+    )]);
+    let node = NodeDefinition::new(node_key!("run"), "Run", "demo", "conditional")
+        .expect("fixture node is valid")
+        .with_parameter("mode", ParamValue::literal(json!("for")))
+        .with_parameter("amount", ParamValue::literal(json!(60_000)))
+        .with_parameter("unit", ParamValue::literal(json!("milliseconds")));
+
+    registry
+        .compile_graph_v1(
+            WorkflowVersionId::from_bytes([0x6d; 16]),
+            &one_node_workflow(node),
+        )
+        .expect("conditional fields are validated with their discriminator present");
+}
+
+#[test]
+fn conditional_parameter_contract_rejects_a_value_outside_the_field_rules() {
+    let registry = frozen(vec![action_metadata(
+        "conditional",
+        ActionKind::Stateless,
+        conditional_input_schema(),
+        ValidSchema::empty(),
+    )]);
+    let node = NodeDefinition::new(node_key!("run"), "Run", "demo", "conditional")
+        .expect("fixture node is valid")
+        .with_parameter("mode", ParamValue::literal(json!("for")))
+        .with_parameter("amount", ParamValue::literal(json!(0)))
+        .with_parameter("unit", ParamValue::literal(json!("milliseconds")));
+
+    let error = compile_error(&registry, &one_node_workflow(node));
+    assert!(error.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code() == "PLUGIN_PLAN_GRAPH_V1:INVALID_PARAMETER_CONTRACT"
+            && diagnostic.path() == "/nodes/run/parameters"
+    }));
+}
+
+#[test]
+fn conditional_parameter_contract_rejects_a_reference_backed_discriminator() {
+    let mode_output = Schema::builder()
+        .add(Field::string(field_key!("mode")))
+        .build()
+        .expect("fixture output schema is valid");
+    let registry = frozen(vec![
+        action_metadata(
+            "source",
+            ActionKind::Stateless,
+            ValidSchema::empty(),
+            mode_output,
+        ),
+        action_metadata(
+            "conditional",
+            ActionKind::Stateless,
+            conditional_input_schema(),
+            ValidSchema::empty(),
+        ),
+    ]);
+    let source = NodeDefinition::new(node_key!("source"), "Source", "demo", "source")
+        .expect("fixture source node is valid");
+    let target = NodeDefinition::new(node_key!("target"), "Target", "demo", "conditional")
+        .expect("fixture target node is valid")
+        .with_parameter("mode", ParamValue::reference(node_key!("source"), "$.mode"))
+        .with_parameter("amount", ParamValue::literal(json!(60_000)))
+        .with_parameter("unit", ParamValue::literal(json!("milliseconds")));
+    let workflow = WorkflowBuilder::new("Reference-backed conditional discriminator")
+        .id(WorkflowId::from_bytes([0x6e; 16]))
+        .add_node(source)
+        .add_node(target)
+        .connect(node_key!("source"), node_key!("target"))
+        .build()
+        .expect("fixture workflow is structurally valid");
+
+    let error = compile_error(&registry, &workflow);
+    assert!(error.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code() == "PLUGIN_PLAN_GRAPH_V1:INVALID_PARAMETER_CONTRACT"
+            && diagnostic.path() == "/nodes/target/parameters"
+    }));
+}
+
+#[test]
+fn nested_object_condition_cannot_depend_on_a_reference_backed_discriminator() {
+    let schema = Schema::builder()
+        .add(Field::string(field_key!("mode")).required())
+        .add(
+            Field::object(field_key!("config"))
+                .add(Field::string(field_key!("token")).required_when(mode_equals("advanced"))),
+        )
+        .build()
+        .expect("fixture nested-object schema is valid");
+
+    let error = reference_discriminator_error(schema, "config", json!({}), 0x6f);
+    assert!(error.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code() == "PLUGIN_PLAN_GRAPH_V1:INVALID_PARAMETER_CONTRACT"
+            && diagnostic.path() == "/nodes/target/parameters"
+    }));
+}
+
+#[test]
+fn nested_list_condition_cannot_depend_on_a_reference_backed_discriminator() {
+    let schema = Schema::builder()
+        .add(Field::string(field_key!("mode")).required())
+        .add(
+            Field::list(field_key!("items"))
+                .item(Field::object(field_key!("item")).add(
+                    Field::string(field_key!("token")).required_when(mode_equals("advanced")),
+                )),
+        )
+        .build()
+        .expect("fixture nested-list schema is valid");
+
+    let error = reference_discriminator_error(schema, "items", json!([{}]), 0x70);
+    assert!(error.diagnostics().iter().any(|diagnostic| {
+        diagnostic.code() == "PLUGIN_PLAN_GRAPH_V1:INVALID_PARAMETER_CONTRACT"
+            && diagnostic.path() == "/nodes/target/parameters"
     }));
 }
 

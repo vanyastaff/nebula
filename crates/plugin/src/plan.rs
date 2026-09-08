@@ -11,8 +11,9 @@ use nebula_core::{
 use nebula_credential::Capabilities;
 use nebula_error::ActivationDiagnostic;
 use nebula_schema::{
-    Assignability, Field, FieldKey, FieldValue, FieldValues, InputSchema, OutputSchema, PathWalk,
-    RequiredMode, Schema, SchemaKind, ValidSchema, explain_assignable, explain_field_assignable,
+    Assignability, Field, FieldKey, FieldValue, FieldValues, InputSchema, OutputSchema,
+    PathSegment, PathWalk, RequiredMode, Schema, SchemaKind, ValidSchema, VisibilityMode,
+    explain_assignable, explain_field_assignable,
 };
 use semver::{BuildMetadata, Prerelease, Version};
 use serde::{Deserialize, Serialize};
@@ -1644,6 +1645,9 @@ pub(crate) fn validate_parameter_contract(
     parameter: &RecordedParameterV1,
     action: &RecordedActionV1,
 ) -> Result<(), ExecutablePlanIntegrityError> {
+    if action.input_schema.schema.kind() == SchemaKind::Any {
+        return typed_parameter_value(&parameter.value).map(|_| ());
+    }
     let key = FieldKey::new(&parameter.key).map_err(|_| noncanonical("nodes.parameters"))?;
     let field = action
         .input_schema
@@ -1658,6 +1662,9 @@ pub(crate) fn validate_parameter_contract(
     let Some(typed) = typed_parameter_value(&parameter.value)? else {
         return Ok(());
     };
+    if field_contains_contextual_policy(field) {
+        return Ok(());
+    }
     let one_field_schema = Schema::builder()
         .add(field.clone())
         .build()
@@ -1689,6 +1696,12 @@ pub(crate) fn validate_node_parameters(
     parameters: &[RecordedParameterV1],
     action: &RecordedActionV1,
 ) -> Result<(), ExecutablePlanIntegrityError> {
+    if action.input_schema.schema.kind() == SchemaKind::Any {
+        for parameter in parameters {
+            typed_parameter_value(&parameter.value)?;
+        }
+        return Ok(());
+    }
     if !action.input_schema.schema.root_rules().is_empty() {
         return Err(noncanonical("nodes.parameters.root_rules"));
     }
@@ -1697,23 +1710,21 @@ pub(crate) fn validate_node_parameters(
         .iter()
         .map(|parameter| parameter.key.as_str())
         .collect::<HashSet<_>>();
-    let has_reference = parameters
+    let referenced = parameters
         .iter()
-        .any(|parameter| matches!(parameter.value, RecordedParameterValueV1::Reference { .. }));
+        .filter(|parameter| matches!(parameter.value, RecordedParameterValueV1::Reference { .. }))
+        .map(|parameter| parameter.key.as_str())
+        .collect::<HashSet<_>>();
     for field in action.input_schema.schema.fields() {
         match field.required() {
             RequiredMode::Always if !supplied.contains(field.key().as_str()) => {
                 return Err(noncanonical("nodes.parameters.required"));
             },
-            RequiredMode::When(_) if has_reference && !supplied.contains(field.key().as_str()) => {
-                return Err(noncanonical("nodes.parameters.conditional_required"));
-            },
             _ => {},
         }
-    }
-
-    if has_reference {
-        return Ok(());
+        if field_context_depends_on_reference(field, &referenced) {
+            return Err(noncanonical("nodes.parameters.conditional_reference"));
+        }
     }
 
     let mut values = FieldValues::new();
@@ -1721,7 +1732,7 @@ pub(crate) fn validate_node_parameters(
         let key =
             FieldKey::new(&parameter.key).map_err(|_| noncanonical("nodes.parameters.schema"))?;
         let Some(value) = typed_parameter_value(&parameter.value)? else {
-            return Err(noncanonical("nodes.parameters.schema"));
+            continue;
         };
         values.set(key, value);
     }
@@ -1733,12 +1744,96 @@ pub(crate) fn validate_node_parameters(
     {
         return Err(noncanonical("nodes.parameters.schema"));
     }
-    action
-        .input_schema
-        .schema
-        .validate(&values)
-        .map(|_| ())
-        .map_err(|_| noncanonical("nodes.parameters.schema"))
+    match action.input_schema.schema.validate(&values) {
+        Ok(_) => Ok(()),
+        Err(report)
+            if report.errors().all(|error| {
+                error.code == "required"
+                    && error.path.segments().first().is_some_and(|segment| {
+                        matches!(segment, PathSegment::Key(key) if referenced.contains(key.as_str()))
+                    })
+            }) =>
+        {
+            Ok(())
+        },
+        Err(_) => Err(noncanonical("nodes.parameters.schema")),
+    }
+}
+
+fn field_context_depends_on_reference(field: &Field, referenced: &HashSet<&str>) -> bool {
+    let contextual_rules = match (field.required(), field.visible()) {
+        (RequiredMode::When(required), VisibilityMode::When(visible)) => {
+            [Some(required), Some(visible)]
+        },
+        (RequiredMode::When(required), _) => [Some(required), None],
+        (_, VisibilityMode::When(visible)) => [Some(visible), None],
+        _ => [None, None],
+    };
+    if contextual_rules
+        .into_iter()
+        .flatten()
+        .any(|rule| rule_depends_on_reference(rule, referenced))
+    {
+        return true;
+    }
+
+    match field {
+        Field::Object(object) => object
+            .fields
+            .iter()
+            .any(|child| field_context_depends_on_reference(child, referenced)),
+        Field::List(list) => list
+            .item
+            .as_deref()
+            .is_some_and(|item| field_context_depends_on_reference(item, referenced)),
+        Field::Mode(mode) => mode
+            .variants
+            .iter()
+            .any(|variant| field_context_depends_on_reference(variant.field.as_ref(), referenced)),
+        Field::Unknown(_) => !referenced.is_empty(),
+        _ => false,
+    }
+}
+
+fn field_contains_contextual_policy(field: &Field) -> bool {
+    if matches!(field.required(), RequiredMode::When(_))
+        || matches!(field.visible(), VisibilityMode::When(_))
+    {
+        return true;
+    }
+
+    match field {
+        Field::Object(object) => object.fields.iter().any(field_contains_contextual_policy),
+        Field::List(list) => list
+            .item
+            .as_deref()
+            .is_some_and(field_contains_contextual_policy),
+        Field::Mode(mode) => mode
+            .variants
+            .iter()
+            .any(|variant| field_contains_contextual_policy(variant.field.as_ref())),
+        _ => false,
+    }
+}
+
+fn rule_depends_on_reference(rule: &nebula_schema::Rule, referenced: &HashSet<&str>) -> bool {
+    if referenced.is_empty() {
+        return false;
+    }
+    let mut field_references = Vec::new();
+    rule.field_references(&mut field_references);
+    field_references.into_iter().any(|reference| {
+        let reference = reference.strip_prefix('#').unwrap_or(reference);
+        let root = reference
+            .strip_prefix('/')
+            .and_then(|path| path.split('/').next())
+            .or_else(|| {
+                reference
+                    .strip_prefix("$root.")
+                    .and_then(|path| path.split('.').next())
+            });
+        root.is_none_or(|key| referenced.contains(key))
+    })
 }
 
 fn typed_literal(value: Value) -> Result<FieldValue, ExecutablePlanIntegrityError> {
@@ -2174,6 +2269,18 @@ fn validate_reference_schema(
     let consumer_action = actions
         .get(consumer.action_key.as_str())
         .ok_or_else(|| noncanonical("nodes.parameters.reference"))?;
+    if consumer_action.input_schema.schema.kind() == SchemaKind::Any {
+        if output_path.is_empty() || output_path == "$" {
+            return Ok(());
+        }
+        return match producer_schema.walk_authored_path(output_path) {
+            PathWalk::Resolved(_) => Ok(()),
+            PathWalk::Unresolved(_) | PathWalk::Opaque => {
+                Err(noncanonical("nodes.parameters.reference.path"))
+            },
+            _ => Err(noncanonical("nodes.parameters.reference.path")),
+        };
+    }
     let consumer_key =
         FieldKey::new(&parameter.key).map_err(|_| noncanonical("nodes.parameters.reference"))?;
     let consumer_field = consumer_action

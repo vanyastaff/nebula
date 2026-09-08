@@ -199,6 +199,11 @@ mod tests {
             ActionKind::Stateless,
             "core.delay must be stamped ActionKind::Stateless"
         );
+        assert_eq!(
+            factory.metadata().base.schema.kind(),
+            nebula_schema::SchemaKind::Record,
+            "core.delay must expose its typed conditional input contract"
+        );
     }
 
     #[test]
