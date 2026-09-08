@@ -32,8 +32,10 @@ pub enum DrainTimeoutPolicy {
     Abort,
     /// On drain timeout, log, clear the registry anyway, and report the
     /// outstanding-handle count in [`ShutdownReport`](super::ShutdownReport).
-    /// Opt-in escape hatch for supervisors that must exit on a deadline
-    /// regardless of cost.
+    /// The report is explicitly incomplete (`release_queue_drained = false`).
+    /// Cleanup stays open for late handles while the manager remains alive;
+    /// dropping the manager ends that opportunity. This does not revoke
+    /// Rust references or prove that external activity has stopped.
     Force,
 }
 
@@ -45,8 +47,11 @@ pub struct ShutdownConfig {
     pub drain_timeout: Duration,
     /// What to do on drain timeout. Default: [`DrainTimeoutPolicy::Abort`].
     pub on_drain_timeout: DrainTimeoutPolicy,
-    /// Upper bound on how long the release-queue drain phase will wait
-    /// for release-queue workers to finish processing outstanding tasks.
+    /// Cooperative budget for release-queue workers to finish outstanding tasks.
+    /// On expiry all workers are aborted and their termination is awaited.
+    /// Blocking future polls or destructors cannot be preempted by Tokio, so
+    /// abort acknowledgement may exceed this budget. Detached rescue tasks
+    /// retain their separate bounded lifetime.
     pub release_queue_timeout: Duration,
 }
 

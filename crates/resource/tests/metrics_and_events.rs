@@ -146,6 +146,10 @@ async fn drop_guard_emits_released_event() {
     // `Released` after the recycle/destroy effect.
     drop(handle);
 
+    // Drop queues cleanup; Released is emitted after settlement, not on the
+    // dropping caller's stack. Await the manager's lifecycle checkpoint.
+    manager.graceful_shutdown(Default::default()).await.unwrap();
+
     let mut saw_released = false;
     while let Some(event) = rx.try_recv() {
         if matches!(

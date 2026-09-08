@@ -2,10 +2,10 @@
 //!
 //! Phases:
 //!
-//! 1. **SIGNAL** — cancel the shared token (rejects new acquires; signals workers to drain).
+//! 1. **SIGNAL** — cancel the manager token, rejecting new acquires.
 //! 2. **DRAIN** — wait for in-flight handles, honouring
 //!    [`DrainTimeoutPolicy`].
-//! 3. **CLEAR** — drop registry entries.
+//! 3. **RETIRE** — fence rows and submit retained-instance cleanup.
 //! 4. **AWAIT WORKERS** — wait for release-queue workers to exit.
 //!
 //! Errors are typed [`ShutdownError`] variants; the previous behaviour of
@@ -103,11 +103,17 @@ pub struct ShutdownReport {
     /// phase finished. Zero on the happy path. Nonzero only when the
     /// caller explicitly opted into [`DrainTimeoutPolicy::Force`].
     pub outstanding_handles_after_drain: u64,
-    /// Whether Phase 3 (`registry.clear`) actually ran.
+    /// Whether all rows were removed from the registry and queued for cleanup.
     pub registry_cleared: bool,
-    /// Whether Phase 4 (release-queue drain) completed within
-    /// `release_queue_timeout`.
+    /// Whether every release-queue worker completed within its budget.
+    /// False after Force with outstanding handles: cleanup remains open.
+    /// Does not prove success of earlier asynchronous releases or rescue completion.
     pub release_queue_drained: bool,
+    /// Cumulative queue-lifetime count of release tasks abandoned before
+    /// their futures completed. Detached rescue tasks and late Force-policy
+    /// releases may increment the counter after this snapshot. Zero does not
+    /// prove complete cleanup: a `Future<Output = ()>` can hide provider errors.
+    pub dropped_release_tasks: usize,
 }
 
 /// Errors returned by [`Manager::graceful_shutdown`].
@@ -116,7 +122,7 @@ pub struct ShutdownReport {
 /// absorbed by the old infallible signature. A timeout during drain, for
 /// example, used to be a `tracing::warn!` and a forced `registry.clear()`;
 /// it is now a typed error that the caller must handle.
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 #[non_exhaustive]
 pub enum ShutdownError {
     /// `graceful_shutdown` was already in progress when this call entered.
@@ -146,6 +152,43 @@ pub enum ShutdownError {
         /// The budget that was exceeded.
         timeout: Duration,
     },
+
+    /// A release worker failed to join. Other workers were aborted and joined;
+    /// the error deliberately excludes third-party panic payloads.
+    #[error("release queue worker failed")]
+    ReleaseQueueWorkerFailed,
+
+    /// A row's terminal cleanup failed. Other rows still receive cleanup.
+    #[error("resource terminal cleanup failed for {key}")]
+    ResourceTeardownFailed {
+        /// Resource whose cleanup failed.
+        key: nebula_core::ResourceKey,
+        /// Typed provider or framework failure.
+        #[source]
+        source: crate::Error,
+    },
+}
+
+impl std::fmt::Debug for ShutdownError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AlreadyShuttingDown => formatter.write_str("AlreadyShuttingDown"),
+            Self::DrainTimeout { outstanding } => formatter
+                .debug_struct("DrainTimeout")
+                .field("outstanding", outstanding)
+                .finish(),
+            Self::ReleaseQueueTimeout { timeout } => formatter
+                .debug_struct("ReleaseQueueTimeout")
+                .field("timeout", timeout)
+                .finish(),
+            Self::ReleaseQueueWorkerFailed => formatter.write_str("ReleaseQueueWorkerFailed"),
+            Self::ResourceTeardownFailed { key, source } => formatter
+                .debug_struct("ResourceTeardownFailed")
+                .field("key", key)
+                .field("source_kind", source.kind())
+                .finish_non_exhaustive(),
+        }
+    }
 }
 
 /// Internal drain-phase error used by the private `wait_for_drain` helper.
@@ -155,14 +198,31 @@ pub(super) struct DrainTimeoutError {
     pub(super) outstanding: u64,
 }
 
+/// Counts the ownership of a terminal job, including an unpolled factory.
+pub(super) struct RetirementSettlement(Arc<(std::sync::atomic::AtomicU64, Notify)>);
+
+impl RetirementSettlement {
+    pub(super) fn new(tracker: Arc<(std::sync::atomic::AtomicU64, Notify)>) -> Self {
+        tracker.0.fetch_add(1, AtomicOrdering::AcqRel);
+        Self(tracker)
+    }
+}
+
+impl Drop for RetirementSettlement {
+    fn drop(&mut self) {
+        if self.0.0.fetch_sub(1, AtomicOrdering::AcqRel) == 1 {
+            self.0.1.notify_waiters();
+        }
+    }
+}
+
 impl Manager {
     /// Triggers graceful shutdown with drain and cleanup.
     ///
     /// 1. **Signal** — cancels the token so new acquires are rejected.
     /// 2. **Drain** — waits up to [`ShutdownConfig::drain_timeout`] for in-flight handles to be
     ///    released.
-    /// 3. **Clear** — drops all managed resources, releasing their `Arc<ReleaseQueue>` references
-    ///    so workers can drain and exit.
+    /// 3. **Retire** — fences rows, joins maintenance, and destroys retained entries.
     /// 4. **Await workers** — waits for the release queue workers to finish processing remaining
     ///    tasks.
     ///
@@ -192,15 +252,24 @@ impl Manager {
     /// - [`ShutdownError::ReleaseQueueTimeout`] if the release-queue workers
     ///   do not finish draining within
     ///   [`ShutdownConfig::release_queue_timeout`].
+    /// - [`ShutdownError::ReleaseQueueWorkerFailed`] if a worker failed to join.
+    /// - [`ShutdownError::ResourceTeardownFailed`] if a current row's terminal cleanup failed.
+    ///
+    /// With Force and outstanding handles, returns an incomplete report without
+    /// closing cleanup. Late releases can finish while the manager stays alive.
     ///
     /// # Cancel safety
     ///
     /// Cancel safe with respect to correctness: the shutdown flag and the
     /// cancellation token are set synchronously before the first await, so
     /// dropping this future still leaves new acquires permanently rejected
-    /// and the release-queue workers still drain and exit on their own. It
-    /// is **not** idempotent-on-cancel: a drop mid-shutdown skips the
-    /// registry clear and the final [`ShutdownReport`], and a retry
+    /// throughout shutdown. During DRAIN, cancellation preserves the registry
+    /// and keeps cleanup available until the manager drops. During terminal
+    /// receipt waiting, already-submitted cleanup continues under queue ownership.
+    /// During worker
+    /// waiting, cancellation aborts unfinished workers; abort acknowledgement
+    /// cannot be awaited by a dropped future. It is **not** idempotent-on-cancel:
+    /// cancellation skips the remaining phases and report, and a retry
     /// immediately returns `AlreadyShuttingDown` — treat shutdown as
     /// one-shot and do not race it against a timeout you intend to retry.
     pub async fn graceful_shutdown(
@@ -210,26 +279,32 @@ impl Manager {
         // CAS idempotency guard: exactly one caller wins. Concurrent callers
         // that arrive after this CAS see `AlreadyShuttingDown` immediately
         // rather than re-entering the drain logic against a half-torn state.
-        if self
-            .shutting_down
-            .compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
-            .is_err()
         {
-            return Err(ShutdownError::AlreadyShuttingDown);
+            let _admission = self
+                .admission
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if self
+                .shutting_down
+                .compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
+                .is_err()
+            {
+                return Err(ShutdownError::AlreadyShuttingDown);
+            }
+
+            tracing::info!("resource manager: starting graceful shutdown");
+
+            // Reject acquires while preserving cleanup for guards released during drain.
+            self.cancel.cancel();
+
+            // Mark every registered resource as `Draining` so operators polling
+            // `health_check` during the drain window see the correct lifecycle
+            // phase instead of a stale `Ready`.
+            self.set_phase_all(crate::state::ResourcePhase::Draining);
+            for managed in self.registry.all_managed() {
+                managed.begin_close();
+            }
         }
-
-        tracing::info!("resource manager: starting graceful shutdown");
-
-        // Phase 1: SIGNAL — cancel the shared token. This does two things:
-        //   a) Rejects new acquire calls (checked in `lookup`).
-        //   b) Tells release queue workers to drain remaining tasks and exit
-        //      (they share this token via `ReleaseQueue::with_cancel`).
-        self.cancel.cancel();
-
-        // Mark every registered resource as `Draining` so operators polling
-        // `health_check` during the drain window see the correct lifecycle
-        // phase instead of a stale `Ready`.
-        self.set_phase_all(crate::state::ResourcePhase::Draining);
 
         // Phase 2: DRAIN — wait for in-flight handles to be released.
         // On timeout, respect the policy: Abort preserves "graceful"
@@ -278,45 +353,96 @@ impl Manager {
             },
         }
 
-        // Drain has completed (or been force-released). Mark every
-        // resource as `ShuttingDown` so a health snapshot captured in the
-        // narrow window between here and `registry.clear()` reflects the
-        // real lifecycle state.
-        self.set_phase_all(crate::state::ResourcePhase::ShuttingDown);
+        // Enqueue every row before the first await: cancellation cannot strand
+        // a later row in an unobserved local Vec. Mutation and queue submission
+        // share admission with remove/replacement and final registration commit.
+        let receipts: Vec<_> = {
+            let _admission = self
+                .admission
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.registry
+                .clear()
+                .into_iter()
+                .map(|managed| {
+                    let key = managed.resource_key();
+                    (key, self.retire_resource(managed))
+                })
+                .collect()
+        };
 
-        // Phase 3: CLEAR — drop all ManagedResources so their
-        // Arc<ReleaseQueue> refs are released. The credential reverse-
-        // index (used by the old singular rotation dispatch) was removed
-        // for the slot model; per-slot rotation lands in a follow-up.
-        self.registry.clear();
+        if outstanding_after_drain > 0 {
+            tracing::warn!(
+                outstanding = outstanding_after_drain,
+                "resource manager: forced retirement incomplete; late cleanup remains open"
+            );
+            return Ok(ShutdownReport {
+                outstanding_handles_after_drain: outstanding_after_drain,
+                registry_cleared: true,
+                release_queue_drained: false,
+                dropped_release_tasks: self.release_queue.dropped_count(),
+            });
+        }
 
-        // Phase 4: AWAIT WORKERS — workers are already draining (from
-        // Phase 1 cancel signal). Await with a bounded timeout; failure
-        // to finish in time is a typed error, not a swallowed warning.
-        if let Some(handle) = self.release_queue_handle.lock().await.take() {
-            let shutdown_fut = ReleaseQueue::shutdown(handle);
-            if tokio::time::timeout(config.release_queue_timeout, shutdown_fut)
+        // Maintenance may still publish cleanup jobs until its row receipt
+        // completes. Keep the queue open until those producers have joined.
+        let started = tokio::time::Instant::now();
+        let terminal = tokio::time::timeout(config.release_queue_timeout, async {
+            let mut first_error = None;
+            for (key, receipt) in receipts {
+                let result = receipt
+                    .await
+                    .unwrap_or_else(|_| Err(crate::Error::cancelled()));
+                if let Err(source) = result {
+                    tracing::warn!(resource.key = %key, error.kind = ?source.kind(),
+                        "resource terminal cleanup failed");
+                    first_error
+                        .get_or_insert(ShutdownError::ResourceTeardownFailed { key, source });
+                }
+            }
+            // Removed/replaced rows may still own maintenance producers.
+            // Final admission is closed, so this set cannot grow afterward.
+            let _ = wait_for_tracker_drain(&self.retirement_tracker, Duration::MAX).await;
+            first_error
+        })
+        .await;
+
+        self.release_queue.close();
+        let handle = self.release_queue_handle.lock().await.take();
+        if let Some(handle) = handle {
+            let remaining = config
+                .release_queue_timeout
+                .saturating_sub(started.elapsed());
+            ReleaseQueue::shutdown_bounded(handle, remaining)
                 .await
-                .is_err()
-            {
-                tracing::warn!(
-                    timeout = ?config.release_queue_timeout,
-                    "resource manager: release queue workers did not \
-                     finish within release_queue_timeout"
-                );
+                .map_err(|error| match error {
+                    ShutdownError::ReleaseQueueTimeout { .. } => {
+                        ShutdownError::ReleaseQueueTimeout {
+                            timeout: config.release_queue_timeout,
+                        }
+                    },
+                    other => other,
+                })?;
+        }
+        match terminal {
+            Err(_) => {
                 return Err(ShutdownError::ReleaseQueueTimeout {
                     timeout: config.release_queue_timeout,
                 });
-            }
+            },
+            Ok(Some(error)) => return Err(error),
+            Ok(None) => {},
         }
 
-        tracing::info!("resource manager: shutdown complete");
+        let dropped_release_tasks = self.release_queue.dropped_count();
+        tracing::info!(dropped_release_tasks, "resource manager: shutdown complete");
         Ok(ShutdownReport {
             outstanding_handles_after_drain: outstanding_after_drain,
             registry_cleared: true,
             // If we reached this line Phase 4 either succeeded or had no
             // work to drain — either way the contract is "drained".
             release_queue_drained: true,
+            dropped_release_tasks,
         })
     }
 
@@ -377,6 +503,98 @@ mod drain_race_tests {
 
     use super::*;
     use crate::manager::Manager;
+
+    #[test]
+    fn shutdown_debug_redacts_provider_error_but_preserves_source_chain() {
+        let failure = ShutdownError::ResourceTeardownFailed {
+            key: nebula_core::resource_key!("debug-safety"),
+            source: crate::Error::permanent("PRIVATE_PROVIDER_PAYLOAD"),
+        };
+        for rendered in [
+            format!("{failure:?}"),
+            format!("{failure:#?}"),
+            failure.to_string(),
+        ] {
+            assert!(!rendered.contains("PRIVATE_PROVIDER_PAYLOAD"));
+            assert!(rendered.contains("debug-safety"));
+        }
+        assert!(
+            std::error::Error::source(&failure)
+                .unwrap()
+                .to_string()
+                .contains("PRIVATE_PROVIDER_PAYLOAD")
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_keeps_cleanup_open_for_already_retired_producers() {
+        let manager = Manager::new();
+        let settlement = RetirementSettlement::new(Arc::clone(&manager.retirement_tracker));
+        let queue = Arc::clone(&manager.release_queue);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (resume_tx, resume_rx) = tokio::sync::oneshot::channel();
+        let (cleaned_tx, cleaned_rx) = tokio::sync::oneshot::channel();
+        // Models a removed row's maintenance producer: the registry snapshot
+        // is empty, but producer ownership must keep admission to cleanup open.
+        drop(manager.release_queue.submit_release(move || {
+            Box::pin(async move {
+                let _settlement = settlement;
+                started_tx.send(()).expect("start receiver");
+                resume_rx.await.expect("resume sender");
+                queue.submit(move || {
+                    Box::pin(async move {
+                        cleaned_tx.send(()).expect("cleanup receiver");
+                    })
+                });
+                Ok(())
+            })
+        }));
+        started_rx.await.expect("producer started");
+        let shutdown = manager.graceful_shutdown(ShutdownConfig::default());
+        tokio::pin!(shutdown);
+        assert!(futures::poll!(shutdown.as_mut()).is_pending());
+        resume_tx.send(()).expect("producer still owned");
+        let report = shutdown.await.expect("producer and workers drain");
+        cleaned_rx.await.expect("late cleanup was accepted");
+        assert!(report.release_queue_drained);
+        assert_eq!(report.dropped_release_tasks, 0);
+    }
+
+    #[tokio::test]
+    async fn cancelling_manager_worker_wait_releases_task_ownership() {
+        let manager = Manager::new();
+        let ownership = Arc::new(());
+        let lease = Arc::clone(&ownership);
+        manager.release_queue.submit(move || {
+            Box::pin(async move {
+                std::future::pending::<()>().await;
+                drop(lease);
+            })
+        });
+        {
+            let shutdown = manager.graceful_shutdown(ShutdownConfig::default());
+            tokio::pin!(shutdown);
+            assert!(futures::poll!(shutdown.as_mut()).is_pending());
+        }
+        tokio::task::yield_now().await;
+        assert_eq!(Arc::strong_count(&ownership), 1);
+        assert_eq!(manager.release_queue.dropped_count(), 1);
+        assert!(matches!(
+            manager.graceful_shutdown(ShutdownConfig::default()).await,
+            Err(ShutdownError::AlreadyShuttingDown)
+        ));
+    }
+
+    #[tokio::test]
+    async fn manager_drop_closes_queue_even_with_external_queue_reference() {
+        let manager = Manager::new();
+        let queue = Arc::clone(&manager.release_queue);
+        let handle = manager.release_queue_handle.lock().await.take().unwrap();
+        drop(manager);
+        ReleaseQueue::shutdown(handle).await;
+        queue.submit(|| panic!("manager drop closes queue"));
+        assert_eq!(queue.dropped_count(), 1);
+    }
 
     /// Regression for the drain-race bug: previously `wait_for_drain`
     /// did `tracker.1.notified().await` without pre-registering the

@@ -15,6 +15,28 @@ use crate::{
     topology_tag::TopologyTag,
 };
 
+/// Owns the row even before its cleanup factory is first polled. In-progress
+/// maintenance can hold a strong row reference; aborting on abandonment breaks
+/// that cycle instead of relying on the row's destructor ever being reached.
+struct RetiringResource {
+    managed: Arc<dyn crate::registry::ManagedHandle>,
+    _settlement: super::shutdown::RetirementSettlement,
+}
+
+impl RetiringResource {
+    async fn close(self) -> Result<(), Error> {
+        self.managed.close_retained().await
+    }
+}
+
+impl Drop for RetiringResource {
+    fn drop(&mut self) {
+        // Normal cleanup has already joined/taken the task, so this is inert.
+        // Rejection or cancellation must not leave maintenance self-owning.
+        self.managed.abort_maintenance();
+    }
+}
+
 impl Manager {
     /// Registers a resource from a fully-specified [`RegistrationSpec`].
     ///
@@ -44,7 +66,9 @@ impl Manager {
     ///
     /// The resource is wrapped in a [`ManagedResource`] and stored in the
     /// registry under `R::key()`. If a resource with the same key, scope,
-    /// and slot identity is already registered, it is silently replaced.
+    /// and slot identity is already registered, its row is replaced. The old
+    /// runtime is fenced and queued for cleanup; existing leases retain their
+    /// ownership until release. Registration is rejected once shutdown starts.
     /// The manager's internal [`ReleaseQueue`](crate::ReleaseQueue) is automatically shared with
     /// the managed resource — callers never need to create or manage it.
     ///
@@ -120,10 +144,11 @@ impl Manager {
     pub fn register<R>(&self, spec: RegistrationSpec<R>) -> Result<(), Error>
     where
         R: Provider,
-        R::Instance: Clone,
         R::Topology: Topology<R>,
     {
         use crate::resource::ResourceConfig as _;
+
+        self.shutdown_guard()?;
 
         let RegistrationSpec {
             resource,
@@ -133,6 +158,24 @@ impl Manager {
             topology,
             recovery_gate,
         } = spec;
+
+        let credential_slot_names = R::credential_slot_names();
+        if (R::declares_credential_slots() || !credential_slot_names.is_empty())
+            && !Topology::<R>::pools(&topology)
+            && !Topology::<R>::handles_own_revoke(&topology)
+        {
+            tracing::warn!(
+                resource.key = %R::key(),
+                topology = ?Topology::<R>::tag(&topology),
+                slot_count = credential_slot_names.len(),
+                "registration rejected: credential-bearing non-pooling topology has no revoke policy"
+            );
+            return Err(Error::permanent(
+                "credential-bearing non-pooling topology must handle its own revoke; \
+                 implement the topology revoke policy before registration",
+            )
+            .with_resource_key(R::key()));
+        }
 
         config.validate()?;
 
@@ -198,11 +241,23 @@ impl Manager {
             tainted: std::sync::atomic::AtomicBool::new(false),
             in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
             maintenance_sweeps: AtomicU64::new(0),
+            maintenance: crate::runtime::managed::Maintenance::new(self.cancel.child_token()),
         });
 
+        // Author policy is evaluated outside the commit lock.
+        let schedule = managed.maintenance_schedule();
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.shutdown_guard()?;
         let type_id = std::any::TypeId::of::<ManagedResource<R>>();
-        self.registry
-            .register(key.clone(), type_id, scope, slot_identity, managed.clone());
+        let displaced =
+            self.registry
+                .register(key.clone(), type_id, scope, slot_identity, managed.clone());
+        if let Some(displaced) = displaced {
+            drop(self.retire_resource(displaced));
+        }
 
         // #387: everything below this point is a single funnel — the
         // resource is installed, so advance its phase from `Initializing`
@@ -213,7 +268,7 @@ impl Manager {
         // Start the background idle/lifetime reaper for pools that expire
         // instances. No-op for non-pool topologies and for pools with no
         // TTL configured (zero background overhead in that case).
-        self.spawn_pool_maintenance(&managed);
+        self.spawn_pool_maintenance(&managed, schedule);
 
         if let Some(m) = &self.metrics {
             m.record_create();
@@ -244,7 +299,7 @@ impl Manager {
     ///   [`ManagedResource`], so it never keeps the resource alive — a
     ///   `remove()` drops the last strong ref and the reaper exits on its
     ///   next tick;
-    /// - selects on the manager's cancellation token, so `shutdown` /
+    /// - selects on the row's cancellation token, so retirement / `shutdown` /
     ///   `graceful_shutdown` stops it promptly;
     /// - runs each sweep *outside* the cancel `select!` so a cancellation
     ///   cannot drop a maintenance future mid-eviction.
@@ -260,16 +315,18 @@ impl Manager {
     /// reload still evicts stale-fingerprint instances and a revoke still
     /// evicts revoked ones on the next sweep — only the TTL *durations* are
     /// frozen for the pool's lifetime.
-    fn spawn_pool_maintenance<R>(&self, managed: &Arc<ManagedResource<R>>)
-    where
+    fn spawn_pool_maintenance<R>(
+        &self,
+        managed: &Arc<ManagedResource<R>>,
+        schedule: Option<crate::topology::MaintenanceSchedule>,
+    ) where
         R: Provider,
-        R::Instance: Clone,
         R::Topology: Topology<R>,
     {
         // Only topologies that run a maintenance reaper return a schedule; a
         // topology with no idle eviction returns `None` and pays zero
         // background cost.
-        let Some(schedule) = managed.maintenance_schedule() else {
+        let Some(schedule) = schedule else {
             return;
         };
         if schedule.idle_timeout.is_none() && schedule.max_lifetime.is_none() {
@@ -283,7 +340,7 @@ impl Manager {
             .maintenance_interval
             .max(std::time::Duration::from_secs(1));
         let weak = Arc::downgrade(managed);
-        let cancel = self.cancel.clone();
+        let cancel = managed.maintenance.cancellation_token();
         let bus = Arc::clone(&self.event_bus);
         let key = R::key();
         // The reaper has no caller-supplied context (it runs on a timer, not
@@ -296,7 +353,7 @@ impl Manager {
             cancel.clone(),
         );
 
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let mut ticker = tokio::time::interval(period);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             // The first tick fires immediately; consume it so the first real
@@ -339,6 +396,7 @@ impl Manager {
                 let _refilled = managed.refill_min_idle(&refill_ctx).instrument(span).await;
             }
         });
+        managed.maintenance.set_task(task);
     }
 
     /// Schema-validate an **already-resolved** config JSON tree against
@@ -492,7 +550,7 @@ impl Manager {
     ///   its value.
     /// - [`Error::permanent`] when a `slot_bindings` key does not correspond
     ///   to a declared credential slot on `R`.
-    /// - Any [`Error`](Error) returned by the underlying typed
+    /// - Any [`Error`] returned by the underlying typed
     ///   [`register`](Self::register).
     // guard-justified: irreducible engine ABI — the engine registrar dispatches
     // positionally with a JSON-driven shape; collapsing to a struct reintroduces
@@ -520,7 +578,6 @@ impl Manager {
     where
         R: Provider + nebula_core::DeclaresDependencies,
         R::Config: serde::de::DeserializeOwned,
-        R::Instance: Clone,
         R::Topology: Topology<R>,
     {
         // -1. Registration consistency check (belt to a future compile-time
@@ -622,45 +679,6 @@ impl Manager {
                 .map(|(slot, cred)| (slot.as_str(), cred.as_str())),
         );
 
-        // 4b. Shared-topology revoke footgun guard (observability / DoD). A
-        //     non-pooling topology (`pools() == false`) holding a
-        //     credential-bearing singleton — a gRPC channel, a WebSocket — is
-        //     NOT in the framework store, so the revoke-epoch fence cannot evict
-        //     it; its revoke teardown runs through
-        //     `Topology::dispatch_credential_hook`, which DEFAULTS to a no-op.
-        //     For such a topology the default no-op leaks streams on revoke, so
-        //     the author MUST override the hook. The built-in `Resident`
-        //     overrides it; this fires only for under-built custom topologies
-        //     that pair a credential slot with a non-pooling topology. Make it
-        //     loud — it is the one place a careful author still matters.
-        if !slot_bindings.is_empty()
-            && !Topology::<R>::pools(&topology)
-            && !Topology::<R>::handles_own_revoke(&topology)
-        {
-            tracing::warn!(
-                target: "nebula_resource::register_resolved",
-                resource = %R::key(),
-                slot_count = slot_bindings.len(),
-                "registering a credential-bearing resource on a non-pooling \
-                 topology: the framework store revoke-fence cannot reach a \
-                 shared/multiplexed instance — the topology MUST override \
-                 `dispatch_credential_hook` to tear down on revoke, or a \
-                 revoked credential will keep serving live streams"
-            );
-            // guard-justified: a debug-build trip for the shared-topology revoke
-            // footgun — a non-pooling topology with credential slots that never
-            // overrides `dispatch_credential_hook` leaks on revoke; the invariant
-            // is enforced loudly in dev, the `tracing::warn` above carries it in
-            // release. Built-in `Resident` overrides the hook, so this never
-            // fires for first-party topologies.
-            debug_assert!(
-                false,
-                "non-pooling topology with {} credential slot(s) must override \
-                 Topology::dispatch_credential_hook (a no-op leaks on revoke)",
-                slot_bindings.len(),
-            );
-        }
-
         // 5. Dispatch into the single typed register funnel via a
         //    `RegistrationSpec`. ResourceConfig::validate() runs inside
         //    `register`, so domain-level rules (PoolConfig sanity, host
@@ -731,7 +749,6 @@ impl Manager {
     ) -> Result<ReloadOutcome, Error>
     where
         R: Provider,
-        R::Instance: Clone,
         R::Topology: Topology<R>,
     {
         use crate::resource::ResourceConfig as _;
@@ -805,10 +822,19 @@ impl Manager {
     /// # Errors
     ///
     /// Returns [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if
-    /// the key is not registered.
+    /// the key is not registered. Successful removal queues terminal cleanup;
+    /// it does not wait for provider teardown or outstanding handles.
     pub fn remove(&self, key: &ResourceKey) -> Result<(), Error> {
-        if !self.registry.remove(key) {
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let removed = self.registry.remove(key);
+        if removed.is_empty() {
             return Err(Error::not_found(key));
+        }
+        for managed in removed {
+            drop(self.retire_resource(managed));
         }
 
         if let Some(m) = &self.metrics {
@@ -827,7 +853,7 @@ impl Manager {
     /// its doc for the full-key blast radius this method avoids. Mirrors
     /// the row identity [`register`](Self::register) itself uses
     /// (`(scope, slot_identity)`, per
-    /// [`Registry::register`](crate::registry::Registry::register)'s doc),
+    /// `Registry::register`'s internal contract),
     /// and the same pinning discipline the credential-rotation fan-out
     /// index applies via `ResourceFanoutIndex::unbind_resource_identity`
     /// when a single resolved row is torn down without disturbing
@@ -843,9 +869,14 @@ impl Manager {
         scope: &ScopeLevel,
         slot_identity: &crate::dedup::SlotIdentity,
     ) -> Result<(), Error> {
-        if !self.registry.remove_for(key, scope, slot_identity) {
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(removed) = self.registry.remove_for(key, scope, slot_identity) else {
             return Err(Error::not_found(key));
-        }
+        };
+        drop(self.retire_resource(removed));
 
         if let Some(m) = &self.metrics {
             m.record_destroy();
@@ -853,5 +884,24 @@ impl Manager {
         self.emit(ResourceEvent::Removed { key: key.clone() });
         tracing::debug!(%key, ?scope, "resource removed (single resolved row)");
         Ok(())
+    }
+
+    /// Transfers a fenced row into queue-owned cleanup before any await.
+    pub(super) fn retire_resource(
+        &self,
+        managed: Arc<dyn crate::registry::ManagedHandle>,
+    ) -> crate::release_queue::ReleaseReceipt {
+        managed.begin_close();
+        managed.set_phase(crate::state::ResourcePhase::ShuttingDown);
+        let key = managed.resource_key();
+        tracing::debug!(resource.key = %key, "resource row retired; cleanup queued");
+        let retirement = RetiringResource {
+            managed,
+            _settlement: super::shutdown::RetirementSettlement::new(Arc::clone(
+                &self.retirement_tracker,
+            )),
+        };
+        self.release_queue
+            .submit_release(move || Box::pin(retirement.close()))
     }
 }

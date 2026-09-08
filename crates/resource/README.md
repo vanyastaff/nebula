@@ -15,7 +15,7 @@ External connections — database pools, HTTP clients, message brokers — are a
 
 ## Role
 
-**Bulkhead Pool** (Release It! ch "Stability Patterns — Bulkhead"). Isolates resource exhaustion per topology so one depleted pool cannot cascade to unrelated paths. Three built-in topologies cover the integration space: `Pooled` (N interchangeable stateful instances), `Resident` (one shared instance, cloned on acquire), and `Bounded` (a runtime concurrency cap with no warm idle pool — capped / exclusive / unbounded). The `Provider` trait declares three associated types (`Config`, `Instance`, `Topology`) and lifecycle methods; per-topology hook traits (`PoolProvider` / `ResidentProvider` / `BoundedProvider`) add recycle / liveness / reset decisions. The framework owns the acquire loop and the credential-revoke fence; a custom `Topology<R>` impl can register through the same `Manager`. Long-running workers (`Daemon`) and pull-based subscriptions (`EventSource`) live in `nebula_engine::daemon` — canon §3.5 reserves "Resource" for pool/SDK clients.
+**Bulkhead Pool** (Release It! ch "Stability Patterns — Bulkhead"). Isolates resource exhaustion per topology so one depleted pool cannot cascade to unrelated paths. Three built-in topologies provide common policies: `Pooled` (N interchangeable stateful instances), `Resident` (one retained master shared through owning Arc entries), and `Bounded` (a runtime concurrency cap with no warm idle pool — capped / exclusive / unbounded). The `Provider` trait declares three associated types (`Config`, `Instance`, `Topology`) and lifecycle methods; per-topology hook traits (`PoolProvider` / `ResidentProvider` / `BoundedProvider`) add recycle / liveness / reset decisions. The framework owns the acquire loop and the credential-revoke fence; a custom `Topology<R>` impl can register through the same `Manager`. Long-running workers (`Daemon`) and pull-based subscriptions (`EventSource`) live in `nebula_engine::daemon` — canon §3.5 reserves "Resource" for pool/SDK clients.
 
 ## Public API (v4 — slot-binding pattern, 2026-04-29)
 
@@ -151,22 +151,47 @@ manager.register(RegistrationSpec {
 })?;
 ```
 
-`slot_identity` is the **collision-free structural cross-tenant barrier** (`SlotIdentity::{Unbound, Structural(Arc<[(String, String)]>)}`): two registrations of the same resource type at the same `scope` whose resolved `(slot, credential)` bindings differ occupy **distinct** registry rows with **distinct** runtimes. Equality/hash is over the exact pair list — a distinct resolved credential is a distinct identity *by construction*, not a hash digest, so there is no collision space. `SlotIdentity::Unbound` preserves the historical single-row-per-`(key, scope)` dedup contract and carries no secret bytes. The JSON/`{{ … }}` engine-facing entry is `Manager::register_resolved::<R>(…)` (an internal positional ABI the engine registrar drives, not a general-purpose API).
+`slot_identity` is a collision-free structural resolved-credential identity (`SlotIdentity::{Unbound, Structural(Arc<[(String, String)]>)}`). Registrations with different exact `(slot, credential)` bindings occupy distinct rows, but this identity is **not tenant authorization**: equal credentials or unbound registrations do not prove equal tenants. Hosts must admit the correct scope and caller authority. The JSON/expression entry point is the internal `Manager::register_resolved::<R>(…)` funnel.
 
 The framework resolves declared `#[credential]` slots **before** invoking `Provider::create` — implementations read each resolved credential through the derive-emitted `self.<field>_slot()` accessor (`Option<Arc<CredentialGuard<C>>>`), handling the `None` (unbound) case explicitly.
 
+### Lifecycle ownership and breaking migration
+
+`Provider::Instance` need not be `Clone`, including for Resident. Guards own the
+actual topology entry and expose shared references; `Sync` is still required.
+Exclusive mutable access and `!Sync` instances are not provided by this API.
+Aliases intentionally exposed by a provider's instance remain the author's responsibility.
+
+- Replace fabricated `ResourceGuard::owned` / `guarded` / `guarded_with_permit`
+  and `detach` with manager acquisition and explicit `release().await`.
+- Custom `Topology::create_entry` returns `CreatedEntry<Entry>` and transfers
+  displaced retained entries together with the new lease. `into_owned_instance`
+  returns `Option<Instance>`: shared ownership yields an instance only on final release.
+- Implement `Topology::close_retained` to stop creation and transfer retained
+  owners. Topology policy never calls `Provider::destroy` itself.
+- Drain counters and `Released` events settle after queued cleanup completes or
+  is abandoned, not synchronously inside guard Drop. Await release or graceful shutdown.
+- Registration after shutdown is rejected. Replacement/removal fences the old
+  row and schedules owned retirement; normal graceful shutdown awaits idle/master teardown.
+- Force with outstanding leases returns an incomplete snapshot and retains cleanup
+  workers while the manager lives. Manager Drop closes the queue; later releases
+  may be rejected and counted. This process-local queue cannot recover work after a crash.
+- `ShutdownError::ResourceTeardownFailed` preserves the typed provider error through
+  its source chain. Consequently, `ShutdownError` no longer implements `UnwindSafe`
+  or `RefUnwindSafe`; callers crossing unwind boundaries must account for that source.
+
 ### Other public API
 
-- `ResourceGuard` — RAII instance guard with `Owned`/`Guarded` modes; derefs to `R::Instance`, releases on drop; implements `Debug` (key + topology, no instance leak).
+- `ResourceGuard` — manager-owned topology entry; borrows `R::Instance` through `Deref`, queues release on Drop, or awaits that same queued job through `release()`. No fabricated guards or detachable entries.
 - `ResourceRef<R>` — lazy reference type holding a `ResourceId` string + `PhantomData<R>`. Resolves to a `ResourceGuard<R>` via `.resolve(ctx).await`.
 - `RegistrationSpec` — the single registration param aggregate (see above).
 - `AcquireOptions` — per-call acquire knobs (`deadline`, `acquire_slow_threshold`); every `acquire_*` takes one.
-- `SlotIdentity`, `DedupKey` — collision-free structural resolved-credential identity (`Unbound` / `Structural`); the cross-tenant barrier, and the `(key, scope, slot_identity)` registry dedup key.
+- `SlotIdentity`, `DedupKey` — structural resolved-credential identity (`Unbound` / `Structural`) and the `(key, scope, slot_identity)` registry dedup key; neither is tenant authority.
 - `ManagerConfig`, `RegisterOptions` — configuration surface.
 - `Registry`, `ManagedHandle` (sealed), `LookupOutcome` — type-erased storage + lookup result for registered resource instances.
 - `ResourceMetadata` — static descriptor: key, name, description, schema, version, tags.
 - `ResourceConfig` — operational config trait (no secrets); supertype `HasSchema`.
-- `SlotCell` — lock-free `ArcSwap`-based slot cell the framework populates/rotates (the public cell type; the internal `Cell` alias is no longer exported).
+- `SlotCell` — lock-free `ArcSwap`-based credential slot cell the framework populates/rotates.
 - `TeardownCx`, `TeardownReason` — deadline + cause handed to `Provider::destroy` (ADR-0093 teardown contract).
 - `ReleaseQueue` — background worker pool for async cleanup. Drain on crash is best-effort; see §11.4 canon note.
 - `DrainTimeoutPolicy`, `ShutdownConfig`, `ShutdownReport`, `ShutdownError` — `Manager::graceful_shutdown` drain policy, outcome, and typed failure.
@@ -231,7 +256,35 @@ swap → refresh/revoke sequence behind the second example is diagrammed in
 
 ## Contract
 
-- **[L2-§11.4]** Resource lifecycle (acquire → use → release) is engine-owned. Async release is best-effort on crash; orphaned resources rely on the next process to drain via `ReleaseQueue`. Authors must not assume "release ran" without an explicit checkpoint. Seam: `crates/resource/src/release_queue.rs` — `ReleaseQueue`. Test: `crates/resource` unit tests.
+`Manager::graceful_shutdown` first rejects acquires and waits for guards while
+keeping asynchronous release available. It fences idle stores, joins tracked
+maintenance, and transfers idle/master ownership to teardown before closing the
+queue and awaiting workers. Replaced/removed rows are also included in cleanup.
+`Force` with outstanding leases returns an incomplete report and leaves cleanup
+workers open while the manager lives; late leases can still release.
+An `Abort` drain timeout or cancellation during drain preserves the registry and
+cleanup while the manager lives. Immediate `shutdown()` and cancellation of the
+manager token also leave cleanup available; dropping the manager closes it.
+
+The release worker budget is cooperative: expiry aborts all workers and awaits
+termination, including disposal of buffered tasks. Tokio cannot preempt a blocking
+future poll or destructor. Cancellation during worker waiting requests abort but
+cannot await acknowledgement. Standalone `ReleaseQueue::shutdown` retains its
+best-effort behavior: cancelling its wait leaves workers running.
+
+`ShutdownReport::release_queue_drained` reports worker completion, and
+`dropped_release_tasks` is a cumulative queue-lifetime snapshot of futures that
+did not complete. Detached rescue tasks or guards dropped after `Force` may add
+losses later. Neither a drained queue nor zero observed losses proves that every
+provider teardown succeeded. Framework jobs return typed results; completed
+provider errors are observed separately from abandoned jobs. `ResourceGuard::release().await` is
+the explicit per-guard error checkpoint.
+
+Queue channels are bounded, but saturation rescue tasks are detached and have
+bounded lifetimes, not bounded cardinality. This is not a bounded-memory guarantee
+under arbitrary sustained submissions, nor a durable cleanup log.
+
+- **[L2-§11.4]** Resource lifecycle (acquire → use → release) is engine-owned. Async release is best-effort on crash; process-local queued jobs cannot be recovered by the next process. Authors must not assume "release ran" without an explicit checkpoint. External orphan recovery requires a separate durable/TTL strategy.
 - **[L2-§13.3]** Acquire → use → release for Resource-backed steps must be attributable in durable journal or an operator-visible trace. Not only ephemeral logs. Seam: `ResourceEvent` variants emitted through the engine observability path.
 - **[L1-§11.4]** For long-lived exclusive/external resources (locks, leased cloud instances), deployments need an external TTL / dead-man strategy; Nebula v1 does not provide an external lease arbiter.
 - **Bulkhead isolation** — `ErrorKind::Backpressure` signals pool exhaustion; callers decide retry policy. Pool depletion does not cascade across topology boundaries.
@@ -318,7 +371,7 @@ These types are L4 implementation detail — rename/refactor without canon revis
 | Topology   | Use case                        | Instance model                                    |
 |------------|---------------------------------|---------------------------------------------------|
 | `Pooled`   | Databases (Postgres, Redis)     | N interchangeable instances with checkout/recycle |
-| `Resident` | HTTP clients (`reqwest::Client`) | One shared instance, clone on acquire             |
+| `Resident` | HTTP clients (`reqwest::Client`) | One retained instance, shared owning lease entries |
 | `Bounded`  | License seats, serial device    | Concurrency cap, no warm pool (capped/exclusive/unbounded) |
 
 Long-running workers (`Daemon`) and pull-based event subscriptions (`EventSource`) live in `nebula_engine::daemon`; this crate retains pool/SDK-client topologies only (canon §3.5).
@@ -333,16 +386,17 @@ and pinning `type Topology = MyPool` on the resource. The contract is
 loop — the fenced `InstanceStore::checkout`, the stale-entry destroy, the
 cancel-safe guard wrap, and the on-release return-or-destroy. The topology
 supplies only thin R-aware hooks (`create_entry`, `entry_instance`,
-`into_instance`, `accept`, `prepare`, `on_release`, `pools`, `store_capacity`,
+`into_owned_instance`, `close_retained`, `accept`, `prepare`, `on_release`, `pools`, `store_capacity`,
 `dispatch_credential_hook`, …). A custom topology therefore writes **zero**
 store / checkout / destroy / revoke-fence code — the credential-revoke fence is
 framework-owned for every topology, built-in and custom alike. The async hooks
 are plain `async fn` in trait (RPITIT) — do **not** annotate your
 `impl Topology<R>` block with `#[async_trait]` (`Provider` still needs it;
 `Topology` does not). A non-pooling
-topology that carries credential slots (a shared/multiplexed singleton) must
-override `dispatch_credential_hook` for revoke teardown; the registrar emits a
-loud warning when it does not.
+topology that carries credential slots must declare `handles_own_revoke` and
+provide the corresponding revoke policy, such as `dispatch_credential_hook`
+for a retained shared instance. Typed and resolved registration reject an
+unsupported policy with a permanent error, including declared-but-unbound slots.
 
 ### Shared resource pattern
 
@@ -409,4 +463,4 @@ exactly one `create` invocation, all 10 leases share the same `Arc`.
 - **Fingerprint change in `ResourceConfig`**. Calling `Manager::reload_config::<R>(new_config, &scope)` validates the new config, swaps it in, bumps the resource's `generation`, and emits `ResourceEvent::ConfigReloaded`. For `Pooled` topologies the pool's fingerprint atomic is updated so idle entries with the stale fingerprint are evicted on next acquire or release. `Resident` topologies keep the existing runtime alive until liveness fails (the rebuild then picks up the new config). No-op reloads (same fingerprint) short-circuit to `ReloadOutcome::NoChange` without bumping the generation.
 - **Different `R::key()`**. Two distinct `Resource` impls — even configured identically — register under separate registry rows. `acquire_resident::<TelegramBot>` and `acquire_resident::<AlternateBot>` produce independent runtimes and can be replaced or shut down independently.
 - **Different `ScopeLevel`**. The same `Resource` impl registered at `Organization(A)` and `Organization(B)` produces two independent instances; the registry's scope-aware `find_by_scope` does an exact match first and falls back to `Global` only when no exact match exists. Per-scope reloads / shutdowns affect only the matching scope.
-- **Manager shutdown**. `Manager::shutdown()` cancels the shared token; in-flight acquires drain via `graceful_shutdown` per canon §11.4. After shutdown, every acquire returns `ErrorKind::Cancelled` — no leases are minted from a torn-down registry.
+- **Manager shutdown**. `Manager::shutdown()` cancels the manager token; in-flight acquires drain via `graceful_shutdown` per canon §11.4. Cleanup stays open during handle drain. After shutdown, every acquire returns `ErrorKind::Cancelled`.

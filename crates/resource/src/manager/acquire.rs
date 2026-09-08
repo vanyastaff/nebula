@@ -260,7 +260,6 @@ impl Manager {
             + Send
             + Sync
             + 'static,
-        R::Instance: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
         self.run_acquire_dispatch(managed, ctx, options).await
@@ -304,7 +303,6 @@ impl Manager {
             + Send
             + Sync
             + 'static,
-        R::Instance: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup_for_acquire_with_identity::<R>(ctx, slot_identity)?;
         self.run_acquire_dispatch(managed, ctx, options).await
@@ -330,7 +328,6 @@ impl Manager {
     ) -> Result<crate::guard::ResourceGuard<R>, Error>
     where
         R: Provider,
-        R::Instance: Clone,
         R::Topology: Topology<R>,
     {
         // Foolproofing for open (third-party) topologies: bound the author's
@@ -496,7 +493,6 @@ impl Manager {
             + Send
             + Sync
             + 'static,
-        R::Instance: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
         self.run_acquire_dispatch(managed, ctx, options).await
@@ -541,7 +537,6 @@ impl Manager {
             + Send
             + Sync
             + 'static,
-        R::Instance: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup_for_acquire_with_identity::<R>(ctx, slot_identity)?;
         self.run_acquire_dispatch(managed, ctx, options).await
@@ -588,7 +583,6 @@ impl Manager {
             + Send
             + Sync
             + 'static,
-        R::Instance: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
         self.run_acquire_dispatch(managed, ctx, options).await
@@ -634,7 +628,6 @@ impl Manager {
             + Send
             + Sync
             + 'static,
-        R::Instance: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup_for_acquire_with_identity::<R>(ctx, slot_identity)?;
         self.run_acquire_dispatch(managed, ctx, options).await
@@ -651,7 +644,6 @@ impl Manager {
             + Send
             + Sync
             + 'static,
-        R::Instance: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup::<R>(scope).ok()?;
         Some(managed.topology.stats(&managed.store).await)
@@ -697,7 +689,6 @@ impl Manager {
             + Send
             + Sync
             + 'static,
-        R::Instance: Clone + Send + Sync + 'static,
     {
         let managed = self.lookup_for_acquire_scope::<R>(ctx)?;
         let config = managed.config();

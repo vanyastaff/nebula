@@ -1,161 +1,79 @@
-//! Resident topology — one shared instance, clone on acquire.
+//! Resident topology with one retained master and shared owning lease entries.
 //!
-//! `Resident<R>` is the built-in framework resident topology. It holds a single
-//! shared runtime in a lock-free `Cell` and, on each acquire, clones it into an
-//! owned lease. It supplies the entry-centric [`Topology<R>`] hooks the framework
-//! acquire loop drives:
-//!
-//! - `Entry = R::Instance` (the cloned shared handle the guard holds).
-//! - `pools() == false`: a released clone is dropped, never pooled, so the
-//!   framework idle store stays empty and every acquire is an idle-miss that
-//!   calls `create_entry`.
-//! - `create_entry` clones the live master handle (building it under the create
-//!   lock on first acquire / after a failed liveness check).
-//! - `entry_instance` / `into_instance` are identity.
-//! - `dispatch_credential_hook` runs the create-vs-rotate reconcile against the
-//!   master cell.
-//!
-//! The resident keeps its own master-handle cell (separate from the empty
-//! framework store); the store-fence never reaches the master, so revoke
-//! teardown for a resident runs through `dispatch_credential_hook`.
-//!
-//! [`Topology<R>`]: crate::topology::Topology
+//! Only the framework destroys instances. Retiring a master transfers its Arc
+//! to framework cleanup; the final lifecycle owner extracts the instance.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::Arc;
 
 use tokio::sync::Mutex;
-use tracing::warn;
 
 use crate::{
-    cell::Cell,
     context::ResourceContext,
     error::Error,
-    resource::{Provider, TeardownReason},
-    runtime::teardown::destroy_within,
-    topology::{Ticket, Topology, Unavailable, resident::config::Config, store::InstanceStore},
+    resource::Provider,
+    topology::{
+        CreatedEntry, Ticket, Topology, Unavailable, resident::config::Config, store::InstanceStore,
+    },
     topology_tag::TopologyTag,
 };
 
-/// Framework resident topology — one shared instance, clone on acquire.
+/// One retained master shared by leases without requiring instance cloning.
 ///
-/// Holds a single shared runtime instance in a lock-free `Cell`. On acquire, the
-/// framework calls [`create_entry`](Topology::create_entry), which clones the live
-/// master handle (building it under the create lock on the first acquire or
-/// after a failed liveness check). The framework idle store stays empty —
-/// `pools()` is `false`, so a released clone is dropped, never recycled.
-///
-/// A `create_lock` mutex serialises the slow path (create / recreate) **and**
-/// the per-slot rotation hook dispatch, so the create-vs-rotate reconcile is
-/// exactly-once.
-///
-/// [`Topology<R>`]: crate::topology::Topology
+/// Creation, rotation, and terminal close serialize on one state lock. This
+/// excludes transient Arc owners outside the lock from final-owner extraction.
 pub struct Resident<R: Provider> {
-    cell: Cell<R::Instance>,
+    state: Mutex<ResidentState<R::Instance>>,
     config: Config,
-    /// Serialises the create / recreate slow path **and** the per-slot
-    /// rotation hook dispatch (see [`dispatch_resident_hook`]). The
-    /// rotation dispatch holding this same lock is what makes the
-    /// create-vs-rotate reconcile *exactly-once*: a `create` slow path
-    /// and a rotation dispatch can never interleave, so the freshly-built
-    /// runtime's epoch is either reconciled inside `create` (dispatch ran
-    /// first / sees the post-reconcile epoch) or by the dispatch (it sees
-    /// the stored runtime + its recorded epoch) — never both.
-    ///
-    /// [`dispatch_resident_hook`]: Self::dispatch_resident_hook
-    create_lock: Mutex<()>,
-    /// The credential epoch ([`HasCredentialSlots::credential_slot_epoch`](crate::resource::HasCredentialSlots::credential_slot_epoch)) the
-    /// currently-stored runtime was built against. `0` when no runtime has
-    /// been created. Written only under `create_lock`; read under it by
-    /// the rotation dispatch. A stored runtime whose `built_epoch` is
-    /// *older* than the live slot epoch was bound to a pre-rotation
-    /// credential — the lost-update the dispatch must reconcile rather
-    /// than silently report success for (per-resource revoke deferral / #680).
-    ///
-    /// **Intentionally NOT the same counter as `SlotCell::generation()`,
-    /// and must not be folded into it.** `built_epoch` advances *only* on
-    /// a successful stale reconcile (the `stale && Ok(())` arm of
-    /// [`dispatch_resident_hook`]) or when stamped at create time;
-    /// `SlotCell::generation()` bumps on *every* slot transition, including
-    /// a no-op `take()` on an already-empty or never-bound slot (a "clear"
-    /// signal is meaningful to a rotation observer regardless of prior
-    /// state). A resident runtime can "catch up" to its own `built_epoch`
-    /// by completing a reconcile; it has no way to advance
-    /// `SlotCell::generation()`. Backing this counter with the slot
-    /// generation would leave a correctly-bound runtime perpetually
-    /// re-classified as stale after any unrelated no-op `take()`, forcing
-    /// redundant `on_credential_revoke` / `on_credential_refresh`
-    /// re-delivery — a credential-isolation behavior change. Keep the two
-    /// counters separate.
-    ///
-    /// [`dispatch_resident_hook`]: Self::dispatch_resident_hook
-    built_epoch: AtomicU64,
-    /// The `R::Config` fingerprint the currently-stored master runtime was
-    /// built against (`0` before the first create). Compared on each acquire
-    /// against the live config snapshot's fingerprint: a mismatch means
-    /// `Manager::reload_config` swapped the config, so the master is rebuilt
-    /// with the new config on the next acquire (lazy rebuild, symmetric to the
-    /// pool's stale-fingerprint eviction). Written only under `create_lock`.
-    ///
-    /// Distinct from [`built_epoch`](Self::built_epoch) (credential rotation)
-    /// and from `Pooled::current_fingerprint` (the pool is seeded with the
-    /// fingerprint at construction; the resident instead derives it from the
-    /// live config the framework threads into every `create_entry`, so no
-    /// constructor or `set_fingerprint` change is needed).
-    built_fingerprint: AtomicU64,
+}
+
+struct ResidentState<I> {
+    master: Option<Arc<I>>,
+    built_epoch: u64,
+    built_fingerprint: u64,
+    closed: bool,
 }
 
 impl<R: Provider> std::fmt::Debug for Resident<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // `cell: Cell<R::Instance>` holds the live master handle with no
-        // `Debug` bound on `R::Instance` — report only whether it is
-        // populated, not its contents.
+        let state = self.state.try_lock().ok();
         f.debug_struct("Resident")
             .field("config", &self.config)
-            .field("is_initialized", &self.cell.is_some())
-            .field("built_epoch", &self.built_epoch.load(Ordering::Relaxed))
             .field(
-                "built_fingerprint",
-                &self.built_fingerprint.load(Ordering::Relaxed),
+                "is_initialized",
+                &state.as_ref().map(|state| state.master.is_some()),
             )
+            .field("closed", &state.as_ref().map(|state| state.closed))
             .finish_non_exhaustive()
     }
 }
 
 impl<R: Provider> Resident<R> {
-    /// Creates a new resident topology with the given configuration.
+    /// Creates a resident topology without initializing its master.
     pub fn new(config: Config) -> Self {
         Self {
-            cell: Cell::new(),
+            state: Mutex::new(ResidentState {
+                master: None,
+                built_epoch: 0,
+                built_fingerprint: 0,
+                closed: false,
+            }),
             config,
-            create_lock: Mutex::new(()),
-            built_epoch: AtomicU64::new(0),
-            built_fingerprint: AtomicU64::new(0),
         }
     }
 
-    /// Returns the current configuration.
+    /// Returns the operational configuration.
     pub fn config(&self) -> &Config {
         &self.config
     }
 
-    /// Returns `true` if the cell currently holds an instance.
-    pub fn is_initialized(&self) -> bool {
-        self.cell.is_some()
+    /// Reports whether a master is currently retained.
+    pub async fn is_initialized(&self) -> bool {
+        self.state.lock().await.master.is_some()
     }
 
-    /// The credential epoch the currently-stored runtime was built against.
-    ///
-    /// Test-only: the create-vs-rotate reconcile classifies a runtime as
-    /// stale iff this is *older* than the live slot epoch, so a test that
-    /// drives a `SlotCell::store` into the create slow path's
-    /// sample-vs-read window needs to assert this equals the epoch the
-    /// runtime actually bound (not the pre-create approximation).
     #[cfg(test)]
-    pub(crate) fn built_epoch_for_test(&self) -> u64 {
-        self.built_epoch.load(Ordering::Acquire)
+    pub(crate) async fn built_epoch_for_test(&self) -> u64 {
+        self.state.lock().await.built_epoch
     }
 
     /// Per-slot rotation hook dispatch for the Resident topology, with the
@@ -210,9 +128,9 @@ impl<R: Provider> Resident<R> {
         // Serialise against the create slow path: the reconcile must not
         // interleave with an instance being built / its epoch being
         // published, so delivery is exactly-once.
-        let _guard = self.create_lock.lock().await;
+        let mut state = self.state.lock().await;
 
-        let Some(runtime) = self.cell.load() else {
+        let Some(runtime) = state.master.as_ref() else {
             // No live runtime. Not a stale-skip: nothing is bound to a
             // credential at all, and a concurrent first create is excluded
             // by `create_lock` (it runs strictly before/after this and
@@ -229,7 +147,7 @@ impl<R: Provider> Resident<R> {
         };
 
         let slot_epoch = resource.credential_slot_epoch();
-        let built = self.built_epoch.load(Ordering::Acquire);
+        let built = state.built_epoch;
         let stale = built < slot_epoch;
         if stale {
             tracing::warn!(
@@ -262,9 +180,9 @@ impl<R: Provider> Resident<R> {
             crate::hook_guard::DEFAULT_AUTHOR_HOOK_CEILING,
             async {
                 if refresh {
-                    resource.on_credential_refresh(slot, &runtime).await
+                    resource.on_credential_refresh(slot, runtime).await
                 } else {
-                    resource.on_credential_revoke(slot, &runtime).await
+                    resource.on_credential_revoke(slot, runtime).await
                 }
             },
         )
@@ -289,7 +207,7 @@ impl<R: Provider> Resident<R> {
         match res {
             Ok(()) => {
                 if stale {
-                    self.built_epoch.store(slot_epoch, Ordering::Release);
+                    state.built_epoch = slot_epoch;
                 }
                 Ok(())
             },
@@ -301,118 +219,58 @@ impl<R: Provider> Resident<R> {
 impl<R> Resident<R>
 where
     R: crate::topology::resident::ResidentProvider + Send + Sync + 'static,
-    R::Instance: Clone + Send + Sync + 'static,
 {
-    /// Clones the shared runtime, building it under the create lock on the
-    /// first acquire / after a failed liveness check.
-    ///
-    /// This is the body of [`Topology::create_entry`] for the resident: because
-    /// `pools()` is `false`, the framework store stays empty and the framework
-    /// calls this on **every** acquire — the clone-or-create logic lives here,
-    /// not a fast/slow split in the framework loop.
+    /// Builds before replacing, preserving the old master on failure.
     async fn clone_or_create(
         &self,
         resource: &R,
         resource_config: &R::Config,
         ctx: &ResourceContext,
-    ) -> Result<R::Instance, Error> {
-        // The `R::Config` fingerprint of the live snapshot the framework
-        // threaded in. `Manager::reload_config` swaps that snapshot, so a
-        // changed fingerprint is the signal to rebuild the master against the
-        // new config (lazy rebuild, symmetric to the pool's stale-fingerprint
-        // eviction). Computed once and reused — `resource_config` is fixed for
-        // this acquire.
+    ) -> Result<CreatedEntry<Arc<R::Instance>>, Error> {
         use crate::resource::ResourceConfig as _;
-        let config_fp = resource_config.fingerprint();
-
-        // Fast path — lock-free load + liveness + config-fingerprint check.
-        if let Some(existing) = self.cell.load()
-            && resource.is_alive_sync(&existing)
-            && self.built_fingerprint.load(Ordering::Acquire) == config_fp
-        {
-            return Ok((*existing).clone());
+        let config_fingerprint = resource_config.fingerprint();
+        let mut state = self.state.lock().await;
+        if state.closed {
+            return Err(Error::cancelled().with_resource_key(R::key()));
         }
-
-        // Slow path — serialise create / recreate.
-        let _guard = self.create_lock.lock().await;
-
-        // Double-check: another task may have created while we waited.
-        if let Some(existing) = self.cell.load() {
-            let alive = resource.is_alive_sync(&existing);
-            let config_unchanged = self.built_fingerprint.load(Ordering::Acquire) == config_fp;
-            if alive && config_unchanged {
-                return Ok((*existing).clone());
+        if let Some(existing) = &state.master {
+            let config_unchanged = state.built_fingerprint == config_fingerprint;
+            if resource.is_alive_sync(existing) && config_unchanged {
+                return Ok(CreatedEntry::new(Arc::clone(existing)));
             }
-
-            // A live runtime that merely failed its liveness check is recreated
-            // only when the resident opts in via `recreate_on_failure`. A config
-            // reload (fingerprint changed) ALWAYS rebuilds — it is an explicit
-            // operator action, not failure recovery — so it is not gated on
-            // that flag.
             if config_unchanged && !self.config.recreate_on_failure {
                 return Err(Error::transient("resident runtime is not alive"));
             }
-
-            // Take the old runtime out and best-effort destroy under the
-            // resource's per-instance teardown budget (an evict-and-recreate).
-            if let Some(old) = self.cell.take() {
-                match Arc::try_unwrap(old) {
-                    Ok(owned) => {
-                        let _ = destroy_within(resource, owned, TeardownReason::Evicted).await;
-                    },
-                    Err(arc) => {
-                        warn!(
-                            resource = %R::key(),
-                            refs = Arc::strong_count(&arc),
-                            "cannot exclusively destroy resident runtime; \
-                             another handle still held — dropping Arc"
-                        );
-                    },
-                }
-            }
         }
-
-        // Create a new runtime.
-        let runtime = match tokio::time::timeout(
+        let instance = match tokio::time::timeout(
             self.config.create_timeout,
             resource.create(resource_config, ctx),
         )
         .await
         {
-            Ok(Ok(rt)) => rt,
-            Ok(Err(e)) => return Err(e),
+            Ok(result) => result?,
             Err(_) => return Err(Error::transient("resident: create timed out")),
         };
-
-        // Capture the credential epoch *after* `create` has read the slot, not
-        // before it. A pre-`create` sample is a stale approximation: a
-        // lock-free `SlotCell::store` (engine rotation fan-out) landing
-        // *between* the sample and `create`'s own slot read builds the instance
-        // against the **fresh** credential while `built_epoch` would record the
-        // **old** epoch, so the create-vs-rotate reconcile spuriously
-        // classifies an already-fresh instance as stale. Sampling *after*
-        // `create` returns makes `built_epoch` an at-or-after-read bound. The
-        // sample stays under `create_lock` and is published with the instance,
-        // preserving the exactly-once dispatch / create-vs-rotate semantics.
-        let built_epoch = resource.credential_slot_epoch();
-
-        let cloned = runtime.clone();
-        self.cell.store(Arc::new(runtime));
-        self.built_epoch.store(built_epoch, Ordering::Release);
-        // Stamp the config fingerprint this master was built against so a
-        // later reload (changed fingerprint) triggers a rebuild on next acquire.
-        self.built_fingerprint.store(config_fp, Ordering::Release);
-
-        Ok(cloned)
+        // No await after successful creation: transfer every displaced owner
+        // in the same return that publishes the new retained master.
+        let entry = Arc::new(instance);
+        let retired = state
+            .master
+            .replace(Arc::clone(&entry))
+            .into_iter()
+            .collect();
+        state.built_epoch = resource.credential_slot_epoch();
+        state.built_fingerprint = config_fingerprint;
+        Ok(CreatedEntry::with_retired(entry, retired))
     }
 }
 
 // ─── Topology impl for Resident ───────────────────────────────────────────────
 //
-// `Resident<R>` clones one shared instance on acquire. `Entry = R::Instance`,
+// `Resident<R>` shares its retained master with `Entry = Arc<R::Instance>`;
 // `pools() == false`, so the framework store stays empty and every acquire is an
 // idle-miss that calls `create_entry` (clone-or-create). The revoke fence cannot
-// reach the master cell (it is not in the store), so revoke teardown runs
+// reach the master (it is not in the store), so revoke policy runs
 // through `dispatch_credential_hook`.
 
 impl<R> Topology<R> for Resident<R>
@@ -422,12 +280,11 @@ where
         + Send
         + Sync
         + 'static,
-    R::Instance: Clone + Send + Sync + 'static,
 {
-    type Entry = R::Instance;
+    type Entry = Arc<R::Instance>;
 
     /// Always succeeds — resident is unbounded (one shared instance).
-    fn try_reserve(&self, _store: &InstanceStore<R::Instance>) -> Result<Ticket, Unavailable> {
+    fn try_reserve(&self, _store: &InstanceStore<Self::Entry>) -> Result<Ticket, Unavailable> {
         Ok(Ticket::infallible())
     }
 
@@ -436,16 +293,22 @@ where
         resource: &R,
         config: &R::Config,
         ctx: &ResourceContext,
-    ) -> Result<R::Instance, Error> {
+    ) -> Result<CreatedEntry<Self::Entry>, Error> {
         self.clone_or_create(resource, config, ctx).await
     }
 
-    fn entry_instance<'s>(&self, entry: &'s R::Instance) -> &'s R::Instance {
+    fn entry_instance<'s>(&self, entry: &'s Self::Entry) -> &'s R::Instance {
         entry
     }
 
-    fn into_instance(&self, entry: R::Instance) -> R::Instance {
-        entry
+    fn into_owned_instance(&self, entry: Self::Entry) -> Option<R::Instance> {
+        Arc::into_inner(entry)
+    }
+
+    async fn close_retained(&self) -> Vec<Self::Entry> {
+        let mut state = self.state.lock().await;
+        state.closed = true;
+        state.master.take().into_iter().collect()
     }
 
     /// Resident does not pool: a released clone is dropped, never recycled, so
@@ -467,7 +330,7 @@ where
     async fn dispatch_credential_hook(
         &self,
         resource: &R,
-        _store: &InstanceStore<R::Instance>,
+        _store: &InstanceStore<Self::Entry>,
         slot: &str,
         refresh: bool,
     ) -> Result<(), Error> {
@@ -579,9 +442,9 @@ mod tests {
             .clone_or_create(&resource, &true, &ctx)
             .await
             .expect("first create");
-        assert_eq!(inst, 100);
+        assert_eq!(**inst.entry(), 100);
         assert_eq!(resource.create_count.load(Ordering::Relaxed), 1);
-        assert!(rt.is_initialized());
+        assert!(rt.is_initialized().await);
     }
 
     #[tokio::test]
@@ -592,7 +455,10 @@ mod tests {
 
         let a = rt.clone_or_create(&resource, &true, &ctx).await.unwrap();
         let b = rt.clone_or_create(&resource, &true, &ctx).await.unwrap();
-        assert_eq!(a, b, "both clones share the one master instance");
+        assert!(
+            Arc::ptr_eq(a.entry(), b.entry()),
+            "both entries own the same retained master"
+        );
         assert_eq!(
             resource.create_count.load(Ordering::Relaxed),
             1,
@@ -639,10 +505,14 @@ mod tests {
         let ctx = test_ctx();
 
         let a = rt.clone_or_create(&resource, &true, &ctx).await.unwrap();
-        assert_eq!(a, 100);
+        assert_eq!(**a.entry(), 100);
         resource.alive.store(false, Ordering::Relaxed);
         let b = rt.clone_or_create(&resource, &true, &ctx).await.unwrap();
-        assert_eq!(b, 101, "a fresh master was built after liveness failed");
+        assert_eq!(
+            **b.entry(),
+            101,
+            "a fresh master was built after liveness failed"
+        );
         assert_eq!(resource.create_count.load(Ordering::Relaxed), 2);
     }
 
@@ -853,15 +723,19 @@ mod tests {
             .await
             .expect("task must not panic")
             .expect("first create must succeed");
-        assert_eq!(inst, CRED_NEW, "create read the slot after the store");
         assert_eq!(
-            rt.built_epoch_for_test(),
+            **inst.entry(),
+            CRED_NEW,
+            "create read the slot after the store"
+        );
+        assert_eq!(
+            rt.built_epoch_for_test().await,
             gen_new,
             "built_epoch must be the epoch the instance actually bound \
              (post-create slot read), not the pre-create sample"
         );
         assert!(
-            rt.built_epoch_for_test() >= slot.generation(),
+            rt.built_epoch_for_test().await >= slot.generation(),
             "an instance built reading the current slot must not be older \
              than the live slot epoch (no spurious stale reconcile)"
         );
@@ -886,10 +760,10 @@ mod tests {
             .clone_or_create(&resource, &true, &ctx)
             .await
             .expect("create must succeed");
-        assert_eq!(inst, CRED_OLD);
-        assert!(rt.is_initialized());
+        assert_eq!(**inst.entry(), CRED_OLD);
+        assert!(rt.is_initialized().await);
         assert_eq!(
-            rt.built_epoch_for_test(),
+            rt.built_epoch_for_test().await,
             slot.generation(),
             "with no racing store, built_epoch is exactly the live slot epoch"
         );

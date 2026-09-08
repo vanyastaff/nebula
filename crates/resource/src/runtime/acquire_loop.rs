@@ -1,7 +1,7 @@
 //! Framework-owned acquire loop and cancel-safety guard for [`ManagedResource`].
 //!
 //! This module holds the `impl` block that requires the full
-//! `R: Provider, R::Instance: Clone, R::Topology:
+//! `R: Provider, R::Topology:
 //! Topology<R>` bound — everything that reaches into the topology:
 //!
 //! - [`run_acquire_loop`](ManagedResource::run_acquire_loop) — the fenced
@@ -51,7 +51,6 @@ use super::managed::EntryOf;
 impl<R> ManagedResource<R>
 where
     R: Provider,
-    R::Instance: Clone,
     R::Topology: Topology<R>,
 {
     /// **The framework acquire loop.** Runs the full fenced acquire over the
@@ -63,7 +62,7 @@ where
     ///    returned permit is held by the guard for the whole lease.
     /// 2. `store.checkout()` — the **framework** revoke-epoch fence on pop.
     /// 3. destroy every `checkout.stale` entry via
-    ///    `destroy(into_instance(stale))` — the **framework** tears down
+    ///    `destroy(into_owned_instance(stale))` — the **framework** tears down
     ///    since-revoked idle entries; a topology author can never skip this.
     /// 4. `accept(&mut entry)` a fresh idle entry, or `create_entry(…)` on a miss.
     /// 5. wrap the entry in an [`EntryCreateGuard`] (cancel-safety: a drop here
@@ -73,7 +72,7 @@ where
     /// 7. build the guard whose `Deref` is `topology.entry_instance(&entry)` and
     ///    whose drop runs `on_release(&mut entry)` then either
     ///    `store.return_entry(entry, epoch)` (if `pools()` and kept) or
-    ///    `destroy(into_instance(entry))`.
+    ///    `destroy(into_owned_instance(entry))`.
     ///
     /// # Atomicity (revoke fence)
     ///
@@ -93,7 +92,7 @@ where
     /// # Cancel safety
     ///
     /// A drop between checkout/create and the built guard schedules an async
-    /// `destroy(into_instance(entry))` via the [`ReleaseQueue`] — see
+    /// `destroy(into_owned_instance(entry))` via the [`ReleaseQueue`] — see
     /// [`EntryCreateGuard`].
     pub(crate) async fn run_acquire_loop(
         self: &Arc<Self>,
@@ -121,7 +120,7 @@ where
         //      wraps it the moment it leaves the store / creation call, so a
         //      drop at ANY await from the pop onward (stale destroys, the
         //      `accept` hook, `prepare` below) schedules an async
-        //      `destroy(into_instance(entry))` via the ReleaseQueue instead of
+        //      `destroy(into_owned_instance(entry))` via the ReleaseQueue instead of
         //      leaking the instance through a plain `Drop`.
         let (mut cancel_guard, checkout_epoch) = self.checkout_or_create(ctx, &config).await?;
 
@@ -134,13 +133,15 @@ where
             .await
         {
             let entry = cancel_guard.defuse();
-            let _ = destroy_within(
-                &self.resource,
-                self.topology.into_instance(entry),
-                TeardownReason::Released,
-            )
-            .await;
+            let _ = self.queue_destroy(entry, TeardownReason::Released).await;
             return Err(e);
+        }
+
+        if self.store.is_closed() {
+            let _ = self
+                .queue_destroy(cancel_guard.defuse(), TeardownReason::Shutdown)
+                .await;
+            return Err(Error::cancelled().with_resource_key(R::key()));
         }
 
         // 7. Build the guard. Defuse the cancel guard first so its Drop does
@@ -180,6 +181,9 @@ where
         config: &R::Config,
     ) -> Result<(EntryCreateGuard<R>, u64), Error> {
         loop {
+            if self.store.is_closed() {
+                return Err(Error::cancelled().with_resource_key(R::key()));
+            }
             let checkout = self.store.checkout().await;
             // Cancel-safety: arm the fresh entry's guard NOW, before the stale
             // destroys and the `accept` hook below get a chance to park this
@@ -194,13 +198,9 @@ where
             });
             // FRAMEWORK destroys since-revoked stale entries — the author can
             // never skip this fence.
-            for stale in checkout.stale {
-                let _ = destroy_within(
-                    &self.resource,
-                    self.topology.into_instance(stale),
-                    TeardownReason::Revoked,
-                )
-                .await;
+            if let Some(receipt) = self.queue_destroy_batch(checkout.stale, TeardownReason::Revoked)
+            {
+                let _ = receipt.await;
             }
             let Some((mut cancel_guard, epoch)) = fresh else {
                 // Idle-miss — create a fresh entry. Snapshot the revoke epoch
@@ -209,10 +209,22 @@ where
                 // read the post-revoke counter and silently admit a
                 // since-revoked instance.
                 let create_epoch = self.store.current_revoke_epoch();
-                let entry = self
+                let created = self
                     .topology
                     .create_entry(&self.resource, config, ctx)
                     .await?;
+                let (cancel_guard, retirement) = self.arm_created(created);
+                if let Some(retirement) = retirement {
+                    retirement
+                        .await
+                        .unwrap_or_else(|_| Err(Error::cancelled()))?;
+                }
+                if self.store.is_closed() {
+                    let _ = self
+                        .queue_destroy(cancel_guard.defuse(), TeardownReason::Shutdown)
+                        .await;
+                    return Err(Error::cancelled().with_resource_key(R::key()));
+                }
                 // Fresh-create fence (HikariCP #1836) — POOLED topologies only.
                 // A pooled instance created against a credential revoked while
                 // the create was in flight must NOT be admitted to the idle pool
@@ -223,12 +235,9 @@ where
                 // hook (it serves, then the hook clears the shared binding), so
                 // they must NOT fail-closed here.
                 if self.topology.pools() && self.store.current_revoke_epoch() != create_epoch {
-                    let _ = destroy_within(
-                        &self.resource,
-                        self.topology.into_instance(entry),
-                        TeardownReason::Revoked,
-                    )
-                    .await;
+                    let _ = self
+                        .queue_destroy(cancel_guard.defuse(), TeardownReason::Revoked)
+                        .await;
                     return Err(Error::revoked(format!(
                         "{}: credential revoked while the instance was being \
                          created — fenced before admission (HikariCP #1836)",
@@ -238,10 +247,7 @@ where
                 // No await between `create_entry` returning and this wrap, so
                 // the created instance is guarded before the caller's next
                 // suspension point.
-                return Ok((
-                    EntryCreateGuard::new(entry, Arc::clone(self), Arc::clone(&self.release_queue)),
-                    create_epoch,
-                ));
+                return Ok((cancel_guard, create_epoch));
             };
             if self
                 .topology
@@ -253,22 +259,73 @@ where
             // Rejected (stale fingerprint / max-lifetime / broken) — destroy and
             // loop to the next idle entry, then create.
             let entry = cancel_guard.defuse();
-            let _ = destroy_within(
-                &self.resource,
-                self.topology.into_instance(entry),
-                TeardownReason::Evicted,
-            )
-            .await;
+            let _ = self.queue_destroy(entry, TeardownReason::Evicted).await;
         }
     }
 
-    /// Builds the leased [`ResourceGuard<R>`] over a chosen entry.
-    ///
-    /// The guard's `Deref` is a clone of `entry_instance(&entry)`; the release
-    /// closure captures the **whole entry** (metadata intact) + an `Arc<Self>`
-    /// (store + topology + resource) and, on guard drop, runs
-    /// `on_release(&mut entry)` then either `store.return_entry(entry, epoch)`
-    /// (pools + kept) or `destroy(into_instance(entry))`.
+    /// Transfers one entry before an acquire's cancellation-sensitive await.
+    fn queue_destroy(
+        self: &Arc<Self>,
+        entry: EntryOf<R>,
+        reason: TeardownReason,
+    ) -> crate::release_queue::ReleaseReceipt {
+        let managed = Arc::clone(self);
+        self.release_queue.submit_release(move || {
+            Box::pin(async move { managed.destroy_entry(entry, reason).await })
+        })
+    }
+
+    fn queue_destroy_batch(
+        self: &Arc<Self>,
+        entries: Vec<EntryOf<R>>,
+        reason: TeardownReason,
+    ) -> Option<crate::release_queue::ReleaseReceipt> {
+        if entries.is_empty() {
+            return None;
+        }
+        let managed = Arc::clone(self);
+        Some(self.release_queue.submit_release(move || {
+            Box::pin(async move {
+                let mut outcome = Ok(());
+                for entry in entries {
+                    let result = managed.destroy_entry(entry, reason).await;
+                    if outcome.is_ok() {
+                        outcome = result;
+                    }
+                }
+                outcome
+            })
+        }))
+    }
+
+    /// Extracts only the final lifecycle owner; shared leases do not destroy a master.
+    pub(crate) async fn destroy_entry(
+        &self,
+        entry: EntryOf<R>,
+        reason: TeardownReason,
+    ) -> Result<(), Error> {
+        match self.topology.into_owned_instance(entry) {
+            Some(instance) => destroy_within(&self.resource, instance, reason).await,
+            None => Ok(()),
+        }
+    }
+
+    /// Arms every ownership transfer synchronously before the caller may await.
+    fn arm_created(
+        self: &Arc<Self>,
+        created: crate::topology::CreatedEntry<EntryOf<R>>,
+    ) -> (
+        EntryCreateGuard<R>,
+        Option<crate::release_queue::ReleaseReceipt>,
+    ) {
+        let (entry, retired) = created.into_parts();
+        let active =
+            EntryCreateGuard::new(entry, Arc::clone(self), Arc::clone(&self.release_queue));
+        let receipt = self.queue_destroy_batch(retired, TeardownReason::Evicted);
+        (active, receipt)
+    }
+
+    /// Builds a guard owning the exact entry checked out by this acquire.
     fn build_guard(
         self: &Arc<Self>,
         entry: EntryOf<R>,
@@ -277,31 +334,13 @@ where
         generation: u64,
         metrics: Option<ResourceOpsMetrics>,
     ) -> ResourceGuard<R> {
-        // The guard's Deref value is a clone of the leasable instance; the
-        // release closure owns the real entry.
-        let deref_instance = self.topology.entry_instance(&entry).clone();
-        let managed = Arc::clone(self);
-        let release_queue = Arc::clone(&self.release_queue);
-
-        ResourceGuard::guarded_with_permit(
-            deref_instance,
-            R::key(),
-            self.topology.tag(),
-            generation,
-            move |_returned_instance: R::Instance, tainted| {
-                if let Some(m) = &metrics {
-                    m.record_release();
-                }
-                Box::pin(release_entry(
-                    managed,
-                    entry,
-                    checkout_epoch,
-                    tainted,
-                    metrics,
-                ))
-            },
+        ResourceGuard::new(
+            Arc::clone(self),
+            entry,
+            checkout_epoch,
             permit,
-            release_queue,
+            generation,
+            metrics,
         )
     }
 
@@ -376,16 +415,21 @@ where
         ctx: &ResourceContext,
         config: &R::Config,
     ) -> Result<bool, Error> {
+        if self.store.is_closed() {
+            return Ok(false);
+        }
         let created_epoch = self.store.stamp_epoch();
-        let entry = self
+        let created = self
             .topology
             .create_entry(&self.resource, config, ctx)
             .await?;
         // Cancel-safety: arm the guard before the idle-lock await below — a
         // cancellation landing there must destroy the just-created instance,
         // not drop it silently.
-        let cancel_guard =
-            EntryCreateGuard::new(entry, Arc::clone(self), Arc::clone(&self.release_queue));
+        let (cancel_guard, retirement) = self.arm_created(created);
+        // Maintenance must never await a job on its own cleanup queue:
+        // terminal row cleanup may be waiting for this sweep to finish.
+        drop(retirement);
         let mut idle = self.store.lock_idle().await;
         let entry = cancel_guard.defuse();
         let outcome = self
@@ -397,12 +441,7 @@ where
         match outcome {
             ReturnOutcome::Recycled => Ok(true),
             ReturnOutcome::Evict(entry) => {
-                let _ = destroy_within(
-                    &self.resource,
-                    self.topology.into_instance(entry),
-                    TeardownReason::Evicted,
-                )
-                .await;
+                drop(self.queue_destroy(entry, TeardownReason::Evicted));
                 Ok(false)
             },
         }
@@ -584,7 +623,7 @@ where
     ///   the resource's [`CheckCost`](crate::CheckCost) cadence is due**, so an
     ///   expensive check is not run every sweep.
     ///
-    /// Each evicted/failed entry is destroyed via `destroy(into_instance(entry))`.
+    /// Each evicted/failed entry is destroyed via `destroy(into_owned_instance(entry))`.
     /// Returns the number evicted.
     ///
     /// Complexity: O(n) over the idle queue (average and worst case), bounded
@@ -615,12 +654,7 @@ where
 
         let evicted = to_destroy.len();
         for entry in to_destroy {
-            let _ = destroy_within(
-                &self.resource,
-                self.topology.into_instance(entry),
-                TeardownReason::Evicted,
-            )
-            .await;
+            let _ = self.destroy_entry(entry, TeardownReason::Evicted).await;
         }
         if evicted > 0 {
             tracing::debug!(
@@ -830,7 +864,7 @@ const PROBE_CONCURRENCY: usize = 8;
 /// under the idle lock before pushing. So a revoke landing during a parking
 /// `on_release` still evicts on return — the under-lock compare-then-push is the
 /// fence, identical to the historical pool recycle `Keep` arm.
-async fn release_entry<R>(
+pub(crate) async fn release_entry<R>(
     managed: Arc<ManagedResource<R>>,
     mut entry: EntryOf<R>,
     checkout_epoch: u64,
@@ -839,7 +873,6 @@ async fn release_entry<R>(
 ) -> Result<(), Error>
 where
     R: Provider,
-    R::Instance: Clone,
     R::Topology: Topology<R>,
 {
     // Recycle-vs-discard observability (ADR-0093 Tier-4): exactly one
@@ -854,16 +887,16 @@ where
         }
     };
 
+    if managed.store.is_closed() {
+        record(RecycleOutcome::Discarded);
+        return managed.destroy_entry(entry, TeardownReason::Shutdown).await;
+    }
+
     // Tainted lease — destroy immediately, never recycle. Taint is set by the
     // credential-revoke fan-out, so this is the revoke teardown path.
     if tainted {
         record(RecycleOutcome::Discarded);
-        return destroy_within(
-            &managed.resource,
-            managed.topology.into_instance(entry),
-            TeardownReason::Revoked,
-        )
-        .await;
+        return managed.destroy_entry(entry, TeardownReason::Revoked).await;
     }
 
     // Topology reset / recycle decision (runs before the store fence).
@@ -877,12 +910,7 @@ where
             // Reset failed — destroy. Surface the reset error (so an awaited
             // `release()` sees the failed teardown) once the entry is torn down.
             record(RecycleOutcome::Discarded);
-            let destroy = destroy_within(
-                &managed.resource,
-                managed.topology.into_instance(entry),
-                TeardownReason::Released,
-            )
-            .await;
+            let destroy = managed.destroy_entry(entry, TeardownReason::Released).await;
             return destroy.and(Err(e));
         },
     };
@@ -896,24 +924,14 @@ where
             },
             ReturnOutcome::Evict(entry) => {
                 record(RecycleOutcome::Discarded);
-                destroy_within(
-                    &managed.resource,
-                    managed.topology.into_instance(entry),
-                    TeardownReason::Evicted,
-                )
-                .await
+                managed.destroy_entry(entry, TeardownReason::Evicted).await
             },
         }
     } else {
         // Non-pooling topology (Resident / permit-only) or a `Drop` decision:
         // the released entry is destroyed, never pooled.
         record(RecycleOutcome::Discarded);
-        destroy_within(
-            &managed.resource,
-            managed.topology.into_instance(entry),
-            TeardownReason::Released,
-        )
-        .await
+        managed.destroy_entry(entry, TeardownReason::Released).await
     }
 }
 
@@ -923,7 +941,7 @@ where
 /// Wraps a freshly checked-out / created entry from the moment it leaves the
 /// store/`create_entry` until the [`ResourceGuard`] is built. If the acquire
 /// future is cancelled in that window (`tokio::select!` / timeout), `Drop`
-/// schedules an async `destroy(into_instance(entry))` on the [`ReleaseQueue`] —
+/// schedules an async `destroy(into_owned_instance(entry))` on the [`ReleaseQueue`] —
 /// without this, only the instance's *sync* `Drop` runs and the server-side
 /// resource (DB session, OS handle) leaks. The `cancel-drop` regression test
 /// guards this.
@@ -934,14 +952,13 @@ where
 pub(super) struct EntryCreateGuard<R>
 where
     R: Provider,
-    R::Instance: Clone,
     R::Topology: Topology<R>,
 {
     /// `None` after [`defuse`](Self::defuse) took it out; `Some(_)` for any
     /// guard a caller can still observe. `Drop` short-circuits on `None`.
     entry: Option<EntryOf<R>>,
     /// The managed resource (store + topology + resource) so `Drop` can
-    /// `destroy(into_instance(entry))` from the [`ReleaseQueue`].
+    /// `destroy(into_owned_instance(entry))` from the [`ReleaseQueue`].
     managed: Arc<ManagedResource<R>>,
     /// The framework release queue so `Drop` submits the async destroy with the
     /// queue's bounded backpressure + shutdown drain (not an orphan spawn).
@@ -951,7 +968,6 @@ where
 impl<R> EntryCreateGuard<R>
 where
     R: Provider,
-    R::Instance: Clone,
     R::Topology: Topology<R>,
 {
     /// Creates a new guard wrapping the chosen entry.
@@ -1002,7 +1018,6 @@ where
 impl<R> Drop for EntryCreateGuard<R>
 where
     R: Provider,
-    R::Instance: Clone,
     R::Topology: Topology<R>,
 {
     fn drop(&mut self) {
@@ -1020,12 +1035,7 @@ where
                 // An entry cancelled before reaching the built guard was never
                 // admitted to the store or handed to a caller; the only correct
                 // cleanup is destroy.
-                let _ = destroy_within(
-                    &managed.resource,
-                    managed.topology.into_instance(entry),
-                    TeardownReason::Evicted,
-                )
-                .await;
+                let _ = managed.destroy_entry(entry, TeardownReason::Evicted).await;
             })
         });
     }
@@ -1178,6 +1188,7 @@ mod tests {
             tainted: AtomicBool::new(false),
             in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
             maintenance_sweeps: AtomicU64::new(0),
+            maintenance: Default::default(),
         })
     }
 
@@ -1215,6 +1226,7 @@ mod tests {
                 tainted: AtomicBool::new(false),
                 in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
                 maintenance_sweeps: AtomicU64::new(0),
+                maintenance: Default::default(),
             })
         };
 
@@ -1225,6 +1237,8 @@ mod tests {
             .create_entry(&mr.resource, &PoolCfg, &test_ctx())
             .await
             .expect("create the seed entry");
+        let (entry, retired) = entry.into_parts();
+        assert!(retired.is_empty());
         let epoch = mr.store.stamp_epoch();
         assert!(
             !mr.store.deposit_fresh(entry, epoch).await.is_evict(),
@@ -1296,6 +1310,7 @@ mod tests {
                 tainted: AtomicBool::new(false),
                 in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
                 maintenance_sweeps: AtomicU64::new(0),
+                maintenance: Default::default(),
             })
         };
 
@@ -1359,6 +1374,7 @@ mod tests {
                 tainted: AtomicBool::new(false),
                 in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
                 maintenance_sweeps: AtomicU64::new(0),
+                maintenance: Default::default(),
             })
         };
 
@@ -1367,6 +1383,8 @@ mod tests {
             .create_entry(&mr.resource, &PoolCfg, &test_ctx())
             .await
             .expect("create");
+        let (entry, retired) = entry.into_parts();
+        assert!(retired.is_empty());
         let guard = EntryCreateGuard::new(entry, Arc::clone(&mr), Arc::clone(&rq));
         // Simulate a cancelled acquire: dropped before `defuse`.
         drop(guard);
@@ -1404,6 +1422,8 @@ mod tests {
             .create_entry(&mr.resource, &PoolCfg, &test_ctx())
             .await
             .expect("create");
+        let (entry, retired) = entry.into_parts();
+        assert!(retired.is_empty());
         let guard = EntryCreateGuard::new(entry, Arc::clone(&mr), Arc::clone(&rq));
         let _entry = guard.defuse();
 
@@ -1434,6 +1454,8 @@ mod tests {
             .create_entry(&mr.resource, &PoolCfg, &test_ctx())
             .await
             .expect("create the seed entry");
+        let (entry, retired) = entry.into_parts();
+        assert!(retired.is_empty());
         let epoch = mr.store.stamp_epoch();
         assert!(
             !mr.store.deposit_fresh(entry, epoch).await.is_evict(),
@@ -1504,6 +1526,8 @@ mod tests {
                 .create_entry(&mr.resource, &PoolCfg, &test_ctx())
                 .await
                 .expect("create seed entry");
+            let (entry, retired) = entry.into_parts();
+            assert!(retired.is_empty());
             let epoch = mr.store.stamp_epoch();
             assert!(
                 !mr.store.deposit_fresh(entry, epoch).await.is_evict(),
@@ -1570,6 +1594,8 @@ mod tests {
             .create_entry(&mr.resource, &PoolCfg, &test_ctx())
             .await
             .expect("create the seed entry");
+        let (entry, retired) = entry.into_parts();
+        assert!(retired.is_empty());
         let epoch = mr.store.stamp_epoch();
         assert!(
             !mr.store.deposit_fresh(entry, epoch).await.is_evict(),
@@ -1613,12 +1639,7 @@ mod tests {
         // proving this is a real destroy path, not just an accounting
         // artifact.
         for entry in failed {
-            let _ = destroy_within(
-                &mr.resource,
-                mr.topology.into_instance(entry),
-                TeardownReason::Revoked,
-            )
-            .await;
+            let _ = mr.destroy_entry(entry, TeardownReason::Revoked).await;
         }
         assert_eq!(
             destroyed.load(Ordering::SeqCst),
@@ -1720,6 +1741,7 @@ mod tests {
                 tainted: AtomicBool::new(false),
                 in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
                 maintenance_sweeps: AtomicU64::new(0),
+                maintenance: Default::default(),
             })
         };
 
@@ -1784,6 +1806,7 @@ mod tests {
                 tainted: AtomicBool::new(false),
                 in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
                 maintenance_sweeps: AtomicU64::new(0),
+                maintenance: Default::default(),
             })
         };
 
@@ -1837,6 +1860,7 @@ mod tests {
                 tainted: AtomicBool::new(false),
                 in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
                 maintenance_sweeps: AtomicU64::new(0),
+                maintenance: Default::default(),
             })
         };
 

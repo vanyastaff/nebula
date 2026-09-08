@@ -68,7 +68,7 @@ pub trait ManagedHandle: sealed::Sealed + Send + Sync + 'static {
     /// Returns the concrete `TypeId` used as the secondary index key.
     ///
     /// For real `ManagedResource<R>` this is `TypeId::of::<ManagedResource<R>>()`.
-    /// Used by [`Registry::register`] to scrub stale rows from `type_index`
+    /// Used by `Registry::register` to scrub stale rows from `type_index`
     /// when an entry is replaced in place (#382).
     fn managed_type_id(&self) -> TypeId;
 
@@ -92,6 +92,15 @@ pub trait ManagedHandle: sealed::Sealed + Send + Sync + 'static {
     /// Current lifecycle phase — diagnostic-only; typed callers should prefer
     /// `ManagedResource::status().phase` after a successful downcast.
     fn phase(&self) -> crate::state::ResourcePhase;
+
+    /// Fences publication and cancels this row's maintenance without awaiting.
+    fn begin_close(&self);
+
+    /// Aborts still-owned maintenance when terminal cleanup is abandoned.
+    fn abort_maintenance(&self);
+
+    /// Joins maintenance and destroys retained entries, not outstanding leases.
+    async fn close_retained(&self) -> Result<(), Error>;
 
     /// Topology tag — used by `Manager::{refresh,revoke}_slot` to label
     /// the rotation tracing span without a typed downcast.
@@ -217,11 +226,22 @@ impl<R: Provider> sealed::Sealed for ManagedResource<R> {}
 impl<R> ManagedHandle for ManagedResource<R>
 where
     R: Provider + Send + Sync + 'static,
-    R::Instance: Clone,
     R::Topology: crate::topology::Topology<R>,
 {
     fn resource_key(&self) -> ResourceKey {
         R::key()
+    }
+
+    fn begin_close(&self) {
+        ManagedResource::begin_close(self);
+    }
+
+    fn abort_maintenance(&self) {
+        ManagedResource::abort_maintenance(self);
+    }
+
+    async fn close_retained(&self) -> Result<(), Error> {
+        ManagedResource::close_retained(self).await
     }
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
@@ -375,12 +395,13 @@ pub(crate) enum AcquireLookupOutcome {
 }
 
 /// A single entry in the registry, associating a `(scope, slot_identity)`
-/// row with a managed resource.
+/// row with a managed resource. This is a technical lookup identity, not a
+/// tenant-authorization proof or permission to share a physical runtime.
 ///
 /// `slot_identity` is the resolved per-slot credential identity (see
 /// [`SlotIdentity`]). Two registrations at the same key + scope but a
-/// *different* `slot_identity` are distinct rows with distinct runtimes —
-/// the structural barrier against cross-tenant runtime bleed. Equality is
+/// *different* `slot_identity` are distinct rows with distinct runtimes.
+/// This prevents differently bound rows from aliasing. Equality is
 /// exact and structural ([`SlotIdentity`] derives `Eq`), so two distinct
 /// resolved binding sets can never collapse onto one row.
 struct RegistryEntry {
@@ -445,17 +466,17 @@ impl Registry {
     /// the same `(scope, slot_identity)`. A registration at the same
     /// `(key, scope)` but a *different* `slot_identity` (i.e. a different
     /// resolved per-slot credential) is appended as a **distinct** row with
-    /// its own runtime — it does not overwrite the other tenant's row. This
-    /// is the structural barrier against cross-tenant runtime bleed: two
-    /// resolved credentials can never collapse onto one shared runtime.
-    pub fn register(
+    /// its own runtime — it does not overwrite a differently bound row.
+    /// Equal slot identities do not prove equal tenant authority: this
+    /// internal registry does not authorize cross-tenant sharing.
+    pub(crate) fn register(
         &self,
         key: ResourceKey,
         type_id: TypeId,
         scope: ScopeLevel,
         slot_identity: SlotIdentity,
         managed: Arc<dyn ManagedHandle>,
-    ) {
+    ) -> Option<Arc<dyn ManagedHandle>> {
         // Lock order is **strictly one-way**: `entries → (release) → type_index`.
         //
         // `get_typed` takes the `type_index` shard read lock first and only
@@ -475,6 +496,7 @@ impl Registry {
         // scan the rest of the entries while still holding the guard
         // and only mark the stale row for removal if nobody else uses
         // it.
+        let mut displaced = None;
         let stale_type_id = {
             let mut entries = self.entries.entry(key.clone()).or_default();
 
@@ -488,11 +510,15 @@ impl Registry {
                 .position(|e| e.scope == scope && e.slot_identity == slot_identity)
             {
                 let prev_type_id = entries[pos].managed.managed_type_id();
-                entries[pos] = RegistryEntry {
-                    scope,
-                    slot_identity,
-                    managed,
-                };
+                let previous = std::mem::replace(
+                    &mut entries[pos],
+                    RegistryEntry {
+                        scope,
+                        slot_identity,
+                        managed,
+                    },
+                );
+                displaced = Some(previous.managed);
 
                 if prev_type_id != type_id
                     && !entries
@@ -518,6 +544,7 @@ impl Registry {
             self.type_index.remove_if(&stale, |_, k| k == &key);
         }
         self.type_index.insert(type_id, key);
+        displaced
     }
 
     /// Looks up a managed resource by key and scope (slot-identity
@@ -785,12 +812,12 @@ impl Registry {
     /// siblings that differ only in resolved credential. Use
     /// [`remove_for`](Self::remove_for) to remove a single resolved row
     /// without disturbing siblings.
-    pub fn remove(&self, key: &ResourceKey) -> bool {
-        let existed = self.entries.remove(key).is_some();
-        if existed {
-            self.type_index.retain(|_type_id, k| k != key);
-        }
-        existed
+    pub(crate) fn remove(&self, key: &ResourceKey) -> Vec<Arc<dyn ManagedHandle>> {
+        let Some((_, entries)) = self.entries.remove(key) else {
+            return Vec::new();
+        };
+        self.type_index.retain(|_type_id, k| k != key);
+        entries.into_iter().map(|entry| entry.managed).collect()
     }
 
     /// Removes exactly the row for `(key, scope, slot_identity)`, leaving
@@ -806,28 +833,23 @@ impl Registry {
     /// intra-doc-linked here — it is feature-gated and this doc must
     /// resolve under the default build too).
     ///
-    /// Returns `true` if a matching row existed and was removed.
-    pub fn remove_for(
+    /// Transfers ownership of the removed row to the lifecycle owner.
+    pub(crate) fn remove_for(
         &self,
         key: &ResourceKey,
         scope: &ScopeLevel,
         slot_identity: &SlotIdentity,
-    ) -> bool {
+    ) -> Option<Arc<dyn ManagedHandle>> {
         // Lock order matches `register`: all `entries` work happens in a
         // scoped block so the shard guard drops before `type_index` (a
         // different DashMap) is touched — never both shards held at once.
         let (removed, stale_type_id) = {
-            let Some(mut entries) = self.entries.get_mut(key) else {
-                return false;
-            };
-            let Some(pos) = entries
+            let mut entries = self.entries.get_mut(key)?;
+            let pos = entries
                 .iter()
-                .position(|e| e.scope == *scope && e.slot_identity == *slot_identity)
-            else {
-                return false;
-            };
+                .position(|e| e.scope == *scope && e.slot_identity == *slot_identity)?;
             let removed_type_id = entries[pos].managed.managed_type_id();
-            entries.remove(pos);
+            let removed = entries.remove(pos).managed;
             // #382 discipline: only this concrete type's `type_index` row
             // is stale if NO other row under `key` still uses it — a
             // sibling row of the same type at another scope/identity must
@@ -835,7 +857,7 @@ impl Registry {
             let stale = !entries
                 .iter()
                 .any(|e| e.managed.managed_type_id() == removed_type_id);
-            (true, stale.then_some(removed_type_id))
+            (Some(removed), stale.then_some(removed_type_id))
         };
 
         if let Some(stale) = stale_type_id {
@@ -879,11 +901,13 @@ impl Registry {
 
     /// Removes all entries from the registry.
     ///
-    /// This drops every `Arc<dyn ManagedHandle>`, releasing their
-    /// resources (including `Arc<ReleaseQueue>` references).
-    pub fn clear(&self) {
+    /// Transfers every row to the lifecycle owner for terminal cleanup.
+    /// The manager serializes mutations around this snapshot.
+    pub(crate) fn clear(&self) -> Vec<Arc<dyn ManagedHandle>> {
+        let retained = self.all_managed();
         self.entries.clear();
         self.type_index.clear();
+        retained
     }
 
     /// Lookup at an exact [`ScopeLevel`] only (no ancestor or Global
@@ -1141,6 +1165,12 @@ mod tests {
                 }
                 fn set_phase(&self, _phase: crate::state::ResourcePhase) {}
                 fn set_failed(&self, _kind: crate::error::ErrorKind, _reason: &str) {}
+                // These registry-index fixtures own no lifecycle entries.
+                fn begin_close(&self) {}
+                fn abort_maintenance(&self) {}
+                async fn close_retained(&self) -> Result<(), Error> {
+                    Ok(())
+                }
                 fn phase(&self) -> crate::state::ResourcePhase {
                     crate::state::ResourcePhase::Ready
                 }
@@ -1298,7 +1328,7 @@ mod tests {
         );
 
         assert!(
-            reg.remove_for(&key, &scope, &id_a),
+            reg.remove_for(&key, &scope, &id_a).is_some(),
             "remove_for must report success for a row that exists"
         );
 
@@ -1322,11 +1352,11 @@ mod tests {
 
         // A second remove_for on the same (now-absent) row is a clean
         // no-op `false`, not a panic.
-        assert!(!reg.remove_for(&key, &scope, &id_a));
+        assert!(reg.remove_for(&key, &scope, &id_a).is_none());
 
         // Removing the LAST row for this key must scrub the (now genuinely
         // stale) `type_index` entry too.
-        assert!(reg.remove_for(&key, &scope, &id_b));
+        assert!(reg.remove_for(&key, &scope, &id_b).is_some());
         assert!(
             !reg.type_index.contains_key(&TypeId::of::<FakeA>()),
             "type_index must be scrubbed once no row under the key uses \

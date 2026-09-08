@@ -107,7 +107,7 @@ crates/resource/
 ├── src/
 │   ├── lib.rs              re-exports, crate-level docs (Quick Start, topology table, error taxonomy)
 │   ├── resource.rs         Provider trait, ResourceConfig, HasCredentialSlots, ResourceMetadata
-│   ├── slot.rs / cell.rs   SlotCell (public, generation-stamped) vs internal epoch-blind Cell
+│   ├── slot.rs             Public, generation-stamped credential SlotCell
 │   ├── manager/            Manager: register/registration, acquire, gate, rotation, shutdown, options
 │   ├── registry.rs         Registry, type-erased managed-handle storage, scope-aware lookup
 │   ├── guard.rs            ResourceGuard — RAII acquire lease

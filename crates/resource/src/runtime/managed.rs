@@ -21,6 +21,7 @@ use std::{
 
 use arc_swap::ArcSwap;
 use tokio::sync::Notify;
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     recovery::RecoveryGate,
@@ -36,6 +37,82 @@ use crate::{
 /// The `Entry` type of a resource's topology — the leasable unit the framework
 /// stores and the guard holds for its whole lease.
 pub(crate) type EntryOf<R> = <<R as Provider>::Topology as Topology<R>>::Entry;
+
+/// The row owns its maintenance task until terminal cleanup has joined it.
+#[derive(Default)]
+pub(crate) struct Maintenance {
+    cancellation: CancellationToken,
+    task: std::sync::Mutex<Option<MaintenanceTask>>,
+}
+
+struct MaintenanceTask(tokio::task::JoinHandle<()>);
+
+impl Drop for MaintenanceTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+impl Maintenance {
+    pub(crate) fn new(cancellation: CancellationToken) -> Self {
+        Self {
+            cancellation,
+            task: std::sync::Mutex::new(None),
+        }
+    }
+
+    pub(crate) fn cancellation_token(&self) -> CancellationToken {
+        self.cancellation.clone()
+    }
+
+    pub(crate) fn set_task(&self, task: tokio::task::JoinHandle<()>) {
+        let mut owner = self
+            .task
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        debug_assert!(
+            owner.is_none(),
+            "registration installs maintenance only once"
+        );
+        *owner = Some(MaintenanceTask(task));
+    }
+
+    fn abort(&self) {
+        // An unpolled/rejected retirement must break a sweep's Arc<row>
+        // self-retention even when it cannot await graceful completion.
+        let task = self
+            .task
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(task) = task {
+            tracing::debug!("aborting maintenance after terminal cleanup abandonment");
+            drop(task);
+        }
+    }
+
+    async fn join(&self) -> Result<(), crate::Error> {
+        let task = self
+            .task
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(mut task) = task {
+            (&mut task.0).await.map_err(|_| {
+                crate::Error::permanent(
+                    "resource maintenance worker failed during terminal cleanup",
+                )
+            })?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Maintenance {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
+    }
+}
 
 /// Per-registration runtime holding topology + metadata.
 ///
@@ -104,6 +181,7 @@ pub struct ManagedResource<R: Provider> {
     /// a [`Cheap`](crate::CheckCost::Cheap) one. Bumped once per
     /// [`run_maintenance`](Self::run_maintenance).
     pub(crate) maintenance_sweeps: AtomicU64,
+    pub(crate) maintenance: Maintenance,
 }
 
 impl<R: Provider> std::fmt::Debug for ManagedResource<R> {
@@ -124,6 +202,39 @@ impl<R: Provider> std::fmt::Debug for ManagedResource<R> {
 }
 
 impl<R: Provider> ManagedResource<R> {
+    /// Publishes the terminal admission fence before any cleanup suspension.
+    pub(crate) fn begin_close(&self) {
+        self.store.begin_close();
+        self.maintenance.cancellation.cancel();
+    }
+
+    /// Breaks maintenance ownership when a terminal job is abandoned.
+    /// Graceful cleanup instead takes and joins the handle, making this a no-op.
+    pub(crate) fn abort_maintenance(&self) {
+        self.maintenance.abort();
+    }
+
+    /// Joins maintenance and destroys every idle or retained lifecycle owner.
+    ///
+    /// This is run as one queue-owned job. Its entries never contain acquire
+    /// cancellation guards, so worker abandonment cannot resubmit cleanup.
+    #[tracing::instrument(skip_all, fields(resource.key = %R::key()))]
+    pub(crate) async fn close_retained(&self) -> Result<(), crate::Error> {
+        self.begin_close();
+        let mut outcome = self.maintenance.join().await;
+        let mut entries = self.store.close_and_drain().await;
+        entries.extend(self.topology.close_retained().await);
+        for entry in entries {
+            let result = self
+                .destroy_entry(entry, crate::TeardownReason::Shutdown)
+                .await;
+            if outcome.is_ok() {
+                outcome = result;
+            }
+        }
+        outcome
+    }
+
     /// Returns the current generation counter.
     pub fn generation(&self) -> u64 {
         self.generation.load(Ordering::Acquire)
@@ -414,6 +525,7 @@ mod tests {
             tainted: AtomicBool::new(false),
             in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
             maintenance_sweeps: AtomicU64::new(0),
+            maintenance: Default::default(),
         })
     }
 

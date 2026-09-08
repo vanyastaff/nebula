@@ -99,16 +99,23 @@ impl Topology<PermitRes> for EntryPool {
         resource: &PermitRes,
         config: &PermitCfg,
         ctx: &ResourceContext,
-    ) -> Result<u32, Error> {
-        resource.create(config, ctx).await
+    ) -> Result<nebula_resource::topology::CreatedEntry<u32>, Error> {
+        resource
+            .create(config, ctx)
+            .await
+            .map(nebula_resource::topology::CreatedEntry::new)
     }
 
     fn entry_instance<'s>(&self, entry: &'s u32) -> &'s u32 {
         entry
     }
 
-    fn into_instance(&self, entry: u32) -> u32 {
-        entry
+    fn into_owned_instance(&self, entry: u32) -> Option<u32> {
+        Some(entry)
+    }
+
+    async fn close_retained(&self) -> Vec<Self::Entry> {
+        Vec::new()
     }
 
     fn pools(&self) -> bool {
@@ -184,8 +191,10 @@ async fn create_entry_and_projections() {
         .create_entry(&resource, &PermitCfg, &test_ctx())
         .await
         .expect("create_entry");
+    let (entry, retired) = entry.into_parts();
+    assert!(retired.is_empty());
     assert_eq!(*topo.entry_instance(&entry), 42);
-    assert_eq!(topo.into_instance(entry), 42);
+    assert_eq!(topo.into_owned_instance(entry), Some(42));
     assert!(Topology::<PermitRes>::pools(&topo));
     assert_eq!(Topology::<PermitRes>::store_capacity(&topo), Some(2));
 }

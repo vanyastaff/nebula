@@ -1,10 +1,11 @@
 //! Framework-owned instance storage for resource topologies.
 //!
 //! [`InstanceStore<S>`] is the framework-controlled holder for leased instances
-//! that [`Topology`] implementations borrow but cannot retain. It carries the
+//! that [`Topology`] implementations borrow through lifecycle hooks. It carries the
 //! idle queue, the generation/revoke-epoch state, and the uniform revoke-epoch
 //! fence that runs on every `return_entry` path — for both built-in and custom
-//! topologies.
+//! topologies. A separate monotonic terminal fence prevents a retiring store
+//! from admitting new idle entries or issuing fresh checkouts.
 //!
 //! # Vocabulary: slot vs entry vs lease
 //!
@@ -39,7 +40,7 @@ use std::{
     collections::VecDeque,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -103,10 +104,10 @@ pub(crate) struct StoreEntry<S> {
 /// An `InstanceStore<S>` is the storage the [`Manager`] owns; a
 /// [`Topology`](crate::topology::Topology) implementation receives a borrowed
 /// `&InstanceStore<Self::Entry>` in [`try_reserve`] /
-/// [`on_release`] and [`phase`] / [`load`] but **cannot retain it** (it is a
-/// `&` reference, not an `Arc`). This makes it structurally impossible for an
-/// author topology to build a cross-scope instance cache that bypasses the
-/// per-tenant `SlotIdentity` fence.
+/// [`on_release`] and [`phase`] / [`load`]. Topology implementations must leave
+/// checkout, publication and destruction to the framework. This technical
+/// store is not an authorization proof: its cloneable handles share state,
+/// and do not independently establish tenant isolation.
 ///
 /// # Revoke-epoch fence
 ///
@@ -163,6 +164,9 @@ pub struct InstanceStore<S> {
     /// Every `return_entry` compares the entry's checkout epoch against this;
     /// an advanced counter evicts the entry instead of re-queuing it.
     revoke_epoch: Arc<AtomicU64>,
+    /// Published before asynchronous retirement. Shared by every store handle;
+    /// credential changes cannot reopen a terminal store.
+    closed: Arc<AtomicBool>,
     /// Maximum number of entries the store will hold idle.
     /// `None` = unbounded (Resident / permit-only topologies).
     capacity: Option<usize>,
@@ -176,6 +180,7 @@ impl<S> Clone for InstanceStore<S> {
         Self {
             idle: Arc::clone(&self.idle),
             revoke_epoch: Arc::clone(&self.revoke_epoch),
+            closed: Arc::clone(&self.closed),
             capacity: self.capacity,
             strategy: self.strategy,
         }
@@ -188,6 +193,7 @@ impl<S> std::fmt::Debug for InstanceStore<S> {
             .field("capacity", &self.capacity)
             .field("strategy", &self.strategy)
             .field("revoke_epoch", &self.revoke_epoch.load(Ordering::Acquire))
+            .field("closed", &self.closed.load(Ordering::Acquire))
             .finish()
     }
 }
@@ -203,6 +209,7 @@ impl<S: Send + 'static> InstanceStore<S> {
         Self {
             idle: Arc::new(Mutex::new(VecDeque::new())),
             revoke_epoch: Arc::new(AtomicU64::new(0)),
+            closed: Arc::new(AtomicBool::new(false)),
             capacity,
             strategy: PoolStrategy::Fifo,
         }
@@ -248,6 +255,39 @@ impl<S: Send + 'static> InstanceStore<S> {
         self.revoke_epoch.fetch_add(1, Ordering::Release);
     }
 
+    /// Publishes the terminal fence without waiting for the idle lock.
+    ///
+    /// An operation that already observed the open state can finish under its
+    /// idle lock. `close_and_drain` subsequently takes that same lock and
+    /// collects its deposit. The framework rechecks closure before issuing a
+    /// lease whose checkout raced this signal.
+    pub(crate) fn begin_close(&self) {
+        if !self.closed.swap(true, Ordering::AcqRel) {
+            debug!("resource instance store closed to new leases and deposits");
+        }
+    }
+
+    /// Whether retirement has begun. This state never transitions back to open.
+    pub(crate) fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
+    /// Closes the store and transfers all remaining idle entries to the owner.
+    ///
+    /// Cancellation while acquiring the lock leaves the store closed and its
+    /// entries intact. Once acquired, collection has no cancellation point.
+    /// The returned entries require framework-owned teardown, not plain drop.
+    #[tracing::instrument(skip_all)]
+    pub(crate) async fn close_and_drain(&self) -> Vec<S> {
+        self.begin_close();
+        let mut idle = self.idle.lock().await;
+        debug!(
+            idle_count = idle.len(),
+            "draining terminal resource instance store"
+        );
+        idle.drain(..).map(|item| item.entry).collect()
+    }
+
     /// Checks out the first **fresh** idle entry, running the revoke-epoch
     /// fence on pop (framework-owned).
     ///
@@ -259,7 +299,8 @@ impl<S: Send + 'static> InstanceStore<S> {
     /// framework to destroy via [`Provider::destroy`]) and is **never**
     /// returned as fresh. The first entry whose epoch is current is returned
     /// as [`Checkout::fresh`]; if the queue drains without a fresh entry,
-    /// `fresh` is `None`.
+    /// `fresh` is `None`. Once retirement is observed, every remaining idle
+    /// entry is returned in `stale` for destruction, irrespective of its epoch.
     ///
     /// The framework acquire pipeline destroys every entry in `stale` before
     /// using `fresh`. The store cannot call `Provider::destroy` itself (it
@@ -292,13 +333,16 @@ impl<S: Send + 'static> InstanceStore<S> {
         // a revoke landing between the snapshot and the lock acquire would
         // let a stale entry escape as `fresh`.
         let live_epoch = self.current_revoke_epoch();
+        let closed = self.is_closed();
         let mut stale = Vec::new();
         while let Some(item) = idle.pop_front() {
-            if item.checkout_epoch != live_epoch {
-                // Leased under a since-revoked credential — never hand out.
+            if closed || item.checkout_epoch != live_epoch {
+                // Retired or leased under a since-revoked credential — never hand out.
                 debug!(
                     checkout_epoch = item.checkout_epoch,
-                    live_epoch, "InstanceStore::checkout: epoch mismatch — discarding stale entry"
+                    live_epoch,
+                    closed,
+                    "InstanceStore::checkout: fenced entry requires destruction"
                 );
                 stale.push(item.entry);
                 continue;
@@ -320,11 +364,11 @@ impl<S: Send + 'static> InstanceStore<S> {
     /// entry was leased under a since-revoked credential and is **not**
     /// re-queued — it is handed back via [`ReturnOutcome::Evict`] for the
     /// caller to destroy. Same when the optional capacity cap is already
-    /// reached. Otherwise the entry is enqueued and [`ReturnOutcome::Recycled`]
+    /// reached or retirement has begun. Otherwise the entry is enqueued and [`ReturnOutcome::Recycled`]
     /// is returned.
     ///
     /// Returning the evicted entry (rather than swallowing it) lets the
-    /// topology drive async eviction (e.g. calling `Provider::destroy`)
+    /// framework drive async eviction (e.g. calling `Provider::destroy`)
     /// without the store owning `Provider`.
     ///
     /// # Fence guarantee
@@ -344,6 +388,10 @@ impl<S: Send + 'static> InstanceStore<S> {
     /// than rely on this method to place it.
     pub async fn return_entry(&self, entry: S, checkout_epoch: u64) -> ReturnOutcome<S> {
         let mut idle = self.idle.lock().await;
+        if self.is_closed() {
+            debug!("InstanceStore::return_entry: terminal fence — evicting entry");
+            return ReturnOutcome::Evict(entry);
+        }
         // Revoke-epoch fence: re-read under the idle lock (same lock the
         // credential-revoke idle-walk holds) to make compare-then-push
         // atomic against a concurrent revoke.
@@ -389,8 +437,8 @@ impl<S: Send + 'static> InstanceStore<S> {
 
     /// Drains all idle entries from the queue without running any hooks.
     ///
-    /// Used by the framework during drain/shutdown to empty the store so
-    /// entries can be destroyed by the caller. Returns all entries collected.
+    /// Returns all entries collected without closing the store; subsequent
+    /// deposits remain possible. Terminal shutdown uses a separate fenced drain.
     pub async fn drain_all(&self) -> Vec<S> {
         self.idle.lock().await.drain(..).map(|e| e.entry).collect()
     }
@@ -440,9 +488,8 @@ impl<S: Send + 'static> InstanceStore<S> {
     /// guard across **every** `&R::Instance` credential hook `.await` so no
     /// checkout / return can interleave mid-rotation — the same lock
     /// [`checkout`](Self::checkout) / [`return_entry`](Self::return_entry) take.
-    /// Author topologies receive a `&InstanceStore` and can never name the
-    /// guard, so the "cannot retain the store" rule still holds: only the
-    /// framework can lock the queue, never the author.
+    /// Author topologies cannot name this crate-private guard; only the
+    /// framework can directly lock and mutate the queue.
     ///
     /// Holding this guard across an `.await` is a deliberate head-of-line
     /// block: rotation is rare and the alternative (drop-and-reacquire between
@@ -491,7 +538,8 @@ impl<S: Send + 'static> InstanceStore<S> {
     /// ([`ReturnOutcome::Evict`]); otherwise it is queued (capacity
     /// permitting). The `created_epoch` is the snapshot taken at the *start*
     /// of creation; if it is already behind the live counter the entry was
-    /// built against a since-revoked credential and is rejected.
+    /// built against a since-revoked credential and is rejected. A terminal
+    /// store rejects the entry even when its credential epoch is current.
     ///
     /// # Fence guarantee
     ///
@@ -526,6 +574,10 @@ impl<S: Send + 'static> InstanceStore<S> {
         entry: S,
         created_epoch: u64,
     ) -> ReturnOutcome<S> {
+        if self.is_closed() {
+            debug!("InstanceStore::deposit_fresh: terminal fence — rejecting fresh entry");
+            return ReturnOutcome::Evict(entry);
+        }
         let live_epoch = self.revoke_epoch.load(Ordering::Acquire);
         if created_epoch != live_epoch {
             debug!(
@@ -567,10 +619,9 @@ pub struct Checkout<S> {
     /// The first idle entry whose checkout epoch is current, or `None` if the
     /// idle queue held no fresh entry.
     pub fresh: Option<CheckedOut<S>>,
-    /// Idle entries whose checkout epoch was behind the live revoke counter.
+    /// Idle entries fenced by credential revocation or terminal retirement.
     ///
-    /// These were leased under a since-revoked credential; the framework
-    /// destroys them and never returns them to a caller.
+    /// The framework destroys them and never returns them to a caller.
     pub stale: Vec<S>,
 }
 
@@ -624,7 +675,7 @@ pub enum ReturnOutcome<S> {
     /// be leased again.
     Recycled,
     /// The entry was NOT returned because its checkout epoch is behind the
-    /// live revoke counter, or the capacity cap was reached. The entry is
+    /// live revoke counter, the store is closing, or the capacity cap was reached. The entry is
     /// handed back for the caller to destroy.
     Evict(S),
 }
@@ -641,6 +692,90 @@ impl<S> ReturnOutcome<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn terminal_fence_rejects_checkout_return_and_fresh_deposit() {
+        let store = InstanceStore::new(Some(4));
+        let sibling = store.clone();
+        let epoch = store.stamp_epoch();
+        assert_eq!(
+            store.return_entry(1_u32, epoch).await,
+            ReturnOutcome::Recycled
+        );
+        assert_eq!(store.deposit_fresh(2, epoch).await, ReturnOutcome::Recycled);
+
+        store.begin_close();
+        assert!(
+            sibling.is_closed(),
+            "closure is shared by every store handle"
+        );
+        let checkout = sibling.checkout().await;
+        assert!(checkout.fresh.is_none());
+        assert_eq!(checkout.stale, vec![1, 2]);
+        assert_eq!(store.return_entry(3, epoch).await, ReturnOutcome::Evict(3));
+        assert_eq!(store.deposit_fresh(4, epoch).await, ReturnOutcome::Evict(4));
+        store.bump_revoke_epoch();
+        assert_eq!(
+            sibling.deposit_fresh(5, sibling.stamp_epoch()).await,
+            ReturnOutcome::Evict(5),
+            "a fresh credential epoch cannot reopen a retired store"
+        );
+        assert_eq!(store.len().await, 0);
+    }
+
+    #[tokio::test]
+    async fn terminal_fence_rechecks_return_waiting_for_idle_lock() {
+        let store = InstanceStore::new(None);
+        let epoch = store.stamp_epoch();
+        assert_eq!(
+            store.return_entry(1_u32, epoch).await,
+            ReturnOutcome::Recycled
+        );
+        let idle = store.lock_idle().await;
+        let returning = store.return_entry(2, epoch);
+        tokio::pin!(returning);
+        assert!(futures::poll!(returning.as_mut()).is_pending());
+
+        store.begin_close();
+        drop(idle);
+        assert_eq!(returning.await, ReturnOutcome::Evict(2));
+        assert_eq!(store.close_and_drain().await, vec![1]);
+        assert!(store.close_and_drain().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn terminal_fence_rejects_deposit_under_already_held_lock() {
+        let store = InstanceStore::new(None);
+        let epoch = store.stamp_epoch();
+        let mut idle = store.lock_idle().await;
+        store.begin_close();
+        assert_eq!(
+            store.deposit_fresh_locked(&mut idle, 7_u32, epoch),
+            ReturnOutcome::Evict(7)
+        );
+        assert!(idle.is_empty());
+    }
+
+    #[tokio::test]
+    async fn terminal_fence_survives_cancelled_drain_without_losing_entries() {
+        let store = InstanceStore::new(None);
+        let epoch = store.stamp_epoch();
+        assert_eq!(
+            store.return_entry(9_u32, epoch).await,
+            ReturnOutcome::Recycled
+        );
+        let idle = store.lock_idle().await;
+        {
+            let closing = store.close_and_drain();
+            tokio::pin!(closing);
+            assert!(futures::poll!(closing.as_mut()).is_pending());
+            assert!(store.is_closed(), "the fence precedes the first await");
+        }
+        assert!(store.is_closed());
+        drop(idle);
+        assert_eq!(store.close_and_drain().await, vec![9]);
+        assert!(store.is_empty().await);
+    }
 
     // Entry returned before epoch bump → Recycled (re-pooled).
     #[tokio::test]

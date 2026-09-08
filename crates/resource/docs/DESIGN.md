@@ -15,7 +15,7 @@
 
 **Владеет:** acquire-петлёй (framework-owned, не у топологии), health-check / hot-reload / scope-bounded release, fenced idle-queue (`InstanceStore`), двухфазным credential-revoke (taint→drain), structural cross-tenant барьером (`SlotIdentity`), generation-stamped слот-ячейками (`SlotCell`), per-slot ротационным fan-out (под feature `rotation`), типизированной ошибкой с retry-классификацией.
 
-**ЯВНО НЕ делает:** не хранит ключи и не шифрует (это `nebula-storage` / `nebula-crypto`); не определяет credential-типы и не выполняет refresh/lease/rotation-state (это `nebula-credential`); не содержит long-running worker'ов и pull-подписок — `Daemon` / `EventSource` живут в `nebula_engine::daemon` (канон §3.5 резервирует «Resource» под pool/SDK-клиенты, README.md); внутренний epoch-blind `cell::Cell` намеренно НЕ реэкспортируется (`src/lib.rs`).
+**ЯВНО НЕ делает:** не хранит ключи и не шифрует (это `nebula-storage` / `nebula-crypto`); не определяет credential-типы и не выполняет refresh/lease/rotation-state (это `nebula-credential`); не содержит long-running worker'ов и pull-подписок — `Daemon` / `EventSource` живут в `nebula_engine::daemon` (канон §3.5 резервирует «Resource» под pool/SDK-клиенты, README.md).
 
 ## 2. Публичная поверхность
 
@@ -52,7 +52,7 @@
 - `manager/` — `mod` (`Manager`, каноническая doc двухфазного revoke-инварианта), `acquire`, `gate`, `options`, `registration`, `rotation`, `shutdown`.
 - `topology/` — `contract` (открытый `Topology<R>`), `store` (`InstanceStore`), `pooled`/`resident`/`bounded` (hook-трейты + конфиги).
 - `runtime/` — `pool`/`resident`/`bounded` (сами структуры топологий), `managed` (`ManagedResource` — framework acquire loop).
-- `slot.rs` / `cell.rs` — публичный `SlotCell` vs внутренний epoch-blind `Cell`.
+- `slot.rs` — публичный generation-stamped `SlotCell`; master ресурса удерживается в `runtime/resident.rs`.
 - `registry.rs` — type-erased `Registry`, `(key, scope, slot_identity)`-dedup.
 - `credential_fanout/` `[feature rotation]` — driver + index ротационного fan-out.
 - `guard.rs` / `hook_guard.rs` — RAII guard / внутренний hook-guard.
@@ -69,7 +69,7 @@
 - **Attributable lifecycle (L2-§13.3).** Каждая операция несёт `ResourceContext`/scope; `ResourceEvent` + `ResourceOpsMetrics` дают трассируемость по умолчанию.
 - **Cross-tenant barrier by-construction.** `SlotIdentity::Structural` входит в dedup-ключ (`src/dedup.rs`, `src/registry.rs`), поэтому инстанс одного тенанта структурно не может быть отдан другому — это не runtime-проверка, а форма ключа.
 - **Revoke без TOCTOU.** Двухфазный taint→drain (`src/manager/mod.rs`) гарантирует, что после revoke ни один уже выданный гвард не продолжит работать на отозванном credential.
-- **Generation-stamped слоты.** `SlotCell<S>` lock-free и штампует поколение; epoch-blind `cell::Cell` скрыт (`src/lib.rs`), чтобы автор не прочитал слот мимо epoch-инварианта.
+- **Generation-stamped слоты.** `SlotCell<S>` lock-free и штампует поколение; master ресурса и credential-слот имеют разное владение.
 - **Teardown-контракт (ADR-0093).** `reset`/`destroy` — fallible-async; safe-by-default reset; deadline (а не `Duration`) через `TeardownCx`/`TeardownReason` (`src/resource.rs`).
 
 ## 6. Известные напряжения / долг (честно)

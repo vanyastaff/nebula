@@ -78,7 +78,7 @@ impl InstanceMetrics {
 ///
 /// [`Manager::acquire_pooled`](crate::Manager::acquire_pooled) requires:
 /// - `R: Clone + Send + Sync + 'static`
-/// - `R::Instance: Clone + Send + Sync + 'static`
+/// - `R::Instance: Send + Sync + 'static` (no instance cloning)
 ///
 /// # Object safety
 ///

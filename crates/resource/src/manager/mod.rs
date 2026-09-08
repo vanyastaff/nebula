@@ -227,10 +227,8 @@
 //!   the new runtime (correct delivery) or `None` because create failed
 //!   (correct no-op — nothing is bound). No lost-revoke window exists; earlier
 //!   ledger text overstated this.
-//! - **`graceful_shutdown` phase-4 detached workers can outlive
-//!   `release_queue_timeout` — LOW** ([#715]). The timeout bounds the wait,
-//!   not the detached release work; it eventually drains. shutdown.rs was
-//!   not opened by the collapse.
+//! - Graceful shutdown owns release workers through cooperative completion
+//!   or abort acknowledgement. Cleanup stays open throughout handle drain.
 //! - **`RecoveryTicket` Drop counts a panicked probe as an attempt — LOW**
 //!   ([#716]). A defensible-but-untested default; recovery internals.
 //!
@@ -313,7 +311,6 @@
 //! [#712]: https://github.com/vanyastaff/nebula/issues/712
 //! [#713]: https://github.com/vanyastaff/nebula/issues/713
 //! [#714]: https://github.com/vanyastaff/nebula/issues/714
-//! [#715]: https://github.com/vanyastaff/nebula/issues/715
 //! [#716]: https://github.com/vanyastaff/nebula/issues/716
 //! [#717]: https://github.com/vanyastaff/nebula/issues/717
 //! [#718]: https://github.com/vanyastaff/nebula/issues/718
@@ -400,6 +397,8 @@ pub struct ResourceHealthSnapshot {
 /// whenever the resolved slot identity is known.
 pub struct Manager {
     pub(super) registry: Registry,
+    /// Serializes registry commits and terminal snapshots; never held across await.
+    pub(super) admission: std::sync::Mutex<()>,
     pub(super) cancel: CancellationToken,
     pub(super) metrics: Option<ResourceOpsMetrics>,
     /// Shared lifecycle-event sink. Held behind `Arc` so the same
@@ -413,6 +412,8 @@ pub struct Manager {
     pub(super) release_queue_handle: tokio::sync::Mutex<Option<ReleaseQueueHandle>>,
     /// Tracks active `ResourceGuard`s for drain-aware shutdown.
     pub(super) drain_tracker: Arc<(AtomicU64, Notify)>,
+    /// Terminal jobs, including rows already removed or replaced.
+    pub(super) retirement_tracker: Arc<(AtomicU64, Notify)>,
     /// CAS-guarded idempotency flag for `graceful_shutdown`. Flipped
     /// false → true by the winning caller; losers return
     /// [`ShutdownError::AlreadyShuttingDown`].
@@ -455,8 +456,7 @@ impl Manager {
         Self::warn_once_if_panic_abort();
         let event_bus = Arc::new(EventBus::new(256));
         let cancel = CancellationToken::new();
-        let (release_queue, release_queue_handle) =
-            ReleaseQueue::with_cancel(config.release_queue_workers, cancel.clone());
+        let (release_queue, release_queue_handle) = ReleaseQueue::new(config.release_queue_workers);
         let metrics =
             config
                 .metrics_registry
@@ -471,12 +471,14 @@ impl Manager {
         let acquire_slow_threshold = config.acquire_slow_threshold;
         Self {
             registry: Registry::new(),
+            admission: std::sync::Mutex::new(()),
             cancel,
             metrics,
             event_bus,
             release_queue: Arc::new(release_queue),
             release_queue_handle: tokio::sync::Mutex::new(Some(release_queue_handle)),
             drain_tracker: Arc::new((AtomicU64::new(0), Notify::new())),
+            retirement_tracker: Arc::new((AtomicU64::new(0), Notify::new())),
             shutting_down: AtomicBool::new(false),
             lifecycle: None,
             acquire_slow_threshold,
@@ -611,13 +613,21 @@ impl Manager {
     /// Triggers an immediate shutdown of all managed resources.
     ///
     /// Cancels the shared [`CancellationToken`], signaling all in-flight
-    /// operations to stop. Callers should await pending work separately.
+    /// operations to stop. Cleanup remains available for late guard drops
+    /// while the manager lives. Callers should await pending work separately.
     ///
     /// For a shutdown that waits for in-flight work to drain, use
     /// [`graceful_shutdown`](Self::graceful_shutdown).
     pub fn shutdown(&self) {
+        let _admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         tracing::info!("resource manager shutting down");
         self.cancel.cancel();
+        for managed in self.registry.all_managed() {
+            managed.begin_close();
+        }
     }
 
     /// Returns `true` if a resource with the given key is registered.
@@ -639,6 +649,7 @@ impl Manager {
     /// Returns the manager's cancellation token.
     ///
     /// Child tokens can be derived from this for per-resource cancellation.
+    /// Cancelling it rejects acquires without closing the release queue.
     pub fn cancel_token(&self) -> &CancellationToken {
         &self.cancel
     }
@@ -935,6 +946,16 @@ impl InFlightCounter {
     }
 }
 
+impl Drop for Manager {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+        for managed in self.registry.clear() {
+            drop(self.retire_resource(managed));
+        }
+        self.release_queue.close();
+    }
+}
+
 impl Drop for InFlightCounter {
     fn drop(&mut self) {
         if self.armed {
@@ -1050,6 +1071,170 @@ mod shutdown_post_count_race_tests {
             recovery_gate: None,
         };
         assert!(manager.register(spec).is_ok(), "register succeeds");
+    }
+
+    #[tokio::test]
+    async fn registration_after_shutdown_cannot_repopulate_registry() {
+        let manager = Manager::new();
+        manager
+            .graceful_shutdown(ShutdownConfig::default())
+            .await
+            .expect("empty shutdown");
+        let result = manager.register(RegistrationSpec {
+            resource: ShutdownRaceResident,
+            config: RaceCfg,
+            scope: ScopeLevel::Global,
+            slot_identity: crate::dedup::SlotIdentity::Unbound,
+            topology: Resident::new(ResidentConfig::default()),
+            recovery_gate: None,
+        });
+        assert_eq!(
+            result.expect_err("closed admission").kind(),
+            &ErrorKind::Cancelled
+        );
+        assert!(!manager.contains(&ShutdownRaceResident::key()));
+    }
+
+    #[derive(Clone)]
+    struct BlockingValidation {
+        entered: Arc<std::sync::Barrier>,
+        resume: Arc<std::sync::Barrier>,
+    }
+
+    nebula_schema::impl_empty_has_schema!(BlockingValidation);
+
+    impl ResourceConfig for BlockingValidation {
+        fn fingerprint(&self) -> u64 {
+            0
+        }
+
+        fn validate(&self) -> Result<(), Error> {
+            self.entered.wait();
+            self.resume.wait();
+            Ok(())
+        }
+    }
+
+    struct ValidatingResident;
+
+    #[async_trait::async_trait]
+    impl Provider for ValidatingResident {
+        type Config = BlockingValidation;
+        type Instance = ();
+        type Topology = Resident<Self>;
+
+        fn key() -> ResourceKey {
+            resource_key!("test.registration_validation_race")
+        }
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::from_key(&Self::key())
+        }
+        async fn create(&self, _: &Self::Config, _: &ResourceContext) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    crate::no_credential_slots!(ValidatingResident);
+
+    impl crate::topology::ResidentProvider for ValidatingResident {
+        fn is_alive_sync(&self, (): &()) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn registration_validation_cannot_commit_after_shutdown_snapshot() {
+        let manager = Arc::new(Manager::new());
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let resume = Arc::new(std::sync::Barrier::new(2));
+        let registering = Arc::clone(&manager);
+        let config = BlockingValidation {
+            entered: Arc::clone(&entered),
+            resume: Arc::clone(&resume),
+        };
+        let registration = std::thread::spawn(move || {
+            registering.register(RegistrationSpec {
+                resource: ValidatingResident,
+                config,
+                scope: ScopeLevel::Global,
+                slot_identity: crate::dedup::SlotIdentity::Unbound,
+                topology: Resident::new(ResidentConfig::default()),
+                recovery_gate: None,
+            })
+        });
+        entered.wait();
+        // This must finish while author validation is blocked: author code
+        // cannot hold admission, and its later commit must recheck shutdown.
+        let shutdown = manager.graceful_shutdown(ShutdownConfig::default()).await;
+        resume.wait();
+        let result = registration.join().expect("registration thread");
+        assert!(shutdown.expect("empty snapshot shutdown").registry_cleared);
+        assert_eq!(
+            result.expect_err("final commit fenced").kind(),
+            &ErrorKind::Cancelled
+        );
+        assert!(!manager.contains(&ValidatingResident::key()));
+    }
+
+    #[tokio::test]
+    async fn replacement_and_removal_fence_previously_resolved_rows() {
+        let manager = Manager::new();
+        register_race_resident(&manager, Resident::new(ResidentConfig::default()));
+        let first = manager
+            .lookup::<ShutdownRaceResident>(&ScopeLevel::Global)
+            .expect("first row");
+        register_race_resident(&manager, Resident::new(ResidentConfig::default()));
+        let second = manager
+            .lookup::<ShutdownRaceResident>(&ScopeLevel::Global)
+            .expect("replacement");
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert!(
+            first.store.is_closed(),
+            "replacement fences a captured old row"
+        );
+        assert!(!second.store.is_closed());
+        manager
+            .remove(&ShutdownRaceResident::key())
+            .expect("remove replacement");
+        assert!(second.store.is_closed(), "removal fences a captured row");
+        assert!(!manager.contains(&ShutdownRaceResident::key()));
+        manager
+            .graceful_shutdown(ShutdownConfig::default())
+            .await
+            .expect("retirement cleanup");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rejected_retirement_aborts_maintenance_holding_its_own_row() {
+        let manager = Manager::new();
+        register_race_resident(&manager, Resident::new(ResidentConfig::default()));
+        let row = manager
+            .lookup::<ShutdownRaceResident>(&ScopeLevel::Global)
+            .expect("registered row");
+        let weak = Arc::downgrade(&row);
+        let task_row = Arc::clone(&row);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (alive_tx, alive_rx) = tokio::sync::oneshot::channel::<()>();
+        row.maintenance.set_task(tokio::spawn(async move {
+            // Real maintenance likewise upgrades its Weak for a whole sweep.
+            let _row = task_row;
+            let _alive = alive_tx;
+            started_tx.send(()).expect("start receiver");
+            std::future::pending::<()>().await;
+        }));
+        started_rx.await.expect("maintenance owns the row");
+        manager.release_queue.close();
+        drop(row);
+        drop(manager);
+        let stopped = tokio::time::timeout(Duration::from_secs(1), alive_rx).await;
+        assert!(
+            stopped.is_ok(),
+            "an unpolled rejected retirement must abort its maintenance task"
+        );
+        assert!(
+            weak.upgrade().is_none(),
+            "maintenance must not retain its own row after abandonment"
+        );
     }
 
     /// Runs the resident acquire through the framework loop — the same

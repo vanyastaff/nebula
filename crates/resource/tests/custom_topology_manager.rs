@@ -51,7 +51,6 @@ impl ResourceConfig for FfmpegCfg {
 /// the test can observe that the framework actually tears a stale handle down.
 /// The id is the entry identity — carried through the framework store, not read
 /// directly in assertions (the destroy/create counters are the observables).
-#[derive(Clone)]
 struct Transcoder(
     #[expect(
         dead_code,
@@ -174,11 +173,14 @@ impl Topology<Ffmpeg> for FfmpegPool {
         resource: &Ffmpeg,
         config: &FfmpegCfg,
         ctx: &ResourceContext,
-    ) -> Result<Transcoder, Error> {
+    ) -> Result<nebula_resource::topology::CreatedEntry<Transcoder>, Error> {
         // Make one fresh transcoder. The framework decides WHEN to call this
         // (on an idle-miss / warmup); the author only knows HOW to build one.
         match self.mode {
-            CreateMode::Normal => resource.create(config, ctx).await,
+            CreateMode::Normal => resource
+                .create(config, ctx)
+                .await
+                .map(nebula_resource::topology::CreatedEntry::new),
             CreateMode::Hang => std::future::pending().await,
             CreateMode::Panic => panic!(
                 "foolproofing: a careless create_entry panics — the framework must \
@@ -192,8 +194,12 @@ impl Topology<Ffmpeg> for FfmpegPool {
         entry
     }
 
-    fn into_instance(&self, entry: Transcoder) -> Transcoder {
-        entry
+    fn into_owned_instance(&self, entry: Transcoder) -> Option<Transcoder> {
+        Some(entry)
+    }
+
+    async fn close_retained(&self) -> Vec<Self::Entry> {
+        Vec::new()
     }
 
     fn pools(&self) -> bool {

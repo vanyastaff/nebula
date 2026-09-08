@@ -196,7 +196,7 @@ impl<R: Provider> Bounded<R> {
 // ─── Topology impl for Bounded ────────────────────────────────────────────────
 //
 // `Bounded<R>` gates concurrency with a semaphore. `Entry = R::Instance`,
-// `entry_instance` / `into_instance` are identity. Only `Exclusive` pools (one
+// `entry_instance` / `into_owned_instance` are identity. Only `Exclusive` pools (one
 // reused instance, reset on release); `Capped` / `Unbounded` destroy every
 // instance on release.
 
@@ -207,7 +207,6 @@ where
         + Send
         + Sync
         + 'static,
-    R::Instance: Clone + Send + Sync + 'static,
 {
     type Entry = R::Instance;
 
@@ -232,7 +231,7 @@ where
         resource: &R,
         config: &R::Config,
         ctx: &ResourceContext,
-    ) -> Result<R::Instance, Error> {
+    ) -> Result<crate::topology::CreatedEntry<R::Instance>, Error> {
         let instance = resource.create(config, ctx).await?;
         // Stamp the config fingerprint this instance was built against, and
         // seed the live fingerprint on the very first build. A reload updates
@@ -246,15 +245,19 @@ where
         let _ =
             self.current_fingerprint
                 .compare_exchange(0, fp, Ordering::AcqRel, Ordering::Acquire);
-        Ok(instance)
+        Ok(crate::topology::CreatedEntry::new(instance))
     }
 
     fn entry_instance<'s>(&self, entry: &'s R::Instance) -> &'s R::Instance {
         entry
     }
 
-    fn into_instance(&self, entry: R::Instance) -> R::Instance {
-        entry
+    fn into_owned_instance(&self, entry: R::Instance) -> Option<R::Instance> {
+        Some(entry)
+    }
+
+    async fn close_retained(&self) -> Vec<Self::Entry> {
+        Vec::new()
     }
 
     /// Evicts the reused `Exclusive` instance when its config has been
@@ -601,7 +604,8 @@ mod tests {
             .create_entry(&resource, &BoundedCfg, &test_ctx())
             .await
             .expect("create");
-        assert_eq!(inst, 7);
+        assert_eq!(*inst.entry(), 7);
+        assert!(inst.retired().is_empty());
         assert_eq!(topo.tag(), TopologyTag::Bounded);
     }
 }

@@ -2,12 +2,10 @@
 //!
 //! Provides the per-resource deadline computation and the bounded async
 //! `destroy` dispatch that every topology path (acquire loop, release, warmup,
-//! maintenance, resident create-vs-rotate) uses whenever it needs to tear an
+//! maintenance, retained-master retirement) uses whenever it needs to tear an
 //! instance down.
 //!
-//! Factored out of [`managed`](super::managed) so the `Resident` topology can
-//! import `destroy_within` without pulling in the full
-//! `ManagedResource<R>` acquire-loop machinery.
+//! Topology policy transfers ownership; only the framework invokes destruction.
 
 use std::time::{Duration, Instant};
 
@@ -76,7 +74,7 @@ pub(crate) async fn destroy_within<R: Provider>(
             tracing::warn!(
                 resource = %R::key(),
                 ?reason,
-                %error,
+                error.kind = ?error.kind(),
                 "resource destroy failed"
             );
             Err(error)

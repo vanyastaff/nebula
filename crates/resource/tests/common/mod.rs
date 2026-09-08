@@ -241,7 +241,6 @@ where
         + Send
         + Sync
         + 'static,
-    R::Instance: Clone + Send + Sync + 'static,
 {
     mgr.pool_stats::<R>(&ScopeLevel::Global)
         .await
@@ -260,7 +259,6 @@ where
         + Send
         + Sync
         + 'static,
-    R::Instance: Clone + Send + Sync + 'static,
 {
     let deadline = std::time::Duration::from_secs(2);
     let start = std::time::Instant::now();
@@ -289,7 +287,6 @@ where
         + Send
         + Sync
         + 'static,
-    R::Instance: Clone + Send + Sync + 'static,
 {
     mgr.register(RegistrationSpec {
         resource,
@@ -318,7 +315,6 @@ where
         + Send
         + Sync
         + 'static,
-    R::Instance: Clone + Send + Sync + 'static,
 {
     let registry = Arc::new(nebula_metrics::MetricsRegistry::new());
     let mgr = Manager::with_config(ManagerConfig::default().with_metrics_registry(registry));
@@ -335,7 +331,6 @@ where
         + Send
         + Sync
         + 'static,
-    R::Instance: Clone + Send + Sync + 'static,
 {
     mgr.register(RegistrationSpec {
         resource,

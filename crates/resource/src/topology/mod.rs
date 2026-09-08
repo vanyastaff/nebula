@@ -25,8 +25,8 @@ pub mod store;
 
 pub use bounded::{BoundedMode, BoundedProvider};
 pub use contract::{
-    AdmissionPhase, AdmissionStatus, Load, MaintenanceSchedule, NoTopology, Ticket, Topology,
-    Unavailable,
+    AdmissionPhase, AdmissionStatus, CreatedEntry, Load, MaintenanceSchedule, NoTopology, Ticket,
+    Topology, Unavailable,
 };
 pub use pooled::{BrokenCheck, InstanceMetrics, PoolProvider, RecycleDecision};
 pub use resident::ResidentProvider;

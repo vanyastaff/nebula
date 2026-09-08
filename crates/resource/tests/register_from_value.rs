@@ -109,6 +109,160 @@ impl DeclaresDependencies for Postgres {
 
 // ── Tests ─────────────────────────────────────────────────────────────────
 
+struct AdmissionResource<const CREDENTIALS: bool>;
+
+#[async_trait::async_trait]
+impl<const CREDENTIALS: bool> Provider for AdmissionResource<CREDENTIALS> {
+    type Config = PgConfig;
+    type Instance = ();
+    type Topology = AdmissionTopology;
+
+    fn key() -> ResourceKey {
+        resource_key!("test.revoke-admission")
+    }
+
+    async fn create(&self, _config: &PgConfig, _ctx: &ResourceContext) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+impl<const CREDENTIALS: bool> HasCredentialSlots for AdmissionResource<CREDENTIALS> {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+    fn declares_credential_slots() -> bool {
+        CREDENTIALS
+    }
+    fn credential_slot_names() -> &'static [&'static str] {
+        if CREDENTIALS { &["auth"] } else { &[] }
+    }
+}
+
+impl<const CREDENTIALS: bool> DeclaresDependencies for AdmissionResource<CREDENTIALS> {
+    fn dependencies() -> Dependencies {
+        if CREDENTIALS {
+            Dependencies::new().slot_field(nebula_core::SlotField {
+                slot_key: "auth",
+                default_id: "auth",
+                kind: nebula_core::dependencies::SlotKind::Credential {
+                    type_id: std::any::TypeId::of::<()>(),
+                    type_name: std::any::type_name::<()>(),
+                    key: nebula_core::credential_key!("test.revoke-admission"),
+                },
+                required: true,
+                lazy: false,
+                purpose: None,
+            })
+        } else {
+            Dependencies::new()
+        }
+    }
+}
+
+struct AdmissionTopology {
+    handles_revoke: bool,
+}
+
+impl<const CREDENTIALS: bool> nebula_resource::topology::Topology<AdmissionResource<CREDENTIALS>>
+    for AdmissionTopology
+{
+    type Entry = ();
+
+    fn try_reserve(
+        &self,
+        _store: &nebula_resource::topology::InstanceStore<()>,
+    ) -> Result<nebula_resource::topology::Ticket, nebula_resource::topology::Unavailable> {
+        Ok(nebula_resource::topology::Ticket::infallible())
+    }
+
+    async fn create_entry(
+        &self,
+        _resource: &AdmissionResource<CREDENTIALS>,
+        _config: &PgConfig,
+        _ctx: &ResourceContext,
+    ) -> Result<nebula_resource::topology::CreatedEntry<()>, Error> {
+        Ok(nebula_resource::topology::CreatedEntry::new(()))
+    }
+
+    fn entry_instance<'s>(&self, entry: &'s ()) -> &'s () {
+        entry
+    }
+    fn into_owned_instance(&self, entry: ()) -> Option<()> {
+        Some(entry)
+    }
+    async fn close_retained(&self) -> Vec<Self::Entry> {
+        Vec::new()
+    }
+    fn handles_own_revoke(&self) -> bool {
+        self.handles_revoke
+    }
+}
+
+fn register_admission_resource<const CREDENTIALS: bool>(
+    manager: &Manager,
+    handles_revoke: bool,
+) -> Result<(), Error> {
+    manager.register(nebula_resource::RegistrationSpec {
+        resource: AdmissionResource::<CREDENTIALS>,
+        config: PgConfig {
+            host: "localhost".into(),
+            port: 5432,
+        },
+        scope: ScopeLevel::Global,
+        slot_identity: nebula_resource::SlotIdentity::Unbound,
+        topology: AdmissionTopology { handles_revoke },
+        recovery_gate: None,
+    })
+}
+
+#[tokio::test]
+async fn revoke_admission_rejects_unbound_credentialed_custom_topology() {
+    let manager = Manager::new();
+    let error = register_admission_resource::<true>(&manager, false)
+        .expect_err("declared credentials require a revoke policy before binding");
+    assert_eq!(error.kind(), &nebula_resource::ErrorKind::Permanent);
+    assert!(!manager.contains(&AdmissionResource::<true>::key()));
+}
+
+#[tokio::test]
+async fn revoke_admission_rejects_resolved_credentialed_custom_topology() {
+    let manager = Manager::new();
+    let error = manager
+        .register_resolved(
+            json!({"host": "localhost"}),
+            &ExpressionEngine::new(),
+            HashMap::from([(
+                "auth".to_owned(),
+                nebula_core::credential_key!("binding-identity"),
+            )]),
+            AdmissionResource::<true>,
+            ScopeLevel::Global,
+            AdmissionTopology {
+                handles_revoke: false,
+            },
+            None,
+        )
+        .await
+        .expect_err("resolved registration must reject unsupported revoke policy");
+    assert_eq!(error.kind(), &nebula_resource::ErrorKind::Permanent);
+    assert!(!manager.contains(&AdmissionResource::<true>::key()));
+}
+
+#[tokio::test]
+async fn revoke_admission_allows_custom_topology_without_credentials() {
+    let manager = Manager::new();
+    register_admission_resource::<false>(&manager, false)
+        .expect("no credentials need no revoke hook");
+    assert!(manager.contains(&AdmissionResource::<false>::key()));
+}
+
+#[tokio::test]
+async fn revoke_admission_preserves_explicit_custom_revoke_policy() {
+    let manager = Manager::new();
+    register_admission_resource::<true>(&manager, true).expect("custom revoke policy is supported");
+    assert!(manager.contains(&AdmissionResource::<true>::key()));
+}
+
 #[tokio::test]
 async fn register_from_value_resolves_template_and_registers() {
     let manager = Manager::new();

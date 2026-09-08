@@ -118,13 +118,13 @@ pub struct RegisterRequest<'a> {
 
 impl std::fmt::Debug for RegisterRequest<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // `expr_engine` (`nebula_expression::ExpressionEngine`) does not
-        // implement `Debug`, so a derive is not available here — print a
-        // type-name placeholder for it instead of skipping it silently.
+        // Config and binding payloads are opaque caller data. Neither values
+        // nor field/slot names are guaranteed secret-free before validation.
+        // Keep diagnostics useful without formatting either payload.
         f.debug_struct("RegisterRequest")
-            .field("config_json", &self.config_json)
+            .field("config_json", &"<redacted>")
             .field("expr_engine", &"<ExpressionEngine>")
-            .field("slot_bindings", &self.slot_bindings)
+            .field("slot_binding_count", &self.slot_bindings.len())
             .field("scope", &self.scope)
             .field("recovery_gate", &self.recovery_gate.is_some())
             .finish()
@@ -360,7 +360,6 @@ impl<R, FRes, FTopo> ResourceFactory for KindActivator<R, FRes, FTopo>
 where
     R: Provider + nebula_core::DeclaresDependencies,
     R::Config: serde::de::DeserializeOwned,
-    R::Instance: Clone,
     R::Topology: Topology<R>,
     FRes: Fn() -> R + Send + Sync + 'static,
     FTopo: Fn() -> R::Topology + Send + Sync + 'static,
@@ -782,6 +781,38 @@ mod tests {
             slot_bindings: Vec::new(),
             scope: ScopeLevel::Global,
             recovery_gate: None,
+        }
+    }
+
+    #[test]
+    fn registration_debug_redacts_opaque_config_and_binding_payloads() {
+        let engine = ExpressionEngine::with_cache_size(16);
+        let mut request = request(&engine);
+        request.config_json = serde_json::json!({
+            "opaque_config_field": ["config_secret_sentinel", {"nested": "nested_secret_sentinel"}]
+        });
+        request.slot_bindings.push(SlotBinding {
+            slot_name: "slot_name_sentinel".to_owned(),
+            credential_key: nebula_core::CredentialKey::new("credential_key_sentinel")
+                .expect("valid test key"),
+            credential_id: Some(nebula_credential::CredentialId::new()),
+        });
+        for debug in [format!("{request:?}"), format!("{request:#?}")] {
+            for sensitive in [
+                "opaque_config_field",
+                "config_secret_sentinel",
+                "nested_secret_sentinel",
+                "slot_name_sentinel",
+                "credential_key_sentinel",
+            ] {
+                assert!(
+                    !debug.contains(sensitive),
+                    "opaque registration data must not appear in Debug"
+                );
+            }
+            assert!(debug.contains("RegisterRequest"));
+            assert!(debug.contains("slot_binding_count"));
+            assert!(debug.contains("Global"));
         }
     }
 

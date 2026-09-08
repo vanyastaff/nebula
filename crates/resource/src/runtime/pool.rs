@@ -352,7 +352,6 @@ impl<R: Provider> Pooled<R> {
 impl<R> Pooled<R>
 where
     R: PoolProvider + Clone + Send + Sync + 'static,
-    R::Instance: Clone,
 {
     /// Creates a new pool entry via `resource.create()`.
     ///
@@ -428,7 +427,6 @@ where
 impl<R> Topology<R> for Pooled<R>
 where
     R: Provider<Topology = Pooled<R>> + PoolProvider + Clone + Send + Sync + 'static,
-    R::Instance: Clone + Send + Sync + 'static,
 {
     type Entry = PoolEntry<R>;
 
@@ -445,16 +443,22 @@ where
         resource: &R,
         config: &R::Config,
         ctx: &ResourceContext,
-    ) -> Result<PoolEntry<R>, Error> {
-        self.create_pool_entry(resource, config, ctx).await
+    ) -> Result<crate::topology::CreatedEntry<PoolEntry<R>>, Error> {
+        self.create_pool_entry(resource, config, ctx)
+            .await
+            .map(crate::topology::CreatedEntry::new)
     }
 
     fn entry_instance<'s>(&self, entry: &'s PoolEntry<R>) -> &'s R::Instance {
         &entry.instance
     }
 
-    fn into_instance(&self, entry: PoolEntry<R>) -> R::Instance {
-        entry.instance
+    fn into_owned_instance(&self, entry: PoolEntry<R>) -> Option<R::Instance> {
+        Some(entry.instance)
+    }
+
+    async fn close_retained(&self) -> Vec<Self::Entry> {
+        Vec::new()
     }
 
     async fn accept(&self, entry: &mut PoolEntry<R>, resource: &R, _ctx: &ResourceContext) -> bool {
@@ -828,7 +832,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn entry_instance_and_into_instance_round_trip() {
+    async fn entry_instance_and_into_owned_instance_round_trip() {
         let resource = MockPool::new();
         let topo = mock_pool(Config::default(), 0);
         let entry = topo
@@ -836,8 +840,12 @@ mod tests {
             .await
             .expect("create");
         let id = *topo.entry_instance(&entry);
-        let owned = topo.into_instance(entry);
-        assert_eq!(owned, id, "into_instance returns the same instance");
+        let owned = topo.into_owned_instance(entry);
+        assert_eq!(
+            owned,
+            Some(id),
+            "ownership conversion returns the same instance"
+        );
     }
 
     #[tokio::test]

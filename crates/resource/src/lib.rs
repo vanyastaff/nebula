@@ -226,7 +226,6 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
-pub(crate) mod cell;
 pub mod context;
 #[cfg(feature = "rotation")]
 pub mod credential_fanout;
@@ -253,12 +252,6 @@ pub mod state;
 pub mod topology;
 pub mod topology_tag;
 
-// NOTE: `cell::Cell` is intentionally NOT re-exported. It is an internal
-// lock-free `ArcSwapOption` holder for the resident runtime; it carries no
-// generation/epoch and is a strict subset of the public `SlotCell`. The
-// `cell` module is crate-internal (`pub(crate) mod`) so consumers reach for
-// the generation-bearing `SlotCell` and are not misled into using the
-// epoch-blind cell at a credential-slot boundary.
 pub use context::{
     ResourceContext, minimal_scope_for_level, scope_levels_for_acquire, scope_to_level,
 };

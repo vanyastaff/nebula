@@ -1,14 +1,10 @@
 //! Resource guard — the value callers hold while using a resource.
 //!
-//! [`ResourceGuard`] wraps an instance in one of two ownership modes:
-//!
-//! - **Owned**: caller owns the instance outright (no pool return).
-//! - **Guarded**: exclusive runtime returned to pool on drop.
+//! A manager-owned lease borrows its topology entry through `Deref`.
+//! Explicit release and Drop both transfer that same entry to the cleanup queue.
 
 use std::{
-    future::Future,
     ops::Deref,
-    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering as AtomicOrdering},
@@ -21,27 +17,18 @@ use nebula_eventbus::EventBus;
 use tokio::sync::{Notify, OwnedSemaphorePermit};
 
 use crate::{
-    context::ResourceContext, events::ResourceEvent, metrics::ResourceOpsMetrics,
-    release_queue::ReleaseQueue, resource::Provider, topology_tag::TopologyTag,
+    context::ResourceContext,
+    events::ResourceEvent,
+    metrics::ResourceOpsMetrics,
+    release_queue::ReleaseReceipt,
+    resource::Provider,
+    runtime::{
+        acquire_loop::release_entry,
+        managed::{EntryOf, ManagedResource},
+    },
+    topology::Topology,
+    topology_tag::TopologyTag,
 };
-
-/// The awaited teardown future a release callback produces.
-///
-/// Returning the future (rather than submitting it to a queue) lets the
-/// caller-facing [`ResourceGuard::release`] checkpoint `await` it and
-/// observe the recycle/destroy/reset `Result`. The `Drop` fallback submits
-/// the very same future to the [`ReleaseQueue`], discarding its `Result`,
-/// so the queued path stays best-effort.
-type ReleaseFuture = Pin<Box<dyn Future<Output = Result<(), crate::Error>> + Send>>;
-
-/// Callback invoked when a guarded runtime is released.
-///
-/// It does not perform the teardown itself; it *builds* the teardown future
-/// from the returned runtime + tainted flag. The guard then either awaits that
-/// future inline ([`ResourceGuard::release`]) or submits it to the
-/// [`ReleaseQueue`] (`Drop`).
-type GuardedRelease<R> =
-    Box<dyn FnOnce(<R as Provider>::Instance, bool) -> ReleaseFuture + Send + Sync>;
 
 /// A drain tracker: an in-flight `(active_count, waiters)` pair. One is the
 /// manager-wide `graceful_shutdown` tracker; another is each
@@ -51,195 +38,81 @@ type GuardedRelease<R> =
 pub(crate) type DrainTracker = Arc<(AtomicU64, Notify)>;
 
 /// The `(manager_wide, per_resource)` pair an acquire pre-increments and
-/// hands to its [`ResourceGuard`]. Both are decremented + notified on guard
-/// drop: the first unblocks `graceful_shutdown`, the second unblocks the
+/// hands to its [`ResourceGuard`]. Both are decremented + notified when queued
+/// release settles: the first unblocks `graceful_shutdown`, the second unblocks the
 /// originating resource's isolated revoke drain.
 pub(crate) type DrainTrackers = (DrainTracker, DrainTracker);
 
-/// A guard over an acquired resource instance.
+/// A manager-owned lease over a resource instance.
 ///
-/// Dereferences to [`R::Instance`](Provider::Instance) for ergonomic access.
-/// The guard holds the in-flight reservation: dropping it returns the instance
-/// to its owning topology (recycle / destroy, per topology).
+/// Dereferences to the instance inside the actual topology entry; the framework
+/// never clones that instance or transfers it outside lifecycle cleanup. Both explicit
+/// [`release`](Self::release) and Drop enqueue the same cleanup job.
+/// An author may still expose clonable aliases through its instance API; the
+/// framework cannot revoke or account for those external aliases or their work.
 ///
-/// # Drop
+/// The job holds the admission permit and drain reservations until cleanup
+/// completes or is abandoned. Drop is best-effort; use explicit release to
+/// observe provider errors. Cancelling its caller does not cancel queued work.
 ///
-/// Drop is the **release pathway** and runs synchronously to:
+/// The guard does not offer a lifecycle-bypassing extraction operation:
 ///
-/// 1. Decrement the manager-wide drain tracker (unblocks
-///    `Manager::graceful_shutdown` once it hits zero).
-/// 2. Decrement the per-resource in-flight counter (unblocks
-///    `Manager::revoke_slot` draining this row).
-/// 3. Hand the lease back to its owning topology runtime:
-///    - **Pooled** — `Pooled::recycle` is awaited; on `Keep` the
-///      instance returns to the idle queue, on `Drop` it queues a
-///      destroy on the release queue.
-///    - **Resident** — the `Arc` strong-count is decremented; no
-///      per-acquire release work.
-/// 4. Emit
-///    [`ResourceEvent::Released { held, tainted }`](crate::events::ResourceEvent::Released).
+/// ```compile_fail
+/// use nebula_resource::{Provider, ResourceGuard};
+/// fn extract<R: Provider>(guard: ResourceGuard<R>) {
+///     guard.detach();
+/// }
+/// ```
 ///
-/// Call [`ResourceGuard::taint`] **before** drop to skip recycle and
-/// force destroy on a misbehaving lease.
+/// Only the manager constructs resource guards:
 ///
-/// # Cancel safety
-///
-/// Drop runs in any cancellation context, including a cancelled
-/// `tokio::task`. The drop path itself contains no `.await`; any async
-/// work (destroy, recycle) is pushed onto the release
-/// queue which survives task cancellation. **Async release is
-/// best-effort on crash** — see canon §11.4.
-///
-/// # Panics
-///
-/// Drop does not panic. If a release callback the topology runtime
-/// installed panics, the panic is caught and logged via `tracing`;
-/// drain counters are still decremented so shutdown cannot deadlock.
+/// ```compile_fail
+/// use nebula_resource::{Provider, ResourceGuard};
+/// fn fabricate<R: Provider>(instance: R::Instance) {
+///     ResourceGuard::<R>::owned(instance, R::key(), nebula_resource::TopologyTag::Resident);
+/// }
+/// ```
 #[must_use = "dropping a ResourceGuard immediately releases the resource"]
 pub struct ResourceGuard<R: Provider> {
-    /// The live lease state. `Some` for the entire lifetime of a usable
-    /// guard; only [`ResourceGuard::detach`] sets it to `None`, and `detach`
-    /// consumes `self` by value — so a detached guard is not nameable and
-    /// `Deref`/`Drop` after detach are unrepresentable rather than guarded by
-    /// a runtime sentinel.
-    inner: Option<GuardInner<R>>,
+    // Only consuming release or Drop takes this entry; usable guards are live.
+    entry: Option<EntryOf<R>>,
+    managed: Arc<ManagedResource<R>>,
+    permit: Option<OwnedSemaphorePermit>,
+    checkout_epoch: u64,
+    generation: u64,
+    tainted: bool,
+    metrics: Option<ResourceOpsMetrics>,
     resource_key: ResourceKey,
     topology_tag: TopologyTag,
-    /// When this guard was acquired — used for lifetime tracking and the `Guard` trait.
     acquired_at: Instant,
-    /// Optional manager-wide + per-resource drain trackers — each
-    /// decremented on drop, the owning `Notify` woken when it hits zero.
-    ///
-    /// The first element is `Manager::drain_tracker` (`graceful_shutdown`
-    /// drain); the second is the originating `ManagedResource`'s own
-    /// in-flight tracker, which `Manager::revoke_slot` drains in isolation.
-    /// Both are pre-incremented by `InFlightCounter` and handed off here, so
-    /// a guard handed out for a row stays reflected in that row's revoke
-    /// drain until it drops — part of the revoke-vs-acquire TOCTOU close.
-    /// See the [`manager`](crate::manager) module docs for the canonical
-    /// invariant.
     drain_counters: Option<DrainTrackers>,
-    /// Optional manager event bus for emitting [`ResourceEvent::Released`]
-    /// on drop. Attached by
-    /// [`Manager::run_acquire`](crate::manager::Manager) right after the
-    /// underlying topology runtime hands back the guard. `None` for
-    /// guards minted outside the manager funnel (tests, fixtures, ad-hoc
-    /// owned guards) — in that case the released event is silently
-    /// skipped, matching the existing best-effort emit contract elsewhere
-    /// in the crate.
     event_bus: Option<Arc<EventBus<ResourceEvent>>>,
-    /// The owning topology's [`ReleaseQueue`], used **only** by the `Drop`
-    /// fallback: `Drop` builds the teardown future via the release callback
-    /// and submits it here (discarding its `Result`) so the queued path
-    /// stays best-effort / fire-and-forget across task cancellation.
-    /// `Some` for `Guarded` / `Shared` guards minted by the pool / bounded
-    /// runtimes; `None` for `Owned` (resident) guards, which have no
-    /// release work to queue. [`ResourceGuard::release`] does **not** touch
-    /// this — it awaits the future inline instead of queueing it.
-    release_queue: Option<Arc<ReleaseQueue>>,
-    /// Liveness token for the optional hold-deadline watchdog
-    /// ([`with_hold_watchdog`](Self::with_hold_watchdog)). When a resource
-    /// opts into [`Provider::max_hold_duration`], the manager spawns a
-    /// background task holding a [`std::sync::Weak`] to this `Arc`; the strong
-    /// reference lives here and dies with the guard, so the watchdog can tell
-    /// "still held past the deadline" (leaked/hung lease) from "released in
-    /// time" without any `Drop`-path logic. `None` when the resource declared
-    /// no hold deadline (the common case — zero cost).
-    // Held only for its `Drop`: the watchdog observes liveness via a `Weak`
-    // upgrade, never by reading this field.
     hold_token: Option<Arc<()>>,
 }
 
-enum GuardInner<R: Provider> {
-    Owned(R::Instance),
-    Guarded {
-        value: Option<R::Instance>,
-        on_release: Option<GuardedRelease<R>>,
-        permit: Option<OwnedSemaphorePermit>,
-        tainted: bool,
-        generation: u64,
-    },
-}
-
 impl<R: Provider> ResourceGuard<R> {
-    /// Creates an owned guard — no pool, no release callback.
-    pub fn owned(
-        runtime: R::Instance,
-        resource_key: ResourceKey,
-        topology_tag: TopologyTag,
-    ) -> Self {
-        Self {
-            inner: Some(GuardInner::Owned(runtime)),
-            resource_key,
-            topology_tag,
-            acquired_at: Instant::now(),
-            drain_counters: None,
-            event_bus: None,
-            release_queue: None,
-            hold_token: None,
-        }
-    }
-
-    /// Creates a guarded guard — exclusive runtime returned via callback on drop.
-    ///
-    /// `on_release` does not run the teardown directly; it **builds** the
-    /// teardown future (recycle / destroy) from the returned runtime + tainted
-    /// flag. [`release`](Self::release) awaits that future inline and returns
-    /// its `Result`; `Drop` submits it to `release_queue` (discarding the
-    /// `Result`) as the best-effort fallback.
-    pub fn guarded(
-        runtime: R::Instance,
-        resource_key: ResourceKey,
-        topology_tag: TopologyTag,
-        generation: u64,
-        on_release: impl FnOnce(R::Instance, bool) -> ReleaseFuture + Send + Sync + 'static,
-        release_queue: Arc<ReleaseQueue>,
-    ) -> Self {
-        Self::guarded_with_permit(
-            runtime,
-            resource_key,
-            topology_tag,
-            generation,
-            on_release,
-            None,
-            release_queue,
-        )
-    }
-
-    /// Creates a guarded guard with an optional semaphore permit.
-    ///
-    /// The permit is held as a separate field so that it is returned to the
-    /// semaphore even if the release callback panics (caught by `catch_unwind`
-    /// in the `Drop` impl). Without this, a panic in the callback would
-    /// destroy the permit along with the unwound closure, permanently leaking
-    /// a semaphore slot.
-    ///
-    /// `on_release` returns the teardown future rather than running it; see
-    /// [`guarded`](Self::guarded). `release_queue` is the queue the `Drop`
-    /// fallback submits that future to.
-    pub fn guarded_with_permit(
-        runtime: R::Instance,
-        resource_key: ResourceKey,
-        topology_tag: TopologyTag,
-        generation: u64,
-        on_release: impl FnOnce(R::Instance, bool) -> ReleaseFuture + Send + Sync + 'static,
+    pub(crate) fn new(
+        managed: Arc<ManagedResource<R>>,
+        entry: EntryOf<R>,
+        checkout_epoch: u64,
         permit: Option<OwnedSemaphorePermit>,
-        release_queue: Arc<ReleaseQueue>,
+        generation: u64,
+        metrics: Option<ResourceOpsMetrics>,
     ) -> Self {
+        let topology_tag = managed.topology.tag();
         Self {
-            inner: Some(GuardInner::Guarded {
-                value: Some(runtime),
-                on_release: Some(Box::new(on_release)),
-                permit,
-                tainted: false,
-                generation,
-            }),
-            resource_key,
+            entry: Some(entry),
+            managed,
+            permit,
+            checkout_epoch,
+            generation,
+            tainted: false,
+            metrics,
+            resource_key: R::key(),
             topology_tag,
             acquired_at: Instant::now(),
             drain_counters: None,
             event_bus: None,
-            release_queue: Some(release_queue),
             hold_token: None,
         }
     }
@@ -251,7 +124,7 @@ impl<R: Provider> ResourceGuard<R> {
     /// counter. Callers (the `Manager` acquire paths) must pre-increment
     /// both before any `await` past `lookup()` (via `InFlightCounter`) and
     /// hand the *already-counted slots* off here. The guard then owns both
-    /// and decrements + notifies each on Drop.
+    /// and decrements + notifies each when queued release settles.
     ///
     /// This caller-owned ordering is what makes the pre-count span the whole
     /// guard lifetime, closing both the `graceful_shutdown` race and the
@@ -344,37 +217,9 @@ impl<R: Provider> ResourceGuard<R> {
         self
     }
 
-    /// Marks the instance as tainted — it will be destroyed instead of recycled.
+    /// Marks the lease as tainted so release bypasses recycling.
     pub fn taint(&mut self) {
-        match &mut self.inner {
-            None | Some(GuardInner::Owned(_)) => {}, // no-op for owned / detached
-            Some(GuardInner::Guarded { tainted, .. }) => {
-                *tainted = true;
-            },
-        }
-    }
-
-    /// Detaches the instance from pool management, converting to owned.
-    ///
-    /// Returns `Some(runtime)` for owned and guarded guards. Returns `None`
-    /// only for the post-detach state, which is structurally unreachable for
-    /// any nameable guard (detach consumes `self` by value).
-    pub fn detach(mut self) -> Option<R::Instance> {
-        // `take()` moves the state out and leaves `None` behind. `self` is
-        // then dropped here; its `Drop` impl sees `None` and runs no release
-        // callback — identical to the old `mem::replace` sentinel, but the
-        // post-detach state is now structurally absent (no dummy variant, no
-        // dead match arm to assert away).
-        match self.inner.take() {
-            Some(GuardInner::Owned(runtime)) => Some(runtime),
-            Some(GuardInner::Guarded {
-                value: Some(runtime),
-                ..
-            }) => Some(runtime),
-            // Post-detach `None` and `Guarded { value: None }` are the only
-            // remaining reachable arms; both map to `None`.
-            Some(GuardInner::Guarded { value: None, .. }) | None => None,
-        }
+        self.tainted = true;
     }
 
     /// Returns how long this guard has been held.
@@ -392,108 +237,81 @@ impl<R: Provider> ResourceGuard<R> {
         self.topology_tag
     }
 
-    /// Returns the generation counter, if this is a pooled guard.
-    pub fn generation(&self) -> Option<u64> {
-        match &self.inner {
-            None | Some(GuardInner::Owned(_)) => None,
-            Some(GuardInner::Guarded { generation, .. }) => Some(*generation),
-        }
+    /// Returns the registration generation at acquisition.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
-    /// Explicit, awaited release checkpoint (canon §11.4).
-    ///
-    /// Runs the **same** teardown as [`Drop`] — recycle / destroy / reset —
-    /// but **inline and awaited**, returning the recycle/destroy/reset
-    /// `Result` so a caller who cares observes the outcome instead of
-    /// relying on the best-effort, fire-and-forget [`ReleaseQueue`] fallback
-    /// that `Drop` uses. Canon §11.4: authors must not assume release ran
-    /// without an explicit checkpoint.
-    ///
-    /// Consuming `self` makes the subsequent drop fully **inert**: the
-    /// release state (`inner`), the drain counters, and the event bus are
-    /// all taken out here, so dropping the husk runs no second callback, no
-    /// second drain decrement, and emits no second `Released` event.
+    /// Releases this lease and awaits its queued cleanup outcome.
     ///
     /// # Errors
     ///
-    /// Returns the recycle/destroy/reset error verbatim (pool
-    /// `release_entry`, bounded `release_one`). **On `Err` the teardown
-    /// still completed the drain accounting and the slot is still released**
-    /// — only the recycle/destroy/reset *outcome* is surfaced. For the
-    /// bounded `Exclusive` cap the failed reset has already latched the
-    /// runtime poisoned and returned the permit before the error reaches
-    /// here (S4 / #384), exactly as on the queued path.
+    /// Returns the provider's error, a permanent error on hook panic, or
+    /// cancellation if the queue rejects or abandons the job. The reservation
+    /// settles on all outcomes; an error does not leave the lease checked out.
     ///
     /// # Cancel safety
     ///
-    /// This method is cancel safe. The release state is taken out of `self`
-    /// synchronously before the first await, and the teardown plus
-    /// drain-accounting run on a detached background task; if this future is
-    /// dropped while awaited, that task still runs to completion — the
-    /// resource is still torn down or recycled and the drain trackers still
-    /// settle. Dropping only means the caller never observes the resulting
-    /// `Result`.
+    /// Dropping the waiting caller discards only its receipt. The queue owns
+    /// the entry and runs cleanup independently, bounded by its worker budget.
     pub async fn release(mut self) -> Result<(), crate::Error> {
-        // Take the post-callback settle inputs OUT of `self` so the drop of
-        // the husk at end of scope is inert — no double settle, no double
-        // callback, no double `Released`. `emit_released` mirrors `Drop`:
-        // `inner.is_some()` (a detached `None` skips the event).
-        let inner = self.inner.take();
-        let drain_counters = self.drain_counters.take();
-        let event_bus = self.event_bus.take();
-        let held = self.acquired_at.elapsed();
-        let key = self.resource_key.clone();
-
-        let emit_released = inner.is_some();
-        let tainted = match &inner {
-            Some(GuardInner::Guarded { tainted, .. }) => *tainted,
-            None | Some(GuardInner::Owned(_)) => false,
-        };
-
-        match inner {
-            None | Some(GuardInner::Owned(_)) => {
-                // Owned (resident) / detached: no release work, but the
-                // drain accounting + (for `Owned`) the `Released` event
-                // still run — byte-for-byte the `Drop` Owned/None arm.
-                settle(
-                    drain_counters,
-                    event_bus,
-                    &key,
-                    held,
-                    emit_released,
-                    tainted,
-                );
-                Ok(())
-            },
-            Some(GuardInner::Guarded {
-                value,
-                on_release,
-                permit,
-                ..
-            }) => {
-                // Build the teardown future, then run it + the drain settle on
-                // a DETACHED task (see `spawn_teardown_and_settle`): a caller
-                // that awaits `release()` inside a cancellable task must not,
-                // by being aborted mid-teardown, drop the teardown future or
-                // leave the slot permanently counted in the drain. The permit
-                // is moved in and held until the teardown resolves.
-                let teardown: ReleaseFuture = match (value, on_release) {
-                    (Some(runtime), Some(callback)) => callback(runtime, tainted),
-                    _ => Box::pin(async { Ok(()) }),
-                };
-                spawn_teardown_and_settle(
-                    teardown,
-                    permit,
-                    drain_counters,
-                    event_bus,
-                    key,
-                    held,
-                    emit_released,
-                    tainted,
-                )
+        match self.enqueue_release() {
+            Some(receipt) => receipt
                 .await
-            },
+                .unwrap_or_else(|_| Err(crate::Error::cancelled())),
+            None => Ok(()),
         }
+    }
+
+    fn enqueue_release(&mut self) -> Option<ReleaseReceipt> {
+        let entry = self.entry.take()?;
+        self.hold_token.take();
+        let settlement = ReleaseSettlement {
+            permit: self.permit.take(),
+            drain_counters: self.drain_counters.take(),
+            event_bus: self.event_bus.take(),
+            key: self.resource_key.clone(),
+            held: self.acquired_at.elapsed(),
+            tainted: self.tainted,
+        };
+        let managed = Arc::clone(&self.managed);
+        let checkout_epoch = self.checkout_epoch;
+        let tainted = self.tainted;
+        let metrics = self.metrics.take();
+        Some(self.managed.release_queue.submit_release(move || {
+            Box::pin(async move {
+                if let Some(metrics) = &metrics {
+                    metrics.record_release();
+                }
+                let outcome = release_entry(managed, entry, checkout_epoch, tainted, metrics).await;
+                drop(settlement);
+                outcome
+            })
+        }))
+    }
+}
+
+/// Owns settlement even when a queued factory or future is never polled.
+struct ReleaseSettlement {
+    permit: Option<OwnedSemaphorePermit>,
+    drain_counters: Option<DrainTrackers>,
+    event_bus: Option<Arc<EventBus<ResourceEvent>>>,
+    key: ResourceKey,
+    held: Duration,
+    tainted: bool,
+}
+
+impl Drop for ReleaseSettlement {
+    fn drop(&mut self) {
+        self.permit.take();
+        settle(
+            self.drain_counters.take(),
+            self.event_bus.take(),
+            &self.key,
+            self.held,
+            true,
+            self.tainted,
+        );
     }
 }
 
@@ -538,269 +356,33 @@ fn settle(
     }
 }
 
-/// Runs a guard teardown future + the post-teardown [`settle`] on a **detached
-/// task**, so [`ResourceGuard::release`] is cancel-safe.
-///
-/// Dropping a `JoinHandle` does not abort its task: if the caller that awaited
-/// `release()` is cancelled mid-teardown, the await is abandoned but this task
-/// still runs the teardown to completion and decrements the drain counters —
-/// matching the `Drop` fallback, which offloads the same work to the
-/// [`ReleaseQueue`]. Without this, a cancellation after the guard's state was
-/// taken out would drop the teardown (leaking the pooled runtime) and skip the
-/// drain settle (wedging `graceful_shutdown` / `revoke_slot`).
-///
-/// The teardown runs through the shared [`hook_guard::guard_author_hook`]
-/// chokepoint — bounded by [`MAX_TEARDOWN_CEILING`] and, under `panic =
-/// "unwind"`, panic-isolated — so a careless author teardown that hangs or
-/// panics still settles the drain (the fault is surfaced as a typed error),
-/// mirroring the queued `Drop` path. Under `panic = "abort"` the isolation
-/// half is inert (`catch_unwind` catches nothing — see the `hook_guard`
-/// module docs); only the timeout bound still applies. The effective
-/// teardown bound is the per-resource `timeout_at(cx.deadline)` the teardown
-/// future already carries (ADR-0093); this outer ceiling is a generous
-/// catch-all that only trips on a wedged framework future. The semaphore permit
-/// is moved in and dropped only after the teardown resolves (#384).
-///
-/// [`hook_guard::guard_author_hook`]: crate::hook_guard::guard_author_hook
-/// [`MAX_TEARDOWN_CEILING`]: crate::hook_guard::MAX_TEARDOWN_CEILING
-#[expect(
-    clippy::too_many_arguments,
-    reason = "teardown + permit + the six `settle` inputs; bundling into a one-use struct adds more ceremony than it removes for this internal helper"
-)]
-async fn spawn_teardown_and_settle(
-    teardown: ReleaseFuture,
-    permit: Option<OwnedSemaphorePermit>,
-    drain_counters: Option<DrainTrackers>,
-    event_bus: Option<Arc<EventBus<ResourceEvent>>>,
-    key: ResourceKey,
-    held: Duration,
-    emit_released: bool,
-    tainted: bool,
-) -> Result<(), crate::Error> {
-    let task = tokio::spawn(async move {
-        // Bound + isolate the author teardown (`on_release` / `Provider::destroy`)
-        // through the same chokepoint the queued `Drop` path uses: a careless
-        // hook that hangs or panics must fail closed with the drain still
-        // settled, never wedge or crash the caller that awaited `release()`.
-        //
-        // SAFETY (unwind): `teardown` owns the slot/instance outright (moved in
-        // when the future was built); the guard holds no alias to it, so a
-        // caught panic just drops the owned instance — no partial or torn guard
-        // state survives, and the drain `settle` below still runs.
-        let outcome = match crate::hook_guard::guard_author_hook(
-            crate::hook_guard::MAX_TEARDOWN_CEILING,
-            teardown,
-        )
-        .await
-        {
-            Ok(res) => res,
-            Err(fault) => {
-                fault.observe(&key, "release");
-                match fault {
-                    // Permanent, not transient: a teardown panic is an
-                    // author-hook bug (a broken `destroy`/`on_release`
-                    // impl), not a condition that resolves with time or
-                    // backoff — retrying the SAME instance's teardown would
-                    // panic again deterministically. This matches every
-                    // other `HookFault::Panicked` site in the crate
-                    // (`manager/rotation.rs` refresh/revoke dispatch); this
-                    // was the one outlier still mapping to `Transient`. This
-                    // teardown runs under `MAX_TEARDOWN_CEILING` (2 min),
-                    // not the 30s `DEFAULT_AUTHOR_HOOK_CEILING` author-hook
-                    // budget other sites use.
-                    crate::hook_guard::HookFault::Panicked => Err(crate::Error::permanent(
-                        "resource teardown panicked during release() — caught and \
-                         isolated under panic=unwind (caller not crashed); inert \
-                         under panic=abort, which aborts the process instead",
-                    )),
-                    crate::hook_guard::HookFault::TimedOut => {
-                        Err(crate::Error::transient(format!(
-                            "resource teardown did not complete within {:?} during release()",
-                            crate::hook_guard::MAX_TEARDOWN_CEILING
-                        )))
-                    },
-                }
-            },
-        };
-        // #384: the permit outlives the teardown (a bounded `Exclusive` reset
-        // must complete before the slot frees), then drops here.
-        drop(permit);
-        // Drain accounting ALWAYS runs — even on teardown error/panic, and
-        // even if the caller that awaited `release()` was cancelled (this task
-        // is detached from that cancellation).
-        settle(
-            drain_counters,
-            event_bus,
-            &key,
-            held,
-            emit_released,
-            tainted,
-        );
-        outcome
-    });
-    match task.await {
-        Ok(outcome) => outcome,
-        // The detached task was aborted (e.g. runtime shutdown). The process
-        // is tearing down; report it rather than panic on the `JoinError`.
-        Err(_join_err) => Err(crate::Error::cancelled()),
-    }
-}
-
 impl<R: Provider> Deref for ResourceGuard<R> {
     type Target = R::Instance;
 
     fn deref(&self) -> &Self::Target {
-        match &self.inner {
-            Some(GuardInner::Owned(runtime)) => runtime,
-            Some(GuardInner::Guarded {
-                value: Some(runtime),
-                ..
-            }) => runtime,
-            // `None` and `Guarded { value: None }` are only produced by
-            // `detach`, which consumes `self` by value — so a detached guard
-            // cannot be named, let alone dereferenced. This arm exists solely
-            // to satisfy the total `Deref` signature for a state that is
-            // structurally impossible to construct here.
-            // guard-justified: total Deref fn requires exhaustive arms; the
-            // detach-only state (None / value:None) cannot be reached because
-            // detach moves self by value, making this arm unnameable.
-            Some(GuardInner::Guarded { value: None, .. }) | None => unreachable!(
-                "ResourceGuard::deref called on detached guard; detach() moves self so this \
-                 state is unreachable for any nameable guard"
-            ),
+        match &self.entry {
+            Some(entry) => self.managed.topology.entry_instance(entry),
+            // Only consuming release and Drop take the entry; neither exposes
+            // the consumed guard for dereferencing.
+            None => unreachable!("only consumed resource guards have no topology entry"),
         }
     }
 }
 
 impl<R: Provider> Drop for ResourceGuard<R> {
     fn drop(&mut self) {
-        // Snapshot the released-event payload once up front: `held` is fixed
-        // by now (the guard is being dropped), and `tainted` depends on the
-        // inner variant. `None` (detached) and `Owned` carry no taint
-        // concept — taint only applies to pool-returned (`Guarded`) and
-        // ref-counted (`Shared`) modes. We emit the event below, *after*
-        // the release callback has run, so `tainted` already reflects any
-        // late `taint()` call the callback may have observed.
-        let held = self.acquired_at.elapsed();
-        let event_tainted = match &self.inner {
-            Some(GuardInner::Guarded { tainted, .. }) => *tainted,
-            None | Some(GuardInner::Owned(_)) => false,
-        };
-
-        // `emit_released` mirrors the historical contract: emit iff `inner`
-        // is `Some` (a detached `None` skips the event — the lease is now
-        // caller-owned and emitting `Released` would be a false signal).
-        // Sampled before the match so the post-callback `settle` sees the
-        // same value; the variant is never replaced below (only its fields
-        // are taken), so `inner.is_some()` is stable across this body.
-        let emit_released = self.inner.is_some();
-
-        // A detached guard left `inner` as `None`: nothing to release here
-        // (the lease is now caller-owned). The drain-tracker decrement in
-        // `settle` still runs unconditionally — identical to the old
-        // sentinel path, where the dummy `Guarded { value: None,
-        // on_release: None }` also ran no callback yet fell through to the
-        // same drain accounting.
-        match &mut self.inner {
-            None | Some(GuardInner::Owned(_)) => {}, // nothing to do
-            Some(GuardInner::Guarded {
-                value,
-                on_release,
-                permit,
-                tainted,
-                ..
-            }) => {
-                // Take the permit out BEFORE the callback runs. For the QUEUED
-                // teardown it is moved into the release task and dropped only
-                // once the teardown future has resolved (#384 on the `Drop`
-                // path, mirroring `spawn_teardown_and_settle`): a bounded
-                // `Exclusive` (cap-1, single reused instance) must NOT free its
-                // permit while its `reset` is still pending on the queue, or a
-                // second acquirer would mint a second live instance during the
-                // reset window. If there is nothing to wait for (no callback,
-                // no queue, or a build-panic) it drops at the end of this scope,
-                // so the slot is still returned even when submitting panics.
-                let permit_guard = permit.take();
-
-                if let (Some(runtime), Some(callback)) = (value.take(), on_release.take()) {
-                    let tainted = *tainted;
-                    let release_queue = self.release_queue.take();
-                    // catch_unwind prevents a double-panic abort if BUILDING
-                    // the release future (the callback) or submitting it
-                    // panics. Unwind-safe: `runtime` and `permit_guard` are
-                    // *moved* into the closure and `self` retains no alias to
-                    // them (both were taken out above), so an unwind cannot
-                    // leave shared guard state in a torn condition. The callback
-                    // only *builds* the teardown future; `Drop` submits it to
-                    // the queue discarding its `Result`, keeping the queued
-                    // path best-effort / error-swallowing exactly as before.
-                    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-                        let fut = callback(runtime, tainted);
-                        if let Some(rq) = release_queue {
-                            rq.submit(move || {
-                                Box::pin(async move {
-                                    // Bound + isolate the queued teardown through
-                                    // the same chokepoint the awaited `release()`
-                                    // path uses: a hanging/panicking destroy must
-                                    // not wedge this worker or leak the permit.
-                                    let _ = crate::hook_guard::guard_author_hook(
-                                        crate::hook_guard::MAX_TEARDOWN_CEILING,
-                                        fut,
-                                    )
-                                    .await;
-                                    // Permit held across the teardown, freed only
-                                    // now that reset/destroy has resolved or the
-                                    // guard abandoned it.
-                                    drop(permit_guard);
-                                })
-                            });
-                        }
-                        // No queue: `permit_guard` drops at the end of this
-                        // closure — nothing to wait for.
-                    }))
-                    .is_err()
-                    {
-                        tracing::error!(
-                            key = %self.resource_key,
-                            "release callback panicked in ResourceGuard Drop"
-                        );
-                    }
-                }
-                // If the `if let` did not match (detached / no callback),
-                // `permit_guard` drops here, returning the slot to the semaphore.
-            },
-        }
-
-        // Post-callback settle: the two-tracker drain decrement + the
-        // best-effort `Released` emit, shared byte-for-byte with
-        // `ResourceGuard::release`. `event_tainted` was snapshotted up front
-        // (after any late `taint()`); the drain decrement runs
-        // unconditionally and the emit is gated on `emit_released`.
-        settle(
-            self.drain_counters.take(),
-            self.event_bus.take(),
-            &self.resource_key,
-            held,
-            emit_released,
-            event_tainted,
-        );
+        drop(self.enqueue_release());
     }
 }
 
 impl<R: Provider> std::fmt::Debug for ResourceGuard<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mode = match &self.inner {
-            Some(GuardInner::Owned(_)) => "Owned",
-            Some(GuardInner::Guarded { .. }) => "Guarded",
-            // Unreachable for any nameable guard (detach consumes `self`);
-            // present only because `Debug` is total over the field.
-            None => "Detached",
-        };
         f.debug_struct("ResourceGuard")
             .field("resource_key", &self.resource_key)
             .field("topology_tag", &self.topology_tag)
-            .field("mode", &mode)
-            .finish()
+            .field("generation", &self.generation)
+            .field("tainted", &self.tainted)
+            .finish_non_exhaustive()
     }
 }
 
@@ -828,460 +410,255 @@ impl<R: Provider> nebula_core::TypedGuard for ResourceGuard<R> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::{
+        AcquireOptions, Manager, RegistrationSpec,
+        dedup::SlotIdentity,
+        topology::{InstanceMetrics, PoolProvider, Pooled, RecycleDecision},
+    };
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-    use super::*;
-    use crate::topology::{Ticket, Topology, Unavailable, store::InstanceStore};
+    #[derive(Clone)]
+    struct DummyResource {
+        released: Arc<AtomicU32>,
+        drops: Arc<AtomicU32>,
+        tainted: Arc<AtomicBool>,
+        fault: &'static str,
+    }
 
-    /// Minimal fixture topology for guard-only tests: a blanket `Topology<R>`
-    /// that satisfies the `Provider::Topology: Topology<Self>` bound for any
-    /// resource (including those whose `Instance` is **not** `Clone`, e.g. a
-    /// `Drop`-probe). The guard tests construct `ResourceGuard<R>` directly
-    /// without going through registration/acquire, so the entry lifecycle hooks
-    /// are never exercised — `create_entry` therefore just errors.
-    struct FixtureTopology;
+    // Deliberately not Clone: the guard must borrow the actual owning entry.
+    struct Payload {
+        value: u32,
+        drops: Arc<AtomicU32>,
+    }
 
-    impl<R: Provider> Topology<R> for FixtureTopology {
-        type Entry = R::Instance;
-
-        fn try_reserve(&self, _s: &InstanceStore<R::Instance>) -> Result<Ticket, Unavailable> {
-            Ok(Ticket::infallible())
-        }
-
-        async fn create_entry(
-            &self,
-            _resource: &R,
-            _config: &R::Config,
-            _ctx: &ResourceContext,
-        ) -> Result<R::Instance, crate::Error> {
-            Err(crate::Error::permanent(
-                "FixtureTopology: guard tests construct ResourceGuard directly; \
-                 create_entry is never driven",
-            ))
-        }
-
-        fn entry_instance<'s>(&self, entry: &'s R::Instance) -> &'s R::Instance {
-            entry
-        }
-
-        fn into_instance(&self, entry: R::Instance) -> R::Instance {
-            entry
+    impl Drop for Payload {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::SeqCst);
         }
     }
 
-    // A trivial resource for testing. Instance = u32 so guards hold a plain integer.
-    struct DummyResource;
+    impl DummyResource {
+        fn new(fault: &'static str) -> Self {
+            Self {
+                released: Arc::new(AtomicU32::new(0)),
+                drops: Arc::new(AtomicU32::new(0)),
+                tainted: Arc::new(AtomicBool::new(false)),
+                fault,
+            }
+        }
+    }
 
     #[async_trait::async_trait]
     impl Provider for DummyResource {
         type Config = ();
-        type Instance = u32;
-        type Topology = FixtureTopology;
+        type Instance = Payload;
+        type Topology = Pooled<Self>;
+
         fn key() -> ResourceKey {
-            nebula_core::resource_key!("dummy")
+            nebula_core::resource_key!("guard-test")
         }
 
-        async fn create(&self, _config: &(), _ctx: &ResourceContext) -> Result<u32, crate::Error> {
-            Ok(0)
+        async fn create(&self, (): &(), _: &ResourceContext) -> Result<Payload, crate::Error> {
+            Ok(Payload {
+                value: 42,
+                drops: Arc::clone(&self.drops),
+            })
+        }
+
+        async fn destroy(
+            &self,
+            instance: Payload,
+            context: crate::TeardownCx,
+        ) -> Result<(), crate::Error> {
+            assert_eq!(instance.value, 42, "destroy receives the original instance");
+            self.tainted.store(
+                matches!(context.reason, crate::TeardownReason::Revoked),
+                Ordering::SeqCst,
+            );
+            self.released.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         }
     }
 
     crate::no_credential_slots!(DummyResource);
 
-    fn test_key() -> ResourceKey {
-        nebula_core::resource_key!("test")
+    impl PoolProvider for DummyResource {
+        async fn recycle(
+            &self,
+            _: &Payload,
+            _: &InstanceMetrics,
+        ) -> Result<RecycleDecision, crate::Error> {
+            match self.fault {
+                "panic" => panic!("intentional author recycle panic"),
+                "timeout" => std::future::pending().await,
+                _ => Ok(RecycleDecision::Drop),
+            }
+        }
     }
 
-    /// Builds a single-worker [`ReleaseQueue`] for guard tests. Requires an
-    /// ambient Tokio runtime (the queue spawns its workers), so callers are
-    /// `#[tokio::test]`. The handle is dropped here (detaching the workers);
-    /// these tests assert build-time callback side-effects, not queued-future
-    /// completion, so the workers never need to be awaited.
-    fn test_rq() -> Arc<ReleaseQueue> {
-        let (rq, _handle) = ReleaseQueue::new(1);
-        Arc::new(rq)
-    }
-
-    #[test]
-    fn owned_deref() {
-        let handle = ResourceGuard::<DummyResource>::owned(42, test_key(), TopologyTag::Pool);
-        assert_eq!(*handle, 42);
-    }
-
-    /// A `ResourceContext` with a distinct execution id and workflow id, for
-    /// asserting the hold-deadline watchdog forwards them.
     fn watchdog_test_ctx() -> ResourceContext {
-        use nebula_core::scope::Scope;
-        use tokio_util::sync::CancellationToken;
-        let scope = Scope {
-            execution_id: Some(nebula_core::ExecutionId::new()),
-            workflow_id: Some(nebula_core::WorkflowId::new()),
-            ..Default::default()
-        };
-        ResourceContext::minimal(scope, CancellationToken::new())
+        ResourceContext::minimal(
+            nebula_core::scope::Scope {
+                execution_id: Some(nebula_core::ExecutionId::new()),
+                workflow_id: Some(nebula_core::WorkflowId::new()),
+                ..Default::default()
+            },
+            tokio_util::sync::CancellationToken::new(),
+        )
+    }
+
+    async fn acquire(resource: DummyResource) -> (Manager, ResourceGuard<DummyResource>) {
+        let manager = Manager::new();
+        manager
+            .register(RegistrationSpec {
+                resource,
+                config: (),
+                scope: nebula_core::scope::ScopeLevel::Global,
+                slot_identity: SlotIdentity::Unbound,
+                topology: Pooled::new(
+                    crate::topology::pooled::config::Config {
+                        min_size: 0,
+                        max_size: 1,
+                        idle_timeout: None,
+                        max_lifetime: None,
+                        ..Default::default()
+                    },
+                    0,
+                ),
+                recovery_gate: None,
+            })
+            .unwrap();
+        let guard = manager
+            .acquire_pooled::<DummyResource>(&watchdog_test_ctx(), &AcquireOptions::default())
+            .await
+            .unwrap();
+        (manager, guard)
+    }
+
+    #[tokio::test]
+    async fn manager_guard_borrows_non_clone_entry_and_releases_once() {
+        use nebula_core::{Guard, TypedGuard};
+        let resource = DummyResource::new("");
+        let (_manager, guard) = acquire(resource.clone()).await;
+        assert_eq!(guard.value, 42);
+        assert_eq!(guard.as_inner().value, 42);
+        assert_eq!(guard.guard_kind(), "resource");
+        assert_eq!(guard.resource_key(), &DummyResource::key());
+        assert_eq!(guard.topology_tag(), TopologyTag::Pool);
+        assert_eq!(guard.generation(), 0);
+        assert!(guard.acquired_at().elapsed() < Duration::from_secs(1));
+        assert!(guard.hold_duration() < Duration::from_millis(100));
+        assert_eq!(resource.drops.load(Ordering::SeqCst), 0);
+        guard.release().await.unwrap();
+        assert_eq!(resource.released.load(Ordering::SeqCst), 1);
+        assert_eq!(resource.drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn guard_drop_retains_reservations_until_cleanup_and_drops_once() {
+        let resource = DummyResource::new("");
+        let (manager, guard) = acquire(resource.clone()).await;
+        drop(guard);
+        let report = manager
+            .graceful_shutdown(crate::ShutdownConfig::default())
+            .await
+            .unwrap();
+        assert!(report.release_queue_drained);
+        assert_eq!(resource.released.load(Ordering::SeqCst), 1);
+        assert_eq!(resource.drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn taint_bypasses_recycle_and_destroys_as_revoked() {
+        let resource = DummyResource::new("panic");
+        let (_manager, mut guard) = acquire(resource.clone()).await;
+        guard.taint();
+        guard.release().await.unwrap();
+        assert!(resource.tainted.load(Ordering::SeqCst));
+        assert_eq!(resource.released.load(Ordering::SeqCst), 1);
+        assert_eq!(resource.drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn manager_drop_rejects_late_release_but_settles_ownership() {
+        let resource = DummyResource::new("");
+        let (manager, guard) = acquire(resource.clone()).await;
+        let queue = Arc::clone(&guard.managed.release_queue);
+        let (global, row) = guard.drain_counters.clone().unwrap();
+        drop(manager);
+        let error = guard
+            .release()
+            .await
+            .expect_err("manager Drop closes admission to cleanup");
+        assert_eq!(error.kind(), &crate::ErrorKind::Cancelled);
+        assert_eq!(global.0.load(Ordering::Acquire), 0);
+        assert_eq!(row.0.load(Ordering::Acquire), 0);
+        assert_eq!(queue.dropped_count(), 1);
+        assert_eq!(resource.released.load(Ordering::SeqCst), 0);
+        assert_eq!(resource.drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn queued_guard_hook_faults_remain_visible_to_loss_accounting() {
+        for fault in ["panic", "timeout"] {
+            let resource = DummyResource::new(fault);
+            let (manager, guard) = acquire(resource.clone()).await;
+            assert!(guard.release().await.is_err());
+            let report = manager
+                .graceful_shutdown(crate::ShutdownConfig::default())
+                .await
+                .unwrap();
+            assert_eq!(
+                report.dropped_release_tasks, 1,
+                "lost {fault} teardown counts once"
+            );
+            assert_eq!(resource.drops.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn panicking_cleanup_returns_capacity_after_settlement() {
+        let resource = DummyResource::new("panic");
+        let (manager, guard) = acquire(resource).await;
+        assert!(guard.release().await.is_err());
+        let next = manager
+            .acquire_pooled::<DummyResource>(&watchdog_test_ctx(), &AcquireOptions::default())
+            .await
+            .expect("the failed cleanup must release the sole permit");
+        assert_eq!(next.value, 42);
+        drop(next);
     }
 
     #[tokio::test(start_paused = true)]
     async fn hold_watchdog_emits_when_lease_overruns_deadline() {
-        // A guard armed with a hold deadline must surface a
-        // `HoldDeadlineExceeded` event (HikariCP-style leak detection) when it
-        // is still held past the deadline. Reverting `with_hold_watchdog`
-        // makes this event never fire — red-on-revert.
         let bus = Arc::new(EventBus::<ResourceEvent>::new(256));
         let mut events = bus.subscribe();
         let ctx = watchdog_test_ctx();
-        // The watchdog must carry the acquiring context's identifiers —
-        // captured here, before the ctx is passed by reference below, so the
-        // assertion compares against the exact values the context held.
-        let expected_execution_id = ctx.execution_id();
-        let expected_workflow_id = ctx.scope().workflow_id;
-
-        let _held = ResourceGuard::<DummyResource>::owned(0, test_key(), TopologyTag::Pool)
-            .with_event_bus(Arc::clone(&bus))
-            .with_hold_watchdog(Some(Duration::from_secs(1)), &ctx, None);
-
-        // `start_paused` auto-advances the clock to the watchdog's 1s timer
-        // while this `recv` is the only pending work — deterministic, no
-        // wall-clock sleep.
+        let (_manager, guard) = acquire(DummyResource::new("")).await;
+        let _held = guard.with_event_bus(Arc::clone(&bus)).with_hold_watchdog(
+            Some(Duration::from_secs(1)),
+            &ctx,
+            None,
+        );
         let event = events
             .recv()
             .await
-            .expect("watchdog must emit a HoldDeadlineExceeded event");
+            .expect("watchdog emits the deadline event");
         match event {
             ResourceEvent::HoldDeadlineExceeded {
-                ref key,
+                key,
                 deadline,
                 execution_id,
                 workflow_id,
                 ..
-            } if key == &test_key() && deadline == Duration::from_secs(1) => {
-                assert_eq!(
-                    execution_id, expected_execution_id,
-                    "watchdog must carry the acquiring context's execution id"
-                );
-                assert_eq!(
-                    workflow_id, expected_workflow_id,
-                    "watchdog must carry the acquiring context's workflow id"
-                );
+            } => {
+                assert_eq!(key, DummyResource::key());
+                assert_eq!(deadline, Duration::from_secs(1));
+                assert_eq!(execution_id, ctx.execution_id());
+                assert_eq!(workflow_id, ctx.scope().workflow_id);
             },
             other => panic!("expected HoldDeadlineExceeded, got {other:?}"),
         }
-    }
-
-    #[tokio::test]
-    async fn guarded_calls_release_on_drop() {
-        let released = Arc::new(AtomicBool::new(false));
-        let released_clone = released.clone();
-        let value = Arc::new(AtomicU32::new(0));
-        let value_clone = value.clone();
-
-        {
-            let _handle = ResourceGuard::<DummyResource>::guarded(
-                99,
-                test_key(),
-                TopologyTag::Pool,
-                1,
-                move |lease, tainted| {
-                    value_clone.store(lease, Ordering::Relaxed);
-                    released_clone.store(!tainted, Ordering::Relaxed);
-                    Box::pin(async { Ok(()) })
-                },
-                test_rq(),
-            );
-            assert!(!released.load(Ordering::Relaxed));
-        }
-        // After drop
-        assert!(released.load(Ordering::Relaxed));
-        assert_eq!(value.load(Ordering::Relaxed), 99);
-    }
-
-    // guard-justified: shared_calls_release_on_drop tested GuardInner::Shared which was removed
-    // per spec (zero producers existed; the Shared variant is structurally deleted).
-
-    #[tokio::test]
-    async fn taint_marks_guarded() {
-        let was_tainted = Arc::new(AtomicBool::new(false));
-        let was_tainted_clone = was_tainted.clone();
-
-        {
-            let mut handle = ResourceGuard::<DummyResource>::guarded(
-                1,
-                test_key(),
-                TopologyTag::Pool,
-                1,
-                move |_lease, tainted| {
-                    was_tainted_clone.store(tainted, Ordering::Relaxed);
-                    Box::pin(async { Ok(()) })
-                },
-                test_rq(),
-            );
-            handle.taint();
-        }
-        assert!(was_tainted.load(Ordering::Relaxed));
-    }
-
-    #[test]
-    fn detach_owned_returns_lease() {
-        let handle = ResourceGuard::<DummyResource>::owned(42, test_key(), TopologyTag::Pool);
-        let lease = handle.detach();
-        assert_eq!(lease, Some(42));
-    }
-
-    #[tokio::test]
-    async fn detach_guarded_returns_lease_and_skips_callback() {
-        let released = Arc::new(AtomicBool::new(false));
-        let released_clone = released;
-
-        let handle = ResourceGuard::<DummyResource>::guarded(
-            10,
-            test_key(),
-            TopologyTag::Pool,
-            1,
-            move |_lease, _tainted| {
-                released_clone.store(true, Ordering::Relaxed);
-                Box::pin(async { Ok(()) })
-            },
-            test_rq(),
-        );
-        let lease = handle.detach();
-        assert_eq!(lease, Some(10));
-        // Callback should NOT have fired (the dummy drop handles None gracefully)
-    }
-
-    // guard-justified: detach_shared_returns_none tested GuardInner::Shared which was removed
-    // per spec (zero producers existed; the Shared variant is structurally deleted).
-
-    #[tokio::test]
-    async fn detach_guarded_returns_permit_to_semaphore() {
-        use std::sync::Arc as StdArc;
-
-        use tokio::sync::Semaphore;
-
-        // Single-slot semaphore: detach drops `GuardInner::Guarded`
-        // implicitly after extracting the lease, so the held
-        // `OwnedSemaphorePermit` must be reclaimed without going through
-        // the Drop-impl's explicit `permit.take()` branch. If a future
-        // refactor leaks the permit, the post-detach acquire below fails.
-        let sem = StdArc::new(Semaphore::new(1));
-        assert_eq!(sem.available_permits(), 1);
-
-        let permit = StdArc::clone(&sem)
-            .try_acquire_owned()
-            .expect("first permit is available");
-
-        let handle = ResourceGuard::<DummyResource>::guarded_with_permit(
-            21,
-            test_key(),
-            TopologyTag::Pool,
-            1,
-            |_lease, _tainted| Box::pin(async { Ok(()) }),
-            Some(permit),
-            test_rq(),
-        );
-
-        // While the guard holds the permit the bounded capacity is
-        // exhausted: a second acquire must fail.
-        assert_eq!(sem.available_permits(), 0);
-        assert!(
-            sem.try_acquire().is_err(),
-            "semaphore must be exhausted while the guard holds the only permit"
-        );
-
-        // detach extracts the lease and discards the Guarded variant,
-        // dropping the permit indirectly.
-        let lease = handle.detach();
-        assert_eq!(
-            lease,
-            Some(21),
-            "detach must still return the guarded lease"
-        );
-
-        // The bounded/exclusive slot must be reclaimed: detach must not
-        // leak capacity even though it bypasses the Drop permit branch.
-        assert_eq!(
-            sem.available_permits(),
-            1,
-            "detach must return the permit to the semaphore"
-        );
-        let reacquired = sem
-            .try_acquire()
-            .expect("permit must be reclaimable after detach");
-        drop(reacquired);
-    }
-
-    #[test]
-    fn hold_duration_is_zero_for_owned() {
-        let handle = ResourceGuard::<DummyResource>::owned(1, test_key(), TopologyTag::Pool);
-        // Owned guards now also track acquired_at, so hold_duration may be
-        // very small but not necessarily ZERO.  Just assert it is tiny.
-        assert!(handle.hold_duration() < Duration::from_millis(100));
-    }
-
-    #[test]
-    fn resource_key_and_topology_tag() {
-        let key = test_key();
-        let handle = ResourceGuard::<DummyResource>::owned(1, key.clone(), TopologyTag::Pool);
-        assert_eq!(*handle.resource_key(), key);
-        assert_eq!(handle.topology_tag(), TopologyTag::Pool);
-    }
-
-    // guard-justified: taint_on_shared_handle_is_seen_by_callback tested GuardInner::Shared
-    // which was removed per spec (zero producers existed; the Shared variant is deleted).
-
-    #[tokio::test]
-    async fn detach_guarded_does_not_fire_callback() {
-        let released = Arc::new(AtomicBool::new(false));
-        let r = released.clone();
-
-        let handle = ResourceGuard::<DummyResource>::guarded(
-            10,
-            test_key(),
-            TopologyTag::Pool,
-            1,
-            move |_lease, _tainted| {
-                r.store(true, Ordering::Relaxed);
-                Box::pin(async { Ok(()) })
-            },
-            test_rq(),
-        );
-        let lease = handle.detach();
-        assert_eq!(lease, Some(10));
-        assert!(
-            !released.load(Ordering::Relaxed),
-            "detach should skip the release callback"
-        );
-    }
-
-    #[test]
-    fn resource_guard_implements_guard_trait() {
-        use nebula_core::Guard;
-        let handle = ResourceGuard::<DummyResource>::owned(42, test_key(), TopologyTag::Pool);
-        assert_eq!(handle.guard_kind(), "resource");
-        // acquired_at should be very recent
-        assert!(handle.acquired_at().elapsed() < Duration::from_secs(1));
-    }
-
-    #[test]
-    fn resource_guard_implements_typed_guard_trait() {
-        use nebula_core::TypedGuard;
-        let handle = ResourceGuard::<DummyResource>::owned(42, test_key(), TopologyTag::Pool);
-        assert_eq!(*handle.as_inner(), 42);
-    }
-
-    // A lease whose `Drop` is observable, so we can prove detach does not
-    // double-invoke it or leak it.
-    struct DropProbe(Arc<AtomicU32>);
-
-    impl Drop for DropProbe {
-        fn drop(&mut self) {
-            self.0.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    struct DropProbeResource;
-
-    #[async_trait::async_trait]
-    impl Provider for DropProbeResource {
-        type Config = ();
-        type Instance = DropProbe;
-        type Topology = FixtureTopology;
-        fn key() -> ResourceKey {
-            nebula_core::resource_key!("dropprobe")
-        }
-
-        async fn create(
-            &self,
-            _config: &(),
-            _ctx: &ResourceContext,
-        ) -> Result<DropProbe, crate::Error> {
-            Ok(DropProbe(Arc::new(AtomicU32::new(0))))
-        }
-    }
-
-    crate::no_credential_slots!(DropProbeResource);
-
-    #[tokio::test]
-    async fn detach_guarded_with_observable_drop_lease_does_not_double_drop_or_leak() {
-        let drops = Arc::new(AtomicU32::new(0));
-        let cb_fired = Arc::new(AtomicBool::new(false));
-        let cb_fired_clone = cb_fired.clone();
-
-        let lease = DropProbe(drops.clone());
-        let handle = ResourceGuard::<DropProbeResource>::guarded(
-            lease,
-            test_key(),
-            TopologyTag::Pool,
-            1,
-            move |_lease, _tainted| {
-                // Would normally recycle the lease; detach must skip this so
-                // the lease is handed to the caller, not also released here.
-                cb_fired_clone.store(true, Ordering::Relaxed);
-                Box::pin(async { Ok(()) })
-            },
-            test_rq(),
-        );
-
-        let detached = handle.detach().expect("guarded detach yields the lease");
-        // Guard dropped during `detach`: the release callback must NOT have
-        // run, and the lease must NOT have been dropped yet (it moved out).
-        assert!(
-            !cb_fired.load(Ordering::Relaxed),
-            "detach must not fire the release callback"
-        );
-        assert_eq!(
-            drops.load(Ordering::Relaxed),
-            0,
-            "lease must move to the caller, not be dropped by the guard"
-        );
-
-        drop(detached);
-        assert_eq!(
-            drops.load(Ordering::Relaxed),
-            1,
-            "the detached lease drops exactly once, when the caller drops it"
-        );
-        assert!(
-            !cb_fired.load(Ordering::Relaxed),
-            "the release callback must never fire after detach"
-        );
-    }
-
-    #[tokio::test]
-    async fn panicking_release_callback_still_returns_the_permit() {
-        use std::sync::Arc as StdArc;
-
-        use tokio::sync::Semaphore;
-
-        // Single-slot semaphore: if the permit is destroyed with the
-        // unwinding callback instead of being returned, the second acquire
-        // below would block forever.
-        let sem = StdArc::new(Semaphore::new(1));
-        let permit = StdArc::clone(&sem)
-            .try_acquire_owned()
-            .expect("first permit is available");
-
-        {
-            let handle = ResourceGuard::<DummyResource>::guarded_with_permit(
-                7,
-                test_key(),
-                TopologyTag::Pool,
-                1,
-                |_lease, _tainted| panic!("release callback panics on purpose"),
-                Some(permit),
-                test_rq(),
-            );
-            // Dropping `handle` runs the panicking callback (which builds the
-            // release future) inside catch_unwind; the permit was taken out
-            // *before* the callback, so it is returned to the semaphore even
-            // though the build unwinds.
-            drop(handle);
-        }
-
-        // The slot must be reclaimable: this would fail if the panicking
-        // callback had taken the permit down with it.
-        let reclaimed = sem
-            .try_acquire()
-            .expect("permit must be returned despite the callback panic");
-        drop(reclaimed);
     }
 }
