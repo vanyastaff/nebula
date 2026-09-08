@@ -7,9 +7,9 @@
 //!
 //! # Shutdown
 //!
-//! Workers exit when either:
-//! - The [`CancellationToken`] is cancelled (drain remaining tasks, then exit).
-//! - All senders are dropped (channel returns `None`).
+//! Closing, dropping, or cancelling the queue seals new root submissions.
+//! Already accepted jobs may publish same-queue descendants until all owned
+//! activity settles; only then are workers terminated and joined.
 //!
 //! [`Manager`](crate::Manager) keeps cleanup open while its guards drain,
 //! then closes the queue and awaits workers within a cooperative budget.
@@ -18,13 +18,14 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
 };
 
-use tokio::sync::{mpsc, oneshot};
+use futures::{StreamExt, stream::FuturesUnordered};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 /// A boxed, pinned, sendable future that returns `()`.
@@ -36,45 +37,259 @@ type JobFuture = Pin<Box<dyn Future<Output = Result<(), crate::Error>> + Send>>;
 type TaskFactory = Box<dyn FnOnce() -> JobFuture + Send>;
 pub(crate) type ReleaseReceipt = oneshot::Receiver<Result<(), crate::Error>>;
 
+tokio::task_local! {
+    static CURRENT_QUEUE: Arc<()>;
+}
+
+#[derive(Clone, Copy)]
+enum JobClass {
+    Entry,
+    Coordinator,
+}
+
+enum Submission {
+    Await,
+    Deferred,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QueuePhase {
+    Open,
+    Sealed,
+    Terminating,
+}
+
+struct AdmissionState {
+    phase: QueuePhase,
+    outstanding: usize,
+}
+
+struct Admission {
+    state: Mutex<AdmissionState>,
+    changed: Notify,
+    terminate: CancellationToken,
+}
+
+impl Admission {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new(AdmissionState {
+                phase: QueuePhase::Open,
+                outstanding: 0,
+            }),
+            changed: Notify::new(),
+            terminate: CancellationToken::new(),
+        })
+    }
+
+    fn acquire(self: &Arc<Self>, descendant: bool) -> Option<JobPermit> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match state.phase {
+            QueuePhase::Open => {},
+            QueuePhase::Sealed if descendant => {},
+            QueuePhase::Sealed | QueuePhase::Terminating => return None,
+        }
+        state.outstanding += 1;
+        Some(JobPermit(Arc::clone(self)))
+    }
+
+    fn seal(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.phase == QueuePhase::Open {
+            state.phase = QueuePhase::Sealed;
+            tracing::debug!(
+                outstanding = state.outstanding,
+                "release queue sealed against new roots"
+            );
+        }
+        drop(state);
+        self.changed.notify_waiters();
+    }
+
+    fn terminate(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.phase = QueuePhase::Terminating;
+        tracing::debug!(outstanding = state.outstanding, "release queue terminating");
+        drop(state);
+        self.terminate.cancel();
+        self.changed.notify_waiters();
+    }
+
+    async fn wait_for(&self, predicate: impl Fn(&AdmissionState) -> bool) {
+        loop {
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if predicate(
+                &self
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            ) {
+                return;
+            }
+            changed.await;
+        }
+    }
+
+    async fn supervise(self: Arc<Self>, external_cancel: CancellationToken) {
+        tokio::select! {
+            () = external_cancel.cancelled() => self.seal(),
+            () = self.wait_for(|state| state.phase != QueuePhase::Open) => {},
+        }
+        self.wait_for(|state| state.outstanding == 0 || state.phase == QueuePhase::Terminating)
+            .await;
+        self.terminate();
+    }
+}
+
+struct JobPermit(Arc<Admission>);
+
+impl Drop for JobPermit {
+    fn drop(&mut self) {
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        debug_assert!(
+            state.outstanding != 0,
+            "cleanup activity ownership must balance"
+        );
+        state.outstanding -= 1;
+        drop(state);
+        self.0.changed.notify_waiters();
+    }
+}
+
+struct RescueTask {
+    queued: QueuedTask,
+    deadline: tokio::time::Instant,
+}
+
 /// Tracks a submission until its future completes, including unpolled drops.
 struct QueuedTask {
     factory: TaskFactory,
+    class: JobClass,
+    // The factory's captures must drop before a cancelled receipt can wake.
+    completion: TaskCompletion,
+}
+
+struct TaskCompletion {
     loss: TaskLoss,
+    _permit: Option<JobPermit>,
+    capacity: Option<OwnedSemaphorePermit>,
+    // Fields drop in declaration order. Cancellation closes the receipt only
+    // after accounting and both activity/admission permits have settled.
     receipt: Option<oneshot::Sender<Result<(), crate::Error>>>,
 }
 
 impl QueuedTask {
-    fn abandon(mut self, reason: &'static str) {
-        self.loss.reason = Some(reason);
-        if let Some(receipt) = self.receipt.take() {
-            let _ = receipt.send(Err(crate::Error::cancelled()));
+    fn abandon(self, reason: &'static str) {
+        let Self {
+            factory,
+            mut completion,
+            ..
+        } = self;
+        completion.loss.reason = Some(reason);
+        drop(factory);
+        completion.finish(Err(crate::Error::cancelled()));
+    }
+}
+
+impl TaskCompletion {
+    fn finish(self, result: Result<(), crate::Error>) {
+        let Self {
+            loss,
+            _permit,
+            capacity,
+            receipt,
+        } = self;
+        drop(loss);
+        drop(_permit);
+        drop(capacity);
+        if let Some(receipt) = receipt {
+            let _ = receipt.send(result);
         }
     }
 }
 
-struct TaskLoss {
+pub(crate) struct TaskLoss {
     counter: Arc<AtomicUsize>,
     reason: Option<&'static str>,
+    remaining: usize,
+}
+
+#[derive(Clone)]
+pub(crate) struct AbandonmentTracker {
+    counter: Arc<AtomicUsize>,
+}
+
+impl AbandonmentTracker {
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Self {
+        Self {
+            counter: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    pub(crate) fn track_entries(&self, count: usize) -> TaskLoss {
+        TaskLoss {
+            counter: Arc::clone(&self.counter),
+            reason: Some("abandoned"),
+            remaining: count,
+        }
+    }
+}
+
+impl TaskLoss {
+    pub(crate) fn absorb(&mut self, mut other: Self) {
+        debug_assert!(
+            Arc::ptr_eq(&self.counter, &other.counter),
+            "batch loss accounting must share one queue"
+        );
+        self.remaining += other.remaining;
+        other.remaining = 0;
+    }
+
+    pub(crate) fn add(&mut self, count: usize) {
+        self.remaining += count;
+    }
+
+    pub(crate) fn transfer_one(&mut self) -> Self {
+        self.remaining -= 1;
+        Self {
+            counter: Arc::clone(&self.counter),
+            reason: self.reason,
+            remaining: 1,
+        }
+    }
 }
 
 impl Drop for TaskLoss {
     fn drop(&mut self) {
-        if let Some(reason) = self.reason {
-            record_drop(&self.counter, reason);
+        if let Some(reason) = self.reason
+            && self.remaining != 0
+        {
+            record_drop(&self.counter, reason, self.remaining);
         }
     }
 }
 
 /// Maximum time a single release task may execute before being aborted.
 ///
-/// This is the teardown-path catch-all backstop (ADR-0093): the effective bound
-/// is the per-resource `timeout_at(cx.deadline)` the `Provider::destroy` future
-/// already carries (composed from `Provider::teardown_budget`). This outer
-/// ceiling must always sit above the largest composed deadline so it never
-/// undercuts a resource declaring a budget larger than the legacy 30s — it only
-/// trips on a truly wedged framework future. Mirrors the
-/// [`MAX_TEARDOWN_CEILING`](crate::hook_guard::MAX_TEARDOWN_CEILING) used on the
-/// awaited-`release()` path.
+/// The provider's composed deadline may impose a shorter budget. This ceiling
+/// bounds each individual entry, including its framework hooks; coordinators
+/// have no whole-collection deadline. Manager shutdown bounds their aggregate wait.
 const TASK_EXECUTION_TIMEOUT: Duration = crate::hook_guard::MAX_TEARDOWN_CEILING;
 
 /// Channel buffer size per primary worker.
@@ -86,15 +301,17 @@ const CHANNEL_BUFFER: usize = 256;
 /// Tasks exceeding this capacity are dropped with a warning.
 const FALLBACK_BUFFER: usize = 4096;
 
-/// Maximum lifetime of a rescue task spawned on double-`Full` saturation.
+/// Maximum admission wait of rescue work on double-`Full` saturation.
 ///
 /// When both primary and fallback channels are full, [`ReleaseQueue::submit`]
-/// spawns a short-lived task that awaits capacity on the fallback channel
+/// uses its bounded, owned dispatcher to await capacity on the fallback channel
 /// (blocking send) for up to this window. If no worker drains within
 /// `RESCUE_TIMEOUT`, the task is recorded as truly dropped — an explicit,
 /// metric-observable loss rather than a silent one. This bound also caps
 /// the total lifetime of any rescue task so they cannot leak indefinitely.
 const RESCUE_TIMEOUT: Duration = Duration::from_secs(30);
+const REENTRANT_CAPACITY: usize = 64;
+const RESCUE_CAPACITY: usize = FALLBACK_BUFFER;
 
 /// Handle to the running release queue workers.
 ///
@@ -102,6 +319,7 @@ const RESCUE_TIMEOUT: Duration = Duration::from_secs(30);
 #[must_use = "dropping ReleaseQueueHandle without shutdown leaks worker tasks"]
 pub struct ReleaseQueueHandle {
     workers: Vec<tokio::task::JoinHandle<()>>,
+    admission: Arc<Admission>,
 }
 
 /// Manager shutdown owns workers until completion or acknowledged abort.
@@ -109,6 +327,7 @@ struct AbortWorkers(ReleaseQueueHandle);
 
 impl Drop for AbortWorkers {
     fn drop(&mut self) {
+        self.0.admission.terminate();
         for worker in &self.0.workers {
             worker.abort();
         }
@@ -129,12 +348,11 @@ impl std::fmt::Debug for ReleaseQueueHandle {
 ///
 /// There are two ways to shut down the queue:
 ///
-/// 1. **Via cancellation token**: cancel the queue's
-///    token → workers drain buffered tasks and exit.
-/// 2. **Via drop** (for standalone use): drop the `ReleaseQueue` → senders close → workers see
-///    `None` and exit.
+/// 1. **Via cancellation token or [`close`](Self::close)**: seal new roots.
+/// 2. **Via drop** (for standalone use): seal the queue and close its senders.
 ///
-/// In both cases, call [`ReleaseQueue::shutdown`] afterward to await workers.
+/// Existing same-queue descendants remain admissible until every accepted job
+/// settles. In both cases, call [`ReleaseQueue::shutdown`] to observe completion.
 ///
 /// # Examples
 ///
@@ -154,6 +372,7 @@ pub struct ReleaseQueue {
     fallback_tx: mpsc::Sender<QueuedTask>,
     next: AtomicUsize,
     cancel: CancellationToken,
+    admission: Arc<Admission>,
     /// Tracks how many tasks have gone to the fallback channel.
     fallback_count: AtomicUsize,
     /// Tracks how many tasks were dropped due to full queues (rescue
@@ -168,6 +387,16 @@ pub struct ReleaseQueue {
     /// saturated badly enough that `try_send` to both primary and fallback
     /// failed — operators should investigate worker capacity.
     rescued_count: Arc<AtomicUsize>,
+    identity: Arc<()>,
+    reentrant_tx: mpsc::Sender<QueuedTask>,
+    reentrant_capacity: Arc<Semaphore>,
+    rescue_tx: mpsc::Sender<RescueTask>,
+}
+
+impl Drop for ReleaseQueue {
+    fn drop(&mut self) {
+        self.admission.seal();
+    }
 }
 
 impl std::fmt::Debug for ReleaseQueue {
@@ -199,8 +428,8 @@ impl ReleaseQueue {
 
     /// Creates a new release queue with a shared cancellation token.
     ///
-    /// When the token is cancelled, workers drain remaining buffered tasks
-    /// and exit without requiring the senders to be dropped. Keep this token
+    /// Cancelling the token seals roots. Workers exit after accepted jobs and
+    /// their same-queue descendants settle. Keep this token
     /// independent from acquisition cancellation when late guards still need
     /// to submit cleanup.
     ///
@@ -214,29 +443,59 @@ impl ReleaseQueue {
         assert!(worker_count > 0, "worker_count must be at least 1");
 
         let mut senders = Vec::with_capacity(worker_count);
-        let mut workers = Vec::with_capacity(worker_count + 1);
+        let mut workers = Vec::with_capacity(worker_count + 3);
 
         let dropped_count = Arc::new(AtomicUsize::new(0));
+        let identity = Arc::new(());
+        let admission = Admission::new();
 
         for _ in 0..worker_count {
             let (tx, rx) = mpsc::channel::<QueuedTask>(CHANNEL_BUFFER);
             senders.push(tx);
-            workers.push(tokio::spawn(Self::worker_loop(rx, cancel.clone())));
+            workers.push(tokio::spawn(Self::worker_loop(
+                rx,
+                admission.terminate.clone(),
+                Arc::clone(&identity),
+            )));
         }
 
         let (fallback_tx, fallback_rx) = mpsc::channel::<QueuedTask>(FALLBACK_BUFFER);
-        workers.push(tokio::spawn(Self::worker_loop(fallback_rx, cancel.clone())));
+        workers.push(tokio::spawn(Self::worker_loop(
+            fallback_rx,
+            admission.terminate.clone(),
+            Arc::clone(&identity),
+        )));
+        let (reentrant_tx, reentrant_rx) = mpsc::channel(REENTRANT_CAPACITY);
+        workers.push(tokio::spawn(Self::reentrant_loop(
+            reentrant_rx,
+            admission.terminate.clone(),
+            Arc::clone(&identity),
+        )));
+        let (rescue_tx, rescue_rx) = mpsc::channel(RESCUE_CAPACITY);
+        workers.push(tokio::spawn(Self::rescue_loop(
+            rescue_rx,
+            fallback_tx.clone(),
+            admission.terminate.clone(),
+        )));
+        workers.push(tokio::spawn(
+            Arc::clone(&admission).supervise(cancel.clone()),
+        ));
 
         let queue = Self {
             senders,
             fallback_tx,
             next: AtomicUsize::new(0),
             cancel,
+            admission: Arc::clone(&admission),
             fallback_count: AtomicUsize::new(0),
             dropped_count,
             rescued_count: Arc::new(AtomicUsize::new(0)),
+            identity,
+            reentrant_tx,
+            reentrant_capacity: Arc::new(Semaphore::new(REENTRANT_CAPACITY)),
+            rescue_tx,
         };
-        let handle = ReleaseQueueHandle { workers };
+        let handle = ReleaseQueueHandle { workers, admission };
 
         (queue, handle)
     }
@@ -247,7 +506,7 @@ impl ReleaseQueue {
     /// If the round-robin primary worker's channel is full, the task
     /// goes to the fallback channel.
     pub fn submit(&self, factory: impl FnOnce() -> ReleaseTask + Send + 'static) {
-        self.enqueue(
+        let _ = self.enqueue(
             Box::new(move || {
                 let task = factory();
                 Box::pin(async move {
@@ -256,6 +515,7 @@ impl ReleaseQueue {
                 })
             }),
             None,
+            JobClass::Entry,
         );
     }
 
@@ -264,28 +524,107 @@ impl ReleaseQueue {
         factory: impl FnOnce() -> JobFuture + Send + 'static,
     ) -> ReleaseReceipt {
         let (receipt, receiver) = oneshot::channel();
-        self.enqueue(Box::new(factory), Some(receipt));
+        let _ = self.enqueue(Box::new(factory), Some(receipt), JobClass::Entry);
         receiver
+    }
+
+    pub(crate) fn submit_guard_release(
+        &self,
+        factory: impl FnOnce() -> JobFuture + Send + 'static,
+    ) -> Result<ReleaseReceipt, crate::Error> {
+        let (receipt, receiver) = oneshot::channel();
+        match self.enqueue(Box::new(factory), Some(receipt), JobClass::Entry)? {
+            Submission::Await => Ok(receiver),
+            Submission::Deferred => Err(crate::Error::deferred_cleanup()),
+        }
+    }
+
+    pub(crate) fn submit_coordinator(
+        &self,
+        factory: impl FnOnce() -> JobFuture + Send + 'static,
+    ) -> ReleaseReceipt {
+        let (receipt, receiver) = oneshot::channel();
+        let _ = self.enqueue(Box::new(factory), Some(receipt), JobClass::Coordinator);
+        receiver
+    }
+
+    pub(crate) fn submit_joined_coordinator(
+        &self,
+        factory: impl FnOnce() -> JobFuture + Send + 'static,
+    ) -> Result<ReleaseReceipt, crate::Error> {
+        let (receipt, receiver) = oneshot::channel();
+        match self.enqueue(Box::new(factory), Some(receipt), JobClass::Coordinator)? {
+            Submission::Await => Ok(receiver),
+            Submission::Deferred => Err(crate::Error::deferred_cleanup()),
+        }
+    }
+
+    pub(crate) fn entry_losses(&self, count: usize) -> TaskLoss {
+        self.abandonment_tracker().track_entries(count)
+    }
+
+    pub(crate) fn abandonment_tracker(&self) -> AbandonmentTracker {
+        AbandonmentTracker {
+            counter: Arc::clone(&self.dropped_count),
+        }
     }
 
     fn enqueue(
         &self,
         factory: TaskFactory,
         receipt: Option<oneshot::Sender<Result<(), crate::Error>>>,
-    ) {
-        let idx = self.next.fetch_add(1, Ordering::Relaxed) % self.senders.len();
-        let factory = QueuedTask {
-            factory,
-            receipt,
-            loss: TaskLoss {
-                counter: Arc::clone(&self.dropped_count),
-                reason: Some("abandoned"),
-            },
-        };
+        class: JobClass,
+    ) -> Result<Submission, crate::Error> {
         if self.cancel.is_cancelled() {
-            factory.abandon("queue_closed");
-            return;
+            self.admission.seal();
         }
+        let nested = CURRENT_QUEUE
+            .try_with(|current| Arc::ptr_eq(current, &self.identity))
+            .ok();
+        let permit = self.admission.acquire(nested == Some(true));
+        let accepted = permit.is_some();
+        let idx = self.next.fetch_add(1, Ordering::Relaxed) % self.senders.len();
+        let mut factory = QueuedTask {
+            factory,
+            completion: TaskCompletion {
+                receipt,
+                loss: TaskLoss {
+                    counter: Arc::clone(&self.dropped_count),
+                    reason: Some("abandoned"),
+                    remaining: usize::from(matches!(class, JobClass::Entry)),
+                },
+                _permit: permit,
+                capacity: None,
+            },
+            class,
+        };
+        if !accepted {
+            factory.abandon("queue_closed");
+            return Err(crate::Error::cancelled());
+        }
+
+        let factory = if nested == Some(true) {
+            if let Ok(capacity) = Arc::clone(&self.reentrant_capacity).try_acquire_owned() {
+                factory.completion.capacity = Some(capacity);
+                match self.reentrant_tx.try_send(factory) {
+                    Ok(()) => return Ok(Submission::Await),
+                    Err(error) => {
+                        let mut factory = error.into_inner();
+                        drop(factory.completion.capacity.take());
+                        factory
+                    },
+                }
+            } else {
+                factory
+            }
+        } else {
+            factory
+        };
+        let submission = if nested.is_some() {
+            Submission::Deferred
+        } else {
+            Submission::Await
+        };
 
         match self.senders[idx].try_send(factory) {
             Ok(()) => {},
@@ -301,11 +640,9 @@ impl ReleaseQueue {
                 match self.fallback_tx.try_send(factory) {
                     Ok(()) => {},
                     Err(mpsc::error::TrySendError::Full(factory)) => {
-                        // Both primary and fallback are full. Previously this
-                        // path silently dropped the task. Now we hand it to a
-                        // bounded-lifetime rescue task that awaits capacity on
-                        // the fallback channel for up to `RESCUE_TIMEOUT`.
-                        self.spawn_rescue(factory);
+                        // The owned rescue dispatcher provides a bounded extra
+                        // admission window; exhaustion is an observable loss.
+                        self.rescue(factory)?;
                     },
                     Err(mpsc::error::TrySendError::Closed(factory)) => {
                         // Fallback channel is closed — workers have exited.
@@ -313,6 +650,7 @@ impl ReleaseQueue {
                         // discarding. The factory is dropped here on purpose:
                         // there is nowhere to send it.
                         factory.abandon("fallback_channel_closed");
+                        return Err(crate::Error::cancelled());
                     },
                 }
             },
@@ -322,53 +660,123 @@ impl ReleaseQueue {
                 match self.fallback_tx.try_send(factory) {
                     Ok(()) => {},
                     Err(mpsc::error::TrySendError::Full(factory)) => {
-                        self.spawn_rescue(factory);
+                        self.rescue(factory)?;
                     },
                     Err(mpsc::error::TrySendError::Closed(factory)) => {
                         factory.abandon("primary_and_fallback_closed");
+                        return Err(crate::Error::cancelled());
                     },
                 }
             },
         }
+        if matches!(submission, Submission::Deferred) {
+            tracing::debug!(
+                same_queue = nested == Some(true),
+                "cleanup accepted with deferred completion to avoid a dependency wait"
+            );
+        }
+        Ok(submission)
     }
 
-    /// Spawns a bounded-lifetime rescue task for a release that lost the
+    /// Publishes to the owned rescue dispatcher after a release lost the
     /// `try_send` race on both primary and fallback channels.
     ///
     /// The rescue task asynchronously reserves fallback capacity for up to
     /// [`RESCUE_TIMEOUT`]. Cancellation, timeout, or receiver closure drops
-    /// its owned submission and records the loss. It is detached by design:
-    /// its purpose is to
-    /// survive without a caller handle, and the timeout caps its total
-    /// lifetime so it cannot leak indefinitely.
-    fn spawn_rescue(&self, factory: QueuedTask) {
+    /// its owned submission and records the loss. Both the bounded buffer and
+    /// the in-flight reservation belong to a handle-owned worker, so bounded
+    /// shutdown also aborts and joins rescue ownership.
+    fn rescue(&self, factory: QueuedTask) -> Result<(), crate::Error> {
         let rescued = self.rescued_count.fetch_add(1, Ordering::Relaxed) + 1;
         if rescued.is_power_of_two() {
             tracing::warn!(
                 rescued_tasks = rescued,
                 "release queue saturated (primary + fallback full); \
-                 spawning bounded-lifetime rescue task"
+                 submitting to bounded owned rescue dispatcher"
             );
         }
 
-        let fallback_tx = self.fallback_tx.clone();
-        let cancel = self.cancel.clone();
+        self.rescue_tx
+            .try_send(RescueTask {
+                queued: factory,
+                deadline: tokio::time::Instant::now() + RESCUE_TIMEOUT,
+            })
+            .map_err(|error| {
+                error
+                    .into_inner()
+                    .queued
+                    .abandon("rescue_capacity_or_closed");
+                crate::Error::cancelled()
+            })
+    }
 
-        tokio::spawn(async move {
+    async fn rescue_loop(
+        mut receiver: mpsc::Receiver<RescueTask>,
+        fallback: mpsc::Sender<QueuedTask>,
+        cancel: CancellationToken,
+    ) {
+        loop {
+            let task = tokio::select! {
+                biased;
+                () = cancel.cancelled() => break,
+                task = receiver.recv() => match task { Some(task) => task, None => break },
+            };
+            let RescueTask {
+                queued: task,
+                deadline,
+            } = task;
             tokio::select! {
                 biased;
                 () = cancel.cancelled() => {
-                    factory.abandon("rescue_shutdown");
+                    task.abandon("rescue_shutdown");
+                    break;
                 }
-                res = tokio::time::timeout(RESCUE_TIMEOUT, fallback_tx.reserve()) => {
-                    match res {
-                        Ok(Ok(permit)) => { permit.send(factory); }
-                        Ok(Err(_closed)) => factory.abandon("rescue_channel_closed"),
-                        Err(_elapsed) => factory.abandon("rescue_timeout"),
+                reservation = tokio::time::timeout_at(deadline, fallback.reserve()) => {
+                    match reservation {
+                        Ok(Ok(permit)) => { permit.send(task); }
+                        Ok(Err(_)) => task.abandon("rescue_channel_closed"),
+                        Err(_) => task.abandon("rescue_timeout"),
                     }
                 }
             }
-        });
+        }
+        receiver.close();
+        while let Some(task) = receiver.recv().await {
+            task.queued.abandon("rescue_shutdown");
+        }
+    }
+
+    async fn reentrant_loop(
+        mut receiver: mpsc::Receiver<QueuedTask>,
+        cancel: CancellationToken,
+        identity: Arc<()>,
+    ) {
+        let mut running = FuturesUnordered::new();
+        loop {
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => {
+                    receiver.close();
+                    while let Some(task) = receiver.recv().await {
+                        running.push(Self::execute_reentrant(task, Arc::clone(&identity)));
+                    }
+                    break;
+                }
+                task = receiver.recv() => {
+                    if let Some(task) = task {
+                        running.push(Self::execute_reentrant(task, Arc::clone(&identity)));
+                    } else { break; }
+                }
+                _ = running.next(), if !running.is_empty() => {}
+            }
+        }
+        while running.next().await.is_some() {}
+    }
+
+    async fn execute_reentrant(queued: QueuedTask, identity: Arc<()>) {
+        CURRENT_QUEUE
+            .scope(identity, Self::execute_task(queued))
+            .await;
     }
 
     /// Returns the total number of tasks routed via the fallback channel.
@@ -376,12 +784,12 @@ impl ReleaseQueue {
         self.fallback_count.load(Ordering::Relaxed)
     }
 
-    /// Returns the cumulative number of submitted futures abandoned before
-    /// completion, including rejected submissions, rescue failure, discarded
+    /// Returns the cumulative number of submitted entries/tasks abandoned before
+    /// completion, including weighted unstarted batch members, rejected submissions, rescue failure, discarded
     /// buffers, worker aborts, factory panics, future panics, and timeouts.
     /// A non-zero value warrants operator attention. Zero does not prove
-    /// provider success: these futures return `()` and can handle errors
-    /// internally. Detached rescue tasks may update this count later.
+    /// provider success: a completed task can return or internally handle a
+    /// provider error. Open queues and late Force-policy releases may add losses later.
     pub fn dropped_count(&self) -> usize {
         self.dropped_count.load(Ordering::Relaxed)
     }
@@ -395,30 +803,31 @@ impl ReleaseQueue {
         self.rescued_count.load(Ordering::Relaxed)
     }
 
-    /// Signals workers to drain remaining tasks and exit.
-    /// Subsequent submissions are rejected and counted as dropped tasks.
+    /// Seals new root submissions while preserving accepted descendants.
     ///
-    /// This is equivalent to cancelling the token passed to
-    /// [`with_cancel`](Self::with_cancel). Call before [`shutdown`](Self::shutdown)
-    /// for prompt worker exit without needing to drop the queue.
+    /// External and cross-queue submissions are rejected and counted as losses.
+    /// Same-queue cleanup already running may publish descendants until all
+    /// accepted activity settles; then every owned worker exits.
+    ///
+    /// This initiates the same admission transition as cancellation of the token
+    /// passed to [`with_cancel`](Self::with_cancel), without cancelling that token.
     pub fn close(&self) {
-        self.cancel.cancel();
+        self.admission.seal();
     }
 
     /// Shuts down all workers gracefully, waiting for in-flight tasks.
     ///
-    /// Workers must have been signaled to stop first — either by dropping
-    /// the `ReleaseQueue` (closing channels) or by cancelling the token
-    /// (via [`close`](Self::close) or external cancellation).
+    /// Seals admission, waits for accepted roots and same-queue descendants,
+    /// then joins all owned workers, including rescue and reentrant dispatchers.
     ///
     /// # Cancel safety
     ///
     /// This method is cancel safe. If dropped while awaiting a worker's
     /// `JoinHandle`, that worker (and any not yet reached) is not aborted —
-    /// it keeps draining and exits on its own once the shared cancellation
-    /// token fires. The caller only loses the "all workers finished"
-    /// observation, not correctness.
+    /// the owned supervisor keeps observing quiescence and terminates workers
+    /// afterward. The caller loses only the "all workers finished" observation.
     pub async fn shutdown(handle: ReleaseQueueHandle) {
+        handle.admission.seal();
         for worker in handle.workers {
             let _ = worker.await;
         }
@@ -430,6 +839,7 @@ impl ReleaseQueue {
         handle: ReleaseQueueHandle,
         timeout: Duration,
     ) -> Result<(), crate::manager::ShutdownError> {
+        handle.admission.seal();
         let mut owned = AbortWorkers(handle);
         let mut joined_workers = 0;
         let join_workers = async {
@@ -450,6 +860,7 @@ impl ReleaseQueue {
             Err(_) => crate::manager::ShutdownError::ReleaseQueueTimeout { timeout },
         };
         tracing::warn!(joined_workers, error = %error, "release queue shutdown failed; aborting workers");
+        owned.0.admission.terminate();
         for worker in &owned.0.workers {
             worker.abort();
         }
@@ -464,13 +875,17 @@ impl ReleaseQueue {
     /// Uses `select!` with `biased` to prefer processing messages over
     /// checking cancellation — ensuring buffered tasks are drained before
     /// the worker exits.
-    async fn worker_loop(mut rx: mpsc::Receiver<QueuedTask>, cancel: CancellationToken) {
+    async fn worker_loop(
+        mut rx: mpsc::Receiver<QueuedTask>,
+        cancel: CancellationToken,
+        identity: Arc<()>,
+    ) {
         loop {
             tokio::select! {
                 biased;
                 msg = rx.recv() => {
                     match msg {
-                        Some(factory) => Self::execute_task(factory).await,
+                        Some(factory) => CURRENT_QUEUE.scope(Arc::clone(&identity), Self::execute_task(factory)).await,
                         None => break, // channel closed
                     }
                 }
@@ -478,7 +893,7 @@ impl ReleaseQueue {
                     // Drain remaining buffered tasks, then exit.
                     rx.close();
                     while let Some(factory) = rx.recv().await {
-                        Self::execute_task(factory).await;
+                        CURRENT_QUEUE.scope(Arc::clone(&identity), Self::execute_task(factory)).await;
                     }
                     break;
                 }
@@ -489,8 +904,8 @@ impl ReleaseQueue {
     async fn execute_task(queued: QueuedTask) {
         let QueuedTask {
             factory,
-            mut loss,
-            receipt,
+            class,
+            mut completion,
         } = queued;
         // Foolproofing: a release task runs a third-party topology's
         // `on_release` / `Provider::destroy`. The shared author-hook guard
@@ -509,19 +924,46 @@ impl ReleaseQueue {
             task
         } else {
             tracing::error!("release task factory panicked during future construction — isolated");
-            loss.reason = Some("factory_panic");
-            if let Some(receipt) = receipt {
-                let _ = receipt.send(Err(crate::Error::permanent(
-                    "release task factory panicked",
-                )));
-            }
+            completion.loss.reason = Some("factory_panic");
+            completion.finish(Err(crate::Error::permanent(
+                "release task factory panicked",
+            )));
             return;
         };
-        let result = match crate::hook_guard::guard_author_hook(TASK_EXECUTION_TIMEOUT, task).await
-        {
+        let guarded = match class {
+            JobClass::Entry => {
+                crate::hook_guard::guard_author_hook(TASK_EXECUTION_TIMEOUT, task).await
+            },
+            JobClass::Coordinator => {
+                use futures::FutureExt;
+                std::panic::AssertUnwindSafe(task)
+                    .catch_unwind()
+                    .await
+                    .map_err(|_| crate::hook_guard::HookFault::Panicked)
+            },
+        };
+        let result = Self::finish_task(guarded, &mut completion.loss);
+        completion.finish(result);
+    }
+
+    pub(crate) async fn run_entry(
+        future: impl Future<Output = Result<(), crate::Error>> + Send,
+        mut loss: TaskLoss,
+    ) -> Result<(), crate::Error> {
+        let guarded = crate::hook_guard::guard_author_hook(TASK_EXECUTION_TIMEOUT, future).await;
+        Self::finish_task(guarded, &mut loss)
+    }
+
+    fn finish_task(
+        guarded: Result<Result<(), crate::Error>, crate::hook_guard::HookFault>,
+        loss: &mut TaskLoss,
+    ) -> Result<(), crate::Error> {
+        match guarded {
             Ok(result) => {
                 loss.reason = None;
-                if let Err(error) = &result {
+                if let Err(error) = &result
+                    && *error.kind() != crate::ErrorKind::DeferredCleanup
+                {
                     tracing::warn!(
                         error.kind = ?error.kind(),
                         resource.key = ?error.resource_key(),
@@ -550,9 +992,6 @@ impl ReleaseQueue {
                 loss.reason = Some("worker_timeout");
                 Err(crate::Error::cancelled())
             },
-        };
-        if let Some(receipt) = receipt {
-            let _ = receipt.send(result);
         }
     }
 }
@@ -560,9 +999,9 @@ impl ReleaseQueue {
 /// Records a terminal task drop on the shared counter, with a structured
 /// reason. Logs at ERROR level when the drop count crosses a power-of-two
 /// boundary so log volume stays bounded under sustained loss.
-fn record_drop(counter: &Arc<AtomicUsize>, reason: &'static str) {
-    let n = counter.fetch_add(1, Ordering::Relaxed) + 1;
-    if n.is_power_of_two() {
+fn record_drop(counter: &Arc<AtomicUsize>, reason: &'static str, count: usize) {
+    let n = counter.fetch_add(count, Ordering::Relaxed) + count;
+    if n.is_power_of_two() || count > 1 {
         tracing::error!(
             dropped_tasks = n,
             reason = reason,
@@ -573,12 +1012,241 @@ fn record_drop(counter: &Arc<AtomicUsize>, reason: &'static str) {
 
 #[cfg(test)]
 mod tests {
+    #[path = "receipt.rs"]
+    mod receipt_tests;
+
     use std::sync::{
         Arc,
         atomic::{AtomicU32, Ordering},
     };
 
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn sealed_queue_accepts_descendant_of_already_owned_cleanup() {
+        let (queue, handle) = ReleaseQueue::new(1);
+        let queue = Arc::new(queue);
+        let (entered, parent_entered) = oneshot::channel();
+        let (resume, resumed) = oneshot::channel();
+        let completed = Arc::new(AtomicUsize::new(0));
+        let child_completed = Arc::clone(&completed);
+        let nested_queue = Arc::clone(&queue);
+        let parent = queue.submit_release(move || {
+            Box::pin(async move {
+                entered.send(()).unwrap();
+                resumed.await.unwrap();
+                nested_queue
+                    .submit_guard_release(move || {
+                        Box::pin(async move {
+                            child_completed.fetch_add(1, Ordering::SeqCst);
+                            Ok(())
+                        })
+                    })?
+                    .await
+                    .unwrap()
+            })
+        });
+        parent_entered.await.unwrap();
+        queue.close();
+        resume.send(()).unwrap();
+        parent.await.unwrap().expect(
+            "a sealed queue must retain descendant cleanup admission until owned parents settle",
+        );
+        ReleaseQueue::shutdown_bounded(handle, Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert_eq!(completed.load(Ordering::SeqCst), 1);
+        assert_eq!(queue.dropped_count(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelled_rescue_drains_every_buffered_owner_before_return() {
+        let (sender, receiver) = mpsc::channel(8);
+        let (fallback, _fallback_receiver) = mpsc::channel(1);
+        let cancel = CancellationToken::new();
+        let count = Arc::new(AtomicUsize::new(0));
+        for _ in 0..8 {
+            sender
+                .try_send(RescueTask {
+                    queued: QueuedTask {
+                        factory: Box::new(|| panic!("cancelled rescue must not execute factories")),
+                        completion: TaskCompletion {
+                            loss: TaskLoss {
+                                counter: Arc::clone(&count),
+                                reason: Some("test"),
+                                remaining: 1,
+                            },
+                            receipt: None,
+                            _permit: None,
+                            capacity: None,
+                        },
+                        class: JobClass::Entry,
+                    },
+                    deadline: tokio::time::Instant::now() + RESCUE_TIMEOUT,
+                })
+                .unwrap_or_else(|_| panic!("test capacity"));
+        }
+        cancel.cancel();
+        ReleaseQueue::rescue_loop(receiver, fallback, cancel).await;
+        assert!(sender.is_closed());
+        assert_eq!(count.load(Ordering::SeqCst), 8);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelled_reentrant_dispatcher_drains_accepted_work_before_return() {
+        let (sender, receiver) = mpsc::channel(8);
+        let capacity = Arc::new(Semaphore::new(8));
+        let completed = Arc::new(AtomicUsize::new(0));
+        let losses = Arc::new(AtomicUsize::new(0));
+        let cancel = CancellationToken::new();
+        for _ in 0..8 {
+            let completed = Arc::clone(&completed);
+            sender
+                .try_send(QueuedTask {
+                    factory: Box::new(move || {
+                        Box::pin(async move {
+                            completed.fetch_add(1, Ordering::SeqCst);
+                            Ok(())
+                        })
+                    }),
+                    completion: TaskCompletion {
+                        loss: TaskLoss {
+                            counter: Arc::clone(&losses),
+                            reason: Some("test"),
+                            remaining: 1,
+                        },
+                        receipt: None,
+                        _permit: None,
+                        capacity: Some(Arc::clone(&capacity).try_acquire_owned().unwrap()),
+                    },
+                    class: JobClass::Entry,
+                })
+                .unwrap_or_else(|_| panic!("test capacity"));
+        }
+        cancel.cancel();
+        ReleaseQueue::reentrant_loop(receiver, cancel, Arc::new(())).await;
+        assert!(sender.is_closed());
+        assert_eq!(completed.load(Ordering::SeqCst), 8);
+        assert_eq!(losses.load(Ordering::SeqCst), 0);
+        assert_eq!(capacity.available_permits(), 8);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn bounded_shutdown_owns_pending_reentrant_children() {
+        let (queue, handle) = ReleaseQueue::new(1);
+        let queue = Arc::new(queue);
+        let ownership = Arc::new(());
+        let child_owner = Arc::clone(&ownership);
+        let (entered, child_entered) = oneshot::channel();
+        let nested = Arc::clone(&queue);
+        let parent = queue.submit_release(move || {
+            Box::pin(async move {
+                nested
+                    .submit_guard_release(move || {
+                        Box::pin(async move {
+                            entered.send(()).unwrap();
+                            std::future::pending::<()>().await;
+                            drop(child_owner);
+                            Ok(())
+                        })
+                    })?
+                    .await
+                    .unwrap()
+            })
+        });
+        child_entered.await.unwrap();
+        queue.close();
+        ReleaseQueue::shutdown_bounded(handle, Duration::from_secs(1))
+            .await
+            .unwrap_err();
+        assert!(parent.await.is_err());
+        assert_eq!(queue.dropped_count(), 2);
+        assert_eq!(
+            Arc::strong_count(&ownership),
+            1,
+            "child ownership must settle before abort acknowledgement"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn exhausted_reentrant_capacity_defers_accepted_cleanup_without_loss() {
+        let (queue, handle) = ReleaseQueue::new(1);
+        let queue = Arc::new(queue);
+        let capacity = Arc::clone(&queue.reentrant_capacity)
+            .try_acquire_many_owned(REENTRANT_CAPACITY as u32)
+            .unwrap();
+        let (finished, completion) = oneshot::channel();
+        let nested_queue = Arc::clone(&queue);
+        let parent = queue.submit_release(move || {
+            Box::pin(async move {
+                let error = nested_queue
+                    .submit_guard_release(move || {
+                        Box::pin(async move {
+                            finished.send(()).unwrap();
+                            Ok(())
+                        })
+                    })
+                    .unwrap_err();
+                assert_eq!(*error.kind(), crate::ErrorKind::DeferredCleanup);
+                Ok(())
+            })
+        });
+        parent.await.unwrap().unwrap();
+        completion.await.unwrap();
+        drop(capacity);
+        queue.close();
+        ReleaseQueue::shutdown_bounded(handle, Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert_eq!(queue.dropped_count(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn closed_nested_target_is_rejected_not_reported_as_deferred() {
+        let (queue, handle) = ReleaseQueue::new(1);
+        queue.close();
+        let error = CURRENT_QUEUE
+            .scope(Arc::new(()), async {
+                queue
+                    .submit_guard_release(|| Box::pin(async { Ok(()) }))
+                    .unwrap_err()
+            })
+            .await;
+        assert_eq!(*error.kind(), crate::ErrorKind::Cancelled);
+        ReleaseQueue::shutdown(handle).await;
+        assert_eq!(queue.dropped_count(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn saturated_rescue_has_bounded_publication_and_owned_shutdown() {
+        let (queue, handle) = ReleaseQueue::new(1);
+        let total = CHANNEL_BUFFER + FALLBACK_BUFFER + RESCUE_CAPACITY + 1;
+        let ownership = Arc::new(());
+        for _ in 0..total {
+            let ownership = Arc::clone(&ownership);
+            queue.submit(move || {
+                Box::pin(async move {
+                    std::future::pending::<()>().await;
+                    drop(ownership);
+                })
+            });
+        }
+        assert_eq!(
+            queue.dropped_count(),
+            1,
+            "only capacity overflow is rejected before workers poll"
+        );
+        queue.close();
+        ReleaseQueue::shutdown_bounded(handle, Duration::from_secs(1))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            queue.dropped_count(),
+            total,
+            "shutdown joins rescue ownership, not just primary workers"
+        );
+        assert_eq!(Arc::strong_count(&ownership), 1);
+    }
 
     #[tokio::test]
     async fn cancelling_public_shutdown_leaves_cleanup_running() {
@@ -608,7 +1276,7 @@ mod tests {
     async fn bounded_shutdown_aborts_running_and_buffered_tasks_once() {
         let (queue, handle) = ReleaseQueue::new(1);
         let ownership = Arc::new(());
-        let started = Arc::new(tokio::sync::Notify::new());
+        let started = Arc::new(Notify::new());
         let lease = Arc::clone(&ownership);
         let entered = Arc::clone(&started);
         queue.submit(move || {
@@ -847,17 +1515,13 @@ mod tests {
         );
     }
 
-    fn submit_gated(
-        queue: &ReleaseQueue,
-        gate: &Arc<tokio::sync::Notify>,
-        counter: &Arc<AtomicU32>,
-    ) {
+    fn submit_gated(queue: &ReleaseQueue, gate: &Arc<Notify>, counter: &Arc<AtomicU32>) {
         let g = gate.clone();
         let c = counter.clone();
         queue.submit(move || Box::pin(gated_increment(g, c)));
     }
 
-    async fn gated_increment(gate: Arc<tokio::sync::Notify>, counter: Arc<AtomicU32>) {
+    async fn gated_increment(gate: Arc<Notify>, counter: Arc<AtomicU32>) {
         gate.notified().await;
         counter.fetch_add(1, Ordering::Relaxed);
     }
@@ -870,7 +1534,7 @@ mod tests {
         // NOT silently drop.
         let (queue, handle) = ReleaseQueue::new(1);
         let counter = Arc::new(AtomicU32::new(0));
-        let gate = Arc::new(tokio::sync::Notify::new());
+        let gate = Arc::new(Notify::new());
 
         // Step 1: park the primary worker on the gate. The first submit
         // routes to senders[0] (round-robin with 1 worker). The primary

@@ -368,7 +368,7 @@ pub use options::AcquireOptions;
 pub use recovery::{
     GateState, RecoveryGate, RecoveryGateConfig, RecoveryTicket, RecoveryWaiter, TryBeginError,
 };
-pub use registry::{LookupOutcome, ManagedHandle, Registry};
+pub use registry::{LookupOutcome, ManagedResourceView, Registry};
 pub use release_queue::ReleaseQueue;
 pub use reload::ReloadOutcome;
 pub use resource::{
@@ -379,6 +379,10 @@ pub use resource_ref::ResourceRef;
 pub use slot::{CredentialSlot, SlotCell};
 // Runtime types — the framework topologies needed for `Manager::register()`.
 pub use runtime::managed::ManagedResource;
+pub use runtime::retained_store::{
+    ReplaceStatus, RetainStatus, RetainedId, RetainedLease, RetainedStore, RetireStatus,
+    StoreRejection,
+};
 pub use runtime::{
     bounded::Bounded,
     pool::{PoolStats, Pooled},

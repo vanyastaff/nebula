@@ -22,8 +22,30 @@ use tokio::sync::Notify;
 use crate::{
     events::ResourceEvent,
     manager::{DrainTimeoutPolicy, Manager, ShutdownConfig},
-    release_queue::ReleaseQueue,
+    release_queue::{ReleaseQueue, ReleaseQueueHandle},
 };
+
+use super::retirement::RetirementFailure;
+
+pub(super) type TerminalShutdownTask =
+    tokio::task::JoinHandle<Result<ShutdownReport, ShutdownError>>;
+
+async fn await_terminal_task(
+    task: &mut Option<TerminalShutdownTask>,
+) -> Result<ShutdownReport, ShutdownError> {
+    let Some(handle) = task.as_mut() else {
+        return Err(ShutdownError::RetirementSupervisorFailed);
+    };
+    let result = match handle.await {
+        Ok(result) => result,
+        Err(error) => {
+            tracing::error!(?error, "manager-owned terminal shutdown task failed");
+            Err(ShutdownError::RetirementSupervisorFailed)
+        },
+    };
+    task.take();
+    result
+}
 
 /// Waits until `tracker`'s counter reaches `0` or `timeout` elapses.
 ///
@@ -107,10 +129,10 @@ pub struct ShutdownReport {
     pub registry_cleared: bool,
     /// Whether every release-queue worker completed within its budget.
     /// False after Force with outstanding handles: cleanup remains open.
-    /// Does not prove success of earlier asynchronous releases or rescue completion.
+    /// Includes nested and rescue dispatchers, but does not prove provider success.
     pub release_queue_drained: bool,
     /// Cumulative queue-lifetime count of release tasks abandoned before
-    /// their futures completed. Detached rescue tasks and late Force-policy
+    /// their futures completed, including untouched batch members. Late Force-policy
     /// releases may increment the counter after this snapshot. Zero does not
     /// prove complete cleanup: a `Future<Output = ()>` can hide provider errors.
     pub dropped_release_tasks: usize,
@@ -125,8 +147,7 @@ pub struct ShutdownReport {
 #[derive(thiserror::Error)]
 #[non_exhaustive]
 pub enum ShutdownError {
-    /// `graceful_shutdown` was already in progress when this call entered.
-    /// CAS-guarded so exactly one caller wins the race.
+    /// Another caller is actively driving shutdown, or shutdown already completed.
     #[error("graceful shutdown already in progress")]
     AlreadyShuttingDown,
 
@@ -158,6 +179,10 @@ pub enum ShutdownError {
     #[error("release queue worker failed")]
     ReleaseQueueWorkerFailed,
 
+    /// The manager-owned retirement supervisor stopped before it settled all rows.
+    #[error("resource retirement supervisor failed")]
+    RetirementSupervisorFailed,
+
     /// A row's terminal cleanup failed. Other rows still receive cleanup.
     #[error("resource terminal cleanup failed for {key}")]
     ResourceTeardownFailed {
@@ -182,6 +207,7 @@ impl std::fmt::Debug for ShutdownError {
                 .field("timeout", timeout)
                 .finish(),
             Self::ReleaseQueueWorkerFailed => formatter.write_str("ReleaseQueueWorkerFailed"),
+            Self::RetirementSupervisorFailed => formatter.write_str("RetirementSupervisorFailed"),
             Self::ResourceTeardownFailed { key, source } => formatter
                 .debug_struct("ResourceTeardownFailed")
                 .field("key", key)
@@ -216,6 +242,154 @@ impl Drop for RetirementSettlement {
     }
 }
 
+/// Converts the first typed failure after the supervisor settles all siblings.
+fn retirement_failure(failure: RetirementFailure) -> ShutdownError {
+    tracing::warn!(
+        resource.key = %failure.key,
+        error.kind = ?failure.source.kind(),
+        "resource retirement task failed"
+    );
+    ShutdownError::ResourceTeardownFailed {
+        key: failure.key,
+        source: failure.source,
+    }
+}
+
+/// Owns every terminal value after the registry snapshot. The public
+/// shutdown future only awaits this stored task, so cancelling that waiter
+/// cannot drop unpublished rows or detach supervisor/release-worker handles.
+async fn run_terminal_shutdown(
+    pending_retirements: Vec<super::retirement::PendingRetirement>,
+    retirement_supervisor: Arc<super::retirement::RetirementSupervisor>,
+    retirement_tracker: Arc<(std::sync::atomic::AtomicU64, Notify)>,
+    release_queue: Arc<ReleaseQueue>,
+    release_queue_handle: Arc<tokio::sync::Mutex<Option<ReleaseQueueHandle>>>,
+    config: ShutdownConfig,
+    outstanding_after_drain: u64,
+) -> Result<ShutdownReport, ShutdownError> {
+    let started = tokio::time::Instant::now();
+    let mut terminal_error = None;
+    if !pending_retirements.is_empty() {
+        let remaining = config
+            .release_queue_timeout
+            .saturating_sub(started.elapsed());
+        match retirement_supervisor
+            .publish_batch_bounded(pending_retirements, remaining)
+            .await
+        {
+            Ok(()) => {},
+            Err(super::retirement::PublishBatchError::TimedOut(retirements)) => {
+                for retirement in retirements {
+                    retirement.abandon("terminal publication timed out");
+                }
+                terminal_error = Some(ShutdownError::ReleaseQueueTimeout {
+                    timeout: config.release_queue_timeout,
+                });
+            },
+            Err(super::retirement::PublishBatchError::Closed(retirements)) => {
+                for retirement in retirements {
+                    retirement.abandon("retirement supervisor closed before publication");
+                }
+                terminal_error = Some(ShutdownError::RetirementSupervisorFailed);
+            },
+        }
+    }
+
+    if outstanding_after_drain > 0 && terminal_error.is_none() {
+        tracing::warn!(
+            outstanding = outstanding_after_drain,
+            "resource manager: forced retirement incomplete; late cleanup remains open"
+        );
+        return Ok(ShutdownReport {
+            outstanding_handles_after_drain: outstanding_after_drain,
+            registry_cleared: true,
+            release_queue_drained: false,
+            dropped_release_tasks: release_queue.dropped_count(),
+        });
+    }
+
+    if terminal_error.is_none() {
+        let remaining = config
+            .release_queue_timeout
+            .saturating_sub(started.elapsed());
+        terminal_error = match tokio::time::timeout(remaining, retirement_supervisor.seal()).await {
+            Ok(Ok(())) => None,
+            Ok(Err(_)) => Some(ShutdownError::RetirementSupervisorFailed),
+            Err(_) => Some(ShutdownError::ReleaseQueueTimeout {
+                timeout: config.release_queue_timeout,
+            }),
+        };
+    }
+
+    let remaining = config
+        .release_queue_timeout
+        .saturating_sub(started.elapsed());
+    let supervisor_error = match retirement_supervisor.take_handle() {
+        Some(handle) => match handle.join_bounded(remaining).await {
+            Ok(first_failure) => first_failure.map(retirement_failure),
+            Err(super::retirement::RetirementSupervisorJoinError::TimedOut) => {
+                Some(ShutdownError::ReleaseQueueTimeout {
+                    timeout: config.release_queue_timeout,
+                })
+            },
+            Err(super::retirement::RetirementSupervisorJoinError::Failed) => {
+                Some(ShutdownError::RetirementSupervisorFailed)
+            },
+        },
+        None => Some(ShutdownError::RetirementSupervisorFailed),
+    };
+    if terminal_error.is_none() {
+        terminal_error = supervisor_error;
+    }
+
+    let remaining = config
+        .release_queue_timeout
+        .saturating_sub(started.elapsed());
+    if wait_for_tracker_drain(&retirement_tracker, remaining)
+        .await
+        .is_err()
+        && terminal_error.is_none()
+    {
+        terminal_error = Some(ShutdownError::ReleaseQueueTimeout {
+            timeout: config.release_queue_timeout,
+        });
+    }
+
+    // All outside-queue coordinators are joined (or abort-joined), so no
+    // task can publish terminal work after queue admission is sealed.
+    release_queue.close();
+    let handle = release_queue_handle.lock().await.take();
+    if let Some(handle) = handle {
+        let remaining = config
+            .release_queue_timeout
+            .saturating_sub(started.elapsed());
+        let worker_error = ReleaseQueue::shutdown_bounded(handle, remaining)
+            .await
+            .err()
+            .map(|error| match error {
+                ShutdownError::ReleaseQueueTimeout { .. } => ShutdownError::ReleaseQueueTimeout {
+                    timeout: config.release_queue_timeout,
+                },
+                other => other,
+            });
+        if terminal_error.is_none() {
+            terminal_error = worker_error;
+        }
+    }
+    if let Some(error) = terminal_error {
+        return Err(error);
+    }
+
+    let dropped_release_tasks = release_queue.dropped_count();
+    tracing::info!(dropped_release_tasks, "resource manager: shutdown complete");
+    Ok(ShutdownReport {
+        outstanding_handles_after_drain: 0,
+        registry_cleared: true,
+        release_queue_drained: true,
+        dropped_release_tasks,
+    })
+}
+
 impl Manager {
     /// Triggers graceful shutdown with drain and cleanup.
     ///
@@ -242,8 +416,8 @@ impl Manager {
     ///
     /// # Errors
     ///
-    /// - [`ShutdownError::AlreadyShuttingDown`] if a concurrent caller already
-    ///   won the CAS — shutdown is one-shot, not re-entrant.
+    /// - [`ShutdownError::AlreadyShuttingDown`] if another caller is actively
+    ///   driving shutdown, or terminal shutdown already completed.
     /// - [`ShutdownError::DrainTimeout`] if in-flight handles do not release
     ///   within [`ShutdownConfig::drain_timeout`] and
     ///   [`ShutdownConfig::on_drain_timeout`] is
@@ -260,26 +434,36 @@ impl Manager {
     ///
     /// # Cancel safety
     ///
-    /// Cancel safe with respect to correctness: the shutdown flag and the
-    /// cancellation token are set synchronously before the first await, so
-    /// dropping this future still leaves new acquires permanently rejected
-    /// throughout shutdown. During DRAIN, cancellation preserves the registry
-    /// and keeps cleanup available until the manager drops. During terminal
-    /// receipt waiting, already-submitted cleanup continues under queue ownership.
-    /// During worker
-    /// waiting, cancellation aborts unfinished workers; abort acknowledgement
-    /// cannot be awaited by a dropped future. It is **not** idempotent-on-cancel:
-    /// cancellation skips the remaining phases and report, and a retry
-    /// immediately returns `AlreadyShuttingDown` — treat shutdown as
-    /// one-shot and do not race it against a timeout you intend to retry.
+    /// Cancel safe and resumable. The shutdown flag and cancellation token are
+    /// set synchronously before the first await. During DRAIN, cancellation
+    /// preserves the registry and a later call resumes using the first caller's
+    /// latched policy. After the final registry snapshot, a manager-owned task
+    /// owns all unpublished rows and supervisor/worker handles; cancelling a
+    /// caller only stops waiting for that task. A later call awaits the same
+    /// terminal result. Concurrent drivers still fail fast with
+    /// [`ShutdownError::AlreadyShuttingDown`].
     pub async fn graceful_shutdown(
         &self,
         config: ShutdownConfig,
     ) -> Result<ShutdownReport, ShutdownError> {
-        // CAS idempotency guard: exactly one caller wins. Concurrent callers
-        // that arrive after this CAS see `AlreadyShuttingDown` immediately
-        // rather than re-entering the drain logic against a half-torn state.
-        {
+        // The guard is deliberately held across awaits. Caller cancellation
+        // releases only this driver lease; all terminal owners live either in
+        // `Manager` or its stored terminal task. A concurrent driver fails fast.
+        let mut terminal_task = self
+            .terminal_shutdown
+            .try_lock()
+            .map_err(|_| ShutdownError::AlreadyShuttingDown)?;
+        if self.shutdown_complete.load(AtomicOrdering::Acquire) {
+            return Err(ShutdownError::AlreadyShuttingDown);
+        }
+        if terminal_task.is_some() {
+            let result = await_terminal_task(&mut terminal_task).await;
+            self.shutdown_complete.store(true, AtomicOrdering::Release);
+            return result;
+        }
+
+        let first_driver = !self.shutting_down.load(AtomicOrdering::Acquire);
+        if first_driver {
             let _admission = self
                 .admission
                 .lock()
@@ -304,7 +488,19 @@ impl Manager {
             for managed in self.registry.all_managed() {
                 managed.begin_close();
             }
+
+            *self
+                .shutdown_config
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(config.clone());
         }
+
+        let config = self
+            .shutdown_config
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .unwrap_or(config);
 
         // Phase 2: DRAIN — wait for in-flight handles to be released.
         // On timeout, respect the policy: Abort preserves "graceful"
@@ -353,10 +549,11 @@ impl Manager {
             },
         }
 
-        // Enqueue every row before the first await: cancellation cannot strand
-        // a later row in an unobserved local Vec. Mutation and queue submission
-        // share admission with remove/replacement and final registration commit.
-        let receipts: Vec<_> = {
+        // Fence and retain every row in the final snapshot before awaiting
+        // anything. Shutdown admission prevents later registry growth. The
+        // snapshot is moved directly into a manager-owned task before this
+        // public future reaches its next cancellation point.
+        let pending_retirements: Vec<_> = {
             let _admission = self
                 .admission
                 .lock()
@@ -364,86 +561,21 @@ impl Manager {
             self.registry
                 .clear()
                 .into_iter()
-                .map(|managed| {
-                    let key = managed.resource_key();
-                    (key, self.retire_resource(managed))
-                })
+                .map(|managed| self.prepare_retirement(managed))
                 .collect()
         };
-
-        if outstanding_after_drain > 0 {
-            tracing::warn!(
-                outstanding = outstanding_after_drain,
-                "resource manager: forced retirement incomplete; late cleanup remains open"
-            );
-            return Ok(ShutdownReport {
-                outstanding_handles_after_drain: outstanding_after_drain,
-                registry_cleared: true,
-                release_queue_drained: false,
-                dropped_release_tasks: self.release_queue.dropped_count(),
-            });
-        }
-
-        // Maintenance may still publish cleanup jobs until its row receipt
-        // completes. Keep the queue open until those producers have joined.
-        let started = tokio::time::Instant::now();
-        let terminal = tokio::time::timeout(config.release_queue_timeout, async {
-            let mut first_error = None;
-            for (key, receipt) in receipts {
-                let result = receipt
-                    .await
-                    .unwrap_or_else(|_| Err(crate::Error::cancelled()));
-                if let Err(source) = result {
-                    tracing::warn!(resource.key = %key, error.kind = ?source.kind(),
-                        "resource terminal cleanup failed");
-                    first_error
-                        .get_or_insert(ShutdownError::ResourceTeardownFailed { key, source });
-                }
-            }
-            // Removed/replaced rows may still own maintenance producers.
-            // Final admission is closed, so this set cannot grow afterward.
-            let _ = wait_for_tracker_drain(&self.retirement_tracker, Duration::MAX).await;
-            first_error
-        })
-        .await;
-
-        self.release_queue.close();
-        let handle = self.release_queue_handle.lock().await.take();
-        if let Some(handle) = handle {
-            let remaining = config
-                .release_queue_timeout
-                .saturating_sub(started.elapsed());
-            ReleaseQueue::shutdown_bounded(handle, remaining)
-                .await
-                .map_err(|error| match error {
-                    ShutdownError::ReleaseQueueTimeout { .. } => {
-                        ShutdownError::ReleaseQueueTimeout {
-                            timeout: config.release_queue_timeout,
-                        }
-                    },
-                    other => other,
-                })?;
-        }
-        match terminal {
-            Err(_) => {
-                return Err(ShutdownError::ReleaseQueueTimeout {
-                    timeout: config.release_queue_timeout,
-                });
-            },
-            Ok(Some(error)) => return Err(error),
-            Ok(None) => {},
-        }
-
-        let dropped_release_tasks = self.release_queue.dropped_count();
-        tracing::info!(dropped_release_tasks, "resource manager: shutdown complete");
-        Ok(ShutdownReport {
-            outstanding_handles_after_drain: outstanding_after_drain,
-            registry_cleared: true,
-            // If we reached this line Phase 4 either succeeded or had no
-            // work to drain — either way the contract is "drained".
-            release_queue_drained: true,
-            dropped_release_tasks,
-        })
+        *terminal_task = Some(tokio::spawn(run_terminal_shutdown(
+            pending_retirements,
+            Arc::clone(&self.retirement_supervisor),
+            Arc::clone(&self.retirement_tracker),
+            Arc::clone(&self.release_queue),
+            Arc::clone(&self.release_queue_handle),
+            config,
+            outstanding_after_drain,
+        )));
+        let result = await_terminal_task(&mut terminal_task).await;
+        self.shutdown_complete.store(true, AtomicOrdering::Release);
+        result
     }
 
     /// Drives every registered resource to the given lifecycle phase.
@@ -561,8 +693,8 @@ mod drain_race_tests {
     }
 
     #[tokio::test]
-    async fn cancelling_manager_worker_wait_releases_task_ownership() {
-        let manager = Manager::new();
+    async fn cancelled_worker_wait_is_resumed_and_abort_joined_by_manager_task() {
+        let manager = Arc::new(Manager::new());
         let ownership = Arc::new(());
         let lease = Arc::clone(&ownership);
         manager.release_queue.submit(move || {
@@ -571,12 +703,41 @@ mod drain_race_tests {
                 drop(lease);
             })
         });
-        {
-            let shutdown = manager.graceful_shutdown(ShutdownConfig::default());
-            tokio::pin!(shutdown);
-            assert!(futures::poll!(shutdown.as_mut()).is_pending());
-        }
-        tokio::task::yield_now().await;
+        let shutdown_manager = Arc::clone(&manager);
+        let config =
+            ShutdownConfig::default().with_release_queue_timeout(Duration::from_millis(20));
+        let shutdown_config = config.clone();
+        let shutdown =
+            tokio::spawn(async move { shutdown_manager.graceful_shutdown(shutdown_config).await });
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let worker_handle_was_taken = manager
+                    .release_queue_handle
+                    .try_lock()
+                    .is_ok_and(|handle| handle.is_none());
+                if worker_handle_was_taken {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("shutdown must reach release-worker ownership");
+
+        shutdown.abort();
+        let _ = shutdown.await;
+        assert!(matches!(
+            manager.graceful_shutdown(config).await,
+            Err(ShutdownError::ReleaseQueueTimeout { .. })
+        ));
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while Arc::strong_count(&ownership) != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancelled worker must release task ownership");
         assert_eq!(Arc::strong_count(&ownership), 1);
         assert_eq!(manager.release_queue.dropped_count(), 1);
         assert!(matches!(

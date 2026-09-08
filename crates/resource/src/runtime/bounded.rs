@@ -231,7 +231,11 @@ where
         resource: &R,
         config: &R::Config,
         ctx: &ResourceContext,
+        _retained: &crate::RetainedStore<Self::Entry>,
     ) -> Result<crate::topology::CreatedEntry<R::Instance>, Error> {
+        use crate::resource::ResourceConfig as _;
+        // No author callback may run after create while the instance is unarmed.
+        let fp = config.fingerprint();
         let instance = resource.create(config, ctx).await?;
         // Stamp the config fingerprint this instance was built against, and
         // seed the live fingerprint on the very first build. A reload updates
@@ -239,8 +243,6 @@ where
         // `compare_exchange` is a no-op that does not clobber the reloaded
         // value. Relevant only to `Exclusive` (the reused instance); harmless
         // for `Capped`/`Unbounded`, which never reach `accept`.
-        use crate::resource::ResourceConfig as _;
-        let fp = config.fingerprint();
         self.built_fingerprint.store(fp, Ordering::Release);
         let _ =
             self.current_fingerprint
@@ -254,10 +256,6 @@ where
 
     fn into_owned_instance(&self, entry: R::Instance) -> Option<R::Instance> {
         Some(entry)
-    }
-
-    async fn close_retained(&self) -> Vec<Self::Entry> {
-        Vec::new()
     }
 
     /// Evicts the reused `Exclusive` instance when its config has been
@@ -600,12 +598,74 @@ mod tests {
     async fn create_entry_builds_a_fresh_instance() {
         let resource = MockBounded::new();
         let topo = Bounded::<MockBounded>::capped(2).expect("cap >= 1");
+        let retained = crate::RetainedStore::for_test();
         let inst = topo
-            .create_entry(&resource, &BoundedCfg, &test_ctx())
+            .create_entry(&resource, &BoundedCfg, &test_ctx(), &retained)
             .await
             .expect("create");
         assert_eq!(*inst.entry(), 7);
-        assert!(inst.retired().is_empty());
+        assert!(retained.drain_retired().unwrap().is_empty());
         assert_eq!(topo.tag(), TopologyTag::Bounded);
+    }
+
+    #[derive(Clone)]
+    struct PanickingFingerprint;
+    crate::impl_empty_has_schema!(PanickingFingerprint);
+
+    impl ResourceConfig for PanickingFingerprint {
+        fn fingerprint(&self) -> u64 {
+            panic!("intentional fingerprint panic")
+        }
+    }
+
+    #[derive(Clone)]
+    struct FingerprintResource(Arc<AtomicUsize>);
+
+    #[async_trait]
+    impl Provider for FingerprintResource {
+        type Config = PanickingFingerprint;
+        type Instance = u32;
+        type Topology = Bounded<Self>;
+
+        fn key() -> ResourceKey {
+            resource_key!("fingerprint-ownership-regression")
+        }
+        async fn create(&self, _: &Self::Config, _: &ResourceContext) -> Result<u32, Error> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(1)
+        }
+        async fn destroy(&self, _: u32, _: crate::TeardownCx) -> Result<(), Error> {
+            Ok(())
+        }
+        fn metadata() -> ResourceMetadata {
+            ResourceMetadata::from_key(&Self::key())
+        }
+    }
+
+    crate::no_credential_slots!(FingerprintResource);
+    impl BoundedProvider for FingerprintResource {}
+
+    #[tokio::test]
+    async fn fingerprint_panic_cannot_leave_a_created_instance_unowned() {
+        use futures::FutureExt as _;
+        let created = Arc::new(AtomicUsize::new(0));
+        let resource = FingerprintResource(Arc::clone(&created));
+        let topology = Bounded::<FingerprintResource>::unbounded();
+        let retained = crate::RetainedStore::for_test();
+        let context = test_ctx();
+        let outcome = std::panic::AssertUnwindSafe(topology.create_entry(
+            &resource,
+            &PanickingFingerprint,
+            &context,
+            &retained,
+        ))
+        .catch_unwind()
+        .await;
+        assert!(outcome.is_err());
+        assert_eq!(
+            created.load(Ordering::SeqCst),
+            0,
+            "author metadata must be evaluated before creating an unarmed instance"
+        );
     }
 }

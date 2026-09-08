@@ -15,28 +15,6 @@ use crate::{
     topology_tag::TopologyTag,
 };
 
-/// Owns the row even before its cleanup factory is first polled. In-progress
-/// maintenance can hold a strong row reference; aborting on abandonment breaks
-/// that cycle instead of relying on the row's destructor ever being reached.
-struct RetiringResource {
-    managed: Arc<dyn crate::registry::ManagedHandle>,
-    _settlement: super::shutdown::RetirementSettlement,
-}
-
-impl RetiringResource {
-    async fn close(self) -> Result<(), Error> {
-        self.managed.close_retained().await
-    }
-}
-
-impl Drop for RetiringResource {
-    fn drop(&mut self) {
-        // Normal cleanup has already joined/taken the task, so this is inert.
-        // Rejection or cancellation must not leave maintenance self-owning.
-        self.managed.abort_maintenance();
-    }
-}
-
 impl Manager {
     /// Registers a resource from a fully-specified [`RegistrationSpec`].
     ///
@@ -75,6 +53,9 @@ impl Manager {
     /// # Errors
     ///
     /// Returns an error if config validation fails on the provided config.
+    /// Replacing an existing row also returns
+    /// [`ErrorKind::Backpressure`](crate::ErrorKind::Backpressure) when the
+    /// bounded retirement queue is saturated; inserting a new identity does not.
     ///
     /// # Examples
     ///
@@ -232,9 +213,13 @@ impl Manager {
             topology,
             // Framework-owned idle store the acquire loop runs checkout / return
             // / evict against — the real idle queue, not a throwaway sentinel.
-            store: crate::topology::store::InstanceStore::new(store_capacity)
-                .with_strategy(store_strategy),
+            store: crate::topology::store::InstanceStore::with_abandonment_tracker(
+                store_capacity,
+                self.release_queue.abandonment_tracker(),
+            )
+            .with_strategy(store_strategy),
             release_queue: Arc::clone(&self.release_queue),
+            retained: crate::RetainedStore::new(self.release_queue.abandonment_tracker()),
             generation: AtomicU64::new(0),
             status: arc_swap::ArcSwap::from_pointee(crate::state::ResourceStatus::new()),
             recovery_gate,
@@ -251,12 +236,24 @@ impl Manager {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.shutdown_guard()?;
+        // New rows require no retirement capacity. For an exact-identity
+        // replacement, the registry invokes this admission callback before
+        // mutation so backpressure leaves the old owner installed and unfenced.
         let type_id = std::any::TypeId::of::<ManagedResource<R>>();
-        let displaced =
-            self.registry
-                .register(key.clone(), type_id, scope, slot_identity, managed.clone());
-        if let Some(displaced) = displaced {
-            drop(self.retire_resource(displaced));
+        let registration = self.registry.register_admitted(
+            key.clone(),
+            type_id,
+            scope,
+            slot_identity,
+            managed.clone(),
+            || self.retirement_supervisor.try_reserve(),
+        )?;
+        if let crate::registry::RegistrationOutcome::Replaced {
+            displaced,
+            admission: permit,
+        } = registration
+        {
+            self.retire_resource(displaced, permit);
         }
 
         // #387: everything below this point is a single funnel — the
@@ -701,8 +698,8 @@ impl Manager {
 
     /// Looks up a registered `ManagedResource<R>` by type and scope.
     ///
-    /// This is the building block for acquire: callers retrieve the managed
-    /// resource and then call the topology-specific acquire method directly.
+    /// The returned row exposes read-only inspection. Lifecycle operations stay
+    /// framework-private; acquire leases through the manager's acquire methods.
     ///
     /// # Errors
     ///
@@ -715,7 +712,7 @@ impl Manager {
         scope: &ScopeLevel,
     ) -> Result<Arc<ManagedResource<R>>, Error> {
         self.shutdown_guard()?;
-        Self::resolve_typed::<R>(self.registry.get_typed::<R>(scope))
+        Self::resolve_typed::<R>(self.registry.get_typed_handle::<R>(scope))
     }
 
     /// Hot-reloads the configuration for a registered resource.
@@ -823,19 +820,28 @@ impl Manager {
     ///
     /// Returns [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if
     /// the key is not registered. Successful removal queues terminal cleanup;
-    /// it does not wait for provider teardown or outstanding handles.
+    /// it does not wait for provider teardown or outstanding handles. An
+    /// existing key returns [`ErrorKind::Backpressure`](crate::ErrorKind::Backpressure)
+    /// before mutation when the bounded retirement queue is saturated.
     pub fn remove(&self, key: &ResourceKey) -> Result<(), Error> {
         let _admission = self
             .admission
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let removed = self.registry.remove(key);
-        if removed.is_empty() {
+        if !self.registry.contains(key) {
             return Err(Error::not_found(key));
         }
-        for managed in removed {
-            drop(self.retire_resource(managed));
-        }
+        let retirement_permit = self.retirement_supervisor.try_reserve()?;
+        let removed = self.registry.remove(key);
+        debug_assert!(
+            !removed.is_empty(),
+            "admission-locked key disappeared before removal"
+        );
+        let retirements = removed
+            .into_iter()
+            .map(|managed| self.prepare_retirement(managed))
+            .collect();
+        retirement_permit.commit_batch(retirements);
 
         if let Some(m) = &self.metrics {
             m.record_destroy();
@@ -862,7 +868,9 @@ impl Manager {
     /// # Errors
     ///
     /// Returns [`ErrorKind::NotFound`](crate::error::ErrorKind::NotFound) if
-    /// no row matches `(key, scope, slot_identity)` exactly.
+    /// no row matches `(key, scope, slot_identity)` exactly. A matching row
+    /// returns [`ErrorKind::Backpressure`](crate::ErrorKind::Backpressure)
+    /// before mutation when the bounded retirement queue is saturated.
     pub fn remove_for(
         &self,
         key: &ResourceKey,
@@ -873,10 +881,17 @@ impl Manager {
             .admission
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !self.registry.contains_row(key, scope, slot_identity) {
+            return Err(Error::not_found(key));
+        }
+        let retirement_permit = self.retirement_supervisor.try_reserve()?;
         let Some(removed) = self.registry.remove_for(key, scope, slot_identity) else {
+            // The outer admission lock makes this unreachable unless the two
+            // registry identity predicates diverge.
+            drop(retirement_permit);
             return Err(Error::not_found(key));
         };
-        drop(self.retire_resource(removed));
+        self.retire_resource(removed, retirement_permit);
 
         if let Some(m) = &self.metrics {
             m.record_destroy();
@@ -886,22 +901,26 @@ impl Manager {
         Ok(())
     }
 
-    /// Transfers a fenced row into queue-owned cleanup before any await.
-    pub(super) fn retire_resource(
+    /// Transfers a fenced row into manager-owned retirement before any await.
+    pub(super) fn prepare_retirement(
         &self,
         managed: Arc<dyn crate::registry::ManagedHandle>,
-    ) -> crate::release_queue::ReleaseReceipt {
+    ) -> super::retirement::PendingRetirement {
         managed.begin_close();
         managed.set_phase(crate::state::ResourcePhase::ShuttingDown);
         let key = managed.resource_key();
-        tracing::debug!(resource.key = %key, "resource row retired; cleanup queued");
-        let retirement = RetiringResource {
-            managed,
-            _settlement: super::shutdown::RetirementSettlement::new(Arc::clone(
-                &self.retirement_tracker,
-            )),
-        };
-        self.release_queue
-            .submit_release(move || Box::pin(retirement.close()))
+        tracing::debug!(resource.key = %key, "resource row retired; cleanup scheduled");
+        let settlement =
+            super::shutdown::RetirementSettlement::new(Arc::clone(&self.retirement_tracker));
+        super::retirement::PendingRetirement::new(managed, settlement)
+    }
+
+    /// Commits a fenced row through capacity reserved before registry mutation.
+    pub(super) fn retire_resource(
+        &self,
+        managed: Arc<dyn crate::registry::ManagedHandle>,
+        permit: super::retirement::RetirementPermit,
+    ) {
+        permit.commit(self.prepare_retirement(managed));
     }
 }

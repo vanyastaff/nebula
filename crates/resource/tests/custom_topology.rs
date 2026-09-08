@@ -4,9 +4,10 @@
 //! Verifies that an author-defined topology:
 //! - compiles and satisfies the `Topology<R>` trait contract with only the thin
 //!   entry-centric hooks (`try_reserve` / `create_entry` / `entry_instance` /
-//!   `into_instance` / `pools` / `store_capacity`);
+//!   `into_owned_instance` / `pools` / `store_capacity`) and the borrowed,
+//!   framework-owned retained store;
 //! - drives `try_reserve` admission (Saturated when the semaphore is exhausted);
-//! - produces entries via `create_entry` that project + consume cleanly;
+//! - produces a `CreatedEntry` that projects + consumes cleanly;
 //! - gets the revoke-epoch fence **for free** via the framework-owned
 //!   `InstanceStore` (the topology writes no fence code).
 //!
@@ -99,6 +100,7 @@ impl Topology<PermitRes> for EntryPool {
         resource: &PermitRes,
         config: &PermitCfg,
         ctx: &ResourceContext,
+        _retained: &nebula_resource::topology::RetainedStore<Self::Entry>,
     ) -> Result<nebula_resource::topology::CreatedEntry<u32>, Error> {
         resource
             .create(config, ctx)
@@ -112,10 +114,6 @@ impl Topology<PermitRes> for EntryPool {
 
     fn into_owned_instance(&self, entry: u32) -> Option<u32> {
         Some(entry)
-    }
-
-    async fn close_retained(&self) -> Vec<Self::Entry> {
-        Vec::new()
     }
 
     fn pools(&self) -> bool {
@@ -181,18 +179,17 @@ async fn try_reserve_admission_and_phase() {
     );
 }
 
-/// `create_entry` builds an entry; `entry_instance` / `into_instance` project and
-/// consume it cleanly.
+/// A newly created entry projects through the topology and consumes cleanly.
 #[tokio::test]
 async fn create_entry_and_projections() {
     let topo = EntryPool::new(2);
     let resource = PermitRes;
-    let entry = topo
-        .create_entry(&resource, &PermitCfg, &test_ctx())
+    let entry = resource
+        .create(&PermitCfg, &test_ctx())
         .await
-        .expect("create_entry");
-    let (entry, retired) = entry.into_parts();
-    assert!(retired.is_empty());
+        .map(nebula_resource::topology::CreatedEntry::new)
+        .expect("create entry")
+        .into_entry();
     assert_eq!(*topo.entry_instance(&entry), 42);
     assert_eq!(topo.into_owned_instance(entry), Some(42));
     assert!(Topology::<PermitRes>::pools(&topo));

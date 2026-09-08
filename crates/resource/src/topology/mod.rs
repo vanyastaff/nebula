@@ -23,6 +23,10 @@ pub mod pooled;
 pub mod resident;
 pub mod store;
 
+pub use crate::{
+    ReplaceStatus, RetainStatus, RetainedId, RetainedLease, RetainedStore, RetireStatus,
+    StoreRejection,
+};
 pub use bounded::{BoundedMode, BoundedProvider};
 pub use contract::{
     AdmissionPhase, AdmissionStatus, CreatedEntry, Load, MaintenanceSchedule, NoTopology, Ticket,

@@ -90,6 +90,11 @@ pub struct ResourceGuard<R: Provider> {
     hold_token: Option<Arc<()>>,
 }
 
+pub(crate) struct GuardIdentity {
+    pub(crate) resource_key: ResourceKey,
+    pub(crate) topology_tag: TopologyTag,
+}
+
 impl<R: Provider> ResourceGuard<R> {
     pub(crate) fn new(
         managed: Arc<ManagedResource<R>>,
@@ -98,8 +103,8 @@ impl<R: Provider> ResourceGuard<R> {
         permit: Option<OwnedSemaphorePermit>,
         generation: u64,
         metrics: Option<ResourceOpsMetrics>,
+        identity: GuardIdentity,
     ) -> Self {
-        let topology_tag = managed.topology.tag();
         Self {
             entry: Some(entry),
             managed,
@@ -108,8 +113,8 @@ impl<R: Provider> ResourceGuard<R> {
             generation,
             tainted: false,
             metrics,
-            resource_key: R::key(),
-            topology_tag,
+            resource_key: identity.resource_key,
+            topology_tag: identity.topology_tag,
             acquired_at: Instant::now(),
             drain_counters: None,
             event_bus: None,
@@ -249,6 +254,9 @@ impl<R: Provider> ResourceGuard<R> {
     /// Returns the provider's error, a permanent error on hook panic, or
     /// cancellation if the queue rejects or abandons the job. The reservation
     /// settles on all outcomes; an error does not leave the lease checked out.
+    /// [`DeferredCleanup`](crate::ErrorKind::DeferredCleanup) means cleanup was
+    /// accepted, but this hook cannot safely await it: the target is another
+    /// queue or nested execution capacity is full. Do not resubmit the release.
     ///
     /// # Cancel safety
     ///
@@ -256,14 +264,14 @@ impl<R: Provider> ResourceGuard<R> {
     /// the entry and runs cleanup independently, bounded by its worker budget.
     pub async fn release(mut self) -> Result<(), crate::Error> {
         match self.enqueue_release() {
-            Some(receipt) => receipt
+            Some(receipt) => receipt?
                 .await
                 .unwrap_or_else(|_| Err(crate::Error::cancelled())),
             None => Ok(()),
         }
     }
 
-    fn enqueue_release(&mut self) -> Option<ReleaseReceipt> {
+    fn enqueue_release(&mut self) -> Option<Result<ReleaseReceipt, crate::Error>> {
         let entry = self.entry.take()?;
         self.hold_token.take();
         let settlement = ReleaseSettlement {
@@ -278,7 +286,7 @@ impl<R: Provider> ResourceGuard<R> {
         let checkout_epoch = self.checkout_epoch;
         let tainted = self.tainted;
         let metrics = self.metrics.take();
-        Some(self.managed.release_queue.submit_release(move || {
+        Some(self.managed.release_queue.submit_guard_release(move || {
             Box::pin(async move {
                 if let Some(metrics) = &metrics {
                     metrics.record_release();

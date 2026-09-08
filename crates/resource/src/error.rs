@@ -13,6 +13,7 @@
 //! | [`Backpressure`](ErrorKind::Backpressure) | Caller decides | Shed load or queue — do **not** hot-retry; the pool/semaphore is full, not broken. |
 //! | [`NotFound`](ErrorKind::NotFound) | No | Fail the operation — no resource of that key/scope is registered; this is a wiring bug, not a transient condition. |
 //! | [`Cancelled`](ErrorKind::Cancelled) | No | Propagate cancellation — the caller's own `CancellationToken` fired or the manager is shutting down. |
+//! | [`DeferredCleanup`](ErrorKind::DeferredCleanup) | No | Cleanup was accepted asynchronously; do not resubmit it or wait across cleanup queues. |
 //! | [`Revoked`](ErrorKind::Revoked) | Yes, after re-bind | Retry after the credential is re-registered; the resource is tainted until then, not permanently broken. |
 //! | [`Ambiguous`](ErrorKind::Ambiguous) | No | Fail the operation and fix the caller: acquire through a slot-identity-pinned path (`acquire_<topology>_for_identity`) instead of the identity-agnostic one. |
 //!
@@ -47,6 +48,10 @@ pub enum ErrorKind {
     NotFound,
     /// `CancellationToken` fired.
     Cancelled,
+    /// Cleanup was accepted by its queue, but awaiting it here would create
+    /// a cleanup dependency cycle or exceed cooperative nested capacity.
+    /// Do not resubmit: cleanup remains queue-owned and proceeds asynchronously.
+    DeferredCleanup,
     /// Resource tainted by a credential revoke — new acquires are
     /// rejected until the credential is re-registered.
     ///
@@ -89,6 +94,10 @@ impl ErrorKind {
             ),
             Self::NotFound => (nebula_error::ErrorCategory::NotFound, "RESOURCE:NOT_FOUND"),
             Self::Cancelled => (nebula_error::ErrorCategory::Cancelled, "RESOURCE:CANCELLED"),
+            Self::DeferredCleanup => (
+                nebula_error::ErrorCategory::Conflict,
+                "RESOURCE:DEFERRED_CLEANUP",
+            ),
             Self::Revoked => (nebula_error::ErrorCategory::Unavailable, "RESOURCE:REVOKED"),
             Self::Ambiguous => (nebula_error::ErrorCategory::Conflict, "RESOURCE:AMBIGUOUS"),
         }
@@ -121,6 +130,7 @@ impl fmt::Display for ErrorKind {
             Self::Backpressure => f.write_str("backpressure"),
             Self::NotFound => f.write_str("not found"),
             Self::Cancelled => f.write_str("cancelled"),
+            Self::DeferredCleanup => f.write_str("cleanup deferred"),
             Self::Revoked => f.write_str("revoked"),
             Self::Ambiguous => f.write_str("ambiguous"),
         }
@@ -137,6 +147,15 @@ pub struct Error {
 }
 
 impl Error {
+    /// Reports accepted asynchronous cleanup whose completion cannot safely
+    /// be awaited from the current cleanup hook. Never retry the release.
+    pub fn deferred_cleanup() -> Self {
+        Self::new(
+            ErrorKind::DeferredCleanup,
+            "cleanup accepted; completion deferred to avoid a cleanup dependency cycle",
+        )
+    }
+
     /// Creates a new error with the given kind and message.
     pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
         Self {
@@ -276,7 +295,7 @@ impl Error {
                 Err(_) => nebula_core::CoreError::invalid_key(key_label, "credential"),
             },
             ErrorKind::Ambiguous => nebula_core::CoreError::scope_violation(key_label, detail),
-            ErrorKind::Cancelled => {
+            ErrorKind::Cancelled | ErrorKind::DeferredCleanup => {
                 nebula_core::CoreError::resource_unavailable(key_label, detail, false, None)
             },
             ErrorKind::Permanent => {

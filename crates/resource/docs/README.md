@@ -120,8 +120,8 @@ crates/resource/
 │   ├── release_queue.rs    ReleaseQueue — background async cleanup workers
 │   ├── reload.rs           ReloadOutcome (NoChange / SwappedImmediately)
 │   ├── recovery/           RecoveryGate, RecoveryTicket, RecoveryWaiter, GateState
-│   ├── runtime/            per-topology runtime structs (Pooled, Resident, Bounded) + ManagedResource
-│   ├── topology/           the open Topology<R> contract + per-topology hook traits + InstanceStore
+│   ├── runtime/            per-topology runtimes + ManagedResource + framework RetainedStore owner
+│   ├── topology/           open Topology<R> contract + hook traits + public store capabilities
 │   ├── factory.rs          ResourceFactory / KindActivator — erased plugin-registration bridge
 │   └── credential_fanout/  [feature `rotation`] per-slot rotation fan-out driver + reverse index
 └── docs/

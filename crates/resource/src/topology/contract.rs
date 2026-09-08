@@ -27,6 +27,7 @@ use std::{future::Future, time::Duration};
 use tokio::sync::OwnedSemaphorePermit;
 
 use crate::{
+    RetainedStore,
     context::ResourceContext,
     error::{Error, ErrorKind},
     resource::Provider,
@@ -36,26 +37,17 @@ use crate::{
 
 /// Ownership transferred from topology creation to the framework.
 ///
-/// A successful replacement transfers both the new lease and displaced retained
-/// entries in one return, without awaiting cleanup inside topology policy.
+/// Retained roots and displaced owners stay in the framework's [`RetainedStore`].
 #[derive(Debug)]
+#[must_use = "the framework must assume ownership of the created entry"]
 pub struct CreatedEntry<E> {
     entry: E,
-    retired: Vec<E>,
 }
 
 impl<E> CreatedEntry<E> {
     /// Creates a lease without displacing retained entries.
     pub fn new(entry: E) -> Self {
-        Self {
-            entry,
-            retired: Vec::new(),
-        }
-    }
-
-    /// Creates a lease and transfers all displaced entries to framework cleanup.
-    pub fn with_retired(entry: E, retired: Vec<E>) -> Self {
-        Self { entry, retired }
+        Self { entry }
     }
 
     /// Borrows the newly leased entry.
@@ -63,14 +55,9 @@ impl<E> CreatedEntry<E> {
         &self.entry
     }
 
-    /// Borrows the entries displaced by this creation.
-    pub fn retired(&self) -> &[E] {
-        &self.retired
-    }
-
-    /// Transfers the lease and retired entries to their framework owner.
-    pub fn into_parts(self) -> (E, Vec<E>) {
-        (self.entry, self.retired)
+    /// Transfers the fresh lease to its framework owner.
+    pub fn into_entry(self) -> E {
+        self.entry
     }
 }
 
@@ -398,7 +385,14 @@ pub struct MaintenanceSchedule {
 /// Cloning a borrowed `InstanceStore` shares its fences; borrowing alone does
 /// not prevent retention. The store and `SlotIdentity` are not tenant authority.
 /// Trusted custom topologies must preserve registration scope and transfer
-/// retained entries from `close_retained`; they must not hide lifecycle owners.
+/// retained owners in [`RetainedStore`]; they must not hide lifecycle owners
+/// inside topology fields. Terminal `quiesce` receives no entry ownership.
+/// Accounting covers only owners published into the framework stores. Cloning
+/// strong aliases out of retained leases or forgetting those aliases/leases
+/// violates this mandatory lifecycle contract; the type system cannot prevent
+/// such escapes by trusted in-process plugins. Built-in Resident keeps its
+/// retained root in the store and uses scoped leases for temporary sharing.
+///
 /// # Not a trait object
 ///
 /// `Topology<R>` is reached monomorphically through
@@ -460,15 +454,20 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
     /// framework drives it on an idle-miss (during acquire) and during
     /// warmup.
     ///
+    /// Store strong retained roots in `retained`; keep only [`crate::RetainedId`],
+    /// metadata, or weak references in topology fields. Publication rejected by
+    /// the terminal fence still transfers the supplied entry to framework cleanup.
+    ///
     /// # Errors
     ///
-    /// Returns the create/clone error; the framework fails the acquire and
+    /// Returns the entry creation or sharing error; the framework fails the acquire and
     /// drops the held permit, releasing capacity.
     fn create_entry(
         &self,
         resource: &R,
         config: &R::Config,
         ctx: &ResourceContext,
+        retained: &RetainedStore<Self::Entry>,
     ) -> impl Future<Output = Result<CreatedEntry<Self::Entry>, Error>> + Send;
 
     /// Project a held entry to its leasable instance — the guard's `Deref`
@@ -490,12 +489,13 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
     )]
     fn into_owned_instance(&self, entry: Self::Entry) -> Option<R::Instance>;
 
-    /// Permanently stops creation and transfers every retained entry for teardown.
+    /// Quiesces policy-owned background state after the framework closes stores.
     ///
-    /// Shared topologies must transfer their master ownership here. Every
-    /// lifecycle owner, including old leases, must use `into_owned_instance`;
-    /// a shared entry returns `Some` exactly when the final owner releases it.
-    fn close_retained(&self) -> impl Future<Output = Vec<Self::Entry>> + Send;
+    /// This hook never receives entry ownership. Even if it fails, panics, or
+    /// hangs, the framework drains retained roots and tears them down separately.
+    fn quiesce(&self) -> impl Future<Output = Result<(), Error>> + Send {
+        async { Ok(()) }
+    }
 
     /// Validate a checked-out idle entry **in place** before it is leased
     /// (Pooled: stale-fingerprint / max-lifetime / `is_broken` /
@@ -662,6 +662,7 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
         &self,
         _resource: &R,
         _store: &InstanceStore<Self::Entry>,
+        _retained: &RetainedStore<Self::Entry>,
         _slot: &str,
         _refresh: bool,
     ) -> impl Future<Output = Result<(), Error>> + Send {
@@ -727,6 +728,7 @@ impl<R: Provider> Topology<R> for NoTopology {
         _resource: &R,
         _config: &R::Config,
         _ctx: &ResourceContext,
+        _retained: &RetainedStore<Self::Entry>,
     ) -> Result<CreatedEntry<R::Instance>, Error> {
         Err(Error::permanent(
             "NoTopology: this resource is not leased through the resource Manager",
@@ -739,9 +741,5 @@ impl<R: Provider> Topology<R> for NoTopology {
 
     fn into_owned_instance(&self, entry: R::Instance) -> Option<R::Instance> {
         Some(entry)
-    }
-
-    async fn close_retained(&self) -> Vec<Self::Entry> {
-        Vec::new()
     }
 }

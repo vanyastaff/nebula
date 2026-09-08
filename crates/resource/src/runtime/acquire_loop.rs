@@ -40,6 +40,15 @@ use crate::{
 
 use super::managed::EntryOf;
 
+/// Publishes displaced retained owners even when an author hook is cancelled.
+struct RetiredEntriesGuard<R: Provider>(Arc<ManagedResource<R>>);
+
+impl<R: Provider> Drop for RetiredEntriesGuard<R> {
+    fn drop(&mut self) {
+        drop(self.0.queue_retired_entries());
+    }
+}
+
 // ── The framework acquire loop + topology-driven lifecycle.
 //
 // Everything that reaches into the topology — the acquire loop, the revoke
@@ -144,10 +153,9 @@ where
             return Err(Error::cancelled().with_resource_key(R::key()));
         }
 
-        // 7. Build the guard. Defuse the cancel guard first so its Drop does
-        //    not also schedule a destroy.
-        let entry = cancel_guard.defuse();
-        Ok(self.build_guard(entry, checkout_epoch, permit, generation, metrics))
+        // 7. Snapshot author metadata while the entry remains armed, then
+        // synchronously transfer ownership into the completed lease guard.
+        Ok(self.build_guard(cancel_guard, checkout_epoch, permit, generation, metrics))
     }
 
     /// Framework checkout-then-create: pop the first fresh idle entry (destroying
@@ -209,13 +217,14 @@ where
                 // read the post-revoke counter and silently admit a
                 // since-revoked instance.
                 let create_epoch = self.store.current_revoke_epoch();
+                let _retirement = RetiredEntriesGuard(Arc::clone(self));
                 let created = self
                     .topology
-                    .create_entry(&self.resource, config, ctx)
+                    .create_entry(&self.resource, config, ctx, &self.retained)
                     .await?;
                 let (cancel_guard, retirement) = self.arm_created(created);
                 if let Some(retirement) = retirement {
-                    retirement
+                    retirement?
                         .await
                         .unwrap_or_else(|_| Err(Error::cancelled()))?;
                 }
@@ -283,19 +292,11 @@ where
         if entries.is_empty() {
             return None;
         }
-        let managed = Arc::clone(self);
-        Some(self.release_queue.submit_release(move || {
-            Box::pin(async move {
-                let mut outcome = Ok(());
-                for entry in entries {
-                    let result = managed.destroy_entry(entry, reason).await;
-                    if outcome.is_ok() {
-                        outcome = result;
-                    }
-                }
-                outcome
-            })
-        }))
+        let batch = super::destroy_batch::DestroyBatch::new(Arc::clone(self), entries, reason);
+        Some(
+            self.release_queue
+                .submit_coordinator(move || Box::pin(batch.run())),
+        )
     }
 
     /// Extracts only the final lifecycle owner; shared leases do not destroy a master.
@@ -316,31 +317,61 @@ where
         created: crate::topology::CreatedEntry<EntryOf<R>>,
     ) -> (
         EntryCreateGuard<R>,
-        Option<crate::release_queue::ReleaseReceipt>,
+        Option<Result<crate::release_queue::ReleaseReceipt, Error>>,
     ) {
-        let (entry, retired) = created.into_parts();
+        let entry = created.into_entry();
         let active =
             EntryCreateGuard::new(entry, Arc::clone(self), Arc::clone(&self.release_queue));
-        let receipt = self.queue_destroy_batch(retired, TeardownReason::Evicted);
+        let receipt = self.queue_retired_entries();
         (active, receipt)
+    }
+
+    fn queue_retired_entries(
+        self: &Arc<Self>,
+    ) -> Option<Result<crate::release_queue::ReleaseReceipt, Error>> {
+        let entries = match self.retained.drain_retired() {
+            Ok(entries) => entries,
+            Err(blocked) => {
+                tracing::debug!(resource.key = %R::key(), live_leases = blocked.live_lease_count(), "retired cleanup waits for store-bound leases");
+                return None;
+            },
+        };
+        if entries.is_empty() {
+            return None;
+        }
+        let mut batch = super::destroy_batch::DestroyBatch::new(
+            Arc::clone(self),
+            Vec::new(),
+            TeardownReason::Evicted,
+        );
+        batch.extend_retained(entries);
+        Some(
+            self.release_queue
+                .submit_joined_coordinator(move || Box::pin(batch.run())),
+        )
     }
 
     /// Builds a guard owning the exact entry checked out by this acquire.
     fn build_guard(
         self: &Arc<Self>,
-        entry: EntryOf<R>,
+        entry: EntryCreateGuard<R>,
         checkout_epoch: u64,
         permit: Option<OwnedSemaphorePermit>,
         generation: u64,
         metrics: Option<ResourceOpsMetrics>,
     ) -> ResourceGuard<R> {
+        let identity = crate::guard::GuardIdentity {
+            resource_key: R::key(),
+            topology_tag: self.topology.tag(),
+        };
         ResourceGuard::new(
             Arc::clone(self),
-            entry,
+            entry.defuse(),
             checkout_epoch,
             permit,
             generation,
             metrics,
+            identity,
         )
     }
 
@@ -373,10 +404,56 @@ where
     /// Dropping the returned future after taint leaves the resource
     /// consistently marked as tainted — no partial-taint state is possible and
     /// new acquires remain rejected.
-    pub(crate) async fn dispatch_slot_hook(&self, slot: &str, refresh: bool) -> Result<(), Error> {
-        self.topology
-            .dispatch_credential_hook(&self.resource, &self.store, slot, refresh)
-            .await
+    pub(crate) async fn dispatch_slot_hook(
+        self: &Arc<Self>,
+        slot: &str,
+        refresh: bool,
+    ) -> Result<(), Error> {
+        let managed = Arc::clone(self);
+        let slot = slot.to_owned();
+        let receipt = self.release_queue.submit_joined_coordinator(move || {
+            Box::pin(async move {
+                let _retirement = RetiredEntriesGuard(Arc::clone(&managed));
+                let hook = crate::hook_guard::guard_author_hook(
+                    crate::hook_guard::MAX_ROTATION_DISPATCH_CEILING,
+                    managed.topology.dispatch_credential_hook(
+                        &managed.resource,
+                        &managed.store,
+                        &managed.retained,
+                        &slot,
+                        refresh,
+                    ),
+                )
+                .await;
+                let hook = match hook {
+                    Ok(result) => result,
+                    Err(fault) => {
+                        fault.observe(&R::key(), "rotation");
+                        Err(match fault {
+                            crate::hook_guard::HookFault::Panicked => {
+                                Error::permanent("credential topology hook panicked")
+                            },
+                            crate::hook_guard::HookFault::TimedOut => Error::cancelled(),
+                        })
+                    },
+                };
+                let entries = loop {
+                    managed.retained.wait_quiescent().await;
+                    if let Ok(entries) = managed.retained.drain_retired() {
+                        break entries;
+                    }
+                };
+                let mut batch = super::destroy_batch::DestroyBatch::new(
+                    Arc::clone(&managed),
+                    Vec::new(),
+                    TeardownReason::Evicted,
+                );
+                batch.extend_retained(entries);
+                let cleanup = batch.run().await;
+                hook.and(cleanup)
+            })
+        })?;
+        receipt.await.unwrap_or_else(|_| Err(Error::cancelled()))
     }
 
     /// Creates one fresh entry and cancel-safely deposits it into the
@@ -419,9 +496,10 @@ where
             return Ok(false);
         }
         let created_epoch = self.store.stamp_epoch();
+        let _retirement = RetiredEntriesGuard(Arc::clone(self));
         let created = self
             .topology
-            .create_entry(&self.resource, config, ctx)
+            .create_entry(&self.resource, config, ctx, &self.retained)
             .await?;
         // Cancel-safety: arm the guard before the idle-lock await below — a
         // cancellation landing there must destroy the just-created instance,
@@ -470,7 +548,7 @@ where
                 Err(e) => {
                     tracing::warn!(
                         key = %R::key(),
-                        error = %e,
+                        error.kind = ?e.kind(),
                         created,
                         requested,
                         "create_and_deposit_entries: create_entry failed, stopping early"
@@ -588,7 +666,7 @@ where
                 Err(e) => {
                     tracing::warn!(
                         key = %R::key(),
-                        error = %e,
+                        error.kind = ?e.kind(),
                         created,
                         target,
                         "refill_min_idle: create_entry failed, stopping early"
@@ -623,8 +701,9 @@ where
     ///   the resource's [`CheckCost`](crate::CheckCost) cadence is due**, so an
     ///   expensive check is not run every sweep.
     ///
-    /// Each evicted/failed entry is destroyed via `destroy(into_owned_instance(entry))`.
-    /// Returns the number evicted.
+    /// Transfers evicted entries to one owned teardown batch without awaiting
+    /// its receipt. The manager joins maintenance before publishing terminal
+    /// queue work. Returns the number evicted, not completed teardowns.
     ///
     /// Complexity: O(n) over the idle queue (average and worst case), bounded
     /// by the store's configured idle capacity; the probe arm adds at most one
@@ -632,10 +711,24 @@ where
     pub(crate) async fn run_maintenance(self: &Arc<Self>) -> usize {
         use std::sync::atomic::Ordering;
 
-        let mut to_destroy = self.store.evict_stale().await;
+        let stale = self.store.evict_stale().await;
+        let mut to_destroy = super::destroy_batch::DestroyBatch::new(
+            Arc::clone(self),
+            stale,
+            TeardownReason::Evicted,
+        );
         let nonrevoke = self
             .store
-            .retain(|entry, _epoch| self.topology.idle_evictable(entry))
+            .retain(|entry, _epoch| {
+                if let Ok(evict) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    self.topology.idle_evictable(entry)
+                })) {
+                    evict
+                } else {
+                    crate::hook_guard::HookFault::Panicked.observe(&R::key(), "idle_evictable");
+                    true
+                }
+            })
             .await;
         to_destroy.extend(nonrevoke);
 
@@ -649,14 +742,15 @@ where
         if cadence != 0 && sweep.is_multiple_of(cadence) {
             let failed = self.probe_idle_entries().await;
             probe_evicted = failed.len();
-            to_destroy.extend(failed);
+            to_destroy.append(failed);
         }
 
         let evicted = to_destroy.len();
-        for entry in to_destroy {
-            let _ = self.destroy_entry(entry, TeardownReason::Evicted).await;
-        }
         if evicted > 0 {
+            drop(
+                self.release_queue
+                    .submit_coordinator(move || Box::pin(to_destroy.run())),
+            );
             tracing::debug!(
                 evicted,
                 probe_evicted,
@@ -734,9 +828,13 @@ where
     /// still-in-flight entry via the [`ReleaseQueue`] instead of dropping it
     /// silently — this closes the batch-wide exposure the plain-local shape
     /// had before the drain became fenced per batch.
-    async fn probe_idle_entries(self: &Arc<Self>) -> Vec<EntryOf<R>> {
+    async fn probe_idle_entries(self: &Arc<Self>) -> super::destroy_batch::DestroyBatch<R> {
         let key = R::key();
-        let mut failed = Vec::new();
+        let mut failed = super::destroy_batch::DestroyBatch::new(
+            Arc::clone(self),
+            Vec::new(),
+            TeardownReason::Evicted,
+        );
 
         // Sample the sweep's target count once — see the "Fence-preserving"
         // doc above for why this bounds the loop to a fixed number of
@@ -807,7 +905,6 @@ where
             //    handed to one of those two framework-owned paths instead of
             //    sitting in a bare local.
             for (guard, checkout_epoch, outcome) in checked {
-                let entry = guard.defuse();
                 match outcome {
                     // Healthy — return through the fence. `Evict` here means
                     // a revoke landed while this entry was mid-probe (or the
@@ -815,20 +912,23 @@ where
                     // while the batch sat drained): destroy it, never
                     // re-admit.
                     Ok(Ok(())) => {
+                        let mut idle = self.store.lock_idle().await;
+                        let entry = guard.defuse();
                         if let ReturnOutcome::Evict(entry) =
-                            self.store.return_entry(entry, checkout_epoch).await
+                            self.store
+                                .return_entry_locked(&mut idle, entry, checkout_epoch)
                         {
                             failed.push(entry);
                         }
                     },
                     // The check ran and reported the instance unhealthy — evict.
-                    Ok(Err(_)) => failed.push(entry),
+                    Ok(Err(_)) => failed.push(guard.defuse()),
                     // The check hung past the ceiling or panicked —
                     // bounded/caught by the framework; treat as unhealthy
                     // and evict.
                     Err(fault) => {
                         fault.observe(&key, "probe");
-                        failed.push(entry);
+                        failed.push(guard.defuse());
                     },
                 }
             }
@@ -1026,18 +1126,18 @@ where
         };
         let managed = Arc::clone(&self.managed);
         tracing::warn!(
-            resource = %R::key(),
+            resource_type = std::any::type_name::<R>(),
             "cancel-safety: acquire future cancelled mid-create — \
              scheduling async destroy via ReleaseQueue"
         );
-        self.release_queue.submit(move || {
+        drop(self.release_queue.submit_release(move || {
             Box::pin(async move {
                 // An entry cancelled before reaching the built guard was never
                 // admitted to the store or handed to a caller; the only correct
                 // cleanup is destroy.
-                let _ = managed.destroy_entry(entry, TeardownReason::Evicted).await;
+                managed.destroy_entry(entry, TeardownReason::Evicted).await
             })
-        });
+        }));
     }
 }
 
@@ -1099,6 +1199,11 @@ mod tests {
         park_create: Arc<AtomicBool>,
         create_entered: Arc<Notify>,
         release_create: Arc<Notify>,
+        batch_failures: Arc<AtomicBool>,
+        dependent_release: Arc<std::sync::Mutex<Option<ResourceGuard<Self>>>>,
+        release_dependency_in_check: Arc<AtomicBool>,
+        fail_probe_batch_then_park: Arc<AtomicBool>,
+        destroy_finished: Arc<Notify>,
     }
 
     impl Mock {
@@ -1113,6 +1218,11 @@ mod tests {
                 park_create: Arc::new(AtomicBool::new(false)),
                 create_entered: Arc::new(Notify::new()),
                 release_create: Arc::new(Notify::new()),
+                batch_failures: Arc::new(AtomicBool::new(false)),
+                dependent_release: Arc::default(),
+                release_dependency_in_check: Arc::default(),
+                fail_probe_batch_then_park: Arc::default(),
+                destroy_finished: Arc::default(),
             }
         }
     }
@@ -1136,7 +1246,14 @@ mod tests {
             Ok(id)
         }
 
-        async fn check(&self, _runtime: &u64) -> Result<(), Error> {
+        async fn check(&self, runtime: &u64) -> Result<(), Error> {
+            if self.fail_probe_batch_then_park.load(Ordering::SeqCst) {
+                if *runtime < PROBE_CONCURRENCY as u64 {
+                    return Err(Error::permanent("intentional failed first probe batch"));
+                }
+                self.check_started.notify_one();
+                self.release_check.notified().await;
+            }
             if self.hang_check.load(Ordering::SeqCst) {
                 std::future::pending::<()>().await;
                 // guard-justified: `std::future::pending()` never resolves,
@@ -1147,12 +1264,41 @@ mod tests {
                 self.check_started.notify_one();
                 self.release_check.notified().await;
             }
+            if self.release_dependency_in_check.load(Ordering::SeqCst) {
+                let child = self.dependent_release.lock().unwrap().take();
+                if let Some(child) = child {
+                    child.release().await?;
+                }
+            }
             Ok(())
         }
 
-        async fn destroy(&self, _runtime: u64, _cx: TeardownCx) -> Result<(), Error> {
+        async fn destroy(&self, runtime: u64, _cx: TeardownCx) -> Result<(), Error> {
             self.destroyed.fetch_add(1, Ordering::SeqCst);
+            if self.batch_failures.load(Ordering::SeqCst) {
+                match runtime {
+                    0 => std::future::pending::<()>().await,
+                    1 => return Err(Error::permanent("intentional batch member failure")),
+                    3 => panic!("intentional batch member panic"),
+                    _ => {},
+                }
+            }
+            if runtime == 0 {
+                let child = self.dependent_release.lock().unwrap().take();
+                if let Some(child) = child {
+                    child.release().await?;
+                }
+                self.destroy_finished.notify_one();
+            }
             Ok(())
+        }
+
+        fn teardown_budget(&self) -> std::time::Duration {
+            if self.batch_failures.load(Ordering::SeqCst) {
+                std::time::Duration::from_hours(1)
+            } else {
+                std::time::Duration::from_secs(30)
+            }
         }
 
         fn metadata() -> ResourceMetadata {
@@ -1180,7 +1326,8 @@ mod tests {
             resource,
             config: ArcSwap::from_pointee(PoolCfg),
             topology,
-            store: InstanceStore::new(None),
+            store: InstanceStore::with_abandonment_tracker(None, rq.abandonment_tracker()),
+            retained: crate::RetainedStore::new(rq.abandonment_tracker()),
             release_queue: Arc::new(rq),
             generation: AtomicU64::new(0),
             status: ArcSwap::from_pointee(ResourceStatus::new()),
@@ -1191,6 +1338,15 @@ mod tests {
             maintenance: Default::default(),
         })
     }
+
+    #[path = "batch.rs"]
+    mod batch_tests;
+
+    #[path = "maintenance.rs"]
+    mod maintenance_tests;
+
+    #[path = "custom_fence.rs"]
+    mod custom_fence_tests;
 
     /// Cancel-safety regression (audit 2026-07-01 bug #1): an acquire future
     /// cancelled while suspended in `Topology::accept` (here: a hanging
@@ -1218,7 +1374,8 @@ mod tests {
                 resource,
                 config: ArcSwap::from_pointee(PoolCfg),
                 topology,
-                store: InstanceStore::new(None),
+                store: InstanceStore::with_abandonment_tracker(None, rq.abandonment_tracker()),
+                retained: crate::RetainedStore::new(rq.abandonment_tracker()),
                 release_queue: Arc::clone(&rq),
                 generation: AtomicU64::new(0),
                 status: ArcSwap::from_pointee(ResourceStatus::new()),
@@ -1234,11 +1391,11 @@ mod tests {
         // parks inside `accept`'s health check with the entry popped.
         let entry = mr
             .topology
-            .create_entry(&mr.resource, &PoolCfg, &test_ctx())
+            .create_entry(&mr.resource, &PoolCfg, &test_ctx(), &mr.retained)
             .await
             .expect("create the seed entry");
-        let (entry, retired) = entry.into_parts();
-        assert!(retired.is_empty());
+        let entry = entry.into_entry();
+        assert!(mr.retained.drain_retired().unwrap().is_empty());
         let epoch = mr.store.stamp_epoch();
         assert!(
             !mr.store.deposit_fresh(entry, epoch).await.is_evict(),
@@ -1302,7 +1459,8 @@ mod tests {
                 resource,
                 config: ArcSwap::from_pointee(PoolCfg),
                 topology,
-                store: InstanceStore::new(None),
+                store: InstanceStore::with_abandonment_tracker(None, rq.abandonment_tracker()),
+                retained: crate::RetainedStore::new(rq.abandonment_tracker()),
                 release_queue: Arc::clone(&rq),
                 generation: AtomicU64::new(0),
                 status: ArcSwap::from_pointee(ResourceStatus::new()),
@@ -1366,7 +1524,8 @@ mod tests {
                 resource,
                 config: ArcSwap::from_pointee(PoolCfg),
                 topology,
-                store: InstanceStore::new(None),
+                store: InstanceStore::with_abandonment_tracker(None, rq.abandonment_tracker()),
+                retained: crate::RetainedStore::new(rq.abandonment_tracker()),
                 release_queue: Arc::clone(&rq),
                 generation: AtomicU64::new(0),
                 status: ArcSwap::from_pointee(ResourceStatus::new()),
@@ -1380,11 +1539,11 @@ mod tests {
 
         let entry = mr
             .topology
-            .create_entry(&mr.resource, &PoolCfg, &test_ctx())
+            .create_entry(&mr.resource, &PoolCfg, &test_ctx(), &mr.retained)
             .await
             .expect("create");
-        let (entry, retired) = entry.into_parts();
-        assert!(retired.is_empty());
+        let entry = entry.into_entry();
+        assert!(mr.retained.drain_retired().unwrap().is_empty());
         let guard = EntryCreateGuard::new(entry, Arc::clone(&mr), Arc::clone(&rq));
         // Simulate a cancelled acquire: dropped before `defuse`.
         drop(guard);
@@ -1419,11 +1578,11 @@ mod tests {
 
         let entry = mr
             .topology
-            .create_entry(&mr.resource, &PoolCfg, &test_ctx())
+            .create_entry(&mr.resource, &PoolCfg, &test_ctx(), &mr.retained)
             .await
             .expect("create");
-        let (entry, retired) = entry.into_parts();
-        assert!(retired.is_empty());
+        let entry = entry.into_entry();
+        assert!(mr.retained.drain_retired().unwrap().is_empty());
         let guard = EntryCreateGuard::new(entry, Arc::clone(&mr), Arc::clone(&rq));
         let _entry = guard.defuse();
 
@@ -1451,11 +1610,11 @@ mod tests {
         // Seed one idle entry for the probe to find.
         let entry = mr
             .topology
-            .create_entry(&mr.resource, &PoolCfg, &test_ctx())
+            .create_entry(&mr.resource, &PoolCfg, &test_ctx(), &mr.retained)
             .await
             .expect("create the seed entry");
-        let (entry, retired) = entry.into_parts();
-        assert!(retired.is_empty());
+        let entry = entry.into_entry();
+        assert!(mr.retained.drain_retired().unwrap().is_empty());
         let epoch = mr.store.stamp_epoch();
         assert!(
             !mr.store.deposit_fresh(entry, epoch).await.is_evict(),
@@ -1523,11 +1682,11 @@ mod tests {
         for _ in 0..seeded {
             let entry = mr
                 .topology
-                .create_entry(&mr.resource, &PoolCfg, &test_ctx())
+                .create_entry(&mr.resource, &PoolCfg, &test_ctx(), &mr.retained)
                 .await
                 .expect("create seed entry");
-            let (entry, retired) = entry.into_parts();
-            assert!(retired.is_empty());
+            let entry = entry.into_entry();
+            assert!(mr.retained.drain_retired().unwrap().is_empty());
             let epoch = mr.store.stamp_epoch();
             assert!(
                 !mr.store.deposit_fresh(entry, epoch).await.is_evict(),
@@ -1591,11 +1750,11 @@ mod tests {
 
         let entry = mr
             .topology
-            .create_entry(&mr.resource, &PoolCfg, &test_ctx())
+            .create_entry(&mr.resource, &PoolCfg, &test_ctx(), &mr.retained)
             .await
             .expect("create the seed entry");
-        let (entry, retired) = entry.into_parts();
-        assert!(retired.is_empty());
+        let entry = entry.into_entry();
+        assert!(mr.retained.drain_retired().unwrap().is_empty());
         let epoch = mr.store.stamp_epoch();
         assert!(
             !mr.store.deposit_fresh(entry, epoch).await.is_evict(),
@@ -1638,9 +1797,11 @@ mod tests {
         // performs on every `failed` entry, and confirm it actually ran —
         // proving this is a real destroy path, not just an accounting
         // artifact.
-        for entry in failed {
-            let _ = mr.destroy_entry(entry, TeardownReason::Revoked).await;
-        }
+        mr.release_queue
+            .submit_coordinator(move || Box::pin(failed.run()))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
             destroyed.load(Ordering::SeqCst),
             1,
@@ -1733,7 +1894,11 @@ mod tests {
                 resource,
                 config: ArcSwap::from_pointee(PoolCfg),
                 topology,
-                store: InstanceStore::new(Some(config.max_size as usize)),
+                store: InstanceStore::with_abandonment_tracker(
+                    Some(config.max_size as usize),
+                    rq.abandonment_tracker(),
+                ),
+                retained: crate::RetainedStore::new(rq.abandonment_tracker()),
                 release_queue: Arc::new(rq),
                 generation: AtomicU64::new(0),
                 status: ArcSwap::from_pointee(ResourceStatus::new()),
@@ -1798,7 +1963,8 @@ mod tests {
                 resource,
                 config: ArcSwap::from_pointee(PoolCfg),
                 topology,
-                store: InstanceStore::new(None),
+                store: InstanceStore::with_abandonment_tracker(None, rq.abandonment_tracker()),
+                retained: crate::RetainedStore::new(rq.abandonment_tracker()),
                 release_queue: Arc::new(rq),
                 generation: AtomicU64::new(0),
                 status: ArcSwap::from_pointee(ResourceStatus::new()),
@@ -1852,7 +2018,8 @@ mod tests {
                 resource,
                 config: ArcSwap::from_pointee(PoolCfg),
                 topology,
-                store: InstanceStore::new(None),
+                store: InstanceStore::with_abandonment_tracker(None, rq.abandonment_tracker()),
+                retained: crate::RetainedStore::new(rq.abandonment_tracker()),
                 release_queue: Arc::clone(&rq),
                 generation: AtomicU64::new(0),
                 status: ArcSwap::from_pointee(ResourceStatus::new()),

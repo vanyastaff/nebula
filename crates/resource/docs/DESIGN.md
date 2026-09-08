@@ -24,15 +24,15 @@
 | `Provider` — центральный трейт: assoc `Config`/`Instance`/`Topology`, `key()`, `create/check/shutdown/destroy`, per-slot `on_credential_refresh`/`on_credential_revoke` | `src/resource.rs` |
 | `HasCredentialSlots` — epoch-fold по слотам, эмитится derive `Resource` | `src/resource.rs` |
 | `ResourceConfig` (supertrait `HasSchema`, `validate`+`fingerprint`); `TeardownCx`/`TeardownReason` (ADR-0093); `CheckCost` | `src/resource.rs` |
-| `Topology<R>` — открытый slot-centric трейт; framework владеет петлёй, топология НЕ может достать revoke-fence (storage-safety через lifetime-bound `&InstanceStore`) | `src/topology/contract.rs` |
-| `InstanceStore<S>`, `Checkout`, `CheckedOut`, `ReturnOutcome` — fenced idle-queue | `src/topology/store.rs` |
+| `Topology<R>` — открытый entry-centric трейт; framework владеет петлёй и terminal teardown; topology получает borrowed stores, но не может забрать lifecycle ownership | `src/topology/contract.rs` |
+| `InstanceStore<S>` — fenced idle-queue; `RetainedStore<S>` + opaque `RetainedId` — non-cloneable framework owner для долгоживущих roots без public drain/remove-and-take | `src/topology/store.rs`; `src/runtime/retained_store.rs` |
 | Встроенные топологии `Pooled<R>` / `Resident<R>` / `Bounded<R>` (capped/exclusive/unbounded) + hook-трейты `PoolProvider`/`ResidentProvider`/`BoundedProvider` | `src/runtime/pool.rs`, `resident.rs`, `bounded.rs`; `src/topology/pooled.rs`, `resident.rs`, `bounded.rs` |
 | `Manager` — единая воронка `register(RegistrationSpec)`, acquire-dispatch, revoke (`TaintedSlot`/`RevokeTail`), shutdown | `src/manager/mod.rs` |
 | `RegistrationSpec<R>` — plain struct (без builder): resource/config/scope/slot_identity/topology/recovery_gate | `src/manager/options.rs` |
 | `SlotIdentity` (`Unbound`/`Structural`) — структурный cross-tenant барьер; `DedupKey` | `src/dedup.rs` |
 | `SlotCell<S>` — публичная generation-stamped lock-free ячейка слота | `src/slot.rs` |
 | `ResourceGuard<R>` (RAII Owned/Guarded); `ResourceRef<R>` (lazy-ссылка) | `src/guard.rs`; `src/resource_ref.rs` |
-| `Registry`, sealed `ManagedHandle`, `LookupOutcome` — type-erased хранилище, scope-aware lookup | `src/registry.rs` |
+| `Registry`, `LookupOutcome`, `ManagedResourceView` — type-erased хранилище, scope-aware read-only lookup; operational handle остаётся crate-private | `src/registry.rs` |
 | `ReleaseQueue` — best-effort async drain (§11.4); `RecoveryGate`+`RecoveryTicket`/`RecoveryWaiter`/`GateState` — thundering-herd | `src/release_queue.rs`; `src/recovery/gate.rs` |
 | `Error`/`ErrorKind`; `ResourceEvent`; `ResourceOpsMetrics`/`ResourceOpsSnapshot` | `src/error.rs`; `src/events.rs`; `src/metrics.rs` |
 | `ResourceContext` + scope-хелперы; `AcquireOptions`; `ReloadOutcome`; `ResourcePhase`/`ResourceStatus` | `src/context.rs`; `src/options.rs`; `src/reload.rs`; `src/state.rs` |
@@ -64,10 +64,10 @@
 
 ## 5. Инварианты и контракты
 
-- **Framework владеет acquire-петлёй и revoke-fence.** Открытый `Topology<R>` намеренно НЕ возвращает `ResourceGuard<R>` и не даёт топологии доступ к store/fence (storage-safety через lifetime-bound `&InstanceStore`, `src/topology/contract.rs`) — закрывает failure-mode «façade-twice» из bind-inversion (ADR-0093).
+- **Framework владеет acquire-петлёй, revoke-fence и terminal ownership.** Открытый `Topology<R>` намеренно НЕ возвращает `ResourceGuard<R>`. Для idle entries он получает borrowed `InstanceStore`; для долгоживущих roots — borrowed, non-cloneable `RetainedStore` и сохраняет только opaque `RetainedId`. Public drain/remove-and-take отсутствуют, поэтому policy не может обойти framework teardown (ADR-0093).
 - **Release best-effort on crash (L2-§11.4).** Drop гварда никогда не паникует и не блокирует; недослитое уходит в `ReleaseQueue` (`src/release_queue.rs`).
 - **Attributable lifecycle (L2-§13.3).** Каждая операция несёт `ResourceContext`/scope; `ResourceEvent` + `ResourceOpsMetrics` дают трассируемость по умолчанию.
-- **Cross-tenant barrier by-construction.** `SlotIdentity::Structural` входит в dedup-ключ (`src/dedup.rs`, `src/registry.rs`), поэтому инстанс одного тенанта структурно не может быть отдан другому — это не runtime-проверка, а форма ключа.
+- **Resolved-binding isolation by construction.** `SlotIdentity::Structural` входит в dedup-ключ (`src/dedup.rs`, `src/registry.rs`), поэтому разные наборы resolved credential bindings не alias один runtime. Равные bindings и `Unbound` не доказывают равную tenant authority: решение о допустимом cross-tenant sharing принимает host/core admission policy, а не этот технический ключ.
 - **Revoke без TOCTOU.** Двухфазный taint→drain (`src/manager/mod.rs`) гарантирует, что после revoke ни один уже выданный гвард не продолжит работать на отозванном credential.
 - **Generation-stamped слоты.** `SlotCell<S>` lock-free и штампует поколение; master ресурса и credential-слот имеют разное владение.
 - **Teardown-контракт (ADR-0093).** `reset`/`destroy` — fallible-async; safe-by-default reset; deadline (а не `Duration`) через `TeardownCx`/`TeardownReason` (`src/resource.rs`).
@@ -81,9 +81,9 @@
 
 1. ~~**Устаревшее имя в миграционном рецепте.**~~ **Fixed.** README.md
    migration step 5 now says `#[derive(Resource)]` + `impl Provider`.
-2. ~~**Несуществующий публичный тип в доках.**~~ **Fixed.** README.md now
-   names the real sealed `ManagedHandle` (`src/registry.rs`), not
-   `AnyManagedResource`.
+2. ~~**Несуществующий публичный тип в доках.**~~ **Fixed.** README.md names
+   the public read-only `ManagedResourceView`; the operational
+   `ManagedHandle` remains crate-private.
 3. ~~**Примеры не компилируются.**~~ **Fixed.** The Telegram example and
    migration step 6 no longer show phantom `resilience`/`acquire` fields;
    `RegistrationSpec` literals match `src/manager/options.rs`.

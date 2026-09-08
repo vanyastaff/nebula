@@ -10,6 +10,210 @@
 
 mod common;
 
+#[derive(Clone)]
+struct NestedCleanupResource {
+    next_id: Arc<AtomicU64>,
+    children: Arc<std::sync::Mutex<std::collections::HashMap<u64, ResourceGuard<Self>>>>,
+    completed: Arc<AtomicU64>,
+    pause_child: Arc<AtomicBool>,
+    child_entered: Arc<tokio::sync::Notify>,
+    child_continue: Arc<tokio::sync::Notify>,
+    root_barrier: Arc<std::sync::Mutex<Option<Arc<tokio::sync::Barrier>>>>,
+}
+
+#[async_trait::async_trait]
+impl Provider for NestedCleanupResource {
+    type Config = TestConfig;
+    type Instance = u64;
+    type Topology = nebula_resource::Bounded<Self>;
+
+    fn key() -> ResourceKey {
+        resource_key!("nested-cleanup")
+    }
+
+    async fn create(&self, _: &TestConfig, _: &ResourceContext) -> Result<u64, Error> {
+        Ok(self.next_id.fetch_add(1, Ordering::SeqCst))
+    }
+
+    async fn destroy(&self, instance: u64, _: nebula_resource::TeardownCx) -> Result<(), Error> {
+        if instance == 0 {
+            let barrier = self.root_barrier.lock().unwrap().clone();
+            if let Some(barrier) = barrier {
+                barrier.wait().await;
+            }
+        }
+        if instance == 1 && self.pause_child.load(Ordering::SeqCst) {
+            self.child_entered.notify_one();
+            self.child_continue.notified().await;
+        }
+        let child = self.children.lock().unwrap().remove(&instance);
+        if let Some(child) = child {
+            child.release().await?;
+        }
+        self.completed.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+impl nebula_resource::BoundedProvider for NestedCleanupResource {}
+nebula_resource::no_credential_slots!(NestedCleanupResource);
+
+fn nested_cleanup_manager() -> (Manager, NestedCleanupResource) {
+    let resource = NestedCleanupResource {
+        next_id: Arc::new(AtomicU64::new(0)),
+        children: Arc::default(),
+        completed: Arc::new(AtomicU64::new(0)),
+        pause_child: Arc::new(AtomicBool::new(false)),
+        child_entered: Arc::default(),
+        child_continue: Arc::default(),
+        root_barrier: Arc::default(),
+    };
+    let manager = Manager::with_config(
+        nebula_resource::ManagerConfig::default().with_release_queue_workers(1),
+    );
+    manager
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: nebula_resource::Bounded::unbounded(),
+            recovery_gate: None,
+        })
+        .unwrap();
+    (manager, resource)
+}
+
+#[tokio::test(start_paused = true)]
+async fn nested_release_on_one_worker_completes_parent_and_child() {
+    let (manager, resource) = nested_cleanup_manager();
+    let parent = manager
+        .acquire_bounded::<NestedCleanupResource>(&test_ctx(), &AcquireOptions::default())
+        .await
+        .unwrap();
+    let child = manager
+        .acquire_bounded::<NestedCleanupResource>(&test_ctx(), &AcquireOptions::default())
+        .await
+        .unwrap();
+    resource.children.lock().unwrap().insert(*parent, child);
+    tokio::time::timeout(std::time::Duration::from_secs(1), parent.release())
+        .await
+        .expect("nested release must progress without waiting for the parent's worker")
+        .unwrap();
+    assert_eq!(resource.completed.load(Ordering::SeqCst), 2);
+    let report = manager
+        .graceful_shutdown(ShutdownConfig::default())
+        .await
+        .unwrap();
+    assert_eq!(report.dropped_release_tasks, 0);
+}
+
+async fn nested_lease(manager: &Manager) -> ResourceGuard<NestedCleanupResource> {
+    manager
+        .acquire_bounded::<NestedCleanupResource>(&test_ctx(), &AcquireOptions::default())
+        .await
+        .unwrap()
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancelling_nested_release_waiter_keeps_child_hook_queue_owned() {
+    let (manager, resource) = nested_cleanup_manager();
+    let parent = nested_lease(&manager).await;
+    let child = nested_lease(&manager).await;
+    resource.children.lock().unwrap().insert(*parent, child);
+    resource.pause_child.store(true, Ordering::SeqCst);
+    let caller = tokio::spawn(parent.release());
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        resource.child_entered.notified(),
+    )
+    .await
+    .unwrap();
+    caller.abort();
+    assert!(caller.await.unwrap_err().is_cancelled());
+    assert_eq!(resource.completed.load(Ordering::SeqCst), 0);
+    resource.child_continue.notify_one();
+    let report = manager
+        .graceful_shutdown(ShutdownConfig::default())
+        .await
+        .unwrap();
+    assert_eq!(resource.completed.load(Ordering::SeqCst), 2);
+    assert_eq!(report.outstanding_handles_after_drain, 0);
+    assert_eq!(report.dropped_release_tasks, 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn cross_queue_nested_release_defers_only_accepted_child_cleanup() {
+    let (first, resource) = nested_cleanup_manager();
+    let (second, child_resource) = nested_cleanup_manager();
+    let parent = nested_lease(&first).await;
+    let child = nested_lease(&second).await;
+    resource.children.lock().unwrap().insert(*parent, child);
+    let error = tokio::time::timeout(std::time::Duration::from_secs(1), parent.release())
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(*error.kind(), nebula_resource::ErrorKind::DeferredCleanup);
+    assert!(
+        !error.is_retryable(),
+        "accepted cleanup must never be resubmitted"
+    );
+    let report = second
+        .graceful_shutdown(ShutdownConfig::default())
+        .await
+        .unwrap();
+    assert_eq!(child_resource.completed.load(Ordering::SeqCst), 1);
+    assert_eq!(report.dropped_release_tasks, 0);
+    first
+        .graceful_shutdown(ShutdownConfig::default())
+        .await
+        .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn cross_queue_cleanup_cycle_defers_both_edges_without_deadlock() {
+    let (first, first_resource) = nested_cleanup_manager();
+    let (second, second_resource) = nested_cleanup_manager();
+    let first_parent = nested_lease(&first).await;
+    let first_child = nested_lease(&first).await;
+    let second_parent = nested_lease(&second).await;
+    let second_child = nested_lease(&second).await;
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    *first_resource.root_barrier.lock().unwrap() = Some(Arc::clone(&barrier));
+    *second_resource.root_barrier.lock().unwrap() = Some(barrier);
+    first_resource
+        .children
+        .lock()
+        .unwrap()
+        .insert(*first_parent, second_child);
+    second_resource
+        .children
+        .lock()
+        .unwrap()
+        .insert(*second_parent, first_child);
+    let outcomes = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        tokio::join!(first_parent.release(), second_parent.release())
+    })
+    .await
+    .expect("cross-queue cleanup cannot form a wait cycle");
+    assert_eq!(
+        *outcomes.0.unwrap_err().kind(),
+        nebula_resource::ErrorKind::DeferredCleanup
+    );
+    assert_eq!(
+        *outcomes.1.unwrap_err().kind(),
+        nebula_resource::ErrorKind::DeferredCleanup
+    );
+    let (first_report, second_report) = tokio::join!(
+        first.graceful_shutdown(ShutdownConfig::default()),
+        second.graceful_shutdown(ShutdownConfig::default()),
+    );
+    assert_eq!(first_report.unwrap().dropped_release_tasks, 0);
+    assert_eq!(second_report.unwrap().dropped_release_tasks, 0);
+    assert_eq!(first_resource.completed.load(Ordering::SeqCst), 1);
+    assert_eq!(second_resource.completed.load(Ordering::SeqCst), 1);
+}
+
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -36,6 +240,7 @@ struct ResidentLifecycleResource {
     destroyed: Arc<std::sync::Mutex<Vec<u64>>>,
     alive: Arc<AtomicBool>,
     fail_create: Arc<AtomicBool>,
+    fail_destroy: Arc<AtomicBool>,
 }
 
 // A unique instance must work even for shared Resident leases.
@@ -64,6 +269,9 @@ impl Provider for ResidentLifecycleResource {
         _: nebula_resource::TeardownCx,
     ) -> Result<(), Error> {
         self.destroyed.lock().unwrap().push(instance.0);
+        if self.fail_destroy.load(Ordering::SeqCst) {
+            return Err(Error::permanent("intentional retained teardown failure"));
+        }
         Ok(())
     }
 }
@@ -82,6 +290,7 @@ fn resident_lifecycle_manager() -> (Manager, ResidentLifecycleResource) {
         destroyed: Arc::new(std::sync::Mutex::new(Vec::new())),
         alive: Arc::new(AtomicBool::new(true)),
         fail_create: Arc::new(AtomicBool::new(false)),
+        fail_destroy: Arc::new(AtomicBool::new(false)),
     };
     let manager = Manager::new();
     manager
@@ -98,6 +307,70 @@ fn resident_lifecycle_manager() -> (Manager, ResidentLifecycleResource) {
         })
         .unwrap();
     (manager, resource)
+}
+
+#[tokio::test]
+async fn graceful_shutdown_reports_terminal_failure_and_finishes_sibling_rows() {
+    let (manager, failing) = resident_lifecycle_manager();
+    let sibling = ResidentLifecycleResource {
+        next_id: Arc::new(AtomicU64::new(0)),
+        destroyed: Arc::default(),
+        alive: Arc::new(AtomicBool::new(true)),
+        fail_create: Arc::new(AtomicBool::new(false)),
+        fail_destroy: Arc::new(AtomicBool::new(false)),
+    };
+    let identity =
+        SlotIdentity::Structural(Arc::from([("scope".to_owned(), "sibling".to_owned())]));
+    manager
+        .register(RegistrationSpec {
+            resource: sibling.clone(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: identity.clone(),
+            topology: Resident::new(ResidentConfig::default()),
+            recovery_gate: None,
+        })
+        .unwrap();
+    manager
+        .acquire_resident_for_identity::<ResidentLifecycleResource>(
+            &test_ctx(),
+            &AcquireOptions::default(),
+            &SlotIdentity::Unbound,
+        )
+        .await
+        .unwrap()
+        .release()
+        .await
+        .unwrap();
+    manager
+        .acquire_resident_for_identity::<ResidentLifecycleResource>(
+            &test_ctx(),
+            &AcquireOptions::default(),
+            &identity,
+        )
+        .await
+        .unwrap()
+        .release()
+        .await
+        .unwrap();
+    failing.fail_destroy.store(true, Ordering::SeqCst);
+    let error = manager
+        .graceful_shutdown(ShutdownConfig::default())
+        .await
+        .unwrap_err();
+    match error {
+        nebula_resource::ShutdownError::ResourceTeardownFailed { key, source } => {
+            assert_eq!(key, ResidentLifecycleResource::key());
+            assert_eq!(*source.kind(), nebula_resource::ErrorKind::Permanent);
+        },
+        other => panic!("expected typed terminal failure, got {other:?}"),
+    }
+    assert_eq!(*failing.destroyed.lock().unwrap(), vec![0]);
+    assert_eq!(
+        *sibling.destroyed.lock().unwrap(),
+        vec![0],
+        "one failing row must not discard sibling teardown"
+    );
 }
 
 #[tokio::test]

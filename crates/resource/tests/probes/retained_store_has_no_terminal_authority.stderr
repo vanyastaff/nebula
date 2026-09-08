@@ -1,0 +1,44 @@
+error[E0277]: the trait bound `RetainedStore<u32>: Clone` is not satisfied
+ --> tests/probes/retained_store_has_no_terminal_authority.rs:6:21
+  |
+6 |     require_clone::<RetainedStore<u32>>();
+  |                     ^^^^^^^^^^^^^^^^^^ the trait `Clone` is not implemented for `RetainedStore<u32>`
+  |
+note: required by a bound in `require_clone`
+ --> tests/probes/retained_store_has_no_terminal_authority.rs:3:21
+  |
+3 | fn require_clone<T: Clone>() {}
+  |                     ^^^^^ required by this bound in `require_clone`
+
+error[E0624]: method `drain_all` is private
+ --> tests/probes/retained_store_has_no_terminal_authority.rs:7:19
+  |
+7 |     let _ = store.drain_all();
+  |                   ^^^^^^^^^ private method
+  |
+ ::: src/runtime/retained_store.rs
+  |
+  |     pub(crate) fn drain_all(&self) -> Result<Vec<TrackedRetained<E>>, DrainBlocked> {
+  |     ------------------------------------------------------------------------------- private method defined here
+
+error[E0624]: method `drain_retired` is private
+ --> tests/probes/retained_store_has_no_terminal_authority.rs:8:19
+  |
+8 |     let _ = store.drain_retired();
+  |                   ^^^^^^^^^^^^^ private method
+  |
+ ::: src/runtime/retained_store.rs
+  |
+  |     pub(crate) fn drain_retired(&self) -> Result<Vec<TrackedRetained<E>>, DrainBlocked> {
+  |     ----------------------------------------------------------------------------------- private method defined here
+
+error[E0624]: method `begin_close` is private
+ --> tests/probes/retained_store_has_no_terminal_authority.rs:9:19
+  |
+9 |     let _ = store.begin_close();
+  |                   ^^^^^^^^^^^ private method
+  |
+ ::: src/runtime/retained_store.rs
+  |
+  |     pub(crate) fn begin_close(&self) -> usize {
+  |     ----------------------------------------- private method defined here

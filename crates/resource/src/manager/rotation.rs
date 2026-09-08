@@ -264,7 +264,7 @@ impl Manager {
         // a later sweep), never a torn store.
         let guarded = guard_author_hook(
             crate::hook_guard::MAX_ROTATION_DISPATCH_CEILING,
-            managed.dispatch_on_refresh(slot),
+            Arc::clone(&managed).dispatch_on_refresh(slot),
         )
         .await;
         tracing::Span::current().record("duration_ms", started.elapsed().as_millis() as u64);
@@ -610,8 +610,11 @@ impl Manager {
         // so a caught panic leaves it tainted (fail-closed — no further leases);
         // the dispatch mutates only borrowed instances under the store lock, so
         // the unwind drops the lock guard and leaves the store intact.
-        let hook_outcome =
-            guard_author_hook(drain_timeout, managed.dispatch_on_revoke(&slot)).await;
+        let hook_outcome = guard_author_hook(
+            drain_timeout,
+            Arc::clone(&managed).dispatch_on_revoke(&slot),
+        )
+        .await;
         tracing::Span::current().record("duration_ms", tainted_at.elapsed().as_millis() as u64);
 
         match hook_outcome {
@@ -771,16 +774,16 @@ impl Manager {
         key: &ResourceKey,
         scope: &ScopeLevel,
     ) -> Result<Arc<dyn crate::registry::ManagedHandle>, Error> {
-        use crate::registry::LookupOutcome;
+        use crate::registry::HandleLookupOutcome;
         self.shutdown_guard()?;
-        match self.registry.get(key, scope) {
-            LookupOutcome::Found(any) => Ok(any),
-            LookupOutcome::NotFound => Err(Error::not_found(key)),
+        match self.registry.get_handle(key, scope) {
+            HandleLookupOutcome::Found(any) => Ok(any),
+            HandleLookupOutcome::NotFound => Err(Error::not_found(key)),
             // Fail closed: do not drive a rotation/revoke hook against an
             // arbitrarily-chosen tenant's row when several resolved-
             // credential rows share this `(key, scope)`. The engine's
             // per-slot fan-out targets the specific resolved row.
-            LookupOutcome::Ambiguous { rows } => Err(Error::ambiguous(format!(
+            HandleLookupOutcome::Ambiguous { rows } => Err(Error::ambiguous(format!(
                 "{key}: {rows} resolved-credential registrations exist at this scope; \
                  slot rotation/revoke must target a resolved row, not an ambiguous \
                  (key, scope)"
@@ -848,11 +851,11 @@ impl Manager {
         scope: &ScopeLevel,
         slot_identity: &crate::dedup::SlotIdentity,
     ) -> Result<Arc<dyn crate::registry::ManagedHandle>, Error> {
-        use crate::registry::PinnedLookup;
+        use crate::registry::PinnedHandleLookup;
         self.shutdown_guard()?;
-        match self.registry.get_for(key, scope, slot_identity) {
-            PinnedLookup::Found(any) => Ok(any),
-            PinnedLookup::NotFound => Err(Error::not_found(key)),
+        match self.registry.get_handle_for(key, scope, slot_identity) {
+            PinnedHandleLookup::Found(any) => Ok(any),
+            PinnedHandleLookup::NotFound => Err(Error::not_found(key)),
         }
     }
 }

@@ -180,6 +180,7 @@ impl<const CREDENTIALS: bool> nebula_resource::topology::Topology<AdmissionResou
         _resource: &AdmissionResource<CREDENTIALS>,
         _config: &PgConfig,
         _ctx: &ResourceContext,
+        _retained: &nebula_resource::topology::RetainedStore<Self::Entry>,
     ) -> Result<nebula_resource::topology::CreatedEntry<()>, Error> {
         Ok(nebula_resource::topology::CreatedEntry::new(()))
     }
@@ -189,9 +190,6 @@ impl<const CREDENTIALS: bool> nebula_resource::topology::Topology<AdmissionResou
     }
     fn into_owned_instance(&self, entry: ()) -> Option<()> {
         Some(entry)
-    }
-    async fn close_retained(&self) -> Vec<Self::Entry> {
-        Vec::new()
     }
     fn handles_own_revoke(&self) -> bool {
         self.handles_revoke

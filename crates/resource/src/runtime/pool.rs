@@ -443,6 +443,7 @@ where
         resource: &R,
         config: &R::Config,
         ctx: &ResourceContext,
+        _retained: &crate::RetainedStore<Self::Entry>,
     ) -> Result<crate::topology::CreatedEntry<PoolEntry<R>>, Error> {
         self.create_pool_entry(resource, config, ctx)
             .await
@@ -455,10 +456,6 @@ where
 
     fn into_owned_instance(&self, entry: PoolEntry<R>) -> Option<R::Instance> {
         Some(entry.instance)
-    }
-
-    async fn close_retained(&self) -> Vec<Self::Entry> {
-        Vec::new()
     }
 
     async fn accept(&self, entry: &mut PoolEntry<R>, resource: &R, _ctx: &ResourceContext) -> bool {
@@ -551,6 +548,7 @@ where
         &self,
         resource: &R,
         store: &InstanceStore<PoolEntry<R>>,
+        _retained: &crate::RetainedStore<Self::Entry>,
         slot: &str,
         refresh: bool,
     ) -> Result<(), Error> {
@@ -1208,9 +1206,15 @@ mod tests {
             let _ = store.return_entry(entry, epoch).await;
         }
 
-        topo.dispatch_credential_hook(&resource, &store, "db", false)
-            .await
-            .expect("rotation dispatch");
+        topo.dispatch_credential_hook(
+            &resource,
+            &store,
+            &crate::RetainedStore::for_test(),
+            "db",
+            false,
+        )
+        .await
+        .expect("rotation dispatch");
         assert_eq!(
             resource.revoke_calls.load(Ordering::SeqCst),
             2,
@@ -1245,7 +1249,13 @@ mod tests {
         *resource.panic_revoke_for.lock().unwrap() = Some(0);
 
         let outcome = topo
-            .dispatch_credential_hook(&resource, &store, "db", false)
+            .dispatch_credential_hook(
+                &resource,
+                &store,
+                &crate::RetainedStore::for_test(),
+                "db",
+                false,
+            )
             .await;
         assert!(
             outcome.is_err(),

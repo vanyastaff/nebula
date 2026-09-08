@@ -47,6 +47,8 @@ use std::{
 use tokio::sync::{Mutex, MutexGuard};
 use tracing::debug;
 
+use crate::release_queue::AbandonmentTracker;
+
 // ─── PoolStrategy ─────────────────────────────────────────────────────────────
 
 /// Idle-queue ordering strategy: which end of the queue a returned entry
@@ -96,6 +98,28 @@ pub(crate) struct StoreEntry<S> {
     /// out** (via [`InstanceStore::checkout`] → stamps with the live
     /// counter).
     pub(crate) checkout_epoch: u64,
+}
+
+struct StoreInner<S> {
+    idle: Mutex<VecDeque<StoreEntry<S>>>,
+    revoke_epoch: AtomicU64,
+    closed: AtomicBool,
+    abandonment: Option<AbandonmentTracker>,
+}
+
+impl<S> Drop for StoreInner<S> {
+    fn drop(&mut self) {
+        let remaining = self.idle.get_mut().len();
+        if remaining != 0
+            && let Some(tracker) = &self.abandonment
+        {
+            // Record ownership loss before the mutex field drops its raw
+            // entries. The loss guard is intentionally never disarmed here:
+            // reaching final inner Drop means no framework cleanup owner
+            // survived to receive these entries.
+            drop(tracker.track_entries(remaining));
+        }
+    }
 }
 
 /// Framework-owned idle queue and revoke-epoch state for a
@@ -153,20 +177,9 @@ pub(crate) struct StoreEntry<S> {
 /// [`return_entry`]: InstanceStore::return_entry
 /// [`bump_revoke_epoch`]: InstanceStore::bump_revoke_epoch
 pub struct InstanceStore<S> {
-    /// Framework-held idle queue; entries are `(S, checkout_epoch)` pairs.
-    idle: Arc<Mutex<VecDeque<StoreEntry<S>>>>,
-    // `Clone` (below) is hand-written, not derived: it shares the same `Arc`
-    // backing — a cloned handle returns entries into the *same* idle queue and
-    // observes the *same* revoke counter. This is what lets the release
-    // closure hold a cloned `InstanceStore` and recycle into the live store.
-    /// Monotonic credential-revoke counter. Bumped synchronously by the
-    /// manager on credential revoke — before any async revoke hook dispatch.
-    /// Every `return_entry` compares the entry's checkout epoch against this;
-    /// an advanced counter evicts the entry instead of re-queuing it.
-    revoke_epoch: Arc<AtomicU64>,
-    /// Published before asynchronous retirement. Shared by every store handle;
-    /// credential changes cannot reopen a terminal store.
-    closed: Arc<AtomicBool>,
+    /// One shared owner ensures abandonment is observed only at final-handle
+    /// drop, never when an intermediate cloned handle goes away.
+    inner: Arc<StoreInner<S>>,
     /// Maximum number of entries the store will hold idle.
     /// `None` = unbounded (Resident / permit-only topologies).
     capacity: Option<usize>,
@@ -178,9 +191,7 @@ pub struct InstanceStore<S> {
 impl<S> Clone for InstanceStore<S> {
     fn clone(&self) -> Self {
         Self {
-            idle: Arc::clone(&self.idle),
-            revoke_epoch: Arc::clone(&self.revoke_epoch),
-            closed: Arc::clone(&self.closed),
+            inner: Arc::clone(&self.inner),
             capacity: self.capacity,
             strategy: self.strategy,
         }
@@ -192,8 +203,11 @@ impl<S> std::fmt::Debug for InstanceStore<S> {
         f.debug_struct("InstanceStore")
             .field("capacity", &self.capacity)
             .field("strategy", &self.strategy)
-            .field("revoke_epoch", &self.revoke_epoch.load(Ordering::Acquire))
-            .field("closed", &self.closed.load(Ordering::Acquire))
+            .field(
+                "revoke_epoch",
+                &self.inner.revoke_epoch.load(Ordering::Acquire),
+            )
+            .field("closed", &self.inner.closed.load(Ordering::Acquire))
             .finish()
     }
 }
@@ -206,10 +220,25 @@ impl<S: Send + 'static> InstanceStore<S> {
     /// The idle queue defaults to FIFO ordering — see
     /// [`with_strategy`](Self::with_strategy).
     pub fn new(capacity: Option<usize>) -> Self {
+        Self::from_parts(capacity, None)
+    }
+
+    /// Creates a manager-owned store whose final idle owners are loss-accounted.
+    pub(crate) fn with_abandonment_tracker(
+        capacity: Option<usize>,
+        tracker: AbandonmentTracker,
+    ) -> Self {
+        Self::from_parts(capacity, Some(tracker))
+    }
+
+    fn from_parts(capacity: Option<usize>, abandonment: Option<AbandonmentTracker>) -> Self {
         Self {
-            idle: Arc::new(Mutex::new(VecDeque::new())),
-            revoke_epoch: Arc::new(AtomicU64::new(0)),
-            closed: Arc::new(AtomicBool::new(false)),
+            inner: Arc::new(StoreInner {
+                idle: Mutex::new(VecDeque::new()),
+                revoke_epoch: AtomicU64::new(0),
+                closed: AtomicBool::new(false),
+                abandonment,
+            }),
             capacity,
             strategy: PoolStrategy::Fifo,
         }
@@ -242,7 +271,7 @@ impl<S: Send + 'static> InstanceStore<S> {
 
     /// Reads the current revoke epoch.
     pub fn current_revoke_epoch(&self) -> u64 {
-        self.revoke_epoch.load(Ordering::Acquire)
+        self.inner.revoke_epoch.load(Ordering::Acquire)
     }
 
     /// Advances the revoke epoch by one.
@@ -252,7 +281,7 @@ impl<S: Send + 'static> InstanceStore<S> {
     /// After this call every subsequent `return_entry` will evict any entry
     /// whose `checkout_epoch` is behind the new counter.
     pub fn bump_revoke_epoch(&self) {
-        self.revoke_epoch.fetch_add(1, Ordering::Release);
+        self.inner.revoke_epoch.fetch_add(1, Ordering::Release);
     }
 
     /// Publishes the terminal fence without waiting for the idle lock.
@@ -262,14 +291,14 @@ impl<S: Send + 'static> InstanceStore<S> {
     /// collects its deposit. The framework rechecks closure before issuing a
     /// lease whose checkout raced this signal.
     pub(crate) fn begin_close(&self) {
-        if !self.closed.swap(true, Ordering::AcqRel) {
+        if !self.inner.closed.swap(true, Ordering::AcqRel) {
             debug!("resource instance store closed to new leases and deposits");
         }
     }
 
     /// Whether retirement has begun. This state never transitions back to open.
     pub(crate) fn is_closed(&self) -> bool {
-        self.closed.load(Ordering::Acquire)
+        self.inner.closed.load(Ordering::Acquire)
     }
 
     /// Closes the store and transfers all remaining idle entries to the owner.
@@ -280,7 +309,7 @@ impl<S: Send + 'static> InstanceStore<S> {
     #[tracing::instrument(skip_all)]
     pub(crate) async fn close_and_drain(&self) -> Vec<S> {
         self.begin_close();
-        let mut idle = self.idle.lock().await;
+        let mut idle = self.inner.idle.lock().await;
         debug!(
             idle_count = idle.len(),
             "draining terminal resource instance store"
@@ -326,7 +355,7 @@ impl<S: Send + 'static> InstanceStore<S> {
     ///
     /// [`Provider::destroy`]: crate::resource::Provider::destroy
     pub async fn checkout(&self) -> Checkout<S> {
-        let mut idle = self.idle.lock().await;
+        let mut idle = self.inner.idle.lock().await;
         // Revoke-epoch fence: read under the idle lock (same lock the
         // credential-revoke idle-walk holds) so the epoch snapshot is
         // atomic against a concurrent `bump_revoke_epoch`. Without this,
@@ -387,7 +416,18 @@ impl<S: Send + 'static> InstanceStore<S> {
     /// guard (the framework acquire loop's `EntryCreateGuard` pattern) rather
     /// than rely on this method to place it.
     pub async fn return_entry(&self, entry: S, checkout_epoch: u64) -> ReturnOutcome<S> {
-        let mut idle = self.idle.lock().await;
+        let mut idle = self.inner.idle.lock().await;
+        self.return_entry_locked(&mut idle, entry, checkout_epoch)
+    }
+
+    /// Synchronous core of [`return_entry`](Self::return_entry) for a caller
+    /// that already holds the idle lock and still owns a cancellation guard.
+    pub(crate) fn return_entry_locked(
+        &self,
+        idle: &mut VecDeque<StoreEntry<S>>,
+        entry: S,
+        checkout_epoch: u64,
+    ) -> ReturnOutcome<S> {
         if self.is_closed() {
             debug!("InstanceStore::return_entry: terminal fence — evicting entry");
             return ReturnOutcome::Evict(entry);
@@ -395,7 +435,7 @@ impl<S: Send + 'static> InstanceStore<S> {
         // Revoke-epoch fence: re-read under the idle lock (same lock the
         // credential-revoke idle-walk holds) to make compare-then-push
         // atomic against a concurrent revoke.
-        let live_epoch = self.revoke_epoch.load(Ordering::Acquire);
+        let live_epoch = self.inner.revoke_epoch.load(Ordering::Acquire);
         if checkout_epoch != live_epoch {
             // Entry was leased under a since-revoked credential — evict.
             debug!(
@@ -411,7 +451,7 @@ impl<S: Send + 'static> InstanceStore<S> {
             return ReturnOutcome::Evict(entry);
         }
         self.enqueue(
-            &mut idle,
+            idle,
             StoreEntry {
                 entry,
                 checkout_epoch,
@@ -422,12 +462,12 @@ impl<S: Send + 'static> InstanceStore<S> {
 
     /// Number of idle entries currently in the queue.
     pub async fn len(&self) -> usize {
-        self.idle.lock().await.len()
+        self.inner.idle.lock().await.len()
     }
 
     /// Returns `true` if the idle queue is empty.
     pub async fn is_empty(&self) -> bool {
-        self.idle.lock().await.is_empty()
+        self.inner.idle.lock().await.is_empty()
     }
 
     /// The configured capacity cap, or `None` if unbounded.
@@ -440,7 +480,13 @@ impl<S: Send + 'static> InstanceStore<S> {
     /// Returns all entries collected without closing the store; subsequent
     /// deposits remain possible. Terminal shutdown uses a separate fenced drain.
     pub async fn drain_all(&self) -> Vec<S> {
-        self.idle.lock().await.drain(..).map(|e| e.entry).collect()
+        self.inner
+            .idle
+            .lock()
+            .await
+            .drain(..)
+            .map(|e| e.entry)
+            .collect()
     }
 
     /// Evicts all idle entries whose checkout epoch is behind the live counter.
@@ -452,7 +498,7 @@ impl<S: Send + 'static> InstanceStore<S> {
     /// reaper sweep — so a stale entry can never be served regardless of which
     /// path observes it first.
     pub async fn evict_stale(&self) -> Vec<S> {
-        let mut idle = self.idle.lock().await;
+        let mut idle = self.inner.idle.lock().await;
         // Epoch read under the idle lock — the same discipline as `checkout` /
         // `return_entry` — so a revoke racing this sweep is either fully
         // observed (its entries evicted now) or fully deferred to the next
@@ -497,7 +543,7 @@ impl<S: Send + 'static> InstanceStore<S> {
     /// and miss its hook (a credential-isolation violation). Do not widen the
     /// unlocked window.
     pub(crate) async fn lock_idle(&self) -> MutexGuard<'_, VecDeque<StoreEntry<S>>> {
-        self.idle.lock().await
+        self.inner.idle.lock().await
     }
 
     /// Removes and returns every idle entry for which `should_evict` is `true`,
@@ -514,7 +560,7 @@ impl<S: Send + 'static> InstanceStore<S> {
     where
         F: FnMut(&S, u64) -> bool,
     {
-        let mut idle = self.idle.lock().await;
+        let mut idle = self.inner.idle.lock().await;
         let mut evicted = Vec::new();
         let mut keep = VecDeque::with_capacity(idle.len());
         for item in idle.drain(..) {
@@ -556,7 +602,7 @@ impl<S: Send + 'static> InstanceStore<S> {
     /// guard stays armed across the lock acquisition — the warmup loop does
     /// exactly this.
     pub async fn deposit_fresh(&self, entry: S, created_epoch: u64) -> ReturnOutcome<S> {
-        let mut idle = self.idle.lock().await;
+        let mut idle = self.inner.idle.lock().await;
         self.deposit_fresh_locked(&mut idle, entry, created_epoch)
     }
 
@@ -578,7 +624,7 @@ impl<S: Send + 'static> InstanceStore<S> {
             debug!("InstanceStore::deposit_fresh: terminal fence — rejecting fresh entry");
             return ReturnOutcome::Evict(entry);
         }
-        let live_epoch = self.revoke_epoch.load(Ordering::Acquire);
+        let live_epoch = self.inner.revoke_epoch.load(Ordering::Acquire);
         if created_epoch != live_epoch {
             debug!(
                 created_epoch,
@@ -691,7 +737,22 @@ impl<S> ReturnOutcome<S> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
     use super::*;
+    use crate::release_queue::ReleaseQueue;
+
+    #[derive(Debug)]
+    struct DropProbe(Arc<AtomicUsize>);
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
 
     #[tokio::test]
     async fn terminal_fence_rejects_checkout_return_and_fresh_deposit() {
@@ -997,5 +1058,94 @@ mod tests {
         let drained = store.drain_all().await;
         assert_eq!(drained.len(), 2);
         assert!(store.is_empty().await);
+    }
+
+    #[tokio::test]
+    async fn final_shared_store_drop_accounts_for_each_idle_owner_once() {
+        let (queue, workers) = ReleaseQueue::new(1);
+        let store = InstanceStore::with_abandonment_tracker(None, queue.abandonment_tracker());
+        let raw_drops = Arc::new(AtomicUsize::new(0));
+        let epoch = store.stamp_epoch();
+        for _ in 0..3 {
+            std::assert_matches!(
+                store
+                    .return_entry(DropProbe(Arc::clone(&raw_drops)), epoch)
+                    .await,
+                ReturnOutcome::Recycled
+            );
+        }
+        let final_handle = store.clone();
+
+        drop(store);
+        assert_eq!(
+            queue.dropped_count(),
+            0,
+            "an intermediate handle owns nothing alone"
+        );
+        assert_eq!(raw_drops.load(Ordering::SeqCst), 0);
+        drop(final_handle);
+
+        assert_eq!(
+            queue.dropped_count(),
+            3,
+            "all three idle owners were abandoned once"
+        );
+        assert_eq!(raw_drops.load(Ordering::SeqCst), 3);
+        queue.close();
+        ReleaseQueue::shutdown(workers).await;
+    }
+
+    #[tokio::test]
+    async fn dropping_intermediate_clones_never_reports_shared_idle_owners() {
+        let (queue, workers) = ReleaseQueue::new(1);
+        let store = InstanceStore::with_abandonment_tracker(None, queue.abandonment_tracker());
+        let epoch = store.stamp_epoch();
+        let raw_drops = Arc::new(AtomicUsize::new(0));
+        std::assert_matches!(
+            store
+                .return_entry(DropProbe(Arc::clone(&raw_drops)), epoch)
+                .await,
+            ReturnOutcome::Recycled
+        );
+        let first_clone = store.clone();
+        let second_clone = store.clone();
+
+        drop(first_clone);
+        drop(second_clone);
+        assert_eq!(queue.dropped_count(), 0);
+        assert_eq!(raw_drops.load(Ordering::SeqCst), 0);
+        drop(store);
+
+        assert_eq!(queue.dropped_count(), 1);
+        assert_eq!(raw_drops.load(Ordering::SeqCst), 1);
+        queue.close();
+        ReleaseQueue::shutdown(workers).await;
+    }
+
+    #[tokio::test]
+    async fn normal_drain_transfers_idle_owners_without_abandonment() {
+        let (queue, workers) = ReleaseQueue::new(1);
+        let store = InstanceStore::with_abandonment_tracker(None, queue.abandonment_tracker());
+        let epoch = store.stamp_epoch();
+        let raw_drops = Arc::new(AtomicUsize::new(0));
+        for _ in 0..2 {
+            std::assert_matches!(
+                store
+                    .return_entry(DropProbe(Arc::clone(&raw_drops)), epoch)
+                    .await,
+                ReturnOutcome::Recycled
+            );
+        }
+
+        let drained = store.drain_all().await;
+        drop(store);
+        assert_eq!(queue.dropped_count(), 0, "drain transferred both owners");
+        assert_eq!(raw_drops.load(Ordering::SeqCst), 0);
+        drop(drained);
+
+        assert_eq!(queue.dropped_count(), 0);
+        assert_eq!(raw_drops.load(Ordering::SeqCst), 2);
+        queue.close();
+        ReleaseQueue::shutdown(workers).await;
     }
 }

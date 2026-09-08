@@ -1,0 +1,5 @@
+error[E0599]: no method named `begin_close` found for reference `&ManagedResourceView` in the current scope
+ --> tests/probes/managed_resource_view_cannot_close.rs:4:10
+  |
+4 |     view.begin_close();
+  |          ^^^^^^^^^^^ method not found in `&ManagedResourceView`

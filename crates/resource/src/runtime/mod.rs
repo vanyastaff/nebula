@@ -18,7 +18,9 @@
 
 pub(crate) mod acquire_loop;
 pub(crate) mod bounded;
+mod destroy_batch;
 pub(crate) mod managed;
 pub(crate) mod pool;
 pub(crate) mod resident;
+pub(crate) mod retained_store;
 pub(crate) mod teardown;

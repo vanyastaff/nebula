@@ -6,7 +6,7 @@
 //!
 //! `FfmpegPool` is an author-supplied topology that is neither the built-in
 //! `Pooled` nor `Resident`. It supplies only the entry-centric `Topology<Ffmpeg>`
-//! hooks (`try_reserve`, `create_entry`, `entry_instance`, `into_instance`,
+//! hooks (`try_reserve`, `create_entry`, `entry_instance`, `into_owned_instance`,
 //! `pools`, `store_capacity`). It holds **no** `InstanceStore` and contains
 //! **no** `store.checkout` / `resource.destroy` / stale-handling / epoch-compare
 //! code — the framework owns the idle store and the fence.
@@ -14,12 +14,10 @@
 //! The test proves:
 //! 1. a custom topology registers + acquires through the erased
 //!    `Manager::acquire_any` path, reporting `TopologyTag::Custom`;
-//! 2. an entry that went idle **before** a credential revoke is evicted
-//!    (destroyed) on the next acquire — and the **framework**, not the author,
-//!    does the eviction. Bumping the revoke epoch through the erased
-//!    `ManagedHandle::bump_revoke_epoch` (exactly as `Manager::revoke_slot`
-//!    does in phase 1) and re-acquiring shows the stale entry is never served
-//!    and a fresh one is created in its place — with no author fence code.
+//! 2. the public manager revoke path fences the whole custom-topology row:
+//!    an entry created before revoke is never leased again, and terminal
+//!    shutdown destroys it through framework-owned cleanup. The author writes
+//!    no store, fence, or destroy dispatch code.
 
 use std::sync::{
     Arc,
@@ -28,7 +26,8 @@ use std::sync::{
 
 use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_resource::{
-    AcquireOptions, Manager, RegistrationSpec, ResourceContext, SlotIdentity,
+    AcquireOptions, HasCredentialSlots, Manager, RegistrationSpec, ResourceContext, ShutdownConfig,
+    SlotIdentity,
     error::{Error, ErrorKind},
     resource::{Provider, ResourceConfig, ResourceMetadata},
     topology::{InstanceStore, Ticket, Topology, Unavailable},
@@ -107,7 +106,19 @@ impl Provider for Ffmpeg {
     }
 }
 
-nebula_resource::no_credential_slots!(Ffmpeg);
+impl HasCredentialSlots for Ffmpeg {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+
+    fn declares_credential_slots() -> bool {
+        true
+    }
+
+    fn credential_slot_names() -> &'static [&'static str] {
+        &["transcoder"]
+    }
+}
 
 // ─── The custom topology ───────────────────────────────────────────────────
 
@@ -173,6 +184,7 @@ impl Topology<Ffmpeg> for FfmpegPool {
         resource: &Ffmpeg,
         config: &FfmpegCfg,
         ctx: &ResourceContext,
+        _retained: &nebula_resource::topology::RetainedStore<Self::Entry>,
     ) -> Result<nebula_resource::topology::CreatedEntry<Transcoder>, Error> {
         // Make one fresh transcoder. The framework decides WHEN to call this
         // (on an idle-miss / warmup); the author only knows HOW to build one.
@@ -196,10 +208,6 @@ impl Topology<Ffmpeg> for FfmpegPool {
 
     fn into_owned_instance(&self, entry: Transcoder) -> Option<Transcoder> {
         Some(entry)
-    }
-
-    async fn close_retained(&self) -> Vec<Self::Entry> {
-        Vec::new()
     }
 
     fn pools(&self) -> bool {
@@ -279,11 +287,10 @@ async fn custom_topology_registers_and_acquires_through_manager() {
     );
 }
 
-/// The safety-by-construction proof: an entry idle **before** a revoke is
-/// evicted (destroyed) by the **FRAMEWORK** on the next acquire. The author
-/// wrote zero fence code; bumping the revoke epoch through the erased
-/// `ManagedHandle::bump_revoke_epoch` (exactly as `Manager::revoke_slot` phase 1
-/// does) makes the framework store fence the stale entry on the next checkout.
+/// The safety-by-construction proof: the public manager revoke path fences a
+/// custom topology without exposing the operational registry handle. The
+/// author writes zero fence code; after revoke, the old entry cannot be leased
+/// again and framework-owned shutdown cleanup destroys it.
 #[tokio::test]
 async fn custom_topology_store_is_revoke_fenced_by_framework() {
     let manager = Arc::new(Manager::new());
@@ -308,26 +315,26 @@ async fn custom_topology_store_is_revoke_fenced_by_framework() {
     .expect("first acquire")
     .downcast::<nebula_resource::guard::ResourceGuard<Ffmpeg>>()
     .expect("downcast");
-    drop(g);
-    // Wait for the release worker to recycle the entry into the framework store.
-    let recycled = poll_until(std::time::Duration::from_secs(2), || {
-        create_count.load(Ordering::SeqCst) == 1
-    })
-    .await;
-    assert!(recycled, "the first acquire created exactly one transcoder");
+    g.release()
+        .await
+        .expect("release completes after framework recycling");
+    assert_eq!(create_count.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        destroy_count.load(Ordering::SeqCst),
+        0,
+        "the released entry was recycled, not destroyed"
+    );
 
-    // 2. Revoke: bump the revoke epoch through the erased handle — exactly the
-    //    synchronous phase-1 step `Manager::revoke_slot` performs. The author
-    //    topology is NOT involved; the framework store now holds a stale entry.
-    let handle = manager
-        .get_any(&key, &ScopeLevel::Global)
-        .expect("the registered row is reachable through the erased handle");
-    handle.bump_revoke_epoch();
+    // 2. Revoke through the manager-owned lifecycle operation. This applies
+    //    the taint and epoch fence synchronously before its awaited tail.
+    manager
+        .revoke_slot(&key, ScopeLevel::Global, "transcoder")
+        .await
+        .expect("manager revoke must accept the declared slot");
 
-    // 3. Next acquire: the FRAMEWORK loop checks out, sees the stale entry,
-    //    destroys it (`destroy(into_instance(stale))`), and creates a fresh one.
-    //    The author wrote no checkout, no destroy, no epoch compare.
-    let g2 = Manager::acquire_any(
+    // 3. The revoked row cannot hand out the pre-revoke entry (or create a
+    //    replacement against the revoked credential).
+    let error = Manager::acquire_any(
         Arc::clone(&manager),
         &key,
         &ctx,
@@ -335,28 +342,27 @@ async fn custom_topology_store_is_revoke_fenced_by_framework() {
         &SlotIdentity::Unbound,
     )
     .await
-    .expect("acquire after revoke")
-    .downcast::<nebula_resource::guard::ResourceGuard<Ffmpeg>>()
-    .expect("downcast");
+    .expect_err("a revoked custom-topology row must reject new leases");
+    assert_eq!(*error.kind(), ErrorKind::Revoked);
+    assert_eq!(
+        create_count.load(Ordering::SeqCst),
+        1,
+        "revoke must not create a replacement against revoked credentials"
+    );
 
-    // The framework destroyed the since-revoked idle entry on checkout...
+    // Terminal cleanup still owns and destroys the retained idle entry.
+    manager
+        .graceful_shutdown(ShutdownConfig::default())
+        .await
+        .expect("shutdown must clean the retained custom-topology entry");
     let destroyed = poll_until(std::time::Duration::from_secs(2), || {
         destroy_count.load(Ordering::SeqCst) >= 1
     })
     .await;
     assert!(
         destroyed,
-        "the FRAMEWORK must have destroyed the since-revoked idle entry on \
-         checkout — the custom topology has no fence/destroy code at all"
+        "framework-owned terminal cleanup must destroy the retained revoked entry"
     );
-    // ...and created a fresh transcoder to serve this acquire.
-    assert_eq!(
-        create_count.load(Ordering::SeqCst),
-        2,
-        "a fresh transcoder was created after the stale one was fenced by the \
-         framework (the stale entry was never re-served)"
-    );
-    drop(g2);
 }
 
 /// Polls `cond` until it returns `true` or the deadline elapses; returns the

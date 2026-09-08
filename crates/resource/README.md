@@ -164,13 +164,26 @@ Aliases intentionally exposed by a provider's instance remain the author's respo
 
 - Replace fabricated `ResourceGuard::owned` / `guarded` / `guarded_with_permit`
   and `detach` with manager acquisition and explicit `release().await`.
-- Custom `Topology::create_entry` returns `CreatedEntry<Entry>` and transfers
-  displaced retained entries together with the new lease. `into_owned_instance`
-  returns `Option<Instance>`: shared ownership yields an instance only on final release.
-- Implement `Topology::close_retained` to stop creation and transfer retained
-  owners. Topology policy never calls `Provider::destroy` itself.
+- Custom `Topology::create_entry` receives a borrowed `RetainedStore<Entry>`
+  after the resource context and returns only the fresh `CreatedEntry<Entry>`.
+  A topology that keeps a shared root publishes it into that store and keeps
+  only its opaque `RetainedId`; hiding strong entries outside the store violates
+  the mandatory lifecycle contract and escapes framework accounting.
+- Retained state is manipulated only through the borrowed store. The store is
+  not cloneable and exposes no public drain or remove-and-take capability;
+  closing and destruction remain framework-owned. `Topology::quiesce` may stop
+  policy-owned background work, but never transfers entry ownership.
+- `CreatedEntry` exposes `new`, `entry`, and `into_entry`; displaced retained
+  owners are retired inside `RetainedStore`, not returned beside a new lease.
+  `into_owned_instance` returns `Option<Instance>`: shared ownership yields an
+  instance only on final release.
 - Drain counters and `Released` events settle after queued cleanup completes or
   is abandoned, not synchronously inside guard Drop. Await release or graceful shutdown.
+- Nested release on the same queue uses bounded cooperative execution. A release
+  targeting another queue, or exceeding that nested capacity, returns
+  `ErrorKind::DeferredCleanup` after acceptance instead of creating a wait cycle.
+  Cleanup remains queue-owned; never retry that release. Separately spawned
+  provider tasks do not inherit the current cleanup context.
 - Registration after shutdown is rejected. Replacement/removal fences the old
   row and schedules owned retirement; normal graceful shutdown awaits idle/master teardown.
 - Force with outstanding leases returns an incomplete snapshot and retains cleanup
@@ -188,7 +201,7 @@ Aliases intentionally exposed by a provider's instance remain the author's respo
 - `AcquireOptions` — per-call acquire knobs (`deadline`, `acquire_slow_threshold`); every `acquire_*` takes one.
 - `SlotIdentity`, `DedupKey` — structural resolved-credential identity (`Unbound` / `Structural`) and the `(key, scope, slot_identity)` registry dedup key; neither is tenant authority.
 - `ManagerConfig`, `RegisterOptions` — configuration surface.
-- `Registry`, `ManagedHandle` (sealed), `LookupOutcome` — type-erased storage + lookup result for registered resource instances.
+- `Registry`, `LookupOutcome`, `ManagedResourceView` — type-erased storage with read-only diagnostic lookup; lifecycle authority remains inside `Manager`.
 - `ResourceMetadata` — static descriptor: key, name, description, schema, version, tags.
 - `ResourceConfig` — operational config trait (no secrets); supertype `HasSchema`.
 - `SlotCell` — lock-free `ArcSwap`-based credential slot cell the framework populates/rotates.
@@ -208,7 +221,11 @@ Aliases intentionally exposed by a provider's instance remain the author's respo
 - Topology configs / constructors: `PoolConfig`, `ResidentConfig`, `BoundedMode` (`Bounded::capped`/`exclusive`/`unbounded`).
 - `PoolStats` — point-in-time pool snapshot (`idle`, `capacity`, `available_permits`, `in_use`) via `Manager::pool_stats`.
 - `TopologyTag` — the runtime topology discriminant (`Pool` / `Resident` / `Bounded` / custom) carried on a `ResourceGuard`; read via `guard.topology_tag()`.
-- Custom-topology surface: the framework-owned `InstanceStore` idle queue plus `Checkout`, `CheckedOut`, `ReturnOutcome`, `Ticket`, `Unavailable`, `Load`, `MaintenanceSchedule`, `AdmissionPhase`, `AdmissionStatus`, `PoolStrategy`, `NoTopology`.
+- Custom-topology surface: framework-owned `InstanceStore` for idle entries and
+  non-cloneable `RetainedStore` + opaque `RetainedId` for topology-retained
+  roots, plus `Checkout`, `CheckedOut`, `ReturnOutcome`, `Ticket`, `Unavailable`,
+  `Load`, `MaintenanceSchedule`, `AdmissionPhase`, `AdmissionStatus`,
+  `PoolStrategy`, and `NoTopology`.
 - `HasCredentialSlots` — per-resource credential epoch fold; emitted by `#[derive(Resource)]`, or by `no_credential_slots!(R)` for a slot-less resource.
 - `HasResourcesExt` — the `ctx.resource::<R>().await?` access surface for action code.
 - `ResourceFactory`, `KindActivator`, `ResourceActivatorRegistry`, `RegisterRequest`, `RegistrarError`, `ResourceRegistrationOutcome`, `SlotBinding`, `BoxFut` — the erased plugin-registration bridge.
@@ -274,15 +291,18 @@ best-effort behavior: cancelling its wait leaves workers running.
 
 `ShutdownReport::release_queue_drained` reports worker completion, and
 `dropped_release_tasks` is a cumulative queue-lifetime snapshot of futures that
-did not complete. Detached rescue tasks or guards dropped after `Force` may add
+did not complete, including unstarted batch members. Guards dropped after `Force` may add
 losses later. Neither a drained queue nor zero observed losses proves that every
 provider teardown succeeded. Framework jobs return typed results; completed
 provider errors are observed separately from abandoned jobs. `ResourceGuard::release().await` is
 the explicit per-guard error checkpoint.
 
-Queue channels are bounded, but saturation rescue tasks are detached and have
-bounded lifetimes, not bounded cardinality. This is not a bounded-memory guarantee
-under arbitrary sustained submissions, nor a durable cleanup log.
+Queue messages, nested execution slots, and saturation rescue admission are bounded.
+Rescue and nested dispatchers belong to the shutdown handle and are aborted/joined
+with ordinary workers. A destroy batch occupies one queue message, owns its entries,
+and applies a separate panic/timeout boundary to each member while continuing siblings.
+The queue-message bound does not bound the size of a provider instance or an owned
+batch, and the queue is not a durable cleanup log.
 
 - **[L2-§11.4]** Resource lifecycle (acquire → use → release) is engine-owned. Async release is best-effort on crash; process-local queued jobs cannot be recovered by the next process. Authors must not assume "release ran" without an explicit checkpoint. External orphan recovery requires a separate durable/TTL strategy.
 - **[L2-§13.3]** Acquire → use → release for Resource-backed steps must be attributable in durable journal or an operator-visible trace. Not only ephemeral logs. Seam: `ResourceEvent` variants emitted through the engine observability path.
@@ -382,14 +402,22 @@ Long-running workers (`Daemon`) and pull-based event subscriptions (`EventSource
 author can supply a bespoke topology (a permit pool, an FFmpeg transcoder pool,
 a sticky-session pool) by implementing the **entry-centric** `Topology<R>` trait
 and pinning `type Topology = MyPool` on the resource. The contract is
-**framework-driven and safe-by-construction**: the framework owns the acquire
+**framework-driven, with a mandatory trusted-plugin lifecycle contract**: the framework owns the acquire
 loop — the fenced `InstanceStore::checkout`, the stale-entry destroy, the
 cancel-safe guard wrap, and the on-release return-or-destroy. The topology
 supplies only thin R-aware hooks (`create_entry`, `entry_instance`,
-`into_owned_instance`, `close_retained`, `accept`, `prepare`, `on_release`, `pools`, `store_capacity`,
-`dispatch_credential_hook`, …). A custom topology therefore writes **zero**
-store / checkout / destroy / revoke-fence code — the credential-revoke fence is
-framework-owned for every topology, built-in and custom alike. The async hooks
+`into_owned_instance`, `quiesce`, `accept`, `prepare`, `on_release`, `pools`,
+`store_capacity`, `dispatch_credential_hook`, …). Hooks receive borrowed
+framework stores: `InstanceStore` for idle entries and `RetainedStore` for
+long-lived roots. A custom topology may publish or retire retained roots only
+through the latter and must keep opaque `RetainedId`s rather than hidden strong owners.
+Only owners published into framework stores are accounted for. Cloning strong
+aliases out of `RetainedLease`, or forgetting aliases/leases, violates the
+contract; trusted in-process plugins are not isolated by the type system.
+Built-in Resident follows the contract structurally. The store itself cannot
+be cloned or publicly drained, and the topology writes **zero** terminal
+destroy or revoke-fence code — those remain framework-owned for every topology,
+built-in and custom alike. The async hooks
 are plain `async fn` in trait (RPITIT) — do **not** annotate your
 `impl Topology<R>` block with `#[async_trait]` (`Provider` still needs it;
 `Topology` does not). A non-pooling
@@ -401,10 +429,10 @@ unsupported policy with a permanent error, including declared-but-unbound slots.
 ### Shared resource pattern
 
 When multiple workflows acquire the same `Resource` impl at the same scope,
-the manager deduplicates by `(R::key(), ScopeLevel)` and — for topologies
-backed by a single shared runtime — by the config `fingerprint()`. Exactly
-one `Provider::create` invocation runs, and every acquirer receives a lease
-that points at the same backing runtime.
+the manager deduplicates by `(R::key(), ScopeLevel, SlotIdentity)`. Config
+`fingerprint()` participates in freshness/reload policy, not registry row
+identity. Within one Resident row, concurrent leases share its current retained
+runtime; initial creation is serialized, while recreation may create a successor.
 
 This is the foundation of the "one bot, ten workflows" headline: a single
 Telegram bot client serving many concurrent workflow nodes without

@@ -98,11 +98,22 @@ impl Maintenance {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
         if let Some(mut task) = task {
-            (&mut task.0).await.map_err(|_| {
-                crate::Error::permanent(
-                    "resource maintenance worker failed during terminal cleanup",
-                )
-            })?;
+            if let Ok(joined) =
+                tokio::time::timeout(crate::hook_guard::MAX_TEARDOWN_CEILING, &mut task.0).await
+            {
+                joined.map_err(|_| {
+                    crate::Error::permanent(
+                        "resource maintenance worker failed during terminal cleanup",
+                    )
+                })?;
+            } else {
+                tracing::warn!(
+                    "maintenance join timed out; aborting and awaiting worker acknowledgement"
+                );
+                task.0.abort();
+                let _ = (&mut task.0).await;
+                return Err(crate::Error::cancelled());
+            }
         }
         Ok(())
     }
@@ -135,10 +146,12 @@ pub struct ManagedResource<R: Provider> {
     /// This is the **real** idle queue: built-in [`Pooled`](crate::topology::Pooled)
     /// recycles `PoolEntry<R>`s here; [`Resident`](crate::topology::Resident)
     /// (which does not pool) leaves it empty. A custom topology receives a
-    /// borrowed `&store` it cannot retain — the structural barrier against a
-    /// cross-scope instance cache — and the framework, not the topology, runs
+    /// borrowed `&store`, which it may clone; that capability is not tenant
+    /// authorization. The framework, not the topology, runs
     /// `checkout` / `return_entry` / `evict_stale` against it.
     pub(crate) store: InstanceStore<EntryOf<R>>,
+    /// Retained roots remain owned and loss-accounted independently of policy hooks.
+    pub(crate) retained: crate::RetainedStore<EntryOf<R>>,
     /// Background worker pool for async cleanup.
     pub(crate) release_queue: Arc<ReleaseQueue>,
     /// Monotonically increasing generation counter (bumped on reload).
@@ -205,6 +218,7 @@ impl<R: Provider> ManagedResource<R> {
     /// Publishes the terminal admission fence before any cleanup suspension.
     pub(crate) fn begin_close(&self) {
         self.store.begin_close();
+        self.retained.begin_close();
         self.maintenance.cancellation.cancel();
     }
 
@@ -214,25 +228,67 @@ impl<R: Provider> ManagedResource<R> {
         self.maintenance.abort();
     }
 
-    /// Joins maintenance and destroys every idle or retained lifecycle owner.
-    ///
-    /// This is run as one queue-owned job. Its entries never contain acquire
-    /// cancellation guards, so worker abandonment cannot resubmit cleanup.
+    /// Joins maintenance outside the release queue so author hooks may release dependencies.
     #[tracing::instrument(skip_all, fields(resource.key = %R::key()))]
-    pub(crate) async fn close_retained(&self) -> Result<(), crate::Error> {
+    pub(crate) async fn join_maintenance(&self) -> Result<(), crate::Error> {
+        self.maintenance.join().await
+    }
+
+    /// Destroys idle and retained owners after maintenance has been joined externally.
+    ///
+    /// Runs inside a queue-owned coordinator; each entry receives its own
+    /// fault boundary and budget, not one timeout for the entire collection.
+    #[tracing::instrument(skip_all, fields(resource.key = %R::key()))]
+    pub(crate) async fn close_retained(self: &Arc<Self>) -> Result<(), crate::Error> {
         self.begin_close();
-        let mut outcome = self.maintenance.join().await;
-        let mut entries = self.store.close_and_drain().await;
-        entries.extend(self.topology.close_retained().await);
-        for entry in entries {
-            let result = self
-                .destroy_entry(entry, crate::TeardownReason::Shutdown)
-                .await;
-            if outcome.is_ok() {
-                outcome = result;
+        let entries = self.store.close_and_drain().await;
+        let mut batch = super::destroy_batch::DestroyBatch::new(
+            Arc::clone(self),
+            entries,
+            crate::TeardownReason::Shutdown,
+        );
+        let quiesce =
+            crate::hook_guard::guard_author_hook(crate::hook_guard::MAX_TEARDOWN_CEILING, async {
+                self.topology.quiesce().await
+            })
+            .await;
+        let quiesce = match quiesce {
+            Ok(result) => result,
+            Err(fault) => {
+                fault.observe(&R::key(), "quiesce");
+                Err(match fault {
+                    crate::hook_guard::HookFault::Panicked => {
+                        crate::Error::permanent("topology quiesce hook panicked")
+                    },
+                    crate::hook_guard::HookFault::TimedOut => crate::Error::cancelled(),
+                })
+            },
+        };
+        let leases = tokio::time::timeout(
+            crate::hook_guard::MAX_TEARDOWN_CEILING,
+            self.retained.wait_quiescent(),
+        )
+        .await;
+        let leases = if leases.is_ok() {
+            match self.retained.drain_all() {
+                Ok(entries) => {
+                    batch.extend_retained(entries);
+                    Ok(())
+                },
+                Err(blocked) => {
+                    tracing::error!(
+                        live_leases = blocked.live_lease_count(),
+                        "closed retained store did not reach quiescence; roots remain armed"
+                    );
+                    Err(crate::Error::cancelled())
+                },
             }
-        }
-        outcome
+        } else {
+            tracing::warn!("retained lease quiescence timed out; roots remain armed");
+            Err(crate::Error::cancelled())
+        };
+        let cleanup = batch.run().await;
+        quiesce.and(leases).and(cleanup)
     }
 
     /// Returns the current generation counter.
@@ -407,6 +463,9 @@ mod tests {
         topology::{Pooled, pooled::config::Config as PoolConfig, store::InstanceStore},
     };
 
+    #[path = "retained.rs"]
+    mod retained_tests;
+
     // A minimal pooled resource over which the framework acquire loop runs.
     #[derive(Clone)]
     struct PoolCfg;
@@ -517,7 +576,8 @@ mod tests {
             resource,
             config: ArcSwap::from_pointee(PoolCfg),
             topology,
-            store: InstanceStore::new(None),
+            store: InstanceStore::with_abandonment_tracker(None, rq.abandonment_tracker()),
+            retained: crate::RetainedStore::new(rq.abandonment_tracker()),
             release_queue: Arc::new(rq),
             generation: AtomicU64::new(0),
             status: ArcSwap::from_pointee(ResourceStatus::new()),
@@ -653,6 +713,93 @@ mod tests {
         g2.release().await.expect("release");
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn bounded_maintenance_join_acknowledges_worker_abort_before_return() {
+        let managed = managed(Mock::new(), PoolConfig::default());
+        let (alive, mut abandoned) = tokio::sync::oneshot::channel::<()>();
+        managed.maintenance.set_task(tokio::spawn(async move {
+            let _alive = alive;
+            std::future::pending::<()>().await;
+        }));
+        assert_eq!(
+            *managed.join_maintenance().await.unwrap_err().kind(),
+            crate::ErrorKind::Cancelled
+        );
+        assert!(
+            matches!(
+                abandoned.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+            ),
+            "bounded join must observe maintenance cancellation, not merely request abort"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn abort_before_terminal_idle_drain_counts_every_stored_owner() {
+        let mut managed = managed(Mock::new(), PoolConfig::default());
+        let (queue, workers) = ReleaseQueue::new(1);
+        let row = Arc::get_mut(&mut managed).unwrap();
+        row.store = InstanceStore::with_abandonment_tracker(None, queue.abandonment_tracker());
+        row.retained = crate::RetainedStore::new(queue.abandonment_tracker());
+        row.release_queue = Arc::new(queue);
+        for _ in 0..3 {
+            let entry = managed
+                .topology
+                .create_entry(&managed.resource, &PoolCfg, &test_ctx(), &managed.retained)
+                .await
+                .unwrap()
+                .into_entry();
+            assert!(!managed.store.deposit_fresh(entry, 0).await.is_evict());
+        }
+        let queue = Arc::clone(&managed.release_queue);
+        let destroyed = Arc::clone(&managed.resource.destroyed);
+        let weak = Arc::downgrade(&managed);
+        let (entered, blocked) = tokio::sync::oneshot::channel();
+        queue.submit(move || {
+            Box::pin(async move {
+                entered.send(()).unwrap();
+                std::future::pending::<()>().await;
+            })
+        });
+        blocked.await.unwrap();
+        drop(
+            queue.submit_coordinator(move || {
+                Box::pin(async move { managed.close_retained().await })
+            }),
+        );
+        queue.close();
+        assert!(
+            ReleaseQueue::shutdown_bounded(workers, Duration::from_secs(1))
+                .await
+                .is_err()
+        );
+        assert!(
+            weak.upgrade().is_none(),
+            "aborted buffered terminal owner must release the row"
+        );
+        assert_eq!(
+            destroyed.load(Ordering::SeqCst),
+            0,
+            "abandonment is not provider teardown"
+        );
+        assert_eq!(
+            queue.dropped_count(),
+            4,
+            "three idle owners plus the running blocked job are each counted once"
+        );
+    }
+
+    async fn settle_maintenance_cleanup(managed: &ManagedResource<Mock>) {
+        // This fixture has one primary worker. The FIFO receipt runs after
+        // the maintenance batch; publication itself deliberately never waits.
+        managed
+            .release_queue
+            .submit_release(|| Box::pin(async { Ok(()) }))
+            .await
+            .expect("cleanup checkpoint receipt")
+            .expect("cleanup checkpoint");
+    }
+
     /// Maintenance over the framework store evicts both revoke-stale and
     /// non-revoke (fingerprint) idle entries, destroying each.
     #[tokio::test]
@@ -689,6 +836,7 @@ mod tests {
         // Bump fingerprint → both become non-revoke-evictable.
         mr.set_fingerprint(99);
         assert_eq!(mr.run_maintenance().await, 2);
+        settle_maintenance_cleanup(&mr).await;
         assert_eq!(destroyed.load(Ordering::SeqCst), 2);
         assert_eq!(mr.store.len().await, 0);
         Ok(())
@@ -765,6 +913,7 @@ mod tests {
         // The entry's health check now fails — the probe must evict + destroy it.
         check_fails.store(true, Ordering::SeqCst);
         let evicted = mr.run_maintenance().await;
+        settle_maintenance_cleanup(&mr).await;
 
         assert_eq!(evicted, 1, "the failing probe evicted the unhealthy entry");
         assert_eq!(
@@ -806,6 +955,7 @@ mod tests {
         // crash the reaper) and evict the entry.
         check_panics.store(true, Ordering::SeqCst);
         let evicted = mr.run_maintenance().await;
+        settle_maintenance_cleanup(&mr).await;
 
         assert_eq!(
             evicted, 1,

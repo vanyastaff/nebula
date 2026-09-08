@@ -3,7 +3,7 @@
 //! Only the framework destroys instances. Retiring a master transfers its Arc
 //! to framework cleanup; the final lifecycle owner extracts the instance.
 
-use std::sync::Arc;
+use std::{marker::PhantomData, sync::Arc};
 
 use tokio::sync::Mutex;
 
@@ -22,12 +22,13 @@ use crate::{
 /// Creation, rotation, and terminal close serialize on one state lock. This
 /// excludes transient Arc owners outside the lock from final-owner extraction.
 pub struct Resident<R: Provider> {
-    state: Mutex<ResidentState<R::Instance>>,
+    state: Mutex<ResidentState>,
     config: Config,
+    _resource: PhantomData<fn() -> R>,
 }
 
-struct ResidentState<I> {
-    master: Option<Arc<I>>,
+struct ResidentState {
+    master: Option<crate::RetainedId>,
     built_epoch: u64,
     built_fingerprint: u64,
     closed: bool,
@@ -58,6 +59,7 @@ impl<R: Provider> Resident<R> {
                 closed: false,
             }),
             config,
+            _resource: PhantomData,
         }
     }
 
@@ -122,6 +124,7 @@ impl<R: Provider> Resident<R> {
     pub(crate) async fn dispatch_resident_hook(
         &self,
         resource: &R,
+        retained: &crate::RetainedStore<Arc<R::Instance>>,
         slot: &str,
         refresh: bool,
     ) -> Result<(), Error> {
@@ -130,7 +133,7 @@ impl<R: Provider> Resident<R> {
         // published, so delivery is exactly-once.
         let mut state = self.state.lock().await;
 
-        let Some(runtime) = state.master.as_ref() else {
+        let Some(runtime) = state.master.and_then(|id| retained.lease(id)) else {
             // No live runtime. Not a stale-skip: nothing is bound to a
             // credential at all, and a concurrent first create is excluded
             // by `create_lock` (it runs strictly before/after this and
@@ -180,9 +183,9 @@ impl<R: Provider> Resident<R> {
             crate::hook_guard::DEFAULT_AUTHOR_HOOK_CEILING,
             async {
                 if refresh {
-                    resource.on_credential_refresh(slot, runtime).await
+                    resource.on_credential_refresh(slot, &runtime).await
                 } else {
-                    resource.on_credential_revoke(slot, runtime).await
+                    resource.on_credential_revoke(slot, &runtime).await
                 }
             },
         )
@@ -226,6 +229,7 @@ where
         resource: &R,
         resource_config: &R::Config,
         ctx: &ResourceContext,
+        retained: &crate::RetainedStore<Arc<R::Instance>>,
     ) -> Result<CreatedEntry<Arc<R::Instance>>, Error> {
         use crate::resource::ResourceConfig as _;
         let config_fingerprint = resource_config.fingerprint();
@@ -233,10 +237,10 @@ where
         if state.closed {
             return Err(Error::cancelled().with_resource_key(R::key()));
         }
-        if let Some(existing) = &state.master {
+        if let Some(existing) = state.master.and_then(|id| retained.lease(id)) {
             let config_unchanged = state.built_fingerprint == config_fingerprint;
-            if resource.is_alive_sync(existing) && config_unchanged {
-                return Ok(CreatedEntry::new(Arc::clone(existing)));
+            if resource.is_alive_sync(&existing) && config_unchanged {
+                return Ok(CreatedEntry::new(Arc::clone(&existing)));
             }
             if config_unchanged && !self.config.recreate_on_failure {
                 return Err(Error::transient("resident runtime is not alive"));
@@ -251,17 +255,24 @@ where
             Ok(result) => result?,
             Err(_) => return Err(Error::transient("resident: create timed out")),
         };
-        // No await after successful creation: transfer every displaced owner
-        // in the same return that publishes the new retained master.
+        // No await after creation: the store absorbs all retained ownership,
+        // including publication rejected by a concurrent terminal fence.
         let entry = Arc::new(instance);
-        let retired = state
-            .master
-            .replace(Arc::clone(&entry))
-            .into_iter()
-            .collect();
+        if let Some(id) = state.master {
+            if retained.replace(id, Arc::clone(&entry)) != crate::ReplaceStatus::Replaced {
+                return Err(Error::cancelled().with_resource_key(R::key()));
+            }
+        } else {
+            match retained.retain(Arc::clone(&entry)) {
+                crate::RetainStatus::Published(id) => state.master = Some(id),
+                crate::RetainStatus::Retired(_) => {
+                    return Err(Error::cancelled().with_resource_key(R::key()));
+                },
+            }
+        }
         state.built_epoch = resource.credential_slot_epoch();
         state.built_fingerprint = config_fingerprint;
-        Ok(CreatedEntry::with_retired(entry, retired))
+        Ok(CreatedEntry::new(entry))
     }
 }
 
@@ -293,8 +304,9 @@ where
         resource: &R,
         config: &R::Config,
         ctx: &ResourceContext,
+        retained: &crate::RetainedStore<Self::Entry>,
     ) -> Result<CreatedEntry<Self::Entry>, Error> {
-        self.clone_or_create(resource, config, ctx).await
+        self.clone_or_create(resource, config, ctx, retained).await
     }
 
     fn entry_instance<'s>(&self, entry: &'s Self::Entry) -> &'s R::Instance {
@@ -305,10 +317,11 @@ where
         Arc::into_inner(entry)
     }
 
-    async fn close_retained(&self) -> Vec<Self::Entry> {
+    async fn quiesce(&self) -> Result<(), Error> {
         let mut state = self.state.lock().await;
         state.closed = true;
-        state.master.take().into_iter().collect()
+        state.master = None;
+        Ok(())
     }
 
     /// Resident does not pool: a released clone is dropped, never recycled, so
@@ -331,13 +344,15 @@ where
         &self,
         resource: &R,
         _store: &InstanceStore<Self::Entry>,
+        retained: &crate::RetainedStore<Self::Entry>,
         slot: &str,
         refresh: bool,
     ) -> Result<(), Error> {
         // The resident's master handle is NOT in the framework store, so the
         // store-fence cannot reach it: revoke / refresh teardown runs the
         // create-vs-rotate reconcile against the master cell instead.
-        self.dispatch_resident_hook(resource, slot, refresh).await
+        self.dispatch_resident_hook(resource, retained, slot, refresh)
+            .await
     }
 
     fn tag(&self) -> TopologyTag {
@@ -437,9 +452,10 @@ mod tests {
         let resource = MockResident::new();
         let rt = Resident::<MockResident>::new(Config::default());
         let ctx = test_ctx();
+        let retained = Arc::new(crate::RetainedStore::for_test());
 
         let inst = rt
-            .clone_or_create(&resource, &true, &ctx)
+            .clone_or_create(&resource, &true, &ctx, &retained)
             .await
             .expect("first create");
         assert_eq!(**inst.entry(), 100);
@@ -452,9 +468,16 @@ mod tests {
         let resource = MockResident::new();
         let rt = Resident::<MockResident>::new(Config::default());
         let ctx = test_ctx();
+        let retained = Arc::new(crate::RetainedStore::for_test());
 
-        let a = rt.clone_or_create(&resource, &true, &ctx).await.unwrap();
-        let b = rt.clone_or_create(&resource, &true, &ctx).await.unwrap();
+        let a = rt
+            .clone_or_create(&resource, &true, &ctx, &retained)
+            .await
+            .unwrap();
+        let b = rt
+            .clone_or_create(&resource, &true, &ctx, &retained)
+            .await
+            .unwrap();
         assert!(
             Arc::ptr_eq(a.entry(), b.entry()),
             "both entries own the same retained master"
@@ -471,15 +494,17 @@ mod tests {
         let resource = MockResident::new();
         let rt = Arc::new(Resident::<MockResident>::new(Config::default()));
         let ctx = Arc::new(test_ctx());
+        let retained = Arc::new(crate::RetainedStore::for_test());
 
         let mut handles = Vec::new();
         for _ in 0..10 {
             let r = resource.clone();
             let runtime = Arc::clone(&rt);
             let c = Arc::clone(&ctx);
+            let retained = Arc::clone(&retained);
             handles.push(tokio::spawn(async move {
                 runtime
-                    .clone_or_create(&r, &true, c.as_ref())
+                    .clone_or_create(&r, &true, c.as_ref(), &retained)
                     .await
                     .unwrap()
             }));
@@ -503,11 +528,18 @@ mod tests {
         };
         let rt = Resident::<MockResident>::new(config);
         let ctx = test_ctx();
+        let retained = Arc::new(crate::RetainedStore::for_test());
 
-        let a = rt.clone_or_create(&resource, &true, &ctx).await.unwrap();
+        let a = rt
+            .clone_or_create(&resource, &true, &ctx, &retained)
+            .await
+            .unwrap();
         assert_eq!(**a.entry(), 100);
         resource.alive.store(false, Ordering::Relaxed);
-        let b = rt.clone_or_create(&resource, &true, &ctx).await.unwrap();
+        let b = rt
+            .clone_or_create(&resource, &true, &ctx, &retained)
+            .await
+            .unwrap();
         assert_eq!(
             **b.entry(),
             101,
@@ -525,11 +557,17 @@ mod tests {
         };
         let rt = Resident::<MockResident>::new(config);
         let ctx = test_ctx();
+        let retained = Arc::new(crate::RetainedStore::for_test());
 
-        let _a = rt.clone_or_create(&resource, &true, &ctx).await.unwrap();
+        let _a = rt
+            .clone_or_create(&resource, &true, &ctx, &retained)
+            .await
+            .unwrap();
         resource.alive.store(false, Ordering::Relaxed);
         assert!(
-            rt.clone_or_create(&resource, &true, &ctx).await.is_err(),
+            rt.clone_or_create(&resource, &true, &ctx, &retained)
+                .await
+                .is_err(),
             "a dead master with recreate disabled must fail"
         );
     }
@@ -585,15 +623,16 @@ mod tests {
         };
         let rt = Arc::new(Resident::<HangingResident>::new(config));
         let ctx = Arc::new(test_ctx());
+        let retained = Arc::new(crate::RetainedStore::for_test());
 
         assert!(
-            rt.clone_or_create(&resource, &true, ctx.as_ref())
+            rt.clone_or_create(&resource, &true, ctx.as_ref(), &retained)
                 .await
                 .is_err(),
             "first create should time out"
         );
         assert!(
-            rt.clone_or_create(&resource, &true, ctx.as_ref())
+            rt.clone_or_create(&resource, &true, ctx.as_ref(), &retained)
                 .await
                 .is_err(),
             "second create should time out (lock released)"
@@ -702,12 +741,17 @@ mod tests {
         };
         let rt = Arc::new(Resident::<SlotReadResident>::new(Config::default()));
         let ctx = Arc::new(test_ctx());
+        let retained = Arc::new(crate::RetainedStore::for_test());
 
         let acquire_task = {
             let rt = Arc::clone(&rt);
             let resource = resource.clone();
             let ctx = Arc::clone(&ctx);
-            tokio::spawn(async move { rt.clone_or_create(&resource, &true, ctx.as_ref()).await })
+            let retained = Arc::clone(&retained);
+            tokio::spawn(async move {
+                rt.clone_or_create(&resource, &true, ctx.as_ref(), &retained)
+                    .await
+            })
         };
 
         resource.entered_before_read.notified().await;
@@ -755,9 +799,10 @@ mod tests {
         };
         let rt = Resident::<SlotReadResident>::new(Config::default());
         let ctx = test_ctx();
+        let retained = Arc::new(crate::RetainedStore::for_test());
 
         let inst = rt
-            .clone_or_create(&resource, &true, &ctx)
+            .clone_or_create(&resource, &true, &ctx, &retained)
             .await
             .expect("create must succeed");
         assert_eq!(**inst.entry(), CRED_OLD);
