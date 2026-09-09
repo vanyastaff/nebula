@@ -183,6 +183,25 @@ pub(crate) fn storage_setup_error(error: CatalogSetupError) -> nebula_storage_po
 #[cfg(feature = "sqlite")]
 static SQLITE_MEMORY_SETUP: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
+#[cfg(all(test, feature = "sqlite"))]
+pub(crate) fn assert_sqlite_memory_setup_locked() {
+    std::assert_matches!(
+        SQLITE_MEMORY_SETUP.try_acquire(),
+        Err(tokio::sync::TryAcquireError::NoPermits)
+    );
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+pub(crate) fn assert_sqlite_file_setup_locked(path: &std::path::Path) {
+    let base = path.as_os_str().to_string_lossy();
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(format!("{base}{SQLITE_SETUP_LOCK_SUFFIX}"))
+        .expect("setup sidecar exists after terminal admission");
+    std::assert_matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock));
+}
+
 #[cfg(feature = "sqlite")]
 #[must_use = "dropping the permit allows another in-memory schema setup to start"]
 pub(crate) struct SqliteMemorySetupPermit {
@@ -391,6 +410,10 @@ where
 }
 
 #[cfg(feature = "sqlite")]
+/// Run policy-specific admission, migration, and postflight on one session.
+/// The caller must run this inside an owned terminal section that retains both
+/// the setup guard and session until completion; dropping this borrowed future
+/// does not cancel work already submitted to SQLite's worker.
 pub(crate) async fn setup_sqlite_connection_with<P>(
     connection: &mut sqlx::SqliteConnection,
 ) -> Result<(), P::Error>
@@ -689,13 +712,17 @@ fn require_sqlite_terminal_setup_admission(
 }
 
 #[cfg(feature = "sqlite")]
-async fn complete_sqlite_terminal_section<Guard, T>(
+/// Own the setup guard and operation through terminal completion, independently
+/// of cancellation of the task observing this result. The operation must own all
+/// database sessions and pool handles needed to finish its work.
+pub(crate) async fn complete_sqlite_terminal_section<Guard, T, E>(
     setup_guard: Guard,
-    operation: impl Future<Output = Result<T, CatalogSetupError>> + Send + 'static,
-) -> Result<T, CatalogSetupError>
+    operation: impl Future<Output = Result<T, E>> + Send + 'static,
+) -> Result<T, E>
 where
     Guard: Send + 'static,
     T: Send + 'static,
+    E: From<CatalogSetupError> + SchemaSetupFailure + Send + 'static,
 {
     let span = Span::current();
     let terminal_result = tokio::spawn(
@@ -720,7 +747,7 @@ where
                 "SQLite terminal schema setup task failed before reporting its result"
             );
         })
-        .map_err(|_| CatalogSetupError::Unavailable)
+        .map_err(|_| E::from(CatalogSetupError::Unavailable))
         .inspect_err(record_setup_failure)?
 }
 

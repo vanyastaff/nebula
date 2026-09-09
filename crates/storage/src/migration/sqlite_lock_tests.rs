@@ -517,7 +517,7 @@ async fn cancelling_terminal_waiter_retains_guard_until_operation_settles() {
             complete_sqlite_terminal_section(GuardDropObserver { dropped }, async move {
                 operation_started.notify_one();
                 operation_release.notified().await;
-                Ok(())
+                Ok::<(), catalog::CatalogSetupError>(())
             })
             .await
         }
