@@ -3,7 +3,10 @@
 //! their shared post-resolution dispatch, and the type-erased `(key, scope)`
 //! row resolution helpers the rotation entry points use.
 
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use nebula_core::{ResourceKey, ScopeLevel};
 use nebula_credential::SecretFreeMessage;
@@ -23,6 +26,15 @@ use crate::{
 enum SlotHookDirection {
     Refresh,
     Revoke,
+}
+
+const MAX_SLOT_HOOK_OBSERVATION_HORIZON: Duration = Duration::from_hours(1);
+
+fn slot_hook_observation_deadline(timeout: Duration) -> tokio::time::Instant {
+    let now = tokio::time::Instant::now();
+    now.checked_add(timeout)
+        .or_else(|| now.checked_add(MAX_SLOT_HOOK_OBSERVATION_HORIZON))
+        .unwrap_or(now)
 }
 
 /// Result of the in-flight drain that precedes a slot hook.
@@ -491,8 +503,8 @@ impl Manager {
         scope: ScopeLevel,
         slot: &str,
         slot_identity: &crate::dedup::SlotIdentity,
-        hook_timeout: std::time::Duration,
-        observation_timeout: std::time::Duration,
+        hook_timeout: Duration,
+        observation_timeout: Duration,
     ) -> Result<SlotDispatchOutcome, Error> {
         let managed = self.lookup_any_for_slot_identity_structural(key, &scope, slot_identity)?;
         self.refresh_resolved(key, slot, managed, hook_timeout, observation_timeout)
@@ -512,8 +524,8 @@ impl Manager {
         key: &ResourceKey,
         slot: &str,
         managed: Arc<dyn crate::registry::ManagedHandle>,
-        hook_timeout: std::time::Duration,
-        observation_timeout: std::time::Duration,
+        hook_timeout: Duration,
+        observation_timeout: Duration,
     ) -> Result<SlotDispatchOutcome, Error> {
         let started = Instant::now();
         tracing::Span::current().record("topology", managed.topology_tag().as_str());
@@ -576,7 +588,7 @@ impl Manager {
         // stamping this deadline before admission would make an equal hook
         // timeout unreachable under queue delay. Receipt polling is biased,
         // so a terminal hook result wins an exact deadline tie.
-        let observation_deadline = tokio::time::Instant::now() + observation_timeout;
+        let observation_deadline = slot_hook_observation_deadline(observation_timeout);
         let observed = accepted.wait_until(observation_deadline).await;
         tracing::Span::current().record("duration_ms", started.elapsed().as_millis() as u64);
         match observed {
@@ -776,8 +788,7 @@ impl Manager {
     /// previously hard-coded for the drain wait. The engine rotation
     /// fan-out does **not** use this: it passes its own per-resource
     /// rotation budget so the timeout has one owner end-to-end.
-    pub const DEFAULT_REVOKE_DRAIN_TIMEOUT: std::time::Duration =
-        std::time::Duration::from_secs(30);
+    pub const DEFAULT_REVOKE_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 
     /// **Phase 2 of the revoke port — the cancellation-safe awaited tail.**
     /// Consumes a [`TaintedSlot`] from [`taint_slot`](Self::taint_slot) /
@@ -834,7 +845,7 @@ impl Manager {
     pub async fn drain_and_revoke(
         &self,
         tainted: TaintedSlot,
-        drain_timeout: std::time::Duration,
+        drain_timeout: Duration,
     ) -> RevokeTail {
         let TaintedSlot {
             key,
@@ -898,7 +909,7 @@ impl Manager {
                 return RevokeTail::HookFailed { error, drain };
             },
         };
-        let deadline = tokio::time::Instant::now() + drain_timeout;
+        let deadline = slot_hook_observation_deadline(drain_timeout);
         let hook_outcome = accepted.wait_until(deadline).await;
         tracing::Span::current().record("duration_ms", tainted_at.elapsed().as_millis() as u64);
 
@@ -1131,13 +1142,22 @@ impl Manager {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{sync::Arc, time::Duration};
 
     use nebula_core::ResourceKey;
 
-    use super::{Manager, SlotHookDirection};
+    use super::{Manager, SlotHookDirection, slot_hook_observation_deadline};
     use crate::runtime::acquire_loop::{RetiredCleanupObservation, SlotHookObservation};
     use crate::{ErrorKind, ManagerConfig, ResourceEvent};
+
+    #[test]
+    fn slot_hook_observation_deadline_saturates_overflowing_timeout() {
+        let before = tokio::time::Instant::now();
+
+        let deadline = slot_hook_observation_deadline(Duration::MAX);
+
+        assert!(deadline >= before);
+    }
 
     #[tokio::test]
     async fn admitted_hook_abandonment_emits_one_terminal_metric_and_redacted_event() {

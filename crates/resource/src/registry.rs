@@ -141,7 +141,7 @@ pub(crate) trait ManagedHandle: Send + Sync + 'static {
         admission: SlotHookAdmission,
     ) -> Result<AcceptedSlotHook, Error>;
 
-    /// Per-slot revoke dispatch (symmetric to [`Self::dispatch_on_refresh`];
+    /// Per-slot revoke dispatch (symmetric to [`Self::submit_on_refresh`];
     /// forwards to `ManagedResource::dispatch_slot_hook` with `refresh = false`).
     ///
     /// # Cancel Safety
@@ -679,7 +679,7 @@ impl Registry {
     /// Reports whether registration would replace the exact row identity.
     ///
     /// Callers that need to reserve bounded retirement capacity use this
-    /// while holding their outer admission lock, then invoke [`Self::register`]
+    /// while holding their outer admission lock, then invoke `insert`
     /// under the same lock. The predicate intentionally matches
     /// `register`'s replacement predicate exactly.
     pub(crate) fn contains_row(
@@ -992,7 +992,7 @@ impl Registry {
     /// slot identities at the same scope (multi-tenant rows) — untouched.
     ///
     /// The narrower, additive counterpart to [`remove`](Self::remove): it
-    /// is the precise inverse of the single [`register`](Self::register)
+    /// is the precise inverse of the single manager `register`
     /// call that created this row (row identity is `(scope,
     /// slot_identity)`, per `register`'s own doc), mirroring the same
     /// per-row pinning the `rotation`-gated credential fan-out reverse
