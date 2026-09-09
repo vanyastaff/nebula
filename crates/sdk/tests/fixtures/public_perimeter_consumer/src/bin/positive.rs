@@ -4,9 +4,43 @@ use nebula_sdk::{
     },
     integration::credential::{TestFailureCode, TestResult},
     prelude::{
-        ActionBuilder, RemoteDestinationGuarantee, RemoteEffectPolicy, WorkflowBuilder, action_key,
+        ActionBuilder, Error, PoolProvider, Pooled, Provider, RemoteDestinationGuarantee,
+        RemoteEffectPolicy, ResourceContext, ResourceKey, TeardownCx, TeardownReason,
+        WorkflowBuilder, action_key, no_credential_slots, resource_key,
     },
 };
+
+struct OwnedClient(String);
+
+#[derive(Clone)]
+struct ManualProvider;
+no_credential_slots!(ManualProvider);
+impl PoolProvider for ManualProvider {}
+
+#[async_trait::async_trait]
+impl Provider for ManualProvider {
+    type Config = ();
+    type Instance = OwnedClient;
+    type Topology = Pooled<Self>;
+
+    fn key() -> ResourceKey {
+        resource_key!("example.manual-provider")
+    }
+
+    async fn create(&self, _: &(), _: &ResourceContext) -> Result<OwnedClient, Error> {
+        Ok(OwnedClient(String::from("owned connection")))
+    }
+
+    async fn destroy(&self, instance: OwnedClient, cx: TeardownCx) -> Result<(), Error> {
+        let _remaining = cx.deadline.saturating_duration_since(std::time::Instant::now());
+        let _is_shutdown = match cx.reason {
+            TeardownReason::Shutdown => true,
+            _ => false,
+        };
+        drop(instance.0);
+        Ok(())
+    }
+}
 
 fn invocation_identity(
     context: &dyn EffectInvocationContext,
@@ -19,6 +53,7 @@ fn query_identity(context: &dyn EffectQueryContext) -> (OperationId, OperationCa
 }
 
 fn main() {
+    let _resource_key = ManualProvider::key();
     let _invocation_identity: fn(&dyn EffectInvocationContext) -> (OperationId, OperationCallId) =
         invocation_identity;
     let _query_identity: fn(&dyn EffectQueryContext) -> (OperationId, OperationCallId) =

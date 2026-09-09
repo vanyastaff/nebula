@@ -2,7 +2,10 @@
 //!
 //! The fixture has exactly one Nebula dependency. Its positive binary exercises
 //! the currently supported builder/testing subset (`ActionBuilder`,
-//! `WorkflowBuilder`, and credential `TestResult`), while each negative binary
+//! `WorkflowBuilder`, and credential `TestResult`) and manual `Provider` authoring
+//! with a consuming terminal hook over a non-Clone instance, using the
+//! general-purpose `async-trait` dependency. This is a compile check, not runtime
+//! teardown coverage. Each negative binary
 //! targets one distinct authority or persistence escape hatch that must stay
 //! unavailable. Procedural derives have a separate SDK-only compile-pass
 //! contract in `derive_external_contract.rs`.

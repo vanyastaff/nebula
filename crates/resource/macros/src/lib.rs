@@ -11,9 +11,9 @@
 //!    - An inherent `pub fn <field>_slot(&self) -> Option<Arc<...>>` accessor per slot.
 //!    - `impl HasCredentialSlots` with the order-sensitive positional epoch fold.
 //!
-//! 2. **Hand-written `impl Provider`** — the implementor supplies `key()`, the two
-//!    associated types (`Config`, `Instance`), and the lifecycle methods (`create`,
-//!    optionally `check`, `shutdown`, `destroy`, credential-rotation hooks).
+//! 2. **Hand-written `impl Provider`** — the implementor supplies `key()`, the three
+//!    associated types (`Config`, `Instance`, `Topology`), and lifecycle methods (`create`,
+//!    optionally `check`, consuming `destroy`, credential-rotation hooks).
 //!
 //! ```text
 //! use nebula_credential::CredentialGuard;
@@ -28,6 +28,7 @@
 //! impl Provider for Postgres {
 //!     type Config = PostgresConfig;
 //!     type Instance = PgConnection;
+//!     type Topology = nebula_resource::Pooled<Self>;
 //!
 //!     fn key() -> nebula_core::ResourceKey { resource_key!("postgres") }
 //!

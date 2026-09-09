@@ -7,4 +7,5 @@ fn lifecycle_authority_is_not_publicly_callable() {
     tests.compile_fail("tests/probes/managed_resource_view_cannot_close.rs");
     tests.compile_fail("tests/probes/retained_store_has_no_terminal_authority.rs");
     tests.compile_fail("tests/probes/retained_store_has_no_callback_access.rs");
+    tests.compile_fail("tests/probes/provider_has_no_shutdown_hook.rs");
 }

@@ -13,9 +13,9 @@
 //!      listing every declared slot key (used by
 //!      `Manager::refresh_slot`/`taint_slot`'s unknown-slot validation).
 //!
-//! 2. Hand-written `impl Provider` — the implementor supplies `key()`, the two
-//!    associated types (`Config`, `Instance`), and the lifecycle methods
-//!    (`create`, optionally `check`, `shutdown`, `destroy`, hooks).
+//! 2. Hand-written `impl Provider` — the implementor supplies `key()`, the three
+//!    associated types (`Config`, `Instance`, `Topology`), and lifecycle methods
+//!    (`create`, optionally `check`, consuming `destroy`, hooks).
 //!
 //! The macro **never** emits any `Provider` item, `todo!()`, `key()`, or
 //! `metadata()`. There is no `#[resource(...)]` container attribute.

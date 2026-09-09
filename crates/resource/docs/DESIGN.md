@@ -21,7 +21,7 @@
 
 | Элемент | Где |
 |---------|-----|
-| `Provider` — центральный трейт: assoc `Config`/`Instance`/`Topology`, `key()`, `create/check/shutdown/destroy`, per-slot `on_credential_refresh`/`on_credential_revoke` | `src/resource.rs` |
+| `Provider` — центральный трейт: assoc `Config`/`Instance`/`Topology`, `key()`, `create/check/destroy`, per-slot `on_credential_refresh`/`on_credential_revoke` | `src/resource.rs` |
 | `HasCredentialSlots` — epoch-fold по слотам, эмитится derive `Resource` | `src/resource.rs` |
 | `ResourceConfig` (supertrait `HasSchema`, `validate`+`fingerprint`); `TeardownCx`/`TeardownReason` (ADR-0093); `CheckCost` | `src/resource.rs` |
 | `Topology<R>` — открытый entry-centric трейт; framework владеет петлёй и terminal teardown; topology получает borrowed stores, но не может забрать lifecycle ownership | `src/topology/contract.rs` |
@@ -70,7 +70,7 @@
 - **Resolved-binding isolation by construction.** `SlotIdentity::Structural` входит в dedup-ключ (`src/dedup.rs`, `src/registry.rs`), поэтому разные наборы resolved credential bindings не alias один runtime. Равные bindings и `Unbound` не доказывают равную tenant authority: решение о допустимом cross-tenant sharing принимает host/core admission policy, а не этот технический ключ.
 - **Revoke без TOCTOU.** Двухфазный taint→drain (`src/manager/mod.rs`) гарантирует, что после revoke ни один уже выданный гвард не продолжит работать на отозванном credential.
 - **Generation-stamped слоты.** `SlotCell<S>` lock-free и штампует поколение; master ресурса и credential-слот имеют разное владение.
-- **Teardown-контракт (ADR-0093).** `reset`/`destroy` — fallible-async; safe-by-default reset; deadline (а не `Duration`) через `TeardownCx`/`TeardownReason` (`src/resource.rs`).
+- **Teardown-контракт (ADR-0093).** `destroy(Instance, TeardownCx)` — единственный consuming terminal hook; flush/stop/join принадлежат ему. Ошибка не возвращает instance и не запускает retry. Default — только синхронный Drop. Future может быть отброшена на любом await: owned tasks/handles требуют drop fallback. Deadline через `TeardownCx`/`TeardownReason` (`src/resource.rs`) независимо захвачен framework; изменение public fields его не продлевает. Cooperative timeout не прерывает blocking poll/Drop и не обещает cleanup после crash.
 
 ## 6. Известные напряжения / долг (честно)
 
@@ -106,7 +106,7 @@
 
 **Batch E (2026-07-09)** — повторный прогон доков против кода: `Provider`-скетч
 в README приведён к реальной сигнатуре (супертрейты `HasCredentialSlots + … +
-Sized`, `destroy(…, cx: TeardownCx)`, дефолты у `check`/`shutdown`/`destroy`);
+Sized`, `destroy(…, cx: TeardownCx)`, дефолты у `check`/`destroy`);
 `docs/events.md` дополнен пропущенным `MaintenanceEvicted` (счётчики 14→16);
 в `src/lib.rs` убраны битые относительные ссылки `](../docs/*.md)` — rustdoc
 резолвил их в `target/doc/docs/*`.

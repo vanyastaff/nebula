@@ -5,7 +5,7 @@ Type-safe, topology-aware resource management for the Nebula workflow engine.
 clients — database connections, HTTP clients, message-queue producers, and
 anything else that is costly to create and should be reused across executions.
 It handles the full operational lifecycle: create → health-check → recycle →
-shutdown → destroy, with credential rotation, recovery gating, and lifecycle
+consuming destroy, with credential rotation, recovery gating, and lifecycle
 event streaming.
 
 > **Maturity: `frontier`.** The public API still evolves between minor releases.
@@ -25,7 +25,7 @@ read `src/lib.rs`'s module doc directly) and the doctest on
 
 | Type | Role |
 |------|------|
-| `Provider` | Central trait — `Config`/`Instance`/`Topology` associated types + lifecycle methods (`create`, `check`, `shutdown`, `destroy`) + per-slot credential-rotation hooks (`on_credential_refresh`, `on_credential_revoke`) |
+| `Provider` | Central trait — `Config`/`Instance`/`Topology` associated types + lifecycle methods (`create`, `check`, consuming `destroy`) + per-slot credential-rotation hooks (`on_credential_refresh`, `on_credential_revoke`) |
 | `Resource` (derive) | Emits credential-slot plumbing (`HasCredentialSlots`, `<field>_slot()` accessors) for a hand-written `impl Provider` |
 | `Pooled` / `Resident` / `Bounded` | The three built-in topologies — see below |
 | `Manager` | Central registry — single `register(RegistrationSpec { … })` funnel, typed acquire dispatch (`acquire_any`, `acquire_pooled[_for_identity]`, `acquire_resident[_for_identity]`, `acquire_bounded[_for_identity]`), slot rotation, graceful shutdown |
