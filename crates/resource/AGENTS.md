@@ -13,14 +13,14 @@
 
 ## Key files
 
-- `src/lib.rs` — crate facade + re-exports; `cell::Cell` deliberately NOT re-exported (use `SlotCell`)
+- `src/lib.rs` — crate facade + re-exports
 - `src/resource.rs` — `Provider` trait (`Config`/`Instance` assoc types, slot-rotation hooks), `HasCredentialSlots`, `ResourceConfig`, `ResourceMetadata`; `Resource` is the derive macro (slot plumbing only)
-- `src/slot.rs` / `src/cell.rs` — `SlotCell` (public, generation-stamped) vs internal epoch-blind `cell::Cell`
-- `src/registry.rs` — type-erased registry, scope-aware lookup, `(key, scope)` dedup
+- `src/slot.rs` — public, generation-stamped `SlotCell`; retained resource ownership lives in `runtime/resident.rs`, not credential slots
+- `src/registry.rs` — type-erased registry, scope-aware lookup, `(key, scope, slot_identity)` row identity
 - `src/manager/` — `Manager::register(RegistrationSpec)` funnel, acquire dispatch, shutdown/drain
-- `src/topology/contract.rs` — the open `Topology<R>` trait (entry-centric, framework-driven; **slot** = credential axis, **entry** = store axis — see `src/topology/store.rs` module docs). The **framework** owns the acquire loop (`ManagedResource::run_acquire_loop`): fenced `store.checkout()`, stale-entry destroy, cancel-safe wrap, on-release return-or-destroy. A topology supplies only thin R-aware hooks (`create_entry` / `entry_instance` / `into_instance` / `accept` / `prepare` / `on_release` / `pools` / `store_capacity` / `dispatch_credential_hook` / …) and **cannot** reach the revoke fence — never write `store.checkout` / `resource.destroy` / a stale loop / an epoch compare in a `Topology` impl.
+- `src/topology/contract.rs` — the open `Topology<R>` trait (entry-centric, framework-driven; **slot** = credential axis, **entry** = store axis — see `src/topology/store.rs` module docs). The **framework** owns the acquire loop (`ManagedResource::run_acquire_loop`): fenced `store.checkout()`, stale-entry destroy, cancel-safe wrap, on-release return-or-destroy. A topology supplies only thin R-aware hooks (`create_entry` / `entry_instance` / `into_owned_instance` / `accept` / `prepare` / `on_release` / `pools` / `store_capacity` / `dispatch_credential_hook` / …) and **cannot** reach the revoke fence — never write `store.checkout` / `resource.destroy` / a stale loop / an epoch compare in a `Topology` impl.
 - `src/topology/` + `src/runtime/` — `Pooled<R>` / `Resident<R>` / `Bounded<R>` built-in topologies (`Topology<R>` impls; Bounded = runtime concurrency cap, capped/exclusive/unbounded, no warm pool); the framework-owned `InstanceStore<Entry>` is the real idle queue (`ManagedResource.store`)
-- `src/release_queue.rs` — `ReleaseQueue` best-effort async drain (canon §11.4); `src/recovery/` — thundering-herd `RecoveryGate`
+- `src/release_queue/mod.rs` — `ReleaseQueue` best-effort async drain (canon §11.4); `src/recovery/` — thundering-herd `RecoveryGate`
 
 ## Conventions & never-do
 

@@ -2,7 +2,7 @@
 //!
 //! [`Provider`] is the central lifecycle trait: it describes how to create,
 //! health-check, and tear down a single resource type. Implementors supply
-//! two associated types (`Config`, `Instance`) and the lifecycle methods
+//! three associated types (`Config`, `Instance`, `Topology`) and the lifecycle methods
 //! (slot model).
 //!
 //! Per slot model (supersedes credential isolation) the singular `type Credential`
@@ -299,12 +299,14 @@ pub enum TeardownReason {
 
 /// Framework-owned teardown context handed to [`Provider::destroy`].
 ///
-/// `deadline` is the budget the framework will wait before abandoning the
-/// teardown (it also hard-bounds the call). An author doing graceful work
-/// (`flush`/`drain`/`close`) should bound it to this same deadline via
-/// `tokio::time::timeout_at(cx.deadline, …)` so it composes with the framework
-/// backstop. Read-only by construction (`#[non_exhaustive]`): an author cannot
-/// extend the deadline or disarm the backstop. See ADR-0093.
+/// `deadline` tells the author when the framework will abandon asynchronous
+/// teardown. Bound graceful work to it with
+/// `tokio::time::timeout_at(cx.deadline.into(), …)`. The public fields can be
+/// changed locally, but the framework captures its deadline independently:
+/// changing this context cannot extend or disarm that timeout.
+///
+/// The timeout is cooperative: it cannot preempt a blocking future poll or a
+/// blocking destructor. Providers must keep both non-blocking.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub struct TeardownCx {
@@ -359,7 +361,7 @@ impl CheckCost {
     }
 }
 
-/// Provider trait — 2 associated types + lifecycle methods (slot model).
+/// Provider trait — 3 associated types + lifecycle methods (slot model).
 ///
 /// Uses `#[async_trait]` to keep return types uniform with the blanket
 /// `impl<R: Provider> ManagedHandle for ManagedResource<R>`, which
@@ -385,6 +387,7 @@ impl CheckCost {
 /// |------|---------|
 /// | `Config` | Operational config (no secrets) |
 /// | `Instance` | The live resource handle (connection, client, etc.) |
+/// | `Topology` | The resource's framework-driven entry policy |
 ///
 /// # Lifecycle
 ///
@@ -393,9 +396,7 @@ impl CheckCost {
 ///   ↓
 /// check()  → Ok(()) | Err
 ///   ↓
-/// shutdown() → graceful wind-down
-///   ↓
-/// destroy()  → final cleanup (consumes Instance)
+/// destroy() → flush, stop, close, and join (consumes Instance on final ownership release)
 /// ```
 // `Sized` is required so `type Topology: Topology<Self>` can name `Self` as the
 // topology's `R` (which carries an implicit `Sized` bound). `Provider` is never
@@ -578,24 +579,9 @@ pub trait Provider: HasCredentialSlots + Send + Sync + Sized + 'static {
         CheckCost::Cheap
     }
 
-    /// Gracefully winds down an instance (e.g., drain connections).
-    ///
-    /// The default implementation is a no-op.
-    ///
-    /// # Errors
-    ///
-    /// Returns `crate::Error` if graceful shutdown failed and the instance
-    /// state is now indeterminate. The manager treats any error here as
-    /// non-fatal and proceeds to [`destroy`](Self::destroy), so this
-    /// method MUST be idempotent — multiple calls (or
-    /// shutdown-then-destroy) leave the instance in the same final state.
-    async fn shutdown(&self, _instance: &Self::Instance) -> Result<(), crate::Error> {
-        Ok(())
-    }
-
-    /// Worst-case time this resource may need to tear down one instance
-    /// (`shutdown`/`destroy` flush/drain/close). The framework composes the actual
-    /// teardown deadline from this and the operation context; a `Revoked` teardown
+    /// Budget for [`destroy`](Self::destroy) to flush, drain, stop, and join
+    /// one instance's owned work. The framework composes the actual
+    /// teardown deadline from this budget and the reason; a `Revoked` teardown
     /// is additionally capped short. Default 30s. See ADR-0093.
     fn teardown_budget(&self) -> std::time::Duration {
         std::time::Duration::from_secs(30)
@@ -618,23 +604,31 @@ pub trait Provider: HasCredentialSlots + Send + Sync + Sized + 'static {
         None
     }
 
-    /// Final cleanup — consumes the instance.
+    /// The single terminal hook — consumes the instance on final ownership release.
     ///
-    /// The default implementation drops the instance.
+    /// Put all asynchronous flush, drain, stop, close, and worker-join work here.
+    /// Shared Resident leases do not trigger physical teardown until the retained
+    /// owner and every lease have released ownership. The framework dispatches
+    /// this hook once for the owned instance and never retries it.
+    ///
+    /// The default implementation only drops the instance. It is appropriate
+    /// when synchronous RAII cleanup is sufficient; it performs no asynchronous
+    /// shutdown. `Drop` and this process-local hook do not guarantee cleanup
+    /// after a process crash.
     ///
     /// # Errors
     ///
-    /// Returns `crate::Error` only if final cleanup cannot complete (e.g.,
-    /// background workers refused to join). The manager logs the error
-    /// and discards the instance regardless — `destroy` is the last
-    /// chance to release server-side handles, so prefer side-effects
-    /// over `Err` here.
+    /// Return a typed error if cleanup cannot complete (for example, a worker
+    /// failed to join). The instance remains consumed on error: its ownership
+    /// is not returned and there is no terminal retry, regardless of the error's
+    /// retry classification. The framework logs failures and exposes them through
+    /// awaited release or shutdown where that path reports the result.
     ///
     /// # Teardown context
     ///
     /// `cx.deadline` is the instant by which teardown must finish or be
     /// abandoned — an author doing graceful work (`flush`/`drain`/`close`)
-    /// should bound it via `tokio::time::timeout_at(cx.deadline, …)` so it
+    /// should bound it via `tokio::time::timeout_at(cx.deadline.into(), …)` so it
     /// composes with the framework's per-resource backstop (derived from
     /// [`teardown_budget`](Self::teardown_budget)). `cx.reason` says why the
     /// instance is going away ([`TeardownReason`]), letting an impl adapt
@@ -646,6 +640,12 @@ pub trait Provider: HasCredentialSlots + Send + Sync + Sized + 'static {
     /// [`ReleaseQueue`](crate::ReleaseQueue) so caller-side `Drop` is
     /// non-blocking. It MUST tolerate running after the manager's cancel
     /// token has fired; do not abort if you observe cancellation.
+    ///
+    /// The future may be dropped at any await when its budget expires or its
+    /// runtime stops. Owned tasks and handles therefore need a synchronous
+    /// drop fallback (for example, abort-on-drop ownership for spawned tasks).
+    /// Dropping a bare task handle does not stop its task. Keep polls and Drop
+    /// non-blocking: the cooperative timeout cannot preempt either.
     async fn destroy(&self, instance: Self::Instance, cx: TeardownCx) -> Result<(), crate::Error> {
         let _ = (instance, cx);
         Ok(())

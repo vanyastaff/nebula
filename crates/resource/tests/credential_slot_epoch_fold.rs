@@ -20,9 +20,12 @@
 //!    treat the runtime as stale and deliver `on_credential_refresh`
 //!    (the end-to-end rotation invariant).
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicU32, AtomicUsize, Ordering},
+use std::{
+    assert_matches,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, AtomicUsize, Ordering},
+    },
 };
 
 use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
@@ -422,9 +425,14 @@ async fn resident_reconcile_fires_when_non_max_slot_rotates() {
     resource
         .slot_a
         .store(Arc::new(CredentialGuard::new(FakeCred(99))));
-    mgr.refresh_slot(&TwoSlotResident::key(), ScopeLevel::Global, "slot_a")
+    let outcome = mgr
+        .refresh_slot(&TwoSlotResident::key(), ScopeLevel::Global, "slot_a")
         .await
         .expect("refresh_slot must succeed (the hook ran — a real success)");
+    assert_matches!(
+        outcome,
+        nebula_resource::SlotDispatchOutcome::Completed { .. }
+    );
 
     assert_eq!(
         refresh_calls.load(Ordering::SeqCst),

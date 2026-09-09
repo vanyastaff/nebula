@@ -5,7 +5,7 @@ Type-safe, topology-aware resource management for the Nebula workflow engine.
 clients — database connections, HTTP clients, message-queue producers, and
 anything else that is costly to create and should be reused across executions.
 It handles the full operational lifecycle: create → health-check → recycle →
-shutdown → destroy, with credential rotation, recovery gating, and lifecycle
+consuming destroy, with credential rotation, recovery gating, and lifecycle
 event streaming.
 
 > **Maturity: `frontier`.** The public API still evolves between minor releases.
@@ -25,7 +25,7 @@ read `src/lib.rs`'s module doc directly) and the doctest on
 
 | Type | Role |
 |------|------|
-| `Provider` | Central trait — `Config`/`Instance`/`Topology` associated types + lifecycle methods (`create`, `check`, `shutdown`, `destroy`) + per-slot credential-rotation hooks (`on_credential_refresh`, `on_credential_revoke`) |
+| `Provider` | Central trait — `Config`/`Instance`/`Topology` associated types + lifecycle methods (`create`, `check`, consuming `destroy`) + per-slot credential-rotation hooks (`on_credential_refresh`, `on_credential_revoke`) |
 | `Resource` (derive) | Emits credential-slot plumbing (`HasCredentialSlots`, `<field>_slot()` accessors) for a hand-written `impl Provider` |
 | `Pooled` / `Resident` / `Bounded` | The three built-in topologies — see below |
 | `Manager` | Central registry — single `register(RegistrationSpec { … })` funnel, typed acquire dispatch (`acquire_any`, `acquire_pooled[_for_identity]`, `acquire_resident[_for_identity]`, `acquire_bounded[_for_identity]`), slot rotation, graceful shutdown |
@@ -40,12 +40,21 @@ read `src/lib.rs`'s module doc directly) and the doctest on
 | Topology | Instance model | Use when | Example |
 |----------|-----------------|----------|---------|
 | `Pooled` | N interchangeable instances, checkout/recycle | Stateful, interchangeable connections | PostgreSQL, Redis |
-| `Resident` | One shared instance, `Arc::clone` on acquire | Cheap-to-clone client shared widely | `reqwest::Client`, in-memory cache, OAuth/token-gated SDK clients |
+| `Resident` | One retained instance with owning lease entries | One runtime should be shared widely without requiring `Instance: Clone` | `reqwest::Client`, in-memory cache, OAuth/token-gated SDK clients |
 | `Bounded` | Concurrency-capped, no warm idle pool | Scarce non-warmable capacity | License seats, a serial-exclusive device |
 
 `type Topology` is static per resource type; only its *config* (sizes, cap) is
 a runtime value. See [`topology-reference.md`](topology-reference.md) for a
 per-topology trait skeleton, decision matrix, and friction-point checklist.
+
+Custom topologies are trusted in-process plugins. The framework drives the
+normal acquire/release path, but hooks receive an `InstanceStore` whose public
+capabilities include ownership transfer through `drain_all`. The type system
+cannot stop plugin code from draining, dropping, or hiding an alias outside a
+framework cleanup submission. `TaskLoss` and abandonment metrics therefore
+cover only work accepted by framework-owned cleanup paths, not ownership lost
+inside a custom plugin. Built-in topologies keep all lifecycle ownership on the
+framework path; custom authors must preserve the same contract.
 
 > **Background workers and event sources** live in
 > [`nebula-engine`](https://docs.rs/nebula-engine) (`nebula_engine::daemon::*`).
@@ -84,11 +93,11 @@ runnable doctest on the `ClassifyError` re-export in `src/lib.rs`.
 | Capability | How to enable |
 |------------|---------------|
 | Bounded connection pooling | `RegistrationSpec { topology: Pooled::new(..), .. }` |
-| Shared singleton with clone-on-acquire | `RegistrationSpec { topology: Resident::new(..), .. }` |
+| Shared retained runtime with owning leases | `RegistrationSpec { topology: Resident::new(..), .. }` |
 | Concurrency cap without a warm pool | `RegistrationSpec { topology: Bounded::capped(n) / exclusive() / unbounded(), .. }` |
 | Fast-fail during backend recovery | `RegistrationSpec::recovery_gate: Some(Arc<RecoveryGate>)` |
 | Config hot-reload (fingerprint-based) | Implement `ResourceConfig::fingerprint`; call `Manager::reload_config` |
-| Per-tenant credential isolation | Build `SlotIdentity::from_bindings(…)` and acquire via `acquire_<topology>_for_identity` |
+| Resolved-binding row separation | Build `SlotIdentity::from_bindings(…)` and acquire via `acquire_<topology>_for_identity`; authenticate and authorize the tenant at host admission |
 | Lifecycle event stream | `manager.subscribe_events()` → `Subscriber<ResourceEvent>` |
 | Async background cleanup | `ReleaseQueue` (owned by `Manager`, transparent to callers) |
 | Atomic operation counters | `manager.metrics()` → `Option<&ResourceOpsMetrics>` |
@@ -107,7 +116,7 @@ crates/resource/
 ├── src/
 │   ├── lib.rs              re-exports, crate-level docs (Quick Start, topology table, error taxonomy)
 │   ├── resource.rs         Provider trait, ResourceConfig, HasCredentialSlots, ResourceMetadata
-│   ├── slot.rs / cell.rs   SlotCell (public, generation-stamped) vs internal epoch-blind Cell
+│   ├── slot.rs             Public, generation-stamped credential SlotCell
 │   ├── manager/            Manager: register/registration, acquire, gate, rotation, shutdown, options
 │   ├── registry.rs         Registry, type-erased managed-handle storage, scope-aware lookup
 │   ├── guard.rs            ResourceGuard — RAII acquire lease
@@ -120,8 +129,8 @@ crates/resource/
 │   ├── release_queue.rs    ReleaseQueue — background async cleanup workers
 │   ├── reload.rs           ReloadOutcome (NoChange / SwappedImmediately)
 │   ├── recovery/           RecoveryGate, RecoveryTicket, RecoveryWaiter, GateState
-│   ├── runtime/            per-topology runtime structs (Pooled, Resident, Bounded) + ManagedResource
-│   ├── topology/           the open Topology<R> contract + per-topology hook traits + InstanceStore
+│   ├── runtime/            per-topology runtimes + ManagedResource + framework RetainedStore owner
+│   ├── topology/           open Topology<R> contract + hook traits + public store capabilities
 │   ├── factory.rs          ResourceFactory / KindActivator — erased plugin-registration bridge
 │   └── credential_fanout/  [feature `rotation`] per-slot rotation fan-out driver + reverse index
 └── docs/

@@ -32,8 +32,10 @@ pub enum DrainTimeoutPolicy {
     Abort,
     /// On drain timeout, log, clear the registry anyway, and report the
     /// outstanding-handle count in [`ShutdownReport`](super::ShutdownReport).
-    /// Opt-in escape hatch for supervisors that must exit on a deadline
-    /// regardless of cost.
+    /// The report is explicitly incomplete (`release_queue_drained = false`).
+    /// Cleanup stays open for late handles while the manager remains alive;
+    /// dropping the manager ends that opportunity. This does not revoke
+    /// Rust references or prove that external activity has stopped.
     Force,
 }
 
@@ -41,12 +43,20 @@ pub enum DrainTimeoutPolicy {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ShutdownConfig {
-    /// How long to wait for in-flight handles to be released.
+    /// How long to wait for in-flight handles from the first shutdown call.
+    /// Retained and idle roots retire concurrently so their child guards can release.
+    /// Cancellation and retry preserve this original deadline and policy.
     pub drain_timeout: Duration,
     /// What to do on drain timeout. Default: [`DrainTimeoutPolicy::Abort`].
     pub on_drain_timeout: DrainTimeoutPolicy,
-    /// Upper bound on how long the release-queue drain phase will wait
-    /// for release-queue workers to finish processing outstanding tasks.
+    /// Cooperative budget for terminal publication, retirement and release-worker joining.
+    /// Finalization gets at most this duration and never extends past the first call's
+    /// `drain_timeout + release_queue_timeout` envelope. On expiry owned tasks are
+    /// aborted and their termination is awaited. Publication/finalization failure with
+    /// live guards retains release workers for late cleanup while the manager lives.
+    /// Blocking future polls or destructors cannot be preempted by Tokio, so
+    /// abort acknowledgement may exceed this budget. This ownership includes
+    /// cooperative nested cleanup and the bounded rescue dispatcher.
     pub release_queue_timeout: Duration,
 }
 
@@ -96,10 +106,21 @@ impl ShutdownConfig {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ManagerConfig {
-    /// Number of background workers for the release queue.
+    /// Number of background workers in each cleanup execution lane.
+    ///
+    /// Entry release and framework coordinator lanes each receive this many
+    /// workers so a coordinator waiting for leases cannot starve their return.
     ///
     /// Defaults to 2.
     pub release_queue_workers: usize,
+    /// Maximum number of retirement commands waiting for the bounded supervisor.
+    ///
+    /// One whole-key removal is one `RetireBatch` command and can own multiple
+    /// rows; active row teardowns are bounded separately by the supervisor's
+    /// worker concurrency. Synchronous replacement and removal return typed
+    /// backpressure before mutating the registry when command capacity is
+    /// exhausted. Defaults to 256.
+    pub retirement_queue_capacity: usize,
     /// Optional shared metrics registry for telemetry counters.
     ///
     /// When `Some`, the manager records resource operation counters
@@ -135,6 +156,7 @@ impl Default for ManagerConfig {
     fn default() -> Self {
         Self {
             release_queue_workers: 2,
+            retirement_queue_capacity: 256,
             metrics_registry: None,
             acquire_slow_threshold: None,
         }
@@ -146,6 +168,13 @@ impl ManagerConfig {
     #[must_use]
     pub fn with_release_queue_workers(mut self, workers: usize) -> Self {
         self.release_queue_workers = workers;
+        self
+    }
+
+    /// Sets the bounded retirement-publication capacity.
+    #[must_use]
+    pub fn with_retirement_queue_capacity(mut self, capacity: usize) -> Self {
+        self.retirement_queue_capacity = capacity.max(1);
         self
     }
 

@@ -352,7 +352,6 @@ impl<R: Provider> Pooled<R> {
 impl<R> Pooled<R>
 where
     R: PoolProvider + Clone + Send + Sync + 'static,
-    R::Instance: Clone,
 {
     /// Creates a new pool entry via `resource.create()`.
     ///
@@ -428,7 +427,6 @@ where
 impl<R> Topology<R> for Pooled<R>
 where
     R: Provider<Topology = Pooled<R>> + PoolProvider + Clone + Send + Sync + 'static,
-    R::Instance: Clone + Send + Sync + 'static,
 {
     type Entry = PoolEntry<R>;
 
@@ -445,16 +443,19 @@ where
         resource: &R,
         config: &R::Config,
         ctx: &ResourceContext,
-    ) -> Result<PoolEntry<R>, Error> {
-        self.create_pool_entry(resource, config, ctx).await
+        _retained: &crate::RetainedStore<Self::Entry>,
+    ) -> Result<crate::topology::CreatedEntry<PoolEntry<R>>, Error> {
+        self.create_pool_entry(resource, config, ctx)
+            .await
+            .map(crate::topology::CreatedEntry::new)
     }
 
     fn entry_instance<'s>(&self, entry: &'s PoolEntry<R>) -> &'s R::Instance {
         &entry.instance
     }
 
-    fn into_instance(&self, entry: PoolEntry<R>) -> R::Instance {
-        entry.instance
+    fn into_owned_instance(&self, entry: PoolEntry<R>) -> Option<R::Instance> {
+        Some(entry.instance)
     }
 
     async fn accept(&self, entry: &mut PoolEntry<R>, resource: &R, _ctx: &ResourceContext) -> bool {
@@ -547,9 +548,10 @@ where
         &self,
         resource: &R,
         store: &InstanceStore<PoolEntry<R>>,
+        _retained: &crate::RetainedStore<Self::Entry>,
         slot: &str,
         refresh: bool,
-    ) -> Result<(), Error> {
+    ) -> Result<(), crate::topology::HookFault> {
         // Walk the framework idle store under its lock so no checkout / return
         // can interleave mid-rotation — the same lock `checkout` / `return_entry`
         // take. The store reference is granted by the framework dispatcher; the
@@ -575,7 +577,7 @@ where
         // (rotation is rare, and a hung per-entry hook is itself the
         // pathological case this bounds).
         let idle = store.lock_idle().await;
-        let mut first_err: Option<Error> = None;
+        let mut first_fault: Option<crate::topology::HookFault> = None;
         let hook_op = if refresh {
             "on_credential_refresh"
         } else {
@@ -591,7 +593,7 @@ where
             // at its own boundary and the loop continues normally, so the
             // lock still releases via ordinary `Drop` when this function
             // returns.
-            let res = match crate::hook_guard::guard_author_hook(
+            let result = match crate::hook_guard::guard_author_hook(
                 crate::hook_guard::DEFAULT_AUTHOR_HOOK_CEILING,
                 async {
                     if refresh {
@@ -607,43 +609,51 @@ where
             )
             .await
             {
-                Ok(res) => res,
+                Ok(result) => result.map_err(crate::topology::HookFault::Failed),
                 Err(fault) => {
                     fault.observe(&R::key(), "rotation");
                     Err(match fault {
-                        crate::hook_guard::HookFault::Panicked => Error::permanent(format!(
-                            "pool {hook_op} hook panicked for an idle instance — caught \
-                             and isolated under panic=unwind (fan-out not crashed); \
-                             inert under panic=abort"
-                        )),
-                        crate::hook_guard::HookFault::TimedOut => Error::backpressure(format!(
-                            "pool {hook_op} hook did not complete within {:?} for an \
-                             idle instance",
-                            crate::hook_guard::DEFAULT_AUTHOR_HOOK_CEILING
-                        )),
+                        crate::hook_guard::HookFault::Panicked => {
+                            crate::topology::HookFault::Failed(Error::permanent(format!(
+                                "pool {hook_op} hook panicked for an idle instance — caught \
+                                 and isolated under panic=unwind (fan-out not crashed); \
+                                 inert under panic=abort"
+                            )))
+                        },
+                        crate::hook_guard::HookFault::TimedOut => {
+                            crate::topology::HookFault::TimedOut
+                        },
                     })
                 },
             };
-            if let Err(error) = res {
+            if let Err(fault) = result {
                 // Surface EVERY per-entry hook failure. Returning only the
                 // first would silently hide a partial rotation where some
                 // idle instances refreshed and others did not, leaving them
                 // in an uncertain credential state. The hook error is the
                 // author's, already redacted (never credential material).
-                tracing::warn!(
-                    resource = %R::key(),
-                    slot,
-                    refresh,
-                    %error,
-                    "credential rotation hook failed for an idle pool instance"
-                );
-                if first_err.is_none() {
-                    first_err = Some(error);
+                match &fault {
+                    crate::topology::HookFault::Failed(error) => tracing::warn!(
+                        resource = %R::key(),
+                        slot,
+                        refresh,
+                        %error,
+                        "credential rotation hook failed for an idle pool instance"
+                    ),
+                    crate::topology::HookFault::TimedOut => tracing::warn!(
+                        resource = %R::key(),
+                        slot,
+                        refresh,
+                        "credential rotation hook timed out for an idle pool instance"
+                    ),
+                }
+                if first_fault.is_none() {
+                    first_fault = Some(fault);
                 }
             }
         }
-        match first_err {
-            Some(e) => Err(e),
+        match first_fault {
+            Some(fault) => Err(fault),
             None => Ok(()),
         }
     }
@@ -828,7 +838,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn entry_instance_and_into_instance_round_trip() {
+    async fn entry_instance_and_into_owned_instance_round_trip() {
         let resource = MockPool::new();
         let topo = mock_pool(Config::default(), 0);
         let entry = topo
@@ -836,8 +846,12 @@ mod tests {
             .await
             .expect("create");
         let id = *topo.entry_instance(&entry);
-        let owned = topo.into_instance(entry);
-        assert_eq!(owned, id, "into_instance returns the same instance");
+        let owned = topo.into_owned_instance(entry);
+        assert_eq!(
+            owned,
+            Some(id),
+            "ownership conversion returns the same instance"
+        );
     }
 
     #[tokio::test]
@@ -1200,9 +1214,15 @@ mod tests {
             let _ = store.return_entry(entry, epoch).await;
         }
 
-        topo.dispatch_credential_hook(&resource, &store, "db", false)
-            .await
-            .expect("rotation dispatch");
+        topo.dispatch_credential_hook(
+            &resource,
+            &store,
+            &crate::RetainedStore::for_test(),
+            "db",
+            false,
+        )
+        .await
+        .expect("rotation dispatch");
         assert_eq!(
             resource.revoke_calls.load(Ordering::SeqCst),
             2,
@@ -1237,15 +1257,26 @@ mod tests {
         *resource.panic_revoke_for.lock().unwrap() = Some(0);
 
         let outcome = topo
-            .dispatch_credential_hook(&resource, &store, "db", false)
+            .dispatch_credential_hook(
+                &resource,
+                &store,
+                &crate::RetainedStore::for_test(),
+                "db",
+                false,
+            )
             .await;
         assert!(
             outcome.is_err(),
             "a panicking per-entry hook must surface as a typed error, not \
              a silent success"
         );
+        let crate::topology::HookFault::Failed(error) =
+            outcome.expect_err("panic must produce a hook fault")
+        else {
+            panic!("an isolated hook panic must not be classified as a timeout")
+        };
         assert!(
-            !outcome.unwrap_err().is_retryable(),
+            !error.is_retryable(),
             "an isolated hook panic is a permanent author-hook bug"
         );
         assert_eq!(

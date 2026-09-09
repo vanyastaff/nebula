@@ -32,6 +32,7 @@
 //! exposed the defect and assert the fenced outcome.
 
 use std::{
+    assert_matches,
     future::Future,
     sync::{
         Arc,
@@ -272,9 +273,14 @@ async fn revoked_credential_not_reserved_via_idle_recycle() {
     // 3. Revoke now. The idle queue is empty (the instance is parked in the
     //    release path), so the pool revoke hook walks nothing — this is the
     //    TOCTOU: the escaped instance is never visited by the hook.
-    mgr.revoke_slot(&PoolResource::key(), ScopeLevel::Global, "db")
+    let outcome = mgr
+        .revoke_slot(&PoolResource::key(), ScopeLevel::Global, "db")
         .await
         .expect("revoke_slot must succeed");
+    assert_matches!(
+        outcome,
+        nebula_resource::SlotDispatchOutcome::Completed { .. }
+    );
     assert_eq!(
         resource.revoke_calls.load(Ordering::SeqCst),
         0,
@@ -450,9 +456,14 @@ async fn revoked_pre_existing_idle_instance_not_reserved() {
     // 2. Revoke. The pool revoke hook now walks the one idle entry and marks
     //    it revoked — but the entry remains in the idle queue (the hook does
     //    not evict; the revoke counter was bumped synchronously).
-    mgr.revoke_slot(&PoolResource::key(), ScopeLevel::Global, "db")
+    let outcome = mgr
+        .revoke_slot(&PoolResource::key(), ScopeLevel::Global, "db")
         .await
         .expect("revoke_slot must succeed");
+    assert_matches!(
+        outcome,
+        nebula_resource::SlotDispatchOutcome::Completed { .. }
+    );
     assert_eq!(
         resource.revoke_calls.load(Ordering::SeqCst),
         1,

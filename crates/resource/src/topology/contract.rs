@@ -6,37 +6,87 @@
 //! the fenced [`InstanceStore::checkout`](crate::topology::store::InstanceStore::checkout),
 //! the stale-entry destroy, the create-or-accept decision, the cancel-safe
 //! guard-wrap, and the on-release return-or-destroy. The topology supplies only
-//! thin, R-aware policy hooks (`create_entry` / `entry_instance` / `into_instance`
-//! / `accept` / `prepare` / `on_release` / …) that it **cannot** use to skip the
-//! credential-revoke fence.
+//! thin, R-aware policy hooks (`create_entry` / `entry_instance` / `into_owned_instance`
+//! / `accept` / `prepare` / `on_release` / …). The built-in implementations
+//! leave checkout, fencing, and destruction to the framework path.
 //!
 //! This is the inversion the open trait exists for: a custom topology author
-//! writes zero `store.checkout()` / `resource.destroy()` / stale-loop /
-//! epoch-compare code. The fence is framework-owned for **every** topology —
-//! built-in and custom alike — by construction, not by author discipline.
+//! normally writes zero `store.checkout()` / `resource.destroy()` / stale-loop /
+//! epoch-compare code. Custom topology code is nevertheless a trusted in-process
+//! plugin: hooks receive an [`InstanceStore`] whose public capabilities include
+//! ownership-transferring operations such as [`InstanceStore::drain_all`]. The
+//! type system cannot prevent a plugin from draining, dropping, or aliasing an
+//! entry outside framework submission.
 //!
 //! # Storage safety
 //!
-//! Every store-bearing method receives a lifetime-bound
-//! `&InstanceStore<Self::Entry>` it cannot retain past the call. It therefore
-//! cannot build a cross-scope instance cache that bypasses the per-tenant
-//! [`SlotIdentity`] fence. Cross-tenant runtime bleed is prevented by API shape,
-//! not author discipline.
-//!
-//! [`SlotIdentity`]: crate::dedup::SlotIdentity
-//! [`InstanceStore`]: crate::topology::store::InstanceStore
+//! Store-bearing hooks receive the framework-owned store. Its clone shares
+//! the same terminal and revoke fences; it is not tenant authorization.
+//! Trusted topology authors must not cache entries across registration scopes,
+//! drain the store outside the documented lifecycle, or retain untracked aliases.
+//! Framework abandonment accounting observes only work submitted through
+//! framework-owned cleanup paths; it cannot observe ownership discarded inside
+//! plugin code.
 
 use std::{future::Future, time::Duration};
 
 use tokio::sync::OwnedSemaphorePermit;
 
 use crate::{
+    RetainedStore,
     context::ResourceContext,
     error::{Error, ErrorKind},
     resource::Provider,
     topology::store::{InstanceStore, PoolStrategy},
     topology_tag::TopologyTag,
 };
+
+/// Ownership transferred from topology creation to the framework.
+///
+/// Retained roots and displaced owners stay in the framework's [`RetainedStore`].
+#[derive(Debug)]
+#[must_use = "the framework must assume ownership of the created entry"]
+pub struct CreatedEntry<E> {
+    entry: E,
+}
+
+/// Typed failure of a topology-driven credential hook dispatch.
+///
+/// This boundary preserves framework timeout semantics without inferring them
+/// from an [`Error`] message or retry category. Custom topologies return
+/// [`Failed`](Self::Failed) for provider/topology errors and
+/// [`TimedOut`](Self::TimedOut) only when their bounded hook execution elapsed.
+#[derive(Debug, thiserror::Error)]
+#[must_use = "credential hook faults must be settled as failure or timeout"]
+#[non_exhaustive]
+pub enum HookFault {
+    /// Provider or topology hook returned an error.
+    #[error(transparent)]
+    Failed(#[from] Error),
+    /// The topology's bounded credential hook execution elapsed.
+    #[error("credential topology hook timed out")]
+    TimedOut,
+}
+
+impl<E> CreatedEntry<E> {
+    /// Wraps a freshly created topology entry for transfer to the framework.
+    ///
+    /// Any retained-root publication or displacement is performed separately
+    /// through the framework-owned [`RetainedStore`].
+    pub fn new(entry: E) -> Self {
+        Self { entry }
+    }
+
+    /// Borrows the newly leased entry.
+    pub fn entry(&self) -> &E {
+        &self.entry
+    }
+
+    /// Transfers the fresh lease to its framework owner.
+    pub fn into_entry(self) -> E {
+        self.entry
+    }
+}
 
 // ─── AdmissionPhase ──────────────────────────────────────────────────────────
 
@@ -311,7 +361,7 @@ impl Ticket {
 /// [`evict_stale`](crate::topology::store::InstanceStore::evict_stale) (revoke
 /// fence) plus the per-entry [`Topology::idle_evictable`] predicate
 /// (fingerprint / max-lifetime / idle-timeout), destroying evicted entries via
-/// [`Topology::into_instance`] → [`Provider::destroy`].
+/// [`Topology::into_owned_instance`] → [`Provider::destroy`].
 #[derive(Debug, Clone, Copy)]
 pub struct MaintenanceSchedule {
     /// Idle-timeout TTL, if configured.
@@ -329,8 +379,8 @@ pub struct MaintenanceSchedule {
 /// A `Topology<R>` describes *how* already-built, already-authorized instances
 /// are leased to callers under concurrency — but the **framework owns the
 /// acquire loop and the credential-revoke fence**. The topology supplies thin
-/// R-aware hooks the framework calls *inside* its own loop; it cannot reach the
-/// store's fence, retain the store, or skip stale-entry destruction.
+/// R-aware hooks the framework calls *inside* its own loop. Topology policy
+/// must not implement a competing store or destruction path.
 ///
 /// # Entry-centric
 ///
@@ -341,41 +391,34 @@ pub struct MaintenanceSchedule {
 /// round-trip:
 ///
 /// - **Pooled**: `Entry = PoolEntry<R>` (instance + metrics + fingerprint).
-/// - **Resident**: `Entry = R::Instance` (the cloned shared handle); `pools() ==
-///   false`, so a released clone is dropped, never pooled.
+/// - **Resident**: `Entry = Arc<R::Instance>`; a retained master and its leases
+///   share ownership. Final-owner extraction alone yields a destroyable instance.
 /// - **Permit-only**: a thin id/handle entry, or `()`-shaped.
 ///
 /// # The framework acquire loop (what the topology does NOT write)
 ///
-/// ```text
-/// let ticket = topology.try_reserve(&store)?;           // sync gate
-/// loop {
-///     let checkout = store.checkout().await;            // FRAMEWORK fences on pop
-///     for stale in checkout.stale {                     // FRAMEWORK destroys stale
-///         resource.destroy(topology.into_instance(stale)).await;
-///     }
-///     match checkout.fresh {
-///         Some(co) => { let (mut entry, epoch) = co.into_parts();
-///                       if topology.accept(&mut entry, …).await { break (entry, epoch); }
-///                       resource.destroy(topology.into_instance(entry)).await; }
-///         None => break (topology.create_entry(…).await?, store.stamp_epoch()),
-///     }
-/// }
-/// // CreateGuard-wrap (cancel-safety) → topology.prepare(&mut entry, …).await? → build guard
-/// // Guard Deref = topology.entry_instance(&entry).
-/// // On drop: topology.on_release(&mut entry)?; if pools() && kept
-/// //          store.return_entry(entry, epoch) else destroy(into_instance(entry)).
-/// ```
+/// The framework reserves capacity, snapshots the credential epoch, and
+/// checks out a fenced entry or calls `create_entry`. It immediately arms the
+/// active entry and transfers all stale/displaced entries to cleanup ownership
+/// before any subsequent await. After `accept` and `prepare`, a guard owns
+/// that same entry. Release runs policy then either returns it through the
+/// terminal/revoke fence or extracts its final owner for destruction.
 ///
-/// A topology that finds itself writing `store.checkout()`, `resource.destroy`,
-/// a stale-entry loop, or a revoke epoch-compare is doing the framework's job —
-/// that logic belongs in the framework loop, not in a `Topology` hook.
+/// A topology that writes `resource.destroy`, a competing checkout loop, or
+/// a revoke epoch-compare is doing the framework's job.
 ///
-/// # Storage safety
+/// # Storage and trust
 ///
-/// Every store-bearing method receives a `&InstanceStore<Self::Entry>` whose
-/// borrow does not exceed the call, so the topology cannot retain the store or
-/// build a cross-scope cache that bypasses the per-tenant `SlotIdentity` fence.
+/// Cloning a borrowed `InstanceStore` shares its fences; borrowing alone does
+/// not prevent retention. The store and `SlotIdentity` are not tenant authority.
+/// Trusted custom topologies must preserve registration scope and transfer
+/// retained owners in [`RetainedStore`]; they must not hide lifecycle owners
+/// inside topology fields. Terminal `quiesce` receives no entry ownership.
+/// Accounting covers only owners published into the framework stores. Cloning
+/// strong aliases out of retained leases or forgetting those aliases/leases
+/// violates this mandatory lifecycle contract; the type system cannot prevent
+/// such escapes by trusted in-process plugins. Built-in Resident keeps its
+/// retained root in the store and uses scoped leases for temporary sharing.
 ///
 /// # Not a trait object
 ///
@@ -395,13 +438,13 @@ pub struct MaintenanceSchedule {
 /// An implementor writes plain `async fn` bodies; only the returned future must
 /// be `Send`.
 ///
-/// Sync hooks (`try_reserve`, `entry_instance`, `into_instance`, `phase`,
+/// Sync hooks (`try_reserve`, `entry_instance`, `into_owned_instance`, `phase`,
 /// `load`, `pools`, …) stay plain sync.
 pub trait Topology<R: Provider>: Send + Sync + 'static {
     /// The leasable unit the framework stores and the guard holds.
     ///
     /// - Pooled: `PoolEntry<R>` (one connection handle + metrics).
-    /// - Resident: `R::Instance` (the cloned shared handle).
+    /// - Resident: `Arc<R::Instance>` (a shared owning lease).
     /// - Permit-only: a thin id/handle, or `()`-shaped.
     type Entry: Send + Sync + 'static;
 
@@ -432,30 +475,37 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
     /// Make one fresh, credential-resolved leasable entry.
     ///
     /// Pooled builds `PoolEntry { instance: <R::create>, metrics: now,
-    /// fingerprint }`; Resident clones the shared master handle into
-    /// `Entry = R::Instance`; a permit pool stores an id/handle. Credentials
+    /// fingerprint }`; Resident shares its master via `Arc<R::Instance>`;
+    /// a permit pool stores an id/handle. Credentials
     /// are resolved into the resource's slot cells before this runs. The
     /// framework drives it on an idle-miss (during acquire) and during
     /// warmup.
     ///
+    /// Store strong retained roots in `retained`; keep only [`crate::RetainedId`],
+    /// metadata, or weak references in topology fields. Publication rejected by
+    /// the terminal fence still transfers the supplied entry to framework cleanup.
+    ///
     /// # Errors
     ///
-    /// Returns the create/clone error; the framework fails the acquire and
+    /// Returns the entry creation or sharing error; the framework fails the acquire and
     /// drops the held permit, releasing capacity.
     fn create_entry(
         &self,
         resource: &R,
         config: &R::Config,
         ctx: &ResourceContext,
-    ) -> impl Future<Output = Result<Self::Entry, Error>> + Send;
+        retained: &RetainedStore<Self::Entry>,
+    ) -> impl Future<Output = Result<CreatedEntry<Self::Entry>, Error>> + Send;
 
     /// Project a held entry to its leasable instance — the guard's `Deref`
     /// target. Pooled: `&entry.instance`; Resident: the entry itself.
     fn entry_instance<'s>(&self, entry: &'s Self::Entry) -> &'s R::Instance;
 
-    /// Consume an entry back into its instance for [`Provider::destroy`]
-    /// (stale-fenced / accept-rejected / maintenance-evicted / non-pooled
-    /// entries). Pooled: `entry.instance`; Resident: identity.
+    /// Consumes an entry and yields its instance only when this owner may destroy it.
+    ///
+    /// Exclusive entries return `Some(instance)`. Shared entries return `None`
+    /// while a retained master or another lease owns the instance; the final
+    /// owner returns `Some`. All lifecycle owners must use this conversion.
     // guard-justified: `&self` borrows the framework-owned topology while the
     // `entry` argument is consumed — `into_*` names the entry→instance
     // conversion, not a `self`-consuming builder, so wrong_self_convention is a
@@ -464,14 +514,27 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
         clippy::wrong_self_convention,
         reason = "topology is borrowed, the entry argument is consumed; the conversion is entry→instance"
     )]
-    fn into_instance(&self, entry: Self::Entry) -> R::Instance;
+    fn into_owned_instance(&self, entry: Self::Entry) -> Option<R::Instance>;
+
+    /// Quiesces policy-owned background state after the framework closes stores.
+    ///
+    /// This hook never receives entry ownership. Even if it fails, panics, or
+    /// hangs, the framework drains retained roots and tears them down separately.
+    /// It runs while issued guards may still be live: it must neither invalidate
+    /// their instances nor wait for those guards to release. Stop only policy-owned
+    /// background work here. Physical shutdown belongs exclusively to
+    /// [`Provider::destroy`] after [`Self::into_owned_instance`] yields the final owner.
+    /// Relinquishing a retained root does not physically destroy a shared instance.
+    fn quiesce(&self) -> impl Future<Output = Result<(), Error>> + Send {
+        async { Ok(()) }
+    }
 
     /// Validate a checked-out idle entry **in place** before it is leased
     /// (Pooled: stale-fingerprint / max-lifetime / `is_broken` /
     /// `test_on_checkout`).
     ///
     /// `false` ⇒ the framework destroys the entry
-    /// ([`into_instance`](Topology::into_instance) → [`Provider::destroy`]) and
+    /// ([`into_owned_instance`](Topology::into_owned_instance) → [`Provider::destroy`]) and
     /// loops to the next idle entry, then `create_entry`. Default `true` (no
     /// post-checkout policy).
     fn accept(
@@ -524,7 +587,7 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
     /// Whether a released, kept entry returns to the framework idle store.
     ///
     /// Pooled: `true`; Resident / pure-permit: `false` (a released entry is
-    /// dropped via `into_instance` → destroy, never pooled). Default `false`.
+    /// dropped via `into_owned_instance` → destroy, never pooled). Default `false`.
     fn pools(&self) -> bool {
         false
     }
@@ -540,9 +603,9 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
     /// [`dispatch_credential_hook`](Topology::dispatch_credential_hook). A
     /// topology that holds credential-bound state on `pools() == false` MUST
     /// override both this (to `true`) and the hook, or a revoked credential
-    /// keeps serving. Registration warns in release and `debug_assert!`s in
-    /// debug when resolved slot bindings are non-empty and this stays `false`
-    /// on a non-pooling topology.
+    /// keeps serving. Typed and resolved registration return a permanent
+    /// error when the resource declares credential slots and this stays
+    /// `false` on a non-pooling topology, even before any slot is bound.
     ///
     /// Ignored when [`pools`](Topology::pools) is `true` (the store fence
     /// covers pooled entries). Default `false` — a non-pooling topology opts in
@@ -608,8 +671,8 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
     /// The framework passes the borrowed `&InstanceStore<Self::Entry>` so a
     /// pooling topology can walk its idle entries under the store lock (the
     /// same lock `checkout` / `return_entry` take, so no checkout can
-    /// interleave mid-rotation). The borrow does not exceed the call; the
-    /// topology cannot retain it.
+    /// interleave mid-rotation). A cloned store still shares its fences;
+    /// trusted policy must not retain entries beyond their registration scope.
     ///
     /// `refresh = true` selects `Provider::on_credential_refresh`, `false`
     /// `Provider::on_credential_revoke`. Default no-op: a topology with no
@@ -619,21 +682,30 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
     /// credential-bearing singleton — a gRPC channel, a WebSocket) that is
     /// **not** in the framework store cannot be reached by the store's
     /// revoke-epoch fence, so its revoke teardown MUST run here. The default
-    /// no-op leaks streams on revoke for such a topology; the framework emits a
-    /// register-time warning when `pools() == false` and the resource declares
-    /// ≥1 credential slot.
+    /// no-op leaks streams on revoke for such a topology; registration rejects
+    /// a credential-bearing non-pooling topology unless it declares
+    /// [`handles_own_revoke`](Topology::handles_own_revoke).
     ///
     /// # Errors
     ///
-    /// Returns the first hook error; the framework surfaces it to the rotation
-    /// dispatch caller.
+    /// Returns the first typed hook fault; the framework preserves timeout as
+    /// terminal timeout accounting instead of collapsing it into an error.
+    ///
+    /// # Panics
+    ///
+    /// Custom topologies are trusted in-process plugins. Under
+    /// `panic = "unwind"`, the framework boundary converts a panic into a
+    /// terminal failed observation. Under `panic = "abort"`, Rust terminates
+    /// the process before any framework settlement can run; no API can
+    /// provide in-process recovery in that build mode.
     fn dispatch_credential_hook(
         &self,
         _resource: &R,
         _store: &InstanceStore<Self::Entry>,
+        _retained: &RetainedStore<Self::Entry>,
         _slot: &str,
         _refresh: bool,
-    ) -> impl Future<Output = Result<(), Error>> + Send {
+    ) -> impl Future<Output = Result<(), HookFault>> + Send {
         async { Ok(()) }
     }
 
@@ -696,7 +768,8 @@ impl<R: Provider> Topology<R> for NoTopology {
         _resource: &R,
         _config: &R::Config,
         _ctx: &ResourceContext,
-    ) -> Result<R::Instance, Error> {
+        _retained: &RetainedStore<Self::Entry>,
+    ) -> Result<CreatedEntry<R::Instance>, Error> {
         Err(Error::permanent(
             "NoTopology: this resource is not leased through the resource Manager",
         ))
@@ -706,7 +779,7 @@ impl<R: Provider> Topology<R> for NoTopology {
         entry
     }
 
-    fn into_instance(&self, entry: R::Instance) -> R::Instance {
-        entry
+    fn into_owned_instance(&self, entry: R::Instance) -> Option<R::Instance> {
+        Some(entry)
     }
 }

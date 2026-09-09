@@ -1,0 +1,5 @@
+error[E0599]: no method named `with_entry` found for reference `&RetainedStore<u32>` in the current scope
+ --> tests/probes/retained_store_has_no_callback_access.rs:4:11
+  |
+4 |     store.with_entry(id, |_| store.retire(id));
+  |           ^^^^^^^^^^ method not found in `&RetainedStore<u32>`

@@ -1,10 +1,9 @@
-//! Admission-surface tests: `AdmissionPhase`, `Load`, `try_reserve_gate`,
-//! and the `acquire_any` backpressure path.
+//! Admission-surface tests: `AdmissionPhase`, `Load`, and the manager's
+//! authoritative acquire gate.
 //!
 //! Verifies that:
 //! - A pool at max capacity reports `AdmissionPhase::Saturated` and
 //!   `Load { saturation: 1.0 }`.
-//! - `try_reserve_gate` returns `Err(Unavailable::Saturated)` when saturated.
 //! - `acquire_any` maps the saturated gate to `ErrorKind::Backpressure`.
 //! - A resident resource always reports `AdmissionPhase::Ready` and `None` load.
 //! - `Unavailable::into_error` maps each variant to the expected `ErrorKind`.
@@ -105,7 +104,7 @@ impl ResidentProvider for SimpleResident {
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 /// A pool of size 1, fully occupied: `phase` == Saturated, `load` == 1.0,
-/// `try_reserve_gate` returns `Err(Saturated)`.
+/// and the manager's authoritative acquire gate rejects a second lease.
 #[tokio::test]
 async fn pool_saturated_phase_and_load() {
     use nebula_resource::topology::pooled::config::Config as PoolConfig;
@@ -153,13 +152,11 @@ async fn pool_saturated_phase_and_load() {
         load.saturation
     );
 
-    let gate_err = handle
-        .try_reserve_gate()
-        .expect_err("saturated pool must deny try_reserve_gate");
-    assert!(
-        matches!(gate_err, Unavailable::Saturated { .. }),
-        "gate must return Saturated, got {gate_err:?}"
-    );
+    let gate_err = manager
+        .acquire_pooled::<TinyPool>(&ctx(), &AcquireOptions::default())
+        .await
+        .expect_err("saturated pool must deny a second acquire");
+    assert_eq!(*gate_err.kind(), ErrorKind::Backpressure);
 }
 
 /// `Manager::admission_status` reports a `Saturated` snapshot (`load == 1.0`)
@@ -298,10 +295,11 @@ async fn resident_always_ready_no_load() {
         handle.admission_load().is_none(),
         "resident always reports None load"
     );
-    assert!(
-        handle.try_reserve_gate().is_ok(),
-        "resident try_reserve_gate always succeeds"
-    );
+    let guard = manager
+        .acquire_resident::<SimpleResident>(&ctx(), &AcquireOptions::default())
+        .await
+        .expect("resident manager gate must admit a lease");
+    drop(guard);
 }
 
 /// `Unavailable::into_error` maps each variant to the expected `ErrorKind`.

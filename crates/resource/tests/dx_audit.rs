@@ -67,15 +67,7 @@ fn test_ctx() -> ResourceContext {
 // it, let it return to pool automatically via RAII.
 // ============================================================================
 
-// FRICTION NOTE [ASSOCIATED TYPES]: The Resource trait has 5 associated types.
-// Runtime vs Lease distinction is not intuitive for beginners. The doc says
-// "Runtime: the live resource handle" and "Lease: what callers hold" but for
-// simple cases like an HTTP client they are the same type. Nothing in the
-// docs says "just use the same type for both and implement From<Runtime> for
-// Lease". I had to read the pool runtime source to discover that the pool
-// calls `runtime.clone().into()` to produce a Lease — meaning I need
-// `Runtime: Clone + Into<Lease>` and `Lease: Into<Runtime>`. These bounds are
-// NOT visible on the Resource trait itself; they appear only on acquire_pooled.
+// Provider exposes one Instance type; the guard borrows its owning topology entry.
 
 #[derive(Clone)]
 struct FakeHttpClient {
@@ -143,13 +135,7 @@ impl Provider for HttpClientResource {
 
 nebula_resource::no_credential_slots!(HttpClientResource);
 
-// FRICTION NOTE [Pooled requires Instance: Clone + Into<Lease>]: The Pooled
-// trait itself has no bounds on Clone/Into, but acquire_pooled on Manager
-// requires `R::Instance: Clone + Into<R::Lease>` and `R::Lease: Into<R::Instance>`.
-// These bounds are not visible at trait definition time. When you write the impl
-// and try to compile, you get a constraint error only at the call site, not at
-// the impl site. The error message says nothing like "your Runtime must be
-// Clone+Into<Lease>". I had to read acquire_pooled's where clause explicitly.
+// Pooled acquisition does not require Instance: Clone or a separate Lease conversion.
 //
 // ADDITIONAL FRICTION NOTE [From<T> for T conflict]: When Runtime == Lease
 // (same type), the natural instinct is to write `impl From<T> for T`. This
@@ -308,19 +294,11 @@ impl Provider for ConfigStoreResource {
 
 nebula_resource::no_credential_slots!(ConfigStoreResource);
 
-// FRICTION NOTE [Resident BOUNDS ON LEASE]: The Resident trait has
-//   `where Self::Lease: Clone`
-// as a supertrait bound. This means when you implement Resident, you need
-// your Lease type to impl Clone. The error if you forget is a compile error
-// pointing at the Resident impl, not at the missing Clone impl on Lease.
-// This is a mild footgun — the error message doesn't say "add Clone to Lease".
+// Resident shares the actual instance through framework-owned Arc entries.
 #[async_trait::async_trait]
 impl ResidentProvider for ConfigStoreResource {}
 
-// FRICTION NOTE [ResidentRuntime REQUIRES Runtime: Clone + Into<Lease>]:
-// Same issue as pooled — the bounds are on the impl block inside
-// ResidentRuntime, not visible at the trait level. The error manifests
-// at acquire_resident call site with a deeply nested trait constraint message.
+// Resident acquisition does not impose Clone on the author's instance.
 #[tokio::test]
 async fn use_case_2_resident_config_store() {
     let manager = Manager::new();

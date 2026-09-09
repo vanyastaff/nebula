@@ -9,8 +9,40 @@
 use std::time::Duration;
 
 use nebula_core::{ExecutionId, ResourceKey, WorkflowId, obs::SpanId};
+use nebula_credential::SecretFreeMessage;
 
 use crate::error::ErrorKind;
+
+/// Registry operation that transferred a resource row into terminal retirement.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetirementOrigin {
+    /// A new registration replaced the row at the same exact identity.
+    Replacement,
+    /// An explicit [`Manager::remove`](crate::Manager::remove) or
+    /// [`Manager::remove_for`](crate::Manager::remove_for) unpublished the row.
+    Removal,
+    /// Graceful manager shutdown retired the registry snapshot.
+    Shutdown,
+    /// Dropping a manager without graceful shutdown retired the remaining rows.
+    ManagerDrop,
+}
+
+/// Stage of row retirement that produced a terminal failure.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetirementFailureStage {
+    /// The row's background maintenance task could not be joined cleanly.
+    Maintenance,
+    /// A provider destroy or topology quiesce operation failed.
+    TerminalCleanup,
+    /// Retained lease accounting failed closed.
+    ///
+    /// The affected owner remains fenced because extracting it could destroy
+    /// an instance which is still leased. Process restart is required to
+    /// recover the process-local accounting state.
+    LeaseAccounting,
+}
 
 /// A lifecycle event emitted by the resource manager.
 ///
@@ -25,7 +57,12 @@ pub enum ResourceEvent {
         /// The key of the registered resource.
         key: ResourceKey,
     },
-    /// A resource was removed from the registry.
+    /// A resource was unpublished from the registry.
+    ///
+    /// This event confirms that new lookup/acquire operations can no longer
+    /// resolve the row. Physical teardown is asynchronous; a later
+    /// [`ResourceTeardownFailed`](Self::ResourceTeardownFailed) reports a
+    /// terminal cleanup failure.
     Removed {
         /// The key of the removed resource.
         key: ResourceKey,
@@ -48,7 +85,7 @@ pub enum ResourceEvent {
         /// Human-readable error description.
         error: String,
     },
-    /// A resource handle was released (dropped).
+    /// Queued cleanup for a released resource handle completed.
     Released {
         /// The key of the released resource.
         key: ResourceKey,
@@ -106,25 +143,56 @@ pub enum ResourceEvent {
         /// The slot name that was revoked.
         slot: String,
     },
-    /// The per-resource refresh hook failed or timed out. `error` is an
-    /// already-redacted string (NEVER credential material).
+    /// The per-resource refresh hook failed or timed out.
     SlotRefreshFailed {
         /// The key of the resource whose slot refresh failed.
         key: ResourceKey,
         /// The slot name whose refresh failed.
         slot: String,
-        /// Already-redacted error description.
-        error: String,
+        /// Typed, credential-free failure classification.
+        kind: ErrorKind,
+        /// Fixed framework-selected message; never provider error text.
+        message: SecretFreeMessage,
     },
-    /// The per-resource revoke hook failed. `error` is an already-redacted
-    /// string (NEVER credential material).
+    /// The per-resource revoke hook failed.
     SlotRevokeFailed {
         /// The key of the resource whose slot revoke failed.
         key: ResourceKey,
         /// The slot name whose revoke failed.
         slot: String,
-        /// Already-redacted error description.
-        error: String,
+        /// Typed, credential-free failure classification.
+        kind: ErrorKind,
+        /// Fixed framework-selected message; never provider error text.
+        message: SecretFreeMessage,
+    },
+    /// Framework-owned cleanup of retained generations failed after a
+    /// credential hook had already reached its independent terminal result.
+    #[non_exhaustive]
+    RetiredCleanupFailed {
+        /// The resource whose retained generations could not be cleaned up.
+        key: ResourceKey,
+        /// The credential slot whose rotation displaced the generations.
+        slot: String,
+        /// Credential-free classification of the cleanup failure.
+        kind: ErrorKind,
+    },
+    /// A registry row failed during manager-owned terminal retirement.
+    ///
+    /// One event is emitted at each failing retirement stage. The message is
+    /// selected by the framework and never includes provider-supplied error
+    /// text or credential material.
+    #[non_exhaustive]
+    ResourceTeardownFailed {
+        /// Resource row whose retirement failed.
+        key: ResourceKey,
+        /// Operation that transferred the row into retirement.
+        origin: RetirementOrigin,
+        /// Retirement stage that failed.
+        stage: RetirementFailureStage,
+        /// Typed failure classification.
+        kind: ErrorKind,
+        /// Fixed, credential-free operator message.
+        message: SecretFreeMessage,
     },
     /// A background pool-maintenance sweep evicted idle-timed-out,
     /// max-lifetime-exceeded, stale-fingerprint, or revoked idle instances.
@@ -179,6 +247,8 @@ impl ResourceEvent {
             | Self::SlotRevoked { key, .. }
             | Self::SlotRefreshFailed { key, .. }
             | Self::SlotRevokeFailed { key, .. }
+            | Self::RetiredCleanupFailed { key, .. }
+            | Self::ResourceTeardownFailed { key, .. }
             | Self::MaintenanceEvicted { key, .. }
             | Self::HoldDeadlineExceeded { key, .. } => Some(key),
         }
@@ -208,23 +278,25 @@ mod tests {
         let failed = ResourceEvent::SlotRefreshFailed {
             key: k.clone(),
             slot: "db".into(),
-            error: "transient: upstream 503".into(),
+            kind: ErrorKind::Transient,
+            message: SecretFreeMessage::new("credential refresh hook failed"),
         };
         assert_eq!(failed.key().map(ResourceKey::as_str), Some("k"));
-        let ResourceEvent::SlotRefreshFailed { error, .. } = &failed else {
+        let ResourceEvent::SlotRefreshFailed { message, .. } = &failed else {
             unreachable!()
         };
-        assert!(!error.contains("secret"), "error must be redacted");
+        assert_eq!(message.as_str(), "credential refresh hook failed");
 
         let revoke_failed = ResourceEvent::SlotRevokeFailed {
             key: k,
             slot: "db".into(),
-            error: "transient: upstream 503".into(),
+            kind: ErrorKind::Transient,
+            message: SecretFreeMessage::new("credential revoke hook failed"),
         };
         assert_eq!(revoke_failed.key().map(ResourceKey::as_str), Some("k"));
-        let ResourceEvent::SlotRevokeFailed { error, .. } = &revoke_failed else {
+        let ResourceEvent::SlotRevokeFailed { message, .. } = &revoke_failed else {
             unreachable!()
         };
-        assert!(!error.contains("secret"), "error must be redacted");
+        assert_eq!(message.as_str(), "credential revoke hook failed");
     }
 }

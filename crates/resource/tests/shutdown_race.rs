@@ -287,13 +287,8 @@ async fn lookup_rejects_acquire_after_shutdown_starts() {
 }
 
 // ---------------------------------------------------------------------------
-// PausableEvictResource — a pooled resource whose `destroy()` parks on a
-// `Notify` pair the instant it starts. Lets a test hold the background
-// maintenance reaper inside `run_maintenance`'s eviction-destroy loop —
-// after eviction decided to destroy the entry, before `run_maintenance`
-// returns to the tick loop — so shutdown can be fired from outside and land
-// deterministically in that exact window, rather than racing a wall-clock
-// guess against it.
+// The awaited health check pins the maintenance sweep. Destroy is intentionally
+// not a barrier: maintenance publishes cleanup without awaiting queue receipts.
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug, Default)]
@@ -311,16 +306,16 @@ impl ResourceConfig for PausablePoolConfig {
 #[derive(Clone)]
 struct PausableEvictResource {
     create_count: Arc<AtomicU64>,
-    destroy_entered: Arc<Notify>,
-    release_destroy: Arc<Notify>,
+    check_entered: Arc<Notify>,
+    release_check: Arc<Notify>,
 }
 
 impl PausableEvictResource {
     fn new() -> Self {
         Self {
             create_count: Arc::new(AtomicU64::new(0)),
-            destroy_entered: Arc::new(Notify::new()),
-            release_destroy: Arc::new(Notify::new()),
+            check_entered: Arc::new(Notify::new()),
+            release_check: Arc::new(Notify::new()),
         }
     }
 }
@@ -340,13 +335,10 @@ impl Provider for PausableEvictResource {
         Ok(())
     }
 
-    async fn destroy(&self, _runtime: (), _cx: nebula_resource::TeardownCx) -> Result<(), Error> {
-        // Signal the test that eviction-destroy has begun — still inside
-        // `run_maintenance` — then park until the test releases us. This is
-        // the window the test uses to fire `Manager::shutdown()`.
-        self.destroy_entered.notify_one();
-        self.release_destroy.notified().await;
-        Ok(())
+    async fn check(&self, _runtime: &()) -> Result<(), Error> {
+        self.check_entered.notify_one();
+        self.release_check.notified().await;
+        Err(Error::cancelled())
     }
 
     fn metadata() -> ResourceMetadata {
@@ -372,28 +364,19 @@ impl PoolProvider for PausableEvictResource {
 // loop) once shutdown has landed.
 // ---------------------------------------------------------------------------
 
-// Real time, not `start_paused`: `teardown_deadline` (`runtime/teardown.rs`)
-// and the idle-timeout age check both stamp against `std::time::Instant`,
-// not tokio's mockable clock, so a paused-clock test would race tokio's
-// virtual-time auto-advance against those real-clock deadlines and see
-// `destroy()` abandoned via its 30s teardown budget almost immediately
-// instead of genuinely completing. `maintenance_interval` is floored at 1s
-// (`spawn_pool_maintenance`), so this test's first sweep costs ~1 real
-// second — matching the existing `pool_maintenance_reaper_evicts_idle_timed_out_instance`
-// convention of a bounded real wait for the background reaper.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn reaper_skips_refill_when_shutdown_lands_mid_sweep() {
     let resource = PausableEvictResource::new();
     let create_count = Arc::clone(&resource.create_count);
-    let destroy_entered = Arc::clone(&resource.destroy_entered);
-    let release_destroy = Arc::clone(&resource.release_destroy);
+    let check_entered = Arc::clone(&resource.check_entered);
+    let release_check = Arc::clone(&resource.release_check);
 
     let manager = Manager::new();
     let pool_config = nebula_resource::topology::pooled::config::Config {
         min_size: 1,
         max_size: 4,
-        idle_timeout: Some(Duration::from_millis(50)),
-        max_lifetime: None,
+        idle_timeout: None,
+        max_lifetime: Some(Duration::from_hours(1)),
         maintenance_interval: Duration::from_millis(50),
         ..Default::default()
     };
@@ -416,32 +399,29 @@ async fn reaper_skips_refill_when_shutdown_lands_mid_sweep() {
         .acquire_pooled::<PausableEvictResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("seed acquire succeeds");
-    drop(handle);
+    assert_eq!(
+        handle.release().await.expect("seed returns to idle store"),
+        nebula_resource::ReleaseOutcome::Completed
+    );
     assert_eq!(create_count.load(Ordering::SeqCst), 1);
 
-    // Wait for the background reaper to age the seed entry past
-    // `idle_timeout` and begin evicting it — parks inside our `destroy()`
-    // hook, still within `run_maintenance`, before the tick loop reaches
-    // its post-sweep cancellation check. Bounded so a genuine regression
-    // (the hook never gets reached) fails promptly instead of hanging.
-    tokio::time::timeout(Duration::from_secs(5), destroy_entered.notified())
+    // The health probe is awaited by the sweep, unlike its queued teardown.
+    tokio::time::timeout(Duration::from_secs(5), check_entered.notified())
         .await
-        .expect("background reaper must evict the idle-timed-out seed entry within 5s");
+        .expect("background reaper must probe the seed entry within 5s");
 
     // Fire shutdown NOW, strictly before the tick loop's post-sweep
     // cancellation check runs (that check is what this regression test
-    // proves exists) — `destroy()` is still parked, so `run_maintenance`
+    // proves exists) — `check()` is still parked, so `run_maintenance`
     // cannot have returned yet.
     manager.shutdown();
     assert!(manager.is_shutdown());
 
-    // Let `destroy()` — and therefore `run_maintenance` — finish.
-    release_destroy.notify_one();
-
-    // Give the reaper task a moment to resume past the (now-cancelled) tick
-    // body. A buggy tick would call `create()` synchronously right after
-    // `run_maintenance` returns, so a short bound is enough to observe it.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    release_check.notify_one();
+    manager
+        .graceful_shutdown(ShutdownConfig::default())
+        .await
+        .expect("shutdown joins maintenance and its queued cleanup");
 
     assert_eq!(
         create_count.load(Ordering::SeqCst),

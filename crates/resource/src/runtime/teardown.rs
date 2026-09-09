@@ -2,12 +2,10 @@
 //!
 //! Provides the per-resource deadline computation and the bounded async
 //! `destroy` dispatch that every topology path (acquire loop, release, warmup,
-//! maintenance, resident create-vs-rotate) uses whenever it needs to tear an
+//! maintenance, retained-master retirement) uses whenever it needs to tear an
 //! instance down.
 //!
-//! Factored out of [`managed`](super::managed) so the `Resident` topology can
-//! import `destroy_within` without pulling in the full
-//! `ManagedResource<R>` acquire-loop machinery.
+//! Topology policy transfers ownership; only the framework invokes destruction.
 
 use std::time::{Duration, Instant};
 
@@ -50,13 +48,14 @@ pub(crate) fn teardown_deadline<R: Provider>(resource: &R, reason: TeardownReaso
 
 /// Tear one instance down under a per-resource, per-context deadline.
 ///
-/// Composes the deadline from [`teardown_deadline`], builds the read-only
+/// Composes the deadline from [`teardown_deadline`], builds the author-facing
 /// [`TeardownCx`], and runs [`Provider::destroy`] under
 /// [`tokio::time::timeout_at`]. On timeout the in-flight destroy future is
 /// dropped (abandoned) and a typed [`ErrorKind::Cancelled`](crate::error::ErrorKind::Cancelled)
 /// error is returned so the caller can record the abandoned teardown — the
-/// framework never blocks past the deadline. An author doing graceful work
-/// bounds it to the same `cx.deadline`, so the two deadlines coincide.
+/// framework captures its deadline independently of the mutable context fields.
+/// Authors bound graceful work to `cx.deadline.into()`. The timeout is
+/// cooperative: blocking polls and destructors cannot be preempted.
 ///
 /// Every failure path is observed here with a `WARN` span: most call sites
 /// discard the result (`let _ = destroy_within(...)`) on a best-effort
@@ -76,7 +75,7 @@ pub(crate) async fn destroy_within<R: Provider>(
             tracing::warn!(
                 resource = %R::key(),
                 ?reason,
-                %error,
+                error.kind = ?error.kind(),
                 "resource destroy failed"
             );
             Err(error)

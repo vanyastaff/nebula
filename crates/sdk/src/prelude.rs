@@ -20,7 +20,7 @@
 //! ```rust
 //! use nebula_sdk::prelude::*;
 //!
-//! #[derive(Clone, Debug)]
+//! #[derive(Debug)]
 //! struct HttpClient {
 //!     base_url: String,
 //! }
@@ -44,6 +44,12 @@
 //!             base_url: "https://api.example.com".to_owned(),
 //!         })
 //!     }
+//!
+//!     async fn destroy(&self, instance: HttpClient, _cx: TeardownCx) -> Result<(), Error> {
+//!         // This client needs only RAII cleanup; omitting this override is equivalent.
+//!         drop(instance);
+//!         Ok(())
+//!     }
 //! }
 //!
 //! impl PoolProvider for HttpResource {}
@@ -52,6 +58,14 @@
 //! # struct Slotless;
 //! no_credential_slots!(Slotless);
 //! ```
+//!
+//! A real adapter's consuming [`Provider::destroy`] owns all async flush, stop,
+//! close, and worker-join work. [`TeardownCx`] supplies the deadline and
+//! [`TeardownReason`]; use `cx.deadline.into()` with Tokio's `timeout_at`.
+//! Errors still consume the instance and are never retried by the framework.
+//! Cleanup must tolerate manager cancellation and a dropped future at any await,
+//! so owned tasks and handles need synchronous drop fallback. The default hook
+//! only runs Drop; neither path promises cleanup after a process crash.
 //!
 //! Engine-side registration uses deployment/runtime APIs rather than an SDK
 //! re-export of implementation crates; action code receives a [`ResourceGuard`]
@@ -146,9 +160,9 @@ pub use nebula_plugin::{
 pub use nebula_resource::{
     AcquireOptions, Bounded, BoundedMode, BoundedProvider, ClassifyError, Error, ErrorKind,
     HasCredentialSlots, PoolConfig, PoolProvider, Pooled, Provider, RegistrationSpec,
-    ReloadOutcome, Resident, ResidentConfig, ResidentProvider, Resource, ResourceConfig,
-    ResourceContext, ResourceGuard, ResourceMetadata, SlotCell, SlotIdentity, TopologyTag,
-    no_credential_slots,
+    ReleaseOutcome, ReloadOutcome, Resident, ResidentConfig, ResidentProvider, Resource,
+    ResourceConfig, ResourceContext, ResourceGuard, ResourceMetadata, SlotCell, SlotIdentity,
+    TeardownCx, TeardownReason, TopologyTag, no_credential_slots,
 };
 // Derive names are re-exported from their respective domain crates. Generated
 // paths prefer a direct (including renamed) leaf dependency, then the SDK's

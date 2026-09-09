@@ -190,3 +190,19 @@ histogram_quantile(0.99, sum(rate(nebula_credential_refresh_coord_hold_duration_
 ```
 
 **Analysis loop integration:** an `outcome="exhausted"` crossing zero or a `reauth_triggered` increment is a paging-class event. Cross-reference the `credential.refresh.coordinate` span's `trace_id` with the `execution_journal` to find which actions were waiting on the failed refresh. The sentinel event bus is deliberately non-authoritative; until the K3 owner-qualified command lands, operators must not interpret `reauth_triggered` as evidence that `reauth_required = true` was persisted.
+
+## 8. Resource credential-hook settlement
+
+Resource credential hooks separate terminal execution from caller observation.
+`nebula_resource_credential_{rotation,revoke}_attempts_total` has four terminal
+`outcome` values: `success`, `failed`, `timed_out`, and `abandoned`. Exactly one
+terminal series increments per dispatch. Accepted hooks that remain in flight
+when a caller's post-admission observation budget expires increment the separate
+`nebula_resource_credential_{rotation,revoke}_observations_total{outcome="deferred"}`
+series; their eventual terminal result still increments the attempts counter.
+
+This amendment adds exactly one bounded observation series per direction. The
+closed vocabulary has five values across the two metric families; `deferred` is
+never terminal loss and `abandoned` is never an in-flight alias. No resource key,
+credential id, tenant id, or slot name is a metric label. Correlation remains in
+the credential-free structured resource event and tracing fields.

@@ -13,6 +13,8 @@
 
 ## Key files
 
+- `src/integration/resource.rs` — curated trusted custom-topology authoring; the public-perimeter fixture compiles non-Clone provider/instance and lifecycle signatures using only SDK plus `async-trait`. This is authoring coverage, not a runtime lifecycle proof. Registration-local store mutation is trusted capability; Manager/Registry/ReleaseQueue remain excluded.
+
 - `src/lib.rs` — curated persona modules, SDK `Error`, and `params!` / `workflow!` / `simple_action!` / `json!` macros; `__private` exists only for macro hygiene and is not an integration surface.
 - `src/prelude.rs` — one-stop `use nebula_sdk::prelude::*` set (action traits, schema, credential/OAuth2 types).
 - `src/action.rs` — `ActionBuilder` (programmatic action metadata).

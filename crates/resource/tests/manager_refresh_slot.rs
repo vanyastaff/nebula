@@ -10,6 +10,7 @@
 //! prove the `&Runtime` reached the `&self` hook and that `revoke_slot`
 //! taints before it calls `on_credential_revoke`.
 
+use std::assert_matches;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -162,7 +163,9 @@ mod counting {
                 "careless on_credential_revoke hook unwinds"
             );
             if runtime.ledger.revoke_should_fail.load(Ordering::SeqCst) {
-                return Err(Error::transient("revoke hook boom"));
+                return Err(Error::transient(
+                    "revoke hook boom: telegram_token=123456789:PRIVATE_PROVIDER_TOKEN",
+                ));
             }
             Ok(())
         }
@@ -345,9 +348,14 @@ async fn refresh_slot_invokes_hook_with_runtime() {
             .expect("acquire must succeed");
     }
 
-    mgr.refresh_slot(&key, ScopeLevel::Global, "db")
+    let outcome = mgr
+        .refresh_slot(&key, ScopeLevel::Global, "db")
         .await
         .expect("refresh_slot must succeed");
+    assert_matches!(
+        outcome,
+        nebula_resource::SlotDispatchOutcome::Completed { .. }
+    );
 
     assert_eq!(
         ledger.refresh_calls.load(Ordering::SeqCst),
@@ -449,10 +457,14 @@ async fn revoke_slot_taints_then_drains_then_hooks() {
     //    wakes → `revoke_slot` proceeds to the hook and returns.
     drop(in_flight_guard);
 
-    revoke_handle
+    let outcome = revoke_handle
         .await
         .expect("revoke task must not panic")
         .expect("revoke_slot must succeed once the guard is dropped");
+    assert_matches!(
+        outcome,
+        nebula_resource::SlotDispatchOutcome::Completed { .. }
+    );
 
     // The hook fired exactly once, *after* the taint and *after* the drain
     // unblocked — a genuine taint → drain-blocks → guard-dropped → hook-last
@@ -633,13 +645,23 @@ async fn revoke_drain_timeout_records_exactly_one_outcome() {
     // Let the spawned revoke reach the `wait_for_drain` park point, then let
     // paused time auto-advance past the 30 s drain budget. The revoke then
     // proceeds to the (successful) hook while the guard is still held.
-    revoke_handle
+    let outcome = revoke_handle
         .await
         .expect("revoke task must not panic")
         .expect("revoke_slot must still succeed after a drain timeout");
+    assert_matches!(
+        outcome,
+        nebula_resource::SlotDispatchOutcome::Completed {
+            drain: nebula_resource::SlotDrainOutcome::TimedOut {
+                outstanding_leases: 1,
+                ..
+            },
+            ..
+        }
+    );
 
-    // Hook ran exactly once and succeeded, but because the drain timed out
-    // first, only the terminal `timed_out` outcome was recorded.
+    // Hook ran exactly once and succeeded. The drain timeout is preserved in
+    // the typed outcome above; terminal hook accounting remains `success`.
     assert_eq!(
         ledger.revoke_calls.load(Ordering::SeqCst),
         1,
@@ -652,21 +674,21 @@ async fn revoke_drain_timeout_records_exactly_one_outcome() {
         .snapshot()
         .slot_revoke_outcomes;
     assert_eq!(
-        snap.timed_out, 1,
-        "drain timeout must record exactly one timed_out"
+        snap.timed_out, 0,
+        "drain timeout is orthogonal to terminal hook accounting"
     );
     assert_eq!(
-        snap.success, 0,
-        "timed-out dispatch must NOT also record success"
+        snap.success, 1,
+        "successful hook records one terminal success despite drain timeout"
     );
     assert_eq!(
         snap.failed, 0,
         "timed-out dispatch must NOT also record failed"
     );
     assert_eq!(
-        snap.success + snap.failed + snap.timed_out,
+        snap.success + snap.failed + snap.timed_out + snap.abandoned,
         1,
-        "exactly one outcome per dispatch — attempts == success + failed + timed_out"
+        "exactly one terminal outcome per dispatch"
     );
 
     drop(in_flight_guard);
@@ -700,7 +722,7 @@ async fn revoke_failure_emits_slot_revoke_failed_not_refresh() {
         .await
         .expect_err("revoke must fail when the hook returns Err");
     assert!(
-        err.to_string().contains("revoke hook boom"),
+        err.to_string().contains("PRIVATE_PROVIDER_TOKEN"),
         "revoke_slot must surface the hook error, got: {err}"
     );
 
@@ -712,15 +734,15 @@ async fn revoke_failure_emits_slot_revoke_failed_not_refresh() {
             ResourceEvent::SlotRevokeFailed {
                 key: k,
                 slot,
-                error,
+                kind,
+                message,
             } => {
                 saw_revoke_failed = true;
                 assert_eq!(k.as_str(), key.as_str());
                 assert_eq!(slot, "db");
-                assert!(
-                    error.contains("revoke hook boom"),
-                    "event error must carry the (redacted) hook message"
-                );
+                assert_eq!(kind, nebula_resource::ErrorKind::Transient);
+                assert_eq!(message.as_str(), "credential revoke hook failed");
+                assert!(!message.as_str().contains("PRIVATE_PROVIDER_TOKEN"));
             },
             ResourceEvent::SlotRefreshFailed { .. } => {
                 panic!("revoke failure must NOT emit SlotRefreshFailed");
@@ -770,13 +792,16 @@ async fn revoke_hook_panic_is_isolated_and_emits_revoke_failed() {
     let mut saw_revoke_failed = false;
     while let Some(evt) = events.try_recv() {
         match evt {
-            ResourceEvent::SlotRevokeFailed { slot, error, .. } => {
+            ResourceEvent::SlotRevokeFailed {
+                slot,
+                kind,
+                message,
+                ..
+            } => {
                 saw_revoke_failed = true;
                 assert_eq!(slot, "db");
-                assert!(
-                    error.contains("panicked"),
-                    "event error must report the isolated panic, got: {error}"
-                );
+                assert_eq!(kind, nebula_resource::ErrorKind::Permanent);
+                assert_eq!(message.as_str(), "credential revoke hook failed");
             },
             ResourceEvent::SlotRefreshFailed { .. } => {
                 panic!("a revoke-hook panic must NOT emit SlotRefreshFailed");
@@ -824,13 +849,17 @@ async fn refresh_hook_panic_is_isolated_and_emits_refresh_failed() {
 
     let mut saw_refresh_failed = false;
     while let Some(evt) = events.try_recv() {
-        if let ResourceEvent::SlotRefreshFailed { slot, error, .. } = evt {
+        if let ResourceEvent::SlotRefreshFailed {
+            slot,
+            kind,
+            message,
+            ..
+        } = evt
+        {
             saw_refresh_failed = true;
             assert_eq!(slot, "db");
-            assert!(
-                error.contains("panicked"),
-                "event error must report the isolated panic, got: {error}"
-            );
+            assert_eq!(kind, nebula_resource::ErrorKind::Permanent);
+            assert_eq!(message.as_str(), "credential refresh hook failed");
         }
     }
     assert!(
@@ -913,10 +942,14 @@ async fn revoke_vs_acquire_post_taint_recheck_rejects_late_acquire() {
 
     // Release the held guard → per-resource drain completes → revoke returns.
     drop(held);
-    revoke_handle
+    let outcome = revoke_handle
         .await
         .expect("revoke task must not panic")
         .expect("revoke_slot must succeed once the held guard drops");
+    assert_matches!(
+        outcome,
+        nebula_resource::SlotDispatchOutcome::Completed { .. }
+    );
 
     // And it stays revoked.
     let ctx = ResourceContext::minimal(Scope::default(), CancellationToken::new());
@@ -1032,9 +1065,14 @@ async fn revoke_vs_acquire_multithread_no_guard_after_revoke() {
         "workers failed to establish the pre-revoke acquire window in time"
     );
 
-    mgr.revoke_slot(&key, ScopeLevel::Global, "db")
+    let outcome = mgr
+        .revoke_slot(&key, ScopeLevel::Global, "db")
         .await
         .expect("revoke_slot must succeed");
+    assert_matches!(
+        outcome,
+        nebula_resource::SlotDispatchOutcome::Completed { .. }
+    );
     // Mark the boundary the instant the revoke future resolved.
     revoke_done.store(true, Ordering::Release);
 
@@ -1101,13 +1139,17 @@ async fn revoke_on_one_resource_does_not_block_on_unrelated_resource() {
     // Revoke tenant A while B's lease is still held. A's per-resource counter
     // is empty, so this must return promptly.
     let started = Instant::now();
-    tokio::time::timeout(
+    let outcome = tokio::time::timeout(
         Duration::from_secs(5),
         mgr.revoke_slot_for_identity(&key, ScopeLevel::Global, "db", &counting::slot_a_id()),
     )
     .await
     .expect("revoke_slot_for_identity(A) must NOT block on tenant B's held lease (would hit 30s)")
     .expect("revoke_slot_for_identity(A) must succeed");
+    assert_matches!(
+        outcome,
+        nebula_resource::SlotDispatchOutcome::Completed { .. }
+    );
     let elapsed = started.elapsed();
     assert!(
         elapsed < Duration::from_secs(2),
@@ -1184,7 +1226,7 @@ async fn taint_slot_applies_taint_synchronously_before_any_await() {
         matches!(
             mgr.drain_and_revoke(tainted, std::time::Duration::from_secs(5))
                 .await,
-            nebula_resource::RevokeTail::Done
+            nebula_resource::RevokeTail::Done { .. }
         ),
         "drain_and_revoke (phase 2) must complete the revoke hook"
     );
@@ -1282,8 +1324,8 @@ async fn dropping_drain_and_revoke_future_keeps_row_tainted() {
     drop(in_flight);
 }
 
-/// #690 review — single-owner budget: a **timed-out drain still runs the
-/// revoke hook**. `drain_and_revoke` is the sole owner of the
+/// A **timed-out drain still runs the revoke hook**. `drain_and_revoke` is
+/// the sole owner of the
 /// per-resource budget — it bounds the drain *best-effort* (a drain
 /// timeout is non-fatal and proceeds to the hook) and there is no outer
 /// `tokio::time::timeout` wrapper that could elapse on the slow drain and
@@ -1327,7 +1369,7 @@ async fn drain_timeout_still_runs_revoke_hook_single_budget_owner() {
         .drain_and_revoke(tainted, Duration::from_millis(50))
         .await;
     assert!(
-        matches!(tail, nebula_resource::RevokeTail::Done),
+        matches!(tail, nebula_resource::RevokeTail::Done { .. }),
         "a timed-out DRAIN must still complete the revoke hook (single \
          budget owner; no outer wrapper drops the post-drain hook), got: {tail:?}"
     );
@@ -1353,6 +1395,7 @@ async fn drain_timeout_still_runs_revoke_hook_single_budget_owner() {
 // ===========================================================================
 
 mod u9_gate {
+    use std::assert_matches;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -1526,9 +1569,14 @@ mod u9_gate {
         // First refresh: reconciles the genuinely-stale runtime exactly once
         // (delivers the hook, advances built_epoch to the observed slot
         // epoch).
-        mgr.refresh_slot(&GateResource::key(), ScopeLevel::Global, "db")
+        let outcome = mgr
+            .refresh_slot(&GateResource::key(), ScopeLevel::Global, "db")
             .await
             .expect("refresh after a real transition must succeed");
+        assert_matches!(
+            outcome,
+            nebula_resource::SlotDispatchOutcome::Completed { .. }
+        );
         assert_eq!(
             refresh_calls.load(Ordering::SeqCst),
             1,
@@ -1552,9 +1600,14 @@ mod u9_gate {
         // the slot epoch on the prior success. Folding `built_epoch` into a
         // counter that the resident cannot "catch up" by storing into would
         // break this.
-        mgr.refresh_slot(&GateResource::key(), ScopeLevel::Global, "db")
+        let outcome = mgr
+            .refresh_slot(&GateResource::key(), ScopeLevel::Global, "db")
             .await
             .expect("refresh after no-op takes must succeed");
+        assert_matches!(
+            outcome,
+            nebula_resource::SlotDispatchOutcome::Completed { .. }
+        );
         assert_eq!(
             refresh_calls.load(Ordering::SeqCst),
             2,

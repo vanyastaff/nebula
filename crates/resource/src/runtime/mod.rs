@@ -5,7 +5,7 @@
 //!
 //! - [`pool::Pooled<R>`] — N interchangeable instances over an
 //!   [`InstanceStore`](crate::topology::store::InstanceStore) idle queue.
-//! - [`resident::Resident<R>`] — one shared instance in a lock-free cell.
+//! - [`resident::Resident<R>`] — one retained master with shared owning entries.
 //! - [`bounded::Bounded<R>`] — a runtime concurrency cap over a non-pooled
 //!   resource (capped / exclusive / unbounded).
 //!
@@ -18,7 +18,9 @@
 
 pub(crate) mod acquire_loop;
 pub(crate) mod bounded;
+mod destroy_batch;
 pub(crate) mod managed;
 pub(crate) mod pool;
 pub(crate) mod resident;
+pub(crate) mod retained_store;
 pub(crate) mod teardown;

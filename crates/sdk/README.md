@@ -14,7 +14,9 @@ related: [nebula-action, nebula-credential, nebula-resource, nebula-schema, nebu
 The product contract is that an integration author should depend on one Nebula crate rather than
 learn the workspace topology. External one-dependency proofs cover `ActionBuilder`,
 `WorkflowBuilder`, credential `TestResult`, and representative derives for every current
-procedural-macro family; other manual/prelude workflows need their own compile-pass proof before
+procedural-macro family. Manual `Provider` authoring with a consuming terminal hook is
+also compile-checked using the SDK plus the general-purpose `async-trait` crate;
+other manual/prelude workflows need their own compile-pass proof before
 being described as verified.
 Without a façade, every new contributor discovers the dependency graph by trial and error, which
 violates the §4.4 north star (focused day, no plumbing). `nebula-sdk` is that façade: a single
@@ -60,12 +62,50 @@ integrations.
 
 ### Resource authoring and the SDK
 
-Resource authoring types, traits, and derives are in the prelude:
+Resource authoring types, traits, and derives are in the prelude and the explicit
+`nebula_sdk::integration::resource` persona:
 
 | Surface | What you use |
 |--------|----------------|
-| **Prelude** | `nebula_sdk::prelude::*` re-exports the author surface: derives `Resource` / `ResourceConfig` / `ClassifyError`; traits `Provider`, `ResourceConfig`, `HasCredentialSlots`, `PoolProvider`, `ResidentProvider`, `BoundedProvider`; topologies `Pooled`, `Resident`, `Bounded` with `PoolConfig` / `ResidentConfig` / `BoundedMode`; and `AcquireOptions`, `RegistrationSpec`, `ResourceContext`, `ResourceGuard`, `ResourceMetadata`, `ResourceKey`, `resource_key!`, `ScopeLevel`, `SlotIdentity`, `SlotCell`, `TopologyTag`, `ReloadOutcome`, `Error`, `ErrorKind`, `no_credential_slots!`. See `prelude.rs` for a runnable pooled-resource example. |
-| **Derives** | `Resource` and `ResourceConfig` are covered by the SDK-only derive compile contract. Manual `Provider` authoring remains available through the prelude plus the general-purpose `async-trait` crate. |
+| **Prelude** | `nebula_sdk::prelude::*` re-exports the author surface: derives `Resource` / `ResourceConfig` / `ClassifyError`; traits `Provider`, `ResourceConfig`, `HasCredentialSlots`, `PoolProvider`, `ResidentProvider`, `BoundedProvider`; topologies `Pooled`, `Resident`, `Bounded` with `PoolConfig` / `ResidentConfig` / `BoundedMode`; and `AcquireOptions`, `RegistrationSpec`, `ResourceContext`, `ResourceGuard`, `ReleaseOutcome`, `ResourceMetadata`, `ResourceKey`, `resource_key!`, `ScopeLevel`, `SlotIdentity`, `SlotCell`, `TopologyTag`, `ReloadOutcome`, `Error`, `ErrorKind`, `no_credential_slots!`. See `prelude.rs` for a runnable pooled-resource example. |
+| **Derives** | `Resource` and `ResourceConfig` are covered by the SDK-only derive compile contract. Manual `Provider` authoring, including a consuming `destroy` over a non-Clone instance using `TeardownCx` and `TeardownReason`, is separately compile-checked through the prelude plus the general-purpose `async-trait` crate. |
+
+**Release migration:** `ResourceGuard::release()` now returns
+`Result<ReleaseOutcome, Error>` instead of `Result<(), Error>`. Match
+`ReleaseOutcome::Completed`, `ReleaseOutcome::Deferred`, and `_` because the
+enum is non-exhaustive. A deferred release has consumed the guard and
+transferred ownership to bounded, best-effort queue cleanup; never retry it,
+and do not interpret it as proof that the provider hook will run.
+
+**Custom topology authoring:** `nebula_sdk::integration::resource` curates the open
+`Topology` contract, built-in provider hooks, terminal context, and store vocabulary.
+The external SDK-only fixture (plus general-purpose `async-trait`) compiles a custom
+topology with a non-Clone provider and instance, explicit credential hook, admission,
+load, maintenance, and retained-lease signatures. This proves authoring reachability;
+runtime cleanup and cancellation guarantees are tested by the resource crate.
+
+Custom topologies are trusted in-process adapters. Framework-supplied `InstanceStore`
+and `RetainedStore` access is registration-local lifecycle capability, including the
+inherent mutation methods of `InstanceStore`. It does not grant global registry or
+tenant authority. Authors must preserve ownership and credential fences: the type
+system cannot prevent an adapter from hiding aliases or dropping extracted entries.
+`Manager`, `Registry`, and `ReleaseQueue` are excluded from this persona and checked
+by negative external import probes.
+
+**Terminal hook migration:** Remove `Provider::shutdown(&Instance)` implementations;
+that hook was never framework-driven. Move asynchronous flush, drain, stop, close,
+and worker-join work into `destroy(Instance, TeardownCx)`. Import `TeardownCx` and
+`TeardownReason` from `nebula_sdk::prelude`. This source-breaking cleanup keeps
+the SDK and its internal packages on their existing lockstep version.
+
+`destroy` consumes the final owned instance even on error and is never retried by
+the framework. Its default only runs synchronous Drop. Overrides must tolerate
+the manager already being cancelled and need drop fallback for tasks/handles if
+the future is abandoned at any await. Bound graceful work with
+`tokio::time::timeout_at(cx.deadline.into(), …)`; the framework captures its
+deadline independently, so changing the context's public fields cannot extend
+it. Cooperative timeouts cannot preempt blocking polls or Drop, and neither
+async cleanup nor Drop promises release after a process crash.
 
 **Not in the prelude:** the engine-owned lifecycle (`Manager::register` / `acquire_*`, `Registry`, dispatch, rotation fan-out). Authors implement `Provider`; the engine drives it. Missing authoring contracts are SDK gaps, not permission to reach through to implementation crates.
 
@@ -127,6 +167,9 @@ See `docs/MATURITY.md` row for `nebula-sdk`.
   trigger, resource-backed) require direct trait implementation.
 - External one-dependency proofs cover `ActionBuilder`, `WorkflowBuilder`, credential
   `TestResult`, and representative Action/Credential/Plugin/Resource/Schema/Validator derives.
+- The external public-perimeter fixture also compile-checks manual `Provider` terminal
+  authoring with `nebula-sdk` as its only Nebula dependency plus `async-trait`.
+  Runtime teardown guarantees are covered by the resource crate's tests.
 
 ## Related
 

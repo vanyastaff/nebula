@@ -156,13 +156,13 @@
 //!    asynchronously via the [`ReleaseQueue`] on cancellation, never orphaned.
 //!    Tested by `cancelled_acquire_during_accept_destroys_the_popped_entry`
 //!    and `cancelled_warmup_between_create_and_deposit_destroys_the_entry`
-//!    in `src/runtime/acquire_loop.rs`.
+//!    in `src/runtime/acquire_loop/tests.rs`.
 //! 2. **After a credential is revoked, no new lease is ever handed out on
 //!    it** — the taint runs synchronously before the first `.await`, so a
 //!    dropped or timed-out revoke future can never leave the credential
 //!    silently servable. Tested by `tests/revoke_recycle_toctou.rs` and
 //!    `probe_revoke_mid_probe_destroys_probed_entries_not_redeposited` in
-//!    `src/runtime/acquire_loop.rs`. See
+//!    `src/runtime/acquire_loop/tests.rs`. See
 //!    `crates/resource/docs/credential-rotation.md` for the full sequence.
 //! 3. **Exactly one [`Provider::create`] runs per `(key, scope,
 //!    slot_identity)` under concurrent acquire** — every other concurrent
@@ -226,7 +226,6 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
-pub(crate) mod cell;
 pub mod context;
 #[cfg(feature = "rotation")]
 pub mod credential_fanout;
@@ -253,23 +252,18 @@ pub mod state;
 pub mod topology;
 pub mod topology_tag;
 
-// NOTE: `cell::Cell` is intentionally NOT re-exported. It is an internal
-// lock-free `ArcSwapOption` holder for the resident runtime; it carries no
-// generation/epoch and is a strict subset of the public `SlotCell`. The
-// `cell` module is crate-internal (`pub(crate) mod`) so consumers reach for
-// the generation-bearing `SlotCell` and are not misled into using the
-// epoch-blind cell at a credential-slot boundary.
 pub use context::{
     ResourceContext, minimal_scope_for_level, scope_levels_for_acquire, scope_to_level,
 };
 pub use dedup::{DedupKey, SlotIdentity};
 pub use error::{Error, ErrorKind};
-pub use events::ResourceEvent;
+pub use events::{ResourceEvent, RetirementFailureStage, RetirementOrigin};
 pub use ext::HasResourcesExt;
-pub use guard::ResourceGuard;
+pub use guard::{ReleaseOutcome, ResourceGuard};
 pub use manager::{
     DrainTimeoutPolicy, Manager, ManagerConfig, RegisterOptions, RegistrationSpec,
-    ResourceHealthSnapshot, RevokeTail, ShutdownConfig, ShutdownError, ShutdownReport, TaintedSlot,
+    ResourceHealthSnapshot, RevokeTail, ShutdownConfig, ShutdownError, ShutdownReport,
+    SlotDeferralReason, SlotDispatchOutcome, SlotDrainOutcome, TaintedSlot,
 };
 pub use metrics::{
     ACQUIRE_WAIT_BUCKET_UPPER_BOUNDS_MICROS, AcquireWaitSnapshot, OutcomeCountersSnapshot,
@@ -375,7 +369,7 @@ pub use options::AcquireOptions;
 pub use recovery::{
     GateState, RecoveryGate, RecoveryGateConfig, RecoveryTicket, RecoveryWaiter, TryBeginError,
 };
-pub use registry::{LookupOutcome, ManagedHandle, Registry};
+pub use registry::{LookupOutcome, ManagedResourceView, Registry};
 pub use release_queue::ReleaseQueue;
 pub use reload::ReloadOutcome;
 pub use resource::{
@@ -386,6 +380,10 @@ pub use resource_ref::ResourceRef;
 pub use slot::{CredentialSlot, SlotCell};
 // Runtime types — the framework topologies needed for `Manager::register()`.
 pub use runtime::managed::ManagedResource;
+pub use runtime::retained_store::{
+    ReplaceStatus, RetainStatus, RetainedId, RetainedLease, RetainedStore, RetireStatus,
+    StoreRejection,
+};
 pub use runtime::{
     bounded::Bounded,
     pool::{PoolStats, Pooled},
@@ -394,7 +392,7 @@ pub use runtime::{
 pub use state::{ResourceErrorSummary, ResourcePhase, ResourceStatus};
 // Topology configurations — used at registration time.
 pub use topology::{
-    AdmissionPhase, AdmissionStatus, CheckedOut, Checkout, InstanceStore, Load,
+    AdmissionPhase, AdmissionStatus, CheckedOut, Checkout, HookFault, InstanceStore, Load,
     MaintenanceSchedule, NoTopology, PoolStrategy, ReturnOutcome, Ticket, Topology, Unavailable,
     bounded::{BoundedMode, BoundedProvider},
     pooled::{
@@ -439,8 +437,8 @@ pub use credential_fanout::{Bind, ResourceFanoutDriver, ResourceFanoutIndex, Rot
 pub mod prelude {
     pub use crate::{
         AcquireOptions, Error, ErrorKind, HasCredentialSlots, Manager, PoolConfig, Pooled,
-        Provider, RegistrationSpec, Resident, ResidentConfig, ResourceConfig, ResourceContext,
-        ResourceGuard, ResourceKey, ResourceMetadata, ScopeLevel, ShutdownConfig, SlotCell,
-        SlotIdentity, TopologyTag, resource_key,
+        Provider, RegistrationSpec, ReleaseOutcome, Resident, ResidentConfig, ResourceConfig,
+        ResourceContext, ResourceGuard, ResourceKey, ResourceMetadata, ScopeLevel, ShutdownConfig,
+        SlotCell, SlotIdentity, TopologyTag, resource_key,
     };
 }

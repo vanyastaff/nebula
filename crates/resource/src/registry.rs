@@ -18,47 +18,26 @@ use crate::{
     error::Error,
     options::AcquireOptions,
     resource::Provider,
+    runtime::acquire_loop::{AcceptedSlotHook, SlotHookAdmission, SlotHookSettlement},
     runtime::managed::ManagedResource,
     topology_tag::TopologyTag,
 };
-
-/// Crate-private seal: only `nebula-resource` can name `sealed::Sealed`,
-/// so [`ManagedHandle`] is **not implementable downstream**.
-///
-/// `ManagedHandle` is engine-internal: the only purpose is to let the
-/// [`Registry`] store heterogeneous `ManagedResource<R>` behind one
-/// `dyn ManagedHandle`, and the sole implementor is the blanket
-/// `impl<R: Provider>` below. Sealing makes that a *structural*
-/// guarantee rather than a convention — adding a required method (e.g.
-/// the per-resource-drain hook) can never be a downstream compile-break,
-/// because no downstream impl can exist. The
-/// `LookupOutcome::Found(Arc<dyn ManagedHandle>)` surface stays usable
-/// (callers only *consume* the trait object); they just cannot *implement*
-/// it.
-mod sealed {
-    /// Sealed marker. Implemented only by the crate-internal blanket
-    /// `impl<R: Provider>` for `ManagedResource<R>`.
-    pub trait Sealed {}
-}
 
 /// Type-erased trait for managed resources stored in the [`Registry`].
 ///
 /// Every `ManagedResource<R>` implements this trait, allowing the registry
 /// to store heterogeneous resource types behind a single `dyn ManagedHandle`.
 ///
-/// **Sealed (engine-internal).** This trait has a private `sealed::Sealed`
-/// supertrait, so it can only be implemented inside `nebula-resource` (by
-/// the blanket `impl<R: Provider>`). It is an engine-internal erasure
-/// boundary, **not** a downstream extension point — new required methods
-/// may be added without it being a semver-breaking change for consumers
-/// (they only ever hold `Arc<dyn ManagedHandle>` via
-/// [`LookupOutcome::Found`], never implement it).
+/// This is the crate-private lifecycle authority boundary. Public lookups
+/// expose [`ManagedResourceView`] instead, so callers can inspect a row but
+/// cannot mutate its phase, dispatch credentials, acquire through erased
+/// internals, or start terminal cleanup outside [`Manager`](crate::Manager).
 ///
 /// `#[async_trait]` is applied because lifecycle dispatch goes through
 /// `dyn ManagedHandle` at runtime; native async-fn-in-trait (RPITIT)
 /// produces associated `Future` types that are not object-safe.
 #[async_trait]
-pub trait ManagedHandle: sealed::Sealed + Send + Sync + 'static {
+pub(crate) trait ManagedHandle: Send + Sync + 'static {
     /// Returns the resource key for this managed resource.
     fn resource_key(&self) -> ResourceKey;
 
@@ -68,7 +47,7 @@ pub trait ManagedHandle: sealed::Sealed + Send + Sync + 'static {
     /// Returns the concrete `TypeId` used as the secondary index key.
     ///
     /// For real `ManagedResource<R>` this is `TypeId::of::<ManagedResource<R>>()`.
-    /// Used by [`Registry::register`] to scrub stale rows from `type_index`
+    /// Used by `Registry::register` to scrub stale rows from `type_index`
     /// when an entry is replaced in place (#382).
     fn managed_type_id(&self) -> TypeId;
 
@@ -92,6 +71,18 @@ pub trait ManagedHandle: sealed::Sealed + Send + Sync + 'static {
     /// Current lifecycle phase — diagnostic-only; typed callers should prefer
     /// `ManagedResource::status().phase` after a successful downcast.
     fn phase(&self) -> crate::state::ResourcePhase;
+
+    /// Fences publication and cancels this row's maintenance without awaiting.
+    fn begin_close(&self);
+
+    /// Aborts still-owned maintenance when terminal cleanup is abandoned.
+    fn abort_maintenance(&self);
+
+    /// Joins maintenance and destroys retained entries, not outstanding leases.
+    async fn close_retained(self: Arc<Self>) -> Result<(), Error>;
+
+    /// Joins owned maintenance outside cleanup workers to avoid dependency cycles.
+    async fn join_maintenance(&self) -> Result<(), Error>;
 
     /// Topology tag — used by `Manager::{refresh,revoke}_slot` to label
     /// the rotation tracing span without a typed downcast.
@@ -142,9 +133,15 @@ pub trait ManagedHandle: sealed::Sealed + Send + Sync + 'static {
     /// Dropping the returned future after taint leaves the resource
     /// consistently marked as tainted — no partial-taint state is possible
     /// and new acquires remain rejected.
-    async fn dispatch_on_refresh(&self, slot: &str) -> Result<(), Error>;
+    fn submit_on_refresh(
+        self: Arc<Self>,
+        slot: &str,
+        timeout: std::time::Duration,
+        settlement: SlotHookSettlement,
+        admission: SlotHookAdmission,
+    ) -> Result<AcceptedSlotHook, Error>;
 
-    /// Per-slot revoke dispatch (symmetric to [`Self::dispatch_on_refresh`];
+    /// Per-slot revoke dispatch (symmetric to [`Self::submit_on_refresh`];
     /// forwards to `ManagedResource::dispatch_slot_hook` with `refresh = false`).
     ///
     /// # Cancel Safety
@@ -155,7 +152,13 @@ pub trait ManagedHandle: sealed::Sealed + Send + Sync + 'static {
     /// taint leaves the resource consistently marked as tainted — no
     /// partial-taint state is possible, new acquires are still rejected, and
     /// the credential is never silently un-revoked.
-    async fn dispatch_on_revoke(&self, slot: &str) -> Result<(), Error>;
+    fn submit_on_revoke(
+        self: Arc<Self>,
+        slot: &str,
+        timeout: std::time::Duration,
+        settlement: SlotHookSettlement,
+        admission: SlotHookAdmission,
+    ) -> Result<AcceptedSlotHook, Error>;
 
     /// Bounded drain of **this resource's own** in-flight acquires.
     ///
@@ -208,20 +211,30 @@ pub trait ManagedHandle: sealed::Sealed + Send + Sync + 'static {
     ) -> Result<Box<dyn Any + Send + Sync>, Error>;
 }
 
-// The one and only `Sealed` impl: every `ManagedResource<R>` (and
-// nothing else, anywhere) — this is what makes `ManagedHandle`
-// non-implementable downstream.
-impl<R: Provider> sealed::Sealed for ManagedResource<R> {}
-
 #[async_trait]
 impl<R> ManagedHandle for ManagedResource<R>
 where
     R: Provider + Send + Sync + 'static,
-    R::Instance: Clone,
     R::Topology: crate::topology::Topology<R>,
 {
     fn resource_key(&self) -> ResourceKey {
         R::key()
+    }
+
+    fn begin_close(&self) {
+        ManagedResource::begin_close(self);
+    }
+
+    fn abort_maintenance(&self) {
+        ManagedResource::abort_maintenance(self);
+    }
+
+    async fn close_retained(self: Arc<Self>) -> Result<(), Error> {
+        ManagedResource::close_retained(&self).await
+    }
+
+    async fn join_maintenance(&self) -> Result<(), Error> {
+        ManagedResource::join_maintenance(self).await
     }
 
     fn as_any_arc(self: Arc<Self>) -> Arc<dyn Any + Send + Sync> {
@@ -260,12 +273,24 @@ where
         R::credential_slot_names().contains(&slot)
     }
 
-    async fn dispatch_on_refresh(&self, slot: &str) -> Result<(), Error> {
-        self.dispatch_slot_hook(slot, true).await
+    fn submit_on_refresh(
+        self: Arc<Self>,
+        slot: &str,
+        timeout: std::time::Duration,
+        settlement: SlotHookSettlement,
+        admission: SlotHookAdmission,
+    ) -> Result<AcceptedSlotHook, Error> {
+        self.submit_slot_hook(slot, true, timeout, settlement, admission)
     }
 
-    async fn dispatch_on_revoke(&self, slot: &str) -> Result<(), Error> {
-        self.dispatch_slot_hook(slot, false).await
+    fn submit_on_revoke(
+        self: Arc<Self>,
+        slot: &str,
+        timeout: std::time::Duration,
+        settlement: SlotHookSettlement,
+        admission: SlotHookAdmission,
+    ) -> Result<AcceptedSlotHook, Error> {
+        self.submit_slot_hook(slot, false, timeout, settlement, admission)
     }
 
     async fn wait_for_in_flight_drain(&self, timeout: std::time::Duration) -> Result<(), u64> {
@@ -303,6 +328,61 @@ where
     }
 }
 
+/// Read-only diagnostic view of a registered managed resource.
+///
+/// Registry and manager lookup APIs return this capability instead of the
+/// crate-private lifecycle handle. The view deliberately exposes snapshots
+/// only: lifecycle mutation, credential dispatch, erased acquire, draining,
+/// and terminal cleanup remain owned by [`Manager`](crate::Manager).
+#[derive(Clone)]
+pub struct ManagedResourceView {
+    managed: Arc<dyn ManagedHandle>,
+}
+
+impl ManagedResourceView {
+    fn new(managed: Arc<dyn ManagedHandle>) -> Self {
+        Self { managed }
+    }
+
+    /// Returns the stable key of the registered resource.
+    pub fn resource_key(&self) -> ResourceKey {
+        self.managed.resource_key()
+    }
+
+    /// Returns the current lifecycle phase snapshot.
+    pub fn phase(&self) -> crate::state::ResourcePhase {
+        self.managed.phase()
+    }
+
+    /// Returns the resource's topology kind.
+    pub fn topology_tag(&self) -> TopologyTag {
+        self.managed.topology_tag()
+    }
+
+    /// Returns the current advisory admission phase snapshot.
+    pub fn admission_phase(&self) -> crate::topology::AdmissionPhase {
+        self.managed.admission_phase()
+    }
+
+    /// Returns the current advisory load snapshot when the topology reports one.
+    pub fn admission_load(&self) -> Option<crate::topology::Load> {
+        self.managed.admission_load()
+    }
+}
+
+impl std::fmt::Debug for ManagedResourceView {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ManagedResourceView")
+            .field("resource_key", &self.resource_key())
+            .field("phase", &self.phase())
+            .field("topology_tag", &self.topology_tag())
+            .field("admission_phase", &self.admission_phase())
+            .field("admission_load", &self.admission_load())
+            .finish()
+    }
+}
+
 /// Outcome of an **identity-agnostic** registry lookup.
 ///
 /// The `Ambiguous` arm is the security-relevant one: when a caller that
@@ -311,17 +391,15 @@ where
 /// one (which would alias one tenant's runtime to another). Callers map
 /// `Ambiguous` to a typed deny-by-default error — fail closed, never bleed.
 ///
-/// The **slot-identity-pinned** lookups
-/// ([`get_for`](Registry::get_for) /
-/// `get_typed_for_acquire`)
-/// return [`PinnedLookup`] instead — a 2-variant type with **no
+/// The slot-identity-pinned [`Registry::get_for`] lookup returns
+/// [`PinnedLookup`] instead — a 2-variant type with **no
 /// `Ambiguous`** arm, because a resolved [`SlotIdentity`] addresses exactly
 /// one row by construction, so ambiguity is unrepresentable there rather
 /// than a runtime branch a caller could mis-handle.
 #[non_exhaustive]
 pub enum LookupOutcome {
-    /// Exactly one row matched — here it is.
-    Found(Arc<dyn ManagedHandle>),
+    /// Exactly one row matched — exposed through a read-only diagnostic view.
+    Found(ManagedResourceView),
     /// No row matched the key/scope.
     NotFound,
     /// Multiple distinct credential rows exist for the resolved
@@ -347,11 +425,42 @@ pub enum LookupOutcome {
 /// a different tenant's row).
 #[non_exhaustive]
 pub enum PinnedLookup {
-    /// Exactly one row matched the pinned `(scope, slot_identity)`.
-    Found(Arc<dyn ManagedHandle>),
+    /// Exactly one row matched the pinned `(scope, slot_identity)`, exposed
+    /// through a read-only diagnostic view.
+    Found(ManagedResourceView),
     /// No row matched the key/scope/identity. Never an alias to another
     /// resolved credential's row.
     NotFound,
+}
+
+pub(crate) enum HandleLookupOutcome {
+    Found(Arc<dyn ManagedHandle>),
+    NotFound,
+    Ambiguous { rows: usize },
+}
+
+impl HandleLookupOutcome {
+    fn into_public(self) -> LookupOutcome {
+        match self {
+            Self::Found(managed) => LookupOutcome::Found(ManagedResourceView::new(managed)),
+            Self::NotFound => LookupOutcome::NotFound,
+            Self::Ambiguous { rows } => LookupOutcome::Ambiguous { rows },
+        }
+    }
+}
+
+pub(crate) enum PinnedHandleLookup {
+    Found(Arc<dyn ManagedHandle>),
+    NotFound,
+}
+
+impl PinnedHandleLookup {
+    fn into_public(self) -> PinnedLookup {
+        match self {
+            Self::Found(managed) => PinnedLookup::Found(ManagedResourceView::new(managed)),
+            Self::NotFound => PinnedLookup::NotFound,
+        }
+    }
 }
 
 /// Outcome of a registry acquire lookup (same semantics as [`LookupOutcome`]).
@@ -375,12 +484,13 @@ pub(crate) enum AcquireLookupOutcome {
 }
 
 /// A single entry in the registry, associating a `(scope, slot_identity)`
-/// row with a managed resource.
+/// row with a managed resource. This is a technical lookup identity, not a
+/// tenant-authorization proof or permission to share a physical runtime.
 ///
 /// `slot_identity` is the resolved per-slot credential identity (see
 /// [`SlotIdentity`]). Two registrations at the same key + scope but a
-/// *different* `slot_identity` are distinct rows with distinct runtimes —
-/// the structural barrier against cross-tenant runtime bleed. Equality is
+/// *different* `slot_identity` are distinct rows with distinct runtimes.
+/// This prevents differently bound rows from aliasing. Equality is
 /// exact and structural ([`SlotIdentity`] derives `Eq`), so two distinct
 /// resolved binding sets can never collapse onto one row.
 struct RegistryEntry {
@@ -412,13 +522,22 @@ enum PinnedFind {
 /// Provides two lookup paths:
 /// - **By key + scope**: `get()` finds the best-matching entry for a given [`ResourceKey`] and
 ///   [`ScopeLevel`].
-/// - **By type**: `get_typed()` uses a secondary [`TypeId`] index for typed lookup with automatic
-///   downcasting.
+/// - **By type**: `get_typed()` uses a secondary [`TypeId`] index to select only rows of the
+///   requested provider type.
 pub struct Registry {
     /// Primary index: ResourceKey -> list of entries (one per scope).
     entries: DashMap<ResourceKey, Vec<RegistryEntry>>,
     /// Secondary index: TypeId -> ResourceKey (for typed lookup).
     type_index: DashMap<TypeId, ResourceKey>,
+}
+
+/// Atomic result of registry insertion plus replacement admission.
+pub(crate) enum RegistrationOutcome<T> {
+    Inserted,
+    Replaced {
+        displaced: Arc<dyn ManagedHandle>,
+        admission: T,
+    },
 }
 
 impl std::fmt::Debug for Registry {
@@ -445,17 +564,41 @@ impl Registry {
     /// the same `(scope, slot_identity)`. A registration at the same
     /// `(key, scope)` but a *different* `slot_identity` (i.e. a different
     /// resolved per-slot credential) is appended as a **distinct** row with
-    /// its own runtime — it does not overwrite the other tenant's row. This
-    /// is the structural barrier against cross-tenant runtime bleed: two
-    /// resolved credentials can never collapse onto one shared runtime.
-    pub fn register(
+    /// its own runtime — it does not overwrite a differently bound row.
+    /// Equal slot identities do not prove equal tenant authority: this
+    /// internal registry does not authorize cross-tenant sharing.
+    #[cfg(test)]
+    pub(crate) fn register(
         &self,
         key: ResourceKey,
         type_id: TypeId,
         scope: ScopeLevel,
         slot_identity: SlotIdentity,
         managed: Arc<dyn ManagedHandle>,
-    ) {
+    ) -> Option<Arc<dyn ManagedHandle>> {
+        match self.register_admitted(key, type_id, scope, slot_identity, managed, || {
+            Ok::<(), std::convert::Infallible>(())
+        }) {
+            Ok(RegistrationOutcome::Inserted) => None,
+            Ok(RegistrationOutcome::Replaced { displaced, .. }) => Some(displaced),
+            Err(never) => match never {},
+        }
+    }
+
+    /// Registers a row after running `before_replace` immediately before an
+    /// exact-identity replacement.
+    ///
+    /// An admission failure leaves the prior row untouched. Insertion of a
+    /// brand-new identity never invokes the callback.
+    pub(crate) fn register_admitted<T, E>(
+        &self,
+        key: ResourceKey,
+        type_id: TypeId,
+        scope: ScopeLevel,
+        slot_identity: SlotIdentity,
+        managed: Arc<dyn ManagedHandle>,
+        before_replace: impl FnOnce() -> Result<T, E>,
+    ) -> Result<RegistrationOutcome<T>, E> {
         // Lock order is **strictly one-way**: `entries → (release) → type_index`.
         //
         // `get_typed` takes the `type_index` shard read lock first and only
@@ -475,6 +618,7 @@ impl Registry {
         // scan the rest of the entries while still holding the guard
         // and only mark the stale row for removal if nobody else uses
         // it.
+        let mut replacement = None;
         let stale_type_id = {
             let mut entries = self.entries.entry(key.clone()).or_default();
 
@@ -487,12 +631,17 @@ impl Registry {
                 .iter()
                 .position(|e| e.scope == scope && e.slot_identity == slot_identity)
             {
+                let admission = before_replace()?;
                 let prev_type_id = entries[pos].managed.managed_type_id();
-                entries[pos] = RegistryEntry {
-                    scope,
-                    slot_identity,
-                    managed,
-                };
+                let previous = std::mem::replace(
+                    &mut entries[pos],
+                    RegistryEntry {
+                        scope,
+                        slot_identity,
+                        managed,
+                    },
+                );
+                replacement = Some((previous.managed, admission));
 
                 if prev_type_id != type_id
                     && !entries
@@ -518,6 +667,32 @@ impl Registry {
             self.type_index.remove_if(&stale, |_, k| k == &key);
         }
         self.type_index.insert(type_id, key);
+        Ok(match replacement {
+            Some((displaced, admission)) => RegistrationOutcome::Replaced {
+                displaced,
+                admission,
+            },
+            None => RegistrationOutcome::Inserted,
+        })
+    }
+
+    /// Reports whether registration would replace the exact row identity.
+    ///
+    /// Callers that need to reserve bounded retirement capacity use this
+    /// while holding their outer admission lock, then invoke `insert`
+    /// under the same lock. The predicate intentionally matches
+    /// `register`'s replacement predicate exactly.
+    pub(crate) fn contains_row(
+        &self,
+        key: &ResourceKey,
+        scope: &ScopeLevel,
+        slot_identity: &SlotIdentity,
+    ) -> bool {
+        self.entries.get(key).is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|entry| entry.scope == *scope && entry.slot_identity == *slot_identity)
+        })
     }
 
     /// Looks up a managed resource by key and scope (slot-identity
@@ -531,12 +706,16 @@ impl Registry {
     /// would be a cross-tenant bleed). Callers that know the resolved slot
     /// identity must use [`get_for`](Self::get_for).
     ///
-    /// Untyped: returns the erased `Arc` without downcasting, so no
-    /// concrete-type constraint is implied. [`get_typed`](Self::get_typed)
+    /// Untyped: returns a read-only view without a concrete-type constraint.
+    /// [`get_typed`](Self::get_typed)
     /// goes through the same shared private core with the concrete-type
     /// filter so a sibling type sharing the resolved [`ResourceKey`] cannot
     /// mask a correctly-typed row.
     pub fn get(&self, key: &ResourceKey, scope: &ScopeLevel) -> LookupOutcome {
+        self.get_handle(key, scope).into_public()
+    }
+
+    pub(crate) fn get_handle(&self, key: &ResourceKey, scope: &ScopeLevel) -> HandleLookupOutcome {
         self.get_inner(key, scope, None)
     }
 
@@ -548,8 +727,8 @@ impl Registry {
     /// resolved [`ResourceKey`] is skipped instead of returned and then
     /// `downcast`-failed, which would surface as a spurious `NotFound`
     /// masking a correctly-typed row at an ancestor/Global scope), `None`
-    /// for the untyped [`get`](Self::get) callers that return the erased
-    /// `Arc` directly. The fail-closed-on-ambiguity contract is unchanged:
+    /// for the untyped [`get`](Self::get) callers. The
+    /// fail-closed-on-ambiguity contract is unchanged:
     /// two same-type rows the caller cannot disambiguate still report
     /// [`LookupOutcome::Ambiguous`].
     fn get_inner(
@@ -557,14 +736,14 @@ impl Registry {
         key: &ResourceKey,
         scope: &ScopeLevel,
         concrete_type: Option<TypeId>,
-    ) -> LookupOutcome {
+    ) -> HandleLookupOutcome {
         let Some(entries) = self.entries.get(key) else {
-            return LookupOutcome::NotFound;
+            return HandleLookupOutcome::NotFound;
         };
         match Self::find_in_entries(&entries, scope, None, concrete_type) {
-            ScopeFind::Hit { managed, .. } => LookupOutcome::Found(managed),
-            ScopeFind::NotFound => LookupOutcome::NotFound,
-            ScopeFind::Ambiguous { rows } => LookupOutcome::Ambiguous { rows },
+            ScopeFind::Hit { managed, .. } => HandleLookupOutcome::Found(managed),
+            ScopeFind::NotFound => HandleLookupOutcome::NotFound,
+            ScopeFind::Ambiguous { rows } => HandleLookupOutcome::Ambiguous { rows },
         }
     }
 
@@ -622,8 +801,8 @@ impl Registry {
     /// level (no within-level Global fallback). Matches
     /// [`get_acquire_for`](Self::get_acquire_for) so the erased hook and
     /// typed row cannot diverge when Global and ancestor-scoped rows
-    /// coexist. Returns [`PinnedLookup`] (no `Ambiguous`): a resolved
-    /// identity pins exactly one row.
+    /// coexist. Returns the crate-private operational handle outcome (no
+    /// `Ambiguous`): a resolved identity pins exactly one row.
     ///
     /// Constrained to the concrete `ManagedResource<R>`: `type_index` only
     /// proves the resolved [`ResourceKey`], and distinct types can share
@@ -635,17 +814,17 @@ impl Registry {
         &self,
         scope: &Scope,
         slot_identity: &SlotIdentity,
-    ) -> PinnedLookup {
+    ) -> PinnedHandleLookup {
         let type_id = TypeId::of::<ManagedResource<R>>();
         let Some(key) = self.type_index.get(&type_id) else {
-            return PinnedLookup::NotFound;
+            return PinnedHandleLookup::NotFound;
         };
         let Some(entries) = self.entries.get(&*key) else {
-            return PinnedLookup::NotFound;
+            return PinnedHandleLookup::NotFound;
         };
         for level in scope_levels_for_acquire(scope) {
             match Self::find_pinned_at_exact_scope(&entries, &level, slot_identity, Some(type_id)) {
-                PinnedFind::Hit { managed, .. } => return PinnedLookup::Found(managed),
+                PinnedFind::Hit { managed, .. } => return PinnedHandleLookup::Found(managed),
                 PinnedFind::NotFound => {
                     if slot_identity.is_unbound()
                         && Self::scope_has_cred_bound_rows_without_unbound(
@@ -654,13 +833,13 @@ impl Registry {
                             Some(type_id),
                         )
                     {
-                        return PinnedLookup::NotFound;
+                        return PinnedHandleLookup::NotFound;
                     }
                     continue;
                 },
             }
         }
-        PinnedLookup::NotFound
+        PinnedHandleLookup::NotFound
     }
 
     /// [`get_typed_for_acquire`](Self::get_typed_for_acquire) without a
@@ -674,22 +853,25 @@ impl Registry {
     /// key, so a sibling-typed row at an exact scope is skipped (the scope
     /// walk continues) instead of returned and then `downcast`-failed —
     /// without the filter that masks a correctly-typed ancestor/Global row.
-    pub(crate) fn get_typed_for_acquire_scope<R: Provider>(&self, scope: &Scope) -> LookupOutcome {
+    pub(crate) fn get_typed_for_acquire_scope<R: Provider>(
+        &self,
+        scope: &Scope,
+    ) -> HandleLookupOutcome {
         let type_id = TypeId::of::<ManagedResource<R>>();
         let Some(key) = self.type_index.get(&type_id) else {
-            return LookupOutcome::NotFound;
+            return HandleLookupOutcome::NotFound;
         };
         let Some(entries) = self.entries.get(&*key) else {
-            return LookupOutcome::NotFound;
+            return HandleLookupOutcome::NotFound;
         };
         for level in scope_levels_for_acquire(scope) {
             match Self::find_at_exact_scope(&entries, &level, None, Some(type_id)) {
-                ScopeFind::Hit { managed, .. } => return LookupOutcome::Found(managed),
-                ScopeFind::Ambiguous { rows } => return LookupOutcome::Ambiguous { rows },
+                ScopeFind::Hit { managed, .. } => return HandleLookupOutcome::Found(managed),
+                ScopeFind::Ambiguous { rows } => return HandleLookupOutcome::Ambiguous { rows },
                 ScopeFind::NotFound => continue,
             }
         }
-        LookupOutcome::NotFound
+        HandleLookupOutcome::NotFound
     }
 
     /// At `level`, cred-bound rows exist but the caller asked for the
@@ -720,15 +902,23 @@ impl Registry {
     /// (scope falls back to [`ScopeLevel::Global`]). Because the row is
     /// pinned by `slot_identity` there is never ambiguity: a caller that
     /// resolved tenant A's credential can only ever reach tenant A's row.
-    /// Hence the [`PinnedLookup`] return — `Ambiguous` is unrepresentable.
+    /// Hence the [`PinnedLookup`] return — `Ambiguous` is unrepresentable and
+    /// the matched row is exposed only as a read-only view.
     pub fn get_for(
         &self,
         key: &ResourceKey,
         scope: &ScopeLevel,
         slot_identity: &SlotIdentity,
     ) -> PinnedLookup {
-        // Untyped: the caller hands back the erased `Arc` without
-        // downcasting, so no concrete type is implied (`None`).
+        self.get_handle_for(key, scope, slot_identity).into_public()
+    }
+
+    pub(crate) fn get_handle_for(
+        &self,
+        key: &ResourceKey,
+        scope: &ScopeLevel,
+        slot_identity: &SlotIdentity,
+    ) -> PinnedHandleLookup {
         self.get_for_inner(key, scope, slot_identity, None)
     }
 
@@ -746,18 +936,18 @@ impl Registry {
         scope: &ScopeLevel,
         slot_identity: &SlotIdentity,
         concrete_type: Option<TypeId>,
-    ) -> PinnedLookup {
+    ) -> PinnedHandleLookup {
         let Some(entries) = self.entries.get(key) else {
-            return PinnedLookup::NotFound;
+            return PinnedHandleLookup::NotFound;
         };
         match Self::find_pinned_in_entries(&entries, scope, slot_identity, concrete_type) {
-            PinnedFind::Hit { managed, .. } => PinnedLookup::Found(managed),
-            PinnedFind::NotFound => PinnedLookup::NotFound,
+            PinnedFind::Hit { managed, .. } => PinnedHandleLookup::Found(managed),
+            PinnedFind::NotFound => PinnedHandleLookup::NotFound,
         }
     }
 
-    /// Typed lookup: finds the resource for type `R` and downcasts to
-    /// `Arc<ManagedResource<R>>` (slot-identity agnostic).
+    /// Typed lookup: finds the resource row for provider type `R` and returns
+    /// a read-only diagnostic view (slot-identity agnostic).
     ///
     /// Inherits [`get`](Self::get)'s fail-closed-on-ambiguity contract.
     /// Constrained to the concrete `ManagedResource<R>`: `type_index` only
@@ -768,9 +958,13 @@ impl Registry {
     /// surface as a spurious `NotFound` masking a correctly-typed row at an
     /// ancestor/Global scope.
     pub fn get_typed<R: Provider>(&self, scope: &ScopeLevel) -> LookupOutcome {
+        self.get_typed_handle::<R>(scope).into_public()
+    }
+
+    pub(crate) fn get_typed_handle<R: Provider>(&self, scope: &ScopeLevel) -> HandleLookupOutcome {
         let type_id = TypeId::of::<ManagedResource<R>>();
         let Some(key) = self.type_index.get(&type_id) else {
-            return LookupOutcome::NotFound;
+            return HandleLookupOutcome::NotFound;
         };
         self.get_inner(&key, scope, Some(type_id))
     }
@@ -785,12 +979,12 @@ impl Registry {
     /// siblings that differ only in resolved credential. Use
     /// [`remove_for`](Self::remove_for) to remove a single resolved row
     /// without disturbing siblings.
-    pub fn remove(&self, key: &ResourceKey) -> bool {
-        let existed = self.entries.remove(key).is_some();
-        if existed {
-            self.type_index.retain(|_type_id, k| k != key);
-        }
-        existed
+    pub(crate) fn remove(&self, key: &ResourceKey) -> Vec<Arc<dyn ManagedHandle>> {
+        let Some((_, entries)) = self.entries.remove(key) else {
+            return Vec::new();
+        };
+        self.type_index.retain(|_type_id, k| k != key);
+        entries.into_iter().map(|entry| entry.managed).collect()
     }
 
     /// Removes exactly the row for `(key, scope, slot_identity)`, leaving
@@ -798,7 +992,7 @@ impl Registry {
     /// slot identities at the same scope (multi-tenant rows) — untouched.
     ///
     /// The narrower, additive counterpart to [`remove`](Self::remove): it
-    /// is the precise inverse of the single [`register`](Self::register)
+    /// is the precise inverse of the single manager `register`
     /// call that created this row (row identity is `(scope,
     /// slot_identity)`, per `register`'s own doc), mirroring the same
     /// per-row pinning the `rotation`-gated credential fan-out reverse
@@ -806,28 +1000,23 @@ impl Registry {
     /// intra-doc-linked here — it is feature-gated and this doc must
     /// resolve under the default build too).
     ///
-    /// Returns `true` if a matching row existed and was removed.
-    pub fn remove_for(
+    /// Transfers ownership of the removed row to the lifecycle owner.
+    pub(crate) fn remove_for(
         &self,
         key: &ResourceKey,
         scope: &ScopeLevel,
         slot_identity: &SlotIdentity,
-    ) -> bool {
+    ) -> Option<Arc<dyn ManagedHandle>> {
         // Lock order matches `register`: all `entries` work happens in a
         // scoped block so the shard guard drops before `type_index` (a
         // different DashMap) is touched — never both shards held at once.
         let (removed, stale_type_id) = {
-            let Some(mut entries) = self.entries.get_mut(key) else {
-                return false;
-            };
-            let Some(pos) = entries
+            let mut entries = self.entries.get_mut(key)?;
+            let pos = entries
                 .iter()
-                .position(|e| e.scope == *scope && e.slot_identity == *slot_identity)
-            else {
-                return false;
-            };
+                .position(|e| e.scope == *scope && e.slot_identity == *slot_identity)?;
             let removed_type_id = entries[pos].managed.managed_type_id();
-            entries.remove(pos);
+            let removed = entries.remove(pos).managed;
             // #382 discipline: only this concrete type's `type_index` row
             // is stale if NO other row under `key` still uses it — a
             // sibling row of the same type at another scope/identity must
@@ -835,7 +1024,7 @@ impl Registry {
             let stale = !entries
                 .iter()
                 .any(|e| e.managed.managed_type_id() == removed_type_id);
-            (true, stale.then_some(removed_type_id))
+            (Some(removed), stale.then_some(removed_type_id))
         };
 
         if let Some(stale) = stale_type_id {
@@ -879,11 +1068,13 @@ impl Registry {
 
     /// Removes all entries from the registry.
     ///
-    /// This drops every `Arc<dyn ManagedHandle>`, releasing their
-    /// resources (including `Arc<ReleaseQueue>` references).
-    pub fn clear(&self) {
+    /// Transfers every row to the lifecycle owner for terminal cleanup.
+    /// The manager serializes mutations around this snapshot.
+    pub(crate) fn clear(&self) -> Vec<Arc<dyn ManagedHandle>> {
+        let retained = self.all_managed();
         self.entries.clear();
         self.type_index.clear();
+        retained
     }
 
     /// Lookup at an exact [`ScopeLevel`] only (no ancestor or Global
@@ -1120,12 +1311,6 @@ mod tests {
     struct FakeA;
     struct FakeB;
 
-    // In-crate test doubles: the seal is crate-private, so the test
-    // module can satisfy it directly (an out-of-crate type could not —
-    // that is the point of the seal).
-    impl sealed::Sealed for FakeA {}
-    impl sealed::Sealed for FakeB {}
-
     macro_rules! impl_fake_handle {
         ($T:ty) => {
             #[async_trait::async_trait]
@@ -1141,6 +1326,16 @@ mod tests {
                 }
                 fn set_phase(&self, _phase: crate::state::ResourcePhase) {}
                 fn set_failed(&self, _kind: crate::error::ErrorKind, _reason: &str) {}
+                // These registry-index fixtures own no lifecycle entries.
+                fn begin_close(&self) {}
+                fn abort_maintenance(&self) {}
+                async fn close_retained(self: Arc<Self>) -> Result<(), Error> {
+                    Ok(())
+                }
+
+                async fn join_maintenance(&self) -> Result<(), Error> {
+                    Ok(())
+                }
                 fn phase(&self) -> crate::state::ResourcePhase {
                     crate::state::ResourcePhase::Ready
                 }
@@ -1152,11 +1347,23 @@ mod tests {
                 fn accepts_credential_slot_name(&self, _slot: &str) -> bool {
                     true
                 }
-                async fn dispatch_on_refresh(&self, _slot: &str) -> Result<(), Error> {
-                    Ok(())
+                fn submit_on_refresh(
+                    self: Arc<Self>,
+                    _slot: &str,
+                    _timeout: std::time::Duration,
+                    _settlement: SlotHookSettlement,
+                    _admission: SlotHookAdmission,
+                ) -> Result<AcceptedSlotHook, Error> {
+                    unreachable!("registry lookup fake never dispatches credential hooks")
                 }
-                async fn dispatch_on_revoke(&self, _slot: &str) -> Result<(), Error> {
-                    Ok(())
+                fn submit_on_revoke(
+                    self: Arc<Self>,
+                    _slot: &str,
+                    _timeout: std::time::Duration,
+                    _settlement: SlotHookSettlement,
+                    _admission: SlotHookAdmission,
+                ) -> Result<AcceptedSlotHook, Error> {
+                    unreachable!("registry lookup fake never dispatches credential hooks")
                 }
                 async fn wait_for_in_flight_drain(
                     &self,
@@ -1192,6 +1399,31 @@ mod tests {
 
     fn ident(slot: &str, cred: &str) -> SlotIdentity {
         SlotIdentity::from_bindings([(slot, cred)])
+    }
+
+    #[test]
+    fn public_lookup_returns_read_only_diagnostics() {
+        let registry = Registry::new();
+        let key = ResourceKey::new("fake").unwrap();
+        registry.register(
+            key.clone(),
+            TypeId::of::<FakeA>(),
+            ScopeLevel::Global,
+            SlotIdentity::Unbound,
+            Arc::new(FakeA),
+        );
+
+        let LookupOutcome::Found(view) = registry.get(&key, &ScopeLevel::Global) else {
+            panic!("registered unambiguous row must return a diagnostic view");
+        };
+        assert_eq!(view.resource_key(), key);
+        assert_eq!(view.phase(), crate::state::ResourcePhase::Ready);
+        assert_eq!(view.topology_tag(), TopologyTag::Resident);
+        assert_eq!(
+            view.admission_phase(),
+            crate::topology::AdmissionPhase::Ready
+        );
+        assert!(view.admission_load().is_none());
     }
 
     #[test]
@@ -1298,7 +1530,7 @@ mod tests {
         );
 
         assert!(
-            reg.remove_for(&key, &scope, &id_a),
+            reg.remove_for(&key, &scope, &id_a).is_some(),
             "remove_for must report success for a row that exists"
         );
 
@@ -1322,11 +1554,11 @@ mod tests {
 
         // A second remove_for on the same (now-absent) row is a clean
         // no-op `false`, not a panic.
-        assert!(!reg.remove_for(&key, &scope, &id_a));
+        assert!(reg.remove_for(&key, &scope, &id_a).is_none());
 
         // Removing the LAST row for this key must scrub the (now genuinely
         // stale) `type_index` entry too.
-        assert!(reg.remove_for(&key, &scope, &id_b));
+        assert!(reg.remove_for(&key, &scope, &id_b).is_some());
         assert!(
             !reg.type_index.contains_key(&TypeId::of::<FakeA>()),
             "type_index must be scrubbed once no row under the key uses \

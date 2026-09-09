@@ -1,0 +1,5 @@
+error[E0432]: unresolved import `nebula_resource::ManagedHandle`
+ --> tests/probes/managed_handle_is_private.rs:1:5
+  |
+1 | use nebula_resource::ManagedHandle;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `ManagedHandle` in the root

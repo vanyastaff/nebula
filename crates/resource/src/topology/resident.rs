@@ -1,12 +1,13 @@
-//! Resident topology — one shared instance, clone on acquire.
+//! Resident topology — one retained instance shared by owning lease entries.
 
 use std::time::Duration;
 
 use crate::resource::Provider;
 
-/// Resident provider hooks — one shared instance, clone on acquire.
+/// Resident provider hooks — one instance shared through framework-owned Arcs.
 ///
-/// The instance is created once and shared across all callers via `Clone`.
+/// The framework creates and retains the instance, then lends shared access
+/// through guards. The instance does not need to implement `Clone`.
 /// Suitable for stateless or internally-pooled clients (e.g., `reqwest::Client`).
 /// A resource that declares `type Topology = Resident<Self>` implements this
 /// trait so the framework [`Resident`](crate::topology::Resident) topology can
@@ -16,11 +17,8 @@ use crate::resource::Provider;
 ///
 /// [`Manager::acquire_resident`](crate::Manager::acquire_resident) requires:
 /// - `R: Send + Sync + 'static`
-/// - `R::Instance: Clone + Send + Sync + 'static`
-pub trait ResidentProvider: Provider
-where
-    Self::Instance: Clone,
-{
+/// - `R::Instance: Send + Sync + 'static`
+pub trait ResidentProvider: Provider {
     /// Sync O(1) liveness check. NO I/O, NO blocking.
     ///
     /// The default implementation always reports alive.

@@ -10,6 +10,208 @@
 
 mod common;
 
+#[derive(Clone)]
+struct NestedCleanupResource {
+    next_id: Arc<AtomicU64>,
+    children: Arc<std::sync::Mutex<std::collections::HashMap<u64, ResourceGuard<Self>>>>,
+    completed: Arc<AtomicU64>,
+    deferred: Arc<AtomicU64>,
+    pause_child: Arc<AtomicBool>,
+    child_entered: Arc<tokio::sync::Notify>,
+    child_continue: Arc<tokio::sync::Notify>,
+    root_barrier: Arc<std::sync::Mutex<Option<Arc<tokio::sync::Barrier>>>>,
+}
+
+#[async_trait::async_trait]
+impl Provider for NestedCleanupResource {
+    type Config = TestConfig;
+    type Instance = u64;
+    type Topology = nebula_resource::Bounded<Self>;
+
+    fn key() -> ResourceKey {
+        resource_key!("nested-cleanup")
+    }
+
+    async fn create(&self, _: &TestConfig, _: &ResourceContext) -> Result<u64, Error> {
+        Ok(self.next_id.fetch_add(1, Ordering::SeqCst))
+    }
+
+    async fn destroy(&self, instance: u64, _: nebula_resource::TeardownCx) -> Result<(), Error> {
+        if instance == 0 {
+            let barrier = self.root_barrier.lock().unwrap().clone();
+            if let Some(barrier) = barrier {
+                barrier.wait().await;
+            }
+        }
+        if instance == 1 && self.pause_child.load(Ordering::SeqCst) {
+            self.child_entered.notify_one();
+            self.child_continue.notified().await;
+        }
+        let child = self.children.lock().unwrap().remove(&instance);
+        if let Some(child) = child
+            && child.release().await? == ReleaseOutcome::Deferred
+        {
+            self.deferred.fetch_add(1, Ordering::SeqCst);
+        }
+        self.completed.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+impl nebula_resource::BoundedProvider for NestedCleanupResource {}
+nebula_resource::no_credential_slots!(NestedCleanupResource);
+
+fn nested_cleanup_manager() -> (Manager, NestedCleanupResource) {
+    let resource = NestedCleanupResource {
+        next_id: Arc::new(AtomicU64::new(0)),
+        children: Arc::default(),
+        completed: Arc::new(AtomicU64::new(0)),
+        deferred: Arc::new(AtomicU64::new(0)),
+        pause_child: Arc::new(AtomicBool::new(false)),
+        child_entered: Arc::default(),
+        child_continue: Arc::default(),
+        root_barrier: Arc::default(),
+    };
+    let manager = Manager::with_config(
+        nebula_resource::ManagerConfig::default().with_release_queue_workers(1),
+    );
+    manager
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: nebula_resource::Bounded::unbounded(),
+            recovery_gate: None,
+        })
+        .unwrap();
+    (manager, resource)
+}
+
+#[tokio::test(start_paused = true)]
+async fn nested_release_on_one_worker_completes_parent_and_child() {
+    let (manager, resource) = nested_cleanup_manager();
+    let parent = manager
+        .acquire_bounded::<NestedCleanupResource>(&test_ctx(), &AcquireOptions::default())
+        .await
+        .unwrap();
+    let child = manager
+        .acquire_bounded::<NestedCleanupResource>(&test_ctx(), &AcquireOptions::default())
+        .await
+        .unwrap();
+    resource.children.lock().unwrap().insert(*parent, child);
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(1), parent.release())
+        .await
+        .expect("nested release must progress without waiting for the parent's worker")
+        .unwrap();
+    assert_eq!(outcome, ReleaseOutcome::Completed);
+    assert_eq!(resource.completed.load(Ordering::SeqCst), 2);
+    let report = manager
+        .graceful_shutdown(ShutdownConfig::default())
+        .await
+        .unwrap();
+    assert_eq!(report.dropped_release_tasks, 0);
+}
+
+async fn nested_lease(manager: &Manager) -> ResourceGuard<NestedCleanupResource> {
+    manager
+        .acquire_bounded::<NestedCleanupResource>(&test_ctx(), &AcquireOptions::default())
+        .await
+        .unwrap()
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancelling_nested_release_waiter_keeps_child_hook_queue_owned() {
+    let (manager, resource) = nested_cleanup_manager();
+    let parent = nested_lease(&manager).await;
+    let child = nested_lease(&manager).await;
+    resource.children.lock().unwrap().insert(*parent, child);
+    resource.pause_child.store(true, Ordering::SeqCst);
+    let caller = tokio::spawn(parent.release());
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        resource.child_entered.notified(),
+    )
+    .await
+    .unwrap();
+    caller.abort();
+    assert!(caller.await.unwrap_err().is_cancelled());
+    assert_eq!(resource.completed.load(Ordering::SeqCst), 0);
+    resource.child_continue.notify_one();
+    let report = manager
+        .graceful_shutdown(ShutdownConfig::default())
+        .await
+        .unwrap();
+    assert_eq!(resource.completed.load(Ordering::SeqCst), 2);
+    assert_eq!(report.outstanding_handles_after_drain, 0);
+    assert_eq!(report.dropped_release_tasks, 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn cross_queue_nested_release_defers_only_accepted_child_cleanup() {
+    let (first, resource) = nested_cleanup_manager();
+    let (second, child_resource) = nested_cleanup_manager();
+    let parent = nested_lease(&first).await;
+    let child = nested_lease(&second).await;
+    resource.children.lock().unwrap().insert(*parent, child);
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(1), parent.release())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(outcome, ReleaseOutcome::Completed);
+    assert_eq!(resource.deferred.load(Ordering::SeqCst), 1);
+    let report = second
+        .graceful_shutdown(ShutdownConfig::default())
+        .await
+        .unwrap();
+    assert_eq!(child_resource.completed.load(Ordering::SeqCst), 1);
+    assert_eq!(report.dropped_release_tasks, 0);
+    first
+        .graceful_shutdown(ShutdownConfig::default())
+        .await
+        .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn cross_queue_cleanup_cycle_defers_both_edges_without_deadlock() {
+    let (first, first_resource) = nested_cleanup_manager();
+    let (second, second_resource) = nested_cleanup_manager();
+    let first_parent = nested_lease(&first).await;
+    let first_child = nested_lease(&first).await;
+    let second_parent = nested_lease(&second).await;
+    let second_child = nested_lease(&second).await;
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    *first_resource.root_barrier.lock().unwrap() = Some(Arc::clone(&barrier));
+    *second_resource.root_barrier.lock().unwrap() = Some(barrier);
+    first_resource
+        .children
+        .lock()
+        .unwrap()
+        .insert(*first_parent, second_child);
+    second_resource
+        .children
+        .lock()
+        .unwrap()
+        .insert(*second_parent, first_child);
+    let outcomes = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        tokio::join!(first_parent.release(), second_parent.release())
+    })
+    .await
+    .expect("cross-queue cleanup cannot form a wait cycle");
+    assert_eq!(outcomes.0.unwrap(), ReleaseOutcome::Completed);
+    assert_eq!(outcomes.1.unwrap(), ReleaseOutcome::Completed);
+    assert_eq!(first_resource.deferred.load(Ordering::SeqCst), 1);
+    assert_eq!(second_resource.deferred.load(Ordering::SeqCst), 1);
+    let (first_report, second_report) = tokio::join!(
+        first.graceful_shutdown(ShutdownConfig::default()),
+        second.graceful_shutdown(ShutdownConfig::default()),
+    );
+    assert_eq!(first_report.unwrap().dropped_release_tasks, 0);
+    assert_eq!(second_report.unwrap().dropped_release_tasks, 0);
+    assert_eq!(first_resource.completed.load(Ordering::SeqCst), 2);
+    assert_eq!(second_resource.completed.load(Ordering::SeqCst), 2);
+}
+
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -22,17 +224,267 @@ use common::{
 };
 use nebula_core::{ResourceKey, resource_key};
 use nebula_resource::{
-    AcquireOptions, Manager, Pooled, RegistrationSpec, Resident, ResidentConfig, ResourceContext,
-    ScopeLevel, ShutdownConfig, SlotIdentity, TopologyTag,
+    AcquireOptions, Manager, Pooled, RegistrationSpec, ReleaseOutcome, Resident, ResidentConfig,
+    ResourceContext, ScopeLevel, ShutdownConfig, SlotIdentity,
     error::Error,
     guard::ResourceGuard,
-    release_queue::ReleaseQueue,
     resource::{HasCredentialSlots, Provider, ResourceMetadata},
-    topology::{
-        pooled::{PoolProvider, RecycleDecision},
-        resident::ResidentProvider,
-    },
+    topology::pooled::{PoolProvider, RecycleDecision},
 };
+
+#[derive(Clone)]
+struct ResidentLifecycleResource {
+    next_id: Arc<AtomicU64>,
+    destroyed: Arc<std::sync::Mutex<Vec<u64>>>,
+    alive: Arc<AtomicBool>,
+    fail_create: Arc<AtomicBool>,
+    fail_destroy: Arc<AtomicBool>,
+}
+
+// A unique instance must work even for shared Resident leases.
+struct UniqueResident(u64);
+
+#[async_trait::async_trait]
+impl Provider for ResidentLifecycleResource {
+    type Config = TestConfig;
+    type Instance = UniqueResident;
+    type Topology = Resident<Self>;
+
+    fn key() -> ResourceKey {
+        resource_key!("resident-lifecycle")
+    }
+
+    async fn create(&self, _: &TestConfig, _: &ResourceContext) -> Result<UniqueResident, Error> {
+        if self.fail_create.load(Ordering::SeqCst) {
+            return Err(Error::permanent("intentional replacement failure"));
+        }
+        Ok(UniqueResident(self.next_id.fetch_add(1, Ordering::SeqCst)))
+    }
+
+    async fn destroy(
+        &self,
+        instance: UniqueResident,
+        _: nebula_resource::TeardownCx,
+    ) -> Result<(), Error> {
+        self.destroyed.lock().unwrap().push(instance.0);
+        if self.fail_destroy.load(Ordering::SeqCst) {
+            return Err(Error::permanent("intentional retained teardown failure"));
+        }
+        Ok(())
+    }
+}
+
+impl nebula_resource::topology::ResidentProvider for ResidentLifecycleResource {
+    fn is_alive_sync(&self, _: &UniqueResident) -> bool {
+        self.alive.load(Ordering::SeqCst)
+    }
+}
+
+nebula_resource::no_credential_slots!(ResidentLifecycleResource);
+
+fn resident_lifecycle_manager() -> (Manager, ResidentLifecycleResource) {
+    let resource = ResidentLifecycleResource {
+        next_id: Arc::new(AtomicU64::new(0)),
+        destroyed: Arc::new(std::sync::Mutex::new(Vec::new())),
+        alive: Arc::new(AtomicBool::new(true)),
+        fail_create: Arc::new(AtomicBool::new(false)),
+        fail_destroy: Arc::new(AtomicBool::new(false)),
+    };
+    let manager = Manager::new();
+    manager
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: Resident::new(ResidentConfig {
+                recreate_on_failure: true,
+                ..Default::default()
+            }),
+            recovery_gate: None,
+        })
+        .unwrap();
+    (manager, resource)
+}
+
+#[tokio::test]
+async fn graceful_shutdown_reports_terminal_failure_and_finishes_sibling_rows() {
+    let (manager, failing) = resident_lifecycle_manager();
+    let sibling = ResidentLifecycleResource {
+        next_id: Arc::new(AtomicU64::new(0)),
+        destroyed: Arc::default(),
+        alive: Arc::new(AtomicBool::new(true)),
+        fail_create: Arc::new(AtomicBool::new(false)),
+        fail_destroy: Arc::new(AtomicBool::new(false)),
+    };
+    let identity =
+        SlotIdentity::Structural(Arc::from([("scope".to_owned(), "sibling".to_owned())]));
+    manager
+        .register(RegistrationSpec {
+            resource: sibling.clone(),
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: identity.clone(),
+            topology: Resident::new(ResidentConfig::default()),
+            recovery_gate: None,
+        })
+        .unwrap();
+    let first_outcome = manager
+        .acquire_resident_for_identity::<ResidentLifecycleResource>(
+            &test_ctx(),
+            &AcquireOptions::default(),
+            &SlotIdentity::Unbound,
+        )
+        .await
+        .unwrap()
+        .release()
+        .await
+        .unwrap();
+    assert_eq!(first_outcome, ReleaseOutcome::Completed);
+    let sibling_outcome = manager
+        .acquire_resident_for_identity::<ResidentLifecycleResource>(
+            &test_ctx(),
+            &AcquireOptions::default(),
+            &identity,
+        )
+        .await
+        .unwrap()
+        .release()
+        .await
+        .unwrap();
+    assert_eq!(sibling_outcome, ReleaseOutcome::Completed);
+    failing.fail_destroy.store(true, Ordering::SeqCst);
+    let error = manager
+        .graceful_shutdown(ShutdownConfig::default())
+        .await
+        .unwrap_err();
+    match error {
+        nebula_resource::ShutdownError::ResourceTeardownFailed { key, source } => {
+            assert_eq!(key, ResidentLifecycleResource::key());
+            assert_eq!(*source.kind(), nebula_resource::ErrorKind::Permanent);
+        },
+        other => panic!("expected typed terminal failure, got {other:?}"),
+    }
+    assert_eq!(*failing.destroyed.lock().unwrap(), vec![0]);
+    assert_eq!(
+        *sibling.destroyed.lock().unwrap(),
+        vec![0],
+        "one failing row must not discard sibling teardown"
+    );
+}
+
+#[tokio::test]
+async fn resident_lease_release_does_not_destroy_retained_master() {
+    let (manager, resource) = resident_lifecycle_manager();
+    let first = manager
+        .acquire_resident::<ResidentLifecycleResource>(&test_ctx(), &AcquireOptions::default())
+        .await
+        .unwrap();
+    let second = manager
+        .acquire_resident::<ResidentLifecycleResource>(&test_ctx(), &AcquireOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(first.0, second.0);
+    assert_eq!(first.release().await.unwrap(), ReleaseOutcome::Completed);
+    assert_eq!(second.release().await.unwrap(), ReleaseOutcome::Completed);
+    assert!(resource.destroyed.lock().unwrap().is_empty());
+    manager
+        .graceful_shutdown(ShutdownConfig::default())
+        .await
+        .unwrap();
+    assert_eq!(*resource.destroyed.lock().unwrap(), vec![0]);
+}
+
+#[tokio::test]
+async fn resident_replacement_destroys_old_master_only_after_last_lease() {
+    let (manager, resource) = resident_lifecycle_manager();
+    let old = manager
+        .acquire_resident::<ResidentLifecycleResource>(&test_ctx(), &AcquireOptions::default())
+        .await
+        .unwrap();
+    resource.alive.store(false, Ordering::SeqCst);
+    let new = manager
+        .acquire_resident::<ResidentLifecycleResource>(&test_ctx(), &AcquireOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(old.0, 0);
+    assert_eq!(new.0, 1);
+    assert!(resource.destroyed.lock().unwrap().is_empty());
+    assert_eq!(old.release().await.unwrap(), ReleaseOutcome::Completed);
+    assert_eq!(*resource.destroyed.lock().unwrap(), vec![0]);
+    assert_eq!(new.release().await.unwrap(), ReleaseOutcome::Completed);
+    assert_eq!(*resource.destroyed.lock().unwrap(), vec![0]);
+    manager
+        .graceful_shutdown(ShutdownConfig::default())
+        .await
+        .unwrap();
+    assert_eq!(*resource.destroyed.lock().unwrap(), vec![0, 1]);
+}
+
+#[tokio::test]
+async fn resident_predecessor_teardown_failure_does_not_cancel_healthy_replacement() {
+    let (manager, resource) = resident_lifecycle_manager();
+    let old = manager
+        .acquire_resident::<ResidentLifecycleResource>(&test_ctx(), &AcquireOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(old.0, 0);
+    assert_eq!(old.release().await.unwrap(), ReleaseOutcome::Completed);
+
+    resource.alive.store(false, Ordering::SeqCst);
+    resource.fail_destroy.store(true, Ordering::SeqCst);
+    let replacement = manager
+        .acquire_resident::<ResidentLifecycleResource>(&test_ctx(), &AcquireOptions::default())
+        .await
+        .expect("predecessor teardown failure must not cancel its healthy replacement");
+
+    assert_eq!(replacement.0, 1);
+    assert_eq!(
+        *resource.destroyed.lock().unwrap(),
+        vec![0],
+        "failed predecessor teardown is attempted exactly once"
+    );
+    resource.fail_destroy.store(false, Ordering::SeqCst);
+    assert_eq!(
+        replacement.release().await.unwrap(),
+        ReleaseOutcome::Completed
+    );
+    assert_eq!(
+        *resource.destroyed.lock().unwrap(),
+        vec![0],
+        "the usable replacement remains retained after the acquire succeeds"
+    );
+
+    manager
+        .graceful_shutdown(ShutdownConfig::default())
+        .await
+        .unwrap();
+    assert_eq!(*resource.destroyed.lock().unwrap(), vec![0, 1]);
+}
+
+#[tokio::test]
+async fn resident_failed_recreation_preserves_master_for_terminal_teardown() {
+    let (manager, resource) = resident_lifecycle_manager();
+    let old = manager
+        .acquire_resident::<ResidentLifecycleResource>(&test_ctx(), &AcquireOptions::default())
+        .await
+        .unwrap();
+    resource.alive.store(false, Ordering::SeqCst);
+    resource.fail_create.store(true, Ordering::SeqCst);
+    assert!(
+        manager
+            .acquire_resident::<ResidentLifecycleResource>(&test_ctx(), &AcquireOptions::default())
+            .await
+            .is_err()
+    );
+    assert_eq!(old.release().await.unwrap(), ReleaseOutcome::Completed);
+    assert!(resource.destroyed.lock().unwrap().is_empty());
+    manager
+        .graceful_shutdown(ShutdownConfig::default())
+        .await
+        .unwrap();
+    assert_eq!(*resource.destroyed.lock().unwrap(), vec![0]);
+}
 
 // ---------------------------------------------------------------------------
 // Handle RAII semantics
@@ -66,155 +518,73 @@ async fn tainted_handle_not_recycled() {
     assert_eq!(idle_count::<PoolTestResource>(&mgr).await, 0);
 }
 
-// ---------------------------------------------------------------------------
-// Handle detach
-// ---------------------------------------------------------------------------
+/// Explicitly discarding a lease releases capacity without detaching ownership.
+#[tokio::test]
+async fn explicit_discard_destroys_instead_of_returning_to_pool() {
+    let resource = PoolTestResource::new();
+    let manager = Manager::new();
+    register_pool(
+        &manager,
+        resource.clone(),
+        test_config(),
+        Pooled::new(Default::default(), 1),
+    );
+    let mut guard = manager
+        .acquire_pooled::<PoolTestResource>(&test_ctx(), &AcquireOptions::default())
+        .await
+        .unwrap();
+    guard.taint();
+    assert_eq!(guard.release().await.unwrap(), ReleaseOutcome::Completed);
+    assert_eq!(idle_count::<PoolTestResource>(&manager).await, 0);
+    assert_eq!(resource.destroy_counter.load(Ordering::Relaxed), 1);
+}
 
 #[tokio::test]
-async fn pool_detach_removes_from_pool() {
-    let resource = PoolTestResource::new();
-    let config = nebula_resource::topology::pooled::config::Config {
-        max_size: 2,
-        ..Default::default()
-    };
-    let pool = Pooled::<PoolTestResource>::new(config, 1);
-    let mgr = Manager::new();
-    register_pool(&mgr, resource.clone(), test_config(), pool);
-    let ctx = test_ctx();
-
-    let handle = mgr
-        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
-        .await
-        .expect("acquire should succeed");
-
-    // Detach — the lease is extracted, on_release callback is disarmed.
-    let lease = handle.detach();
-    assert!(lease.is_some(), "guarded handle detach should return Some");
-
-    // `detach` disarms the release callback synchronously, so the slot can
-    // never return to the framework store. Polling the idle count down to the
-    // settle deadline is the deterministic proof: an (erroneously) enqueued
-    // return-to-pool would surface as a non-zero idle count within the window.
-    for _ in 0..40 {
-        if idle_count::<PoolTestResource>(&mgr).await != 0 {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-    }
-
-    // Pool must NOT have gotten the instance back.
-    assert_eq!(
-        idle_count::<PoolTestResource>(&mgr).await,
-        0,
-        "detached handle should not return to pool"
+async fn panic_in_drop_cleanup_does_not_abort_or_leak_drain_reservation() {
+    let manager = Manager::new();
+    let resource = PanickingDestroyPoolResource::new();
+    register_pool(
+        &manager,
+        resource,
+        test_config(),
+        Pooled::new(Default::default(), 1),
     );
-}
-
-// ---------------------------------------------------------------------------
-// 1. Panic in release callback doesn't abort
-// ---------------------------------------------------------------------------
-
-/// A minimal resource for handle-level tests that don't need a pool.
-#[derive(Clone)]
-struct HandleDummyResource;
-
-#[async_trait::async_trait]
-impl Provider for HandleDummyResource {
-    type Config = TestConfig;
-    type Instance = u32;
-    type Topology = Resident<Self>;
-
-    fn key() -> ResourceKey {
-        resource_key!("handle-dummy")
-    }
-
-    async fn create(&self, _config: &TestConfig, _ctx: &ResourceContext) -> Result<u32, Error> {
-        Ok(1)
-    }
-
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
-    }
-}
-
-impl ResidentProvider for HandleDummyResource {}
-
-nebula_resource::no_credential_slots!(HandleDummyResource);
-
-#[test]
-fn panic_in_release_callback_does_not_abort() {
-    // Create a guarded handle with a callback that panics. The callback now
-    // *builds* the teardown future; the build runs synchronously on `Drop`
-    // inside `catch_unwind`, so a panic there must still be caught and the
-    // process must not abort.
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    // The guard holds a `ReleaseQueue` for its `Drop` fallback. Building the
-    // queue spawns workers, so it must happen inside a Tokio runtime
-    // context; keep the runtime alive for the whole test via `enter()`.
-    let rt = tokio::runtime::Runtime::new().expect("build a tokio runtime");
-    let _rt_guard = rt.enter();
-    // Drop the handle (detaches the workers) — this test asserts the panic is
-    // caught at future-build time on `Drop`, not queued-future completion.
-    let (queue, _queue_handle) = ReleaseQueue::new(1);
-    let queue = Arc::new(queue);
-
-    let callback_entered = Arc::new(AtomicBool::new(false));
-    let entered = callback_entered.clone();
-
-    {
-        let _handle = ResourceGuard::<HandleDummyResource>::guarded(
-            42,
-            resource_key!("handle-dummy"),
-            TopologyTag::Pool,
-            1,
-            move |_lease, _tainted| {
-                entered.store(true, Ordering::Relaxed);
-                panic!("intentional panic in release callback");
-            },
-            queue,
-        );
-    }
-    // If we get here, the process didn't abort.
-    assert!(
-        callback_entered.load(Ordering::Relaxed),
-        "callback should have been invoked before the panic was caught"
+    let mut guard = manager
+        .acquire_pooled::<PanickingDestroyPoolResource>(&test_ctx(), &AcquireOptions::default())
+        .await
+        .unwrap();
+    guard.taint();
+    drop(guard);
+    let report = manager
+        .graceful_shutdown(ShutdownConfig::default())
+        .await
+        .unwrap();
+    assert_eq!(report.outstanding_handles_after_drain, 0);
+    assert_eq!(
+        report.dropped_release_tasks, 1,
+        "the panicking teardown was attempted and counted once"
     );
 }
 
 #[tokio::test]
 async fn release_guarded_handle_runs_teardown_and_returns_ok() {
-    // `release()` on a guarded handle must run the release callback to
-    // completion and surface its `Ok` — the callback must be invoked before
-    // `release()` returns, not deferred to the Drop queue.
-    use nebula_resource::guard::ResourceGuard;
-
-    let (queue, _queue_handle) = ReleaseQueue::new(1);
-    let queue = Arc::new(queue);
-
-    let ran = Arc::new(AtomicBool::new(false));
-    let ran_clone = Arc::clone(&ran);
-
-    let guard = ResourceGuard::<HandleDummyResource>::guarded(
-        42_u32,
-        resource_key!("handle-dummy"),
-        TopologyTag::Resident,
-        1,
-        move |_runtime, _tainted| {
-            ran_clone.store(true, Ordering::Relaxed);
-            Box::pin(async { Ok::<(), Error>(()) })
-                as std::pin::Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>
-        },
-        queue,
+    let manager = Manager::new();
+    let resource = DropOnRecycleResource::new();
+    register_pool(
+        &manager,
+        resource.clone(),
+        test_config(),
+        Pooled::new(Default::default(), 1),
     );
-
-    guard
-        .release()
+    let guard = manager
+        .acquire_pooled::<DropOnRecycleResource>(&test_ctx(), &AcquireOptions::default())
         .await
-        .expect("release() on a guarded handle must complete without error");
-    assert!(
-        ran.load(Ordering::Relaxed),
-        "release callback must have run before release() returned"
+        .unwrap();
+    assert_eq!(guard.release().await.unwrap(), ReleaseOutcome::Completed);
+    assert_eq!(
+        resource.destroy_counter.load(Ordering::Relaxed),
+        1,
+        "release does not return before the provider's teardown completes"
     );
 }
 
@@ -1062,7 +1432,169 @@ async fn credentialed_pool_recycle_keep_override_reuses() {
 // ResourceGuard::release() — explicit, awaited release checkpoint (canon §11.4)
 // ---------------------------------------------------------------------------
 
-/// `release()` on a Pooled guard returns `Ok(())` and recycles the instance:
+#[tokio::test(start_paused = true)]
+async fn graceful_shutdown_executes_guard_dropped_after_signal() {
+    let resource = PoolTestResource::new();
+    let manager = Manager::new();
+    let pool = Pooled::<PoolTestResource>::new(Default::default(), 1);
+    register_pool(&manager, resource.clone(), test_config(), pool);
+    let ctx = test_ctx();
+    let mut guard = manager
+        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .await
+        .expect("acquire succeeds");
+    guard.taint();
+    let shutdown = manager.graceful_shutdown(ShutdownConfig::default());
+    tokio::pin!(shutdown);
+    assert!(futures::poll!(shutdown.as_mut()).is_pending());
+    assert!(manager.is_shutdown());
+    // Run idle workers after SIGNAL before submitting the late teardown.
+    tokio::task::yield_now().await;
+    drop(guard);
+    let report = shutdown.await.expect("shutdown drains late teardown");
+    assert!(report.release_queue_drained);
+    assert_eq!(resource.destroy_counter.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn graceful_shutdown_accepts_maximum_release_queue_budget() {
+    let manager = Manager::new();
+    let report = manager
+        .graceful_shutdown(
+            ShutdownConfig::default().with_release_queue_timeout(std::time::Duration::MAX),
+        )
+        .await
+        .expect("a representable duration must not panic during shutdown");
+    assert!(report.registry_cleared);
+    assert!(report.release_queue_drained);
+    assert_eq!(report.dropped_release_tasks, 0);
+}
+
+#[tokio::test]
+async fn graceful_shutdown_destroys_idle_pool_instances() {
+    let resource = PoolTestResource::new();
+    let manager = Manager::new();
+    register_pool(
+        &manager,
+        resource.clone(),
+        test_config(),
+        Pooled::new(Default::default(), 1),
+    );
+    let ctx = test_ctx();
+    let guard = manager
+        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .await
+        .expect("acquire succeeds");
+    let outcome = guard
+        .release()
+        .await
+        .expect("healthy entry returns to idle");
+    assert_eq!(outcome, ReleaseOutcome::Completed);
+    assert_eq!(idle_count::<PoolTestResource>(&manager).await, 1);
+    manager
+        .graceful_shutdown(ShutdownConfig::default())
+        .await
+        .expect("terminal cleanup succeeds");
+    assert_eq!(
+        resource.destroy_counter.load(Ordering::Relaxed),
+        1,
+        "terminal shutdown destroys idle entries instead of dropping only the registry row"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn aborted_or_cancelled_drain_keeps_late_cleanup_available() {
+    for cancel_drain in [false, true] {
+        let resource = PoolTestResource::new();
+        let manager = Manager::new();
+        register_pool(
+            &manager,
+            resource.clone(),
+            test_config(),
+            Pooled::new(Default::default(), 1),
+        );
+        let ctx = test_ctx();
+        let mut guard = manager
+            .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+            .await
+            .expect("acquire succeeds");
+        guard.taint();
+        {
+            let shutdown = manager.graceful_shutdown(
+                ShutdownConfig::default().with_drain_timeout(std::time::Duration::from_secs(1)),
+            );
+            tokio::pin!(shutdown);
+            assert!(futures::poll!(shutdown.as_mut()).is_pending());
+            if !cancel_drain {
+                let error = shutdown
+                    .await
+                    .expect_err("outstanding guard prevents drain");
+                assert!(matches!(
+                    error,
+                    nebula_resource::ShutdownError::DrainTimeout { outstanding: 1 }
+                ));
+            }
+        }
+        assert!(manager.contains(&PoolTestResource::key()));
+        tokio::task::yield_now().await;
+        drop(guard);
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while resource.destroy_counter.load(Ordering::Relaxed) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("late teardown remains available");
+        assert_eq!(resource.destroy_counter.load(Ordering::Relaxed), 1);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn forced_shutdown_reports_outstanding_guard_without_claiming_cleanup() {
+    let resource = PoolTestResource::new();
+    let manager = Manager::new();
+    register_pool(
+        &manager,
+        resource.clone(),
+        test_config(),
+        Pooled::new(Default::default(), 1),
+    );
+    let ctx = test_ctx();
+    let mut guard = manager
+        .acquire_pooled::<PoolTestResource>(&ctx, &AcquireOptions::default())
+        .await
+        .expect("acquire succeeds");
+    guard.taint();
+    let report = manager
+        .graceful_shutdown(
+            ShutdownConfig::default()
+                .with_drain_timeout(std::time::Duration::from_secs(1))
+                .with_drain_timeout_policy(nebula_resource::DrainTimeoutPolicy::Force),
+        )
+        .await
+        .expect("force proceeds past outstanding guard");
+    assert_eq!(report.outstanding_handles_after_drain, 1);
+    assert_eq!(
+        report.dropped_release_tasks, 0,
+        "snapshot precedes late submission"
+    );
+    assert!(
+        !report.release_queue_drained,
+        "Force retains live cleanup workers"
+    );
+    let outcome = guard
+        .release()
+        .await
+        .expect("late release is still accepted while manager lives");
+    assert_eq!(outcome, ReleaseOutcome::Completed);
+    assert_eq!(resource.destroy_counter.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        report.outstanding_handles_after_drain, 1,
+        "the report remains a snapshot"
+    );
+}
+
+/// `release()` on a Pooled guard returns `Completed` and recycles the instance:
 /// the slot lands back in idle and a subsequent acquire reuses it (the
 /// `create_counter` does not advance). This is the awaited-inline counterpart
 /// to the drop-then-`wait_idle_count` recycle path.
@@ -1086,10 +1618,11 @@ async fn release_pooled_guard_recycles_and_returns_ok() {
 
     // Explicit awaited release: runs the recycle on the detached teardown task
     // and awaits its completion, so the slot is back in idle when it returns.
-    handle
+    let outcome = handle
         .release()
         .await
         .expect("release of a healthy pooled guard recycles and returns Ok");
+    assert_eq!(outcome, ReleaseOutcome::Completed);
 
     // The instance is back in idle by the time `release()` returned (the
     // teardown task ran the recycle to completion before `release().await`
@@ -1139,10 +1672,11 @@ async fn release_owned_resident_guard_returns_ok() {
         .await
         .expect("acquire should succeed");
 
-    handle
+    let outcome = handle
         .release()
         .await
         .expect("release of an owned resident guard is a no-op teardown — Ok");
+    assert_eq!(outcome, ReleaseOutcome::Completed);
 
     manager
         .graceful_shutdown(
@@ -1182,7 +1716,10 @@ async fn release_then_drop_emits_exactly_one_released_event() {
 
     // The awaited checkpoint runs the settle (emits `Released`) and consumes
     // `self`; the husk's drop at end of statement is fully inert.
-    handle.release().await.expect("release should succeed");
+    assert_eq!(
+        handle.release().await.expect("release should succeed"),
+        ReleaseOutcome::Completed
+    );
 
     let mut released_count = 0usize;
     while let Some(event) = rx.try_recv() {
@@ -1206,6 +1743,44 @@ async fn release_then_drop_emits_exactly_one_released_event() {
         )
         .await
         .expect("graceful_shutdown must succeed");
+}
+
+/// Queue rejection settles the lease reservation but must not claim that
+/// provider cleanup completed.
+#[tokio::test]
+async fn rejected_release_never_emits_released() {
+    let manager = Manager::new();
+    let resource = ResidentTestResource::new();
+    let resident_rt = Resident::<ResidentTestResource>::new(ResidentConfig::default());
+
+    manager
+        .register(RegistrationSpec {
+            resource,
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: resident_rt,
+            recovery_gate: None,
+        })
+        .expect("registration should succeed");
+
+    let mut events = manager.subscribe_events();
+    let guard: ResourceGuard<ResidentTestResource> = manager
+        .acquire_resident(&test_ctx(), &AcquireOptions::default())
+        .await
+        .expect("acquire should succeed");
+    drop(manager);
+
+    guard
+        .release()
+        .await
+        .expect_err("closed cleanup queue rejects release submission");
+    while let Some(event) = events.try_recv() {
+        assert!(
+            !matches!(event, nebula_resource::ResourceEvent::Released { .. }),
+            "a rejected cleanup must never be observed as Released"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

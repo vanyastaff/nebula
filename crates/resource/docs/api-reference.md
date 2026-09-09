@@ -16,8 +16,12 @@ this page intentionally does not duplicate it.
 - **[`../README.md`](../README.md)** — the shipped public surface in prose:
   the `Provider` trait and its associated types (`Config` / `Instance` /
   `Topology`), the three topologies (`Pooled` / `Resident` / `Bounded`), the
+  custom-topology `InstanceStore` and non-cloneable `RetainedStore` /
+  `RetainedId` ownership capabilities (including the trusted-plugin boundary
+  around ownership-transferring store operations), the
   single `Manager::register(RegistrationSpec { … })` registration funnel, the
-  structural `SlotIdentity` cross-tenant barrier (`Unbound` / `Structural`),
+  structural `SlotIdentity` deduplication/resolution key (`Unbound` /
+  `Structural`; tenant authorization remains a host responsibility),
   the `acquire_any` / `acquire_<topology>` /
   `acquire_<topology>_for_identity` acquire family, the engine-driven slot
   operations (`refresh_slot` / `refresh_slot_for_identity`, `revoke_slot` /

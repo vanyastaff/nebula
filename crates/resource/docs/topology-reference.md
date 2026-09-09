@@ -21,7 +21,7 @@ touch the idle store or the fence — see
 | Topology                    | Instance model                                              | Use when…                                                                      | Don't use for…                                          |
 |-----------------------------|------------------------------------------------------------|--------------------------------------------------------------------------------|---------------------------------------------------------|
 | **[Pool](#pool)**           | N interchangeable instances, checkout / recycle / destroy  | N stateful instances, expensive to create, reused (DB connections).            | A single shared client (use Resident).                  |
-| **[Resident](#resident)**   | One shared instance, `Arc::clone` on acquire               | One instance shared widely; clone is cheap (`reqwest::Client`, in-mem cache).  | Per-caller mutable state (use Pool).                    |
+| **[Resident](#resident)**   | One retained instance, shared through owning lease entries | One instance shared widely without requiring `Instance: Clone`.                | Per-caller mutable state (use Pool).                    |
 | **[Bounded](#bounded)**     | Concurrency-capped, **no** warm idle pool                  | Cap concurrent leases without pooling: license seats, serial-exclusive device. | N reusable warm instances (use Pool).                   |
 
 `type Topology` is static per resource type; only its *config* (sizes, cap) is a
@@ -109,7 +109,7 @@ fence) / `Drop` (destroy).
 
 ## Resident
 
-**A single shared instance, cloned on every acquire.**
+**A single retained instance shared through owning lease entries.**
 
 ### Trait set
 
@@ -119,7 +119,7 @@ use nebula_resource::topology::{Resident, ResidentProvider};
 #[async_trait::async_trait]
 impl Provider for GoogleSheets {
     type Config = GoogleSheetsConfig;
-    type Instance = GoogleSheetsClient;    // Clone — cloned on each acquire
+    type Instance = GoogleSheetsClient;    // no universal Clone bound
     type Topology = Resident<Self>;
 
     fn key() -> ResourceKey { resource_key!("demo.google.sheets") }
@@ -156,13 +156,23 @@ manager.register(RegistrationSpec {
 
 The Manager dedupes by `(R::key(), ScopeLevel, SlotIdentity)`. 10 concurrent
 acquires at the same scope and credential identity produce **one**
-`Provider::create`; every lease is a clone of the one master handle. See
+`Provider::create`; every lease points at the one retained master through a
+topology-owned entry. See
 [`examples/examples/resource_telegram_multi_workflow.rs`](../../../examples/examples/resource_telegram_multi_workflow.rs).
 
 ### Friction points
 
-- **`Clone` on `Instance`.** Inner state typically lives behind `Arc<Inner>`, so
-  `Clone` is a refcount bump.
+- **Retained ownership is framework-visible.** Resident publishes its master in
+  the non-cloneable retained store and keeps only an opaque retained identity;
+  terminal cleanup accounts for roots published into the store. Trusted custom
+  topologies must not clone or forget untracked strong aliases outside it;
+  doing so violates the lifecycle contract and escapes this accounting.
+- **Shutdown retires roots while leases remain live.** Retained and idle parents
+  may own child guards from the same manager; releasing their roots during drain
+  lets those dependencies settle without author-managed shutdown ordering.
+  `Topology::quiesce` stops policy background work only and must not invalidate or
+  await issued guards. `into_owned_instance` yields the final owner for
+  `Provider::destroy`; other consumers remain usable until they release.
 - **Revoke teardown runs through the credential hook.** The master handle is
   never in the framework idle store, so the store revoke-fence cannot reach it;
   Resident handles its own revoke via `dispatch_credential_hook`
