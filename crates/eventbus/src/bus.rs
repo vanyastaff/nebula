@@ -209,8 +209,8 @@ impl<E: Clone + Send> EventBus<E> {
     ///
     /// Returns a [`Subscriber`] that receives all events emitted after this call.
     /// If the subscriber falls behind by more than `buffer_size` events, it
-    /// skips to the latest (handles `Lagged` internally) and attributes the
-    /// skipped count into [`EventBusStats::dropped_count`].
+    /// resumes at the oldest retained event (handles `Lagged` internally) and
+    /// adds the missed count to [`EventBusStats::dropped_count`].
     #[must_use]
     pub fn subscribe(&self) -> Subscriber<E> {
         Subscriber::new(self.sender.subscribe(), Arc::clone(&self.dropped_count))

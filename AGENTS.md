@@ -9,11 +9,14 @@ Read this, then `crates/<crate>/AGENTS.md` for the crate you're touching. Each f
 same shape — **Purpose / Layer** header, **Key files**, **Conventions & never-do** (that
 crate's real traps and what it deliberately does *not* do), **See also**, plus
 **Commands** only where the crate needs something beyond `cargo check -p <name>` /
-`cargo nextest run -p <name>`. They state only what's crate-specific; everything in this
-file applies everywhere and is not repeated there.
+`cargo nextest run -p <name>`. **Change checks** maps affected contracts to relevant tests;
+it is a starting point, not an exhaustive gate or a claim that those tests passed.
+Run package commands from the workspace root unless stated otherwise. These guides add
+only crate-specific rules; everything in this file applies everywhere.
 
 `orchestrator`, `worker`, `plugin-core`, `apps/server`, and `apps/worker` have no
-`AGENTS.md` yet — read their `README.md` and the invariants below instead.
+`AGENTS.md` yet — read their `README.md` where present, otherwise the crate-root docs in
+`src/lib.rs` or `src/main.rs`, plus the invariants below.
 
 ---
 
@@ -32,7 +35,9 @@ Design records — ADRs, roadmap, specs, research — are **not tracked in this 
 They live in the maintainers' private Obsidian vault, reachable via the `obsidian` MCP
 under `projects/nebula/`. Run `/recall <area>` before working a known area so prior
 decisions carry forward, and `/remember` after a non-obvious decision, gotcha, or fix.
-If the MCP is absent, skip it.
+If the MCP is absent, skip vault access. If the host provides local project memory,
+recall relevant notes there and verify them against current files before relying on them.
+Local memory is not a substitute for the private design vault or binding canon.
 
 **Tooling.** Serena is configured (`.mcp.json`) — prefer its symbolic tools for
 definition lookup, reference search, and renames; `rename_symbol` over grep+replace.
@@ -40,6 +45,38 @@ Also wired: `rust-analyzer-mcp` (hover, diagnostics, code actions), `rust-mcp-se
 (cargo check/clippy/deny/test runners), `rust-docs`, `cratesio`. Modern CLI equivalents
 (`rg`, `fd`, `bat`, `eza`, `sd`, `jq`, `yq`, `delta`, `dust`, `procs`) are installed.
 Install cargo tools with `cargo binstall`, not `cargo install`.
+Configuration is not proof of availability: use tools exposed in the current session.
+If an MCP is unavailable, use scoped `rg` and CLI checks; report any evidence you could
+not retrieve instead of inventing tool results.
+
+## Agent Work Loop
+
+- **Start with the outcome.** For non-trivial work, state the observable result,
+  constraints, and how it will be verified. Infer routine details from the request and
+  code; preserve later user corrections alongside the original requirements. Ask only
+  when a missing decision materially changes scope or correctness.
+- **Inspect before editing.** Check the current branch and `git status --short`, read
+  the applicable guides and surrounding implementation, and preserve existing edits.
+  Keep changes scoped, but finish required cross-crate consequences.
+- **Continue within authorization.** Make reversible implementation choices and state
+  consequential assumptions. Before an unapproved destructive operation, publication,
+  deployment, paid service, or access change, finish the safe preparation and request
+  approval for the concrete action. Existing user authorization still applies.
+- **Protect context and secrets.** Do not dump environment variables, real `.env` files,
+  credentials, or keys into tool output or notes. Use public templates and redacted
+  diagnostics. Source modules named `secrets` or `credentials` are ordinary code.
+- **Parallel work needs ownership.** When delegation is requested or required by an
+  applicable skill, assign independent responsibilities and explicit file ownership.
+  Workers must preserve others' edits. Follow the Git Workflow for persistent branches;
+  the coordinator owns integration and verification of the combined diff.
+- **Done requires evidence.** Compare the result with the user's request and corrections,
+  not only the implementation plan. Review the actual diff, run the applicable checks
+  below, and report results for the final revision. Distinguish passed, failed, and not run;
+  explain missing prerequisites. A plan, a started command, or a worker's summary is
+  not a passing check. Do not weaken gates to obtain a green result.
+
+For long tasks or a handoff, use [Agent workflow templates](docs/AGENT_WORKFLOW.md).
+Keep task state in the conversation or local ignored notes, not in this guide.
 
 ---
 
@@ -62,12 +99,14 @@ PostgreSQL + SQLite (`crates/storage/migrations/`) · `cargo nextest` + doctests
 | `task deny` | Layer wrappers + advisories + licenses |
 | `task ci` | Full CI pipeline locally |
 | `task bench:crate CRATE=<name>` | Benchmarks |
-| `task db:up && task db:migrate` | Local Postgres + admitted migration operator |
+| `task db:up`, then `task db:migrate` | Local Postgres + admitted migration operator |
 | `task obs:up` / `obs:down` | Jaeger + OTEL collector |
 | `cargo xtask ci-plan full` | Versioned full CI package plan |
 | `cargo xtask ci-plan diff --base <sha> --head <sha> --comparison merge-base` | Metadata-driven diff plan |
 
 Run chained shell steps separately, not `&&`-joined — one clear pass/fail per step.
+Preserve the check's exit status when shortening output: a pipeline ending in `tail`
+or `tee` needs `pipefail`; otherwise a failed check can report success.
 
 ---
 
@@ -228,8 +267,8 @@ Branch from `main`, squash-merge to `main`, never force-push shared history. Don
 
 Not hook-enforced — CI catches these, so check them yourself: no `unwrap()`/`expect()`/
 `panic!()` in libs, no TODO/FIXME/HACK, no test weakening. (`.claude/hooks/` contains
-guard scripts that are **not currently wired** into `.claude/settings.json`; don't rely
-on them.)
+guard scripts; verify their registration in the active host and their execution before
+relying on them. A script on disk is not an enforced gate.)
 
 ---
 

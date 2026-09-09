@@ -126,25 +126,31 @@ fn record_admission(admission: CatalogAdmission) {
 }
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
-fn record_setup_result<E>(result: &Result<(), E>)
+fn record_setup_result<T, E>(result: &Result<T, E>)
 where
     E: SchemaSetupFailure,
 {
     let span = Span::current();
     match result {
-        Ok(()) => {
+        Ok(_) => {
             span.record("outcome", "ready");
             span.record("error_code", "none");
         },
-        Err(error) => match error.failure_kind() {
-            SetupFailureKind::Rejected => {
-                span.record("outcome", "rejected");
-                span.record("error_code", "unsupported_schema");
-            },
-            SetupFailureKind::Unavailable => {
-                span.record("outcome", "failed");
-                span.record("error_code", "unavailable");
-            },
+        Err(error) => record_setup_failure(error),
+    }
+}
+
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+fn record_setup_failure(error: &impl SchemaSetupFailure) {
+    let span = Span::current();
+    match error.failure_kind() {
+        SetupFailureKind::Rejected => {
+            span.record("outcome", "rejected");
+            span.record("error_code", "unsupported_schema");
+        },
+        SetupFailureKind::Unavailable => {
+            span.record("outcome", "failed");
+            span.record("error_code", "unavailable");
         },
     }
 }
@@ -177,6 +183,25 @@ pub(crate) fn storage_setup_error(error: CatalogSetupError) -> nebula_storage_po
 #[cfg(feature = "sqlite")]
 static SQLITE_MEMORY_SETUP: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
+#[cfg(all(test, feature = "sqlite"))]
+pub(crate) fn assert_sqlite_memory_setup_locked() {
+    std::assert_matches!(
+        SQLITE_MEMORY_SETUP.try_acquire(),
+        Err(tokio::sync::TryAcquireError::NoPermits)
+    );
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+pub(crate) fn assert_sqlite_file_setup_locked(path: &std::path::Path) {
+    let base = path.as_os_str().to_string_lossy();
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(format!("{base}{SQLITE_SETUP_LOCK_SUFFIX}"))
+        .expect("setup sidecar exists after terminal admission");
+    std::assert_matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock));
+}
+
 #[cfg(feature = "sqlite")]
 #[must_use = "dropping the permit allows another in-memory schema setup to start"]
 pub(crate) struct SqliteMemorySetupPermit {
@@ -201,9 +226,23 @@ impl SqliteFileSetupGuard {
 #[cfg(feature = "sqlite")]
 pub(crate) async fn acquire_sqlite_memory_setup_guard()
 -> Result<SqliteMemorySetupPermit, CatalogSetupError> {
-    let permit = SQLITE_MEMORY_SETUP
-        .acquire()
+    acquire_sqlite_memory_setup_guard_until(tokio::time::Instant::now() + SETUP_LOCK_TIMEOUT).await
+}
+
+#[cfg(feature = "sqlite")]
+async fn acquire_sqlite_memory_setup_guard_until(
+    deadline: tokio::time::Instant,
+) -> Result<SqliteMemorySetupPermit, CatalogSetupError> {
+    if tokio::time::Instant::now() >= deadline {
+        record_sqlite_pre_terminal_budget_exhaustion("memory_setup_lock");
+        return Err(CatalogSetupError::Unavailable);
+    }
+    let permit = tokio::time::timeout_at(deadline, SQLITE_MEMORY_SETUP.acquire())
         .await
+        .map_err(|_| {
+            record_sqlite_pre_terminal_budget_exhaustion("memory_setup_lock");
+            CatalogSetupError::Unavailable
+        })?
         .map_err(|_| CatalogSetupError::Unavailable)?;
     Ok(SqliteMemorySetupPermit { _permit: permit })
 }
@@ -215,15 +254,17 @@ pub(crate) async fn acquire_sqlite_memory_setup_guard()
 #[cfg(feature = "sqlite")]
 const SQLITE_SETUP_LOCK_SUFFIX: &str = "-setup-lock";
 
-/// How long to wait for another process to finish its schema setup.
+/// How long schema setup may wait before entering its terminal section.
 ///
-/// This budget covers the winner's *entire* run — a cold catalog is 41
-/// migrations plus two admission passes — not just a lock handshake, because a
-/// loser holds the wait for exactly as long as the winner works. The previous
-/// five seconds was routinely shorter than that run, so a simultaneous
-/// multi-replica cold start turned every process but one into a crash-loop:
-/// each got `Unavailable`, exited, restarted, and contended again. It stays
-/// bounded so a genuinely stuck peer still surfaces rather than hanging.
+/// For SQLite this is one pre-terminal admission budget shared by connection
+/// acquisition, database discovery, setup-lock admission, and any observer
+/// connection required for shared-memory verification. Once admitted, SQLite
+/// DDL and its postflight checks run to completion because SQLx's blocking
+/// SQLite worker cannot be safely cancelled. An in-flight pool acquisition is
+/// likewise allowed to settle under `PoolOptions::acquire_timeout` and is
+/// rejected if this admission cutoff passed meanwhile. PostgreSQL uses the
+/// same duration for advisory-lock acquisition; its existing setup contract is
+/// otherwise unchanged.
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 const SETUP_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(5);
 
@@ -235,59 +276,86 @@ const SQLITE_SETUP_LOCK_POLL_INTERVAL: std::time::Duration = std::time::Duration
 pub(crate) async fn acquire_sqlite_file_setup_guard(
     path: std::path::PathBuf,
 ) -> Result<SqliteFileSetupGuard, CatalogSetupError> {
-    use std::fs::{OpenOptions, TryLockError};
-    use std::time::Instant;
+    acquire_sqlite_file_setup_guard_until(path, tokio::time::Instant::now() + SETUP_LOCK_TIMEOUT)
+        .await
+}
 
-    tokio::task::spawn_blocking(move || {
-        let base = path.as_os_str().to_string_lossy().into_owned();
-        // Lock a dedicated sidecar, never the database file itself. POSIX
-        // removes *every* `fcntl` record lock a process holds on an inode as
-        // soon as that process closes *any* descriptor for it, and SQLite's
-        // unix VFS locks with `fcntl`. A second descriptor on the database
-        // would therefore silently strip the locks held by live pooled
-        // connections in this same process the moment this guard dropped —
-        // one of SQLite's documented corruption paths. Opening a different
-        // inode keeps the two lock domains disjoint.
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(format!("{base}{SQLITE_SETUP_LOCK_SUFFIX}"))
-            .map_err(|_| CatalogSetupError::Unavailable)?;
-        let deadline = Instant::now() + SETUP_LOCK_TIMEOUT;
-        loop {
-            match file.try_lock() {
-                Ok(()) => {
-                    // Measure the database under the lock without opening it.
-                    // A missing database reads as empty, exactly as the old
-                    // `create(true)` path reported for a freshly created file.
-                    let initial_len = match std::fs::metadata(&path) {
-                        Ok(metadata) => metadata.len(),
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
-                        Err(_) => return Err(CatalogSetupError::Unavailable),
-                    };
-                    let has_sidecar = ["-journal", "-wal", "-shm"]
-                        .iter()
-                        .any(|suffix| std::path::Path::new(&format!("{base}{suffix}")).exists());
-                    return Ok(SqliteFileSetupGuard {
-                        _file: file,
-                        initial_len,
-                        has_sidecar,
-                    });
-                },
-                Err(TryLockError::WouldBlock) => {
-                    if Instant::now() >= deadline {
-                        return Err(CatalogSetupError::Unavailable);
-                    }
-                    std::thread::sleep(SQLITE_SETUP_LOCK_POLL_INTERVAL);
-                },
-                Err(TryLockError::Error(_)) => return Err(CatalogSetupError::Unavailable),
-            }
+#[cfg(feature = "sqlite")]
+async fn acquire_sqlite_file_setup_guard_until(
+    path: std::path::PathBuf,
+    deadline: tokio::time::Instant,
+) -> Result<SqliteFileSetupGuard, CatalogSetupError> {
+    if tokio::time::Instant::now() >= deadline {
+        record_sqlite_pre_terminal_budget_exhaustion("file_setup_lock");
+        return Err(CatalogSetupError::Unavailable);
+    }
+    let remaining_budget = deadline.saturating_duration_since(tokio::time::Instant::now());
+    let blocking_deadline = std::time::Instant::now() + remaining_budget;
+    let lock_attempt = tokio::task::spawn_blocking(move || {
+        acquire_sqlite_file_setup_guard_blocking(path, blocking_deadline)
+    });
+    tokio::time::timeout_at(deadline, lock_attempt)
+        .await
+        .map_err(|_| {
+            record_sqlite_pre_terminal_budget_exhaustion("file_setup_lock");
+            CatalogSetupError::Unavailable
+        })?
+        .map_err(|_| CatalogSetupError::Unavailable)?
+}
+
+#[cfg(feature = "sqlite")]
+fn acquire_sqlite_file_setup_guard_blocking(
+    path: std::path::PathBuf,
+    deadline: std::time::Instant,
+) -> Result<SqliteFileSetupGuard, CatalogSetupError> {
+    use std::fs::{OpenOptions, TryLockError};
+
+    if std::time::Instant::now() >= deadline {
+        return Err(CatalogSetupError::Unavailable);
+    }
+    let base = path.as_os_str().to_string_lossy().into_owned();
+    // Lock a dedicated sidecar, never the database file itself. POSIX removes
+    // every `fcntl` record lock a process holds on an inode as soon as that
+    // process closes any descriptor for it. A separate inode keeps SQLite's
+    // lock domain disjoint from schema-setup serialization.
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(format!("{base}{SQLITE_SETUP_LOCK_SUFFIX}"))
+        .map_err(|_| CatalogSetupError::Unavailable)?;
+    loop {
+        if std::time::Instant::now() >= deadline {
+            return Err(CatalogSetupError::Unavailable);
         }
-    })
-    .await
-    .map_err(|_| CatalogSetupError::Unavailable)?
+        match file.try_lock() {
+            Ok(()) => {
+                // Measure the database under the lock without opening it. A
+                // missing database is the empty state of a new catalog.
+                let initial_len = match std::fs::metadata(&path) {
+                    Ok(metadata) => metadata.len(),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+                    Err(_) => return Err(CatalogSetupError::Unavailable),
+                };
+                let has_sidecar = ["-journal", "-wal", "-shm"]
+                    .iter()
+                    .any(|suffix| std::path::Path::new(&format!("{base}{suffix}")).exists());
+                return Ok(SqliteFileSetupGuard {
+                    _file: file,
+                    initial_len,
+                    has_sidecar,
+                });
+            },
+            Err(TryLockError::WouldBlock) => {
+                std::thread::sleep(
+                    SQLITE_SETUP_LOCK_POLL_INTERVAL
+                        .min(deadline.saturating_duration_since(std::time::Instant::now())),
+                );
+            },
+            Err(TryLockError::Error(_)) => return Err(CatalogSetupError::Unavailable),
+        }
+    }
 }
 
 #[cfg(feature = "sqlite")]
@@ -342,6 +410,10 @@ where
 }
 
 #[cfg(feature = "sqlite")]
+/// Run policy-specific admission, migration, and postflight on one session.
+/// The caller must run this inside an owned terminal section that retains both
+/// the setup guard and session until completion; dropping this borrowed future
+/// does not cancel work already submitted to SQLite's worker.
 pub(crate) async fn setup_sqlite_connection_with<P>(
     connection: &mut sqlx::SqliteConnection,
 ) -> Result<(), P::Error>
@@ -359,7 +431,11 @@ where
 }
 
 #[cfg(feature = "sqlite")]
-trait SqliteDatabaseDiscoveryProbe {
+trait SqliteSetupProbe {
+    fn before_connection_acquisition(&self) -> impl Future<Output = ()> + Send {
+        std::future::ready(())
+    }
+
     fn before_first_attempt(&self) -> impl Future<Output = ()> + Send {
         std::future::ready(())
     }
@@ -373,24 +449,34 @@ trait SqliteDatabaseDiscoveryProbe {
 struct UnobservedSqliteDatabaseDiscovery;
 
 #[cfg(feature = "sqlite")]
-impl SqliteDatabaseDiscoveryProbe for UnobservedSqliteDatabaseDiscovery {}
+impl SqliteSetupProbe for UnobservedSqliteDatabaseDiscovery {}
 
 #[cfg(feature = "sqlite")]
 #[derive(Clone, Copy)]
-struct SqliteDatabaseDiscoveryRetry {
-    timeout: std::time::Duration,
+struct SqlitePreTerminalRetryPolicy {
+    admission_timeout: std::time::Duration,
     poll_interval: std::time::Duration,
 }
 
 #[cfg(feature = "sqlite")]
-const SQLITE_DATABASE_DISCOVERY_RETRY: SqliteDatabaseDiscoveryRetry =
-    SqliteDatabaseDiscoveryRetry {
-        timeout: SETUP_LOCK_TIMEOUT,
+const SQLITE_PRE_TERMINAL_RETRY_POLICY: SqlitePreTerminalRetryPolicy =
+    SqlitePreTerminalRetryPolicy {
+        admission_timeout: SETUP_LOCK_TIMEOUT,
         poll_interval: SQLITE_SETUP_LOCK_POLL_INTERVAL,
     };
 
 #[cfg(feature = "sqlite")]
 type SqliteDatabaseRows = Vec<(i64, String, String)>;
+
+#[cfg(feature = "sqlite")]
+fn record_sqlite_pre_terminal_budget_exhaustion(stage: &'static str) {
+    tracing::warn!(
+        target: "nebula_storage::migration",
+        stage,
+        outcome = "budget_exhausted",
+        "SQLite schema setup exhausted its pre-terminal admission budget"
+    );
+}
 
 #[cfg(feature = "sqlite")]
 enum ClassifiedAttempt<T> {
@@ -412,7 +498,7 @@ fn record_sqlite_database_discovery_exhaustion(last_lock_code: Option<u32>, atte
         sqlite_code = ?last_lock_code,
         attempts,
         outcome = "retry_exhausted",
-        "SQLite schema setup exhausted its database-discovery retry budget"
+        "SQLite schema setup exhausted its remaining budget during database discovery"
     );
 }
 
@@ -439,17 +525,31 @@ impl SqliteDatabaseDiscoveryAttempt for SqliteDatabaseListAttempt<'_> {
     }
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(test, feature = "sqlite"))]
 async fn retry_sqlite_database_discovery<Attempt, Probe>(
     attempt: &mut Attempt,
     probe: &Probe,
-    retry: SqliteDatabaseDiscoveryRetry,
+    retry: SqlitePreTerminalRetryPolicy,
 ) -> Result<SqliteDatabaseRows, CatalogSetupError>
 where
     Attempt: SqliteDatabaseDiscoveryAttempt,
-    Probe: SqliteDatabaseDiscoveryProbe,
+    Probe: SqliteSetupProbe,
 {
-    let deadline = tokio::time::Instant::now() + retry.timeout;
+    let deadline = tokio::time::Instant::now() + retry.admission_timeout;
+    retry_sqlite_database_discovery_until(attempt, probe, deadline, retry.poll_interval).await
+}
+
+#[cfg(feature = "sqlite")]
+async fn retry_sqlite_database_discovery_until<Attempt, Probe>(
+    attempt: &mut Attempt,
+    probe: &Probe,
+    deadline: tokio::time::Instant,
+    poll_interval: std::time::Duration,
+) -> Result<SqliteDatabaseRows, CatalogSetupError>
+where
+    Attempt: SqliteDatabaseDiscoveryAttempt,
+    Probe: SqliteSetupProbe,
+{
     let mut attempts = 0_u32;
     let mut last_lock_code = None::<u32>;
     loop {
@@ -485,7 +585,7 @@ where
                     record_sqlite_database_discovery_exhaustion(last_lock_code, attempts);
                     return Err(CatalogSetupError::Unavailable);
                 }
-                let retry_wait = tokio::time::sleep(retry.poll_interval.min(deadline - now));
+                let retry_wait = tokio::time::sleep(poll_interval.min(deadline - now));
                 tokio::pin!(retry_wait);
                 probe.before_retry_wait(attempts);
                 retry_wait.await;
@@ -509,14 +609,16 @@ where
 async fn sqlite_main_database_path_with_probe<Probe>(
     connection: &mut sqlx::SqliteConnection,
     probe: &Probe,
-    retry: SqliteDatabaseDiscoveryRetry,
+    deadline: tokio::time::Instant,
+    poll_interval: std::time::Duration,
 ) -> Result<std::path::PathBuf, CatalogSetupError>
 where
-    Probe: SqliteDatabaseDiscoveryProbe,
+    Probe: SqliteSetupProbe,
 {
     probe.before_first_attempt().await;
     let mut attempt = SqliteDatabaseListAttempt { connection };
-    let databases = retry_sqlite_database_discovery(&mut attempt, probe, retry).await?;
+    let databases =
+        retry_sqlite_database_discovery_until(&mut attempt, probe, deadline, poll_interval).await?;
     let main_path = databases
         .into_iter()
         .find_map(|(_, name, file)| (name == "main").then(|| std::path::PathBuf::from(file)));
@@ -533,12 +635,9 @@ where
 }
 
 #[cfg(feature = "sqlite")]
-async fn verify_shared_memory_visibility(pool: &sqlx::SqlitePool) -> Result<(), CatalogSetupError> {
-    use std::time::Duration;
-
-    let mut observer = tokio::time::timeout(Duration::from_secs(5), acquire_setup_connection(pool))
-        .await
-        .map_err(|_| CatalogSetupError::Unavailable)??;
+async fn verify_shared_memory_visibility(
+    mut observer: sqlx::pool::PoolConnection<sqlx::Sqlite>,
+) -> Result<(), CatalogSetupError> {
     sqlite_foreign_keys_enabled::<CatalogSetupError>(&mut observer).await?;
     let observed_head: Option<i64> =
         sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations WHERE success")
@@ -555,6 +654,141 @@ async fn verify_shared_memory_visibility(pool: &sqlx::SqlitePool) -> Result<(), 
     } else {
         Err(CatalogSetupError::Unavailable)
     }
+}
+
+#[cfg(feature = "sqlite")]
+async fn run_sqlite_memory_terminal_sequence<
+    MigrationConnection,
+    ObserverConnection,
+    Migration,
+    MigrationFuture,
+    VerifyVisibility,
+    VisibilityFuture,
+>(
+    migration_connection: MigrationConnection,
+    observer_connection: Option<ObserverConnection>,
+    migrate: Migration,
+    verify_visibility: VerifyVisibility,
+) -> Result<(), CatalogSetupError>
+where
+    Migration: FnOnce(MigrationConnection) -> MigrationFuture,
+    MigrationFuture: Future<Output = Result<(), CatalogSetupError>>,
+    VerifyVisibility: FnOnce(ObserverConnection) -> VisibilityFuture,
+    VisibilityFuture: Future<Output = Result<(), CatalogSetupError>>,
+{
+    migrate(migration_connection).await?;
+    if let Some(observer_connection) = observer_connection {
+        verify_visibility(observer_connection).await?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+async fn run_sqlite_memory_terminal_operations(
+    migration_connection: sqlx::pool::PoolConnection<sqlx::Sqlite>,
+    observer_connection: Option<sqlx::pool::PoolConnection<sqlx::Sqlite>>,
+) -> Result<(), CatalogSetupError> {
+    run_sqlite_memory_terminal_sequence(
+        migration_connection,
+        observer_connection,
+        |mut connection| async move {
+            migrate_sqlite_connection::<CatalogOnly>(&mut connection).await
+        },
+        verify_shared_memory_visibility,
+    )
+    .await
+}
+
+#[cfg(feature = "sqlite")]
+fn require_sqlite_terminal_setup_admission(
+    deadline: tokio::time::Instant,
+) -> Result<(), CatalogSetupError> {
+    if tokio::time::Instant::now() < deadline {
+        Ok(())
+    } else {
+        record_sqlite_pre_terminal_budget_exhaustion("terminal_setup_admission");
+        Err(CatalogSetupError::Unavailable)
+    }
+}
+
+#[cfg(feature = "sqlite")]
+/// Own the setup guard and operation through terminal completion, independently
+/// of cancellation of the task observing this result. The operation must own all
+/// database sessions and pool handles needed to finish its work.
+pub(crate) async fn complete_sqlite_terminal_section<Guard, T, E>(
+    setup_guard: Guard,
+    operation: impl Future<Output = Result<T, E>> + Send + 'static,
+) -> Result<T, E>
+where
+    Guard: Send + 'static,
+    T: Send + 'static,
+    E: From<CatalogSetupError> + SchemaSetupFailure + Send + 'static,
+{
+    let span = Span::current();
+    let terminal_owner = tokio::spawn(
+        async move {
+            let _setup_guard = setup_guard;
+            let result = operation.await;
+            record_setup_result(&result);
+            result
+        }
+        .instrument(span),
+    );
+    supervise_sqlite_setup_task(terminal_owner, SqliteSetupTaskStage::Terminal)
+        .await
+        .map_err(|_| E::from(CatalogSetupError::Unavailable))?
+        .map_err(E::from)?
+}
+
+#[cfg(feature = "sqlite")]
+#[derive(Clone, Copy)]
+enum SqliteSetupTaskStage {
+    Terminal,
+    ConnectionAcquisition,
+}
+
+/// Supervision owns the join independently of the result receiver. Losing the
+/// receiver never cancels SQLite work or its failure reporting. Runtime shutdown
+/// and process-aborting panics remain outside this task-lifetime guarantee.
+#[cfg(feature = "sqlite")]
+fn supervise_sqlite_setup_task<T: Send + 'static>(
+    owner: tokio::task::JoinHandle<T>,
+    stage: SqliteSetupTaskStage,
+) -> tokio::sync::oneshot::Receiver<Result<T, CatalogSetupError>> {
+    use tracing::instrument::WithSubscriber as _;
+
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    tokio::spawn(
+        async move {
+            let result = owner.await.map_err(|join_error| {
+                let stage_name = match stage {
+                    SqliteSetupTaskStage::Terminal => "terminal_setup_task",
+                    SqliteSetupTaskStage::ConnectionAcquisition => {
+                        "setup_connection_acquisition_task"
+                    },
+                };
+                tracing::error!(
+                    target: "nebula_storage::migration",
+                    stage = stage_name,
+                    task_id = %join_error.id(),
+                    task_cancelled = join_error.is_cancelled(),
+                    task_panicked = join_error.is_panic(),
+                    outcome = "task_failed",
+                    "SQLite schema setup task failed before reporting its result"
+                );
+                if matches!(stage, SqliteSetupTaskStage::Terminal) {
+                    record_setup_failure(&CatalogSetupError::Unavailable);
+                }
+                CatalogSetupError::Unavailable
+            });
+            // A cancelled observer cannot retain an undeliverable pooled
+            // connection: dropping the failed send's value returns it to its pool.
+            drop(sender.send(result));
+        }
+        .instrument(Span::current())
+        .with_current_subscriber(),
+    );
+    receiver
 }
 
 /// Whether a `sqlx` failure is SQLite reporting a lock that clears on its own.
@@ -600,26 +834,52 @@ fn is_transient_sqlite_numeric_code(extended_code: u32) -> bool {
 /// opening against the same shared-cache database is refused outright. Failing
 /// setup on that would make a second replica's boot depend on losing a race it
 /// has no way to avoid, so the loser waits for the lock to clear instead —
-/// bounded by the same budget that covers a peer's whole migration run, so a
-/// genuinely stuck peer still surfaces.
+/// bounded by the setup caller's pre-terminal admission deadline. An admitted
+/// peer may continue beyond that deadline because SQLite DDL cannot be safely
+/// cancelled once its blocking worker starts.
 #[cfg(feature = "sqlite")]
 async fn acquire_setup_connection(
     pool: &sqlx::SqlitePool,
+    deadline: tokio::time::Instant,
 ) -> Result<sqlx::pool::PoolConnection<sqlx::Sqlite>, CatalogSetupError> {
-    let deadline = tokio::time::Instant::now() + SETUP_LOCK_TIMEOUT;
     loop {
-        match pool.acquire().await {
+        if tokio::time::Instant::now() >= deadline {
+            record_sqlite_pre_terminal_budget_exhaustion("setup_connection_acquisition");
+            return Err(CatalogSetupError::Unavailable);
+        }
+        // SQLx 0.9 acquisition is not cancellation-safe. Let an owning task
+        // settle under the pool's configured `acquire_timeout`; if this setup
+        // caller is cancelled, the detached task returns any acquired
+        // connection to the pool instead of abandoning its slot. The absolute
+        // deadline remains an admission cutoff, checked again after settling.
+        let acquisition_pool = pool.clone();
+        let acquisition = settle_sqlite_connection_acquisition_until(
+            async move { acquisition_pool.acquire().await },
+            deadline,
+        )
+        .await?;
+        if tokio::time::Instant::now() >= deadline {
+            drop(acquisition);
+            record_sqlite_pre_terminal_budget_exhaustion("setup_connection_acquisition");
+            return Err(CatalogSetupError::Unavailable);
+        }
+        match acquisition {
             Ok(connection) => return Ok(connection),
             Err(error) if is_transient_sqlite_lock(&error) => {
                 if tokio::time::Instant::now() >= deadline {
                     tracing::warn!(
                         target: "nebula_storage::migration",
-                        %error,
-                        "schema-setup connection stayed locked past the setup budget"
+                        stage = "setup_connection_acquisition",
+                        sqlite_code = ?sqlite_numeric_error_code(&error),
+                        outcome = "budget_exhausted",
+                        "SQLite schema-setup connection stayed locked past pre-terminal admission"
                     );
                     return Err(CatalogSetupError::Unavailable);
                 }
-                tokio::time::sleep(SQLITE_SETUP_LOCK_POLL_INTERVAL).await;
+                tokio::time::sleep_until(
+                    (tokio::time::Instant::now() + SQLITE_SETUP_LOCK_POLL_INTERVAL).min(deadline),
+                )
+                .await;
             },
             Err(_) => return Err(CatalogSetupError::Unavailable),
         }
@@ -627,44 +887,133 @@ async fn acquire_setup_connection(
 }
 
 #[cfg(feature = "sqlite")]
+async fn settle_sqlite_connection_acquisition_until(
+    acquisition: impl Future<Output = Result<sqlx::pool::PoolConnection<sqlx::Sqlite>, sqlx::Error>>
+    + Send
+    + 'static,
+    deadline: tokio::time::Instant,
+) -> Result<Result<sqlx::pool::PoolConnection<sqlx::Sqlite>, sqlx::Error>, CatalogSetupError> {
+    let acquisition_result = supervise_sqlite_setup_task(
+        tokio::spawn(acquisition),
+        SqliteSetupTaskStage::ConnectionAcquisition,
+    );
+    let acquisition_result =
+        if let Ok(result) = tokio::time::timeout_at(deadline, acquisition_result).await {
+            result
+        } else {
+            // Only the result receiver expires. The supervisor still observes
+            // completion under the pool's acquisition timeout and returns any
+            // undeliverable connection to the pool.
+            record_sqlite_pre_terminal_budget_exhaustion("setup_connection_acquisition");
+            return Err(CatalogSetupError::Unavailable);
+        };
+    acquisition_result.map_err(|_| CatalogSetupError::Unavailable)?
+}
+
+#[cfg(feature = "sqlite")]
+async fn prepare_sqlite_pool_setup<Connection, Acquire, AcquireFuture, Discover, DiscoverFuture>(
+    probe: &impl SqliteSetupProbe,
+    retry_policy: SqlitePreTerminalRetryPolicy,
+    acquire: Acquire,
+    discover: Discover,
+) -> Result<(Connection, std::path::PathBuf, tokio::time::Instant), CatalogSetupError>
+where
+    Acquire: FnOnce(tokio::time::Instant) -> AcquireFuture,
+    AcquireFuture: Future<Output = Result<Connection, CatalogSetupError>>,
+    Discover: FnOnce(Connection, tokio::time::Instant, std::time::Duration) -> DiscoverFuture,
+    DiscoverFuture: Future<Output = Result<(Connection, std::path::PathBuf), CatalogSetupError>>,
+{
+    let pre_terminal_deadline = tokio::time::Instant::now() + retry_policy.admission_timeout;
+    probe.before_connection_acquisition().await;
+    let connection = acquire(pre_terminal_deadline).await?;
+    let (connection, main_path) = discover(
+        connection,
+        pre_terminal_deadline,
+        retry_policy.poll_interval,
+    )
+    .await?;
+    Ok((connection, main_path, pre_terminal_deadline))
+}
+
+#[cfg(feature = "sqlite")]
 async fn setup_sqlite_pool_with_discovery_probe<Probe>(
     pool: sqlx::SqlitePool,
     discovery_probe: &Probe,
-    discovery_retry: SqliteDatabaseDiscoveryRetry,
+    retry_policy: SqlitePreTerminalRetryPolicy,
 ) -> Result<(), CatalogSetupError>
 where
-    Probe: SqliteDatabaseDiscoveryProbe,
+    Probe: SqliteSetupProbe,
 {
     let span = sqlite_setup_span(<CatalogOnly as AdmissionPolicy<sqlx::SqliteConnection>>::SCOPE);
     async {
+        let mut terminal_owner_started = false;
         let result = async {
-            let mut connection = acquire_setup_connection(&pool).await?;
-            let main_path = sqlite_main_database_path_with_probe(
-                &mut connection,
+            // The preparation seam creates one pre-terminal deadline before
+            // its first await. Acquisition, discovery, lock admission, and a
+            // shared-memory observer all consume that same budget. Once the
+            // guarded terminal owner starts, SQLite DDL cannot be cancelled
+            // safely; it may outlive both this deadline and its caller while
+            // retaining every connection and guard through postflight.
+            let (mut connection, main_path, pre_terminal_deadline) = prepare_sqlite_pool_setup(
                 discovery_probe,
-                discovery_retry,
+                retry_policy,
+                |deadline| acquire_setup_connection(&pool, deadline),
+                |mut connection, deadline, poll_interval| async move {
+                    let main_path = sqlite_main_database_path_with_probe(
+                        &mut connection,
+                        discovery_probe,
+                        deadline,
+                        poll_interval,
+                    )
+                    .await?;
+                    Ok((connection, main_path))
+                },
             )
             .await?;
             let is_memory = main_path.as_os_str().is_empty();
             if is_memory {
                 // Do not occupy a pool slot while waiting for the process-wide
                 // permit: the winner needs a second slot to prove shared-cache
-                // visibility.
+                // visibility. Once the permit is held, no competing in-process
+                // setup can claim one slot and wait for the other. Both owned
+                // connections are acquired before terminal admission, so the
+                // admitted path never waits on pool capacity.
                 drop(connection);
-                let _setup_guard = acquire_sqlite_memory_setup_guard().await?;
-                let mut migration_connection = acquire_setup_connection(&pool).await?;
-                migrate_sqlite_connection::<CatalogOnly>(&mut migration_connection).await?;
-                if pool.options().get_max_connections() > 1 {
-                    verify_shared_memory_visibility(&pool).await?;
-                }
+                let setup_guard =
+                    acquire_sqlite_memory_setup_guard_until(pre_terminal_deadline).await?;
+                let migration_connection =
+                    acquire_setup_connection(&pool, pre_terminal_deadline).await?;
+                let observer_connection = if pool.options().get_max_connections() > 1 {
+                    Some(acquire_setup_connection(&pool, pre_terminal_deadline).await?)
+                } else {
+                    None
+                };
+                require_sqlite_terminal_setup_admission(pre_terminal_deadline)?;
+                terminal_owner_started = true;
+                complete_sqlite_terminal_section(
+                    setup_guard,
+                    run_sqlite_memory_terminal_operations(
+                        migration_connection,
+                        observer_connection,
+                    ),
+                )
+                .await?;
             } else {
-                let _setup_guard = acquire_sqlite_file_setup_guard(main_path).await?;
-                migrate_sqlite_connection::<CatalogOnly>(&mut connection).await?;
+                let setup_guard =
+                    acquire_sqlite_file_setup_guard_until(main_path, pre_terminal_deadline).await?;
+                require_sqlite_terminal_setup_admission(pre_terminal_deadline)?;
+                terminal_owner_started = true;
+                complete_sqlite_terminal_section(setup_guard, async move {
+                    migrate_sqlite_connection::<CatalogOnly>(&mut connection).await
+                })
+                .await?;
             }
             Ok(())
         }
         .await;
-        record_setup_result(&result);
+        if !terminal_owner_started && let Err(error) = &result {
+            record_setup_failure(error);
+        }
         result
     }
     .instrument(span)
@@ -676,7 +1025,7 @@ pub(crate) async fn setup_sqlite_pool(pool: sqlx::SqlitePool) -> Result<(), Cata
     setup_sqlite_pool_with_discovery_probe(
         pool,
         &UnobservedSqliteDatabaseDiscovery,
-        SQLITE_DATABASE_DISCOVERY_RETRY,
+        SQLITE_PRE_TERMINAL_RETRY_POLICY,
     )
     .await
 }

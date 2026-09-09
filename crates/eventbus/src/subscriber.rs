@@ -9,8 +9,8 @@ use tokio::sync::broadcast;
 
 /// Subscription handle that receives events from an [`EventBus`](crate::EventBus).
 ///
-/// Handles [`Lagged`](broadcast::error::RecvError::Lagged) by skipping to the latest
-/// event so the subscriber does not block the producer.
+/// Handles [`Lagged`](broadcast::error::RecvError::Lagged) by resuming at the oldest
+/// event still retained in the buffer. Slow subscribers do not block the producer.
 ///
 /// # Lifecycle
 ///
@@ -23,7 +23,7 @@ use tokio::sync::broadcast;
 ///
 /// When the ring buffer fills (more events emitted than buffer size), subscribers
 /// fall behind. Upon the next [`recv()`](Self::recv) or [`try_recv()`](Self::try_recv), the
-/// subscriber automatically skips to the latest event and recovers without blocking the producer.
+/// subscriber records the missed events and resumes at the oldest retained event.
 ///
 /// Use [`lagged_count()`](Self::lagged_count) to detect lag and monitor missed events:
 ///

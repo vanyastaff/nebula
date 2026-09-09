@@ -32,7 +32,7 @@
 //! Run with:
 //!   RUSTFLAGS="--cfg loom" cargo nextest run \
 //!     -p nebula-storage-loom-probe --features loom-test \
-//!     --profile ci --no-tests=pass
+//!     --profile ci
 
 #![cfg(loom)]
 

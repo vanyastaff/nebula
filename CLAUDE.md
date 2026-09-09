@@ -3,6 +3,8 @@
 [`AGENTS.md`](AGENTS.md) is the canonical agent guide: project map, layer rules,
 architecture invariants, commands. Read it before non-trivial work, plus
 `crates/<crate>/AGENTS.md` for the crate you're touching.
+Follow its **Agent Work Loop**; use [workflow templates](docs/AGENT_WORKFLOW.md) for
+substantial tasks and handoffs. Keep shared rules in `AGENTS.md`, not mirrored here.
 
 The few things worth knowing before you open anything:
 

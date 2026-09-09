@@ -1,14 +1,17 @@
 # nebula-expression — Agent orientation
-> Agent quick-map for `crates/expression/`. Full design: `README.md`. Repo-wide rules: root `AGENTS.md`.
+> Local guide for `crates/expression/`. Read [root AGENTS.md](../../AGENTS.md) first;
+> this guide adds crate-specific rules. Design and status: [README.md](README.md).
 
 **Purpose:** Shared expression evaluator that resolves `{{ expression }}` templates (n8n-compatible syntax) against execution-time context — the resolution backend `nebula-schema`'s `ValidValues::resolve` step calls.
 **Layer:** Core — depends only downward (root AGENTS.md -> Layered Dependency Map).
 
 ## Commands
+
 - Features: `default = cache,regex,datetime,uuid` (`full` = all). `datetime` adds IANA tz args; `regex`/`cache` pull in `moka` for true LRU.
 - Bench: `cargo bench -p nebula-expression --bench baseline`. Examples: `cargo run -p nebula-examples --example expression_template_rendering`.
 
 ## Key files
+
 - `src/lib.rs` — public re-exports + `parse_expression` (parse-only entrypoint; template-parser-authoritative dispatch, not substring match)
 - `src/engine.rs` — `ExpressionEngine` + LRU AST cache (`evaluate`, `evaluate_template`, `cache_overview`)
 - `src/eval.rs` — `Evaluator` / `EvalFrame` AST walker; `BuiltinView` (policy-only handle) + higher-order combinators
@@ -18,10 +21,19 @@
 - `src/template.rs` — `Template` / `MaybeTemplate`; `{{- -}}` whitespace control
 
 ## Conventions & never-do
+
 - `BuiltinFunction` takes `BuiltinView<'_>` (policy queries only), NOT `Evaluator` — builtins physically cannot recurse into AST eval; do NOT add an eval handle to that signature (type-enforced fix for the issue #252 step-budget bypass).
 - Higher-order combinators (`filter`/`map`/`reduce`/…) live in `eval.rs` and call `eval_with_frame` with the caller's `EvalFrame` so the step budget accumulates across iterations — never re-route them through the builtin registry.
 - `EvaluationPolicy` must bound every evaluation (recursion depth default 256 + step budget); exceeding either returns `ExpressionError`, never panics or loops.
 - NOT a validation engine (`nebula-validator`), schema system (`nebula-schema`), or HTML template engine — keep scope to `{{ }}` field resolution.
 
+## Change checks
+
+| Change | Relevant evidence |
+|--------|-------------------|
+| Evaluation or builtins | Unit tests in [src/eval.rs](src/eval.rs), [builtin_functions](tests/builtin_functions.rs); retain shared step-budget and recursion-limit coverage. |
+| Optional builtins or caching | Repeat affected checks with default features and `--no-default-features`; then enable the individual feature being changed. `full` alone misses disabled paths. |
+
 ## See also
-- `README.md` — full design · `docs/PRODUCT_CANON.md` §3.5 (expression context at resolve step) · `docs/pitfalls.md` (builtin-frame step-budget pitfall)
+
+- `README.md` — full design · [docs/PRODUCT_CANON.md](../../docs/PRODUCT_CANON.md) §3.5 (expression context at resolve step) · [docs/pitfalls.md](../../docs/pitfalls.md) (builtin-frame step-budget pitfall)

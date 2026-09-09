@@ -8,12 +8,119 @@ use std::sync::{
 use std::time::Duration;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use tracing::instrument::WithSubscriber as _;
+
+struct TaskFailureCapture(tokio::sync::mpsc::UnboundedSender<String>);
+
+impl tracing::Subscriber for TaskFailureCapture {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        struct Fields(String);
+        impl tracing::field::Visit for Fields {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                use std::fmt::Write as _;
+                write!(&mut self.0, "{}={value:?};", field.name()).unwrap();
+            }
+        }
+        let mut fields = Fields(String::new());
+        event.record(&mut fields);
+        if fields.0.contains("outcome=\"task_failed\"") {
+            self.0.send(fields.0).unwrap();
+        }
+    }
+}
+
+async fn assert_one_task_failure(
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+    stage: &str,
+) {
+    let event = tokio::time::timeout(Duration::from_secs(1), events.recv())
+        .await
+        .expect("supervisor must report a late worker panic")
+        .expect("failure event must be delivered");
+    assert!(event.contains(stage), "{event}");
+    assert!(event.contains("task_panicked=true"), "{event}");
+    assert!(!event.contains("private panic payload"), "{event}");
+    // Every owner of this capture must have exited before exact-once is asserted.
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), events.recv())
+            .await
+            .unwrap(),
+        None
+    );
+}
+
+#[tokio::test]
+async fn cancelled_terminal_waiter_still_reports_worker_panic() {
+    let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let (started, start) = tokio::sync::oneshot::channel();
+    let (release, released) = tokio::sync::oneshot::channel();
+    let waiter = tokio::spawn(
+        async move {
+            complete_sqlite_terminal_section((), async move {
+                started.send(()).unwrap();
+                released.await.unwrap();
+                panic!("private panic payload");
+                #[expect(
+                    unreachable_code,
+                    reason = "the operation deliberately panics after admission"
+                )]
+                Ok::<(), super::CatalogSetupError>(())
+            })
+            .await
+        }
+        .with_subscriber(TaskFailureCapture(events)),
+    );
+    start.await.unwrap();
+    waiter.abort();
+    assert!(waiter.await.unwrap_err().is_cancelled());
+    release.send(()).unwrap();
+    assert_one_task_failure(&mut received, "terminal_setup_task").await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn expired_acquisition_waiter_still_reports_worker_panic() {
+    let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let (started, start) = tokio::sync::oneshot::channel();
+    let (release, released) = tokio::sync::oneshot::channel();
+    let waiter = tokio::spawn(
+        async move {
+            settle_sqlite_connection_acquisition_until(
+                async move {
+                    started.send(()).unwrap();
+                    released.await.unwrap();
+                    panic!("private panic payload");
+                },
+                tokio::time::Instant::now() + Duration::from_millis(10),
+            )
+            .await
+        }
+        .with_subscriber(TaskFailureCapture(events)),
+    );
+    start.await.unwrap();
+    tokio::time::advance(Duration::from_millis(10)).await;
+    assert!(waiter.await.unwrap().is_err());
+    release.send(()).unwrap();
+    assert_one_task_failure(&mut received, "setup_connection_acquisition_task").await;
+}
 
 use super::{
-    ClassifiedAttempt, SQLITE_DATABASE_DISCOVERY_RETRY, SQLITE_MIGRATOR,
-    SqliteDatabaseDiscoveryAttempt, SqliteDatabaseDiscoveryProbe, SqliteDatabaseDiscoveryRetry,
-    SqliteDatabaseRows, UnobservedSqliteDatabaseDiscovery, catalog,
-    retry_sqlite_database_discovery, setup_sqlite_pool_with_discovery_probe,
+    ClassifiedAttempt, SQLITE_MIGRATOR, SQLITE_PRE_TERMINAL_RETRY_POLICY, SQLITE_SETUP_LOCK_SUFFIX,
+    SqliteDatabaseDiscoveryAttempt, SqliteDatabaseRows, SqlitePreTerminalRetryPolicy,
+    SqliteSetupProbe, UnobservedSqliteDatabaseDiscovery, acquire_sqlite_file_setup_guard_blocking,
+    catalog, complete_sqlite_terminal_section, prepare_sqlite_pool_setup,
+    require_sqlite_terminal_setup_admission, retry_sqlite_database_discovery,
+    retry_sqlite_database_discovery_until, run_sqlite_memory_terminal_sequence,
+    settle_sqlite_connection_acquisition_until, setup_sqlite_pool_with_discovery_probe,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -54,7 +161,7 @@ impl ControlledDiscovery {
     }
 }
 
-impl SqliteDatabaseDiscoveryProbe for ControlledDiscovery {
+impl SqliteSetupProbe for ControlledDiscovery {
     async fn before_first_attempt(&self) {
         self.query_arrived.wait().await;
         self.query_released.wait().await;
@@ -122,7 +229,7 @@ async fn observe_controlled_setup(
     mut observation_receiver: tokio::sync::mpsc::UnboundedReceiver<DiscoveryObservation>,
     mut blocker: sqlx::pool::PoolConnection<sqlx::Sqlite>,
     controlled_transaction: ControlledTransaction,
-    retry: SqliteDatabaseDiscoveryRetry,
+    retry: SqlitePreTerminalRetryPolicy,
 ) -> (Result<(), catalog::CatalogSetupError>, DiscoveryObservation) {
     let setup_finished = Arc::new(tokio::sync::Notify::new());
     let setup_finished_signal = Arc::clone(&setup_finished);
@@ -205,7 +312,7 @@ async fn database_discovery_waits_for_an_uncommitted_schema_transaction() {
         observation_receiver,
         blocker,
         ControlledTransaction::PendingSchema,
-        SQLITE_DATABASE_DISCOVERY_RETRY,
+        SQLITE_PRE_TERMINAL_RETRY_POLICY,
     )
     .await;
 
@@ -242,7 +349,7 @@ async fn database_discovery_accepts_a_committed_schema_transaction() {
         observation_receiver,
         blocker,
         ControlledTransaction::Committed,
-        SQLITE_DATABASE_DISCOVERY_RETRY,
+        SQLITE_PRE_TERMINAL_RETRY_POLICY,
     )
     .await;
 
@@ -263,7 +370,7 @@ async fn database_discovery_accepts_a_non_schema_transaction() {
         observation_receiver,
         blocker,
         ControlledTransaction::ReadOnly,
-        SQLITE_DATABASE_DISCOVERY_RETRY,
+        SQLITE_PRE_TERMINAL_RETRY_POLICY,
     )
     .await;
 
@@ -332,10 +439,268 @@ struct RetryWaitProbe {
     retry_wait_started: Arc<tokio::sync::Notify>,
 }
 
-impl SqliteDatabaseDiscoveryProbe for RetryWaitProbe {
+impl SqliteSetupProbe for RetryWaitProbe {
     fn before_retry_wait(&self, _attempts: u32) {
         self.retry_wait_started.notify_one();
     }
+}
+
+/// The composed pool setup creates its deadline before connection acquisition
+/// and reuses it for discovery instead of granting either stage a fresh budget.
+#[tokio::test(start_paused = true)]
+async fn pool_setup_reuses_its_pre_acquisition_deadline_for_database_discovery() {
+    let (attempt_sender, attempt_receiver) = tokio::sync::watch::channel(0_u32);
+    let retry_wait_started = Arc::new(tokio::sync::Notify::new());
+    let retry_probe = RetryWaitProbe {
+        retry_wait_started: Arc::clone(&retry_wait_started),
+    };
+    let retry_policy = SqlitePreTerminalRetryPolicy {
+        admission_timeout: Duration::from_millis(50),
+        poll_interval: Duration::from_millis(10),
+    };
+    let setup = tokio::spawn(async move {
+        let composition_probe = UnobservedSqliteDatabaseDiscovery;
+        prepare_sqlite_pool_setup(
+            &composition_probe,
+            retry_policy,
+            |_deadline| async {
+                tokio::time::sleep(Duration::from_millis(40)).await;
+                Ok(())
+            },
+            |connection, deadline, poll_interval| async move {
+                let mut attempt = ImmediateTransientAttempt { attempt_sender };
+                retry_sqlite_database_discovery_until(
+                    &mut attempt,
+                    &retry_probe,
+                    deadline,
+                    poll_interval,
+                )
+                .await?;
+                Ok((connection, std::path::PathBuf::new()))
+            },
+        )
+        .await
+    });
+
+    retry_wait_started.notified().await;
+    tokio::time::advance(Duration::from_millis(10)).await;
+    tokio::task::yield_now().await;
+    assert!(
+        setup.is_finished(),
+        "discovery received a fresh budget after acquisition"
+    );
+    let setup_result = setup.await.expect("schema setup task must not panic");
+    assert_unavailable(setup_result.map(|_| Vec::new()));
+    assert_eq!(
+        *attempt_receiver.borrow(),
+        1,
+        "only one discovery attempt fits after acquisition consumed forty milliseconds"
+    );
+}
+
+/// The pre-terminal deadline finishes its caller promptly without cancelling
+/// SQLx's in-flight acquire; the detached owner later returns the max-one slot.
+#[tokio::test]
+async fn max_one_acquisition_deadline_detaches_owner_without_losing_pool_slot() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(1))
+        .connect("sqlite::memory:")
+        .await
+        .expect("max-one SQLite memory pool must open");
+    let mut held_connection = pool
+        .acquire()
+        .await
+        .expect("the only pool connection must be reservable");
+    sqlx::query("CREATE TABLE acquisition_marker (value INTEGER NOT NULL)")
+        .execute(&mut *held_connection)
+        .await
+        .expect("the live in-memory connection must accept the marker schema");
+
+    let acquisition_started = Arc::new(tokio::sync::Notify::new());
+    let acquisition_settled = Arc::new(tokio::sync::Notify::new());
+    tokio::time::pause();
+    let admission_deadline = tokio::time::Instant::now() + Duration::from_millis(50);
+    let setup_waiter = tokio::spawn({
+        let acquisition_pool = pool.clone();
+        let acquisition_started = Arc::clone(&acquisition_started);
+        let acquisition_settled = Arc::clone(&acquisition_settled);
+        async move {
+            settle_sqlite_connection_acquisition_until(
+                async move {
+                    acquisition_started.notify_one();
+                    let result = acquisition_pool.acquire().await;
+                    acquisition_settled.notify_one();
+                    result
+                },
+                admission_deadline,
+            )
+            .await
+        }
+    });
+
+    acquisition_started.notified().await;
+    tokio::time::advance(Duration::from_millis(50)).await;
+    let setup_result = setup_waiter
+        .await
+        .expect("the setup waiter must not panic at its admission deadline");
+    assert!(
+        tokio::time::Instant::now() <= admission_deadline + Duration::from_millis(25),
+        "setup caller remained blocked after its admission deadline"
+    );
+    assert!(
+        matches!(setup_result, Err(catalog::CatalogSetupError::Unavailable)),
+        "deadline expiry must reject pre-terminal setup"
+    );
+
+    tokio::time::resume();
+    drop(held_connection);
+    tokio::time::timeout(Duration::from_secs(1), acquisition_settled.notified())
+        .await
+        .expect("the detached acquisition owner must settle after deadline expiry");
+    let mut recovered_connection = tokio::time::timeout(Duration::from_secs(1), pool.acquire())
+        .await
+        .expect("the settled owner must return the only slot")
+        .expect("the max-one pool must remain available");
+    let marker_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = 'acquisition_marker'",
+    )
+    .fetch_one(&mut *recovered_connection)
+    .await
+    .expect("the original in-memory connection must remain usable");
+    assert_eq!(
+        marker_count, 1,
+        "deadline expiry destroyed the live database"
+    );
+}
+
+/// A blocking worker that starts after its caller's deadline must not create
+/// the lock sidecar or replace the elapsed budget with a new one.
+#[test]
+fn delayed_file_lock_worker_rejects_the_captured_absolute_deadline() {
+    let directory = tempfile::tempdir().expect("temporary directory must be available");
+    let database_path = directory.path().join("delayed-worker.db");
+    let result =
+        acquire_sqlite_file_setup_guard_blocking(database_path.clone(), std::time::Instant::now());
+
+    assert!(
+        matches!(result, Err(catalog::CatalogSetupError::Unavailable)),
+        "a worker starting at the deadline must reject the setup lock"
+    );
+    let lock_path = format!(
+        "{}{SQLITE_SETUP_LOCK_SUFFIX}",
+        database_path.as_os_str().to_string_lossy()
+    );
+    assert!(
+        !std::path::Path::new(&lock_path).exists(),
+        "an expired worker must not create a setup-lock sidecar"
+    );
+}
+
+struct GuardDropObserver {
+    dropped: tokio::sync::watch::Sender<bool>,
+}
+
+impl Drop for GuardDropObserver {
+    fn drop(&mut self) {
+        self.dropped.send_replace(true);
+    }
+}
+
+/// Cancelling the setup caller after terminal admission must detach the waiter,
+/// not drop the guard while the underlying SQLite operation is still live.
+#[tokio::test]
+async fn cancelling_terminal_waiter_retains_guard_until_operation_settles() {
+    let (dropped, mut drop_observer) = tokio::sync::watch::channel(false);
+    let operation_started = Arc::new(tokio::sync::Notify::new());
+    let operation_release = Arc::new(tokio::sync::Notify::new());
+    let terminal_waiter = tokio::spawn({
+        let operation_started = Arc::clone(&operation_started);
+        let operation_release = Arc::clone(&operation_release);
+        async move {
+            complete_sqlite_terminal_section(GuardDropObserver { dropped }, async move {
+                operation_started.notify_one();
+                operation_release.notified().await;
+                Ok::<(), catalog::CatalogSetupError>(())
+            })
+            .await
+        }
+    });
+
+    operation_started.notified().await;
+    terminal_waiter.abort();
+    let cancellation = terminal_waiter
+        .await
+        .expect_err("terminal waiter must observe caller cancellation");
+    assert!(cancellation.is_cancelled());
+    assert!(
+        !*drop_observer.borrow(),
+        "caller cancellation dropped the terminal setup guard early"
+    );
+
+    operation_release.notify_one();
+    drop_observer
+        .wait_for(|was_dropped| *was_dropped)
+        .await
+        .expect("terminal owner must retain its guard-drop observer");
+}
+
+/// Once terminal setup is admitted, migration may cross the admission deadline;
+/// the already-owned observer must still run before the guard is released.
+#[tokio::test(start_paused = true)]
+async fn admitted_memory_migration_crosses_deadline_and_still_verifies_owned_observer() {
+    let admission_deadline = tokio::time::Instant::now() + Duration::from_millis(10);
+    require_sqlite_terminal_setup_admission(admission_deadline)
+        .expect("terminal setup must be admitted before its deadline");
+    let (guard_dropped, mut guard_drop_observer) = tokio::sync::watch::channel(false);
+    let migration_started = Arc::new(tokio::sync::Notify::new());
+    let observer_verified = Arc::new(AtomicBool::new(false));
+
+    let terminal_owner = tokio::spawn({
+        let migration_started = Arc::clone(&migration_started);
+        let observer_verified = Arc::clone(&observer_verified);
+        async move {
+            complete_sqlite_terminal_section(
+                GuardDropObserver {
+                    dropped: guard_dropped,
+                },
+                run_sqlite_memory_terminal_sequence(
+                    (),
+                    Some(()),
+                    move |()| async move {
+                        migration_started.notify_one();
+                        tokio::time::sleep_until(admission_deadline + Duration::from_millis(10))
+                            .await;
+                        Ok(())
+                    },
+                    move |()| async move {
+                        assert!(
+                            tokio::time::Instant::now() >= admission_deadline,
+                            "visibility verification must run after migration crosses admission"
+                        );
+                        observer_verified.store(true, Ordering::Relaxed);
+                        Ok(())
+                    },
+                ),
+            )
+            .await
+        }
+    });
+
+    migration_started.notified().await;
+    tokio::time::advance(Duration::from_millis(20)).await;
+    let terminal_result = terminal_owner
+        .await
+        .expect("terminal owner must not panic after crossing admission");
+    terminal_result.expect("admitted terminal setup must finish after crossing its deadline");
+    assert!(
+        observer_verified.load(Ordering::Relaxed),
+        "the observer acquired before terminal admission was not used"
+    );
+    guard_drop_observer
+        .wait_for(|was_dropped| *was_dropped)
+        .await
+        .expect("terminal owner must release its guard after visibility settles");
 }
 
 fn assert_unavailable(result: Result<SqliteDatabaseRows, catalog::CatalogSetupError>) {
@@ -358,8 +723,8 @@ async fn database_discovery_expires_one_fixed_deadline_during_backoff() {
     let retry_probe = RetryWaitProbe {
         retry_wait_started: Arc::clone(&retry_wait_started),
     };
-    let retry = SqliteDatabaseDiscoveryRetry {
-        timeout: Duration::from_millis(50),
+    let retry = SqlitePreTerminalRetryPolicy {
+        admission_timeout: Duration::from_millis(50),
         poll_interval: Duration::from_millis(10),
     };
     let discovery = tokio::spawn(async move {
@@ -395,8 +760,8 @@ async fn database_discovery_does_not_start_a_ready_attempt_at_the_deadline() {
     let retry_probe = RetryWaitProbe {
         retry_wait_started: Arc::clone(&retry_wait_started),
     };
-    let retry = SqliteDatabaseDiscoveryRetry {
-        timeout: Duration::from_millis(50),
+    let retry = SqlitePreTerminalRetryPolicy {
+        admission_timeout: Duration::from_millis(50),
         poll_interval: Duration::from_millis(50),
     };
     let discovery = tokio::spawn(async move {
@@ -427,8 +792,8 @@ async fn database_discovery_does_not_start_a_ready_attempt_at_the_deadline() {
 #[tokio::test(start_paused = true)]
 async fn database_discovery_expires_one_fixed_deadline_during_an_attempt() {
     let (attempt_sender, mut attempt_receiver) = tokio::sync::watch::channel(0_u32);
-    let retry = SqliteDatabaseDiscoveryRetry {
-        timeout: Duration::from_millis(50),
+    let retry = SqlitePreTerminalRetryPolicy {
+        admission_timeout: Duration::from_millis(50),
         poll_interval: Duration::from_millis(10),
     };
     let discovery = tokio::spawn(async move {
@@ -461,7 +826,7 @@ async fn database_discovery_does_not_retry_a_non_lock_failure() {
     let result = retry_sqlite_database_discovery(
         &mut attempt,
         &UnobservedSqliteDatabaseDiscovery,
-        SQLITE_DATABASE_DISCOVERY_RETRY,
+        SQLITE_PRE_TERMINAL_RETRY_POLICY,
     )
     .await;
     assert_unavailable(result);
@@ -474,9 +839,9 @@ async fn database_discovery_does_not_retry_a_non_lock_failure() {
 async fn cancelling_database_discovery_returns_its_pool_slot() {
     let (pool, mut blocker) = controlled_shared_memory_pool("cancelled-discovery").await;
     let (discovery, _observation_receiver, query_attempt_receiver) = ControlledDiscovery::new();
-    let cancellation_retry = SqliteDatabaseDiscoveryRetry {
-        timeout: SQLITE_DATABASE_DISCOVERY_RETRY.timeout,
-        poll_interval: SQLITE_DATABASE_DISCOVERY_RETRY.timeout,
+    let cancellation_retry = SqlitePreTerminalRetryPolicy {
+        admission_timeout: SQLITE_PRE_TERMINAL_RETRY_POLICY.admission_timeout,
+        poll_interval: SQLITE_PRE_TERMINAL_RETRY_POLICY.admission_timeout,
     };
     let mut setup = Box::pin(setup_sqlite_pool_with_discovery_probe(
         pool.clone(),

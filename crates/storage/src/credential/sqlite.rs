@@ -56,7 +56,7 @@ use super::{
 use crate::migration::SQLITE_MIGRATOR;
 use crate::migration::{
     acquire_sqlite_file_setup_guard, acquire_sqlite_memory_setup_guard,
-    setup_sqlite_connection_with,
+    complete_sqlite_terminal_section, setup_sqlite_connection_with,
 };
 
 #[cfg(test)]
@@ -73,6 +73,25 @@ impl ReadinessTestGate {
             lock_acquired: tokio::sync::Barrier::new(2),
             release: tokio::sync::Notify::new(),
         }
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct TerminalSetupTestGate {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+    pool: tokio::sync::OnceCell<SqlitePool>,
+}
+
+#[cfg(test)]
+impl TerminalSetupTestGate {
+    async fn wait(&self, pool: &SqlitePool) {
+        self.pool
+            .set(pool.clone())
+            .expect("terminal gate is entered once");
+        self.entered.notify_one();
+        self.release.notified().await;
     }
 }
 
@@ -210,6 +229,8 @@ impl SqliteCredentialPersistence {
     /// immutable read-only preflight, canonical SQLx migration, and postflight
     /// run. The exact `sqlite::memory:` form is serialized process-wide and
     /// uses one physical connection during readiness.
+    /// Once terminal setup begins, it retains its connection and setup guard
+    /// through migration and postflight even if the caller cancels this future.
     ///
     /// # Errors
     ///
@@ -225,7 +246,12 @@ impl SqliteCredentialPersistence {
             .create_if_missing(true);
 
         if url == "sqlite::memory:" {
-            return Self::connect_memory_options(options).await;
+            return Self::connect_memory_options(
+                options,
+                #[cfg(test)]
+                None,
+            )
+            .await;
         }
         Self::connect_file_options(options).await
     }
@@ -258,8 +284,9 @@ impl SqliteCredentialPersistence {
 
     async fn connect_memory_options(
         options: sqlx::sqlite::SqliteConnectOptions,
+        #[cfg(test)] terminal_gate: Option<Arc<TerminalSetupTestGate>>,
     ) -> Result<Self, CredentialStoreStartupError> {
-        let _readiness = acquire_sqlite_memory_setup_guard().await?;
+        let readiness = acquire_sqlite_memory_setup_guard().await?;
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .min_connections(1)
             .max_connections(1)
@@ -270,17 +297,23 @@ impl SqliteCredentialPersistence {
             .acquire()
             .await
             .map_err(|_| CredentialStoreStartupError::Unavailable)?;
-        setup_sqlite_connection_with::<schema::CredentialAdmission>(&mut connection).await?;
-        drop(connection);
-
-        Ok(Self::from_ready_pool(pool))
+        complete_sqlite_terminal_section(readiness, async move {
+            #[cfg(test)]
+            if let Some(gate) = terminal_gate {
+                gate.wait(&pool).await;
+            }
+            setup_sqlite_connection_with::<schema::CredentialAdmission>(&mut connection).await?;
+            drop(connection);
+            Ok(Self::from_ready_pool(pool))
+        })
+        .await
     }
 
     async fn connect_file_options(
         options: sqlx::sqlite::SqliteConnectOptions,
     ) -> Result<Self, CredentialStoreStartupError> {
         #[cfg(test)]
-        return Self::connect_file_options_inner(options, None).await;
+        return Self::connect_file_options_inner(options, None, None).await;
         #[cfg(not(test))]
         return Self::connect_file_options_inner(options).await;
     }
@@ -290,12 +323,13 @@ impl SqliteCredentialPersistence {
         options: sqlx::sqlite::SqliteConnectOptions,
         gate: &ReadinessTestGate,
     ) -> Result<Self, CredentialStoreStartupError> {
-        Self::connect_file_options_inner(options, Some(gate)).await
+        Self::connect_file_options_inner(options, Some(gate), None).await
     }
 
     async fn connect_file_options_inner(
         options: sqlx::sqlite::SqliteConnectOptions,
         #[cfg(test)] gate: Option<&ReadinessTestGate>,
+        #[cfg(test)] terminal_gate: Option<Arc<TerminalSetupTestGate>>,
     ) -> Result<Self, CredentialStoreStartupError> {
         let path = options.get_filename().to_owned();
         let lock = acquire_sqlite_file_setup_guard(path.clone()).await?;
@@ -339,11 +373,16 @@ impl SqliteCredentialPersistence {
             .acquire()
             .await
             .map_err(|_| CredentialStoreStartupError::Unavailable)?;
-        setup_sqlite_connection_with::<schema::CredentialAdmission>(&mut connection).await?;
-        drop(connection);
-        drop(lock);
-
-        Ok(Self::from_ready_pool(pool))
+        complete_sqlite_terminal_section(lock, async move {
+            #[cfg(test)]
+            if let Some(gate) = terminal_gate {
+                gate.wait(&pool).await;
+            }
+            setup_sqlite_connection_with::<schema::CredentialAdmission>(&mut connection).await?;
+            drop(connection);
+            Ok(Self::from_ready_pool(pool))
+        })
+        .await
     }
 }
 
@@ -428,11 +467,97 @@ mod tests {
 
     use crate::credential::test_support::{make_credential, make_replacement};
 
-    use super::{ReadinessTestGate, SQLITE_MIGRATOR, SqliteCredentialPersistence, schema};
+    use super::{
+        ReadinessTestGate, SQLITE_MIGRATOR, SqliteCredentialPersistence, TerminalSetupTestGate,
+        schema,
+    };
     use crate::credential::{CredentialSchemaAdmissionReason, CredentialStoreStartupError};
 
     fn version(value: i64) -> CredentialVersion {
         CredentialVersion::try_from(value).expect("test version must be valid")
+    }
+
+    async fn assert_cancelled_terminal_setup_keeps_lock(
+        first: tokio::task::JoinHandle<
+            Result<SqliteCredentialPersistence, CredentialStoreStartupError>,
+        >,
+        gate: Arc<TerminalSetupTestGate>,
+        assert_lock_held: impl FnOnce(),
+        competitor: impl Future<
+            Output = Result<SqliteCredentialPersistence, CredentialStoreStartupError>,
+        >,
+    ) {
+        gate.entered.notified().await;
+        first.abort();
+        assert!(
+            first
+                .await
+                .expect_err("caller must be cancelled")
+                .is_cancelled()
+        );
+        assert_lock_held();
+        gate.release.notify_one();
+        competitor
+            .await
+            .expect("competing startup succeeds after terminal completion");
+        let pool = gate.pool.get().expect("terminal setup published its pool");
+        let applied: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations WHERE success = 1")
+                .fetch_one(pool)
+                .await
+                .expect("cancelled startup completed its canonical ledger");
+        assert_eq!(
+            usize::try_from(applied).expect("positive count"),
+            SQLITE_MIGRATOR.iter().count()
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_memory_startup_keeps_terminal_setup_owned() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let gate = Arc::new(TerminalSetupTestGate::default());
+            let options = sqlx::sqlite::SqliteConnectOptions::from_str("sqlite::memory:")
+                .expect("memory options");
+            let first = tokio::spawn(SqliteCredentialPersistence::connect_memory_options(
+                options,
+                Some(Arc::clone(&gate)),
+            ));
+            assert_cancelled_terminal_setup_keeps_lock(
+                first,
+                gate,
+                crate::migration::assert_sqlite_memory_setup_locked,
+                SqliteCredentialPersistence::connect_memory(),
+            )
+            .await;
+        })
+        .await
+        .expect("memory terminal setup must complete");
+    }
+
+    #[tokio::test]
+    async fn cancelled_file_startup_keeps_terminal_setup_owned() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let directory = tempfile::tempdir().expect("temporary directory");
+            let options = sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(directory.path().join("cancelled-startup.sqlite"))
+                .create_if_missing(true);
+            let path = options.get_filename().to_owned();
+            let gate = Arc::new(TerminalSetupTestGate::default());
+            let first = tokio::spawn(SqliteCredentialPersistence::connect_file_options_inner(
+                options.clone(),
+                None,
+                Some(Arc::clone(&gate)),
+            ));
+            assert_cancelled_terminal_setup_keeps_lock(
+                first,
+                gate,
+                || crate::migration::assert_sqlite_file_setup_locked(&path),
+                SqliteCredentialPersistence::connect_file_options(options),
+            )
+            .await;
+        })
+        .await
+        .expect("file terminal setup must complete");
     }
 
     #[test]
