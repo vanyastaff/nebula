@@ -359,17 +359,177 @@ where
 }
 
 #[cfg(feature = "sqlite")]
-async fn sqlite_main_database_path(
+trait SqliteDatabaseDiscoveryProbe {
+    fn before_first_attempt(&self) -> impl Future<Output = ()> + Send {
+        std::future::ready(())
+    }
+
+    fn observe_attempt(&self, _attempt: &ClassifiedAttempt<SqliteDatabaseRows>) {}
+
+    fn before_retry_wait(&self, _attempts: u32) {}
+}
+
+#[cfg(feature = "sqlite")]
+struct UnobservedSqliteDatabaseDiscovery;
+
+#[cfg(feature = "sqlite")]
+impl SqliteDatabaseDiscoveryProbe for UnobservedSqliteDatabaseDiscovery {}
+
+#[cfg(feature = "sqlite")]
+#[derive(Clone, Copy)]
+struct SqliteDatabaseDiscoveryRetry {
+    timeout: std::time::Duration,
+    poll_interval: std::time::Duration,
+}
+
+#[cfg(feature = "sqlite")]
+const SQLITE_DATABASE_DISCOVERY_RETRY: SqliteDatabaseDiscoveryRetry =
+    SqliteDatabaseDiscoveryRetry {
+        timeout: SETUP_LOCK_TIMEOUT,
+        poll_interval: SQLITE_SETUP_LOCK_POLL_INTERVAL,
+    };
+
+#[cfg(feature = "sqlite")]
+type SqliteDatabaseRows = Vec<(i64, String, String)>;
+
+#[cfg(feature = "sqlite")]
+enum ClassifiedAttempt<T> {
+    Success(T),
+    Transient { numeric_code: Option<u32> },
+    NonRetryable { numeric_code: Option<u32> },
+}
+
+#[cfg(feature = "sqlite")]
+trait SqliteDatabaseDiscoveryAttempt {
+    fn run(&mut self) -> impl Future<Output = ClassifiedAttempt<SqliteDatabaseRows>> + Send;
+}
+
+#[cfg(feature = "sqlite")]
+fn record_sqlite_database_discovery_exhaustion(last_lock_code: Option<u32>, attempts: u32) {
+    tracing::warn!(
+        target: "nebula_storage::migration",
+        stage = "main_database_discovery",
+        sqlite_code = ?last_lock_code,
+        attempts,
+        outcome = "retry_exhausted",
+        "SQLite schema setup exhausted its database-discovery retry budget"
+    );
+}
+
+#[cfg(feature = "sqlite")]
+struct SqliteDatabaseListAttempt<'connection> {
+    connection: &'connection mut sqlx::SqliteConnection,
+}
+
+#[cfg(feature = "sqlite")]
+impl SqliteDatabaseDiscoveryAttempt for SqliteDatabaseListAttempt<'_> {
+    async fn run(&mut self) -> ClassifiedAttempt<SqliteDatabaseRows> {
+        match sqlx::query_as("PRAGMA database_list")
+            .fetch_all(&mut *self.connection)
+            .await
+        {
+            Ok(databases) => ClassifiedAttempt::Success(databases),
+            Err(error) if is_transient_sqlite_lock(&error) => ClassifiedAttempt::Transient {
+                numeric_code: sqlite_numeric_error_code(&error),
+            },
+            Err(error) => ClassifiedAttempt::NonRetryable {
+                numeric_code: sqlite_numeric_error_code(&error),
+            },
+        }
+    }
+}
+
+#[cfg(feature = "sqlite")]
+async fn retry_sqlite_database_discovery<Attempt, Probe>(
+    attempt: &mut Attempt,
+    probe: &Probe,
+    retry: SqliteDatabaseDiscoveryRetry,
+) -> Result<SqliteDatabaseRows, CatalogSetupError>
+where
+    Attempt: SqliteDatabaseDiscoveryAttempt,
+    Probe: SqliteDatabaseDiscoveryProbe,
+{
+    let deadline = tokio::time::Instant::now() + retry.timeout;
+    let mut attempts = 0_u32;
+    let mut last_lock_code = None::<u32>;
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            record_sqlite_database_discovery_exhaustion(last_lock_code, attempts);
+            return Err(CatalogSetupError::Unavailable);
+        }
+        attempts = attempts.saturating_add(1);
+        let attempt_result = tokio::time::timeout_at(deadline, attempt.run()).await;
+        let Ok(attempt_result) = attempt_result else {
+            record_sqlite_database_discovery_exhaustion(last_lock_code, attempts);
+            return Err(CatalogSetupError::Unavailable);
+        };
+        probe.observe_attempt(&attempt_result);
+        match attempt_result {
+            ClassifiedAttempt::Success(databases) => {
+                if attempts > 1 {
+                    tracing::info!(
+                        target: "nebula_storage::migration",
+                        stage = "main_database_discovery",
+                        sqlite_code = ?last_lock_code,
+                        attempts,
+                        outcome = "recovered",
+                        "SQLite schema setup recovered database discovery after a transient lock"
+                    );
+                }
+                return Ok(databases);
+            },
+            ClassifiedAttempt::Transient { numeric_code } => {
+                last_lock_code = numeric_code;
+                let now = tokio::time::Instant::now();
+                if now >= deadline {
+                    record_sqlite_database_discovery_exhaustion(last_lock_code, attempts);
+                    return Err(CatalogSetupError::Unavailable);
+                }
+                let retry_wait = tokio::time::sleep(retry.poll_interval.min(deadline - now));
+                tokio::pin!(retry_wait);
+                probe.before_retry_wait(attempts);
+                retry_wait.await;
+            },
+            ClassifiedAttempt::NonRetryable { numeric_code } => {
+                tracing::warn!(
+                    target: "nebula_storage::migration",
+                    stage = "main_database_discovery",
+                    sqlite_code = ?numeric_code,
+                    attempts,
+                    outcome = "non_retryable",
+                    "SQLite schema setup database discovery failed"
+                );
+                return Err(CatalogSetupError::Unavailable);
+            },
+        }
+    }
+}
+
+#[cfg(feature = "sqlite")]
+async fn sqlite_main_database_path_with_probe<Probe>(
     connection: &mut sqlx::SqliteConnection,
-) -> Result<std::path::PathBuf, CatalogSetupError> {
-    let databases: Vec<(i64, String, String)> = sqlx::query_as("PRAGMA database_list")
-        .fetch_all(connection)
-        .await
-        .map_err(|_| CatalogSetupError::Unavailable)?;
-    databases
+    probe: &Probe,
+    retry: SqliteDatabaseDiscoveryRetry,
+) -> Result<std::path::PathBuf, CatalogSetupError>
+where
+    Probe: SqliteDatabaseDiscoveryProbe,
+{
+    probe.before_first_attempt().await;
+    let mut attempt = SqliteDatabaseListAttempt { connection };
+    let databases = retry_sqlite_database_discovery(&mut attempt, probe, retry).await?;
+    let main_path = databases
         .into_iter()
-        .find_map(|(_, name, file)| (name == "main").then(|| std::path::PathBuf::from(file)))
-        .ok_or(CatalogSetupError::Unavailable)
+        .find_map(|(_, name, file)| (name == "main").then(|| std::path::PathBuf::from(file)));
+    if main_path.is_none() {
+        tracing::warn!(
+            target: "nebula_storage::migration",
+            stage = "main_database_discovery",
+            sqlite_code = ?None::<u32>,
+            outcome = "missing_main",
+            "SQLite schema setup did not discover the main database"
+        );
+    }
+    main_path.ok_or(CatalogSetupError::Unavailable)
 }
 
 #[cfg(feature = "sqlite")]
@@ -402,20 +562,35 @@ async fn verify_shared_memory_visibility(pool: &sqlx::SqlitePool) -> Result<(), 
 /// Shared-cache mode returns `SQLITE_LOCKED_SHAREDCACHE` (262) **immediately**
 /// and deliberately does not route it through `busy_timeout`: a busy handler
 /// cannot resolve a shared-cache lock without deadlocking, so SQLite hands the
-/// condition to the application to retry. `SQLITE_BUSY` (5) and plain
-/// `SQLITE_LOCKED` (6), plus their extended forms, are the same class.
+/// condition to the application to retry. Every extended result retains its
+/// primary result in the low byte, so primary `SQLITE_BUSY` (5) and
+/// `SQLITE_LOCKED` (6), including current and future extended forms, are the
+/// complete transient lock class.
 #[cfg(feature = "sqlite")]
 fn is_transient_sqlite_lock(error: &sqlx::Error) -> bool {
+    sqlite_numeric_error_code(error).is_some_and(is_transient_sqlite_numeric_code)
+}
+
+#[cfg(feature = "sqlite")]
+fn sqlite_numeric_error_code(error: &sqlx::Error) -> Option<u32> {
     let sqlx::Error::Database(database_error) = error else {
-        return false;
+        return None;
     };
-    // Primary codes 5 (BUSY) and 6 (LOCKED), and the extended codes that carry
-    // them in the low byte — 261 BUSY_SNAPSHOT, 262 LOCKED_SHAREDCACHE,
-    // 517 BUSY_TIMEOUT.
-    matches!(
-        database_error.code().as_deref(),
-        Some("5" | "6" | "261" | "262" | "517")
-    )
+    database_error
+        .code()
+        .as_deref()
+        .and_then(|code| code.parse().ok())
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+fn is_transient_sqlite_code(code: &str) -> bool {
+    code.parse::<u32>()
+        .is_ok_and(is_transient_sqlite_numeric_code)
+}
+
+#[cfg(feature = "sqlite")]
+fn is_transient_sqlite_numeric_code(extended_code: u32) -> bool {
+    matches!(extended_code & 0xff, 5 | 6)
 }
 
 /// Acquire a pooled connection for schema setup, waiting out a transient lock.
@@ -452,12 +627,24 @@ async fn acquire_setup_connection(
 }
 
 #[cfg(feature = "sqlite")]
-pub(crate) async fn setup_sqlite_pool(pool: sqlx::SqlitePool) -> Result<(), CatalogSetupError> {
+async fn setup_sqlite_pool_with_discovery_probe<Probe>(
+    pool: sqlx::SqlitePool,
+    discovery_probe: &Probe,
+    discovery_retry: SqliteDatabaseDiscoveryRetry,
+) -> Result<(), CatalogSetupError>
+where
+    Probe: SqliteDatabaseDiscoveryProbe,
+{
     let span = sqlite_setup_span(<CatalogOnly as AdmissionPolicy<sqlx::SqliteConnection>>::SCOPE);
     async {
         let result = async {
             let mut connection = acquire_setup_connection(&pool).await?;
-            let main_path = sqlite_main_database_path(&mut connection).await?;
+            let main_path = sqlite_main_database_path_with_probe(
+                &mut connection,
+                discovery_probe,
+                discovery_retry,
+            )
+            .await?;
             let is_memory = main_path.as_os_str().is_empty();
             if is_memory {
                 // Do not occupy a pool slot while waiting for the process-wide
@@ -481,6 +668,16 @@ pub(crate) async fn setup_sqlite_pool(pool: sqlx::SqlitePool) -> Result<(), Cata
         result
     }
     .instrument(span)
+    .await
+}
+
+#[cfg(feature = "sqlite")]
+pub(crate) async fn setup_sqlite_pool(pool: sqlx::SqlitePool) -> Result<(), CatalogSetupError> {
+    setup_sqlite_pool_with_discovery_probe(
+        pool,
+        &UnobservedSqliteDatabaseDiscovery,
+        SQLITE_DATABASE_DISCOVERY_RETRY,
+    )
     .await
 }
 
@@ -718,6 +915,9 @@ where
     .await
 }
 
+#[cfg(all(test, feature = "sqlite"))]
+mod sqlite_lock_tests;
+
 #[cfg(all(test, any(feature = "sqlite", feature = "postgres")))]
 mod tests {
     use super::{GENERAL_CATALOG_SUPPORTED_FLOOR, catalog};
@@ -752,7 +952,22 @@ mod tests {
     #[cfg(feature = "sqlite")]
     #[test]
     fn only_sqlite_lock_codes_are_treated_as_transient() {
-        use super::is_transient_sqlite_lock;
+        use super::{is_transient_sqlite_code, is_transient_sqlite_lock};
+
+        // Primary BUSY/LOCKED and their named extended forms: BUSY_RECOVERY,
+        // LOCKED_SHAREDCACHE, BUSY_SNAPSHOT, LOCKED_VTAB, BUSY_TIMEOUT.
+        for code in ["5", "6", "261", "262", "517", "518", "773"] {
+            assert!(
+                is_transient_sqlite_code(code),
+                "SQLite lock code {code} must enter the bounded retry path"
+            );
+        }
+        for code in ["0", "1", "7", "256", "not-numeric", "-5"] {
+            assert!(
+                !is_transient_sqlite_code(code),
+                "non-lock SQLite code {code} must fail without retry"
+            );
+        }
 
         // A non-database error is never a lock.
         assert!(!is_transient_sqlite_lock(&sqlx::Error::PoolClosed));
