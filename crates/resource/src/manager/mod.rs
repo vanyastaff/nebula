@@ -354,7 +354,9 @@ mod shutdown_session_tests;
 pub use options::{
     DrainTimeoutPolicy, ManagerConfig, RegisterOptions, RegistrationSpec, ShutdownConfig,
 };
-pub use rotation::{RevokeTail, TaintedSlot};
+pub use rotation::{
+    RevokeTail, SlotDeferralReason, SlotDispatchOutcome, SlotDrainOutcome, TaintedSlot,
+};
 pub use shutdown::{ShutdownError, ShutdownReport};
 
 /// Snapshot of a resource's health and operational state.
@@ -381,6 +383,13 @@ pub struct ResourceHealthSnapshot {
 ///
 /// Thread-safe: all internal state is behind concurrent data structures.
 /// Share via `Arc<Manager>` across tasks.
+///
+/// [`graceful_shutdown`](Self::graceful_shutdown) is the only teardown
+/// checkpoint. Dropping an open manager cannot await provider cleanup and
+/// therefore classifies every remaining row as an observable
+/// [`RetirementOrigin::ManagerDrop`](crate::RetirementOrigin::ManagerDrop)
+/// abandonment instead of enqueueing work into workers that are about to be
+/// aborted.
 ///
 /// Slot-identity-pinned acquire (the `*_for_identity` entry points —
 /// [`acquire_pooled_for_identity`](Self::acquire_pooled_for_identity),
@@ -968,12 +977,9 @@ impl Drop for Manager {
             shutdown_session::ShutdownState::Open
         ) {
             for managed in self.registry.clear() {
-                if let Ok(permit) = self.retirement_supervisor.try_reserve() {
-                    self.retire_resource(managed, permit);
-                } else {
-                    managed.set_phase(crate::state::ResourcePhase::ShuttingDown);
-                    drop(self.prepare_retirement(managed));
-                }
+                managed.set_phase(crate::state::ResourcePhase::ShuttingDown);
+                self.prepare_retirement(managed, crate::events::RetirementOrigin::ManagerDrop)
+                    .abandon("manager dropped before graceful terminal cleanup");
             }
         } else {
             // The session already owns this snapshot; the registry is only an index.

@@ -15,14 +15,15 @@ async fn destroy_batch_timeout_continues_error_and_success_siblings() {
             .await
             .unwrap();
         let entry = created.into_entry();
-        assert!(managed.retained.drain_retired().unwrap().is_empty());
+        assert!(managed.retained.drain_retired().is_empty());
         entries.push(entry);
     }
     let result = managed
         .queue_destroy_batch(entries, TeardownReason::Evicted)
         .unwrap()
-        .await
-        .unwrap();
+        .unwrap()
+        .wait()
+        .await;
     assert!(
         result.is_err(),
         "batch must retain the first teardown failure"
@@ -49,7 +50,7 @@ async fn batch_entries(managed: &ManagedResource<Mock>, count: usize) -> Vec<Ent
             .await
             .unwrap();
         let entry = created.into_entry();
-        assert!(managed.retained.drain_retired().unwrap().is_empty());
+        assert!(managed.retained.drain_retired().is_empty());
         entries.push(entry);
     }
     entries
@@ -63,9 +64,8 @@ async fn rejected_large_destroy_batch_accounts_every_unpolled_entry() {
     let result = managed
         .queue_destroy_batch(entries, TeardownReason::Evicted)
         .unwrap()
-        .await
-        .unwrap();
-    assert_eq!(*result.unwrap_err().kind(), crate::ErrorKind::Cancelled);
+        .unwrap_err();
+    assert_eq!(*result.kind(), crate::ErrorKind::Cancelled);
     assert_eq!(managed.release_queue.dropped_count(), 10_000);
     assert_eq!(managed.resource.destroyed.load(Ordering::SeqCst), 0);
 }
@@ -74,12 +74,16 @@ async fn rejected_large_destroy_batch_accounts_every_unpolled_entry() {
 async fn large_destroy_batch_uses_one_queue_message_and_completes_all_entries() {
     let managed = managed(Mock::new(), PoolConfig::default());
     let entries = batch_entries(&managed, 10_000).await;
-    managed
-        .queue_destroy_batch(entries, TeardownReason::Evicted)
-        .unwrap()
-        .await
-        .unwrap()
-        .unwrap();
+    assert_eq!(
+        managed
+            .queue_destroy_batch(entries, TeardownReason::Evicted)
+            .unwrap()
+            .unwrap()
+            .wait()
+            .await
+            .unwrap(),
+        SubmissionOutcome::Completed,
+    );
     assert_eq!(managed.resource.destroyed.load(Ordering::SeqCst), 10_000);
     assert_eq!(managed.release_queue.dropped_count(), 0);
     assert_eq!(managed.release_queue.fallback_count(), 0);
@@ -100,13 +104,14 @@ async fn cancelled_destroy_batch_accounts_running_and_untouched_entries() {
     let entries = batch_entries(&managed, 10).await;
     let receipt = managed
         .queue_destroy_batch(entries, TeardownReason::Evicted)
+        .unwrap()
         .unwrap();
     managed.release_queue.close();
     ReleaseQueue::shutdown_bounded(handle, std::time::Duration::from_secs(1))
         .await
         .unwrap_err();
     assert!(
-        receipt.await.is_err(),
+        receipt.wait().await.is_err(),
         "aborted coordinator cannot report completion"
     );
     assert_eq!(managed.release_queue.dropped_count(), 10);
@@ -129,8 +134,9 @@ async fn terminal_teardown_preserves_error_and_attempts_remaining_idle_siblings(
     let error = managed
         .release_queue
         .submit_coordinator(move || Box::pin(async move { closing.close_retained().await }))
+        .expect("open queue must accept terminal cleanup")
+        .wait()
         .await
-        .unwrap()
         .unwrap_err();
     assert_eq!(*error.kind(), crate::ErrorKind::Permanent);
     assert_eq!(managed.resource.destroyed.load(Ordering::SeqCst), 2);
@@ -153,8 +159,9 @@ async fn destroy_batch_member_panic_does_not_discard_success_sibling() {
     let error = managed
         .queue_destroy_batch(entries, TeardownReason::Evicted)
         .unwrap()
-        .await
         .unwrap()
+        .wait()
+        .await
         .unwrap_err();
     assert_eq!(*error.kind(), crate::ErrorKind::Permanent);
     assert_eq!(managed.resource.destroyed.load(Ordering::SeqCst), 2);

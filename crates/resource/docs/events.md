@@ -31,22 +31,22 @@ need to handle a lag error explicitly.
 
 ## Event Catalog
 
-Sixteen `#[non_exhaustive]` variants; new variants may be added in minor
+Eighteen `#[non_exhaustive]` variants; new variants may be added in minor
 releases without a major bump. Every variant carries a `ResourceKey` — this
 crate reports strictly per-resource (the per-slot rotation fan-out lives **in
 this crate**, co-located with `Manager` and relocated from `nebula-engine` per
 ADR-0092; it reports per-resource, so there is no aggregate `CredentialRefreshed` /
 `CredentialRevoked` event and no `CredentialId` in any payload).
 
-### Generic lifecycle variants (12)
+### Generic lifecycle variants (13)
 
 | Variant | Emitted when | Key fields |
 |---------|-------------|------------|
 | `Registered` | A resource is registered | `key` |
-| `Removed` | A resource is removed | `key` |
+| `Removed` | A row is unpublished from the registry; physical teardown may still be running | `key` |
 | `AcquireSuccess` | A handle is acquired | `key`, `duration: Duration` |
 | `AcquireFailed` | Acquire returns an error | `key`, `kind: ErrorKind`, `error: String` |
-| `Released` | A handle is dropped | `key`, `held: Duration`, `tainted: bool` |
+| `Released` | Queue-owned cleanup for a released handle completes; rejected or abandoned cleanup emits no success event | `key`, `held: Duration`, `tainted: bool` |
 | `HealthChanged` | Health status transitions | `key`, `healthy: bool` |
 | `ConfigReloaded` | Config is hot-reloaded | `key` |
 | `RetryAttempt` | A retry is about to sleep after a transient acquire failure | `key`, `attempt: u32`, `backoff: Duration`, `error: String` |
@@ -54,22 +54,35 @@ ADR-0092; it reports per-resource, so there is no aggregate `CredentialRefreshed
 | `RecoveryGateChanged` | A recovery gate transitioned | `key`, `state: String` |
 | `MaintenanceEvicted` | A background pool-maintenance sweep evicted idle-timed-out, max-lifetime-exceeded, stale-fingerprint, or revoked idle instances. Emitted only when at least one instance was evicted | `key`, `evicted: usize` |
 | `HoldDeadlineExceeded` | A lease was still held past `Provider::max_hold_duration` (leak/hang detection, warn-only) | `key`, `held: Duration`, `deadline: Duration`, `execution_id: Option<ExecutionId>`, `workflow_id: Option<WorkflowId>`, `span_id: Option<SpanId>` |
+| `ResourceTeardownFailed` | A manager-owned row retirement stage fails after replacement, removal, shutdown, or manager drop | `key`, `origin: RetirementOrigin`, `stage: RetirementFailureStage`, `kind: ErrorKind`, `message: SecretFreeMessage` |
 
-### Slot-rotation variants (4)
+### Slot-rotation variants (5)
 
 Emitted per `(resource, slot)` by the resource-layer rotation fan-out
 (`credential_fanout`, relocated from `nebula-engine` to this crate per ADR-0092)
 through the `Manager::{refresh_slot, revoke_slot}` port, after the rotated guard
 has been swapped into the slot and the resource's `on_credential_refresh` /
-`on_credential_revoke` hook invoked. The `error` string is already redacted — it
-never carries credential material.
+`on_credential_revoke` hook invoked. Failure events expose a typed
+classification plus a fixed framework-selected message; provider error text
+never enters an event payload.
 
 | Variant | Emitted when | Key fields |
 |---------|-------------|------------|
 | `SlotRefreshed` | A `#[credential]` slot was refreshed (hook returned `Ok`) | `key`, `slot: String` |
 | `SlotRevoked` | A slot's credential was revoked (hook returned `Ok`) | `key`, `slot: String` |
-| `SlotRefreshFailed` | The per-resource refresh hook failed or timed out | `key`, `slot: String`, `error: String` (redacted) |
-| `SlotRevokeFailed` | The per-resource revoke hook failed | `key`, `slot: String`, `error: String` (redacted) |
+| `SlotRefreshFailed` | The per-resource refresh hook failed or timed out | `key`, `slot: String`, `kind: ErrorKind`, `message: SecretFreeMessage` |
+| `SlotRevokeFailed` | The per-resource revoke hook failed | `key`, `slot: String`, `kind: ErrorKind`, `message: SecretFreeMessage` |
+| `RetiredCleanupFailed` | Framework-owned retained-generation cleanup failed after the slot hook settled | `key`, `slot: String`, `kind: ErrorKind` |
+
+`ResourceTeardownFailed.message` is selected from fixed framework strings;
+provider error text is never copied into the event. A
+`RetirementFailureStage::LeaseAccounting` event means ownership accounting
+failed closed: the affected owner stays fenced because destroying it could
+invalidate a live lease, and process restart is required. Healthy sibling
+owners are still transferred to teardown before that failure is reported.
+`RetirementOrigin::ManagerDrop` is an explicit abandonment signal: `Drop`
+cannot await provider cleanup, so applications that require a teardown
+checkpoint must call `Manager::graceful_shutdown` before releasing the manager.
 
 Per-resource revocation failures are also signalled inline as
 `HealthChanged { healthy: false }`, so subscribers that filter slot events
@@ -142,10 +155,9 @@ match &event {
         rotation_counter.increment(1);
         tracing::info!(%key, %slot, "credential slot rotated");
     }
-    ResourceEvent::SlotRefreshFailed { key, slot, error }
-    | ResourceEvent::SlotRevokeFailed { key, slot, error } => {
-        // `error` is already redacted — safe to log verbatim.
-        tracing::warn!(%key, %slot, %error, "slot rotation hook failed");
+    ResourceEvent::SlotRefreshFailed { key, slot, kind, message }
+    | ResourceEvent::SlotRevokeFailed { key, slot, kind, message } => {
+        tracing::warn!(%key, %slot, ?kind, %message, "slot rotation hook failed");
     }
     _ => {}
 }

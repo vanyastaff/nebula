@@ -142,7 +142,7 @@ manager.register(RegistrationSpec {
     resource,                                  // fully-constructed R, all #[credential] slots resolved
     config,                                    // validated on register
     scope: ScopeLevel::Global,
-    slot_identity: SlotIdentity::Unbound,      // structural anti-bleed identity (see below)
+    slot_identity: SlotIdentity::Unbound,      // structural dedup/resolution key (see below)
     topology: Resident::new(ResidentConfig::default()),
     recovery_gate: None,                       // Option<Arc<RecoveryGate>>
 })?;
@@ -187,26 +187,41 @@ Aliases intentionally exposed by a provider's instance remain the author's respo
   only its opaque `RetainedId`; hiding strong entries outside the store violates
   the mandatory lifecycle contract and escapes framework accounting.
 - Retained state is manipulated only through the borrowed store. The store is
-  not cloneable and exposes no public drain or remove-and-take capability;
-  closing and destruction remain framework-owned. `Topology::quiesce` may stop
+  not cloneable and exposes no public remove-and-take capability; closing and
+  destruction remain framework-owned on the supported path. `InstanceStore`,
+  however, exposes ownership-transferring `drain_all` to trusted in-process
+  topology code. The type system cannot prevent a custom plugin from draining,
+  dropping, or aliasing an entry outside framework submission, and framework
+  abandonment metrics cannot observe that loss. `Topology::quiesce` may stop
   policy-owned background work, but must not invalidate or await issued guards.
   Physical shutdown belongs to final-owner `Provider::destroy`.
+- Retained lease fences are per generation, not global to the resource row.
+  Incremental cleanup can therefore extract every ready sibling while another
+  generation still has a live lease or fail-closed poisoned accounting;
+  terminal close also tears down healthy siblings before reporting poison. A
+  newly ready retirement wakes cleanup without waiting for an unrelated lease
+  transition.
 - `CreatedEntry` exposes `new`, `entry`, and `into_entry`; displaced retained
   owners are retired inside `RetainedStore`, not returned beside a new lease.
   `into_owned_instance` returns `Option<Instance>`: shared ownership yields an
   instance only on final release.
-- Drain counters and `Released` events settle after queued cleanup completes or
-  is abandoned, not synchronously inside guard Drop. Await release or graceful shutdown.
+- Drain counters settle after queued cleanup completes or is abandoned.
+  `Released` is emitted only after cleanup returns; rejected or abandoned
+  cleanup never emits a success event. Await release or graceful shutdown for
+  a completion checkpoint.
 - Nested release on the same queue uses bounded cooperative execution. A release
   targeting another queue, or exceeding that nested capacity, returns
-  `ErrorKind::DeferredCleanup` after acceptance instead of creating a wait cycle.
+  `ReleaseOutcome::Deferred` after acceptance instead of creating a wait cycle.
   Cleanup remains queue-owned; never retry that release. Separately spawned
   provider tasks do not inherit the current cleanup context.
 - Registration and removal after shutdown admission closes are rejected. Replacement/removal fences the old
   row and schedules owned retirement; normal graceful shutdown awaits idle/master teardown.
 - Force with outstanding leases returns an incomplete snapshot and retains cleanup
   workers while the manager lives. Manager Drop closes the queue; later releases
-  may be rejected and counted. This process-local queue cannot recover work after a crash.
+  may be rejected and counted. Dropping an open manager cannot await provider
+  teardown: every remaining row emits a `ResourceTeardownFailed` event with
+  `RetirementOrigin::ManagerDrop`. Call `graceful_shutdown` for a teardown
+  checkpoint. This process-local queue cannot recover work after a crash.
 - `ShutdownError::ResourceTeardownFailed` preserves the typed provider error through
   its source chain. Consequently, `ShutdownError` no longer implements `UnwindSafe`
   or `RefUnwindSafe`; callers crossing unwind boundaries must account for that source.
@@ -231,7 +246,7 @@ Aliases intentionally exposed by a provider's instance remain the author's respo
 - `ResourceContext` — execution context with cancellation and capability traits (`HasResources`, `HasCredentials`).
 - `ScopeLevel` — re-exported from `nebula_core::ScopeLevel`.
 - `ResourcePhase`, `ResourceStatus` — lifecycle phase tracking for observability.
-- `ResourceEvent` — lifecycle events (`Registered`, `Removed`, `AcquireSuccess`, `AcquireFailed`, `Released`, `HealthChanged`, `ConfigReloaded`, `RetryAttempt`, `BackpressureDetected`, `RecoveryGateChanged`, `SlotRefreshed`, `SlotRevoked`, `SlotRefreshFailed`, `SlotRevokeFailed`, `MaintenanceEvicted`, `HoldDeadlineExceeded`).
+- `ResourceEvent` — lifecycle events (`Registered`, registry-unpublish `Removed`, `AcquireSuccess`, `AcquireFailed`, `Released`, `HealthChanged`, `ConfigReloaded`, `RetryAttempt`, `BackpressureDetected`, `RecoveryGateChanged`, `SlotRefreshed`, `SlotRevoked`, `SlotRefreshFailed`, `SlotRevokeFailed`, `RetiredCleanupFailed`, `ResourceTeardownFailed`, `MaintenanceEvicted`, `HoldDeadlineExceeded`). `ResourceTeardownFailed` reports every failing row-retirement stage with a fixed secret-free message; shutdown still returns only the first typed failure as its aggregate result.
 - `ResourceOpsMetrics`, `ResourceOpsSnapshot` — registry-backed operation counters.
 - `RecoveryGate`, `RecoveryGateConfig`, `RecoveryTicket`, `RecoveryWaiter`, `GateState` — thundering-herd recovery gate.
 - Open `Topology<R>` trait + framework topology structs `Pooled<R>` / `Resident<R>` / `Bounded<R>` (reached monomorphically through `Provider::Topology`; no dispatch enum — the framework owns the acquire loop).
@@ -337,7 +352,9 @@ the explicit per-guard error checkpoint.
 Queue messages, nested execution slots, and saturation rescue admission are bounded.
 Rescue and nested dispatchers belong to the shutdown handle and are aborted/joined
 with ordinary workers. A destroy batch occupies one queue message, owns its entries,
-and applies a separate panic/timeout boundary to each member while continuing siblings.
+and, when built with `panic = "unwind"`, applies a separate panic/timeout boundary to
+each member while continuing siblings. With `panic = "abort"`, a trusted in-process
+plugin panic terminates the process before framework recovery or settlement can run.
 The queue-message bound does not bound the size of a provider instance or an owned
 batch, and the queue is not a durable cleanup log.
 
@@ -419,7 +436,7 @@ See the `nebula-resource` row in the workspace [`docs/MATURITY.md`](../../docs/M
 Cooperative process-local drain uses:
 
 - `DrainTimeoutPolicy` — policy controlling how long a drain operation waits.
-- `ReleaseQueue` (`src/release_queue.rs`) — the queue of releases awaiting drain.
+- `ReleaseQueue` (`src/release_queue/mod.rs`) — the queue of releases awaiting drain.
 
 These types are L4 implementation detail — rename/refactor without canon revision.
 The queue is not persisted and cannot drain a crashed process's work after restart.
@@ -450,6 +467,8 @@ supplies only thin R-aware hooks (`create_entry`, `entry_instance`,
 framework stores: `InstanceStore` for idle entries and `RetainedStore` for
 long-lived roots. A custom topology may publish or retire retained roots only
 through the latter and must keep opaque `RetainedId`s rather than hidden strong owners.
+Every retained generation has its own lease fence, so a live lease blocks only
+that generation; ready retired siblings remain independently drainable.
 Only owners published into framework stores are accounted for. Cloning strong
 aliases out of `RetainedLease`, or forgetting aliases/leases, violates the
 contract; trusted in-process plugins are not isolated by the type system.

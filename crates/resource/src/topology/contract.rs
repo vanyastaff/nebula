@@ -7,20 +7,26 @@
 //! the stale-entry destroy, the create-or-accept decision, the cancel-safe
 //! guard-wrap, and the on-release return-or-destroy. The topology supplies only
 //! thin, R-aware policy hooks (`create_entry` / `entry_instance` / `into_owned_instance`
-//! / `accept` / `prepare` / `on_release` / …) that it **cannot** use to skip the
-//! credential-revoke fence.
+//! / `accept` / `prepare` / `on_release` / …). The built-in implementations
+//! leave checkout, fencing, and destruction to the framework path.
 //!
 //! This is the inversion the open trait exists for: a custom topology author
-//! writes zero `store.checkout()` / `resource.destroy()` / stale-loop /
-//! epoch-compare code. The fence is framework-owned for **every** topology —
-//! built-in and custom alike — by construction, not by author discipline.
+//! normally writes zero `store.checkout()` / `resource.destroy()` / stale-loop /
+//! epoch-compare code. Custom topology code is nevertheless a trusted in-process
+//! plugin: hooks receive an [`InstanceStore`] whose public capabilities include
+//! ownership-transferring operations such as [`InstanceStore::drain_all`]. The
+//! type system cannot prevent a plugin from draining, dropping, or aliasing an
+//! entry outside framework submission.
 //!
 //! # Storage safety
 //!
 //! Store-bearing hooks receive the framework-owned store. Its clone shares
 //! the same terminal and revoke fences; it is not tenant authorization.
-//! Trusted topology authors must not cache entries across registration scopes.
-//! The framework, not topology policy, owns destruction and admission checks.
+//! Trusted topology authors must not cache entries across registration scopes,
+//! drain the store outside the documented lifecycle, or retain untracked aliases.
+//! Framework abandonment accounting observes only work submitted through
+//! framework-owned cleanup paths; it cannot observe ownership discarded inside
+//! plugin code.
 
 use std::{future::Future, time::Duration};
 
@@ -44,8 +50,29 @@ pub struct CreatedEntry<E> {
     entry: E,
 }
 
+/// Typed failure of a topology-driven credential hook dispatch.
+///
+/// This boundary preserves framework timeout semantics without inferring them
+/// from an [`Error`] message or retry category. Custom topologies return
+/// [`Failed`](Self::Failed) for provider/topology errors and
+/// [`TimedOut`](Self::TimedOut) only when their bounded hook execution elapsed.
+#[derive(Debug, thiserror::Error)]
+#[must_use = "credential hook faults must be settled as failure or timeout"]
+#[non_exhaustive]
+pub enum HookFault {
+    /// Provider or topology hook returned an error.
+    #[error(transparent)]
+    Failed(#[from] Error),
+    /// The topology's bounded credential hook execution elapsed.
+    #[error("credential topology hook timed out")]
+    TimedOut,
+}
+
 impl<E> CreatedEntry<E> {
-    /// Creates a lease without displacing retained entries.
+    /// Wraps a freshly created topology entry for transfer to the framework.
+    ///
+    /// Any retained-root publication or displacement is performed separately
+    /// through the framework-owned [`RetainedStore`].
     pub fn new(entry: E) -> Self {
         Self { entry }
     }
@@ -661,8 +688,16 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
     ///
     /// # Errors
     ///
-    /// Returns the first hook error; the framework surfaces it to the rotation
-    /// dispatch caller.
+    /// Returns the first typed hook fault; the framework preserves timeout as
+    /// terminal timeout accounting instead of collapsing it into an error.
+    ///
+    /// # Panics
+    ///
+    /// Custom topologies are trusted in-process plugins. Under
+    /// `panic = "unwind"`, the framework boundary converts a panic into a
+    /// terminal failed observation. Under `panic = "abort"`, Rust terminates
+    /// the process before any framework settlement can run; no API can
+    /// provide in-process recovery in that build mode.
     fn dispatch_credential_hook(
         &self,
         _resource: &R,
@@ -670,7 +705,7 @@ pub trait Topology<R: Provider>: Send + Sync + 'static {
         _retained: &RetainedStore<Self::Entry>,
         _slot: &str,
         _refresh: bool,
-    ) -> impl Future<Output = Result<(), Error>> + Send {
+    ) -> impl Future<Output = Result<(), HookFault>> + Send {
         async { Ok(()) }
     }
 

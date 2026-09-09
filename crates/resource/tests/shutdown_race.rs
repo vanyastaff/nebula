@@ -399,7 +399,10 @@ async fn reaper_skips_refill_when_shutdown_lands_mid_sweep() {
         .acquire_pooled::<PausableEvictResource>(&ctx, &AcquireOptions::default())
         .await
         .expect("seed acquire succeeds");
-    handle.release().await.expect("seed returns to idle store");
+    assert_eq!(
+        handle.release().await.expect("seed returns to idle store"),
+        nebula_resource::ReleaseOutcome::Completed
+    );
     assert_eq!(create_count.load(Ordering::SeqCst), 1);
 
     // The health probe is awaited by the sweep, unlike its queued teardown.

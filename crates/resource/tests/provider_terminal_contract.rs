@@ -106,13 +106,14 @@ async fn cancelled_shutdown_preserves_outcome(outcome: TerminalOutcome) {
         (),
         Resident::new(ResidentConfig::default()),
     );
-    manager
+    let release_outcome = manager
         .acquire_resident::<TerminalProvider>(&common::test_ctx(), &AcquireOptions::default())
         .await
         .unwrap()
         .release()
         .await
         .unwrap();
+    assert_eq!(release_outcome, nebula_resource::ReleaseOutcome::Completed);
 
     let before_shutdown = Instant::now();
     let caller = tokio::spawn({
@@ -220,9 +221,15 @@ async fn default_destroy_drops_instance_only_after_final_resident_owner() {
         .acquire_resident::<DefaultDropProvider>(&common::test_ctx(), &AcquireOptions::default())
         .await
         .unwrap();
-    first.release().await.unwrap();
+    assert_eq!(
+        first.release().await.unwrap(),
+        nebula_resource::ReleaseOutcome::Completed
+    );
     assert_eq!(drops.load(Ordering::SeqCst), 0);
-    second.release().await.unwrap();
+    assert_eq!(
+        second.release().await.unwrap(),
+        nebula_resource::ReleaseOutcome::Completed
+    );
     assert_eq!(drops.load(Ordering::SeqCst), 0);
     manager
         .graceful_shutdown(ShutdownConfig::default())

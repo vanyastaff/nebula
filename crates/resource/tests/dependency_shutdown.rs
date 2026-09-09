@@ -30,6 +30,7 @@ impl ResourceConfig for Config {
 }
 
 type Dependencies = Vec<Box<dyn Any + Send + Sync>>;
+type DestroyOrder = Arc<Mutex<Vec<usize>>>;
 
 struct Instance {
     dependencies: Dependencies,
@@ -40,6 +41,7 @@ struct Instance {
 struct ResidentNode<const ID: usize> {
     dependencies: Arc<Mutex<Dependencies>>,
     destroyed: Arc<AtomicUsize>,
+    destroy_order: DestroyOrder,
 }
 
 #[async_trait::async_trait]
@@ -60,6 +62,7 @@ impl<const ID: usize> Provider for ResidentNode<ID> {
         })
     }
     async fn destroy(&self, instance: Instance, _: TeardownCx) -> Result<(), Error> {
+        self.destroy_order.lock().unwrap().push(ID);
         drop(instance.dependencies);
         self.destroyed.fetch_add(1, Ordering::SeqCst);
         Ok(())
@@ -122,6 +125,10 @@ fn manager() -> Manager {
     )
 }
 
+fn default_manager() -> Manager {
+    Manager::new()
+}
+
 fn context() -> ResourceContext {
     ResourceContext::minimal(
         Default::default(),
@@ -130,8 +137,20 @@ fn context() -> ResourceContext {
 }
 
 fn register<const ID: usize>(manager: &Manager, dependencies: Dependencies) -> Arc<AtomicUsize> {
+    register_with_order::<ID>(manager, dependencies, &Arc::default())
+}
+
+fn register_with_order<const ID: usize>(
+    manager: &Manager,
+    dependencies: Dependencies,
+    destroy_order: &DestroyOrder,
+) -> Arc<AtomicUsize> {
     let resource = ResidentNode::<ID>::default();
     *resource.dependencies.lock().unwrap() = dependencies;
+    let resource = ResidentNode {
+        destroy_order: Arc::clone(destroy_order),
+        ..resource
+    };
     let destroyed = Arc::clone(&resource.destroyed);
     manager
         .register(RegistrationSpec {
@@ -176,13 +195,19 @@ async fn assert_complete(manager: &Manager, destroyed: &[Arc<AtomicUsize>]) {
 #[tokio::test(start_paused = true)]
 async fn resident_parent_releases_same_manager_child_during_graceful_shutdown() {
     let manager = manager();
-    let child_destroyed = register::<0>(&manager, vec![]);
+    let destroy_order = Arc::default();
+    let child_destroyed = register_with_order::<0>(&manager, vec![], &destroy_order);
     let child = acquire::<0>(&manager).await;
-    let parent_destroyed = register::<1>(&manager, vec![Box::new(child)]);
+    let parent_destroyed =
+        register_with_order::<1>(&manager, vec![Box::new(child)], &destroy_order);
     let parent = acquire::<1>(&manager).await;
     assert_eq!(parent.value, 1);
-    parent.release().await.unwrap();
+    assert_eq!(
+        parent.release().await.unwrap(),
+        nebula_resource::ReleaseOutcome::Completed
+    );
     assert_complete(&manager, &[parent_destroyed, child_destroyed]).await;
+    assert_eq!(*destroy_order.lock().unwrap(), vec![1, 0]);
 }
 
 #[tokio::test(start_paused = true)]
@@ -203,13 +228,14 @@ async fn idle_pooled_parent_releases_same_manager_child_during_graceful_shutdown
             recovery_gate: None,
         })
         .unwrap();
-    manager
+    let release_outcome = manager
         .acquire_pooled::<PooledParent>(&context(), &AcquireOptions::default())
         .await
         .unwrap()
         .release()
         .await
         .unwrap();
+    assert_eq!(release_outcome, nebula_resource::ReleaseOutcome::Completed);
     assert_eq!(
         manager
             .pool_stats::<PooledParent>(&ScopeLevel::Global)
@@ -221,34 +247,66 @@ async fn idle_pooled_parent_releases_same_manager_child_during_graceful_shutdown
     assert_complete(&manager, &[parent_destroyed, child_destroyed]).await;
 }
 
-#[tokio::test(start_paused = true)]
-async fn resident_chain_drains_with_one_retirement_slot_and_release_worker() {
-    let manager = manager();
-    let leaf_destroyed = register::<0>(&manager, vec![]);
-    let middle_destroyed = register::<1>(&manager, vec![Box::new(acquire::<0>(&manager).await)]);
-    let root_destroyed = register::<2>(&manager, vec![Box::new(acquire::<1>(&manager).await)]);
-    acquire::<2>(&manager).await.release().await.unwrap();
+async fn assert_resident_chain_order(manager: Manager) {
+    let destroy_order = Arc::default();
+    let leaf_destroyed = register_with_order::<0>(&manager, vec![], &destroy_order);
+    let middle_destroyed = register_with_order::<1>(
+        &manager,
+        vec![Box::new(acquire::<0>(&manager).await)],
+        &destroy_order,
+    );
+    let root_destroyed = register_with_order::<2>(
+        &manager,
+        vec![Box::new(acquire::<1>(&manager).await)],
+        &destroy_order,
+    );
+    assert_eq!(
+        acquire::<2>(&manager).await.release().await.unwrap(),
+        nebula_resource::ReleaseOutcome::Completed
+    );
     assert_complete(
         &manager,
         &[root_destroyed, middle_destroyed, leaf_destroyed],
     )
     .await;
+    assert_eq!(*destroy_order.lock().unwrap(), vec![2, 1, 0]);
 }
 
 #[tokio::test(start_paused = true)]
-async fn resident_diamond_destroys_shared_child_once() {
-    let manager = manager();
-    let leaf_destroyed = register::<3>(&manager, vec![]);
-    let left_destroyed = register::<2>(&manager, vec![Box::new(acquire::<3>(&manager).await)]);
-    let right_destroyed = register::<1>(&manager, vec![Box::new(acquire::<3>(&manager).await)]);
-    let root_destroyed = register::<0>(
+async fn resident_chain_drains_with_one_retirement_slot_and_release_worker() {
+    assert_resident_chain_order(manager()).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn resident_chain_default_workers_destroy_dependents_before_dependencies() {
+    assert_resident_chain_order(default_manager()).await;
+}
+
+async fn assert_resident_diamond_order(manager: Manager) {
+    let destroy_order = Arc::default();
+    let leaf_destroyed = register_with_order::<3>(&manager, vec![], &destroy_order);
+    let left_destroyed = register_with_order::<2>(
+        &manager,
+        vec![Box::new(acquire::<3>(&manager).await)],
+        &destroy_order,
+    );
+    let right_destroyed = register_with_order::<1>(
+        &manager,
+        vec![Box::new(acquire::<3>(&manager).await)],
+        &destroy_order,
+    );
+    let root_destroyed = register_with_order::<0>(
         &manager,
         vec![
             Box::new(acquire::<1>(&manager).await),
             Box::new(acquire::<2>(&manager).await),
         ],
+        &destroy_order,
     );
-    acquire::<0>(&manager).await.release().await.unwrap();
+    assert_eq!(
+        acquire::<0>(&manager).await.release().await.unwrap(),
+        nebula_resource::ReleaseOutcome::Completed
+    );
     assert_complete(
         &manager,
         &[
@@ -259,6 +317,25 @@ async fn resident_diamond_destroys_shared_child_once() {
         ],
     )
     .await;
+    let destroy_order = destroy_order.lock().unwrap();
+    let root_position = destroy_order.iter().position(|node| *node == 0).unwrap();
+    let right_position = destroy_order.iter().position(|node| *node == 1).unwrap();
+    let left_position = destroy_order.iter().position(|node| *node == 2).unwrap();
+    let leaf_position = destroy_order.iter().position(|node| *node == 3).unwrap();
+    assert!(root_position < right_position);
+    assert!(root_position < left_position);
+    assert!(right_position < leaf_position);
+    assert!(left_position < leaf_position);
+}
+
+#[tokio::test(start_paused = true)]
+async fn resident_diamond_destroys_shared_child_once() {
+    assert_resident_diamond_order(manager()).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn resident_diamond_default_workers_destroy_dependencies_last() {
+    assert_resident_diamond_order(default_manager()).await;
 }
 
 #[tokio::test(start_paused = true)]
@@ -306,7 +383,10 @@ async fn cancelled_drain_preserves_original_deadline_and_rejects_removal() {
     );
     assert_eq!(started.elapsed(), Duration::from_secs(10));
     assert_eq!(guard.value, 0);
-    guard.release().await.unwrap();
+    assert_eq!(
+        guard.release().await.unwrap(),
+        nebula_resource::ReleaseOutcome::Completed
+    );
     // Expired drain is not an unconditional rejection: the late zero count advances.
     assert_complete(&manager, &[destroyed]).await;
 }
@@ -319,8 +399,14 @@ async fn removed_old_generation_and_registered_successor_retire_once() {
     manager.remove(&ResidentNode::<0>::key()).unwrap();
     let successor_destroyed = register::<0>(&manager, vec![]);
     let parent_destroyed = register::<1>(&manager, vec![Box::new(old_guard)]);
-    acquire::<0>(&manager).await.release().await.unwrap();
-    acquire::<1>(&manager).await.release().await.unwrap();
+    assert_eq!(
+        acquire::<0>(&manager).await.release().await.unwrap(),
+        nebula_resource::ReleaseOutcome::Completed
+    );
+    assert_eq!(
+        acquire::<1>(&manager).await.release().await.unwrap(),
+        nebula_resource::ReleaseOutcome::Completed
+    );
     assert_complete(
         &manager,
         &[old_destroyed, successor_destroyed, parent_destroyed],
@@ -332,7 +418,10 @@ async fn removed_old_generation_and_registered_successor_retire_once() {
 async fn oversized_shutdown_budgets_do_not_overflow() {
     let manager = manager();
     let destroyed = register::<0>(&manager, vec![]);
-    acquire::<0>(&manager).await.release().await.unwrap();
+    assert_eq!(
+        acquire::<0>(&manager).await.release().await.unwrap(),
+        nebula_resource::ReleaseOutcome::Completed
+    );
     let report = manager
         .graceful_shutdown(
             ShutdownConfig::default()

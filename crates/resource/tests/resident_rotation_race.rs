@@ -16,6 +16,7 @@
 //! yield-budget guessing; the ordering is enforced by a barrier and the
 //! resident `create_lock`.
 
+use std::assert_matches;
 use std::sync::{
     Arc,
     atomic::{AtomicU32, AtomicUsize, Ordering},
@@ -314,10 +315,14 @@ async fn resident_create_during_rotation_delivers_hook_not_false_success() {
         .await
         .expect("acquire task must not panic")
         .expect("first acquire must succeed");
-    refresh_task
+    let outcome = refresh_task
         .await
         .expect("refresh task must not panic")
         .expect("refresh_slot must succeed (the hook ran — a real success)");
+    assert_matches!(
+        outcome,
+        nebula_resource::SlotDispatchOutcome::Completed { .. }
+    );
 
     // The decisive assertions: the runtime the caller holds was reconciled
     // to the NEW credential and the hook fired exactly once. Pre-fix this
@@ -339,9 +344,14 @@ async fn resident_create_during_rotation_delivers_hook_not_false_success() {
     resource
         .db
         .store(Arc::new(CredentialGuard::new(FakeCred(123))));
-    mgr.refresh_slot(&key, ScopeLevel::Global, "db")
+    let outcome = mgr
+        .refresh_slot(&key, ScopeLevel::Global, "db")
         .await
         .expect("second refresh must succeed");
+    assert_matches!(
+        outcome,
+        nebula_resource::SlotDispatchOutcome::Completed { .. }
+    );
     assert_eq!(guard.bound_cred.load(Ordering::SeqCst), 123);
     assert_eq!(resource.refresh_calls.load(Ordering::SeqCst), 2);
 }
@@ -411,7 +421,7 @@ async fn refresh_slot_lock_wait_does_not_consume_the_hook_ceiling() {
     tokio::time::sleep(std::time::Duration::from_secs(20)).await;
     resource.gate.release_refresh.notify_one();
 
-    refresh_task
+    let outcome = refresh_task
         .await
         .expect("refresh task must not panic")
         .expect(
@@ -419,6 +429,10 @@ async fn refresh_slot_lock_wait_does_not_consume_the_hook_ceiling() {
              total) exceeds the old single-tier 30s ceiling, but neither \
              phase alone exceeds its own tier (two-tier ceiling)",
         );
+    assert_matches!(
+        outcome,
+        nebula_resource::SlotDispatchOutcome::Completed { .. }
+    );
 
     assert_eq!(
         resource.refresh_calls.load(Ordering::SeqCst),
@@ -497,7 +511,7 @@ async fn resident_revoke_during_first_acquire_does_not_serve_revoked_credential(
 
     let tail = revoke_task.await.expect("revoke task must not panic");
     assert!(
-        matches!(tail, nebula_resource::RevokeTail::Done),
+        matches!(tail, nebula_resource::RevokeTail::Done { .. }),
         "drain_and_revoke must complete the revoke hook, got: {tail:?}"
     );
 
@@ -528,9 +542,14 @@ async fn never_activated_resident_refresh_is_legitimate_noop() {
     resource
         .db
         .store(Arc::new(CredentialGuard::new(FakeCred(CRED_NEW))));
-    mgr.refresh_slot(&key, ScopeLevel::Global, "db")
+    let outcome = mgr
+        .refresh_slot(&key, ScopeLevel::Global, "db")
         .await
         .expect("refresh on a never-activated resident must be a legitimate Ok no-op");
+    assert_matches!(
+        outcome,
+        nebula_resource::SlotDispatchOutcome::Completed { .. }
+    );
 
     // The hook must NOT have fired (there is no live runtime to refresh) —
     // this is the legitimate-no-op case, distinct from a stale-skip.
@@ -574,9 +593,14 @@ async fn warm_resident_no_rotation_refresh_delivers_once_not_stale() {
     assert_eq!(guard.bound_cred.load(Ordering::SeqCst), CRED_OLD);
 
     // No rotation between build and refresh — built epoch == slot epoch.
-    mgr.refresh_slot(&key, ScopeLevel::Global, "db")
+    let outcome = mgr
+        .refresh_slot(&key, ScopeLevel::Global, "db")
         .await
         .expect("refresh on a warm, un-rotated resident must succeed");
+    assert_matches!(
+        outcome,
+        nebula_resource::SlotDispatchOutcome::Completed { .. }
+    );
     assert_eq!(
         resource.refresh_calls.load(Ordering::SeqCst),
         1,

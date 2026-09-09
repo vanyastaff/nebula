@@ -127,7 +127,7 @@ impl<R: Provider> Resident<R> {
         retained: &crate::RetainedStore<Arc<R::Instance>>,
         slot: &str,
         refresh: bool,
-    ) -> Result<(), Error> {
+    ) -> Result<(), crate::topology::HookFault> {
         // Serialise against the create slow path: the reconcile must not
         // interleave with an instance being built / its epoch being
         // published, so delivery is exactly-once.
@@ -179,7 +179,7 @@ impl<R: Provider> Resident<R> {
         } else {
             "on_credential_revoke"
         };
-        let res = match crate::hook_guard::guard_author_hook(
+        let result = match crate::hook_guard::guard_author_hook(
             crate::hook_guard::DEFAULT_AUTHOR_HOOK_CEILING,
             async {
                 if refresh {
@@ -191,23 +191,22 @@ impl<R: Provider> Resident<R> {
         )
         .await
         {
-            Ok(res) => res,
+            Ok(result) => result.map_err(crate::topology::HookFault::Failed),
             Err(fault) => {
                 fault.observe(&R::key(), "rotation");
                 Err(match fault {
-                    crate::hook_guard::HookFault::Panicked => Error::permanent(format!(
-                        "resident {hook_op} hook panicked — caught and isolated under \
+                    crate::hook_guard::HookFault::Panicked => {
+                        crate::topology::HookFault::Failed(Error::permanent(format!(
+                            "resident {hook_op} hook panicked — caught and isolated under \
                          panic=unwind (fan-out not crashed); inert under panic=abort"
-                    )),
-                    crate::hook_guard::HookFault::TimedOut => Error::backpressure(format!(
-                        "resident {hook_op} hook did not complete within {:?}",
-                        crate::hook_guard::DEFAULT_AUTHOR_HOOK_CEILING
-                    )),
+                        )))
+                    },
+                    crate::hook_guard::HookFault::TimedOut => crate::topology::HookFault::TimedOut,
                 })
             },
         };
 
-        match res {
+        match result {
             Ok(()) => {
                 if stale {
                     state.built_epoch = slot_epoch;
@@ -347,7 +346,7 @@ where
         retained: &crate::RetainedStore<Self::Entry>,
         slot: &str,
         refresh: bool,
-    ) -> Result<(), Error> {
+    ) -> Result<(), crate::topology::HookFault> {
         // The resident's master handle is NOT in the framework store, so the
         // store-fence cannot reach it: revoke / refresh teardown runs the
         // create-vs-rotate reconcile against the master cell instead.

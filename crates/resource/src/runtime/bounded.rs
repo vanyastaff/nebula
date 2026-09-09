@@ -604,7 +604,7 @@ mod tests {
             .await
             .expect("create");
         assert_eq!(*inst.entry(), 7);
-        assert!(retained.drain_retired().unwrap().is_empty());
+        assert!(retained.drain_retired().is_empty());
         assert_eq!(topo.tag(), TopologyTag::Bounded);
     }
 

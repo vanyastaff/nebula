@@ -19,9 +19,12 @@
 //!    shutdown destroys it through framework-owned cleanup. The author writes
 //!    no store, fence, or destroy dispatch code.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
+use std::{
+    assert_matches,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
@@ -315,9 +318,12 @@ async fn custom_topology_store_is_revoke_fenced_by_framework() {
     .expect("first acquire")
     .downcast::<nebula_resource::guard::ResourceGuard<Ffmpeg>>()
     .expect("downcast");
-    g.release()
-        .await
-        .expect("release completes after framework recycling");
+    assert_eq!(
+        g.release()
+            .await
+            .expect("release completes after framework recycling"),
+        nebula_resource::ReleaseOutcome::Completed
+    );
     assert_eq!(create_count.load(Ordering::SeqCst), 1);
     assert_eq!(
         destroy_count.load(Ordering::SeqCst),
@@ -327,10 +333,14 @@ async fn custom_topology_store_is_revoke_fenced_by_framework() {
 
     // 2. Revoke through the manager-owned lifecycle operation. This applies
     //    the taint and epoch fence synchronously before its awaited tail.
-    manager
+    let outcome = manager
         .revoke_slot(&key, ScopeLevel::Global, "transcoder")
         .await
         .expect("manager revoke must accept the declared slot");
+    assert_matches!(
+        outcome,
+        nebula_resource::SlotDispatchOutcome::Completed { .. }
+    );
 
     // 3. The revoked row cannot hand out the pre-revoke entry (or create a
     //    replacement against the revoked credential).

@@ -40,12 +40,21 @@ read `src/lib.rs`'s module doc directly) and the doctest on
 | Topology | Instance model | Use when | Example |
 |----------|-----------------|----------|---------|
 | `Pooled` | N interchangeable instances, checkout/recycle | Stateful, interchangeable connections | PostgreSQL, Redis |
-| `Resident` | One shared instance, `Arc::clone` on acquire | Cheap-to-clone client shared widely | `reqwest::Client`, in-memory cache, OAuth/token-gated SDK clients |
+| `Resident` | One retained instance with owning lease entries | One runtime should be shared widely without requiring `Instance: Clone` | `reqwest::Client`, in-memory cache, OAuth/token-gated SDK clients |
 | `Bounded` | Concurrency-capped, no warm idle pool | Scarce non-warmable capacity | License seats, a serial-exclusive device |
 
 `type Topology` is static per resource type; only its *config* (sizes, cap) is
 a runtime value. See [`topology-reference.md`](topology-reference.md) for a
 per-topology trait skeleton, decision matrix, and friction-point checklist.
+
+Custom topologies are trusted in-process plugins. The framework drives the
+normal acquire/release path, but hooks receive an `InstanceStore` whose public
+capabilities include ownership transfer through `drain_all`. The type system
+cannot stop plugin code from draining, dropping, or hiding an alias outside a
+framework cleanup submission. `TaskLoss` and abandonment metrics therefore
+cover only work accepted by framework-owned cleanup paths, not ownership lost
+inside a custom plugin. Built-in topologies keep all lifecycle ownership on the
+framework path; custom authors must preserve the same contract.
 
 > **Background workers and event sources** live in
 > [`nebula-engine`](https://docs.rs/nebula-engine) (`nebula_engine::daemon::*`).
@@ -84,11 +93,11 @@ runnable doctest on the `ClassifyError` re-export in `src/lib.rs`.
 | Capability | How to enable |
 |------------|---------------|
 | Bounded connection pooling | `RegistrationSpec { topology: Pooled::new(..), .. }` |
-| Shared singleton with clone-on-acquire | `RegistrationSpec { topology: Resident::new(..), .. }` |
+| Shared retained runtime with owning leases | `RegistrationSpec { topology: Resident::new(..), .. }` |
 | Concurrency cap without a warm pool | `RegistrationSpec { topology: Bounded::capped(n) / exclusive() / unbounded(), .. }` |
 | Fast-fail during backend recovery | `RegistrationSpec::recovery_gate: Some(Arc<RecoveryGate>)` |
 | Config hot-reload (fingerprint-based) | Implement `ResourceConfig::fingerprint`; call `Manager::reload_config` |
-| Per-tenant credential isolation | Build `SlotIdentity::from_bindings(…)` and acquire via `acquire_<topology>_for_identity` |
+| Resolved-binding row separation | Build `SlotIdentity::from_bindings(…)` and acquire via `acquire_<topology>_for_identity`; authenticate and authorize the tenant at host admission |
 | Lifecycle event stream | `manager.subscribe_events()` → `Subscriber<ResourceEvent>` |
 | Async background cleanup | `ReleaseQueue` (owned by `Manager`, transparent to callers) |
 | Atomic operation counters | `manager.metrics()` → `Option<&ResourceOpsMetrics>` |

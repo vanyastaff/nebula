@@ -10,8 +10,13 @@ use tracing::Instrument as _;
 
 use super::{Manager, RegistrationSpec, resolve_json_templates};
 use crate::{
-    error::Error, events::ResourceEvent, recovery::gate::RecoveryGate, reload::ReloadOutcome,
-    resource::Provider, runtime::managed::ManagedResource, topology::Topology,
+    error::Error,
+    events::{ResourceEvent, RetirementOrigin},
+    recovery::gate::RecoveryGate,
+    reload::ReloadOutcome,
+    resource::Provider,
+    runtime::managed::ManagedResource,
+    topology::Topology,
     topology_tag::TopologyTag,
 };
 
@@ -34,13 +39,15 @@ impl Manager {
     /// dispatch layer, which holds a per-`R` constructor closure — the
     /// derive emits no constructor).
     ///
-    /// `spec.slot_identity` is the structural anti-bleed seam: two
-    /// registrations of the same resource type at the same `spec.scope`
+    /// `spec.slot_identity` is the structural deduplication and resolution
+    /// key. Two registrations of the same resource type at the same `spec.scope`
     /// whose resolved `(slot, credential)` bindings differ occupy
-    /// **distinct** registry rows with **distinct** topology runtimes, so
-    /// one tenant's runtime can never serve another tenant's resolved
-    /// credential. Equality is exact and structural (no digest), so two
-    /// distinct resolved binding sets can never alias.
+    /// **distinct** registry rows with **distinct** topology runtimes.
+    /// Equality is exact and structural (no digest), so two distinct resolved
+    /// binding sets can never alias. This key does not authenticate a caller,
+    /// authorize a tenant, or prove that equal bindings may be shared across
+    /// tenants; the host must enforce tenant authority and admit the scope
+    /// before registration.
     ///
     /// The resource is wrapped in a [`ManagedResource`] and stored in the
     /// registry under `R::key()`. If a resource with the same key, scope,
@@ -51,6 +58,13 @@ impl Manager {
     /// the managed resource — callers never need to create or manage it.
     ///
     /// # Errors
+    ///
+    /// Returns [`ErrorKind::Permanent`](crate::ErrorKind::Permanent) when the
+    /// resource declares credential slots but its non-pooling topology neither
+    /// implements its own revoke handling nor opts into framework pool
+    /// revocation. This fail-closed check applies even when every declared slot
+    /// is currently unbound: declaring a slot is a lifecycle capability, not
+    /// evidence that a credential is presently resolved.
     ///
     /// Returns an error if config validation fails on the provided config.
     /// Replacing an existing row also returns
@@ -253,7 +267,7 @@ impl Manager {
             admission: permit,
         } = registration
         {
-            self.retire_resource(displaced, permit);
+            self.retire_resource(displaced, permit, RetirementOrigin::Replacement);
         }
 
         // #387: everything below this point is a single funnel — the
@@ -844,7 +858,7 @@ impl Manager {
             .into_iter()
             .map(|managed| {
                 managed.set_phase(crate::state::ResourcePhase::ShuttingDown);
-                self.prepare_retirement(managed)
+                self.prepare_retirement(managed, RetirementOrigin::Removal)
             })
             .collect();
         retirement_permit.commit_batch(retirements);
@@ -900,7 +914,7 @@ impl Manager {
             drop(retirement_permit);
             return Err(Error::not_found(key));
         };
-        self.retire_resource(removed, retirement_permit);
+        self.retire_resource(removed, retirement_permit, RetirementOrigin::Removal);
 
         if let Some(m) = &self.metrics {
             m.record_destroy();
@@ -915,13 +929,20 @@ impl Manager {
     pub(super) fn prepare_retirement(
         &self,
         managed: Arc<dyn crate::registry::ManagedHandle>,
+        origin: RetirementOrigin,
     ) -> super::retirement::PendingRetirement {
         managed.begin_close();
         let key = managed.resource_key();
         tracing::debug!(resource.key = %key, "resource row retired; cleanup scheduled");
         let settlement =
             super::shutdown::RetirementSettlement::new(Arc::clone(&self.retirement_tracker));
-        super::retirement::PendingRetirement::new(managed, settlement)
+        super::retirement::PendingRetirement::new(
+            managed,
+            settlement,
+            Arc::clone(&self.event_bus),
+            self.metrics.clone(),
+            origin,
+        )
     }
 
     /// Commits a fenced row through capacity reserved before registry mutation.
@@ -929,8 +950,9 @@ impl Manager {
         &self,
         managed: Arc<dyn crate::registry::ManagedHandle>,
         permit: super::retirement::RetirementPermit,
+        origin: RetirementOrigin,
     ) {
         managed.set_phase(crate::state::ResourcePhase::ShuttingDown);
-        permit.commit(self.prepare_retirement(managed));
+        permit.commit(self.prepare_retirement(managed, origin));
     }
 }

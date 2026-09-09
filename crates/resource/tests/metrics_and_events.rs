@@ -11,13 +11,79 @@ mod common;
 use std::sync::Arc;
 
 use common::{PoolTestResource, ResidentTestResource, poll_until, test_config, test_ctx};
-use nebula_core::resource_key;
+use nebula_core::{ResourceKey, resource_key};
 use nebula_resource::{
-    AcquireOptions, Manager, ManagerConfig, Pooled, RegistrationSpec, Resident, ResidentConfig,
-    ScopeLevel, ShutdownConfig, SlotIdentity,
+    AcquireOptions, Error, ErrorKind, Manager, ManagerConfig, Pooled, Provider, RegistrationSpec,
+    Resident, ResidentConfig, ResidentProvider, ResourceContext, ResourceEvent,
+    RetirementFailureStage, RetirementOrigin, ScopeLevel, ShutdownConfig, ShutdownError,
+    SlotIdentity, TeardownCx,
     guard::ResourceGuard,
     recovery::{RecoveryGate, RecoveryGateConfig},
 };
+
+#[derive(Clone)]
+struct FailingRetirementResource<const ID: u8>;
+
+impl<const ID: u8> nebula_resource::HasCredentialSlots for FailingRetirementResource<ID> {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+
+    fn declares_credential_slots() -> bool {
+        false
+    }
+}
+impl<const ID: u8> ResidentProvider for FailingRetirementResource<ID> {}
+
+#[async_trait::async_trait]
+impl<const ID: u8> Provider for FailingRetirementResource<ID> {
+    type Config = common::TestConfig;
+    type Instance = ();
+    type Topology = Resident<Self>;
+
+    fn key() -> ResourceKey {
+        ResourceKey::try_from(format!("test-failing-retirement-{ID}"))
+            .expect("static test resource key is valid")
+    }
+
+    async fn create(
+        &self,
+        _config: &Self::Config,
+        _context: &ResourceContext,
+    ) -> Result<Self::Instance, Error> {
+        Ok(())
+    }
+
+    async fn destroy(&self, (): (), _context: TeardownCx) -> Result<(), Error> {
+        Err(Error::permanent(
+            "provider supplied text must not reach lifecycle events",
+        ))
+    }
+}
+
+async fn instantiate<const ID: u8>(manager: &Manager) {
+    let guard = manager
+        .acquire_resident::<FailingRetirementResource<ID>>(&test_ctx(), &AcquireOptions::default())
+        .await
+        .expect("test resource acquires");
+    assert_eq!(
+        guard.release().await.expect("resident lease releases"),
+        nebula_resource::ReleaseOutcome::Completed
+    );
+}
+
+fn register_failing<const ID: u8>(manager: &Manager) {
+    manager
+        .register(RegistrationSpec {
+            resource: FailingRetirementResource::<ID>,
+            config: test_config(),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: Resident::new(ResidentConfig::default()),
+            recovery_gate: None,
+        })
+        .expect("test resource registers");
+}
 
 // ---------------------------------------------------------------------------
 // Event emission tests
@@ -44,7 +110,7 @@ async fn register_emits_registered_event() {
 
     let event = rx.try_recv().expect("should have received an event");
     assert!(
-        matches!(&event, nebula_resource::ResourceEvent::Registered { key } if key == &resource_key!("test-resident")),
+        matches!(&event, ResourceEvent::Registered { key } if key == &resource_key!("test-resident")),
         "expected Registered event, got {event:?}"
     );
 }
@@ -72,8 +138,139 @@ async fn remove_emits_removed_event() {
 
     let event = rx.try_recv().expect("should have received an event");
     assert!(
-        matches!(&event, nebula_resource::ResourceEvent::Removed { key } if key == &resource_key!("test-resident")),
+        matches!(&event, ResourceEvent::Removed { key } if key == &resource_key!("test-resident")),
         "expected Removed event, got {event:?}"
+    );
+}
+
+#[tokio::test]
+async fn shutdown_emits_one_redacted_failure_event_for_each_failing_row() {
+    let registry = Arc::new(nebula_metrics::MetricsRegistry::new());
+    let manager = Manager::with_config(
+        ManagerConfig::default()
+            .with_release_queue_workers(2)
+            .with_metrics_registry(registry),
+    );
+    register_failing::<1>(&manager);
+    register_failing::<2>(&manager);
+    instantiate::<1>(&manager).await;
+    instantiate::<2>(&manager).await;
+    let mut events = manager.subscribe_events();
+
+    let error = manager
+        .graceful_shutdown(ShutdownConfig::default())
+        .await
+        .expect_err("terminal failures fail graceful shutdown");
+    let ShutdownError::ResourceTeardownFailed { key, source } = error else {
+        panic!("expected first typed row failure, got {error:?}");
+    };
+    assert!(
+        key == FailingRetirementResource::<1>::key()
+            || key == FailingRetirementResource::<2>::key()
+    );
+    assert_eq!(source.kind(), &ErrorKind::Permanent);
+    assert_eq!(
+        manager
+            .metrics()
+            .expect("configured metrics are available")
+            .snapshot()
+            .release_errors,
+        2,
+        "each failing row increments the lifecycle failure counter"
+    );
+
+    let mut failed_keys = Vec::new();
+    while let Some(event) = events.try_recv() {
+        if let ResourceEvent::ResourceTeardownFailed {
+            key,
+            origin,
+            stage,
+            kind,
+            message,
+            ..
+        } = event
+        {
+            assert_eq!(origin, RetirementOrigin::Shutdown);
+            assert_eq!(stage, RetirementFailureStage::TerminalCleanup);
+            assert_eq!(kind, ErrorKind::Permanent);
+            assert_eq!(message.as_str(), "resource terminal cleanup failed");
+            assert!(!message.as_str().contains("provider supplied"));
+            failed_keys.push(key);
+        }
+    }
+    failed_keys.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+    assert_eq!(
+        failed_keys,
+        vec![
+            FailingRetirementResource::<1>::key(),
+            FailingRetirementResource::<2>::key(),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn replacement_and_removal_failures_keep_their_retirement_origin() {
+    let manager = Manager::new();
+    register_failing::<3>(&manager);
+    instantiate::<3>(&manager).await;
+    let mut events = manager.subscribe_events();
+
+    register_failing::<3>(&manager);
+    let replacement = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if let Some(ResourceEvent::ResourceTeardownFailed { key, origin, .. }) =
+                events.recv().await
+                && origin == RetirementOrigin::Replacement
+            {
+                break key;
+            }
+        }
+    })
+    .await
+    .expect("replacement cleanup settles");
+    assert_eq!(replacement, FailingRetirementResource::<3>::key());
+
+    instantiate::<3>(&manager).await;
+    manager
+        .remove(&FailingRetirementResource::<3>::key())
+        .expect("registered row removes");
+    let removal = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if let Some(ResourceEvent::ResourceTeardownFailed { key, origin, .. }) =
+                events.recv().await
+                && origin == RetirementOrigin::Removal
+            {
+                break key;
+            }
+        }
+    })
+    .await
+    .expect("removal cleanup settles");
+    assert_eq!(removal, FailingRetirementResource::<3>::key());
+}
+
+#[tokio::test]
+async fn manager_drop_reports_each_row_abandoned_without_enqueuing_terminal_work() {
+    let manager = Manager::new();
+    register_failing::<4>(&manager);
+    instantiate::<4>(&manager).await;
+    let mut events = manager.subscribe_events();
+
+    drop(manager);
+
+    std::assert_matches!(
+        events.try_recv(),
+        Some(ResourceEvent::ResourceTeardownFailed {
+            key,
+            origin: RetirementOrigin::ManagerDrop,
+            stage: RetirementFailureStage::TerminalCleanup,
+            kind: ErrorKind::Cancelled,
+            ..
+        }) if key == FailingRetirementResource::<4>::key()
+    );
+    assert!(
+        events.try_recv().is_none(),
+        "manager drop must classify a row exactly once"
     );
 }
 
@@ -106,7 +303,7 @@ async fn acquire_emits_success_event() {
 
     let event = rx.try_recv().expect("should have received an event");
     assert!(
-        matches!(&event, nebula_resource::ResourceEvent::AcquireSuccess { key, .. } if key == &resource_key!("test-resident")),
+        matches!(&event, ResourceEvent::AcquireSuccess { key, .. } if key == &resource_key!("test-resident")),
         "expected AcquireSuccess event, got {event:?}"
     );
 }
@@ -154,7 +351,7 @@ async fn drop_guard_emits_released_event() {
     while let Some(event) = rx.try_recv() {
         if matches!(
             &event,
-            nebula_resource::ResourceEvent::Released { key, .. }
+            ResourceEvent::Released { key, .. }
                 if key == &resource_key!("test-resident")
         ) {
             saw_released = true;
@@ -203,7 +400,7 @@ async fn recovery_gate_transition_emits_event_via_manager_bus() {
 
     let mut saw_in_progress = false;
     while let Some(event) = rx.try_recv() {
-        if let nebula_resource::ResourceEvent::RecoveryGateChanged { key, state } = &event
+        if let ResourceEvent::RecoveryGateChanged { key, state } = &event
             && key == &resource_key!("test-resident")
             && state.contains("in_progress")
         {

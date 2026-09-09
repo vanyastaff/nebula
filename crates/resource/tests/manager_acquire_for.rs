@@ -18,9 +18,12 @@
 //! re-mocked here. `refresh_slot_for_identity` / `revoke_slot_for_identity`
 //! (the ports the engine rotation fan-out drives) are covered directly.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, AtomicUsize, Ordering},
+use std::{
+    assert_matches,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    },
 };
 
 use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
@@ -467,10 +470,14 @@ async fn refresh_slot_for_routes_to_the_resolved_row() {
     );
 
     // Slot-identity-pinned refresh routes to tenant B's row only.
-    manager
+    let outcome = manager
         .refresh_slot_for_identity(&key, scope.clone(), "db", &res_b_id())
         .await
         .expect("pinned refresh of tenant B must succeed");
+    assert_matches!(
+        outcome,
+        nebula_resource::SlotDispatchOutcome::Completed { .. }
+    );
     assert_eq!(
         refresh_saw.load(Ordering::SeqCst),
         b_tag,
@@ -483,10 +490,14 @@ async fn refresh_slot_for_routes_to_the_resolved_row() {
     );
 
     // And tenant A's row, pinned by A's identity.
-    manager
+    let outcome = manager
         .refresh_slot_for_identity(&key, scope, "db", &res_a_id())
         .await
         .expect("pinned refresh of tenant A must succeed");
+    assert_matches!(
+        outcome,
+        nebula_resource::SlotDispatchOutcome::Completed { .. }
+    );
     assert_eq!(
         refresh_saw.load(Ordering::SeqCst),
         a_tag,
@@ -547,10 +558,14 @@ async fn revoke_slot_for_revokes_only_the_pinned_row() {
     let ctx = ctx_for_org(org);
 
     // Revoke only tenant A's resolved row.
-    manager
+    let outcome = manager
         .revoke_slot_for_identity(&key, scope.clone(), "db", &res_a_id())
         .await
         .expect("pinned revoke of tenant A must succeed");
+    assert_matches!(
+        outcome,
+        nebula_resource::SlotDispatchOutcome::Completed { .. }
+    );
     assert_eq!(
         revoke_saw.load(Ordering::SeqCst),
         a_tag,
@@ -582,12 +597,11 @@ async fn revoke_slot_for_revokes_only_the_pinned_row() {
         .expect("tenant B must remain acquirable after tenant A's revoke");
 }
 
-/// #690 review (CodeRabbit, CRITICAL) — `warmup_pool` must NOT create
+/// `warmup_pool` must not create
 /// fresh pool entries on a credential a concurrent revoke tainted after
 /// the pre-lookup gate. `warmup` runs `R::create` against the resolved
 /// credential, so it is acquire-like and must enforce the same
-/// revoke-vs-acquire post-taint re-check the `run_acquire` pipeline got in
-/// #679.
+/// revoke-vs-acquire post-taint re-check as the `run_acquire` pipeline.
 ///
 /// Deterministic model of the race: `taint_slot` applies the taint
 /// **synchronously** (phase 1) — exactly the state a concurrent
@@ -773,10 +787,14 @@ async fn pool_two_tenant_pinned_acquires_route_independently() {
 
     // Revoke only tenant A's pinned row.
     let key = PoolRes::key();
-    manager
+    let outcome = manager
         .revoke_slot_for_identity(&key, scope.clone(), "db", &id_a)
         .await
         .expect("pinned revoke of tenant A must succeed");
+    assert_matches!(
+        outcome,
+        nebula_resource::SlotDispatchOutcome::Completed { .. }
+    );
 
     // Tenant A is now tainted: its row must reject subsequent acquires.
     let a_after = manager

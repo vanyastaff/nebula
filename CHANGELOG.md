@@ -9,7 +9,132 @@ changes are expected between minor releases — call them out here.
 
 ## [Unreleased]
 
+### Breaking
+
+- **The workspace moves from 0.4 to 0.5 in lockstep.** This is the
+  pre-1.0 breaking release; exact-version SDK consumers and renamed leaf
+  fixtures must update all Nebula pins together.
+- **Resource teardown has one consuming hook.** `Provider::shutdown(&Instance)`
+  is removed; move flush, drain, close, and task joins into
+  `Provider::destroy(Instance, TeardownCx)`. The instance stays consumed on
+  error and is not retried. `TeardownCx::deadline` remains a
+  `std::time::Instant`; the corrected Tokio timeout example uses
+  `tokio::time::timeout_at(cx.deadline.into(), work)`.
+- **Guards can only be acquired through the manager.** The public
+  `ResourceGuard::{owned,guarded,guarded_with_permit,detach}` methods are
+  removed. Acquire through `Manager` and release or drop the guard; extracting
+  an instance would bypass lifecycle ownership. `generation()` now returns
+  `u64` instead of `Option<u64>` because every admitted guard has a generation.
+- **Custom topologies participate in retained ownership.**
+  `Topology::create_entry` now receives `&RetainedStore<Self::Entry>` and returns
+  `Result<CreatedEntry<Self::Entry>, Error>` instead of a raw entry.
+  `into_instance(Entry) -> Instance` becomes
+  `into_owned_instance(Entry) -> Option<Instance>`: return `Some` only for the
+  final owner. Store retained roots in the supplied store; the credential hook
+  also receives that store. The new `quiesce()` hook stops topology policy work;
+  physical instance teardown remains in `Provider::destroy`.
+- **Registry lookups no longer grant lifecycle authority.**
+  `Registry::{register,remove,remove_for,clear}` and `ManagedHandle` become
+  internal. Use manager registration/removal methods. Public
+  `LookupOutcome::Found` and `PinnedLookup::Found` now contain
+  `ManagedResourceView` instead of `Arc<dyn ManagedHandle>`; its diagnostic
+  accessors replace lifecycle-handle access. `Manager::get_any` likewise
+  returns a diagnostic view instead of a lifecycle handle.
+  `ShutdownError` no longer implements `UnwindSafe` or `RefUnwindSafe`;
+  callers must not rely on those auto-trait bounds around retained failures.
+- **Rotation metrics are framework-owned terminal accounting.** The former
+  `metrics::SlotDispatchOutcome` is removed and
+  `ResourceOpsMetrics::{record_slot_refresh_outcome,record_slot_revoke_outcome}`
+  become internal. Inspect snapshots and the public dispatch outcome instead
+  of recording attempts manually. Terminal outcome labels grow from three to
+  four: `success|failed|timed_out|abandoned`. Accepted observer deferral has
+  separate counters and is never a terminal `abandoned` label. Terminal
+  recording follows queue-owned settlement even after the observer returns;
+  dashboards must not treat an immediate deferred observation as a terminal
+  failure or add it to the eventual terminal attempt count. The dispatch
+  latency histogram measures admission through the caller's terminal or
+  deferred observation, including queue wait; a deferred sample is not hook
+  completion latency. Its outcome labels include `deferred` alongside the
+  four terminal labels, so its series budget differs from attempt counters.
+- **Slot failure events carry typed, secret-free diagnostics.**
+  `SlotRefreshFailed` and `SlotRevokeFailed` replace `error: String` with
+  `kind: ErrorKind` and `message: SecretFreeMessage`. Match the kind for
+  classification and use `message.as_str()` for display.
+- **Credential-bearing custom topologies must define revoke ownership.**
+  `Manager::register` now fails closed with `ErrorKind::Permanent` whenever a
+  resource declares credential slots and its non-pooling topology does not
+  report `handles_own_revoke()`. This also applies while all declared slots are
+  unbound: slot declaration is a lifecycle capability, not proof of a current
+  binding. Custom topology authors must either implement their revoke policy
+  and return `true`, or use a pooling topology whose revoke fence is owned by
+  the framework.
+- **Resource release now reports accepted deferral as a value.**
+  Before: `ResourceGuard::release() -> Result<(), Error>` represented accepted
+  deferral as `ErrorKind::DeferredCleanup`. After:
+  `ResourceGuard::release() -> Result<ReleaseOutcome, Error>` returns
+  `ReleaseOutcome::{Completed, Deferred}`.
+  Match `ReleaseOutcome::Completed`, `ReleaseOutcome::Deferred`, and a wildcard
+  arm because the enum is non-exhaustive. `Deferred` means the queue owns the
+  bounded, best-effort cleanup but completion is not guaranteed; the consumed
+  guard is gone and callers must never retry the release.
+- **Credential-slot dispatch preserves accepted deferral.** Before:
+  `Manager::{refresh_slot,revoke_slot}* -> Result<(), Error>` erased whether
+  accepted work completed. After these methods return
+  `Result<SlotDispatchOutcome, Error>`, where `Completed { drain }`,
+  `TimedOut { drain }`, `Deferred { drain, reason }`, and
+  `Abandoned { drain }` preserve terminal execution, observer deferral, queue
+  abandonment, and the exact `SlotDrainOutcome`. The lower-level `RevokeTail`
+  variants likewise carry the drain result. Credential fan-out reports these
+  states through `RotationOutcome` accessors, with `drain_timed_out()` and
+  `observation_timed_out()` as orthogonal counts;
+  external `RotationOutcome` struct literals are no longer supported.
+- **Custom topology credential hooks return typed faults.** Before:
+  `Topology::dispatch_credential_hook(...) -> Result<(), Error>`. After:
+  `Topology::dispatch_credential_hook(...) -> Result<(), HookFault>`, where
+  `HookFault::Failed(Error)` preserves author failures and
+  `HookFault::TimedOut` preserves topology-owned execution timeout. Existing
+  `Error` returns migrate with `?` through `From<Error> for HookFault`.
+- **Retained cleanup failures are separately observable.** The non-exhaustive
+  `ResourceEvent` adds `RetiredCleanupFailed { key, slot, kind, .. }` for
+  framework cleanup that fails, times out, or is abandoned after a credential
+  hook has already settled. Downstream event matches must retain a wildcard
+  arm and match this data-bearing variant with `..`.
+- **Row-retirement failures are observed where they settle.** `ResourceEvent`
+  adds `ResourceTeardownFailed { key, origin, stage, kind, message, .. }`.
+  Replacement, removal, shutdown, and manager-drop cleanup no longer rely on
+  the eventual shutdown return to surface a failure; every failing row/stage
+  emits independently while `ShutdownError` retains the first typed failure.
+  Messages are fixed `SecretFreeMessage` values. Lease-accounting poison is a
+  distinct restart-required, fail-closed stage; healthy siblings still tear
+  down. `Removed` now explicitly means registry-unpublished, not physically
+  destroyed. Dropping an open manager no longer queues teardown into the
+  supervisor it is about to abort; it emits one `ManagerDrop` abandonment per
+  remaining row. Use `graceful_shutdown` when physical teardown is required.
+
+### Removed
+
+- `ErrorKind::DeferredCleanup` and `Error::deferred_cleanup`; accepted cleanup
+  is represented by `ReleaseOutcome::Deferred` or
+  `SlotDispatchOutcome::Deferred` instead of an error.
+
 ### Fixed
+
+- **Retained lease fencing is generation-local.** A live lease or poisoned
+  counter now fences only its own retained generation. Ready siblings are
+  transferred by incremental cleanup independently and exactly once; terminal
+  close likewise tears down healthy siblings before reporting poisoned
+  accounting. Every transition that publishes a ready retirement wakes a
+  parked cleanup observer. `RetiredDrain` is internally `#[must_use]` so a
+  removed owner cannot be discarded silently.
+- **Credential-hook admission is cancellation-safe.** A refresh or revoke
+  observer timing out or being dropped after queue admission no longer
+  returns a retryable hook error or loses terminal observability. The queue
+  owns admitted execution and records exactly one eventual terminal
+  metric/event; the immediate fan-out may report `deferred` without
+  double-counting it as a terminal attempt. `RotationOutcome` exposes
+  `drain_timed_out()` and `observation_timed_out()` as orthogonal counts,
+  excluded from `dispatched()`, and reports terminal queue loss separately
+  through `abandoned()`.
 
 - **`task db:up` / `db:down` / `db:up:cache` were broken.** `Taskfile.yml`
   points `COMPOSE_LOCAL` at `deploy/docker/docker-compose.yml`, which commit

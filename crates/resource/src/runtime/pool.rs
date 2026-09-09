@@ -551,7 +551,7 @@ where
         _retained: &crate::RetainedStore<Self::Entry>,
         slot: &str,
         refresh: bool,
-    ) -> Result<(), Error> {
+    ) -> Result<(), crate::topology::HookFault> {
         // Walk the framework idle store under its lock so no checkout / return
         // can interleave mid-rotation — the same lock `checkout` / `return_entry`
         // take. The store reference is granted by the framework dispatcher; the
@@ -577,7 +577,7 @@ where
         // (rotation is rare, and a hung per-entry hook is itself the
         // pathological case this bounds).
         let idle = store.lock_idle().await;
-        let mut first_err: Option<Error> = None;
+        let mut first_fault: Option<crate::topology::HookFault> = None;
         let hook_op = if refresh {
             "on_credential_refresh"
         } else {
@@ -593,7 +593,7 @@ where
             // at its own boundary and the loop continues normally, so the
             // lock still releases via ordinary `Drop` when this function
             // returns.
-            let res = match crate::hook_guard::guard_author_hook(
+            let result = match crate::hook_guard::guard_author_hook(
                 crate::hook_guard::DEFAULT_AUTHOR_HOOK_CEILING,
                 async {
                     if refresh {
@@ -609,43 +609,51 @@ where
             )
             .await
             {
-                Ok(res) => res,
+                Ok(result) => result.map_err(crate::topology::HookFault::Failed),
                 Err(fault) => {
                     fault.observe(&R::key(), "rotation");
                     Err(match fault {
-                        crate::hook_guard::HookFault::Panicked => Error::permanent(format!(
-                            "pool {hook_op} hook panicked for an idle instance — caught \
-                             and isolated under panic=unwind (fan-out not crashed); \
-                             inert under panic=abort"
-                        )),
-                        crate::hook_guard::HookFault::TimedOut => Error::backpressure(format!(
-                            "pool {hook_op} hook did not complete within {:?} for an \
-                             idle instance",
-                            crate::hook_guard::DEFAULT_AUTHOR_HOOK_CEILING
-                        )),
+                        crate::hook_guard::HookFault::Panicked => {
+                            crate::topology::HookFault::Failed(Error::permanent(format!(
+                                "pool {hook_op} hook panicked for an idle instance — caught \
+                                 and isolated under panic=unwind (fan-out not crashed); \
+                                 inert under panic=abort"
+                            )))
+                        },
+                        crate::hook_guard::HookFault::TimedOut => {
+                            crate::topology::HookFault::TimedOut
+                        },
                     })
                 },
             };
-            if let Err(error) = res {
+            if let Err(fault) = result {
                 // Surface EVERY per-entry hook failure. Returning only the
                 // first would silently hide a partial rotation where some
                 // idle instances refreshed and others did not, leaving them
                 // in an uncertain credential state. The hook error is the
                 // author's, already redacted (never credential material).
-                tracing::warn!(
-                    resource = %R::key(),
-                    slot,
-                    refresh,
-                    %error,
-                    "credential rotation hook failed for an idle pool instance"
-                );
-                if first_err.is_none() {
-                    first_err = Some(error);
+                match &fault {
+                    crate::topology::HookFault::Failed(error) => tracing::warn!(
+                        resource = %R::key(),
+                        slot,
+                        refresh,
+                        %error,
+                        "credential rotation hook failed for an idle pool instance"
+                    ),
+                    crate::topology::HookFault::TimedOut => tracing::warn!(
+                        resource = %R::key(),
+                        slot,
+                        refresh,
+                        "credential rotation hook timed out for an idle pool instance"
+                    ),
+                }
+                if first_fault.is_none() {
+                    first_fault = Some(fault);
                 }
             }
         }
-        match first_err {
-            Some(e) => Err(e),
+        match first_fault {
+            Some(fault) => Err(fault),
             None => Ok(()),
         }
     }
@@ -1262,8 +1270,13 @@ mod tests {
             "a panicking per-entry hook must surface as a typed error, not \
              a silent success"
         );
+        let crate::topology::HookFault::Failed(error) =
+            outcome.expect_err("panic must produce a hook fault")
+        else {
+            panic!("an isolated hook panic must not be classified as a timeout")
+        };
         assert!(
-            !outcome.unwrap_err().is_retryable(),
+            !error.is_retryable(),
             "an isolated hook panic is a permanent author-hook bug"
         );
         assert_eq!(

@@ -72,7 +72,6 @@ impl<R: Provider> DestroyBatch<R> {
     pub(crate) async fn run(mut self) -> Result<(), Error> {
         let mut outcome = Ok(());
         let mut failed_entries = 0usize;
-        let mut deferred_entries = 0usize;
         while let Some(entry) = self.entries.pop_front() {
             let (entry, loss) = match entry {
                 BatchEntry::Fresh(entry) => (entry, self.losses.transfer_one()),
@@ -80,28 +79,16 @@ impl<R: Provider> DestroyBatch<R> {
             };
             let result =
                 ReleaseQueue::run_entry(self.managed.destroy_entry(entry, self.reason), loss).await;
-            if let Err(error) = &result {
-                if *error.kind() == crate::ErrorKind::DeferredCleanup {
-                    deferred_entries += 1;
-                } else {
-                    failed_entries += 1;
-                }
+            if result.is_err() {
+                failed_entries += 1;
             }
-            if outcome
-                .as_ref()
-                .err()
-                .is_none_or(|error: &Error| *error.kind() == crate::ErrorKind::DeferredCleanup)
-                && result.is_err()
-            {
+            if outcome.is_ok() && result.is_err() {
                 outcome = result;
             }
             tokio::task::consume_budget().await;
         }
         if failed_entries != 0 {
             tracing::warn!(resource.key = %R::key(), failed_entries, "resource teardown batch completed with failures");
-        }
-        if deferred_entries != 0 {
-            tracing::debug!(resource.key = %R::key(), deferred_entries, "batch members accepted nested cleanup with deferred completion");
         }
         outcome
     }

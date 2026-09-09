@@ -4,9 +4,12 @@ How a credential refresh or revoke, decided entirely inside `nebula-credential`,
 reaches a live resource instance's `Provider::on_credential_refresh` /
 `on_credential_revoke` hook without ever handing this crate credential
 material or rotation policy. Gated behind the `rotation` cargo feature
-(`crate::credential_fanout`, relocated from `nebula-engine` per ADR-0092
-step 5) — off by default so the base build pays no eventbus-subscriber
+(`crate::credential_fanout`) — off by default so the base build pays no eventbus-subscriber
 overhead.
+
+These event buses carry ephemeral observations. Delivery may be lost, duplicated,
+or reordered; fan-out is not durable revoke authority or an audit log. Persisted
+credential state and its owning runtime remain authoritative.
 
 ---
 
@@ -26,7 +29,7 @@ nebula-credential                nebula-resource
                                      ▼
                           ResourceFanoutIndex::dispatch_refresh(cid, mgr, timeout)
                                      │  (per-row, concurrent, independently
-                                     │   timeout-wrapped — one slow row never
+                                     │   bounded — one slow row never
                                      │   blocks or fails a sibling)
                                      ▼
                           Manager::refresh_slot_for_identity(key, scope, slot, id)
@@ -74,8 +77,8 @@ nebula-credential                nebula-resource
             stale checkout epoch are evicted, never re-handed-out)
           ⇒ new acquires against this row are rejected from this instant
                     │
-                    │ (only the tail below is wrapped in
-                    │  tokio::time::timeout — the taint above never is)
+                    │ (drain and admitted hook execution have separate
+                    │  budgets — the taint above is synchronous)
                     ▼
         Manager::drain_and_revoke(tainted, per_resource_timeout)
           - waits (best-effort) for in-flight leases on *this row only* to
@@ -89,9 +92,21 @@ nebula-credential                nebula-resource
            tainted either way; a timed-out hook never un-revokes)
 ```
 
-`RotationOutcome` aggregates `success` / `failed` / `timed_out` counts across
-every affected row and is a metrics/observability signal only — not an audit
-record.
+Hook admission transfers execution ownership to the cleanup queue. Expiry of
+the observer's deadline while the job has not started returns
+`SlotDispatchOutcome::Deferred`; it does not cancel the admitted hook.
+Once the worker starts, observation follows the independently bounded hook to
+its terminal result. Queue abandonment is reported as `Abandoned`, never as
+still-running work. Retained-generation cleanup settles separately: a cleanup
+failure cannot change a successful author hook into a hook failure.
+
+`RotationOutcome` exposes `success()`, `failed()`, `timed_out()`,
+`deferred()`, and `abandoned()` through accessors. These classifications sum
+to `dispatched()`; `drain_timed_out()` and `observation_timed_out()` are
+orthogonal counts and must not be added to that total. A timed-out drain can
+coexist with a successful hook. Deferred observations do not increment terminal
+attempt metrics: the queue records the eventual terminal outcome exactly once.
+All of these counts are observability signals, not durable audit records.
 
 ---
 
@@ -102,12 +117,11 @@ record.
   or mid-drain):
   - `tests/revoke_recycle_toctou.rs`
   - `runtime::acquire_loop::tests::probe_revoke_mid_probe_destroys_probed_entries_not_redeposited`
-    (`src/runtime/acquire_loop.rs`) — a revoke landing while idle entries are
+    (`src/runtime/acquire_loop/tests.rs`) — a revoke landing while idle entries are
     being health-probed destroys the probed entries instead of re-depositing
     them.
-- **The taint is synchronous-before-the-first-await**, so a caller (the
-  engine fan-out) that wraps only the drain/hook tail in
-  `tokio::time::timeout` can never drop the future before the taint applies
+- **The taint is synchronous-before-the-first-await**, so cancellation of
+  the subsequent drain/hook observer cannot undo the applied fence
   — see the [`manager`](../src/manager/mod.rs) module doc's "two-phase
   revoke / drain invariant" section for the canonical proof.
 - **A slot name that does not match one of the resource's declared

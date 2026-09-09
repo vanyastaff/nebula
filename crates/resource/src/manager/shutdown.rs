@@ -19,7 +19,7 @@ use std::{
 use tokio::sync::Notify;
 
 use crate::{
-    events::ResourceEvent,
+    events::{ResourceEvent, RetirementOrigin},
     manager::{DrainTimeoutPolicy, Manager, ShutdownConfig},
     release_queue::{ReleaseQueue, ReleaseQueueHandle},
 };
@@ -27,8 +27,22 @@ use crate::{
 use super::retirement::RetirementFailure;
 use super::shutdown_session::{DrainFailure, ShutdownSession, ShutdownState};
 
+fn shutdown_state_name(state: &ShutdownState) -> &'static str {
+    match state {
+        ShutdownState::Open => "open",
+        ShutdownState::Draining(_) => "draining",
+        ShutdownState::Finishing(_) => "finishing",
+        ShutdownState::Finished => "finished",
+    }
+}
+
 async fn await_terminal_task(state: &mut ShutdownState) -> Result<ShutdownReport, ShutdownError> {
     let ShutdownState::Finishing(handle) = state else {
+        tracing::error!(
+            shutdown.state = shutdown_state_name(state),
+            shutdown.expected_state = "finishing",
+            "resource manager shutdown state invariant violated before awaiting terminal task"
+        );
         return Err(ShutdownError::RetirementSupervisorFailed);
     };
     let result = match handle.await {
@@ -243,8 +257,9 @@ impl Drop for RetirementSettlement {
 fn retirement_failure(failure: RetirementFailure) -> ShutdownError {
     tracing::warn!(
         resource.key = %failure.key,
+        retirement.origin = ?failure.origin,
         error.kind = ?failure.source.kind(),
-        "resource retirement task failed"
+        "resource manager returning the first previously observed retirement failure"
     );
     ShutdownError::ResourceTeardownFailed {
         key: failure.key,
@@ -286,7 +301,15 @@ async fn run_terminal_shutdown(
         let remaining = budget.saturating_sub(started.elapsed());
         terminal_error = match tokio::time::timeout(remaining, retirement_supervisor.seal()).await {
             Ok(Ok(())) => None,
-            Ok(Err(_)) => Some(ShutdownError::RetirementSupervisorFailed),
+            Ok(Err(error)) => {
+                tracing::error!(
+                    shutdown.phase = "retirement_seal",
+                    supervisor.state = "seal_rejected",
+                    error.kind = ?error.kind(),
+                    "retirement supervisor rejected the terminal seal command"
+                );
+                Some(ShutdownError::RetirementSupervisorFailed)
+            },
             Err(_) => Some(ShutdownError::ReleaseQueueTimeout {
                 timeout: config.release_queue_timeout,
             }),
@@ -294,8 +317,8 @@ async fn run_terminal_shutdown(
     }
 
     let remaining = budget.saturating_sub(started.elapsed());
-    let supervisor_error = match retirement_supervisor.take_handle() {
-        Some(handle) => match handle.join_bounded(remaining).await {
+    let supervisor_error = if let Some(handle) = retirement_supervisor.take_handle() {
+        match handle.join_bounded(remaining).await {
             Ok(first_failure) => first_failure.map(retirement_failure),
             Err(super::retirement::RetirementSupervisorJoinError::TimedOut) => {
                 Some(ShutdownError::ReleaseQueueTimeout {
@@ -303,10 +326,21 @@ async fn run_terminal_shutdown(
                 })
             },
             Err(super::retirement::RetirementSupervisorJoinError::Failed) => {
+                tracing::error!(
+                    shutdown.phase = "retirement_join",
+                    supervisor.state = "task_failed",
+                    "retirement supervisor task failed before terminal settlement"
+                );
                 Some(ShutdownError::RetirementSupervisorFailed)
             },
-        },
-        None => Some(ShutdownError::RetirementSupervisorFailed),
+        }
+    } else {
+        tracing::error!(
+            shutdown.phase = "retirement_join",
+            supervisor.state = "handle_missing",
+            "retirement supervisor handle was already consumed before terminal settlement"
+        );
+        Some(ShutdownError::RetirementSupervisorFailed)
     };
     if terminal_error.is_none() {
         terminal_error = supervisor_error;
@@ -470,7 +504,7 @@ impl Manager {
                 .into_iter()
                 .map(|managed| {
                     managed.set_phase(crate::state::ResourcePhase::Draining);
-                    self.prepare_retirement(managed)
+                    self.prepare_retirement(managed, RetirementOrigin::Shutdown)
                 })
                 .collect();
             *state = ShutdownState::Draining(ShutdownSession::start(
@@ -482,6 +516,11 @@ impl Manager {
         }
 
         let ShutdownState::Draining(session) = &mut *state else {
+            tracing::error!(
+                shutdown.state = shutdown_state_name(&state),
+                shutdown.expected_state = "draining",
+                "resource manager shutdown state invariant violated before drain"
+            );
             return Err(ShutdownError::RetirementSupervisorFailed);
         };
         let outstanding_after_drain = match session.drain(&self.drain_tracker).await {
@@ -520,10 +559,17 @@ impl Manager {
             self.set_phase_all(crate::state::ResourcePhase::ShuttingDown);
             self.registry.clear();
         }
-        let ShutdownState::Draining(session) =
-            std::mem::replace(&mut *state, ShutdownState::Finished)
-        else {
-            return Err(ShutdownError::RetirementSupervisorFailed);
+        let previous_state = std::mem::replace(&mut *state, ShutdownState::Finished);
+        let session = match previous_state {
+            ShutdownState::Draining(session) => session,
+            unexpected_state => {
+                tracing::error!(
+                    shutdown.state = shutdown_state_name(&unexpected_state),
+                    shutdown.expected_state = "draining",
+                    "resource manager shutdown state invariant violated before terminal ownership transfer"
+                );
+                return Err(ShutdownError::RetirementSupervisorFailed);
+            },
         };
         *state = ShutdownState::Finishing(tokio::spawn(run_terminal_shutdown(
             session,
@@ -626,19 +672,23 @@ mod drain_race_tests {
         let (cleaned_tx, cleaned_rx) = tokio::sync::oneshot::channel();
         // Models a removed row's maintenance producer: the registry snapshot
         // is empty, but producer ownership must keep admission to cleanup open.
-        drop(manager.release_queue.submit_release(move || {
-            Box::pin(async move {
-                let _settlement = settlement;
-                started_tx.send(()).expect("start receiver");
-                resume_rx.await.expect("resume sender");
-                queue.submit(move || {
-                    Box::pin(async move {
-                        cleaned_tx.send(()).expect("cleanup receiver");
-                    })
-                });
-                Ok(())
+        manager
+            .release_queue
+            .submit_release(move || {
+                Box::pin(async move {
+                    let _settlement = settlement;
+                    started_tx.send(()).expect("start receiver");
+                    resume_rx.await.expect("resume sender");
+                    queue.submit(move || {
+                        Box::pin(async move {
+                            cleaned_tx.send(()).expect("cleanup receiver");
+                        })
+                    });
+                    Ok(())
+                })
             })
-        }));
+            .expect("open manager queue must accept cleanup producer")
+            .detach();
         started_rx.await.expect("producer started");
         let shutdown = manager.graceful_shutdown(ShutdownConfig::default());
         tokio::pin!(shutdown);

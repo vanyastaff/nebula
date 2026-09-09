@@ -62,12 +62,35 @@ integrations.
 
 ### Resource authoring and the SDK
 
-Resource authoring types, traits, and derives are in the prelude:
+Resource authoring types, traits, and derives are in the prelude and the explicit
+`nebula_sdk::integration::resource` persona:
 
 | Surface | What you use |
 |--------|----------------|
-| **Prelude** | `nebula_sdk::prelude::*` re-exports the author surface: derives `Resource` / `ResourceConfig` / `ClassifyError`; traits `Provider`, `ResourceConfig`, `HasCredentialSlots`, `PoolProvider`, `ResidentProvider`, `BoundedProvider`; topologies `Pooled`, `Resident`, `Bounded` with `PoolConfig` / `ResidentConfig` / `BoundedMode`; and `AcquireOptions`, `RegistrationSpec`, `ResourceContext`, `ResourceGuard`, `ResourceMetadata`, `ResourceKey`, `resource_key!`, `ScopeLevel`, `SlotIdentity`, `SlotCell`, `TopologyTag`, `ReloadOutcome`, `Error`, `ErrorKind`, `no_credential_slots!`. See `prelude.rs` for a runnable pooled-resource example. |
+| **Prelude** | `nebula_sdk::prelude::*` re-exports the author surface: derives `Resource` / `ResourceConfig` / `ClassifyError`; traits `Provider`, `ResourceConfig`, `HasCredentialSlots`, `PoolProvider`, `ResidentProvider`, `BoundedProvider`; topologies `Pooled`, `Resident`, `Bounded` with `PoolConfig` / `ResidentConfig` / `BoundedMode`; and `AcquireOptions`, `RegistrationSpec`, `ResourceContext`, `ResourceGuard`, `ReleaseOutcome`, `ResourceMetadata`, `ResourceKey`, `resource_key!`, `ScopeLevel`, `SlotIdentity`, `SlotCell`, `TopologyTag`, `ReloadOutcome`, `Error`, `ErrorKind`, `no_credential_slots!`. See `prelude.rs` for a runnable pooled-resource example. |
 | **Derives** | `Resource` and `ResourceConfig` are covered by the SDK-only derive compile contract. Manual `Provider` authoring, including a consuming `destroy` over a non-Clone instance using `TeardownCx` and `TeardownReason`, is separately compile-checked through the prelude plus the general-purpose `async-trait` crate. |
+
+**Release migration:** `ResourceGuard::release()` now returns
+`Result<ReleaseOutcome, Error>` instead of `Result<(), Error>`. Match
+`ReleaseOutcome::Completed`, `ReleaseOutcome::Deferred`, and `_` because the
+enum is non-exhaustive. A deferred release has consumed the guard and
+transferred ownership to bounded, best-effort queue cleanup; never retry it,
+and do not interpret it as proof that the provider hook will run.
+
+**Custom topology authoring:** `nebula_sdk::integration::resource` curates the open
+`Topology` contract, built-in provider hooks, terminal context, and store vocabulary.
+The external SDK-only fixture (plus general-purpose `async-trait`) compiles a custom
+topology with a non-Clone provider and instance, explicit credential hook, admission,
+load, maintenance, and retained-lease signatures. This proves authoring reachability;
+runtime cleanup and cancellation guarantees are tested by the resource crate.
+
+Custom topologies are trusted in-process adapters. Framework-supplied `InstanceStore`
+and `RetainedStore` access is registration-local lifecycle capability, including the
+inherent mutation methods of `InstanceStore`. It does not grant global registry or
+tenant authority. Authors must preserve ownership and credential fences: the type
+system cannot prevent an adapter from hiding aliases or dropping extracted entries.
+`Manager`, `Registry`, and `ReleaseQueue` are excluded from this persona and checked
+by negative external import probes.
 
 **Terminal hook migration:** Remove `Provider::shutdown(&Instance)` implementations;
 that hook was never framework-driven. Move asynchronous flush, drain, stop, close,

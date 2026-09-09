@@ -32,12 +32,16 @@ async fn cancelled_probe_accounts_failures_from_previous_batches() {
         _ = &mut probe => panic!("second probe batch must remain parked"),
     }
     drop(probe);
-    managed
-        .release_queue
-        .submit_release(|| Box::pin(async { Ok(()) }))
-        .await
-        .unwrap()
-        .unwrap();
+    assert_eq!(
+        managed
+            .release_queue
+            .submit_release(|| Box::pin(async { Ok(()) }))
+            .expect("open queue must accept cleanup checkpoint")
+            .wait()
+            .await
+            .unwrap(),
+        SubmissionOutcome::Completed,
+    );
     assert_eq!(
         managed.resource.destroyed.load(Ordering::SeqCst),
         1,
@@ -77,12 +81,16 @@ async fn cancelling_probe_waiting_to_return_keeps_entry_cleanup_owned() {
     );
     drop(probe);
     drop(idle);
-    managed
-        .release_queue
-        .submit_release(|| Box::pin(async { Ok(()) }))
-        .await
-        .unwrap()
-        .unwrap();
+    assert_eq!(
+        managed
+            .release_queue
+            .submit_release(|| Box::pin(async { Ok(()) }))
+            .expect("open queue must accept cleanup checkpoint")
+            .wait()
+            .await
+            .unwrap(),
+        SubmissionOutcome::Completed,
+    );
     assert_eq!(
         managed.resource.destroyed.load(Ordering::SeqCst),
         1,
@@ -123,7 +131,7 @@ async fn retiring_maintenance_check_can_await_same_queue_guard_release() {
     let parent = acquire(&manager).await;
     let mut child = acquire(&manager).await;
     child.taint();
-    parent.release().await.unwrap();
+    let _release_outcome = parent.release().await.unwrap();
     let row = manager.lookup::<Mock>(&crate::ScopeLevel::Global).unwrap();
     *resource.dependent_release.lock().unwrap() = Some(child);
     resource
@@ -160,7 +168,7 @@ async fn retirement_waiting_for_maintenance_does_not_block_dependent_release() {
         .await
         .unwrap();
     let parent = created.into_entry();
-    assert!(managed.retained.drain_retired().unwrap().is_empty());
+    assert!(managed.retained.drain_retired().is_empty());
     let mut child = managed
         .run_acquire_loop(&test_ctx(), &AcquireOptions::default(), None)
         .await
@@ -188,15 +196,19 @@ async fn retirement_waiting_for_maintenance_does_not_block_dependent_release() {
         let cleanup = closing
             .release_queue
             .submit_coordinator(move || Box::pin(async move { terminal.close_retained().await }))
-            .await
-            .unwrap();
+            .expect("open queue must accept terminal cleanup")
+            .wait()
+            .await;
         maintenance.and(cleanup)
     });
     retirement_entered.await.unwrap();
     managed.resource.release_check.notify_one();
 
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
-        retirement.await.unwrap().unwrap();
+        assert_eq!(
+            retirement.await.unwrap().unwrap(),
+            SubmissionOutcome::Completed,
+        );
         managed.resource.destroy_finished.notified().await;
     })
     .await

@@ -492,15 +492,13 @@ async fn run_redaction_gate(want_revoke: bool) {
     // failed. This pins that the gate actually exercised the
     // success-event path AND the failure-event/error path (not a
     // degenerate all-skip).
-    assert_eq!(
-        outcome,
-        RotationOutcome {
-            success: 1,
-            failed: 1,
-            timed_out: 0,
-        },
-        "gate must drive one successful and one failing resolved row"
-    );
+    assert_eq!(outcome.success(), 1);
+    assert_eq!(outcome.failed(), 1);
+    assert_eq!(outcome.timed_out(), 0);
+    assert_eq!(outcome.deferred(), 0);
+    assert_eq!(outcome.abandoned(), 0);
+    assert_eq!(outcome.drain_timed_out(), 0);
+    assert_eq!(outcome.observation_timed_out(), 0);
     assert_eq!(
         outcome.dispatched(),
         2,

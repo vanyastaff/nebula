@@ -18,8 +18,8 @@ error[E0624]: method `drain_all` is private
   |
  ::: src/runtime/retained_store.rs
   |
-  |     pub(crate) fn drain_all(&self) -> Result<Vec<TrackedRetained<E>>, DrainBlocked> {
-  |     ------------------------------------------------------------------------------- private method defined here
+  |     pub(crate) fn drain_all(&self) -> RetiredDrain<E> {
+  |     ------------------------------------------------- private method defined here
 
 error[E0624]: method `drain_retired` is private
  --> tests/probes/retained_store_has_no_terminal_authority.rs:8:19
@@ -29,8 +29,8 @@ error[E0624]: method `drain_retired` is private
   |
  ::: src/runtime/retained_store.rs
   |
-  |     pub(crate) fn drain_retired(&self) -> Result<Vec<TrackedRetained<E>>, DrainBlocked> {
-  |     ----------------------------------------------------------------------------------- private method defined here
+  |     pub(crate) fn drain_retired(&self) -> RetiredDrain<E> {
+  |     ----------------------------------------------------- private method defined here
 
 error[E0624]: method `begin_close` is private
  --> tests/probes/retained_store_has_no_terminal_authority.rs:9:19
@@ -42,3 +42,25 @@ error[E0624]: method `begin_close` is private
   |
   |     pub(crate) fn begin_close(&self) -> usize {
   |     ----------------------------------------- private method defined here
+
+error[E0624]: method `wait_terminal_quiescent` is private
+  --> tests/probes/retained_store_has_no_terminal_authority.rs:10:19
+   |
+10 |     let _ = store.wait_terminal_quiescent();
+   |                   ^^^^^^^^^^^^^^^^^^^^^^^ private method
+   |
+  ::: src/runtime/retained_store.rs
+   |
+   |     pub(crate) async fn wait_terminal_quiescent(&self) -> Result<(), DrainBlocked> {
+   |     ------------------------------------------------------------------------------ private method defined here
+
+error[E0624]: method `wait_retired_ready` is private
+  --> tests/probes/retained_store_has_no_terminal_authority.rs:11:19
+   |
+11 |     let _ = store.wait_retired_ready();
+   |                   ^^^^^^^^^^^^^^^^^^ private method
+   |
+  ::: src/runtime/retained_store.rs
+   |
+   |     pub(crate) async fn wait_retired_ready(&self) -> Result<(), DrainBlocked> {
+   |     ------------------------------------------------------------------------- private method defined here

@@ -47,6 +47,23 @@ pub(crate) struct Maintenance {
 
 struct MaintenanceTask(tokio::task::JoinHandle<()>);
 
+/// Typed marker carried by terminal errors when retained lease accounting
+/// cannot prove final ownership.
+///
+/// Recovery is deliberately unavailable in-process: extracting a poisoned
+/// owner could destroy an instance which is still leased. The owner remains
+/// fenced until process restart.
+#[derive(Debug)]
+pub(crate) struct LeaseAccountingPoisoned;
+
+impl std::fmt::Display for LeaseAccountingPoisoned {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("retained lease accounting poisoned; process restart required")
+    }
+}
+
+impl std::error::Error for LeaseAccountingPoisoned {}
+
 impl Drop for MaintenanceTask {
     fn drop(&mut self) {
         self.0.abort();
@@ -264,28 +281,41 @@ impl<R: Provider> ManagedResource<R> {
                 })
             },
         };
-        let leases = tokio::time::timeout(
+        let wait_for_leases = tokio::time::timeout(
             crate::hook_guard::MAX_TEARDOWN_CEILING,
-            self.retained.wait_quiescent(),
+            self.retained.wait_terminal_quiescent(),
         )
         .await;
-        let leases = if leases.is_ok() {
-            match self.retained.drain_all() {
-                Ok(entries) => {
-                    batch.extend_retained(entries);
-                    Ok(())
-                },
-                Err(blocked) => {
-                    tracing::error!(
-                        live_leases = blocked.live_lease_count(),
-                        "closed retained store did not reach quiescence; roots remain armed"
-                    );
-                    Err(crate::Error::cancelled())
-                },
-            }
-        } else {
-            tracing::warn!("retained lease quiescence timed out; roots remain armed");
-            Err(crate::Error::cancelled())
+        let (ready, blocked_after_wait) = self.retained.drain_all().into_parts();
+        batch.extend_retained(ready);
+        let leases = match wait_for_leases {
+            Ok(Ok(())) if blocked_after_wait.is_none() => Ok(()),
+            Ok(Ok(())) => {
+                tracing::error!(
+                    reason = ?blocked_after_wait.map(super::retained_store::DrainBlocked::reason),
+                    "closed retained store changed after quiescence; blocked roots remain armed"
+                );
+                Err(crate::Error::cancelled())
+            },
+            Ok(Err(blocked)) => {
+                tracing::error!(
+                    reason = ?blocked.reason(),
+                    ready_owner_count = batch.len(),
+                    "retained lease accounting is poisoned; healthy roots continue to teardown"
+                );
+                Err(crate::Error::permanent(
+                    "retained lease accounting poisoned; process restart required",
+                )
+                .with_source(LeaseAccountingPoisoned))
+            },
+            Err(_) => {
+                tracing::warn!(
+                    reason = ?blocked_after_wait.map(super::retained_store::DrainBlocked::reason),
+                    ready_owner_count = batch.len(),
+                    "retained lease quiescence timed out; healthy roots continue to teardown"
+                );
+                Err(crate::Error::cancelled())
+            },
         };
         let cleanup = batch.run().await;
         quiesce.and(leases).and(cleanup)
@@ -480,6 +510,7 @@ mod tests {
     struct Mock {
         created: Arc<AtomicU64>,
         destroyed: Arc<AtomicU64>,
+        destroy_finished: Arc<Notify>,
         park_create: Arc<AtomicBool>,
         create_entered: Arc<Notify>,
         release_create: Arc<Notify>,
@@ -494,6 +525,7 @@ mod tests {
             Self {
                 created: Arc::new(AtomicU64::new(0)),
                 destroyed: Arc::new(AtomicU64::new(0)),
+                destroy_finished: Arc::new(Notify::new()),
                 park_create: Arc::new(AtomicBool::new(false)),
                 create_entered: Arc::new(Notify::new()),
                 release_create: Arc::new(Notify::new()),
@@ -548,6 +580,7 @@ mod tests {
 
         async fn destroy(&self, _runtime: u64, _cx: TeardownCx) -> Result<(), Error> {
             self.destroyed.fetch_add(1, Ordering::SeqCst);
+            self.destroy_finished.notify_one();
             Ok(())
         }
 
@@ -608,7 +641,7 @@ mod tests {
             .expect("first acquire");
         assert_eq!(*g, 0);
         // Release inline so the entry recycles into the framework store.
-        g.release().await.expect("release recycles");
+        let _release_outcome = g.release().await.expect("release recycles");
         assert_eq!(mr.store.len().await, 1, "the entry recycled into the store");
 
         // Second acquire reuses the idle entry — no new create.
@@ -622,7 +655,7 @@ mod tests {
             1,
             "the second acquire reused the idle entry — no extra create"
         );
-        g2.release().await.expect("release");
+        let _release_outcome = g2.release().await.expect("release");
     }
 
     /// The framework loop's revoke fence: an entry idle before a bump is evicted
@@ -646,7 +679,7 @@ mod tests {
             .run_acquire_loop(&test_ctx(), &AcquireOptions::default(), None)
             .await
             .expect("acquire");
-        g.release().await.expect("release");
+        let _release_outcome = g.release().await.expect("release");
         assert_eq!(mr.store.len().await, 1);
 
         // Revoke (the manager phase-1 synchronous bump).
@@ -658,6 +691,7 @@ mod tests {
             .run_acquire_loop(&test_ctx(), &AcquireOptions::default(), None)
             .await
             .expect("acquire after revoke");
+        mr.resource.destroy_finished.notified().await;
         assert_eq!(
             destroyed.load(Ordering::SeqCst),
             1,
@@ -670,7 +704,7 @@ mod tests {
         );
         // The fresh lease is the post-revoke instance, not the stale one.
         assert_eq!(*g2, 1);
-        g2.release().await.expect("release");
+        let _release_outcome = g2.release().await.expect("release");
     }
 
     /// Max-lifetime eviction keeps firing because the entry's `created_at`
@@ -694,7 +728,7 @@ mod tests {
             .run_acquire_loop(&test_ctx(), &AcquireOptions::default(), None)
             .await
             .expect("acquire");
-        g.release().await.expect("release");
+        let _release_outcome = g.release().await.expect("release");
         assert_eq!(mr.store.len().await, 1);
 
         // Age the idle entry past max_lifetime.
@@ -710,7 +744,7 @@ mod tests {
             "the aged idle entry was rejected by `accept` (created_at survived \
              the round-trip) and a fresh entry was created"
         );
-        g2.release().await.expect("release");
+        let _release_outcome = g2.release().await.expect("release");
     }
 
     #[tokio::test(start_paused = true)]
@@ -754,19 +788,32 @@ mod tests {
         let queue = Arc::clone(&managed.release_queue);
         let destroyed = Arc::clone(&managed.resource.destroyed);
         let weak = Arc::downgrade(&managed);
-        let (entered, blocked) = tokio::sync::oneshot::channel();
+        let (entry_started, entry_observed) = tokio::sync::oneshot::channel();
         queue.submit(move || {
             Box::pin(async move {
-                entered.send(()).unwrap();
+                entry_started.send(()).unwrap();
                 std::future::pending::<()>().await;
             })
         });
-        blocked.await.unwrap();
-        drop(
-            queue.submit_coordinator(move || {
-                Box::pin(async move { managed.close_retained().await })
-            }),
-        );
+        entry_observed.await.unwrap();
+        let (coordinator_started, coordinator_observed) = tokio::sync::oneshot::channel();
+        queue
+            .submit_coordinator(move || {
+                Box::pin(async move {
+                    coordinator_started.send(()).unwrap();
+                    std::future::pending::<Result<(), Error>>().await
+                })
+            })
+            .expect("open queue accepts coordinator blocker")
+            .detach();
+        coordinator_observed.await.unwrap();
+        // Entry and coordinator execution are deliberately isolated. Occupy
+        // both lanes so the terminal owner remains buffered and the test still
+        // exercises abort-before-terminal-drain rather than normal teardown.
+        queue
+            .submit_coordinator(move || Box::pin(async move { managed.close_retained().await }))
+            .expect("open queue must accept terminal cleanup")
+            .detach();
         queue.close();
         assert!(
             ReleaseQueue::shutdown_bounded(workers, Duration::from_secs(1))
@@ -792,12 +839,16 @@ mod tests {
     async fn settle_maintenance_cleanup(managed: &ManagedResource<Mock>) {
         // This fixture has one primary worker. The FIFO receipt runs after
         // the maintenance batch; publication itself deliberately never waits.
-        managed
-            .release_queue
-            .submit_release(|| Box::pin(async { Ok(()) }))
-            .await
-            .expect("cleanup checkpoint receipt")
-            .expect("cleanup checkpoint");
+        assert_eq!(
+            managed
+                .release_queue
+                .submit_release(|| Box::pin(async { Ok(()) }))
+                .expect("open queue must accept cleanup checkpoint")
+                .wait()
+                .await
+                .expect("cleanup checkpoint"),
+            crate::release_queue::SubmissionOutcome::Completed,
+        );
     }
 
     /// Maintenance over the framework store evicts both revoke-stale and
@@ -826,8 +877,8 @@ mod tests {
         let g2 = mr
             .run_acquire_loop(&test_ctx(), &AcquireOptions::default(), None)
             .await?;
-        g1.release().await?;
-        g2.release().await?;
+        let _first_outcome = g1.release().await?;
+        let _second_outcome = g2.release().await?;
         assert_eq!(mr.store.len().await, 2);
 
         // No change yet → nothing evicted.
@@ -863,7 +914,7 @@ mod tests {
             let g = mr
                 .run_acquire_loop(&test_ctx(), &AcquireOptions::default(), None)
                 .await?;
-            g.release().await?;
+            let _release_outcome = g.release().await?;
             assert_eq!(mr.store.len().await, 1, "one entry recycled into the store");
             Ok((checks, mr))
         }
@@ -907,7 +958,7 @@ mod tests {
         let g = mr
             .run_acquire_loop(&test_ctx(), &AcquireOptions::default(), None)
             .await?;
-        g.release().await?;
+        let _release_outcome = g.release().await?;
         assert_eq!(mr.store.len().await, 1);
 
         // The entry's health check now fails — the probe must evict + destroy it.
@@ -948,7 +999,7 @@ mod tests {
         let g = mr
             .run_acquire_loop(&test_ctx(), &AcquireOptions::default(), None)
             .await?;
-        g.release().await?;
+        let _release_outcome = g.release().await?;
         assert_eq!(mr.store.len().await, 1);
 
         // The probe's `check` now panics — the chokepoint must catch it (not

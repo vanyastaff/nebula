@@ -20,7 +20,7 @@ use crate::{
     context::ResourceContext,
     events::ResourceEvent,
     metrics::ResourceOpsMetrics,
-    release_queue::ReleaseReceipt,
+    release_queue::ReleaseSubmission,
     resource::Provider,
     runtime::{
         acquire_loop::release_entry,
@@ -29,6 +29,27 @@ use crate::{
     topology::Topology,
     topology_tag::TopologyTag,
 };
+
+/// Observable completion state of a consumed resource release.
+///
+/// Both variants mean the guard was consumed and cleanup ownership was safely
+/// transferred or settled. Callers must never retry the consumed release.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use = "a deferred release is accepted but has not completed yet"]
+#[non_exhaustive]
+pub enum ReleaseOutcome {
+    /// The queued cleanup completed and its provider result was observed.
+    Completed,
+    /// Cleanup was accepted by its queue, but waiting from the current cleanup
+    /// context could form a dependency cycle or exceed cooperative capacity.
+    ///
+    /// The queue owns the cleanup and schedules bounded, best-effort execution.
+    /// Process termination, queue abandonment, or a worker fault can still
+    /// prevent completion; those losses are reported through cleanup
+    /// observability. This is an accepted ownership transfer, not an error or
+    /// a guarantee that the provider hook will run, and must not be retried.
+    Deferred,
+}
 
 /// A drain tracker: an in-flight `(active_count, waiters)` pair. One is the
 /// manager-wide `graceful_shutdown` tracker; another is each
@@ -247,77 +268,122 @@ impl<R: Provider> ResourceGuard<R> {
         self.generation
     }
 
-    /// Releases this lease and awaits its queued cleanup outcome.
+    /// Releases this lease and observes whether cleanup completed or was deferred.
     ///
     /// # Errors
     ///
-    /// Returns the provider's error, a permanent error on hook panic, or
-    /// cancellation if the queue rejects or abandons the job. The reservation
-    /// settles on all outcomes; an error does not leave the lease checked out.
-    /// [`DeferredCleanup`](crate::ErrorKind::DeferredCleanup) means cleanup was
-    /// accepted, but this hook cannot safely await it: the target is another
-    /// queue or nested execution capacity is full. Do not resubmit the release.
+    /// Returns a provider or release-hook error only when this call can observe
+    /// the non-deferred cleanup path. It returns cancellation if the queue
+    /// rejects or abandons the job. The guard is consumed and its reservation
+    /// settles on every error; it cannot and must not be retried. A deferred
+    /// cleanup remains queue-owned, and any later asynchronous failure is
+    /// reported through tracing and resource metrics rather than this result.
     ///
     /// # Cancel safety
     ///
     /// Dropping the waiting caller discards only its receipt. The queue owns
     /// the entry and runs cleanup independently, bounded by its worker budget.
-    pub async fn release(mut self) -> Result<(), crate::Error> {
+    ///
+    /// # Examples
+    ///
+    /// A deferred result is an accepted ownership transfer. The consumed guard
+    /// is no longer available and the operation must never be retried:
+    ///
+    /// ```
+    /// use nebula_resource::{Error, Provider, ReleaseOutcome, ResourceGuard};
+    ///
+    /// async fn release_once<R: Provider>(guard: ResourceGuard<R>) -> Result<(), Error> {
+    ///     match guard.release().await? {
+    ///         ReleaseOutcome::Completed => {},
+    ///         ReleaseOutcome::Deferred => {
+    ///             // The cleanup queue owns the work; do not retry it.
+    ///         },
+    ///         _ => {}, // `ReleaseOutcome` may gain variants in future releases.
+    ///     }
+    ///     Ok(())
+    /// }
+    /// ```
+    pub async fn release(mut self) -> Result<ReleaseOutcome, crate::Error> {
         match self.enqueue_release() {
-            Some(receipt) => receipt?
-                .await
-                .unwrap_or_else(|_| Err(crate::Error::cancelled())),
-            None => Ok(()),
+            Some(Ok(submission)) => submission.wait().await.map(|outcome| match outcome {
+                crate::release_queue::SubmissionOutcome::Completed => ReleaseOutcome::Completed,
+                crate::release_queue::SubmissionOutcome::Deferred => ReleaseOutcome::Deferred,
+            }),
+            Some(Err(error)) => Err(error),
+            None => Ok(ReleaseOutcome::Completed),
         }
     }
 
-    fn enqueue_release(&mut self) -> Option<Result<ReleaseReceipt, crate::Error>> {
+    fn enqueue_release(&mut self) -> Option<Result<ReleaseSubmission, crate::Error>> {
         let entry = self.entry.take()?;
         self.hold_token.take();
+        let metrics = self.metrics.take();
         let settlement = ReleaseSettlement {
             permit: self.permit.take(),
             drain_counters: self.drain_counters.take(),
             event_bus: self.event_bus.take(),
+            metrics: metrics.clone(),
             key: self.resource_key.clone(),
             held: self.acquired_at.elapsed(),
             tainted: self.tainted,
+            has_completed: false,
         };
         let managed = Arc::clone(&self.managed);
         let checkout_epoch = self.checkout_epoch;
         let tainted = self.tainted;
-        let metrics = self.metrics.take();
-        Some(self.managed.release_queue.submit_guard_release(move || {
+        Some(self.managed.release_queue.submit_release(move || {
             Box::pin(async move {
                 if let Some(metrics) = &metrics {
                     metrics.record_release();
                 }
                 let outcome = release_entry(managed, entry, checkout_epoch, tainted, metrics).await;
-                drop(settlement);
+                settlement.complete(outcome.is_err());
                 outcome
             })
         }))
     }
 }
 
-/// Owns settlement even when a queued factory or future is never polled.
+/// Owns reservation settlement even when a queued factory or future is never
+/// polled, while emitting `Released` only after cleanup actually returns.
 struct ReleaseSettlement {
     permit: Option<OwnedSemaphorePermit>,
     drain_counters: Option<DrainTrackers>,
     event_bus: Option<Arc<EventBus<ResourceEvent>>>,
+    metrics: Option<ResourceOpsMetrics>,
     key: ResourceKey,
     held: Duration,
     tainted: bool,
+    has_completed: bool,
+}
+
+impl ReleaseSettlement {
+    fn complete(mut self, has_error: bool) {
+        self.has_completed = true;
+        if has_error && let Some(metrics) = &self.metrics {
+            metrics.record_release_error();
+        }
+    }
 }
 
 impl Drop for ReleaseSettlement {
     fn drop(&mut self) {
+        if !self.has_completed {
+            if let Some(metrics) = &self.metrics {
+                metrics.record_release_error();
+            }
+            tracing::warn!(
+                resource.key = %self.key,
+                "resource release cleanup was abandoned before completion"
+            );
+        }
         self.permit.take();
         settle(
             self.drain_counters.take(),
             self.event_bus.take(),
             &self.key,
             self.held,
-            true,
+            self.has_completed,
             self.tainted,
         );
     }
@@ -379,7 +445,15 @@ impl<R: Provider> Deref for ResourceGuard<R> {
 
 impl<R: Provider> Drop for ResourceGuard<R> {
     fn drop(&mut self) {
-        drop(self.enqueue_release());
+        match self.enqueue_release() {
+            Some(Ok(submission)) => submission.detach(),
+            Some(Err(error)) => tracing::warn!(
+                error.kind = ?error.kind(),
+                resource.key = %self.resource_key,
+                "resource guard release submission was rejected; cleanup was abandoned"
+            ),
+            None => {},
+        }
     }
 }
 
@@ -558,7 +632,7 @@ mod tests {
         assert!(guard.acquired_at().elapsed() < Duration::from_secs(1));
         assert!(guard.hold_duration() < Duration::from_millis(100));
         assert_eq!(resource.drops.load(Ordering::SeqCst), 0);
-        guard.release().await.unwrap();
+        assert_eq!(guard.release().await.unwrap(), ReleaseOutcome::Completed);
         assert_eq!(resource.released.load(Ordering::SeqCst), 1);
         assert_eq!(resource.drops.load(Ordering::SeqCst), 1);
     }
@@ -582,7 +656,7 @@ mod tests {
         let resource = DummyResource::new("panic");
         let (_manager, mut guard) = acquire(resource.clone()).await;
         guard.taint();
-        guard.release().await.unwrap();
+        assert_eq!(guard.release().await.unwrap(), ReleaseOutcome::Completed);
         assert!(resource.tainted.load(Ordering::SeqCst));
         assert_eq!(resource.released.load(Ordering::SeqCst), 1);
         assert_eq!(resource.drops.load(Ordering::SeqCst), 1);

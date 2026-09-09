@@ -10,7 +10,7 @@
 //! - [`checkout_or_create`](ManagedResource::checkout_or_create) — inner loop factored out for future keyed variants.
 //! - [`build_guard`](ManagedResource::build_guard) — assembles the [`ResourceGuard`] with its release closure.
 //! - [`bump_revoke_epoch`](ManagedResource::bump_revoke_epoch) /
-//!   [`dispatch_slot_hook`](ManagedResource::dispatch_slot_hook) — credential
+//!   [`submit_slot_hook`](ManagedResource::submit_slot_hook) — credential
 //!   rotation hooks that need topology dispatch.
 //! - [`warmup`](ManagedResource::warmup) / [`run_maintenance`](ManagedResource::run_maintenance) /
 //!   [`probe_idle_entries`](ManagedResource::probe_idle_entries) — lifecycle maintenance driven by the registry reaper.
@@ -32,7 +32,7 @@ use crate::{
     guard::ResourceGuard,
     metrics::{RecycleOutcome, ResourceOpsMetrics},
     options::AcquireOptions,
-    release_queue::ReleaseQueue,
+    release_queue::{ReleaseQueue, ReleaseSubmission, SubmissionOutcome},
     resource::{Provider, TeardownReason},
     runtime::{managed::ManagedResource, teardown::destroy_within},
     topology::{Topology, store::ReturnOutcome},
@@ -40,12 +40,37 @@ use crate::{
 
 use super::managed::EntryOf;
 
-/// Publishes displaced retained owners even when an author hook is cancelled.
+mod credential_hook;
+
+pub(crate) use credential_hook::{
+    AcceptedSlotHook, RetiredCleanupObservation, SlotHookAdmission, SlotHookDeferral,
+    SlotHookObservation, SlotHookSettlement, SlotHookWaitOutcome,
+};
+#[cfg(test)]
+use credential_hook::{RetiredCleanupSettlement, SlotHookReceipt};
+
+pub(crate) type RetiredCleanupObserver = Box<dyn FnOnce(RetiredCleanupObservation) + Send>;
+
+/// Publishes displaced retained owners after every author-held lease is dropped.
+///
+/// The guard is created before each topology future that receives the retained
+/// store. Rust drops that future (and therefore its [`crate::RetainedLease`]s)
+/// before this earlier local. Its `Drop` is the guaranteed edge-triggered retry:
+/// a last lease release cannot leave the framework-owned retained backlog waiting for an
+/// unrelated acquire or maintenance sweep.
 struct RetiredEntriesGuard<R: Provider>(Arc<ManagedResource<R>>);
 
 impl<R: Provider> Drop for RetiredEntriesGuard<R> {
     fn drop(&mut self) {
-        drop(self.0.queue_retired_entries());
+        match self.0.queue_retired_entries() {
+            Some(Ok(submission)) => submission.detach(),
+            Some(Err(error)) => tracing::warn!(
+                error.kind = ?error.kind(),
+                resource.key = %R::key(),
+                "retired-entry cleanup submission was rejected"
+            ),
+            None => {},
+        }
     }
 }
 
@@ -62,6 +87,39 @@ where
     R: Provider,
     R::Topology: Topology<R>,
 {
+    async fn observe_cleanup_submission(submission: Result<ReleaseSubmission, Error>) {
+        match submission {
+            Ok(submission) => match submission.wait().await {
+                Ok(SubmissionOutcome::Completed) => {},
+                Ok(SubmissionOutcome::Deferred) => tracing::debug!(
+                    resource.key = %R::key(),
+                    "background resource cleanup remains queue-owned"
+                ),
+                Err(error) => tracing::warn!(
+                    error.kind = ?error.kind(),
+                    resource.key = %R::key(),
+                    "background resource cleanup did not complete successfully"
+                ),
+            },
+            Err(error) => tracing::warn!(
+                error.kind = ?error.kind(),
+                resource.key = %R::key(),
+                "background resource cleanup submission was rejected"
+            ),
+        }
+    }
+
+    fn detach_cleanup_submission(submission: Result<ReleaseSubmission, Error>) {
+        match submission {
+            Ok(submission) => submission.detach(),
+            Err(error) => tracing::warn!(
+                error.kind = ?error.kind(),
+                resource.key = %R::key(),
+                "background resource cleanup submission was rejected"
+            ),
+        }
+    }
+
     /// **The framework acquire loop.** Runs the full fenced acquire over the
     /// framework-owned [`store`](ManagedResource::store) and the topology's R-aware hooks,
     /// producing a typed [`ResourceGuard<R>`].
@@ -142,14 +200,16 @@ where
             .await
         {
             let entry = cancel_guard.defuse();
-            let _ = self.queue_destroy(entry, TeardownReason::Released).await;
+            Self::observe_cleanup_submission(self.queue_destroy(entry, TeardownReason::Released))
+                .await;
             return Err(e);
         }
 
         if self.store.is_closed() {
-            let _ = self
-                .queue_destroy(cancel_guard.defuse(), TeardownReason::Shutdown)
-                .await;
+            Self::observe_cleanup_submission(
+                self.queue_destroy(cancel_guard.defuse(), TeardownReason::Shutdown),
+            )
+            .await;
             return Err(Error::cancelled().with_resource_key(R::key()));
         }
 
@@ -171,15 +231,12 @@ where
     /// # Cancel safety
     ///
     /// A popped or freshly-created entry is wrapped in an [`EntryCreateGuard`]
-    /// **before** any subsequent await (the stale-destroy loop, the `accept`
-    /// hook, the fence destroy), so a caller cancellation — a `tokio::select!`
-    /// branch or `tokio::time::timeout` dropping the acquire future — never
-    /// discards a live instance through a plain `Drop`: the guard schedules an
-    /// async `Provider::destroy` via the [`ReleaseQueue`]. A cancellation that
-    /// lands *inside* one of the inline `destroy_within` awaits abandons only
-    /// that teardown attempt (teardown is best-effort and deadline-bounded);
-    /// the instance is already consumed by the destroy at that point, never
-    /// leaked live.
+    /// **before** any subsequent await, so a caller cancellation — a
+    /// `tokio::select!` branch or `tokio::time::timeout` dropping the acquire
+    /// future — never discards a live instance through a plain `Drop`.
+    /// Rejected and stale idle entries transfer to the [`ReleaseQueue`]
+    /// synchronously; the acquire loop never waits for their physical teardown
+    /// while it owns the topology permit.
     ///
     /// Complexity: O(stale + 1) idle pops per call (average and worst case);
     /// bounded by the store's idle capacity.
@@ -206,9 +263,10 @@ where
             });
             // FRAMEWORK destroys since-revoked stale entries — the author can
             // never skip this fence.
-            if let Some(receipt) = self.queue_destroy_batch(checkout.stale, TeardownReason::Revoked)
+            if let Some(submission) =
+                self.queue_destroy_batch(checkout.stale, TeardownReason::Revoked)
             {
-                let _ = receipt.await;
+                Self::detach_cleanup_submission(submission);
             }
             let Some((mut cancel_guard, epoch)) = fresh else {
                 // Idle-miss — create a fresh entry. Snapshot the revoke epoch
@@ -224,14 +282,13 @@ where
                     .await?;
                 let (cancel_guard, retirement) = self.arm_created(created);
                 if let Some(retirement) = retirement {
-                    retirement?
-                        .await
-                        .unwrap_or_else(|_| Err(Error::cancelled()))?;
+                    Self::observe_cleanup_submission(retirement).await;
                 }
                 if self.store.is_closed() {
-                    let _ = self
-                        .queue_destroy(cancel_guard.defuse(), TeardownReason::Shutdown)
-                        .await;
+                    Self::observe_cleanup_submission(
+                        self.queue_destroy(cancel_guard.defuse(), TeardownReason::Shutdown),
+                    )
+                    .await;
                     return Err(Error::cancelled().with_resource_key(R::key()));
                 }
                 // Fresh-create fence (HikariCP #1836) — POOLED topologies only.
@@ -244,9 +301,10 @@ where
                 // hook (it serves, then the hook clears the shared binding), so
                 // they must NOT fail-closed here.
                 if self.topology.pools() && self.store.current_revoke_epoch() != create_epoch {
-                    let _ = self
-                        .queue_destroy(cancel_guard.defuse(), TeardownReason::Revoked)
-                        .await;
+                    Self::observe_cleanup_submission(
+                        self.queue_destroy(cancel_guard.defuse(), TeardownReason::Revoked),
+                    )
+                    .await;
                     return Err(Error::revoked(format!(
                         "{}: credential revoked while the instance was being \
                          created — fenced before admission (HikariCP #1836)",
@@ -266,9 +324,10 @@ where
                 return Ok((cancel_guard, epoch));
             }
             // Rejected (stale fingerprint / max-lifetime / broken) — destroy and
-            // loop to the next idle entry, then create.
+            // loop to the next idle entry, then create. Queue admission, not
+            // physical teardown, is the ownership-transfer boundary.
             let entry = cancel_guard.defuse();
-            let _ = self.queue_destroy(entry, TeardownReason::Evicted).await;
+            Self::detach_cleanup_submission(self.queue_destroy(entry, TeardownReason::Evicted));
         }
     }
 
@@ -277,7 +336,7 @@ where
         self: &Arc<Self>,
         entry: EntryOf<R>,
         reason: TeardownReason,
-    ) -> crate::release_queue::ReleaseReceipt {
+    ) -> Result<ReleaseSubmission, Error> {
         let managed = Arc::clone(self);
         self.release_queue.submit_release(move || {
             Box::pin(async move { managed.destroy_entry(entry, reason).await })
@@ -288,7 +347,7 @@ where
         self: &Arc<Self>,
         entries: Vec<EntryOf<R>>,
         reason: TeardownReason,
-    ) -> Option<crate::release_queue::ReleaseReceipt> {
+    ) -> Option<Result<ReleaseSubmission, Error>> {
         if entries.is_empty() {
             return None;
         }
@@ -317,7 +376,7 @@ where
         created: crate::topology::CreatedEntry<EntryOf<R>>,
     ) -> (
         EntryCreateGuard<R>,
-        Option<Result<crate::release_queue::ReleaseReceipt, Error>>,
+        Option<Result<ReleaseSubmission, Error>>,
     ) {
         let entry = created.into_entry();
         let active =
@@ -326,16 +385,15 @@ where
         (active, receipt)
     }
 
-    fn queue_retired_entries(
-        self: &Arc<Self>,
-    ) -> Option<Result<crate::release_queue::ReleaseReceipt, Error>> {
-        let entries = match self.retained.drain_retired() {
-            Ok(entries) => entries,
-            Err(blocked) => {
-                tracing::debug!(resource.key = %R::key(), live_leases = blocked.live_lease_count(), "retired cleanup waits for store-bound leases");
-                return None;
-            },
-        };
+    fn queue_retired_entries(self: &Arc<Self>) -> Option<Result<ReleaseSubmission, Error>> {
+        let (entries, blocked) = self.retained.drain_retired().into_parts();
+        if let Some(blocked) = blocked {
+            tracing::debug!(
+                resource.key = %R::key(),
+                reason = ?blocked.reason(),
+                "retained cleanup left fenced generations in the backlog"
+            );
+        }
         if entries.is_empty() {
             return None;
         }
@@ -347,7 +405,7 @@ where
         batch.extend_retained(entries);
         Some(
             self.release_queue
-                .submit_joined_coordinator(move || Box::pin(batch.run())),
+                .submit_coordinator(move || Box::pin(batch.run())),
         )
     }
 
@@ -386,74 +444,6 @@ where
     /// stays empty, e.g. Resident).
     pub(crate) fn bump_revoke_epoch(&self) {
         self.store.bump_revoke_epoch();
-    }
-
-    /// Borrows the live topology and invokes the per-entry credential hook —
-    /// [`Provider::on_credential_refresh`] when `refresh` is `true`,
-    /// [`Provider::on_credential_revoke`] otherwise — against this resource's
-    /// instances.
-    ///
-    /// The dispatch is topology-specific (resident reconcile vs pool idle
-    /// fan-out) and lives behind [`Topology::dispatch_credential_hook`]; the
-    /// resource handle the hook needs is supplied from `self.resource`.
-    ///
-    /// # Cancel Safety
-    ///
-    /// This method is cancel-safe. The resource taint and revoke-epoch bump
-    /// are performed synchronously by the caller before this future is polled.
-    /// Dropping the returned future after taint leaves the resource
-    /// consistently marked as tainted — no partial-taint state is possible and
-    /// new acquires remain rejected.
-    pub(crate) async fn dispatch_slot_hook(
-        self: &Arc<Self>,
-        slot: &str,
-        refresh: bool,
-    ) -> Result<(), Error> {
-        let managed = Arc::clone(self);
-        let slot = slot.to_owned();
-        let receipt = self.release_queue.submit_joined_coordinator(move || {
-            Box::pin(async move {
-                let _retirement = RetiredEntriesGuard(Arc::clone(&managed));
-                let hook = crate::hook_guard::guard_author_hook(
-                    crate::hook_guard::MAX_ROTATION_DISPATCH_CEILING,
-                    managed.topology.dispatch_credential_hook(
-                        &managed.resource,
-                        &managed.store,
-                        &managed.retained,
-                        &slot,
-                        refresh,
-                    ),
-                )
-                .await;
-                let hook = match hook {
-                    Ok(result) => result,
-                    Err(fault) => {
-                        fault.observe(&R::key(), "rotation");
-                        Err(match fault {
-                            crate::hook_guard::HookFault::Panicked => {
-                                Error::permanent("credential topology hook panicked")
-                            },
-                            crate::hook_guard::HookFault::TimedOut => Error::cancelled(),
-                        })
-                    },
-                };
-                let entries = loop {
-                    managed.retained.wait_quiescent().await;
-                    if let Ok(entries) = managed.retained.drain_retired() {
-                        break entries;
-                    }
-                };
-                let mut batch = super::destroy_batch::DestroyBatch::new(
-                    Arc::clone(&managed),
-                    Vec::new(),
-                    TeardownReason::Evicted,
-                );
-                batch.extend_retained(entries);
-                let cleanup = batch.run().await;
-                hook.and(cleanup)
-            })
-        })?;
-        receipt.await.unwrap_or_else(|_| Err(Error::cancelled()))
     }
 
     /// Creates one fresh entry and cancel-safely deposits it into the
@@ -507,7 +497,9 @@ where
         let (cancel_guard, retirement) = self.arm_created(created);
         // Maintenance must never await a job on its own cleanup queue:
         // terminal row cleanup may be waiting for this sweep to finish.
-        drop(retirement);
+        if let Some(retirement) = retirement {
+            Self::detach_cleanup_submission(retirement);
+        }
         let mut idle = self.store.lock_idle().await;
         let entry = cancel_guard.defuse();
         let outcome = self
@@ -519,7 +511,7 @@ where
         match outcome {
             ReturnOutcome::Recycled => Ok(true),
             ReturnOutcome::Evict(entry) => {
-                drop(self.queue_destroy(entry, TeardownReason::Evicted));
+                Self::detach_cleanup_submission(self.queue_destroy(entry, TeardownReason::Evicted));
                 Ok(false)
             },
         }
@@ -747,7 +739,7 @@ where
 
         let evicted = to_destroy.len();
         if evicted > 0 {
-            drop(
+            Self::detach_cleanup_submission(
                 self.release_queue
                     .submit_coordinator(move || Box::pin(to_destroy.run())),
             );
@@ -1130,1008 +1122,25 @@ where
             "cancel-safety: acquire future cancelled mid-create — \
              scheduling async destroy via ReleaseQueue"
         );
-        drop(self.release_queue.submit_release(move || {
+        let submission = self.release_queue.submit_release(move || {
             Box::pin(async move {
                 // An entry cancelled before reaching the built guard was never
                 // admitted to the store or handed to a caller; the only correct
                 // cleanup is destroy.
                 managed.destroy_entry(entry, TeardownReason::Evicted).await
             })
-        }));
+        });
+        match submission {
+            Ok(submission) => submission.detach(),
+            Err(error) => tracing::warn!(
+                error.kind = ?error.kind(),
+                resource.key = %R::key(),
+                "cancel-safety destroy submission was rejected after ownership settlement"
+            ),
+        }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
-    };
-
-    use arc_swap::ArcSwap;
-    use nebula_core::{ExecutionId, ResourceKey, resource_key};
-    use tokio::sync::Notify;
-    use tokio_util::sync::CancellationToken;
-
-    use super::*;
-    use crate::{
-        context::ResourceContext,
-        error::Error,
-        recovery::gate::{RecoveryGate, RecoveryGateConfig},
-        release_queue::ReleaseQueue,
-        resource::{Provider, ResourceConfig, ResourceMetadata, TeardownCx},
-        runtime::managed::ManagedResource,
-        state::ResourceStatus,
-        topology::{Pooled, pooled::config::Config as PoolConfig, store::InstanceStore},
-    };
-
-    // Minimal pooled resource config used by both test helpers.
-    #[derive(Clone)]
-    struct PoolCfg;
-    crate::impl_empty_has_schema!(PoolCfg);
-    impl ResourceConfig for PoolCfg {
-        fn fingerprint(&self) -> u64 {
-            0
-        }
-    }
-
-    #[derive(Clone)]
-    struct Mock {
-        created: Arc<AtomicU64>,
-        destroyed: Arc<AtomicU64>,
-        /// When `true`, `check` parks forever — the deterministic suspension
-        /// point for the accept-await cancellation tests.
-        hang_check: Arc<AtomicBool>,
-        /// Probe-lock regression fixture: when `true`, `check` notifies
-        /// `check_started` the instant it begins, then parks on
-        /// `release_check` until the test releases it — a *slow* (it
-        /// eventually resolves) check, distinct from `hang_check` (never
-        /// resolves). Lets a test observe "the probe is mid-check, still
-        /// outside the idle lock" deterministically.
-        park_in_check: Arc<AtomicBool>,
-        check_started: Arc<Notify>,
-        release_check: Arc<Notify>,
-        /// Min-idle-refill fixture: when `true`, the *next* `create` call notifies
-        /// `create_entered` the instant it begins, then parks on
-        /// `release_create` until the test releases it — lets a test observe
-        /// "a create is in flight, entry not yet deposited" deterministically
-        /// (mirrors `park_in_check`, but for `create` rather than `check`).
-        park_create: Arc<AtomicBool>,
-        create_entered: Arc<Notify>,
-        release_create: Arc<Notify>,
-        batch_failures: Arc<AtomicBool>,
-        dependent_release: Arc<std::sync::Mutex<Option<ResourceGuard<Self>>>>,
-        release_dependency_in_check: Arc<AtomicBool>,
-        fail_probe_batch_then_park: Arc<AtomicBool>,
-        destroy_finished: Arc<Notify>,
-    }
-
-    impl Mock {
-        fn new() -> Self {
-            Self {
-                created: Arc::new(AtomicU64::new(0)),
-                destroyed: Arc::new(AtomicU64::new(0)),
-                hang_check: Arc::new(AtomicBool::new(false)),
-                park_in_check: Arc::new(AtomicBool::new(false)),
-                check_started: Arc::new(Notify::new()),
-                release_check: Arc::new(Notify::new()),
-                park_create: Arc::new(AtomicBool::new(false)),
-                create_entered: Arc::new(Notify::new()),
-                release_create: Arc::new(Notify::new()),
-                batch_failures: Arc::new(AtomicBool::new(false)),
-                dependent_release: Arc::default(),
-                release_dependency_in_check: Arc::default(),
-                fail_probe_batch_then_park: Arc::default(),
-                destroy_finished: Arc::default(),
-            }
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl Provider for Mock {
-        type Config = PoolCfg;
-        type Instance = u64;
-        type Topology = Pooled<Self>;
-
-        fn key() -> ResourceKey {
-            resource_key!("acquire-loop-guard-mock")
-        }
-
-        async fn create(&self, _config: &PoolCfg, _ctx: &ResourceContext) -> Result<u64, Error> {
-            let id = self.created.fetch_add(1, Ordering::SeqCst);
-            if self.park_create.swap(false, Ordering::SeqCst) {
-                self.create_entered.notify_one();
-                self.release_create.notified().await;
-            }
-            Ok(id)
-        }
-
-        async fn check(&self, runtime: &u64) -> Result<(), Error> {
-            if self.fail_probe_batch_then_park.load(Ordering::SeqCst) {
-                if *runtime < PROBE_CONCURRENCY as u64 {
-                    return Err(Error::permanent("intentional failed first probe batch"));
-                }
-                self.check_started.notify_one();
-                self.release_check.notified().await;
-            }
-            if self.hang_check.load(Ordering::SeqCst) {
-                std::future::pending::<()>().await;
-                // guard-justified: `std::future::pending()` never resolves,
-                // so this line is statically unreachable.
-                unreachable!("pending future never resolves")
-            }
-            if self.park_in_check.load(Ordering::SeqCst) {
-                self.check_started.notify_one();
-                self.release_check.notified().await;
-            }
-            if self.release_dependency_in_check.load(Ordering::SeqCst) {
-                let child = self.dependent_release.lock().unwrap().take();
-                if let Some(child) = child {
-                    child.release().await?;
-                }
-            }
-            Ok(())
-        }
-
-        async fn destroy(&self, runtime: u64, _cx: TeardownCx) -> Result<(), Error> {
-            self.destroyed.fetch_add(1, Ordering::SeqCst);
-            if self.batch_failures.load(Ordering::SeqCst) {
-                match runtime {
-                    0 => std::future::pending::<()>().await,
-                    1 => return Err(Error::permanent("intentional batch member failure")),
-                    3 => panic!("intentional batch member panic"),
-                    _ => {},
-                }
-            }
-            if runtime == 0 {
-                let child = self.dependent_release.lock().unwrap().take();
-                if let Some(child) = child {
-                    child.release().await?;
-                }
-                self.destroy_finished.notify_one();
-            }
-            Ok(())
-        }
-
-        fn teardown_budget(&self) -> std::time::Duration {
-            if self.batch_failures.load(Ordering::SeqCst) {
-                std::time::Duration::from_hours(1)
-            } else {
-                std::time::Duration::from_secs(30)
-            }
-        }
-
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::from_key(&Self::key())
-        }
-    }
-
-    crate::no_credential_slots!(Mock);
-
-    impl crate::topology::pooled::PoolProvider for Mock {}
-
-    fn test_ctx() -> ResourceContext {
-        use nebula_core::scope::Scope;
-        let scope = Scope {
-            execution_id: Some(ExecutionId::new()),
-            ..Default::default()
-        };
-        ResourceContext::minimal(scope, CancellationToken::new())
-    }
-
-    fn managed(resource: Mock, config: PoolConfig) -> Arc<ManagedResource<Mock>> {
-        let (rq, _handle) = ReleaseQueue::new(1);
-        let topology = Pooled::<Mock>::new(config, 0);
-        Arc::new(ManagedResource {
-            resource,
-            config: ArcSwap::from_pointee(PoolCfg),
-            topology,
-            store: InstanceStore::with_abandonment_tracker(None, rq.abandonment_tracker()),
-            retained: crate::RetainedStore::new(rq.abandonment_tracker()),
-            release_queue: Arc::new(rq),
-            generation: AtomicU64::new(0),
-            status: ArcSwap::from_pointee(ResourceStatus::new()),
-            recovery_gate: None,
-            tainted: AtomicBool::new(false),
-            in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
-            maintenance_sweeps: AtomicU64::new(0),
-            maintenance: Default::default(),
-        })
-    }
-
-    #[path = "batch.rs"]
-    mod batch_tests;
-
-    #[path = "maintenance.rs"]
-    mod maintenance_tests;
-
-    #[path = "custom_fence.rs"]
-    mod custom_fence_tests;
-
-    /// Cancel-safety regression (audit 2026-07-01 bug #1): an acquire future
-    /// cancelled while suspended in `Topology::accept` (here: a hanging
-    /// `test_on_checkout` health check) must destroy the popped idle entry via
-    /// the release queue — before the fix the entry was a plain local across
-    /// the `accept().await` and a cancellation dropped the live instance
-    /// without ever calling `Provider::destroy` (permanent leak: the entry was
-    /// already off the idle queue).
-    #[tokio::test]
-    async fn cancelled_acquire_during_accept_destroys_the_popped_entry() {
-        let resource = Mock::new();
-        let destroyed = Arc::clone(&resource.destroyed);
-        let hang_check = Arc::clone(&resource.hang_check);
-        let (rq, rq_handle) = ReleaseQueue::new(1);
-        let rq = Arc::new(rq);
-        let mr = {
-            let topology = Pooled::<Mock>::new(
-                PoolConfig {
-                    test_on_checkout: true,
-                    ..PoolConfig::default()
-                },
-                0,
-            );
-            Arc::new(ManagedResource {
-                resource,
-                config: ArcSwap::from_pointee(PoolCfg),
-                topology,
-                store: InstanceStore::with_abandonment_tracker(None, rq.abandonment_tracker()),
-                retained: crate::RetainedStore::new(rq.abandonment_tracker()),
-                release_queue: Arc::clone(&rq),
-                generation: AtomicU64::new(0),
-                status: ArcSwap::from_pointee(ResourceStatus::new()),
-                recovery_gate: None,
-                tainted: AtomicBool::new(false),
-                in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
-                maintenance_sweeps: AtomicU64::new(0),
-                maintenance: Default::default(),
-            })
-        };
-
-        // Seed one healthy idle entry, then arm the hang so the NEXT acquire
-        // parks inside `accept`'s health check with the entry popped.
-        let entry = mr
-            .topology
-            .create_entry(&mr.resource, &PoolCfg, &test_ctx(), &mr.retained)
-            .await
-            .expect("create the seed entry");
-        let entry = entry.into_entry();
-        assert!(mr.retained.drain_retired().unwrap().is_empty());
-        let epoch = mr.store.stamp_epoch();
-        assert!(
-            !mr.store.deposit_fresh(entry, epoch).await.is_evict(),
-            "the seed entry must land in the idle queue"
-        );
-        hang_check.store(true, Ordering::SeqCst);
-
-        // The cancellation: a timeout drops the acquire future while it is
-        // suspended in `accept` → `resource.check`.
-        let cancelled = tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            mr.run_acquire_loop(&test_ctx(), &AcquireOptions::default(), None),
-        )
-        .await;
-        assert!(
-            cancelled.is_err(),
-            "the acquire must still be parked in the hanging health check \
-             when the timeout fires"
-        );
-        assert!(
-            mr.store.is_empty().await,
-            "the popped entry must not have been silently re-queued"
-        );
-
-        // Drain the release queue and assert the destroy actually ran.
-        rq.close();
-        drop(rq);
-        drop(mr);
-        ReleaseQueue::shutdown(rq_handle).await;
-        assert_eq!(
-            destroyed.load(Ordering::SeqCst),
-            1,
-            "a cancellation during `accept` must destroy the popped entry via \
-             the ReleaseQueue, never leak it through a plain Drop"
-        );
-    }
-
-    /// Cancel-safety regression (audit 2026-07-01 bug #2): a warmup future
-    /// dropped between `create_entry` succeeding and the fenced deposit
-    /// completing (here: parked on the held idle lock; in production the
-    /// author-hook ceiling timeout in `Manager::warmup_pool`) must destroy
-    /// the created instance via the release queue — before the fix the entry
-    /// travelled unguarded into `deposit_fresh`'s future and a cancellation
-    /// dropped it without `Provider::destroy`.
-    #[tokio::test]
-    async fn cancelled_warmup_between_create_and_deposit_destroys_the_entry() {
-        let resource = Mock::new();
-        let created = Arc::clone(&resource.created);
-        let destroyed = Arc::clone(&resource.destroyed);
-        let (rq, rq_handle) = ReleaseQueue::new(1);
-        let rq = Arc::new(rq);
-        let mr = {
-            let topology = Pooled::<Mock>::new(
-                PoolConfig {
-                    min_size: 1, // warmup_target = 1
-                    ..PoolConfig::default()
-                },
-                0,
-            );
-            Arc::new(ManagedResource {
-                resource,
-                config: ArcSwap::from_pointee(PoolCfg),
-                topology,
-                store: InstanceStore::with_abandonment_tracker(None, rq.abandonment_tracker()),
-                retained: crate::RetainedStore::new(rq.abandonment_tracker()),
-                release_queue: Arc::clone(&rq),
-                generation: AtomicU64::new(0),
-                status: ArcSwap::from_pointee(ResourceStatus::new()),
-                recovery_gate: None,
-                tainted: AtomicBool::new(false),
-                in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
-                maintenance_sweeps: AtomicU64::new(0),
-                maintenance: Default::default(),
-            })
-        };
-
-        // Hold the idle lock so warmup creates its entry, then parks on the
-        // lock acquisition — the exact created-but-undeposited window.
-        let idle_lock = mr.store.lock_idle().await;
-        let ctx = test_ctx();
-        {
-            let mut warmup = Box::pin(mr.warmup(&ctx));
-            let parked =
-                tokio::time::timeout(std::time::Duration::from_millis(100), &mut warmup).await;
-            assert!(
-                parked.is_err(),
-                "warmup must be parked awaiting the idle lock with a created entry in hand"
-            );
-            drop(warmup); // the cancellation
-        }
-        drop(idle_lock);
-
-        assert_eq!(
-            created.load(Ordering::SeqCst),
-            1,
-            "exactly one instance was created before the cancellation"
-        );
-        assert!(
-            mr.store.is_empty().await,
-            "the cancelled warmup must not have deposited the entry"
-        );
-
-        rq.close();
-        drop(rq);
-        drop(mr);
-        ReleaseQueue::shutdown(rq_handle).await;
-        assert_eq!(
-            destroyed.load(Ordering::SeqCst),
-            1,
-            "a warmup cancelled between create and deposit must destroy the \
-             created instance via the ReleaseQueue, never leak it"
-        );
-    }
-
-    /// Cancel-safety: an [`EntryCreateGuard`] dropped before `defuse` schedules an
-    /// async `destroy` via the release queue.
-    #[tokio::test]
-    async fn entry_create_guard_drop_destroys_via_release_queue() {
-        let resource = Mock::new();
-        let destroyed = Arc::clone(&resource.destroyed);
-        let (rq, rq_handle) = ReleaseQueue::new(1);
-        let rq = Arc::new(rq);
-        let mr = {
-            let topology = Pooled::<Mock>::new(PoolConfig::default(), 0);
-            Arc::new(ManagedResource {
-                resource,
-                config: ArcSwap::from_pointee(PoolCfg),
-                topology,
-                store: InstanceStore::with_abandonment_tracker(None, rq.abandonment_tracker()),
-                retained: crate::RetainedStore::new(rq.abandonment_tracker()),
-                release_queue: Arc::clone(&rq),
-                generation: AtomicU64::new(0),
-                status: ArcSwap::from_pointee(ResourceStatus::new()),
-                recovery_gate: None,
-                tainted: AtomicBool::new(false),
-                in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
-                maintenance_sweeps: AtomicU64::new(0),
-                maintenance: Default::default(),
-            })
-        };
-
-        let entry = mr
-            .topology
-            .create_entry(&mr.resource, &PoolCfg, &test_ctx(), &mr.retained)
-            .await
-            .expect("create");
-        let entry = entry.into_entry();
-        assert!(mr.retained.drain_retired().unwrap().is_empty());
-        let guard = EntryCreateGuard::new(entry, Arc::clone(&mr), Arc::clone(&rq));
-        // Simulate a cancelled acquire: dropped before `defuse`.
-        drop(guard);
-
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        // Signal the workers to drain + exit before joining. `drop(rq)` alone
-        // does NOT close the channels here: `mr` holds another
-        // `Arc<ReleaseQueue>`, so the senders outlive the test's `rq` and the
-        // worker loop would block on `rx.recv()` forever. `close()` cancels the
-        // token, the documented precondition for `shutdown`.
-        rq.close();
-        drop(rq);
-        ReleaseQueue::shutdown(rq_handle).await;
-
-        assert_eq!(
-            destroyed.load(Ordering::SeqCst),
-            1,
-            "EntryCreateGuard::drop must schedule destroy via the ReleaseQueue \
-             when the acquire future is cancelled mid-create"
-        );
-    }
-
-    /// A `EntryCreateGuard` that runs through `defuse` (the success path) must
-    /// NOT trigger a stray destroy.
-    #[tokio::test]
-    async fn entry_create_guard_defuse_skips_destroy() {
-        let resource = Mock::new();
-        let destroyed = Arc::clone(&resource.destroyed);
-        let (rq, rq_handle) = ReleaseQueue::new(1);
-        let rq = Arc::new(rq);
-        let mr = managed(resource, PoolConfig::default());
-
-        let entry = mr
-            .topology
-            .create_entry(&mr.resource, &PoolCfg, &test_ctx(), &mr.retained)
-            .await
-            .expect("create");
-        let entry = entry.into_entry();
-        assert!(mr.retained.drain_retired().unwrap().is_empty());
-        let guard = EntryCreateGuard::new(entry, Arc::clone(&mr), Arc::clone(&rq));
-        let _entry = guard.defuse();
-
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        drop(rq);
-        ReleaseQueue::shutdown(rq_handle).await;
-
-        assert_eq!(
-            destroyed.load(Ordering::SeqCst),
-            0,
-            "a defused EntryCreateGuard must not schedule a destroy"
-        );
-    }
-
-    // ── Probe-lock fix regression tests ─────────────────────────────────
-
-    /// A slow (but eventually healthy) `Provider::check` must not block a
-    /// concurrent checkout while a maintenance probe is running — the idle
-    /// lock is held only to drain the queue, never across the check itself.
-    #[tokio::test]
-    async fn probe_slow_check_does_not_block_concurrent_checkout() {
-        let resource = Mock::new();
-        let mr = managed(resource.clone(), PoolConfig::default());
-
-        // Seed one idle entry for the probe to find.
-        let entry = mr
-            .topology
-            .create_entry(&mr.resource, &PoolCfg, &test_ctx(), &mr.retained)
-            .await
-            .expect("create the seed entry");
-        let entry = entry.into_entry();
-        assert!(mr.retained.drain_retired().unwrap().is_empty());
-        let epoch = mr.store.stamp_epoch();
-        assert!(
-            !mr.store.deposit_fresh(entry, epoch).await.is_evict(),
-            "the seed entry must land in the idle queue"
-        );
-
-        resource.park_in_check.store(true, Ordering::SeqCst);
-        let check_started = Arc::clone(&resource.check_started);
-        let release_check = Arc::clone(&resource.release_check);
-
-        let mr_probe = Arc::clone(&mr);
-        let probe_task = tokio::spawn(async move { mr_probe.probe_idle_entries().await });
-
-        // Deterministic: the probe has drained the store and its (only)
-        // `check()` call has started — i.e. it is now suspended OUTSIDE the
-        // idle lock (the fix under test). Pre-fix, the lock was held across
-        // this exact suspension point.
-        check_started.notified().await;
-
-        // Prove the idle lock is free: a concurrent checkout completes
-        // promptly instead of blocking on the still-in-flight probe. It
-        // correctly observes an empty queue (the probe drained the only
-        // entry) — the point is that it does not HANG waiting for a lock.
-        let checkout =
-            tokio::time::timeout(std::time::Duration::from_millis(200), mr.store.checkout())
-                .await
-                .expect(
-                    "checkout must not block on a slow probe check — the idle \
-                 lock must not be held across it",
-                );
-        assert!(
-            checkout.fresh.is_none(),
-            "the single idle entry is off-store while the probe holds it mid-check"
-        );
-
-        // Release the check and let the probe finish.
-        release_check.notify_one();
-        let failed = probe_task.await.expect("probe task must not panic");
-        assert!(
-            failed.is_empty(),
-            "the slow-but-healthy check must survive, not be marked failed"
-        );
-        assert_eq!(
-            mr.store.len().await,
-            1,
-            "the survivor must be returned to the idle queue via the \
-             epoch-fenced return path"
-        );
-    }
-
-    /// A probe sweep must drain the idle store in batches of at most
-    /// [`PROBE_CONCURRENCY`], never the whole idle queue in one shot — the
-    /// bound on how far live instances can transiently overshoot the
-    /// topology's cap while a sweep is in flight (a concurrent acquire can
-    /// create a fresh instance for each entry currently drained-but-not-yet-
-    /// returned).
-    #[tokio::test]
-    async fn probe_drains_in_bounded_batches_not_the_whole_idle_queue() {
-        let resource = Mock::new();
-        let mr = managed(resource.clone(), PoolConfig::default());
-
-        // Seed more idle entries than a single probe batch holds, so the
-        // batch boundary is observable.
-        let seeded = PROBE_CONCURRENCY + 2;
-        for _ in 0..seeded {
-            let entry = mr
-                .topology
-                .create_entry(&mr.resource, &PoolCfg, &test_ctx(), &mr.retained)
-                .await
-                .expect("create seed entry");
-            let entry = entry.into_entry();
-            assert!(mr.retained.drain_retired().unwrap().is_empty());
-            let epoch = mr.store.stamp_epoch();
-            assert!(
-                !mr.store.deposit_fresh(entry, epoch).await.is_evict(),
-                "every seed entry must land in the idle queue"
-            );
-        }
-        assert_eq!(mr.store.len().await, seeded);
-
-        resource.park_in_check.store(true, Ordering::SeqCst);
-        let check_started = Arc::clone(&resource.check_started);
-        let release_check = Arc::clone(&resource.release_check);
-
-        let mr_probe = Arc::clone(&mr);
-        let probe_task = tokio::spawn(async move { mr_probe.probe_idle_entries().await });
-
-        // Deterministic: the first batch's checks have started, which only
-        // happens after that batch's drain (under the idle lock) already
-        // completed.
-        check_started.notified().await;
-
-        // The bounded-batch drain must leave the rest of the idle queue
-        // alone — never the whole-queue drain a single unbounded `mem::take`
-        // would perform.
-        assert_eq!(
-            mr.store.len().await,
-            seeded - PROBE_CONCURRENCY,
-            "one probe batch must drain at most PROBE_CONCURRENCY entries, \
-             leaving the rest of the idle queue available to concurrent \
-             acquires instead of the whole queue at once"
-        );
-
-        // Release the first batch and let the remaining batch(es) proceed
-        // without parking, so the sweep can finish.
-        resource.park_in_check.store(false, Ordering::SeqCst);
-        release_check.notify_waiters();
-
-        let failed = probe_task.await.expect("probe task must not panic");
-        assert!(
-            failed.is_empty(),
-            "every seeded entry is healthy and must survive the sweep"
-        );
-        assert_eq!(
-            mr.store.len().await,
-            seeded,
-            "every entry must be returned to the idle queue across every batch"
-        );
-    }
-
-    /// A credential revoke that lands WHILE an entry is mid-probe (drained,
-    /// health check in flight) must destroy that entry on return — never
-    /// re-admit it to the idle queue. This is the fence-preservation half of
-    /// the probe-lock fix: a plain `*idle = survivors` write-back would
-    /// resurrect a since-revoked entry; routing survivors back through
-    /// `InstanceStore::return_entry` re-checks the epoch under the re-taken
-    /// lock and evicts instead.
-    #[tokio::test]
-    async fn probe_revoke_mid_probe_destroys_probed_entries_not_redeposited() {
-        let resource = Mock::new();
-        let destroyed = Arc::clone(&resource.destroyed);
-        let mr = managed(resource.clone(), PoolConfig::default());
-
-        let entry = mr
-            .topology
-            .create_entry(&mr.resource, &PoolCfg, &test_ctx(), &mr.retained)
-            .await
-            .expect("create the seed entry");
-        let entry = entry.into_entry();
-        assert!(mr.retained.drain_retired().unwrap().is_empty());
-        let epoch = mr.store.stamp_epoch();
-        assert!(
-            !mr.store.deposit_fresh(entry, epoch).await.is_evict(),
-            "the seed entry must land in the idle queue"
-        );
-
-        resource.park_in_check.store(true, Ordering::SeqCst);
-        let check_started = Arc::clone(&resource.check_started);
-        let release_check = Arc::clone(&resource.release_check);
-
-        let mr_probe = Arc::clone(&mr);
-        let probe_task = tokio::spawn(async move { mr_probe.probe_idle_entries().await });
-
-        check_started.notified().await;
-
-        // The revoke fence bump — exactly what `Manager::revoke_slot`'s
-        // synchronous phase 1 does — lands while the entry is drained and
-        // mid-check, strictly BEFORE the check resolves.
-        mr.store.bump_revoke_epoch();
-
-        // Let the (otherwise healthy) check resolve.
-        release_check.notify_one();
-        let failed = probe_task.await.expect("probe task must not panic");
-
-        assert_eq!(
-            failed.len(),
-            1,
-            "an entry revoked mid-probe must be reported for the caller to \
-             destroy, not silently dropped or kept"
-        );
-        assert_eq!(
-            mr.store.len().await,
-            0,
-            "an entry revoked mid-probe must NEVER be written back to the \
-             idle queue (a plain `*idle = survivors` write-back would \
-             resurrect a revoked entry)"
-        );
-
-        // Run the destroy the caller (`run_maintenance`, in production)
-        // performs on every `failed` entry, and confirm it actually ran —
-        // proving this is a real destroy path, not just an accounting
-        // artifact.
-        mr.release_queue
-            .submit_coordinator(move || Box::pin(failed.run()))
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            destroyed.load(Ordering::SeqCst),
-            1,
-            "the revoked-mid-probe entry must actually be torn down via \
-             Provider::destroy"
-        );
-    }
-
-    // ── Reaper-tick min-idle floor refill ───────────────────────────────
-
-    /// After a maintenance sweep evicts every idle entry, `refill_min_idle`
-    /// tops the store back up to `min_size` (warmup_target) — the reaper
-    /// closes the gap proactively instead of waiting for the next
-    /// caller-driven acquire to create one on demand.
-    #[tokio::test]
-    async fn refill_min_idle_tops_up_after_maintenance_eviction() {
-        let resource = Mock::new();
-        let created = Arc::clone(&resource.created);
-        let mr = managed(
-            resource,
-            PoolConfig {
-                min_size: 2,
-                max_size: 4,
-                idle_timeout: None,
-                max_lifetime: None,
-                ..PoolConfig::default()
-            },
-        );
-
-        // Two overlapping leases so both entries land in the idle queue on
-        // release — a serial acquire-release would just reuse the one entry
-        // and only ever accumulate one.
-        let g1 = mr
-            .run_acquire_loop(&test_ctx(), &AcquireOptions::default(), None)
-            .await
-            .expect("acquire 1");
-        let g2 = mr
-            .run_acquire_loop(&test_ctx(), &AcquireOptions::default(), None)
-            .await
-            .expect("acquire 2");
-        g1.release().await.expect("release 1");
-        g2.release().await.expect("release 2");
-        assert_eq!(mr.store.len().await, 2);
-
-        // Force eviction deterministically via a fingerprint bump (no
-        // wall-clock sleep needed).
-        mr.set_fingerprint(99);
-        let evicted = mr.run_maintenance().await;
-        assert_eq!(evicted, 2, "both stale-fingerprint entries must be evicted");
-        assert_eq!(mr.store.len().await, 0);
-
-        let refilled = mr.refill_min_idle(&test_ctx()).await;
-        assert_eq!(
-            refilled, 2,
-            "refill must top the idle queue back up to min_size"
-        );
-        assert_eq!(mr.store.len().await, 2);
-        assert_eq!(
-            created.load(Ordering::SeqCst),
-            4,
-            "2 initial creates + 2 refill creates"
-        );
-    }
-
-    /// MAJOR regression (final-review item 2): the deficit computation used
-    /// to read only the idle-queue floor (`warmup_target - idle_len`),
-    /// ignoring currently checked-out leases tracked by
-    /// `ManagedResource::in_flight`. Under full load — idle empty, every
-    /// permit already leased — the naive deficit equalled `min_size` and the
-    /// tick created that many *extra* instances on top of the `max_size`
-    /// already checked out, overshooting the pool to `max_size + min_size`
-    /// live instances. The fix additionally bounds the refill by
-    /// `store.capacity() - (idle_len + in_flight)`; at `max_size` fully
-    /// leased that headroom is zero, so the tick must create nothing.
-    #[tokio::test]
-    async fn refill_min_idle_does_not_overshoot_when_pool_is_fully_leased() {
-        let resource = Mock::new();
-        let created = Arc::clone(&resource.created);
-        let (rq, _handle) = ReleaseQueue::new(1);
-        let mr = {
-            let config = PoolConfig {
-                min_size: 2,
-                max_size: 2,
-                idle_timeout: None,
-                max_lifetime: None,
-                ..PoolConfig::default()
-            };
-            let topology = Pooled::<Mock>::new(config.clone(), 0);
-            Arc::new(ManagedResource {
-                resource,
-                config: ArcSwap::from_pointee(PoolCfg),
-                topology,
-                store: InstanceStore::with_abandonment_tracker(
-                    Some(config.max_size as usize),
-                    rq.abandonment_tracker(),
-                ),
-                retained: crate::RetainedStore::new(rq.abandonment_tracker()),
-                release_queue: Arc::new(rq),
-                generation: AtomicU64::new(0),
-                status: ArcSwap::from_pointee(ResourceStatus::new()),
-                recovery_gate: None,
-                tainted: AtomicBool::new(false),
-                in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
-                maintenance_sweeps: AtomicU64::new(0),
-                maintenance: Default::default(),
-            })
-        };
-
-        // Simulate both `max_size` leases already checked out and in flight
-        // — the state `Manager::acquire_pooled`'s `InFlightCounter` puts
-        // `ManagedResource::in_flight` in for the duration of a lease.
-        // `run_acquire_loop` alone (used directly by this module's unit
-        // tests) never touches that counter, so it is set directly here to
-        // isolate `refill_min_idle`'s bound math from the manager dispatch
-        // layer.
-        mr.in_flight.0.store(2, Ordering::SeqCst);
-        assert_eq!(
-            mr.store.len().await,
-            0,
-            "idle queue starts empty — both entries are checked out, not idle"
-        );
-
-        let refilled = mr.refill_min_idle(&test_ctx()).await;
-        assert_eq!(
-            refilled, 0,
-            "no headroom left under max_size while both leases are in flight \
-             — the reaper tick must be a no-op"
-        );
-        assert_eq!(
-            created.load(Ordering::SeqCst),
-            0,
-            "refill must not create instances beyond max_size"
-        );
-    }
-
-    /// A `RecoveryGate` in any state other than `Idle` (a recovery attempt
-    /// in progress here) must make `refill_min_idle` a complete no-op —
-    /// creating replacement entries against a backend the gate has already
-    /// flagged unhealthy would recreate the exact stampede the gate exists
-    /// to prevent.
-    #[tokio::test]
-    async fn refill_min_idle_skips_when_gate_not_idle() {
-        let resource = Mock::new();
-        let created = Arc::clone(&resource.created);
-        let gate = RecoveryGate::new(RecoveryGateConfig::default());
-        // Holding the ticket moves the gate to `InProgress`.
-        let _ticket = gate.try_begin().expect("gate starts idle");
-
-        let mr = {
-            let (rq, _handle) = ReleaseQueue::new(1);
-            let topology = Pooled::<Mock>::new(
-                PoolConfig {
-                    min_size: 2,
-                    ..PoolConfig::default()
-                },
-                0,
-            );
-            Arc::new(ManagedResource {
-                resource,
-                config: ArcSwap::from_pointee(PoolCfg),
-                topology,
-                store: InstanceStore::with_abandonment_tracker(None, rq.abandonment_tracker()),
-                retained: crate::RetainedStore::new(rq.abandonment_tracker()),
-                release_queue: Arc::new(rq),
-                generation: AtomicU64::new(0),
-                status: ArcSwap::from_pointee(ResourceStatus::new()),
-                recovery_gate: Some(Arc::new(gate)),
-                tainted: AtomicBool::new(false),
-                in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
-                maintenance_sweeps: AtomicU64::new(0),
-                maintenance: Default::default(),
-            })
-        };
-
-        let refilled = mr.refill_min_idle(&test_ctx()).await;
-        assert_eq!(
-            refilled, 0,
-            "a non-Idle gate must skip the refill tick entirely"
-        );
-        assert_eq!(
-            created.load(Ordering::SeqCst),
-            0,
-            "no create_entry call must happen while the gate is not Idle"
-        );
-    }
-
-    /// Cancel-safety invariant: shutdown-during-refill race is clean. A refill task
-    /// aborted while `create` is in flight (before the entry is deposited —
-    /// here: parked in the mock's `create`; in production the reaper task
-    /// being cancelled by `graceful_shutdown`) must destroy the created
-    /// instance via the release queue, never leak it and never panic —
-    /// mirrors `cancelled_warmup_between_create_and_deposit_destroys_the_entry`,
-    /// proving `refill_min_idle` inherited the same cancel-safety contract
-    /// through the shared `create_and_deposit_entries` helper.
-    #[tokio::test]
-    async fn refill_min_idle_shutdown_race_destroys_in_flight_entry() {
-        let resource = Mock::new();
-        resource.park_create.store(true, Ordering::SeqCst);
-        let created = Arc::clone(&resource.created);
-        let destroyed = Arc::clone(&resource.destroyed);
-        let create_entered = Arc::clone(&resource.create_entered);
-        let release_create = Arc::clone(&resource.release_create);
-        let (rq, rq_handle) = ReleaseQueue::new(1);
-        let rq = Arc::new(rq);
-        let mr = {
-            let topology = Pooled::<Mock>::new(
-                PoolConfig {
-                    min_size: 1, // refill deficit == 1 against an empty store
-                    ..PoolConfig::default()
-                },
-                0,
-            );
-            Arc::new(ManagedResource {
-                resource,
-                config: ArcSwap::from_pointee(PoolCfg),
-                topology,
-                store: InstanceStore::with_abandonment_tracker(None, rq.abandonment_tracker()),
-                retained: crate::RetainedStore::new(rq.abandonment_tracker()),
-                release_queue: Arc::clone(&rq),
-                generation: AtomicU64::new(0),
-                status: ArcSwap::from_pointee(ResourceStatus::new()),
-                recovery_gate: None,
-                tainted: AtomicBool::new(false),
-                in_flight: Arc::new((AtomicU64::new(0), Notify::new())),
-                maintenance_sweeps: AtomicU64::new(0),
-                maintenance: Default::default(),
-            })
-        };
-
-        let mr_refill = Arc::clone(&mr);
-        let ctx = test_ctx();
-        let refill_task = tokio::spawn(async move { mr_refill.refill_min_idle(&ctx).await });
-
-        // `len()` (the deficit check) strictly precedes `create_entry` in
-        // program order, so by the time `create` has entered and parked, the
-        // idle lock is free — take it ourselves *before* letting `create`
-        // resume, so the loop's post-create `lock_idle().await` blocks on
-        // us. This produces the exact created-but-undeposited window a
-        // cancelled reaper task (shutdown) lands in, without racing `len()`
-        // for the same lock (holding it from the start would block `len()`
-        // itself, never reaching `create_entry` at all).
-        create_entered.notified().await;
-        let idle_lock = mr.store.lock_idle().await;
-        release_create.notify_one();
-        // Let the task resume past `create`, build its `EntryCreateGuard`,
-        // and block on the lock we hold. Single-threaded test runtime: this
-        // only needs to yield long enough for the scheduler to poll the
-        // parked task once.
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-
-        refill_task.abort(); // the cancellation: shutdown drops the reaper task
-        let _ = refill_task.await; // best-effort join (JoinError::is_cancelled())
-        drop(idle_lock);
-
-        assert_eq!(
-            created.load(Ordering::SeqCst),
-            1,
-            "exactly one instance was created before the cancellation"
-        );
-        assert!(
-            mr.store.is_empty().await,
-            "the cancelled refill must not have deposited the entry"
-        );
-
-        rq.close();
-        drop(rq);
-        drop(mr);
-        ReleaseQueue::shutdown(rq_handle).await;
-        assert_eq!(
-            destroyed.load(Ordering::SeqCst),
-            1,
-            "a refill cancelled between create and deposit must destroy the \
-             created instance via the ReleaseQueue, never leak it — no panic, \
-             no leak"
-        );
-    }
-
-    /// Fence invariant: revoke-during-refill. A `revoke_slot` epoch bump that
-    /// lands while a refill-created entry is still mid-`create` (the window
-    /// between the epoch snapshot and the fenced deposit) must make the
-    /// deposit fence destroy the entry, never admit it to the idle queue as
-    /// a since-revoked instance.
-    #[tokio::test]
-    async fn refill_min_idle_revoke_mid_create_destroys_not_deposits() {
-        let resource = Mock::new();
-        resource.park_create.store(true, Ordering::SeqCst);
-        let created = Arc::clone(&resource.created);
-        let destroyed = Arc::clone(&resource.destroyed);
-        let create_entered = Arc::clone(&resource.create_entered);
-        let release_create = Arc::clone(&resource.release_create);
-        let mr = managed(
-            resource,
-            PoolConfig {
-                min_size: 1,
-                ..PoolConfig::default()
-            },
-        );
-
-        let mr_refill = Arc::clone(&mr);
-        let ctx = test_ctx();
-        let refill_task = tokio::spawn(async move { mr_refill.refill_min_idle(&ctx).await });
-
-        // Deterministic: the entry's pre-revoke epoch is already snapshotted
-        // (`create_and_deposit_entries` stamps it before calling
-        // `create_entry`) and `create` is now parked mid-flight.
-        create_entered.notified().await;
-
-        // The revoke fence bump — exactly what `Manager::revoke_slot`'s
-        // synchronous phase 1 does — lands while the entry is still being
-        // created, strictly before the fenced deposit.
-        mr.bump_revoke_epoch();
-        release_create.notify_one();
-
-        // Let the refill actually finish: it must observe the epoch
-        // mismatch at deposit and destroy the entry instead of admitting it.
-        let refilled = refill_task.await.expect("refill task must not panic");
-        assert_eq!(
-            refilled, 0,
-            "the epoch-fenced entry must not count as a successful refill"
-        );
-        assert!(
-            mr.store.is_empty().await,
-            "the deposit fence must never admit a since-revoked entry — no \
-             plain write-back that would resurrect it"
-        );
-        assert_eq!(created.load(Ordering::SeqCst), 1);
-        assert_eq!(
-            destroyed.load(Ordering::SeqCst),
-            1,
-            "the fenced entry must be destroyed, not silently dropped"
-        );
-    }
-}
+#[path = "tests.rs"]
+mod tests;

@@ -37,8 +37,8 @@
 //!   credential / dynamic-secret lease was revoked. Either triggers
 //!   [`ResourceFanoutIndex::dispatch_revoke`]. The fan-out itself is already
 //!   two-phase + cancellation-safe internally: synchronous
-//!   `taint_slot_for` outside the per-resource timeout, then the
-//!   timeout-wrapped `drain_and_revoke` tail. This driver does **not**
+//!   `taint_slot_for` before the awaited tail, then queue-owned hook
+//!   settlement after admission. This driver does **not**
 //!   re-implement that — it only invokes `dispatch_revoke`.
 //!
 //! A `LeaseRevoked` whose `credential_id` is `None` (an orphan lease
@@ -423,7 +423,7 @@ impl ResourceFanoutDriver {
             );
             return;
         }
-        if outcome.failed > 0 || outcome.timed_out > 0 {
+        if outcome.failed > 0 || outcome.timed_out > 0 || outcome.abandoned > 0 {
             tracing::warn!(
                 target: "nebula_resource::credential_fanout",
                 %credential_id,
@@ -431,9 +431,25 @@ impl ResourceFanoutDriver {
                 success = outcome.success,
                 failed = outcome.failed,
                 timed_out = outcome.timed_out,
+                deferred = outcome.deferred,
+                abandoned = outcome.abandoned,
+                drain_timed_out = outcome.drain_timed_out,
+                observation_timed_out = outcome.observation_timed_out,
                 dispatched = outcome.dispatched(),
                 "resource rotation fan-out completed with non-success rows; \
                  siblings unaffected (per-resource isolation)"
+            );
+        } else if outcome.deferred > 0 {
+            tracing::info!(
+                target: "nebula_resource::credential_fanout",
+                %credential_id,
+                op,
+                success = outcome.success,
+                deferred = outcome.deferred,
+                drain_timed_out = outcome.drain_timed_out,
+                observation_timed_out = outcome.observation_timed_out,
+                dispatched = outcome.dispatched(),
+                "resource rotation fan-out accepted queue-owned deferred rows"
             );
         } else {
             tracing::info!(
@@ -441,6 +457,8 @@ impl ResourceFanoutDriver {
                 %credential_id,
                 op,
                 success = outcome.success,
+                drain_timed_out = outcome.drain_timed_out,
+                observation_timed_out = outcome.observation_timed_out,
                 dispatched = outcome.dispatched(),
                 "resource rotation fan-out completed"
             );

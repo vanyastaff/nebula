@@ -148,7 +148,7 @@ impl ResidentProvider for Ctl {
 /// a wedged resource times out in isolation; both healthy siblings still
 /// refresh, and the aggregate accounts for every bound row.
 #[tokio::test]
-async fn engine_fanout_isolates_a_wedged_resource_from_siblings() {
+async fn engine_fanout_reports_terminal_timeout_for_wedged_resource() {
     let behaviour = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
     let refresh_entered = Arc::new(AtomicUsize::new(0));
     let org = OrgId::new();
@@ -199,8 +199,8 @@ async fn engine_fanout_isolates_a_wedged_resource_from_siblings() {
         idx.bind(cid, Ctl::key(), scope.clone(), "db", id);
     }
 
-    // Per-resource budget: the wedged row times out fast; the two OK rows
-    // complete well within it. The whole dispatch is additionally bounded
+    // Per-resource hook budget: the wedged row becomes a terminal timeout;
+    // the two OK rows complete within it. The whole dispatch is additionally bounded
     // by a generous outer timeout so an isolation regression (the wedged
     // hang leaking past its per-resource budget to stall the dispatch)
     // fails this test loudly instead of hanging the test runner.
@@ -211,15 +211,13 @@ async fn engine_fanout_isolates_a_wedged_resource_from_siblings() {
     .await
     .expect("dispatch_refresh must complete under timeout isolation");
 
-    assert_eq!(
-        out,
-        RotationOutcome {
-            success: 2,
-            failed: 0,
-            timed_out: 1,
-        },
-        "the wedged resource must time out in isolation; both siblings still refresh"
-    );
+    assert_eq!(out.success(), 2);
+    assert_eq!(out.failed(), 0);
+    assert_eq!(out.timed_out(), 1);
+    assert_eq!(out.deferred(), 0);
+    assert_eq!(out.abandoned(), 0);
+    assert_eq!(out.drain_timed_out(), 0);
+    assert_eq!(out.observation_timed_out(), 0);
     assert_eq!(
         out.dispatched(),
         3,
@@ -228,7 +226,7 @@ async fn engine_fanout_isolates_a_wedged_resource_from_siblings() {
     assert_eq!(
         refresh_entered.load(Ordering::SeqCst),
         3,
-        "every resource's hook ran — the per-resource timeout did not cancel siblings"
+        "every resource's hook ran — timeout isolation did not cancel siblings"
     );
 }
 

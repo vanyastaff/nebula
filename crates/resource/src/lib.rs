@@ -156,13 +156,13 @@
 //!    asynchronously via the [`ReleaseQueue`] on cancellation, never orphaned.
 //!    Tested by `cancelled_acquire_during_accept_destroys_the_popped_entry`
 //!    and `cancelled_warmup_between_create_and_deposit_destroys_the_entry`
-//!    in `src/runtime/acquire_loop.rs`.
+//!    in `src/runtime/acquire_loop/tests.rs`.
 //! 2. **After a credential is revoked, no new lease is ever handed out on
 //!    it** — the taint runs synchronously before the first `.await`, so a
 //!    dropped or timed-out revoke future can never leave the credential
 //!    silently servable. Tested by `tests/revoke_recycle_toctou.rs` and
 //!    `probe_revoke_mid_probe_destroys_probed_entries_not_redeposited` in
-//!    `src/runtime/acquire_loop.rs`. See
+//!    `src/runtime/acquire_loop/tests.rs`. See
 //!    `crates/resource/docs/credential-rotation.md` for the full sequence.
 //! 3. **Exactly one [`Provider::create`] runs per `(key, scope,
 //!    slot_identity)` under concurrent acquire** — every other concurrent
@@ -257,12 +257,13 @@ pub use context::{
 };
 pub use dedup::{DedupKey, SlotIdentity};
 pub use error::{Error, ErrorKind};
-pub use events::ResourceEvent;
+pub use events::{ResourceEvent, RetirementFailureStage, RetirementOrigin};
 pub use ext::HasResourcesExt;
-pub use guard::ResourceGuard;
+pub use guard::{ReleaseOutcome, ResourceGuard};
 pub use manager::{
     DrainTimeoutPolicy, Manager, ManagerConfig, RegisterOptions, RegistrationSpec,
-    ResourceHealthSnapshot, RevokeTail, ShutdownConfig, ShutdownError, ShutdownReport, TaintedSlot,
+    ResourceHealthSnapshot, RevokeTail, ShutdownConfig, ShutdownError, ShutdownReport,
+    SlotDeferralReason, SlotDispatchOutcome, SlotDrainOutcome, TaintedSlot,
 };
 pub use metrics::{
     ACQUIRE_WAIT_BUCKET_UPPER_BOUNDS_MICROS, AcquireWaitSnapshot, OutcomeCountersSnapshot,
@@ -391,7 +392,7 @@ pub use runtime::{
 pub use state::{ResourceErrorSummary, ResourcePhase, ResourceStatus};
 // Topology configurations — used at registration time.
 pub use topology::{
-    AdmissionPhase, AdmissionStatus, CheckedOut, Checkout, InstanceStore, Load,
+    AdmissionPhase, AdmissionStatus, CheckedOut, Checkout, HookFault, InstanceStore, Load,
     MaintenanceSchedule, NoTopology, PoolStrategy, ReturnOutcome, Ticket, Topology, Unavailable,
     bounded::{BoundedMode, BoundedProvider},
     pooled::{
@@ -436,8 +437,8 @@ pub use credential_fanout::{Bind, ResourceFanoutDriver, ResourceFanoutIndex, Rot
 pub mod prelude {
     pub use crate::{
         AcquireOptions, Error, ErrorKind, HasCredentialSlots, Manager, PoolConfig, Pooled,
-        Provider, RegistrationSpec, Resident, ResidentConfig, ResourceConfig, ResourceContext,
-        ResourceGuard, ResourceKey, ResourceMetadata, ScopeLevel, ShutdownConfig, SlotCell,
-        SlotIdentity, TopologyTag, resource_key,
+        Provider, RegistrationSpec, ReleaseOutcome, Resident, ResidentConfig, ResourceConfig,
+        ResourceContext, ResourceGuard, ResourceKey, ResourceMetadata, ScopeLevel, ShutdownConfig,
+        SlotCell, SlotIdentity, TopologyTag, resource_key,
     };
 }

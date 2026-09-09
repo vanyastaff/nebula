@@ -592,7 +592,7 @@ pub const NEBULA_RESOURCE_CIRCUIT_BREAKER_CLOSED_TOTAL: &str =
 /// Counter: per-resource credential refresh dispatch attempts.
 ///
 /// Labeled by `outcome` (see [`rotation_outcome`]). Bounded cardinality
-/// (3 closed values) — no `resource_key` or `credential_id` label, since
+/// (4 terminal values) — no `resource_key` or `credential_id` label, since
 /// either would explode cardinality on hot rotation paths. Aggregate-level
 /// fan-out signal is published via
 /// [`crate::naming::NEBULA_CREDENTIAL_REFRESH_COORD_COALESCED_TOTAL`].
@@ -604,12 +604,25 @@ pub const NEBULA_RESOURCE_CREDENTIAL_ROTATION_ATTEMPTS_TOTAL: &str =
 /// [`NEBULA_RESOURCE_CREDENTIAL_ROTATION_ATTEMPTS_TOTAL`].
 pub const NEBULA_RESOURCE_CREDENTIAL_REVOKE_ATTEMPTS_TOTAL: &str =
     "nebula_resource_credential_revoke_attempts_total";
+/// Counter: accepted credential refresh hooks whose caller stopped observing.
+///
+/// Labeled only with `outcome="deferred"`. This is deliberately separate
+/// from the terminal attempts counter: an admitted hook can be observed as
+/// deferred and later settle successfully, so combining both states in one
+/// conservation equation would double-count a physical dispatch.
+pub const NEBULA_RESOURCE_CREDENTIAL_ROTATION_OBSERVATIONS_TOTAL: &str =
+    "nebula_resource_credential_rotation_observations_total";
+/// Counter: accepted credential revoke hooks whose caller stopped observing.
+///
+/// Symmetric to [`NEBULA_RESOURCE_CREDENTIAL_ROTATION_OBSERVATIONS_TOTAL`].
+pub const NEBULA_RESOURCE_CREDENTIAL_REVOKE_OBSERVATIONS_TOTAL: &str =
+    "nebula_resource_credential_revoke_observations_total";
 /// Histogram: per-resource credential rotation dispatch latency in seconds.
 ///
-/// Labeled by `outcome` (see [`rotation_outcome`]). Covers the full
-/// dispatcher span — `SchemeFactory::acquire` plus the resource hook
-/// (`on_credential_refresh` for rotations, `on_credential_revoke` for
-/// revocations) wrapped in the per-resource `tokio::time::timeout` budget.
+/// Labeled by `outcome` (see [`rotation_outcome`]). Covers the resolved
+/// resource dispatch from hook admission through the caller's terminal or
+/// deferred observation, including queue wait. A deferred observation does
+/// not imply that the queue-owned hook has completed.
 pub const NEBULA_RESOURCE_CREDENTIAL_ROTATION_DISPATCH_LATENCY_SECONDS: &str =
     "nebula_resource_credential_rotation_dispatch_latency_seconds";
 
@@ -648,8 +661,12 @@ pub const NEBULA_RESOURCE_RECYCLE_OUTCOME_TOTAL: &str = "nebula_resource_recycle
 /// [`NEBULA_RESOURCE_CREDENTIAL_REVOKE_ATTEMPTS_TOTAL`],
 /// [`NEBULA_RESOURCE_CREDENTIAL_ROTATION_DISPATCH_LATENCY_SECONDS`]).
 ///
-/// Closed set of three values — adding another permanently inflates the
-/// cardinality floor and requires a sub-spec amendment.
+/// Closed vocabulary of five values across two metric families. Terminal
+/// attempt counters use `success|failed|timed_out|abandoned`; observation
+/// counters use only `deferred`. This adds one bounded series per direction,
+/// rather than mixing an in-flight observer state into terminal conservation.
+/// Adding another value permanently inflates the cardinality floor and
+/// requires an amendment to the credential-rotation observability sub-spec.
 pub mod rotation_outcome {
     /// Resource hook returned `Ok(())` within the per-resource budget.
     pub const SUCCESS: &str = "success";
@@ -657,6 +674,14 @@ pub mod rotation_outcome {
     pub const FAILED: &str = "failed";
     /// Per-resource budget elapsed before the hook completed.
     pub const TIMED_OUT: &str = "timed_out";
+    /// Caller observation ended while accepted work remained queue-owned and
+    /// in flight. This is not terminal loss and is never an alias for
+    /// [`ABANDONED`].
+    pub const DEFERRED: &str = "deferred";
+    /// An admitted cleanup-queue task was abandoned before producing a hook
+    /// result. A caller merely stopping receipt observation does not emit
+    /// this terminal label.
+    pub const ABANDONED: &str = "abandoned";
 }
 
 /// Outcome labels for the pooled-release recycle counter
@@ -1001,9 +1026,12 @@ mod tests {
         NEBULA_RESOURCE_ACQUIRE_ERROR_TOTAL, NEBULA_RESOURCE_ACQUIRE_TOTAL,
         NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS, NEBULA_RESOURCE_CLEANUP_TOTAL,
         NEBULA_RESOURCE_CONFIG_RELOADED_TOTAL, NEBULA_RESOURCE_CREATE_TOTAL,
-        NEBULA_RESOURCE_CREDENTIAL_REVOKE_ATTEMPTS_TOTAL, NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL,
+        NEBULA_RESOURCE_CREDENTIAL_REVOKE_ATTEMPTS_TOTAL,
+        NEBULA_RESOURCE_CREDENTIAL_REVOKE_OBSERVATIONS_TOTAL,
+        NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL,
         NEBULA_RESOURCE_CREDENTIAL_ROTATION_ATTEMPTS_TOTAL,
         NEBULA_RESOURCE_CREDENTIAL_ROTATION_DISPATCH_LATENCY_SECONDS,
+        NEBULA_RESOURCE_CREDENTIAL_ROTATION_OBSERVATIONS_TOTAL,
         NEBULA_RESOURCE_CREDENTIAL_ROTATION_SKIPPED_TOTAL, NEBULA_RESOURCE_DESTROY_TOTAL,
         NEBULA_RESOURCE_ERROR_TOTAL, NEBULA_RESOURCE_HEALTH_STATE,
         NEBULA_RESOURCE_POOL_EXHAUSTED_TOTAL, NEBULA_RESOURCE_POOL_WAITERS,
@@ -1018,7 +1046,7 @@ mod tests {
         webhook_signature_failure_reason,
     };
 
-    const RESOURCE_METRIC_NAMES: [&str; 22] = [
+    const RESOURCE_METRIC_NAMES: [&str; 24] = [
         NEBULA_RESOURCE_CREATE_TOTAL,
         NEBULA_RESOURCE_ACQUIRE_TOTAL,
         NEBULA_RESOURCE_ACQUIRE_WAIT_DURATION_SECONDS,
@@ -1036,6 +1064,8 @@ mod tests {
         NEBULA_RESOURCE_CREDENTIAL_ROTATED_TOTAL,
         NEBULA_RESOURCE_CREDENTIAL_ROTATION_ATTEMPTS_TOTAL,
         NEBULA_RESOURCE_CREDENTIAL_REVOKE_ATTEMPTS_TOTAL,
+        NEBULA_RESOURCE_CREDENTIAL_ROTATION_OBSERVATIONS_TOTAL,
+        NEBULA_RESOURCE_CREDENTIAL_REVOKE_OBSERVATIONS_TOTAL,
         NEBULA_RESOURCE_CREDENTIAL_ROTATION_DISPATCH_LATENCY_SECONDS,
         NEBULA_RESOURCE_CREDENTIAL_ROTATION_SKIPPED_TOTAL,
         NEBULA_RESOURCE_DESTROY_TOTAL,
@@ -1083,7 +1113,7 @@ mod tests {
             }
         }
 
-        assert_eq!(unique.len(), 22);
+        assert_eq!(unique.len(), 24);
     }
 
     #[test]
@@ -1095,6 +1125,8 @@ mod tests {
             rotation_outcome::SUCCESS,
             rotation_outcome::FAILED,
             rotation_outcome::TIMED_OUT,
+            rotation_outcome::DEFERRED,
+            rotation_outcome::ABANDONED,
         ];
         let mut unique = HashSet::new();
         for label in labels {
@@ -1102,7 +1134,7 @@ mod tests {
             assert!(label.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'));
             assert!(unique.insert(label));
         }
-        assert_eq!(unique.len(), 3);
+        assert_eq!(unique.len(), 5);
     }
 
     #[test]

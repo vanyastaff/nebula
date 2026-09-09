@@ -160,9 +160,9 @@ pub use nebula_plugin::{
 pub use nebula_resource::{
     AcquireOptions, Bounded, BoundedMode, BoundedProvider, ClassifyError, Error, ErrorKind,
     HasCredentialSlots, PoolConfig, PoolProvider, Pooled, Provider, RegistrationSpec,
-    ReloadOutcome, Resident, ResidentConfig, ResidentProvider, Resource, ResourceConfig,
-    ResourceContext, ResourceGuard, ResourceMetadata, SlotCell, SlotIdentity, TeardownCx,
-    TeardownReason, TopologyTag, no_credential_slots,
+    ReleaseOutcome, ReloadOutcome, Resident, ResidentConfig, ResidentProvider, Resource,
+    ResourceConfig, ResourceContext, ResourceGuard, ResourceMetadata, SlotCell, SlotIdentity,
+    TeardownCx, TeardownReason, TopologyTag, no_credential_slots,
 };
 // Derive names are re-exported from their respective domain crates. Generated
 // paths prefer a direct (including renamed) leaf dependency, then the SDK's

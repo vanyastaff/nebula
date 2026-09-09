@@ -5,8 +5,9 @@
 //! `WorkflowBuilder`, and credential `TestResult`) and manual `Provider` authoring
 //! with a consuming terminal hook over a non-Clone instance, using the
 //! general-purpose `async-trait` dependency. This is a compile check, not runtime
-//! teardown coverage. Each negative binary
-//! targets one distinct authority or persistence escape hatch that must stay
+//! teardown coverage. A second positive binary checks custom resource topology
+//! authoring. Each negative binary targets one distinct authority or persistence
+//! escape hatch that must stay
 //! unavailable. Procedural derives have a separate SDK-only compile-pass
 //! contract in `derive_external_contract.rs`.
 
@@ -20,6 +21,10 @@ use std::{
 const FIXTURE_FILES: &[&str] = &[
     "Cargo.toml",
     "src/bin/positive.rs",
+    "src/bin/resource_topology.rs",
+    "src/bin/resource_manager.rs",
+    "src/bin/resource_registry.rs",
+    "src/bin/resource_release_queue.rs",
     "src/bin/authority_constructor.rs",
     "src/bin/owner_selector.rs",
     "src/bin/raw_writer.rs",
@@ -31,6 +36,9 @@ const FIXTURE_FILES: &[&str] = &[
 ];
 
 const FORBIDDEN: &[(&str, &str)] = &[
+    ("resource_manager", "Manager"),
+    ("resource_registry", "Registry"),
+    ("resource_release_queue", "ReleaseQueue"),
     ("authority_constructor", "Principal"),
     ("owner_selector", "CredentialOwner"),
     ("raw_writer", "CredentialPersistence"),
@@ -89,6 +97,12 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
         positive.status.success(),
         "supported SDK authoring path must compile:\n{}",
         render_output(&positive)
+    );
+    let topology = cargo_check(temp.path(), "resource_topology");
+    assert!(
+        topology.status.success(),
+        "custom topology authoring must compile:\n{}",
+        render_output(&topology)
     );
 
     for &(binary, forbidden_segment) in FORBIDDEN {

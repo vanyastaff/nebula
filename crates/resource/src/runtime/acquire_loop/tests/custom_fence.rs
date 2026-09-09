@@ -6,6 +6,7 @@ use super::*;
 struct CustomResource {
     created: Arc<AtomicU64>,
     destroyed: Arc<AtomicU64>,
+    destroy_finished: Arc<Notify>,
 }
 
 #[async_trait::async_trait]
@@ -24,6 +25,7 @@ impl Provider for CustomResource {
 
     async fn destroy(&self, _: u64, _: TeardownCx) -> Result<(), Error> {
         self.destroyed.fetch_add(1, Ordering::SeqCst);
+        self.destroy_finished.notify_one();
         Ok(())
     }
 }
@@ -119,7 +121,7 @@ async fn custom_topology_checkout_destroys_recycled_entry_after_epoch_only_revok
         .unwrap();
     let first = acquire(&manager).await;
     assert_eq!(*first, 0);
-    first.release().await.unwrap();
+    let _release_outcome = first.release().await.unwrap();
     let row = manager
         .lookup::<CustomResource>(&crate::ScopeLevel::Global)
         .unwrap();
@@ -135,12 +137,13 @@ async fn custom_topology_checkout_destroys_recycled_entry_after_epoch_only_revok
         "checkout must never lease the stale entry again"
     );
     assert_eq!(resource.created.load(Ordering::SeqCst), 2);
+    resource.destroy_finished.notified().await;
     assert_eq!(
         resource.destroyed.load(Ordering::SeqCst),
         1,
         "the checkout fence, not terminal shutdown, must destroy the stale entry"
     );
-    replacement.release().await.unwrap();
+    let _release_outcome = replacement.release().await.unwrap();
     manager
         .graceful_shutdown(crate::ShutdownConfig::default())
         .await
@@ -170,9 +173,9 @@ async fn panicking_idle_predicate_preserves_all_owned_entries_for_teardown() {
     let first = acquire(&manager).await;
     let second = acquire(&manager).await;
     let third = acquire(&manager).await;
-    first.release().await.unwrap();
-    second.release().await.unwrap();
-    third.release().await.unwrap();
+    let _first_outcome = first.release().await.unwrap();
+    let _second_outcome = second.release().await.unwrap();
+    let _third_outcome = third.release().await.unwrap();
     let row = manager
         .lookup::<CustomResource>(&crate::ScopeLevel::Global)
         .unwrap();
@@ -183,11 +186,15 @@ async fn panicking_idle_predicate_preserves_all_owned_entries_for_teardown() {
             .expect("author predicate panic must be isolated without unwinding the store drain"),
         3
     );
-    row.release_queue
-        .submit_release(|| Box::pin(async { Ok(()) }))
-        .await
-        .unwrap()
-        .unwrap();
+    assert_eq!(
+        row.release_queue
+            .submit_release(|| Box::pin(async { Ok(()) }))
+            .expect("open queue must accept cleanup checkpoint")
+            .wait()
+            .await
+            .unwrap(),
+        SubmissionOutcome::Completed,
+    );
     assert_eq!(
         resource.destroyed.load(Ordering::SeqCst),
         3,
@@ -234,11 +241,15 @@ async fn panicking_guard_metadata_keeps_created_entry_armed() {
         .await
         .is_err()
     );
-    row.release_queue
-        .submit_release(|| Box::pin(async { Ok(()) }))
-        .await
-        .unwrap()
-        .unwrap();
+    assert_eq!(
+        row.release_queue
+            .submit_release(|| Box::pin(async { Ok(()) }))
+            .expect("open queue must accept cleanup checkpoint")
+            .wait()
+            .await
+            .unwrap(),
+        SubmissionOutcome::Completed,
+    );
     assert_eq!(resource.created.load(Ordering::SeqCst), 1);
     assert_eq!(
         resource.destroyed.load(Ordering::SeqCst),

@@ -1,9 +1,10 @@
 //! Background release queue for async cleanup tasks.
 //!
 //! [`ReleaseQueue`] distributes cleanup work (e.g., returning connections to a
-//! pool, destroying tainted leases) across N primary workers and one fallback
-//! worker. Tasks are round-robin distributed to primary workers; if a primary
-//! channel is full, the task falls back to the overflow channel.
+//! pool, destroying tainted leases) across independent bounded entry and
+//! coordinator lanes. Each lane has N primary workers and one fallback worker.
+//! A framework coordinator that waits for leases therefore cannot occupy the
+//! workers needed by external guards to return those leases.
 //!
 //! # Shutdown
 //!
@@ -24,7 +25,7 @@ use std::{
     time::Duration,
 };
 
-use futures::{StreamExt, stream::FuturesUnordered};
+use futures::{FutureExt as _, StreamExt, stream::FuturesUnordered};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
@@ -37,17 +38,67 @@ type JobFuture = Pin<Box<dyn Future<Output = Result<(), crate::Error>> + Send>>;
 type TaskFactory = Box<dyn FnOnce() -> JobFuture + Send>;
 pub(crate) type ReleaseReceipt = oneshot::Receiver<Result<(), crate::Error>>;
 
+/// Result of accepting a fallible cleanup job.
+#[derive(Debug)]
+#[must_use = "an accepted cleanup submission must be awaited, deferred, or explicitly detached"]
+pub(crate) enum ReleaseSubmission {
+    /// The caller may await this receipt without creating a queue dependency cycle.
+    Await(ReleaseReceipt),
+    /// The queue accepted the job, but the current cleanup context must not await it.
+    Deferred,
+}
+
+/// Observable state after handling an accepted cleanup submission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use = "deferred cleanup remains queue-owned and must not be reported as completed"]
+pub(crate) enum SubmissionOutcome {
+    /// The job finished and its result was observed.
+    Completed,
+    /// The job remains queue-owned because awaiting it from this context is unsafe.
+    Deferred,
+}
+
+impl ReleaseSubmission {
+    /// Observes completion when safe without erasing accepted deferral.
+    pub(crate) async fn wait(self) -> Result<SubmissionOutcome, crate::Error> {
+        match self {
+            Self::Await(receipt) => receipt
+                .await
+                .unwrap_or_else(|_| Err(crate::Error::cancelled()))
+                .map(|()| SubmissionOutcome::Completed),
+            Self::Deferred => Ok(SubmissionOutcome::Deferred),
+        }
+    }
+
+    /// Explicitly discards only the completion observation, never queue ownership.
+    pub(crate) fn detach(self) {
+        match self {
+            Self::Await(receipt) => drop(receipt),
+            Self::Deferred => {},
+        }
+    }
+}
+
 tokio::task_local! {
     static CURRENT_QUEUE: Arc<()>;
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum JobClass {
     Entry,
     Coordinator,
 }
 
-enum Submission {
+impl JobClass {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Entry => "entry",
+            Self::Coordinator => "coordinator",
+        }
+    }
+}
+
+enum CompletionDisposition {
     Await,
     Deferred,
 }
@@ -288,8 +339,9 @@ impl Drop for TaskLoss {
 /// Maximum time a single release task may execute before being aborted.
 ///
 /// The provider's composed deadline may impose a shorter budget. This ceiling
-/// bounds each individual entry, including its framework hooks; coordinators
-/// have no whole-collection deadline. Manager shutdown bounds their aggregate wait.
+/// bounds each individual entry, including its framework hooks. Coordinator
+/// jobs instead rely on bounds owned by their composed operations and the
+/// manager's terminal shutdown boundary.
 const TASK_EXECUTION_TIMEOUT: Duration = crate::hook_guard::MAX_TEARDOWN_CEILING;
 
 /// Channel buffer size per primary worker.
@@ -320,6 +372,13 @@ const RESCUE_CAPACITY: usize = FALLBACK_BUFFER;
 pub struct ReleaseQueueHandle {
     workers: Vec<tokio::task::JoinHandle<()>>,
     admission: Arc<Admission>,
+}
+
+struct QueueLane {
+    senders: Vec<mpsc::Sender<QueuedTask>>,
+    fallback_tx: mpsc::Sender<QueuedTask>,
+    rescue_tx: mpsc::Sender<RescueTask>,
+    next: AtomicUsize,
 }
 
 /// Manager shutdown owns workers until completion or acknowledged abort.
@@ -368,9 +427,8 @@ impl std::fmt::Debug for ReleaseQueueHandle {
 /// ```
 #[must_use = "dropping the queue closes its channels — keep it alive to submit work"]
 pub struct ReleaseQueue {
-    senders: Vec<mpsc::Sender<QueuedTask>>,
-    fallback_tx: mpsc::Sender<QueuedTask>,
-    next: AtomicUsize,
+    entry_lane: QueueLane,
+    coordinator_lane: QueueLane,
     cancel: CancellationToken,
     admission: Arc<Admission>,
     /// Tracks how many tasks have gone to the fallback channel.
@@ -390,7 +448,6 @@ pub struct ReleaseQueue {
     identity: Arc<()>,
     reentrant_tx: mpsc::Sender<QueuedTask>,
     reentrant_capacity: Arc<Semaphore>,
-    rescue_tx: mpsc::Sender<RescueTask>,
 }
 
 impl Drop for ReleaseQueue {
@@ -402,7 +459,11 @@ impl Drop for ReleaseQueue {
 impl std::fmt::Debug for ReleaseQueue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ReleaseQueue")
-            .field("worker_count", &self.senders.len())
+            .field("entry_worker_count", &self.entry_lane.senders.len())
+            .field(
+                "coordinator_worker_count",
+                &self.coordinator_lane.senders.len(),
+            )
             .field(
                 "fallback_count",
                 &self.fallback_count.load(Ordering::Relaxed),
@@ -414,8 +475,45 @@ impl std::fmt::Debug for ReleaseQueue {
 }
 
 impl ReleaseQueue {
-    /// Creates a new release queue with `worker_count` primary workers
-    /// and its own internal cancellation token.
+    fn spawn_lane(
+        worker_count: usize,
+        workers: &mut Vec<tokio::task::JoinHandle<()>>,
+        admission: &Arc<Admission>,
+        identity: &Arc<()>,
+    ) -> QueueLane {
+        let mut senders = Vec::with_capacity(worker_count);
+        for _ in 0..worker_count {
+            let (sender, receiver) = mpsc::channel::<QueuedTask>(CHANNEL_BUFFER);
+            senders.push(sender);
+            workers.push(tokio::spawn(Self::worker_loop(
+                receiver,
+                admission.terminate.clone(),
+                Arc::clone(identity),
+            )));
+        }
+
+        let (fallback_tx, fallback_rx) = mpsc::channel::<QueuedTask>(FALLBACK_BUFFER);
+        workers.push(tokio::spawn(Self::worker_loop(
+            fallback_rx,
+            admission.terminate.clone(),
+            Arc::clone(identity),
+        )));
+        let (rescue_tx, rescue_rx) = mpsc::channel(RESCUE_CAPACITY);
+        workers.push(tokio::spawn(Self::rescue_loop(
+            rescue_rx,
+            fallback_tx.clone(),
+            admission.terminate.clone(),
+        )));
+        QueueLane {
+            senders,
+            fallback_tx,
+            rescue_tx,
+            next: AtomicUsize::new(0),
+        }
+    }
+
+    /// Creates a new release queue with `worker_count` primary workers per
+    /// execution lane and its own internal cancellation token.
     ///
     /// Returns the queue (for submitting tasks) and a handle (for shutdown).
     ///
@@ -426,7 +524,8 @@ impl ReleaseQueue {
         Self::with_cancel(worker_count, CancellationToken::new())
     }
 
-    /// Creates a new release queue with a shared cancellation token.
+    /// Creates a new release queue with a shared cancellation token and
+    /// `worker_count` primary workers per execution lane.
     ///
     /// Cancelling the token seals roots. Workers exit after accepted jobs and
     /// their same-queue descendants settle. Keep this token
@@ -442,49 +541,27 @@ impl ReleaseQueue {
     ) -> (Self, ReleaseQueueHandle) {
         assert!(worker_count > 0, "worker_count must be at least 1");
 
-        let mut senders = Vec::with_capacity(worker_count);
-        let mut workers = Vec::with_capacity(worker_count + 3);
+        let mut workers = Vec::with_capacity(worker_count.saturating_mul(2).saturating_add(6));
 
         let dropped_count = Arc::new(AtomicUsize::new(0));
         let identity = Arc::new(());
         let admission = Admission::new();
 
-        for _ in 0..worker_count {
-            let (tx, rx) = mpsc::channel::<QueuedTask>(CHANNEL_BUFFER);
-            senders.push(tx);
-            workers.push(tokio::spawn(Self::worker_loop(
-                rx,
-                admission.terminate.clone(),
-                Arc::clone(&identity),
-            )));
-        }
-
-        let (fallback_tx, fallback_rx) = mpsc::channel::<QueuedTask>(FALLBACK_BUFFER);
-        workers.push(tokio::spawn(Self::worker_loop(
-            fallback_rx,
-            admission.terminate.clone(),
-            Arc::clone(&identity),
-        )));
+        let entry_lane = Self::spawn_lane(worker_count, &mut workers, &admission, &identity);
+        let coordinator_lane = Self::spawn_lane(worker_count, &mut workers, &admission, &identity);
         let (reentrant_tx, reentrant_rx) = mpsc::channel(REENTRANT_CAPACITY);
         workers.push(tokio::spawn(Self::reentrant_loop(
             reentrant_rx,
             admission.terminate.clone(),
             Arc::clone(&identity),
         )));
-        let (rescue_tx, rescue_rx) = mpsc::channel(RESCUE_CAPACITY);
-        workers.push(tokio::spawn(Self::rescue_loop(
-            rescue_rx,
-            fallback_tx.clone(),
-            admission.terminate.clone(),
-        )));
         workers.push(tokio::spawn(
             Arc::clone(&admission).supervise(cancel.clone()),
         ));
 
         let queue = Self {
-            senders,
-            fallback_tx,
-            next: AtomicUsize::new(0),
+            entry_lane,
+            coordinator_lane,
             cancel,
             admission: Arc::clone(&admission),
             fallback_count: AtomicUsize::new(0),
@@ -493,7 +570,6 @@ impl ReleaseQueue {
             identity,
             reentrant_tx,
             reentrant_capacity: Arc::new(Semaphore::new(REENTRANT_CAPACITY)),
-            rescue_tx,
         };
         let handle = ReleaseQueueHandle { workers, admission };
 
@@ -506,7 +582,7 @@ impl ReleaseQueue {
     /// If the round-robin primary worker's channel is full, the task
     /// goes to the fallback channel.
     pub fn submit(&self, factory: impl FnOnce() -> ReleaseTask + Send + 'static) {
-        let _ = self.enqueue(
+        if let Err(error) = self.enqueue(
             Box::new(move || {
                 let task = factory();
                 Box::pin(async move {
@@ -516,46 +592,34 @@ impl ReleaseQueue {
             }),
             None,
             JobClass::Entry,
-        );
+        ) {
+            tracing::warn!(error.kind = ?error.kind(), "best-effort release submission rejected");
+        }
     }
 
     pub(crate) fn submit_release(
         &self,
         factory: impl FnOnce() -> JobFuture + Send + 'static,
-    ) -> ReleaseReceipt {
-        let (receipt, receiver) = oneshot::channel();
-        let _ = self.enqueue(Box::new(factory), Some(receipt), JobClass::Entry);
-        receiver
-    }
-
-    pub(crate) fn submit_guard_release(
-        &self,
-        factory: impl FnOnce() -> JobFuture + Send + 'static,
-    ) -> Result<ReleaseReceipt, crate::Error> {
-        let (receipt, receiver) = oneshot::channel();
-        match self.enqueue(Box::new(factory), Some(receipt), JobClass::Entry)? {
-            Submission::Await => Ok(receiver),
-            Submission::Deferred => Err(crate::Error::deferred_cleanup()),
-        }
+    ) -> Result<ReleaseSubmission, crate::Error> {
+        self.submit_job(factory, JobClass::Entry)
     }
 
     pub(crate) fn submit_coordinator(
         &self,
         factory: impl FnOnce() -> JobFuture + Send + 'static,
-    ) -> ReleaseReceipt {
-        let (receipt, receiver) = oneshot::channel();
-        let _ = self.enqueue(Box::new(factory), Some(receipt), JobClass::Coordinator);
-        receiver
+    ) -> Result<ReleaseSubmission, crate::Error> {
+        self.submit_job(factory, JobClass::Coordinator)
     }
 
-    pub(crate) fn submit_joined_coordinator(
+    fn submit_job(
         &self,
         factory: impl FnOnce() -> JobFuture + Send + 'static,
-    ) -> Result<ReleaseReceipt, crate::Error> {
+        class: JobClass,
+    ) -> Result<ReleaseSubmission, crate::Error> {
         let (receipt, receiver) = oneshot::channel();
-        match self.enqueue(Box::new(factory), Some(receipt), JobClass::Coordinator)? {
-            Submission::Await => Ok(receiver),
-            Submission::Deferred => Err(crate::Error::deferred_cleanup()),
+        match self.enqueue(Box::new(factory), Some(receipt), class)? {
+            CompletionDisposition::Await => Ok(ReleaseSubmission::Await(receiver)),
+            CompletionDisposition::Deferred => Ok(ReleaseSubmission::Deferred),
         }
     }
 
@@ -569,12 +633,19 @@ impl ReleaseQueue {
         }
     }
 
+    fn lane(&self, class: JobClass) -> &QueueLane {
+        match class {
+            JobClass::Entry => &self.entry_lane,
+            JobClass::Coordinator => &self.coordinator_lane,
+        }
+    }
+
     fn enqueue(
         &self,
         factory: TaskFactory,
         receipt: Option<oneshot::Sender<Result<(), crate::Error>>>,
         class: JobClass,
-    ) -> Result<Submission, crate::Error> {
+    ) -> Result<CompletionDisposition, crate::Error> {
         if self.cancel.is_cancelled() {
             self.admission.seal();
         }
@@ -583,7 +654,6 @@ impl ReleaseQueue {
             .ok();
         let permit = self.admission.acquire(nested == Some(true));
         let accepted = permit.is_some();
-        let idx = self.next.fetch_add(1, Ordering::Relaxed) % self.senders.len();
         let mut factory = QueuedTask {
             factory,
             completion: TaskCompletion {
@@ -607,7 +677,7 @@ impl ReleaseQueue {
             if let Ok(capacity) = Arc::clone(&self.reentrant_capacity).try_acquire_owned() {
                 factory.completion.capacity = Some(capacity);
                 match self.reentrant_tx.try_send(factory) {
-                    Ok(()) => return Ok(Submission::Await),
+                    Ok(()) => return Ok(CompletionDisposition::Await),
                     Err(error) => {
                         let mut factory = error.into_inner();
                         drop(factory.completion.capacity.take());
@@ -621,12 +691,14 @@ impl ReleaseQueue {
             factory
         };
         let submission = if nested.is_some() {
-            Submission::Deferred
+            CompletionDisposition::Deferred
         } else {
-            Submission::Await
+            CompletionDisposition::Await
         };
+        let lane = self.lane(class);
+        let idx = lane.next.fetch_add(1, Ordering::Relaxed) % lane.senders.len();
 
-        match self.senders[idx].try_send(factory) {
+        match lane.senders[idx].try_send(factory) {
             Ok(()) => {},
             Err(mpsc::error::TrySendError::Full(factory)) => {
                 // Primary is full — try bounded fallback.
@@ -637,12 +709,12 @@ impl ReleaseQueue {
                         "release queue primary channels full, using fallback"
                     );
                 }
-                match self.fallback_tx.try_send(factory) {
+                match lane.fallback_tx.try_send(factory) {
                     Ok(()) => {},
                     Err(mpsc::error::TrySendError::Full(factory)) => {
                         // The owned rescue dispatcher provides a bounded extra
                         // admission window; exhaustion is an observable loss.
-                        self.rescue(factory)?;
+                        self.rescue(lane, factory)?;
                     },
                     Err(mpsc::error::TrySendError::Closed(factory)) => {
                         // Fallback channel is closed — workers have exited.
@@ -657,10 +729,10 @@ impl ReleaseQueue {
             Err(mpsc::error::TrySendError::Closed(factory)) => {
                 // Primary worker exited (e.g., panic). Try the fallback
                 // before recording a drop — fallback may still be alive.
-                match self.fallback_tx.try_send(factory) {
+                match lane.fallback_tx.try_send(factory) {
                     Ok(()) => {},
                     Err(mpsc::error::TrySendError::Full(factory)) => {
-                        self.rescue(factory)?;
+                        self.rescue(lane, factory)?;
                     },
                     Err(mpsc::error::TrySendError::Closed(factory)) => {
                         factory.abandon("primary_and_fallback_closed");
@@ -669,7 +741,7 @@ impl ReleaseQueue {
                 }
             },
         }
-        if matches!(submission, Submission::Deferred) {
+        if matches!(submission, CompletionDisposition::Deferred) {
             tracing::debug!(
                 same_queue = nested == Some(true),
                 "cleanup accepted with deferred completion to avoid a dependency wait"
@@ -686,7 +758,7 @@ impl ReleaseQueue {
     /// its owned submission and records the loss. Both the bounded buffer and
     /// the in-flight reservation belong to a handle-owned worker, so bounded
     /// shutdown also aborts and joins rescue ownership.
-    fn rescue(&self, factory: QueuedTask) -> Result<(), crate::Error> {
+    fn rescue(&self, lane: &QueueLane, factory: QueuedTask) -> Result<(), crate::Error> {
         let rescued = self.rescued_count.fetch_add(1, Ordering::Relaxed) + 1;
         if rescued.is_power_of_two() {
             tracing::warn!(
@@ -696,7 +768,7 @@ impl ReleaseQueue {
             );
         }
 
-        self.rescue_tx
+        lane.rescue_tx
             .try_send(RescueTask {
                 queued: factory,
                 deadline: tokio::time::Instant::now() + RESCUE_TIMEOUT,
@@ -907,11 +979,13 @@ impl ReleaseQueue {
             class,
             mut completion,
         } = queued;
-        // Foolproofing: a release task runs a third-party topology's
-        // `on_release` / `Provider::destroy`. The shared author-hook guard
-        // bounds it (timeout) AND isolates a panic so one careless or hostile
-        // hook can neither stall nor kill this worker — the queue keeps draining
-        // every other slot.
+        // Entry jobs run a third-party topology's `on_release` /
+        // `Provider::destroy`; coordinator jobs drive framework-owned cleanup
+        // collections. Entry hooks retain their cooperative per-job ceiling.
+        // Coordinators have an isolated lane and containment for unwinding
+        // panics, but no whole-job execution timeout: each composed operation
+        // owns its local bound, and manager terminal shutdown is the final
+        // abort boundary. A panic-abort build cannot run unwind containment.
         //
         // SAFETY (unwind): `factory()` builds a self-contained teardown future
         // that owns its slot; the worker holds no alias to it, so a caught panic
@@ -934,15 +1008,12 @@ impl ReleaseQueue {
             JobClass::Entry => {
                 crate::hook_guard::guard_author_hook(TASK_EXECUTION_TIMEOUT, task).await
             },
-            JobClass::Coordinator => {
-                use futures::FutureExt;
-                std::panic::AssertUnwindSafe(task)
-                    .catch_unwind()
-                    .await
-                    .map_err(|_| crate::hook_guard::HookFault::Panicked)
-            },
+            JobClass::Coordinator => std::panic::AssertUnwindSafe(task)
+                .catch_unwind()
+                .await
+                .map_err(|_| crate::hook_guard::HookFault::Panicked),
         };
-        let result = Self::finish_task(guarded, &mut completion.loss);
+        let result = Self::finish_task(guarded, &mut completion.loss, class);
         completion.finish(result);
     }
 
@@ -951,19 +1022,18 @@ impl ReleaseQueue {
         mut loss: TaskLoss,
     ) -> Result<(), crate::Error> {
         let guarded = crate::hook_guard::guard_author_hook(TASK_EXECUTION_TIMEOUT, future).await;
-        Self::finish_task(guarded, &mut loss)
+        Self::finish_task(guarded, &mut loss, JobClass::Entry)
     }
 
     fn finish_task(
         guarded: Result<Result<(), crate::Error>, crate::hook_guard::HookFault>,
         loss: &mut TaskLoss,
+        class: JobClass,
     ) -> Result<(), crate::Error> {
         match guarded {
             Ok(result) => {
                 loss.reason = None;
-                if let Err(error) = &result
-                    && *error.kind() != crate::ErrorKind::DeferredCleanup
-                {
+                if let Err(error) = &result {
                     tracing::warn!(
                         error.kind = ?error.kind(),
                         resource.key = ?error.resource_key(),
@@ -974,6 +1044,7 @@ impl ReleaseQueue {
             },
             Err(crate::hook_guard::HookFault::Panicked) => {
                 tracing::error!(
+                    job.class = class.label(),
                     "release task panicked — isolated; the release worker keeps draining"
                 );
                 // A teardown that unwound never returned its resource — count it
@@ -983,9 +1054,14 @@ impl ReleaseQueue {
                 Err(crate::Error::permanent("release task panicked"))
             },
             Err(crate::hook_guard::HookFault::TimedOut) => {
+                debug_assert!(
+                    matches!(class, JobClass::Entry),
+                    "only entry jobs have a local execution ceiling"
+                );
                 tracing::warn!(
-                    "release task timed out after {}s, skipping",
-                    TASK_EXECUTION_TIMEOUT.as_secs()
+                    job.class = class.label(),
+                    timeout_secs = TASK_EXECUTION_TIMEOUT.as_secs(),
+                    "release task exceeded its execution ceiling; abandoning owned work"
                 );
                 // A teardown abandoned on timeout may have leaked its resource —
                 // count it as a true drop so the leak invariant stays honest.
@@ -1011,701 +1087,4 @@ fn record_drop(counter: &Arc<AtomicUsize>, reason: &'static str, count: usize) {
 }
 
 #[cfg(test)]
-mod tests {
-    #[path = "receipt.rs"]
-    mod receipt_tests;
-
-    use std::sync::{
-        Arc,
-        atomic::{AtomicU32, Ordering},
-    };
-
-    use super::*;
-
-    #[tokio::test(start_paused = true)]
-    async fn sealed_queue_accepts_descendant_of_already_owned_cleanup() {
-        let (queue, handle) = ReleaseQueue::new(1);
-        let queue = Arc::new(queue);
-        let (entered, parent_entered) = oneshot::channel();
-        let (resume, resumed) = oneshot::channel();
-        let completed = Arc::new(AtomicUsize::new(0));
-        let child_completed = Arc::clone(&completed);
-        let nested_queue = Arc::clone(&queue);
-        let parent = queue.submit_release(move || {
-            Box::pin(async move {
-                entered.send(()).unwrap();
-                resumed.await.unwrap();
-                nested_queue
-                    .submit_guard_release(move || {
-                        Box::pin(async move {
-                            child_completed.fetch_add(1, Ordering::SeqCst);
-                            Ok(())
-                        })
-                    })?
-                    .await
-                    .unwrap()
-            })
-        });
-        parent_entered.await.unwrap();
-        queue.close();
-        resume.send(()).unwrap();
-        parent.await.unwrap().expect(
-            "a sealed queue must retain descendant cleanup admission until owned parents settle",
-        );
-        ReleaseQueue::shutdown_bounded(handle, Duration::from_secs(1))
-            .await
-            .unwrap();
-        assert_eq!(completed.load(Ordering::SeqCst), 1);
-        assert_eq!(queue.dropped_count(), 0);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn cancelled_rescue_drains_every_buffered_owner_before_return() {
-        let (sender, receiver) = mpsc::channel(8);
-        let (fallback, _fallback_receiver) = mpsc::channel(1);
-        let cancel = CancellationToken::new();
-        let count = Arc::new(AtomicUsize::new(0));
-        for _ in 0..8 {
-            sender
-                .try_send(RescueTask {
-                    queued: QueuedTask {
-                        factory: Box::new(|| panic!("cancelled rescue must not execute factories")),
-                        completion: TaskCompletion {
-                            loss: TaskLoss {
-                                counter: Arc::clone(&count),
-                                reason: Some("test"),
-                                remaining: 1,
-                            },
-                            receipt: None,
-                            _permit: None,
-                            capacity: None,
-                        },
-                        class: JobClass::Entry,
-                    },
-                    deadline: tokio::time::Instant::now() + RESCUE_TIMEOUT,
-                })
-                .unwrap_or_else(|_| panic!("test capacity"));
-        }
-        cancel.cancel();
-        ReleaseQueue::rescue_loop(receiver, fallback, cancel).await;
-        assert!(sender.is_closed());
-        assert_eq!(count.load(Ordering::SeqCst), 8);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn cancelled_reentrant_dispatcher_drains_accepted_work_before_return() {
-        let (sender, receiver) = mpsc::channel(8);
-        let capacity = Arc::new(Semaphore::new(8));
-        let completed = Arc::new(AtomicUsize::new(0));
-        let losses = Arc::new(AtomicUsize::new(0));
-        let cancel = CancellationToken::new();
-        for _ in 0..8 {
-            let completed = Arc::clone(&completed);
-            sender
-                .try_send(QueuedTask {
-                    factory: Box::new(move || {
-                        Box::pin(async move {
-                            completed.fetch_add(1, Ordering::SeqCst);
-                            Ok(())
-                        })
-                    }),
-                    completion: TaskCompletion {
-                        loss: TaskLoss {
-                            counter: Arc::clone(&losses),
-                            reason: Some("test"),
-                            remaining: 1,
-                        },
-                        receipt: None,
-                        _permit: None,
-                        capacity: Some(Arc::clone(&capacity).try_acquire_owned().unwrap()),
-                    },
-                    class: JobClass::Entry,
-                })
-                .unwrap_or_else(|_| panic!("test capacity"));
-        }
-        cancel.cancel();
-        ReleaseQueue::reentrant_loop(receiver, cancel, Arc::new(())).await;
-        assert!(sender.is_closed());
-        assert_eq!(completed.load(Ordering::SeqCst), 8);
-        assert_eq!(losses.load(Ordering::SeqCst), 0);
-        assert_eq!(capacity.available_permits(), 8);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn bounded_shutdown_owns_pending_reentrant_children() {
-        let (queue, handle) = ReleaseQueue::new(1);
-        let queue = Arc::new(queue);
-        let ownership = Arc::new(());
-        let child_owner = Arc::clone(&ownership);
-        let (entered, child_entered) = oneshot::channel();
-        let nested = Arc::clone(&queue);
-        let parent = queue.submit_release(move || {
-            Box::pin(async move {
-                nested
-                    .submit_guard_release(move || {
-                        Box::pin(async move {
-                            entered.send(()).unwrap();
-                            std::future::pending::<()>().await;
-                            drop(child_owner);
-                            Ok(())
-                        })
-                    })?
-                    .await
-                    .unwrap()
-            })
-        });
-        child_entered.await.unwrap();
-        queue.close();
-        ReleaseQueue::shutdown_bounded(handle, Duration::from_secs(1))
-            .await
-            .unwrap_err();
-        assert!(parent.await.is_err());
-        assert_eq!(queue.dropped_count(), 2);
-        assert_eq!(
-            Arc::strong_count(&ownership),
-            1,
-            "child ownership must settle before abort acknowledgement"
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn exhausted_reentrant_capacity_defers_accepted_cleanup_without_loss() {
-        let (queue, handle) = ReleaseQueue::new(1);
-        let queue = Arc::new(queue);
-        let capacity = Arc::clone(&queue.reentrant_capacity)
-            .try_acquire_many_owned(REENTRANT_CAPACITY as u32)
-            .unwrap();
-        let (finished, completion) = oneshot::channel();
-        let nested_queue = Arc::clone(&queue);
-        let parent = queue.submit_release(move || {
-            Box::pin(async move {
-                let error = nested_queue
-                    .submit_guard_release(move || {
-                        Box::pin(async move {
-                            finished.send(()).unwrap();
-                            Ok(())
-                        })
-                    })
-                    .unwrap_err();
-                assert_eq!(*error.kind(), crate::ErrorKind::DeferredCleanup);
-                Ok(())
-            })
-        });
-        parent.await.unwrap().unwrap();
-        completion.await.unwrap();
-        drop(capacity);
-        queue.close();
-        ReleaseQueue::shutdown_bounded(handle, Duration::from_secs(1))
-            .await
-            .unwrap();
-        assert_eq!(queue.dropped_count(), 0);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn closed_nested_target_is_rejected_not_reported_as_deferred() {
-        let (queue, handle) = ReleaseQueue::new(1);
-        queue.close();
-        let error = CURRENT_QUEUE
-            .scope(Arc::new(()), async {
-                queue
-                    .submit_guard_release(|| Box::pin(async { Ok(()) }))
-                    .unwrap_err()
-            })
-            .await;
-        assert_eq!(*error.kind(), crate::ErrorKind::Cancelled);
-        ReleaseQueue::shutdown(handle).await;
-        assert_eq!(queue.dropped_count(), 1);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn saturated_rescue_has_bounded_publication_and_owned_shutdown() {
-        let (queue, handle) = ReleaseQueue::new(1);
-        let total = CHANNEL_BUFFER + FALLBACK_BUFFER + RESCUE_CAPACITY + 1;
-        let ownership = Arc::new(());
-        for _ in 0..total {
-            let ownership = Arc::clone(&ownership);
-            queue.submit(move || {
-                Box::pin(async move {
-                    std::future::pending::<()>().await;
-                    drop(ownership);
-                })
-            });
-        }
-        assert_eq!(
-            queue.dropped_count(),
-            1,
-            "only capacity overflow is rejected before workers poll"
-        );
-        queue.close();
-        ReleaseQueue::shutdown_bounded(handle, Duration::from_secs(1))
-            .await
-            .unwrap_err();
-        assert_eq!(
-            queue.dropped_count(),
-            total,
-            "shutdown joins rescue ownership, not just primary workers"
-        );
-        assert_eq!(Arc::strong_count(&ownership), 1);
-    }
-
-    #[tokio::test]
-    async fn cancelling_public_shutdown_leaves_cleanup_running() {
-        let (queue, handle) = ReleaseQueue::new(1);
-        let (release, wait) = oneshot::channel();
-        let (completed, completion) = oneshot::channel();
-        queue.submit(move || {
-            Box::pin(async move {
-                wait.await.expect("test releases cleanup");
-                completed.send(()).expect("test observes completion");
-            })
-        });
-        queue.close();
-        {
-            let shutdown = ReleaseQueue::shutdown(handle);
-            tokio::pin!(shutdown);
-            assert!(futures::poll!(shutdown.as_mut()).is_pending());
-        }
-        release.send(()).expect("cleanup still owns receiver");
-        completion
-            .await
-            .expect("cleanup completed after waiter cancellation");
-        assert_eq!(queue.dropped_count(), 0);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn bounded_shutdown_aborts_running_and_buffered_tasks_once() {
-        let (queue, handle) = ReleaseQueue::new(1);
-        let ownership = Arc::new(());
-        let started = Arc::new(Notify::new());
-        let lease = Arc::clone(&ownership);
-        let entered = Arc::clone(&started);
-        queue.submit(move || {
-            Box::pin(async move {
-                entered.notify_one();
-                std::future::pending::<()>().await;
-                drop(lease);
-            })
-        });
-        started.notified().await;
-        for _ in 0..=CHANNEL_BUFFER {
-            let lease = Arc::clone(&ownership);
-            queue.submit(move || {
-                Box::pin(async move {
-                    std::future::pending::<()>().await;
-                    drop(lease);
-                })
-            });
-        }
-        queue.close();
-        let error = ReleaseQueue::shutdown_bounded(handle, Duration::from_secs(1))
-            .await
-            .expect_err("pending tasks exhaust the budget");
-        assert!(matches!(
-            error,
-            crate::manager::ShutdownError::ReleaseQueueTimeout { .. }
-        ));
-        assert_eq!(
-            Arc::strong_count(&ownership),
-            1,
-            "abort acknowledges ownership release"
-        );
-        assert_eq!(queue.dropped_count(), CHANNEL_BUFFER + 2);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn bounded_shutdown_shares_one_budget_across_workers() {
-        let (queue, handle) = ReleaseQueue::new(2);
-        for seconds in [1, 2] {
-            queue.submit(move || Box::pin(tokio::time::sleep(Duration::from_secs(seconds))));
-        }
-        queue.close();
-        let budget = Duration::from_millis(1500);
-        let started = tokio::time::Instant::now();
-        let error = ReleaseQueue::shutdown_bounded(handle, budget)
-            .await
-            .expect_err("the second worker exceeds the shared budget");
-        assert!(
-            matches!(error, crate::manager::ShutdownError::ReleaseQueueTimeout { timeout } if timeout == budget)
-        );
-        assert_eq!(started.elapsed(), budget);
-        assert_eq!(
-            queue.dropped_count(),
-            1,
-            "only the unfinished task is abandoned"
-        );
-    }
-
-    #[tokio::test]
-    async fn cancelling_bounded_shutdown_aborts_every_worker() {
-        let (queue, handle) = ReleaseQueue::new(1);
-        let ownership = Arc::new(());
-        for _ in 0..=CHANNEL_BUFFER {
-            let lease = Arc::clone(&ownership);
-            queue.submit(move || {
-                Box::pin(async move {
-                    std::future::pending::<()>().await;
-                    drop(lease);
-                })
-            });
-        }
-        queue.close();
-        {
-            let shutdown = ReleaseQueue::shutdown_bounded(handle, Duration::from_secs(1));
-            tokio::pin!(shutdown);
-            assert!(futures::poll!(shutdown.as_mut()).is_pending());
-        }
-        tokio::task::yield_now().await;
-        assert_eq!(Arc::strong_count(&ownership), 1);
-        assert_eq!(queue.dropped_count(), CHANNEL_BUFFER + 1);
-    }
-
-    #[tokio::test]
-    async fn worker_join_failure_is_typed_and_remaining_workers_are_aborted() {
-        let (queue, handle) = ReleaseQueue::new(1);
-        handle.workers[0].abort();
-        queue.close();
-        let error = ReleaseQueue::shutdown_bounded(handle, Duration::from_secs(1))
-            .await
-            .expect_err("aborted worker cannot report successful drain");
-        assert!(matches!(
-            error,
-            crate::manager::ShutdownError::ReleaseQueueWorkerFailed
-        ));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn rescue_and_buffers_each_account_for_abandonment_once() {
-        let (queue, handle) = ReleaseQueue::new(1);
-        let ownership = Arc::new(());
-        let total = CHANNEL_BUFFER + FALLBACK_BUFFER + 1;
-        for _ in 0..total {
-            let lease = Arc::clone(&ownership);
-            queue.submit(move || {
-                Box::pin(async move {
-                    std::future::pending::<()>().await;
-                    drop(lease);
-                })
-            });
-        }
-        assert_eq!(queue.rescued_count(), 1);
-        queue.close();
-        ReleaseQueue::shutdown_bounded(handle, Duration::from_secs(1))
-            .await
-            .expect_err("pending cleanup exceeds deadline");
-        tokio::task::yield_now().await;
-        assert_eq!(queue.dropped_count(), total);
-        assert_eq!(Arc::strong_count(&ownership), 1);
-    }
-
-    #[tokio::test]
-    async fn submit_after_close_rejects_without_running_factory() {
-        let (queue, handle) = ReleaseQueue::new(1);
-        queue.close();
-        queue.submit(|| panic!("closed queue must never call the factory"));
-        ReleaseQueue::shutdown(handle).await;
-        assert_eq!(queue.dropped_count(), 1);
-    }
-
-    #[tokio::test]
-    async fn factory_panic_is_counted_once_and_worker_continues() {
-        let (queue, handle) = ReleaseQueue::new(1);
-        queue.submit(|| panic!("factory fails before constructing a future"));
-        let completed = Arc::new(AtomicU32::new(0));
-        submit_increment(&queue, &completed);
-        queue.close();
-        ReleaseQueue::shutdown(handle).await;
-        assert_eq!(queue.dropped_count(), 1);
-        assert_eq!(completed.load(Ordering::Relaxed), 1);
-    }
-
-    async fn increment_counter(c: Arc<AtomicU32>) {
-        c.fetch_add(1, Ordering::Relaxed);
-    }
-
-    fn submit_increment(queue: &ReleaseQueue, counter: &Arc<AtomicU32>) {
-        let c = counter.clone();
-        queue.submit(move || Box::pin(increment_counter(c)));
-    }
-
-    #[tokio::test]
-    async fn submit_and_execute() {
-        let (queue, handle) = ReleaseQueue::new(2);
-        let counter = Arc::new(AtomicU32::new(0));
-
-        for _ in 0..10 {
-            submit_increment(&queue, &counter);
-        }
-
-        // Give workers time to process.
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        assert_eq!(counter.load(Ordering::Relaxed), 10);
-
-        drop(queue);
-        ReleaseQueue::shutdown(handle).await;
-    }
-
-    use std::sync::atomic::AtomicBool;
-
-    #[tokio::test]
-    async fn shutdown_completes_after_drop() {
-        let (queue, handle) = ReleaseQueue::new(1);
-        let done = Arc::new(AtomicBool::new(false));
-        let done_clone = done.clone();
-
-        queue.submit(move || {
-            Box::pin(async move {
-                done_clone.store(true, Ordering::Relaxed);
-            })
-        });
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        drop(queue);
-        ReleaseQueue::shutdown(handle).await;
-        assert!(done.load(Ordering::Relaxed));
-    }
-
-    #[tokio::test]
-    #[should_panic(expected = "worker_count must be at least 1")]
-    async fn zero_workers_panics() {
-        let _ = ReleaseQueue::new(0);
-    }
-
-    #[tokio::test]
-    async fn fallback_channel_handles_overflow() {
-        // Use 1 worker so primary channel has 256 capacity.
-        // Fallback has 4096 capacity. Total: 4352. 1500 < 4352 → no drops.
-        let total_tasks: u32 = 1500;
-        let (queue, handle) = ReleaseQueue::new(1);
-        let counter = Arc::new(AtomicU32::new(0));
-
-        for _ in 0..total_tasks {
-            submit_increment(&queue, &counter);
-        }
-
-        // Give workers time to drain all tasks.
-        tokio::time::sleep(Duration::from_secs(2)).await;
-        drop(queue);
-        ReleaseQueue::shutdown(handle).await;
-
-        assert_eq!(
-            counter.load(Ordering::Relaxed),
-            total_tasks,
-            "all {total_tasks} tasks must complete — none should be dropped"
-        );
-    }
-
-    #[tokio::test]
-    async fn close_drains_buffered_tasks_before_exit() {
-        let cancel = CancellationToken::new();
-        let (queue, handle) = ReleaseQueue::with_cancel(1, cancel);
-        let counter = Arc::new(AtomicU32::new(0));
-
-        for _ in 0..5 {
-            submit_increment(&queue, &counter);
-        }
-
-        // Signal drain via close() without dropping the queue.
-        queue.close();
-        ReleaseQueue::shutdown(handle).await;
-
-        assert_eq!(
-            counter.load(Ordering::Relaxed),
-            5,
-            "close() must drain all buffered tasks before workers exit"
-        );
-    }
-
-    fn submit_gated(queue: &ReleaseQueue, gate: &Arc<Notify>, counter: &Arc<AtomicU32>) {
-        let g = gate.clone();
-        let c = counter.clone();
-        queue.submit(move || Box::pin(gated_increment(g, c)));
-    }
-
-    async fn gated_increment(gate: Arc<Notify>, counter: Arc<AtomicU32>) {
-        gate.notified().await;
-        counter.fetch_add(1, Ordering::Relaxed);
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn double_full_saturation_rescues_instead_of_dropping() {
-        // Saturate both primary (256) and fallback (4096) by parking BOTH
-        // the primary worker and the fallback worker on a gate. Once both
-        // channels are full, any further submit must spawn a rescue task —
-        // NOT silently drop.
-        let (queue, handle) = ReleaseQueue::new(1);
-        let counter = Arc::new(AtomicU32::new(0));
-        let gate = Arc::new(Notify::new());
-
-        // Step 1: park the primary worker on the gate. The first submit
-        // routes to senders[0] (round-robin with 1 worker). The primary
-        // worker pulls it via `recv()` and blocks on `notified()`.
-        submit_gated(&queue, &gate, &counter);
-        // Yield long enough for the primary worker to actually receive
-        // and start the gated task.
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        // Step 2: park the fallback worker too. Fill primary first with
-        // near-instant tasks so the next submit overflows into the
-        // fallback channel — and the gated task we send next is what
-        // the fallback worker picks up and blocks on.
-        for _ in 0..CHANNEL_BUFFER {
-            submit_increment(&queue, &counter);
-        }
-        // Primary is now full (256 buffered, 1 in-flight on the worker).
-        // Next submit overflows to the fallback channel.
-        submit_gated(&queue, &gate, &counter);
-        // Let the fallback worker pick up the gated task and block.
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        // Step 3: now both workers are blocked. Flood until both channels
-        // are completely full and rescue must kick in. Capacity:
-        //   primary buffer  = 256 (full from step 2)
-        //   fallback buffer = 4096 (1 already used by the gated task that
-        //                          the fallback worker is now holding;
-        //                          the gated task is no longer in the
-        //                          buffer, so 4096 free slots remain)
-        // Submitting (256 already filled - we re-fill primary as workers
-        // are gated) plus 4096 to fallback = 4352 buffered before rescue.
-        // After step 2, primary buffer is still ~256 but the 257th went
-        // to fallback. So available room: primary 0, fallback 4096.
-        // Add a margin: 4096 + 300 forces 300 rescues.
-        let extras: u32 = FALLBACK_BUFFER as u32 + 300;
-        for _ in 0..extras {
-            submit_increment(&queue, &counter);
-        }
-
-        // Rescue path must have been exercised at least once.
-        assert!(
-            queue.rescued_count() > 0,
-            "rescue path must be exercised under double-full saturation \
-             (fallback={}, rescued={}, dropped={})",
-            queue.fallback_count(),
-            queue.rescued_count(),
-            queue.dropped_count(),
-        );
-        assert_eq!(
-            queue.dropped_count(),
-            0,
-            "no task should be dropped — they must all be rescued and run"
-        );
-
-        // Release both gated tasks so workers can drain.
-        gate.notify_waiters();
-
-        // Wait for the counter to settle. Total expected:
-        //   2 gated tasks
-        //   + CHANNEL_BUFFER near-instant tasks (step 2)
-        //   + extras near-instant tasks (step 3)
-        let expected: u32 = 2 + CHANNEL_BUFFER as u32 + extras;
-        let deadline = std::time::Instant::now() + Duration::from_secs(15);
-        while counter.load(Ordering::Relaxed) < expected {
-            if std::time::Instant::now() > deadline {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-
-        drop(queue);
-        ReleaseQueue::shutdown(handle).await;
-
-        assert_eq!(
-            counter.load(Ordering::Relaxed),
-            expected,
-            "every submitted task (including gated and rescued) must \
-             complete — none should be silently dropped"
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn slow_task_is_aborted_after_execution_timeout() {
-        let (queue, handle) = ReleaseQueue::new(1);
-        let completed = Arc::new(AtomicBool::new(false));
-        let c = completed.clone();
-
-        queue.submit(move || {
-            Box::pin(async move {
-                // Sleep longer than TASK_EXECUTION_TIMEOUT (the teardown ceiling).
-                tokio::time::sleep(Duration::from_secs(150)).await;
-                c.store(true, Ordering::Relaxed);
-            })
-        });
-
-        // Advance past the task timeout.
-        tokio::time::sleep(Duration::from_secs(125)).await;
-
-        drop(queue);
-        ReleaseQueue::shutdown(handle).await;
-
-        assert!(
-            !completed.load(Ordering::Relaxed),
-            "slow task should have been aborted by the execution timeout"
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn worker_timeout_increments_dropped_count() {
-        // A worker-path teardown that exceeds TASK_EXECUTION_TIMEOUT must be
-        // counted as a true drop — otherwise a leaked resource stays invisible
-        // while `dropped_count()` falsely reports a clean zero.
-        let (queue, handle) = ReleaseQueue::new(1);
-
-        queue.submit(|| {
-            Box::pin(async {
-                // Never completes — the guard must abort it on timeout.
-                std::future::pending::<()>().await;
-            })
-        });
-
-        // Advance the paused clock past the execution timeout so the guard
-        // fires and the worker records the drop. Same time-control technique
-        // as `slow_task_is_aborted_after_execution_timeout`.
-        tokio::time::sleep(Duration::from_secs(125)).await;
-
-        // Yield once more so the worker that woke from the timeout finishes
-        // recording the drop before we observe it.
-        tokio::task::yield_now().await;
-
-        assert_eq!(
-            queue.dropped_count(),
-            1,
-            "a worker-path teardown timeout must count as exactly one drop"
-        );
-
-        queue.close();
-        ReleaseQueue::shutdown(handle).await;
-    }
-
-    #[tokio::test]
-    async fn worker_panic_increments_dropped_count() {
-        // A teardown that unwinds is caught by the hook guard so the worker
-        // keeps draining — but the resource it was releasing never came back,
-        // so the panic must be counted as a true drop.
-        let (queue, handle) = ReleaseQueue::new(1);
-
-        queue.submit(|| {
-            Box::pin(async {
-                panic!("release teardown blew up");
-            })
-        });
-
-        // Wait for the worker to process the panicking task and record the
-        // drop. The counter is the deterministic signal — poll it rather than
-        // sleeping a fixed wall-clock duration.
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while queue.dropped_count() == 0 {
-            if std::time::Instant::now() > deadline {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-
-        assert_eq!(
-            queue.dropped_count(),
-            1,
-            "a worker-path teardown panic must count as exactly one drop"
-        );
-
-        queue.close();
-        ReleaseQueue::shutdown(handle).await;
-    }
-}
+mod tests;

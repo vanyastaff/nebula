@@ -18,6 +18,7 @@ use crate::{
     error::Error,
     options::AcquireOptions,
     resource::Provider,
+    runtime::acquire_loop::{AcceptedSlotHook, SlotHookAdmission, SlotHookSettlement},
     runtime::managed::ManagedResource,
     topology_tag::TopologyTag,
 };
@@ -132,7 +133,13 @@ pub(crate) trait ManagedHandle: Send + Sync + 'static {
     /// Dropping the returned future after taint leaves the resource
     /// consistently marked as tainted — no partial-taint state is possible
     /// and new acquires remain rejected.
-    async fn dispatch_on_refresh(self: Arc<Self>, slot: &str) -> Result<(), Error>;
+    fn submit_on_refresh(
+        self: Arc<Self>,
+        slot: &str,
+        timeout: std::time::Duration,
+        settlement: SlotHookSettlement,
+        admission: SlotHookAdmission,
+    ) -> Result<AcceptedSlotHook, Error>;
 
     /// Per-slot revoke dispatch (symmetric to [`Self::dispatch_on_refresh`];
     /// forwards to `ManagedResource::dispatch_slot_hook` with `refresh = false`).
@@ -145,7 +152,13 @@ pub(crate) trait ManagedHandle: Send + Sync + 'static {
     /// taint leaves the resource consistently marked as tainted — no
     /// partial-taint state is possible, new acquires are still rejected, and
     /// the credential is never silently un-revoked.
-    async fn dispatch_on_revoke(self: Arc<Self>, slot: &str) -> Result<(), Error>;
+    fn submit_on_revoke(
+        self: Arc<Self>,
+        slot: &str,
+        timeout: std::time::Duration,
+        settlement: SlotHookSettlement,
+        admission: SlotHookAdmission,
+    ) -> Result<AcceptedSlotHook, Error>;
 
     /// Bounded drain of **this resource's own** in-flight acquires.
     ///
@@ -260,12 +273,24 @@ where
         R::credential_slot_names().contains(&slot)
     }
 
-    async fn dispatch_on_refresh(self: Arc<Self>, slot: &str) -> Result<(), Error> {
-        self.dispatch_slot_hook(slot, true).await
+    fn submit_on_refresh(
+        self: Arc<Self>,
+        slot: &str,
+        timeout: std::time::Duration,
+        settlement: SlotHookSettlement,
+        admission: SlotHookAdmission,
+    ) -> Result<AcceptedSlotHook, Error> {
+        self.submit_slot_hook(slot, true, timeout, settlement, admission)
     }
 
-    async fn dispatch_on_revoke(self: Arc<Self>, slot: &str) -> Result<(), Error> {
-        self.dispatch_slot_hook(slot, false).await
+    fn submit_on_revoke(
+        self: Arc<Self>,
+        slot: &str,
+        timeout: std::time::Duration,
+        settlement: SlotHookSettlement,
+        admission: SlotHookAdmission,
+    ) -> Result<AcceptedSlotHook, Error> {
+        self.submit_slot_hook(slot, false, timeout, settlement, admission)
     }
 
     async fn wait_for_in_flight_drain(&self, timeout: std::time::Duration) -> Result<(), u64> {
@@ -1322,11 +1347,23 @@ mod tests {
                 fn accepts_credential_slot_name(&self, _slot: &str) -> bool {
                     true
                 }
-                async fn dispatch_on_refresh(self: Arc<Self>, _slot: &str) -> Result<(), Error> {
-                    Ok(())
+                fn submit_on_refresh(
+                    self: Arc<Self>,
+                    _slot: &str,
+                    _timeout: std::time::Duration,
+                    _settlement: SlotHookSettlement,
+                    _admission: SlotHookAdmission,
+                ) -> Result<AcceptedSlotHook, Error> {
+                    unreachable!("registry lookup fake never dispatches credential hooks")
                 }
-                async fn dispatch_on_revoke(self: Arc<Self>, _slot: &str) -> Result<(), Error> {
-                    Ok(())
+                fn submit_on_revoke(
+                    self: Arc<Self>,
+                    _slot: &str,
+                    _timeout: std::time::Duration,
+                    _settlement: SlotHookSettlement,
+                    _admission: SlotHookAdmission,
+                ) -> Result<AcceptedSlotHook, Error> {
+                    unreachable!("registry lookup fake never dispatches credential hooks")
                 }
                 async fn wait_for_in_flight_drain(
                     &self,

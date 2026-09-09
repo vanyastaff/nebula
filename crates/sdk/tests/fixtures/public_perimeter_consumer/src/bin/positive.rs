@@ -5,7 +5,7 @@ use nebula_sdk::{
     integration::credential::{TestFailureCode, TestResult},
     prelude::{
         ActionBuilder, Error, PoolProvider, Pooled, Provider, RemoteDestinationGuarantee,
-        RemoteEffectPolicy, ResourceContext, ResourceKey, TeardownCx, TeardownReason,
+        ReleaseOutcome, RemoteEffectPolicy, ResourceContext, ResourceKey, TeardownCx, TeardownReason,
         WorkflowBuilder, action_key, no_credential_slots, resource_key,
     },
 };
@@ -58,6 +58,11 @@ fn main() {
         invocation_identity;
     let _query_identity: fn(&dyn EffectQueryContext) -> (OperationId, OperationCallId) =
         query_identity;
+    let release_completed = match ReleaseOutcome::Completed {
+        ReleaseOutcome::Completed => true,
+        ReleaseOutcome::Deferred => false,
+        _ => false,
+    };
     let metadata = ActionBuilder::new(action_key!("example.perimeter"), "Perimeter action")
         .with_description("Uses only the supported SDK authoring surface")
         .build();
@@ -76,6 +81,7 @@ fn main() {
         .expect("a bounded opaque effect policy is valid");
 
     assert_eq!(metadata.base.name, "Perimeter action");
+    assert!(release_completed);
     assert_eq!(workflow.nodes.len(), 1);
     assert_eq!(effect_policy.max_invocations(), 1);
     assert_eq!(

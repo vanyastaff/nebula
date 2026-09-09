@@ -230,12 +230,33 @@ impl ResourceConfig for ReloadConfig {
 #[derive(Clone)]
 struct ReloadPoolResource {
     create_counter: Arc<AtomicU64>,
+    destroy_counter: Arc<AtomicU64>,
+    destroy_started: Arc<tokio::sync::Notify>,
+    destroy_finished: Arc<tokio::sync::Notify>,
+    destroy_gate: Option<Arc<tokio::sync::Notify>>,
 }
 
 impl ReloadPoolResource {
     fn new() -> Self {
         Self {
             create_counter: Arc::new(AtomicU64::new(0)),
+            destroy_counter: Arc::new(AtomicU64::new(0)),
+            destroy_started: Arc::new(tokio::sync::Notify::new()),
+            destroy_finished: Arc::new(tokio::sync::Notify::new()),
+            destroy_gate: None,
+        }
+    }
+
+    fn with_controlled_destroy() -> Self {
+        Self {
+            destroy_gate: Some(Arc::new(tokio::sync::Notify::new())),
+            ..Self::new()
+        }
+    }
+
+    fn release_one_destroy(&self) {
+        if let Some(gate) = &self.destroy_gate {
+            gate.notify_one();
         }
     }
 }
@@ -257,6 +278,20 @@ impl Provider for ReloadPoolResource {
     ) -> Result<Arc<AtomicU64>, Error> {
         let id = self.create_counter.fetch_add(1, Ordering::Relaxed);
         Ok(Arc::new(AtomicU64::new(id)))
+    }
+
+    async fn destroy(
+        &self,
+        _instance: Arc<AtomicU64>,
+        _cx: nebula_resource::TeardownCx,
+    ) -> Result<(), Error> {
+        self.destroy_started.notify_one();
+        if let Some(gate) = &self.destroy_gate {
+            gate.notified().await;
+        }
+        self.destroy_counter.fetch_add(1, Ordering::Relaxed);
+        self.destroy_finished.notify_one();
+        Ok(())
     }
 
     fn metadata() -> ResourceMetadata {
@@ -360,7 +395,10 @@ async fn reload_config_rebuilds_bounded_exclusive_instance_with_new_config() {
     // Await release so the reset instance is back in the store BEFORE the
     // reload — otherwise the next acquire would create fresh from an empty
     // store and not exercise the fingerprint-aware eviction.
-    first.release().await.expect("release returns the instance");
+    assert_eq!(
+        first.release().await.expect("release returns the instance"),
+        nebula_resource::ReleaseOutcome::Completed
+    );
 
     manager
         .reload_config::<ReloadExclusiveResource>(ReloadConfig::new(42), &ScopeLevel::Global)
@@ -568,6 +606,78 @@ async fn reload_config_evicts_stale_pool_instances() {
         )
         .await
         .expect("graceful_shutdown must succeed");
+}
+
+#[tokio::test]
+async fn stale_pool_destroy_does_not_block_fresh_acquire_under_topology_permit() {
+    let manager = Arc::new(Manager::new());
+    let resource = ReloadPoolResource::with_controlled_destroy();
+    let pool_config = nebula_resource::topology::pooled::config::Config {
+        max_size: 1,
+        ..Default::default()
+    };
+    manager
+        .register(RegistrationSpec {
+            resource: resource.clone(),
+            config: ReloadConfig::new(1),
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: Pooled::<ReloadPoolResource>::new(pool_config, 1),
+            recovery_gate: None,
+        })
+        .expect("register should succeed");
+
+    let first = manager
+        .acquire_pooled::<ReloadPoolResource>(&test_ctx(), &AcquireOptions::default())
+        .await
+        .expect("seed acquire should succeed");
+    assert_eq!(
+        first.release().await.expect("seed release should recycle"),
+        nebula_resource::ReleaseOutcome::Completed
+    );
+    manager
+        .reload_config::<ReloadPoolResource>(ReloadConfig::new(2), &ScopeLevel::Global)
+        .expect("reload should stale the idle generation");
+
+    let acquire_manager = Arc::clone(&manager);
+    let mut acquire_task = tokio::spawn(async move {
+        acquire_manager
+            .acquire_pooled::<ReloadPoolResource>(&test_ctx(), &AcquireOptions::default())
+            .await
+    });
+    resource.destroy_started.notified().await;
+    let Ok(joined) =
+        tokio::time::timeout(std::time::Duration::from_millis(100), &mut acquire_task).await
+    else {
+        resource.release_one_destroy();
+        let _ = acquire_task.await;
+        panic!("fresh acquire waited for physical teardown while holding the pool permit");
+    };
+    let replacement = joined
+        .expect("acquire task must not panic")
+        .expect("fresh acquire must succeed");
+
+    assert_eq!(replacement.load(Ordering::Relaxed), 1);
+    assert_eq!(resource.create_counter.load(Ordering::Relaxed), 2);
+    assert_eq!(
+        resource.destroy_counter.load(Ordering::Relaxed),
+        0,
+        "the replacement is usable before stale physical teardown completes"
+    );
+
+    resource.release_one_destroy();
+    resource.destroy_finished.notified().await;
+    assert_eq!(resource.destroy_counter.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        replacement.release().await.expect("replacement recycles"),
+        nebula_resource::ReleaseOutcome::Completed
+    );
+    resource.release_one_destroy();
+    manager
+        .graceful_shutdown(ShutdownConfig::default())
+        .await
+        .expect("shutdown succeeds after stale teardown settles");
+    assert_eq!(resource.destroy_counter.load(Ordering::Relaxed), 2);
 }
 
 #[tokio::test]

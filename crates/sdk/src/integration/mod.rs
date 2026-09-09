@@ -6,3 +6,4 @@
 
 pub mod action;
 pub mod credential;
+pub mod resource;

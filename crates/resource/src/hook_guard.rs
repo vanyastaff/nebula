@@ -3,17 +3,18 @@
 //! An open-topology author's hooks — `create_entry` / `accept` / `prepare`,
 //! `Provider::create` / `Provider::destroy`, `on_release`,
 //! `on_credential_refresh` / `on_credential_revoke` — run *inside* the
-//! framework's own loops. A careless or hostile author must not be able to
-//! **wedge** the framework by hanging; under `panic = "unwind"` (the default),
-//! it also must not be able to **crash** it by panicking.
+//! framework's own loops. The framework bounds hooks that remain cooperative
+//! with async scheduling; under `panic = "unwind"` (the default), it also
+//! isolates unwinding panics.
 //!
 //! [`guard_author_hook`] is the single chokepoint every author-hook dispatch
-//! funnels through: it caps the hook with a timeout and isolates an unwinding
+//! funnels through: it applies a cooperative timeout and isolates an unwinding
 //! panic via [`catch_unwind`](futures::FutureExt::catch_unwind), collapsing both
-//! failure modes into a typed [`HookFault`] the caller maps onto its local
-//! outcome. Routing every site through one combinator makes "an unbounded,
-//! crash-propagating author hook" unrepresentable rather than a hazard each new
-//! call site must remember to guard.
+//! observed failure modes into a typed [`HookFault`] the caller maps onto its
+//! local outcome. A future that blocks inside `poll` without yielding prevents
+//! Tokio from observing the timer and is not preempted; providers must move
+//! blocking work to an appropriately bounded blocking executor or external
+//! process.
 //!
 //! **The panic isolation half of this contract is unwind-only.**
 //! `catch_unwind` catches nothing under `panic = "abort"` — the process
@@ -29,7 +30,8 @@ use std::{future::Future, panic::AssertUnwindSafe, time::Duration};
 use nebula_core::ResourceKey;
 
 /// Worst-case ceiling on a single author-hook dispatch when the caller carries
-/// no tighter deadline of its own. A blocking hook can never hang past this; a
+/// no tighter deadline of its own. This bounds cooperative async work only; it
+/// cannot preempt a hook that blocks the executor thread inside `poll`. A
 /// caller-supplied deadline, when present, takes precedence (it is usually
 /// tighter than this backstop).
 pub(crate) const DEFAULT_AUTHOR_HOOK_CEILING: Duration = Duration::from_secs(30);
@@ -124,7 +126,8 @@ impl HookFault {
 
 /// Runs an author-supplied hook future under the framework's bound + isolate
 /// guard. Returns the hook's own output on success, or a [`HookFault`] when the
-/// framework had to cut it short (panic caught, or `timeout` elapsed).
+/// framework observed an unwind or the cooperative timeout elapsed. The timer
+/// cannot run while `fut` blocks its executor thread without yielding.
 ///
 /// The future is wrapped in [`AssertUnwindSafe`]: the caller is responsible for
 /// ensuring no observable broken invariant survives a caught panic. Every

@@ -185,7 +185,7 @@ async fn custom_quiescence_preserves_live_instance_and_cancelled_drain_resumes()
     assert_eq!(destroyed.load(Ordering::SeqCst), 0);
     assert_eq!(quiesced.load(Ordering::SeqCst), 1);
     drop(shutdown);
-    guard.release().await.unwrap();
+    let _release_outcome = guard.release().await.unwrap();
     let report = manager
         .graceful_shutdown(ShutdownConfig::default())
         .await
@@ -195,6 +195,90 @@ async fn custom_quiescence_preserves_live_instance_and_cancelled_drain_resumes()
     assert_eq!(report.outstanding_handles_after_drain, 0);
     assert!(report.release_queue_drained);
     assert_eq!(report.dropped_release_tasks, 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn retirement_coordinators_cannot_starve_external_releases() {
+    let manager = Manager::new();
+    let destroyed = Arc::new(AtomicUsize::new(0));
+    let quiesced = Arc::new(AtomicUsize::new(0));
+    let workflow_scope = ScopeLevel::Workflow(nebula_core::WorkflowId::new());
+
+    for scope in [ScopeLevel::Global, workflow_scope.clone()] {
+        manager
+            .register(RegistrationSpec {
+                resource: LeasedResource {
+                    destroyed: Arc::clone(&destroyed),
+                },
+                config: Config,
+                scope,
+                slot_identity: SlotIdentity::Unbound,
+                topology: QuiescingTopology {
+                    quiesced: Arc::clone(&quiesced),
+                    ..QuiescingTopology::default()
+                },
+                recovery_gate: None,
+            })
+            .unwrap();
+    }
+
+    let context = ResourceContext::minimal(
+        Default::default(),
+        tokio_util::sync::CancellationToken::new(),
+    );
+    let global = manager
+        .run_acquire_dispatch(
+            manager
+                .lookup::<LeasedResource>(&ScopeLevel::Global)
+                .unwrap(),
+            &context,
+            &Default::default(),
+        )
+        .await
+        .unwrap();
+    let workflow = manager
+        .run_acquire_dispatch(
+            manager.lookup::<LeasedResource>(&workflow_scope).unwrap(),
+            &context,
+            &Default::default(),
+        )
+        .await
+        .unwrap();
+
+    let shutdown_config = ShutdownConfig::default()
+        .with_drain_timeout(Duration::from_secs(1))
+        .with_release_queue_timeout(Duration::from_secs(1));
+    let mut shutdown = Box::pin(manager.graceful_shutdown(shutdown_config));
+    assert!(futures::poll!(shutdown.as_mut()).is_pending());
+    tokio::time::timeout(Duration::from_millis(100), async {
+        while quiesced.load(Ordering::SeqCst) != 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("both default-lane retirement coordinators start");
+
+    let (global_release, workflow_release) = tokio::join!(
+        tokio::time::timeout(Duration::from_millis(100), global.release()),
+        tokio::time::timeout(Duration::from_millis(100), workflow.release()),
+    );
+    assert_eq!(
+        global_release
+            .expect("global release is not queued behind retirement")
+            .unwrap(),
+        crate::ReleaseOutcome::Completed,
+    );
+    assert_eq!(
+        workflow_release
+            .expect("workflow release is not queued behind retirement")
+            .unwrap(),
+        crate::ReleaseOutcome::Completed,
+    );
+
+    let report = shutdown.await.unwrap();
+    assert!(report.release_queue_drained);
+    assert_eq!(report.dropped_release_tasks, 0);
+    assert_eq!(destroyed.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test(start_paused = true)]
@@ -230,7 +314,7 @@ async fn publication_failure_with_live_guard_keeps_release_workers_owned() {
     std::assert_matches!(error, ShutdownError::RetirementSupervisorFailed);
     assert!(manager.release_queue_handle.lock().await.is_some());
     assert_eq!(guard.load(Ordering::SeqCst), 7);
-    guard.release().await.unwrap();
+    let _release_outcome = guard.release().await.unwrap();
     assert_eq!(manager.drain_tracker.0.load(Ordering::Acquire), 0);
     assert_eq!(
         manager.release_queue.dropped_count(),
@@ -258,7 +342,7 @@ async fn saturated_publication_uses_original_envelope_and_keeps_late_release_ope
     assert!(manager.release_queue_handle.lock().await.is_some());
     assert_eq!(manager.retirement_tracker.0.load(Ordering::Acquire), 0);
     drop(held_capacity);
-    guard.release().await.unwrap();
+    let _release_outcome = guard.release().await.unwrap();
     assert_eq!(manager.drain_tracker.0.load(Ordering::Acquire), 0);
     assert_eq!(
         manager.release_queue.dropped_count(),
@@ -283,7 +367,7 @@ async fn cancelled_drain_before_publication_resumes_without_second_snapshot() {
     assert_eq!(manager.retirement_tracker.0.load(Ordering::Acquire), 1);
     drop(held_capacity);
     entered.notified().await;
-    guard.release().await.unwrap();
+    let _release_outcome = guard.release().await.unwrap();
     let report = manager
         .graceful_shutdown(ShutdownConfig::default())
         .await
@@ -313,7 +397,7 @@ async fn accepted_publication_observed_after_deadline_never_duplicates_ownership
     drop(shutdown);
     // The publisher has committed, but the cancelled driver has not observed its result.
     entered.notified().await;
-    guard.release().await.unwrap();
+    let _release_outcome = guard.release().await.unwrap();
     tokio::time::advance(Duration::from_secs(3)).await;
     let result = manager.graceful_shutdown(ShutdownConfig::default()).await;
     std::assert_matches!(
@@ -351,7 +435,7 @@ async fn force_confirms_publication_and_preserves_late_custom_lease_destruction(
     assert_eq!(quiesced.load(Ordering::SeqCst), 1);
     assert_eq!(destroyed.load(Ordering::SeqCst), 0);
     assert_eq!(guard.load(Ordering::SeqCst), 7);
-    guard.release().await.unwrap();
+    let _release_outcome = guard.release().await.unwrap();
     assert_eq!(destroyed.load(Ordering::SeqCst), 1);
     assert_eq!(manager.drain_tracker.0.load(Ordering::Acquire), 0);
     assert_eq!(manager.release_queue.dropped_count(), 0);
@@ -411,13 +495,13 @@ async fn scoped_shared_rows_remain_usable_until_each_final_consumer_releases() {
     assert_eq!(leases[0][1].load(Ordering::SeqCst), 8);
     assert_eq!(leases[1][0].load(Ordering::SeqCst), 7);
     let mut first_row = leases.remove(0);
-    first_row.pop().unwrap().release().await.unwrap();
+    let _release_outcome = first_row.pop().unwrap().release().await.unwrap();
     assert_eq!(destroyed[0].load(Ordering::SeqCst), 0);
-    first_row.pop().unwrap().release().await.unwrap();
+    let _release_outcome = first_row.pop().unwrap().release().await.unwrap();
     assert_eq!(destroyed[0].load(Ordering::SeqCst), 1);
     assert_eq!(destroyed[1].load(Ordering::SeqCst), 0);
     for guard in leases.pop().unwrap() {
-        guard.release().await.unwrap();
+        let _release_outcome = guard.release().await.unwrap();
     }
     let report = shutdown.await.unwrap();
     assert_eq!(destroyed[1].load(Ordering::SeqCst), 1);
@@ -450,7 +534,7 @@ async fn aborted_drain_observes_publisher_failure_after_original_envelope() {
     assert_eq!(manager.retirement_tracker.0.load(Ordering::Acquire), 0);
     assert!(manager.release_queue_handle.lock().await.is_some());
     drop(held_capacity);
-    guard.release().await.unwrap();
+    let _release_outcome = guard.release().await.unwrap();
     assert_eq!(manager.drain_tracker.0.load(Ordering::Acquire), 0);
     assert_eq!(
         manager.release_queue.dropped_count(),
@@ -467,7 +551,7 @@ async fn zero_drain_budget_still_observes_an_already_released_lease() {
         destroyed,
         ..
     } = fixture().await;
-    guard.release().await.unwrap();
+    let _release_outcome = guard.release().await.unwrap();
     let report = manager
         .graceful_shutdown(ShutdownConfig::default().with_drain_timeout(Duration::ZERO))
         .await
@@ -562,10 +646,10 @@ async fn external_parent_and_child_stay_live_after_both_roots_retire() {
     assert_eq!(external_child.load(Ordering::SeqCst), 10);
     assert_eq!(parent_destroyed.load(Ordering::SeqCst), 0);
     assert_eq!(child_destroyed.load(Ordering::SeqCst), 0);
-    parent.release().await.unwrap();
+    let _parent_outcome = parent.release().await.unwrap();
     assert_eq!(parent_destroyed.load(Ordering::SeqCst), 1);
     assert_eq!(child_destroyed.load(Ordering::SeqCst), 0);
-    external_child.release().await.unwrap();
+    let _child_outcome = external_child.release().await.unwrap();
     let report = shutdown.await.unwrap();
     assert_eq!(child_destroyed.load(Ordering::SeqCst), 1);
     assert_eq!(report.outstanding_handles_after_drain, 0);

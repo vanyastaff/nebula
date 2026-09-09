@@ -17,13 +17,15 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use nebula_core::{ResourceKey, resource_key};
+use nebula_core::{ResourceKey, ScopeLevel, resource_key};
 use nebula_resource::error::Error;
 use nebula_resource::resource::{Provider, ResourceConfig, ResourceMetadata};
 use nebula_resource::topology::{
     AdmissionPhase, InstanceStore, ReturnOutcome, Ticket, Topology, Unavailable,
 };
-use nebula_resource::{ResourceContext, TopologyTag};
+use nebula_resource::{
+    AcquireOptions, Manager, RegistrationSpec, ResourceContext, SlotIdentity, TopologyTag,
+};
 use tokio::sync::Semaphore;
 
 // ─── A minimal resource to parameterize the custom topology ──────────────────
@@ -179,21 +181,42 @@ async fn try_reserve_admission_and_phase() {
     );
 }
 
-/// A newly created entry projects through the topology and consumes cleanly.
+/// A newly created entry reaches the caller only through the framework-owned
+/// manager acquire path; release consumes it through the topology projection.
 #[tokio::test]
-async fn create_entry_and_projections() {
-    let topo = EntryPool::new(2);
-    let resource = PermitRes;
-    let entry = resource
-        .create(&PermitCfg, &test_ctx())
-        .await
-        .map(nebula_resource::topology::CreatedEntry::new)
-        .expect("create entry")
-        .into_entry();
-    assert_eq!(*topo.entry_instance(&entry), 42);
-    assert_eq!(topo.into_owned_instance(entry), Some(42));
-    assert!(Topology::<PermitRes>::pools(&topo));
-    assert_eq!(Topology::<PermitRes>::store_capacity(&topo), Some(2));
+async fn created_entry_is_acquired_and_released_through_manager() {
+    let manager = Arc::new(Manager::new());
+    manager
+        .register(RegistrationSpec {
+            resource: PermitRes,
+            config: PermitCfg,
+            scope: ScopeLevel::Global,
+            slot_identity: SlotIdentity::Unbound,
+            topology: EntryPool::new(2),
+            recovery_gate: None,
+        })
+        .expect("custom topology registration must succeed");
+
+    let erased_guard = Manager::acquire_any(
+        Arc::clone(&manager),
+        &PermitRes::key(),
+        &test_ctx(),
+        &AcquireOptions::default(),
+        &SlotIdentity::Unbound,
+    )
+    .await
+    .expect("custom topology acquire must succeed through Manager")
+    .downcast::<nebula_resource::ResourceGuard<PermitRes>>()
+    .expect("manager must return the registered resource guard type");
+    assert_eq!(**erased_guard, 42);
+    assert_eq!(erased_guard.topology_tag(), TopologyTag::Custom);
+    assert_eq!(
+        (*erased_guard)
+            .release()
+            .await
+            .expect("custom topology release must settle"),
+        nebula_resource::ReleaseOutcome::Completed
+    );
 }
 
 /// The revoke-epoch fence runs on the **framework** `InstanceStore`, not in the

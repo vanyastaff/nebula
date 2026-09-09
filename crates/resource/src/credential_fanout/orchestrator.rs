@@ -26,13 +26,12 @@ impl ResourceFanoutIndex {
     /// the typed per-row resource port, and the resource layer never reaches
     /// back.
     ///
-    /// **Per-resource timeout isolation.** Each row's
-    /// `refresh_slot_for_identity` is independently wrapped in
-    /// `tokio::time::timeout(per_resource_timeout, …)` and all are driven
-    /// concurrently via [`futures::future::join_all`]. One slow, failed, or
-    /// timed-out row therefore **never aborts or fails a sibling** — every
-    /// row's outcome is recorded independently and folded into the returned
-    /// [`RotationOutcome`] (`success + failed + timed_out == affected_rows`).
+    /// **Per-resource timeout isolation.** All rows are driven concurrently
+    /// via [`futures::future::join_all`]. Each manager port applies separate
+    /// post-admission observation and queue-owned hook-execution budgets, so
+    /// one slow, failed, timed-out, deferred, or abandoned row never aborts a
+    /// sibling. Every row contributes exactly one dispatch count:
+    /// `success + failed + timed_out + deferred + abandoned == affected_rows`.
     ///
     /// Identity routing: a multi-tenant `(key, scope)` has more than one
     /// resolved row, so `Manager::refresh_slot` (identity-agnostic) would
@@ -51,16 +50,15 @@ impl ResourceFanoutIndex {
     ///
     /// # Cancel safety
     ///
-    /// This method is cancel safe. Dropping it mid-fan-out abandons
-    /// whichever per-row dispatches had not yet completed; each row is left
-    /// in a well-defined state (an un-dispatched refresh simply never ran).
-    /// The only effect of cancellation is that the aggregate
-    /// [`RotationOutcome`] for this call is never produced.
+    /// Dropping this future stops fan-out admission for rows that were not
+    /// yet submitted. Hooks already admitted remain queue-owned and reach
+    /// exactly one terminal metric/event; cancellation only loses this
+    /// call's aggregate [`RotationOutcome`], not admitted execution.
     #[tracing::instrument(
         level = "debug",
         name = "nebula.credential.rotation.fanout_refresh",
         skip(self, mgr),
-        fields(credential_id = %cid, affected, success, failed, timed_out)
+        fields(credential_id = %cid, affected, success, failed, timed_out, deferred, abandoned, drain_timed_out, observation_timed_out)
     )]
     pub async fn dispatch_refresh(
         &self,
@@ -85,17 +83,16 @@ impl ResourceFanoutIndex {
     ///
     /// # Cancel safety
     ///
-    /// This method is cancel safe. A revoke row that had already
-    /// synchronously tainted its resource stays tainted — new acquires
-    /// remain rejected — even if its drain/hook tail never ran (see
-    /// [`Manager::drain_and_revoke`](crate::Manager::drain_and_revoke)).
-    /// Cancellation only means the aggregate [`RotationOutcome`] is never
-    /// produced.
+    /// A revoke row that already synchronously tainted its resource remains
+    /// tainted. Hooks admitted before cancellation remain queue-owned and
+    /// reach exactly one terminal metric/event; hooks not yet admitted do not
+    /// run. Cancellation only prevents construction of the aggregate
+    /// [`RotationOutcome`].
     #[tracing::instrument(
         level = "debug",
         name = "nebula.credential.rotation.fanout_revoke",
         skip(self, mgr),
-        fields(credential_id = %cid, affected, success, failed, timed_out)
+        fields(credential_id = %cid, affected, success, failed, timed_out, deferred, abandoned, drain_timed_out, observation_timed_out)
     )]
     pub async fn dispatch_revoke(
         &self,
@@ -110,31 +107,25 @@ impl ResourceFanoutIndex {
     /// Shared fan-out skeleton for [`dispatch_refresh`](Self::dispatch_refresh)
     /// and [`dispatch_revoke`](Self::dispatch_revoke).
     ///
-    /// Snapshots `affected(cid)`, then for **each** row independently wraps
-    /// the matching slot-identity-pinned `Manager` port call in
-    /// `tokio::time::timeout(per_resource_timeout, …)` and drives them all
-    /// concurrently via [`futures::future::join_all`]. This
-    /// independent per-future timeout + `join_all` is exactly what
-    /// guarantees the timeout-isolation invariant: a slow, failed,
-    /// or timed-out row's future resolves on its own and cannot abort or
-    /// fail a sibling — every row's outcome is recorded independently.
+    /// Snapshots `affected(cid)`, then drives every slot-identity-pinned
+    /// `Manager` port concurrently via [`futures::future::join_all`]. Each
+    /// port owns its per-resource budget: observation expiry returns typed
+    /// deferral only for admitted work that has not started, without dropping
+    /// queue ownership. Once started, a hook reaches its independently bounded
+    /// terminal result. A slow, failed, deferred, or timed-out row therefore
+    /// cannot abort a sibling.
     ///
     /// **Revoke is two-phase and cancellation-safe.**
     /// `Manager::revoke_slot_for_identity` is *not* called inside the
-    /// timeout: a Rust `async fn` body is lazy, so a timeout future dropped
+    /// deadline: a Rust `async fn` body is lazy, so a future dropped
     /// before its first poll would skip the synchronous taint and leave new
     /// acquires accepted on a credential whose revoke "timed out". Instead
     /// the synchronous `Manager::taint_slot_for_identity` runs **first,
-    /// outside and before** the `tokio::time::timeout` (the taint is fully
-    /// applied the instant it returns), and **only** the cancellation-safe
-    /// `Manager::drain_and_revoke` tail is wrapped in the per-resource
-    /// timeout. A timed-out (or otherwise dropped) drain tail therefore
-    /// leaves the row tainted — recorded `timed_out`, never silently
-    /// un-revoked. A failed *taint* (resolution miss / shutting down) is the
-    /// row's terminal outcome (`failed`); the drain tail is then not entered.
-    /// Refresh has no pre-`await` state mutation (the engine already stored
-    /// the fresh material before this is called), so it stays a single
-    /// timeout-wrapped `refresh_slot_for_identity` call.
+    /// outside and before** the awaited drain/hook tail. A cancelled drain
+    /// therefore leaves the row tainted. After hook admission, the queue owns
+    /// execution and terminal observability even if this fan-out is dropped.
+    /// A failed taint (resolution miss / shutting down) is the row's terminal
+    /// outcome (`failed`); the drain tail is then not entered.
     ///
     /// Each row's `Bind` is moved into its own dispatch future (the snapshot
     /// from [`affected`](ResourceFanoutIndex::affected) is already an owned `Vec`, so no
@@ -160,17 +151,45 @@ impl ResourceFanoutIndex {
         let dispatches = rows.into_iter().map(|b| async move {
             match op {
                 FanoutOp::Refresh => {
-                    // Refresh has no pre-`await` state mutation, so the whole
-                    // call is safe to wrap in the per-resource timeout.
-                    let refresh = mgr.refresh_slot_for_identity(
+                    // Admission is synchronous. The manager starts receipt
+                    // observation only after admission. Expiry returns
+                    // Deferred only while the hook remains queued; once it
+                    // starts, its bounded terminal result wins. Neither path
+                    // drops queue ownership or invents a retryable error.
+                    let refresh = mgr.refresh_slot_for_identity_with_timeout(
                         &b.resource_key,
                         b.scope.clone(),
                         &b.slot_name,
                         &b.slot_identity,
+                        per_resource_timeout,
+                        per_resource_timeout,
                     );
-                    match tokio::time::timeout(per_resource_timeout, refresh).await {
-                        Ok(Ok(())) => RowOutcome::Success,
-                        Ok(Err(err)) => {
+                    match refresh.await {
+                        Ok(crate::SlotDispatchOutcome::Completed { .. }) => {
+                            RowOutcome::Success {
+                                drain_timed_out: false,
+                            }
+                        },
+                        Ok(crate::SlotDispatchOutcome::TimedOut { .. }) => {
+                            RowOutcome::TimedOut {
+                                drain_timed_out: false,
+                            }
+                        },
+                        Ok(crate::SlotDispatchOutcome::Deferred { reason, .. }) => {
+                            RowOutcome::Deferred {
+                                drain_timed_out: false,
+                                observation_timed_out: matches!(
+                                    reason,
+                                    crate::SlotDeferralReason::ObservationTimedOut
+                                ),
+                            }
+                        },
+                        Ok(crate::SlotDispatchOutcome::Abandoned { .. }) => {
+                            RowOutcome::Abandoned {
+                                drain_timed_out: false,
+                            }
+                        },
+                        Err(err) => {
                             // Resource-crate errors are already
                             // credential-free (key/slot/scope only).
                             tracing::warn!(
@@ -182,19 +201,9 @@ impl ResourceFanoutIndex {
                                 "rotation fan-out: per-resource refresh failed; \
                                  siblings unaffected",
                             );
-                            RowOutcome::Failed
-                        },
-                        Err(_elapsed) => {
-                            tracing::warn!(
-                                credential_id = %cid,
-                                resource_key = %b.resource_key,
-                                slot = %b.slot_name,
-                                slot_identity = ?b.slot_identity,
-                                timeout_ms = per_resource_timeout.as_millis() as u64,
-                                "rotation fan-out: per-resource refresh timed out; \
-                                 siblings unaffected",
-                            );
-                            RowOutcome::TimedOut
+                            RowOutcome::Failed {
+                                drain_timed_out: false,
+                            }
                         },
                     }
                 },
@@ -222,7 +231,9 @@ impl ResourceFanoutIndex {
                                 "rotation fan-out: per-resource revoke taint failed; \
                                  siblings unaffected",
                             );
-                            return RowOutcome::Failed;
+                            return RowOutcome::Failed {
+                                drain_timed_out: false,
+                            };
                         },
                     };
                     // Phase 2 — the cancellation-safe drain + revoke hook.
@@ -238,20 +249,30 @@ impl ResourceFanoutIndex {
                     // guarantee. The row is already tainted (phase 1); every
                     // tail outcome leaves it tainted.
                     match mgr.drain_and_revoke(tainted, per_resource_timeout).await {
-                        crate::RevokeTail::Done => RowOutcome::Success,
-                        crate::RevokeTail::HookFailed(err) => {
+                        crate::RevokeTail::Done { drain } => RowOutcome::Success {
+                            drain_timed_out: matches!(
+                                drain,
+                                crate::SlotDrainOutcome::TimedOut { .. }
+                            ),
+                        },
+                        crate::RevokeTail::HookFailed { error, drain } => {
                             tracing::warn!(
                                 credential_id = %cid,
                                 resource_key = %b.resource_key,
                                 slot = %b.slot_name,
                                 slot_identity = ?b.slot_identity,
-                                error = %err,
+                                error = %error,
                                 "rotation fan-out: per-resource revoke hook failed \
                                  (row stays tainted); siblings unaffected",
                             );
-                            RowOutcome::Failed
+                            RowOutcome::Failed {
+                                drain_timed_out: matches!(
+                                    drain,
+                                    crate::SlotDrainOutcome::TimedOut { .. }
+                                ),
+                            }
                         },
-                        crate::RevokeTail::HookTimedOut => {
+                        crate::RevokeTail::HookTimedOut { drain } => {
                             tracing::warn!(
                                 credential_id = %cid,
                                 resource_key = %b.resource_key,
@@ -262,7 +283,43 @@ impl ResourceFanoutIndex {
                                  (drain already completed or also timed out; row stays \
                                  tainted, no new leases); siblings unaffected",
                             );
-                            RowOutcome::TimedOut
+                            RowOutcome::TimedOut {
+                                drain_timed_out: matches!(
+                                    drain,
+                                    crate::SlotDrainOutcome::TimedOut { .. }
+                                ),
+                            }
+                        },
+                        crate::RevokeTail::Deferred { drain, reason } => {
+                            if let crate::SlotDrainOutcome::TimedOut {
+                                outstanding_leases,
+                            } = drain
+                            {
+                                tracing::warn!(
+                                    credential_id = %cid,
+                                    resource_key = %b.resource_key,
+                                    slot = %b.slot_name,
+                                    slot_identity = ?b.slot_identity,
+                                    outstanding_leases,
+                                    "rotation fan-out: revoke hook deferred after the per-resource drain timed out"
+                                );
+                            }
+                            RowOutcome::Deferred {
+                                drain_timed_out: matches!(
+                                    drain,
+                                    crate::SlotDrainOutcome::TimedOut { .. }
+                                ),
+                                observation_timed_out: matches!(
+                                    reason,
+                                    crate::SlotDeferralReason::ObservationTimedOut
+                                ),
+                            }
+                        },
+                        crate::RevokeTail::Abandoned { drain } => RowOutcome::Abandoned {
+                            drain_timed_out: matches!(
+                                drain,
+                                crate::SlotDrainOutcome::TimedOut { .. }
+                            ),
                         },
                     }
                 },
@@ -271,24 +328,25 @@ impl ResourceFanoutIndex {
 
         let results = futures::future::join_all(dispatches).await;
 
-        let mut outcome = RotationOutcome::default();
-        for r in results {
-            match r {
-                RowOutcome::Success => outcome.success += 1,
-                RowOutcome::Failed => outcome.failed += 1,
-                RowOutcome::TimedOut => outcome.timed_out += 1,
-            }
-        }
+        let outcome = summarize_row_outcomes(results);
 
         tracing::Span::current().record("success", outcome.success);
         tracing::Span::current().record("failed", outcome.failed);
         tracing::Span::current().record("timed_out", outcome.timed_out);
+        tracing::Span::current().record("deferred", outcome.deferred);
+        tracing::Span::current().record("abandoned", outcome.abandoned);
+        tracing::Span::current().record("drain_timed_out", outcome.drain_timed_out);
+        tracing::Span::current().record("observation_timed_out", outcome.observation_timed_out);
         tracing::debug!(
             credential_id = %cid,
             affected,
             success = outcome.success,
             failed = outcome.failed,
             timed_out = outcome.timed_out,
+            deferred = outcome.deferred,
+            abandoned = outcome.abandoned,
+            drain_timed_out = outcome.drain_timed_out,
+            observation_timed_out = outcome.observation_timed_out,
             "rotation fan-out {op_name} complete",
         );
         outcome
@@ -302,9 +360,9 @@ enum FanoutOp {
     /// material already resolved and stored by the engine.
     Refresh,
     /// Credential revoked (e.g. lease revoke). Driven as the two-phase port:
-    /// synchronous `Manager::taint_slot_for_identity` outside the timeout,
-    /// then the timeout-wrapped cancellation-safe `Manager::drain_and_revoke`
-    /// tail.
+    /// synchronous `Manager::taint_slot_for_identity`, then the
+    /// cancellation-safe `Manager::drain_and_revoke` tail with queue-owned
+    /// hook settlement after admission.
     Revoke,
 }
 
@@ -321,7 +379,83 @@ impl FanoutOp {
 /// Per-row fan-out result (one [`Bind`](super::index::Bind) → exactly one of these).
 #[derive(Debug, Clone, Copy)]
 enum RowOutcome {
-    Success,
-    Failed,
-    TimedOut,
+    Success {
+        drain_timed_out: bool,
+    },
+    Failed {
+        drain_timed_out: bool,
+    },
+    TimedOut {
+        drain_timed_out: bool,
+    },
+    Deferred {
+        drain_timed_out: bool,
+        observation_timed_out: bool,
+    },
+    Abandoned {
+        drain_timed_out: bool,
+    },
+}
+
+fn summarize_row_outcomes(outcomes: impl IntoIterator<Item = RowOutcome>) -> RotationOutcome {
+    let mut summary = RotationOutcome::default();
+    for outcome in outcomes {
+        match outcome {
+            RowOutcome::Success { drain_timed_out } => {
+                summary.success += 1;
+                summary.drain_timed_out += usize::from(drain_timed_out);
+            },
+            RowOutcome::Failed { drain_timed_out } => {
+                summary.failed += 1;
+                summary.drain_timed_out += usize::from(drain_timed_out);
+            },
+            RowOutcome::TimedOut { drain_timed_out } => {
+                summary.timed_out += 1;
+                summary.drain_timed_out += usize::from(drain_timed_out);
+            },
+            RowOutcome::Deferred {
+                drain_timed_out,
+                observation_timed_out,
+            } => {
+                summary.deferred += 1;
+                summary.drain_timed_out += usize::from(drain_timed_out);
+                summary.observation_timed_out += usize::from(observation_timed_out);
+            },
+            RowOutcome::Abandoned { drain_timed_out } => {
+                summary.abandoned += 1;
+                summary.drain_timed_out += usize::from(drain_timed_out);
+            },
+        }
+    }
+    summary
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RowOutcome, summarize_row_outcomes};
+
+    #[test]
+    fn mixed_completed_and_deferred_rows_are_counted_separately() {
+        let outcome = summarize_row_outcomes([
+            RowOutcome::Success {
+                drain_timed_out: true,
+            },
+            RowOutcome::Deferred {
+                drain_timed_out: true,
+                observation_timed_out: true,
+            },
+            RowOutcome::Abandoned {
+                drain_timed_out: true,
+            },
+        ]);
+
+        assert_eq!(outcome.success, 1);
+        assert_eq!(outcome.deferred, 1);
+        assert_eq!(outcome.abandoned, 1);
+        assert_eq!(outcome.drain_timed_out, 3);
+        assert_eq!(outcome.observation_timed_out, 1);
+        assert_eq!(outcome.failed, 0);
+        assert_eq!(outcome.timed_out, 0);
+        assert_eq!(outcome.dispatched(), 3);
+    }
 }

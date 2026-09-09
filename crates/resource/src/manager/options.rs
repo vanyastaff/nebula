@@ -106,7 +106,10 @@ impl ShutdownConfig {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ManagerConfig {
-    /// Number of background workers for the release queue.
+    /// Number of background workers in each cleanup execution lane.
+    ///
+    /// Entry release and framework coordinator lanes each receive this many
+    /// workers so a coordinator waiting for leases cannot starve their return.
     ///
     /// Defaults to 2.
     pub release_queue_workers: usize,

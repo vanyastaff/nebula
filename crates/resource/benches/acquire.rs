@@ -196,7 +196,7 @@ fn bench_acquire(c: &mut Criterion) {
             .acquire_pooled::<KeepPool>(&ctx, &options)
             .await
             .expect("warm the pool");
-        guard.release().await.expect("warm release");
+        let _release_outcome = guard.release().await.expect("warm release");
     });
 
     group.bench_function("pooled_hit", |b| {
@@ -206,7 +206,7 @@ fn bench_acquire(c: &mut Criterion) {
                 .await
                 .expect("idle-hit acquire");
             black_box(*guard);
-            guard.release().await.expect("recycling release");
+            let _release_outcome = guard.release().await.expect("recycling release");
         });
     });
 
@@ -217,7 +217,7 @@ fn bench_acquire(c: &mut Criterion) {
                 .await
                 .expect("create-path acquire");
             black_box(*guard);
-            guard.release().await.expect("discarding release");
+            let _release_outcome = guard.release().await.expect("discarding release");
         });
     });
 
