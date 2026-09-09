@@ -725,7 +725,7 @@ where
     E: From<CatalogSetupError> + SchemaSetupFailure + Send + 'static,
 {
     let span = Span::current();
-    let terminal_result = tokio::spawn(
+    let terminal_owner = tokio::spawn(
         async move {
             let _setup_guard = setup_guard;
             let result = operation.await;
@@ -733,22 +733,62 @@ where
             result
         }
         .instrument(span),
-    )
-    .await;
-    terminal_result
-        .inspect_err(|join_error| {
-            tracing::error!(
-                target: "nebula_storage::migration",
-                stage = "terminal_setup_task",
-                task_id = %join_error.id(),
-                task_cancelled = join_error.is_cancelled(),
-                task_panicked = join_error.is_panic(),
-                outcome = "task_failed",
-                "SQLite terminal schema setup task failed before reporting its result"
-            );
-        })
-        .map_err(|_| E::from(CatalogSetupError::Unavailable))
-        .inspect_err(record_setup_failure)?
+    );
+    supervise_sqlite_setup_task(terminal_owner, SqliteSetupTaskStage::Terminal)
+        .await
+        .map_err(|_| E::from(CatalogSetupError::Unavailable))?
+        .map_err(E::from)?
+}
+
+#[cfg(feature = "sqlite")]
+#[derive(Clone, Copy)]
+enum SqliteSetupTaskStage {
+    Terminal,
+    ConnectionAcquisition,
+}
+
+/// Supervision owns the join independently of the result receiver. Losing the
+/// receiver never cancels SQLite work or its failure reporting. Runtime shutdown
+/// and process-aborting panics remain outside this task-lifetime guarantee.
+#[cfg(feature = "sqlite")]
+fn supervise_sqlite_setup_task<T: Send + 'static>(
+    owner: tokio::task::JoinHandle<T>,
+    stage: SqliteSetupTaskStage,
+) -> tokio::sync::oneshot::Receiver<Result<T, CatalogSetupError>> {
+    use tracing::instrument::WithSubscriber as _;
+
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    tokio::spawn(
+        async move {
+            let result = owner.await.map_err(|join_error| {
+                let stage_name = match stage {
+                    SqliteSetupTaskStage::Terminal => "terminal_setup_task",
+                    SqliteSetupTaskStage::ConnectionAcquisition => {
+                        "setup_connection_acquisition_task"
+                    },
+                };
+                tracing::error!(
+                    target: "nebula_storage::migration",
+                    stage = stage_name,
+                    task_id = %join_error.id(),
+                    task_cancelled = join_error.is_cancelled(),
+                    task_panicked = join_error.is_panic(),
+                    outcome = "task_failed",
+                    "SQLite schema setup task failed before reporting its result"
+                );
+                if matches!(stage, SqliteSetupTaskStage::Terminal) {
+                    record_setup_failure(&CatalogSetupError::Unavailable);
+                }
+                CatalogSetupError::Unavailable
+            });
+            // A cancelled observer cannot retain an undeliverable pooled
+            // connection: dropping the failed send's value returns it to its pool.
+            drop(sender.send(result));
+        }
+        .instrument(Span::current())
+        .with_current_subscriber(),
+    );
+    receiver
 }
 
 /// Whether a `sqlx` failure is SQLite reporting a lock that clears on its own.
@@ -853,31 +893,21 @@ async fn settle_sqlite_connection_acquisition_until(
     + 'static,
     deadline: tokio::time::Instant,
 ) -> Result<Result<sqlx::pool::PoolConnection<sqlx::Sqlite>, sqlx::Error>, CatalogSetupError> {
-    let mut acquisition_owner = tokio::spawn(acquisition);
+    let acquisition_result = supervise_sqlite_setup_task(
+        tokio::spawn(acquisition),
+        SqliteSetupTaskStage::ConnectionAcquisition,
+    );
     let acquisition_result =
-        if let Ok(result) = tokio::time::timeout_at(deadline, &mut acquisition_owner).await {
+        if let Ok(result) = tokio::time::timeout_at(deadline, acquisition_result).await {
             result
         } else {
-            // Dropping a `JoinHandle` detaches its task. The SQLx acquire future
-            // therefore settles under `PoolOptions::acquire_timeout` and returns
-            // any acquired connection to the pool safely.
-            drop(acquisition_owner);
+            // Only the result receiver expires. The supervisor still observes
+            // completion under the pool's acquisition timeout and returns any
+            // undeliverable connection to the pool.
             record_sqlite_pre_terminal_budget_exhaustion("setup_connection_acquisition");
             return Err(CatalogSetupError::Unavailable);
         };
-    acquisition_result
-        .inspect_err(|join_error| {
-            tracing::error!(
-                target: "nebula_storage::migration",
-                stage = "setup_connection_acquisition_task",
-                task_id = %join_error.id(),
-                task_cancelled = join_error.is_cancelled(),
-                task_panicked = join_error.is_panic(),
-                outcome = "task_failed",
-                "SQLite setup connection acquisition task failed"
-            );
-        })
-        .map_err(|_| CatalogSetupError::Unavailable)
+    acquisition_result.map_err(|_| CatalogSetupError::Unavailable)?
 }
 
 #[cfg(feature = "sqlite")]

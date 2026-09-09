@@ -8,6 +8,110 @@ use std::sync::{
 use std::time::Duration;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use tracing::instrument::WithSubscriber as _;
+
+struct TaskFailureCapture(tokio::sync::mpsc::UnboundedSender<String>);
+
+impl tracing::Subscriber for TaskFailureCapture {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        struct Fields(String);
+        impl tracing::field::Visit for Fields {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                use std::fmt::Write as _;
+                write!(&mut self.0, "{}={value:?};", field.name()).unwrap();
+            }
+        }
+        let mut fields = Fields(String::new());
+        event.record(&mut fields);
+        if fields.0.contains("outcome=\"task_failed\"") {
+            self.0.send(fields.0).unwrap();
+        }
+    }
+}
+
+async fn assert_one_task_failure(
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+    stage: &str,
+) {
+    let event = tokio::time::timeout(Duration::from_secs(1), events.recv())
+        .await
+        .expect("supervisor must report a late worker panic")
+        .expect("failure event must be delivered");
+    assert!(event.contains(stage), "{event}");
+    assert!(event.contains("task_panicked=true"), "{event}");
+    assert!(!event.contains("private panic payload"), "{event}");
+    // Every owner of this capture must have exited before exact-once is asserted.
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), events.recv())
+            .await
+            .unwrap(),
+        None
+    );
+}
+
+#[tokio::test]
+async fn cancelled_terminal_waiter_still_reports_worker_panic() {
+    let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let (started, start) = tokio::sync::oneshot::channel();
+    let (release, released) = tokio::sync::oneshot::channel();
+    let waiter = tokio::spawn(
+        async move {
+            complete_sqlite_terminal_section((), async move {
+                started.send(()).unwrap();
+                released.await.unwrap();
+                panic!("private panic payload");
+                #[expect(
+                    unreachable_code,
+                    reason = "the operation deliberately panics after admission"
+                )]
+                Ok::<(), super::CatalogSetupError>(())
+            })
+            .await
+        }
+        .with_subscriber(TaskFailureCapture(events)),
+    );
+    start.await.unwrap();
+    waiter.abort();
+    assert!(waiter.await.unwrap_err().is_cancelled());
+    release.send(()).unwrap();
+    assert_one_task_failure(&mut received, "terminal_setup_task").await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn expired_acquisition_waiter_still_reports_worker_panic() {
+    let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let (started, start) = tokio::sync::oneshot::channel();
+    let (release, released) = tokio::sync::oneshot::channel();
+    let waiter = tokio::spawn(
+        async move {
+            settle_sqlite_connection_acquisition_until(
+                async move {
+                    started.send(()).unwrap();
+                    released.await.unwrap();
+                    panic!("private panic payload");
+                },
+                tokio::time::Instant::now() + Duration::from_millis(10),
+            )
+            .await
+        }
+        .with_subscriber(TaskFailureCapture(events)),
+    );
+    start.await.unwrap();
+    tokio::time::advance(Duration::from_millis(10)).await;
+    assert!(waiter.await.unwrap().is_err());
+    release.send(()).unwrap();
+    assert_one_task_failure(&mut received, "setup_connection_acquisition_task").await;
+}
 
 use super::{
     ClassifiedAttempt, SQLITE_MIGRATOR, SQLITE_PRE_TERMINAL_RETRY_POLICY, SQLITE_SETUP_LOCK_SUFFIX,
