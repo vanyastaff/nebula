@@ -15,7 +15,7 @@ fn live_north_star_registry_and_schema_validate() {
     );
     assert_eq!(
         output.stdout,
-        b"{\"registry_version\":1,\"schema_version\":1,\"gate_count\":22,\"status\":\"valid\"}\n"
+        b"{\"registry_version\":2,\"schema_version\":1,\"gate_count\":22,\"status\":\"valid\"}\n"
     );
     assert!(output.stderr.is_empty());
 }

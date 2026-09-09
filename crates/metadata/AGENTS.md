@@ -5,7 +5,7 @@
 **Layer:** Core — depends only downward (`nebula-core`, `nebula-schema`, `nebula-error`, `semver`, `serde`, `thiserror`); no upward deps.
 
 ## Commands
-- `#![warn(missing_docs)]` + `#![forbid(unsafe_code)]` — keep every public item documented.
+- `cargo nextest run -p nebula-metadata`  ·  doctests: `cargo test -p nebula-metadata --doc`
 
 ## Key files
 - `src/lib.rs` — module wiring + flat re-exports (the public surface)
@@ -15,6 +15,7 @@
 - `src/icon.rs` · `src/maturity.rs` · `src/deprecation.rs` — supporting catalog ornaments
 
 ## Conventions & never-do
+- `#![warn(missing_docs)]` + `#![forbid(unsafe_code)]` — keep every public item documented.
 - Consumers compose `BaseMetadata<K>` via `#[serde(flatten)]` on their own concrete struct and impl `Metadata` with a one-line `base()`; do NOT re-add the `Icon`/`MaturityLevel`/`DeprecationNotice` fields per-crate.
 - `Icon` is the single valid representation (`None`/`Inline`/`Url`); never reintroduce the old `icon: Option<String>` + `icon_url` pair.
 - `PluginManifest` is a container, not a schematized leaf: it must NOT compose `BaseMetadata` or carry a canonical input schema (ADR-0018).

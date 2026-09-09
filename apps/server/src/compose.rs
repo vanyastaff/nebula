@@ -104,9 +104,8 @@ pub(crate) enum TransportInitError {
     /// `API_IDEMPOTENCY_BACKEND` selects a backend that the current build
     /// cannot satisfy.
     ///
-    /// Today this fires when an operator sets
-    /// `API_IDEMPOTENCY_BACKEND=postgres` while Phase E (PG-backed store) is
-    /// not yet shipped. Per ADR-0048 fail-closed contract, the binary
+    /// This fires when an operator selects a backend that the current build
+    /// cannot provide. Per ADR-0048 fail-closed contract, the binary
     /// refuses to boot rather than silently fall back to in-memory dedup.
     #[error(
         "API_IDEMPOTENCY_BACKEND={requested} requires {requirement}; set API_IDEMPOTENCY_BACKEND=memory or land the missing wiring"

@@ -25,7 +25,7 @@ pub(crate) use runtime_authority::{
 const REGISTRY_PATH: &str = "tools/xtask/gates/north-star-v1.toml";
 const SCHEMA_PATH: &str = "tools/xtask/schemas/gate-evidence-v1.schema.json";
 const CANONICAL_EVIDENCE: &str = include_str!("../../schemas/gate-evidence-v1.example.json");
-const REGISTRY_VERSION: u16 = 1;
+const REGISTRY_VERSION: u16 = 2;
 const SCHEMA_VERSION: u16 = 1;
 
 const ACCOUNTABLE_OWNER_ROLES: [&str; 12] = [
@@ -126,7 +126,7 @@ struct DurationDefinition {
 struct ValidationContext<'a> {
     workspace_root: &'a Path,
     workflow_jobs: BTreeMap<String, BTreeSet<String>>,
-    artifact_paths: BTreeSet<String>,
+    artifact_names: BTreeSet<String>,
     focused_working_day_id: String,
     focused_working_day_minutes: u16,
     focused_working_day_is_referenced: bool,
@@ -174,7 +174,7 @@ struct Evidence {
     kind: String,
     schema_version: u16,
     schema_path: String,
-    artifact_path: String,
+    artifact_name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -249,7 +249,7 @@ fn validate_registry(
     let mut context = ValidationContext {
         workspace_root,
         workflow_jobs: BTreeMap::new(),
-        artifact_paths: BTreeSet::new(),
+        artifact_names: BTreeSet::new(),
         focused_working_day_id: format!("focused-working-day-v{}", focused_working_day.version),
         focused_working_day_minutes: focused_working_day.minutes,
         focused_working_day_is_referenced: false,
@@ -308,7 +308,7 @@ fn validate_gate(
         512,
     )?;
     validate_backend_applicability(gate)?;
-    validate_evidence(gate, &mut context.artifact_paths)?;
+    validate_evidence(gate, &mut context.artifact_names)?;
     validate_threshold(
         gate,
         &context.focused_working_day_id,
@@ -346,7 +346,7 @@ fn validate_backend_applicability(gate: &Gate) -> Result<(), ValidationError> {
 
 fn validate_evidence(
     gate: &Gate,
-    artifact_paths: &mut BTreeSet<String>,
+    artifact_names: &mut BTreeSet<String>,
 ) -> Result<(), ValidationError> {
     if gate.evidence.schema_version != SCHEMA_VERSION || gate.evidence.schema_path != SCHEMA_PATH {
         return invalid_registry(format!(
@@ -355,18 +355,12 @@ fn validate_evidence(
         ));
     }
     validate_kebab_identifier(&gate.evidence.kind, &format!("{} evidence kind", gate.id))?;
-    validate_repo_path(
-        &gate.evidence.artifact_path,
-        &format!("{} evidence artifact_path", gate.id),
+    validate_kebab_identifier(
+        &gate.evidence.artifact_name,
+        &format!("{} evidence artifact_name", gate.id),
     )?;
-    if !has_extension(&gate.evidence.artifact_path, "json") {
-        return invalid_registry(format!(
-            "{} evidence artifact_path must name a JSON result manifest",
-            gate.id
-        ));
-    }
-    if !artifact_paths.insert(gate.evidence.artifact_path.clone()) {
-        return invalid_registry(format!("{} evidence artifact_path is duplicated", gate.id));
+    if !artifact_names.insert(gate.evidence.artifact_name.clone()) {
+        return invalid_registry(format!("{} evidence artifact_name is duplicated", gate.id));
     }
     Ok(())
 }

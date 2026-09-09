@@ -30,7 +30,7 @@
     },
     "registry_version": {
       "type": "integer",
-      "const": 1
+      "const": 2
     },
     "evidence_schema_version": {
       "type": "integer",

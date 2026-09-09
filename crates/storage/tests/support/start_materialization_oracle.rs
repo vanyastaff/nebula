@@ -121,10 +121,8 @@ pub(super) async fn trigger_replay(
     queue: &dyn ControlQueue,
     writer: &dyn PlanFlavorCatalogWriter,
     admin: &dyn PlanFlavorCatalogAdmin,
-    legacy: &dyn nebula_storage_port::store::TriggerDedupInbox,
-    jobs: &dyn nebula_storage_port::store::JobDispatchQueue,
 ) {
-    use nebula_storage_port::dto::{DispatchKind, TriggerDedupRow, TriggerStartKey};
+    use nebula_storage_port::dto::TriggerStartKey;
     let fixture = Fixture::with_plan_seed(61);
     writer.insert(&fixture.pair).await.unwrap();
     let key = TriggerStartKey::new("trigger", "event");
@@ -241,106 +239,6 @@ pub(super) async fn trigger_replay(
         Some(foreign.execution_id.clone())
     );
 
-    // Legacy first: replay preserves its execution, without synthesizing a bundle.
-    let legacy_first = fixture.fresh_execution();
-    let legacy_key = TriggerStartKey::new("trigger", "legacy-first");
-    let legacy_row = TriggerDedupRow::new(
-        legacy_key.trigger_id(),
-        legacy_key.event_id(),
-        fixture.scope.clone(),
-        "2026-09-07T00:00:00Z",
-    );
-    let legacy_job = trigger_job(&legacy_first, legacy_key.event_id());
-    let legacy_execution = NewExecution::new(&fixture.workflow_id, &legacy_first.state);
-    assert_eq!(
-        legacy
-            .claim_and_materialize_start(Some(&legacy_row), &legacy_job, &legacy_execution)
-            .await
-            .unwrap()
-            .kind,
-        DispatchKind::Dispatched
-    );
-    assert_eq!(
-        starts
-            .materialize_start(&second.trigger_start(legacy_key))
-            .await
-            .unwrap(),
-        StartMaterialization::Replayed {
-            execution_id: legacy_first.execution_id.clone()
-        }
-    );
-    assert!(
-        starts
-            .read_contract_bundle(&fixture.scope, &legacy_first.execution_id)
-            .await
-            .unwrap()
-            .is_none()
-    );
-    // New owner first: the old ingress must not enqueue a second Start job.
-    let row = TriggerDedupRow::new(
-        key.trigger_id(),
-        key.event_id(),
-        fixture.scope.clone(),
-        "2026-09-07T00:00:00Z",
-    );
-    let duplicate = legacy
-        .claim_and_materialize_start(Some(&row), &legacy_job, &legacy_execution)
-        .await
-        .unwrap();
-    assert_eq!(duplicate.kind, DispatchKind::Duplicate);
-    assert_eq!(duplicate.execution_id, fixture.execution_id);
-
-    let old_racer = fixture.fresh_execution();
-    let new_racer = fixture.fresh_execution();
-    let race_key = TriggerStartKey::new("trigger", "mixed-race");
-    let race_row = TriggerDedupRow::new(
-        race_key.trigger_id(),
-        race_key.event_id(),
-        fixture.scope.clone(),
-        "2026-09-07T00:00:00Z",
-    );
-    let race_job = trigger_job(&old_racer, race_key.event_id());
-    let old_execution = NewExecution::new(&fixture.workflow_id, &old_racer.state);
-    let new_start = new_racer.trigger_start(race_key);
-    let (old_result, new_result) = tokio::join!(
-        legacy.claim_and_materialize_start(Some(&race_row), &race_job, &old_execution),
-        starts.materialize_start(&new_start)
-    );
-    let old_result = old_result.unwrap();
-    let new_result = new_result.unwrap();
-    let legacy_won = match new_result {
-        StartMaterialization::Accepted { execution_id } => {
-            assert_eq!(old_result.kind, DispatchKind::Duplicate);
-            assert_eq!(old_result.execution_id, execution_id);
-            false
-        },
-        StartMaterialization::Replayed { execution_id } => {
-            assert_eq!(old_result.kind, DispatchKind::Dispatched);
-            assert_eq!(old_result.execution_id, execution_id);
-            true
-        },
-        other => panic!("unexpected trigger race result {other:?}"),
-    };
-    let loser = if legacy_won {
-        &new_racer.execution_id
-    } else {
-        &old_racer.execution_id
-    };
-    assert!(
-        executions
-            .get(&fixture.scope, loser)
-            .await
-            .unwrap()
-            .is_none()
-    );
-    assert_eq!(
-        starts
-            .lookup_trigger_start(&fixture.scope, &race_key)
-            .await
-            .unwrap(),
-        Some(old_result.execution_id)
-    );
-
     admin
         .begin_drain(PlanFlavorRevisionTarget::ExecutablePlan(
             fixture.pair.ids().plan(),
@@ -388,46 +286,6 @@ pub(super) async fn trigger_replay(
             .count(),
         1
     );
-    assert!(
-        !claims
-            .iter()
-            .any(|claim| claim.msg.execution_id == legacy_first.execution_id)
-    );
-    let plugin = nebula_core::PluginKey::new("core").unwrap();
-    let job_claims = jobs
-        .claim_pending(
-            &[71; 16],
-            100,
-            &[plugin],
-            fixture.pair.ids().worker_flavor(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(job_claims.len(), if legacy_won { 2 } else { 1 });
-    assert!(
-        !job_claims
-            .iter()
-            .any(|claim| claim.msg.execution_id == fixture.execution_id
-                || claim.msg.execution_id == caller.execution_id
-                || claim.msg.execution_id == foreign.execution_id)
-    );
-}
-
-fn trigger_job(fixture: &Fixture, event: &str) -> nebula_storage_port::dto::JobDispatchMsg {
-    let plugin = nebula_core::PluginKey::new("core").unwrap();
-    nebula_storage_port::dto::JobDispatchMsg::new(
-        fixture.command.id,
-        &fixture.execution_id,
-        ControlCommand::Start,
-        fixture.scope.clone(),
-        serde_json::json!({}),
-        Some(event),
-        plugin.clone(),
-        vec![plugin],
-        None::<String>,
-        0,
-        fixture.pair.ids().worker_flavor(),
-    )
 }
 
 pub(super) struct RunEvidence {
@@ -522,6 +380,20 @@ pub(super) async fn run(
         .unwrap();
     assert_eq!(reservation.execution_id(), winner);
     assert_eq!(reservation.fingerprint(), key.fingerprint());
+    let durable_drive_identities = u64::from(
+        executions
+            .get(&fixture.scope, &first.execution_id)
+            .await
+            .unwrap()
+            .is_some(),
+    ) + u64::from(
+        executions
+            .get(&fixture.scope, &second.execution_id)
+            .await
+            .unwrap()
+            .is_some(),
+    );
+    assert_eq!(durable_drive_identities, 1);
     let mut malformed_retry = fixture.fresh_execution();
     malformed_retry.bundle =
         ContractBundleRecord::v1_json(malformed_retry.bundle.identity(), b"{}".to_vec()).unwrap();
@@ -544,15 +416,17 @@ pub(super) async fn run(
             .unwrap(),
         StartMaterialization::FingerprintMismatch
     );
-    assert!(
+    let fingerprint_mismatch_durable_delta = u64::from(
         executions
             .get(&fixture.scope, &malformed_retry.execution_id)
             .await
             .unwrap()
-            .is_none()
+            .is_some(),
     );
+    assert_eq!(fingerprint_mismatch_durable_delta, 0);
 
     rejected_envelopes(starts, executions, &fixture).await;
+    let mut conflict_durable_delta = 0_u64;
     for collision in [true, false] {
         let mut candidate = fixture.fresh_execution();
         if collision {
@@ -568,28 +442,29 @@ pub(super) async fn run(
                 .await,
             Err(StartMaterializationError::MaterializationConflict)
         ));
-        assert!(
+        conflict_durable_delta += u64::from(
             starts
                 .lookup_start(&fixture.scope, "collision")
                 .await
                 .unwrap()
-                .is_none()
+                .is_some(),
         );
-        assert!(
+        conflict_durable_delta += u64::from(
             executions
                 .get(&fixture.scope, &candidate.execution_id)
                 .await
                 .unwrap()
-                .is_none()
+                .is_some(),
         );
-        assert!(
+        conflict_durable_delta += u64::from(
             starts
                 .read_contract_bundle(&fixture.scope, &candidate.execution_id)
                 .await
                 .unwrap()
-                .is_none()
+                .is_some(),
         );
     }
+    assert_eq!(conflict_durable_delta, 0);
     let racer = fixture.fresh_execution();
     let racer_start = racer.start(Some(StartKey::new("drain-race", key.fingerprint())));
     let target = PlanFlavorRevisionTarget::ExecutablePlan(fixture.pair.ids().plan());
@@ -688,13 +563,12 @@ pub(super) async fn run(
         1
     );
     let foreign = Scope::new(WorkspaceId::new().to_string(), OrgId::new().to_string());
-    assert!(
-        starts
-            .read_contract_bundle(&foreign, &fixture.execution_id)
-            .await
-            .unwrap()
-            .is_none()
-    );
+    let foreign_scope_bundle_visible = starts
+        .read_contract_bundle(&foreign, &fixture.execution_id)
+        .await
+        .unwrap()
+        .is_some();
+    assert!(!foreign_scope_bundle_visible);
     assert!(
         starts
             .lookup_start(&foreign, "concurrent")
@@ -704,6 +578,7 @@ pub(super) async fn run(
     );
     let exact_route = exact_control_claim(starts, executions, queue, writer, admin).await;
     let identity = stored.record().identity();
+    let live_references_after_terminal = counts.live_executions();
     RunEvidence {
         stored,
         observations: serde_json::json!({
@@ -716,12 +591,12 @@ pub(super) async fn run(
             "initial_execution_version": initial_execution.version,
             "keyed_winner_execution_id": reservation.execution_id(),
             "keyed_replay_execution_id": winner,
-            "durable_drive_identities": 1,
-            "fingerprint_mismatch_durable_delta": 0,
-            "conflict_durable_delta": 0,
+            "durable_drive_identities": durable_drive_identities,
+            "fingerprint_mismatch_durable_delta": fingerprint_mismatch_durable_delta,
+            "conflict_durable_delta": conflict_durable_delta,
             "drain_race_accepted_count": accepted_count,
-            "live_references_after_terminal": accepted_count - 1,
-            "foreign_scope_bundle_visible": false,
+            "live_references_after_terminal": live_references_after_terminal,
+            "foreign_scope_bundle_visible": foreign_scope_bundle_visible,
             "exact_route": exact_route
         }),
     }

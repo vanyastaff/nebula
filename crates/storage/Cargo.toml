@@ -104,6 +104,12 @@ sqlite = ["dep:sqlx", "sqlx/sqlite", "dep:nebula-metrics"]
 msgpack-storage = ["dep:rmp-serde"]
 
 [dev-dependencies]
+# The conformance fixtures name a job by its id in error text regardless of
+# which backend feature is on, while the library's own `hex` is gated behind
+# `postgres`. A dev-dependency keeps the SQLite-only test build compiling
+# without widening the library's feature surface; the package is already in
+# the graph, so this adds nothing to the lockfile.
+hex = { workspace = true }
 # `testing` feature provides EnvGuard for the env-provider integration test.
 nebula-env = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["full", "test-util"] }

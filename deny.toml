@@ -145,8 +145,6 @@ deny = [
     "nebula-engine",
     "nebula-api",
     "nebula-credential",
-    # Exact compiled action contracts record the shared bounded effect policy.
-    "nebula-plugin",
     # exec-layer consumer of the JobDispatchQueue port (capability-routed dispatch).
     "nebula-orchestrator",
     # nebula-worker assembles the orchestrator + engine over the storage ports.

@@ -31,7 +31,7 @@ Legend:
 | nebula-execution     | stable existing state-machine/journal/plan path; partial default-public revision and Graph-v1 bundle vocabulary | stable  | stable | partial bundle path is consumed by activation, persisted start materialization, exact-flavor dispatch, resume, and restart; the wider crate remains partial while its supported surface is curated through `nebula-sdk` | partial |
 | nebula-expression    | stable   | stable  | stable | stable | n/a |
 | nebula-log           | stable   | stable  | stable | n/a | n/a |
-| nebula-metadata      | frontier | stable  | stable | n/a | n/a |
+| nebula-metadata      | stable | stable  | stable | n/a | n/a |
 | nebula-metrics       | stable   | stable  | stable | n/a | n/a |
 | nebula-plugin        | stable mutable registry path; partial default-public frozen plugin-set/flavor epoch and pure Graph-v1 compiler | stable  | stable | partial frozen path is consumed by activation, persisted plan/flavor catalogs, server materialization, and worker exact-flavor dispatch; registry compatibility is checked before a turn receives execution authority | n/a |
 | nebula-resilience    | stable   | stable  | stable | n/a | n/a |
@@ -71,7 +71,16 @@ Credential authority/persistence delivery is intentionally staged:
 This file is a living dashboard. Reviewers check truthfulness on every PR that touches a crate's public surface, test suite, or docs. Canon §17 DoD includes "MATURITY.md row updated if the PR changes crate state."
 
 Last full sweep: 2026-04-17 (Pass 4 of docs architecture redesign).
-Last targeted revision: 2026-09-07 — **durable runtime authority truth pass.** Updated the API,
+Last targeted revision: 2026-09-08 — issue 996: `nebula-metadata` frontier→stable. Deduplicated
+`default_version`/`is_default_version`/`is_default_maturity` into a private `defaults.rs`; removed
+`Metadata::schema_arc` and `MaturityLevel::is_unstable`/`is_deprecated` (zero in-workspace callers,
+`Cargo.toml` version bumped 0.3.0→0.4.0 per the 0.x-minor-is-breaking convention); made
+`ManifestError::MissingRequiredField` reachable (`PluginManifestBuilder::build()` now rejects an
+empty/whitespace-only `name`); added integration test coverage (`crates/metadata/tests/`, zero
+before this change); widened `nebula-sdk`'s prelude to re-export `BaseCompatError`,
+`validate_base_compat`, `ManifestError`, `PluginDependency`, `PluginManifestBuilder` alongside the
+metadata types already there. README/AGENTS/DESIGN doc-debt from ADR-0090 resolved in the same PR.
+Prior targeted revision: 2026-09-07 — **durable runtime authority truth pass.** Updated the API,
 engine, execution, plugin, storage-port, storage, and worker rows to reflect first-party exact-flavor
 control consumption, persisted start/turn authority, accepted-turn recovery, bounded checkpoints,
 and durable remote-effect identity across SQLite and PostgreSQL. The rows remain partial where the

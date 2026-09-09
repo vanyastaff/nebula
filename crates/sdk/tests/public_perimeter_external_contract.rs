@@ -55,7 +55,11 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
         .collect::<Vec<_>>();
     assert_eq!(
         nebula_dependencies,
-        ["nebula-sdk = { version = \"=0.2.0\", default-features = false }"],
+        [format!(
+            "nebula-sdk = {{ version = \"={}\", default-features = false }}",
+            env!("CARGO_PKG_VERSION")
+        )
+        .as_str()],
         "fixture must have exactly one Nebula dependency: nebula-sdk"
     );
 

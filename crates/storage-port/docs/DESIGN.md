@@ -59,7 +59,7 @@ directly because first-party composition roots select concrete adapters and obje
 ### Repository families
 
 `src/store/` contains the execution/workflow/control-queue/journal/checkpoint/node-result,
-idempotency, identity, webhook, trigger-dedup, dispatch/resume, refresh-claim, and credential role
+idempotency, identity, webhook, dispatch/resume, refresh-claim, and credential role
 traits. `src/dto/` contains their port-local rows. Exact exports are defined by `src/lib.rs` and
 `src/store/mod.rs`; this document describes ownership rather than duplicating a symbol inventory.
 

@@ -21,7 +21,6 @@ mod resume_producer;
 mod resume_token;
 mod revision_catalog;
 mod start_acceptance;
-mod trigger_dedup;
 mod turn_handoff;
 mod webhook;
 mod workflow;
@@ -54,7 +53,6 @@ pub use start_acceptance::{
     StartMaterialization, StartMaterializationError, StartReservationMaintenance,
     StartRevisionRejection,
 };
-pub use trigger_dedup::TriggerDedupInbox;
 pub use turn_handoff::{
     ControlStartAcceptance, ControlStartHandoff, ControlTurnCommand, ControlTurnCommit,
     ControlTurnCommitOutcome, ControlTurnTransition, ExecutionTurnHandoff, RecoverableTurn,

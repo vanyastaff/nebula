@@ -152,7 +152,12 @@ impl ExecutionStore for PgExecutionStore {
     async fn commit(&self, batch: TransitionBatch) -> Result<TransitionOutcome, StorageError> {
         let mut tx = self.pool.begin().await.map_err(conn_err)?;
         let outcome = commit_locked(&mut tx, &batch).await?;
-        tx.commit().await.map_err(conn_err)?;
+        match outcome {
+            TransitionOutcome::Applied { .. } => tx.commit().await.map_err(conn_err)?,
+            TransitionOutcome::FencedOut | TransitionOutcome::VersionConflict { .. } => {
+                tx.rollback().await.map_err(conn_err)?;
+            },
+        }
         Ok(outcome)
     }
 

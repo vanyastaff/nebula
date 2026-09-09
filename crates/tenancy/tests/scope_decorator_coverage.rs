@@ -10,12 +10,11 @@
 //! arbitrary `&Scope` — a cross-tenant read on `get`/`list` and a
 //! cross-tenant write on `create`/`update`/`soft_delete` (BOLA / IDOR).
 //!
-//! This hand-maintained audit list binds each known `&Scope`-keyed trait
-//! to its decorator via a generic
-//! `assert_scoped::<Decorator, dyn PortTrait>()` that only type-checks
-//! when the decorator implements that exact port trait. Rust cannot
-//! enumerate traits from another crate, so reviewers must update this list
-//! whenever a storage-port capability changes.
+//! The test parses every public trait in `storage-port/src/store`, rejects
+//! module-level macros and renamed `Scope` imports that would hide a port from
+//! the inventory, and requires every discovered trait to have one explicit
+//! classification. Generic `assert_scoped::<Decorator, dyn PortTrait>()`
+//! bounds then prove each scope-keyed decorator implements the exact port.
 //!
 //! Parent-id-keyed identity stores (no `&Scope` in the signature) are a
 //! *different* authorization model and are deliberately enumerated in the
@@ -24,20 +23,21 @@
 
 use std::sync::Arc;
 
+use nebula_storage_port::Scope;
 use nebula_storage_port::store::{
-    ControlQueue, ExecutionJournalReader, ExecutionStore, ExecutionTurnHandoff, IdempotencyStore,
-    NodeResultStore, OperationLedger, OperationLedgerAdjudicator, ResourceStore, ResumeTokenStore,
-    StartAcceptanceStore, TriggerStore, WebhookActivationStore, WorkflowStore,
-    WorkflowVersionStore,
+    CheckpointStore, ControlQueue, ExecutionJournalReader, ExecutionStore, ExecutionTurnHandoff,
+    IdempotencyGuard, IdempotencyStore, NodeResultStore, OperationLedger,
+    OperationLedgerAdjudicator, ResourceStore, ResumeTokenStore, StartAcceptanceStore,
+    TriggerStore, WebhookActivationStore, WorkflowStore, WorkflowVersionStore,
 };
-use nebula_storage_port::{Scope, StorageError};
 use nebula_tenancy::{
-    ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore,
-    ScopedExecutionTurnHandoff, ScopedIdempotencyStore, ScopedNodeResultStore,
-    ScopedOperationLedger, ScopedOperationLedgerAdjudicator, ScopedResourceStore,
-    ScopedResumeTokenStore, ScopedStartAcceptanceStore, ScopedTriggerStore,
+    ScopedCheckpointStore, ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore,
+    ScopedExecutionTurnHandoff, ScopedIdempotencyGuard, ScopedIdempotencyStore,
+    ScopedNodeResultStore, ScopedOperationLedger, ScopedOperationLedgerAdjudicator,
+    ScopedResourceStore, ScopedResumeTokenStore, ScopedStartAcceptanceStore, ScopedTriggerStore,
     ScopedWebhookActivationStore, ScopedWorkflowStore, ScopedWorkflowVersionStore,
 };
+use syn::{FnArg, GenericArgument, Item, PathArguments, TraitItem, Type, UseTree};
 
 /// Compile-time proof that `D` is a scope-substituting decorator for the
 /// object-safe port trait `P`: it is `Send + Sync` (usable as
@@ -86,10 +86,12 @@ macro_rules! scope_decorator {
 }
 
 scope_decorator!(ScopedExecutionStore, ExecutionStore);
+scope_decorator!(ScopedCheckpointStore, CheckpointStore);
 scope_decorator!(ScopedWorkflowStore, WorkflowStore);
 scope_decorator!(ScopedWorkflowVersionStore, WorkflowVersionStore);
 scope_decorator!(ScopedNodeResultStore, NodeResultStore);
 scope_decorator!(ScopedIdempotencyStore, IdempotencyStore);
+scope_decorator!(ScopedIdempotencyGuard, IdempotencyGuard);
 scope_decorator!(ScopedControlQueue, ControlQueue);
 scope_decorator!(ScopedExecutionJournalReader, ExecutionJournalReader);
 scope_decorator!(ScopedWebhookActivationStore, WebhookActivationStore);
@@ -101,19 +103,252 @@ scope_decorator!(ScopedOperationLedgerAdjudicator, OperationLedgerAdjudicator);
 scope_decorator!(ScopedStartAcceptanceStore, StartAcceptanceStore);
 scope_decorator!(ScopedExecutionTurnHandoff, ExecutionTurnHandoff);
 
-/// Reviewed inventory of known `&Scope`-keyed port traits. Each line is a
-/// compile-time assertion that the listed port has its scope decorator.
-/// Reviewers must add newly introduced scoped ports to this inventory.
+const DIRECT_SCOPE_PORTS: &[&str] = &[
+    "CheckpointStore",
+    "ExecutionJournalReader",
+    "ExecutionStore",
+    "IdempotencyGuard",
+    "IdempotencyStore",
+    "NodeResultStore",
+    "OperationLedger",
+    "OperationLedgerAdjudicator",
+    "ResourceStore",
+    "ResumeTokenStore",
+    "StartAcceptanceStore",
+    "TriggerStore",
+    "WebhookActivationStore",
+    "WorkflowStore",
+    "WorkflowVersionStore",
+];
+
+const EMBEDDED_SCOPE_PORTS: &[&str] = &["ControlQueue", "ExecutionTurnHandoff"];
+
+const INTENTIONALLY_UNSCOPED_PORTS: &[&str] = &[
+    "AuditStore",
+    "BlobStore",
+    "CredentialPersistence",
+    "JobDispatchQueue",
+    "MembershipStore",
+    "OrgStore",
+    "PlanFlavorCatalog",
+    "PlanFlavorCatalogAdmin",
+    "PlanFlavorCatalogWriter",
+    "QuotaStore",
+    "RefreshClaimStore",
+    "ResumeProducer",
+    "StartReservationMaintenance",
+    "TurnRecovery",
+    "UserStore",
+    "WorkspaceStore",
+];
+
+fn path_ends_with_scope(path: &syn::Path, scope_names: &[String]) -> bool {
+    path.segments.last().is_some_and(|segment| {
+        scope_names
+            .iter()
+            .any(|name| name == &segment.ident.to_string())
+    })
+}
+
+fn type_mentions_scope(ty: &Type, scope_names: &[String]) -> bool {
+    match ty {
+        Type::Reference(reference) => type_mentions_scope(&reference.elem, scope_names),
+        Type::Array(array) => type_mentions_scope(&array.elem, scope_names),
+        Type::Group(group) => type_mentions_scope(&group.elem, scope_names),
+        Type::Paren(parenthesized) => type_mentions_scope(&parenthesized.elem, scope_names),
+        Type::Path(path) => {
+            path_ends_with_scope(&path.path, scope_names)
+                || path.path.segments.iter().any(|segment| {
+                    let PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+                        return false;
+                    };
+                    arguments.args.iter().any(|argument| match argument {
+                        GenericArgument::Type(argument) => {
+                            type_mentions_scope(argument, scope_names)
+                        },
+                        _ => false,
+                    })
+                })
+        },
+        Type::Ptr(pointer) => type_mentions_scope(&pointer.elem, scope_names),
+        Type::Slice(slice) => type_mentions_scope(&slice.elem, scope_names),
+        Type::Tuple(tuple) => tuple
+            .elems
+            .iter()
+            .any(|element| type_mentions_scope(element, scope_names)),
+        _ => false,
+    }
+}
+
+fn type_contains_scope_reference(ty: &Type, scope_names: &[String]) -> bool {
+    match ty {
+        Type::Reference(reference) => type_mentions_scope(&reference.elem, scope_names),
+        Type::Array(array) => type_contains_scope_reference(&array.elem, scope_names),
+        Type::Group(group) => type_contains_scope_reference(&group.elem, scope_names),
+        Type::Paren(parenthesized) => {
+            type_contains_scope_reference(&parenthesized.elem, scope_names)
+        },
+        Type::Path(path) => path.path.segments.iter().any(|segment| {
+            let PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+                return false;
+            };
+            arguments.args.iter().any(|argument| match argument {
+                GenericArgument::Type(argument) => {
+                    type_contains_scope_reference(argument, scope_names)
+                },
+                _ => false,
+            })
+        }),
+        Type::Ptr(pointer) => type_contains_scope_reference(&pointer.elem, scope_names),
+        Type::Slice(slice) => type_contains_scope_reference(&slice.elem, scope_names),
+        Type::Tuple(tuple) => tuple
+            .elems
+            .iter()
+            .any(|element| type_contains_scope_reference(element, scope_names)),
+        _ => false,
+    }
+}
+
+fn use_tree_renames_scope(tree: &UseTree) -> bool {
+    match tree {
+        UseTree::Rename(rename) => rename.ident == "Scope",
+        UseTree::Group(group) => group.items.iter().any(use_tree_renames_scope),
+        UseTree::Path(path) => use_tree_renames_scope(&path.tree),
+        UseTree::Name(_) | UseTree::Glob(_) => false,
+    }
+}
+
+fn method_contains_scope_reference(method: &syn::TraitItemFn, scope_names: &[String]) -> bool {
+    method.sig.inputs.iter().any(|input| match input {
+        FnArg::Receiver(_) => false,
+        FnArg::Typed(argument) => type_contains_scope_reference(&argument.ty, scope_names),
+    })
+}
+
+fn collect_port_traits(
+    items: &[Item],
+    inherited_scope_names: &[String],
+    traits: &mut Vec<(String, bool)>,
+) {
+    let mut scope_names = inherited_scope_names.to_vec();
+    loop {
+        let previous_len = scope_names.len();
+        for item in items {
+            if let Item::Type(alias) = item
+                && type_mentions_scope(&alias.ty, &scope_names)
+            {
+                let alias_name = alias.ident.to_string();
+                if !scope_names.contains(&alias_name) {
+                    scope_names.push(alias_name);
+                }
+            }
+        }
+        if scope_names.len() == previous_len {
+            break;
+        }
+    }
+
+    for item in items {
+        match item {
+            Item::Use(import) => assert!(
+                !use_tree_renames_scope(&import.tree),
+                "Scope imports in storage ports must retain the Scope name"
+            ),
+            Item::Macro(_) => panic!(
+                "module-level macros are not allowed in storage-port store modules because they can hide public port traits from the tenancy inventory"
+            ),
+            Item::Mod(module) => {
+                // An inline module is inspected here; a file-backed one is
+                // reached by the directory walk, which visits every `.rs` file
+                // under `store/` including `mod.rs`. Rejecting `mod x;` would
+                // now reject the ordinary module layout rather than close a
+                // hole, since nothing can hide behind a file the walk opens.
+                if let Some((_, nested_items)) = &module.content {
+                    collect_port_traits(nested_items, &scope_names, traits);
+                }
+            },
+            Item::Trait(port) if matches!(port.vis, syn::Visibility::Public(_)) => {
+                let has_scope_reference = port.items.iter().any(|item| match item {
+                    TraitItem::Fn(method) => method_contains_scope_reference(method, &scope_names),
+                    _ => false,
+                });
+                traits.push((port.ident.to_string(), has_scope_reference));
+            },
+            _ => {},
+        }
+    }
+}
+
+fn declared_port_traits() -> Vec<(String, bool)> {
+    let store_root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../storage-port/src/store");
+    let mut traits = Vec::new();
+    collect_port_traits_in_dir(&store_root, &mut traits);
+    traits.sort_unstable();
+    traits
+}
+
+/// Walk the whole module tree, `mod.rs` included.
+///
+/// A non-recursive scan that also skipped `mod.rs` left two ways for a port to
+/// escape a test whose entire purpose is completeness: declare the trait in
+/// `store/mod.rs`, or in `store/<submodule>/`. Either one kept the inventory
+/// green while the port shipped without a decorator.
+fn collect_port_traits_in_dir(dir: &std::path::Path, traits: &mut Vec<(String, bool)>) {
+    let entries = std::fs::read_dir(dir).expect("storage-port store directory exists");
+    for entry in entries {
+        let path = entry.expect("store entry is readable").path();
+        if path.is_dir() {
+            collect_port_traits_in_dir(&path, traits);
+            continue;
+        }
+        if path.extension().and_then(std::ffi::OsStr::to_str) != Some("rs") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).expect("store source is readable");
+        let syntax = syn::parse_file(&source).expect("storage-port store source parses as Rust");
+        collect_port_traits(&syntax.items, &["Scope".to_owned()], traits);
+    }
+}
+
+/// The source-derived inventory fails when a new port is not classified.
 #[test]
-fn listed_scope_keyed_ports_have_decorators() {
+fn every_port_has_an_explicit_tenancy_classification() {
+    let declared = declared_port_traits();
+    let mut classified = DIRECT_SCOPE_PORTS
+        .iter()
+        .chain(EMBEDDED_SCOPE_PORTS)
+        .chain(INTENTIONALLY_UNSCOPED_PORTS)
+        .copied()
+        .collect::<Vec<_>>();
+    classified.sort_unstable();
+    assert_eq!(
+        declared
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        classified,
+        "every public storage port must be classified when it is introduced"
+    );
+    assert_eq!(
+        declared
+            .iter()
+            .filter_map(|(name, has_direct_scope)| has_direct_scope.then_some(name.as_str()))
+            .collect::<Vec<_>>(),
+        DIRECT_SCOPE_PORTS,
+        "every port with a direct &Scope parameter must have a scope-substituting decorator"
+    );
+
     // Atomic execution unit (§12.2): create/get/lease/commit all `&Scope`.
     assert_scoped::<ScopedExecutionStore, dyn ExecutionStore>();
+    assert_scoped::<ScopedCheckpointStore, dyn CheckpointStore>();
     // Workflow + version split: row carries an embedded `Scope` (rebound).
     assert_scoped::<ScopedWorkflowStore, dyn WorkflowStore>();
     assert_scoped::<ScopedWorkflowVersionStore, dyn WorkflowVersionStore>();
     // Per-node result cache: `&Scope`-keyed put/get.
     assert_scoped::<ScopedNodeResultStore, dyn NodeResultStore>();
     // Idempotency dedup: `&Scope` namespaces the key (no replay oracle).
+    assert_scoped::<ScopedIdempotencyGuard, dyn IdempotencyGuard>();
     assert_scoped::<ScopedIdempotencyStore, dyn IdempotencyStore>();
     // Control queue: enqueued msg carries a `Scope` (rebound).
     assert_scoped::<ScopedControlQueue, dyn ControlQueue>();
@@ -133,7 +368,7 @@ fn listed_scope_keyed_ports_have_decorators() {
     assert_scoped::<ScopedExecutionTurnHandoff, dyn ExecutionTurnHandoff>();
 }
 
-/// Decision record for the identity-zoo traits that are **not**
+/* Decision record for the identity-zoo traits that are **not**
 /// `&Scope`-keyed. These authorize on a parent id (org/workspace id) or a
 /// global key, resolved at the composition root *before* the call — they
 /// have no caller-supplied `&Scope` surface a confused deputy could
@@ -153,11 +388,4 @@ fn listed_scope_keyed_ports_have_decorators() {
 /// | `BlobStore`       | parent `workspace_id`                    | Workspace-id-keyed at the root; no `&Scope` arg a deputy could forge.             |
 ///
 /// `&Scope`-keyed traits MUST get a decorator (enumerated above);
-/// parent-id-keyed traits get this documented decision and no decorator.
-#[test]
-fn parent_id_keyed_identity_stores_are_intentionally_undecorated() {
-    // No assertion to make — the value is the audited table above. The
-    // test exists so the decision is a tracked, reviewable unit and the
-    // file fails CI if it is deleted.
-    let _: fn() -> Result<(), StorageError> = || Ok(());
-}
+/// parent-id-keyed traits get this documented decision and no decorator. */

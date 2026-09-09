@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | Frontier (AGENTS-метка устарела; контент-стабильный Core-крейт после ADR-0090) |
+| **Status** | **Stable** (issue 996, 2026-09-08: `README.md`/`docs/MATURITY.md` status flipped `frontier` → `stable`; §6 doc-debt below — accumulated since ADR-0090 — resolved in the same change: dedup'd defaults, `schema_arc()` removed, dead `MissingRequiredField` made reachable, README/AGENTS refreshed) |
 | **Layer** | Core / cross-cutting (нет восходящих зависимостей; листовой набор типов) |
 | **Redesign role** | **Не мишень редизайна, общая база.** ADR-0090 закрепил: `nebula-metadata` ОСТАЁТСЯ отдельным Core-крейтом (не сливать в `nebula-core`); симметричный by-value `metadata()` API по Action/Credential/Resource уже сделан (PR #784). Поверхность крейта не меняется ни в credential-rewrite (ADR-0088/0092), ни в resource-teardown (ADR-0093). |
 | **Related** | ADR-0018 (plugin = контейнер-дескриптор), ADR-0090 (отдельный Core-крейт + by-value API), PRODUCT_CANON §3.5 (one pattern, five concepts), canon-инвариант L2-3.5 |
@@ -37,16 +37,17 @@ maturity, deprecation). Крейт даёт этот префикс как ко�
 | `BaseMetadata<K>` — общий префикс; `#[non_exhaustive]`, serde-flatten-композиция | `src/base.rs:31` |
 | `BaseMetadata::new(key, name, description, schema)` + builder `with_version`/`with_icon`/`with_tags`/`add_tag`/`with_documentation_url` | `src/base.rs:74-147` |
 | `mark_experimental`/`mark_beta`/`mark_stable`/`with_maturity`/`deprecate`/`with_deprecation` (deprecation ⇒ maturity=Deprecated) | `src/base.rs:151-191` |
-| `trait Metadata { type Key; fn base() }` — остальные 11 аксессоров default-делегируют (key/name/description/schema/version/schema_arc/icon/documentation_url/tags/maturity/deprecation) | `src/base.rs:206-268` |
+| `trait Metadata { type Key; fn base() }` — остальные 10 аксессоров default-делегируют (key/name/description/schema/version/icon/documentation_url/tags/maturity/deprecation) — `schema_arc()` УДАЛЁН issue 996 (`metadata.schema().clone()` полностью заменяет) | `src/base.rs:195-251` |
 | `BaseCompatError<K>` — enum `KeyChanged`/`VersionRegressed`/`SchemaChangeWithoutMajorBump` | `src/compat.rs:22-48` |
 | `validate_base_compat(current, previous)` — ключ immutable, версия монотонна, schema-change ⇒ major bump | `src/compat.rs:61-84` |
 | `Icon` — untagged enum `None`/`Inline(String)`/`Url{url}`; `inline()`/`url()`/`as_inline()`/`as_url()`/`is_none()` | `src/icon.rs:18-67` |
-| `MaturityLevel` — `Experimental`/`Beta`/`Stable`(default)/`Deprecated` + `is_unstable()`/`is_deprecated()` | `src/maturity.rs:17-43` |
+| `MaturityLevel` — `Experimental`/`Beta`/`Stable`(default)/`Deprecated` — `is_unstable()`/`is_deprecated()` УДАЛЕНЫ issue 996 (0 in-workspace вызовов) | `src/maturity.rs:17-27` |
 | `DeprecationNotice` — `since: Version` + опц. `sunset`/`replacement`/`reason` + builder | `src/deprecation.rs:21-67` |
-| `PluginManifest` — контейнер-дескриптор (key/name/version/group/description/icon/color/tags/author/license/homepage/repository/nebula_version/maturity/deprecation), приватные поля + геттеры | `src/manifest.rs:78-228` |
-| `PluginManifestBuilder` — `PluginManifest::builder(key, name)`; `build()` нормализует ключ и форсит deprecation⇒Deprecated независимо от порядка вызовов | `src/manifest.rs:231-396` |
-| `ManifestError` — `MissingRequiredField`/`InvalidKey(PluginKeyParseError)`, `derive(Classify)` | `src/manifest.rs:24-37` |
-| `lib.rs` — плоский re-export всего вышеперечисленного | `src/lib.rs:25-30` |
+| `defaults.rs` (private, НЕ re-export) — `default_version`/`is_default_version`/`is_default_maturity`, написаны один раз issue 996 вместо дублей в `base.rs`+`manifest.rs` | `src/defaults.rs` |
+| `PluginManifest` — контейнер-дескриптор (key/name/version/group/description/icon/color/tags/author/license/homepage/repository/nebula_version/maturity/deprecation), приватные поля + геттеры | `src/manifest.rs:110-274` |
+| `PluginManifestBuilder` — `PluginManifest::builder(key, name)`; `build()` нормализует ключ, форсит deprecation⇒Deprecated независимо от порядка вызовов, и (issue 996) отвергает пустое/whitespace-only `name` | `src/manifest.rs:277-469` |
+| `ManifestError` — `MissingRequiredField`/`InvalidKey(PluginKeyParseError)`, `derive(Classify)` — `MissingRequiredField` теперь ДОСТИЖИМ issue 996 (`build()` возвращает его для `name`) | `src/manifest.rs:64-81` |
+| `lib.rs` — плоский re-export всего вышеперечисленного (кроме `defaults` — приватный `mod`) | `src/lib.rs:29-34` |
 
 ## 3. Зависимости и зависимые
 
@@ -92,23 +93,55 @@ maturity, deprecation). Крейт даёт этот префикс как ко�
 
 ## 6. Известные напряжения / долг (честно)
 
-1. **README устарел vs Cargo.toml.** `README.md:29-31` утверждает «зависит только от nebula-schema, semver,
-   serde, thiserror», но в deps есть `nebula-core` и `nebula-error` (`Cargo.toml:15-16`), оба нужны `manifest.rs`.
-2. **README устарел vs код.** Секция Public API (`README.md:35-51`) не упоминает `PluginManifest`/`ManifestError`;
-   `README.md:98` пишет «`nebula-plugin::PluginManifest`», хотя манифест уже живёт ЗДЕСЬ (`src/manifest.rs:10-14`).
-3. **Устаревший rationale переноса.** `src/manifest.rs:11-14` объясняет перенос нуждой `nebula-plugin-sdk`
-   («zero engine-side deps, canon §7.1»), но pivot 2026-06-09 отказался от out-of-process plugin-sdk. Обоснование
-   переноса повисло (сам перенос безвреден — манифест остаётся уместным в Core).
-4. **Дубли мелких хелперов.** `default_version`/`is_default_version` (`base.rs:9-14` и `manifest.rs:47-52`),
-   `is_default_maturity` (`base.rs:64` и `manifest.rs:55`) — копипаста внутри одного крейта.
-5. **`Metadata::schema_arc()` несостыковка имени.** `base.rs:240-242` обещает Arc именем, возвращает
-   `ValidSchema` (дешёвый clone) — лёгкое расхождение имени и сигнатуры.
-6. **Мёртвый вариант ошибки.** `ManifestError::MissingRequiredField` (`manifest.rs:28`) существует, но builder
-   его никогда не возвращает — оба обязательных поля передаются в `builder()` позиционно.
-7. **Шаблонный AGENTS-пункт.** `AGENTS.md:24` «cross-crate calls go through nebula-eventbus» нерелевантен для
-   чисто типового крейта без вызовов.
-8. **Устаревший статус/дата.** `AGENTS.md` status: frontier, last-reviewed 2026-04-19 — после ADR-0090 (PR #784)
-   не обновлены; контент крейта по сути стабилен.
+Пункты 1-8 — **✅ RESOLVED issue 996** (2026-09-08, frontier→stable), оставлены как запись истории
+долга и как doc-debt чек-лист на будущее, а не как открытые задачи. Пункт 9 — новый, найденный тем же
+review pass'ом и намеренно **не исправленный** (вне утверждённого объёма) — принятый, а не молчаливый
+долг.
+
+1. **✅ RESOLVED. README устарел vs Cargo.toml.** Было: `README.md:29-31` утверждал «зависит только от
+   nebula-schema, semver, serde, thiserror», но в deps есть `nebula-core` и `nebula-error` (`Cargo.toml:15-16`),
+   оба нужны `manifest.rs`. Исправлено: README §Role теперь перечисляет все шесть зависимостей.
+2. **✅ RESOLVED. README устарел vs код.** Было: секция Public API не упоминала `PluginManifest`/`ManifestError`/
+   `PluginManifestBuilder`/`PluginDependency`; README писал «`nebula-plugin::PluginManifest`», хотя манифест уже
+   жил ЗДЕСЬ. Исправлено: Public API перечисляет все re-export'ы `lib.rs`; §Consumers прямо говорит, что
+   `PluginManifest` живёт в этом крейте и `nebula_plugin::PluginManifest` — лишь re-export.
+3. **✅ RESOLVED. Устаревший rationale переноса.** Было: `src/manifest.rs:11-14` объяснял перенос нуждой
+   `nebula-plugin-sdk` («zero engine-side deps, canon §7.1»), но pivot 2026-06-09 (ADR-0091, in-process registry)
+   отказался от out-of-process plugin-sdk — крейт `nebula-plugin-sdk` больше не существует. Исправлено:
+   module-doc `manifest.rs` теперь обосновывает размещение через ADR-0018 (container-descriptor split at the
+   Core layer) и упоминает ретирмент `nebula-plugin-sdk` как историю, а не как живое обоснование.
+4. **✅ RESOLVED. Дубли мелких хелперов.** Было: `default_version`/`is_default_version`/`is_default_maturity`
+   продублированы байт-в-байт в `base.rs` и `manifest.rs`. Исправлено: вынесены в приватный `src/defaults.rs`
+   (`pub(crate) fn`), оба модуля используют `crate::defaults::{...}`; `#[expect(clippy::trivially_copy_pass_by_ref)]`
+   написан один раз.
+5. **✅ RESOLVED. `Metadata::schema_arc()` несостыковка имени.** Было: обещал Arc именем, возвращал дешёвый
+   `ValidSchema`-clone. Исправлено: метод удалён (0 in-workspace вызовов подтверждено) — `metadata.schema().clone()`
+   полностью его заменяет (`ValidSchema` сам — `Clone`-обёртка над `Arc`).
+6. **✅ RESOLVED. Мёртвый вариант ошибки.** Было: `ManifestError::MissingRequiredField` существовал, но builder
+   никогда его не возвращал — оба обязательных поля передавались в `builder()` позиционно. Исправлено (TDD,
+   red→green): `PluginManifestBuilder::build()` теперь отвергает пустое/whitespace-only `name`, возвращая
+   `MissingRequiredField { field: "name" }`; вариант остался (не удалён), стал достижим by-construction.
+7. **✅ RESOLVED (запись была сама устаревшей). Шаблонный AGENTS-пункт.** Пункт долга описывал строку
+   `AGENTS.md:24` «cross-crate calls go through nebula-eventbus» как нерелевантную для чисто типового крейта.
+   На момент issue 996 эта строка в `AGENTS.md` уже отсутствовала — сам код был исправлен раньше, а именно эта
+   запись §6 осталась висеть как стале-долг. Убрано отсюда.
+8. **✅ RESOLVED (наполовину сама запись была неверна). Устаревший статус/дата.** Было: пункт долга
+   утверждал «`AGENTS.md`/`README.md` status: frontier, last-reviewed 2026-04-19 — не обновлялись после
+   ADR-0090». Проверено (`git show HEAD:crates/metadata/AGENTS.md` до issue 996): у `AGENTS.md` НЕТ
+   YAML-frontmatter вообще — ни `status`, ни `last-reviewed` там никогда не было; только `README.md`
+   когда-либо их нёс. Пункт долга был неверен насчёт `AGENTS.md` уже на момент написания, и переписывание
+   этой записи в §6 issue 996 расширило неточность, а не исправило её — тот же класс stale-записи, что и
+   пункт 7 выше. Исправлено: `README.md` frontmatter → `status: stable`, `last-reviewed: 2026-09-08`;
+   `docs/MATURITY.md` API-stability cell для `nebula-metadata` → `stable` (issue 996); `AGENTS.md` не
+   получил и не нуждается в `status`/`last-reviewed` — у него никогда не было этих полей.
+9. **⚠️ ACCEPTED DEBT (issue 996 review, найдено не исправлено — вне утверждённого объёма).**
+   `PluginManifestBuilder::build()` (`src/manifest.rs:436`) валидирует `self.name.trim().is_empty()`,
+   но хранит `name: self.name` (`src/manifest.rs:452`) — **нетримленным**. Соседняя строка нормализует
+   `key` через `normalize_key()` перед сохранением; `name` такой нормализации не получает, так что
+   `PluginManifest::builder("slack", "  Slack  ")` проходит валидацию (не пусто после trim) и хранит имя
+   с ведущими/хвостовыми пробелами. Тримминг при сохранении — за пределами утверждённого объёма issue 996
+   (задача была «сделать `MissingRequiredField` достижимым», не «нормализовать хранимое имя») и намеренно
+   НЕ исправлен в этом изменении. Зафиксировано здесь как явно принятый долг, а не молчаливый.
 
 ## 7. Роль в пост-0092 credential/resource модели
 
@@ -142,17 +175,19 @@ maturity, deprecation). Крейт даёт этот префикс как ко�
 
 ## 8. Forward design / открытые вопросы
 
-- **Освежить README/AGENTS** под фактическое состояние: добавить `nebula-core`/`nebula-error` в раздел deps,
-  включить `PluginManifest`/`ManifestError` в Public API, убрать «manifest живёт в nebula-plugin», обновить
-  status/last-reviewed после ADR-0090. Низкий риск, чистый doc-debt.
-- **Удалить устаревший rationale переноса манифеста** (`manifest.rs:11-14`): plugin-sdk-обоснование мертво после
-  pivot 2026-06-09; заменить на «манифест — Core-уровневый дескриптор контейнера, ADR-0018». Сам перенос оставить.
-- **Дедуп мелких хелперов** (`default_version`/`is_default_version`/`is_default_maturity`) в один внутренний
-  модуль — устранить копипасту base.rs↔manifest.rs.
-- **Решить судьбу `schema_arc()`**: либо вернуть реальный `Arc<...>`, либо переименовать в честное `schema()` /
-  убрать — устранить расхождение имени и сигнатуры до того, как новые потребители завяжутся на текущую форму.
-- **Удалить мёртвый `ManifestError::MissingRequiredField`** ИЛИ перевести обязательные поля манифеста с позиционных
-  аргументов `builder()` на builder-сеттеры с проверкой в `build()` — тогда вариант станет достижимым by-construction.
-- **Открытый вопрос (single-public-sdk).** При переходе на единственный публичный `nebula-sdk` нужно зафиксировать,
-  какие именно типы metadata sdk реэкспортирует (вся поверхность vs только `BaseMetadata`/`Metadata`/`Icon`/`MaturityLevel`);
-  непубличные станут свободны для рефакторинга без semver-ограничений. Решить до публикации sdk.
+Пять из шести пунктов, ранее перечисленных здесь (README/AGENTS refresh, устаревший rationale переноса, дедуп
+хелперов, судьба `schema_arc()`, мёртвый `MissingRequiredField`), закрыты issue 996 — см. §6 (все восемь пунктов
+долга отмечены `✅ RESOLVED`). Ниже — только решённый ранее открытый вопрос single-public-sdk, записанный как
+решение, а не как вопрос.
+
+- **РЕШЕНО (single-public-sdk re-export set), issue 996.** `nebula-sdk`'s prelude (`crates/sdk/src/prelude.rs`)
+  реэкспортирует **всю** публичную поверхность этого крейта: `BaseMetadata`, `Metadata`, `Icon`, `MaturityLevel`,
+  `DeprecationNotice`, `BaseCompatError`, `validate_base_compat`, `PluginManifest`, `PluginManifestBuilder`,
+  `ManifestError`, `PluginDependency` — не только "малое" подмножество (`BaseMetadata`/`Metadata`/`Icon`/
+  `MaturityLevel`), которое рассматривалось как альтернатива. Мотив: `BaseCompatError<K>` — payload варианта
+  `Base(..)` у всех трёх `MetadataCompatibilityError` enum'ов (action/credential/resource), которые сам prelude
+  уже реэкспортирует; без `BaseCompatError` потребитель мог получить значение ошибки, но не мог назвать тип его
+  payload'а. `PluginManifestBuilder` уже именуется как параметр consumer'ом
+  (`crates/plugin/tests/frozen_registry.rs`), значит был достижим только анонимно через method-chaining, а не
+  именуемо. См. `crates/sdk/docs/DESIGN.md` — issue 1000 (сжатие prelude в persona-модули) обязано сохранить
+  достижимость этого набора, а не решать вопрос заново.

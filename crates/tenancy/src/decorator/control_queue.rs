@@ -13,10 +13,10 @@ use nebula_storage_port::{Scope, StorageError};
 /// `enqueue` overwrites `msg.scope` with the bound scope: a low-privilege
 /// tenant cannot enqueue a Cancel/Terminate carrying another tenant's
 /// scope (§6.1 control-queue confused-deputy). The consumer-side methods
-/// (`claim_pending`, `mark_*`, `reclaim_stuck`, `cleanup`) are
-/// deliberately *not* scoped — claiming is a cross-tenant worker
-/// operation; the engine consumer re-verifies scope against the execution
-/// row before dispatch (spec §6.1 point 3). They forward unchanged.
+/// Claiming and maintenance remain worker-wide operations. Acknowledgement
+/// rejects tokens bound to another tenant before they reach storage, so a
+/// caller cannot use a token-shaped value to probe or mutate another tenant's
+/// row.
 #[derive(Clone)]
 pub struct ScopedControlQueue {
     inner: Arc<dyn ControlQueue>,
@@ -38,6 +38,20 @@ impl ScopedControlQueue {
         Self {
             inner,
             bound: scope,
+        }
+    }
+
+    fn admit_claim<'a>(
+        &self,
+        claim: &'a ControlClaimToken,
+    ) -> Result<&'a ControlClaimToken, StorageError> {
+        if claim.scope() == &self.bound {
+            Ok(claim)
+        } else {
+            Err(StorageError::NotFound {
+                entity: "control_queue",
+                id: "scoped-claim".to_owned(),
+            })
         }
     }
 }
@@ -69,10 +83,8 @@ impl ControlQueue for ScopedControlQueue {
             .await
     }
 
-    // Acknowledgement carries a storage-minted token, which already names its
-    // own row; there is no scope to substitute and nothing to rebind.
     async fn mark_completed(&self, claim: &ControlClaimToken) -> Result<(), StorageError> {
-        self.inner.mark_completed(claim).await
+        self.inner.mark_completed(self.admit_claim(claim)?).await
     }
 
     async fn mark_failed(
@@ -80,11 +92,13 @@ impl ControlQueue for ScopedControlQueue {
         claim: &ControlClaimToken,
         error: &str,
     ) -> Result<(), StorageError> {
-        self.inner.mark_failed(claim, error).await
+        self.inner
+            .mark_failed(self.admit_claim(claim)?, error)
+            .await
     }
 
     async fn release_claim(&self, claim: &ControlClaimToken) -> Result<(), StorageError> {
-        self.inner.release_claim(claim).await
+        self.inner.release_claim(self.admit_claim(claim)?).await
     }
 
     async fn reclaim_stuck(

@@ -4,15 +4,8 @@ use nebula_schema::ValidSchema;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
+use crate::defaults::{default_version, is_default_maturity, is_default_version};
 use crate::{deprecation::DeprecationNotice, icon::Icon, maturity::MaturityLevel};
-
-fn default_version() -> Version {
-    Version::new(1, 0, 0)
-}
-
-fn is_default_version(v: &Version) -> bool {
-    v == &default_version()
-}
 
 /// Shared shape held by every catalog entity's metadata.
 ///
@@ -59,14 +52,6 @@ pub struct BaseMetadata<K> {
     /// Deprecation notice, if this entity is being phased out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deprecation: Option<DeprecationNotice>,
-}
-
-#[expect(
-    clippy::trivially_copy_pass_by_ref,
-    reason = "serde skip_serializing_if requires the &T signature"
-)]
-fn is_default_maturity(m: &MaturityLevel) -> bool {
-    *m == MaturityLevel::default()
 }
 
 impl<K> BaseMetadata<K> {
@@ -237,12 +222,6 @@ pub trait Metadata {
     /// Interface version.
     fn version(&self) -> &Version {
         &self.base().version
-    }
-
-    /// Cheap `Arc`-clone of the input schema — useful for consumers
-    /// that need to own a `ValidSchema` without borrowing.
-    fn schema_arc(&self) -> ValidSchema {
-        self.base().schema.clone()
     }
 
     /// Catalog icon.

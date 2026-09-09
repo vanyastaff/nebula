@@ -88,12 +88,12 @@ changes are expected between minor releases — call them out here.
   `ExecutionTurnHandoff` ends the dispatch claim and accepts the turn under the
   aggregate fence in the same transaction, so an action's duration can no
   longer extend a queue claim, and durable checkpoints restore state and output
-  across a reconnect. Effecting actions run under a storage-minted
-  `OperationId` with a durable outcome ledger: prepare is acknowledged before
-  an adapter can observe the identity, stable-key recovery is bounded and
-  capability-gated, reconciliation is read-only, and exhausted guarantees
-  converge to a durable `OutcomeUnknown`. Five new paired migrations (0046–0050)
-  carry the schema on SQLite and PostgreSQL.
+  across a reconnect. Effecting actions run under a durably minted
+  `OperationId`, re-validated by the outcome ledger on every use: prepare is
+  acknowledged before an adapter can observe the identity, stable-key recovery
+  is bounded and capability-gated, reconciliation is read-only, and exhausted
+  guarantees converge to a durable `OutcomeUnknown`. Five new paired migrations
+  (0046–0050) carry the schema on SQLite and PostgreSQL.
 
 - **Provenance-bound runtime-authority evidence.** The required CI jobs emit raw
   behaviour observations that `cargo xtask north-star-gates
@@ -103,10 +103,13 @@ changes are expected between minor releases — call them out here.
   a revision, repository or run other than the one it is itself running, and
   accepts only the job that actually produces the bundle as an artifact's
   source — membership in a gate's `required_ci` set is not a producer claim.
-  Checked-in gate state remains a conservative baseline. Only a successful
-  provenance and semantic verification emits the deterministic effective
-  `partial` state for the covered runtime gates; a failed verification emits no
-  effective-state result.
+  Checked-in gate state remains a conservative baseline. Complete provenance
+  and semantic verification derives `partial` for each verified gate; runtime
+  evidence alone cannot emit release-level `passed`. A failed verification
+  emits no effective-state result. The obsolete `TriggerDedupInbox` materialization port
+  was removed, leaving `StartAcceptanceStore` as the only API that may create an
+  execution, reserve a trigger key, retain exact revision references, persist
+  the contract bundle, and enqueue `Start` in one transaction.
 
 - **Authenticated credential command boundary.** API handlers now submit a
   middleware-created `AuthenticatedPrincipal`, resolved tenant `Scope`, and

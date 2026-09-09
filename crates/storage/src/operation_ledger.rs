@@ -171,10 +171,11 @@ impl ProtocolTransition {
     }
 
     fn is_within_window(&self, window_ms: u64, now_ms: i64) -> bool {
-        i64::try_from(window_ms)
-            .ok()
-            .and_then(|window_ms| self.original.prepared_at_ms().checked_add(window_ms))
-            .is_some_and(|deadline_ms| now_ms < deadline_ms)
+        now_ms >= self.original.prepared_at_ms()
+            && i64::try_from(window_ms)
+                .ok()
+                .and_then(|window_ms| self.original.prepared_at_ms().checked_add(window_ms))
+                .is_some_and(|deadline_ms| now_ms < deadline_ms)
     }
 
     fn has_changes(&self) -> bool {
@@ -362,6 +363,7 @@ fn finalize_transition(
     stored: &OperationRecord,
     mut transition: ProtocolTransition,
     fresh_call: OperationCallId,
+    authorized_at_ms: i64,
 ) -> Result<ProtocolDecision, OperationLedgerError> {
     let changed = transition.has_changes();
     if changed {
@@ -395,10 +397,12 @@ fn finalize_transition(
     let response = match transition.granted_call {
         Some(GrantedCall::Invocation) => OperationAdvance::Granted {
             call: fresh_call,
+            authorized_at_ms,
             record: record.clone(),
         },
         Some(GrantedCall::Reconciliation) => OperationAdvance::ReconciliationGranted {
             call: fresh_call,
+            authorized_at_ms,
             record: record.clone(),
         },
         None => OperationAdvance::Recorded(record.clone()),
@@ -454,7 +458,7 @@ pub(crate) fn decide_advance(
         },
         _ => return Err(OperationLedgerError::ProtocolConflict),
     }
-    finalize_transition(stored, transition, fresh_call)
+    finalize_transition(stored, transition, fresh_call, now_ms)
 }
 
 pub(crate) fn validate_protocol(
@@ -843,6 +847,33 @@ mod tests {
             Err(OperationLedgerError::ProtocolConflict)
         ));
         assert_eq!(legacy.protocol(), None);
+    }
+
+    #[test]
+    fn backend_clock_rollback_cannot_expand_the_recovery_window() {
+        let protocol = OperationProtocolRecord::prepared(contract(), 100)
+            .build()
+            .unwrap();
+        let stored = record(OperationState::Prepared, 0).with_protocol(protocol);
+
+        let result = decide_advance(
+            &stored,
+            &OperationCommand::GrantInvocation {
+                expected_revision: 0,
+            },
+            99,
+            OperationCallId::from_bytes([1; 16]),
+        )
+        .unwrap();
+
+        let OperationAdvance::Recorded(record) = result.response else {
+            panic!("a backward backend clock must not authorize a provider call");
+        };
+        assert_eq!(record.state(), OperationState::OutcomeUnknown);
+        assert_eq!(
+            record.protocol().map(OperationProtocolRecord::phase),
+            Some(EffectPhase::OutcomeUnknown),
+        );
     }
 
     #[test]

@@ -99,8 +99,8 @@ pub use nebula_action::{impl_batch_action, impl_paginated_action};
 pub use nebula_core::AuthScheme as AuthSchemeContract;
 pub use nebula_core::auth::NoAuthFamily;
 pub use nebula_core::{
-    ActionKey, AuthPattern, ExecutionId, NodeKey, OperationCallId, OperationId, PluginKey,
-    ResourceKey, ScopeLevel, WorkflowId, action_key, resource_key,
+    ActionKey, AuthPattern, ExecutionId, NodeKey, OperationCallId, PluginKey, ResourceKey,
+    ScopeLevel, WorkflowId, action_key, resource_key,
 };
 // Credential types (v2)
 pub use nebula_credential::{
@@ -131,9 +131,24 @@ pub use nebula_credential::{CredentialContext, CredentialId};
 // `CredentialMetadata`, and `ResourceMetadata` all compose. Re-exported so the
 // uniform `metadata()` accessor surface (`key`/`name`/`version`/`icon`/…) is
 // usable across all three catalog leaves from a single import.
-pub use nebula_metadata::{BaseMetadata, DeprecationNotice, Icon, MaturityLevel, Metadata};
-// Plugin types
-pub use nebula_plugin::{Plugin, PluginManifest};
+//
+// `BaseCompatError`/`validate_base_compat`: `BaseCompatError<K>` is the
+// payload of the `Base(..)` variant on the `MetadataCompatibilityError` enum
+// that `nebula-action`, `nebula-credential`, and `nebula-resource` each
+// re-export from their crate roots, and all three entity metadata types are
+// already in this prelude — without this re-export a consumer could obtain
+// the value but not name its payload type.
+pub use nebula_metadata::{
+    BaseCompatError, BaseMetadata, DeprecationNotice, Icon, MaturityLevel, Metadata,
+    validate_base_compat,
+};
+// Plugin types. `ManifestError`/`PluginDependency`/`PluginManifestBuilder`
+// join `Plugin`/`PluginManifest`: `PluginManifestBuilder` is already named as
+// a parameter type by a consumer (`crates/plugin/tests/frozen_registry.rs`),
+// so it was reachable only anonymously via method chaining, not nameable.
+pub use nebula_plugin::{
+    ManifestError, Plugin, PluginDependency, PluginManifest, PluginManifestBuilder,
+};
 // Resource authoring surface — mirrors `nebula_resource::prelude` plus the
 // `Resource` / `ResourceConfig` / `ClassifyError` derive names.
 //

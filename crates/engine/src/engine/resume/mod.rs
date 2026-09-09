@@ -132,6 +132,13 @@ impl WorkflowEngine {
         execution_id: ExecutionId,
         lease_source: ResumeLeaseSource<'_>,
     ) -> Result<ExecutionResult, EngineError> {
+        let adopted_fence = match &lease_source {
+            ResumeLeaseSource::Adopt { fence } => Some(*fence),
+            ResumeLeaseSource::Acquire
+            | ResumeLeaseSource::ControlStart(_)
+            | ResumeLeaseSource::Recovery(_)
+            | ResumeLeaseSource::Control(_) => None,
+        };
         let result = self
             .drive_exact_execution(scope, execution_id, lease_source)
             .await
@@ -150,7 +157,7 @@ impl WorkflowEngine {
             tracing::warn!(%execution_id, %error, "durable execution turn rejected");
             // A rejected preparation has not constructed its heartbeat guard.
             // Release only the handed-off generation; a successor's lease is untouched.
-            if let ResumeLeaseSource::Adopt { fence } = lease_source
+            if let Some(fence) = adopted_fence
                 && let Some(stores) = &self.stores
                 && let Err(release_error) = stores
                     .execution
@@ -168,7 +175,7 @@ impl WorkflowEngine {
         &self,
         scope: &Scope,
         execution_id: ExecutionId,
-        lease_source: ResumeLeaseSource<'_>,
+        lease_source: &ResumeLeaseSource<'_>,
         turn_started_at: DateTime<Utc>,
     ) -> Result<LoadedExactExecution, ExactTurnFailure> {
         // The scoped execution-store bundle is required for resume; its absence
@@ -259,7 +266,7 @@ impl WorkflowEngine {
         &self,
         scope: &Scope,
         execution_id: ExecutionId,
-        lease_source: ResumeLeaseSource<'_>,
+        lease_source: &ResumeLeaseSource<'_>,
         turn_started_at: DateTime<Utc>,
         exact_execution: LoadedExactExecution,
     ) -> Result<PreparedExactExecution, ExactTurnFailure> {
@@ -325,7 +332,7 @@ impl WorkflowEngine {
                 return Err(rejection.into());
             }
             let handoff_fence = match lease_source {
-                ResumeLeaseSource::Adopt { fence } => Some(fence),
+                ResumeLeaseSource::Adopt { fence } => Some(*fence),
                 ResumeLeaseSource::Acquire
                 | ResumeLeaseSource::ControlStart(_)
                 | ResumeLeaseSource::Recovery(_)
@@ -762,13 +769,13 @@ impl WorkflowEngine {
         let started = Instant::now();
         let turn_started_at = self.clock.now();
         let exact_execution = self
-            .load_exact_execution(scope, execution_id, lease_source, turn_started_at)
+            .load_exact_execution(scope, execution_id, &lease_source, turn_started_at)
             .await?;
         let prepared = self
             .prepare_exact_execution(
                 scope,
                 execution_id,
-                lease_source,
+                &lease_source,
                 turn_started_at,
                 exact_execution,
             )

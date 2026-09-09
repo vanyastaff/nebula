@@ -318,8 +318,8 @@ impl RawClaimed {
     }
 
     /// The token that acknowledges this claim.
-    const fn token(&self) -> ControlClaimToken {
-        self.0.token
+    fn token(&self) -> ControlClaimToken {
+        self.0.token.clone()
     }
 
     /// Normalize into a [`ClaimedRow`], decoding `execution_id` (carried
@@ -762,6 +762,7 @@ impl ControlConsumer {
         }
 
         let dispatch = Arc::clone(&self.dispatch);
+        let dispatch_token = token.clone();
         let dispatch_result = async move {
             tracing::info!(
                 execution_id = %execution_id,
@@ -773,7 +774,7 @@ impl ControlConsumer {
                 ControlCommand::Start => {
                     tracing::debug!(%execution_id, "control-queue: dispatching Start");
                     return dispatch
-                        .dispatch_claimed_start(&scope, execution_id, token)
+                        .dispatch_claimed_start(&scope, execution_id, dispatch_token.clone())
                         .await;
                 },
                 ControlCommand::Cancel => {
@@ -787,13 +788,18 @@ impl ControlConsumer {
                 ControlCommand::Resume => {
                     tracing::debug!(%execution_id, "control-queue: dispatching Resume");
                     return dispatch
-                        .dispatch_claimed_resume(&scope, execution_id, resume_target, token)
+                        .dispatch_claimed_resume(
+                            &scope,
+                            execution_id,
+                            resume_target,
+                            dispatch_token.clone(),
+                        )
                         .await;
                 },
                 ControlCommand::Restart => {
                     tracing::debug!(%execution_id, "control-queue: dispatching Restart");
                     return dispatch
-                        .dispatch_claimed_restart(&scope, execution_id, token)
+                        .dispatch_claimed_restart(&scope, execution_id, dispatch_token)
                         .await;
                 },
             };

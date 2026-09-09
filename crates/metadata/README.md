@@ -1,8 +1,8 @@
 ---
 name: nebula-metadata
 role: Shared catalog-citizen metadata (BaseMetadata + Metadata trait + Icon / MaturityLevel / DeprecationNotice + compat rules)
-status: frontier
-last-reviewed: 2026-04-19
+status: stable
+last-reviewed: 2026-09-08
 canon-invariants: [L2-3.5]
 related: [nebula-action, nebula-credential, nebula-resource, nebula-plugin]
 ---
@@ -26,11 +26,12 @@ input schema (see ADR-0018).
 ## Role
 
 **Core-layer support crate.** Cross-cutting, no upward dependencies.
-Only depends on `nebula-schema` (for `ValidSchema`), `semver`, `serde`,
-and `thiserror`. Every other crate in the business layer
-(`nebula-action`, `nebula-credential`, `nebula-resource`) composes
-`BaseMetadata<K>` via `#[serde(flatten)]` on its own concrete metadata
-struct.
+Depends on `nebula-core` (for `PluginKey`, used by `PluginManifest`),
+`nebula-error` (for the `Classify` derive on `ManifestError`),
+`nebula-schema` (for `ValidSchema`), `semver`, `serde`, and `thiserror`.
+Every other crate in the business layer (`nebula-action`,
+`nebula-credential`, `nebula-resource`) composes `BaseMetadata<K>` via
+`#[serde(flatten)]` on its own concrete metadata struct.
 
 ## Public API
 
@@ -49,6 +50,15 @@ struct.
   rules shared by every catalog citizen (`key` immutable, `version`
   monotonic, schema-break-requires-major-bump). Each consumer layers
   entity-specific rules on top via a thin wrapper enum.
+- `PluginManifest` + `PluginManifestBuilder` — plugin bundle descriptor and
+  its builder (`PluginManifest::builder(key, name)` then chained setters,
+  `.build()`); see [Consumers](#consumers) for why it lives here instead
+  of composing `BaseMetadata`.
+- `PluginDependency` — one declared plugin-on-plugin dependency (`key` +
+  semver `req`) inside a `PluginManifest`.
+- `ManifestError` — `PluginManifestBuilder::build()` failure: `InvalidKey`
+  (normalized key fails `PluginKey` validation) or `MissingRequiredField`
+  (currently: an empty or whitespace-only `name`).
 
 ## Composition
 
@@ -95,11 +105,60 @@ assert_eq!(md.name(), "My Entity");
   `BaseCompatError<ResourceKey>` in a single-variant
   `MetadataCompatibilityError` for shape parity with the other
   consumers.
-- `nebula-plugin::PluginManifest` — **does not** compose `BaseMetadata`
-  by design (plugin is a container, not a schematized leaf). Reuses
-  `Icon` / `MaturityLevel` / `DeprecationNotice` from this crate; see
-  ADR-0018 for the
-  bundle-descriptor rationale.
+- `PluginManifest` — **lives in this crate** (`src/manifest.rs`) and
+  **does not** compose `BaseMetadata` by design (plugin is a container,
+  not a schematized leaf); it reuses `Icon` / `MaturityLevel` /
+  `DeprecationNotice` from here too. See ADR-0018 for the
+  bundle-descriptor rationale. `nebula_plugin::PluginManifest` is a
+  re-export of this type, not a second definition.
+
+## Maturity semantics
+
+`MaturityLevel` is **declarative catalog data an author states**, not a
+guarantee the engine enforces. As of this writing nothing in the engine
+reads `maturity` to gate dispatch, warn on activation, or change retry/
+timeout behavior — it is metadata for the catalog UI and for humans
+reading a manifest, not a runtime contract.
+
+- `Experimental` — actively iterated; the author is telling integrators
+  the public surface may break without notice.
+- `Beta` — stabilizing; the author is committing to a deprecation cycle
+  before a breaking change.
+- `Stable` (default) — breaking changes require a major version bump.
+  Because it is the default, an author who never touches the field ships
+  as `Stable` — state `Experimental`/`Beta` explicitly if that is not
+  true yet.
+- `Deprecated` — scheduled for removal; pair with a `DeprecationNotice`.
+  `deprecate()`/`with_deprecation()` on `BaseMetadata` and `.deprecation()`
+  on `PluginManifestBuilder` both force `maturity = Deprecated` — but this
+  holds only when construction goes through **exactly those entry
+  points**, and only for `PluginManifest` does it hold unconditionally
+  after that: `PluginManifestBuilder::build()` re-derives `maturity` from
+  `deprecation` at build time, so a later `.maturity(Stable)` call cannot
+  win. `BaseMetadata` has no such build step, so the invariant does *not*
+  hold in at least three other places — pinned by the crate's
+  `deprecation_flow` integration tests, not left implicit: (a)
+  deserializing hand-written JSON, since `maturity` and `deprecation` are
+  independent fields with no `Deserialize`-time invariant; (b) builder
+  call order — `BaseMetadata::new(..).with_deprecation(n).with_maturity(
+  MaturityLevel::Stable)` leaves `deprecation: Some(..)` with
+  `maturity: Stable`, because `with_maturity` unconditionally overwrites
+  and nothing re-derives it afterward; (c) direct field assignment — all
+  ten `BaseMetadata` fields are `pub`, so a caller can set `maturity` and
+  `deprecation` independently without calling either builder method at
+  all. Treat "deprecation implies `Deprecated`" as a convention the
+  `with_deprecation()`/`deprecate()` call enforces at the moment you call
+  it, not a standing invariant of the type.
+
+## SDK surface
+
+`nebula-sdk`'s `prelude` re-exports: `BaseMetadata`, `Metadata`, `Icon`,
+`MaturityLevel`, `DeprecationNotice`, `BaseCompatError`,
+`validate_base_compat`, `PluginManifest`, `PluginManifestBuilder`,
+`ManifestError`, `PluginDependency` — effectively this crate's entire
+public surface. See `crates/sdk/docs/DESIGN.md` for the re-export
+rationale and its interaction with issue 1000 (prelude contraction into
+persona modules).
 
 ## Canon
 

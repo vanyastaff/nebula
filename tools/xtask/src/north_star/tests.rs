@@ -15,7 +15,7 @@ fn valid_manifest_and_schema_pass() {
     let summary = validate_documents(VALID_REGISTRY, VALID_SCHEMA, fixture.path())
         .expect("checked-in gate documents validate");
 
-    assert_eq!(summary.registry_version, 1);
+    assert_eq!(summary.registry_version, 2);
     assert_eq!(summary.schema_version, 1);
     assert_eq!(summary.gate_count, 22);
     assert_eq!(summary.status, "valid");
@@ -112,7 +112,7 @@ fn sparse_evidence_instance_is_rejected() {
         serde_json::from_str(VALID_SCHEMA).expect("checked-in schema is JSON");
     let sparse_evidence = json!({
         "gate_id": super::external_registry::ExternalGateId::PersistenceConformance,
-        "registry_version": 1,
+        "registry_version": 2,
         "evidence_schema_version": 1,
         "result_status": "passed",
         "threshold_evaluation": {

@@ -62,7 +62,8 @@ async fn duplicate(ports: &Ports, original: &Seed) -> Seed {
         .claim_pending_for_flavor(&[0x72; 16], 1, original.flavor)
         .await
         .unwrap()[0]
-        .token;
+        .token
+        .clone();
     Seed {
         scope: original.scope.clone(),
         execution: execution.to_string(),
@@ -321,7 +322,8 @@ pub(super) async fn run(ports: &Ports) {
         .claim_pending(&[0x73; 16], 1, &[plugin], job.flavor)
         .await
         .unwrap()[0]
-        .token;
+        .token
+        .clone();
     let nebula_storage_port::store::TurnAcceptance::Accepted { fence } = ports
         .handoff
         .accept_turn(

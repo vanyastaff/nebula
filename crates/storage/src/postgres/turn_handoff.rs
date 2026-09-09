@@ -260,8 +260,15 @@ impl PgTurnHandoff {
                 };
             };
 
+            // Retention is measured from the terminal transition, and this is
+            // one: a claim that spent longer than the retention window in
+            // preflight would otherwise be eligible for deletion the moment the
+            // handoff lands, because `processed_at_ms` would still hold the
+            // claim time.
             let acknowledged = sqlx::query(
-                "UPDATE port_job_dispatch_queue SET status = 'Dispatched' \
+                "UPDATE port_job_dispatch_queue \
+                 SET status = 'Dispatched', \
+                     processed_at_ms = (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint \
                  WHERE id = $1 AND status = 'Processing' AND claim_generation = $2 \
                    AND execution_id = $3 AND workspace_id = $4 AND org_id = $5",
             )

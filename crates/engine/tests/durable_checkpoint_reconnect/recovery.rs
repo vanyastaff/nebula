@@ -55,7 +55,7 @@ async fn accept_then_crash(ports: Ports, admitted: &Admitted, count: &Arc<Atomic
     let control_start_handoff = ControlStartHandoff::for_claim(
         &admitted.scope,
         &admitted_execution_id,
-        claims[0].token,
+        claims[0].token.clone(),
         registry.revision().id(),
     )
     .at_version(record.version)
@@ -94,7 +94,7 @@ async fn recover(ports: Ports, admitted: &Admitted, count: &Arc<AtomicU32>, warm
         accepted_fencing_generation: candidate.accepted_fencing_generation(),
     };
     let RecoveryTurnOutcome::Accepted(Ok(result)) = engine
-        .resume_recoverable_turn(candidate.scope(), admitted.id, request)
+        .resume_recoverable_turn(candidate.scope(), admitted.id, request.clone())
         .await
     else {
         panic!("owner must grant recovery of the expired accepted turn");

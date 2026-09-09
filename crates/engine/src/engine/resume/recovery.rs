@@ -4,7 +4,7 @@ use super::*;
 use nebula_storage_port::store::ControlClaimToken;
 
 /// A discovered accepted turn and the owner capability that may grant recovery.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct RecoveryTurnRequest<'a> {
     /// Owner of the durable acceptance marker and execution lease.
     pub handoff: &'a dyn nebula_storage_port::TurnRecovery,
@@ -45,7 +45,7 @@ impl std::fmt::Debug for RecoveryTurnOutcome {
 }
 
 /// Current Start delivery and the execution owner's atomic handoff capability.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct ClaimedStartRequest<'a> {
     /// Proof of the current queue claim.
     pub claim: ControlClaimToken,

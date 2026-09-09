@@ -20,6 +20,7 @@
 //! [`Scope`]: nebula_storage_port::Scope
 //! [`ScopeResolver`]: crate::ScopeResolver
 
+mod checkpoint;
 mod control_queue;
 mod execution;
 mod idempotency;
@@ -34,6 +35,7 @@ mod turn_handoff;
 mod webhook;
 mod workflow;
 
+pub use checkpoint::ScopedCheckpointStore;
 pub use control_queue::ScopedControlQueue;
 pub use execution::ScopedExecutionStore;
 pub use idempotency::{ScopedIdempotencyGuard, ScopedIdempotencyStore};

@@ -35,9 +35,8 @@ const POLICY_SOURCE: &str = concat!(
     "\0",
     include_str!("mod.rs"),
     "\0",
-    // The assembler decides which raw observation backs which gate and case,
-    // so it is part of the policy an artifact is bound to. Leaving it out let
-    // that mapping change without moving `verifier_policy_sha256`.
+    // The artifact-to-observation mapping is policy-bearing and therefore part
+    // of the verifier policy digest.
     include_str!("bundle.rs"),
     "\0",
     include_str!("loader.rs"),
@@ -203,12 +202,9 @@ fn policy() -> Result<BTreeMap<GateBackend, RequiredArtifact>, VerificationError
         .filter(|gate| runtime_gate(gate.id).is_ok())
     {
         gates.insert(gate.id);
-        let artifact_stem = Path::new(&gate.evidence.artifact_path)
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .filter(|value| !value.is_empty())
-            .ok_or(VerificationError::PolicyMismatch)?
-            .to_owned();
+        let runtime_gate = runtime_gate(gate.id)?;
+        validate_runtime_threshold(runtime_gate, &gate.threshold)?;
+        let artifact_stem = gate.evidence.artifact_name;
         let cases = match gate.threshold {
             Threshold::All { required_cases, .. } => required_cases.into_iter().map(Some).collect(),
             _ => BTreeSet::from([None]),
@@ -237,6 +233,125 @@ fn policy() -> Result<BTreeMap<GateBackend, RequiredArtifact>, VerificationError
     Ok(required)
 }
 
+fn validate_runtime_threshold(
+    gate: RuntimeAuthorityGate,
+    threshold: &Threshold,
+) -> Result<(), VerificationError> {
+    use RuntimeAuthorityGate as Gate;
+
+    let matches_policy = match (gate, threshold) {
+        (
+            Gate::ExecutionIdentity,
+            Threshold::RequiredSet {
+                metric,
+                required_values,
+            },
+        ) => {
+            metric == "non_terminal_execution_identity_fields"
+                && values_match(
+                    required_values,
+                    &["bundle_revision", "workflow_revision", "flavor_revision"],
+                )
+        },
+        (
+            Gate::ExactRevisionRouting,
+            Threshold::All {
+                metric,
+                required_cases,
+            },
+        ) => {
+            metric == "fail_closed_revision_cases"
+                && values_match(required_cases, &["missing", "draining"])
+        },
+        (Gate::ClaimGenerationFencing, Threshold::Zero { metrics }) => {
+            values_match(metrics, &["stale_generation_mutation_count"])
+        },
+        (Gate::KeyedAcceptance, Threshold::Exact { metric, expected }) => {
+            metric == "durable_drive_identities_per_ambiguous_acceptance"
+                && expected.as_integer() == Some(1)
+        },
+        (Gate::ClaimHandoff, Threshold::Zero { metrics }) => values_match(
+            metrics,
+            &[
+                "claim_reclaimed_while_action_blocked",
+                "claim_exhausted_while_action_blocked",
+                "competing_claim_count",
+            ],
+        ),
+        (
+            Gate::PersistenceConformance,
+            Threshold::All {
+                metric,
+                required_cases,
+            },
+        ) => {
+            metric == "persistence_conformance_case_pass"
+                && values_match(
+                    required_cases,
+                    &[
+                        "checkpoint-reconnect",
+                        "owner-fencing",
+                        "atomic-transition",
+                        "tenant-isolation",
+                        "keyed-acceptance",
+                        "publication-atomicity",
+                        "lease-recovery",
+                        "claim-generation-fencing",
+                        "exact-revision-routing",
+                        "backend-reinitialization",
+                        "remote-effects",
+                    ],
+                )
+        },
+        (Gate::RequiredPostgresql, Threshold::Exact { metric, expected }) => {
+            metric == "required_ci_result_when_postgresql_is_absent"
+                && expected.as_str() == Some("failure")
+        },
+        (
+            Gate::OrderedMigrations,
+            Threshold::All {
+                metric,
+                required_cases,
+            },
+        ) => {
+            metric == "ordered_migration_fixture_pass"
+                && values_match(required_cases, &["clean", "previous-supported-version"])
+        },
+        (
+            Gate::ActivationDiagnostics,
+            Threshold::RequiredSet {
+                metric,
+                required_values,
+            },
+        ) => {
+            metric == "activation_diagnostic_fields"
+                && values_match(
+                    required_values,
+                    &["code", "path", "expected", "actual", "remediation"],
+                )
+        },
+        (Gate::RemoteEffects, Threshold::Zero { metrics }) => values_match(
+            metrics,
+            &[
+                "stale_committed_effect_count",
+                "duplicate_committed_effect_count",
+            ],
+        ),
+        _ => false,
+    };
+    if matches_policy {
+        Ok(())
+    } else {
+        Err(VerificationError::PolicyMismatch)
+    }
+}
+
+fn values_match(actual: &[String], expected: &[&str]) -> bool {
+    let actual = actual.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    let expected = expected.iter().copied().collect::<BTreeSet<_>>();
+    actual == expected
+}
+
 /// Identity of the job running the verifier.
 ///
 /// Supplied by the trusted runner on the command line and never read from the
@@ -254,29 +369,48 @@ pub(crate) struct RunnerIdentity {
 struct VerificationSummary {
     status: &'static str,
     contract: &'static str,
-    derived_states: Vec<DerivedGateState>,
+    effective_states: Vec<EffectiveGateState>,
 }
 
 #[derive(Debug, Serialize)]
-struct DerivedGateState {
+struct EffectiveGateState {
     gate: ExternalGateId,
     state: &'static str,
 }
 
 impl VerificationSummary {
-    fn from_verified_runtime_authority() -> Self {
-        let derived_states = RuntimeAuthorityGate::ALL
-            .into_iter()
-            .map(|gate| DerivedGateState {
-                gate: gate.into(),
+    fn from_verified_observations(
+        verified: &BTreeMap<GateBackend, BTreeSet<Option<String>>>,
+        required: &BTreeMap<GateBackend, RequiredArtifact>,
+    ) -> Result<Self, VerificationError> {
+        let mut effective_states = Vec::with_capacity(RuntimeAuthorityGate::ALL.len());
+        for gate in RuntimeAuthorityGate::ALL {
+            let external = ExternalGateId::from(gate);
+            let expected = required
+                .iter()
+                .filter(|(identity, _)| identity.gate == external)
+                .collect::<Vec<_>>();
+            if expected.is_empty()
+                || expected
+                    .iter()
+                    .any(|(identity, artifact)| verified.get(*identity) != Some(&artifact.cases))
+            {
+                return Err(VerificationError::InventoryMismatch);
+            }
+            effective_states.push(EffectiveGateState {
+                gate: external,
+                // Runtime evidence establishes only the observed contract.
+                // Release-level `passed` also requires independent policy
+                // provenance, so a complete verified inventory advances to
+                // `partial` and no farther.
                 state: "partial",
-            })
-            .collect();
-        Self {
+            });
+        }
+        Ok(Self {
             status: "verified",
             contract: "runtime-authority",
-            derived_states,
-        }
+            effective_states,
+        })
     }
 
     fn to_json_line(&self) -> Result<Vec<u8>, VerificationError> {
@@ -329,15 +463,17 @@ pub(crate) fn verify(
     }
     super::validate(workspace).map_err(|_| VerificationError::PolicyMismatch)?;
     admit_artifacts(&root, &expected, runner)?;
-    verify_semantics(workspace, &root, &expected)?;
-    VerificationSummary::from_verified_runtime_authority().to_json_line()
+    let verified = verify_semantics(workspace, &root, &expected)?;
+    let required = policy()?;
+    VerificationSummary::from_verified_observations(&verified, &required)?.to_json_line()
 }
 
 fn verify_semantics(
     workspace: &Path,
     root: &Path,
     expected: &ExpectedProvenance,
-) -> Result<(), VerificationError> {
+) -> Result<BTreeMap<GateBackend, BTreeSet<Option<String>>>, VerificationError> {
+    let mut verified = BTreeMap::<GateBackend, BTreeSet<Option<String>>>::new();
     for entry in &expected.artifacts {
         let bytes = loader::artifact(root, &entry.path, &entry.sha256)?;
         let artifact: ObservationArtifact = json::decode(&bytes)?;
@@ -353,9 +489,13 @@ fn verify_semantics(
                 backend: backend_name(artifact.identity.backend).to_owned(),
                 case: observation.case.as_deref().unwrap_or("default").to_owned(),
             })?;
+            verified
+                .entry(artifact.identity.clone())
+                .or_default()
+                .insert(observation.case.clone());
         }
     }
-    Ok(())
+    Ok(verified)
 }
 
 fn backend_name(backend: Option<Backend>) -> &'static str {
