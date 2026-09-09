@@ -1,13 +1,16 @@
 # nebula-log — Agent orientation
-> Agent quick-map for `crates/log/`. Full design: `README.md`. Repo-wide rules: root `AGENTS.md`.
+> Local guide for `crates/log/`. Read [root AGENTS.md](../../AGENTS.md) first;
+> this guide adds crate-specific rules. Design and status: [README.md](README.md).
 
 **Purpose:** Single `tracing` subscriber-init pipeline for all Nebula binaries — one `auto_init`/`init_with` call wires format, writers, structured fields, runtime reload, and optional OTLP/Sentry.
 **Layer:** Cross-cutting — no upward deps; importable from any tier (root AGENTS.md -> Layered Dependency Map).
 
 ## Commands
+
 - Feature-gated paths: `cargo check -p nebula-log --features full` (or `file` / `telemetry` / `sentry` / `log-compat`); bench: `task bench:crate CRATE=nebula-log` (`benches/log_hot_path.rs`)
 
 ## Key files
+
 - `src/lib.rs` — public API + `auto_init`/`init`/`init_with`/`init_test`; idempotent-init logic (#379 no-op guard when a dispatcher already set)
 - `src/builder/mod.rs` — `LoggerBuilder`, `LoggerGuard`, `ReloadHandle`; `build_startup` resolution (`explicit > env > preset`)
 - `src/config/` — `Config`, `Format`, `WriterConfig`, presets (`development`/`production`/`test`), env resolution, `Fields`
@@ -16,10 +19,19 @@
 - `src/writer.rs`, `src/format.rs`, `src/timing.rs` — writer backends, formatters, `Timer`/`Timed`
 
 ## Conventions & never-do
+
 - This crate sets up the subscriber only; it does NOT redact secrets — callers must pass redacted forms to `tracing::*!` (canon §12.5). Never log raw credential/token values from here.
 - Not a metrics system (`nebula-metrics`) and not an event bus (`nebula-eventbus`) — don't add either here.
 - `LoggerGuard` is RAII; it must stay alive for the process lifetime. Duplicate init returns a no-op guard / `LogError::AlreadyInitialized` — keep init idempotent, never panic.
 - `#![forbid(unsafe_code)]` and `#![warn(missing_docs)]` — every public item needs docs; sentry uses `rustls` only (native-tls banned in `deny.toml`).
 
+## Change checks
+
+| Change | Relevant evidence |
+|--------|-------------------|
+| Configuration precedence | [config_precedence](tests/config_precedence.rs), [config_compatibility](tests/config_compatibility.rs), [config_schema_snapshot](tests/config_schema_snapshot.rs). |
+| Initialization and writers | [init_hardening](tests/init_hardening.rs), [writer_fanout](tests/writer_fanout.rs), [hook_policy](tests/hook_policy.rs); enable `file` for file-writer behavior. |
+
 ## See also
-- `README.md` — full design · `docs/README.md` (extended internals) · canon `docs/PRODUCT_CANON.md` §4.6/§12.5, `docs/OBSERVABILITY.md` · sibling `nebula-metrics`
+
+- `README.md` — full design · `docs/README.md` (extended internals) · canon [docs/PRODUCT_CANON.md](../../docs/PRODUCT_CANON.md) §4.6/§12.5, [docs/OBSERVABILITY.md](../../docs/OBSERVABILITY.md) · sibling `nebula-metrics`

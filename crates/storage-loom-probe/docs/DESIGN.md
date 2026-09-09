@@ -40,7 +40,7 @@ Standalone-крейт с loom-модельными пробами для CAS-к�
 
 - **Deps:** только `loom = "0.7"` (optional, за фичей `loom-test = ["dep:loom"]`); workspace-зависимостей НЕТ — это принцип крейта (Cargo.toml:15-25).
 - **Dependents:** ни один крейт workspace не зависит от него; единственное упоминание — комментарий в `crates/storage/Cargo.toml:121`, объясняющий, почему loom-пробы вынесены сюда.
-- **Запуск:** `RUSTFLAGS="--cfg loom" cargo nextest run -p nebula-storage-loom-probe --features loom-test --profile ci --no-tests=pass`.
+- **Запуск:** `RUSTFLAGS="--cfg loom" cargo nextest run -p nebula-storage-loom-probe --features loom-test --profile ci`.
 
 ## 4. Внутренняя архитектура
 

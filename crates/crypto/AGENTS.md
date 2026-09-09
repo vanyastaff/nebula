@@ -1,18 +1,28 @@
 # nebula-crypto — Agent orientation
-> Agent quick-map for `crates/crypto/`. Full design: `README.md`. Repo-wide rules: root `AGENTS.md`.
+> Local guide for `crates/crypto/`. Read [root AGENTS.md](../../AGENTS.md) first;
+> this guide adds crate-specific rules. Design and status: [README.md](README.md).
 
 **Purpose:** Leaf crypto primitives — AES-256-GCM authenticated encryption (mandatory AAD) + Argon2id key derivation, with the `EncryptedData` envelope and `CryptoError` taxonomy.
 **Layer:** Cross-cutting — depends only on `nebula-error` + the RustCrypto stack (root AGENTS.md -> Layered Dependency Map); importable from any layer.
 
 ## Key files
+
 - `src/lib.rs` — the entire crate (single file): `EncryptionKey`, `EncryptedData`, encrypt/decrypt fns, `CryptoError`, private `fresh_nonce`.
 
 ## Conventions & never-do
+
 - **SEC-11:** no public no-AAD `encrypt`. Production callers MUST use `encrypt_with_aad` / `encrypt_with_key_id`; the AAD-free `encrypt_no_aad` is `#[cfg(test)]`-only — do not promote it to a non-test path.
 - Plaintext outputs are wrapped in `Zeroizing<T>` and `EncryptionKey` is `ZeroizeOnDrop`. `EncryptedData` (nonce/ciphertext/tag) is public bytes by design — do NOT add a scrubbing `Drop`.
 - `encrypt_with_key_id` rejects an empty `key_id` (`CryptoError::InvalidKeyId`) so rotation lookup can pick the decryption key — keep that invariant.
 - `CryptoError` `code` strings keep the `CREDENTIAL:CRYPTO_*` prefix (stable across the credential stack) — do not rename them on a move.
 - Keep this a leaf: no PKCE/OAuth-state helpers or `serde_base64` here — those stay in `nebula-credential` (travel with the OAuth protocol).
 
+## Change checks
+
+| Change | Relevant evidence |
+|--------|-------------------|
+| AEAD envelope, key identity, or AAD | Unit tests in [src/lib.rs](src/lib.rs); storage [credential_encryption_invariants](../storage/tests/credential_encryption_invariants.rs) checks the consuming encryption layer. |
+
 ## See also
+
 - `README.md` — full design · ADR-0088 (extracted from `nebula-credential`; design records are maintained in the maintainers' private design vault, not in this public repository)

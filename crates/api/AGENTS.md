@@ -1,8 +1,9 @@
 # nebula-api — Agent orientation
-> Agent quick-map for `crates/api/`. Full design: `README.md`. Repo-wide rules: root `AGENTS.md`.
+> Local guide for `crates/api/`. Read [root AGENTS.md](../../AGENTS.md) first;
+> this guide adds crate-specific rules. Design and status: [README.md](README.md).
 
 **Purpose:** Thin axum HTTP gateway translating REST into typed port-trait calls; all business logic delegates downward, plus inbound webhook + OAuth transports.
-**Layer:** API/Public — depends only downward (root AGENTS.md -> Layered Dependency Map).
+**Layer:** API / Surfaces — technical HTTP/composition boundary; the supported Rust product surface is `nebula-sdk`.
 
 ## Common Tasks
 
@@ -10,16 +11,18 @@
 |------|-------|
 | Add a new API endpoint | 1. Add handler in `src/domain/<x>/handler.rs` 2. Register it in `src/domain/<x>/routes.rs` and the relevant `src/domain/mod.rs` assembly 3. Run `cargo nextest run -p nebula-api --test openapi_spec` to verify spec sync |
 | Add a new middleware | Add to the stack in `src/app.rs` — **order is load-bearing** (auth before csrf). See existing stack. |
-| Add a new DTO | Create in `src/domain/<x>/dto.rs`. DTOs MUST NOT embed `nebula-core`/`-storage`/`-engine` types (ADR-0047). Use `serde_json::Value` or wrappers. |
+| Add a new DTO | Create in `src/domain/<x>/dto.rs`; follow the transport/domain separation below and update OpenAPI schemas and secret-redaction tests. |
 | Add a new error variant | Extend `ApiError` in `src/error/mod.rs` — all errors are RFC 9457 `application/problem+json`. Never a new ad-hoc 500. |
 | Test Plane-A OAuth | Run `cargo nextest run -p nebula-api` and `cargo nextest run -p nebula-api --features postgres`; the private egress suite uses a generated TLS CA/server and the production client policy without a release bypass. |
-| Check if API compiles | `cargo check -p nebula-api` |
 
 ## Commands
-- OpenAPI/spec guards: `cargo nextest run -p nebula-api --test openapi_spec` (regenerates spec from the router)
-- Feature flags: `postgres` (PG idempotency + `PgAuthBackend`), `test-util` (`ApiConfig::for_test`, bypasses JWT gate — never in prod)
+
+- OpenAPI/spec guards: `cargo nextest run -p nebula-api --test openapi_spec --test openapi_canon_compliance --test openapi_secret_redaction` (inspect the generated router/spec contract; no static spec regeneration step).
+- Feature flags: `postgres` (PG idempotency + `PgAuthBackend`), `test-util` (`ApiConfig::for_test`, bypasses JWT configuration validation — never in prod), `first-party-composition` (technical composition hooks).
+- PostgreSQL auth tests require `DATABASE_URL`; an absent variable makes suites such as `auth_pg_e2e` return early. A feature-enabled build or green skipped test is not backend runtime evidence.
 
 ## Key files
+
 - `src/lib.rs` — crate root, public re-exports (`build_app`, `AppState`, `ApiConfig`, `ApiError`)
 - `src/app.rs` — `build_app`: OpenApiRouter merge + `split_for_parts` + full middleware stack + `serve()`
 - `src/state.rs` — `AppState` builder + API-tier port traits (`OrgResolver`/`WorkspaceResolver`/`MembershipStore`/`SessionStore`/`AuthBackend`)
@@ -32,6 +35,7 @@
 - `src/transport/webhook/` — single converged inbound webhook transport (programmatic + slug-routed)
 
 ## Conventions & never-do
+
 - Pure library — ships NO binary/composition root; wiring lives in `apps/server`. Do not add a `main`.
 - No SQL driver / storage-schema knowledge here — inject spec-16 storage ports via `AppState::new` (`nebula-storage` owns adapters).
 - DTOs MUST NOT embed `nebula-core`/`-storage`/`-engine`/`-credential` types (ADR-0047 §3); wrap cross-layer types (`OrgRoleDto`/`WorkspaceRoleDto`). DTOs carry only `serde_json::Value`/wrappers.
@@ -97,6 +101,16 @@
   without organization membership denies access (enumeration-safe 404 where the route contract
   requires it). Neither case implies administrator access.
 
+## Change checks
+
+| Change | Relevant evidence |
+|--------|-------------------|
+| Routes, DTOs, and public failures | [openapi_spec](tests/openapi_spec.rs), [openapi_canon_compliance](tests/openapi_canon_compliance.rs), [openapi_secret_redaction](tests/openapi_secret_redaction.rs). |
+| Auth and tenant authority | [access_e2e](tests/access_e2e.rs), [auth_mfa_csrf](tests/auth_mfa_csrf.rs), [authority_cache_control](tests/authority_cache_control.rs); PostgreSQL auth needs the backend prerequisites above. |
+| Credential command boundary | [credential_facade_lifecycle_e2e](tests/credential_facade_lifecycle_e2e.rs), [seam_credential_write_path_validation](tests/seam_credential_write_path_validation.rs). |
+| Activation/start | [workflow_activation](tests/workflow_activation.rs), [workflow_start](tests/workflow_start.rs), [activation_diagnostic_contract](tests/activation_diagnostic_contract.rs). |
+
 ## See also
+
 - `README.md` — full design (endpoint table, CSRF route table, OAuth/idempotency env vars, durability caveats)
 - ADRs: 0047 (OpenAPI), 0048/0082 (idempotency), 0049 (webhook), 0050 (W3C trace), 0072 (storage port), 0085 (OAuth IdP)

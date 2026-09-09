@@ -62,7 +62,7 @@ Both probes (run separately or together):
 RUSTFLAGS="--cfg loom" cargo nextest run \
   -p nebula-storage-loom-probe \
   --features loom-test \
-  --profile ci --no-tests=pass
+  --profile ci
 ```
 
 Only one probe at a time:
@@ -71,13 +71,13 @@ Only one probe at a time:
 # Refresh-claim CAS
 RUSTFLAGS="--cfg loom" cargo nextest run \
   -p nebula-storage-loom-probe --features loom-test \
-  --profile ci --no-tests=pass \
+  --profile ci \
   --test refresh_claim_loom
 
 # Execution-lease handoff
 RUSTFLAGS="--cfg loom" cargo nextest run \
   -p nebula-storage-loom-probe --features loom-test \
-  --profile ci --no-tests=pass \
+  --profile ci \
   --test lease_handoff_loom
 ```
 

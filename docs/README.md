@@ -7,6 +7,7 @@
 | Path | Role |
 |------|------|
 | [`AGENTS.md`](../AGENTS.md) | Repo rules, layout, commands, guard hooks |
+| [`docs/AGENT_WORKFLOW.md`](./AGENT_WORKFLOW.md) | Task brief, resume/handoff notes, review and completion evidence; read for substantial or interrupted work |
 | [`README.md`](../README.md) | Product overview |
 | [`docs/pitfalls.md`](./pitfalls.md) | Traps before touching hot paths |
 | [`docs/MATURITY.md`](./MATURITY.md) | L0–L4 maturity |

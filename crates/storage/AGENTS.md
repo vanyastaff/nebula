@@ -1,5 +1,6 @@
 # nebula-storage — Agent orientation
-> Agent quick-map for `crates/storage/`. Full design: `README.md`. Repo-wide rules: root `AGENTS.md`.
+> Local guide for `crates/storage/`. Read [root AGENTS.md](../../AGENTS.md) first;
+> this guide adds crate-specific rules. Design and status: [README.md](README.md).
 
 **Purpose:** The sole adapter implementation of the spec-16 `nebula-storage-port` contract — SQLite/PostgreSQL deployment backends plus internal in-memory test/reference adapters, including owner-bound credential persistence.
 **Layer:** Exec — depends only downward (root AGENTS.md -> Layered Dependency Map).
@@ -8,17 +9,14 @@
 
 | Task | Steps |
 |------|-------|
-| Add a new port method | 1. Define on the trait in `nebula-storage-port` (Core layer) 2. Implement in `src/inmem/`, `src/sqlite/`, `src/postgres/` 3. Add migration if SQL changes needed |
+| Add a new port method | Define in `nebula-storage-port`, update all applicable backends and policy decorators, then shared conformance tests. Credential adapters/decorators live under `src/credential/`; general adapters live under `src/inmem/`, `src/sqlite/`, `src/postgres/`. Add paired migrations when needed. |
 | Add a SQL migration | Create paired `migrations/{postgres,sqlite}/NNNN_description.sql` files when the logical schema is shared. Numbered SQLx migrations are the sole setup source; never add a `src/**/schema.sql` snapshot. Classify the migration as aggregate-neutral or aggregate-transforming before changing the executable catalog-boundary test. Run the curated `task db:migrate` operator; never run raw SQLx migration against a non-empty database. |
-| Test Postgres adapter | Needs `DATABASE_URL` env var. Tests are skip-clean without a live DB. |
-| Understand CAS transitions | `ExecutionStore::commit` uses CAS on `version` + lease `FencingToken`. If persistence is unavailable it FAILS — never silently mutate in-memory state. |
-| Understand outbox atomicity | Control-queue writes share the SAME `TransitionBatch` as state transition (§12.2). Never transition without enqueueing. |
-| Check if storage compiles | `cargo check -p nebula-storage --features sqlite,postgres` |
 
 ## Commands
-- `cargo check -p nebula-storage`  (backends are feature-gated: add `--features sqlite,postgres`)
-- `cargo nextest run -p nebula-storage`  ·  doctests: n/a (`doctest = false` in Cargo.toml)
-- Postgres runtime tests are `DATABASE_URL`-gated + skip-clean (e.g. `tests/pg_idempotency.rs`); not pg-verified without a live DB.
+
+- `cargo check -p nebula-storage --features sqlite,postgres` — compile both deployment backends; default features alone compile neither SQL backend.
+- `cargo nextest run -p nebula-storage --features sqlite --test conformance` — exercises the SQLite/reference matrix; the PostgreSQL cases remain unverified without their prerequisites.
+- With `DATABASE_URL` set to a disposable test database: `NEBULA_REQUIRE_POSTGRES=1 cargo nextest run -p nebula-storage --features sqlite,postgres --test conformance`. This harness fails on missing PostgreSQL prerequisites. Other suites, such as `pg_idempotency`, still return early when the URL is absent; do not generalize the strict flag to every test.
 - Migrations: per-backend ordered trees `migrations/{postgres,sqlite}/`; both production startup
   and test/`:memory:` setup run those exact catalogs. Existing numbered files are immutable.
   `task db:migrate` uses the admitted server-owned operator. `task db:reset` is the only raw-run
@@ -32,6 +30,7 @@
   mechanical catalog update.
 
 ## Key files
+
 - `src/lib.rs` — adapter re-exports (`InMemory*`, `StorageError`, `StorageFormat`); module/feature map.
 - `src/inmem/` — internal test/reference/conformance adapters and loom probes; not a supported deployment backend.
 - `src/sqlite/` · `src/postgres/` — feature-gated port adapters over the port-scoped schema (Postgres uses real tx + `FOR UPDATE SKIP LOCKED`).
@@ -48,8 +47,9 @@
   final invariants; unchecked raw-pool constructors are deliberately unavailable.
 
 ## Conventions & never-do
+
 - `ExecutionStore::commit` is the single source of truth: CAS on `version` + lease `FencingToken` gating; if persistence is unavailable it FAILS — never silently mutate in-memory state.
-- Outbox atomicity (§12.2): control-queue writes share the SAME `TransitionBatch` as the state transition. Never transition without enqueueing, or enqueue without transitioning.
+- Outbox atomicity (§12.2): when a transition produces control messages, include them in the SAME `TransitionBatch` as the state change. Do not split that intent into a later enqueue. An empty outbox is valid for transitions that produce no control message.
 - `try_claim` must be atomic under contention (exactly one winner of N replicas). It may replace
   only an expired `Normal` row. An expired `RefreshInFlight` row is durable
   `OutcomeUnknown` poison: reclaim atomically records its event exactly once but never deletes
@@ -77,6 +77,15 @@
 - Every credential predicate is owner-bound (`CredentialSelector` or `CredentialOwner`); wrong-owner and missing are indistinguishable. Owner metadata is compatibility/audit data only and never grants authority.
 - The credential refresh-retry gate and material epoch are structural row state, separate from metadata and refresh-claim TTL. Backends author epochs: create/migration starts at `CredentialMaterialEpoch::MIN`; `CredentialMaterialTransition::Preserve { refresh_retry }` retains the epoch and applies its explicit gate transition; `Advance` increments the epoch and unconditionally clears the old gate; overflow fails closed. SQLite/PostgreSQL compute `SetAfter` and admission from their own wall clock (PostgreSQL uses `clock_timestamp()` after lock waits); unknown codecs fail closed, and tombstones carry no gate.
 
+## Change checks
+
+| Change | Relevant evidence |
+|--------|-------------------|
+| Port behavior and tenancy | [conformance](tests/conformance.rs) and [identity_conformance](tests/identity_conformance.rs) for the affected backends; report which backend cases actually executed. |
+| Migration admission | [schema_source_authority](tests/schema_source_authority.rs), [credential_migration_catalog](tests/credential_migration_catalog.rs), and the SQLite/PostgreSQL schema-admission suites. Review catalog-floor policy before updating expected heads. |
+| Execution handoff or remote effects | The `turn_handoff_conformance_*` and `operation_ledger_conformance_*` targets in [tests/](tests/); pair backend evidence with engine/worker ownership tests. |
+
 ## See also
+
 - `README.md` — full durability matrix + backend status table.
-- ADR-0072 (port/adapter/tenancy); ADR-0041 (refresh claim); `docs/PRODUCT_CANON.md` §11.1/§11.3/§11.5/§12.2/§12.3.
+- ADR-0072 (port/adapter/tenancy); ADR-0041 (refresh claim); [docs/PRODUCT_CANON.md](../../docs/PRODUCT_CANON.md) §11.1/§11.3/§11.5/§12.2/§12.3.
