@@ -80,6 +80,7 @@ nebula-storage-port = { path = "../../crates/storage-port" }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time", "test-util"] }
 chrono = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

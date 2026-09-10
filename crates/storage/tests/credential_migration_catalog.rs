@@ -209,15 +209,15 @@ fn repository_catalog_matches_k2_contract() {
     let postgres = Catalog::load("postgres").expect("Postgres catalog must be valid");
     let sqlite = Catalog::load("sqlite").expect("SQLite catalog must be valid");
 
-    let expected_postgres = (1_u16..=50).collect::<Vec<_>>();
+    let expected_postgres = (1_u16..=51).collect::<Vec<_>>();
     let expected_sqlite = (1_u16..=28)
         .chain(30..=35)
-        .chain([39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50])
+        .chain([39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51])
         .collect::<Vec<_>>();
     assert_eq!(
         postgres.versions(),
         expected_postgres,
-        "Postgres must reserve every logical migration through version 0050"
+        "Postgres must reserve every logical migration through version 0051"
     );
     assert_eq!(
         sqlite.versions(),
@@ -286,6 +286,15 @@ fn repository_catalog_matches_k2_contract() {
         assert_eq!(
             control_generation.file_name, "0044_control_queue_claim_generation.sql",
             "control-queue claim-generation migration filename is part of the catalog contract"
+        );
+        let resource_runtime = catalog
+            .by_version()
+            .get(&51)
+            .copied()
+            .expect("resource-runtime migration 0051 must exist in both backends");
+        assert_eq!(
+            resource_runtime.file_name, "0051_resource_runtime.sql",
+            "resource-runtime migration filename is part of the catalog contract"
         );
     }
 }

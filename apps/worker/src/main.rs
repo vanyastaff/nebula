@@ -1,7 +1,8 @@
 //! Core-flavor worker binary.
 //!
 //! Boots the first-party [`CorePlugin`], wires it into a [`WorkflowEngine`],
-//! and runs durable control, recovery, and timer processing via [`nebula_worker`].
+//! and runs durable control, recovery, resource fanout, and timer processing
+//! via [`nebula_worker`].
 //!
 //! ## Configuration (environment variables)
 //!

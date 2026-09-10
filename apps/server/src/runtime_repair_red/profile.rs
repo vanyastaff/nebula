@@ -271,6 +271,7 @@ impl RuntimeRepairHarness {
                     catalog: worker_projection.revision_catalog,
                     bundles: worker_projection.bundles,
                 },
+                worker_projection.resource_fanout,
                 nebula_worker_bin::compose::RuntimeRepairEvidenceInputs {
                     clock: engine_clock,
                     event_bus: execution_event_bus,

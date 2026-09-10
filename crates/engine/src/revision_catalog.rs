@@ -386,6 +386,15 @@ impl From<PlanRegistryCompatibilityError> for PlanFlavorRevisionBridgeError {
 }
 
 impl PlanFlavorRevisionBridgeError {
+    pub(crate) const fn is_transient_catalog_failure(&self) -> bool {
+        matches!(
+            self,
+            Self::Catalog {
+                source: RevisionCatalogError::Unavailable | RevisionCatalogError::OutcomeUnknown
+            }
+        )
+    }
+
     const fn code(&self) -> &'static str {
         match self {
             Self::Catalog { source } => catalog_error_code(source),

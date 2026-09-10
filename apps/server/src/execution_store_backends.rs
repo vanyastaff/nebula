@@ -88,6 +88,13 @@ fn build_memory_execution_stores(
             turn_recovery: Arc::new(nebula_storage::inmem::InMemoryTurnHandoff::new(
                 &execution_store,
             )),
+            resource_fanout: nebula_worker_bin::compose::ResourceFanoutInputs::from_runtime(
+                nebula_engine::WorkflowStores {
+                    workflow: Arc::new(workflow_store.clone()),
+                    versions: Arc::new(workflow_versions.clone()),
+                },
+                Arc::new(nebula_storage::inmem::InMemoryResourceRuntime::new()),
+            ),
         }
     };
 
@@ -214,6 +221,15 @@ async fn build_sqlite_execution_stores(
             control_queue: Arc::clone(&control_queue),
             turn_handoff: Arc::clone(&turn_handoff),
             turn_recovery: Arc::new(SqliteTurnHandoff::new(pool.clone())),
+            resource_fanout: nebula_worker_bin::compose::ResourceFanoutInputs::from_runtime(
+                nebula_engine::WorkflowStores {
+                    workflow: Arc::clone(&workflow_store),
+                    versions: Arc::clone(&workflow_version_store),
+                },
+                Arc::new(nebula_storage::sqlite::SqliteResourceRuntime::new(
+                    pool.clone(),
+                )),
+            ),
         }
     };
     #[cfg(feature = "runtime-repair-red")]
@@ -335,6 +351,15 @@ async fn build_postgres_execution_stores(
             control_queue: Arc::clone(&control_queue),
             turn_handoff: Arc::clone(&turn_handoff),
             turn_recovery: Arc::new(PgTurnHandoff::new(pool.clone())),
+            resource_fanout: nebula_worker_bin::compose::ResourceFanoutInputs::from_runtime(
+                nebula_engine::WorkflowStores {
+                    workflow: Arc::clone(&workflow_store),
+                    versions: Arc::clone(&workflow_version_store),
+                },
+                Arc::new(nebula_storage::postgres::PgResourceRuntime::new(
+                    pool.clone(),
+                )),
+            ),
         }
     };
     #[cfg(feature = "runtime-repair-red")]

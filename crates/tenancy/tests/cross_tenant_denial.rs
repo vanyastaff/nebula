@@ -22,6 +22,7 @@
 //! single-use cross-tenant replay) is covered by the credential
 //! scope-layer coverage suite, where the credential layer lives.
 
+use std::assert_matches;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -29,17 +30,30 @@ use std::time::Duration;
 use nebula_core::WorkerFlavorRevisionId;
 use nebula_storage_port::dto::resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash};
 use nebula_storage_port::dto::{
-    CachedRecord, ControlCommand, ControlMsg, EffectOccurrenceKey, EffectSlotBinding, EffectSlotId,
-    ExecutionRecord, FrozenOutcomeEvidence, KnownOutcome, MaterializedStart, OperationAdvance,
+    AcceptResourceEventRequest, AcquireResourceSourceLeaseRequest, CachedRecord,
+    ClaimResourceDeliveriesRequest, ClaimResourceHandoffsRequest, CompleteResourceDeliveryRequest,
+    ControlCommand, ControlMsg, EffectOccurrenceKey, EffectSlotBinding, EffectSlotId,
+    EventEnvelope, EventOccurrenceKey, EventOccurrenceNamespace, ExecutionRecord,
+    FrozenOutcomeEvidence, HeartbeatResourceDeliveryRequest, HeartbeatResourceHandoffRequest,
+    HeartbeatResourceSourceLeaseRequest, KnownOutcome, MaterializedStart, OperationAdvance,
     OperationCommand, OperationLedgerError, OperationRecord, OutcomeEvidenceSource, PrepareOutcome,
-    ResourceRow, StartReservation, StoredContractBundle, TriggerRow,
+    PutResourceSubscriptionRequest, ReleaseResourceDeliveryRequest,
+    ReleaseResourceSourceLeaseRequest, ResolveSharedResourceRequest, ResourceCompatibilityVersion,
+    ResourceConfigurationIdentity, ResourceConsumerIdentity, ResourceConsumerKind,
+    ResourceDeliveryClaimToken, ResourceDeliveryCompletion, ResourceDeliveryId,
+    ResourceHandoffClaimRequest, ResourceHandoffClaimToken, ResourceKind, ResourceLeaseGeneration,
+    ResourceLeaseHolder, ResourceLeaseTtl, ResourcePageSize, ResourceRow, ResourceSlotIdentity,
+    ResourceSourceLeaseToken, ResourceSubscriptionId, ResourceSubscriptionState,
+    ResourceSubscriptionVersion, SharedResourceId, SharedResourceIdentity, StartReservation,
+    StoredContractBundle, TransitionResourceSubscriptionRequest, TriggerRow,
 };
 use nebula_storage_port::store::{
     CheckpointStore, ClaimGeneration, ControlQueue, ControlStartAcceptance, ControlStartHandoff,
     ControlTurnCommit, ControlTurnCommitOutcome, ExecutionStore, ExecutionTurnHandoff,
     IdempotencyStore, JobClaimToken, OperationLedger, OperationLedgerAdjudicator, ReclaimOutcome,
-    ResourceStore, StartAcceptanceStore, StartMaterialization, StartMaterializationError,
-    TriggerStore, TurnAcceptance, TurnHandoff,
+    ResourceEventFanoutStore, ResourceExecutionHandoffStore, ResourceSourceLeaseStore,
+    ResourceStore, ResourceSubscriptionStore, SharedResourceStore, StartAcceptanceStore,
+    StartMaterialization, StartMaterializationError, TriggerStore, TurnAcceptance, TurnHandoff,
 };
 use nebula_storage_port::{
     FencingToken, OperationCallId, Scope, StorageError, TransitionBatch, TransitionOutcome,
@@ -47,7 +61,9 @@ use nebula_storage_port::{
 use nebula_tenancy::{
     ScopedCheckpointStore, ScopedControlQueue, ScopedExecutionStore, ScopedExecutionTurnHandoff,
     ScopedIdempotencyStore, ScopedOperationLedger, ScopedOperationLedgerAdjudicator,
-    ScopedResourceStore, ScopedStartAcceptanceStore, ScopedTriggerStore,
+    ScopedResourceEventFanoutStore, ScopedResourceExecutionHandoffStore,
+    ScopedResourceSourceLeaseStore, ScopedResourceStore, ScopedResourceSubscriptionStore,
+    ScopedSharedResourceStore, ScopedStartAcceptanceStore, ScopedTriggerStore,
 };
 
 fn scope_a() -> Scope {
@@ -600,13 +616,13 @@ async fn cross_tenant_control_enqueue_is_stamped_with_bound_scope() {
         ClaimGeneration::new(1),
         scope_b(),
     );
-    assert!(matches!(
+    assert_matches!(
         tenant_a.mark_completed(&forged).await,
         Err(StorageError::NotFound {
             entity: "control_queue",
             ..
         })
-    ));
+    );
     assert!(mock.acknowledged.lock().expect("mock lock").is_empty());
 }
 
@@ -1487,5 +1503,549 @@ async fn execution_turn_handoff_substitutes_the_bound_scope() {
     assert_eq!(
         inner.observed.lock().expect("recording lock").as_slice(),
         &[scope_a()]
+    );
+}
+
+#[derive(Default)]
+struct ResourceRuntimeScopeRecorder {
+    observations: Mutex<Vec<(&'static str, Scope)>>,
+}
+
+impl ResourceRuntimeScopeRecorder {
+    fn record(&self, operation: &'static str, scope: &Scope) {
+        self.observations
+            .lock()
+            .expect("resource runtime observation lock")
+            .push((operation, scope.clone()));
+    }
+
+    fn assert_all_bound_to(&self, expected_scope: &Scope, expected_operations: &[&'static str]) {
+        let observations = self
+            .observations
+            .lock()
+            .expect("resource runtime observation lock");
+        assert_eq!(
+            observations
+                .iter()
+                .map(|(operation, _)| *operation)
+                .collect::<Vec<_>>(),
+            expected_operations
+        );
+        assert!(
+            observations
+                .iter()
+                .all(|(_, observed_scope)| observed_scope == expected_scope),
+            "every raw port call must observe only the decorator-bound scope"
+        );
+    }
+}
+
+impl std::fmt::Debug for ResourceRuntimeScopeRecorder {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ResourceRuntimeScopeRecorder")
+    }
+}
+
+#[async_trait::async_trait]
+impl SharedResourceStore for ResourceRuntimeScopeRecorder {
+    async fn resolve(
+        &self,
+        request: ResolveSharedResourceRequest,
+    ) -> Result<nebula_storage_port::dto::ResolveSharedResourceOutcome, StorageError> {
+        self.record("resolve", request.scope());
+        Err(StorageError::Internal("recorded resolve".to_owned()))
+    }
+
+    async fn get(
+        &self,
+        scope: &Scope,
+        _resource_id: SharedResourceId,
+    ) -> Result<Option<nebula_storage_port::dto::SharedResourceRecord>, StorageError> {
+        self.record("get", scope);
+        Ok(None)
+    }
+
+    async fn list_for_reconciliation(
+        &self,
+        scope: &Scope,
+        _after: Option<nebula_storage_port::dto::ReconciliationCursor>,
+        _page_size: ResourcePageSize,
+    ) -> Result<nebula_storage_port::dto::SharedResourcePage, StorageError> {
+        self.record("list_for_reconciliation", scope);
+        Ok(nebula_storage_port::dto::SharedResourcePage::new(
+            Vec::new(),
+            None,
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl ResourceSubscriptionStore for ResourceRuntimeScopeRecorder {
+    async fn put(
+        &self,
+        request: PutResourceSubscriptionRequest,
+    ) -> Result<nebula_storage_port::dto::PutResourceSubscriptionOutcome, StorageError> {
+        self.record("put", request.scope());
+        Err(StorageError::Internal("recorded put".to_owned()))
+    }
+
+    async fn get(
+        &self,
+        scope: &Scope,
+        _subscription_id: ResourceSubscriptionId,
+    ) -> Result<Option<nebula_storage_port::dto::ResourceSubscriptionRecord>, StorageError> {
+        self.record("get", scope);
+        Ok(None)
+    }
+
+    async fn list_active_for_resource(
+        &self,
+        scope: &Scope,
+        _resource_id: SharedResourceId,
+        _after: Option<nebula_storage_port::dto::ReconciliationCursor>,
+        _page_size: ResourcePageSize,
+    ) -> Result<nebula_storage_port::dto::ResourceSubscriptionPage, StorageError> {
+        self.record("list_active_for_resource", scope);
+        Ok(nebula_storage_port::dto::ResourceSubscriptionPage::new(
+            Vec::new(),
+            None,
+        ))
+    }
+
+    async fn list_for_reconciliation(
+        &self,
+        scope: &Scope,
+        _after: Option<nebula_storage_port::dto::ReconciliationCursor>,
+        _page_size: ResourcePageSize,
+    ) -> Result<nebula_storage_port::dto::ResourceSubscriptionPage, StorageError> {
+        self.record("list_subscriptions_for_reconciliation", scope);
+        Ok(nebula_storage_port::dto::ResourceSubscriptionPage::new(
+            Vec::new(),
+            None,
+        ))
+    }
+
+    async fn count_active_for_resource(
+        &self,
+        scope: &Scope,
+        _resource_id: SharedResourceId,
+    ) -> Result<u64, StorageError> {
+        self.record("count_active_for_resource", scope);
+        Ok(0)
+    }
+
+    async fn transition(
+        &self,
+        request: TransitionResourceSubscriptionRequest,
+    ) -> Result<nebula_storage_port::dto::ResourceSubscriptionRecord, StorageError> {
+        self.record("transition", request.scope());
+        Err(StorageError::Internal("recorded transition".to_owned()))
+    }
+}
+
+#[async_trait::async_trait]
+impl ResourceExecutionHandoffStore for ResourceRuntimeScopeRecorder {
+    async fn claim_handoffs(
+        &self,
+        request: ClaimResourceHandoffsRequest,
+    ) -> Result<Vec<nebula_storage_port::dto::ClaimedResourceHandoff>, StorageError> {
+        self.record("claim_handoffs", request.scope());
+        Ok(Vec::new())
+    }
+
+    async fn heartbeat_handoff(
+        &self,
+        request: HeartbeatResourceHandoffRequest,
+    ) -> Result<nebula_storage_port::dto::ClaimedResourceHandoff, StorageError> {
+        self.record("heartbeat_handoff", request.scope());
+        Err(StorageError::Internal(
+            "recorded handoff heartbeat".to_owned(),
+        ))
+    }
+
+    async fn release_handoff(
+        &self,
+        request: ResourceHandoffClaimRequest,
+    ) -> Result<(), StorageError> {
+        self.record("release_handoff", request.scope());
+        Ok(())
+    }
+
+    async fn acknowledge_handoff(
+        &self,
+        request: ResourceHandoffClaimRequest,
+    ) -> Result<nebula_storage_port::dto::AcknowledgeResourceHandoffOutcome, StorageError> {
+        self.record("acknowledge_handoff", request.scope());
+        Err(StorageError::Internal(
+            "recorded handoff acknowledgement".to_owned(),
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl ResourceSourceLeaseStore for ResourceRuntimeScopeRecorder {
+    async fn acquire(
+        &self,
+        request: AcquireResourceSourceLeaseRequest,
+    ) -> Result<nebula_storage_port::dto::AcquireResourceSourceLeaseOutcome, StorageError> {
+        self.record("acquire", request.scope());
+        Err(StorageError::Internal("recorded acquire".to_owned()))
+    }
+
+    async fn heartbeat(
+        &self,
+        request: HeartbeatResourceSourceLeaseRequest,
+    ) -> Result<nebula_storage_port::dto::ResourceSourceLease, StorageError> {
+        self.record("heartbeat", request.scope());
+        Err(StorageError::Internal("recorded heartbeat".to_owned()))
+    }
+
+    async fn release(
+        &self,
+        request: ReleaseResourceSourceLeaseRequest,
+    ) -> Result<(), StorageError> {
+        self.record("release", request.scope());
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl ResourceEventFanoutStore for ResourceRuntimeScopeRecorder {
+    async fn accept(
+        &self,
+        request: AcceptResourceEventRequest,
+    ) -> Result<nebula_storage_port::dto::AcceptResourceEventOutcome, StorageError> {
+        self.record("accept", request.scope());
+        Err(StorageError::Internal("recorded accept".to_owned()))
+    }
+
+    async fn get_event(
+        &self,
+        scope: &Scope,
+        _event_id: nebula_storage_port::dto::ResourceEventId,
+    ) -> Result<Option<nebula_storage_port::dto::ResourceEventRecord>, StorageError> {
+        self.record("get_event", scope);
+        Ok(None)
+    }
+
+    async fn claim_deliveries(
+        &self,
+        request: ClaimResourceDeliveriesRequest,
+    ) -> Result<Vec<nebula_storage_port::dto::ClaimedResourceDelivery>, StorageError> {
+        self.record("claim_deliveries", request.scope());
+        Ok(Vec::new())
+    }
+
+    async fn heartbeat_delivery(
+        &self,
+        request: HeartbeatResourceDeliveryRequest,
+    ) -> Result<nebula_storage_port::dto::ClaimedResourceDelivery, StorageError> {
+        self.record("heartbeat_delivery", request.scope());
+        Err(StorageError::Internal(
+            "recorded delivery heartbeat".to_owned(),
+        ))
+    }
+
+    async fn release_delivery(
+        &self,
+        request: ReleaseResourceDeliveryRequest,
+    ) -> Result<(), StorageError> {
+        self.record("release_delivery", request.scope());
+        Ok(())
+    }
+
+    async fn complete_delivery(
+        &self,
+        request: CompleteResourceDeliveryRequest,
+    ) -> Result<nebula_storage_port::dto::CompleteResourceDeliveryOutcome, StorageError> {
+        self.record("complete_delivery", request.scope());
+        Err(StorageError::Internal(
+            "recorded delivery completion".to_owned(),
+        ))
+    }
+}
+
+fn shared_resource_identity() -> SharedResourceIdentity {
+    SharedResourceIdentity::new(
+        ResourceKind::new("telegram.bot").expect("valid resource kind"),
+        ResourceCompatibilityVersion::new(1),
+        ResourceConfigurationIdentity::try_from_vec(b"configuration-secret".to_vec())
+            .expect("valid configuration identity"),
+        ResourceSlotIdentity::try_from_vec(b"credential-slot".to_vec())
+            .expect("valid slot identity"),
+    )
+}
+
+fn resource_lease_holder() -> ResourceLeaseHolder {
+    ResourceLeaseHolder::new("worker-a").expect("valid lease holder")
+}
+
+fn resource_lease_ttl() -> ResourceLeaseTtl {
+    ResourceLeaseTtl::new(Duration::from_secs(30)).expect("valid lease TTL")
+}
+
+#[tokio::test]
+async fn shared_resource_decorator_substitutes_foreign_scope_for_reads_and_resolve() {
+    let inner = Arc::new(ResourceRuntimeScopeRecorder::default());
+    let scoped = ScopedSharedResourceStore::new(inner.clone(), scope_a());
+    let resource_id = SharedResourceId::from_bytes([1; 16]);
+
+    let resolve_result = scoped
+        .resolve(ResolveSharedResourceRequest::new(
+            scope_b(),
+            shared_resource_identity(),
+        ))
+        .await;
+    assert_matches!(resolve_result, Err(StorageError::Internal(_)));
+    assert_eq!(scoped.get(&scope_b(), resource_id).await.unwrap(), None);
+    assert!(
+        scoped
+            .list_for_reconciliation(
+                &scope_b(),
+                Some(nebula_storage_port::dto::ReconciliationCursor::from_sequence(9)),
+                ResourcePageSize::new(10).expect("valid page size"),
+            )
+            .await
+            .unwrap()
+            .resources()
+            .is_empty()
+    );
+
+    inner.assert_all_bound_to(&scope_a(), &["resolve", "get", "list_for_reconciliation"]);
+}
+
+#[tokio::test]
+async fn resource_subscription_decorator_substitutes_foreign_scope_for_every_operation() {
+    let inner = Arc::new(ResourceRuntimeScopeRecorder::default());
+    let scoped = ScopedResourceSubscriptionStore::new(inner.clone(), scope_a());
+    let resource_id = SharedResourceId::from_bytes([2; 16]);
+    let subscription_id = ResourceSubscriptionId::from_bytes([3; 16]);
+    let consumer_kind = ResourceConsumerKind::new("workflow-trigger").expect("valid kind");
+    let consumer_identity =
+        ResourceConsumerIdentity::try_from_vec(b"workflow/version/node".to_vec())
+            .expect("valid consumer identity");
+
+    let put_result = scoped
+        .put(PutResourceSubscriptionRequest::new(
+            scope_b(),
+            resource_id,
+            consumer_kind,
+            consumer_identity,
+        ))
+        .await;
+    assert_matches!(put_result, Err(StorageError::Internal(_)));
+    assert_eq!(scoped.get(&scope_b(), subscription_id).await.unwrap(), None);
+    assert!(
+        scoped
+            .list_active_for_resource(
+                &scope_b(),
+                resource_id,
+                None,
+                ResourcePageSize::new(10).expect("valid page size"),
+            )
+            .await
+            .unwrap()
+            .subscriptions()
+            .is_empty()
+    );
+    assert!(
+        scoped
+            .list_for_reconciliation(
+                &scope_b(),
+                None,
+                ResourcePageSize::new(10).expect("valid page size")
+            )
+            .await
+            .unwrap()
+            .subscriptions()
+            .is_empty()
+    );
+    assert_eq!(
+        scoped
+            .count_active_for_resource(&scope_b(), resource_id)
+            .await
+            .unwrap(),
+        0
+    );
+    let transition_result = scoped
+        .transition(TransitionResourceSubscriptionRequest::new(
+            scope_b(),
+            subscription_id,
+            ResourceSubscriptionVersion::new(7),
+            ResourceSubscriptionState::Disabled,
+        ))
+        .await;
+    assert_matches!(transition_result, Err(StorageError::Internal(_)));
+
+    inner.assert_all_bound_to(
+        &scope_a(),
+        &[
+            "put",
+            "get",
+            "list_active_for_resource",
+            "list_subscriptions_for_reconciliation",
+            "count_active_for_resource",
+            "transition",
+        ],
+    );
+}
+
+#[tokio::test]
+async fn execution_handoff_decorator_rebinds_nested_foreign_scopes() {
+    let inner = Arc::new(ResourceRuntimeScopeRecorder::default());
+    let scoped = ScopedResourceExecutionHandoffStore::new(inner.clone(), scope_a());
+    let delivery_id = ResourceDeliveryId::from_bytes([12; 16]);
+    let token =
+        ResourceHandoffClaimToken::from_claim_bytes([13; 16], ResourceLeaseGeneration::new(2));
+    let claim = ResourceHandoffClaimRequest::new(scope_b(), delivery_id, token.clone());
+    assert!(
+        scoped
+            .claim_handoffs(ClaimResourceHandoffsRequest::new(
+                scope_b(),
+                resource_lease_holder(),
+                resource_lease_ttl(),
+                ResourcePageSize::new(1).expect("valid page size")
+            ))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_matches!(
+        scoped
+            .heartbeat_handoff(HeartbeatResourceHandoffRequest::new(
+                claim.clone(),
+                resource_lease_ttl()
+            ))
+            .await,
+        Err(StorageError::Internal(_))
+    );
+    scoped.release_handoff(claim.clone()).await.unwrap();
+    assert_matches!(
+        scoped.acknowledge_handoff(claim).await,
+        Err(StorageError::Internal(_))
+    );
+    inner.assert_all_bound_to(
+        &scope_a(),
+        &[
+            "claim_handoffs",
+            "heartbeat_handoff",
+            "release_handoff",
+            "acknowledge_handoff",
+        ],
+    );
+}
+
+#[tokio::test]
+async fn source_lease_decorator_rebinds_every_nested_foreign_scope() {
+    let inner = Arc::new(ResourceRuntimeScopeRecorder::default());
+    let scoped = ScopedResourceSourceLeaseStore::new(inner.clone(), scope_a());
+    let resource_id = SharedResourceId::from_bytes([4; 16]);
+    let token =
+        ResourceSourceLeaseToken::from_claim_bytes([41; 16], ResourceLeaseGeneration::new(3));
+
+    let acquire_result = scoped
+        .acquire(AcquireResourceSourceLeaseRequest::new(
+            scope_b(),
+            resource_id,
+            resource_lease_holder(),
+            resource_lease_ttl(),
+        ))
+        .await;
+    assert_matches!(acquire_result, Err(StorageError::Internal(_)));
+    let heartbeat_result = scoped
+        .heartbeat(HeartbeatResourceSourceLeaseRequest::new(
+            scope_b(),
+            resource_id,
+            token.clone(),
+            resource_lease_ttl(),
+        ))
+        .await;
+    assert_matches!(heartbeat_result, Err(StorageError::Internal(_)));
+    scoped
+        .release(ReleaseResourceSourceLeaseRequest::new(
+            scope_b(),
+            resource_id,
+            token,
+        ))
+        .await
+        .unwrap();
+
+    inner.assert_all_bound_to(&scope_a(), &["acquire", "heartbeat", "release"]);
+}
+
+#[tokio::test]
+async fn event_fanout_decorator_substitutes_foreign_scope_for_every_operation() {
+    let inner = Arc::new(ResourceRuntimeScopeRecorder::default());
+    let scoped = ScopedResourceEventFanoutStore::new(inner.clone(), scope_a());
+    let resource_id = SharedResourceId::from_bytes([5; 16]);
+    let event_id = nebula_storage_port::dto::ResourceEventId::from_bytes([6; 16]);
+    let delivery_id = ResourceDeliveryId::from_bytes([7; 16]);
+    let source_token =
+        ResourceSourceLeaseToken::from_claim_bytes([51; 16], ResourceLeaseGeneration::new(4));
+    let delivery_token =
+        ResourceDeliveryClaimToken::from_claim_bytes([52; 16], ResourceLeaseGeneration::new(5));
+
+    let accept_result = scoped
+        .accept(AcceptResourceEventRequest::new(
+            scope_b(),
+            resource_id,
+            source_token,
+            EventOccurrenceNamespace::new("telegram.update").expect("valid namespace"),
+            EventOccurrenceKey::try_from_vec(b"update-42".to_vec()).expect("valid occurrence key"),
+            EventEnvelope::try_from_vec(1, b"canonical-payload-secret".to_vec())
+                .expect("valid envelope"),
+        ))
+        .await;
+    assert_matches!(accept_result, Err(StorageError::Internal(_)));
+    assert_eq!(scoped.get_event(&scope_b(), event_id).await.unwrap(), None);
+    assert!(
+        scoped
+            .claim_deliveries(ClaimResourceDeliveriesRequest::new(
+                scope_b(),
+                resource_lease_holder(),
+                resource_lease_ttl(),
+                ResourcePageSize::new(10).expect("valid batch size"),
+            ))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let heartbeat_result = scoped
+        .heartbeat_delivery(HeartbeatResourceDeliveryRequest::new(
+            scope_b(),
+            delivery_id,
+            delivery_token.clone(),
+            resource_lease_ttl(),
+        ))
+        .await;
+    assert_matches!(heartbeat_result, Err(StorageError::Internal(_)));
+    scoped
+        .release_delivery(ReleaseResourceDeliveryRequest::new(
+            scope_b(),
+            delivery_id,
+            delivery_token.clone(),
+        ))
+        .await
+        .unwrap();
+    let completion_result = scoped
+        .complete_delivery(CompleteResourceDeliveryRequest::new(
+            scope_b(),
+            delivery_id,
+            delivery_token,
+            ResourceDeliveryCompletion::Delivered,
+        ))
+        .await;
+    assert_matches!(completion_result, Err(StorageError::Internal(_)));
+
+    inner.assert_all_bound_to(
+        &scope_a(),
+        &[
+            "accept",
+            "get_event",
+            "claim_deliveries",
+            "heartbeat_delivery",
+            "release_delivery",
+            "complete_delivery",
+        ],
     );
 }

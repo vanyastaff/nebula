@@ -27,15 +27,20 @@ use nebula_storage_port::Scope;
 use nebula_storage_port::store::{
     CheckpointStore, ControlQueue, ExecutionJournalReader, ExecutionStore, ExecutionTurnHandoff,
     IdempotencyGuard, IdempotencyStore, NodeResultStore, OperationLedger,
-    OperationLedgerAdjudicator, ResourceStore, ResumeTokenStore, StartAcceptanceStore,
-    TriggerStore, WebhookActivationStore, WorkflowStore, WorkflowVersionStore,
+    OperationLedgerAdjudicator, ResourceEventFanoutStore, ResourceExecutionHandoffStore,
+    ResourceSourceLeaseStore, ResourceStore, ResourceSubscriptionStore, ResumeTokenStore,
+    SharedResourceStore, StartAcceptanceStore, TriggerStore, WebhookActivationStore, WorkflowStore,
+    WorkflowVersionStore,
 };
 use nebula_tenancy::{
     ScopedCheckpointStore, ScopedControlQueue, ScopedExecutionJournalReader, ScopedExecutionStore,
     ScopedExecutionTurnHandoff, ScopedIdempotencyGuard, ScopedIdempotencyStore,
     ScopedNodeResultStore, ScopedOperationLedger, ScopedOperationLedgerAdjudicator,
-    ScopedResourceStore, ScopedResumeTokenStore, ScopedStartAcceptanceStore, ScopedTriggerStore,
-    ScopedWebhookActivationStore, ScopedWorkflowStore, ScopedWorkflowVersionStore,
+    ScopedResourceEventFanoutStore, ScopedResourceExecutionHandoffStore,
+    ScopedResourceSourceLeaseStore, ScopedResourceStore, ScopedResourceSubscriptionStore,
+    ScopedResumeTokenStore, ScopedSharedResourceStore, ScopedStartAcceptanceStore,
+    ScopedTriggerStore, ScopedWebhookActivationStore, ScopedWorkflowStore,
+    ScopedWorkflowVersionStore,
 };
 use syn::{FnArg, GenericArgument, Item, PathArguments, TraitItem, Type, UseTree};
 
@@ -96,6 +101,14 @@ scope_decorator!(ScopedControlQueue, ControlQueue);
 scope_decorator!(ScopedExecutionJournalReader, ExecutionJournalReader);
 scope_decorator!(ScopedWebhookActivationStore, WebhookActivationStore);
 scope_decorator!(ScopedResourceStore, ResourceStore);
+scope_decorator!(ScopedSharedResourceStore, SharedResourceStore);
+scope_decorator!(ScopedResourceSubscriptionStore, ResourceSubscriptionStore);
+scope_decorator!(ScopedResourceSourceLeaseStore, ResourceSourceLeaseStore);
+scope_decorator!(ScopedResourceEventFanoutStore, ResourceEventFanoutStore);
+scope_decorator!(
+    ScopedResourceExecutionHandoffStore,
+    ResourceExecutionHandoffStore
+);
 scope_decorator!(ScopedResumeTokenStore, ResumeTokenStore);
 scope_decorator!(ScopedTriggerStore, TriggerStore);
 scope_decorator!(ScopedOperationLedger, OperationLedger);
@@ -112,8 +125,11 @@ const DIRECT_SCOPE_PORTS: &[&str] = &[
     "NodeResultStore",
     "OperationLedger",
     "OperationLedgerAdjudicator",
+    "ResourceEventFanoutStore",
     "ResourceStore",
+    "ResourceSubscriptionStore",
     "ResumeTokenStore",
+    "SharedResourceStore",
     "StartAcceptanceStore",
     "TriggerStore",
     "WebhookActivationStore",
@@ -121,7 +137,12 @@ const DIRECT_SCOPE_PORTS: &[&str] = &[
     "WorkflowVersionStore",
 ];
 
-const EMBEDDED_SCOPE_PORTS: &[&str] = &["ControlQueue", "ExecutionTurnHandoff"];
+const EMBEDDED_SCOPE_PORTS: &[&str] = &[
+    "ControlQueue",
+    "ExecutionTurnHandoff",
+    "ResourceExecutionHandoffStore",
+    "ResourceSourceLeaseStore",
+];
 
 const INTENTIONALLY_UNSCOPED_PORTS: &[&str] = &[
     "AuditStore",
@@ -135,6 +156,10 @@ const INTENTIONALLY_UNSCOPED_PORTS: &[&str] = &[
     "PlanFlavorCatalogWriter",
     "QuotaStore",
     "RefreshClaimStore",
+    // Deployment recovery discovers work across scopes and returns only the
+    // authoritative scope stored with each claimed row. It is never exposed
+    // through a tenant-facing composition root.
+    "ResourceRuntimeRecovery",
     "ResumeProducer",
     "StartReservationMaintenance",
     "TurnRecovery",
@@ -358,6 +383,10 @@ fn every_port_has_an_explicit_tenancy_classification() {
     assert_scoped::<ScopedWebhookActivationStore, dyn WebhookActivationStore>();
     // Identity zoo, workspace-scoped (the BOLA/IDOR class this guards):
     assert_scoped::<ScopedResourceStore, dyn ResourceStore>();
+    assert_scoped::<ScopedSharedResourceStore, dyn SharedResourceStore>();
+    assert_scoped::<ScopedResourceSubscriptionStore, dyn ResourceSubscriptionStore>();
+    assert_scoped::<ScopedResourceSourceLeaseStore, dyn ResourceSourceLeaseStore>();
+    assert_scoped::<ScopedResourceEventFanoutStore, dyn ResourceEventFanoutStore>();
     assert_scoped::<ScopedTriggerStore, dyn TriggerStore>();
     // Resume-token revocation is scope-keyed (`revoke_on_terminal` takes
     // `&Scope`); consume has no scope parameter by design (hash = only key).

@@ -4,17 +4,28 @@
 //! reads config, builds the SQLite pool, and calls into this module.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use nebula_action::result::ActionResult;
 use nebula_core::ArtifactSetDigest;
 use nebula_engine::{
     ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, EngineError, ExecutionStores,
-    InProcessRunner, Plugin, PluginKey, PluginWiringError, ResolvedPlugin, WorkflowEngine,
+    InProcessRunner, Plugin, PluginKey, PluginWiringError, ResolvedPlugin,
+    ResourceFanoutCoordinator, ResourceFanoutCoordinatorBuildError, WorkflowEngine,
+    WorkflowStartBuildError, WorkflowStartService, WorkflowStores,
 };
 use nebula_metrics::MetricsRegistry;
 use nebula_plugin::{ManifestError, PluginError, PluginRegistry};
 use nebula_plugin_core::CorePlugin;
-use nebula_storage_port::store::{ExecutionTurnHandoff, TurnRecovery};
+use nebula_storage_port::{
+    dto::{
+        ClaimResourceRuntimeWorkRequest, ResourceLeaseHolder, ResourceLeaseTtl, ResourcePageSize,
+    },
+    store::{
+        ExecutionTurnHandoff, ResourceEventFanoutStore, ResourceExecutionHandoffStore,
+        ResourceRuntimeRecovery, ResourceSubscriptionStore, TurnRecovery,
+    },
+};
 use nebula_worker::{WorkerBuildError, WorkerRuntimeBuilder};
 
 #[cfg(feature = "runtime-repair-red")]
@@ -52,11 +63,70 @@ pub enum ComposeError {
     #[error("engine / runtime construction failed: {0}")]
     Engine(#[from] EngineError),
 
+    /// The workflow-start owner rejected the deployment execution budget.
+    #[error("workflow-start service construction failed: {0}")]
+    WorkflowStart(#[from] WorkflowStartBuildError),
+
+    /// A fixed resource-fanout lease value violated the storage contract.
+    #[error("resource fanout claim configuration is invalid: {0}")]
+    ResourceLease(#[from] nebula_storage_port::dto::ResourceLeaseValueError),
+
+    /// The fixed resource-fanout batch size violated the storage contract.
+    #[error("resource fanout batch configuration is invalid: {0}")]
+    ResourceBatch(#[from] nebula_storage_port::dto::SharedResourceValueError),
+
+    /// The resource-fanout coordinator rejected its supervision settings.
+    #[error("resource fanout coordinator construction failed: {0}")]
+    ResourceFanout(#[from] ResourceFanoutCoordinatorBuildError),
+
     /// `WorkerRuntimeBuilder::build` rejected the assembled configuration.
     ///
     /// Required worker wiring or timing configuration is incomplete.
     #[error("worker runtime builder construction failed: {0}")]
     Worker(#[from] WorkerBuildError),
+}
+
+const RESOURCE_FANOUT_CLAIM_TTL: Duration = Duration::from_secs(30);
+const RESOURCE_FANOUT_BATCH_SIZE: u16 = 1;
+const RESOURCE_FANOUT_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const RESOURCE_FANOUT_MAX_CONSECUTIVE_FAILURES: u32 = 5;
+
+/// Same-backend inputs for durable resource fanout and workflow starts.
+#[derive(Clone)]
+pub struct ResourceFanoutInputs {
+    workflows: WorkflowStores,
+    recovery: Arc<dyn ResourceRuntimeRecovery>,
+    subscriptions: Arc<dyn ResourceSubscriptionStore>,
+    fanout: Arc<dyn ResourceEventFanoutStore>,
+    handoffs: Arc<dyn ResourceExecutionHandoffStore>,
+}
+
+impl std::fmt::Debug for ResourceFanoutInputs {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ResourceFanoutInputs")
+            .finish_non_exhaustive()
+    }
+}
+
+impl ResourceFanoutInputs {
+    /// Project one concrete resource runtime into every durable coordinator role.
+    #[must_use]
+    pub fn from_runtime<T>(workflows: WorkflowStores, runtime: Arc<T>) -> Self
+    where
+        T: ResourceRuntimeRecovery
+            + ResourceSubscriptionStore
+            + ResourceEventFanoutStore
+            + ResourceExecutionHandoffStore,
+    {
+        Self {
+            workflows,
+            recovery: runtime.clone(),
+            subscriptions: runtime.clone(),
+            fanout: runtime.clone(),
+            handoffs: runtime,
+        }
+    }
 }
 
 /// Assemble a core-flavor `WorkerRuntime` from the supplied durable stores.
@@ -70,6 +140,8 @@ pub enum ComposeError {
 /// 4. Freeze the registered plugins with the deployment artifact identity and
 ///    retain that registry with the exact catalog loader in the engine. The
 ///    [`WorkerRuntimeBuilder`] derives its routing context from this configuration.
+/// 5. Build the workflow-start owner and durable resource coordinator from the
+///    same backend roles and frozen registry, then attach it to the worker.
 ///
 /// Returns a ready-to-configure [`WorkerRuntimeBuilder`], the shared
 /// [`MetricsRegistry`], and the [`PluginKey`]
@@ -96,6 +168,7 @@ pub fn build_core_flavor_runtime(
     turn_recovery: Arc<dyn TurnRecovery>,
     processor_id: [u8; 16],
     revisions: CoreFlavorRevisionInputs,
+    resource_fanout: ResourceFanoutInputs,
 ) -> Result<(WorkerRuntimeBuilder, MetricsRegistry, PluginKey), ComposeError> {
     build_core_flavor_runtime_impl(
         execution_stores,
@@ -103,6 +176,7 @@ pub fn build_core_flavor_runtime(
         turn_recovery,
         processor_id,
         revisions,
+        resource_fanout,
         EngineEvidenceInputs::Ordinary,
     )
 }
@@ -129,6 +203,7 @@ pub fn build_core_flavor_runtime_for_runtime_repair_red(
     turn_recovery: Arc<dyn TurnRecovery>,
     processor_id: [u8; 16],
     revisions: CoreFlavorRevisionInputs,
+    resource_fanout: ResourceFanoutInputs,
     evidence: RuntimeRepairEvidenceInputs,
 ) -> Result<(WorkerRuntimeBuilder, MetricsRegistry, PluginKey), ComposeError> {
     build_core_flavor_runtime_impl(
@@ -137,6 +212,7 @@ pub fn build_core_flavor_runtime_for_runtime_repair_red(
         turn_recovery,
         processor_id,
         revisions,
+        resource_fanout,
         EngineEvidenceInputs::RuntimeRepair(evidence),
     )
 }
@@ -174,6 +250,7 @@ fn build_core_flavor_runtime_impl(
     turn_recovery: Arc<dyn TurnRecovery>,
     processor_id: [u8; 16],
     revisions: CoreFlavorRevisionInputs,
+    resource_fanout: ResourceFanoutInputs,
     evidence_inputs: EngineEvidenceInputs,
 ) -> Result<(WorkerRuntimeBuilder, MetricsRegistry, PluginKey), ComposeError> {
     // Boot and resolve the statically linked core plugin.
@@ -208,6 +285,11 @@ fn build_core_flavor_runtime_impl(
         .map_err(EngineError::from)?,
     );
 
+    let start_clock: Arc<dyn nebula_core::accessor::Clock> = match &evidence_inputs {
+        EngineEvidenceInputs::Ordinary => Arc::new(nebula_core::accessor::SystemClock),
+        #[cfg(feature = "runtime-repair-red")]
+        EngineEvidenceInputs::RuntimeRepair(evidence) => Arc::clone(&evidence.clock),
+    };
     let engine = WorkflowEngine::new(action_runtime, metrics.clone())?
         .with_execution_stores(execution_stores.clone());
     let engine = match evidence_inputs {
@@ -228,6 +310,30 @@ fn build_core_flavor_runtime_impl(
         revisions.artifact_set_digest,
         nebula_plugin::RuntimeContractVersion::current(),
     )?);
+    let start_service = Arc::new(WorkflowStartService::new(
+        resource_fanout.workflows,
+        Arc::clone(&execution_stores.execution),
+        Arc::clone(&revisions.bundles),
+        nebula_engine::PlanFlavorRevisionLoader::new(Arc::clone(&revisions.catalog)),
+        Arc::clone(&frozen),
+        start_clock,
+        Default::default(),
+    )?);
+    let resource_claim = ClaimResourceRuntimeWorkRequest::new(
+        ResourceLeaseHolder::new(format!("resource-fanout:{}", hex_id(&processor_id)))?,
+        ResourceLeaseTtl::new(RESOURCE_FANOUT_CLAIM_TTL)?,
+        ResourcePageSize::new(RESOURCE_FANOUT_BATCH_SIZE)?,
+    );
+    let resource_fanout = Arc::new(ResourceFanoutCoordinator::new(
+        resource_fanout.recovery,
+        resource_fanout.subscriptions,
+        resource_fanout.fanout,
+        resource_fanout.handoffs,
+        start_service,
+        resource_claim,
+        RESOURCE_FANOUT_POLL_INTERVAL,
+        RESOURCE_FANOUT_MAX_CONSECUTIVE_FAILURES,
+    )?);
     let engine = Arc::new(engine.with_plan_flavor_runtime(
         Arc::new(nebula_engine::PlanFlavorRevisionLoader::new(
             revisions.catalog,
@@ -246,7 +352,8 @@ fn build_core_flavor_runtime_impl(
         processor_id,
     )
     .with_turn_handoff(turn_handoff)
-    .with_turn_recovery(turn_recovery);
+    .with_turn_recovery(turn_recovery)
+    .with_resource_fanout(resource_fanout);
 
     tracing::info!(
         plugin = %plugin_key,

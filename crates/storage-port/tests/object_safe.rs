@@ -31,6 +31,16 @@ fn _assert_runtime_authority_object_safe(
 ) {
 }
 
+fn _assert_resource_runtime_object_safe(
+    _shared_resources: &dyn SharedResourceStore,
+    _subscriptions: &dyn ResourceSubscriptionStore,
+    _source_leases: &dyn ResourceSourceLeaseStore,
+    _event_fanout: &dyn ResourceEventFanoutStore,
+    _execution_handoffs: &dyn ResourceExecutionHandoffStore,
+    _runtime_recovery: &dyn ResourceRuntimeRecovery,
+) {
+}
+
 // Compile-time object-safety probe over the identity zoo: it is never
 // called, so the argument count is not an ergonomics concern.
 #[expect(clippy::too_many_arguments)]

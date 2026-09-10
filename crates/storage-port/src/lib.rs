@@ -55,5 +55,7 @@ pub use scope::Scope;
 pub use store::{
     CredentialAlreadyExistsKey, CredentialPersistence, CredentialPersistenceError,
     ExecutionTurnHandoff, OperationLedger, OperationLedgerAdjudicator, PlanFlavorCatalog,
-    PlanFlavorCatalogAdmin, PlanFlavorCatalogWriter, TurnAcceptance, TurnHandoff, TurnRecovery,
+    PlanFlavorCatalogAdmin, PlanFlavorCatalogWriter, ResourceEventFanoutStore,
+    ResourceExecutionHandoffStore, ResourceRuntimeRecovery, ResourceSourceLeaseStore,
+    ResourceSubscriptionStore, SharedResourceStore, TurnAcceptance, TurnHandoff, TurnRecovery,
 };

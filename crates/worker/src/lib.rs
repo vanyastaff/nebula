@@ -10,6 +10,7 @@
 //! 2. Derives the exact frozen flavor identity used to claim matching control commands.
 //! 3. Drains the durable control queue through [`ControlConsumer`].
 //! 4. Recovers accepted turns abandoned by a previous owner and wakes overdue timers.
+//! 5. Drains durable resource-event deliveries and execution handoffs.
 //!
 //! ## Wiring honesty
 //!
@@ -22,7 +23,7 @@
 //! ```rust,no_run
 //! use std::sync::Arc;
 //!
-//! use nebula_engine::{ExecutionStores, WorkflowEngine};
+//! use nebula_engine::{ExecutionStores, ResourceFanoutCoordinator, WorkflowEngine};
 //! use nebula_storage_port::store::{ControlQueue, ExecutionTurnHandoff, TurnRecovery};
 //! use nebula_worker::WorkerRuntimeBuilder;
 //! use tokio_util::sync::CancellationToken;
@@ -33,6 +34,7 @@
 //! #     control_queue: Arc<dyn ControlQueue>,
 //! #     handoff: Arc<dyn ExecutionTurnHandoff>,
 //! #     recovery: Arc<dyn TurnRecovery>,
+//! #     resource_fanout: Arc<ResourceFanoutCoordinator>,
 //! #     proc_id: [u8; 16],
 //! #     shutdown_token: CancellationToken,
 //! # ) -> Result<(), Box<dyn std::error::Error>> {
@@ -40,6 +42,7 @@
 //!     .with_control_queue(control_queue)
 //!     .with_turn_handoff(handoff)
 //!     .with_turn_recovery(recovery)
+//!     .with_resource_fanout(resource_fanout)
 //!     .build()?;
 //!
 //! runtime.spawn(shutdown_token);
@@ -55,7 +58,7 @@ use std::time::Duration;
 
 use nebula_engine::{
     ControlConsumer, DEFAULT_TIMER_SCAN_INTERVAL, EngineControlDispatch, ExecutionStores,
-    WorkflowEngine,
+    ResourceFanoutCoordinator, WorkflowEngine,
 };
 use nebula_storage_port::store::{ControlQueue, ExecutionTurnHandoff, TurnRecovery};
 use tokio::task::{JoinHandle, JoinSet};
@@ -88,6 +91,10 @@ pub enum WorkerBuildError {
     /// No worker-wide abandoned-turn recovery capability was wired.
     #[error("no turn recovery wired — accepted turns could remain abandoned after owner loss")]
     NoTurnRecovery,
+
+    /// No durable resource fanout coordinator was wired.
+    #[error("no resource fanout wired — durable resource deliveries would never be consumed")]
+    NoResourceFanout,
 
     /// The timer-scan interval is zero.
     ///
@@ -126,6 +133,18 @@ pub enum WorkerRuntimeError {
         #[source]
         source: nebula_storage_port::StorageError,
     },
+
+    /// Durable resource fanout exhausted its bounded infrastructure retry budget.
+    #[error("resource fanout failed after {attempts} attempts; code={error_code}")]
+    ResourceFanout {
+        /// Consecutive failed drain attempts.
+        attempts: u32,
+        /// Stable payload-free coordinator failure code.
+        error_code: &'static str,
+        /// Original payload-free coordinator error.
+        #[source]
+        source: nebula_engine::ResourceFanoutCoordinatorError,
+    },
 }
 
 /// What one supervised task reports: which component it was, and — when the
@@ -138,6 +157,7 @@ enum Component {
     ControlConsumer,
     TimerScanner,
     AcceptedTurnRecovery,
+    ResourceFanout,
     EngineShutdownRelay,
 }
 
@@ -147,6 +167,7 @@ impl Component {
             Self::ControlConsumer => "control-consumer",
             Self::TimerScanner => "timer-scanner",
             Self::AcceptedTurnRecovery => "accepted-turn-recovery",
+            Self::ResourceFanout => "resource-fanout",
             Self::EngineShutdownRelay => "engine-shutdown-relay",
         }
     }
@@ -154,8 +175,8 @@ impl Component {
 
 /// An assembled, ready-to-run worker runtime.
 ///
-/// Owns the control consumer, abandoned-turn recovery, and durable-timer
-/// scanner connected to one exact runtime flavor.
+/// Owns the control consumer, abandoned-turn recovery, durable resource
+/// fanout, and durable-timer scanner connected to one exact runtime flavor.
 ///
 /// Obtain via [`WorkerRuntimeBuilder::build`].
 #[must_use = "call .run() or .spawn() to start the worker runtime"]
@@ -170,6 +191,7 @@ pub struct WorkerRuntime {
     /// Held by the runtime rather than by the caller so it lives and dies with
     /// the other worker components under one cancellation tree.
     control_consumer: ControlConsumer,
+    resource_fanout: Arc<ResourceFanoutCoordinator>,
     processor_id: [u8; 16],
     available_plugins_count: usize,
 }
@@ -187,15 +209,16 @@ impl WorkerRuntime {
     /// Run the durable runtime components on the current task until
     /// `shutdown` is cancelled.
     ///
-    /// The timer scanner runs as a sibling background task sharing the same
-    /// shutdown token so it stops when the worker stops.
+    /// The timer scanner and resource fanout coordinator run as sibling
+    /// background tasks sharing the same shutdown token.
     ///
     /// Prefer [`spawn`](Self::spawn) unless integrating into a custom task structure.
     ///
     /// ## Shutdown contract
     ///
-    /// Cancellation stops control polling, accepted-turn recovery, and timer
-    /// scanning. In-flight engine turns observe the relayed engine shutdown.
+    /// Cancellation stops control polling, accepted-turn recovery, resource
+    /// fanout, and timer scanning. In-flight engine turns observe the relayed
+    /// engine shutdown.
     pub async fn run(self, shutdown: CancellationToken) -> Result<(), WorkerRuntimeError> {
         tracing::info!(
             processor = %hex_id(&self.processor_id),
@@ -208,7 +231,7 @@ impl WorkerRuntime {
         // The timer scanner used to be spawned and its `JoinHandle` dropped.
         // A detached task that panics takes its failure with it: the worker
         // keeps serving, parked executions silently stop waking, and nothing
-        // reports it. Joining all three means a component death is an error the
+        // reports it. Joining every sibling means a component death is an error the
         // app can act on, and cancelling the token stops the siblings rather
         // than leaving them running against a half-dead runtime.
         // Each task reports which component it is, so a failure is attributed
@@ -299,6 +322,26 @@ impl WorkerRuntime {
         });
         labels.insert(handle.id(), Component::AcceptedTurnRecovery);
 
+        let resource_fanout = self.resource_fanout;
+        let resource_fanout_shutdown = shutdown.clone();
+        let handle = components.spawn(async move {
+            resource_fanout
+                .run(resource_fanout_shutdown)
+                .await
+                .map(|()| Component::ResourceFanout)
+                .map_err(|source| {
+                    (
+                        Component::ResourceFanout,
+                        WorkerRuntimeError::ResourceFanout {
+                            attempts: source.attempts(),
+                            error_code: source.error_code(),
+                            source,
+                        },
+                    )
+                })
+        });
+        labels.insert(handle.id(), Component::ResourceFanout);
+
         let mut first_failure = None;
         while let Some(joined) = components.join_next().await {
             let failure = match joined {
@@ -370,6 +413,7 @@ pub struct WorkerRuntimeBuilder {
     /// at `build` time — see [`WorkerBuildError::NoTurnHandoff`].
     turn_handoff: Option<Arc<dyn ExecutionTurnHandoff>>,
     turn_recovery: Option<Arc<dyn TurnRecovery>>,
+    resource_fanout: Option<Arc<ResourceFanoutCoordinator>>,
     processor_id: [u8; 16],
     handoff_lease_ttl: Option<Duration>,
     // Optional timer scanner override — None means DEFAULT_TIMER_SCAN_INTERVAL.
@@ -414,6 +458,7 @@ impl WorkerRuntimeBuilder {
             control_queue: None,
             turn_handoff: None,
             turn_recovery: None,
+            resource_fanout: None,
             processor_id,
             handoff_lease_ttl: None,
             timer_scan_interval: None,
@@ -448,6 +493,15 @@ impl WorkerRuntimeBuilder {
         self
     }
 
+    /// Wire the engine-owned durable resource fanout coordinator.
+    ///
+    /// Its persistence roles and workflow-start service must use the same
+    /// deployment backend and frozen registry as this worker's engine.
+    pub fn with_resource_fanout(mut self, resource_fanout: Arc<ResourceFanoutCoordinator>) -> Self {
+        self.resource_fanout = Some(resource_fanout);
+        self
+    }
+
     /// Override the lease TTL the handoff mints for each accepted turn
     /// (default: 30 s).
     pub fn with_handoff_lease_ttl(mut self, d: Duration) -> Self {
@@ -473,12 +527,17 @@ impl WorkerRuntimeBuilder {
     /// wired, and [`WorkerBuildError::NoTurnHandoff`] when no turn handoff
     /// was wired. Returns [`WorkerBuildError::NoTurnRecovery`] when the
     /// worker-wide recovery capability is absent. Returns
+    /// [`WorkerBuildError::NoResourceFanout`] when the durable resource
+    /// coordinator is absent. Returns
     /// [`WorkerBuildError::MissingExactRuntime`] if the engine has no exact
     /// revision loader and frozen registry.
     pub fn build(self) -> Result<WorkerRuntime, WorkerBuildError> {
         let control_queue = self.control_queue.ok_or(WorkerBuildError::NoControlQueue)?;
         let turn_handoff = self.turn_handoff.ok_or(WorkerBuildError::NoTurnHandoff)?;
         let turn_recovery = self.turn_recovery.ok_or(WorkerBuildError::NoTurnRecovery)?;
+        let resource_fanout = self
+            .resource_fanout
+            .ok_or(WorkerBuildError::NoResourceFanout)?;
         let timer_scan_interval = self
             .timer_scan_interval
             .unwrap_or(DEFAULT_TIMER_SCAN_INTERVAL);
@@ -516,6 +575,7 @@ impl WorkerRuntimeBuilder {
             worker_flavor: worker_flavor_revision,
             timer_scan_interval,
             control_consumer,
+            resource_fanout,
             processor_id: self.processor_id,
             available_plugins_count,
         })

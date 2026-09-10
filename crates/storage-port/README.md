@@ -21,6 +21,12 @@ does **not** implement any backend.
 - **Port-local DTOs.** Row/record types are defined here and depend only on
   `serde_json::Value` — never on `ActionResult` or any higher-tier type
   (prevents a Core-tier dependency inversion).
+- **Durable shared-resource fanout.** Exact scoped resource identities resolve
+  independently of author-facing rows. Bounded subscription reconciliation,
+  source fencing, exact event replay, delivery claims, and delivery-keyed
+  execution-start handoff recovery are separate object-safe roles. Event
+  acceptance persists backend time and source-generation provenance while
+  occurrence deduplication remains independent of lease generation.
 - **Exact plan/flavor catalog.** `PlanFlavorCatalog` loads only a caller-pinned
   typed plan/flavor pair. `PlanFlavorCatalogWriter` owns immutable insertion
   only; `PlanFlavorCatalogAdmin` owns drain and guarded deletion. Runtime

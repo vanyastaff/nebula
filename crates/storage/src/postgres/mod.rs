@@ -19,6 +19,7 @@ mod identity;
 mod job_dispatch;
 mod operation_ledger;
 mod plan_flavor_catalog;
+mod resource_runtime;
 mod resume_producer;
 mod resume_token;
 mod start_acceptance;
@@ -36,6 +37,7 @@ pub use identity::{
 pub use job_dispatch::PgJobDispatchQueue;
 pub use operation_ledger::PgOperationLedger;
 pub use plan_flavor_catalog::PgPlanFlavorCatalog;
+pub use resource_runtime::PgResourceRuntime;
 pub use resume_producer::PgResumeProducer;
 pub use resume_token::PgResumeTokenStore;
 pub use start_acceptance::PgStartAcceptanceStore;
