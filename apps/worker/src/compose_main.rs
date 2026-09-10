@@ -9,7 +9,8 @@ use std::time::Duration;
 
 use nebula_storage::sqlite::{
     SqliteControlQueue, SqliteExecutionStore, SqliteIdempotencyGuard, SqliteJournalReader,
-    SqliteOperationLedger, SqliteResumeTokenStore, SqliteTurnHandoff, init_schema,
+    SqliteOperationLedger, SqliteResourceRuntime, SqliteResumeTokenStore, SqliteTurnHandoff,
+    SqliteWorkflowStore, SqliteWorkflowVersionStore, init_schema,
 };
 use nebula_storage::{InMemoryCheckpointStore, InMemoryNodeResultStore};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
@@ -20,7 +21,7 @@ use tracing_subscriber::{EnvFilter, fmt};
 use nebula_engine::ExecutionStores;
 use nebula_storage_port::store::{ControlQueue, ExecutionTurnHandoff, TurnRecovery};
 use nebula_worker_bin::compose::{
-    ComposeError, WorkerConfig, WorkerConfigError, build_core_flavor_runtime,
+    ComposeError, ResourceFanoutInputs, WorkerConfig, WorkerConfigError, build_core_flavor_runtime,
 };
 
 /// Top-level error union for the worker binary startup.
@@ -126,6 +127,7 @@ async fn build_stores(
         Arc<dyn TurnRecovery>,
         Arc<dyn nebula_storage_port::PlanFlavorCatalog>,
         Arc<dyn nebula_storage_port::store::StartAcceptanceStore>,
+        ResourceFanoutInputs,
     ),
     WorkerRunError,
 > {
@@ -167,6 +169,14 @@ async fn build_stores(
         pool.clone(),
     ));
     let control_queue = Arc::new(SqliteControlQueue::new(pool.clone()));
+    let resource_runtime = Arc::new(SqliteResourceRuntime::new(pool.clone()));
+    let resource_fanout = ResourceFanoutInputs::from_runtime(
+        nebula_engine::WorkflowStores {
+            workflow: Arc::new(SqliteWorkflowStore::new(pool.clone())),
+            versions: Arc::new(SqliteWorkflowVersionStore::new(pool.clone())),
+        },
+        resource_runtime,
+    );
     let execution_stores = ExecutionStores {
         execution: execution_store,
         journal: journal_reader,
@@ -183,6 +193,7 @@ async fn build_stores(
         turn_handoff,
         catalog,
         bundles,
+        resource_fanout,
     ))
 }
 
@@ -208,12 +219,14 @@ async fn build_pg_stores(
         Arc<dyn TurnRecovery>,
         Arc<dyn nebula_storage_port::PlanFlavorCatalog>,
         Arc<dyn nebula_storage_port::store::StartAcceptanceStore>,
+        ResourceFanoutInputs,
     ),
     WorkerRunError,
 > {
     use nebula_storage::postgres::{
         PgControlQueue, PgExecutionStore, PgIdempotencyGuard, PgJournalReader, PgOperationLedger,
-        PgResumeTokenStore, PgTurnHandoff, init_schema as pg_init_schema,
+        PgResourceRuntime, PgResumeTokenStore, PgTurnHandoff, PgWorkflowStore,
+        PgWorkflowVersionStore, init_schema as pg_init_schema,
     };
     use sqlx::postgres::PgPoolOptions;
 
@@ -255,6 +268,14 @@ async fn build_pg_stores(
         pool.clone(),
     ));
     let control_queue = Arc::new(PgControlQueue::new(pool.clone()));
+    let resource_runtime = Arc::new(PgResourceRuntime::new(pool.clone()));
+    let resource_fanout = ResourceFanoutInputs::from_runtime(
+        nebula_engine::WorkflowStores {
+            workflow: Arc::new(PgWorkflowStore::new(pool.clone())),
+            versions: Arc::new(PgWorkflowVersionStore::new(pool.clone())),
+        },
+        resource_runtime,
+    );
 
     let execution_stores = ExecutionStores {
         execution: execution_store,
@@ -272,6 +293,7 @@ async fn build_pg_stores(
         turn_handoff,
         catalog,
         bundles,
+        resource_fanout,
     ))
 }
 
@@ -294,6 +316,7 @@ async fn build_pg_stores(
         Arc<dyn TurnRecovery>,
         Arc<dyn nebula_storage_port::PlanFlavorCatalog>,
         Arc<dyn nebula_storage_port::store::StartAcceptanceStore>,
+        ResourceFanoutInputs,
     ),
     WorkerRunError,
 > {
@@ -333,8 +356,15 @@ pub(crate) async fn run() -> Result<(), WorkerRunError> {
 
     // Build the store bundle — SQLite or Postgres depending on config.
     let metrics = nebula_metrics::MetricsRegistry::new();
-    let (execution_stores, control_queue, turn_handoff, turn_recovery, catalog, bundles) =
-        build_stores(&config, &metrics).await?;
+    let (
+        execution_stores,
+        control_queue,
+        turn_handoff,
+        turn_recovery,
+        catalog,
+        bundles,
+        resource_fanout,
+    ) = build_stores(&config, &metrics).await?;
 
     // Assemble the core-flavor builder (boots CorePlugin + wires into engine).
     let (builder, _metrics, plugin_key) = build_core_flavor_runtime(
@@ -348,6 +378,7 @@ pub(crate) async fn run() -> Result<(), WorkerRunError> {
             catalog,
             bundles,
         },
+        resource_fanout,
     )?;
 
     let runtime = builder.with_control_queue(control_queue).build()?;
@@ -439,5 +470,51 @@ mod tests {
             matches!(result, Err(WorkerRunError::PostgresFeatureNotEnabled)),
             "expected WorkerRunError::PostgresFeatureNotEnabled, got: {result:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn sqlite_backend_bootstrap_wires_concrete_resource_runtime() {
+        use super::{WorkerConfig, build_stores};
+
+        let directory = tempfile::tempdir().expect("temporary SQLite directory must be created");
+        let database_path = directory.path().join("worker.sqlite3");
+        let config = WorkerConfig {
+            artifact_set_digest: nebula_core::ArtifactSetDigest::from_bytes([0x72; 32]),
+            database_url: None,
+            db_path: database_path.to_string_lossy().into_owned(),
+            processor_id: [0x24; 16],
+        };
+        let metrics = nebula_metrics::MetricsRegistry::new();
+        let (
+            execution_stores,
+            control_queue,
+            turn_handoff,
+            turn_recovery,
+            catalog,
+            bundles,
+            resource_fanout,
+        ) = build_stores(&config, &metrics)
+            .await
+            .expect("SQLite backend bootstrap must succeed");
+        let (builder, _, _) = nebula_worker_bin::compose::build_core_flavor_runtime(
+            execution_stores,
+            turn_handoff,
+            turn_recovery,
+            config.processor_id,
+            nebula_worker_bin::compose::CoreFlavorRevisionInputs {
+                metrics,
+                artifact_set_digest: config.artifact_set_digest,
+                catalog,
+                bundles,
+            },
+            resource_fanout,
+        )
+        .expect("SQLite resource runtime must compose with the worker");
+
+        let runtime = builder
+            .with_control_queue(control_queue)
+            .build()
+            .expect("SQLite worker must include the mandatory resource coordinator");
+        drop(runtime);
     }
 }

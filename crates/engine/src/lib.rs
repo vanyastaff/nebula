@@ -78,6 +78,7 @@ mod recorded_graph;
 pub(crate) mod resolver;
 pub mod resource;
 pub mod resource_accessor;
+mod resource_fanout;
 pub mod resource_status;
 pub mod result;
 pub mod revision_catalog;
@@ -123,6 +124,11 @@ pub use resource::{
     ResourceRegistrationOutcome, SlotBinding,
 };
 pub use resource_accessor::EngineResourceAccessor;
+pub use resource_fanout::{
+    ResourceFanoutCoordinator, ResourceFanoutCoordinatorBuildError, ResourceFanoutCoordinatorError,
+    ResourceFanoutDrainOutcome, WorkflowTriggerConsumerCodec, WorkflowTriggerConsumerCodecError,
+    WorkflowTriggerTarget,
+};
 pub use resource_status::{
     EngineManagerResourceStatus, EngineResourceStatus, ResourceRuntimeStatus,
 };

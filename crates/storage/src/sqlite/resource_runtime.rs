@@ -6,26 +6,27 @@ use chrono::{DateTime, Utc};
 use nebula_storage_port::dto::{
     AcceptResourceEventOutcome, AcceptResourceEventRequest, AcknowledgeResourceHandoffOutcome,
     AcquireResourceSourceLeaseOutcome, AcquireResourceSourceLeaseRequest,
-    ClaimResourceDeliveriesRequest, ClaimResourceHandoffsRequest, ClaimedResourceDelivery,
-    ClaimedResourceHandoff, CompleteResourceDeliveryOutcome, CompleteResourceDeliveryRequest,
-    EventEnvelope, EventOccurrenceKey, EventOccurrenceNamespace, HeartbeatResourceDeliveryRequest,
-    HeartbeatResourceHandoffRequest, HeartbeatResourceSourceLeaseRequest,
-    PutResourceSubscriptionOutcome, PutResourceSubscriptionRequest, ReconciliationCursor,
-    ReleaseResourceDeliveryRequest, ReleaseResourceSourceLeaseRequest,
-    ResolveSharedResourceOutcome, ResolveSharedResourceRequest, ResourceCompatibilityVersion,
-    ResourceConfigurationIdentity, ResourceConsumerIdentity, ResourceConsumerKind,
-    ResourceDeliveryClaimToken, ResourceDeliveryCompletion, ResourceDeliveryId,
-    ResourceEventAcceptance, ResourceEventId, ResourceEventRecord, ResourceEventState,
-    ResourceHandoffClaimRequest, ResourceHandoffClaimToken, ResourceKind, ResourceLeaseGeneration,
-    ResourceLeaseHolder, ResourceLeaseTtl, ResourcePageSize, ResourceSlotIdentity,
-    ResourceSourceLease, ResourceSourceLeaseToken, ResourceSubscriptionId,
+    ClaimResourceDeliveriesRequest, ClaimResourceHandoffsRequest, ClaimResourceRuntimeWorkRequest,
+    ClaimedResourceDelivery, ClaimedResourceHandoff, CompleteResourceDeliveryOutcome,
+    CompleteResourceDeliveryRequest, EventEnvelope, EventOccurrenceKey, EventOccurrenceNamespace,
+    HeartbeatResourceDeliveryRequest, HeartbeatResourceHandoffRequest,
+    HeartbeatResourceSourceLeaseRequest, PutResourceSubscriptionOutcome,
+    PutResourceSubscriptionRequest, ReconciliationCursor, ReleaseResourceDeliveryRequest,
+    ReleaseResourceSourceLeaseRequest, ResolveSharedResourceOutcome, ResolveSharedResourceRequest,
+    ResourceCompatibilityVersion, ResourceConfigurationIdentity, ResourceConsumerIdentity,
+    ResourceConsumerKind, ResourceDeliveryClaimToken, ResourceDeliveryCompletion,
+    ResourceDeliveryId, ResourceEventAcceptance, ResourceEventId, ResourceEventRecord,
+    ResourceEventState, ResourceHandoffClaimRequest, ResourceHandoffClaimToken, ResourceKind,
+    ResourceLeaseGeneration, ResourceLeaseHolder, ResourceLeaseTtl, ResourcePageSize,
+    ResourceSlotIdentity, ResourceSourceLease, ResourceSourceLeaseToken, ResourceSubscriptionId,
     ResourceSubscriptionPage, ResourceSubscriptionRecord, ResourceSubscriptionState,
-    ResourceSubscriptionVersion, SharedResourceId, SharedResourceIdentity, SharedResourcePage,
-    SharedResourceRecord, TerminalDeliveryIneligibility, TransitionResourceSubscriptionRequest,
+    ResourceSubscriptionVersion, ScopedClaimedResourceDelivery, ScopedClaimedResourceHandoff,
+    SharedResourceId, SharedResourceIdentity, SharedResourcePage, SharedResourceRecord,
+    TerminalDeliveryIneligibility, TransitionResourceSubscriptionRequest,
 };
 use nebula_storage_port::store::{
-    ResourceEventFanoutStore, ResourceExecutionHandoffStore, ResourceSourceLeaseStore,
-    ResourceSubscriptionStore, SharedResourceStore,
+    ResourceEventFanoutStore, ResourceExecutionHandoffStore, ResourceRuntimeRecovery,
+    ResourceSourceLeaseStore, ResourceSubscriptionStore, SharedResourceStore,
 };
 use nebula_storage_port::{Scope, StorageError};
 use sqlx::sqlite::SqliteRow;
@@ -1161,6 +1162,136 @@ impl ResourceExecutionHandoffStore for SqliteResourceRuntime {
         transaction.commit().await.map_err(commit_unknown)?;
         tracing::debug!(storage.outcome = "acknowledged");
         Ok(AcknowledgeResourceHandoffOutcome::Acknowledged)
+    }
+}
+
+#[async_trait::async_trait]
+impl ResourceRuntimeRecovery for SqliteResourceRuntime {
+    #[tracing::instrument(skip_all, fields(storage.role = "resource_runtime_recovery", storage.operation = "claim_deliveries"))]
+    async fn claim_deliveries_globally(
+        &self,
+        request: ClaimResourceRuntimeWorkRequest,
+    ) -> Result<Vec<ScopedClaimedResourceDelivery>, StorageError> {
+        let mut transaction = self.begin_write().await?;
+        let now = now_ms(&mut transaction).await?;
+        let expires_at_ms = now
+            .checked_add(ttl_ms(request.ttl())?)
+            .ok_or_else(corrupt)?;
+        let rows = sqlx::query("SELECT d.workspace_id, d.org_id, d.id, d.event_id, d.subscription_id, d.claim_generation, e.schema_version, e.canonical_payload FROM port_resource_deliveries d JOIN port_resource_events e ON e.workspace_id = d.workspace_id AND e.org_id = d.org_id AND e.id = d.event_id WHERE d.status = 'pending' AND (d.claim_id IS NULL OR d.claim_expires_at_ms <= ?) ORDER BY d.sequence LIMIT ?")
+            .bind(now).bind(i64::from(request.batch_size().get()))
+            .fetch_all(&mut *transaction).await.map_err(unavailable)?;
+        let mut claimed = Vec::with_capacity(rows.len());
+        for row in rows {
+            let scope = Scope::new(
+                row.try_get::<String, _>("workspace_id")
+                    .map_err(unavailable)?,
+                row.try_get::<String, _>("org_id").map_err(unavailable)?,
+            );
+            let delivery_id =
+                ResourceDeliveryId::from_bytes(id16(row.try_get("id").map_err(unavailable)?)?);
+            let generation = decode_u64(row.try_get("claim_generation").map_err(unavailable)?)?
+                .checked_add(1)
+                .ok_or_else(|| {
+                    StorageError::Internal("resource generation exhausted".to_owned())
+                })?;
+            let claim_id = Uuid::new_v4();
+            sqlx::query("UPDATE port_resource_deliveries SET claim_holder = ?, claim_id = ?, claim_generation = ?, claim_expires_at_ms = ? WHERE workspace_id = ? AND org_id = ? AND id = ?")
+                .bind(request.holder().as_str()).bind(claim_id.as_bytes().as_slice()).bind(generation.to_be_bytes().as_slice()).bind(expires_at_ms)
+                .bind(&scope.workspace_id).bind(&scope.org_id).bind(delivery_id.into_bytes().as_slice())
+                .execute(&mut *transaction).await.map_err(unavailable)?;
+            claimed.push(ScopedClaimedResourceDelivery::new(
+                scope,
+                ClaimedResourceDelivery::new(
+                    delivery_id,
+                    ResourceEventId::from_bytes(id16(
+                        row.try_get("event_id").map_err(unavailable)?,
+                    )?),
+                    ResourceSubscriptionId::from_bytes(id16(
+                        row.try_get("subscription_id").map_err(unavailable)?,
+                    )?),
+                    EventEnvelope::try_from_vec(
+                        u32::try_from(
+                            row.try_get::<i64, _>("schema_version")
+                                .map_err(unavailable)?,
+                        )
+                        .map_err(|_| corrupt())?,
+                        row.try_get("canonical_payload").map_err(unavailable)?,
+                    )
+                    .map_err(|_| corrupt())?,
+                    ResourceDeliveryClaimToken::new(
+                        claim_id,
+                        ResourceLeaseGeneration::new(generation),
+                    ),
+                ),
+            ));
+        }
+        transaction.commit().await.map_err(commit_unknown)?;
+        tracing::debug!(storage.outcome = "claimed", claim_count = claimed.len());
+        Ok(claimed)
+    }
+
+    #[tracing::instrument(skip_all, fields(storage.role = "resource_runtime_recovery", storage.operation = "claim_handoffs"))]
+    async fn claim_handoffs_globally(
+        &self,
+        request: ClaimResourceRuntimeWorkRequest,
+    ) -> Result<Vec<ScopedClaimedResourceHandoff>, StorageError> {
+        let mut transaction = self.begin_write().await?;
+        let now = now_ms(&mut transaction).await?;
+        let expires_at_ms = now
+            .checked_add(ttl_ms(request.ttl())?)
+            .ok_or_else(corrupt)?;
+        let rows = sqlx::query("SELECT h.workspace_id, h.org_id, h.delivery_id, h.event_id, h.subscription_id, h.claim_generation, e.schema_version, e.canonical_payload FROM port_resource_execution_handoffs h JOIN port_resource_events e ON e.workspace_id = h.workspace_id AND e.org_id = h.org_id AND e.resource_id = h.resource_id AND e.id = h.event_id WHERE h.status = 'pending' AND (h.claim_id IS NULL OR h.claim_expires_at_ms <= ?) ORDER BY h.sequence LIMIT ?")
+            .bind(now).bind(i64::from(request.batch_size().get()))
+            .fetch_all(&mut *transaction).await.map_err(unavailable)?;
+        let mut claimed = Vec::with_capacity(rows.len());
+        for row in rows {
+            let scope = Scope::new(
+                row.try_get::<String, _>("workspace_id")
+                    .map_err(unavailable)?,
+                row.try_get::<String, _>("org_id").map_err(unavailable)?,
+            );
+            let delivery_id = ResourceDeliveryId::from_bytes(id16(
+                row.try_get("delivery_id").map_err(unavailable)?,
+            )?);
+            let generation = decode_u64(row.try_get("claim_generation").map_err(unavailable)?)?
+                .checked_add(1)
+                .ok_or_else(|| {
+                    StorageError::Internal("resource generation exhausted".to_owned())
+                })?;
+            let claim_id = Uuid::new_v4();
+            sqlx::query("UPDATE port_resource_execution_handoffs SET claim_holder = ?, claim_id = ?, claim_generation = ?, claim_expires_at_ms = ? WHERE workspace_id = ? AND org_id = ? AND delivery_id = ?")
+                .bind(request.holder().as_str()).bind(claim_id.as_bytes().as_slice()).bind(generation.to_be_bytes().as_slice()).bind(expires_at_ms)
+                .bind(&scope.workspace_id).bind(&scope.org_id).bind(delivery_id.into_bytes().as_slice())
+                .execute(&mut *transaction).await.map_err(unavailable)?;
+            claimed.push(ScopedClaimedResourceHandoff::new(
+                scope,
+                ClaimedResourceHandoff::new(
+                    delivery_id,
+                    ResourceEventId::from_bytes(id16(
+                        row.try_get("event_id").map_err(unavailable)?,
+                    )?),
+                    ResourceSubscriptionId::from_bytes(id16(
+                        row.try_get("subscription_id").map_err(unavailable)?,
+                    )?),
+                    EventEnvelope::try_from_vec(
+                        u32::try_from(
+                            row.try_get::<i64, _>("schema_version")
+                                .map_err(unavailable)?,
+                        )
+                        .map_err(|_| corrupt())?,
+                        row.try_get("canonical_payload").map_err(unavailable)?,
+                    )
+                    .map_err(|_| corrupt())?,
+                    ResourceHandoffClaimToken::new(
+                        claim_id,
+                        ResourceLeaseGeneration::new(generation),
+                    ),
+                ),
+            ));
+        }
+        transaction.commit().await.map_err(commit_unknown)?;
+        tracing::debug!(storage.outcome = "claimed", claim_count = claimed.len());
+        Ok(claimed)
     }
 }
 

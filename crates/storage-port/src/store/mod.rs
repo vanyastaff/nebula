@@ -47,8 +47,8 @@ pub use refresh_claim::{
     RefreshClaimStore, ReplicaId, SentinelState,
 };
 pub use resource_subscription::{
-    ResourceEventFanoutStore, ResourceExecutionHandoffStore, ResourceSourceLeaseStore,
-    ResourceSubscriptionStore, SharedResourceStore,
+    ResourceEventFanoutStore, ResourceExecutionHandoffStore, ResourceRuntimeRecovery,
+    ResourceSourceLeaseStore, ResourceSubscriptionStore, SharedResourceStore,
 };
 pub use resume_producer::ResumeProducer;
 pub use resume_token::ResumeTokenStore;

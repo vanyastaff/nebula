@@ -40,7 +40,8 @@ use nebula_action::{
 use nebula_core::{Dependencies, PluginKey, action_key, id::ExecutionId, node_key};
 use nebula_engine::{
     ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, EngineExecutionSink,
-    InProcessRunner, WorkflowEngine,
+    InProcessRunner, ResourceFanoutCoordinator, WorkflowEngine, WorkflowTriggerConsumerCodec,
+    WorkflowTriggerTarget,
 };
 use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_metrics::MetricsRegistry;
@@ -50,10 +51,22 @@ use nebula_storage::{
     InMemoryExecutionStore, InMemoryWorkflowVersionStore, inmem::InMemoryJobDispatchQueue,
 };
 use nebula_storage_port::{
-    Scope,
-    dto::{ControlCommand, JobDispatchMsg, TriggerStartKey, WorkflowVersionRecord},
+    Scope, StorageError,
+    dto::{
+        AcceptResourceEventRequest, AcquireResourceSourceLeaseOutcome,
+        AcquireResourceSourceLeaseRequest, ClaimResourceHandoffsRequest,
+        ClaimResourceRuntimeWorkRequest, ClaimedResourceHandoff, ControlCommand, EventEnvelope,
+        EventOccurrenceKey, EventOccurrenceNamespace, HeartbeatResourceHandoffRequest,
+        JobDispatchMsg, PutResourceSubscriptionRequest, ResolveSharedResourceOutcome,
+        ResolveSharedResourceRequest, ResourceCompatibilityVersion, ResourceConfigurationIdentity,
+        ResourceHandoffClaimRequest, ResourceKind, ResourceLeaseHolder, ResourceLeaseTtl,
+        ResourcePageSize, ResourceSlotIdentity, SharedResourceIdentity, TriggerStartKey,
+        WorkflowVersionRecord,
+    },
     store::{
-        ControlQueue, ExecutionStore, JobDispatchQueue, StartAcceptanceStore, WorkflowStore,
+        ControlQueue, ExecutionStore, JobDispatchQueue, ResourceEventFanoutStore,
+        ResourceExecutionHandoffStore, ResourceRuntimeRecovery, ResourceSourceLeaseStore,
+        ResourceSubscriptionStore, SharedResourceStore, StartAcceptanceStore, WorkflowStore,
         WorkflowVersionStore,
     },
 };
@@ -964,4 +977,225 @@ async fn unsupported_selected_flavor_writes_no_execution_dispatch_or_dedup() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[derive(Debug)]
+struct FailFirstHandoffAcknowledgement {
+    inner: Arc<nebula_storage::InMemoryResourceRuntime>,
+    remaining_failures: AtomicU32,
+    heartbeat_calls: AtomicU32,
+}
+
+#[derive(Debug)]
+struct AlwaysFailResourceRecovery;
+
+#[async_trait::async_trait]
+impl ResourceRuntimeRecovery for AlwaysFailResourceRecovery {
+    async fn claim_deliveries_globally(
+        &self,
+        _request: ClaimResourceRuntimeWorkRequest,
+    ) -> Result<Vec<nebula_storage_port::dto::ScopedClaimedResourceDelivery>, StorageError> {
+        Err(StorageError::Connection(
+            "injected global delivery claim failure".to_owned(),
+        ))
+    }
+
+    async fn claim_handoffs_globally(
+        &self,
+        _request: ClaimResourceRuntimeWorkRequest,
+    ) -> Result<Vec<nebula_storage_port::dto::ScopedClaimedResourceHandoff>, StorageError> {
+        Err(StorageError::Connection(
+            "injected global handoff claim failure".to_owned(),
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl ResourceExecutionHandoffStore for FailFirstHandoffAcknowledgement {
+    async fn claim_handoffs(
+        &self,
+        request: ClaimResourceHandoffsRequest,
+    ) -> Result<Vec<ClaimedResourceHandoff>, StorageError> {
+        self.inner.claim_handoffs(request).await
+    }
+
+    async fn heartbeat_handoff(
+        &self,
+        request: HeartbeatResourceHandoffRequest,
+    ) -> Result<ClaimedResourceHandoff, StorageError> {
+        self.heartbeat_calls.fetch_add(1, Ordering::SeqCst);
+        self.inner.heartbeat_handoff(request).await
+    }
+
+    async fn release_handoff(
+        &self,
+        request: ResourceHandoffClaimRequest,
+    ) -> Result<(), StorageError> {
+        self.inner.release_handoff(request).await
+    }
+
+    async fn acknowledge_handoff(
+        &self,
+        request: ResourceHandoffClaimRequest,
+    ) -> Result<nebula_storage_port::dto::AcknowledgeResourceHandoffOutcome, StorageError> {
+        if self.remaining_failures.swap(0, Ordering::SeqCst) > 0 {
+            return Err(StorageError::Connection(
+                "injected handoff acknowledgement failure".to_owned(),
+            ));
+        }
+        self.inner.acknowledge_handoff(request).await
+    }
+}
+
+#[tokio::test]
+async fn resource_fanout_one_shot_replays_start_after_ack_failure_without_eventbus() {
+    let stores = TestStores::new();
+    let workflow = save_echo_workflow(&stores).await;
+    let starts = activated_start_service(&stores, &workflow).await;
+    let resource_runtime = Arc::new(nebula_storage::InMemoryResourceRuntime::new());
+    let resource_scope = scope();
+    let resource_id = match resource_runtime
+        .resolve(ResolveSharedResourceRequest::new(
+            resource_scope.clone(),
+            SharedResourceIdentity::new(
+                ResourceKind::new("test.resource").expect("valid resource kind"),
+                ResourceCompatibilityVersion::new(1),
+                ResourceConfigurationIdentity::try_from_vec(b"configuration".to_vec())
+                    .expect("valid configuration identity"),
+                ResourceSlotIdentity::try_from_vec(Vec::new()).expect("valid slot identity"),
+            ),
+        ))
+        .await
+        .expect("resource resolves")
+    {
+        ResolveSharedResourceOutcome::Created(record)
+        | ResolveSharedResourceOutcome::Existing(record) => record.id(),
+    };
+    let (consumer_kind, consumer_identity) = WorkflowTriggerConsumerCodec::encode(
+        &WorkflowTriggerTarget::new(workflow.definition().id, node_key!("test.trigger")),
+    )
+    .expect("workflow target encodes");
+    resource_runtime
+        .put(PutResourceSubscriptionRequest::new(
+            resource_scope.clone(),
+            resource_id,
+            consumer_kind,
+            consumer_identity,
+        ))
+        .await
+        .expect("subscription stores");
+    let lease = match resource_runtime
+        .acquire(AcquireResourceSourceLeaseRequest::new(
+            resource_scope.clone(),
+            resource_id,
+            ResourceLeaseHolder::new("resource-source").expect("valid source holder"),
+            ResourceLeaseTtl::new(Duration::from_secs(30)).expect("valid source TTL"),
+        ))
+        .await
+        .expect("source lease acquires")
+    {
+        AcquireResourceSourceLeaseOutcome::Acquired(lease) => lease,
+        AcquireResourceSourceLeaseOutcome::Contended { .. } => {
+            panic!("fresh resource source lease must be acquired")
+        },
+    };
+    resource_runtime
+        .accept(AcceptResourceEventRequest::new(
+            resource_scope.clone(),
+            resource_id,
+            lease.token().clone(),
+            EventOccurrenceNamespace::new("test.event").expect("valid namespace"),
+            EventOccurrenceKey::try_from_vec(b"occurrence-1".to_vec()).expect("valid occurrence"),
+            EventEnvelope::try_from_vec(1, br#"{"event":"tick"}"#.to_vec())
+                .expect("valid envelope"),
+        ))
+        .await
+        .expect("event accepts");
+
+    let handoffs = Arc::new(FailFirstHandoffAcknowledgement {
+        inner: Arc::clone(&resource_runtime),
+        remaining_failures: AtomicU32::new(1),
+        heartbeat_calls: AtomicU32::new(0),
+    });
+    let claim = ClaimResourceRuntimeWorkRequest::new(
+        ResourceLeaseHolder::new("resource-fanout").expect("valid fanout holder"),
+        ResourceLeaseTtl::new(Duration::from_secs(30)).expect("valid fanout TTL"),
+        ResourcePageSize::new(10).expect("valid batch size"),
+    );
+    let coordinator = ResourceFanoutCoordinator::new(
+        resource_runtime.clone(),
+        resource_runtime.clone(),
+        resource_runtime.clone(),
+        handoffs.clone(),
+        starts,
+        claim.clone(),
+        Duration::from_millis(10),
+        3,
+    )
+    .expect("coordinator builds");
+
+    let first = coordinator.drain_once().await.expect_err("first ack fails");
+    assert_eq!(first.error_code(), "RESOURCE_FANOUT:ACK_HANDOFF");
+    let replay = coordinator.drain_once().await.expect("retry drains");
+    assert_eq!(replay.completed_deliveries, 0);
+    assert_eq!(replay.acknowledged_handoffs, 1);
+    assert!(
+        resource_runtime
+            .claim_handoffs_globally(claim)
+            .await
+            .expect("handoff query succeeds")
+            .is_empty(),
+        "the exact handoff must be acknowledged after replay"
+    );
+    assert_eq!(
+        stores.execution.count(&resource_scope, None).await.unwrap(),
+        1,
+        "stable trigger and delivery keys must materialize one execution"
+    );
+    let queue = nebula_storage::InMemoryControlQueue::new(&stores.execution);
+    let starts = queue
+        .claim_pending_for_flavor(
+            &proc16(0xDC),
+            10,
+            nebula_plugin::WorkerFlavorContext::from_registry(stores.frozen.get().unwrap())
+                .revision_id(),
+        )
+        .await
+        .expect("control queue claims");
+    assert_eq!(starts.len(), 1, "replay must not enqueue a second start");
+    assert_eq!(
+        handoffs.heartbeat_calls.load(Ordering::SeqCst),
+        2,
+        "each potentially slow workflow start must refresh its exact handoff claim"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn resource_fanout_run_stops_after_bounded_persistent_infrastructure_failures() {
+    let stores = TestStores::new();
+    let workflow = save_echo_workflow(&stores).await;
+    let starts = activated_start_service(&stores, &workflow).await;
+    let resource_runtime = Arc::new(nebula_storage::InMemoryResourceRuntime::new());
+    let coordinator = ResourceFanoutCoordinator::new(
+        Arc::new(AlwaysFailResourceRecovery),
+        resource_runtime.clone(),
+        resource_runtime.clone(),
+        resource_runtime,
+        starts,
+        ClaimResourceRuntimeWorkRequest::new(
+            ResourceLeaseHolder::new("bounded-failure").expect("valid holder"),
+            ResourceLeaseTtl::new(Duration::from_secs(30)).expect("valid TTL"),
+            ResourcePageSize::new(10).expect("valid batch size"),
+        ),
+        Duration::from_millis(1),
+        2,
+    )
+    .expect("coordinator builds");
+
+    let error = coordinator
+        .run(CancellationToken::new())
+        .await
+        .expect_err("persistent failure reaches the configured bound");
+    assert_eq!(error.attempts(), 2);
+    assert_eq!(error.error_code(), "RESOURCE_FANOUT:CLAIM_DELIVERIES");
 }

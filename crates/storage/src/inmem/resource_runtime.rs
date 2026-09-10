@@ -8,25 +8,26 @@ use nebula_core::accessor::Clock;
 use nebula_storage_port::dto::{
     AcceptResourceEventOutcome, AcceptResourceEventRequest, AcknowledgeResourceHandoffOutcome,
     AcquireResourceSourceLeaseOutcome, AcquireResourceSourceLeaseRequest,
-    ClaimResourceDeliveriesRequest, ClaimResourceHandoffsRequest, ClaimedResourceDelivery,
-    ClaimedResourceHandoff, CompleteResourceDeliveryOutcome, CompleteResourceDeliveryRequest,
-    EventEnvelope, EventOccurrenceKey, EventOccurrenceNamespace, HeartbeatResourceDeliveryRequest,
-    HeartbeatResourceHandoffRequest, HeartbeatResourceSourceLeaseRequest,
-    PutResourceSubscriptionOutcome, PutResourceSubscriptionRequest, ReconciliationCursor,
-    ReleaseResourceDeliveryRequest, ReleaseResourceSourceLeaseRequest,
-    ResolveSharedResourceOutcome, ResolveSharedResourceRequest, ResourceConsumerIdentity,
-    ResourceConsumerKind, ResourceDeliveryClaimToken, ResourceDeliveryCompletion,
-    ResourceDeliveryId, ResourceEventAcceptance, ResourceEventId, ResourceEventRecord,
-    ResourceEventState, ResourceHandoffClaimRequest, ResourceHandoffClaimToken,
-    ResourceLeaseGeneration, ResourceLeaseHolder, ResourceLeaseTtl, ResourcePageSize,
-    ResourceSourceLease, ResourceSourceLeaseToken, ResourceSubscriptionId,
+    ClaimResourceDeliveriesRequest, ClaimResourceHandoffsRequest, ClaimResourceRuntimeWorkRequest,
+    ClaimedResourceDelivery, ClaimedResourceHandoff, CompleteResourceDeliveryOutcome,
+    CompleteResourceDeliveryRequest, EventEnvelope, EventOccurrenceKey, EventOccurrenceNamespace,
+    HeartbeatResourceDeliveryRequest, HeartbeatResourceHandoffRequest,
+    HeartbeatResourceSourceLeaseRequest, PutResourceSubscriptionOutcome,
+    PutResourceSubscriptionRequest, ReconciliationCursor, ReleaseResourceDeliveryRequest,
+    ReleaseResourceSourceLeaseRequest, ResolveSharedResourceOutcome, ResolveSharedResourceRequest,
+    ResourceConsumerIdentity, ResourceConsumerKind, ResourceDeliveryClaimToken,
+    ResourceDeliveryCompletion, ResourceDeliveryId, ResourceEventAcceptance, ResourceEventId,
+    ResourceEventRecord, ResourceEventState, ResourceHandoffClaimRequest,
+    ResourceHandoffClaimToken, ResourceLeaseGeneration, ResourceLeaseHolder, ResourceLeaseTtl,
+    ResourcePageSize, ResourceSourceLease, ResourceSourceLeaseToken, ResourceSubscriptionId,
     ResourceSubscriptionPage, ResourceSubscriptionRecord, ResourceSubscriptionState,
-    ResourceSubscriptionVersion, SharedResourceId, SharedResourceIdentity, SharedResourcePage,
-    SharedResourceRecord, TerminalDeliveryIneligibility, TransitionResourceSubscriptionRequest,
+    ResourceSubscriptionVersion, ScopedClaimedResourceDelivery, ScopedClaimedResourceHandoff,
+    SharedResourceId, SharedResourceIdentity, SharedResourcePage, SharedResourceRecord,
+    TerminalDeliveryIneligibility, TransitionResourceSubscriptionRequest,
 };
 use nebula_storage_port::store::{
-    ResourceEventFanoutStore, ResourceExecutionHandoffStore, ResourceSourceLeaseStore,
-    ResourceSubscriptionStore, SharedResourceStore,
+    ResourceEventFanoutStore, ResourceExecutionHandoffStore, ResourceRuntimeRecovery,
+    ResourceSourceLeaseStore, ResourceSubscriptionStore, SharedResourceStore,
 };
 use nebula_storage_port::{Scope, StorageError};
 use parking_lot::Mutex;
@@ -43,6 +44,7 @@ struct State {
     force_identity_digest_collision: bool,
     next_reconciliation_sequence: u64,
     next_subscription_sequence: u64,
+    next_delivery_sequence: u64,
     next_handoff_sequence: u64,
     resources: HashMap<ScopedResourceKey, SharedResourceRecord>,
     resource_identity_buckets: HashMap<(Scope, [u8; 32]), Vec<SharedResourceId>>,
@@ -149,6 +151,7 @@ struct DeliveryClaim {
 
 #[derive(Clone)]
 struct DeliveryRow {
+    sequence: u64,
     id: ResourceDeliveryId,
     event_id: ResourceEventId,
     subscription_id: ResourceSubscriptionId,
@@ -636,7 +639,25 @@ impl ResourceEventFanoutStore for InMemoryResourceRuntime {
         let delivery_count = u32::try_from(subscription_ids.len()).map_err(|_| {
             StorageError::Internal("resource delivery count exceeds u32".to_owned())
         })?;
+        let has_deliveries = !subscription_ids.is_empty();
         let event_id = next_event_id(&state);
+        let mut next_delivery_sequence = state.next_delivery_sequence;
+        let mut deliveries = Vec::with_capacity(subscription_ids.len());
+        for subscription_id in subscription_ids {
+            next_delivery_sequence = next_delivery_sequence
+                .checked_add(1)
+                .ok_or_else(generation_exhausted)?;
+            deliveries.push(DeliveryRow {
+                sequence: next_delivery_sequence,
+                id: next_delivery_id(&state, &deliveries),
+                event_id,
+                subscription_id,
+                envelope: request.envelope().clone(),
+                last_generation: ResourceLeaseGeneration::new(0),
+                claim: None,
+                terminal: None,
+            });
+        }
         let event = EventRow {
             id: event_id,
             resource_id: request.resource_id(),
@@ -645,26 +666,18 @@ impl ResourceEventFanoutStore for InMemoryResourceRuntime {
             envelope: request.envelope().clone(),
             accepted_at: now,
             source_generation: request.source_token().generation(),
-            state: if subscription_ids.is_empty() {
-                ResourceEventState::Complete
-            } else {
+            state: if has_deliveries {
                 ResourceEventState::Pending
+            } else {
+                ResourceEventState::Complete
             },
         };
         state.event_occurrences.insert(occurrence_key, event_id);
         state
             .events
             .insert((request.scope().clone(), event_id), event);
-        for subscription_id in subscription_ids {
-            let delivery = DeliveryRow {
-                id: next_delivery_id(&state),
-                event_id,
-                subscription_id,
-                envelope: request.envelope().clone(),
-                last_generation: ResourceLeaseGeneration::new(0),
-                claim: None,
-                terminal: None,
-            };
+        state.next_delivery_sequence = next_delivery_sequence;
+        for delivery in deliveries {
             state
                 .deliveries
                 .insert((request.scope().clone(), delivery.id), delivery);
@@ -708,15 +721,15 @@ impl ResourceEventFanoutStore for InMemoryResourceRuntime {
                         .claim
                         .as_ref()
                         .is_none_or(|claim| now >= claim.expires_at))
-                .then_some(*delivery_id)
+                .then_some((row.sequence, *delivery_id))
             })
             .collect::<Vec<_>>();
-        candidates.sort_unstable();
+        candidates.sort_unstable_by_key(|(sequence, _)| *sequence);
         candidates.truncate(usize::from(request.batch_size().get()));
 
         let prepared = candidates
             .into_iter()
-            .map(|delivery_id| {
+            .map(|(_, delivery_id)| {
                 let row = state
                     .deliveries
                     .get(&(request.scope().clone(), delivery_id))
@@ -1027,6 +1040,126 @@ impl ResourceExecutionHandoffStore for InMemoryResourceRuntime {
     }
 }
 
+#[async_trait::async_trait]
+impl ResourceRuntimeRecovery for InMemoryResourceRuntime {
+    #[tracing::instrument(skip_all, fields(storage.role = "resource_runtime_recovery", storage.operation = "claim_deliveries"))]
+    async fn claim_deliveries_globally(
+        &self,
+        request: ClaimResourceRuntimeWorkRequest,
+    ) -> Result<Vec<ScopedClaimedResourceDelivery>, StorageError> {
+        let mut state = self.inner.lock();
+        let now = self.clock.now();
+        let expires_at = checked_expiry(now, request.ttl())?;
+        let mut candidates = state
+            .deliveries
+            .iter()
+            .filter_map(|((scope, delivery_id), row)| {
+                (row.terminal.is_none()
+                    && row
+                        .claim
+                        .as_ref()
+                        .is_none_or(|claim| now >= claim.expires_at))
+                .then_some((row.sequence, scope.clone(), *delivery_id))
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_unstable_by_key(|(sequence, _, _)| *sequence);
+        candidates.truncate(usize::from(request.batch_size().get()));
+
+        let prepared = candidates
+            .into_iter()
+            .map(|(_, scope, delivery_id)| {
+                let row = state
+                    .deliveries
+                    .get(&(scope.clone(), delivery_id))
+                    .ok_or_else(|| opaque_not_found("resource delivery"))?;
+                let generation = row
+                    .last_generation
+                    .checked_next()
+                    .map_err(|_| generation_exhausted())?;
+                Ok((scope, delivery_id, generation, Uuid::new_v4()))
+            })
+            .collect::<Result<Vec<_>, StorageError>>()?;
+
+        let mut claimed = Vec::with_capacity(prepared.len());
+        for (scope, delivery_id, generation, claim_id) in prepared {
+            let row = state
+                .deliveries
+                .get_mut(&(scope.clone(), delivery_id))
+                .ok_or_else(|| opaque_not_found("resource delivery"))?;
+            row.last_generation = generation;
+            row.claim = Some(DeliveryClaim {
+                holder: request.holder().clone(),
+                token: ResourceDeliveryClaimToken::new(claim_id, generation),
+                expires_at,
+            });
+            claimed.push(ScopedClaimedResourceDelivery::new(
+                scope,
+                row.claimed_snapshot()?,
+            ));
+        }
+        tracing::debug!(storage.outcome = "claimed", claim_count = claimed.len());
+        Ok(claimed)
+    }
+
+    #[tracing::instrument(skip_all, fields(storage.role = "resource_runtime_recovery", storage.operation = "claim_handoffs"))]
+    async fn claim_handoffs_globally(
+        &self,
+        request: ClaimResourceRuntimeWorkRequest,
+    ) -> Result<Vec<ScopedClaimedResourceHandoff>, StorageError> {
+        let mut state = self.inner.lock();
+        let now = self.clock.now();
+        let expires_at = checked_expiry(now, request.ttl())?;
+        let mut candidates = state
+            .handoffs
+            .iter()
+            .filter_map(|((scope, delivery_id), row)| {
+                (row.acknowledged_by.is_none()
+                    && row
+                        .claim
+                        .as_ref()
+                        .is_none_or(|claim| now >= claim.expires_at))
+                .then_some((row.sequence, scope.clone(), *delivery_id))
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_unstable_by_key(|(sequence, _, _)| *sequence);
+        candidates.truncate(usize::from(request.batch_size().get()));
+
+        let prepared = candidates
+            .into_iter()
+            .map(|(_, scope, delivery_id)| {
+                let row = state
+                    .handoffs
+                    .get(&(scope.clone(), delivery_id))
+                    .ok_or_else(|| opaque_not_found("resource execution handoff"))?;
+                let generation = row
+                    .last_generation
+                    .checked_next()
+                    .map_err(|_| generation_exhausted())?;
+                Ok((scope, delivery_id, generation, Uuid::new_v4()))
+            })
+            .collect::<Result<Vec<_>, StorageError>>()?;
+
+        let mut claimed = Vec::with_capacity(prepared.len());
+        for (scope, delivery_id, generation, claim_id) in prepared {
+            let row = state
+                .handoffs
+                .get_mut(&(scope.clone(), delivery_id))
+                .ok_or_else(|| opaque_not_found("resource execution handoff"))?;
+            row.last_generation = generation;
+            row.claim = Some(HandoffClaim {
+                token: ResourceHandoffClaimToken::new(claim_id, generation),
+                expires_at,
+            });
+            claimed.push(ScopedClaimedResourceHandoff::new(
+                scope,
+                row.claimed_snapshot()?,
+            ));
+        }
+        tracing::debug!(storage.outcome = "claimed", claim_count = claimed.len());
+        Ok(claimed)
+    }
+}
+
 fn ensure_handoff(
     state: &mut State,
     scope: &Scope,
@@ -1240,13 +1373,14 @@ fn next_event_id(state: &State) -> ResourceEventId {
     }
 }
 
-fn next_delivery_id(state: &State) -> ResourceDeliveryId {
+fn next_delivery_id(state: &State, prepared: &[DeliveryRow]) -> ResourceDeliveryId {
     loop {
         let candidate = ResourceDeliveryId::from_bytes(*Uuid::new_v4().as_bytes());
         if state
             .deliveries
             .keys()
             .all(|(_, delivery_id)| *delivery_id != candidate)
+            && prepared.iter().all(|row| row.id != candidate)
         {
             return candidate;
         }
@@ -1263,15 +1397,18 @@ mod tests {
     use chrono::{DateTime, Utc};
     use nebula_core::accessor::Clock;
     use nebula_storage_port::dto::{
-        AcquireResourceSourceLeaseOutcome, AcquireResourceSourceLeaseRequest,
-        ClaimResourceDeliveriesRequest, EventEnvelope, HeartbeatResourceSourceLeaseRequest,
-        ResolveSharedResourceOutcome, ResolveSharedResourceRequest, ResourceCompatibilityVersion,
-        ResourceConfigurationIdentity, ResourceDeliveryId, ResourceEventId, ResourceKind,
+        AcceptResourceEventRequest, AcquireResourceSourceLeaseOutcome,
+        AcquireResourceSourceLeaseRequest, ClaimResourceDeliveriesRequest, EventEnvelope,
+        EventOccurrenceKey, EventOccurrenceNamespace, HeartbeatResourceSourceLeaseRequest,
+        PutResourceSubscriptionRequest, ResolveSharedResourceOutcome, ResolveSharedResourceRequest,
+        ResourceCompatibilityVersion, ResourceConfigurationIdentity, ResourceConsumerIdentity,
+        ResourceConsumerKind, ResourceDeliveryId, ResourceEventId, ResourceKind,
         ResourceLeaseGeneration, ResourceLeaseHolder, ResourceLeaseTtl, ResourcePageSize,
         ResourceSlotIdentity, ResourceSubscriptionId, SharedResourceIdentity,
     };
     use nebula_storage_port::store::{
-        ResourceEventFanoutStore, ResourceSourceLeaseStore, SharedResourceStore,
+        ResourceEventFanoutStore, ResourceSourceLeaseStore, ResourceSubscriptionStore,
+        SharedResourceStore,
     };
     use nebula_storage_port::{Scope, StorageError};
 
@@ -1487,6 +1624,7 @@ mod tests {
         store.inner.lock().deliveries.insert(
             (scope.clone(), delivery_id),
             DeliveryRow {
+                sequence: 1,
                 id: delivery_id,
                 event_id: ResourceEventId::from_bytes([8; 16]),
                 subscription_id: ResourceSubscriptionId::from_bytes([9; 16]),
@@ -1518,5 +1656,73 @@ mod tests {
             ResourceLeaseGeneration::new(u64::MAX)
         );
         assert!(delivery.claim.is_none());
+    }
+
+    #[tokio::test]
+    async fn accept_sequence_exhaustion_leaves_no_partial_event_or_delivery() {
+        let store = InMemoryResourceRuntime::new();
+        let scope = Scope::new("accept-overflow-workspace", "accept-overflow-org");
+        let identity = SharedResourceIdentity::new(
+            ResourceKind::new("accept-overflow.resource").expect("valid kind"),
+            ResourceCompatibilityVersion::new(1),
+            ResourceConfigurationIdentity::try_from_vec(b"configuration".to_vec())
+                .expect("valid configuration"),
+            ResourceSlotIdentity::try_from_vec(Vec::new()).expect("valid slot"),
+        );
+        let resource_id = match store
+            .resolve(ResolveSharedResourceRequest::new(scope.clone(), identity))
+            .await
+            .expect("resource resolves")
+        {
+            ResolveSharedResourceOutcome::Created(record)
+            | ResolveSharedResourceOutcome::Existing(record) => record.id(),
+        };
+        store
+            .put(PutResourceSubscriptionRequest::new(
+                scope.clone(),
+                resource_id,
+                ResourceConsumerKind::new("workflow-trigger").expect("valid consumer kind"),
+                ResourceConsumerIdentity::try_from_vec(b"consumer".to_vec())
+                    .expect("valid consumer identity"),
+            ))
+            .await
+            .expect("subscription stores");
+        let lease = match store
+            .acquire(AcquireResourceSourceLeaseRequest::new(
+                scope.clone(),
+                resource_id,
+                ResourceLeaseHolder::new("source").expect("valid holder"),
+                ResourceLeaseTtl::new(Duration::from_secs(30)).expect("valid TTL"),
+            ))
+            .await
+            .expect("source acquires")
+        {
+            AcquireResourceSourceLeaseOutcome::Acquired(lease) => lease,
+            AcquireResourceSourceLeaseOutcome::Contended { .. } => {
+                panic!("fresh source must acquire")
+            },
+        };
+        {
+            let mut state = store.inner.lock();
+            state.next_delivery_sequence = u64::MAX;
+        }
+
+        let result = store
+            .accept(AcceptResourceEventRequest::new(
+                scope,
+                resource_id,
+                lease.token().clone(),
+                EventOccurrenceNamespace::new("overflow").expect("valid namespace"),
+                EventOccurrenceKey::try_from_vec(b"occurrence".to_vec()).expect("valid occurrence"),
+                EventEnvelope::try_from_vec(1, b"payload".to_vec()).expect("valid envelope"),
+            ))
+            .await;
+
+        assert_matches!(result, Err(StorageError::Internal(_)));
+        let state = store.inner.lock();
+        assert!(state.events.is_empty());
+        assert!(state.event_occurrences.is_empty());
+        assert!(state.deliveries.is_empty());
+        assert_eq!(state.next_delivery_sequence, u64::MAX);
     }
 }

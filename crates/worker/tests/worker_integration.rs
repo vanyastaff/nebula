@@ -27,7 +27,7 @@ use nebula_action::{
 use nebula_core::{Dependencies, PluginKey, action_key, id::ExecutionId, node_key};
 use nebula_engine::{
     ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
-    WorkflowEngine,
+    ResourceFanoutCoordinator, WorkflowEngine, WorkflowStartService,
 };
 use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_metrics::MetricsRegistry;
@@ -36,9 +36,13 @@ use nebula_storage::{
     inmem::InMemoryJobDispatchQueue,
 };
 use nebula_storage_port::{
-    Scope,
-    dto::{ControlCommand, JobDispatchMsg},
-    store::{ExecutionStore, JobDispatchQueue, WorkflowVersionStore},
+    Scope, StorageError,
+    dto::{
+        ClaimResourceRuntimeWorkRequest, ControlCommand, JobDispatchMsg, ResourceLeaseHolder,
+        ResourceLeaseTtl, ResourcePageSize, ScopedClaimedResourceDelivery,
+        ScopedClaimedResourceHandoff,
+    },
+    store::{ExecutionStore, JobDispatchQueue, ResourceRuntimeRecovery, WorkflowVersionStore},
 };
 use nebula_worker::WorkerRuntimeBuilder;
 use nebula_workflow::{
@@ -115,6 +119,79 @@ impl TestStores {
         Arc::new(nebula_storage::inmem::InMemoryTurnHandoff::new(
             &self.execution,
         ))
+    }
+
+    fn resource_fanout(&self, plugins: &[PluginKey]) -> Arc<ResourceFanoutCoordinator> {
+        let runtime = Arc::new(nebula_storage::inmem::InMemoryResourceRuntime::new());
+        self.resource_fanout_with_recovery(plugins, runtime.clone(), runtime, 3)
+    }
+
+    fn resource_fanout_with_recovery(
+        &self,
+        plugins: &[PluginKey],
+        recovery: Arc<dyn ResourceRuntimeRecovery>,
+        runtime: Arc<nebula_storage::inmem::InMemoryResourceRuntime>,
+        max_consecutive_failures: u32,
+    ) -> Arc<ResourceFanoutCoordinator> {
+        let starts = Arc::new(
+            WorkflowStartService::new(
+                self.workflow_stores(),
+                self.execution.clone(),
+                Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
+                    &self.execution,
+                )),
+                nebula_engine::PlanFlavorRevisionLoader::new(Arc::new(
+                    nebula_storage::InMemoryPlanFlavorCatalog::new(&self.execution),
+                )),
+                Arc::new(frozen_fixture(plugins, Arc::new(AtomicU32::new(0)))),
+                Arc::new(nebula_core::accessor::SystemClock),
+                nebula_execution::ExecutionBudget::default(),
+            )
+            .expect("test workflow-start service must accept the default budget"),
+        );
+        let holder = ResourceLeaseHolder::new("worker-test-resource-fanout")
+            .expect("test resource fanout holder is bounded");
+        let ttl = ResourceLeaseTtl::new(Duration::from_secs(30))
+            .expect("test resource fanout TTL is bounded");
+        let batch_size =
+            ResourcePageSize::new(32).expect("test resource fanout batch size is bounded");
+        Arc::new(
+            ResourceFanoutCoordinator::new(
+                recovery,
+                runtime.clone(),
+                runtime.clone(),
+                runtime,
+                starts,
+                ClaimResourceRuntimeWorkRequest::new(holder, ttl, batch_size),
+                Duration::from_millis(100),
+                max_consecutive_failures,
+            )
+            .expect("test resource fanout configuration is valid"),
+        )
+    }
+}
+
+#[derive(Debug)]
+struct FailingResourceRecovery;
+
+#[async_trait::async_trait]
+impl ResourceRuntimeRecovery for FailingResourceRecovery {
+    async fn claim_deliveries_globally(
+        &self,
+        _request: ClaimResourceRuntimeWorkRequest,
+    ) -> Result<Vec<ScopedClaimedResourceDelivery>, StorageError> {
+        Err(StorageError::AcknowledgementUnknown {
+            operation: "resource-fanout-test",
+        })
+    }
+
+    async fn claim_handoffs_globally(
+        &self,
+        _request: ClaimResourceRuntimeWorkRequest,
+    ) -> Result<Vec<ScopedClaimedResourceHandoff>, StorageError> {
+        Err(StorageError::AcknowledgementUnknown {
+            operation: "resource-fanout-test",
+        })
     }
 }
 
@@ -453,6 +530,7 @@ async fn worker_runtime_does_not_poll_the_technical_job_queue() {
     .with_control_queue(Arc::new(InMemoryControlQueue::new(&stores.execution)))
     .with_turn_handoff(stores.turn_handoff())
     .with_turn_recovery(stores.turn_handoff())
+    .with_resource_fanout(stores.resource_fanout(std::slice::from_ref(&plugin_key)))
     .build()
     .expect("WorkerRuntimeBuilder::build must succeed with non-empty plugin set");
 
@@ -541,7 +619,7 @@ async fn control_start_waits_for_worker_with_retained_exact_flavor() {
     .activate(&scope(), workflow_id, 1, workflow.definition().clone())
     .await
     .unwrap();
-    let starts = nebula_engine::WorkflowStartService::new(
+    let starts = WorkflowStartService::new(
         stores.workflow_stores(),
         stores.execution.clone(),
         Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
@@ -590,6 +668,10 @@ async fn control_start_waits_for_worker_with_retained_exact_flavor() {
     .with_control_queue(queue.clone())
     .with_turn_handoff(stores.turn_handoff())
     .with_turn_recovery(stores.turn_handoff())
+    .with_resource_fanout(stores.resource_fanout(&[
+        TEST_PLUGIN_KEY.parse().unwrap(),
+        "test.extra".parse().unwrap(),
+    ]))
     .build()
     .unwrap();
     let cancel = CancellationToken::new();
@@ -633,6 +715,7 @@ async fn control_start_waits_for_worker_with_retained_exact_flavor() {
             .with_control_queue(queue)
             .with_turn_handoff(stores.turn_handoff())
             .with_turn_recovery(stores.turn_handoff())
+            .with_resource_fanout(stores.resource_fanout(&[TEST_PLUGIN_KEY.parse().unwrap()]))
             .build()
             .unwrap();
     let cancel = CancellationToken::new();
@@ -672,9 +755,67 @@ async fn builder_rejects_an_engine_without_exact_runtime_configuration() {
             .with_control_queue(Arc::new(InMemoryControlQueue::new(&stores.execution)))
             .with_turn_handoff(stores.turn_handoff())
             .with_turn_recovery(stores.turn_handoff())
+            .with_resource_fanout(stores.resource_fanout(&[TEST_PLUGIN_KEY.parse().unwrap()]))
             .build();
     let error = result.expect_err("an independently advertised flavor cannot authorize an engine");
     assert_eq!(error.to_string(), "exact runtime configuration is required");
+}
+
+#[tokio::test]
+async fn builder_requires_resource_fanout() {
+    let stores = TestStores::new();
+    let (engine, _) = make_engine(&stores).await;
+    let result =
+        WorkerRuntimeBuilder::from_wired_engine(engine, stores.execution_stores(), proc16(0x08))
+            .with_control_queue(Arc::new(InMemoryControlQueue::new(&stores.execution)))
+            .with_turn_handoff(stores.turn_handoff())
+            .with_turn_recovery(stores.turn_handoff())
+            .build();
+
+    assert!(
+        matches!(
+            result,
+            Err(nebula_worker::WorkerBuildError::NoResourceFanout)
+        ),
+        "missing resource fanout must be rejected; got {result:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn resource_fanout_failure_stops_worker_with_typed_error() {
+    let stores = TestStores::new();
+    let (engine, _) = make_engine(&stores).await;
+    let runtime_store = Arc::new(nebula_storage::inmem::InMemoryResourceRuntime::new());
+    let resource_fanout = stores.resource_fanout_with_recovery(
+        &[TEST_PLUGIN_KEY.parse().unwrap()],
+        Arc::new(FailingResourceRecovery),
+        runtime_store,
+        1,
+    );
+    let runtime =
+        WorkerRuntimeBuilder::from_wired_engine(engine, stores.execution_stores(), proc16(0x07))
+            .with_control_queue(Arc::new(InMemoryControlQueue::new(&stores.execution)))
+            .with_turn_handoff(stores.turn_handoff())
+            .with_turn_recovery(stores.turn_handoff())
+            .with_resource_fanout(resource_fanout)
+            .build()
+            .expect("fully wired worker runtime must build");
+
+    let error = runtime
+        .run(CancellationToken::new())
+        .await
+        .expect_err("bounded resource fanout failure must stop the worker");
+    assert!(
+        matches!(
+            error,
+            nebula_worker::WorkerRuntimeError::ResourceFanout {
+                attempts: 1,
+                error_code: "RESOURCE_FANOUT:CLAIM_DELIVERIES",
+                ..
+            }
+        ),
+        "worker must preserve the bounded fanout error classification; got {error:?}"
+    );
 }
 
 /// A zero timer-scan interval is rejected rather than deferred to a panic.
@@ -693,6 +834,7 @@ async fn builder_rejects_a_zero_timer_scan_interval() {
             .with_control_queue(Arc::new(InMemoryControlQueue::new(&stores.execution)))
             .with_turn_handoff(stores.turn_handoff())
             .with_turn_recovery(stores.turn_handoff())
+            .with_resource_fanout(stores.resource_fanout(&[TEST_PLUGIN_KEY.parse().unwrap()]))
             .with_timer_scan_interval(Duration::ZERO)
             .build();
 
@@ -811,6 +953,7 @@ async fn reclaimed_job_dispatch_row_remains_outside_worker_runtime() {
     .with_control_queue(Arc::new(InMemoryControlQueue::new(&stores.execution)))
     .with_turn_handoff(stores.turn_handoff())
     .with_turn_recovery(stores.turn_handoff())
+    .with_resource_fanout(stores.resource_fanout(&[TEST_PLUGIN_KEY.parse().unwrap()]))
     .build()
     .expect("WorkerRuntimeBuilder::build must succeed");
 

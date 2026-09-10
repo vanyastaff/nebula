@@ -56,6 +56,6 @@ pub use store::{
     CredentialAlreadyExistsKey, CredentialPersistence, CredentialPersistenceError,
     ExecutionTurnHandoff, OperationLedger, OperationLedgerAdjudicator, PlanFlavorCatalog,
     PlanFlavorCatalogAdmin, PlanFlavorCatalogWriter, ResourceEventFanoutStore,
-    ResourceExecutionHandoffStore, ResourceSourceLeaseStore, ResourceSubscriptionStore,
-    SharedResourceStore, TurnAcceptance, TurnHandoff, TurnRecovery,
+    ResourceExecutionHandoffStore, ResourceRuntimeRecovery, ResourceSourceLeaseStore,
+    ResourceSubscriptionStore, SharedResourceStore, TurnAcceptance, TurnHandoff, TurnRecovery,
 };

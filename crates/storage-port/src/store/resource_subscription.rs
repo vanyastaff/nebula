@@ -3,16 +3,17 @@
 use crate::dto::{
     AcceptResourceEventOutcome, AcceptResourceEventRequest, AcknowledgeResourceHandoffOutcome,
     AcquireResourceSourceLeaseOutcome, AcquireResourceSourceLeaseRequest,
-    ClaimResourceDeliveriesRequest, ClaimResourceHandoffsRequest, ClaimedResourceDelivery,
-    ClaimedResourceHandoff, CompleteResourceDeliveryOutcome, CompleteResourceDeliveryRequest,
-    HeartbeatResourceDeliveryRequest, HeartbeatResourceHandoffRequest,
-    HeartbeatResourceSourceLeaseRequest, PutResourceSubscriptionOutcome,
-    PutResourceSubscriptionRequest, ReconciliationCursor, ReleaseResourceDeliveryRequest,
-    ReleaseResourceSourceLeaseRequest, ResolveSharedResourceOutcome, ResolveSharedResourceRequest,
-    ResourceEventId, ResourceEventRecord, ResourceHandoffClaimRequest, ResourcePageSize,
-    ResourceSourceLease, ResourceSubscriptionId, ResourceSubscriptionPage,
-    ResourceSubscriptionRecord, SharedResourceId, SharedResourcePage, SharedResourceRecord,
-    TransitionResourceSubscriptionRequest,
+    ClaimResourceDeliveriesRequest, ClaimResourceHandoffsRequest, ClaimResourceRuntimeWorkRequest,
+    ClaimedResourceDelivery, ClaimedResourceHandoff, CompleteResourceDeliveryOutcome,
+    CompleteResourceDeliveryRequest, HeartbeatResourceDeliveryRequest,
+    HeartbeatResourceHandoffRequest, HeartbeatResourceSourceLeaseRequest,
+    PutResourceSubscriptionOutcome, PutResourceSubscriptionRequest, ReconciliationCursor,
+    ReleaseResourceDeliveryRequest, ReleaseResourceSourceLeaseRequest,
+    ResolveSharedResourceOutcome, ResolveSharedResourceRequest, ResourceEventId,
+    ResourceEventRecord, ResourceHandoffClaimRequest, ResourcePageSize, ResourceSourceLease,
+    ResourceSubscriptionId, ResourceSubscriptionPage, ResourceSubscriptionRecord,
+    ScopedClaimedResourceDelivery, ScopedClaimedResourceHandoff, SharedResourceId,
+    SharedResourcePage, SharedResourceRecord, TransitionResourceSubscriptionRequest,
 };
 use crate::{Scope, StorageError};
 
@@ -114,6 +115,25 @@ pub trait ResourceExecutionHandoffStore: Send + Sync + 'static {
         &self,
         request: ResourceHandoffClaimRequest,
     ) -> Result<AcknowledgeResourceHandoffOutcome, StorageError>;
+}
+
+/// Deployment-only recovery role spanning every persisted tenant scope.
+///
+/// Tenant-facing services use scoped roles. This capability is deliberately
+/// not tenancy-decorated; every result carries its authoritative stored scope.
+#[async_trait::async_trait]
+pub trait ResourceRuntimeRecovery: Send + Sync + 'static {
+    /// Claim a globally sequence-ordered batch of recoverable deliveries.
+    async fn claim_deliveries_globally(
+        &self,
+        request: ClaimResourceRuntimeWorkRequest,
+    ) -> Result<Vec<ScopedClaimedResourceDelivery>, StorageError>;
+
+    /// Claim a globally sequence-ordered batch of recoverable handoffs.
+    async fn claim_handoffs_globally(
+        &self,
+        request: ClaimResourceRuntimeWorkRequest,
+    ) -> Result<Vec<ScopedClaimedResourceHandoff>, StorageError>;
 }
 
 /// Atomic source ownership role for one shared resource.

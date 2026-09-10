@@ -37,6 +37,7 @@ fn _assert_resource_runtime_object_safe(
     _source_leases: &dyn ResourceSourceLeaseStore,
     _event_fanout: &dyn ResourceEventFanoutStore,
     _execution_handoffs: &dyn ResourceExecutionHandoffStore,
+    _runtime_recovery: &dyn ResourceRuntimeRecovery,
 ) {
 }
 

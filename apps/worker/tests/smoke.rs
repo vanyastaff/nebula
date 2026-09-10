@@ -80,6 +80,7 @@ struct TestStores {
     idempotency: Arc<nebula_storage::InMemoryIdempotencyGuard>,
     versions: Arc<InMemoryWorkflowVersionStore>,
     workflows: Arc<InMemoryWorkflowStore>,
+    resource_runtime: Arc<nebula_storage::inmem::InMemoryResourceRuntime>,
 }
 
 impl TestStores {
@@ -109,6 +110,7 @@ impl TestStores {
             idempotency: Arc::new(nebula_storage::InMemoryIdempotencyGuard::new()),
             versions: Arc::new(versions),
             workflows: Arc::new(workflows),
+            resource_runtime: Arc::new(nebula_storage::inmem::InMemoryResourceRuntime::new()),
         }
     }
 
@@ -131,6 +133,13 @@ impl TestStores {
             workflow: self.workflows.clone(),
             versions: self.versions.clone(),
         }
+    }
+
+    fn resource_fanout_inputs(&self) -> nebula_worker_bin::compose::ResourceFanoutInputs {
+        nebula_worker_bin::compose::ResourceFanoutInputs::from_runtime(
+            self.workflow_stores(),
+            Arc::clone(&self.resource_runtime),
+        )
     }
 
     /// Build a handoff over the same shared core used by the queue and execution store.
@@ -306,6 +315,7 @@ async fn core_flavor_runtime_processes_materialized_start() {
         stores.turn_handoff(),
         [0xCCu8; 16],
         stores.revision_inputs(),
+        stores.resource_fanout_inputs(),
     )
     .expect("build_core_flavor_runtime must succeed");
     let runtime = builder
@@ -394,6 +404,7 @@ async fn core_flavor_runtime_advertises_core_plugin_key() {
         stores.turn_handoff(),
         [0x01u8; 16],
         stores.revision_inputs(),
+        stores.resource_fanout_inputs(),
     )
     .expect("build_core_flavor_runtime must succeed with the CorePlugin installed");
 
@@ -425,6 +436,7 @@ fn runtime_repair_builder_seals_exact_clock_and_event_bus() {
         stores.turn_handoff(),
         [0xEEu8; 16],
         stores.revision_inputs(),
+        stores.resource_fanout_inputs(),
         nebula_worker_bin::compose::RuntimeRepairEvidenceInputs { clock, event_bus },
     )
     .expect("evidence-specific core flavor builds");
@@ -449,5 +461,31 @@ fn runtime_repair_builder_seals_exact_clock_and_event_bus() {
     assert!(
         event_subscriber.is_closed(),
         "event bus ownership must end with the sealed runtime"
+    );
+}
+
+#[test]
+fn core_flavor_builder_owns_the_concrete_resource_runtime() {
+    let stores = TestStores::new();
+    let resource_runtime = Arc::downgrade(&stores.resource_runtime);
+    let (builder, _, _) = build_core_flavor_runtime(
+        stores.execution_stores(),
+        stores.turn_handoff(),
+        stores.turn_handoff(),
+        [0x02; 16],
+        stores.revision_inputs(),
+        stores.resource_fanout_inputs(),
+    )
+    .expect("core flavor composition must accept the concrete resource runtime");
+
+    drop(stores);
+    assert!(
+        resource_runtime.upgrade().is_some(),
+        "worker builder must retain the concrete resource runtime through its coordinator"
+    );
+    drop(builder);
+    assert!(
+        resource_runtime.upgrade().is_none(),
+        "resource runtime ownership must end with the worker builder"
     );
 }

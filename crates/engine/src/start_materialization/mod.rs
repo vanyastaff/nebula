@@ -702,7 +702,7 @@ fn sort_object_keys(value: &mut Value) {
 }
 
 impl WorkflowStartError {
-    fn code(&self) -> &'static str {
+    pub(crate) fn code(&self) -> &'static str {
         match self {
             Self::InvalidScope => "WORKFLOW_START:INVALID_SCOPE",
             Self::InvalidKey => "WORKFLOW_START:INVALID_KEY",

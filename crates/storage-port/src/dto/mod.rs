@@ -19,6 +19,7 @@ mod operation_protocol;
 mod resource_event;
 mod resource_handoff;
 mod resource_lease;
+mod resource_recovery;
 mod resource_subscription;
 pub mod resume_token;
 mod revision_catalog;
@@ -80,6 +81,9 @@ pub use resource_lease::{
     ReleaseResourceSourceLeaseRequest, ResourceDeliveryClaimToken, ResourceLeaseGeneration,
     ResourceLeaseGenerationOverflow, ResourceLeaseHolder, ResourceLeaseTtl,
     ResourceLeaseValueError, ResourceSourceLease, ResourceSourceLeaseToken,
+};
+pub use resource_recovery::{
+    ClaimResourceRuntimeWorkRequest, ScopedClaimedResourceDelivery, ScopedClaimedResourceHandoff,
 };
 pub use resource_subscription::{
     PutResourceSubscriptionOutcome, PutResourceSubscriptionRequest, ResourceConsumerIdentity,

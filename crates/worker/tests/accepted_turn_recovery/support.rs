@@ -12,7 +12,8 @@ use nebula_action::{
 use nebula_core::{Dependencies, ExecutionId, OperationId, WorkflowId, action_key, node_key};
 use nebula_engine::{
     ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, ExecutionStores,
-    InProcessRunner, PlanFlavorRevisionInstaller, PlanFlavorRevisionLoader, WorkflowEngine,
+    InProcessRunner, PlanFlavorRevisionInstaller, PlanFlavorRevisionLoader,
+    ResourceFanoutCoordinator, WorkflowEngine, WorkflowStartService,
 };
 use nebula_execution::{
     ExecutionBudget, ExecutionContractBundle, ExecutionRevisions, ExecutionState,
@@ -21,7 +22,10 @@ use nebula_metrics::MetricsRegistry;
 use nebula_plugin::{FrozenPluginRegistry, Plugin, PluginManifest, PluginRegistry, ResolvedPlugin};
 use nebula_storage_port::{
     FencingToken, Scope,
-    dto::{ContractBundleRecord, ControlCommand, ControlMsg, MaterializedStart, NewExecution},
+    dto::{
+        ClaimResourceRuntimeWorkRequest, ContractBundleRecord, ControlCommand, ControlMsg,
+        MaterializedStart, NewExecution, ResourceLeaseHolder, ResourceLeaseTtl, ResourcePageSize,
+    },
     store::{
         ControlQueue, PlanFlavorCatalog, PlanFlavorCatalogWriter, StartAcceptanceStore,
         StartContractIdentity, StartMaterialization,
@@ -683,6 +687,7 @@ fn build_worker(
     nebula_worker::WorkerRuntime,
     std::sync::Weak<WorkflowEngine>,
 ) {
+    let resource_fanout = test_resource_fanout(Arc::clone(&frozen));
     let metrics = MetricsRegistry::new();
     let executor: ActionExecutor =
         Arc::new(|_, _, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
@@ -712,8 +717,56 @@ fn build_worker(
             .with_control_queue(ports.control)
             .with_turn_handoff(ports.handoff)
             .with_turn_recovery(ports.recovery)
+            .with_resource_fanout(resource_fanout)
             .with_handoff_lease_ttl(Duration::from_secs(1))
             .build()
             .unwrap();
     (worker, weak)
+}
+
+fn test_resource_fanout(frozen: Arc<FrozenPluginRegistry>) -> Arc<ResourceFanoutCoordinator> {
+    let execution = Arc::new(nebula_storage::InMemoryExecutionStore::new());
+    let versions = nebula_storage::InMemoryWorkflowVersionStore::new();
+    let workflows = Arc::new(nebula_storage::InMemoryWorkflowStore::new_with_versions(
+        &versions, &execution,
+    ));
+    let runtime = Arc::new(nebula_storage::inmem::InMemoryResourceRuntime::new());
+    let starts = Arc::new(
+        WorkflowStartService::new(
+            nebula_engine::WorkflowStores {
+                workflow: workflows,
+                versions: Arc::new(versions),
+            },
+            execution.clone(),
+            Arc::new(nebula_storage::inmem::InMemoryStartAcceptanceStore::new(
+                &execution,
+            )),
+            PlanFlavorRevisionLoader::new(Arc::new(
+                nebula_storage::InMemoryPlanFlavorCatalog::new(&execution),
+            )),
+            frozen,
+            Arc::new(nebula_core::accessor::SystemClock),
+            ExecutionBudget::default(),
+        )
+        .expect("test resource workflow-start service accepts the default budget"),
+    );
+    let claim = ClaimResourceRuntimeWorkRequest::new(
+        ResourceLeaseHolder::new("accepted-turn-resource-fanout")
+            .expect("test resource holder is bounded"),
+        ResourceLeaseTtl::new(Duration::from_secs(30)).expect("test resource claim TTL is bounded"),
+        ResourcePageSize::new(32).expect("test resource batch is bounded"),
+    );
+    Arc::new(
+        ResourceFanoutCoordinator::new(
+            runtime.clone(),
+            runtime.clone(),
+            runtime.clone(),
+            runtime,
+            starts,
+            claim,
+            Duration::from_millis(100),
+            3,
+        )
+        .expect("test resource fanout configuration is valid"),
+    )
 }

@@ -156,6 +156,10 @@ const INTENTIONALLY_UNSCOPED_PORTS: &[&str] = &[
     "PlanFlavorCatalogWriter",
     "QuotaStore",
     "RefreshClaimStore",
+    // Deployment recovery discovers work across scopes and returns only the
+    // authoritative scope stored with each claimed row. It is never exposed
+    // through a tenant-facing composition root.
+    "ResourceRuntimeRecovery",
     "ResumeProducer",
     "StartReservationMaintenance",
     "TurnRecovery",

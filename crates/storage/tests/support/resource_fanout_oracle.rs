@@ -3,22 +3,22 @@
 use nebula_storage_port::dto::{
     AcceptResourceEventOutcome, AcceptResourceEventRequest, AcknowledgeResourceHandoffOutcome,
     AcquireResourceSourceLeaseOutcome, AcquireResourceSourceLeaseRequest,
-    ClaimResourceDeliveriesRequest, ClaimResourceHandoffsRequest, CompleteResourceDeliveryOutcome,
-    CompleteResourceDeliveryRequest, EventEnvelope, EventOccurrenceKey, EventOccurrenceNamespace,
-    HeartbeatResourceDeliveryRequest, HeartbeatResourceHandoffRequest,
-    PutResourceSubscriptionOutcome, PutResourceSubscriptionRequest, ReconciliationCursor,
-    ReleaseResourceDeliveryRequest, ReleaseResourceSourceLeaseRequest,
-    ResolveSharedResourceOutcome, ResolveSharedResourceRequest, ResourceCompatibilityVersion,
-    ResourceConfigurationIdentity, ResourceConsumerIdentity, ResourceConsumerKind,
-    ResourceDeliveryCompletion, ResourceDeliveryId, ResourceEventState,
+    ClaimResourceDeliveriesRequest, ClaimResourceHandoffsRequest, ClaimResourceRuntimeWorkRequest,
+    CompleteResourceDeliveryOutcome, CompleteResourceDeliveryRequest, EventEnvelope,
+    EventOccurrenceKey, EventOccurrenceNamespace, HeartbeatResourceDeliveryRequest,
+    HeartbeatResourceHandoffRequest, PutResourceSubscriptionOutcome,
+    PutResourceSubscriptionRequest, ReconciliationCursor, ReleaseResourceDeliveryRequest,
+    ReleaseResourceSourceLeaseRequest, ResolveSharedResourceOutcome, ResolveSharedResourceRequest,
+    ResourceCompatibilityVersion, ResourceConfigurationIdentity, ResourceConsumerIdentity,
+    ResourceConsumerKind, ResourceDeliveryCompletion, ResourceDeliveryId, ResourceEventState,
     ResourceHandoffClaimRequest, ResourceKind, ResourceLeaseHolder, ResourceLeaseTtl,
     ResourcePageSize, ResourceSlotIdentity, ResourceSubscriptionState, ResourceSubscriptionVersion,
     SharedResourceId, SharedResourceIdentity, TerminalDeliveryIneligibility,
     TransitionResourceSubscriptionRequest,
 };
 use nebula_storage_port::store::{
-    ResourceEventFanoutStore, ResourceExecutionHandoffStore, ResourceSourceLeaseStore,
-    ResourceSubscriptionStore, SharedResourceStore,
+    ResourceEventFanoutStore, ResourceExecutionHandoffStore, ResourceRuntimeRecovery,
+    ResourceSourceLeaseStore, ResourceSubscriptionStore, SharedResourceStore,
 };
 use nebula_storage_port::{Scope, StorageError};
 use std::assert_matches;
@@ -38,6 +38,7 @@ pub(crate) trait ResourceRuntimeUnderTest:
     + ResourceSourceLeaseStore
     + ResourceEventFanoutStore
     + ResourceExecutionHandoffStore
+    + ResourceRuntimeRecovery
     + Clone
     + Send
     + Sync
@@ -51,6 +52,7 @@ impl<T> ResourceRuntimeUnderTest for T where
         + ResourceSourceLeaseStore
         + ResourceEventFanoutStore
         + ResourceExecutionHandoffStore
+        + ResourceRuntimeRecovery
         + Clone
         + Send
         + Sync
@@ -1104,6 +1106,235 @@ pub(crate) fn opaque_debug_contract(store: &impl std::fmt::Debug) {
     assert!(!debug.contains("claim_id"));
 }
 
+async fn seed_global_recovery_deliveries(store: &impl ResourceRuntimeUnderTest) -> [Scope; 2] {
+    let scopes = [scope(), other_scope()];
+    for (index, target_scope) in scopes.iter().enumerate() {
+        let resource_id = resolved_id(
+            &resolve(
+                store,
+                target_scope.clone(),
+                identity(&[u8::try_from(index).expect("small index")], b"global"),
+            )
+            .await,
+        );
+        store
+            .put(PutResourceSubscriptionRequest::new(
+                target_scope.clone(),
+                resource_id,
+                ResourceConsumerKind::new("workflow-trigger").expect("valid consumer kind"),
+                consumer_identity(u8::try_from(index + 20).expect("small index")),
+            ))
+            .await
+            .expect("subscription stores");
+        let lease = match store
+            .acquire(AcquireResourceSourceLeaseRequest::new(
+                target_scope.clone(),
+                resource_id,
+                holder("global-source"),
+                ttl(10),
+            ))
+            .await
+            .expect("source acquires")
+        {
+            AcquireResourceSourceLeaseOutcome::Acquired(lease) => lease,
+            AcquireResourceSourceLeaseOutcome::Contended { .. } => {
+                panic!("fresh global recovery fixture must acquire its source")
+            },
+        };
+        store
+            .accept(AcceptResourceEventRequest::new(
+                target_scope.clone(),
+                resource_id,
+                lease.token().clone(),
+                EventOccurrenceNamespace::new("global-recovery").expect("valid namespace"),
+                EventOccurrenceKey::try_from_vec(vec![u8::try_from(index).expect("small index")])
+                    .expect("valid occurrence"),
+                EventEnvelope::try_from_vec(1, vec![u8::try_from(index + 1).expect("small index")])
+                    .expect("valid envelope"),
+            ))
+            .await
+            .expect("event accepts");
+    }
+    scopes
+}
+
+fn global_claim_request(holder_name: &str, batch_size: u16) -> ClaimResourceRuntimeWorkRequest {
+    ClaimResourceRuntimeWorkRequest::new(
+        holder(holder_name),
+        ttl(10),
+        ResourcePageSize::new(batch_size).expect("batch size"),
+    )
+}
+
+pub(crate) async fn global_recovery_claims_cross_scope_in_sequence(
+    store: impl ResourceRuntimeUnderTest,
+) {
+    let scopes = seed_global_recovery_deliveries(&store).await;
+
+    let deliveries = store
+        .claim_deliveries_globally(global_claim_request("deployment-recovery", 10))
+        .await
+        .expect("global delivery claim succeeds");
+    assert_eq!(deliveries.len(), 2);
+    assert_eq!(deliveries[0].scope(), &scopes[0]);
+    assert_eq!(deliveries[1].scope(), &scopes[1]);
+
+    for scoped in deliveries {
+        let (authoritative_scope, delivery) = scoped.into_parts();
+        store
+            .complete_delivery(CompleteResourceDeliveryRequest::new(
+                authoritative_scope,
+                delivery.id(),
+                delivery.token().clone(),
+                ResourceDeliveryCompletion::Delivered,
+            ))
+            .await
+            .expect("scoped completion succeeds");
+    }
+
+    let handoffs = store
+        .claim_handoffs_globally(global_claim_request("deployment-recovery", 10))
+        .await
+        .expect("global handoff claim succeeds");
+    assert_eq!(handoffs.len(), 2);
+    assert_eq!(handoffs[0].scope(), &scopes[0]);
+    assert_eq!(handoffs[1].scope(), &scopes[1]);
+    assert_eq!(
+        handoffs
+            .iter()
+            .map(|scoped| scoped.handoff().envelope().canonical_payload())
+            .collect::<Vec<_>>(),
+        vec![&[1][..], &[2][..]],
+    );
+}
+
+pub(crate) async fn global_recovery_takeover_fences_stale_tokens(
+    store: impl ResourceRuntimeUnderTest,
+) {
+    seed_global_recovery_deliveries(&store).await;
+    let first = store
+        .claim_deliveries_globally(global_claim_request("global-delivery-a", 1))
+        .await
+        .expect("first global delivery claim succeeds")
+        .pop()
+        .expect("one delivery is available");
+    let (delivery_scope, first_delivery) = first.into_parts();
+    store
+        .release_delivery(ReleaseResourceDeliveryRequest::new(
+            delivery_scope.clone(),
+            first_delivery.id(),
+            first_delivery.token().clone(),
+        ))
+        .await
+        .expect("first global delivery claim releases");
+    let takeover = store
+        .claim_deliveries_globally(global_claim_request("global-delivery-b", 1))
+        .await
+        .expect("released global delivery reclaims")
+        .pop()
+        .expect("released delivery is available");
+    let (takeover_scope, takeover_delivery) = takeover.into_parts();
+    assert_eq!(takeover_scope, delivery_scope);
+    assert_eq!(takeover_delivery.id(), first_delivery.id());
+    assert!(takeover_delivery.token().generation() > first_delivery.token().generation());
+    assert_matches!(
+        store
+            .complete_delivery(CompleteResourceDeliveryRequest::new(
+                delivery_scope,
+                first_delivery.id(),
+                first_delivery.token().clone(),
+                ResourceDeliveryCompletion::Delivered,
+            ))
+            .await,
+        Err(StorageError::FencedOut { .. })
+    );
+    store
+        .complete_delivery(CompleteResourceDeliveryRequest::new(
+            takeover_scope.clone(),
+            takeover_delivery.id(),
+            takeover_delivery.token().clone(),
+            ResourceDeliveryCompletion::Delivered,
+        ))
+        .await
+        .expect("takeover delivery completes");
+
+    let first_handoff = store
+        .claim_handoffs_globally(global_claim_request("global-handoff-a", 1))
+        .await
+        .expect("first global handoff claim succeeds")
+        .pop()
+        .expect("one handoff is available");
+    let (handoff_scope, first_handoff) = first_handoff.into_parts();
+    store
+        .release_handoff(ResourceHandoffClaimRequest::new(
+            handoff_scope.clone(),
+            first_handoff.delivery_id(),
+            first_handoff.token().clone(),
+        ))
+        .await
+        .expect("first global handoff claim releases");
+    let takeover_handoff = store
+        .claim_handoffs_globally(global_claim_request("global-handoff-b", 1))
+        .await
+        .expect("released global handoff reclaims")
+        .pop()
+        .expect("released handoff is available");
+    let (takeover_handoff_scope, takeover_handoff) = takeover_handoff.into_parts();
+    assert_eq!(takeover_handoff_scope, handoff_scope);
+    assert_eq!(takeover_handoff.delivery_id(), first_handoff.delivery_id());
+    assert!(takeover_handoff.token().generation() > first_handoff.token().generation());
+    assert_matches!(
+        store
+            .acknowledge_handoff(ResourceHandoffClaimRequest::new(
+                handoff_scope,
+                first_handoff.delivery_id(),
+                first_handoff.token().clone(),
+            ))
+            .await,
+        Err(StorageError::FencedOut { .. })
+    );
+    assert_eq!(
+        store
+            .acknowledge_handoff(ResourceHandoffClaimRequest::new(
+                takeover_handoff_scope,
+                takeover_handoff.delivery_id(),
+                takeover_handoff.token().clone(),
+            ))
+            .await
+            .expect("takeover handoff acknowledges"),
+        AcknowledgeResourceHandoffOutcome::Acknowledged
+    );
+}
+
+pub(crate) async fn concurrent_global_recovery_claims_are_disjoint(
+    store: impl ResourceRuntimeUnderTest,
+) {
+    let expected_scopes = seed_global_recovery_deliveries(&store).await;
+    let barrier = Arc::new(tokio::sync::Barrier::new(3));
+    let mut tasks = Vec::with_capacity(2);
+    for holder_name in ["global-concurrent-a", "global-concurrent-b"] {
+        let task_store = store.clone();
+        let task_barrier = Arc::clone(&barrier);
+        tasks.push(tokio::spawn(async move {
+            task_barrier.wait().await;
+            task_store
+                .claim_deliveries_globally(global_claim_request(holder_name, 1))
+                .await
+                .expect("concurrent global claim succeeds")
+                .pop()
+                .expect("each concurrent claimant receives one delivery")
+        }));
+    }
+    barrier.wait().await;
+    let first = tasks.remove(0).await.expect("first claim task joins");
+    let second = tasks.remove(0).await.expect("second claim task joins");
+
+    assert_ne!(first.delivery().id(), second.delivery().id());
+    assert_ne!(first.scope(), second.scope());
+    assert!(expected_scopes.contains(first.scope()));
+    assert!(expected_scopes.contains(second.scope()));
+}
+
 #[macro_export]
 macro_rules! resource_fanout_conformance_suite {
     ($factory:expr) => {
@@ -1178,6 +1409,24 @@ macro_rules! resource_fanout_conformance_suite {
             let (store, _control) = $factory.await;
             oracle::opaque_debug_contract(&store);
         }
+
+        #[tokio::test]
+        async fn global_recovery_claims_cross_scope_in_sequence() {
+            let (store, _control) = $factory.await;
+            oracle::global_recovery_claims_cross_scope_in_sequence(store).await;
+        }
+
+        #[tokio::test]
+        async fn global_recovery_takeover_fences_stale_tokens() {
+            let (store, _control) = $factory.await;
+            oracle::global_recovery_takeover_fences_stale_tokens(store).await;
+        }
+
+        #[tokio::test]
+        async fn concurrent_global_recovery_claims_are_disjoint() {
+            let (store, _control) = $factory.await;
+            oracle::concurrent_global_recovery_claims_are_disjoint(store).await;
+        }
     };
 }
 
@@ -1190,6 +1439,27 @@ macro_rules! optional_resource_fanout_conformance_suite {
                 return;
             };
             oracle::exact_identity_and_scope_isolation(store).await;
+        }
+        #[tokio::test]
+        async fn global_recovery_claims_cross_scope_in_sequence() {
+            let Some((store, _control)) = $factory.await else {
+                return;
+            };
+            oracle::global_recovery_claims_cross_scope_in_sequence(store).await;
+        }
+        #[tokio::test]
+        async fn global_recovery_takeover_fences_stale_tokens() {
+            let Some((store, _control)) = $factory.await else {
+                return;
+            };
+            oracle::global_recovery_takeover_fences_stale_tokens(store).await;
+        }
+        #[tokio::test]
+        async fn concurrent_global_recovery_claims_are_disjoint() {
+            let Some((store, _control)) = $factory.await else {
+                return;
+            };
+            oracle::concurrent_global_recovery_claims_are_disjoint(store).await;
         }
         #[tokio::test]
         async fn subscription_put_and_cas_states() {
