@@ -19,6 +19,13 @@ value type, so port signatures can require it without an upward dependency).
   confused-deputy caller cannot substitute another tenant's scope. This does
   not include credential persistence, which uses mandatory owner-bound
   selectors and a separate authority above the port.
+  Shared-resource resolution, subscriptions, source leases, event fanout, and
+  execution-start handoff recovery use the same substitution rule, including
+  nested request DTOs.
+
+The decorators intentionally emit no cross-tenant denial audit event: scope
+substitution reveals no denial and this crate has no audit sink. The authenticated
+coordinator records authorization denials before a scoped store is invoked.
 
 ## Threat model (normative — spec §6.1)
 

@@ -131,10 +131,14 @@ pub use format::StorageFormat;
 pub use inmem::{
     InMemoryCheckpointStore, InMemoryControlQueue, InMemoryExecutionStore,
     InMemoryIdempotencyGuard, InMemoryIdempotencyStore, InMemoryJournalReader,
-    InMemoryNodeResultStore, InMemoryPlanFlavorCatalog, InMemoryResumeProducer,
-    InMemoryResumeTokenStore, InMemoryWebhookActivationStore, InMemoryWorkflowStore,
-    InMemoryWorkflowVersionStore,
+    InMemoryNodeResultStore, InMemoryPlanFlavorCatalog, InMemoryResourceRuntime,
+    InMemoryResumeProducer, InMemoryResumeTokenStore, InMemoryWebhookActivationStore,
+    InMemoryWorkflowStore, InMemoryWorkflowVersionStore,
 };
+#[cfg(feature = "postgres")]
+pub use postgres::PgResourceRuntime;
+#[cfg(feature = "sqlite")]
+pub use sqlite::SqliteResourceRuntime;
 // Mirrors the gating on `migration::adopt`: with no backend feature there is no
 // migration catalog to adopt a database into, and `sqlx` — which adoption is
 // written entirely against — is not even a dependency. `mod migration` also

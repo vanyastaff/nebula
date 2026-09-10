@@ -324,10 +324,16 @@ proved that migration is aggregate-neutral. An aggregate-transforming or
 destructive migration requires owner-specific preflight and postflight under
 the same guard/session, or a higher general floor that rejects every prefix
 from which the transformation is not already known safe. The executable
-catalog-boundary test deliberately pins the current `head = 0041` and general
-`floor = 0040`; adding `0042` therefore fails a test until admission policy is
+catalog-boundary test deliberately pins the current `head = 0051` and general
+`floor = 0040`; adding `0052` therefore fails a test until admission policy is
 reviewed. Advancing that pin is an architectural decision, not migration
 bookkeeping.
+
+Migration `0051` is aggregate-neutral: it creates only empty resource-runtime
+relations, constraints, and indexes. Resource event acceptance snapshots Active
+subscriptions into deliveries in one transaction. A Delivered completion creates
+the delivery-keyed execution-start handoff in that same transaction; future engine
+consumers recover it through the bounded handoff claim port.
 
 PostgreSQL setup holds the established database/schema-scoped advisory lock
 through preflight, migration, and postflight on one retired session. SQLite

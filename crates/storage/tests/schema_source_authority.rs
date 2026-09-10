@@ -51,22 +51,23 @@ fn ordered_migrations_are_the_only_embedded_schema_source() {
         !rust_source.contains("include_str!(\"schema.sql\")"),
         "setup must not embed a schema snapshot"
     );
-    // The SQL catalog adapters read and write the 0041 tables, so naming those
-    // tables in Rust source is now expected. What must stay true is that
-    // migration 0041 remains their only schema authority: an adapter that
-    // issued its own DDL would be a second, divergent definition of the same
-    // tables, reachable without the ordered catalog ever running.
+    // SQL adapters name their migration-owned tables in Rust queries. What
+    // must stay true is that ordered migrations remain their only schema
+    // authority: adapter DDL would create a second divergent definition that
+    // is reachable without the catalog running.
     let catalog_adapters = [
         source_root.join("sqlite/plan_flavor_catalog.rs"),
         source_root.join("postgres/plan_flavor_catalog.rs"),
         source_root.join("revision_catalog.rs"),
+        source_root.join("sqlite/resource_runtime.rs"),
+        source_root.join("postgres/resource_runtime.rs"),
     ];
     for adapter in &catalog_adapters {
         let source = fs::read_to_string(adapter).expect("catalog adapter source must be UTF-8");
         for forbidden_ddl in ["CREATE TABLE", "CREATE INDEX", "ALTER TABLE", "DROP TABLE"] {
             assert!(
                 !source.contains(forbidden_ddl),
-                "migration 0041 is the only schema authority; found `{forbidden_ddl}` in \
+                "ordered migrations are the only schema authority; found `{forbidden_ddl}` in \
                  {adapter:?}"
             );
         }

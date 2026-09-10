@@ -20,6 +20,7 @@ mod identity;
 mod job_dispatch;
 mod operation_ledger;
 mod plan_flavor_catalog;
+mod resource_runtime;
 mod resume_producer;
 mod resume_token;
 mod start_acceptance;
@@ -37,6 +38,7 @@ pub use identity::{
 pub use job_dispatch::SqliteJobDispatchQueue;
 pub use operation_ledger::SqliteOperationLedger;
 pub use plan_flavor_catalog::SqlitePlanFlavorCatalog;
+pub use resource_runtime::SqliteResourceRuntime;
 pub use resume_producer::SqliteResumeProducer;
 pub use resume_token::SqliteResumeTokenStore;
 pub use start_acceptance::SqliteStartAcceptanceStore;

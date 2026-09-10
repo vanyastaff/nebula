@@ -320,6 +320,7 @@ jobs:
             operation_ledger_conformance_postgres \
             postgres_control_queue_atomicity \
             refresh_claim_pg_integration \
+            resource_fanout_conformance_postgres \
             revision_catalog_conformance_postgres \
             revision_catalog_migration_postgres \
             schema_setup_postgres \

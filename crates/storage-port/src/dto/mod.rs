@@ -16,8 +16,13 @@ mod journal;
 mod node_result;
 mod operation_ledger;
 mod operation_protocol;
+mod resource_event;
+mod resource_handoff;
+mod resource_lease;
+mod resource_subscription;
 pub mod resume_token;
 mod revision_catalog;
+mod shared_resource;
 mod start_materialization;
 mod webhook;
 mod workflow;
@@ -56,11 +61,44 @@ pub use operation_protocol::{
     OperationProtocolRecord, OutcomeEvidenceSource, PreparedEffectContract, PreparedEffectPolicy,
     PreparedEffectPolicyBuilder,
 };
+pub use resource_event::{
+    AcceptResourceEventOutcome, AcceptResourceEventRequest, ClaimedResourceDelivery,
+    CompleteResourceDeliveryOutcome, CompleteResourceDeliveryRequest, EventEnvelope,
+    EventOccurrenceKey, EventOccurrenceNamespace, ResourceDeliveryCompletion, ResourceDeliveryId,
+    ResourceEventAcceptance, ResourceEventId, ResourceEventRecord, ResourceEventState,
+    ResourceEventStateParseError, ResourceEventValueError, TerminalDeliveryIneligibility,
+    TerminalDeliveryIneligibilityParseError,
+};
+pub use resource_handoff::{
+    AcknowledgeResourceHandoffOutcome, ClaimResourceHandoffsRequest, ClaimedResourceHandoff,
+    HeartbeatResourceHandoffRequest, ResourceHandoffClaimRequest, ResourceHandoffClaimToken,
+};
+pub use resource_lease::{
+    AcquireResourceSourceLeaseOutcome, AcquireResourceSourceLeaseRequest,
+    ClaimResourceDeliveriesRequest, HeartbeatResourceDeliveryRequest,
+    HeartbeatResourceSourceLeaseRequest, ReleaseResourceDeliveryRequest,
+    ReleaseResourceSourceLeaseRequest, ResourceDeliveryClaimToken, ResourceLeaseGeneration,
+    ResourceLeaseGenerationOverflow, ResourceLeaseHolder, ResourceLeaseTtl,
+    ResourceLeaseValueError, ResourceSourceLease, ResourceSourceLeaseToken,
+};
+pub use resource_subscription::{
+    PutResourceSubscriptionOutcome, PutResourceSubscriptionRequest, ResourceConsumerIdentity,
+    ResourceConsumerKind, ResourceSubscriptionId, ResourceSubscriptionPage,
+    ResourceSubscriptionRecord, ResourceSubscriptionState, ResourceSubscriptionStateParseError,
+    ResourceSubscriptionValueError, ResourceSubscriptionVersion,
+    TransitionResourceSubscriptionRequest,
+};
 pub use resume_token::{ResumeTokenRow, ResumeTokenWaitKind, TokenHash, TokenHashLengthError};
 pub use revision_catalog::{
     BeginDrainOutcome, ExecutablePlanRecordFormat, PlanFlavorRevisionIds, PlanFlavorRevisionRecord,
     PlanFlavorRevisionTarget, RevisionCatalogError, RevisionInsertOutcome, RevisionRecordBytes,
     RevisionReferenceCounts, WorkerFlavorRecordFormat, WorkerFlavorRevisionRecord,
+};
+pub use shared_resource::{
+    ReconciliationCursor, ResolveSharedResourceOutcome, ResolveSharedResourceRequest,
+    ResourceCompatibilityVersion, ResourceConfigurationIdentity, ResourceKind, ResourcePageSize,
+    ResourceSlotIdentity, SharedResourceId, SharedResourceIdentity, SharedResourcePage,
+    SharedResourceRecord, SharedResourceValueError,
 };
 pub use start_materialization::{
     ContractBundleFormat, ContractBundleRecord, MAX_CONTRACT_BUNDLE_BYTES, MaterializedStart,

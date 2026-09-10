@@ -28,6 +28,7 @@
 | Change | Relevant evidence |
 |--------|-------------------|
 | Object-safe trait changes | [object_safe](tests/object_safe.rs), [credential_persistence_object_safe](tests/credential_persistence_object_safe.rs); then storage conformance for implementations. |
+| Shared-resource runtime DTOs and roles | [resource_subscription_dto](tests/resource_subscription_dto.rs), [object_safe](tests/object_safe.rs), then `nebula-storage` resource fanout conformance. |
 | DTO/batch/catalog contracts | [dto](tests/dto.rs), [batch](tests/batch.rs), [revision_catalog_api_contract](tests/revision_catalog_api_contract.rs). |
 | Credential lifecycle perimeter | [credential_lifecycle_api_contract](tests/credential_lifecycle_api_contract.rs), [credential_lifecycle_surface_guard](tests/credential_lifecycle_surface_guard.rs), [credential_secret_debug_contract](tests/credential_secret_debug_contract.rs). |
 
