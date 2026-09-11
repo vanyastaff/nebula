@@ -1,6 +1,6 @@
 //! Bounded construction for registered builtin outputs.
 
-use std::fmt;
+use std::{collections::BTreeMap, fmt};
 
 use serde_json::{Map, Number, Value};
 
@@ -372,33 +372,27 @@ impl BuiltinOutputBuilder {
         K: AsRef<str>,
     {
         let mut object = Map::new();
-        let mut size = OutputSize {
-            total_bytes: 2,
-            value_nodes: 1,
-            max_depth: 1,
-            ..OutputSize::default()
-        };
+        let mut entry_sizes = BTreeMap::new();
+        let mut size = object_output_size(&entry_sizes);
+        self.ensure_output_size(size)?;
         for (key, output) in entries {
-            let key = key.as_ref();
-            let next_items = object.len().saturating_add(1);
-            size.total_bytes = size
-                .total_bytes
-                .saturating_add(usize::from(next_items > 1))
-                .saturating_add(key.len())
-                .saturating_add(3)
-                .saturating_add(output.size.total_bytes);
-            size.max_string_bytes = size
-                .max_string_bytes
-                .max(key.len())
-                .max(output.size.max_string_bytes);
-            size.max_collection_items = size
-                .max_collection_items
-                .max(next_items)
-                .max(output.size.max_collection_items);
-            size.value_nodes = size.value_nodes.saturating_add(output.size.value_nodes);
-            size.max_depth = size.max_depth.max(output.size.max_depth.saturating_add(1));
-            self.ensure_output_size(size)?;
-            object.insert(key.to_owned(), output.value);
+            let key = key.as_ref().to_owned();
+            let candidate_size = if entry_sizes.contains_key(&key) {
+                let mut candidate_entries = entry_sizes.clone();
+                candidate_entries.insert(key.clone(), output.size);
+                object_output_size(&candidate_entries)
+            } else {
+                object_output_size_with_entry(
+                    size,
+                    &key,
+                    object.len().saturating_add(1),
+                    output.size,
+                )
+            };
+            self.ensure_output_size(candidate_size)?;
+            size = candidate_size;
+            entry_sizes.insert(key.clone(), output.size);
+            object.insert(key, output.value);
         }
         Ok(BuiltinOutput {
             value: Value::Object(object),
@@ -656,6 +650,44 @@ impl BuiltinOutputBuilder {
     }
 }
 
+fn object_output_size_with_entry(
+    mut size: OutputSize,
+    key: &str,
+    direct_items: usize,
+    child: OutputSize,
+) -> OutputSize {
+    size.total_bytes = size
+        .total_bytes
+        .saturating_add(usize::from(direct_items > 1))
+        .saturating_add(key.len())
+        .saturating_add(3)
+        .saturating_add(child.total_bytes);
+    size.max_string_bytes = size
+        .max_string_bytes
+        .max(key.len())
+        .max(child.max_string_bytes);
+    size.max_collection_items = size
+        .max_collection_items
+        .max(direct_items)
+        .max(child.max_collection_items);
+    size.value_nodes = size.value_nodes.saturating_add(child.value_nodes);
+    size.max_depth = size.max_depth.max(child.max_depth.saturating_add(1));
+    size
+}
+
+fn object_output_size(entries: &BTreeMap<String, OutputSize>) -> OutputSize {
+    let mut size = OutputSize {
+        total_bytes: 2,
+        value_nodes: 1,
+        max_depth: 1,
+        ..OutputSize::default()
+    };
+    for (index, (key, child)) in entries.iter().enumerate() {
+        size = object_output_size_with_entry(size, key, index.saturating_add(1), *child);
+    }
+    size
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{BuiltinOutputBound, EvaluationPolicy};
@@ -738,6 +770,19 @@ mod tests {
         assert_eq!(dimension, BuiltinOutputLimit::StringBytes);
         assert_eq!(limit, 8);
         assert_eq!(actual, 9);
+    }
+
+    #[test]
+    fn object_duplicate_keys_are_charged_after_replacement() {
+        let output = builder_with_limits(16, 1, 2);
+        let result = output
+            .object([
+                ("key", output.signed_integer(1).unwrap()),
+                ("key", output.signed_integer(2).unwrap()),
+            ])
+            .unwrap();
+
+        assert_eq!(result.into_value(), serde_json::json!({"key": 2}));
     }
 
     #[test]

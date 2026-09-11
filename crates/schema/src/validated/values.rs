@@ -253,7 +253,7 @@ impl ValidValues {
             self.values,
             Scope::Root(self.schema.fields()),
             ValuePath::root(),
-            1,
+            0,
             context,
             &mut budget,
         )

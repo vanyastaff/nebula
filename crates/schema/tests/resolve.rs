@@ -14,6 +14,13 @@ use std::{
 use nebula_schema::*;
 use serde_json::json;
 
+fn nested_list(mut leaf: serde_json::Value, depth: u8) -> serde_json::Value {
+    for _ in 0..depth {
+        leaf = json!([leaf]);
+    }
+    leaf
+}
+
 #[derive(Debug, serde::Deserialize, PartialEq)]
 struct Person {
     name: String,
@@ -78,6 +85,19 @@ impl ExpressionContext for FailCtx {
                 .build())
         })
     }
+}
+
+#[tokio::test]
+async fn literal_resolution_accepts_the_authored_depth_boundary() {
+    let input = nested_list(json!(null), MAX_VALUE_DEPTH);
+    let resolved = ValidSchema::any()
+        .validate(AuthoredValue::from_data(input.clone()).unwrap())
+        .unwrap()
+        .resolve(&FailCtx)
+        .await
+        .unwrap();
+
+    assert_eq!(resolved.into_json(), input);
 }
 
 struct CountingLargeResultCtx {
