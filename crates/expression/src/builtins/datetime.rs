@@ -12,16 +12,26 @@ use crate::{
     eval::BuiltinView,
 };
 
+fn preflight_string_output(
+    view: BuiltinView<'_>,
+    context: &EvaluationContext,
+    output_bytes: usize,
+) -> ExpressionResult<()> {
+    view.check_output_bytes(output_bytes)?;
+    let output = view.output_builder(context);
+    output.ensure_string_bytes(output_bytes)?;
+    output.ensure_total_bytes(output_bytes)
+}
+
 /// Parse an IANA timezone name into a `chrono_tz::Tz`.
 ///
 /// Used by every datetime builtin that accepts an optional `tz` argument.
-/// Returns a typed error with the rejected name so dashboards can spot
-/// misconfigured workflows quickly.
+/// Returns a typed error without echoing the runtime value.
 fn parse_timezone(function: &str, name: &str) -> ExpressionResult<Tz> {
     name.parse::<Tz>().map_err(|_| {
         ExpressionError::expression_invalid_argument(
             function,
-            format!("Unknown timezone '{name}' — expected IANA name like 'Europe/Moscow' or 'UTC'"),
+            "Unknown timezone; expected an IANA name like 'Europe/Moscow' or 'UTC'",
         )
     })
 }
@@ -30,7 +40,7 @@ fn parse_timezone(function: &str, name: &str) -> ExpressionResult<Tz> {
 ///
 /// Returns `Ok(None)` if the slot doesn't exist; `Err` if it exists but
 /// isn't a string or names an unknown zone.
-fn optional_tz_arg(function: &str, args: &[Value], index: usize) -> ExpressionResult<Option<Tz>> {
+fn optional_tz_arg(function: &str, args: &[&Value], index: usize) -> ExpressionResult<Option<Tz>> {
     let Some(raw) = args.get(index) else {
         return Ok(None);
     };
@@ -41,8 +51,8 @@ fn optional_tz_arg(function: &str, args: &[Value], index: usize) -> ExpressionRe
 }
 
 /// Get current timestamp as Unix seconds
-pub fn now(
-    _args: &[Value],
+pub(crate) fn now(
+    _args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
@@ -51,8 +61,8 @@ pub fn now(
 }
 
 /// Get current date/time as ISO 8601 string
-pub fn now_iso(
-    _args: &[Value],
+pub(crate) fn now_iso(
+    _args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
@@ -73,10 +83,10 @@ pub fn now_iso(
 ///   template, `tz` is the timezone.
 /// - When `tz` is omitted output is in UTC; when `format` is omitted RFC 3339 is used. Unknown
 ///   timezone names in the explicit-tz slot yield a typed error.
-pub fn format_date(
-    args: &[Value],
-    _view: BuiltinView<'_>,
-    _ctx: &EvaluationContext,
+pub(crate) fn format_date(
+    args: &[&Value],
+    view: BuiltinView<'_>,
+    ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_min_arg_count("format_date", args, 1)?;
     if args.len() > 3 {
@@ -86,7 +96,7 @@ pub fn format_date(
         ));
     }
 
-    let utc_dt = parse_datetime(&args[0])?;
+    let utc_dt = parse_datetime(args[0])?;
 
     let (format_str, tz) = match args.len() {
         1 => (None, None),
@@ -94,7 +104,7 @@ pub fn format_date(
             let arg1 = args[1].as_str().ok_or_else(|| {
                 ExpressionError::expression_type_error(
                     "string",
-                    crate::value_utils::value_type_name(&args[1]),
+                    crate::value_utils::value_type_name(args[1]),
                 )
             })?;
             // Probe-parse as IANA timezone. Success → tz-only call;
@@ -109,7 +119,7 @@ pub fn format_date(
             let fmt = args[1].as_str().ok_or_else(|| {
                 ExpressionError::expression_type_error(
                     "string",
-                    crate::value_utils::value_type_name(&args[1]),
+                    crate::value_utils::value_type_name(args[1]),
                 )
             })?;
             let tz = optional_tz_arg("format_date", args, 2)?;
@@ -120,9 +130,10 @@ pub fn format_date(
     let rendered = match (format_str, tz) {
         (None, None) => utc_dt.to_rfc3339(),
         (None, Some(tz)) => utc_dt.with_timezone(&tz).to_rfc3339(),
-        (Some(fmt), None) => format_datetime(&utc_dt, fmt)?,
-        (Some(fmt), Some(tz)) => format_datetime(&utc_dt.with_timezone(&tz), fmt)?,
+        (Some(fmt), None) => format_datetime(&utc_dt, fmt, view, ctx)?,
+        (Some(fmt), Some(tz)) => format_datetime(&utc_dt.with_timezone(&tz), fmt, view, ctx)?,
     };
+    preflight_string_output(view, ctx, rendered.len())?;
 
     Ok(Value::String(rendered))
 }
@@ -134,8 +145,8 @@ pub fn format_date(
 /// - `tz`: optional IANA timezone name. When the input string has no embedded offset, it is
 ///   interpreted as wall time in `tz` (UTC by default). Strings that already carry a `+HH:MM` / `Z`
 ///   suffix ignore `tz` and round-trip exactly.
-pub fn parse_date(
-    args: &[Value],
+pub(crate) fn parse_date(
+    args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
@@ -149,8 +160,8 @@ pub fn parse_date(
 
     let tz = optional_tz_arg("parse_date", args, 1)?;
     let dt = match tz {
-        Some(tz) => parse_datetime_in_tz(&args[0], tz)?,
-        None => parse_datetime(&args[0])?,
+        Some(tz) => parse_datetime_in_tz(args[0], tz)?,
+        None => parse_datetime(args[0])?,
     };
     Ok(Value::Number(dt.timestamp().into()))
 }
@@ -170,34 +181,31 @@ fn duration_for_unit(fn_name: &str, unit: &str, amount: i64) -> ExpressionResult
         _ => {
             return Err(ExpressionError::expression_invalid_argument(
                 fn_name,
-                format!("Invalid unit: {unit}"),
+                "Invalid duration unit",
             ));
         },
     };
     duration.ok_or_else(|| {
-        ExpressionError::expression_invalid_argument(
-            fn_name,
-            format!("duration {amount} {unit} is out of range"),
-        )
+        ExpressionError::expression_invalid_argument(fn_name, "Duration is out of range")
     })
 }
 
 /// Add duration to a date
-pub fn date_add(
-    args: &[Value],
+pub(crate) fn date_add(
+    args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("date_add", args, 3)?;
 
-    let dt = parse_datetime(&args[0])?;
+    let dt = parse_datetime(args[0])?;
     let amount = args[1].as_i64().ok_or_else(|| {
-        ExpressionError::type_error("integer", crate::value_utils::value_type_name(&args[1]))
+        ExpressionError::type_error("integer", crate::value_utils::value_type_name(args[1]))
     })?;
     let unit = args[2].as_str().ok_or_else(|| {
         ExpressionError::expression_type_error(
             "string",
-            crate::value_utils::value_type_name(&args[2]),
+            crate::value_utils::value_type_name(args[2]),
         )
     })?;
 
@@ -205,7 +213,7 @@ pub fn date_add(
     let new_dt = dt.checked_add_signed(duration).ok_or_else(|| {
         ExpressionError::expression_invalid_argument(
             "date_add",
-            format!("adding {amount} {unit} overflows the representable date range"),
+            "Date addition overflows the representable date range",
         )
     })?;
 
@@ -213,21 +221,21 @@ pub fn date_add(
 }
 
 /// Subtract duration from a date
-pub fn date_subtract(
-    args: &[Value],
+pub(crate) fn date_subtract(
+    args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("date_subtract", args, 3)?;
 
-    let dt = parse_datetime(&args[0])?;
+    let dt = parse_datetime(args[0])?;
     let amount = args[1].as_i64().ok_or_else(|| {
-        ExpressionError::type_error("integer", crate::value_utils::value_type_name(&args[1]))
+        ExpressionError::type_error("integer", crate::value_utils::value_type_name(args[1]))
     })?;
     let unit = args[2].as_str().ok_or_else(|| {
         ExpressionError::expression_type_error(
             "string",
-            crate::value_utils::value_type_name(&args[2]),
+            crate::value_utils::value_type_name(args[2]),
         )
     })?;
 
@@ -235,7 +243,7 @@ pub fn date_subtract(
     let new_dt = dt.checked_sub_signed(duration).ok_or_else(|| {
         ExpressionError::expression_invalid_argument(
             "date_subtract",
-            format!("subtracting {amount} {unit} overflows the representable date range"),
+            "Date subtraction overflows the representable date range",
         )
     })?;
 
@@ -243,19 +251,19 @@ pub fn date_subtract(
 }
 
 /// Get difference between two dates in specified unit
-pub fn date_diff(
-    args: &[Value],
+pub(crate) fn date_diff(
+    args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("date_diff", args, 3)?;
 
-    let dt1 = parse_datetime(&args[0])?;
-    let dt2 = parse_datetime(&args[1])?;
+    let dt1 = parse_datetime(args[0])?;
+    let dt2 = parse_datetime(args[1])?;
     let unit = args[2].as_str().ok_or_else(|| {
         ExpressionError::expression_type_error(
             "string",
-            crate::value_utils::value_type_name(&args[2]),
+            crate::value_utils::value_type_name(args[2]),
         )
     })?;
 
@@ -270,7 +278,7 @@ pub fn date_diff(
         _ => {
             return Err(ExpressionError::expression_invalid_argument(
                 "date_diff",
-                format!("Invalid unit: {unit}"),
+                "Invalid duration unit",
             ));
         },
     };
@@ -279,79 +287,79 @@ pub fn date_diff(
 }
 
 /// Extract year from date
-pub fn date_year(
-    args: &[Value],
+pub(crate) fn date_year(
+    args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("date_year", args, 1)?;
-    let dt = parse_datetime(&args[0])?;
+    let dt = parse_datetime(args[0])?;
     Ok(Value::Number((dt.year() as i64).into()))
 }
 
 /// Extract month from date (1-12)
-pub fn date_month(
-    args: &[Value],
+pub(crate) fn date_month(
+    args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("date_month", args, 1)?;
-    let dt = parse_datetime(&args[0])?;
+    let dt = parse_datetime(args[0])?;
     Ok(Value::Number((dt.month() as i64).into()))
 }
 
 /// Extract day from date (1-31)
-pub fn date_day(
-    args: &[Value],
+pub(crate) fn date_day(
+    args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("date_day", args, 1)?;
-    let dt = parse_datetime(&args[0])?;
+    let dt = parse_datetime(args[0])?;
     Ok(Value::Number((dt.day() as i64).into()))
 }
 
 /// Extract hour from date (0-23)
-pub fn date_hour(
-    args: &[Value],
+pub(crate) fn date_hour(
+    args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("date_hour", args, 1)?;
-    let dt = parse_datetime(&args[0])?;
+    let dt = parse_datetime(args[0])?;
     Ok(Value::Number((dt.hour() as i64).into()))
 }
 
 /// Extract minute from date (0-59)
-pub fn date_minute(
-    args: &[Value],
+pub(crate) fn date_minute(
+    args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("date_minute", args, 1)?;
-    let dt = parse_datetime(&args[0])?;
+    let dt = parse_datetime(args[0])?;
     Ok(Value::Number((dt.minute() as i64).into()))
 }
 
 /// Extract second from date (0-59)
-pub fn date_second(
-    args: &[Value],
+pub(crate) fn date_second(
+    args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("date_second", args, 1)?;
-    let dt = parse_datetime(&args[0])?;
+    let dt = parse_datetime(args[0])?;
     Ok(Value::Number((dt.second() as i64).into()))
 }
 
 /// Get day of week (0=Sunday, 6=Saturday)
-pub fn date_day_of_week(
-    args: &[Value],
+pub(crate) fn date_day_of_week(
+    args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("date_day_of_week", args, 1)?;
-    let dt = parse_datetime(&args[0])?;
+    let dt = parse_datetime(args[0])?;
     let weekday = dt.weekday().num_days_from_sunday();
     Ok(Value::Number((weekday as i64).into()))
 }
@@ -406,7 +414,7 @@ fn parse_datetime(value: &Value) -> ExpressionResult<DateTime<Utc>> {
                 return Ok(dt.with_timezone(&Utc));
             }
             let naive = parse_naive(s).ok_or_else(|| {
-                ExpressionError::expression_eval_error(format!("Cannot parse date: {s}"))
+                ExpressionError::expression_eval_error("Cannot parse date string")
             })?;
             Ok(Utc.from_utc_datetime(&naive))
         },
@@ -432,7 +440,7 @@ fn parse_datetime_in_tz(value: &Value, tz: Tz) -> ExpressionResult<DateTime<Utc>
                 return Ok(dt.with_timezone(&Utc));
             }
             let naive = parse_naive(s).ok_or_else(|| {
-                ExpressionError::expression_eval_error(format!("Cannot parse date: {s}"))
+                ExpressionError::expression_eval_error("Cannot parse date string")
             })?;
             // Naive wall time → tz → UTC. For ambiguous instants (DST
             // fall-back), pick the earliest interpretation; for skipped
@@ -441,9 +449,9 @@ fn parse_datetime_in_tz(value: &Value, tz: Tz) -> ExpressionResult<DateTime<Utc>
                 .earliest()
                 .map(|dt| dt.with_timezone(&Utc))
                 .ok_or_else(|| {
-                    ExpressionError::expression_eval_error(format!(
-                        "Local datetime '{s}' does not exist in timezone {tz:?}",
-                    ))
+                    ExpressionError::expression_eval_error(
+                        "Local datetime does not exist in the requested timezone",
+                    )
                 })
         },
         _ => Err(ExpressionError::expression_type_error(
@@ -467,7 +475,12 @@ fn parse_datetime_in_tz(value: &Value, tz: Tz) -> ExpressionResult<DateTime<Utc>
 /// - m: minute
 /// - ss: 2-digit second
 /// - s: second
-fn format_datetime<TZ: TimeZone>(dt: &DateTime<TZ>, format: &str) -> ExpressionResult<String>
+fn format_datetime<TZ: TimeZone>(
+    dt: &DateTime<TZ>,
+    format: &str,
+    view: BuiltinView<'_>,
+    context: &EvaluationContext,
+) -> ExpressionResult<String>
 where
     TZ::Offset: std::fmt::Display,
 {
@@ -491,37 +504,37 @@ where
     if result.contains("YYYY") {
         buf.clear();
         let _ = write!(buf, "{year:04}");
-        result = Cow::Owned(result.replace("YYYY", &buf));
+        replace_format_token(&mut result, "YYYY", &buf, view, context)?;
     }
     if result.contains("YY") {
         buf.clear();
         let _ = write!(buf, "{:02}", year % 100);
-        result = Cow::Owned(result.replace("YY", &buf));
+        replace_format_token(&mut result, "YY", &buf, view, context)?;
     }
     if result.contains("MM") {
         buf.clear();
         let _ = write!(buf, "{month:02}");
-        result = Cow::Owned(result.replace("MM", &buf));
+        replace_format_token(&mut result, "MM", &buf, view, context)?;
     }
     if result.contains("DD") {
         buf.clear();
         let _ = write!(buf, "{day:02}");
-        result = Cow::Owned(result.replace("DD", &buf));
+        replace_format_token(&mut result, "DD", &buf, view, context)?;
     }
     if result.contains("HH") {
         buf.clear();
         let _ = write!(buf, "{hour:02}");
-        result = Cow::Owned(result.replace("HH", &buf));
+        replace_format_token(&mut result, "HH", &buf, view, context)?;
     }
     if result.contains("mm") {
         buf.clear();
         let _ = write!(buf, "{minute:02}");
-        result = Cow::Owned(result.replace("mm", &buf));
+        replace_format_token(&mut result, "mm", &buf, view, context)?;
     }
     if result.contains("ss") {
         buf.clear();
         let _ = write!(buf, "{second:02}");
-        result = Cow::Owned(result.replace("ss", &buf));
+        replace_format_token(&mut result, "ss", &buf, view, context)?;
     }
 
     // Single letter variants (after double-letter to avoid conflicts)
@@ -529,28 +542,44 @@ where
     if result.contains('M') {
         buf.clear();
         let _ = write!(buf, "{month}");
-        result = Cow::Owned(result.replace('M', &buf));
+        replace_format_token(&mut result, "M", &buf, view, context)?;
     }
     if result.contains('D') {
         buf.clear();
         let _ = write!(buf, "{day}");
-        result = Cow::Owned(result.replace('D', &buf));
+        replace_format_token(&mut result, "D", &buf, view, context)?;
     }
     if result.contains('H') {
         buf.clear();
         let _ = write!(buf, "{hour}");
-        result = Cow::Owned(result.replace('H', &buf));
+        replace_format_token(&mut result, "H", &buf, view, context)?;
     }
     if result.contains('m') {
         buf.clear();
         let _ = write!(buf, "{minute}");
-        result = Cow::Owned(result.replace('m', &buf));
+        replace_format_token(&mut result, "m", &buf, view, context)?;
     }
     if result.contains('s') {
         buf.clear();
         let _ = write!(buf, "{second}");
-        result = Cow::Owned(result.replace('s', &buf));
+        replace_format_token(&mut result, "s", &buf, view, context)?;
     }
 
     Ok(result.into_owned())
+}
+
+fn replace_format_token(
+    value: &mut std::borrow::Cow<'_, str>,
+    token: &str,
+    replacement: &str,
+    view: BuiltinView<'_>,
+    context: &EvaluationContext,
+) -> ExpressionResult<()> {
+    let occurrences = value.matches(token).count();
+    let removed = token.len().saturating_mul(occurrences);
+    let added = replacement.len().saturating_mul(occurrences);
+    let output_bytes = value.len().saturating_sub(removed).saturating_add(added);
+    preflight_string_output(view, context, output_bytes)?;
+    *value = std::borrow::Cow::Owned(value.replace(token, replacement));
+    Ok(())
 }

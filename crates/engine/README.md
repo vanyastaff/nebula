@@ -36,6 +36,23 @@ Recovery checks the exact snapshot and obtains a fresh owner fence; unarmed
 paused waits remain parked. Resume and Restart still use their existing
 delivery lifecycle.
 
+## Input Admission
+
+Named workflow parameters are schema-internal authored fields. The engine retains
+explicit `Expression` versus `Template` intent, admits the tree directly with the
+selected action schema's `validate`, and evaluates its retained programs once.
+A lone Template expression still produces a string. Evaluator output is data and
+is never parsed as another expression. Undeclared fields and Any roots do not
+implicitly authorize expressions.
+
+Whole predecessor values and raw runtime ingress use the schema's serde-wire
+converter instead; internal union parameters are not interpreted as external enum
+wire. `ActionInput::Resolved` carries the resulting schema-bound proof through typed
+dispatch, including repeated stateful iterations. A mismatched complete schema is
+rejected. Cancellation during resolution prevents provider execution. Remote effects
+receive an explicit trusted JSON disclosure after proof verification, without changing
+operation-ledger authority or admission. Input diagnostics redact evaluator sources.
+
 ## Role
 
 *Runtime control.* `WorkflowEngine` drives a supplied workflow and supplied
@@ -136,6 +153,18 @@ Re-exports from `nebula-plugin`: `Plugin`, `PluginKey`, `PluginManifest`, `Plugi
 action/credential/resource caches enforcing the namespace invariant at construction (ADR-0027).
 
 ## Contract
+
+An empty node-parameter map preserves the supplied workflow or predecessor root
+value; a nonempty map constructs an object. Neither path converts supplied
+objects to unit `null`. Default flow connections carry the whole root value.
+Named target ports are reserved for declared support bindings; named flow ports
+fail with `EngineError::UnsupportedInputPort` before execution. Typed dispatch
+preserves scalar values, including literal template-looking strings.
+
+Exact replay retains the archived schema and parameter representation. An archived
+empty record remains an object contract, even when a live factory with the same
+key now declares unit `null`; incompatible live contracts are rejected without
+rewriting the stored plan or selecting a replacement revision.
 
 - **[L2-§11.1]** Execution state transitions go through `ExecutionRepo::transition` (CAS on
   `version`). No handler inside the engine mutates execution state in-memory or invents a

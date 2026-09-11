@@ -1,0 +1,38 @@
+error[E0277]: the trait bound `ForgedFactory: nebula_action::factory::sealed::Sealed` is not satisfied
+  --> tests/probes/action_factory_direct_impl.rs:11:24
+   |
+11 | impl ActionFactory for ForgedFactory {
+   |                        ^^^^^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `nebula_action::factory::sealed::Sealed` is not implemented for `ForgedFactory`
+  --> tests/probes/action_factory_direct_impl.rs:9:1
+   |
+ 9 | struct ForgedFactory;
+   | ^^^^^^^^^^^^^^^^^^^^
+   = note: `ForgedFactory` implements similarly named trait `unicode_width::private::Sealed`, but not `nebula_action::factory::sealed::Sealed`
+   = help: the following other types implement trait `nebula_action::factory::sealed::Sealed`:
+             GenericAgentFactory<A>
+             GenericControlFactory<A>
+             GenericResourceFactory<A>
+             GenericStatefulFactory<A>
+             GenericStatelessFactory<A>
+             GenericStreamFactory<A>
+             GenericTriggerFactory<A>
+             InstanceFactory<A>
+             RemoteEffectInstanceFactory<A>
+note: required by a bound in `ActionFactory`
+  --> src/factory.rs
+   |
+   | pub trait ActionFactory: sealed::Sealed + Send + Sync + 'static {
+   |                          ^^^^^^^^^^^^^^ required by this bound in `ActionFactory`
+   = note: `ActionFactory` is a "sealed trait", because to implement it you also need to implement `nebula_action::factory::sealed::Sealed`, which is not accessible; this is usually done to force you to use one of the provided types that already implement it
+   = help: the following types implement the trait:
+             nebula_action::GenericStatelessFactory<A>
+             nebula_action::InstanceFactory<A>
+             nebula_action::RemoteEffectInstanceFactory<A>
+             nebula_action::GenericStatefulFactory<A>
+             nebula_action::GenericTriggerFactory<A>
+             nebula_action::GenericResourceFactory<A>
+             nebula_action::GenericControlFactory<A>
+             nebula_action::GenericStreamFactory<A>
+             nebula_action::GenericAgentFactory<A>

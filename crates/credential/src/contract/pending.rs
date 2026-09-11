@@ -14,7 +14,7 @@
 
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Typed pending state for interactive credential flows.
@@ -31,7 +31,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 ///   persisted representation.
 /// - **Zeroize on drop:** the [`ZeroizeOnDrop`] supertrait — added per Tech Spec §15.4 to mirror
 ///   the [`CredentialState`](crate::CredentialState) requirement — guarantees deterministic
-///   scrubbing of ephemeral interactive secrets (PKCE verifiers, anti-CSRF state, device codes) on
+///   scrubbing of ephemeral interactive secrets (PKCE verifiers, anti-CSRF state, one-time codes) on
 ///   drop, even on cleanup paths that bypass the store.
 /// - Serialization buffers wrapped in `Zeroizing<Vec<u8>>` by store implementation.
 pub trait PendingState:
@@ -70,25 +70,6 @@ impl PendingState for NoPendingState {
     }
 }
 
-/// Per Tech Spec §15.4 — the base [`Credential::resolve`] returns
-/// `ResolveResult<Self::State, ()>`. Interactive credentials carry their
-/// typed `Self::Pending` on [`Interactive::continue_resolve`]; the base
-/// trait has no `Pending` associated type. This blanket lets `()` stand
-/// in as the second `ResolveResult` parameter for non-interactive
-/// resolve paths and as the kickoff "no carried state" marker for
-/// interactive flows that initialize their typed pending state inside
-/// `continue_resolve`.
-///
-/// [`Credential::resolve`]: crate::Credential::resolve
-/// [`Interactive::continue_resolve`]: crate::Interactive::continue_resolve
-impl PendingState for () {
-    const KIND: &'static str = "unit";
-
-    fn expires_in(&self) -> Duration {
-        Duration::ZERO
-    }
-}
-
 // ── PendingToken ───────────────────────────────────────────────────────
 
 /// Opaque handle to a stored [`PendingState`].
@@ -99,7 +80,7 @@ impl PendingState for () {
 /// Contains a 32-byte CSPRNG value encoded as URL-safe base64 (no padding).
 /// The token is bound to (credential_kind, owner_id, session_id) at storage
 /// time — all four dimensions are validated on consume.
-#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct PendingToken(String);
 
 // Manual `Debug` so that `tracing::debug!(?token)` — which is exactly the
@@ -113,6 +94,9 @@ impl std::fmt::Debug for PendingToken {
 }
 
 impl PendingToken {
+    const ENCODED_LEN: usize = 43;
+    const DECODED_LEN: usize = 32;
+
     /// Generates a new cryptographically random token.
     ///
     /// Callable by pending-store impls that live outside this crate (see
@@ -131,6 +115,27 @@ impl PendingToken {
     /// Returns the token as a string slice.
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        if value.len() != Self::ENCODED_LEN {
+            return None;
+        }
+        let decoded =
+            base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, value)
+                .ok()?;
+        (decoded.len() == Self::DECODED_LEN).then(|| Self(value.to_owned()))
+    }
+}
+
+impl<'de> Deserialize<'de> for PendingToken {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(&value)
+            .ok_or_else(|| serde::de::Error::custom("invalid pending token encoding"))
     }
 }
 
@@ -171,5 +176,24 @@ mod tests {
         let json = serde_json::to_string(&token).unwrap();
         let back: PendingToken = serde_json::from_str(&json).unwrap();
         assert_eq!(token, back);
+    }
+
+    #[test]
+    fn deserialize_rejects_noncanonical_and_oversized_tokens() {
+        let generated = PendingToken::generate();
+        let mut padded = generated.as_str().to_owned();
+        padded.push('=');
+        let invalid = [
+            String::new(),
+            "a".repeat(42),
+            "a".repeat(44),
+            padded,
+            "a".repeat(1024 * 1024),
+        ];
+
+        for value in invalid {
+            let result = serde_json::from_value::<PendingToken>(serde_json::json!(value));
+            assert!(result.is_err(), "accepted an invalid pending token");
+        }
     }
 }

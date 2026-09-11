@@ -4,6 +4,8 @@
 
 use thiserror::Error;
 
+use crate::builtins::BuiltinOutputLimit;
+
 // ============================================================================
 // Main Error Type
 // ============================================================================
@@ -104,6 +106,46 @@ pub enum ExpressionError {
     #[classify(category = "validation", code = "EXPR:DEPTH_LIMIT")]
     #[error("Recursion depth exhausted: actual={actual} >= limit={limit}")]
     DepthExceeded { limit: usize, actual: usize },
+
+    /// A registered builtin result exceeded its mandatory output policy.
+    #[classify(category = "validation", code = "EXPR:BUILTIN_OUTPUT_LIMIT")]
+    #[error("Builtin output {dimension} limit exceeded: actual={actual} > limit={limit}")]
+    BuiltinOutputLimitExceeded {
+        /// Output dimension that exceeded its limit.
+        dimension: BuiltinOutputLimit,
+        /// Configured finite ceiling.
+        limit: usize,
+        /// Attempted output size.
+        actual: usize,
+    },
+
+    /// An embedded expression failed at a position in a compiled template.
+    #[classify(category = "validation", code = "EXPR:TEMPLATE_EVAL")]
+    #[error("Template evaluation failed at {position}: {source}")]
+    TemplateEvaluation {
+        position: crate::template::Position,
+        #[source]
+        source: Box<ExpressionError>,
+    },
+
+    /// Compilation or output exceeded a hard resource bound.
+    #[classify(category = "validation", code = "EXPR:RESOURCE_LIMIT")]
+    #[error("Expression {resource} limit exceeded: actual={actual} > limit={limit}")]
+    ResourceLimitExceeded {
+        resource: &'static str,
+        limit: usize,
+        actual: usize,
+    },
+
+    /// Integer arithmetic exceeded the representable JSON integer range.
+    #[classify(category = "validation", code = "EXPR:NUMERIC_OVERFLOW")]
+    #[error("Integer overflow in {operation}")]
+    NumericOverflow { operation: &'static str },
+
+    /// A numeric conversion or operation produced infinity or NaN.
+    #[classify(category = "validation", code = "EXPR:NONFINITE")]
+    #[error("Non-finite number in {operation}")]
+    NonFiniteNumber { operation: &'static str },
 }
 
 impl ExpressionError {
@@ -205,6 +247,19 @@ impl ExpressionError {
     /// Create a recursion-depth-exceeded error.
     pub fn depth_exceeded(limit: usize, actual: usize) -> Self {
         Self::DepthExceeded { limit, actual }
+    }
+
+    /// Create a builtin-output-limit error.
+    pub fn builtin_output_limit_exceeded(
+        dimension: BuiltinOutputLimit,
+        limit: usize,
+        actual: usize,
+    ) -> Self {
+        Self::BuiltinOutputLimitExceeded {
+            dimension,
+            limit,
+            actual,
+        }
     }
 }
 

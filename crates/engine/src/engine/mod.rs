@@ -70,7 +70,7 @@ use crate::{
     credential_accessor::EngineCredentialAccessor,
     error::EngineError,
     event::{ExecutionEvent, NodeFailedDetails},
-    resolver::ParamResolver,
+    resolver::{NodeInputRequest, ParamResolver},
     resource::ResourceActivatorRegistry,
     resource_accessor::EngineResourceAccessor,
     result::ExecutionResult,
@@ -209,7 +209,9 @@ enum FactoryDispatch<'a> {
 }
 
 enum NodeFactoryDispatch {
-    DirectRegistry,
+    DirectRegistry {
+        factory: Arc<dyn nebula_action::ActionFactory>,
+    },
     Frozen {
         factory: Arc<dyn nebula_action::ActionFactory>,
         effect_contract: nebula_action::effect::ActionEffectContract,
@@ -236,9 +238,9 @@ pub struct WorkflowEngine {
     /// activation.
     ///
     /// A persisted resource row carries only a `kind` string plus opaque
-    /// JSON; turning it into a typed `Manager::register_resolved::<R>`
-    /// call requires an erased [`ResourceFactory`](crate::ResourceFactory)
-    /// that already knows its concrete `R` and `R::Topology`
+    /// JSON; turning it into an admitted typed registration requires an erased
+    /// [`ResourceFactory`](crate::ResourceFactory) that already knows its
+    /// concrete `R`, canonical configuration schema, and `R::Topology`
     /// (see [`KindActivator`](crate::KindActivator)). The map is
     /// **closed**: a kind is registrable only if a factory was explicitly
     /// inserted; an unknown kind is a wiring fault caught at activation,
@@ -541,6 +543,7 @@ impl Drop for RunningRegistration {
 
 mod checkpoint;
 mod frontier;
+mod input_ports;
 mod outcome;
 mod persistence;
 mod resume;
@@ -790,8 +793,8 @@ impl WorkflowEngine {
     /// The closed `kind → typed registrar` allowlist.
     ///
     /// This is the only path from a stored resource row (a `kind` string
-    /// plus opaque JSON) to a typed `Manager::register_resolved::<R>`
-    /// call. A kind is registrable only if a registrar was explicitly
+    /// plus opaque JSON) to an admitted [`ResourceFactory`](crate::ResourceFactory)
+    /// registration. A kind is registrable only if a registrar was explicitly
     /// wired in (via [`with_resource_registrars`](Self::with_resource_registrars));
     /// an unknown kind is a wiring fault surfaced at activation, never a
     /// silent no-op . Defaults empty
@@ -809,7 +812,7 @@ impl WorkflowEngine {
     ///
     /// This is the `bind` producer for the §M11.5 fan-out: the
     /// resource-activation path (`ResourceActivatorRegistry::register` →
-    /// `Manager::register_resolved`, which resolves a credential into a
+    /// `ResourceFactory::register`, which resolves a credential into a
     /// `#[credential]` slot) records a row here so a later rotation /
     /// revoke fans to exactly that resolved row. It is also the index the
     /// [`spawn_resource_rotation_fanout`](Self::spawn_resource_rotation_fanout)
@@ -1041,25 +1044,12 @@ impl WorkflowEngine {
     /// `impl Plugin` is the runtime source of truth for *what* a plugin
     /// contributes (`actions()` / `resources()` / `credentials()` —
     /// INTEGRATION_MODEL, "Plugin packaging" §). But `Plugin::resources()`
-    /// yields `Vec<Arc<dyn nebula_resource::AnyResource>>`, and
-    /// `AnyResource` is **metadata-only** (`key()` + `metadata()`, no
-    /// associated types, no constructor); `#[derive(Resource)]` emits
-    /// only slot plumbing (`DeclaresDependencies`, slot accessors,
-    /// `HasCredentialSlots`) — it emits no per-`R` value factory and no
-    /// `R::Topology` factory. The typed
-    /// `Manager::register_resolved::<R>` consumes a `resource: R` and a
-    /// `R::Topology` by value, monomorphized, so neither is
-    /// recoverable from `dyn AnyResource`.
-    ///
-    /// The engine therefore cannot synthesize this allowlist by reflecting
-    /// over `Plugin::resources()`. The composition root pairs each
-    /// plugin-declared resource `kind` (taken from the resource's own
-    /// catalog key — never guessed) with the concrete-`R`
-    /// resource/topology constructors it holds (the shape
-    /// [`crate::KindActivator`] takes) and threads the assembled
-    /// [`ResourceActivatorRegistry`] in here — mirroring how Actions are
-    /// registered by the caller (typed registration), not auto-pulled from
-    /// the plugin registry. Scope is row/activation context, not a
+    /// yields admitted `Arc<dyn ResourceFactory>` entries. Each factory owns
+    /// the concrete resource/topology constructors and caches metadata whose
+    /// schema was derived from that resource's `Config` type. The composition
+    /// root inserts those factories into the closed
+    /// [`ResourceActivatorRegistry`] and threads it here. Scope is
+    /// row/activation context, not a
     /// plugin-declaration field, and is supplied per-call via
     /// [`RegisterRequest`](crate::RegisterRequest) — never defaulted, since
     /// a wrong scope is an isolation hole.
@@ -1101,7 +1091,7 @@ impl WorkflowEngine {
     ///
     /// use nebula_engine::{Plugin, PluginManifest, ResolvedPlugin, WorkflowEngine};
     /// # use nebula_engine::{
-    /// #     ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
+    /// #     ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
     /// # };
     /// # use nebula_action::result::ActionResult;
     /// # use nebula_metrics::MetricsRegistry;
@@ -1116,9 +1106,7 @@ impl WorkflowEngine {
     /// }
     ///
     /// # let registry = Arc::new(ActionRegistry::new());
-    /// # let executor: ActionExecutor =
-    /// #     Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    /// # let runner = Arc::new(InProcessRunner::new(executor));
+    /// # let runner = Arc::new(InProcessRunner::new());
     /// # let metrics = MetricsRegistry::new();
     /// # let runtime = Arc::new(
     /// #     ActionRuntime::try_new(registry, runner, DataPassingPolicy::default(), metrics.clone())
@@ -1190,11 +1178,12 @@ impl WorkflowEngine {
         );
         let _guard = span.enter();
 
-        for (action_key, factory) in plugin.actions() {
-            let metadata = factory.metadata().clone();
+        for (metadata, factory) in plugin.action_definitions() {
+            let action_key = metadata.base().key();
+            debug_assert!(Arc::ptr_eq(metadata, factory.metadata()));
             self.runtime
                 .registry()
-                .register_factory(metadata, Arc::clone(factory));
+                .register_factory(Arc::clone(factory));
             tracing::debug!(
                 target: "nebula_engine::plugin_wiring",
                 %action_key,
@@ -1233,14 +1222,12 @@ impl WorkflowEngine {
     /// use nebula_credential::{CredentialAccessError, CredentialSnapshot};
     /// # use std::sync::Arc;
     /// # use nebula_engine::{
-    /// #     ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
+    /// #     ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
     /// # };
     /// # use nebula_action::result::ActionResult;
     /// # use nebula_metrics::MetricsRegistry;
     /// # let registry = Arc::new(ActionRegistry::new());
-    /// # let executor: ActionExecutor =
-    /// #     Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    /// # let runner = Arc::new(InProcessRunner::new(executor));
+    /// # let runner = Arc::new(InProcessRunner::new());
     /// # let metrics = MetricsRegistry::new();
     /// # let runtime = Arc::new(
     /// #     ActionRuntime::try_new(registry, runner, DataPassingPolicy::default(), metrics.clone())
@@ -1307,14 +1294,12 @@ impl WorkflowEngine {
     /// use nebula_action::ActionError;
     /// # use std::sync::Arc;
     /// # use nebula_engine::{
-    /// #     ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
+    /// #     ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
     /// # };
     /// # use nebula_action::result::ActionResult;
     /// # use nebula_metrics::MetricsRegistry;
     /// # let registry = Arc::new(ActionRegistry::new());
-    /// # let executor: ActionExecutor =
-    /// #     Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    /// # let runner = Arc::new(InProcessRunner::new(executor));
+    /// # let runner = Arc::new(InProcessRunner::new());
     /// # let metrics = MetricsRegistry::new();
     /// # let runtime = Arc::new(
     /// #     ActionRuntime::try_new(registry, runner, DataPassingPolicy::default(), metrics.clone())
@@ -1390,14 +1375,12 @@ impl WorkflowEngine {
     /// use nebula_engine::WorkflowEngine;
     /// # use std::sync::Arc;
     /// # use nebula_engine::{
-    /// #     ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
+    /// #     ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
     /// # };
     /// # use nebula_action::result::ActionResult;
     /// # use nebula_metrics::MetricsRegistry;
     /// # let registry = Arc::new(ActionRegistry::new());
-    /// # let executor: ActionExecutor =
-    /// #     Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    /// # let runner = Arc::new(InProcessRunner::new(executor));
+    /// # let runner = Arc::new(InProcessRunner::new());
     /// # let metrics = MetricsRegistry::new();
     /// # let runtime = Arc::new(
     /// #     ActionRuntime::try_new(registry, runner, DataPassingPolicy::default(), metrics.clone())
@@ -2025,8 +2008,10 @@ impl WorkflowEngine {
         }
     }
 
-    /// Reject a connection whose source port is absent from the metadata of
-    /// the factory that will execute it. Exact resume supplies factories from
+    /// Validate named support bindings and reject a connection whose source
+    /// port is absent from the metadata of the factory that will execute it.
+    /// Root flow uses the default input, never a named support binding.
+    /// Exact resume supplies factories from
     /// the retained plan snapshot on every turn; direct embedded execution
     /// resolves the explicitly pinned registry version before creating state.
     /// Dynamic output declarations remain open by definition.
@@ -2053,6 +2038,7 @@ impl WorkflowEngine {
         node_map: &HashMap<NodeKey, &nebula_workflow::NodeDefinition>,
         factories: Option<&HashMap<NodeKey, Arc<dyn nebula_action::ActionFactory>>>,
     ) -> Result<(), EngineError> {
+        self.validate_declared_input_ports(graph, node_map, factories)?;
         // `(from_node, to_node, port, declared)` per offending connection.
         // Collected as plain data (not yet wrapped in `EngineError`) so it
         // can be sorted below — `node_map` is a `HashMap`, so iterating it
@@ -2076,8 +2062,8 @@ impl WorkflowEngine {
                         .get(source_id)
                         .ok_or(EngineError::ExactFactoryUnavailable)?
                         .metadata()
-                        .outputs
-                        .clone(),
+                        .outputs()
+                        .to_vec(),
                 ),
             };
             let Some(declared) = ports else {
@@ -2655,21 +2641,13 @@ struct NodeTask {
     node_key: NodeKey,
     workflow_id: WorkflowId,
     action_key: String,
-    /// Workflow node being executed. Passed through to
-    /// [`ActionRuntime::execute_action_with_node`] so the dispatch path
-    /// can hand the [`NodeDefinition`](nebula_workflow::NodeDefinition) to
+    /// Workflow node handed to
     /// [`nebula_action::ActionFactory::instantiate`] (slot bindings,
     /// parameters, version pinning live on the node).
     node: Arc<nebula_workflow::NodeDefinition>,
-    /// Pinned interface version for versioned action lookup.
-    ///
-    /// When `Some`, the runtime uses [`ActionRuntime::execute_action_with_node`] with this
-    /// exact version. When `None`, the latest registered handler is used.
-    interface_version: Option<semver::Version>,
-    input: serde_json::Value,
+    input: crate::resolver::PreparedNodeInput,
     /// Data for support input ports, keyed by port name.
-    #[expect(dead_code, reason = "reserved for multi-input actions")]
-    support_inputs: HashMap<String, Vec<serde_json::Value>>,
+    support_inputs: HashMap<PortKey, Vec<serde_json::Value>>,
     /// Credential accessor injected into the action context.
     credentials: Arc<dyn CredentialAccessor>,
     /// Resource accessor injected into the action context.
@@ -2710,6 +2688,18 @@ impl NodeTask {
             Err(_) => return (self.node_key, Err(EngineError::Cancelled)),
         };
 
+        if self.cancel.is_cancelled() {
+            return (self.node_key, Err(EngineError::Cancelled));
+        }
+
+        let input = tokio::select! {
+            biased;
+            () = self.cancel.cancelled() => return (self.node_key, Err(EngineError::Cancelled)),
+            result = self.input.resolve() => match result {
+                Ok(input) => input,
+                Err(error) => return (self.node_key, Err(error)),
+            },
+        };
         if self.cancel.is_cancelled() {
             return (self.node_key, Err(EngineError::Cancelled));
         }
@@ -2773,7 +2763,8 @@ impl NodeTask {
             self.workflow_id,
         )
         .with_credentials(self.credentials.clone())
-        .with_resources(self.resources.clone());
+        .with_resources(self.resources.clone())
+        .with_support_inputs(nebula_action::SupportInputs::new(self.support_inputs));
 
         // Acquire rate limit permit if configured. If the limiter rejects the
         // request, fail the node so ErrorStrategy decides abort/continue.
@@ -2805,15 +2796,9 @@ impl NodeTask {
         // spine is the sole dispatch path as of ADR-0098 D0 PR3.
 
         let result = match self.factory_dispatch {
-            NodeFactoryDispatch::DirectRegistry => self
+            NodeFactoryDispatch::DirectRegistry { factory } => self
                 .runtime
-                .execute_action_with_node(
-                    &self.node,
-                    self.interface_version.as_ref(),
-                    self.input,
-                    &action_ctx,
-                    None,
-                )
+                .execute_resolved_action(factory, &self.node, input, &action_ctx)
                 .await
                 .map_err(EngineError::Runtime),
             NodeFactoryDispatch::Frozen {
@@ -2822,8 +2807,9 @@ impl NodeTask {
                 action_version,
             } => {
                 use nebula_action::effect::ActionEffectContract;
-                if factory.metadata().effect_contract != effect_contract
-                    || factory.metadata().base.version != action_version
+                let metadata = factory.metadata();
+                if metadata.effect_contract() != &effect_contract
+                    || metadata.base().version() != &action_version
                 {
                     return (
                         self.node_key,
@@ -2835,7 +2821,7 @@ impl NodeTask {
                         if factory.remote_effect_factory().is_none() =>
                     {
                         self.runtime
-                            .execute_resolved_action(factory, &self.node, self.input, &action_ctx)
+                            .execute_resolved_action(factory, &self.node, input, &action_ctx)
                             .await
                             .map_err(EngineError::Runtime)
                     },
@@ -2846,7 +2832,7 @@ impl NodeTask {
                                 Err(crate::EffectExecutionError::MissingAuthority.into()),
                             );
                         };
-                        if factory.metadata().kind != nebula_action::ActionKind::Stateless {
+                        if metadata.kind() != nebula_action::ActionKind::Stateless {
                             return (
                                 self.node_key,
                                 Err(crate::EffectExecutionError::InvalidContract.into()),
@@ -2873,7 +2859,19 @@ impl NodeTask {
                             clock: self.clock.as_ref(),
                             cancellation: &self.cancel,
                         };
-                        turn.execute(remote, descriptor, self.input)
+                        if !Arc::ptr_eq(factory.metadata(), remote.metadata()) {
+                            return (
+                                self.node_key,
+                                Err(crate::EffectExecutionError::InvalidContract.into()),
+                            );
+                        }
+                        let input = match remote
+                            .prepare_input(nebula_action::ActionInput::Resolved(input))
+                        {
+                            Ok(input) => input,
+                            Err(error) => return (self.node_key, Err(EngineError::Action(error))),
+                        };
+                        turn.execute(remote, descriptor, input)
                             .await
                             .map_err(|error| {
                                 if error == crate::EffectExecutionError::Cancelled {
@@ -3977,13 +3975,13 @@ fn resolve_node_input_with_support(
     outputs: &DashMap<NodeKey, serde_json::Value>,
     workflow_input: &serde_json::Value,
     activated_edges: &HashMap<NodeKey, HashSet<NodeKey>>,
-) -> (serde_json::Value, HashMap<String, Vec<serde_json::Value>>) {
+) -> (serde_json::Value, HashMap<PortKey, Vec<serde_json::Value>>) {
     let activated: HashSet<NodeKey> = activated_edges.get(&node_key).cloned().unwrap_or_default();
 
     // Partition incoming connections by to_port
     let incoming = graph.incoming_connections(node_key);
     let mut flow_predecessors: Vec<NodeKey> = Vec::new();
-    let mut support_inputs: HashMap<String, Vec<serde_json::Value>> = HashMap::new();
+    let mut support_inputs: HashMap<PortKey, Vec<serde_json::Value>> = HashMap::new();
 
     for conn in &incoming {
         let source = conn.from_node.clone();
@@ -3999,7 +3997,7 @@ fn resolve_node_input_with_support(
             Some(port_name) => {
                 if let Some(output) = outputs.get(&source) {
                     support_inputs
-                        .entry(port_name.as_str().to_owned())
+                        .entry(port_name.clone())
                         .or_default()
                         .push(output.value().clone());
                 }

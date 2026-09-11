@@ -30,7 +30,7 @@
 //! - `"loader.missing_config"` — `load_select_options_without_loader_emits_missing_config`.
 
 use nebula_schema::{
-    EvalFuture, ExpressionAst, ExpressionContext, Field, FieldKey, FieldValue, FieldValues, Schema,
+    AuthoredValue, CompiledProgram, EvalFuture, ExpressionContext, Field, FieldKey, Schema,
     ValidationError, ValidationReport, field_key,
 };
 use serde_json::json;
@@ -40,7 +40,7 @@ fn fk(s: &str) -> FieldKey {
 }
 
 fn has_code(r: &ValidationReport, code: &str) -> bool {
-    r.errors().any(|e| e.code == code)
+    r.errors().any(|e| e.code() == code)
 }
 
 fn raw_schema(fields: impl IntoIterator<Item = Field>) -> Schema {
@@ -56,12 +56,12 @@ fn emits_required() {
         .add(Field::string(field_key!("x")).required())
         .build()
         .unwrap();
-    let vs = FieldValues::from_json(json!({})).unwrap();
-    let err = schema.validate(&vs).unwrap_err();
+    let vs = AuthoredValue::from_data(json!({})).unwrap();
+    let err = schema.validate(vs).unwrap_err();
     assert!(
         has_code(&err, "required"),
         "codes: {:?}",
-        err.errors().map(|e| &e.code).collect::<Vec<_>>()
+        err.errors().map(ValidationError::code).collect::<Vec<_>>()
     );
 }
 
@@ -71,12 +71,12 @@ fn emits_type_mismatch_string() {
         .add(Field::string(field_key!("x")))
         .build()
         .unwrap();
-    let vs = FieldValues::from_json(json!({"x": 42})).unwrap();
-    let err = schema.validate(&vs).unwrap_err();
+    let vs = AuthoredValue::from_data(json!({"x": 42})).unwrap();
+    let err = schema.validate(vs).unwrap_err();
     assert!(
         has_code(&err, "type_mismatch"),
         "codes: {:?}",
-        err.errors().map(|e| &e.code).collect::<Vec<_>>()
+        err.errors().map(ValidationError::code).collect::<Vec<_>>()
     );
 }
 
@@ -86,8 +86,8 @@ fn emits_type_mismatch_number() {
         .add(Field::number(field_key!("x")))
         .build()
         .unwrap();
-    let vs = FieldValues::from_json(json!({"x": "not_a_number"})).unwrap();
-    let err = schema.validate(&vs).unwrap_err();
+    let vs = AuthoredValue::from_data(json!({"x": "not_a_number"})).unwrap();
+    let err = schema.validate(vs).unwrap_err();
     assert!(has_code(&err, "type_mismatch"));
 }
 
@@ -97,8 +97,8 @@ fn emits_type_mismatch_boolean() {
         .add(Field::boolean(field_key!("x")))
         .build()
         .unwrap();
-    let vs = FieldValues::from_json(json!({"x": "yes"})).unwrap();
-    let err = schema.validate(&vs).unwrap_err();
+    let vs = AuthoredValue::from_data(json!({"x": "yes"})).unwrap();
+    let err = schema.validate(vs).unwrap_err();
     assert!(has_code(&err, "type_mismatch"));
 }
 
@@ -110,12 +110,12 @@ fn emits_min_length() {
         .add(Field::string(field_key!("x")).min_length(5))
         .build()
         .unwrap();
-    let vs = FieldValues::from_json(json!({"x": "hi"})).unwrap();
-    let err = schema.validate(&vs).unwrap_err();
+    let vs = AuthoredValue::from_data(json!({"x": "hi"})).unwrap();
+    let err = schema.validate(vs).unwrap_err();
     assert!(
         has_code(&err, "min_length"),
         "expected min_length, got: {:?}",
-        err.errors().map(|e| &e.code).collect::<Vec<_>>()
+        err.errors().map(ValidationError::code).collect::<Vec<_>>()
     );
 }
 
@@ -125,12 +125,12 @@ fn emits_max_length() {
         .add(Field::string(field_key!("x")).max_length(3))
         .build()
         .unwrap();
-    let vs = FieldValues::from_json(json!({"x": "abcdef"})).unwrap();
-    let err = schema.validate(&vs).unwrap_err();
+    let vs = AuthoredValue::from_data(json!({"x": "abcdef"})).unwrap();
+    let err = schema.validate(vs).unwrap_err();
     assert!(
         has_code(&err, "max_length"),
         "expected max_length, got: {:?}",
-        err.errors().map(|e| &e.code).collect::<Vec<_>>()
+        err.errors().map(ValidationError::code).collect::<Vec<_>>()
     );
 }
 
@@ -142,12 +142,12 @@ fn emits_min() {
         .add(Field::number(field_key!("x")).min(10))
         .build()
         .unwrap();
-    let vs = FieldValues::from_json(json!({"x": 3})).unwrap();
-    let err = schema.validate(&vs).unwrap_err();
+    let vs = AuthoredValue::from_data(json!({"x": 3})).unwrap();
+    let err = schema.validate(vs).unwrap_err();
     assert!(
         has_code(&err, "min"),
         "expected min, got: {:?}",
-        err.errors().map(|e| &e.code).collect::<Vec<_>>()
+        err.errors().map(ValidationError::code).collect::<Vec<_>>()
     );
 }
 
@@ -157,12 +157,12 @@ fn emits_max() {
         .add(Field::number(field_key!("x")).max(10))
         .build()
         .unwrap();
-    let vs = FieldValues::from_json(json!({"x": 99})).unwrap();
-    let err = schema.validate(&vs).unwrap_err();
+    let vs = AuthoredValue::from_data(json!({"x": 99})).unwrap();
+    let err = schema.validate(vs).unwrap_err();
     assert!(
         has_code(&err, "max"),
         "expected max, got: {:?}",
-        err.errors().map(|e| &e.code).collect::<Vec<_>>()
+        err.errors().map(ValidationError::code).collect::<Vec<_>>()
     );
 }
 
@@ -174,15 +174,15 @@ fn emits_max() {
 #[test]
 fn emits_invalid_format_for_pattern() {
     let schema = Schema::builder()
-        .add(Field::string(field_key!("x")).pattern("^[a-z]+$"))
+        .add(Field::string(field_key!("x")).pattern("^[a-z]+$").unwrap())
         .build()
         .unwrap();
-    let vs = FieldValues::from_json(json!({"x": "HI"})).unwrap();
-    let err = schema.validate(&vs).unwrap_err();
+    let vs = AuthoredValue::from_data(json!({"x": "HI"})).unwrap();
+    let err = schema.validate(vs).unwrap_err();
     assert!(
         has_code(&err, "invalid_format"),
         "expected invalid_format from pattern rule, got: {:?}",
-        err.errors().map(|e| &e.code).collect::<Vec<_>>()
+        err.errors().map(ValidationError::code).collect::<Vec<_>>()
     );
 }
 
@@ -192,12 +192,12 @@ fn emits_invalid_format_for_url() {
         .add(Field::string(field_key!("x")).url())
         .build()
         .unwrap();
-    let vs = FieldValues::from_json(json!({"x": "not-a-url"})).unwrap();
-    let err = schema.validate(&vs).unwrap_err();
+    let vs = AuthoredValue::from_data(json!({"x": "not-a-url"})).unwrap();
+    let err = schema.validate(vs).unwrap_err();
     assert!(
         has_code(&err, "invalid_format"),
         "expected invalid_format from url rule, got: {:?}",
-        err.errors().map(|e| &e.code).collect::<Vec<_>>()
+        err.errors().map(ValidationError::code).collect::<Vec<_>>()
     );
 }
 
@@ -207,12 +207,12 @@ fn emits_invalid_format_for_email() {
         .add(Field::string(field_key!("x")).email())
         .build()
         .unwrap();
-    let vs = FieldValues::from_json(json!({"x": "not-an-email"})).unwrap();
-    let err = schema.validate(&vs).unwrap_err();
+    let vs = AuthoredValue::from_data(json!({"x": "not-an-email"})).unwrap();
+    let err = schema.validate(vs).unwrap_err();
     assert!(
         has_code(&err, "invalid_format"),
         "expected invalid_format from email rule, got: {:?}",
-        err.errors().map(|e| &e.code).collect::<Vec<_>>()
+        err.errors().map(ValidationError::code).collect::<Vec<_>>()
     );
 }
 
@@ -228,12 +228,12 @@ fn emits_items_min() {
         )
         .build()
         .unwrap();
-    let vs = FieldValues::from_json(json!({"xs": ["a"]})).unwrap();
-    let err = schema.validate(&vs).unwrap_err();
+    let vs = AuthoredValue::from_data(json!({"xs": ["a"]})).unwrap();
+    let err = schema.validate(vs).unwrap_err();
     assert!(
         has_code(&err, "items.min"),
         "codes: {:?}",
-        err.errors().map(|e| &e.code).collect::<Vec<_>>()
+        err.errors().map(ValidationError::code).collect::<Vec<_>>()
     );
 }
 
@@ -247,12 +247,12 @@ fn emits_items_max() {
         )
         .build()
         .unwrap();
-    let vs = FieldValues::from_json(json!({"xs": ["a", "b", "c"]})).unwrap();
-    let err = schema.validate(&vs).unwrap_err();
+    let vs = AuthoredValue::from_data(json!({"xs": ["a", "b", "c"]})).unwrap();
+    let err = schema.validate(vs).unwrap_err();
     assert!(
         has_code(&err, "items.max"),
         "codes: {:?}",
-        err.errors().map(|e| &e.code).collect::<Vec<_>>()
+        err.errors().map(ValidationError::code).collect::<Vec<_>>()
     );
 }
 
@@ -266,12 +266,12 @@ fn emits_items_unique() {
         )
         .build()
         .unwrap();
-    let vs = FieldValues::from_json(json!({"xs": ["a", "b", "a"]})).unwrap();
-    let err = schema.validate(&vs).unwrap_err();
+    let vs = AuthoredValue::from_data(json!({"xs": ["a", "b", "a"]})).unwrap();
+    let err = schema.validate(vs).unwrap_err();
     assert!(
         has_code(&err, "items.unique"),
         "codes: {:?}",
-        err.errors().map(|e| &e.code).collect::<Vec<_>>()
+        err.errors().map(ValidationError::code).collect::<Vec<_>>()
     );
 }
 
@@ -285,12 +285,12 @@ fn emits_option_invalid() {
         )
         .build()
         .unwrap();
-    let vs = FieldValues::from_json(json!({"color": "green"})).unwrap();
-    let err = schema.validate(&vs).unwrap_err();
+    let vs = AuthoredValue::from_data(json!({"color": "green"})).unwrap();
+    let err = schema.validate(vs).unwrap_err();
     assert!(
         has_code(&err, "option.invalid"),
         "codes: {:?}",
-        err.errors().map(|e| &e.code).collect::<Vec<_>>()
+        err.errors().map(ValidationError::code).collect::<Vec<_>>()
     );
 }
 
@@ -302,20 +302,12 @@ fn emits_mode_invalid() {
         .add(Field::mode(field_key!("m")).variant("a", "A", Field::string(fk("val"))))
         .build()
         .unwrap();
-    let mut vs = FieldValues::new();
-    // Supply an unknown variant key.
-    vs.set(
-        fk("m"),
-        FieldValue::Mode {
-            mode: fk("nonexistent"),
-            value: None,
-        },
-    );
-    let err = schema.validate(&vs).unwrap_err();
+    let vs = AuthoredValue::from_data(json!({"m": {"mode": "nonexistent"}})).unwrap();
+    let err = schema.validate(vs).unwrap_err();
     assert!(
         has_code(&err, "mode.invalid"),
         "codes: {:?}",
-        err.errors().map(|e| &e.code).collect::<Vec<_>>()
+        err.errors().map(ValidationError::code).collect::<Vec<_>>()
     );
 }
 
@@ -325,17 +317,17 @@ fn emits_mode_required() {
         .add(Field::mode(field_key!("m")).variant("a", "A", Field::string(fk("val"))))
         .build()
         .unwrap();
-    let vs = FieldValues::from_json(json!({
+    let vs = AuthoredValue::from_data(json!({
         "m": {
             "value": "missing mode selector"
         }
     }))
     .unwrap();
-    let err = schema.validate(&vs).unwrap_err();
+    let err = schema.validate(vs).unwrap_err();
     assert!(
         has_code(&err, "mode.required"),
         "codes: {:?}",
-        err.errors().map(|e| &e.code).collect::<Vec<_>>()
+        err.errors().map(ValidationError::code).collect::<Vec<_>>()
     );
 }
 
@@ -348,8 +340,8 @@ fn emits_expression_forbidden() {
         .add(Field::boolean(field_key!("flag")))
         .build()
         .unwrap();
-    let vs = FieldValues::from_json(json!({"flag": "{{ $x }}"})).unwrap();
-    let err = schema.validate(&vs).unwrap_err();
+    let vs = AuthoredValue::from_template_json(json!({"flag": "{{ $x }}"})).unwrap();
+    let err = schema.validate(vs).unwrap_err();
     assert!(has_code(&err, "expression.forbidden"));
 }
 
@@ -359,12 +351,12 @@ fn emits_expression_required() {
         .add(Field::computed(field_key!("derived")))
         .build()
         .unwrap();
-    let vs = FieldValues::from_json(json!({"derived": "literal"})).unwrap();
-    let err = schema.validate(&vs).unwrap_err();
+    let vs = AuthoredValue::from_data(json!({"derived": "literal"})).unwrap();
+    let err = schema.validate(vs).unwrap_err();
     assert!(
         has_code(&err, "expression.required"),
         "expected expression.required, got: {:?}",
-        err.errors().map(|e| &e.code).collect::<Vec<_>>()
+        err.errors().map(ValidationError::code).collect::<Vec<_>>()
     );
 }
 
@@ -374,19 +366,22 @@ fn emits_expression_parse() {
         .add(Field::number(field_key!("n")))
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({"n": {"$expr": "{{ 1 + }}"}})).unwrap();
-    let report = schema.validate(&values).unwrap_err();
+    let values = AuthoredValue::from_template_json(json!({"n": {"$expr": "{{ 1 + }}"}})).unwrap();
+    let report = schema.validate(values).unwrap_err();
     assert!(
         has_code(&report, "expression.parse"),
         "expected expression.parse, got: {:?}",
-        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        report
+            .errors()
+            .map(ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
 struct RuntimeFailCtx;
 
 impl ExpressionContext for RuntimeFailCtx {
-    fn evaluate<'a>(&'a self, _ast: &'a ExpressionAst) -> EvalFuture<'a> {
+    fn evaluate<'a>(&'a self, _ast: &'a CompiledProgram) -> EvalFuture<'a> {
         Box::pin(async move {
             Err(ValidationError::builder("expression.runtime")
                 .message("forced runtime failure")
@@ -398,7 +393,7 @@ impl ExpressionContext for RuntimeFailCtx {
 struct ConstCtx(serde_json::Value);
 
 impl ExpressionContext for ConstCtx {
-    fn evaluate<'a>(&'a self, _ast: &'a ExpressionAst) -> EvalFuture<'a> {
+    fn evaluate<'a>(&'a self, _ast: &'a CompiledProgram) -> EvalFuture<'a> {
         Box::pin(async move { Ok(self.0.clone()) })
     }
 }
@@ -409,13 +404,16 @@ async fn emits_expression_runtime() {
         .add(Field::string(field_key!("x")))
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({"x": {"$expr": "{{ $bad }}"}})).unwrap();
-    let validated = schema.validate(&values).unwrap();
+    let values = AuthoredValue::from_template_json(json!({"x": {"$expr": "{{ $bad }}"}})).unwrap();
+    let validated = schema.validate(values).unwrap();
     let report = validated.resolve(&RuntimeFailCtx).await.unwrap_err();
     assert!(
         has_code(&report, "expression.runtime"),
         "expected expression.runtime, got: {:?}",
-        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        report
+            .errors()
+            .map(ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -425,13 +423,16 @@ async fn emits_expression_type_mismatch() {
         .add(Field::string(field_key!("x")))
         .build()
         .unwrap();
-    let values = FieldValues::from_json(json!({"x": {"$expr": "{{ $n }}"}})).unwrap();
-    let validated = schema.validate(&values).unwrap();
+    let values = AuthoredValue::from_template_json(json!({"x": {"$expr": "{{ $n }}"}})).unwrap();
+    let validated = schema.validate(values).unwrap();
     let report = validated.resolve(&ConstCtx(json!(123))).await.unwrap_err();
     assert!(
         has_code(&report, "expression.type_mismatch"),
         "expected expression.type_mismatch, got: {:?}",
-        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        report
+            .errors()
+            .map(ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -441,10 +442,10 @@ async fn emits_expression_type_mismatch() {
 fn emits_invalid_key() {
     // invalid_key is emitted by FieldKey::new when the key is malformed.
     let err = FieldKey::new("has-dash").unwrap_err();
-    assert_eq!(err.code, "invalid_key");
+    assert_eq!(err.code(), "invalid_key");
 
     let err2 = FieldKey::new("").unwrap_err();
-    assert_eq!(err2.code, "invalid_key");
+    assert_eq!(err2.code(), "invalid_key");
 }
 
 #[test]
@@ -470,7 +471,10 @@ fn emits_duplicate_key() {
     assert!(
         has_code(&report, "duplicate_key"),
         "codes: {:?}",
-        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        report
+            .errors()
+            .map(ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -484,7 +488,10 @@ fn emits_missing_item_schema() {
     assert!(
         has_code(&report, "missing_item_schema"),
         "codes: {:?}",
-        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        report
+            .errors()
+            .map(ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -542,7 +549,10 @@ fn emits_secret_default_forbidden() {
     assert!(
         has_code(&report, "secret.default_forbidden"),
         "got: {:?}",
-        report.errors().map(|e| &e.code).collect::<Vec<_>>()
+        report
+            .errors()
+            .map(ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -551,7 +561,7 @@ fn emits_recursion_limit_on_deeply_nested_value_input() {
     use nebula_schema::value::MAX_VALUE_DEPTH;
 
     // Nest plain JSON objects 5 levels past MAX_VALUE_DEPTH to trigger the
-    // ingress depth-guard in `FieldValues::from_json`.
+    // ingress depth-guard in `AuthoredValue::from_data`.
     let mut current = json!({ "leaf": 1 });
     for _ in 0..usize::from(MAX_VALUE_DEPTH) + 5 {
         let mut wrapped = serde_json::Map::with_capacity(1);
@@ -560,8 +570,8 @@ fn emits_recursion_limit_on_deeply_nested_value_input() {
     }
     let payload = json!({ "top": current });
 
-    let err = FieldValues::from_json(payload).expect_err("must reject deep input");
-    assert_eq!(err.code, "recursion_limit", "got: {}", err.message);
+    let err = AuthoredValue::from_data(payload).expect_err("must reject deep input");
+    assert_eq!(err.code(), "recursion_limit", "got: {}", err.message());
 }
 
 #[test]
@@ -574,7 +584,7 @@ fn emits_rule_contradictory() {
     assert!(
         has_code(&report, "rule.contradictory"),
         "all codes: {:?}",
-        report.iter().map(|e| &e.code).collect::<Vec<_>>()
+        report.iter().map(ValidationError::code).collect::<Vec<_>>()
     );
 }
 
@@ -593,7 +603,7 @@ fn emits_self_dependency() {
     assert!(
         has_code(&report, "self_dependency"),
         "codes: {:?}",
-        report.iter().map(|e| &e.code).collect::<Vec<_>>()
+        report.iter().map(ValidationError::code).collect::<Vec<_>>()
     );
 }
 
@@ -603,8 +613,10 @@ fn emits_visibility_cycle() {
     use nebula_validator::{Predicate, Rule, foundation::FieldPath};
 
     // IsTrue predicate on field `b` causes field `a` to reference `b`.
-    let rule_a_references_b = Rule::predicate(Predicate::IsTrue(FieldPath::parse("b").unwrap()));
-    let rule_b_references_a = Rule::predicate(Predicate::IsTrue(FieldPath::parse("a").unwrap()));
+    let rule_a_references_b = Rule::predicate(Predicate::IsTrue(FieldPath::parse("/b").unwrap()))
+        .expect("bounded visibility rule");
+    let rule_b_references_a = Rule::predicate(Predicate::IsTrue(FieldPath::parse("/a").unwrap()))
+        .expect("bounded visibility rule");
 
     let schema = raw_schema(vec![
         Field::string(fk("a"))
@@ -617,9 +629,9 @@ fn emits_visibility_cycle() {
 
     let lint = schema.lint();
     assert!(
-        lint.errors().any(|d| d.code == "visibility_cycle"),
+        lint.errors().any(|d| d.code() == "visibility_cycle"),
         "expected visibility_cycle, got: {:?}",
-        lint.errors().map(|d| &d.code).collect::<Vec<_>>()
+        lint.errors().map(ValidationError::code).collect::<Vec<_>>()
     );
 }
 
@@ -628,8 +640,10 @@ fn emits_required_cycle() {
     // A's required predicate references B, B's required predicate references A.
     use nebula_validator::{Predicate, Rule, foundation::FieldPath};
 
-    let rule_a_references_b = Rule::predicate(Predicate::IsTrue(FieldPath::parse("b").unwrap()));
-    let rule_b_references_a = Rule::predicate(Predicate::IsTrue(FieldPath::parse("a").unwrap()));
+    let rule_a_references_b = Rule::predicate(Predicate::IsTrue(FieldPath::parse("/b").unwrap()))
+        .expect("bounded requiredness rule");
+    let rule_b_references_a = Rule::predicate(Predicate::IsTrue(FieldPath::parse("/a").unwrap()))
+        .expect("bounded requiredness rule");
 
     let schema = raw_schema(vec![
         Field::string(fk("a"))
@@ -642,9 +656,9 @@ fn emits_required_cycle() {
 
     let lint = schema.lint();
     assert!(
-        lint.errors().any(|d| d.code == "required_cycle"),
+        lint.errors().any(|d| d.code() == "required_cycle"),
         "expected required_cycle, got: {:?}",
-        lint.errors().map(|d| &d.code).collect::<Vec<_>>()
+        lint.errors().map(ValidationError::code).collect::<Vec<_>>()
     );
 }
 
@@ -654,8 +668,9 @@ fn emits_dangling_reference() {
     use nebula_validator::{Predicate, Rule, foundation::FieldPath};
 
     let rule_unknown = Rule::predicate(Predicate::IsTrue(
-        FieldPath::parse("nonexistent_field").unwrap(),
-    ));
+        FieldPath::parse("/nonexistent_field").unwrap(),
+    ))
+    .expect("bounded dangling-reference rule");
     let report = Schema::builder()
         .add(Field::string(field_key!("x")).visible_when(rule_unknown))
         .build()
@@ -663,7 +678,7 @@ fn emits_dangling_reference() {
     assert!(
         has_code(&report, "dangling_reference"),
         "codes: {:?}",
-        report.iter().map(|e| &e.code).collect::<Vec<_>>()
+        report.iter().map(ValidationError::code).collect::<Vec<_>>()
     );
 }
 
@@ -678,9 +693,11 @@ fn emits_missing_loader_warning() {
         "expected warnings for dynamic select without loader"
     );
     assert!(
-        lint.warnings().any(|d| d.code == "missing_loader"),
+        lint.warnings().any(|d| d.code() == "missing_loader"),
         "expected missing_loader, got: {:?}",
-        lint.warnings().map(|d| &d.code).collect::<Vec<_>>()
+        lint.warnings()
+            .map(ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -694,9 +711,12 @@ fn emits_loader_without_dynamic_warning() {
     let schema = raw_schema(vec![Field::Select(sf)]);
     let lint = schema.lint();
     assert!(
-        lint.warnings().any(|d| d.code == "loader_without_dynamic"),
+        lint.warnings()
+            .any(|d| d.code() == "loader_without_dynamic"),
         "expected loader_without_dynamic, got: {:?}",
-        lint.warnings().map(|d| &d.code).collect::<Vec<_>>()
+        lint.warnings()
+            .map(ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -713,9 +733,11 @@ fn emits_duplicate_dependency_warning() {
     ]);
     let lint = schema.lint();
     assert!(
-        lint.warnings().any(|d| d.code == "duplicate_dependency"),
+        lint.warnings().any(|d| d.code() == "duplicate_dependency"),
         "expected duplicate_dependency, got: {:?}",
-        lint.warnings().map(|d| &d.code).collect::<Vec<_>>()
+        lint.warnings()
+            .map(ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -735,17 +757,19 @@ fn emits_missing_variant_label_warning() {
             ])
             .lint();
             assert!(
-                lint.warnings().any(|d| d.code == "missing_variant_label"),
+                lint.warnings().any(|d| d.code() == "missing_variant_label"),
                 "expected missing_variant_label in lint output, got: {:?}",
-                lint.warnings().map(|d| &d.code).collect::<Vec<_>>()
+                lint.warnings()
+                    .map(ValidationError::code)
+                    .collect::<Vec<_>>()
             );
             let _ = schema;
         },
         Err(report) => {
             assert!(
-                report.iter().any(|e| e.code == "missing_variant_label"),
+                report.iter().any(|e| e.code() == "missing_variant_label"),
                 "expected missing_variant_label, got: {:?}",
-                report.iter().map(|e| &e.code).collect::<Vec<_>>()
+                report.iter().map(ValidationError::code).collect::<Vec<_>>()
             );
         },
     }
@@ -761,9 +785,11 @@ fn emits_notice_misuse() {
     let schema = raw_schema(vec![Field::Notice(nf)]);
     let lint = schema.lint();
     assert!(
-        lint.warnings().any(|d| d.code == "notice.misuse"),
+        lint.warnings().any(|d| d.code() == "notice.misuse"),
         "expected notice.misuse, got: {:?}",
-        lint.warnings().map(|d| &d.code).collect::<Vec<_>>()
+        lint.warnings()
+            .map(ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -777,9 +803,11 @@ fn emits_notice_missing_description() {
     let lint = schema.lint();
     assert!(
         lint.warnings()
-            .any(|d| d.code == "notice_missing_description"),
+            .any(|d| d.code() == "notice_missing_description"),
         "expected notice_missing_description, got: {:?}",
-        lint.warnings().map(|d| &d.code).collect::<Vec<_>>()
+        lint.warnings()
+            .map(ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -789,13 +817,15 @@ fn emits_rule_incompatible_warning() {
 
     let schema = raw_schema(vec![
         Field::number(fk("n"))
-            .with_rule(Rule::pattern("^[0-9]+$"))
+            .with_rule(Rule::pattern("^[0-9]+$").unwrap())
             .into(),
     ]);
     let lint = schema.lint();
     assert!(
-        lint.warnings().any(|d| d.code == "rule.incompatible"),
+        lint.warnings().any(|d| d.code() == "rule.incompatible"),
         "expected rule.incompatible, got: {:?}",
-        lint.warnings().map(|d| &d.code).collect::<Vec<_>>()
+        lint.warnings()
+            .map(ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }

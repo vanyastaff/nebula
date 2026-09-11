@@ -27,7 +27,7 @@ use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_resource::Resident;
 use nebula_resource::{
     AcquireOptions, Manager, Provider, RegisterOptions, RegistrationSpec, ResidentConfig,
-    ResourceConfig, ResourceContext, SlotIdentity, error::Error, resource::ResourceMetadata,
+    ResourceConfig, ResourceContext, SlotIdentity, error::Error, resource::ResourceMetadataDraft,
     topology::resident::ResidentProvider,
 };
 use tokio_util::sync::CancellationToken;
@@ -35,10 +35,8 @@ use tokio_util::sync::CancellationToken;
 /// Config whose `fingerprint()` is left at the `0` default on purpose: the
 /// dedup separation must come from the resolved slot identity, never from the
 /// author overriding `fingerprint()`.
-#[derive(Clone)]
+#[derive(Clone, nebula_schema::Schema)]
 struct CountingConfig;
-
-nebula_schema::impl_empty_has_schema!(CountingConfig);
 
 impl ResourceConfig for CountingConfig {
     fn validate(&self) -> Result<(), Error> {
@@ -99,8 +97,8 @@ impl Provider for CountingResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 
@@ -455,8 +453,8 @@ impl Provider for SiblingResidentResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 

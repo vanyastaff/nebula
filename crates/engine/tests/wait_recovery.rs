@@ -43,14 +43,13 @@ use std::{
 use nebula_action::{
     ActionError,
     action::Action,
-    metadata::ActionMetadata,
     result::{ActionResult, WaitCondition},
     stateless::StatelessAction,
 };
 use nebula_core::{Dependencies, action_key, id::ExecutionId, node_key};
 use nebula_engine::{
-    ActionExecutor, ActionRegistry, ActionRuntime, ControlDispatch, ControlDispatchError,
-    DataPassingPolicy, EngineControlDispatch, ExecutionEvent, InProcessRunner, WorkflowEngine,
+    ActionRegistry, ActionRuntime, ControlDispatch, ControlDispatchError, DataPassingPolicy,
+    EngineControlDispatch, ExecutionEvent, InProcessRunner, WorkflowEngine,
 };
 use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_metrics::MetricsRegistry;
@@ -180,14 +179,25 @@ impl ExecutionStore for FaultInjectingExecutionStore {
 
 // ── Action stubs ──────────────────────────────────────────────────────────────
 
+macro_rules! pure_action_metadata {
+    ($key:expr, $name:expr, $description:expr $(,)?) => {
+        nebula_action::metadata::ActionMetadataDraft::new($key, $name, $description)
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+    };
+}
+
 macro_rules! static_action_impl {
     ($ty:ty, $key:expr, $name:expr) => {
         impl Action for $ty {
             type Input = serde_json::Value;
             type Output = serde_json::Value;
 
-            fn metadata() -> ActionMetadata {
-                ActionMetadata::new($key, $name, "wait_recovery integration test stub")
+            fn metadata() -> nebula_action::ActionMetadataDraft {
+                pure_action_metadata!(
+                    $key,
+                    nebula_action::metadata_name!($name),
+                    "wait_recovery integration test stub",
+                )
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
@@ -431,9 +441,7 @@ fn make_engine(stores: &RecoveryStores, registry: Arc<ActionRegistry>) -> Workfl
     let frozen = exact_fixture::freeze_registry(&registry, &actions);
     *stores.frozen.lock().unwrap() = Some(Arc::clone(&frozen));
     let metrics = MetricsRegistry::new();
-    let executor: ActionExecutor =
-        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    let runner = Arc::new(InProcessRunner::new(executor));
+    let runner = Arc::new(InProcessRunner::new());
     let runtime = Arc::new(
         ActionRuntime::try_new(
             registry,
@@ -463,27 +471,31 @@ fn build_single_registry(
     downstream: &Arc<AtomicU32>,
 ) -> Arc<ActionRegistry> {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless_instance(
-        ActionMetadata::new(
-            action_key!("test.wr.webhook_timeout"),
-            "WebhookWaitWithTimeout",
-            "wait_recovery stub",
-        ),
-        WebhookWaitWithTimeout {
-            callback_id: callback_id.to_owned(),
-            timeout,
-        },
-    );
-    registry.register_stateless_instance(
-        ActionMetadata::new(
-            action_key!("test.wr.echo"),
-            "CountingEcho",
-            "wait_recovery stub",
-        ),
-        CountingEcho {
-            invocations: Arc::clone(downstream),
-        },
-    );
+    registry
+        .register_stateless_instance(
+            pure_action_metadata!(
+                action_key!("test.wr.webhook_timeout"),
+                nebula_action::metadata_name!("WebhookWaitWithTimeout"),
+                "wait_recovery stub",
+            ),
+            WebhookWaitWithTimeout {
+                callback_id: callback_id.to_owned(),
+                timeout,
+            },
+        )
+        .expect("valid test catalog definition");
+    registry
+        .register_stateless_instance(
+            pure_action_metadata!(
+                action_key!("test.wr.echo"),
+                nebula_action::metadata_name!("CountingEcho"),
+                "wait_recovery stub",
+            ),
+            CountingEcho {
+                invocations: Arc::clone(downstream),
+            },
+        )
+        .expect("valid test catalog definition");
     registry
 }
 
@@ -814,48 +826,56 @@ async fn mixed_wait_targeted_recovery_arms_only_match() {
 
     // Two distinct webhook waits + two distinct downstreams.
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless_instance(
-        ActionMetadata::new(
-            action_key!("test.wr.webhook_timeout"),
-            "WebhookWaitWithTimeout",
-            "wait_recovery stub",
-        ),
-        WebhookWaitWithTimeout {
-            callback_id: "cb-a".to_owned(),
-            timeout,
-        },
-    );
-    registry.register_stateless_instance(
-        ActionMetadata::new(
-            action_key!("test.wr.webhook_timeout_b"),
-            "WebhookWaitWithTimeoutB",
-            "wait_recovery stub",
-        ),
-        WebhookWaitWithTimeoutB {
-            callback_id: "cb-b".to_owned(),
-            timeout,
-        },
-    );
-    registry.register_stateless_instance(
-        ActionMetadata::new(
-            action_key!("test.wr.echo"),
-            "CountingEcho",
-            "wait_recovery stub",
-        ),
-        CountingEcho {
-            invocations: Arc::clone(&downstream_a),
-        },
-    );
-    registry.register_stateless_instance(
-        ActionMetadata::new(
-            action_key!("test.wr.echo_b"),
-            "CountingEchoB",
-            "wait_recovery stub",
-        ),
-        CountingEchoB {
-            invocations: Arc::clone(&downstream_b),
-        },
-    );
+    registry
+        .register_stateless_instance(
+            pure_action_metadata!(
+                action_key!("test.wr.webhook_timeout"),
+                nebula_action::metadata_name!("WebhookWaitWithTimeout"),
+                "wait_recovery stub",
+            ),
+            WebhookWaitWithTimeout {
+                callback_id: "cb-a".to_owned(),
+                timeout,
+            },
+        )
+        .expect("valid test catalog definition");
+    registry
+        .register_stateless_instance(
+            pure_action_metadata!(
+                action_key!("test.wr.webhook_timeout_b"),
+                nebula_action::metadata_name!("WebhookWaitWithTimeoutB"),
+                "wait_recovery stub",
+            ),
+            WebhookWaitWithTimeoutB {
+                callback_id: "cb-b".to_owned(),
+                timeout,
+            },
+        )
+        .expect("valid test catalog definition");
+    registry
+        .register_stateless_instance(
+            pure_action_metadata!(
+                action_key!("test.wr.echo"),
+                nebula_action::metadata_name!("CountingEcho"),
+                "wait_recovery stub",
+            ),
+            CountingEcho {
+                invocations: Arc::clone(&downstream_a),
+            },
+        )
+        .expect("valid test catalog definition");
+    registry
+        .register_stateless_instance(
+            pure_action_metadata!(
+                action_key!("test.wr.echo_b"),
+                nebula_action::metadata_name!("CountingEchoB"),
+                "wait_recovery stub",
+            ),
+            CountingEchoB {
+                invocations: Arc::clone(&downstream_b),
+            },
+        )
+        .expect("valid test catalog definition");
 
     let now = chrono::Utc::now();
     let wait_a = node_key!("wait_a");
@@ -921,48 +941,56 @@ async fn mixed_wait_targeted_recovery_arms_only_match() {
 
     // Recover with a TARGETED Resume for cb-a only.
     let registry_b = Arc::new(ActionRegistry::new());
-    registry_b.register_stateless_instance(
-        ActionMetadata::new(
-            action_key!("test.wr.webhook_timeout"),
-            "WebhookWaitWithTimeout",
-            "wait_recovery stub",
-        ),
-        WebhookWaitWithTimeout {
-            callback_id: "cb-a".to_owned(),
-            timeout,
-        },
-    );
-    registry_b.register_stateless_instance(
-        ActionMetadata::new(
-            action_key!("test.wr.webhook_timeout_b"),
-            "WebhookWaitWithTimeoutB",
-            "wait_recovery stub",
-        ),
-        WebhookWaitWithTimeoutB {
-            callback_id: "cb-b".to_owned(),
-            timeout,
-        },
-    );
-    registry_b.register_stateless_instance(
-        ActionMetadata::new(
-            action_key!("test.wr.echo"),
-            "CountingEcho",
-            "wait_recovery stub",
-        ),
-        CountingEcho {
-            invocations: Arc::clone(&downstream_a),
-        },
-    );
-    registry_b.register_stateless_instance(
-        ActionMetadata::new(
-            action_key!("test.wr.echo_b"),
-            "CountingEchoB",
-            "wait_recovery stub",
-        ),
-        CountingEchoB {
-            invocations: Arc::clone(&downstream_b),
-        },
-    );
+    registry_b
+        .register_stateless_instance(
+            pure_action_metadata!(
+                action_key!("test.wr.webhook_timeout"),
+                nebula_action::metadata_name!("WebhookWaitWithTimeout"),
+                "wait_recovery stub",
+            ),
+            WebhookWaitWithTimeout {
+                callback_id: "cb-a".to_owned(),
+                timeout,
+            },
+        )
+        .expect("valid test catalog definition");
+    registry_b
+        .register_stateless_instance(
+            pure_action_metadata!(
+                action_key!("test.wr.webhook_timeout_b"),
+                nebula_action::metadata_name!("WebhookWaitWithTimeoutB"),
+                "wait_recovery stub",
+            ),
+            WebhookWaitWithTimeoutB {
+                callback_id: "cb-b".to_owned(),
+                timeout,
+            },
+        )
+        .expect("valid test catalog definition");
+    registry_b
+        .register_stateless_instance(
+            pure_action_metadata!(
+                action_key!("test.wr.echo"),
+                nebula_action::metadata_name!("CountingEcho"),
+                "wait_recovery stub",
+            ),
+            CountingEcho {
+                invocations: Arc::clone(&downstream_a),
+            },
+        )
+        .expect("valid test catalog definition");
+    registry_b
+        .register_stateless_instance(
+            pure_action_metadata!(
+                action_key!("test.wr.echo_b"),
+                nebula_action::metadata_name!("CountingEchoB"),
+                "wait_recovery stub",
+            ),
+            CountingEchoB {
+                invocations: Arc::clone(&downstream_b),
+            },
+        )
+        .expect("valid test catalog definition");
     let engine_b = Arc::new(
         stores
             .attach(make_engine(&stores, registry_b))

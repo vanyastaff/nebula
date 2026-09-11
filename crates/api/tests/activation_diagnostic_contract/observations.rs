@@ -24,7 +24,6 @@ const SCENARIOS: &[(&str, &str)] = &[
     ("duplicate_connection", "DUPLICATE_CONNECTION"),
     ("graph_cycle", "GRAPH_CYCLE"),
     ("undeclared_effects", "UNDECLARED_EFFECTS"),
-    ("unsupported_effect_kind", "UNSUPPORTED_EFFECT_KIND"),
     ("unsupported_node_kind", "UNSUPPORTED_NODE_KIND"),
     ("action_version_mismatch", "ACTION_VERSION_MISMATCH"),
     ("disabled_node_edge", "DISABLED_NODE_EDGE"),
@@ -32,7 +31,6 @@ const SCENARIOS: &[(&str, &str)] = &[
     ("unsupported_target_port", "UNSUPPORTED_TARGET_PORT"),
     ("trigger_kind_mismatch", "TRIGGER_KIND_MISMATCH"),
     ("duplicate_trigger", "DUPLICATE_TRIGGER"),
-    ("invalid_reference_path", "INVALID_REFERENCE_PATH"),
     ("unknown_slot_override", "UNKNOWN_SLOT_OVERRIDE"),
     ("invalid_parameter_contract", "INVALID_PARAMETER_CONTRACT"),
     ("invalid_reference_contract", "INVALID_REFERENCE_CONTRACT"),
@@ -100,12 +98,22 @@ struct ExcludedDiagnostic {
     reason: &'static str,
 }
 
-// Ratified inventory exclusions, not evidence that either rejection was executed.
+// Ratified inventory exclusions, not evidence that these rejections were executed.
 // Their five-field formatting remains exercised by the separate variant tests.
-const EXCLUDED_DIAGNOSTICS: &[ExcludedDiagnostic] = &[ExcludedDiagnostic {
-    code: "WORKFLOW:GRAPH_ERROR",
-    reason: "No reachable producer beyond error conversion plumbing in the supported workflow validator.",
-}];
+const EXCLUDED_DIAGNOSTICS: &[ExcludedDiagnostic] = &[
+    ExcludedDiagnostic {
+        code: "PLUGIN_PLAN_GRAPH_V1:INVALID_REFERENCE_PATH",
+        reason: "Workflow definitions deserialize reference output paths as admitted RFC6901 ValuePath values, so malformed paths are rejected before the plugin Graph-v1 compiler boundary.",
+    },
+    ExcludedDiagnostic {
+        code: "PLUGIN_PLAN_GRAPH_V1:UNSUPPORTED_EFFECT_KIND",
+        reason: "Frozen registry admission rejects a remote effect contract unless the retained factory exposes a matching remote-effect capability, and that capability is only provided by stateless remote-effect factories.",
+    },
+    ExcludedDiagnostic {
+        code: "WORKFLOW:GRAPH_ERROR",
+        reason: "No reachable producer beyond error conversion plumbing in the supported workflow validator.",
+    },
+];
 
 fn fixture(scenario: &str, workflow: WorkflowId) -> Value {
     let mut definition = common::make_valid_workflow_definition(&workflow);
@@ -146,7 +154,7 @@ fn fixture(scenario: &str, workflow: WorkflowId) -> Value {
             definition["nodes"][0]["parameters"] = if scenario == "invalid_parameter_contract" {
                 json!({"value":{"type":"literal", "value":123}})
             } else {
-                json!({"value":{"type":"reference", "node_key":"absent", "output_path":"value"}})
+                json!({"value":{"type":"reference", "node_key":"absent", "output_path":"/value"}})
             };
         },
         "invalid_trigger_configuration" => {
@@ -175,12 +183,8 @@ fn fixture(scenario: &str, workflow: WorkflowId) -> Value {
         "missing_plugin" => definition["nodes"][0]["plugin_key"] = json!("missing"),
         "unsupported_schema" => definition["schema_version"] = json!(99),
         "undeclared_effects" => definition["nodes"][0]["action_key"] = json!("undeclared"),
-        "unsupported_effect_kind" => definition["nodes"][0]["action_key"] = json!("remote_control"),
         "unsupported_node_kind" => definition["nodes"][0]["action_key"] = json!("trigger"),
         "action_version_mismatch" => definition["nodes"][0]["interface_version"] = json!("99.0.0"),
-        "invalid_reference_path" => {
-            definition["nodes"][0]["parameters"] = json!({"input":{"type":"reference", "node_key":"absent", "output_path":"$[?(@.secret)]"}});
-        },
         "unknown_slot_override" => {
             definition["nodes"][0]["slot_bindings"] =
                 json!({"absent":{"kind":"resource_id", "id":"fixture"}});
@@ -700,7 +704,7 @@ fn checked_record_observations() -> Vec<ScenarioObservation> {
                 input["connections"] = json!([{"from_node":"step_a", "to_node":"step_a"}]);
             },
             "reference_without_connection" => {
-                input["nodes"][0]["parameters"] = json!({"value":{"type":"reference", "node_key":"step_a", "output_path":"value"}});
+                input["nodes"][0]["parameters"] = json!({"value":{"type":"reference", "node_key":"step_a", "output_path":"/value"}});
             },
             "invalid_retry" => {
                 input["config"]["retry_policy"] = json!({"max_attempts":0, "initial_delay_ms":100, "max_delay_ms":1000, "backoff_multiplier":2.0});
@@ -743,9 +747,7 @@ fn checked_record_observations() -> Vec<ScenarioObservation> {
 
 fn rehash_record(record: &mut Value) {
     record.as_object_mut().unwrap().remove("claimed_id");
-    let canonical = nebula_schema::FieldValue::Literal(record.clone())
-        .canonical_bytes()
-        .unwrap();
+    let canonical = nebula_schema::canonical_json_v1(record).unwrap();
     let domain = if record["canonical_hash_version"] == 1 {
         b"nebula.executable-plan.graph.v1"
     } else {

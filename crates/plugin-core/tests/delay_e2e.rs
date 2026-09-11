@@ -22,8 +22,8 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use nebula_engine::{
-    ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, ExecutionEvent,
-    InProcessRunner, WorkflowEngine,
+    ActionRegistry, ActionRuntime, DataPassingPolicy, ExecutionEvent, InProcessRunner,
+    WorkflowEngine,
 };
 use nebula_execution::context::ExecutionBudget;
 use nebula_metrics::MetricsRegistry;
@@ -38,10 +38,7 @@ use nebula_workflow::{
 
 fn make_engine() -> WorkflowEngine {
     let registry = Arc::new(ActionRegistry::new());
-    let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
-        Box::pin(async move { Ok(nebula_action::ActionResult::success(input)) })
-    });
-    let runner = Arc::new(InProcessRunner::new(executor));
+    let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(

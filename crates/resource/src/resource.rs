@@ -32,7 +32,10 @@
 
 use async_trait::async_trait;
 use nebula_core::ResourceKey;
-use nebula_metadata::{BaseCompatError, BaseMetadata, Metadata, validate_base_compat};
+use nebula_metadata::{
+    BaseCompatError, BaseMetadata, Metadata, MetadataDraft, RecordedBaseMetadata,
+    validate_base_compat,
+};
 use nebula_schema::ValidSchema;
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -50,8 +53,12 @@ use crate::context::ResourceContext;
 ///
 /// Must implement [`HasSchema`](nebula_schema::HasSchema) so the resource
 /// metadata can auto-derive its configuration schema from the config type.
-/// Use `()` / `bool` / `String` for schema-less stubs — baseline impls in
-/// `nebula-schema` cover primitives with empty schemas.
+/// `()` declares a null root; primitives such as `bool` and `String` declare
+/// their scalar kinds. An empty-braced struct declares an empty record, not
+/// null. JSON-driven registration must use the declared serde wire shape.
+/// The `ResourceConfig` derive requires `#[config(schema = external)]` plus a
+/// derived or manual `HasSchema` for every nonempty or tuple config; it only
+/// supplies automatic schemas for unit and empty-braced structs.
 pub trait ResourceConfig: nebula_schema::HasSchema + Send + Sync + Clone + 'static {
     /// Validates the configuration, returning an error if invalid.
     ///
@@ -83,9 +90,10 @@ pub trait ResourceConfig: nebula_schema::HasSchema + Send + Sync + Clone + 'stat
     /// for a correct structural default:
     ///
     /// ```
-    /// use nebula_resource::ResourceConfig;
+    /// use nebula_resource::{ResourceConfig, Schema};
     ///
-    /// #[derive(ResourceConfig, Clone)]
+    /// #[derive(ResourceConfig, Schema, Clone)]
+    /// #[config(schema = external)]
     /// struct PgConfig {
     ///     url: String,
     ///     max_conns: u32,
@@ -116,24 +124,259 @@ impl ResourceConfig for () {
     }
 }
 
-/// Resource metadata for UI and diagnostics.
+/// Resource metadata authoring state before the canonical configuration schema is bound.
 ///
-/// The shared catalog prefix (`key`, `name`, `description`, `schema`, `icon`,
-/// `documentation_url`, `tags`, `maturity`, `deprecation`) lives on the
-/// composed [`BaseMetadata`]. Resource has no additional top-level metadata
-/// fields today — every catalog-level concern lives on the shared base.
+/// Authors return this type from [`Provider::metadata`]. The resource factory
+/// derives the schema from `R::Config` and performs the only transition to
+/// getter-only [`ResourceMetadata`]. A draft cannot supply or override a schema.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use = "resource metadata drafts are admitted by a resource factory"]
+pub struct ResourceMetadataDraft {
+    base: MetadataDraft<ResourceKey>,
+}
+
+impl ResourceMetadataDraft {
+    /// Create a draft from an already checked display name.
+    pub fn new(
+        key: ResourceKey,
+        name: nebula_metadata::MetadataName,
+        description: impl Into<String>,
+    ) -> Self {
+        Self {
+            base: MetadataDraft::new(key, name, description),
+        }
+    }
+
+    /// Create a draft after checking a dynamic display name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`nebula_metadata::MetadataError::BlankName`] for empty or
+    /// whitespace-only text.
+    pub fn try_new(
+        key: ResourceKey,
+        name: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Result<Self, nebula_metadata::MetadataError> {
+        Ok(Self {
+            base: MetadataDraft::try_new(key, name, description)?,
+        })
+    }
+
+    /// Create minimal author intent derived from a resource key.
+    pub fn from_key(key: ResourceKey) -> Self {
+        Self::new(key.clone(), key.into(), String::new())
+    }
+
+    /// Set the interface version.
+    pub fn with_version(mut self, version: Version) -> Self {
+        self.base = self.base.with_version(version);
+        self
+    }
+
+    /// Set the catalog icon.
+    pub fn with_icon(mut self, icon: nebula_metadata::Icon) -> Self {
+        self.base = self.base.with_icon(icon);
+        self
+    }
+
+    /// Set an inline-identifier icon.
+    pub fn with_inline_icon(mut self, name: impl Into<String>) -> Self {
+        self.base = self.base.with_inline_icon(name);
+        self
+    }
+
+    /// Set a URL-backed icon.
+    pub fn with_url_icon(mut self, url: impl Into<String>) -> Self {
+        self.base = self.base.with_url_icon(url);
+        self
+    }
+
+    /// Set the documentation URL.
+    pub fn with_documentation_url(mut self, url: impl Into<String>) -> Self {
+        self.base = self.base.with_documentation_url(url);
+        self
+    }
+
+    /// Replace all catalog tags.
+    pub fn with_tags<I, S>(mut self, tags: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.base = self.base.with_tags(tags);
+        self
+    }
+
+    /// Append one catalog tag.
+    pub fn add_tag(mut self, tag: impl Into<String>) -> Self {
+        self.base = self.base.add_tag(tag);
+        self
+    }
+
+    /// Mark the resource experimental.
+    pub fn mark_experimental(mut self) -> Self {
+        self.base = self.base.mark_experimental();
+        self
+    }
+
+    /// Mark the resource beta.
+    pub fn mark_beta(mut self) -> Self {
+        self.base = self.base.mark_beta();
+        self
+    }
+
+    /// Mark the resource stable.
+    pub fn mark_stable(mut self) -> Self {
+        self.base = self.base.mark_stable();
+        self
+    }
+
+    /// Attach a deprecation notice and mark the resource deprecated.
+    pub fn with_deprecation(mut self, notice: nebula_metadata::DeprecationNotice) -> Self {
+        self.base = self.base.with_deprecation(notice);
+        self
+    }
+
+    pub(crate) fn admit(self, schema: ValidSchema) -> ResourceMetadata {
+        ResourceMetadata {
+            base: self.base.bind_schema(schema),
+        }
+    }
+}
+
+/// Immutable resource metadata admitted by a resource factory.
+///
+/// The schema is always derived from the resource's `R::Config` type. Fields
+/// are private and exposed through getters; rebuild a fresh draft to change a
+/// static definition. This admitted form serializes for catalogs but cannot be
+/// deserialized from wire or persistence data.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ResourceMetadata {
-    /// Shared catalog prefix.
     #[serde(flatten)]
-    pub base: BaseMetadata<ResourceKey>,
+    base: BaseMetadata<ResourceKey>,
+}
+
+impl ResourceMetadata {
+    /// Shared admitted catalog metadata.
+    #[must_use]
+    pub const fn base(&self) -> &BaseMetadata<ResourceKey> {
+        &self.base
+    }
+
+    /// Validate that this metadata update is version-compatible with `previous`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MetadataCompatibilityError`] when the key changes, the
+    /// version moves backward, or a schema change lacks a major-version bump.
+    pub fn validate_compatibility(
+        &self,
+        previous: &Self,
+    ) -> Result<(), MetadataCompatibilityError> {
+        validate_base_compat(&self.base, &previous.base)?;
+        Ok(())
+    }
 }
 
 impl Metadata for ResourceMetadata {
     type Key = ResourceKey;
+
     fn base(&self) -> &BaseMetadata<ResourceKey> {
         &self.base
+    }
+}
+
+/// Deserialized evidence of a previously admitted resource definition.
+///
+/// Recorded fields never become authority. Call [`Self::readmit_against`]
+/// with metadata freshly admitted from the current static resource type.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordedResourceMetadata {
+    #[serde(flatten)]
+    base: RecordedBaseMetadata<ResourceKey>,
+}
+
+impl RecordedResourceMetadata {
+    /// Recorded shared metadata evidence.
+    #[must_use]
+    pub const fn base(&self) -> &RecordedBaseMetadata<ResourceKey> {
+        &self.base
+    }
+
+    /// Re-admit an exact recorded definition against fresh static metadata.
+    ///
+    /// The returned value is cloned entirely from `fresh_definition`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`nebula_metadata::MetadataReadmissionError::DefinitionMismatch`]
+    /// when any recorded field or the canonical schema differs.
+    #[tracing::instrument(name = "resource.metadata.readmit_recorded", skip_all, err)]
+    pub fn readmit_against(
+        &self,
+        fresh_definition: &ResourceMetadata,
+    ) -> Result<ResourceMetadata, nebula_metadata::MetadataReadmissionError> {
+        self.base.readmit_against(fresh_definition.base())?;
+        Ok(fresh_definition.clone())
+    }
+}
+
+/// A resource catalog definition failed factory admission.
+#[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
+pub enum MetadataBuildError {
+    /// Shared metadata or canonical schema construction failed.
+    #[error(transparent)]
+    Definition(#[from] nebula_metadata::MetadataBuildError),
+    /// The authored metadata key differs from the provider's canonical key.
+    #[error("resource metadata key `{actual}` does not match provider key `{expected}`")]
+    KeyMismatch {
+        /// Canonical key declared by [`Provider::key`].
+        expected: ResourceKey,
+        /// Key carried by the schema-free author draft.
+        actual: ResourceKey,
+    },
+}
+
+impl From<nebula_schema::ValidationReport> for MetadataBuildError {
+    fn from(report: nebula_schema::ValidationReport) -> Self {
+        Self::Definition(nebula_metadata::MetadataBuildError::from(report))
+    }
+}
+
+impl nebula_error::Classify for MetadataBuildError {
+    fn category(&self) -> nebula_error::ErrorCategory {
+        match self {
+            Self::Definition(source) => nebula_error::Classify::category(source),
+            Self::KeyMismatch { .. } => nebula_error::ErrorCategory::Validation,
+        }
+    }
+
+    fn code(&self) -> nebula_error::ErrorCode {
+        match self {
+            Self::Definition(source) => nebula_error::Classify::code(source),
+            Self::KeyMismatch { .. } => {
+                nebula_error::ErrorCode::new("RESOURCE:METADATA_KEY_MISMATCH")
+            },
+        }
+    }
+
+    fn is_retryable(&self) -> bool {
+        match self {
+            Self::Definition(source) => nebula_error::Classify::is_retryable(source),
+            Self::KeyMismatch { .. } => false,
+        }
+    }
+
+    fn retry_hint(&self) -> Option<nebula_error::RetryHint> {
+        match self {
+            Self::Definition(source) => nebula_error::Classify::retry_hint(source),
+            Self::KeyMismatch { .. } => None,
+        }
     }
 }
 
@@ -151,134 +394,6 @@ pub enum MetadataCompatibilityError {
     /// A generic catalog-citizen rule fired (key / version / schema).
     #[error(transparent)]
     Base(#[from] BaseCompatError<ResourceKey>),
-}
-
-impl ResourceMetadata {
-    /// Build resource metadata with explicit catalog-level fields.
-    #[must_use]
-    pub fn builder(
-        key: ResourceKey,
-        name: impl Into<String>,
-        description: impl Into<String>,
-    ) -> ResourceMetadataBuilder {
-        ResourceMetadataBuilder {
-            inner: Self::new(key, name, description, ValidSchema::empty()),
-        }
-    }
-
-    /// Build resource metadata with explicit catalog-level fields.
-    pub fn new(
-        key: ResourceKey,
-        name: impl Into<String>,
-        description: impl Into<String>,
-        schema: ValidSchema,
-    ) -> Self {
-        Self {
-            base: BaseMetadata::new(key, name, description, schema),
-        }
-    }
-
-    /// Set the interface version from `(major, minor)` components.
-    ///
-    /// Symmetric with `ActionMetadata::with_version` and
-    /// `CredentialMetadata::with_version`.
-    #[must_use = "builder methods must be chained or built"]
-    pub fn with_version(mut self, major: u64, minor: u64) -> Self {
-        self.base.version = Version::new(major, minor, 0);
-        self
-    }
-
-    /// Set the full interface version, including patch and pre-release data.
-    #[must_use = "builder methods must be chained or built"]
-    pub fn with_version_full(mut self, version: Version) -> Self {
-        self.base.version = version;
-        self
-    }
-
-    /// Build resource metadata whose schema is auto-derived from a
-    /// [`Provider`] implementation's `Config` type.
-    pub fn for_resource<R>(
-        key: ResourceKey,
-        name: impl Into<String>,
-        description: impl Into<String>,
-    ) -> Self
-    where
-        R: Provider,
-    {
-        Self::new(
-            key,
-            name,
-            description,
-            <R::Config as nebula_schema::HasSchema>::schema(),
-        )
-    }
-
-    /// Create minimal metadata derived from a key — uses the key as the
-    /// display name, an empty description, and an empty schema. Convenient
-    /// for in-process resources that never show up in a user-facing catalog.
-    pub fn from_key(key: &ResourceKey) -> Self {
-        Self::new(
-            key.clone(),
-            key.to_string(),
-            String::new(),
-            ValidSchema::empty(),
-        )
-    }
-
-    /// Validate that this metadata update is version-compatible with `previous`.
-    ///
-    /// Delegates `key immutable / version monotonic / schema-break-requires-
-    /// major` to [`validate_base_compat`]. Resource has no entity-specific
-    /// rules today, so the wrapper enum has only the `Base` variant; the
-    /// wrapper exists for shape parity with `nebula-action` and
-    /// `nebula-credential`, so callers can match the error across all three
-    /// catalog-leaf consumers uniformly.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MetadataCompatibilityError`] when `self.base.key` differs
-    /// from `previous.base.key`, `self.base.version` is not monotonically
-    /// increasing over `previous.base.version`, or the schema changed in a
-    /// way that requires a major version bump — see [`validate_base_compat`]
-    /// for the exact rule set.
-    pub fn validate_compatibility(
-        &self,
-        previous: &Self,
-    ) -> Result<(), MetadataCompatibilityError> {
-        validate_base_compat(&self.base, &previous.base)?;
-        Ok(())
-    }
-}
-
-/// Fluent builder for [`ResourceMetadata`].
-///
-/// Obtain one via [`ResourceMetadata::builder`] and call
-/// [`build`](ResourceMetadataBuilder::build) when done.
-#[derive(Debug, Clone)]
-pub struct ResourceMetadataBuilder {
-    inner: ResourceMetadata,
-}
-
-impl ResourceMetadataBuilder {
-    /// Set the configuration schema for this resource.
-    #[must_use = "builder methods must be chained or built"]
-    pub fn with_schema(mut self, schema: ValidSchema) -> Self {
-        self.inner.base.schema = schema;
-        self
-    }
-
-    /// Set the interface version from `(major, minor)` components.
-    #[must_use = "builder methods must be chained or built"]
-    pub fn with_version(mut self, major: u64, minor: u64) -> Self {
-        self.inner = self.inner.with_version(major, minor);
-        self
-    }
-
-    /// Finalise the builder and return the [`ResourceMetadata`].
-    #[must_use]
-    pub fn build(self) -> ResourceMetadata {
-        self.inner
-    }
 }
 
 /// Why an instance is being torn down — lets a `destroy` impl adapt its
@@ -651,21 +766,12 @@ pub trait Provider: HasCredentialSlots + Send + Sync + Sized + 'static {
         Ok(())
     }
 
-    /// Returns the schema for this resource's configuration.
+    /// Returns schema-free author intent for UI and diagnostics.
     ///
-    /// Default: derives from `Config` via [`HasSchema`](nebula_schema::HasSchema).
-    fn schema() -> ValidSchema {
-        <Self::Config as nebula_schema::HasSchema>::schema()
-    }
-
-    /// Returns metadata for UI and diagnostics.
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(
-            Self::key(),
-            Self::key().to_string(),
-            String::new(),
-            Self::schema(),
-        )
+    /// The resource factory derives and binds the canonical configuration
+    /// schema from [`Self::Config`]. Authors cannot supply an arbitrary schema.
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 
@@ -791,34 +897,34 @@ mod tests {
     use nebula_schema::ValidSchema;
     use semver::Version;
 
-    use super::{MetadataCompatibilityError, ResourceMetadata};
+    use super::{
+        MetadataCompatibilityError, RecordedResourceMetadata, ResourceMetadata,
+        ResourceMetadataDraft,
+    };
 
     fn empty_schema() -> ValidSchema {
         ValidSchema::empty()
     }
 
     fn md(major: u64, minor: u64) -> ResourceMetadata {
-        ResourceMetadata::new(resource_key!("postgres"), "pg", "d", empty_schema())
-            .with_version(major, minor)
+        ResourceMetadataDraft::new(resource_key!("postgres"), crate::metadata_name!("pg"), "d")
+            .with_version(Version::new(major, minor, 0))
+            .admit(empty_schema())
     }
 
     #[test]
     fn metadata_equality_tracks_version() {
-        let a = ResourceMetadata::new(resource_key!("postgres"), "pg", "d", empty_schema())
-            .with_version(1, 2);
-        let b = ResourceMetadata::new(resource_key!("postgres"), "pg", "d", empty_schema())
-            .with_version(1, 2);
+        let a = md(1, 2);
+        let b = md(1, 2);
         assert_eq!(a, b);
 
-        let c = ResourceMetadata::new(resource_key!("postgres"), "pg", "d", empty_schema())
-            .with_version(1, 3);
+        let c = md(1, 3);
         assert_ne!(a, c, "different minor version must break equality");
     }
 
     #[test]
-    fn metadata_serde_roundtrip() {
-        let original = ResourceMetadata::new(resource_key!("postgres"), "pg", "d", empty_schema())
-            .with_version(2, 1);
+    fn recorded_metadata_roundtrip_requires_fresh_readmission() {
+        let original = md(2, 1);
 
         let json = serde_json::to_string(&original).expect("serialization succeeds");
         let json_value: serde_json::Value =
@@ -832,18 +938,23 @@ mod tests {
             Some("postgres")
         );
 
-        let decoded: ResourceMetadata =
-            serde_json::from_str(&json).expect("deserialization succeeds");
-        assert_eq!(original, decoded);
+        let recorded: RecordedResourceMetadata =
+            serde_json::from_str(&json).expect("recorded evidence deserializes");
+        let readmitted = recorded
+            .readmit_against(&original)
+            .expect("matching evidence readmits against the fresh definition");
+        assert_eq!(original, readmitted);
     }
 
     #[test]
     fn full_version_preserves_all_semver_components() {
         let version = Version::parse("2.1.3-alpha.1+build.7").expect("valid test version");
-        let metadata = ResourceMetadata::new(resource_key!("postgres"), "pg", "d", empty_schema())
-            .with_version_full(version.clone());
+        let metadata =
+            ResourceMetadataDraft::new(resource_key!("postgres"), crate::metadata_name!("pg"), "d")
+                .with_version(version.clone())
+                .admit(empty_schema());
 
-        assert_eq!(metadata.base.version, version);
+        assert_eq!(metadata.base().version(), &version);
     }
 
     #[test]
@@ -858,9 +969,12 @@ mod tests {
         let prev = md(2, 1);
         let next = md(2, 0);
         let err = next.validate_compatibility(&prev).unwrap_err();
-        assert!(matches!(
-            err,
-            MetadataCompatibilityError::Base(BaseCompatError::VersionRegressed { .. })
-        ));
+        assert!(
+            matches!(
+                err,
+                MetadataCompatibilityError::Base(BaseCompatError::VersionRegressed { .. })
+            ),
+            "version regression must retain its typed compatibility failure"
+        );
     }
 }

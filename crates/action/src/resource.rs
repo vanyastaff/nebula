@@ -67,7 +67,7 @@ pub trait ResourceAction: Action<Output = ResourceProduces<Self::Resource>> {
 ///
 /// Returns [`ActionError`] on configuration or cleanup failure.
 #[async_trait::async_trait]
-pub trait ResourceHandler: Send + Sync + 'static {
+pub trait ResourceHandler: crate::handle::sealed::Resource + Send + Sync + 'static {
     /// Action metadata (key, version, capabilities).
     fn metadata(&self) -> &ActionMetadata;
 
@@ -118,8 +118,8 @@ pub trait ResourceHandler: Send + Sync + 'static {
 ///     // ResourceAction constrains `Output` to `ResourceProduces<Self::Resource>`.
 ///     type Output = ResourceProduces<String>;
 ///
-///     fn metadata() -> ActionMetadata {
-///         ActionMetadata::new(action_key!("demo.string_pool"), "StringPool", "A pooled String")
+///     fn metadata() -> nebula_action::ActionMetadataDraft {
+///         nebula_action::ActionMetadataDraft::new(action_key!("demo.string_pool"), nebula_action::metadata_name!("StringPool"), "A pooled String")
 ///     }
 ///     fn dependencies() -> &'static Dependencies {
 ///         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -147,23 +147,28 @@ pub trait ResourceHandler: Send + Sync + 'static {
 /// }
 ///
 /// // The typed action erases to a `dyn ResourceHandler` the engine can store.
-/// let handler: Arc<dyn ResourceHandler> = Arc::new(ResourceActionAdapter::new(StringPool));
-/// assert_eq!(handler.metadata().base.key, action_key!("demo.string_pool"));
+/// let handler: Arc<dyn ResourceHandler> = Arc::new(ResourceActionAdapter::new(StringPool).expect("valid metadata"));
+/// assert_eq!(handler.metadata().base().key(), &action_key!("demo.string_pool"));
 /// ```
 pub struct ResourceActionAdapter<A> {
     action: A,
     meta: ActionMetadata,
 }
 
+impl<A> crate::handle::sealed::Resource for ResourceActionAdapter<A> {}
+
 impl<A> ResourceActionAdapter<A> {
     /// Wrap a typed resource action.
-    #[must_use]
-    pub fn new(action: A) -> Self
+    ///
+    /// # Errors
+    /// Returns a typed catalog error if metadata or an associated schema is invalid.
+    #[tracing::instrument(name = "action.metadata.admit", skip_all, err)]
+    pub fn new(action: A) -> Result<Self, crate::ActionMetadataAdmissionError>
     where
         A: Action,
     {
-        let meta = <A as Action>::metadata();
-        Self { action, meta }
+        let meta = <A as Action>::metadata().admit_for::<A>(crate::ActionKind::Resource)?;
+        Ok(Self { action, meta })
     }
 
     /// Consume the adapter, returning the inner action.
@@ -229,7 +234,7 @@ where
 impl<A: Action> fmt::Debug for ResourceActionAdapter<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ResourceActionAdapter")
-            .field("action", &<A as Action>::metadata().base.key)
+            .field("action", self.meta.base().key())
             .finish_non_exhaustive()
     }
 }
@@ -259,10 +264,10 @@ mod tests {
         // MockResourceAction::Resource = String, so Output = ResourceProduces<String>.
         type Output = ResourceProduces<String>;
 
-        fn metadata() -> ActionMetadata {
-            ActionMetadata::new(
+        fn metadata() -> crate::ActionMetadataDraft {
+            crate::ActionMetadataDraft::new(
                 nebula_core::action_key!("test.resource_action"),
-                "MockResource",
+                crate::metadata_name!("MockResource"),
                 "Creates a string pool",
             )
         }
@@ -297,13 +302,15 @@ mod tests {
 
     #[test]
     fn resource_adapter_is_dyn_compatible() {
-        let adapter = ResourceActionAdapter::new(MockResourceAction::new());
+        let adapter = ResourceActionAdapter::new(MockResourceAction::new())
+            .expect("valid test catalog definition");
         let _: Arc<dyn ResourceHandler> = Arc::new(adapter);
     }
 
     #[tokio::test]
     async fn resource_adapter_configure_returns_boxed_instance() {
-        let adapter = ResourceActionAdapter::new(MockResourceAction::new());
+        let adapter = ResourceActionAdapter::new(MockResourceAction::new())
+            .expect("valid test catalog definition");
         let handler: Arc<dyn ResourceHandler> = Arc::new(adapter);
         let ctx = make_ctx();
 
@@ -317,7 +324,8 @@ mod tests {
 
     #[tokio::test]
     async fn resource_adapter_cleanup_receives_typed_instance() {
-        let adapter = ResourceActionAdapter::new(MockResourceAction::new());
+        let adapter = ResourceActionAdapter::new(MockResourceAction::new())
+            .expect("valid test catalog definition");
         let handler: Arc<dyn ResourceHandler> = Arc::new(adapter);
         let ctx = make_ctx();
 
@@ -327,7 +335,8 @@ mod tests {
 
     #[tokio::test]
     async fn resource_adapter_cleanup_fails_on_wrong_type() {
-        let adapter = ResourceActionAdapter::new(MockResourceAction::new());
+        let adapter = ResourceActionAdapter::new(MockResourceAction::new())
+            .expect("valid test catalog definition");
         let handler: Arc<dyn ResourceHandler> = Arc::new(adapter);
         let ctx = make_ctx();
 
@@ -338,11 +347,10 @@ mod tests {
 
     #[test]
     fn resource_adapter_into_inner_returns_action() {
-        let adapter = ResourceActionAdapter::new(MockResourceAction::new());
+        let adapter = ResourceActionAdapter::new(MockResourceAction::new())
+            .expect("valid test catalog definition");
+        let key = adapter.metadata().base().key().clone();
         let _action = adapter.into_inner();
-        assert_eq!(
-            <MockResourceAction as Action>::metadata().base.key,
-            nebula_core::action_key!("test.resource_action")
-        );
+        assert_eq!(key, nebula_core::action_key!("test.resource_action"));
     }
 }

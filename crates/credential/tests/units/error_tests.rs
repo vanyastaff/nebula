@@ -35,7 +35,7 @@ fn test_crypto_error_display() {
     assert!(version_err.to_string().contains("99"));
 }
 
-/// Test: Validation error messages include helpful reason
+/// Test: Validation error diagnostics never include rejected credential input.
 #[test]
 fn test_validation_error_display() {
     let empty_err = ValidationError::EmptyCredentialId;
@@ -43,25 +43,24 @@ fn test_validation_error_display() {
     assert!(msg.contains("empty"));
     assert!(msg.contains("Credential ID"));
 
-    let invalid_err = ValidationError::InvalidCredentialId {
-        id: "../etc/passwd".to_string(),
-        reason: "contains invalid characters".to_string(),
-    };
-    let msg = invalid_err.to_string();
-    assert!(msg.contains("../etc/passwd"));
-    assert!(msg.contains("contains invalid characters"));
+    let invalid_err = ValidationError::InvalidCredentialId;
+    assert_eq!(invalid_err.to_string(), "Credential ID is invalid");
 
-    let format_err = ValidationError::InvalidFormat("missing required field".to_string());
-    assert!(format_err.to_string().contains("Invalid credential format"));
+    let format_err = ValidationError::InvalidFormat;
+    assert_eq!(format_err.to_string(), "Invalid credential format");
 }
 
 /// Test: Crypto error conversion to CredentialError
 #[test]
 fn test_crypto_error_conversion() {
-    let crypto_err = CryptoError::DecryptionFailed;
+    const CANARY: &str = "credential-crypto-source-secret-canary";
+    let crypto_err = CryptoError::EncryptionFailed(CANARY.to_owned());
     let cred_err: CredentialError = crypto_err.into();
     let msg = cred_err.to_string();
-    assert!(msg.contains("Decryption failed"));
+    assert_eq!(msg, "credential cryptographic operation failed");
+    assert!(!format!("{cred_err:?}").contains(CANARY));
+
+    assert!(std::error::Error::source(&cred_err).is_none());
 }
 
 /// Test: Validation error conversion to CredentialError
@@ -90,7 +89,7 @@ fn test_error_display_format_stable() {
 fn test_classify_integration() {
     use nebula_error::Classify;
 
-    let err = CredentialError::InvalidInput("bad".into());
+    let err = CredentialError::InvalidInput;
     assert_eq!(err.category(), nebula_error::ErrorCategory::Validation);
     assert!(!err.is_retryable());
 
@@ -114,13 +113,10 @@ fn test_provider_error_context() {
     let ctx = ProviderErrorContext::new(
         ProviderErrorKind::Network,
         SecretFreeMessage::new("connection refused"),
-    )
-    .with_code("ERR_CONNECT");
+    );
 
     assert_eq!(ctx.kind(), ProviderErrorKind::Network);
     assert_eq!(ctx.message().as_str(), "connection refused");
-    assert_eq!(ctx.provider_code(), Some("ERR_CONNECT"));
-
     let err = CredentialError::Provider(Box::new(ctx));
     assert!(err.is_retryable());
 }

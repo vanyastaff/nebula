@@ -44,14 +44,14 @@ fn top_level_type_sizes_are_stable() {
          that drives this size, check it first."
     );
     // NOTE: ActionMetadata is a composed `BaseMetadata<ActionKey>` plus
-    // action-specific fields (version / inputs / outputs / isolation / kind /
+    // action-specific fields (inputs / outputs / isolation / kind /
     // checkpoint_policy / effect_contract / max_concurrent / output_schema). The shared prefix
     // brings Icon, documentation_url, tags (Box<[String]>), MaturityLevel, and
     // Option<DeprecationNotice>. Allocation is once-per-action type — not a hot
     // path — so we accept the size in exchange for the unified catalog contract.
     // The effect declaration keeps its cold remote descriptor behind a box,
     // limiting the catalog entry increase to the enum's 16-byte handle.
-    assert_eq!(size_of::<ActionMetadata>(), 400);
+    assert_eq!(size_of::<ActionMetadata>(), 376);
     assert_eq!(size_of::<ActionError>(), 72);
 
     // `WebhookRequest` contains a `SystemTime`, which is 8 bytes on

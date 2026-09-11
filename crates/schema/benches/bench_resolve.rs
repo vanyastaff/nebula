@@ -1,5 +1,5 @@
-use criterion::{Criterion, black_box};
-use nebula_schema::{Field, FieldValues, Schema, field_key};
+use criterion::{BatchSize, Criterion, black_box};
+use nebula_schema::{AuthoredValue, Field, Schema, field_key};
 use serde_json::json;
 
 fn bench_resolve_literal_only(c: &mut Criterion) {
@@ -9,18 +9,33 @@ fn bench_resolve_literal_only(c: &mut Criterion) {
         .build()
         .expect("schema is valid");
 
-    let values = FieldValues::from_json(json!({"name": "hello", "score": 42})).unwrap();
-    let valid = schema.validate(&values).expect("values are valid");
+    let values = AuthoredValue::from_data(json!({"name": "hello", "score": 42})).unwrap();
+    let valid = schema.validate(values).expect("values are valid");
+    assert_eq!(
+        valid
+            .clone()
+            .resolve_data()
+            .expect("data completes")
+            .into_json(),
+        json!({"name": "hello", "score": 42})
+    );
 
-    c.bench_function("resolve_literal_only_fast_path", |b| {
-        b.iter(|| {
-            // Fast path: schema.flags().uses_expressions == false so no walking.
-            black_box(&valid);
-        });
+    c.bench_function("resolve_literal_only", |b| {
+        b.iter_batched(
+            || valid.clone(),
+            |valid| {
+                black_box(
+                    valid
+                        .resolve_data()
+                        .expect("data completes without an engine"),
+                )
+            },
+            BatchSize::SmallInput,
+        );
     });
 }
 
-fn bench_validate_static_phase1(c: &mut Criterion) {
+fn bench_validate_static(c: &mut Criterion) {
     let schema = Schema::builder()
         .add(Field::string(field_key!("name")).required())
         .add(
@@ -38,19 +53,26 @@ fn bench_validate_static_phase1(c: &mut Criterion) {
         .expect("schema is valid");
 
     let values =
-        FieldValues::from_json(json!({"name": "nebula", "retries": 3, "mode": "sync"})).unwrap();
+        AuthoredValue::from_data(json!({"name": "nebula", "retries": 3, "mode": "sync"})).unwrap();
 
     c.bench_function("schema_validate_static", |b| {
-        b.iter(|| {
-            let result = schema.validate(black_box(&values));
-            let _ = black_box(result);
-        });
+        b.iter_batched(
+            || values.clone(),
+            |values| {
+                black_box(
+                    schema
+                        .validate(black_box(values))
+                        .expect("valid static data"),
+                )
+            },
+            BatchSize::SmallInput,
+        );
     });
 }
 
 fn main() {
     let mut criterion = Criterion::default().configure_from_args();
     bench_resolve_literal_only(&mut criterion);
-    bench_validate_static_phase1(&mut criterion);
+    bench_validate_static(&mut criterion);
     criterion.final_summary();
 }

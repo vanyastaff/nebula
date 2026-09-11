@@ -13,13 +13,12 @@
 //! diagnostics, etc.). It can be removed when those internal callers
 //! migrate.
 
-use nebula_schema::FieldValues;
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{
-    AuthPattern, Credential, CredentialContext, CredentialError, CredentialMetadata,
-    CredentialState, ResolveResult,
+    AuthPattern, Credential, CredentialContext, CredentialError, CredentialMetadataDraft,
+    CredentialState, StaticResolveResult,
 };
 
 /// State for [`NoCredential`]. Carries no data — it is the type-level marker
@@ -68,12 +67,11 @@ impl Credential for NoCredential {
 
     const KEY: &'static str = "no_credential";
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> CredentialMetadataDraft {
+        CredentialMetadataDraft::new(
             nebula_core::credential_key!("no_credential"),
-            "No credential",
+            crate::metadata_name!("No credential"),
             "Opt-out marker for resources without an authenticated binding.",
-            nebula_schema::schema_of::<Self::Properties>(),
             AuthPattern::NoAuth,
         )
     }
@@ -81,9 +79,9 @@ impl Credential for NoCredential {
     fn project(_state: &Self::State) {}
 
     async fn resolve(
-        _values: &FieldValues,
+        _properties: &(),
         _ctx: &CredentialContext,
-    ) -> Result<ResolveResult<Self::State, ()>, CredentialError> {
-        Ok(ResolveResult::Complete(NoCredentialState))
+    ) -> Result<StaticResolveResult<Self::State>, CredentialError> {
+        Ok(StaticResolveResult::Complete(NoCredentialState))
     }
 }

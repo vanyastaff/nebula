@@ -3,7 +3,7 @@
 //! validated (a smuggled expression in a no-payload mode-variant placeholder
 //! must not escape to resolve). The carve-out is moved, not deleted.
 use nebula_schema::mode::VisibilityMode;
-use nebula_schema::{Field, FieldValues, Schema, field_key};
+use nebula_schema::{AuthoredValue, Field, Schema, field_key};
 use serde_json::json;
 
 #[test]
@@ -22,18 +22,18 @@ fn hidden_mode_present_expr_payload_is_rejected_not_skipped() {
         .build()
         .expect("schema builds");
 
-    let values = FieldValues::from_json(json!({
+    let values = AuthoredValue::from_template_json(json!({
         "auth": { "mode": "flag", "value": { "$expr": "{{ $secrets.leak }}" } }
     }))
     .unwrap();
 
-    let report = schema.validate(&values).expect_err("must reject");
+    let report = schema.validate(values).expect_err("must reject");
     assert!(
-        report.errors().any(|e| e.code == "expression.forbidden"),
+        report.errors().any(|e| e.code() == "expression.forbidden"),
         "hidden+present mode payload must still be structurally validated, got: {:?}",
         report
             .errors()
-            .map(|e| (e.code.to_string(), e.path.to_string()))
+            .map(|e| (e.code().to_string(), e.path().to_string()))
             .collect::<Vec<_>>()
     );
 }
@@ -41,7 +41,7 @@ fn hidden_mode_present_expr_payload_is_rejected_not_skipped() {
 fn codes(report: &nebula_schema::ValidationReport) -> Vec<(String, String)> {
     report
         .errors()
-        .map(|e| (e.code.to_string(), e.path.to_string()))
+        .map(|e| (e.code().to_string(), e.path().to_string()))
         .collect()
 }
 
@@ -59,14 +59,14 @@ fn hidden_object_present_expr_child_is_still_validated() {
         .build()
         .expect("schema builds");
 
-    let values = FieldValues::from_json(json!({
+    let values = AuthoredValue::from_template_json(json!({
         "cfg": { "token": { "$expr": "{{ $secrets.leak }}" } }
     }))
     .unwrap();
 
-    let report = schema.validate(&values).expect_err("must reject");
+    let report = schema.validate(values).expect_err("must reject");
     assert!(
-        report.errors().any(|e| e.code == "expression.forbidden"),
+        report.errors().any(|e| e.code() == "expression.forbidden"),
         "hidden Object child must still be structurally validated, got: {:?}",
         codes(&report)
     );
@@ -85,14 +85,14 @@ fn hidden_list_present_expr_item_is_still_validated() {
         .build()
         .expect("schema builds");
 
-    let values = FieldValues::from_json(json!({
+    let values = AuthoredValue::from_template_json(json!({
         "rows": [ { "$expr": "{{ $secrets.leak }}" } ]
     }))
     .unwrap();
 
-    let report = schema.validate(&values).expect_err("must reject");
+    let report = schema.validate(values).expect_err("must reject");
     assert!(
-        report.errors().any(|e| e.code == "expression.forbidden"),
+        report.errors().any(|e| e.code() == "expression.forbidden"),
         "hidden List item must still be structurally validated, got: {:?}",
         codes(&report)
     );
@@ -117,14 +117,14 @@ fn hidden_required_object_present_expr_child_is_validated_not_required_absent() 
         .build()
         .expect("schema builds");
 
-    let values = FieldValues::from_json(json!({
+    let values = AuthoredValue::from_template_json(json!({
         "cfg": { "token": { "$expr": "{{ $secrets.leak }}" } }
     }))
     .unwrap();
 
-    let report = schema.validate(&values).expect_err("must reject");
+    let report = schema.validate(values).expect_err("must reject");
     assert!(
-        report.errors().any(|e| e.code == "expression.forbidden"),
+        report.errors().any(|e| e.code() == "expression.forbidden"),
         "hidden+required Object with a present child must be Validated, not \
          swallowed by RequiredAbsent, got: {:?}",
         codes(&report)
@@ -147,9 +147,9 @@ fn hidden_required_empty_collection_emits_exactly_one_required() {
         .build()
         .expect("schema builds");
 
-    let values = FieldValues::from_json(json!({ "rows": [] })).unwrap();
-    let report = schema.validate(&values).expect_err("must reject");
-    let required_count = report.errors().filter(|e| e.code == "required").count();
+    let values = AuthoredValue::from_template_json(json!({ "rows": [] })).unwrap();
+    let report = schema.validate(values).expect_err("must reject");
+    let required_count = report.errors().filter(|e| e.code() == "required").count();
     assert_eq!(
         required_count,
         1,

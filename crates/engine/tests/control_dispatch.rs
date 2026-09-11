@@ -18,13 +18,13 @@ use std::{
 };
 
 use nebula_action::{
-    ActionError, action::Action, metadata::ActionMetadata, result::ActionResult,
+    ActionError, ActionMetadataDraft, action::Action, result::ActionResult,
     stateless::StatelessAction,
 };
 use nebula_core::{ActionKey, Dependencies, action_key, id::ExecutionId, node_key};
 use nebula_engine::{
-    ActionExecutor, ActionRegistry, ActionRuntime, ControlDispatch, ControlDispatchError,
-    DataPassingPolicy, EngineControlDispatch, InProcessRunner, WorkflowEngine,
+    ActionRegistry, ActionRuntime, ControlDispatch, ControlDispatchError, DataPassingPolicy,
+    EngineControlDispatch, InProcessRunner, WorkflowEngine,
 };
 use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_metrics::MetricsRegistry;
@@ -116,10 +116,10 @@ impl Action for CountingEchoHandler {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> ActionMetadataDraft {
+        ActionMetadataDraft::new(
             action_key!("test.counting_echo.static"),
-            "CountingEcho",
+            nebula_action::metadata_name!("CountingEcho"),
             "static",
         )
     }
@@ -151,10 +151,10 @@ impl Action for SlowCancellableHandler {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> ActionMetadataDraft {
+        ActionMetadataDraft::new(
             action_key!("test.slow_cancellable.static"),
-            "SlowCancellable",
+            nebula_action::metadata_name!("SlowCancellable"),
             "static",
         )
     }
@@ -179,9 +179,10 @@ impl StatelessAction for SlowCancellableHandler {
     }
 }
 
-fn meta(key: ActionKey) -> ActionMetadata {
-    let name = key.to_string();
-    ActionMetadata::new(key, name, "control_dispatch test handler")
+fn meta(key: ActionKey) -> ActionMetadataDraft {
+    let name = key.clone().into();
+    ActionMetadataDraft::new(key, name, "control_dispatch test handler")
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
 }
 
 // ── Harness ───────────────────────────────────────────────────────────────
@@ -202,26 +203,28 @@ impl Harness {
         let slow_count = Arc::new(AtomicU32::new(0));
         let slow_started = Arc::new(Notify::new());
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless_instance(
-            meta(action_key!("echo")),
-            CountingEchoHandler {
-                count: Arc::clone(&action_count),
-            },
+        registry
+            .register_stateless_instance(
+                meta(action_key!("core.echo")),
+                CountingEchoHandler {
+                    count: Arc::clone(&action_count),
+                },
+            )
+            .expect("valid test catalog definition");
+        registry
+            .register_stateless_instance(
+                meta(action_key!("core.slow")),
+                SlowCancellableHandler {
+                    started: Arc::clone(&slow_started),
+                    count: Arc::clone(&slow_count),
+                },
+            )
+            .expect("valid test catalog definition");
+        let frozen = exact_fixture::freeze_registry(
+            &registry,
+            &[("core", "core.echo"), ("core", "core.slow")],
         );
-        registry.register_stateless_instance(
-            meta(action_key!("slow")),
-            SlowCancellableHandler {
-                started: Arc::clone(&slow_started),
-                count: Arc::clone(&slow_count),
-            },
-        );
-        let frozen =
-            exact_fixture::freeze_registry(&registry, &[("core", "echo"), ("core", "slow")]);
-
-        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
-            Box::pin(async move { Ok(ActionResult::success(input)) })
-        });
-        let runner = Arc::new(InProcessRunner::new(executor));
+        let runner = Arc::new(InProcessRunner::new());
         let metrics = MetricsRegistry::new();
         let runtime = Arc::new(
             ActionRuntime::try_new(
@@ -275,7 +278,9 @@ impl Harness {
             name: "a2-dispatch-test".into(),
             description: None,
             version: Version::new(0, 1, 0),
-            nodes: vec![NodeDefinition::new(node_key!("step"), "Step", "core", "echo").unwrap()],
+            nodes: vec![
+                NodeDefinition::new(node_key!("step"), "Step", "core", "core.echo").unwrap(),
+            ],
             connections: Vec::<Connection>::new(),
             variables: HashMap::new(),
             config: WorkflowConfig::default(),
@@ -334,7 +339,9 @@ impl Harness {
             name: "a3-cancel-test".into(),
             description: None,
             version: Version::new(0, 1, 0),
-            nodes: vec![NodeDefinition::new(node_key!("step"), "Step", "core", "slow").unwrap()],
+            nodes: vec![
+                NodeDefinition::new(node_key!("step"), "Step", "core", "core.slow").unwrap(),
+            ],
             connections: Vec::<Connection>::new(),
             variables: HashMap::new(),
             config: WorkflowConfig::default(),

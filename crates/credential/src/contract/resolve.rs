@@ -12,25 +12,26 @@ use crate::{NoPendingState, PendingState};
 
 // ── ResolveResult ──────────────────────────────────────────────────────
 
-/// Outcome of [`Credential::resolve`](crate::Credential::resolve)
+/// Outcome of an interactive [`Interactive::begin`](crate::Interactive::begin)
 /// or [`Interactive::continue_resolve`](crate::Interactive::continue_resolve).
 ///
 /// # Variants
 ///
 /// - **Complete** -- credential ready immediately (API key, basic auth).
-/// - **Pending** -- requires user interaction (OAuth2, SAML, device code).
-/// - **Retry** -- framework should poll `continue_resolve()` after a delay (device code flow, RFC
-///   8628).
+/// - **Pending** -- requires user interaction (OAuth2, SAML, or an out-of-band challenge).
+/// - **Retry** -- framework should poll `continue_resolve()` after a delay;
+///   valid only when continuing with [`UserInput::Poll`].
 pub enum ResolveResult<S, P: PendingState = NoPendingState> {
     /// Credential ready immediately (API key, basic auth, database).
     Complete(S),
 
-    /// Requires user interaction (OAuth2 redirect, SAML, device code, 2FA).
+    /// Requires user interaction (OAuth2 redirect, SAML, or 2FA).
     ///
     /// **Credential returns raw `PendingState`.** Framework handles:
     /// - Encrypting and storing the state in `PendingStateStore`
     /// - Generating a CSPRNG `PendingToken` bound to owner
-    /// - Loading and consuming the state before `continue_resolve()`
+    /// - Atomically consuming state before one-shot callback/form/code
+    ///   continuations; polling reads retain state until completion
     ///
     /// Credential author never calls `store_pending()` or
     /// `consume_pending()`.
@@ -42,7 +43,7 @@ pub enum ResolveResult<S, P: PendingState = NoPendingState> {
     },
 
     /// Framework should call `continue_resolve()` again after delay.
-    /// Used by device code flow (RFC 8628) polling pattern.
+    /// Used by polling-based interactive flows.
     Retry {
         /// How long to wait before the next poll.
         after: Duration,
@@ -68,10 +69,32 @@ impl<S, P: PendingState> fmt::Debug for ResolveResult<S, P> {
     }
 }
 
-/// Convenience alias for non-interactive credentials.
+/// Outcome of base [`Credential::resolve`](crate::Credential::resolve).
 ///
-/// Avoids writing `ResolveResult<MyState, NoPendingState>` everywhere.
-pub type StaticResolveResult<S> = ResolveResult<S, NoPendingState>;
+/// Pending state is intentionally absent. Credentials that advertise the
+/// [`Interactive`](crate::Interactive) capability start through its required
+/// typed `begin` method instead.
+pub enum StaticResolveResult<S> {
+    /// Credential resolved synchronously.
+    Complete(S),
+    /// Framework should retry the initial operation after this delay.
+    Retry {
+        /// Minimum delay before retrying.
+        after: Duration,
+    },
+}
+
+impl<S> fmt::Debug for StaticResolveResult<S> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Complete(_) => formatter.debug_tuple("Complete").field(&REDACTED).finish(),
+            Self::Retry { after } => formatter
+                .debug_struct("Retry")
+                .field("after", after)
+                .finish(),
+        }
+    }
+}
 
 // ── InteractionRequest ─────────────────────────────────────────────────
 
@@ -93,7 +116,7 @@ pub enum InteractionRequest {
         fields: Vec<(String, String)>,
     },
 
-    /// Display information to user (device code, SMS code, TOTP).
+    /// Display information to user (SMS code, TOTP, or another challenge).
     DisplayInfo {
         /// Dialog title.
         title: String,
@@ -131,7 +154,7 @@ impl fmt::Debug for InteractionRequest {
 #[derive(Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum DisplayData {
-    /// Device code flow: user types this code on another device.
+    /// User types this code in an out-of-band verifier.
     UserCode {
         /// The user code to enter.
         code: String,
@@ -171,7 +194,7 @@ pub enum UserInput {
         params: HashMap<String, String>,
     },
 
-    /// Device code flow: "check if authorized yet" (framework polls).
+    /// Check whether a polling-based interaction has completed.
     Poll,
 
     /// User entered a code (SMS, TOTP, 2FA).
@@ -428,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn display_data_debug_redacts_device_code_and_text() {
+    fn display_data_debug_redacts_user_code_and_text() {
         let values = [
             DisplayData::UserCode {
                 code: SECRET_CANARY.to_owned(),

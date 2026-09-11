@@ -1,28 +1,29 @@
 //! EventSource topology + `EventSourceAdapter<E>: TriggerAction`.
 //!
-//! Migrated from `crates/resource/src/topology/event_source.rs` and
-//! `crates/resource/src/runtime/event_source.rs` per / Tech Spec
-//! . EventSource lands as a thin adapter onto engine's existing
+//! Event sources are resource providers adapted onto the engine's existing
 //! `TriggerAction` substrate.
 //!
 //! # Why an adapter, not a TriggerAction extension
 //!
-//! `EventSource: Provider` (needs `R::Instance`, `nebula_resource::Error`, `ResourceContext`)
-//! and `TriggerAction: Action` (needs `ActionMetadata`, `TriggerContext`,
-//! `ActionError`) sit on different bases. Rather than refactor either trait,
-//! `EventSourceAdapter<E>` bridges them at construction time:
-//! caller supplies `Arc<E::Instance>`, `ActionMetadata`, and an `event_to_payload`
-//! closure; the adapter implements `TriggerAction::start` as a "run-until-cancelled"
-//! loop that `subscribe`s + `recv`s + emits via `ctx.emitter()`.
+//! `EventSource: Provider` and `TriggerAction: Action` sit on different bases.
+//! `EventSourceAdapter<E>` bridges them as a typed action: the source owns its
+//! [`ActionMetadataDraft`], while callers supply `Arc<E::Instance>` and an
+//! `event_to_payload` closure. Erasure happens only through action's sealed
+//! [`TriggerActionAdapter`].
 //!
 //! This mirrors `crates/action/src/poll.rs::PollTriggerAdapter` (which runs
 //! `poll()` in an inline loop driven by `ctx.cancellation()` + `ctx.emitter()`).
 
-use std::{future::Future, sync::Arc};
+use std::{
+    future::Future,
+    sync::{Arc, OnceLock},
+};
 
 use nebula_action::{
-    ActionError, ActionMetadata, TriggerContext, TriggerEvent, TriggerEventOutcome, TriggerHandler,
+    Action, ActionError, ActionMetadataAdmissionError, ActionMetadataDraft, TriggerAction,
+    TriggerActionAdapter, TriggerContext, TriggerEventOutcome, TriggerSource,
 };
+use nebula_core::Dependencies;
 use nebula_resource::{ResourceContext, error::ErrorKind as ResourceErrorKind, resource::Provider};
 
 /// EventSource — pull-based event subscription.
@@ -34,6 +35,15 @@ pub trait EventSource: Provider {
     type Event: Send + Clone + 'static;
     /// An opaque subscription handle for receiving events.
     type Subscription: Send + 'static;
+
+    /// Author-owned action catalog intent for this event source.
+    fn action_metadata() -> ActionMetadataDraft;
+
+    /// Action dependencies required while driving this event source.
+    fn action_dependencies() -> &'static Dependencies {
+        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
+        DEPENDENCIES.get_or_init(Dependencies::new)
+    }
 
     /// Creates a new subscription to this event source.
     ///
@@ -61,49 +71,30 @@ pub trait EventSource: Provider {
     ) -> impl Future<Output = Result<Self::Event, nebula_resource::Error>> + Send;
 }
 
-/// EventSource configuration.
-///
-/// Currently inert under [`EventSourceAdapter`] — the adapter does not consult
-/// any field. Reserved for forward-compat: future transports may own bounded
-/// queues / flow-control parameters, and consumers can opt in via this
-/// `#[non_exhaustive]` struct without requiring a follow-up signature change.
-#[derive(Debug, Clone, Default)]
-#[non_exhaustive]
-pub struct EventSourceConfig {
-    /// Buffer size hint for transports that own a bounded internal queue
-    /// between `subscribe` and `recv`. **Currently NOT consulted by
-    /// `EventSourceAdapter::start`** — wire to a real buffering mechanism
-    /// when a concrete EventSource implementation needs flow control.
-    pub buffer_size: usize,
-}
-
-/// Runtime state for an EventSource — preserves the original
-/// `EventSourceRuntime<R>` shape from `nebula-resource` for callers that want
-/// the explicit subscribe/recv API outside the `TriggerAction` adapter path.
+/// Runtime state for driving an [`EventSource`] through its explicit
+/// subscribe/receive API outside the [`TriggerAction`] adapter path.
 ///
 /// Most consumers should use [`EventSourceAdapter`] instead — it folds
 /// EventSource into the engine's `TriggerAction` substrate. This struct stays
 /// for the rare case where direct subscription management is needed
 /// (e.g. testing, ad-hoc engine tooling).
 pub struct EventSourceRuntime<E: EventSource> {
-    config: EventSourceConfig,
     _phantom: std::marker::PhantomData<E>,
 }
 
 impl<E: EventSource> EventSourceRuntime<E> {
-    /// Creates a new event source runtime with the given configuration.
+    /// Creates a new event source runtime.
     #[must_use]
-    pub fn new(config: EventSourceConfig) -> Self {
+    pub const fn new() -> Self {
         Self {
-            config,
             _phantom: std::marker::PhantomData,
         }
     }
+}
 
-    /// Returns the current configuration.
-    #[must_use]
-    pub fn config(&self) -> &EventSourceConfig {
-        &self.config
+impl<E: EventSource> Default for EventSourceRuntime<E> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -142,8 +133,7 @@ where
 
 // ── EventSourceAdapter — bridges EventSource onto TriggerHandler ────────────
 
-/// Adapts an `EventSource` impl as a `TriggerHandler` so the engine can drive
-/// it through the existing trigger lifecycle (`start`/`stop` + emit-via-context).
+/// Adapts an [`EventSource`] as a typed [`TriggerAction`].
 ///
 /// # Construction
 ///
@@ -151,8 +141,6 @@ where
 /// - the typed `source: E`,
 /// - an `Arc<E::Instance>` (caller is responsible for building `E::Instance` — typically via
 ///   `Resource::create()` outside the adapter),
-/// - `ActionMetadata` (EventSource has no inherent action metadata),
-/// - `EventSourceConfig` for buffer / flow-control hints,
 /// - an `event_to_payload` closure converting `&E::Event` to `serde_json::Value` (caller controls
 ///   serialization + redaction).
 ///
@@ -164,11 +152,6 @@ where
 pub struct EventSourceAdapter<E: EventSource> {
     source: E,
     runtime: Arc<E::Instance>,
-    metadata: ActionMetadata,
-    // guard-justified: retained as a downstream-observability buffer-size
-    // hint; not read on the current adapter path.
-    #[expect(dead_code, reason = "buffer_size hint for downstream observability")]
-    config: EventSourceConfig,
     // guard-justified: a single boxed-fn field — a type alias would not
     // improve readability over the inline signature.
     #[expect(
@@ -184,43 +167,61 @@ where
     E::Instance: Send + Sync + 'static,
 {
     /// Wrap an EventSource impl as a `TriggerAction`.
-    pub fn new<F>(
-        source: E,
-        runtime: Arc<E::Instance>,
-        metadata: ActionMetadata,
-        config: EventSourceConfig,
-        event_to_payload: F,
-    ) -> Self
+    pub fn new<F>(source: E, runtime: Arc<E::Instance>, event_to_payload: F) -> Self
     where
         F: Fn(&E::Event) -> serde_json::Value + Send + Sync + 'static,
     {
         Self {
             source,
             runtime,
-            metadata,
-            config,
             event_to_payload: Arc::new(event_to_payload),
         }
     }
+
+    /// Admit this typed event source and erase it behind action's sealed trigger boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed admission error when the source metadata or its associated schemas fail
+    /// catalog admission.
+    pub fn into_handler(self) -> Result<TriggerActionAdapter<Self>, ActionMetadataAdmissionError> {
+        TriggerActionAdapter::new(self)
+    }
 }
 
-// `EventSourceAdapter<E>` carries per-instance dynamic metadata (the
-// host supplies `ActionMetadata` at construction).// typed [`nebula_action::Action`] / [`nebula_action::TriggerAction`]
-// traits require **static** metadata, so the adapter implements the
-// dyn-erased [`nebula_action::TriggerHandler`] surface directly. The
-// engine registers it as `Arc<dyn TriggerHandler>` like any other
-// trigger, without going through a typed factory.
-#[async_trait::async_trait]
-impl<E> TriggerHandler for EventSourceAdapter<E>
+impl<E> Action for EventSourceAdapter<E>
 where
     E: EventSource + Send + Sync + 'static,
     E::Instance: Send + Sync + 'static,
 {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.metadata
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> ActionMetadataDraft {
+        E::action_metadata()
     }
 
-    async fn start(&self, ctx: &dyn TriggerContext) -> Result<(), ActionError> {
+    fn dependencies() -> &'static Dependencies {
+        E::action_dependencies()
+    }
+}
+
+/// Event family marker for self-driven [`EventSourceAdapter`] triggers.
+pub struct EventSourceTriggerSource;
+
+impl TriggerSource for EventSourceTriggerSource {
+    type Event = serde_json::Value;
+}
+
+impl<E> TriggerAction for EventSourceAdapter<E>
+where
+    E: EventSource + Send + Sync + 'static,
+    E::Instance: Send + Sync + 'static,
+{
+    type Source = EventSourceTriggerSource;
+    type Error = ActionError;
+
+    async fn start(&self, ctx: &(impl TriggerContext + ?Sized)) -> Result<(), ActionError> {
         let resource_ctx =
             ResourceContext::minimal(ctx.scope().clone(), ctx.cancellation().clone());
         let mut subscription = match self.source.subscribe(&self.runtime, &resource_ctx).await {
@@ -269,7 +270,7 @@ where
         }
     }
 
-    async fn stop(&self, ctx: &dyn TriggerContext) -> Result<(), ActionError> {
+    async fn stop(&self, ctx: &(impl TriggerContext + ?Sized)) -> Result<(), ActionError> {
         // Mirror PollTriggerAdapter::stop (poll.rs:1455) — cancel the trigger
         // context's cancellation token so the run-until-cancelled start() loop
         // observes the signal and returns Ok(()).
@@ -277,19 +278,11 @@ where
         Ok(())
     }
 
-    fn accepts_events(&self) -> bool {
-        // EventSourceAdapter is self-driving: events flow through
-        // `ctx.emitter()` inside `start()`'s loop, not through the
-        // `handle_event` push path.
-        false
-    }
-
-    async fn handle_event(
+    async fn handle(
         &self,
-        _event: TriggerEvent,
-        _ctx: &dyn TriggerContext,
+        _ctx: &(impl TriggerContext + ?Sized),
+        _event: serde_json::Value,
     ) -> Result<TriggerEventOutcome, ActionError> {
-        // Defensive guard for direct callers that bypass `accepts_events`.
         Err(ActionError::fatal(
             "EventSourceAdapter does not accept external events",
         ))
@@ -439,22 +432,20 @@ mod tests {
     };
 
     use nebula_action::{
-        ActionMetadata,
+        TriggerHandler,
         testing::{TestContextBuilder, TestTriggerContext},
     };
     use nebula_core::{Context, ResourceKey, action_key};
     use nebula_resource::{
         ResourceContext,
         error::Error as ResourceError,
-        resource::{Provider, ResourceConfig, ResourceMetadata},
+        resource::{Provider, ResourceConfig, ResourceMetadataDraft},
     };
 
     use super::*;
 
-    #[derive(Clone, Debug, Default)]
+    #[derive(Clone, Debug, Default, nebula_schema::Schema)]
     struct EmptyCfg;
-
-    nebula_schema::impl_empty_has_schema!(EmptyCfg);
 
     impl ResourceConfig for EmptyCfg {
         fn fingerprint(&self) -> u64 {
@@ -496,8 +487,8 @@ mod tests {
             Ok(())
         }
 
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::from_key(&Self::key())
+        fn metadata() -> ResourceMetadataDraft {
+            ResourceMetadataDraft::from_key(Self::key())
         }
     }
 
@@ -506,6 +497,10 @@ mod tests {
     impl EventSource for ThreeEventSource {
         type Event = u32;
         type Subscription = ();
+
+        fn action_metadata() -> ActionMetadataDraft {
+            make_metadata()
+        }
 
         async fn subscribe(
             &self,
@@ -529,10 +524,10 @@ mod tests {
         }
     }
 
-    fn make_metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn make_metadata() -> ActionMetadataDraft {
+        ActionMetadataDraft::new(
             action_key!("test.event_source_adapter"),
-            "EventSourceAdapterTest",
+            nebula_action::metadata_name!("EventSourceAdapterTest"),
             "Adapter integration test",
         )
     }
@@ -546,10 +541,10 @@ mod tests {
         let adapter = EventSourceAdapter::new(
             source,
             Arc::new(()),
-            make_metadata(),
-            EventSourceConfig::default(),
             |e: &u32| serde_json::json!({ "n": *e }),
-        );
+        )
+        .into_handler()
+        .expect("event source action metadata admits");
 
         let (ctx, emitter, _scheduler) = TestContextBuilder::new().build_trigger();
         let cancel = ctx.cancellation().clone();
@@ -620,8 +615,8 @@ mod tests {
             Ok(())
         }
 
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::from_key(&Self::key())
+        fn metadata() -> ResourceMetadataDraft {
+            ResourceMetadataDraft::from_key(Self::key())
         }
     }
 
@@ -630,6 +625,10 @@ mod tests {
     impl EventSource for PermanentlyBrokenSource {
         type Event = u32;
         type Subscription = ();
+
+        fn action_metadata() -> ActionMetadataDraft {
+            make_metadata()
+        }
 
         async fn subscribe(
             &self,
@@ -652,10 +651,10 @@ mod tests {
         let adapter = EventSourceAdapter::new(
             PermanentlyBrokenSource,
             Arc::new(()),
-            make_metadata(),
-            EventSourceConfig::default(),
             |e: &u32| serde_json::json!({ "n": *e }),
-        );
+        )
+        .into_handler()
+        .expect("event source action metadata admits");
 
         let (ctx, _emitter, _scheduler) = TestContextBuilder::new().build_trigger();
         let result = adapter.start(&ctx).await;
@@ -674,10 +673,10 @@ mod tests {
         let adapter = EventSourceAdapter::new(
             source,
             Arc::new(()),
-            make_metadata(),
-            EventSourceConfig::default(),
             |e: &u32| serde_json::json!({ "n": *e }),
-        );
+        )
+        .into_handler()
+        .expect("event source action metadata admits");
 
         let ctx: TestTriggerContext = TestContextBuilder::new().build_trigger().0;
         // stop() is a no-op — should always succeed.

@@ -1,9 +1,9 @@
-//! Phase 9 / Task 9.4 — End-to-end engine pipeline integration test.
+//! End-to-end schema-bound engine pipeline integration test.
 //!
 //! Headline scenario: a single-node workflow whose action declares a
 //! `ValidSchema` input that mixes literal + `{{ }}`-template parameters.
 //! The engine receives the node, resolves expressions through the
-//! `ParamResolver` → `ExpressionEngine` chain, hands the resolved JSON to
+//! retained-program evaluation, hands the resolved proof to
 //! the action via the dispatch path, and the action body inspects the
 //! result.
 //!
@@ -32,7 +32,7 @@ use std::{
 };
 
 use nebula_action::{
-    ActionError, action::Action, metadata::ActionMetadata, result::ActionResult,
+    ActionError, ActionMetadataDraft, action::Action, result::ActionResult,
     stateless::StatelessAction,
 };
 use nebula_core::{
@@ -40,8 +40,7 @@ use nebula_core::{
     resource_key,
 };
 use nebula_engine::{
-    ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
-    WorkflowEngine,
+    ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, WorkflowEngine,
 };
 use nebula_execution::context::ExecutionBudget;
 use nebula_metrics::MetricsRegistry;
@@ -49,7 +48,7 @@ use nebula_resource::Resident;
 use nebula_resource::{
     Manager, RegistrationSpec, ResidentConfig, ResourceContext, SlotIdentity,
     error::Error as ResourceError,
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
     topology::resident::ResidentProvider,
 };
 use nebula_workflow::{
@@ -58,6 +57,26 @@ use nebula_workflow::{
 
 // ── Action handler ─────────────────────────────────────────────────────────
 
+#[derive(serde::Deserialize)]
+#[serde(transparent)]
+struct PipelineInput(serde_json::Value);
+
+impl nebula_schema::HasSchema for PipelineInput {
+    fn schema() -> Result<nebula_schema::ValidSchema, nebula_schema::ValidationReport> {
+        use nebula_schema::{Field, Schema, field_key};
+
+        // Each scenario supplies a subset of these declared optional fields.
+        Schema::builder()
+            .add(Field::string(field_key!("name")))
+            .add(Field::number(field_key!("timestamp")).integer())
+            .add(Field::number(field_key!("count")).integer())
+            .add(Field::string(field_key!("greeting")))
+            .add(Field::number(field_key!("static_value")).integer())
+            .add(Field::number(field_key!("value")))
+            .build()
+    }
+}
+
 /// Records the JSON input it observed so the test can introspect what the
 /// engine handed it after expression resolution + validation.
 struct PipelineWitness {
@@ -65,13 +84,13 @@ struct PipelineWitness {
 }
 
 impl Action for PipelineWitness {
-    type Input = serde_json::Value;
+    type Input = PipelineInput;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> ActionMetadataDraft {
+        ActionMetadataDraft::new(
             action_key!("test.phase9.pipeline_witness"),
-            "PipelineWitness",
+            nebula_action::metadata_name!("PipelineWitness"),
             "Phase 9 e2e pipeline witness",
         )
         .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
@@ -91,6 +110,7 @@ impl StatelessAction for PipelineWitness {
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
         // Record the resolved input — the test asserts that every
         // expression has already been replaced by a literal value.
+        let PipelineInput(input) = input;
         *self.seen_input.lock() = Some(input.clone());
         Ok(ActionResult::success(input))
     }
@@ -98,12 +118,10 @@ impl StatelessAction for PipelineWitness {
 
 // ── Resource fixture for slot-binding integration check ────────────────────
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, nebula_schema::Schema)]
 struct WitnessResourceConfig {
     label: String,
 }
-
-nebula_schema::impl_empty_has_schema!(WitnessResourceConfig);
 
 impl ResourceConfig for WitnessResourceConfig {
     fn validate(&self) -> Result<(), ResourceError> {
@@ -189,8 +207,8 @@ impl Provider for WitnessResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 
@@ -226,9 +244,9 @@ fn make_workflow(nodes: Vec<NodeDefinition>) -> WorkflowDefinition {
     }
 }
 
-fn meta(key: ActionKey) -> ActionMetadata {
-    let name = key.to_string();
-    ActionMetadata::new(key, name, "phase9 e2e pipeline test handler")
+fn meta(key: ActionKey) -> ActionMetadataDraft {
+    let name = key.clone().into();
+    ActionMetadataDraft::new(key, name, "phase9 e2e pipeline test handler")
         .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
 }
 
@@ -241,16 +259,15 @@ fn meta(key: ActionKey) -> ActionMetadata {
 async fn pipeline_resolves_expressions_before_handler_runs() {
     let seen_input = Arc::new(parking_lot::Mutex::new(None::<serde_json::Value>));
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless_instance(
-        meta(action_key!("phase9.witness")),
-        PipelineWitness {
-            seen_input: Arc::clone(&seen_input),
-        },
-    );
-
-    let executor: ActionExecutor =
-        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    let runner = Arc::new(InProcessRunner::new(executor));
+    registry
+        .register_stateless_instance(
+            meta(action_key!("phase9.witness")),
+            PipelineWitness {
+                seen_input: Arc::clone(&seen_input),
+            },
+        )
+        .expect("valid test catalog definition");
+    let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(
@@ -368,16 +385,15 @@ async fn pipeline_with_resource_manager_resolves_and_executes() {
 
     let seen_input = Arc::new(parking_lot::Mutex::new(None::<serde_json::Value>));
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless_instance(
-        meta(action_key!("phase9.witness")),
-        PipelineWitness {
-            seen_input: Arc::clone(&seen_input),
-        },
-    );
-
-    let executor: ActionExecutor =
-        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    let runner = Arc::new(InProcessRunner::new(executor));
+    registry
+        .register_stateless_instance(
+            meta(action_key!("phase9.witness")),
+            PipelineWitness {
+                seen_input: Arc::clone(&seen_input),
+            },
+        )
+        .expect("valid test catalog definition");
+    let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(
@@ -441,16 +457,15 @@ async fn pipeline_with_resource_manager_resolves_and_executes() {
 async fn pipeline_unresolvable_expression_fails_node_before_handler() {
     let seen_input = Arc::new(parking_lot::Mutex::new(None::<serde_json::Value>));
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless_instance(
-        meta(action_key!("phase9.witness")),
-        PipelineWitness {
-            seen_input: Arc::clone(&seen_input),
-        },
-    );
-
-    let executor: ActionExecutor =
-        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    let runner = Arc::new(InProcessRunner::new(executor));
+    registry
+        .register_stateless_instance(
+            meta(action_key!("phase9.witness")),
+            PipelineWitness {
+                seen_input: Arc::clone(&seen_input),
+            },
+        )
+        .expect("valid test catalog definition");
+    let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(
@@ -490,5 +505,9 @@ async fn pipeline_unresolvable_expression_fails_node_before_handler() {
     assert!(
         seen_input.lock().is_none(),
         "handler must NOT have run when resolution failed"
+    );
+    assert_eq!(
+        result.node_errors[&node],
+        "parameter resolution failed for node bad_node, param 'value': input expression resolution failed: [input.validation]: input expression resolution failed: input processing failed"
     );
 }

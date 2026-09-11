@@ -35,7 +35,8 @@ mod credential_attr;
 ///
 /// - `key = "…"` — stable credential type key (required).
 /// - `name = "…"` — required only when no `fn metadata` is supplied.
-/// - `description = "…"`, `icon = "…"`, `doc_url = "…"` — optional metadata.
+/// - `description = "…"`, `icon = "…"`, `doc_url = "…"` — optional metadata;
+///   `icon` constructs the shared catalog `Icon::Inline` variant.
 ///
 /// # Example
 ///
@@ -55,8 +56,8 @@ mod credential_attr;
 ///
 ///     fn project(state: &SecretToken) -> SecretToken { state.clone() }
 ///
-///     async fn resolve(values: &FieldValues, _ctx: &CredentialContext)
-///         -> Result<ResolveResult<SecretToken, ()>, CredentialError> { /* … */ }
+///     async fn resolve(properties: &ApiKeyProperties, _ctx: &CredentialContext)
+///         -> Result<StaticResolveResult<SecretToken>, CredentialError> { /* … */ }
 /// }
 /// ```
 ///

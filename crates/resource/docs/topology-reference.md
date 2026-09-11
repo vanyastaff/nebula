@@ -38,7 +38,7 @@ runtime value. The author constructs the concrete topology and hands it to
 
 ```rust,ignore
 use nebula_resource::{
-    Provider, ResourceContext, ResourceMetadata, TeardownCx,
+    Provider, ResourceContext, ResourceMetadataDraft, TeardownCx,
     error::Error, resource::ResourceConfig,
     topology::{Pooled, PoolProvider, BrokenCheck, InstanceMetrics, RecycleDecision},
 };
@@ -57,7 +57,7 @@ impl Provider for Postgres {
     async fn destroy(&self, instance: Self::Instance, cx: TeardownCx)
         -> Result<(), Error> { /* flush/close before drop; cx.deadline bounds it */ }
 
-    fn metadata() -> ResourceMetadata { ResourceMetadata::from_key(&Self::key()) }
+    fn metadata() -> ResourceMetadataDraft { ResourceMetadataDraft::from_key(Self::key()) }
 }
 
 impl PoolProvider for Postgres {
@@ -130,7 +130,7 @@ impl Provider for GoogleSheets {
     async fn destroy(&self, instance: Self::Instance, cx: TeardownCx)
         -> Result<(), Error> { Ok(()) }
 
-    fn metadata() -> ResourceMetadata { ResourceMetadata::from_key(&Self::key()) }
+    fn metadata() -> ResourceMetadataDraft { ResourceMetadataDraft::from_key(Self::key()) }
 }
 
 impl ResidentProvider for GoogleSheets {
@@ -221,7 +221,7 @@ impl Provider for SerialPort {
     async fn destroy(&self, instance: Self::Instance, cx: TeardownCx)
         -> Result<(), Error> { /* close */ }
 
-    fn metadata() -> ResourceMetadata { ResourceMetadata::from_key(&Self::key()) }
+    fn metadata() -> ResourceMetadataDraft { ResourceMetadataDraft::from_key(Self::key()) }
 }
 
 // Only Exclusive reuses its instance and therefore resets; Capped / Unbounded

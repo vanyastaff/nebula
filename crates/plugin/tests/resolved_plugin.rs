@@ -1,223 +1,210 @@
 //! Integration tests for `ResolvedPlugin` — namespace enforcement and lookup.
 
-use std::{any::TypeId, future::Future, pin::Pin, sync::Arc};
+use std::sync::{Arc, OnceLock};
 
-use nebula_action::{ActionContext, ActionError, ActionFactory, ActionHandle, ActionMetadata};
+use nebula_action::{
+    Action, ActionContext, ActionError, ActionFactory, ActionMetadataDraft, ActionResult,
+    InstanceFactory, StatelessAction,
+};
 use nebula_core::{ActionKey, CredentialKey, Dependencies, ResourceKey};
-use nebula_credential::{AnyCredential, AuthPattern, Capabilities, CredentialMetadata};
-use nebula_metadata::PluginManifest;
+use nebula_credential::{
+    AnyCredential, AuthPattern, Credential, CredentialContext, CredentialMetadataDraft,
+    SecretString, SecretToken, contract::plugin_capability_report, error::CredentialError,
+    resolve::StaticResolveResult,
+};
+use nebula_metadata::{Metadata, PluginManifest};
 use nebula_plugin::{ComponentKind, Plugin, PluginError, ResolvedPlugin};
 use nebula_resource::{
-    ResourceFactory, ResourceMetadata, SlotIdentity,
-    factory::{BoxFut, RegisterRequest},
+    KindActivator, Provider, Resident, ResidentConfig, ResourceFactory, ResourceMetadataDraft,
 };
-use nebula_schema::ValidSchema;
-use nebula_workflow::NodeDefinition;
 
-// ── Stub ActionFactory ───────────────────────────────────────────────────────
-//
-// The plugin contract returns `Vec<Arc<dyn ActionFactory>>`. For these tests
-// we only need the metadata side — `instantiate` is never invoked because
-// the tests only check namespace / dedup / registration. A stub factory that
-// errors on `instantiate` is sufficient.
+#[derive(Clone)]
+struct MetadataFixture<const INDEX: usize>;
 
-struct StubAction {
-    metadata: ActionMetadata,
-    dependencies: Dependencies,
+impl<const INDEX: usize> nebula_resource::HasCredentialSlots for MetadataFixture<INDEX> {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+
+    fn declares_credential_slots() -> bool {
+        false
+    }
 }
 
-impl StubAction {
-    fn new(key: &str) -> Self {
-        Self {
-            metadata: ActionMetadata::new(
+impl<const INDEX: usize> nebula_core::DeclaresDependencies for MetadataFixture<INDEX> {}
+
+#[async_trait::async_trait]
+impl<const INDEX: usize> Provider for MetadataFixture<INDEX> {
+    type Config = ();
+    type Instance = ();
+    type Topology = Resident<Self>;
+
+    fn key() -> ResourceKey {
+        let key = match INDEX {
+            0 => "slack.http_client",
+            1 => "slack.audit_client",
+            2 => "slack.aaa",
+            3 => "slack.zzz",
+            4 => "api.http_client",
+            5 => "http.client",
+            6 => "http.pool",
+            _ => panic!("resource metadata fixture index {INDEX} is not declared"),
+        };
+        ResourceKey::new(key).expect("valid fixture resource key")
+    }
+
+    async fn create(
+        &self,
+        _config: &(),
+        _context: &nebula_resource::ResourceContext,
+    ) -> Result<(), nebula_resource::Error> {
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl<const INDEX: usize> nebula_resource::ResidentProvider for MetadataFixture<INDEX> {}
+
+fn resource_factory_at<const INDEX: usize>() -> Arc<dyn ResourceFactory> {
+    let factory = KindActivator::<MetadataFixture<INDEX>, _, _>::with_metadata(
+        ResourceMetadataDraft::from_key(MetadataFixture::<INDEX>::key()),
+        || MetadataFixture,
+        || Resident::new(ResidentConfig::default()),
+    );
+    Arc::new(factory)
+}
+
+fn resource_factory(key: &str) -> Arc<dyn ResourceFactory> {
+    match key {
+        "slack.http_client" => resource_factory_at::<0>(),
+        "slack.audit_client" => resource_factory_at::<1>(),
+        "slack.aaa" => resource_factory_at::<2>(),
+        "slack.zzz" => resource_factory_at::<3>(),
+        "api.http_client" => resource_factory_at::<4>(),
+        "http.client" => resource_factory_at::<5>(),
+        "http.pool" => resource_factory_at::<6>(),
+        _ => panic!("resource factory fixture key `{key}` is not declared"),
+    }
+}
+
+fn action_factory(key: &str) -> Arc<dyn ActionFactory> {
+    Arc::new(
+        InstanceFactory::new(
+            ActionMetadataDraft::new(
                 ActionKey::new(key).expect("valid action key"),
-                key,
+                nebula_action::MetadataName::try_from(key).expect("fixture display name"),
                 "stub",
             ),
-            dependencies: Dependencies::new(),
-        }
+            MetadataAction,
+        )
+        .expect("stub metadata admits through its structural factory"),
+    )
+}
+
+struct MetadataAction;
+
+impl Action for MetadataAction {
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> ActionMetadataDraft {
+        ActionMetadataDraft::new(
+            nebula_core::action_key!("fixture.metadata"),
+            nebula_action::metadata_name!("Fixture metadata"),
+            "Plugin metadata fixture",
+        )
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
+        DEPENDENCIES.get_or_init(Dependencies::new)
     }
 }
 
-impl std::fmt::Debug for StubAction {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("StubAction")
-            .field("key", &self.metadata.base.key)
-            .finish()
-    }
-}
-
-impl ActionFactory for StubAction {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.metadata
-    }
-
-    fn dependencies(&self) -> &Dependencies {
-        &self.dependencies
-    }
-
-    fn instantiate<'a>(
-        &'a self,
-        _node: &'a NodeDefinition,
-        _ctx: &'a dyn ActionContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
-        Box::pin(async {
-            Err(ActionError::fatal(
-                "StubAction::instantiate is a test stub — should never be invoked",
-            ))
-        })
+impl StatelessAction for MetadataAction {
+    async fn execute(
+        &self,
+        input: serde_json::Value,
+        _context: &(impl ActionContext + ?Sized),
+    ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+        Ok(ActionResult::success(input))
     }
 }
 
 // ── Stub AnyCredential ───────────────────────────────────────────────────────
 
-struct StubCredential {
-    projected_key: String,
-    metadata_key: CredentialKey,
-    mismatched_downcast_projection: bool,
-}
+macro_rules! credential_fixture {
+    ($type:ident, $projected_key:literal, $metadata_key:literal) => {
+        struct $type;
 
-impl StubCredential {
-    fn new(key: &str) -> Self {
-        let key = CredentialKey::new(key).expect("valid credential key");
-        Self {
-            projected_key: key.as_str().to_owned(),
-            metadata_key: key,
-            mismatched_downcast_projection: false,
+        impl Credential for $type {
+            type Properties = ();
+            type Scheme = SecretToken;
+            type State = SecretToken;
+
+            const KEY: &'static str = $projected_key;
+
+            fn metadata() -> CredentialMetadataDraft {
+                CredentialMetadataDraft::new(
+                    nebula_core::credential_key!($metadata_key),
+                    nebula_credential::metadata_name!("Stub"),
+                    "stub credential",
+                    AuthPattern::SecretToken,
+                )
+            }
+
+            fn project(state: &SecretToken) -> SecretToken {
+                state.clone()
+            }
+
+            async fn resolve(
+                _properties: &(),
+                _context: &CredentialContext,
+            ) -> Result<StaticResolveResult<SecretToken>, CredentialError> {
+                Ok(StaticResolveResult::Complete(SecretToken::new(
+                    SecretString::new("fixture"),
+                )))
+            }
         }
-    }
 
-    fn with_metadata_key(projected_key: &str, metadata_key: &str) -> Self {
-        Self {
-            projected_key: projected_key.to_owned(),
-            metadata_key: CredentialKey::new(metadata_key).expect("valid metadata credential key"),
-            mismatched_downcast_projection: false,
+        impl plugin_capability_report::IsInteractive for $type {
+            const VALUE: bool = false;
         }
-    }
-
-    fn with_mismatched_downcast_projection(key: &str) -> Self {
-        let mut credential = Self::new(key);
-        credential.mismatched_downcast_projection = true;
-        credential
-    }
-
-    fn with_invalid_projected_key(projected_key: &str, metadata_key: &str) -> Self {
-        Self {
-            projected_key: projected_key.to_owned(),
-            metadata_key: CredentialKey::new(metadata_key).expect("valid metadata credential key"),
-            mismatched_downcast_projection: false,
+        impl plugin_capability_report::IsRefreshable for $type {
+            const VALUE: bool = false;
         }
-    }
-}
-
-impl std::fmt::Debug for StubCredential {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("StubCredential")
-            .field("projected_key", &self.projected_key)
-            .field("metadata_key", &self.metadata_key)
-            .finish()
-    }
-}
-
-impl AnyCredential for StubCredential {
-    fn credential_key(&self) -> &str {
-        &self.projected_key
-    }
-
-    fn metadata(&self) -> CredentialMetadata {
-        CredentialMetadata::new(
-            self.metadata_key.clone(),
-            "Stub",
-            "stub credential",
-            ValidSchema::empty(),
-            AuthPattern::SecretToken,
-        )
-    }
-
-    fn capabilities(&self) -> Capabilities {
-        Capabilities::empty()
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        static DIFFERENT_CONCRETE_TYPE: u8 = 0;
-
-        if self.mismatched_downcast_projection {
-            &DIFFERENT_CONCRETE_TYPE
-        } else {
-            self
+        impl plugin_capability_report::IsRevocable for $type {
+            const VALUE: bool = false;
         }
-    }
-}
-
-// ── Stub ResourceFactory ─────────────────────────────────────────────────────
-//
-// Implements the B+ merged `ResourceFactory` contract (ADR-0095 D2).
-// The introspection arm (`key`, `metadata`, `validate`) is the only part
-// exercised by the namespace/dedup tests; `register` is a stub that always
-// returns `SlotIdentity::Unbound` because these tests never call it.
-
-struct StubResource {
-    factory_key: ResourceKey,
-    metadata_key: ResourceKey,
-    dependencies: Dependencies,
-}
-
-impl StubResource {
-    fn new(key: &str) -> Self {
-        let key = ResourceKey::new(key).expect("valid resource key");
-        Self {
-            factory_key: key.clone(),
-            metadata_key: key,
-            dependencies: Dependencies::new(),
+        impl plugin_capability_report::IsTestable for $type {
+            const VALUE: bool = false;
         }
-    }
-
-    fn with_metadata_key(factory_key: &str, metadata_key: &str) -> Self {
-        Self {
-            factory_key: ResourceKey::new(factory_key).expect("valid factory resource key"),
-            metadata_key: ResourceKey::new(metadata_key).expect("valid metadata resource key"),
-            dependencies: Dependencies::new(),
+        impl plugin_capability_report::IsDynamic for $type {
+            const VALUE: bool = false;
         }
-    }
+    };
 }
 
-impl std::fmt::Debug for StubResource {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("StubResource")
-            .field("factory_key", &self.factory_key)
-            .field("metadata_key", &self.metadata_key)
-            .finish()
-    }
-}
+credential_fixture!(SlackOauthCredential, "slack.oauth2", "slack.oauth2");
+credential_fixture!(SlackBotCredential, "slack.bot_token", "slack.bot_token");
+credential_fixture!(GithubOauthCredential, "github.oauth2", "github.oauth2");
+credential_fixture!(MismatchedCredential, "slack.oauth2", "slack.bot_token");
+credential_fixture!(InvalidBadCredential, "slack.bad!", "slack.oauth2");
+credential_fixture!(InvalidLowCredential, "slack.low!", "slack.beta");
+credential_fixture!(InvalidZzzCredential, "slack.zzz!", "slack.alpha");
+credential_fixture!(InvalidAaaCredential, "slack.aaa!", "slack.alpha");
 
-impl ResourceFactory for StubResource {
-    fn key(&self) -> ResourceKey {
-        self.factory_key.clone()
-    }
-
-    fn dependencies(&self) -> &Dependencies {
-        &self.dependencies
-    }
-
-    fn resource_type_id(&self) -> TypeId {
-        TypeId::of::<Self>()
-    }
-
-    fn metadata(&self) -> ResourceMetadata {
-        ResourceMetadata::from_key(&self.metadata_key)
-    }
-
-    fn validate(&self, _config_json: serde_json::Value) -> Result<(), nebula_resource::Error> {
-        Ok(())
-    }
-
-    fn register<'a>(
-        &'a self,
-        _manager: &'a nebula_resource::Manager,
-        _request: RegisterRequest<'a>,
-    ) -> BoxFut<'a, Result<SlotIdentity, nebula_resource::Error>> {
-        // Test stub: register is never invoked by the namespace/dedup tests.
-        Box::pin(async { Ok(SlotIdentity::Unbound) })
+fn credential_fixture(projected_key: &str, metadata_key: &str) -> Arc<dyn AnyCredential> {
+    match (projected_key, metadata_key) {
+        ("slack.oauth2", "slack.oauth2") => Arc::new(SlackOauthCredential),
+        ("slack.bot_token", "slack.bot_token") => Arc::new(SlackBotCredential),
+        ("github.oauth2", "github.oauth2") => Arc::new(GithubOauthCredential),
+        ("slack.oauth2", "slack.bot_token") => Arc::new(MismatchedCredential),
+        ("slack.bad!", "slack.oauth2") => Arc::new(InvalidBadCredential),
+        ("slack.low!", "slack.beta") => Arc::new(InvalidLowCredential),
+        ("slack.zzz!", "slack.alpha") => Arc::new(InvalidZzzCredential),
+        ("slack.aaa!", "slack.alpha") => Arc::new(InvalidAaaCredential),
+        _ => panic!("credential fixture ({projected_key:?}, {metadata_key:?}) is not declared"),
     }
 }
 
@@ -249,22 +236,19 @@ impl StubPlugin {
     }
 
     fn with_action(mut self, action_key: &'static str) -> Self {
-        self.actions.push(Arc::new(StubAction::new(action_key)));
+        self.actions.push(action_factory(action_key));
         self
     }
 
     fn with_credential(mut self, cred_key: &str) -> Self {
         self.credentials
-            .push(Arc::new(StubCredential::new(cred_key)));
+            .push(credential_fixture(cred_key, cred_key));
         self
     }
 
     fn with_mismatched_credential(mut self, projected_key: &str, metadata_key: &str) -> Self {
         self.credentials
-            .push(Arc::new(StubCredential::with_metadata_key(
-                projected_key,
-                metadata_key,
-            )));
+            .push(credential_fixture(projected_key, metadata_key));
         self
     }
 
@@ -274,31 +258,12 @@ impl StubPlugin {
         metadata_key: &str,
     ) -> Self {
         self.credentials
-            .push(Arc::new(StubCredential::with_invalid_projected_key(
-                projected_key,
-                metadata_key,
-            )));
-        self
-    }
-
-    fn with_mismatched_credential_type(mut self, key: &str) -> Self {
-        self.credentials.push(Arc::new(
-            StubCredential::with_mismatched_downcast_projection(key),
-        ));
+            .push(credential_fixture(projected_key, metadata_key));
         self
     }
 
     fn with_resource(mut self, res_key: &'static str) -> Self {
-        self.resources.push(Arc::new(StubResource::new(res_key)));
-        self
-    }
-
-    fn with_mismatched_resource(mut self, factory_key: &str, metadata_key: &str) -> Self {
-        self.resources
-            .push(Arc::new(StubResource::with_metadata_key(
-                factory_key,
-                metadata_key,
-            )));
+        self.resources.push(resource_factory(res_key));
         self
     }
 }
@@ -418,18 +383,16 @@ fn resolved_plugin_rejects_invalid_credential_key_projection() {
 }
 
 #[test]
-fn resolved_plugin_rejects_mismatched_credential_downcast_type() {
-    let plugin = StubPlugin::new("slack").with_mismatched_credential_type("slack.oauth2");
-    let error = ResolvedPlugin::from(plugin).expect_err("mismatched type projection must fail");
+fn typed_credential_blanket_preserves_downcast_identity() {
+    let credential = SlackOauthCredential;
+    let erased: &dyn AnyCredential = &credential;
 
-    assert!(matches!(
-        error,
-        PluginError::ComponentTypeMismatch {
-            plugin,
-            kind: ComponentKind::Credential,
-            key,
-        } if plugin.as_str() == "slack" && key == "slack.oauth2"
-    ));
+    assert!(
+        erased
+            .as_any()
+            .downcast_ref::<SlackOauthCredential>()
+            .is_some()
+    );
 }
 
 #[test]
@@ -448,15 +411,16 @@ fn credential_validation_error_is_deterministic_across_contribution_order() {
     let reversed_error =
         ResolvedPlugin::from(reversed).expect_err("the invalid credential set must fail");
 
-    assert_eq!(forward_error, reversed_error);
-    assert!(matches!(
-        forward_error,
-        PluginError::InvalidComponentKey {
-            plugin,
-            kind: ComponentKind::Credential,
-            projected_key,
-        } if plugin.as_str() == "slack" && projected_key == "slack.aaa!"
-    ));
+    for error in [forward_error, reversed_error] {
+        std::assert_matches!(
+            error,
+            PluginError::InvalidComponentKey {
+                plugin,
+                kind: ComponentKind::Credential,
+                projected_key,
+            } if plugin.as_str() == "slack" && projected_key == "slack.aaa!"
+        );
+    }
 }
 
 #[test]
@@ -496,55 +460,6 @@ fn resolved_plugin_accepts_well_namespaced_resource() {
 
     let key = ResourceKey::new("slack.http_client").unwrap();
     assert!(resolved.resource(&key).is_some());
-}
-
-#[test]
-fn resolved_plugin_rejects_resource_key_metadata_mismatch() {
-    let plugin = StubPlugin::new("slack")
-        .with_mismatched_resource("slack.http_client", "slack.audit_client");
-    let error = ResolvedPlugin::from(plugin).expect_err("key mismatch must fail resolution");
-
-    assert!(matches!(
-        error,
-        PluginError::ComponentKeyMismatch {
-            plugin,
-            kind: ComponentKind::Resource,
-            projected_key,
-            metadata_key,
-        } if plugin.as_str() == "slack"
-            && projected_key == "slack.http_client"
-            && metadata_key == "slack.audit_client"
-    ));
-}
-
-#[test]
-fn resource_validation_error_is_deterministic_across_contribution_order() {
-    let forward = StubPlugin::new("slack")
-        .with_mismatched_resource("slack.beta", "slack.aaa")
-        .with_mismatched_resource("slack.alpha", "slack.zzz")
-        .with_mismatched_resource("slack.alpha", "slack.aaa");
-    let reversed = StubPlugin::new("slack")
-        .with_mismatched_resource("slack.alpha", "slack.aaa")
-        .with_mismatched_resource("slack.alpha", "slack.zzz")
-        .with_mismatched_resource("slack.beta", "slack.aaa");
-
-    let forward_error =
-        ResolvedPlugin::from(forward).expect_err("the invalid resource set must fail");
-    let reversed_error =
-        ResolvedPlugin::from(reversed).expect_err("the invalid resource set must fail");
-
-    assert_eq!(forward_error, reversed_error);
-    assert!(matches!(
-        forward_error,
-        PluginError::ComponentKeyMismatch {
-            plugin,
-            kind: ComponentKind::Resource,
-            projected_key,
-            metadata_key,
-        } if plugin.as_str() == "slack"
-            && projected_key == "slack.alpha"
-            && metadata_key == "slack.aaa"
-    ));
 }
 
 #[test]
@@ -615,13 +530,16 @@ fn registry_resolve_action_finds_across_plugins() {
     let action = reg
         .resolve_action(&ActionKey::new("slack.send_message").unwrap())
         .expect("slack action");
-    assert_eq!(action.metadata().base.key.as_str(), "slack.send_message");
+    assert_eq!(
+        action.metadata().base().key().as_str(),
+        "slack.send_message"
+    );
 
     // Hits the HTTP plugin's cache.
     let http_post = reg
         .resolve_action(&ActionKey::new("http.post").unwrap())
         .expect("http post");
-    assert_eq!(http_post.metadata().base.key.as_str(), "http.post");
+    assert_eq!(http_post.metadata().base().key().as_str(), "http.post");
 
     // Unknown key: no match.
     assert!(
@@ -646,7 +564,7 @@ fn registry_all_actions_yields_every_action() {
 
     let keys: Vec<&str> = reg
         .all_actions()
-        .map(|(_pk, a)| a.metadata().base.key.as_str())
+        .map(|(_pk, a)| a.metadata().base().key().as_str())
         .collect();
     assert!(keys.contains(&"slack.send_message"));
     assert!(keys.contains(&"http.get"));
@@ -663,7 +581,14 @@ fn registry_resolve_credential_finds_across_plugins() {
     let cred = reg
         .resolve_credential(&CredentialKey::new("slack.oauth2").unwrap())
         .expect("oauth2");
-    assert_eq!(cred.metadata().base.key.as_str(), "slack.oauth2");
+    assert_eq!(
+        cred.metadata()
+            .expect("fixture metadata is valid")
+            .base()
+            .key()
+            .as_str(),
+        "slack.oauth2"
+    );
 
     assert!(
         reg.resolve_credential(&CredentialKey::new("nope.x").unwrap())
@@ -697,7 +622,14 @@ fn registry_resolve_resource_finds_across_plugins() {
     let res = reg
         .resolve_resource(&ResourceKey::new("http.client").unwrap())
         .expect("client");
-    assert_eq!(res.metadata().base.key.as_str(), "http.client");
+    assert_eq!(
+        res.metadata()
+            .expect("fixture metadata is valid")
+            .base()
+            .key()
+            .as_str(),
+        "http.client"
+    );
 }
 
 #[test]

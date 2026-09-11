@@ -1,6 +1,12 @@
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::{
+    cell::RefCell,
+    sync::{Arc, OnceLock},
+};
 
-use nebula_action::{ActionContext, ActionError, ActionFactory, ActionHandle, ActionMetadata};
+use nebula_action::{
+    Action, ActionContext, ActionError, ActionFactory, ActionMetadataDraft, ActionResult,
+    InstanceFactory, OutputPort, StatelessAction,
+};
 use nebula_core::{
     ActionKey, ArtifactSetDigest, Dependencies, WorkflowId, WorkflowVersionId, node_key,
 };
@@ -9,48 +15,110 @@ use nebula_plugin::{
     ExecutablePlanRevision, PlanRegistryCompatibilityError, Plugin, PluginRegistry,
     RecordedExecutablePlanRevisionV1, ResolvedPlugin, RuntimeContractVersion,
 };
-use nebula_schema::{Field, ObjectField, Schema, SecretField, ValidSchema, field_key};
+use nebula_schema::{Field, ObjectField, Schema, SecretField, ValidSchema, ValuePath, field_key};
 use nebula_workflow::{NodeDefinition, ParamValue, WorkflowBuilder};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
-struct ContractAction {
-    metadata: ActionMetadata,
-    dependencies: Dependencies,
-}
+struct ContractAction;
 
 impl ContractAction {
-    fn new(input_schema: ValidSchema) -> Self {
-        Self {
-            metadata: ActionMetadata::new(
-                ActionKey::new("demo.echo").expect("fixture action key is valid"),
-                "Echo",
-                "Graph-v1 contract fixture",
-            )
-            .with_schema(input_schema)
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
-            dependencies: Dependencies::new(),
+    fn factory_with_input_schema(input_schema: ValidSchema) -> Arc<dyn ActionFactory> {
+        Self::with_contract(
+            "demo.echo",
+            input_schema,
+            ValidSchema::empty(),
+            nebula_action::effect::ActionEffectContract::NoExternalEffects,
+            None,
+        )
+    }
+
+    fn with_contract(
+        key: &str,
+        input_schema: ValidSchema,
+        output_schema: ValidSchema,
+        effect_contract: nebula_action::effect::ActionEffectContract,
+        outputs: Option<Vec<OutputPort>>,
+    ) -> Arc<dyn ActionFactory> {
+        INPUT_SCHEMA.with(|schema| *schema.borrow_mut() = Some(input_schema));
+        OUTPUT_SCHEMA.with(|schema| *schema.borrow_mut() = Some(output_schema));
+        let mut draft = ActionMetadataDraft::new(
+            ActionKey::new(key).expect("fixture action key is valid"),
+            nebula_action::metadata_name!("Echo"),
+            "Graph-v1 contract fixture",
+        )
+        .with_effect_contract(effect_contract);
+        if let Some(outputs) = outputs {
+            draft = draft.with_outputs(outputs);
         }
+        let factory = InstanceFactory::new(draft, ContractImplementation)
+            .expect("graph contract admits through its structural factory");
+        INPUT_SCHEMA.with(|schema| *schema.borrow_mut() = None);
+        OUTPUT_SCHEMA.with(|schema| *schema.borrow_mut() = None);
+        Arc::new(factory)
     }
 }
 
-impl ActionFactory for ContractAction {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.metadata
+thread_local! {
+    static INPUT_SCHEMA: RefCell<Option<ValidSchema>> = const { RefCell::new(None) };
+    static OUTPUT_SCHEMA: RefCell<Option<ValidSchema>> = const { RefCell::new(None) };
+}
+
+#[derive(Deserialize)]
+struct ContractInput(Value);
+
+impl nebula_schema::HasSchema for ContractInput {
+    fn schema() -> Result<ValidSchema, nebula_schema::ValidationReport> {
+        Ok(INPUT_SCHEMA.with(|schema| {
+            schema
+                .borrow()
+                .clone()
+                .expect("input schema is installed during fixture admission")
+        }))
+    }
+}
+
+#[derive(Serialize)]
+struct ContractOutput(Value);
+
+impl nebula_schema::HasSchema for ContractOutput {
+    fn schema() -> Result<ValidSchema, nebula_schema::ValidationReport> {
+        Ok(OUTPUT_SCHEMA.with(|schema| {
+            schema
+                .borrow()
+                .clone()
+                .expect("output schema is installed during fixture admission")
+        }))
+    }
+}
+
+struct ContractImplementation;
+
+impl Action for ContractImplementation {
+    type Input = ContractInput;
+    type Output = ContractOutput;
+
+    fn metadata() -> ActionMetadataDraft {
+        ActionMetadataDraft::new(
+            nebula_core::action_key!("fixture.contract"),
+            nebula_action::metadata_name!("Fixture contract"),
+            "Graph contract fixture",
+        )
     }
 
-    fn dependencies(&self) -> &Dependencies {
-        &self.dependencies
+    fn dependencies() -> &'static Dependencies {
+        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
+        DEPENDENCIES.get_or_init(Dependencies::new)
     }
+}
 
-    fn instantiate<'a>(
-        &'a self,
-        _node: &'a NodeDefinition,
-        _context: &'a dyn ActionContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
-        Box::pin(async {
-            Err(ActionError::fatal(
-                "contract fixture is never instantiated by the pure compiler",
-            ))
-        })
+impl StatelessAction for ContractImplementation {
+    async fn execute(
+        &self,
+        input: ContractInput,
+        _context: &(impl ActionContext + ?Sized),
+    ) -> Result<ActionResult<ContractOutput>, ActionError> {
+        Ok(ActionResult::success(ContractOutput(input.0)))
     }
 }
 
@@ -74,7 +142,7 @@ impl ContractPlugin {
             manifest: PluginManifest::builder("demo", "Demo")
                 .build()
                 .expect("fixture manifest is valid"),
-            action: Arc::new(ContractAction::new(input_schema)),
+            action: ContractAction::factory_with_input_schema(input_schema),
         }
     }
 }
@@ -133,9 +201,7 @@ fn readable_legacy_plans_do_not_gain_implicit_execution_permission() {
     for action in record["content"]["actions"].as_array_mut().unwrap() {
         action.as_object_mut().unwrap().remove("effect_contract");
     }
-    let canonical = nebula_schema::FieldValue::Literal(record.clone())
-        .canonical_bytes()
-        .unwrap();
+    let canonical = nebula_schema::canonical_json_v1(&record).unwrap();
     let domain = b"nebula.executable-plan.graph.v1";
     let mut hash = Sha256::new();
     hash.update([1]);
@@ -153,6 +219,40 @@ fn readable_legacy_plans_do_not_gain_implicit_execution_permission() {
         legacy.validate_against(&registry),
         Err(PlanRegistryCompatibilityError::UnsupportedEffectProtocol)
     ));
+}
+
+#[test]
+fn graph_v3_records_remain_executable_against_identical_legacy_contracts() {
+    use sha2::{Digest, Sha256};
+    let registry = frozen(ValidSchema::empty(), 0x82);
+    let plan = registry
+        .compile_graph_v1(WorkflowVersionId::new(), &workflow_with_variables(&[]))
+        .unwrap();
+    let mut record = serde_json::to_value(RecordedExecutablePlanRevisionV1::from(&plan)).unwrap();
+    record["compiler_version"] = serde_json::json!(3);
+    record.as_object_mut().unwrap().remove("claimed_id");
+    let canonical = nebula_schema::canonical_json_v1(&record).unwrap();
+    let domain = b"nebula.executable-plan.graph.v2";
+    let mut hash = Sha256::new();
+    hash.update([1]);
+    hash.update((domain.len() as u64).to_be_bytes());
+    hash.update(domain);
+    hash.update([2]);
+    hash.update((canonical.len() as u64).to_be_bytes());
+    hash.update(canonical);
+    let digest: [u8; 32] = hash.finalize().into();
+    record["claimed_id"] =
+        serde_json::to_value(nebula_core::ExecutablePlanRevisionId::from_bytes(digest)).unwrap();
+    let encoded = serde_json::to_vec(&record).unwrap();
+    let legacy =
+        ExecutablePlanRevision::try_from_recorded_v1(serde_json::from_slice(&encoded).unwrap())
+            .unwrap();
+    legacy.validate_against(&registry).unwrap();
+    assert_eq!(
+        serde_json::to_value(RecordedExecutablePlanRevisionV1::from(&legacy)).unwrap(),
+        record
+    );
+    assert_ne!(legacy.id(), plan.id());
 }
 
 #[test]
@@ -174,29 +274,36 @@ fn intrinsic_error_edge_uses_runtime_payload_schema_and_survives_record_roundtri
             self.actions.clone()
         }
     }
-    let mut source = ContractAction::new(ValidSchema::empty());
-    source.metadata.base.key = ActionKey::new("demo.source").unwrap();
-    source.metadata = source
-        .metadata
-        .with_output_schema(
-            Schema::builder()
-                .add(Field::string(field_key!("success_only")).required())
-                .build()
-                .unwrap(),
-        )
-        .add_output(nebula_action::OutputPort::error(nebula_core::port_key!(
-            "error"
-        )));
-    let mut target =
-        ContractAction::new(nebula_schema::schema_of::<nebula_workflow::ErrorPortPayload>());
-    target.metadata.base.key = ActionKey::new("demo.target").unwrap();
-    let mut incompatible = ContractAction::new(
+    let mut source_outputs = nebula_action::port::default_output_ports();
+    source_outputs.push(OutputPort::error(nebula_core::port_key!("error")));
+    let source = ContractAction::with_contract(
+        "demo.source",
+        ValidSchema::empty(),
         Schema::builder()
             .add(Field::string(field_key!("success_only")).required())
             .build()
             .unwrap(),
+        nebula_action::effect::ActionEffectContract::NoExternalEffects,
+        Some(source_outputs),
     );
-    incompatible.metadata.base.key = ActionKey::new("demo.incompatible").unwrap();
+    let target = ContractAction::with_contract(
+        "demo.target",
+        nebula_schema::schema_of::<nebula_workflow::ErrorPortPayload>()
+            .expect("valid test catalog definition"),
+        ValidSchema::empty(),
+        nebula_action::effect::ActionEffectContract::NoExternalEffects,
+        None,
+    );
+    let incompatible = ContractAction::with_contract(
+        "demo.incompatible",
+        Schema::builder()
+            .add(Field::string(field_key!("success_only")).required())
+            .build()
+            .unwrap(),
+        ValidSchema::empty(),
+        nebula_action::effect::ActionEffectContract::NoExternalEffects,
+        None,
+    );
     let mut plugins = PluginRegistry::new();
     plugins
         .register(Arc::new(
@@ -204,7 +311,7 @@ fn intrinsic_error_edge_uses_runtime_payload_schema_and_survives_record_roundtri
                 manifest: PluginManifest::builder("demo", "Error fixture")
                     .build()
                     .unwrap(),
-                actions: vec![Arc::new(source), Arc::new(target), Arc::new(incompatible)],
+                actions: vec![source, target, incompatible],
             })
             .unwrap(),
         ))
@@ -220,7 +327,13 @@ fn intrinsic_error_edge_uses_runtime_payload_schema_and_survives_record_roundtri
         .add_node(
             NodeDefinition::new(node_key!("handler"), "Handler", "demo", "target")
                 .unwrap()
-                .with_parameter("error", ParamValue::reference(node_key!("source"), "error"))
+                .with_parameter(
+                    "error",
+                    ParamValue::reference(
+                        node_key!("source"),
+                        ValuePath::from_pointer("/error").unwrap(),
+                    ),
+                )
                 .with_parameter("node_id", ParamValue::literal(serde_json::json!("source"))),
         )
         .build()
@@ -245,7 +358,10 @@ fn intrinsic_error_edge_uses_runtime_payload_schema_and_survives_record_roundtri
     let mut wrong_reference = workflow.clone();
     wrong_reference.nodes[1].parameters.insert(
         "error".into(),
-        ParamValue::reference(node_key!("source"), "success_only"),
+        ParamValue::reference(
+            node_key!("source"),
+            ValuePath::from_pointer("/success_only").unwrap(),
+        ),
     );
     let error = frozen
         .compile_graph_v1(WorkflowVersionId::new(), &wrong_reference)
@@ -331,10 +447,14 @@ fn plan_roundtrip_and_exact_registry_compatibility_are_checked() {
 #[test]
 fn newly_compiled_plan_records_explicit_effect_protocol() {
     let mut plugin = ContractPlugin::new(ValidSchema::empty());
-    let mut action = ContractAction::new(ValidSchema::empty());
-    action.metadata.effect_contract =
-        nebula_action::effect::ActionEffectContract::NoExternalEffects;
-    plugin.action = Arc::new(action);
+    let action = ContractAction::with_contract(
+        "demo.echo",
+        ValidSchema::empty(),
+        ValidSchema::empty(),
+        nebula_action::effect::ActionEffectContract::NoExternalEffects,
+        None,
+    );
+    plugin.action = action;
     let mut registry = PluginRegistry::new();
     registry
         .register(Arc::new(ResolvedPlugin::from(plugin).unwrap()))
@@ -350,7 +470,7 @@ fn newly_compiled_plan_records_explicit_effect_protocol() {
         .compile_graph_v1(WorkflowVersionId::new(), &workflow)
         .unwrap();
     let record = serde_json::to_value(RecordedExecutablePlanRevisionV1::from(&plan)).unwrap();
-    assert_eq!(record["compiler_version"], 3);
+    assert_eq!(record["compiler_version"], 4);
     assert_eq!(record["canonical_hash_version"], 2);
     assert_eq!(
         record["content"]["actions"][0]["effect_contract"],
@@ -359,11 +479,80 @@ fn newly_compiled_plan_records_explicit_effect_protocol() {
 }
 
 #[test]
+fn scalar_contracts_roundtrip_under_the_new_epoch_without_named_parameters() {
+    for schema in [
+        nebula_schema::schema_of::<()>().unwrap(),
+        nebula_schema::schema_of::<u64>().unwrap(),
+    ] {
+        let registry = frozen(schema.clone(), 0xa1);
+        let plan = registry
+            .compile_graph_v1(WorkflowVersionId::new(), &workflow_with_variables(&[]))
+            .unwrap();
+        let wire = serde_json::to_value(RecordedExecutablePlanRevisionV1::from(&plan)).unwrap();
+        assert_eq!(wire["compiler_version"], 4);
+        assert_eq!(wire["canonical_hash_version"], 2);
+        assert_eq!(
+            wire["content"]["actions"][0]["input_schema"],
+            serde_json::json!({
+                "schema_wire_version": 2, "schema": schema,
+            })
+        );
+        let loaded =
+            ExecutablePlanRevision::try_from_recorded_v1(serde_json::from_value(wire).unwrap())
+                .unwrap();
+        assert_eq!(loaded.id(), plan.id());
+        loaded.validate_against(&registry).unwrap();
+        assert!(
+            loaded.execution_graph().unwrap().nodes()[0]
+                .parameters
+                .is_empty()
+        );
+
+        let mut workflow = workflow_with_variables(&[]);
+        workflow.nodes[0]
+            .parameters
+            .insert("value".into(), ParamValue::literal(serde_json::json!(42)));
+        assert!(
+            registry
+                .compile_graph_v1(WorkflowVersionId::new(), &workflow)
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn null_and_empty_record_contracts_have_distinct_plan_identities_and_exact_admission() {
+    let record_registry = frozen(ValidSchema::empty(), 0xa2);
+    let null_registry = frozen(nebula_schema::schema_of::<()>().unwrap(), 0xa2);
+    let workflow = workflow_with_variables(&[]);
+    let version = WorkflowVersionId::new();
+    let record = record_registry
+        .compile_graph_v1(version, &workflow)
+        .unwrap();
+    let null = null_registry.compile_graph_v1(version, &workflow).unwrap();
+    assert_eq!(record.plugin_set_id(), null.plugin_set_id());
+    assert_ne!(record.id(), null.id());
+    std::assert_matches!(
+        record.validate_against(&null_registry),
+        Err(PlanRegistryCompatibilityError::ContractMismatch { section: "actions" })
+    );
+    std::assert_matches!(
+        null.validate_against(&record_registry),
+        Err(PlanRegistryCompatibilityError::ContractMismatch { section: "actions" })
+    );
+}
+
+#[test]
 fn undeclared_effects_cannot_be_compiled_for_durable_execution() {
     let mut plugin = ContractPlugin::new(ValidSchema::empty());
-    let mut action = ContractAction::new(ValidSchema::empty());
-    action.metadata.effect_contract = nebula_action::effect::ActionEffectContract::Undeclared;
-    plugin.action = Arc::new(action);
+    let action = ContractAction::with_contract(
+        "demo.echo",
+        ValidSchema::empty(),
+        ValidSchema::empty(),
+        nebula_action::effect::ActionEffectContract::Undeclared,
+        None,
+    );
+    plugin.action = action;
     let mut registry = PluginRegistry::new();
     registry
         .register(Arc::new(ResolvedPlugin::from(plugin).unwrap()))
@@ -412,6 +601,70 @@ fn compatibility_detects_flavor_and_unfingerprinted_contract_drift() {
         plan.validate_against(&same_ids_but_changed_contract),
         Err(PlanRegistryCompatibilityError::ContractMismatch { section: "actions" })
     ));
+}
+
+#[test]
+fn recorded_templates_use_template_grammar_and_preserve_parameter_bytes() {
+    let registry = frozen(
+        Schema::builder()
+            .add(Field::string(field_key!("value")))
+            .build()
+            .unwrap(),
+        0x87,
+    );
+    for source in ["plain text", r"\{{ incomplete", "{{ 7 }}", "'{{ 7 }}'"] {
+        let authored = ParamValue::template(source);
+        let plan = registry
+            .compile_graph_v1(
+                WorkflowVersionId::from_bytes([0x88; 16]),
+                &workflow_with_parameter(Some(authored.clone())),
+            )
+            .unwrap();
+        let bytes = serde_json::to_vec(&RecordedExecutablePlanRevisionV1::from(&plan)).unwrap();
+        let loaded =
+            ExecutablePlanRevision::try_from_recorded_v1(serde_json::from_slice(&bytes).unwrap())
+                .unwrap();
+        assert_eq!(loaded.id(), plan.id());
+        assert_eq!(
+            serde_json::to_vec(&RecordedExecutablePlanRevisionV1::from(&loaded)).unwrap(),
+            bytes
+        );
+        let graph = loaded.execution_graph().unwrap();
+        assert_eq!(graph.nodes()[0].parameters["value"], authored);
+    }
+}
+
+#[test]
+fn recorded_expression_auto_priority_does_not_make_malformed_templates_valid() {
+    let registry = frozen(
+        Schema::builder()
+            .add(Field::string(field_key!("value")))
+            .build()
+            .unwrap(),
+        0x89,
+    );
+    let source = "'{{ incomplete'";
+    let plan = registry
+        .compile_graph_v1(
+            WorkflowVersionId::from_bytes([0x90; 16]),
+            &workflow_with_parameter(Some(ParamValue::expression(source))),
+        )
+        .unwrap();
+    assert_eq!(
+        plan.execution_graph().unwrap().nodes()[0].parameters["value"],
+        ParamValue::expression(source)
+    );
+    let error = registry
+        .compile_graph_v1(
+            WorkflowVersionId::from_bytes([0x91; 16]),
+            &workflow_with_parameter(Some(ParamValue::template(source))),
+        )
+        .unwrap_err();
+    assert!(
+        error.diagnostics().iter().any(
+            |diagnostic| diagnostic.code() == "PLUGIN_PLAN_GRAPH_V1:INVALID_PARAMETER_CONTRACT"
+        )
+    );
 }
 
 #[test]
@@ -555,11 +808,16 @@ fn execution_graph_preserves_parameter_variants_and_canonical_reference_ports() 
         .add(Field::string(field_key!("value")))
         .build()
         .unwrap();
-    let mut action = ContractAction::new(schema.clone());
-    action.metadata = action.metadata.with_output_schema(schema);
+    let action = ContractAction::with_contract(
+        "demo.echo",
+        schema.clone(),
+        schema,
+        nebula_action::effect::ActionEffectContract::NoExternalEffects,
+        None,
+    );
     let plugin = ContractPlugin {
         manifest: PluginManifest::builder("demo", "Demo").build().unwrap(),
-        action: Arc::new(action),
+        action,
     };
     let mut registry = PluginRegistry::new();
     registry
@@ -589,7 +847,10 @@ fn execution_graph_preserves_parameter_variants_and_canonical_reference_ports() 
         ),
         (
             node_key!("reference"),
-            ParamValue::reference(node_key!("source"), "$.value"),
+            ParamValue::reference(
+                node_key!("source"),
+                ValuePath::from_pointer("/value").unwrap(),
+            ),
         ),
     ] {
         builder = builder
@@ -620,7 +881,10 @@ fn execution_graph_preserves_parameter_variants_and_canonical_reference_ports() 
         if authored.id == node_key!("reference") {
             assert_eq!(
                 projected.parameters["value"],
-                ParamValue::reference(node_key!("source"), "value")
+                ParamValue::reference(
+                    node_key!("source"),
+                    ValuePath::from_pointer("/value").unwrap(),
+                )
             );
         } else {
             assert_eq!(projected.parameters, authored.parameters);

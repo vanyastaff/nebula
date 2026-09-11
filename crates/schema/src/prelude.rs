@@ -15,19 +15,22 @@
 //!   the `field_key!` macro. The `Schema` derive macro lives at `nebula_schema::Schema` — the same
 //!   path as the `Schema` aggregate type (Rust allows a type and a derive macro to share a name);
 //!   it isn't re-exported here because a prelude can't hold both meanings of the same identifier.
+//! - `SecretInput`, the explicit owned-and-zeroizing leaf contract for derived secret properties.
 //! - `Rule` + `Predicate` for `visible_when` / `required_when` / `active_when`.
 
 pub use nebula_schema_macros::EnumSelect;
 pub use nebula_validator::{Predicate, Rule};
 
 pub use crate::{
-    BooleanField, CodeField, ComputedField, ComputedReturn, DynamicField, EvalFuture, Expression,
-    ExpressionContext, ExpressionMode, Field, FieldKey, FieldPath, FieldValue, FieldValues,
-    FileField, HasSchema, HasSelectOptions, InputHint, ListField, LoaderContext, LoaderRegistry,
-    ModeField, ModeVariant, NoticeField, NoticeSeverity, NumberField, ObjectField, RequiredMode,
-    ResolvedValues, Schema, SchemaBuilder, SecretField, SecretValue, SecretWire, SelectField,
+    AuthoredValue, BooleanField, CodeField, CompiledProgram, CompiledValue, ComputedField,
+    ComputedReturn, DynamicField, EvalFuture, Expression, ExpressionContext, ExpressionMode, Field,
+    FieldKey, FieldPath, FileField, HasSchema, HasSelectOptions, InputHint, ListField,
+    LoaderContext, LoaderRegistry, ModeField, ModeVariant, NoticeField, NoticeSeverity,
+    NumberField, ObjectField, PendingValidation, ProgramSyntax, RedactedLoaderContext,
+    RequiredMode, ResolvedValue, ResolvedValues, RootShape, ScalarKind, ScalarSchema, ScalarValue,
+    Schema, SchemaBuilder, SecretField, SecretInput, SecretValue, SecretWire, SelectField,
     SelectOption, Severity, StringField, Transformer, ValidSchema, ValidValues, ValidationError,
-    ValidationReport, VisibilityMode, builder::FieldCollector, field_key,
+    ValidationReport, ValuePath, ValueTree, VisibilityMode, builder::FieldCollector, field_key,
 };
 
 #[cfg(test)]
@@ -42,6 +45,7 @@ mod coverage_smoke {
         fn _j<T: HasSchema>(_: &T) {}
         fn _k<T: HasSelectOptions>(_: &T) {}
         fn _l<T: FieldCollector>(_: T) {}
+        fn _m<T: SecretInput>(_: &T) {}
 
         // Field variants.
         fn _f(_: &StringField, _: &SecretField, _: &NumberField, _: &BooleanField) {}

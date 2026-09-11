@@ -13,16 +13,15 @@ use nebula_core::ResourceKey;
 use nebula_resource::{
     AcquireOptions, Error, Manager, ManagerConfig, Pooled, RegistrationSpec, Resident,
     ResidentConfig, ResourceContext, ScopeLevel, ShutdownConfig, SlotIdentity, TeardownCx,
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
     topology::{
         pooled::{BrokenCheck, PoolProvider},
         resident::ResidentProvider,
     },
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, nebula_schema::Schema)]
 struct Config;
-nebula_schema::impl_empty_has_schema!(Config);
 impl ResourceConfig for Config {
     fn fingerprint(&self) -> u64 {
         0
@@ -52,8 +51,8 @@ impl<const ID: usize> Provider for ResidentNode<ID> {
     fn key() -> ResourceKey {
         ResourceKey::try_from(format!("dependency-node-{ID}")).unwrap()
     }
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<Instance, Error> {
         Ok(Instance {
@@ -96,8 +95,8 @@ impl Provider for PooledParent {
     fn key() -> ResourceKey {
         nebula_core::resource_key!("dependency-pooled-parent")
     }
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<Instance, Error> {
         Ok(Instance {

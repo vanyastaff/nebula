@@ -1,19 +1,21 @@
-use std::{
-    any::TypeId,
-    future::Future,
-    pin::Pin,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
+use std::sync::{
+    Arc, OnceLock,
+    atomic::{AtomicUsize, Ordering},
 };
 
-use nebula_action::{ActionContext, ActionError, ActionFactory, ActionHandle, ActionMetadata};
+use nebula_action::{
+    Action, ActionContext, ActionError, ActionFactory, ActionMetadataDraft, ActionResult,
+    InstanceFactory, StatelessAction,
+};
 use nebula_core::{
     ActionKey, ArtifactSetDigest, CredentialKey, Dependencies, PluginKey, ResourceKey, WorkflowId,
     WorkflowVersionId, node_key,
 };
-use nebula_credential::{AnyCredential, AuthPattern, Capabilities, CredentialMetadata};
+use nebula_credential::{
+    AnyCredential, AuthPattern, Credential, CredentialContext, CredentialMetadataDraft,
+    SecretString, SecretToken, contract::plugin_capability_report, error::CredentialError,
+    resolve::StaticResolveResult,
+};
 use nebula_error::Classify;
 use nebula_metadata::{PluginDependency, PluginManifest};
 use nebula_plugin::{
@@ -21,246 +23,220 @@ use nebula_plugin::{
     RuntimeContractVersion, WorkerFlavorContext,
 };
 use nebula_resource::{
-    ResourceFactory, ResourceMetadata, SlotIdentity,
-    factory::{BoxFut, RegisterRequest},
+    KindActivator, Provider, Resident, ResidentConfig, ResourceFactory, ResourceMetadataDraft,
 };
-use nebula_schema::ValidSchema;
 use nebula_workflow::{NodeDefinition, WorkflowBuilder};
 use semver::{Version, VersionReq};
 
-#[derive(Default)]
-struct ProjectionReads {
-    action_metadata: AtomicUsize,
-    action_dependencies: AtomicUsize,
-    credential_key: AtomicUsize,
-    credential_metadata: AtomicUsize,
-    credential_capabilities: AtomicUsize,
-    credential_type_id: AtomicUsize,
-    resource_key: AtomicUsize,
-    resource_metadata: AtomicUsize,
-    resource_dependencies: AtomicUsize,
-    resource_type_id: AtomicUsize,
+#[derive(Clone)]
+struct MetadataFixture<const INDEX: usize>;
+
+impl<const INDEX: usize> nebula_resource::HasCredentialSlots for MetadataFixture<INDEX> {
+    fn credential_slot_epoch(&self) -> u64 {
+        0
+    }
+
+    fn declares_credential_slots() -> bool {
+        false
+    }
 }
 
-struct TestAction {
-    metadata: ActionMetadata,
-    dependencies: Dependencies,
-    projection_reads: Option<Arc<ProjectionReads>>,
+impl<const INDEX: usize> nebula_core::DeclaresDependencies for MetadataFixture<INDEX> {}
+
+#[async_trait::async_trait]
+impl<const INDEX: usize> Provider for MetadataFixture<INDEX> {
+    type Config = ();
+    type Instance = ();
+    type Topology = Resident<Self>;
+
+    fn key() -> ResourceKey {
+        let key = match INDEX {
+            0 => "alpha.db",
+            1 => "alpha.internal_resource",
+            _ => panic!("resource metadata fixture index {INDEX} is not declared"),
+        };
+        ResourceKey::new(key).expect("valid fixture resource key")
+    }
+
+    async fn create(
+        &self,
+        _config: &(),
+        _context: &nebula_resource::ResourceContext,
+    ) -> Result<(), nebula_resource::Error> {
+        Ok(())
+    }
 }
 
-impl TestAction {
-    fn new(key: &str) -> Self {
-        Self {
-            metadata: ActionMetadata::new(
+#[async_trait::async_trait]
+impl<const INDEX: usize> nebula_resource::ResidentProvider for MetadataFixture<INDEX> {}
+
+fn resource_factory_at<const INDEX: usize>() -> Arc<dyn ResourceFactory> {
+    let factory = KindActivator::<MetadataFixture<INDEX>, _, _>::with_metadata(
+        ResourceMetadataDraft::from_key(MetadataFixture::<INDEX>::key()),
+        || MetadataFixture,
+        || Resident::new(ResidentConfig::default()),
+    );
+    Arc::new(factory)
+}
+
+fn resource_factory(key: &str) -> Arc<dyn ResourceFactory> {
+    match key {
+        "alpha.db" => resource_factory_at::<0>(),
+        "alpha.internal_resource" => resource_factory_at::<1>(),
+        _ => panic!("resource factory fixture key `{key}` is not declared"),
+    }
+}
+
+fn action_factory(key: &str) -> Arc<dyn ActionFactory> {
+    Arc::new(
+        InstanceFactory::new(
+            ActionMetadataDraft::new(
                 ActionKey::new(key).expect("test action key must be valid"),
-                key,
+                nebula_action::MetadataName::try_from(key).expect("fixture display name"),
                 "test action",
             )
             .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
-            dependencies: Dependencies::new(),
-            projection_reads: None,
-        }
-    }
-
-    fn with_projection_reads(key: &str, projection_reads: Arc<ProjectionReads>) -> Self {
-        let mut action = Self::new(key);
-        action.projection_reads = Some(projection_reads);
-        action
-    }
+            MetadataAction,
+        )
+        .expect("test action metadata admits through its structural factory"),
+    )
 }
 
-impl std::fmt::Debug for TestAction {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("TestAction")
-            .field("key", &self.metadata.base.key)
-            .finish()
-    }
-}
+struct MetadataAction;
 
-impl ActionFactory for TestAction {
-    fn metadata(&self) -> &ActionMetadata {
-        if let Some(projection_reads) = &self.projection_reads {
-            projection_reads
-                .action_metadata
-                .fetch_add(1, Ordering::Relaxed);
-        }
-        &self.metadata
-    }
+impl Action for MetadataAction {
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
 
-    fn dependencies(&self) -> &Dependencies {
-        if let Some(projection_reads) = &self.projection_reads {
-            projection_reads
-                .action_dependencies
-                .fetch_add(1, Ordering::Relaxed);
-        }
-        &self.dependencies
-    }
-
-    fn instantiate<'a>(
-        &'a self,
-        _node: &'a NodeDefinition,
-        _context: &'a dyn ActionContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
-        Box::pin(async {
-            Err(ActionError::fatal(
-                "TestAction::instantiate is not exercised by registry tests",
-            ))
-        })
-    }
-}
-
-struct TestCredential {
-    key: CredentialKey,
-    projection_reads: Option<Arc<ProjectionReads>>,
-}
-
-impl TestCredential {
-    fn new(key: &str) -> Self {
-        Self {
-            key: CredentialKey::new(key).expect("test credential key must be valid"),
-            projection_reads: None,
-        }
-    }
-
-    fn with_projection_reads(key: &str, projection_reads: Arc<ProjectionReads>) -> Self {
-        let mut credential = Self::new(key);
-        credential.projection_reads = Some(projection_reads);
-        credential
-    }
-}
-
-impl std::fmt::Debug for TestCredential {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("TestCredential")
-            .field("key", &self.key)
-            .finish()
-    }
-}
-
-impl AnyCredential for TestCredential {
-    fn credential_key(&self) -> &str {
-        if let Some(projection_reads) = &self.projection_reads {
-            projection_reads
-                .credential_key
-                .fetch_add(1, Ordering::Relaxed);
-        }
-        self.key.as_str()
-    }
-
-    fn metadata(&self) -> CredentialMetadata {
-        if let Some(projection_reads) = &self.projection_reads {
-            projection_reads
-                .credential_metadata
-                .fetch_add(1, Ordering::Relaxed);
-        }
-        CredentialMetadata::new(
-            self.key.clone(),
-            "Test credential",
-            "test credential",
-            ValidSchema::empty(),
-            AuthPattern::SecretToken,
+    fn metadata() -> ActionMetadataDraft {
+        ActionMetadataDraft::new(
+            nebula_core::action_key!("fixture.metadata"),
+            nebula_action::metadata_name!("Fixture metadata"),
+            "Plugin metadata fixture",
         )
     }
 
-    fn capabilities(&self) -> Capabilities {
-        if let Some(projection_reads) = &self.projection_reads {
-            projection_reads
-                .credential_capabilities
-                .fetch_add(1, Ordering::Relaxed);
-        }
-        Capabilities::empty()
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        if let Some(projection_reads) = &self.projection_reads {
-            projection_reads
-                .credential_type_id
-                .fetch_add(1, Ordering::Relaxed);
-        }
-        self
+    fn dependencies() -> &'static Dependencies {
+        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
+        DEPENDENCIES.get_or_init(Dependencies::new)
     }
 }
 
-struct TestResource {
-    key: ResourceKey,
-    dependencies: Dependencies,
-    projection_reads: Option<Arc<ProjectionReads>>,
-}
-
-impl TestResource {
-    fn new(key: &str) -> Self {
-        Self {
-            key: ResourceKey::new(key).expect("test resource key must be valid"),
-            dependencies: Dependencies::new(),
-            projection_reads: None,
-        }
-    }
-
-    fn with_projection_reads(key: &str, projection_reads: Arc<ProjectionReads>) -> Self {
-        let mut resource = Self::new(key);
-        resource.projection_reads = Some(projection_reads);
-        resource
+impl StatelessAction for MetadataAction {
+    async fn execute(
+        &self,
+        input: serde_json::Value,
+        _context: &(impl ActionContext + ?Sized),
+    ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+        Ok(ActionResult::success(input))
     }
 }
 
-impl std::fmt::Debug for TestResource {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("TestResource")
-            .field("key", &self.key)
-            .finish()
+static OBSERVED_ACTION_METADATA_READS: AtomicUsize = AtomicUsize::new(0);
+static OBSERVED_ACTION_DEPENDENCY_READS: AtomicUsize = AtomicUsize::new(0);
+
+struct ObservedAction;
+
+impl Action for ObservedAction {
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> ActionMetadataDraft {
+        OBSERVED_ACTION_METADATA_READS.fetch_add(1, Ordering::Relaxed);
+        ActionMetadataDraft::new(
+            nebula_core::action_key!("alpha.run"),
+            nebula_action::metadata_name!("Run"),
+            "Observed action admission fixture",
+        )
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        OBSERVED_ACTION_DEPENDENCY_READS.fetch_add(1, Ordering::Relaxed);
+        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
+        DEPENDENCIES.get_or_init(Dependencies::new)
     }
 }
 
-impl ResourceFactory for TestResource {
-    fn key(&self) -> ResourceKey {
-        if let Some(projection_reads) = &self.projection_reads {
-            projection_reads
-                .resource_key
-                .fetch_add(1, Ordering::Relaxed);
+impl StatelessAction for ObservedAction {
+    async fn execute(
+        &self,
+        input: serde_json::Value,
+        _context: &(impl ActionContext + ?Sized),
+    ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+        Ok(ActionResult::success(input))
+    }
+}
+
+fn observed_action_factory() -> Arc<dyn ActionFactory> {
+    OBSERVED_ACTION_METADATA_READS.store(0, Ordering::Relaxed);
+    OBSERVED_ACTION_DEPENDENCY_READS.store(0, Ordering::Relaxed);
+    Arc::new(
+        InstanceFactory::new(ObservedAction::metadata(), ObservedAction)
+            .expect("observed action metadata admits through its structural factory"),
+    )
+}
+
+macro_rules! credential_fixture {
+    ($type:ident, $key:literal) => {
+        struct $type;
+
+        impl Credential for $type {
+            type Properties = ();
+            type Scheme = SecretToken;
+            type State = SecretToken;
+
+            const KEY: &'static str = $key;
+
+            fn metadata() -> CredentialMetadataDraft {
+                CredentialMetadataDraft::new(
+                    nebula_core::credential_key!($key),
+                    nebula_credential::metadata_name!("Test credential"),
+                    "test credential",
+                    AuthPattern::SecretToken,
+                )
+            }
+
+            fn project(state: &SecretToken) -> SecretToken {
+                state.clone()
+            }
+
+            async fn resolve(
+                _properties: &(),
+                _context: &CredentialContext,
+            ) -> Result<StaticResolveResult<SecretToken>, CredentialError> {
+                Ok(StaticResolveResult::Complete(SecretToken::new(
+                    SecretString::new("fixture"),
+                )))
+            }
         }
-        self.key.clone()
-    }
 
-    fn dependencies(&self) -> &Dependencies {
-        if let Some(projection_reads) = &self.projection_reads {
-            projection_reads
-                .resource_dependencies
-                .fetch_add(1, Ordering::Relaxed);
+        impl plugin_capability_report::IsInteractive for $type {
+            const VALUE: bool = false;
         }
-        &self.dependencies
-    }
-
-    fn resource_type_id(&self) -> TypeId {
-        if let Some(projection_reads) = &self.projection_reads {
-            projection_reads
-                .resource_type_id
-                .fetch_add(1, Ordering::Relaxed);
+        impl plugin_capability_report::IsRefreshable for $type {
+            const VALUE: bool = false;
         }
-        TypeId::of::<Self>()
-    }
-
-    fn metadata(&self) -> ResourceMetadata {
-        if let Some(projection_reads) = &self.projection_reads {
-            projection_reads
-                .resource_metadata
-                .fetch_add(1, Ordering::Relaxed);
+        impl plugin_capability_report::IsRevocable for $type {
+            const VALUE: bool = false;
         }
-        ResourceMetadata::from_key(&self.key)
-    }
+        impl plugin_capability_report::IsTestable for $type {
+            const VALUE: bool = false;
+        }
+        impl plugin_capability_report::IsDynamic for $type {
+            const VALUE: bool = false;
+        }
+    };
+}
 
-    fn validate(&self, _config_json: serde_json::Value) -> Result<(), nebula_resource::Error> {
-        Ok(())
-    }
+credential_fixture!(AlphaAuthCredential, "alpha.auth");
+credential_fixture!(AlphaInternalCredential, "alpha.internal_credential");
 
-    fn register<'a>(
-        &'a self,
-        _manager: &'a nebula_resource::Manager,
-        _request: RegisterRequest<'a>,
-    ) -> BoxFut<'a, Result<SlotIdentity, nebula_resource::Error>> {
-        Box::pin(async { Ok(SlotIdentity::Unbound) })
+fn test_credential(key: &str) -> Arc<dyn AnyCredential> {
+    match key {
+        "alpha.auth" => Arc::new(AlphaAuthCredential),
+        "alpha.internal_credential" => Arc::new(AlphaInternalCredential),
+        _ => panic!("credential metadata fixture key `{key}` is not declared"),
     }
 }
 
@@ -298,9 +274,9 @@ impl TestPlugin {
     ) -> Self {
         Self {
             manifest: builder.build().expect("test manifest must be valid"),
-            actions: vec![Arc::new(TestAction::new(action_key))],
-            credentials: vec![Arc::new(TestCredential::new(credential_key))],
-            resources: vec![Arc::new(TestResource::new(resource_key))],
+            actions: vec![action_factory(action_key)],
+            credentials: vec![test_credential(credential_key)],
+            resources: vec![resource_factory(resource_key)],
         }
     }
 }
@@ -378,64 +354,24 @@ fn freeze(
         .expect("test registry must freeze")
 }
 
-fn assert_each_projection_read_once(projection_reads: &ProjectionReads) {
-    assert_eq!(projection_reads.action_metadata.load(Ordering::Relaxed), 1);
-    assert_eq!(
-        projection_reads.action_dependencies.load(Ordering::Relaxed),
-        1
-    );
-    assert_eq!(projection_reads.credential_key.load(Ordering::Relaxed), 1);
-    assert_eq!(
-        projection_reads.credential_metadata.load(Ordering::Relaxed),
-        1
-    );
-    assert_eq!(
-        projection_reads
-            .credential_capabilities
-            .load(Ordering::Relaxed),
-        1
-    );
-    assert_eq!(
-        projection_reads.credential_type_id.load(Ordering::Relaxed),
-        1
-    );
-    assert_eq!(projection_reads.resource_key.load(Ordering::Relaxed), 1);
-    assert_eq!(
-        projection_reads.resource_metadata.load(Ordering::Relaxed),
-        1
-    );
-    assert_eq!(
-        projection_reads
-            .resource_dependencies
-            .load(Ordering::Relaxed),
-        1
-    );
-    assert_eq!(projection_reads.resource_type_id.load(Ordering::Relaxed), 1);
+fn assert_action_projection_read_once() {
+    assert_eq!(OBSERVED_ACTION_METADATA_READS.load(Ordering::Relaxed), 1);
+    assert_eq!(OBSERVED_ACTION_DEPENDENCY_READS.load(Ordering::Relaxed), 1);
 }
 
 #[test]
-fn resolved_plugin_snapshots_each_erased_contract_once() {
-    let projection_reads = Arc::new(ProjectionReads::default());
+fn resolved_plugin_snapshots_contracts_for_frozen_use() {
     let plugin = TestPlugin {
         manifest: PluginManifest::builder("alpha", "alpha")
             .build()
             .expect("test manifest must be valid"),
-        actions: vec![Arc::new(TestAction::with_projection_reads(
-            "alpha.run",
-            Arc::clone(&projection_reads),
-        ))],
-        credentials: vec![Arc::new(TestCredential::with_projection_reads(
-            "alpha.auth",
-            Arc::clone(&projection_reads),
-        ))],
-        resources: vec![Arc::new(TestResource::with_projection_reads(
-            "alpha.db",
-            Arc::clone(&projection_reads),
-        ))],
+        actions: vec![observed_action_factory()],
+        credentials: vec![Arc::new(AlphaAuthCredential)],
+        resources: vec![resource_factory("alpha.db")],
     };
     let resolved = Arc::new(ResolvedPlugin::from(plugin).expect("test plugin must resolve"));
 
-    assert_each_projection_read_once(&projection_reads);
+    assert_action_projection_read_once();
 
     assert_eq!(resolved.actions().count(), 1);
     assert_eq!(resolved.credentials().count(), 1);
@@ -463,7 +399,7 @@ fn resolved_plugin_snapshots_each_erased_contract_once() {
     plan.validate_against(&frozen)
         .expect("compatibility consumes the same snapshots");
 
-    assert_each_projection_read_once(&projection_reads);
+    assert_action_projection_read_once();
 }
 
 #[test]

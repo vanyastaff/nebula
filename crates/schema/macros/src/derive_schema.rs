@@ -1,15 +1,15 @@
 //! Implementation of `#[derive(Schema)]`.
 //!
-//! Generates `impl HasSchema for T { fn schema() -> ValidSchema { ... } }`
-//! where the schema is computed once and cached behind a `OnceLock`.
+//! Generates a fallible `HasSchema` implementation whose schema or construction
+//! report is computed once and cached behind a `OnceLock`.
 
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
-use syn::{Data, DataStruct, DeriveInput, Fields, Ident, ext::IdentExt};
+use syn::{Data, DataStruct, DeriveInput, Fields, Ident, Type, ext::IdentExt};
 
 use crate::{
     attrs::{DefaultLit, FieldAttrs, RenameRule, SchemaStructAttrs, SerdeAttrs, ValidateAttrs},
-    type_infer::{FieldKind, classify},
+    type_infer::{FieldKind, classify, secret_leaf_type},
 };
 
 /// One alias use (a read-alias or an `emit_as` output key) tagged with the
@@ -22,11 +22,16 @@ struct AliasUse {
     span: Span,
 }
 
+pub(crate) struct FieldContext<'a> {
+    pub(crate) name: &'a Ident,
+    pub(crate) ty: &'a Type,
+    pub(crate) key: &'a str,
+}
+
 pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
     let crate_path = crate::crate_path();
     let ty_name = &input.ident;
     let generics = &input.generics;
-    let (impl_g, ty_g, where_g) = generics.split_for_impl();
 
     // Reject generic type/const parameters (lifetimes are fine — a schema does not
     // depend on one). The generated `schema()` caches its result in a single
@@ -57,10 +62,14 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
             fields: Fields::Named(named),
             ..
         }) => &named.named,
+        Data::Struct(DataStruct {
+            fields: Fields::Unit,
+            ..
+        }) => return expand_unit(&input),
         Data::Struct(_) => {
             return Err(syn::Error::new_spanned(
                 ty_name,
-                "#[derive(Schema)] only supports structs with named fields",
+                "#[derive(Schema)] only supports unit structs or structs with named fields",
             ));
         },
         // `#[derive(Schema)]` on an enum means "this enum IS a schema" — a tagged
@@ -85,7 +94,13 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
         .iter()
         .map(|lit| {
             quote! {
-                .root_rule(#crate_path::Rule::custom(#lit))
+                .root_rule(
+                    #crate_path::Rule::custom(#lit).map_err(|error| {
+                        #crate_path::ValidationError::builder("rule.budget_exceeded")
+                            .message(error.to_string())
+                            .build()
+                    })?
+                )
             }
         })
         .collect();
@@ -128,8 +143,8 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
         // `#[field(read_alias)]`.) serde tolerates the same alias repeated on one
         // field (`#[serde(alias="x", alias="x")]`), so dedup per field — emitting a
         // duplicate read-alias would make the runtime `scope_duplicate` lint reject
-        // the generated schema and panic `schema()`. Each is validated as a
-        // `FieldKey` here so an invalid alias is a spanned compile error, not a panic.
+        // the generated schema. Each is validated as a `FieldKey` here so an
+        // invalid alias is a spanned compile error.
         let mut field_read_aliases: Vec<String> = Vec::with_capacity(serde.aliases.len());
         for alias in &serde.aliases {
             if field_read_aliases.iter().any(|seen| seen == alias) {
@@ -152,8 +167,11 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
             });
         }
         let expr = build_field_expr(
-            field_name,
-            &key_str,
+            FieldContext {
+                name: field_name,
+                ty: &f.ty,
+                key: &key_str,
+            },
             &kind,
             &field_attr,
             &validate,
@@ -171,50 +189,140 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
     )?;
     enforce_alias_constraints(&field_keys, &read_aliases, &emit_aliases)?;
 
+    Ok(cached_schema_impl(
+        &input,
+        quote! {
+            #crate_path::Schema::builder()
+                #( .add(#field_exprs) )*
+                #( #root_rule_tokens )*
+                .build()
+        },
+    ))
+}
+
+/// Cache the complete checked construction result for either derive shape.
+pub(crate) fn cached_schema_impl(input: &DeriveInput, build: TokenStream2) -> TokenStream2 {
+    let crate_path = crate::crate_path();
+    let ty_name = &input.ident;
     let ty_name_str = ty_name.to_string();
-    Ok(quote! {
+    let (impl_g, ty_g, where_g) = input.generics.split_for_impl();
+    quote! {
         #[automatically_derived]
         impl #impl_g #crate_path::HasSchema for #ty_name #ty_g #where_g {
-            fn schema() -> #crate_path::ValidSchema {
-                static __CACHE: ::std::sync::OnceLock<#crate_path::ValidSchema> =
-                    ::std::sync::OnceLock::new();
+            fn schema() -> ::core::result::Result<
+                #crate_path::ValidSchema,
+                #crate_path::ValidationReport,
+            > {
+                static __CACHE: ::std::sync::OnceLock<::core::result::Result<
+                    #crate_path::ValidSchema,
+                    #crate_path::ValidationReport,
+                >> = ::std::sync::OnceLock::new();
                 __CACHE
                     .get_or_init(|| {
-                        match #crate_path::Schema::builder()
-                            #( .add(#field_exprs) )*
-                            #( #root_rule_tokens )*
-                            .build()
-                        {
-                            ::core::result::Result::Ok(s) => s,
-                            ::core::result::Result::Err(report) => {
-                                // Surface the structured report through `tracing` first so logs
-                                // capture the failure even if the panic is caught (e.g. tests).
-                                // Compile-time conflict detection in attrs.rs / derive_schema.rs
-                                // catches common attribute mistakes; this branch only runs for
-                                // lint-class issues (visibility cycles, dangling refs,
-                                // contradictory rules across fields) that depend on the full
-                                // value tree and cannot be statically proved at expansion time.
-                                #crate_path::__private::tracing::error!(
-                                    target: "nebula_schema::derive",
-                                    type_name = #ty_name_str,
-                                    report = ?report,
-                                    "#[derive(Schema)] schema-level lint failed at runtime"
-                                );
-                                ::core::panic!(
-                                    "#[derive(Schema)] on `{}` produced an invalid schema — \
-                                     attribute combinations conflict with a schema-level lint. \
-                                     Fix the `#[field(..)]` / `#[validate(..)]` attributes on this type. \
-                                     Report: {:?}",
-                                    #ty_name_str,
-                                    report,
-                                );
-                            },
-                        }
+                        let __span = #crate_path::__private::tracing::debug_span!(
+                            target: "nebula_schema::derive",
+                            "schema.construct",
+                            type_name = #ty_name_str,
+                        ).entered();
+                        let __build = || -> ::core::result::Result<
+                            #crate_path::ValidSchema,
+                            #crate_path::ValidationReport,
+                        > { #build };
+                        __build().inspect_err(|report| {
+                            #crate_path::__private::tracing::error!(
+                                target: "nebula_schema::derive",
+                                type_name = #ty_name_str,
+                                error_count = report.errors().count(),
+                                "derived schema construction failed"
+                            );
+                        })
                     })
                     .clone()
             }
         }
-    })
+    }
+}
+
+fn expand_unit(input: &DeriveInput) -> syn::Result<TokenStream2> {
+    let crate_path = crate::crate_path();
+    let schema_attrs = SchemaStructAttrs::from_attrs(&input.attrs)?;
+    let serde_attrs = SerdeAttrs::from_attrs(&input.attrs)?;
+    enforce_reserved_keys(&schema_attrs.reserved, &[], &[], &[])?;
+    if serde_attrs.tag.is_some() || serde_attrs.content.is_some() || serde_attrs.untagged {
+        return Err(syn::Error::new_spanned(
+            input,
+            "unit struct schemas require serde's null wire shape",
+        ));
+    }
+    for attribute in input
+        .attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("serde"))
+    {
+        let entries = attribute.parse_args_with(
+            syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+        )?;
+        for entry in entries {
+            if ["from", "try_from", "into", "remote", "transparent"]
+                .iter()
+                .any(|name| entry.path().is_ident(name))
+            {
+                return Err(syn::Error::new_spanned(
+                    entry,
+                    "unit struct schema derives cannot model custom serde wire conversions",
+                ));
+            }
+        }
+    }
+    let rules = schema_attrs.custom.iter().map(|rule| {
+        quote! {
+            .root_rule(
+                #crate_path::Rule::custom(#rule).map_err(|error| {
+                    #crate_path::ValidationError::builder("rule.budget_exceeded")
+                        .message(error.to_string())
+                        .build()
+                })?
+            )
+        }
+    });
+    Ok(cached_schema_impl(
+        input,
+        quote! {
+            #crate_path::ValidSchema::scalar(#crate_path::ScalarSchema::null() #(#rules)*)
+        },
+    ))
+}
+
+fn nested_field_expr(
+    ty: &Type,
+    key: &TokenStream2,
+    binding: &Ident,
+    decorated: &TokenStream2,
+    crate_path: &TokenStream2,
+) -> TokenStream2 {
+    quote! {{
+        let nested_schema = <#ty as #crate_path::HasSchema>::schema()?;
+        match nested_schema.root_shape() {
+            #crate_path::RootShape::Any => {
+                let #binding = #crate_path::Field::dynamic(#key);
+                #decorated
+            }
+            #crate_path::RootShape::Record(record) => {
+                if !record.root_rules().is_empty() {
+                    return ::core::result::Result::Err(#crate_path::ValidationError::builder("derive.unsupported_nested_rules")
+                        .message("nested record root rules require an explicit field declaration")
+                        .build().into());
+                }
+                let #binding = #crate_path::Field::object(#key).add_many(record.fields().iter().cloned());
+                #decorated
+            }
+            #crate_path::RootShape::Scalar(_) | #crate_path::RootShape::Union(_) => {
+                return ::core::result::Result::Err(#crate_path::ValidationError::builder("derive.unsupported_nested_root")
+                    .message("nested scalar and union roots cannot be represented by record field derivation")
+                    .build().into());
+            }
+        }
+    }}
 }
 
 /// Resolve a struct field's schema key, honoring serde so the key always matches
@@ -223,8 +331,7 @@ pub(crate) fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
 /// (`r#type` → `type`, as serde does), otherwise the ident itself (also serde's
 /// default). The result is validated against the `FieldKey` rules at expansion,
 /// so an invalid key — e.g. a `kebab-case` rename, which `FieldKey` forbids — is
-/// a spanned compile error instead of a runtime `.expect()` panic in the
-/// consuming crate.
+/// a spanned compile error instead of a runtime construction error.
 pub(crate) fn resolve_field_key(
     field_name: &Ident,
     serde: &SerdeAttrs,
@@ -436,23 +543,24 @@ fn enforce_alias_constraints(
 
 /// Build the token-stream expression that produces a `Field` for one struct field.
 pub(crate) fn build_field_expr(
-    field_name: &Ident,
-    key_str: &str,
+    field: FieldContext<'_>,
     kind: &FieldKind,
     field_attr: &FieldAttrs,
     validate: &ValidateAttrs,
     read_aliases: &[String],
     crate_path: &TokenStream2,
 ) -> syn::Result<TokenStream2> {
-    // `key_str` was resolved and validated against the `FieldKey` rules in
-    // `resolve_field_key`, so the runtime constructor cannot fail — the
-    // `.expect()` is the codegen equivalent of `unreachable!`.
+    let FieldContext {
+        name: field_name,
+        ty: field_type,
+        key: key_str,
+    } = field;
     let key = quote! {
-        #crate_path::FieldKey::new(#key_str)
-            .expect("#[derive(Schema)] field key validated at macro expansion")
+        #crate_path::FieldKey::new(#key_str)?
     };
     let optional = kind.is_optional();
     let inner = kind.inner();
+    let nested_binding = Ident::new("__nebula_nested_field", Span::mixed_site());
 
     if field_attr.enum_select && field_attr.secret {
         return Err(syn::Error::new_spanned(
@@ -510,9 +618,18 @@ pub(crate) fn build_field_expr(
         ));
     }
 
-    // Pick the constructor by inner kind. `field_attr.secret` forces String → Secret.
+    if field_attr.secret && !matches!(inner, FieldKind::String | FieldKind::UserDefined(_)) {
+        return Err(syn::Error::new_spanned(
+            field_name,
+            "`#[field(secret)]` requires a string-like type implementing `SecretInput`, or `Option` of one",
+        ));
+    }
+
+    // A secret property's Rust leaf type is checked below against the explicit
+    // `SecretInput` contract. Both String and user-defined wrappers map to the
+    // schema's string-shaped Secret field.
     let mut expr = match inner {
-        FieldKind::String if field_attr.secret => quote! {
+        FieldKind::String | FieldKind::UserDefined(_) if field_attr.secret => quote! {
             #crate_path::Field::secret(#key)
         },
         FieldKind::String => quote! {
@@ -540,14 +657,7 @@ pub(crate) fn build_field_expr(
                 <#ty as #crate_path::HasSelectOptions>::select_options(),
             )
         },
-        FieldKind::UserDefined(ty) => quote! {
-            #crate_path::Field::object(#key).add_many(
-                <#ty as #crate_path::HasSchema>::schema()
-                    .fields()
-                    .iter()
-                    .cloned(),
-            )
-        },
+        FieldKind::UserDefined(_) => quote! { #nested_binding },
         FieldKind::UnsupportedInteger(name) => {
             return Err(syn::Error::new_spanned(
                 field_name,
@@ -643,36 +753,50 @@ pub(crate) fn build_field_expr(
     }
 
     if let Some(pattern) = &validate.pattern
-        && matches!(inner, FieldKind::String)
+        && (field_attr.secret || matches!(inner, FieldKind::String))
     {
-        expr = quote! { #expr.pattern(#pattern) };
+        expr = quote! { #expr.pattern(#pattern)? };
     }
-    if validate.url && matches!(inner, FieldKind::String) {
+    if validate.url && (field_attr.secret || matches!(inner, FieldKind::String)) {
         expr = quote! { #expr.url() };
     }
-    if validate.email && matches!(inner, FieldKind::String) {
+    if validate.email && (field_attr.secret || matches!(inner, FieldKind::String)) {
         expr = quote! { #expr.email() };
     }
 
-    // Aliases. Each string was validated as a `FieldKey` in `expand()` before this
-    // call, so the runtime `Result` is always `Ok` — the `.expect()` is the codegen
-    // equivalent of `unreachable!`, mirroring the field-key constructor above.
     for alias in read_aliases {
         expr = quote! {
-            #expr
-                .read_alias(#alias)
-                .expect("#[derive(Schema)] read-alias validated at macro expansion")
+            #expr.read_alias(#alias)?
         };
     }
     if let Some(emit_as) = &field_attr.emit_as {
         expr = quote! {
-            #expr
-                .emit_as(#emit_as)
-                .expect("#[derive(Schema)] emit_as key validated at macro expansion")
+            #expr.emit_as(#emit_as)?
         };
     }
 
-    Ok(quote! { #expr.into_field() })
+    let decorated = quote! { #expr.into_field() };
+    if field_attr.secret {
+        let secret_type = secret_leaf_type(field_type);
+        return Ok(quote! {{
+            fn __nebula_assert_secret_input<T: #crate_path::SecretInput>() {}
+            __nebula_assert_secret_input::<#secret_type>();
+            #decorated
+        }});
+    }
+    if let FieldKind::UserDefined(ty) = inner
+        && !field_attr.enum_select
+    {
+        // Each branch finishes its concrete builder before joining as a Field.
+        return Ok(nested_field_expr(
+            ty,
+            &key,
+            &nested_binding,
+            &decorated,
+            crate_path,
+        ));
+    }
+    Ok(decorated)
 }
 
 /// `#[field(enum_select)]` maps to a `SelectField`; only `#[validate(required)]` is meaningful
@@ -709,25 +833,26 @@ fn list_field_expr(
     // the `_item` suffix can push a near-limit key past the 64-char bound.
     check_field_key(&item_key_str, field_name.span())?;
     let key = quote! {
-        #crate_path::FieldKey::new(#key_str)
-            .expect("#[derive(Schema)] field key validated at macro expansion")
+        #crate_path::FieldKey::new(#key_str)?
     };
     let item_key = quote! {
-        #crate_path::FieldKey::new(#item_key_str)
-            .expect("#[derive(Schema)] list item key validated at macro expansion")
+        #crate_path::FieldKey::new(#item_key_str)?
     };
     let item_expr = match item_kind {
         FieldKind::String => quote! { #crate_path::Field::string(#item_key) },
         FieldKind::Boolean => quote! { #crate_path::Field::boolean(#item_key) },
         FieldKind::IntegerNumber => quote! { #crate_path::Field::integer(#item_key) },
         FieldKind::FloatNumber => quote! { #crate_path::Field::number(#item_key) },
-        FieldKind::UserDefined(ty) => quote! {
-            #crate_path::Field::object(#item_key).add_many(
-                <#ty as #crate_path::HasSchema>::schema()
-                    .fields()
-                    .iter()
-                    .cloned(),
-            )
+        FieldKind::UserDefined(ty) => {
+            let binding = Ident::new("__nebula_nested_item", Span::mixed_site());
+            let item = nested_field_expr(
+                ty,
+                &item_key,
+                &binding,
+                &quote! { #binding.into_field() },
+                crate_path,
+            );
+            return Ok(quote! { #crate_path::Field::list(#key).item(#item) });
         },
         FieldKind::List(_) | FieldKind::Optional(_) => {
             return Err(syn::Error::new_spanned(

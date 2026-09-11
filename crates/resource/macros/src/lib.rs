@@ -149,7 +149,7 @@ pub fn derive_resource(input: TokenStream) -> TokenStream {
 }
 
 /// Derive macro that generates `impl ResourceConfig` with a deterministic structural
-/// fingerprint and an optional default empty `impl HasSchema`.
+/// fingerprint and an optional default `impl HasSchema`.
 ///
 /// ## What is emitted
 ///
@@ -159,8 +159,11 @@ pub fn derive_resource(input: TokenStream) -> TokenStream {
 ///   - `fn validate(&self) -> Result<(), Error>` — only emitted if
 ///     `#[config(validate = path)]` is specified; otherwise the trait default (`Ok(())`)
 ///     applies.
-/// - `impl nebula_schema::HasSchema` returning an empty schema — suppressed when
-///   `#[config(schema = external)]` is present (use alongside `#[derive(Schema)]`).
+/// - `impl nebula_schema::HasSchema` returning a null schema for unit structs,
+///   or an empty-record schema for empty-braced structs. Every nonempty or tuple
+///   struct requires `#[config(schema = external)]` and a real `HasSchema`
+///   implementation, such as `#[derive(Schema)]`. External schemas can also
+///   override the automatic schemas of empty configs.
 ///
 /// ## Container attribute (`#[config(...)]`)
 ///
@@ -180,7 +183,8 @@ pub fn derive_resource(input: TokenStream) -> TokenStream {
 /// `nebula_resource::ResourceConfig` in the parent crate.
 ///
 /// ```text
-/// #[derive(ResourceConfig, serde::Deserialize, Clone)]
+/// #[derive(ResourceConfig, Schema, serde::Deserialize, Clone)]
+/// #[config(schema = external)]
 /// struct PgConfig {
 ///     url: String,
 ///     max_conns: u32,

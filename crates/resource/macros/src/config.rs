@@ -11,16 +11,17 @@
 //!     `#[config(validate = path)]` is present, delegates to `path(self)`; otherwise
 //!     the default `Ok(())` from the trait is inherited (method not emitted, so the
 //!     trait default applies).
-//! - Optionally `impl nebula_schema::HasSchema for T` returning an empty schema,
+//! - Optionally `impl nebula_schema::HasSchema for T` returning a null schema for
+//!   unit structs and an empty-record schema for empty-braced structs,
 //!   UNLESS `#[config(schema = external)]` is specified, in which case no `HasSchema`
 //!   impl is emitted (the caller is responsible for `#[derive(Schema)]` or a manual
-//!   `impl HasSchema`).
+//!   `impl HasSchema`). All other structs require that explicit schema source.
 //!
 //! ## Container attribute (`#[config(...)]`)
 //!
 //! Supported keys:
 //! - `validate = path` — calls `path(self)` in the emitted `validate` method.
-//! - `schema = external` — suppresses the empty-`HasSchema` emission.
+//! - `schema = external` — uses the caller's `HasSchema` implementation.
 //!
 //! Unknown keys are rejected with a `compile_error!` at the key span.
 //!
@@ -168,7 +169,7 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
     // Parse container-level options.
     let opts = ContainerOptions::parse(&input.attrs)?;
 
-    // Extract named fields (reject enums/unions/unit structs with no fields for fingerprint).
+    // Configs can be unit, named, or positional structs, but never enums/unions.
     let fields = match &input.data {
         Data::Struct(s) => &s.fields,
         Data::Enum(_) => {
@@ -211,14 +212,27 @@ fn expand(input: DeriveInput) -> syn::Result<TokenStream2> {
         }
     };
 
-    // Optionally emit a default empty-schema HasSchema impl.
+    // Unit structs use serde's null wire; empty-braced structs remain records.
     let has_schema_impl = if opts.schema_external {
         quote! {}
     } else {
+        let schema = match fields {
+            Fields::Unit => quote! { <() as ::nebula_schema::HasSchema>::schema() },
+            Fields::Named(named) if named.named.is_empty() => {
+                quote! { ::core::result::Result::Ok(::nebula_schema::ValidSchema::empty()) }
+            },
+            _ => {
+                return Err(syn::Error::new_spanned(
+                    struct_name,
+                    "only unit and empty-braced configs have automatic schemas; add \
+                     #[config(schema = external)] and derive Schema or implement HasSchema",
+                ));
+            },
+        };
         quote! {
             impl #impl_generics ::nebula_schema::HasSchema for #struct_name #ty_generics #where_clause {
-                fn schema() -> ::nebula_schema::ValidSchema {
-                    ::nebula_schema::ValidSchema::empty()
+                fn schema() -> ::core::result::Result<::nebula_schema::ValidSchema, ::nebula_schema::ValidationReport> {
+                    #schema
                 }
             }
         }

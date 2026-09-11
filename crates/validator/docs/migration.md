@@ -67,6 +67,82 @@ contract. Changing which format a combinator produces requires a major version b
 
 ## Breaking Changes
 
+### Complete JSON Pointers
+
+`FieldPath` now represents every RFC 6901 pointer, including root (`""`) and
+empty-string object keys (`"/"`). `from_segments` is infallible and preserves all
+segments: remove the old `unwrap`/fallback, and use `root()` for an empty path.
+`parent()` of a single-segment path returns `Some(root())`; only root has no parent.
+`starts_with` compares whole segments, with root a prefix of every path.
+
+Serde uses strict `from_pointer(&str) -> Result<FieldPath, FieldPathError>`.
+Dot/bracket aliases and URI fragments are rejected on the wire; explicitly use
+`parse` for authored shorthand and serialize the resulting canonical pointer.
+Pointer whitespace is significant and invalid tilde escapes are rejected.
+The freeform diagnostic normalizer is unchanged: `with_field("")` still leaves
+the field unspecified, while `with_field_path(FieldPath::root())` explicitly sets root.
+
+### Staged Rule Evaluation
+
+These active-development API breaks distinguish authored-value checks from complete
+resolved-value evaluation. `serde_json::Value` remains the shared value model.
+
+| Surface | Previous contract | Current contract |
+|---------|-------------------|------------------|
+| `Rule::validate`, `Logic::validate`, `validate_rules[_with_ctx]` | Unit success also meant skipped rules | `EvaluationOutcome::Satisfied` or `Deferred(Vec<DeferredReason>)` |
+| `StaticOnly` | Silently skipped deferred rules and missing predicate context | Reports explicit remaining obligations through nested `All`, `Any`, `Not` |
+| `Full` and `Validate<Value> for Rule` | Unavailable checks could pass and issue proofs | Require complete evaluation; unavailable checks produce diagnostics |
+| `Rule::matches`, policy `resolve`, `resolve_field_policies` | Infallible conditions accepted wrong rule kinds | Return `Result`; value/deferred rules are invalid conditions |
+| `Predicate::evaluate` | Infallible boolean over all contexts | `Result<bool, ValidationError>`; pending dependencies are unavailable |
+| Authored policy dependencies | Unresolved paths looked missing | `Presence::Pending`, `Requiredness::Pending`, `FieldDirective::Deferred`; no early required failure |
+| Pattern construction | Unchecked strings; separate `try_pattern` | `Rule::pattern(&str)` and `ValueRule::pattern(&str)` return `Result`; `RulePattern::new` checks direct construction |
+| `ValueRule::Pattern`, `Predicate::Matches` | Raw pattern strings | Checked `RulePattern`; malformed serde is rejected before evaluation |
+| Unit-rule map payloads | Arbitrary configuration silently discarded | Only `null` accepted, matching sub-enum serde; bare strings remain canonical |
+| Empty `Rule::any` / `Rule::one_of` / `any_of` | Accepted every value | Reject every value |
+| Mixed JSON number comparisons | Large integers rounded through `f64` | Exact comparison delegated to `num-cmp` |
+| Diagnostics | All errors could be treated as input rejection | `kind()` and JSON `kind` distinguish `violation`, `invalid_rule`, `unavailable` |
+
+An authored-stage caller handles `Deferred` as remaining work. Re-evaluate the
+entire rule tree after resolution with the complete, appropriately scrubbed
+`PredicateContext`; use `Full` and require `Satisfied` before issuing a complete
+proof. `Custom` and `UniqueBy` currently have no runtime evaluator in this crate:
+partial passes report obligations and full passes fail with `evaluation_unavailable`.
+
+For authored root and field rules, attach unresolved expression roots with
+`PredicateContext::with_pending_paths`. Pending overlaps both ancestors and
+descendants, so a container containing unresolved data is unavailable too.
+Other absent paths retain genuinely missing-value semantics. `None` is reserved
+for an unavailable whole context. Build a fresh context without pending roots
+after resolution.
+
+Condition matching requires every dependency to be available, even beneath
+`Any` or `Not`. Invalid condition configuration takes precedence over pending
+dependencies. The policy resolver returns a deferred directive if visibility
+or requiredness is pending, without emitting `required`; the caller records a
+policy obligation and still validates any supplied literal value. Ordinary
+rule validation retains partial logical evaluation and checks independent
+static constraints while context-dependent branches are deferred.
+
+`Any` needs a genuinely satisfied branch. `Not` preserves deferral and propagates
+configuration/unavailable errors; it only inverts input violations. Programmatic
+combinators retain short-circuiting and preserve non-violation errors when encountered,
+including errors inside nested diagnostic aggregates.
+
+```rust
+use nebula_validator::{EvaluationOutcome, ExecutionMode, Rule, validate_rules};
+use serde_json::json;
+
+let rules = [Rule::pattern("^[a-z]+$")?];
+match validate_rules(&json!("alice"), &rules, ExecutionMode::StaticOnly)? {
+    EvaluationOutcome::Satisfied => {}
+    EvaluationOutcome::Deferred(obligations) => {
+        // The host retains these obligations until resolved-value evaluation.
+        assert!(!obligations.is_empty());
+    }
+}
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
 ### v0.x → Current
 
 | Contract area | Old behavior | New behavior | Version | Consumer impact | Migration |

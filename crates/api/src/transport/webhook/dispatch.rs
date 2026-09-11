@@ -786,9 +786,11 @@ mod tests {
     use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
     use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
     use nebula_action::{
-        Action, ActionMetadata, RequiredPolicy, SignaturePolicy, SignatureScheme, TriggerContext,
-        TriggerEventOutcome, TriggerHandler, WebhookAction, WebhookConfig, WebhookRequest,
-        WebhookResponse, WebhookTriggerAdapter, hmac_sha256_compute,
+        Action, ActionMetadataDraft, ActionResult, FromWorkflowNode, GenericTriggerFactory,
+        InstanceFactory, RequiredPolicy, SignaturePolicy, SignatureScheme, StatelessAction,
+        TriggerAction, TriggerContext, TriggerEventOutcome, TriggerHandler, WebhookAction,
+        WebhookConfig, WebhookRequest, WebhookResponse, WebhookSource, WebhookTriggerAdapter,
+        hmac_sha256_compute,
     };
     use nebula_core::{
         BaseContext, Dependencies, NodeKey, WorkflowId, action_key, node_key, scope::Principal,
@@ -838,56 +840,120 @@ mod tests {
         assert!(invalid_scope_body.is_empty());
     }
 
-    struct FixtureFactory {
-        metadata: ActionMetadata,
-        dependencies: Dependencies,
-    }
-    impl nebula_action::ActionFactory for FixtureFactory {
-        fn metadata(&self) -> &ActionMetadata {
-            &self.metadata
+    struct FixtureStatelessAction;
+
+    impl Action for FixtureStatelessAction {
+        type Input = serde_json::Value;
+        type Output = serde_json::Value;
+
+        fn metadata() -> ActionMetadataDraft {
+            ActionMetadataDraft::new(
+                action_key!("core.echo"),
+                nebula_action::metadata_name!("Echo fixture"),
+                "Admission fixture",
+            )
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
         }
-        fn dependencies(&self) -> &Dependencies {
-            &self.dependencies
-        }
-        fn instantiate<'a>(
-            &'a self,
-            _: &'a NodeDefinition,
-            _: &'a dyn nebula_action::ActionContext,
-        ) -> std::pin::Pin<
-            Box<
-                dyn Future<Output = Result<nebula_action::ActionHandle, nebula_action::ActionError>>
-                    + Send
-                    + 'a,
-            >,
-        > {
-            Box::pin(async { panic!("webhook admission must not execute workflow actions") })
+
+        fn dependencies() -> &'static Dependencies {
+            static DEPENDENCIES: std::sync::OnceLock<Dependencies> = std::sync::OnceLock::new();
+            DEPENDENCIES.get_or_init(Dependencies::new)
         }
     }
+
+    impl StatelessAction for FixtureStatelessAction {
+        async fn execute(
+            &self,
+            input: Self::Input,
+            _context: &(impl nebula_action::ActionContext + ?Sized),
+        ) -> Result<ActionResult<Self::Output>, nebula_action::ActionError> {
+            Ok(ActionResult::success(input))
+        }
+    }
+
+    struct FixtureTriggerAction;
+
+    impl Action for FixtureTriggerAction {
+        type Input = serde_json::Value;
+        type Output = serde_json::Value;
+
+        fn metadata() -> ActionMetadataDraft {
+            ActionMetadataDraft::new(
+                action_key!("test.webhook"),
+                nebula_action::metadata_name!("Webhook fixture"),
+                "Admission fixture",
+            )
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+        }
+
+        fn dependencies() -> &'static Dependencies {
+            static DEPENDENCIES: std::sync::OnceLock<Dependencies> = std::sync::OnceLock::new();
+            DEPENDENCIES.get_or_init(Dependencies::new)
+        }
+    }
+
+    impl TriggerAction for FixtureTriggerAction {
+        type Source = WebhookSource;
+        type Error = nebula_action::ActionError;
+
+        async fn start(&self, _ctx: &(impl TriggerContext + ?Sized)) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        async fn stop(&self, _ctx: &(impl TriggerContext + ?Sized)) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        async fn handle(
+            &self,
+            _ctx: &(impl TriggerContext + ?Sized),
+            _event: WebhookRequest,
+        ) -> Result<TriggerEventOutcome, Self::Error> {
+            Ok(TriggerEventOutcome::skip())
+        }
+    }
+
+    impl FromWorkflowNode for FixtureTriggerAction {
+        type Error = nebula_action::ActionError;
+
+        async fn from_workflow_node(
+            _node: &NodeDefinition,
+            _ctx: &dyn nebula_action::ActionContext,
+        ) -> Result<Self, Self::Error> {
+            Ok(Self)
+        }
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum FixtureAction {
+        Stateless,
+        Trigger,
+    }
+
     #[derive(Debug)]
     struct FixturePlugin {
         manifest: nebula_plugin::PluginManifest,
-        action: &'static str,
-        kind: nebula_action::ActionKind,
+        action: FixtureAction,
     }
     impl nebula_plugin::Plugin for FixturePlugin {
         fn manifest(&self) -> &nebula_plugin::PluginManifest {
             &self.manifest
         }
         fn actions(&self) -> Vec<Arc<dyn nebula_action::ActionFactory>> {
-            vec![Arc::new(FixtureFactory {
-                metadata: ActionMetadata::new(
-                    self.action.parse().unwrap(),
-                    "Webhook fixture",
-                    "Admission fixture",
-                )
-                .with_effect_contract(
-                    nebula_action::effect::ActionEffectContract::NoExternalEffects,
-                )
-                .with_kind(self.kind)
-                .with_schema(nebula_action::ValidSchema::empty())
-                .with_output_schema(nebula_action::ValidSchema::empty()),
-                dependencies: Dependencies::new(),
-            })]
+            let factory: Arc<dyn nebula_action::ActionFactory> = match self.action {
+                FixtureAction::Stateless => Arc::new(
+                    InstanceFactory::new(
+                        FixtureStatelessAction::metadata(),
+                        FixtureStatelessAction,
+                    )
+                    .expect("valid test catalog definition"),
+                ),
+                FixtureAction::Trigger => Arc::new(
+                    GenericTriggerFactory::<FixtureTriggerAction>::new()
+                        .expect("valid test catalog definition"),
+                ),
+            };
+            vec![factory]
         }
     }
     struct RuntimeFixture {
@@ -901,9 +967,9 @@ mod tests {
             versions: &Arc<InMemoryWorkflowVersionStore>,
         ) -> Self {
             let mut registry = nebula_plugin::PluginRegistry::new();
-            for (plugin, action, kind) in [
-                ("core", "core.echo", nebula_action::ActionKind::Stateless),
-                ("test", "test.webhook", nebula_action::ActionKind::Trigger),
+            for (plugin, action) in [
+                ("core", FixtureAction::Stateless),
+                ("test", FixtureAction::Trigger),
             ] {
                 registry
                     .register(Arc::new(
@@ -912,7 +978,6 @@ mod tests {
                                 .build()
                                 .unwrap(),
                             action,
-                            kind,
                         })
                         .unwrap(),
                     ))
@@ -1057,10 +1122,10 @@ mod tests {
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> ActionMetadata {
-            ActionMetadata::new(
+        fn metadata() -> ActionMetadataDraft {
+            ActionMetadataDraft::new(
                 action_key!("test.dispatch.configurable"),
-                "ConfigurableWebhookAction",
+                nebula_action::metadata_name!("ConfigurableWebhookAction"),
                 "Test fixture",
             )
         }
@@ -1191,10 +1256,12 @@ mod tests {
 
             let outcome_cell = Arc::new(Mutex::new(TriggerEventOutcome::emit(json!({"ok": true}))));
 
-            let handler: Arc<dyn TriggerHandler> =
-                Arc::new(WebhookTriggerAdapter::new(ConfigurableWebhookAction {
+            let handler: Arc<dyn TriggerHandler> = Arc::new(
+                WebhookTriggerAdapter::new(ConfigurableWebhookAction {
                     outcome_cell: Arc::clone(&outcome_cell),
-                }));
+                })
+                .expect("valid test catalog definition"),
+            );
             let ctx_template = base_ctx(workflow_id, trigger_id_key);
 
             // `WebhookTriggerAdapter::handle_event` requires state populated by
@@ -1701,10 +1768,12 @@ mod tests {
             Arc::new(InMemoryWebhookActivationStore::new());
 
         let outcome_cell = Arc::new(Mutex::new(TriggerEventOutcome::emit(json!({"ok": true}))));
-        let handler: Arc<dyn TriggerHandler> =
-            Arc::new(WebhookTriggerAdapter::new(ConfigurableWebhookAction {
+        let handler: Arc<dyn TriggerHandler> = Arc::new(
+            WebhookTriggerAdapter::new(ConfigurableWebhookAction {
                 outcome_cell: Arc::clone(&outcome_cell),
-            }));
+            })
+            .expect("valid test catalog definition"),
+        );
         let ctx_template = base_ctx(workflow_id, node_key!("webhook_trigger"));
         handler
             .start(&ctx_template)
@@ -1781,10 +1850,12 @@ mod tests {
             Arc::new(InMemoryWebhookActivationStore::new());
 
         let outcome_cell = Arc::new(Mutex::new(TriggerEventOutcome::emit(json!({"ok": true}))));
-        let handler: Arc<dyn TriggerHandler> =
-            Arc::new(WebhookTriggerAdapter::new(ConfigurableWebhookAction {
+        let handler: Arc<dyn TriggerHandler> = Arc::new(
+            WebhookTriggerAdapter::new(ConfigurableWebhookAction {
                 outcome_cell: Arc::clone(&outcome_cell),
-            }));
+            })
+            .expect("valid test catalog definition"),
+        );
         let ctx_template_a = base_ctx(workflow_id, node_key!("webhook_trigger"));
         handler
             .start(&ctx_template_a)
@@ -1904,10 +1975,12 @@ mod tests {
 
         // Register activation A under the shared scope.
         let outcome_a = Arc::new(Mutex::new(TriggerEventOutcome::skip()));
-        let handler_a: Arc<dyn TriggerHandler> =
-            Arc::new(WebhookTriggerAdapter::new(ConfigurableWebhookAction {
+        let handler_a: Arc<dyn TriggerHandler> = Arc::new(
+            WebhookTriggerAdapter::new(ConfigurableWebhookAction {
                 outcome_cell: Arc::clone(&outcome_a),
-            }));
+            })
+            .expect("valid test catalog definition"),
+        );
         let wf_a = WorkflowId::new();
         let ctx_a = base_ctx(wf_a, node_key!("trigger_a"));
         handler_a.start(&ctx_a).await.unwrap();
@@ -1931,10 +2004,12 @@ mod tests {
 
         // Register activation B — different token, same scope.
         let outcome_b = Arc::new(Mutex::new(TriggerEventOutcome::skip()));
-        let handler_b: Arc<dyn TriggerHandler> =
-            Arc::new(WebhookTriggerAdapter::new(ConfigurableWebhookAction {
+        let handler_b: Arc<dyn TriggerHandler> = Arc::new(
+            WebhookTriggerAdapter::new(ConfigurableWebhookAction {
                 outcome_cell: Arc::clone(&outcome_b),
-            }));
+            })
+            .expect("valid test catalog definition"),
+        );
         let wf_b = WorkflowId::new();
         let ctx_b = base_ctx(wf_b, node_key!("trigger_b"));
         handler_b.start(&ctx_b).await.unwrap();
@@ -2036,10 +2111,12 @@ mod tests {
 
         // Register one activation in scope_x.
         let outcome_x = Arc::new(Mutex::new(TriggerEventOutcome::skip()));
-        let handler_x: Arc<dyn TriggerHandler> =
-            Arc::new(WebhookTriggerAdapter::new(ConfigurableWebhookAction {
+        let handler_x: Arc<dyn TriggerHandler> = Arc::new(
+            WebhookTriggerAdapter::new(ConfigurableWebhookAction {
                 outcome_cell: Arc::clone(&outcome_x),
-            }));
+            })
+            .expect("valid test catalog definition"),
+        );
         let wf_x = WorkflowId::new();
         let ctx_x = base_ctx(wf_x, node_key!("trigger_x"));
         handler_x.start(&ctx_x).await.unwrap();
@@ -2063,10 +2140,12 @@ mod tests {
 
         // Register one activation in scope_y.
         let outcome_y = Arc::new(Mutex::new(TriggerEventOutcome::skip()));
-        let handler_y: Arc<dyn TriggerHandler> =
-            Arc::new(WebhookTriggerAdapter::new(ConfigurableWebhookAction {
+        let handler_y: Arc<dyn TriggerHandler> = Arc::new(
+            WebhookTriggerAdapter::new(ConfigurableWebhookAction {
                 outcome_cell: Arc::clone(&outcome_y),
-            }));
+            })
+            .expect("valid test catalog definition"),
+        );
         let wf_y = WorkflowId::new();
         let ctx_y = base_ctx(wf_y, node_key!("trigger_y"));
         handler_y.start(&ctx_y).await.unwrap();
@@ -2182,10 +2261,12 @@ mod tests {
 
         // Register one Test-mode activation (OptionalAcceptUnsigned, no SWH needed).
         let outcome = Arc::new(Mutex::new(TriggerEventOutcome::skip()));
-        let handler: Arc<dyn TriggerHandler> =
-            Arc::new(WebhookTriggerAdapter::new(ConfigurableWebhookAction {
+        let handler: Arc<dyn TriggerHandler> = Arc::new(
+            WebhookTriggerAdapter::new(ConfigurableWebhookAction {
                 outcome_cell: Arc::clone(&outcome),
-            }));
+            })
+            .expect("valid test catalog definition"),
+        );
         let wf = WorkflowId::new();
         let ctx = base_ctx(wf, node_key!("trigger_rl"));
         handler.start(&ctx).await.unwrap();
@@ -2284,10 +2365,12 @@ mod tests {
 
         // Behavioral check: the preserved per-token limiter is actually enforced.
         let outcome = Arc::new(Mutex::new(TriggerEventOutcome::skip()));
-        let handler: Arc<dyn TriggerHandler> =
-            Arc::new(WebhookTriggerAdapter::new(ConfigurableWebhookAction {
+        let handler: Arc<dyn TriggerHandler> = Arc::new(
+            WebhookTriggerAdapter::new(ConfigurableWebhookAction {
                 outcome_cell: Arc::clone(&outcome),
-            }));
+            })
+            .expect("valid test catalog definition"),
+        );
         let wf = WorkflowId::new();
         let ctx = base_ctx(wf, node_key!("trigger_e"));
         handler.start(&ctx).await.unwrap();
@@ -2365,10 +2448,12 @@ mod tests {
             (node_key!("trigger_g2"), WorkflowId::new()),
         ] {
             let outcome = Arc::new(Mutex::new(TriggerEventOutcome::emit(json!({"g": true}))));
-            let handler: Arc<dyn TriggerHandler> =
-                Arc::new(WebhookTriggerAdapter::new(ConfigurableWebhookAction {
+            let handler: Arc<dyn TriggerHandler> = Arc::new(
+                WebhookTriggerAdapter::new(ConfigurableWebhookAction {
                     outcome_cell: Arc::clone(&outcome),
-                }));
+                })
+                .expect("valid test catalog definition"),
+            );
             let ctx = base_ctx(wf_id, trig.clone());
             handler.start(&ctx).await.unwrap();
 
@@ -2540,10 +2625,12 @@ mod tests {
             Arc::new(InMemoryWebhookActivationStore::new());
 
         let outcome_cell = Arc::new(Mutex::new(TriggerEventOutcome::emit(json!({"ok": true}))));
-        let handler: Arc<dyn TriggerHandler> =
-            Arc::new(WebhookTriggerAdapter::new(ConfigurableWebhookAction {
+        let handler: Arc<dyn TriggerHandler> = Arc::new(
+            WebhookTriggerAdapter::new(ConfigurableWebhookAction {
                 outcome_cell: Arc::clone(&outcome_cell),
-            }));
+            })
+            .expect("valid test catalog definition"),
+        );
         let ctx_template = base_ctx(workflow_id, trigger_id_key);
         handler.start(&ctx_template).await.expect("handler start");
 

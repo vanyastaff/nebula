@@ -25,22 +25,28 @@
 //!
 //! # Per-`R` implementation
 //!
-//! [`KindActivator`] is the per-`R` implementor. It closes over two factories:
+//! [`KindActivator`] is the sole production per-`R` implementor. The trait is
+//! sealed, so downstream plugins receive erased factory authority from this
+//! crate instead of self-attesting metadata, type identity, or registration
+//! outcomes. It closes over two factories:
 //! one that produces the `R` value and one that produces `R::Topology`. Both
 //! are factories (not stored values) so one `KindActivator` can be invoked
 //! multiple times (re-activation, multiple scopes). The `#[derive(Resource)]`
 //! macro emits a `<Name>Factory` newtype that wraps a `KindActivator` with
 //! the topology kind fixed by a `#[topology(Pooled|Resident, ...)]` attribute
-//! on the derive.
+//! on the derive; `into_contribution()` yields its sealed erased capability.
 //!
-//! # Three frozen laws (CI-enforced)
+//! # Four frozen laws (CI-enforced)
 //!
-//! 1. **Schema-single-source** — `metadata().base.schema` derives from the
+//! 1. **Schema-single-source** — `metadata().base.schema()` derives from the
 //!    same `<R::Config as HasSchema>::schema()` that `validate` and `register`
 //!    use.
 //! 2. **Removal-funnel** — raw `Manager` mutation is the caller's concern;
 //!    teardown must route through a `PluginHandle` (engine-side).
 //! 3. **Key-coherence** — `factory.key() == <R as Provider>::key()`.
+//! 4. **Factory provenance** — downstream code cannot implement
+//!    `ResourceFactory`; metadata, `TypeId`, and registration identity are
+//!    projections of one crate-issued typed activator.
 //!
 //! # Latent-by-design on landing
 //!
@@ -50,12 +56,22 @@
 //! — the bind-population producer that gives `register` a production caller
 //! is the named M12.4 follow-up.
 
-use std::{any::TypeId, collections::HashMap, future::Future, pin::Pin, sync::Arc};
+use std::{
+    any::TypeId,
+    collections::HashMap,
+    future::Future,
+    pin::Pin,
+    sync::{Arc, OnceLock},
+};
 
-use crate::resource::ResourceMetadata;
+use crate::resource::{ResourceMetadata, ResourceMetadataDraft};
 use crate::topology::Topology;
 use crate::{Manager, ScopeLevel, SlotIdentity, recovery::RecoveryGate, resource::Provider};
 use nebula_core::Dependencies;
+
+mod private {
+    pub trait Sealed {}
+}
 
 /// Boxed, `Send` future returned across the erased factory boundary.
 ///
@@ -91,6 +107,60 @@ pub struct SlotBinding {
     pub credential_id: Option<nebula_credential::CredentialId>,
 }
 
+/// Explicit ingress for resource configuration registration.
+///
+/// Literal JSON and authored expressions are different capabilities. Use
+/// [`Self::data`] for persisted or transport JSON; strings and objects in that
+/// input are always data, even when they resemble template syntax or an
+/// expression envelope. Use [`Self::authored`] only when an authoring layer has
+/// deliberately constructed an [`nebula_schema::AuthoredValue`] with expression
+/// nodes.
+pub struct ResourceConfigInput {
+    source: ResourceConfigSource,
+}
+
+pub(crate) enum ResourceConfigSource {
+    Data(serde_json::Value),
+    Authored(nebula_schema::AuthoredValue),
+}
+
+impl ResourceConfigInput {
+    /// Admit literal JSON data without interpreting any string or object as code.
+    #[must_use]
+    pub fn data(value: serde_json::Value) -> Self {
+        Self {
+            source: ResourceConfigSource::Data(value),
+        }
+    }
+
+    /// Admit explicitly authored values, including deliberate expression nodes.
+    #[must_use]
+    pub fn authored(value: nebula_schema::AuthoredValue) -> Self {
+        Self {
+            source: ResourceConfigSource::Authored(value),
+        }
+    }
+
+    pub(crate) const fn kind(&self) -> &'static str {
+        match self.source {
+            ResourceConfigSource::Data(_) => "data",
+            ResourceConfigSource::Authored(_) => "authored",
+        }
+    }
+
+    pub(crate) fn into_source(self) -> ResourceConfigSource {
+        self.source
+    }
+}
+
+impl std::fmt::Debug for ResourceConfigInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ResourceConfigInput")
+            .field(&self.kind())
+            .finish()
+    }
+}
+
 /// Type-agnostic inputs the *caller* threads into a typed registration.
 ///
 /// Everything here is independent of the concrete resource type `R`; the
@@ -98,11 +168,10 @@ pub struct SlotBinding {
 /// factory (see [`KindActivator`]). Borrowed for the duration of the call so
 /// the factory can be invoked without cloning the expression engine.
 pub struct RegisterRequest<'a> {
-    /// Opaque resource-specific config (the stored `ResourceEntry.config`
-    /// JSON), resolved + schema-validated inside the typed manager call.
-    pub config_json: serde_json::Value,
-    /// Engine-held expression engine used to resolve `{{ … }}` templates in
-    /// `config_json`.
+    /// Resource-specific config with an explicit data or authored ingress.
+    pub config: ResourceConfigInput,
+    /// Engine-held expression engine used only for explicitly authored
+    /// expressions in [`Self::config`].
     pub expr_engine: &'a nebula_expression::ExpressionEngine,
     /// Resolved credential slot bindings — each a [`SlotBinding`] carrying the
     /// slot name, credential key, and optional rotation `CredentialId`
@@ -122,7 +191,7 @@ impl std::fmt::Debug for RegisterRequest<'_> {
         // nor field/slot names are guaranteed secret-free before validation.
         // Keep diagnostics useful without formatting either payload.
         f.debug_struct("RegisterRequest")
-            .field("config_json", &"<redacted>")
+            .field("config", &self.config)
             .field("expr_engine", &"<ExpressionEngine>")
             .field("slot_binding_count", &self.slot_bindings.len())
             .field("scope", &self.scope)
@@ -167,6 +236,42 @@ pub enum RegistrarError {
         #[source]
         source: crate::Error,
     },
+
+    /// A sealed factory returned a row identity different from the canonical
+    /// identity derived from the registration request.
+    ///
+    /// This is an internal invariant failure, not invalid caller input. The
+    /// registry removes the published manager row before returning it; a
+    /// compensation failure is reported separately rather than hidden.
+    #[error(
+        "resource kind `{kind}` returned a non-canonical slot identity: \
+         expected {expected:?}, got {actual:?}"
+    )]
+    IdentityMismatch {
+        /// The allowlist kind being registered.
+        kind: String,
+        /// Canonical identity derived from the request's slot bindings.
+        expected: SlotIdentity,
+        /// Identity returned by the erased factory.
+        actual: SlotIdentity,
+    },
+
+    /// Compensation after an identity mismatch could not remove the row.
+    #[error(
+        "resource kind `{kind}` returned a non-canonical slot identity and \
+         rollback failed: {source}"
+    )]
+    IdentityMismatchRollback {
+        /// The allowlist kind being registered.
+        kind: String,
+        /// Canonical identity derived from the request's slot bindings.
+        expected: SlotIdentity,
+        /// Identity returned by the erased factory.
+        actual: SlotIdentity,
+        /// Failure from removing the just-published manager row.
+        #[source]
+        source: Box<crate::Error>,
+    },
 }
 
 impl nebula_error::Classify for RegistrarError {
@@ -178,6 +283,9 @@ impl nebula_error::Classify for RegistrarError {
             // Delegate to the inner error so schema / deserialize / slot
             // failures keep their own categories.
             Self::Register { source, .. } => nebula_error::Classify::category(source),
+            Self::IdentityMismatch { .. } | Self::IdentityMismatchRollback { .. } => {
+                nebula_error::ErrorCategory::Internal
+            },
         }
     }
 
@@ -185,6 +293,12 @@ impl nebula_error::Classify for RegistrarError {
         match self {
             Self::UnknownKind(_) => nebula_error::ErrorCode::new("RESOURCE:FACTORY_UNKNOWN_KIND"),
             Self::Register { source, .. } => nebula_error::Classify::code(source),
+            Self::IdentityMismatch { .. } => {
+                nebula_error::ErrorCode::new("RESOURCE:FACTORY_IDENTITY_MISMATCH")
+            },
+            Self::IdentityMismatchRollback { .. } => {
+                nebula_error::ErrorCode::new("RESOURCE:FACTORY_IDENTITY_ROLLBACK_FAILED")
+            },
         }
     }
 
@@ -192,6 +306,7 @@ impl nebula_error::Classify for RegistrarError {
         match self {
             Self::UnknownKind(_) => false,
             Self::Register { source, .. } => nebula_error::Classify::is_retryable(source),
+            Self::IdentityMismatch { .. } | Self::IdentityMismatchRollback { .. } => false,
         }
     }
 
@@ -199,6 +314,7 @@ impl nebula_error::Classify for RegistrarError {
         match self {
             Self::UnknownKind(_) => None,
             Self::Register { source, .. } => nebula_error::Classify::retry_hint(source),
+            Self::IdentityMismatch { .. } | Self::IdentityMismatchRollback { .. } => None,
         }
     }
 }
@@ -221,12 +337,11 @@ pub struct ResourceRegistrationOutcome {
 /// construction arm (`register`). Object-safe: stored as
 /// `Arc<dyn ResourceFactory>` in `Plugin::resources()`.
 ///
-/// # Key coherence invariant
-///
-/// Implementations MUST satisfy `self.key() == <R as Provider>::key()`.
-/// The derive-emitted `<Name>Factory` enforces this structurally (it
-/// delegates to `<R as Provider>::key()`).
-pub trait ResourceFactory: Send + Sync + 'static {
+/// The private supertrait seals implementations to this crate. Plugins must
+/// use a typed [`KindActivator`] or a derive-emitted factory wrapper, so the
+/// key, metadata, type identity, validation, and registration arms all come
+/// from the same `R`.
+pub trait ResourceFactory: private::Sealed + Send + Sync + 'static {
     /// The static `ResourceKey` identifying the concrete resource type.
     ///
     /// Pure and side-effect-free — a `const`-ish accessor, not I/O.
@@ -244,16 +359,20 @@ pub trait ResourceFactory: Send + Sync + 'static {
     /// Resource metadata for catalog display, schema introspection, and
     /// install-from-repo pre-install enumeration.
     ///
-    /// Side-effect-free. The schema MUST derive from the same
-    /// `<R::Config as HasSchema>::schema()` that `validate` and `register`
-    /// use (schema-single-source law).
-    fn metadata(&self) -> ResourceMetadata;
+    /// The first call admits the schema-free author draft by deriving the
+    /// canonical schema from `R::Config`; later calls return that immutable,
+    /// cached definition. `validate` and `register` consume its schema rather
+    /// than deriving another copy (schema-single-source law).
+    ///
+    /// # Errors
+    /// Returns a typed catalog error if the definition or configuration schema is invalid.
+    fn metadata(&self) -> Result<&ResourceMetadata, crate::MetadataBuildError>;
 
     /// Validate `config_json` against this resource's `R::Config` schema
     /// **without registering anything**.
     ///
     /// Runs the same schema pass + closed-set guard + `R::Config` deserialize
-    /// as the live `register` path (shared via `Manager::validate_config_value`),
+    /// as the live `register` path (shared through the same private manager helper),
     /// but performs **no** `Manager` mutation, constructs **no** `resource: R`
     /// or `R::Topology`, and resolves **no** `{{ … }}` templates.
     ///
@@ -267,12 +386,16 @@ pub trait ResourceFactory: Send + Sync + 'static {
 
     /// Construct and register this resource type against `manager` using the
     /// caller-threaded [`RegisterRequest`] plus the per-`R` resource and
-    /// topology this factory owns.
+    /// topology this factory owns. `expected_slot_identity` is the canonical
+    /// identity derived by the registry from that exact request; the typed
+    /// manager must verify it before making the row discoverable.
     ///
     /// On success returns the **collision-free structural** [`SlotIdentity`]
     /// the manager derived for this row — the exact value
     /// `Manager::register_resolved` returned — so the caller can record the
-    /// row key without an independent recompute.
+    /// row key without an independent recompute. The typed manager checks
+    /// this identity against the request-derived expectation before publishing
+    /// the row, and the erased registry checks the returned postcondition.
     ///
     /// The returned future is boxed so the trait stays object-safe without
     /// `#[async_trait]`.
@@ -280,11 +403,13 @@ pub trait ResourceFactory: Send + Sync + 'static {
     /// # Errors
     ///
     /// Returns [`crate::Error`] verbatim if the typed `register_resolved`
-    /// fails (deserialize / schema / validation / slot-binding mismatch).
+    /// fails (deserialize / schema / validation / slot-binding or canonical
+    /// identity mismatch).
     fn register<'a>(
         &'a self,
         manager: &'a Manager,
         request: RegisterRequest<'a>,
+        expected_slot_identity: &'a SlotIdentity,
     ) -> BoxFut<'a, Result<SlotIdentity, crate::Error>>;
 }
 
@@ -310,6 +435,8 @@ where
     resource_factory: FRes,
     topology_factory: FTopo,
     dependencies: Dependencies,
+    metadata_draft: Option<ResourceMetadataDraft>,
+    metadata: OnceLock<Result<ResourceMetadata, crate::MetadataBuildError>>,
     // Zero-sized marker — `R` is not stored but bounds the `impl`.
     _marker: std::marker::PhantomData<fn() -> R>,
 }
@@ -351,9 +478,58 @@ where
             resource_factory,
             topology_factory,
             dependencies: R::dependencies(),
+            metadata_draft: None,
+            metadata: OnceLock::new(),
             _marker: std::marker::PhantomData,
         }
     }
+
+    /// Builds an activator from explicit schema-free resource author intent.
+    ///
+    /// The supplied draft cannot carry a schema. Admission still derives the
+    /// canonical schema from `R::Config` at this factory boundary.
+    pub fn with_metadata(
+        metadata_draft: ResourceMetadataDraft,
+        resource_factory: FRes,
+        topology_factory: FTopo,
+    ) -> Self {
+        Self {
+            resource_factory,
+            topology_factory,
+            dependencies: R::dependencies(),
+            metadata_draft: Some(metadata_draft),
+            metadata: OnceLock::new(),
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    fn admit_metadata(&self) -> Result<ResourceMetadata, crate::MetadataBuildError> {
+        let schema = nebula_schema::schema_of::<R::Config>()?;
+        let draft = self.metadata_draft.clone().unwrap_or_else(R::metadata);
+        let metadata = draft.admit(schema);
+        let expected = R::key();
+        if metadata.base().key() != &expected {
+            let actual = metadata.base().key().clone();
+            tracing::warn!(
+                error_code = "RESOURCE:METADATA_KEY_MISMATCH",
+                expected_key = %expected,
+                actual_key = %actual,
+                "resource metadata admission rejected"
+            );
+            return Err(crate::MetadataBuildError::KeyMismatch { expected, actual });
+        }
+        Ok(metadata)
+    }
+}
+
+impl<R, FRes, FTopo> private::Sealed for KindActivator<R, FRes, FTopo>
+where
+    R: Provider + nebula_core::DeclaresDependencies,
+    R::Config: serde::de::DeserializeOwned,
+    R::Topology: Topology<R>,
+    FRes: Fn() -> R + Send + Sync + 'static,
+    FTopo: Fn() -> R::Topology + Send + Sync + 'static,
+{
 }
 
 impl<R, FRes, FTopo> ResourceFactory for KindActivator<R, FRes, FTopo>
@@ -376,8 +552,18 @@ where
         TypeId::of::<R>()
     }
 
-    fn metadata(&self) -> ResourceMetadata {
-        <R as Provider>::metadata()
+    #[tracing::instrument(
+        level = "debug",
+        name = "resource.factory.admit_metadata",
+        skip_all,
+        fields(resource_key = %R::key()),
+        err
+    )]
+    fn metadata(&self) -> Result<&ResourceMetadata, crate::MetadataBuildError> {
+        self.metadata
+            .get_or_init(|| self.admit_metadata())
+            .as_ref()
+            .map_err(Clone::clone)
     }
 
     fn validate(&self, config_json: serde_json::Value) -> Result<(), crate::Error> {
@@ -385,17 +571,27 @@ where
         // a function of the config JSON and the monomorphized `R::Config`
         // schema — exactly the live path's pre-register checks, minus template
         // resolution and typed-runtime construction.
-        Manager::validate_config_value::<R>(config_json).map(|_| ())
+        let metadata = self.metadata().map_err(|source| {
+            crate::Error::permanent("resource factory metadata admission failed")
+                .with_source(source)
+        })?;
+        Manager::validate_config_value_against::<R>(metadata.base().schema(), config_json)
+            .map(|_| ())
     }
 
     fn register<'a>(
         &'a self,
         manager: &'a Manager,
         request: RegisterRequest<'a>,
+        expected_slot_identity: &'a SlotIdentity,
     ) -> BoxFut<'a, Result<SlotIdentity, crate::Error>> {
-        let resource = (self.resource_factory)();
-        let topology = (self.topology_factory)();
         Box::pin(async move {
+            let metadata = self.metadata().map_err(|source| {
+                crate::Error::permanent("resource factory metadata admission failed")
+                    .with_source(source)
+            })?;
+            let resource = (self.resource_factory)();
+            let topology = (self.topology_factory)();
             // The typed register validates declared slots and derives the
             // structural identity from the (slot → credential-key) view; the
             // rotation `CredentialId` lives on the same bindings and is
@@ -407,13 +603,15 @@ where
                 .collect();
             manager
                 .register_resolved::<R>(
-                    request.config_json,
+                    metadata.base().schema(),
+                    request.config,
                     request.expr_engine,
                     slot_keys,
                     resource,
                     request.scope,
                     topology,
                     request.recovery_gate,
+                    expected_slot_identity,
                 )
                 .await
         })
@@ -457,12 +655,21 @@ impl ResourceActivatorRegistry {
     ///
     /// Returns the previously registered factory for this kind, if any, so
     /// the caller can detect an unintended override.
+    ///
+    /// Admission happens before the allowlist is mutated. A rejected resource
+    /// definition therefore cannot become discoverable through this registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::MetadataBuildError`] when the resource's canonical
+    /// configuration schema cannot be derived.
     pub fn insert(
         &mut self,
         kind: impl Into<String>,
         factory: Arc<dyn ResourceFactory>,
-    ) -> Option<Arc<dyn ResourceFactory>> {
-        self.factories.insert(kind.into(), factory)
+    ) -> Result<Option<Arc<dyn ResourceFactory>>, crate::MetadataBuildError> {
+        factory.metadata()?;
+        Ok(self.factories.insert(kind.into(), factory))
     }
 
     /// Returns `true` if `kind` is in the allowlist.
@@ -503,12 +710,23 @@ impl ResourceActivatorRegistry {
             .get(kind)
             .ok_or_else(|| RegistrarError::UnknownKind(kind.to_owned()))?;
         let resource_key = factory.key();
-        let slot_identity = factory.register(manager, request).await.map_err(|source| {
-            RegistrarError::Register {
+        let scope = request.scope.clone();
+        let expected_slot_identity = slot_identity_from_request(&request);
+        let slot_identity = factory
+            .register(manager, request, &expected_slot_identity)
+            .await
+            .map_err(|source| RegistrarError::Register {
                 kind: kind.to_owned(),
                 source,
-            }
-        })?;
+            })?;
+        ensure_registration_identity(
+            kind,
+            manager,
+            &resource_key,
+            &scope,
+            &expected_slot_identity,
+            &slot_identity,
+        )?;
         Ok(ResourceRegistrationOutcome {
             resource_key,
             slot_identity,
@@ -546,12 +764,8 @@ impl ResourceActivatorRegistry {
             .get(kind)
             .ok_or_else(|| RegistrarError::UnknownKind(kind.to_owned()))?;
         let resource_key = factory.key();
-        let staged_slot_identity = SlotIdentity::from_bindings(
-            request
-                .slot_bindings
-                .iter()
-                .map(|binding| (binding.slot_name.as_str(), binding.credential_key.as_str())),
-        );
+        let staged_slot_identity = slot_identity_from_request(&request);
+        let scope = request.scope.clone();
 
         // Stage reverse-index binds BEFORE the typed register makes the
         // Manager row discoverable. Each `CredentialId` rides on the SAME
@@ -592,18 +806,21 @@ impl ResourceActivatorRegistry {
             }
         });
 
-        let slot_identity = factory.register(manager, request).await.map_err(|source| {
-            RegistrarError::Register {
+        let slot_identity = factory
+            .register(manager, request, &staged_slot_identity)
+            .await
+            .map_err(|source| RegistrarError::Register {
                 kind: kind.to_owned(),
                 source,
-            }
-        })?;
-
-        debug_assert_eq!(
-            slot_identity, staged_slot_identity,
-            "register_resolved returned a slot identity that diverged from \
-             the canonical from_bindings recompute — cross-tenant aliasing risk"
-        );
+            })?;
+        ensure_registration_identity(
+            kind,
+            manager,
+            &resource_key,
+            &scope,
+            &staged_slot_identity,
+            &slot_identity,
+        )?;
         scopeguard::ScopeGuard::into_inner(rollback);
         Ok(ResourceRegistrationOutcome {
             resource_key,
@@ -641,6 +858,55 @@ impl ResourceActivatorRegistry {
     }
 }
 
+fn slot_identity_from_request(request: &RegisterRequest<'_>) -> SlotIdentity {
+    SlotIdentity::from_bindings(
+        request
+            .slot_bindings
+            .iter()
+            .map(|binding| (binding.slot_name.as_str(), binding.credential_key.as_str())),
+    )
+}
+
+fn ensure_registration_identity(
+    kind: &str,
+    manager: &Manager,
+    resource_key: &nebula_core::ResourceKey,
+    scope: &ScopeLevel,
+    expected: &SlotIdentity,
+    actual: &SlotIdentity,
+) -> Result<(), RegistrarError> {
+    if actual == expected {
+        return Ok(());
+    }
+
+    tracing::error!(
+        error_code = "RESOURCE:FACTORY_IDENTITY_MISMATCH",
+        resource.kind = kind,
+        resource.key = %resource_key,
+        ?scope,
+        ?expected,
+        ?actual,
+        "sealed resource factory returned a non-canonical registration identity"
+    );
+
+    if let Err(source) = manager.remove_for(resource_key, scope, expected)
+        && source.kind() != &crate::ErrorKind::NotFound
+    {
+        return Err(RegistrarError::IdentityMismatchRollback {
+            kind: kind.to_owned(),
+            expected: expected.clone(),
+            actual: actual.clone(),
+            source: Box::new(source),
+        });
+    }
+
+    Err(RegistrarError::IdentityMismatch {
+        kind: kind.to_owned(),
+        expected: expected.clone(),
+        actual: actual.clone(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -659,7 +925,7 @@ mod tests {
     use crate::{
         Manager, Resident, ScopeLevel,
         error::Error as ResourceError,
-        resource::{Provider, ResourceConfig, ResourceMetadata},
+        resource::{Provider, ResourceConfig, ResourceMetadataDraft},
         topology::resident::{self, ResidentProvider},
     };
 
@@ -682,13 +948,12 @@ mod tests {
         }
     }
 
-    #[derive(Clone, Debug, serde::Deserialize)]
+    #[derive(Clone, Debug, serde::Deserialize, nebula_schema::Schema)]
     struct TestConfig {
         #[serde(default)]
+        #[field(default = "")]
         name: String,
     }
-
-    nebula_schema::impl_empty_has_schema!(TestConfig);
 
     impl ResourceConfig for TestConfig {
         fn validate(&self) -> Result<(), ResourceError> {
@@ -738,12 +1003,11 @@ mod tests {
             Ok(Arc::new(AtomicU64::new(id)))
         }
 
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::new(
+        fn metadata() -> ResourceMetadataDraft {
+            ResourceMetadataDraft::new(
                 Self::key(),
-                "test-factory-res".to_owned(),
+                crate::metadata_name!("test-factory-res"),
                 String::new(),
-                <TestConfig as nebula_schema::HasSchema>::schema(),
             )
         }
     }
@@ -774,9 +1038,115 @@ mod tests {
         ))
     }
 
+    #[cfg(feature = "rotation")]
+    #[derive(Clone)]
+    struct BoundTestRes;
+
+    #[cfg(feature = "rotation")]
+    #[async_trait::async_trait]
+    impl Provider for BoundTestRes {
+        type Config = TestConfig;
+        type Instance = ();
+        type Topology = Resident<Self>;
+
+        fn key() -> ResourceKey {
+            resource_key!("test-factory-bound-res")
+        }
+
+        async fn create(
+            &self,
+            _config: &TestConfig,
+            _ctx: &crate::ResourceContext,
+        ) -> Result<(), ResourceError> {
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "rotation")]
+    impl crate::HasCredentialSlots for BoundTestRes {
+        fn credential_slot_epoch(&self) -> u64 {
+            0
+        }
+
+        fn declares_credential_slots() -> bool {
+            true
+        }
+
+        fn credential_slot_names() -> &'static [&'static str] {
+            &["auth"]
+        }
+    }
+
+    #[cfg(feature = "rotation")]
+    impl nebula_core::DeclaresDependencies for BoundTestRes {
+        fn dependencies() -> Dependencies {
+            Dependencies::new().slot_field(nebula_core::SlotField {
+                slot_key: "auth",
+                default_id: "auth",
+                kind: nebula_core::dependencies::SlotKind::Credential {
+                    type_id: TypeId::of::<()>(),
+                    type_name: std::any::type_name::<()>(),
+                    key: nebula_core::credential_key!("test.factory-credential"),
+                },
+                required: true,
+                lazy: false,
+                purpose: None,
+            })
+        }
+    }
+
+    #[cfg(feature = "rotation")]
+    #[async_trait::async_trait]
+    impl ResidentProvider for BoundTestRes {}
+
+    #[cfg(feature = "rotation")]
+    struct DivergentIdentityFactory {
+        inner: Arc<dyn ResourceFactory>,
+    }
+
+    #[cfg(feature = "rotation")]
+    impl private::Sealed for DivergentIdentityFactory {}
+
+    #[cfg(feature = "rotation")]
+    impl ResourceFactory for DivergentIdentityFactory {
+        fn key(&self) -> ResourceKey {
+            self.inner.key()
+        }
+
+        fn dependencies(&self) -> &Dependencies {
+            self.inner.dependencies()
+        }
+
+        fn resource_type_id(&self) -> TypeId {
+            self.inner.resource_type_id()
+        }
+
+        fn metadata(&self) -> Result<&ResourceMetadata, crate::MetadataBuildError> {
+            self.inner.metadata()
+        }
+
+        fn validate(&self, config_json: serde_json::Value) -> Result<(), ResourceError> {
+            self.inner.validate(config_json)
+        }
+
+        fn register<'a>(
+            &'a self,
+            manager: &'a Manager,
+            request: RegisterRequest<'a>,
+            expected_slot_identity: &'a SlotIdentity,
+        ) -> BoxFut<'a, Result<SlotIdentity, ResourceError>> {
+            Box::pin(async move {
+                self.inner
+                    .register(manager, request, expected_slot_identity)
+                    .await?;
+                Ok(SlotIdentity::Unbound)
+            })
+        }
+    }
+
     fn request(expr_engine: &ExpressionEngine) -> RegisterRequest<'_> {
         RegisterRequest {
-            config_json: serde_json::json!({ "name": "from-factory" }),
+            config: ResourceConfigInput::data(serde_json::json!({ "name": "from-factory" })),
             expr_engine,
             slot_bindings: Vec::new(),
             scope: ScopeLevel::Global,
@@ -788,9 +1158,9 @@ mod tests {
     fn registration_debug_redacts_opaque_config_and_binding_payloads() {
         let engine = ExpressionEngine::with_cache_size(16);
         let mut request = request(&engine);
-        request.config_json = serde_json::json!({
+        request.config = ResourceConfigInput::data(serde_json::json!({
             "opaque_config_field": ["config_secret_sentinel", {"nested": "nested_secret_sentinel"}]
-        });
+        }));
         request.slot_bindings.push(SlotBinding {
             slot_name: "slot_name_sentinel".to_owned(),
             credential_key: nebula_core::CredentialKey::new("credential_key_sentinel")
@@ -859,10 +1229,12 @@ mod tests {
     fn metadata_schema_matches_provider_schema() {
         let create_counter = Arc::new(AtomicU64::new(0));
         let factory = test_factory(create_counter);
-        let md = factory.metadata();
-        let expected = TestRes::metadata();
+        let md = factory.metadata().expect("valid test catalog definition");
+        let expected = nebula_schema::schema_of::<TestConfig>()
+            .expect("test configuration has a valid schema");
         assert_eq!(
-            md.base.schema, expected.base.schema,
+            md.base().schema(),
+            &expected,
             "metadata().schema must derive from the same HasSchema as validate/register \
              (schema-single-source law)"
         );
@@ -877,7 +1249,9 @@ mod tests {
         let create_counter = Arc::new(AtomicU64::new(0));
 
         let mut registry = ResourceActivatorRegistry::new();
-        let prev = registry.insert("test-kind", test_factory(create_counter));
+        let prev = registry
+            .insert("test-kind", test_factory(create_counter))
+            .expect("test resource metadata admits");
         assert!(prev.is_none(), "no prior factory for a fresh kind");
         assert!(registry.contains("test-kind"));
         assert_eq!(registry.len(), 1);
@@ -895,6 +1269,118 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "rotation")]
+    #[tokio::test]
+    async fn identity_mismatch_is_typed_and_rolls_back_manager_and_fanout_state() {
+        let manager = Manager::new();
+        let expression_engine = ExpressionEngine::with_cache_size(16);
+        let credential_id = nebula_credential::CredentialId::new();
+        let fanout_index = crate::ResourceFanoutIndex::new();
+        let inner: Arc<dyn ResourceFactory> = Arc::new(KindActivator::<BoundTestRes, _, _>::new(
+            || BoundTestRes,
+            || Resident::<BoundTestRes>::new(resident::config::Config::default()),
+        ));
+        let mut registry = ResourceActivatorRegistry::new();
+        registry
+            .insert(
+                "test-divergent-identity",
+                Arc::new(DivergentIdentityFactory { inner }),
+            )
+            .expect("typed fixture metadata admits");
+
+        let error = registry
+            .register_and_bind(
+                "test-divergent-identity",
+                &manager,
+                RegisterRequest {
+                    config: ResourceConfigInput::data(
+                        serde_json::json!({ "name": "from-factory" }),
+                    ),
+                    expr_engine: &expression_engine,
+                    slot_bindings: vec![SlotBinding {
+                        slot_name: "auth".to_owned(),
+                        credential_key: nebula_core::credential_key!("test.factory-credential"),
+                        credential_id: Some(credential_id),
+                    }],
+                    scope: ScopeLevel::Global,
+                    recovery_gate: None,
+                },
+                Some(&fanout_index),
+            )
+            .await
+            .expect_err("a divergent erased result must fail in release builds");
+
+        assert_eq!(Classify::category(&error), ErrorCategory::Internal);
+        assert_eq!(
+            Classify::code(&error).as_str(),
+            "RESOURCE:FACTORY_IDENTITY_MISMATCH"
+        );
+        std::assert_matches!(
+            error,
+            RegistrarError::IdentityMismatch {
+                ref kind,
+                ref expected,
+                actual: SlotIdentity::Unbound,
+            } if kind == "test-divergent-identity" && !expected.is_unbound()
+        );
+        assert!(!manager.contains(&BoundTestRes::key()));
+        assert!(fanout_index.affected(&credential_id).is_empty());
+    }
+
+    #[cfg(feature = "rotation")]
+    #[tokio::test]
+    async fn conflicting_duplicate_slot_bindings_fail_before_manager_publication() {
+        let manager = Manager::new();
+        let expression_engine = ExpressionEngine::with_cache_size(16);
+        let first_credential_id = nebula_credential::CredentialId::new();
+        let second_credential_id = nebula_credential::CredentialId::new();
+        let fanout_index = crate::ResourceFanoutIndex::new();
+        let mut registry = ResourceActivatorRegistry::new();
+        registry
+            .insert(
+                "test-conflicting-bindings",
+                Arc::new(KindActivator::<BoundTestRes, _, _>::new(
+                    || BoundTestRes,
+                    || Resident::<BoundTestRes>::new(resident::config::Config::default()),
+                )),
+            )
+            .expect("typed fixture metadata admits");
+
+        let error = registry
+            .register_and_bind(
+                "test-conflicting-bindings",
+                &manager,
+                RegisterRequest {
+                    config: ResourceConfigInput::data(
+                        serde_json::json!({ "name": "from-factory" }),
+                    ),
+                    expr_engine: &expression_engine,
+                    slot_bindings: vec![
+                        SlotBinding {
+                            slot_name: "auth".to_owned(),
+                            credential_key: nebula_core::credential_key!("test.credential-a"),
+                            credential_id: Some(first_credential_id),
+                        },
+                        SlotBinding {
+                            slot_name: "auth".to_owned(),
+                            credential_key: nebula_core::credential_key!("test.credential-b"),
+                            credential_id: Some(second_credential_id),
+                        },
+                    ],
+                    scope: ScopeLevel::Global,
+                    recovery_gate: None,
+                },
+                Some(&fanout_index),
+            )
+            .await
+            .expect_err("one slot cannot resolve to two credential identities");
+
+        std::assert_matches!(error, RegistrarError::Register { .. });
+        assert!(!manager.contains(&BoundTestRes::key()));
+        assert!(fanout_index.affected(&first_credential_id).is_empty());
+        assert!(fanout_index.affected(&second_credential_id).is_empty());
+    }
+
     #[tokio::test]
     async fn unknown_kind_is_typed_error_not_panic_not_silent() {
         let manager = Manager::new();
@@ -902,7 +1388,9 @@ mod tests {
         let create_counter = Arc::new(AtomicU64::new(0));
 
         let mut registry = ResourceActivatorRegistry::new();
-        registry.insert("test-kind", test_factory(create_counter));
+        registry
+            .insert("test-kind", test_factory(create_counter))
+            .expect("test resource metadata admits");
 
         let err = registry
             .register("ghost", &manager, request(&expr_engine))

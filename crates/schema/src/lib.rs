@@ -4,15 +4,23 @@
 //! - Typed field definitions and the `Field` enum.
 //! - `Schema` builder with structural lint passes via `Schema::lint`.
 //! - Schema-time validation via `ValidSchema::validate` returning a `ValidValues` proof-token.
-//! - Runtime expression resolution via `ValidValues::resolve` returning a `ResolvedValues`
-//!   proof-token (a **latent** seam — sound and test-proven, but with no production
-//!   consumer yet; see `ValidValues::resolve`).
+//! - Consuming expression resolution or data-only completion returning `ResolvedValues`.
+//! - Distinct authoring, compiled, and resolved value trees with schema-bound proofs.
 //! - Strongly-typed error and path types.
+//!
+//! JSON data enters through [`AuthoredValue::from_data`], which never interprets
+//! template syntax. [`AuthoredValue::from_template_json`] is an explicit authoring
+//! shorthand. Validation folds aliases, applies transformations once, protects
+//! declared secrets, and retains compiled programs. Pending checks are exposed
+//! through [`ValidValues::pending`]; only full completion yields runtime proof.
+//! [`ValidValues::resolve_data`] performs that completion without executing code.
+//! [`ValuePath`] addresses arbitrary data keys using RFC6901; [`FieldPath`]
+//! addresses schema declarations, not runtime JSON.
 //!
 //! # Quick start
 //!
 //! ```rust
-//! use nebula_schema::{Field, FieldValues, Schema, field_key};
+//! use nebula_schema::{Field, AuthoredValue, Schema, field_key};
 //! use serde_json::json;
 //!
 //! let schema = Schema::builder()
@@ -21,8 +29,8 @@
 //!     .build()
 //!     .expect("schema is valid");
 //!
-//! let values = FieldValues::from_json(json!({"name": "Alice", "age": 30})).unwrap();
-//! let valid = schema.validate(&values).expect("values are valid");
+//! let values = AuthoredValue::from_data(json!({"name": "Alice", "age": 30})).unwrap();
+//! let valid = schema.validate(values).expect("values are valid");
 //!
 //! assert_eq!(valid.warnings().len(), 0);
 //! ```
@@ -45,14 +53,14 @@
 //!             .required(),
 //!     )
 //!     .add(
-//!         Field::secret(field_key!("api_key")).active_when(Rule::predicate(
-//!             Predicate::eq("auth_type", json!("api_key")).unwrap(),
-//!         )),
+//!         Field::secret(field_key!("api_key")).active_when(
+//!             Rule::predicate(Predicate::eq("auth_type", json!("api_key")).unwrap()).unwrap(),
+//!         ),
 //!     )
 //!     .add(
-//!         Field::string(field_key!("client_id")).active_when(Rule::predicate(
-//!             Predicate::eq("auth_type", json!("oauth2")).unwrap(),
-//!         )),
+//!         Field::string(field_key!("client_id")).active_when(
+//!             Rule::predicate(Predicate::eq("auth_type", json!("oauth2")).unwrap()).unwrap(),
+//!         ),
 //!     )
 //!     .build()
 //!     .expect("schema is valid");
@@ -67,23 +75,23 @@
 //! [`ValidSchema::validate`](crate::ValidSchema::validate).
 //!
 //! ```rust
-//! use nebula_schema::{Field, FieldValues, Schema, Predicate, Rule, field_key};
+//! use nebula_schema::{Field, AuthoredValue, Schema, Predicate, Rule, field_key};
 //! use serde_json::json;
 //!
 //! let schema = Schema::builder()
 //!     .add(Field::string(field_key!("tier")))
-//!     .root_rule(Rule::predicate(Predicate::eq("tier", json!("pro")).unwrap()))
+//!     .root_rule(Rule::predicate(Predicate::eq("tier", json!("pro")).unwrap()).unwrap())
 //!     .build()
 //!     .unwrap();
 //!
 //! assert!(
 //!     schema
-//!         .validate(&FieldValues::from_json(json!({"tier": "free"})).unwrap())
+//!         .validate(AuthoredValue::from_data(json!({"tier": "free"})).unwrap())
 //!         .is_err()
 //! );
 //! assert!(
 //!     schema
-//!         .validate(&FieldValues::from_json(json!({"tier": "pro"})).unwrap())
+//!         .validate(AuthoredValue::from_data(json!({"tier": "pro"})).unwrap())
 //!         .is_ok()
 //! );
 //! ```
@@ -91,7 +99,7 @@
 //! # `#[derive(Schema)]` and `HasSchema`
 //!
 //! ```rust
-//! use nebula_schema::{FieldValues, HasSchema, Schema};
+//! use nebula_schema::{AuthoredValue, HasSchema, Schema};
 //! use serde::Deserialize;
 //! use serde_json::json;
 //!
@@ -103,9 +111,9 @@
 //!     name: String,
 //! }
 //!
-//! let schema = Example::schema();
-//! let values = FieldValues::from_json(json!({"name": "n"})).unwrap();
-//! assert!(schema.validate(&values).is_ok());
+//! let schema = Example::schema().unwrap();
+//! let values = AuthoredValue::from_data(json!({"name": "n"})).unwrap();
+//! assert!(schema.validate(values).is_ok());
 //! ```
 //!
 //! `#[schema(reserved("old_key"))]` forbids any field from using a key — reusing
@@ -134,7 +142,7 @@
 //! key, or a key colliding with another field's key/alias is a compile error.
 //!
 //! ```rust
-//! use nebula_schema::{FieldValues, HasSchema, Schema};
+//! use nebula_schema::{AuthoredValue, HasSchema, Schema};
 //! use serde::Deserialize;
 //! use serde_json::json;
 //!
@@ -145,10 +153,10 @@
 //!     user_name: String,
 //! }
 //!
-//! let schema = Payload::schema();
+//! let schema = Payload::schema().unwrap();
 //! // Accepted under the serde alias, folded onto the canonical key.
 //! let valid = schema
-//!     .validate(&FieldValues::from_json(json!({"userName": "alice"})).unwrap())
+//!     .validate(AuthoredValue::from_data(json!({"userName": "alice"})).unwrap())
 //!     .unwrap();
 //! // Emitted under the emit_as key on projection.
 //! assert_eq!(valid.to_wire_json()["user_name_out"], json!("alice"));
@@ -234,14 +242,15 @@ pub use builder::{
 pub use commitment::{CommitmentId, CommitmentKey};
 pub use compat::{
     Assignability, SchemaIncompat, UnknownReason, explain_assignable, explain_field_assignable,
-    is_assignable_schema,
+    explain_root_field_assignable,
 };
 pub use directed::{DirectedSchema, Input, InputSchema, Output, OutputSchema, Polarity};
 pub use error::{
     STANDARD_CODES, Severity, ValidationError, ValidationErrorBuilder, ValidationReport,
 };
 pub use expression::{
-    EngineExpressionContext, EvalFuture, Expression, ExpressionAst, ExpressionContext,
+    CompiledProgram, EngineExpressionContext, EvalFuture, Expression, ExpressionContext,
+    ProgramSyntax,
 };
 /// Discriminated field: one of several payload shapes (auth scheme, body kind, etc.).
 ///
@@ -288,7 +297,8 @@ pub use input_hint::InputHint;
 pub use json_schema::JsonSchemaExportError;
 pub use key::FieldKey;
 pub use loader::{
-    Loader, LoaderContext, LoaderFuture, LoaderRegistry, LoaderResult, OptionLoader, RecordLoader,
+    Loader, LoaderContext, LoaderFuture, LoaderRegistry, LoaderResult, MAX_LOADER_ITEM_DEPTH,
+    MAX_LOADER_ITEMS, MAX_LOADER_PAGE_BYTES, OptionLoader, RecordLoader, RedactedLoaderContext,
 };
 pub use mode::{ExpressionMode, RequiredMode, VisibilityMode};
 pub use nebula_schema_macros::{EnumSelect, Schema, field_key};
@@ -298,13 +308,20 @@ pub use nebula_validator::{Predicate, Rule};
 pub use option::SelectOption;
 pub use path::{FieldPath, PathSegment};
 pub use schema::{Schema, SchemaBuilder};
-pub use secret::{SECRET_REDACTED, SecretBytes, SecretString, SecretValue, SecretWire};
-pub use transformer::Transformer;
-pub use validated::{
-    FieldHandle, PathResolveError, PathWalk, ResolvedLookup, ResolvedValues, SchemaFlags,
-    SchemaKind, SerdeTagging, ValidSchema, ValidValues, is_opaque_field_node,
+pub use secret::{
+    SECRET_REDACTED, SecretBytes, SecretInput, SecretString, SecretValue, SecretWire,
 };
-pub use value::{ContentId, EXPRESSION_KEY, FieldValue, FieldValues, VALUE_CANON_VERSION};
+pub use transformer::{RegexCapture, Transformer};
+pub use validated::{
+    FieldHandle, PathResolveError, PathWalk, PendingValidation, RecordShape, ResolvedLookup,
+    ResolvedValues, RootShape, ScalarKind, ScalarSchema, SchemaFlags, SchemaKind, SerdeTagging,
+    UnionShape, ValidSchema, ValidValues, is_opaque_field_node,
+};
+pub use value::{
+    AuthoredValue, CompiledValue, ContentId, EXPRESSION_KEY, MAX_EXPRESSION_ENTRIES,
+    MAX_EXPRESSION_TEXT_BYTES, MAX_VALUE_DEPTH, MAX_VALUE_NODES, MAX_VALUE_TEXT_BYTES,
+    ResolvedValue, ScalarValue, VALUE_CANON_VERSION, ValuePath, ValueTree, canonical_json_v1,
+};
 pub use widget::{
     BooleanWidget, CodeWidget, ListWidget, NumberWidget, ObjectWidget, SecretWidget, SelectWidget,
     StringWidget,
@@ -335,18 +352,20 @@ pub mod __private {
     /// classification is purely syntactic. Splicing the top-level fields of a
     /// non-record schema would declare keys serde never emits (a union schema's
     /// synthetic root key) or a closed empty object (`Any`'s zero fields), breaking
-    /// the schema↔wire-key invariant. This guard fails loud at `schema()`
-    /// construction instead — consistent with the derive's other schema-build
-    /// panics — naming the offending variant.
+    /// the schema↔wire-key invariant. This guard returns a typed construction
+    /// report through `schema()`, naming the offending variant.
     ///
     /// # Errors
     ///
     /// Returns a [`ValidationReport`](crate::error::ValidationReport) when
     /// `payload`'s kind is not [`Record`](crate::SchemaKind::Record) (e.g. a
     /// newtype over an enum, over `serde_json::Value`, or over any other
-    /// `Any`-typed payload). The derive routes this through the same
-    /// schema-build error path as a failed `ValidSchema::union`, so the failure
+    /// `Any`-typed payload), or when embedding would discard record root rules.
+    /// The derive routes this through the same schema-build error path as a
+    /// failed `ValidSchema::union`, so the failure
     /// surfaces at `schema()` construction — it does not panic from library code.
+    #[tracing::instrument(name = "schema.union.newtype_payload", level = "trace", skip_all,
+        fields(kind = ?payload.kind(), has_root_rules = !payload.root_rules().is_empty()))]
     pub fn union_newtype_payload(
         wire_key: crate::FieldKey,
         payload: crate::ValidSchema,
@@ -366,6 +385,11 @@ pub mod __private {
                     ))
                     .build(),
             ));
+        }
+        if !payload.root_rules().is_empty() {
+            return ::core::result::Result::Err(crate::error::ValidationError::builder("union.newtype_root_rules")
+                .message("union newtype payload root rules cannot be embedded without preserving their context")
+                .build().into());
         }
         ::core::result::Result::Ok(
             crate::Field::object(wire_key)

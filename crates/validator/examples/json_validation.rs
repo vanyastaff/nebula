@@ -36,7 +36,7 @@ fn direct_value_validation() {
     println!("min_length(3) on \"hi\":    {}", status(&result));
 
     // Numeric validation
-    let range = in_range::<i64>(1, 65535);
+    let range = in_range::<i64>(1, 65535).expect("ordered bounds");
     let result = range.validate_any(&json!(8080));
     println!("in_range(1, 65535) on 8080: {}", status(&result));
 
@@ -67,7 +67,10 @@ fn field_level_validation() {
     println!("/server/host: {}", status(&v.validate(&data)));
 
     // Nested numeric field
-    let v = json_field("/server/port", in_range::<i64>(1, 65535));
+    let v = json_field(
+        "/server/port",
+        in_range::<i64>(1, 65535).expect("ordered bounds"),
+    );
     println!("/server/port: {}", status(&v.validate(&data)));
 
     // Optional field — missing is ok
@@ -92,7 +95,10 @@ fn composed_validators() {
     println!("=== Composed Validators ===\n");
 
     // AND: both host and port must be valid
-    let v = json_field("/host", min_length(1)).and(json_field("/port", in_range::<i64>(1, 65535)));
+    let v = json_field("/host", min_length(1)).and(json_field(
+        "/port",
+        in_range::<i64>(1, 65535).expect("ordered bounds"),
+    ));
 
     let good = json!({"host": "localhost", "port": 8080});
     println!("host AND port (valid): {}", status(&v.validate(&good)));
@@ -138,13 +144,16 @@ fn real_world_config_validation() {
     println!("=== Real-World Config Validation ===\n");
 
     let validator = json_field("/host", min_length(1))
-        .and(json_field("/port", in_range::<i64>(1, 65535)))
+        .and(json_field(
+            "/port",
+            in_range::<i64>(1, 65535).expect("ordered bounds"),
+        ))
         .and(json_field("/workers", greater_than::<i64>(0)))
         .and(json_field_optional("/log_level", min_length(1)))
         .and(json_field("/database/url", min_length(10)))
         .and(json_field_optional(
             "/database/pool_size",
-            in_range::<i64>(1, 100),
+            in_range::<i64>(1, 100).expect("ordered bounds"),
         ));
 
     let config = json!({
@@ -188,7 +197,10 @@ fn error_reporting() {
 
     let validator = json_field("/name", min_length(1))
         .and(json_field("/email", email()))
-        .and(json_field("/age", in_range::<i64>(13, 120)))
+        .and(json_field(
+            "/age",
+            in_range::<i64>(13, 120).expect("ordered bounds"),
+        ))
         .and(with_message(
             json_field("/name", max_length(100)),
             "Name is too long",
@@ -218,7 +230,10 @@ fn error_reporting() {
         ("email", Box::new(json_field("/email", email()))),
         (
             "age",
-            Box::new(json_field("/age", in_range::<i64>(13, 120))),
+            Box::new(json_field(
+                "/age",
+                in_range::<i64>(13, 120).expect("ordered bounds"),
+            )),
         ),
     ];
 

@@ -131,11 +131,11 @@ impl PluginContractDescriptor {
         version.build = BuildMetadata::EMPTY;
         let mut action_keys = plugin
             .action_contracts()
-            .map(|contract| contract.metadata().base.key.clone())
+            .map(|contract| contract.metadata().base().key().clone())
             .collect::<Vec<_>>();
         let mut resource_keys = plugin
             .resource_contracts()
-            .map(|contract| contract.metadata().base.key.clone())
+            .map(|contract| contract.metadata().base().key().clone())
             .collect::<Vec<_>>();
         let mut credential_keys = plugin
             .credential_contracts()

@@ -3,9 +3,134 @@
 //! Policies can constrain which builtin functions are callable and carry
 //! compatibility flags such as strict mode.
 
-use std::{collections::HashSet, sync::Arc};
+use std::{collections::HashSet, num::NonZeroUsize, sync::Arc};
 
-/// Evaluation policy applied by the engine and optionally overridden by context.
+/// A non-zero ceiling for one builtin output dimension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BuiltinOutputBound(NonZeroUsize);
+
+impl BuiltinOutputBound {
+    /// Construct an output bound, returning `None` when `limit` is zero.
+    pub const fn new(limit: usize) -> Option<Self> {
+        match NonZeroUsize::new(limit) {
+            Some(limit) => Some(Self(limit)),
+            None => None,
+        }
+    }
+
+    /// Return the configured bound.
+    pub const fn get(self) -> usize {
+        self.0.get()
+    }
+}
+
+impl From<NonZeroUsize> for BuiltinOutputBound {
+    fn from(limit: NonZeroUsize) -> Self {
+        Self(limit)
+    }
+}
+
+/// Finite limits applied to every registered builtin result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuiltinOutputLimits {
+    total_bytes: usize,
+    string_bytes: usize,
+    collection_items: usize,
+    value_nodes: usize,
+    value_depth: usize,
+}
+
+impl BuiltinOutputLimits {
+    /// Default maximum total content bytes in one output tree.
+    pub const DEFAULT_MAX_TOTAL_BYTES: usize = crate::limits::MAX_RESULT_BYTES;
+    /// Default maximum UTF-8 byte length of one output string or object key.
+    pub const DEFAULT_MAX_STRING_BYTES: usize = crate::limits::MAX_RESULT_BYTES;
+    /// Default maximum number of direct entries in one output array or object.
+    pub const DEFAULT_MAX_COLLECTION_ITEMS: usize = crate::limits::MAX_RESULT_NODES;
+    /// Default maximum number of JSON values in one builtin output tree.
+    pub const DEFAULT_MAX_VALUE_NODES: usize = crate::limits::MAX_RESULT_NODES;
+    /// Default maximum depth of one builtin output tree.
+    pub const DEFAULT_MAX_VALUE_DEPTH: usize = crate::limits::MAX_AST_DEPTH;
+
+    /// Maximum total content bytes in one output tree.
+    #[must_use]
+    pub fn max_total_bytes(self) -> usize {
+        self.total_bytes
+    }
+
+    /// Maximum UTF-8 byte length of one output string or object key.
+    #[must_use]
+    pub fn max_string_bytes(self) -> usize {
+        self.string_bytes
+    }
+
+    /// Maximum number of direct entries in one output array or object.
+    #[must_use]
+    pub fn max_collection_items(self) -> usize {
+        self.collection_items
+    }
+
+    /// Maximum number of JSON values in one output tree.
+    #[must_use]
+    pub fn max_value_nodes(self) -> usize {
+        self.value_nodes
+    }
+
+    /// Maximum depth of one output tree, counting the root as depth one.
+    #[must_use]
+    pub fn max_value_depth(self) -> usize {
+        self.value_depth
+    }
+
+    pub(crate) fn most_restrictive(self, other: Self) -> Self {
+        Self {
+            total_bytes: self.total_bytes.min(other.total_bytes),
+            string_bytes: self.string_bytes.min(other.string_bytes),
+            collection_items: self.collection_items.min(other.collection_items),
+            value_nodes: self.value_nodes.min(other.value_nodes),
+            value_depth: self.value_depth.min(other.value_depth),
+        }
+    }
+}
+
+impl Default for BuiltinOutputLimits {
+    fn default() -> Self {
+        Self {
+            total_bytes: Self::DEFAULT_MAX_TOTAL_BYTES,
+            string_bytes: Self::DEFAULT_MAX_STRING_BYTES,
+            collection_items: Self::DEFAULT_MAX_COLLECTION_ITEMS,
+            value_nodes: Self::DEFAULT_MAX_VALUE_NODES,
+            value_depth: Self::DEFAULT_MAX_VALUE_DEPTH,
+        }
+    }
+}
+
+/// A non-zero ceiling for work performed by one expression evaluation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EvaluationStepLimit(NonZeroUsize);
+
+impl EvaluationStepLimit {
+    /// Construct a step limit, returning `None` when `max_steps` is zero.
+    pub const fn new(max_steps: usize) -> Option<Self> {
+        match NonZeroUsize::new(max_steps) {
+            Some(max_steps) => Some(Self(max_steps)),
+            None => None,
+        }
+    }
+
+    /// Return the configured maximum number of evaluation steps.
+    pub const fn get(self) -> usize {
+        self.0.get()
+    }
+}
+
+impl From<NonZeroUsize> for EvaluationStepLimit {
+    fn from(max_steps: NonZeroUsize) -> Self {
+        Self(max_steps)
+    }
+}
+
+/// Evaluation policy applied by the engine and optionally tightened by context.
 #[derive(Debug, Clone, Default)]
 pub struct EvaluationPolicy {
     allowed_functions: Option<Arc<HashSet<String>>>,
@@ -14,7 +139,8 @@ pub struct EvaluationPolicy {
     strict_conversion_functions: bool,
     strict_numeric_comparisons: bool,
     max_json_parse_length: Option<usize>,
-    max_eval_steps: Option<usize>,
+    max_eval_steps: Option<EvaluationStepLimit>,
+    builtin_output_limits: BuiltinOutputLimits,
 }
 
 impl EvaluationPolicy {
@@ -81,7 +207,8 @@ impl EvaluationPolicy {
         self
     }
 
-    /// Set max JSON input size for `parse_json`.
+    /// Set max JSON input size for `parse_json` (engine default: 1 MiB).
+    /// A context can tighten, but cannot raise, the engine's limit.
     pub fn with_max_json_parse_length(mut self, max_bytes: usize) -> Self {
         self.max_json_parse_length = Some(max_bytes);
         self
@@ -89,26 +216,72 @@ impl EvaluationPolicy {
 
     /// Set maximum evaluation steps before aborting.
     ///
-    /// Each AST node evaluation counts as one step. When the limit is
-    /// exceeded, the evaluator returns an `EvalError`. `None` means
-    /// unlimited (the default).
+    /// AST nodes, materialized values, string bytes, and builtin work consume
+    /// one shared budget across an entire compiled program. The engine default
+    /// is 100,000 units. A context cannot raise the engine's effective ceiling.
+    /// Exceeding the ceiling returns `ExpressionError::StepLimitExceeded`.
     ///
-    /// # Panics
+    pub fn with_max_eval_steps(mut self, limit: EvaluationStepLimit) -> Self {
+        self.max_eval_steps = Some(limit);
+        self
+    }
+
+    /// Set the maximum total content bytes in a builtin output tree.
     ///
-    /// Panics if `max == 0`. A zero step budget would abort on the very
-    /// first AST node, which is never the configuration the caller
-    /// actually wanted — this is misconfiguration at construction time
-    /// and is surfaced loudly rather than silently breaking evaluations.
-    /// Pass at least `1`, or do not call this method at all (the default
-    /// is unlimited).
-    pub fn with_max_eval_steps(mut self, max: usize) -> Self {
-        assert!(
-            max > 0,
-            "EvaluationPolicy::with_max_eval_steps(0) is misconfigured — \
-             a zero budget aborts every evaluation. Use at least 1 \
-             (or omit the call for unlimited).",
-        );
-        self.max_eval_steps = Some(max);
+    /// A raw integer, including zero, is intentionally not accepted:
+    ///
+    /// ```compile_fail
+    /// use nebula_expression::EvaluationPolicy;
+    /// let _ = EvaluationPolicy::new().with_max_builtin_output_bytes(0);
+    /// ```
+    #[must_use]
+    pub fn with_max_builtin_output_bytes(mut self, max_bytes: BuiltinOutputBound) -> Self {
+        self.builtin_output_limits.total_bytes = max_bytes
+            .get()
+            .min(BuiltinOutputLimits::DEFAULT_MAX_TOTAL_BYTES);
+        self
+    }
+
+    /// Set the maximum UTF-8 byte length of any string or key returned by a builtin.
+    ///
+    #[must_use]
+    pub fn with_max_builtin_output_string_bytes(mut self, max_bytes: BuiltinOutputBound) -> Self {
+        self.builtin_output_limits.string_bytes = max_bytes
+            .get()
+            .min(BuiltinOutputLimits::DEFAULT_MAX_STRING_BYTES);
+        self
+    }
+
+    /// Set the maximum number of direct entries in a builtin output collection.
+    ///
+    #[must_use]
+    pub fn with_max_builtin_output_collection_items(
+        mut self,
+        max_items: BuiltinOutputBound,
+    ) -> Self {
+        self.builtin_output_limits.collection_items = max_items
+            .get()
+            .min(BuiltinOutputLimits::DEFAULT_MAX_COLLECTION_ITEMS);
+        self
+    }
+
+    /// Set the maximum number of JSON values in one builtin output tree.
+    ///
+    #[must_use]
+    pub fn with_max_builtin_output_nodes(mut self, max_nodes: BuiltinOutputBound) -> Self {
+        self.builtin_output_limits.value_nodes = max_nodes
+            .get()
+            .min(BuiltinOutputLimits::DEFAULT_MAX_VALUE_NODES);
+        self
+    }
+
+    /// Set the maximum depth of one builtin output tree.
+    ///
+    #[must_use]
+    pub fn with_max_builtin_output_depth(mut self, max_depth: BuiltinOutputBound) -> Self {
+        self.builtin_output_limits.value_depth = max_depth
+            .get()
+            .min(BuiltinOutputLimits::DEFAULT_MAX_VALUE_DEPTH);
         self
     }
 
@@ -142,25 +315,46 @@ impl EvaluationPolicy {
         self.max_json_parse_length
     }
 
-    /// Maximum evaluation steps. `None` means unlimited.
+    /// Explicit work limit, or `None` to inherit the engine's default ceiling.
     pub fn max_eval_steps(&self) -> Option<usize> {
-        self.max_eval_steps
+        self.max_eval_steps.map(EvaluationStepLimit::get)
+    }
+
+    /// Finite limits applied to results from registered builtins.
+    #[must_use]
+    pub fn builtin_output_limits(&self) -> BuiltinOutputLimits {
+        self.builtin_output_limits
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::EvaluationPolicy;
+    use super::{BuiltinOutputBound, EvaluationPolicy, EvaluationStepLimit};
+
+    #[test]
+    fn builtin_output_bound_rejects_zero() {
+        assert_eq!(BuiltinOutputBound::new(0), None);
+        assert_eq!(
+            BuiltinOutputBound::new(1).map(BuiltinOutputBound::get),
+            Some(1)
+        );
+    }
 
     #[test]
     fn test_policy_builder_sets_fields() {
+        let output_bound = BuiltinOutputBound::new(64).unwrap();
         let policy = EvaluationPolicy::new()
             .with_allowed_functions(["uppercase", "length"])
             .with_denied_functions(["length"])
             .with_strict_mode(true)
             .with_strict_conversion_functions(true)
             .with_strict_numeric_comparisons(true)
-            .with_max_json_parse_length(2048);
+            .with_max_json_parse_length(2048)
+            .with_max_builtin_output_bytes(output_bound)
+            .with_max_builtin_output_string_bytes(output_bound)
+            .with_max_builtin_output_collection_items(output_bound)
+            .with_max_builtin_output_nodes(output_bound)
+            .with_max_builtin_output_depth(output_bound);
 
         assert!(policy.allowed_functions().unwrap().contains("uppercase"));
         assert!(policy.denied_functions().contains("length"));
@@ -168,19 +362,25 @@ mod tests {
         assert!(policy.strict_conversion_functions());
         assert!(policy.strict_numeric_comparisons());
         assert_eq!(policy.max_json_parse_length(), Some(2048));
+        let limits = policy.builtin_output_limits();
+        assert_eq!(limits.max_total_bytes(), 64);
+        assert_eq!(limits.max_string_bytes(), 64);
+        assert_eq!(limits.max_collection_items(), 64);
+        assert_eq!(limits.max_value_nodes(), 64);
+        assert_eq!(limits.max_value_depth(), 64);
     }
 
     #[test]
-    #[should_panic(expected = "misconfigured")]
-    fn with_max_eval_steps_rejects_zero() {
-        let _ = EvaluationPolicy::new().with_max_eval_steps(0);
+    fn evaluation_step_limit_rejects_zero() {
+        assert_eq!(EvaluationStepLimit::new(0), None);
     }
 
     #[test]
     fn with_max_eval_steps_accepts_one() {
         // Smallest legitimate budget — still useful for "every call must
         // fail-fast" testing scenarios.
-        let policy = EvaluationPolicy::new().with_max_eval_steps(1);
+        let limit = EvaluationStepLimit::new(1).unwrap();
+        let policy = EvaluationPolicy::new().with_max_eval_steps(limit);
         assert_eq!(policy.max_eval_steps(), Some(1));
     }
 }

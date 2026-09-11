@@ -1,0 +1,16 @@
+error[E0616]: field `base` of struct `ResourceMetadata` is private
+ --> tests/probes/resource_metadata_fields_are_private.rs:4:14
+  |
+4 |     metadata.base = metadata.base;
+  |              ^^^^ private field
+
+error[E0616]: field `base` of struct `ResourceMetadata` is private
+ --> tests/probes/resource_metadata_fields_are_private.rs:4:30
+  |
+4 |     metadata.base = metadata.base;
+  |                              ^^^^ private field
+  |
+help: a method `base` also exists, call it with parentheses
+  |
+4 |     metadata.base = metadata.base();
+  |                                  ++

@@ -19,7 +19,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use nebula_core::{ResourceKey, ScopeLevel, resource_key};
 use nebula_resource::error::Error;
-use nebula_resource::resource::{Provider, ResourceConfig, ResourceMetadata};
+use nebula_resource::resource::{Provider, ResourceConfig, ResourceMetadataDraft};
 use nebula_resource::topology::{
     AdmissionPhase, InstanceStore, ReturnOutcome, Ticket, Topology, Unavailable,
 };
@@ -30,9 +30,8 @@ use tokio::sync::Semaphore;
 
 // ─── A minimal resource to parameterize the custom topology ──────────────────
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, nebula_schema::Schema)]
 struct PermitCfg;
-nebula_resource::impl_empty_has_schema!(PermitCfg);
 impl ResourceConfig for PermitCfg {
     fn fingerprint(&self) -> u64 {
         0
@@ -60,8 +59,8 @@ impl Provider for PermitRes {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 

@@ -17,11 +17,10 @@
 //! [`CredentialRegistry`]: nebula_credential::CredentialRegistry
 
 use nebula_credential::{
-    Credential, CredentialContext, CredentialMetadata, CredentialRegistry, RegisterError,
+    Credential, CredentialContext, CredentialMetadataDraft, CredentialRegistry, RegisterError,
     SecretString, contract::plugin_capability_report, error::CredentialError,
-    resolve::ResolveResult, scheme::SecretToken,
+    resolve::StaticResolveResult, scheme::SecretToken,
 };
-use nebula_schema::FieldValues;
 
 const SHARED_KEY: &str = "shared.duplicate";
 
@@ -37,15 +36,13 @@ impl Credential for CredA {
 
     const KEY: &'static str = SHARED_KEY;
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::builder()
-            .key(nebula_core::credential_key!("shared.duplicate"))
-            .name("CredA")
-            .description("first credential — wins on collision")
-            .schema(nebula_credential::schema_of::<Self::Properties>())
-            .pattern(nebula_credential::AuthPattern::SecretToken)
-            .build()
-            .expect("CredA metadata is valid")
+    fn metadata() -> CredentialMetadataDraft {
+        CredentialMetadataDraft::new(
+            nebula_core::credential_key!("shared.duplicate"),
+            nebula_credential::metadata_name!("CredA"),
+            "first credential — wins on collision",
+            nebula_credential::AuthPattern::SecretToken,
+        )
     }
 
     fn project(state: &SecretToken) -> SecretToken {
@@ -53,10 +50,10 @@ impl Credential for CredA {
     }
 
     async fn resolve(
-        _values: &FieldValues,
+        _properties: &(),
         _ctx: &CredentialContext,
-    ) -> Result<ResolveResult<SecretToken, ()>, CredentialError> {
-        Ok(ResolveResult::Complete(SecretToken::new(
+    ) -> Result<StaticResolveResult<SecretToken>, CredentialError> {
+        Ok(StaticResolveResult::Complete(SecretToken::new(
             SecretString::new("cred-a-token"),
         )))
     }
@@ -91,15 +88,13 @@ impl Credential for CredB {
 
     const KEY: &'static str = SHARED_KEY;
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::builder()
-            .key(nebula_core::credential_key!("shared.duplicate"))
-            .name("CredB")
-            .description("second credential — rejected on collision")
-            .schema(nebula_credential::schema_of::<Self::Properties>())
-            .pattern(nebula_credential::AuthPattern::SecretToken)
-            .build()
-            .expect("CredB metadata is valid")
+    fn metadata() -> CredentialMetadataDraft {
+        CredentialMetadataDraft::new(
+            nebula_core::credential_key!("shared.duplicate"),
+            nebula_credential::metadata_name!("CredB"),
+            "second credential — rejected on collision",
+            nebula_credential::AuthPattern::SecretToken,
+        )
     }
 
     fn project(state: &SecretToken) -> SecretToken {
@@ -107,10 +102,10 @@ impl Credential for CredB {
     }
 
     async fn resolve(
-        _values: &FieldValues,
+        _properties: &(),
         _ctx: &CredentialContext,
-    ) -> Result<ResolveResult<SecretToken, ()>, CredentialError> {
-        Ok(ResolveResult::Complete(SecretToken::new(
+    ) -> Result<StaticResolveResult<SecretToken>, CredentialError> {
+        Ok(StaticResolveResult::Complete(SecretToken::new(
             SecretString::new("cred-b-token"),
         )))
     }

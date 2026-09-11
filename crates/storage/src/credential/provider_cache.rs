@@ -49,7 +49,7 @@ use nebula_credential::provider::{
 /// interpret `version` / `field` differently (Vault treats a missing
 /// `version` as "latest", distinct from any pinned version), so they cannot
 /// collapse safely.
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Clone, Hash, PartialEq, Eq)]
 struct CacheKey {
     provider: ProviderKind,
     path: String,
@@ -316,7 +316,7 @@ impl ExternalProvider for ProviderCacheLayer {
                 tracing::debug!(
                     target: "nebula_storage::provider_cache",
                     provider = %self.inner.provider_name(),
-                    path = %reference.path,
+                    cache_outcome = "hit",
                     "cache hit"
                 );
                 return Ok((*arc).clone());
@@ -339,7 +339,7 @@ impl ExternalProvider for ProviderCacheLayer {
             tracing::debug!(
                 target: "nebula_storage::provider_cache",
                 provider = %provider_label,
-                path = %reference.path,
+                cache_outcome = "miss",
                 "cache miss; calling inner"
             );
             let inner_calls = &self.inner_calls;
@@ -409,6 +409,15 @@ impl ProviderCacheLayer {
             })
             .collect()
     }
+
+    async fn invalidate_lease_entries(&self, lease_id: &str) -> usize {
+        let cache_keys = self.cache_keys_for_lease(lease_id);
+        let invalidated_entries = cache_keys.len();
+        for key in cache_keys {
+            self.cache.invalidate(&key).await;
+        }
+        invalidated_entries
+    }
 }
 
 impl LeasedProvider for ProviderCacheLayer {
@@ -438,14 +447,12 @@ impl LeasedProvider for ProviderCacheLayer {
                 ));
             };
             let renewed = inner_leased.renew(lease).await?;
-            for key in self.cache_keys_for_lease(&lease.lease_id) {
-                self.cache.invalidate(&key).await;
-            }
+            let invalidated_entries = self.invalidate_lease_entries(&lease.lease_id).await;
             tracing::debug!(
                 target: "nebula_storage::provider_cache",
                 provider = %self.inner.provider_name(),
-                lease_id = %lease.lease_id,
-                lease_provider = %lease.provider,
+                lease_operation = "renew",
+                invalidated_entries,
                 "lease renewed; cache invalidated for matching entries"
             );
             Ok(renewed)
@@ -462,9 +469,7 @@ impl LeasedProvider for ProviderCacheLayer {
     /// failure.
     fn revoke<'a>(&'a self, lease: &'a LeaseHandle) -> ProviderFuture<'a> {
         ProviderFuture::new(async move {
-            for key in self.cache_keys_for_lease(&lease.lease_id) {
-                self.cache.invalidate(&key).await;
-            }
+            let invalidated_entries = self.invalidate_lease_entries(&lease.lease_id).await;
             let Some(inner_leased) = self.inner.lease_renewal() else {
                 return Err(ProviderError::Backend(
                     "ProviderCacheLayer::revoke: wrapped provider is not leased"
@@ -475,8 +480,8 @@ impl LeasedProvider for ProviderCacheLayer {
             tracing::debug!(
                 target: "nebula_storage::provider_cache",
                 provider = %self.inner.provider_name(),
-                lease_id = %lease.lease_id,
-                lease_provider = %lease.provider,
+                lease_operation = "revoke",
+                invalidated_entries,
                 "cache invalidated for matching entries; forwarding revoke to inner"
             );
             inner_leased.revoke(lease).await
@@ -492,12 +497,63 @@ mod tests {
         SecretString,
         provider::{LeaseHandle, ProviderError, ProviderKind, ProviderResolution},
     };
+    use tracing::instrument::WithSubscriber as _;
 
     use super::*;
 
     // ────────────────────────────────────────────────────────────────────
     // Test scaffolding
     // ────────────────────────────────────────────────────────────────────
+
+    #[derive(Clone, Default)]
+    struct EventCapture(Arc<Mutex<Vec<String>>>);
+
+    impl EventCapture {
+        fn captured(&self) -> String {
+            self.0
+                .lock()
+                .expect("event capture lock poisoned")
+                .join("\n")
+        }
+    }
+
+    impl tracing::Subscriber for EventCapture {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            struct Fields(String);
+
+            impl tracing::field::Visit for Fields {
+                fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn fmt::Debug) {
+                    use fmt::Write as _;
+
+                    write!(&mut self.0, "{}={value:?};", field.name())
+                        .expect("writing to a String cannot fail");
+                }
+            }
+
+            let mut fields = Fields(String::new());
+            event.record(&mut fields);
+            self.0
+                .lock()
+                .expect("event capture lock poisoned")
+                .push(fields.0);
+        }
+
+        fn enter(&self, _: &tracing::span::Id) {}
+
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
 
     /// One step of mock behaviour.
     enum Step {
@@ -972,7 +1028,6 @@ mod tests {
     /// uses the configured `lease_id` (so multiple instances can be
     /// distinguished), and the renew / revoke paths track invocation
     /// counts so tests can assert the cache layer actually delegated.
-    #[derive(Debug)]
     struct LeasedMock {
         name: &'static str,
         lease_id: String,
@@ -980,6 +1035,20 @@ mod tests {
         resolve_calls: AtomicU64,
         renew_calls: AtomicU64,
         revoke_calls: AtomicU64,
+    }
+
+    impl fmt::Debug for LeasedMock {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter
+                .debug_struct("LeasedMock")
+                .field("name", &self.name)
+                .field("lease_id", &"[REDACTED]")
+                .field("lease_ttl", &self.lease_ttl)
+                .field("resolve_calls", &self.resolve_calls.load(Ordering::Relaxed))
+                .field("renew_calls", &self.renew_calls.load(Ordering::Relaxed))
+                .field("revoke_calls", &self.revoke_calls.load(Ordering::Relaxed))
+                .finish()
+        }
     }
 
     impl LeasedMock {
@@ -1064,6 +1133,70 @@ mod tests {
             self.revoke_calls.fetch_add(1, Ordering::Relaxed);
             ProviderFuture::ready(Ok(ProviderResolution::empty()))
         }
+    }
+
+    #[tokio::test]
+    async fn cache_observability_redacts_provider_coordinates_and_lease_identifiers() {
+        const REFERENCE_CANARY: &str = "reference-diagnostic-canary";
+        const LEASE_CANARY: &str = "lease-diagnostic-canary";
+
+        let inner = LeasedMock::new("vault-stub", LEASE_CANARY, Duration::from_mins(1));
+        let layer = ProviderCacheLayer::new(
+            Arc::clone(&inner) as Arc<dyn ExternalProvider>,
+            ProviderCacheConfig::default(),
+        );
+        let reference = refer(REFERENCE_CANARY);
+        let capture = EventCapture::default();
+
+        let _ = layer
+            .resolve(&reference)
+            .with_subscriber(capture.clone())
+            .await
+            .expect("initial resolve");
+        let _ = layer
+            .resolve(&reference)
+            .with_subscriber(capture.clone())
+            .await
+            .expect("cached resolve");
+
+        let leased = layer
+            .lease_renewal()
+            .expect("cache layer advertises lease capability");
+        let _ = leased
+            .renew(&inner.issued_lease())
+            .with_subscriber(capture.clone())
+            .await
+            .expect("renew succeeds");
+
+        let _ = layer
+            .resolve(&reference)
+            .with_subscriber(capture.clone())
+            .await
+            .expect("resolve after renewal");
+        let _ = leased
+            .revoke(&inner.issued_lease())
+            .with_subscriber(capture.clone())
+            .await
+            .expect("revoke succeeds");
+
+        let captured = capture.captured();
+        assert!(!captured.is_empty(), "redaction gate must capture events");
+        assert!(
+            !captured.contains(REFERENCE_CANARY),
+            "provider reference leaked into tracing output: {captured}"
+        );
+        assert!(
+            !captured.contains(LEASE_CANARY),
+            "lease identifier leaked into tracing output: {captured}"
+        );
+        assert!(captured.contains("cache_outcome=\"hit\""), "{captured}");
+        assert!(captured.contains("cache_outcome=\"miss\""), "{captured}");
+        assert!(captured.contains("lease_operation=\"renew\""), "{captured}");
+        assert!(
+            captured.contains("lease_operation=\"revoke\""),
+            "{captured}"
+        );
+        assert!(captured.contains("invalidated_entries=1"), "{captured}");
     }
 
     #[tokio::test]

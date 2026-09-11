@@ -35,12 +35,14 @@
 
 use std::marker::PhantomData;
 
-use nebula_action::Action;
-use nebula_credential::{
-    AuthPattern, AuthScheme, Credential, CredentialContext, CredentialMetadata,
-    error::CredentialError, resolve::ResolveResult,
+use nebula_action::{
+    Action, ActionContext, ActionError, ActionFactory, ActionResult, InstanceFactory,
+    StatelessAction,
 };
-use nebula_schema::FieldValues;
+use nebula_credential::{
+    AuthPattern, AuthScheme, Credential, CredentialContext, CredentialMetadataDraft,
+    error::CredentialError, resolve::StaticResolveResult,
+};
 use serde::{Deserialize, Serialize};
 
 //.1 - the crate author declares the sealed module manually
@@ -94,14 +96,19 @@ pub trait LocalServiceBearer: LocalService {}
 pub struct LocalCredential;
 
 impl Credential for LocalCredential {
-    type Properties = FieldValues;
+    type Properties = serde_json::Value;
     type Scheme = LocalBearerScheme;
     type State = LocalState;
 
     const KEY: &'static str = "local";
 
-    fn metadata() -> CredentialMetadata {
-        unimplemented!("fixture - never invoked at runtime")
+    fn metadata() -> CredentialMetadataDraft {
+        CredentialMetadataDraft::new(
+            nebula_core::credential_key!("local"),
+            nebula_action::metadata_name!("Local credential"),
+            "Local bearer capability fixture",
+            AuthPattern::SecretToken,
+        )
     }
 
     fn project(state: &LocalState) -> LocalBearerScheme {
@@ -111,9 +118,9 @@ impl Credential for LocalCredential {
     }
 
     async fn resolve(
-        _values: &FieldValues,
+        _properties: &serde_json::Value,
         _ctx: &CredentialContext,
-    ) -> Result<ResolveResult<LocalState, ()>, CredentialError> {
+    ) -> Result<StaticResolveResult<LocalState>, CredentialError> {
         unimplemented!("fixture - never invoked at runtime")
     }
 }
@@ -160,6 +167,16 @@ pub struct LocalBearerAction {
     pub bearer: CredentialRef<dyn LocalServiceBearer>,
 }
 
+impl StatelessAction for LocalBearerAction {
+    async fn execute(
+        &self,
+        input: serde_json::Value,
+        _: &(impl ActionContext + ?Sized),
+    ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+        Ok(ActionResult::success(input))
+    }
+}
+
 // --- Tests -----------------------------------------------------------------
 
 #[test]
@@ -168,12 +185,14 @@ fn action_attr_with_derive_pattern2_compiles_and_metadata_roundtrips() {
     // If `dyn LocalServiceBearer` had reached the derive unrewritten,
     // this `Default::default()` call would not compile (E0191 on the
     // `dyn` projection). The fact that it compiles is the proof.
-    let _action = LocalBearerAction {
+    let action = LocalBearerAction {
         bearer: CredentialRef::default(),
     };
-    let meta = LocalBearerAction::metadata();
-    assert_eq!(meta.base.key.as_str(), "local.bearer.fetch");
-    assert_eq!(meta.base.name, "Fetch Local Bearer");
+    let factory = InstanceFactory::new(LocalBearerAction::metadata(), action)
+        .expect("valid test catalog definition");
+    let meta = factory.metadata();
+    assert_eq!(meta.base().key().as_str(), "local.bearer.fetch");
+    assert_eq!(meta.base().name().to_owned(), "Fetch Local Bearer");
 }
 
 #[test]

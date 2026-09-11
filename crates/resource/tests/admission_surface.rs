@@ -15,7 +15,7 @@ use nebula_resource::topology::{pooled::PoolProvider, resident::ResidentProvider
 use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResourceContext, ScopeLevel, SlotIdentity,
     error::{Error, ErrorKind},
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
     topology::{AdmissionPhase, Load, Pooled, Resident, Unavailable},
 };
 use tokio_util::sync::CancellationToken;
@@ -32,10 +32,8 @@ fn ctx() -> ResourceContext {
 
 // ─── Minimal pool resource ───────────────────────────────────────────────────
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, nebula_schema::Schema)]
 struct MinCfg;
-
-nebula_schema::impl_empty_has_schema!(MinCfg);
 
 impl ResourceConfig for MinCfg {
     fn fingerprint(&self) -> u64 {
@@ -62,8 +60,8 @@ impl Provider for TinyPool {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 
@@ -90,8 +88,8 @@ impl Provider for SimpleResident {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 

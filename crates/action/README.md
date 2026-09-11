@@ -30,7 +30,7 @@ pub trait Action: Sized + Send + Sync + 'static {
     type Input:  HasSchema + DeserializeOwned + Send + Sync;
     type Output: HasSchema + Serialize         + Send + Sync;
 
-    fn metadata()       -> &'static ActionMetadata;
+    fn metadata()       -> ActionMetadataDraft;
     fn dependencies()   -> &'static Dependencies;  // slot-binding metadata
 }
 // No schema method — the `Input`/`Output: HasSchema` bound is the single
@@ -39,6 +39,37 @@ pub trait Action: Sized + Send + Sync + 'static {
 ```
 
 `Action` is **not object-safe** — `dyn Action` will not compile. Engine dispatch goes through `ActionFactory` + `ActionHandle` (see below).
+
+Catalog admission is fallible: `HasSchema::schema()` and `schema_of::<T>()`
+return `Result<ValidSchema, ValidationReport>`. Structural factory constructors
+derive both schemas, stamp the action kind, validate the package once, and retain
+the resulting immutable metadata. `ActionFactory::metadata()` returns the shared
+`Arc<ActionMetadata>` by reference. Propagate factory construction errors before
+publishing a catalog entry.
+
+Typed input and output roots retain their serde shape. Unit values serialize as
+`null`, empty-braced records as `{}`, and primitives have known scalar schemas.
+Factories do not turn supplied objects into unit values or parse literal strings
+as expressions. `serde_json::Value` declares an intentionally unknown root.
+
+Erased handles accept `ActionInput::Raw(Value)` or `ActionInput::Resolved(ResolvedValues)`.
+Raw ingress uses the admitted schema's `values_from_wire`, `validate`, and no-engine
+`resolve_data` path. Resolved input must match the complete declared schema, including
+rules and preparation metadata; adapters consume that proof without preparing it again.
+Neither variant exposes its payload through `Debug`.
+
+Aliases, transforms, rules, and secret promotion belong to schema preparation.
+Typed decoding uses `into_typed_exposing_secrets` at this trusted action boundary.
+Control adapters pass the declared Rust input type to `ControlAction::evaluate` and
+serialize only `ControlOutcome<A::Output>`. Raw JSON handler entrypoints remain literal-only. Public input errors
+contain fixed diagnostics, never schema payloads or serde causes.
+
+Names use checked `MetadataName` values (`metadata_name!("Echo")` for static
+definitions). Read identity and lifecycle through `base.key()`, `base.name()`,
+`base.version()`, `base.schema()`, `base.maturity()`, and `base.deprecation()`.
+Use checked `set_maturity` for lifecycle changes; a deprecation notice takes
+precedence regardless of setter order. Schema compatibility remains conservative
+equality, separate from expression-edge assignability.
 
 ### Sub-traits — execution shapes inherit `<Self as Action>::Input/Output`
 
@@ -142,7 +173,7 @@ Because `Action: Sized` is not object-safe, the engine's registry holds `Arc<dyn
 | Handle trait | Mirrors |
 |---|---|
 | `StatelessHandle` | `StatelessHandler` (legacy) |
-| `StatefulHandle`  | `StatefulHandler` |
+| `StatefulHandle`  | `StatefulActionAdapter<A>` |
 | `TriggerHandle`   | `TriggerHandler` |
 | `ResourceHandle`  | `ResourceHandler` |
 | `ControlHandle`   | dyn control flow |
@@ -176,7 +207,7 @@ Generic factories (`GenericStatelessFactory<A>`, `GenericStatefulFactory<A>`, �
 The v4 surface is a hard break per `feedback_no_shims.md` / `feedback_hard_breaking_changes.md`. There is no automated codemod; migrate by hand:
 
 1. **Split form data off `Self`.** Move `#[field]`-bearing fields off the action struct into a `<Name>Input: HasSchema + Deserialize` companion struct. Add `type Input = <Name>Input` to the `Action` impl (or `input = <Name>Input` to the derive's struct attribute).
-2. **Drop `metadata()` boilerplate from `Self`.** The derive emits a `OnceLock` `metadata()` from the `#[action(key, version, …)]` arguments. Delete the manual `impl Action::metadata` block.
+2. **Drop `metadata()` boilerplate from `Self`.** The derive emits fallible `metadata()` from the `#[action(key, version, …)]` arguments and the associated input/output schemas. Generic factories cache the admission result. Delete the manual `impl Action::metadata` block.
 3. **Replace `dependencies()` macros with field attributes.** Old: a separate `DeclaresDependencies` impl listing `ResourceKey`s and `CredentialKey`s. New: `#[resource(key = "…")]` / `#[credential(key = "…")]` per field on the struct.
 4. **Update sub-trait method signatures** to take `Self::Input` explicitly: `execute(&self, input: SendTelegramInput, ctx)` not `execute(&self, ctx)`.
 5. **Replace `dyn Action` with `Arc<dyn ActionFactory>`** anywhere the engine or plugin loader stored a dynamic action handle. Existing transports / SDK harnesses that wrap `Arc<dyn StatelessHandler>` continue to work — four production paths intentionally stay on the legacy handler surface: webhook routing, plugin discovery, SDK runtime, EventSource adapter. The original architectural rationale survives in `git log` (commits up to the retire-AI-Factory pass).

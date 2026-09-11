@@ -36,11 +36,13 @@ Actions, Resources, and Credentials need a versioned distribution unit — one t
   `WorkflowVersionId` and `WorkflowDefinition` into an opaque
   `ExecutablePlanRevision`. The compiler selects the registry's own exact plugin set/flavor,
   validates the closed Graph-v1 contract, and leaves resource/credential selectors abstract.
-  New plans use compiler version 3 and canonical hash version 2 inside the unchanged v1
-  record framing. They preserve compiler 2's intrinsic error-edge semantics and pin each
-  action's explicit effect declaration. Compiler 1/2 records retain their original bytes,
-  hashes, and integrity decoders; current runtime admission rejects their absent effect
-  declarations. An undeclared factory cannot produce a new durable plan.
+  New plans use compiler version 4 and canonical hash version 2 inside the unchanged v1
+  record framing. They include intrinsic error-edge semantics and pin each action's explicit
+  effect declaration. Compiler 1/hash 1 and compiler 3/hash 2 records retain their original
+  bytes, hashes, and schema-v1 interpretation; other compiler/hash tuples are rejected.
+  Compiler 4 admits the versioned scalar schema envelope. Exact registry comparison accepts
+  compiler 3 and 4 but rejects absent effect declarations. An undeclared factory cannot
+  produce a new durable plan.
 - `ExecutablePlanRevision` / `RecordedExecutablePlanRevisionV1` — immutable checked plan and its
   persistable v1 projection. A recorded value becomes trusted only through the fallible integrity
   check; `validate_against` separately proves exact compatibility with a frozen registry.
@@ -127,6 +129,42 @@ These methods have no default-empty compatibility behavior. Custom implementatio
 their exact declared contract. Generic first-party factories cache the author declaration, and
 `ResolvedPlugin::from` reads each projection once; freeze, compilation, and compatibility checks
 consume only that immutable snapshot.
+
+Metadata and `HasSchema` construction are fallible. Registry construction propagates typed
+metadata admission errors without substituting an empty schema or partial component snapshot.
+Intrinsic schema construction failures also remain typed causes of compilation and recorded-plan
+integrity errors.
+
+Recorded literal JSON is converted with `AuthoredValue::from_data`, so template-looking strings
+and `$expr`-shaped objects stay data. Only the record's explicit expression and template variants
+create expression nodes. Schema validation consumes the owned authored tree; the compiler still
+grants neither runtime admission nor a resolved-value proof.
+Literal secret checks include every read alias, even aliases shadowed by canonical keys: the
+persisted record retains raw JSON, so preparation discarding a shadowed alias cannot erase its
+plaintext from that record.
+
+Persisted plan IDs remain independent of the authored tree wire format. Both existing plan hash
+domains retain their original framing and use `canonical_json_v1` on the raw recorded JSON
+projection. Schema canonicality checks use that same fixed JSON-v1 encoder; neither path serializes
+an authored tree or changes existing recorded identity goldens.
+
+Schema envelopes are shape-specific: Record/Union/Any remain schema wire version 1;
+Scalar uses envelope version 2 with schema-owned scalar descriptor version 1. Old epochs
+cannot admit a scalar even if its outer envelope is mislabeled as version 1. `()` and unit
+structs now describe null, not `{}`; recompilation therefore records a distinct contract and
+plan identity. A legacy empty Record is never reinterpreted as null on load. Logical
+`PluginSetId` and flavor hashing remain unchanged; deployment provenance and runtime-contract
+pins still belong to the composition root.
+
+Scalar node inputs require an empty named-parameter map, which preserves the incoming root
+payload. Flow edges use whole-schema assignability. Whole-output references into named scalar
+fields remain unsupported without a schema-to-field assignability proof. New trigger plans
+validate and retain the actual JSON root; only legacy plan checking retains null-to-object
+normalization. Current node compilation and recorded-plan checking admit root rules only
+when schema's static pass proves them against the complete parameter object. Pending root
+checks, reference-bearing parameter objects, and passthrough root rules are rejected;
+compiler epochs 1 and 3 retain their blanket node root-rule rejection. Compilation never
+completes deferred root rules or grants runtime proofs.
 
 ## Maturity
 

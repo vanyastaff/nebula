@@ -46,12 +46,10 @@ impl CredentialService {
                 key: credential_key.to_owned(),
             });
         }
-        self.ops.validate(credential_key, &props)?;
-        let values = self.ops.ingest(credential_key, &props)?;
-        let ctx = Self::owner_context(scope);
+        let ctx = self.owner_context(scope);
         let outcome = self
             .ops
-            .acquire(credential_key, &values, &ctx, &self.pending)
+            .acquire(credential_key, props, &ctx, &self.pending)
             .await?;
         self.finish_acquire(scope, credential_key, outcome).await
     }
@@ -100,15 +98,10 @@ impl CredentialService {
                 capability: "continue",
             });
         }
-        // `PendingToken` has no public string constructor; its
-        // documented wire form is a bare JSON string (see its
-        // serde round-trip contract), so reconstruct the client-returned
-        // token through serde — the only public inbound path.
-        let token: PendingToken = serde_json::from_value(Value::String(pending_token.to_owned()))
-            .map_err(|_| {
+        let token = PendingToken::parse(pending_token).ok_or_else(|| {
             CredentialServiceError::validation("/pending_token", "credential.pending_token_invalid")
         })?;
-        let ctx = Self::owner_context(scope);
+        let ctx = self.owner_context(scope);
         let outcome = self
             .ops
             .continue_resolve(credential_key, &token, &user_input, &ctx, &self.pending)

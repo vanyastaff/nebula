@@ -2,7 +2,22 @@
 
 use std::fmt::Display;
 
-use crate::foundation::ValidationError;
+use crate::foundation::{Validate, ValidationError};
+
+/// Invalid configuration supplied to a numeric or collection range validator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum RangeConfigError {
+    /// A bound is not comparable, such as an IEEE-754 NaN value.
+    #[error("range bounds must be comparable")]
+    Incomparable,
+    /// An inclusive range has a minimum greater than its maximum.
+    #[error("inclusive range requires min <= max")]
+    MinGreaterThanMax,
+    /// An exclusive range has a minimum greater than or equal to its maximum.
+    #[error("exclusive range requires min < max")]
+    MinNotLessThanMax,
+}
 
 crate::validator! {
     /// Validates that a value is at least a minimum.
@@ -30,15 +45,42 @@ crate::validator! {
     fn max(value: T);
 }
 
-crate::validator! {
-    /// Validates that a value is within an inclusive range.
-    #[derive(Copy, PartialEq, Eq, Hash)]
-    pub InRange<T: PartialOrd + Display + Copy> { min: T, max: T } for T;
-    rule(self, input) { *input >= self.min && *input <= self.max }
-    error(self, input) {
-        ValidationError::out_of_range("", self.min, self.max, *input)
+/// Validates that a value is within an inclusive range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct InRange<T> {
+    min: T,
+    max: T,
+}
+
+impl<T: PartialOrd + Display + Copy> Validate<T> for InRange<T> {
+    fn validate(&self, input: &T) -> Result<(), ValidationError> {
+        if *input >= self.min && *input <= self.max {
+            Ok(())
+        } else {
+            Err(ValidationError::out_of_range(
+                "", self.min, self.max, *input,
+            ))
+        }
     }
-    fn in_range(min: T, max: T);
+}
+
+/// Creates an inclusive range validator after checking its bounds.
+///
+/// Equal bounds are valid and describe a range containing one value.
+///
+/// # Errors
+///
+/// Returns [`RangeConfigError::Incomparable`] for unordered bounds and
+/// [`RangeConfigError::MinGreaterThanMax`] when `min > max`.
+pub fn in_range<T: PartialOrd + Display + Copy>(
+    min: T,
+    max: T,
+) -> Result<InRange<T>, RangeConfigError> {
+    match min.partial_cmp(&max) {
+        Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal) => Ok(InRange { min, max }),
+        Some(std::cmp::Ordering::Greater) => Err(RangeConfigError::MinGreaterThanMax),
+        None => Err(RangeConfigError::Incomparable),
+    }
 }
 
 crate::validator! {
@@ -97,103 +139,49 @@ crate::validator! {
     fn less_than(bound: T);
 }
 
-crate::validator! {
-    /// Validates that a value is within an exclusive range (min < value < max).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use nebula_validator::validators::exclusive_range;
-    /// use nebula_validator::foundation::Validate;
-    ///
-    /// let validator = exclusive_range(0, 10);
-    /// assert!(validator.validate(&5).is_ok());
-    /// assert!(validator.validate(&0).is_err()); // Boundary not included
-    /// assert!(validator.validate(&10).is_err()); // Boundary not included
-    /// ```
-    #[derive(Copy, PartialEq, Eq, Hash)]
-    pub ExclusiveRange<T: PartialOrd + Display + Copy> { min: T, max: T } for T;
-    rule(self, input) { *input > self.min && *input < self.max }
-    error(self, input) {
-        ValidationError::new(
-            "exclusive_range",
-            format!(
-                "Value must be between {} and {} (exclusive)",
-                self.min, self.max
-            ),
-        )
-        .with_param("min", self.min.to_string())
-        .with_param("max", self.max.to_string())
-        .with_param("actual", input.to_string())
-    }
-    fn exclusive_range(min: T, max: T);
+/// Validates that a value is within an exclusive range (`min < value < max`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ExclusiveRange<T> {
+    min: T,
+    max: T,
 }
 
-// ============================================================================
-// FALLIBLE CONSTRUCTORS
-// ============================================================================
+impl<T: PartialOrd + Display + Copy> Validate<T> for ExclusiveRange<T> {
+    fn validate(&self, input: &T) -> Result<(), ValidationError> {
+        if *input > self.min && *input < self.max {
+            Ok(())
+        } else {
+            Err(ValidationError::new(
+                "exclusive_range",
+                format!(
+                    "Value must be between {} and {} (exclusive)",
+                    self.min, self.max
+                ),
+            )
+            .with_param("min", self.min.to_string())
+            .with_param("max", self.max.to_string())
+            .with_param("actual", input.to_string()))
+        }
+    }
+}
 
-/// Creates an [`InRange`] validator, returning an error if `min > max`.
-///
-/// Prefer this over [`in_range`] when bounds come from user input or config.
+/// Creates an exclusive range validator after checking its bounds.
 ///
 /// # Errors
 ///
-/// Returns [`ValidationError`] with code `"invalid_range"` if `min > max`.
-///
-/// # Examples
-///
-/// ```
-/// use nebula_validator::validators::try_in_range;
-///
-/// assert!(try_in_range(1, 10).is_ok());
-/// assert!(try_in_range(10, 1).is_err());
-/// ```
-pub fn try_in_range<T: PartialOrd + Display + Copy>(
+/// Returns [`RangeConfigError::Incomparable`] for unordered bounds and
+/// [`RangeConfigError::MinNotLessThanMax`] when `min >= max`.
+pub fn exclusive_range<T: PartialOrd + Display + Copy>(
     min: T,
     max: T,
-) -> Result<InRange<T>, ValidationError> {
-    if min.partial_cmp(&max).is_none_or(std::cmp::Ordering::is_gt) {
-        return Err(ValidationError::new(
-            "invalid_range",
-            format!("in_range requires min <= max (got min={min}, max={max})"),
-        )
-        .with_param("min", min.to_string())
-        .with_param("max", max.to_string()));
+) -> Result<ExclusiveRange<T>, RangeConfigError> {
+    match min.partial_cmp(&max) {
+        Some(std::cmp::Ordering::Less) => Ok(ExclusiveRange { min, max }),
+        Some(std::cmp::Ordering::Equal | std::cmp::Ordering::Greater) => {
+            Err(RangeConfigError::MinNotLessThanMax)
+        },
+        None => Err(RangeConfigError::Incomparable),
     }
-    Ok(InRange { min, max })
-}
-
-/// Creates an [`ExclusiveRange`] validator, returning an error if `min >= max`.
-///
-/// Prefer this over [`exclusive_range`] when bounds come from user input or config.
-///
-/// # Errors
-///
-/// Returns [`ValidationError`] with code `"invalid_range"` if `min >= max`.
-///
-/// # Examples
-///
-/// ```
-/// use nebula_validator::validators::try_exclusive_range;
-///
-/// assert!(try_exclusive_range(0, 10).is_ok());
-/// assert!(try_exclusive_range(10, 10).is_err()); // min must be < max for exclusive
-/// assert!(try_exclusive_range(10, 1).is_err());
-/// ```
-pub fn try_exclusive_range<T: PartialOrd + Display + Copy>(
-    min: T,
-    max: T,
-) -> Result<ExclusiveRange<T>, ValidationError> {
-    if !min.partial_cmp(&max).is_some_and(std::cmp::Ordering::is_lt) {
-        return Err(ValidationError::new(
-            "invalid_range",
-            format!("exclusive_range requires min < max (got min={min}, max={max})"),
-        )
-        .with_param("min", min.to_string())
-        .with_param("max", max.to_string()));
-    }
-    Ok(ExclusiveRange { min, max })
 }
 
 // ============================================================================
@@ -240,80 +228,80 @@ pub fn max_i64(value: i64) -> Max<i64> {
 /// ```
 /// use nebula_validator::{foundation::Validate, validators::in_range_i64};
 ///
-/// assert!(in_range_i64(1, 100).validate(&50_i64).is_ok());
-/// assert!(in_range_i64(1, 100).validate(&0_i64).is_err());
+/// let validator = in_range_i64(1, 100)?;
+/// assert!(validator.validate(&50_i64).is_ok());
+/// assert!(validator.validate(&0_i64).is_err());
+/// # Ok::<(), nebula_validator::validators::RangeConfigError>(())
 /// ```
-#[must_use]
-pub fn in_range_i64(min_val: i64, max_val: i64) -> InRange<i64> {
+pub fn in_range_i64(min_val: i64, max_val: i64) -> Result<InRange<i64>, RangeConfigError> {
     in_range(min_val, max_val)
 }
 
 /// Creates a [`Min`] validator for `f64` values (no turbofish needed).
 ///
-/// # Panics
+/// # Errors
 ///
-/// Debug-panics if `value` is NaN (a NaN bound creates an always-failing validator).
+/// Returns [`RangeConfigError::Incomparable`] if `value` is NaN.
 ///
 /// # Examples
 ///
 /// ```
 /// use nebula_validator::{foundation::Validate, validators::min_f64};
 ///
-/// assert!(min_f64(0.0).validate(&1.5_f64).is_ok());
-/// assert!(min_f64(0.0).validate(&-1.0_f64).is_err());
+/// let validator = min_f64(0.0)?;
+/// assert!(validator.validate(&1.5_f64).is_ok());
+/// assert!(validator.validate(&-1.0_f64).is_err());
+/// # Ok::<(), nebula_validator::validators::RangeConfigError>(())
 /// ```
-#[must_use]
-pub fn min_f64(value: f64) -> Min<f64> {
-    debug_assert!(
-        !value.is_nan(),
-        "min_f64: NaN bound creates an always-failing validator"
-    );
-    min(value)
+pub fn min_f64(value: f64) -> Result<Min<f64>, RangeConfigError> {
+    if value.is_nan() {
+        Err(RangeConfigError::Incomparable)
+    } else {
+        Ok(min(value))
+    }
 }
 
 /// Creates a [`Max`] validator for `f64` values (no turbofish needed).
 ///
-/// # Panics
+/// # Errors
 ///
-/// Debug-panics if `value` is NaN (a NaN bound creates an always-failing validator).
+/// Returns [`RangeConfigError::Incomparable`] if `value` is NaN.
 ///
 /// # Examples
 ///
 /// ```
 /// use nebula_validator::{foundation::Validate, validators::max_f64};
 ///
-/// assert!(max_f64(100.0).validate(&50.5_f64).is_ok());
-/// assert!(max_f64(100.0).validate(&200.0_f64).is_err());
+/// let validator = max_f64(100.0)?;
+/// assert!(validator.validate(&50.5_f64).is_ok());
+/// assert!(validator.validate(&200.0_f64).is_err());
+/// # Ok::<(), nebula_validator::validators::RangeConfigError>(())
 /// ```
-#[must_use]
-pub fn max_f64(value: f64) -> Max<f64> {
-    debug_assert!(
-        !value.is_nan(),
-        "max_f64: NaN bound creates an always-failing validator"
-    );
-    max(value)
+pub fn max_f64(value: f64) -> Result<Max<f64>, RangeConfigError> {
+    if value.is_nan() {
+        Err(RangeConfigError::Incomparable)
+    } else {
+        Ok(max(value))
+    }
 }
 
 /// Creates an [`InRange`] validator for `f64` values (no turbofish needed).
 ///
-/// # Panics
+/// # Errors
 ///
-/// Debug-panics if either bound is NaN.
+/// Returns [`RangeConfigError`] if either bound is NaN or the bounds are inverted.
 ///
 /// # Examples
 ///
 /// ```
 /// use nebula_validator::{foundation::Validate, validators::in_range_f64};
 ///
-/// assert!(in_range_f64(0.0, 1.0).validate(&0.5_f64).is_ok());
-/// assert!(in_range_f64(0.0, 1.0).validate(&2.0_f64).is_err());
+/// let validator = in_range_f64(0.0, 1.0)?;
+/// assert!(validator.validate(&0.5_f64).is_ok());
+/// assert!(validator.validate(&2.0_f64).is_err());
+/// # Ok::<(), nebula_validator::validators::RangeConfigError>(())
 /// ```
-#[must_use]
-pub fn in_range_f64(min_val: f64, max_val: f64) -> InRange<f64> {
-    debug_assert!(
-        !min_val.is_nan() && !max_val.is_nan(),
-        "in_range_f64: NaN bounds create an always-failing validator"
-    );
+pub fn in_range_f64(min_val: f64, max_val: f64) -> Result<InRange<f64>, RangeConfigError> {
     in_range(min_val, max_val)
 }
 
@@ -344,7 +332,7 @@ mod tests {
 
     #[test]
     fn test_in_range() {
-        let validator = in_range(5, 10);
+        let validator = in_range(5, 10).expect("ordered bounds");
         assert!(validator.validate(&5).is_ok());
         assert!(validator.validate(&7).is_ok());
         assert!(validator.validate(&10).is_ok());
@@ -372,7 +360,7 @@ mod tests {
 
     #[test]
     fn test_exclusive_range() {
-        let validator = exclusive_range(0, 10);
+        let validator = exclusive_range(0, 10).expect("strictly ordered bounds");
         assert!(validator.validate(&1).is_ok());
         assert!(validator.validate(&5).is_ok());
         assert!(validator.validate(&9).is_ok());
@@ -383,33 +371,51 @@ mod tests {
     }
 
     #[test]
-    fn try_in_range_accepts_valid_bounds() {
-        let v = try_in_range(1, 10).expect("valid bounds");
+    fn in_range_accepts_equal_bounds() {
+        let v = in_range(5, 5).expect("equal inclusive bounds");
         assert!(v.validate(&5).is_ok());
     }
 
     #[test]
-    fn try_in_range_rejects_inverted_bounds() {
-        let err = try_in_range(10, 1).expect_err("min > max must fail");
-        assert_eq!(err.code.as_ref(), "invalid_range");
+    fn in_range_rejects_inverted_bounds() {
+        assert_eq!(
+            in_range(10, 1).expect_err("min > max must fail"),
+            RangeConfigError::MinGreaterThanMax
+        );
     }
 
     #[test]
-    fn try_exclusive_range_accepts_valid_bounds() {
-        let v = try_exclusive_range(0, 10).expect("valid bounds");
+    fn exclusive_range_accepts_valid_bounds() {
+        let v = exclusive_range(0, 10).expect("strictly ordered bounds");
         assert!(v.validate(&5).is_ok());
     }
 
     #[test]
-    fn try_exclusive_range_rejects_equal_bounds() {
-        let err = try_exclusive_range(5, 5).expect_err("min == max must fail for exclusive");
-        assert_eq!(err.code.as_ref(), "invalid_range");
+    fn exclusive_range_rejects_equal_bounds() {
+        assert_eq!(
+            exclusive_range(5, 5).expect_err("equal exclusive bounds must fail"),
+            RangeConfigError::MinNotLessThanMax
+        );
     }
 
     #[test]
-    fn try_exclusive_range_rejects_inverted_bounds() {
-        let err = try_exclusive_range(10, 1).expect_err("min > max must fail");
-        assert_eq!(err.code.as_ref(), "invalid_range");
+    fn exclusive_range_rejects_inverted_bounds() {
+        assert_eq!(
+            exclusive_range(10, 1).expect_err("inverted exclusive bounds must fail"),
+            RangeConfigError::MinNotLessThanMax
+        );
+    }
+
+    #[test]
+    fn ranges_reject_incomparable_bounds() {
+        assert_eq!(
+            in_range(f64::NAN, 1.0).expect_err("NaN must fail"),
+            RangeConfigError::Incomparable
+        );
+        assert_eq!(
+            exclusive_range(0.0, f64::NAN).expect_err("NaN must fail"),
+            RangeConfigError::Incomparable
+        );
     }
 
     #[test]

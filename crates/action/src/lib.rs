@@ -20,8 +20,8 @@
 //!
 //! ## Key metadata and result types
 //!
-//! - `ActionMetadata` — key, version, ports, `ValidSchema` parameters, `IsolationLevel`,
-//!   `ActionKind`, and `CheckpointPolicy`.
+//! - `ActionMetadataDraft` — author-owned metadata intent without schemas or kind.
+//! - `ActionMetadata` — immutable factory-admitted metadata with typed schemas and kind.
 //! - `ActionResult` — execution result with flow-control intent.
 //! - `ActionError` — typed error distinguishing retryable from fatal.
 //!
@@ -43,8 +43,8 @@ pub(crate) mod branch_key;
 pub mod capability;
 /// Runtime context provided to actions during execution.
 pub mod context;
-/// [`ControlAction`] DX trait, [`ControlOutcome`] / [`ControlInput`] types,
-/// and [`ControlActionAdapter`] bridging to [`StatelessHandler`]. The
+/// [`ControlAction`] DX trait and typed [`ControlOutcome`] decisions,
+/// and [`ControlActionAdapter`] bridging to [`StatelessHandle`]. The
 /// public contract for flow-control nodes (If, Switch, Router, Filter,
 /// NoOp, Stop, Fail).
 pub mod control;
@@ -63,6 +63,7 @@ pub mod from_workflow_node;
 pub mod handle;
 /// [`IdempotencyKey`] — transport-level dedup identifier returned by triggers.
 pub mod idempotency;
+mod input;
 /// Assertion macros for testing action results (`assert_success!`, etc.).
 mod macros;
 /// Static metadata, versioning, and execution mode descriptors.
@@ -83,10 +84,10 @@ pub mod resource;
 pub mod resource_produces;
 /// Execution result types carrying data and flow-control intent.
 pub mod result;
-/// [`StatefulAction`] DX trait, [`StatefulHandler`] dyn contract, adapter,
-/// and DX patterns (paginated, batch).
+/// [`StatefulAction`] DX trait, [`StatefulActionAdapter`], and DX patterns
+/// (paginated, batch).
 pub mod stateful;
-/// [`StatelessAction`] DX trait, [`StatelessHandler`] dyn contract, adapter,
+/// [`StatelessAction`] DX trait, [`StatelessHandle`] dyn contract, adapter,
 /// and function-backed DX adapters.
 pub mod stateless;
 /// [`StreamAction`] author trait — opens an async chunk stream and folds it
@@ -113,15 +114,16 @@ pub use agent::{AgentAction, AgentActionAdapter};
 pub use capability::{ExecutionEmitter, TriggerHealth, TriggerHealthSnapshot, TriggerScheduler};
 pub use context::{
     ActionContext, ActionContextExt, ActionRuntimeContext, CredentialContextExt, HasNodeIdentity,
-    HasTriggerScheduling, HasWebhookEndpoint, TriggerContext, TriggerRuntimeContext,
+    HasSupportInputs, HasTriggerScheduling, HasWebhookEndpoint, SupportInputs, TriggerContext,
+    TriggerRuntimeContext,
 };
-pub use control::{ControlAction, ControlActionAdapter, ControlInput, ControlOutcome};
+pub use control::{ControlAction, ControlActionAdapter, ControlOutcome};
 pub use effect::{
     ActionEffectContract, EffectContractError, EffectFailureCode, EffectInvocationContext,
     EffectInvocationOutcome, EffectPreparationContext, EffectPreparationError, EffectQueryContext,
     EffectReconciliationOutcome, PreparedEffectAdapter, PreparedRemoteEffect, ReadOnlyEffectQuery,
-    RemoteDestinationGuarantee, RemoteEffectDescriptor, RemoteEffectFactory, RemoteEffectPolicy,
-    RemoteEffectPolicyBuilder, RemoteEffectPolicyError, StableKeyGuarantee,
+    RemoteDestinationGuarantee, RemoteEffectAction, RemoteEffectDescriptor, RemoteEffectFactory,
+    RemoteEffectPolicy, RemoteEffectPolicyBuilder, RemoteEffectPolicyError, StableKeyGuarantee,
 };
 pub use error::{
     ActionError, ActionErrorExt, MAX_VALIDATION_DETAIL, RetryHintCode, ValidationReason,
@@ -129,7 +131,7 @@ pub use error::{
 pub use factory::{
     ActionFactory, GenericAgentFactory, GenericControlFactory, GenericResourceFactory,
     GenericStatefulFactory, GenericStatelessFactory, GenericStreamFactory, GenericTriggerFactory,
-    InstanceFactory,
+    InstanceFactory, RemoteEffectInstanceFactory,
 };
 pub use from_workflow_node::FromWorkflowNode;
 pub use handle::{
@@ -137,8 +139,11 @@ pub use handle::{
     StreamHandle, TriggerHandle,
 };
 pub use idempotency::IdempotencyKey;
+pub use input::{ActionInput, PreparedActionInput};
 pub use metadata::{
-    ActionKind, ActionMetadata, CheckpointPolicy, IsolationLevel, MetadataCompatibilityError,
+    ActionKind, ActionMetadata, ActionMetadataAdmissionError, ActionMetadataDraft,
+    ActionMetadataReadmissionError, CheckpointPolicy, IsolationLevel, MetadataCompatibilityError,
+    RecordedActionMetadata,
 };
 pub use nebula_action_macros::{Action, action_phantom};
 pub use nebula_core::{BranchKey, KeyValidationError, KeyValidationErrorKind, PortKey};
@@ -149,6 +154,9 @@ pub use nebula_core::{
 };
 pub use nebula_core::{OperationCallId, OperationId};
 pub use nebula_credential::{CredentialGuard, CredentialRef};
+pub use nebula_metadata::{
+    Icon, MetadataBuildError, MetadataError, MetadataName, MetadataVersion, metadata_name,
+};
 pub use nebula_resource::ResourceRef;
 pub use nebula_schema::{Field, Schema, ValidSchema, field_key};
 pub use output::{
@@ -166,9 +174,9 @@ pub use resource_produces::ResourceProduces;
 pub use result::{ActionResult, BreakReason, TerminationCode, TerminationReason, WaitCondition};
 pub use stateful::{
     BatchAction, BatchItemResult, BatchState, PageResult, PaginatedAction, PaginationState,
-    StatefulAction, StatefulActionAdapter, StatefulHandler,
+    StatefulAction, StatefulActionAdapter,
 };
-pub use stateless::{StatelessAction, StatelessActionAdapter, StatelessHandler};
+pub use stateless::{StatelessAction, StatelessActionAdapter};
 pub use stream::StreamAction;
 pub use testing::{
     SpyEmission, SpyEmitter, SpyLogger, SpyScheduler, StatefulTestHarness, TestActionContext,
@@ -178,9 +186,7 @@ pub use trigger::{
     TriggerAction, TriggerActionAdapter, TriggerEvent, TriggerEventOutcome, TriggerHandler,
     TriggerSource,
 };
-pub use validation::{
-    ActionPackageValidationError, ActionPackageValidationErrors, validate_action_package,
-};
+pub use validation::{ActionPackageValidationError, ActionPackageValidationErrors};
 pub use webhook::{
     BuiltWebhookHandler, Clock, DEFAULT_MAX_BODY_BYTES, FactoryError, HmacSecret, MAX_HEADER_COUNT,
     MockClock, PreHandleOutcome, RequiredPolicy, SignatureError, SignatureOutcome, SignaturePolicy,

@@ -1,424 +1,525 @@
 use nebula_core::CredentialKey;
-use nebula_metadata::{BaseMetadata, Metadata};
-use nebula_schema::ValidSchema;
+use nebula_metadata::{BaseMetadata, Metadata, MetadataDraft, RecordedBaseMetadata};
 use semver::Version;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
 use crate::AuthPattern;
 
-/// Error returned by [`CredentialMetadataBuilder::build`] when a required
-/// field is missing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-#[non_exhaustive]
-pub enum CredentialMetadataBuildError {
-    /// `key` was never set on the builder.
-    #[error("credential metadata `key` is required")]
-    MissingKey,
-    /// `name` was never set on the builder.
-    #[error("credential metadata `name` is required")]
-    MissingName,
-    /// `description` was never set on the builder.
-    #[error("credential metadata `description` is required")]
-    MissingDescription,
-    /// `schema` was never set on the builder.
-    #[error("credential metadata `schema` is required")]
-    MissingSchema,
-    /// `pattern` was never set on the builder.
-    #[error("credential metadata `pattern` is required")]
-    MissingPattern,
+/// Leaf authoring state returned by [`crate::Credential::metadata`].
+///
+/// A draft deliberately carries no schema. Registry admission derives the
+/// only canonical schema from `C::Properties` and consumes the draft.
+#[derive(Debug, Clone)]
+#[must_use = "credential metadata drafts are admitted by a credential registry"]
+pub struct CredentialMetadataDraft {
+    base: MetadataDraft<CredentialKey>,
+    pattern: AuthPattern,
 }
 
-/// Describes a credential type (OAuth2, API Key, Database, etc.)
-///
-/// Used for UI form generation, input validation, type registry, and
-/// auto-generated documentation. The shared catalog prefix (`key`, `name`,
-/// `description`, `schema`, `icon`, `documentation_url`, `tags`,
-/// `maturity`, `deprecation`) lives on the composed [`BaseMetadata`];
-/// `pattern` is the credential-specific classifier.
-///
-/// # Constructors
-///
-/// The accessor and type-driven constructor mirror the other catalog leaves
-/// (`ActionMetadata` / `ResourceMetadata`): [`Credential::metadata`](crate::Credential::metadata) returns
-/// `CredentialMetadata` by value, and [`for_credential`](Self::for_credential)
-/// derives the schema from a typed `Credential` impl, symmetric with
-/// `ActionMetadata::for_action` and `ResourceMetadata::for_resource`.
-///
-/// Two constructors are deliberately *not* mirrored, because `pattern`
-/// ([`AuthPattern`]) is a required identity field with no meaningful default:
-/// there is no `from_key` (a key-only credential carries no auth pattern and
-/// is meaningless), and [`builder`](Self::builder) stays an imperative
-/// `Option`-field builder (rather than the seeded `builder(key, name,
-/// description)` of the other two) for the config-driven / icon / doc-url
-/// path, where `pattern` and `schema` are supplied as setters.
+impl CredentialMetadataDraft {
+    /// Construct a credential metadata draft from validated static literals.
+    pub fn new(
+        key: CredentialKey,
+        name: nebula_metadata::MetadataName,
+        description: impl Into<String>,
+        pattern: AuthPattern,
+    ) -> Self {
+        Self {
+            base: MetadataDraft::new(key, name, description),
+            pattern,
+        }
+    }
+
+    /// Construct a draft from a dynamic display name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`nebula_metadata::MetadataError::BlankName`] when `name` is
+    /// empty or whitespace-only.
+    pub fn try_new(
+        key: CredentialKey,
+        name: impl Into<String>,
+        description: impl Into<String>,
+        pattern: AuthPattern,
+    ) -> Result<Self, nebula_metadata::MetadataError> {
+        Ok(Self {
+            base: MetadataDraft::try_new(key, name, description)?,
+            pattern,
+        })
+    }
+
+    /// Set the complete interface version.
+    #[must_use = "draft methods must be chained"]
+    pub fn with_version(mut self, version: Version) -> Self {
+        self.base = self.base.with_version(version);
+        self
+    }
+
+    /// Set the catalog icon.
+    #[must_use = "draft methods must be chained"]
+    pub fn with_icon(mut self, icon: nebula_metadata::Icon) -> Self {
+        self.base = self.base.with_icon(icon);
+        self
+    }
+
+    /// Set an inline-identifier icon.
+    #[must_use = "draft methods must be chained"]
+    pub fn with_inline_icon(mut self, name: impl Into<String>) -> Self {
+        self.base = self.base.with_inline_icon(name);
+        self
+    }
+
+    /// Set a URL-backed icon.
+    #[must_use = "draft methods must be chained"]
+    pub fn with_url_icon(mut self, url: impl Into<String>) -> Self {
+        self.base = self.base.with_url_icon(url);
+        self
+    }
+
+    /// Attach a documentation URL.
+    #[must_use = "draft methods must be chained"]
+    pub fn with_documentation_url(mut self, url: impl Into<String>) -> Self {
+        self.base = self.base.with_documentation_url(url);
+        self
+    }
+
+    /// Replace all catalog tags.
+    #[must_use = "draft methods must be chained"]
+    pub fn with_tags<I, S>(mut self, tags: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.base = self.base.with_tags(tags);
+        self
+    }
+
+    /// Append one catalog tag.
+    #[must_use = "draft methods must be chained"]
+    pub fn add_tag(mut self, tag: impl Into<String>) -> Self {
+        self.base = self.base.add_tag(tag);
+        self
+    }
+
+    /// Mark the credential experimental.
+    #[must_use = "draft methods must be chained"]
+    pub fn mark_experimental(mut self) -> Self {
+        self.base = self.base.mark_experimental();
+        self
+    }
+
+    /// Mark the credential beta.
+    #[must_use = "draft methods must be chained"]
+    pub fn mark_beta(mut self) -> Self {
+        self.base = self.base.mark_beta();
+        self
+    }
+
+    /// Mark the credential stable.
+    #[must_use = "draft methods must be chained"]
+    pub fn mark_stable(mut self) -> Self {
+        self.base = self.base.mark_stable();
+        self
+    }
+
+    /// Attach a deprecation notice and mark the credential deprecated.
+    #[must_use = "draft methods must be chained"]
+    pub fn with_deprecation(mut self, notice: nebula_metadata::DeprecationNotice) -> Self {
+        self.base = self.base.with_deprecation(notice);
+        self
+    }
+
+    /// Authentication pattern declared by this credential definition.
+    #[must_use]
+    pub const fn pattern(&self) -> AuthPattern {
+        self.pattern
+    }
+
+    #[tracing::instrument(name = "credential.metadata.admit", skip_all, fields(credential_key = C::KEY), err)]
+    pub(crate) fn admit_for<C>(self) -> Result<CredentialMetadata, CredentialMetadataAdmissionError>
+    where
+        C: crate::Credential,
+    {
+        let schema = nebula_schema::schema_of::<C::Properties>().map_err(|report| {
+            tracing::error!(
+                credential.key = C::KEY,
+                issue_count = report.errors().count(),
+                error_code = "CREDENTIAL:PROPERTIES_SCHEMA_INVALID",
+                "credential properties schema admission failed"
+            );
+            CredentialMetadataAdmissionError::PropertiesSchema
+        })?;
+        Ok(self.admit_with_schema(schema))
+    }
+
+    fn admit_with_schema(self, schema: nebula_schema::ValidSchema) -> CredentialMetadata {
+        CredentialMetadata {
+            base: self.base.bind_schema(schema),
+            pattern: self.pattern,
+        }
+    }
+}
+
+/// Payload-free failure to admit a credential definition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum CredentialMetadataAdmissionError {
+    /// `C::Properties` did not produce a valid canonical schema.
+    #[error("credential properties schema admission failed")]
+    PropertiesSchema,
+}
+
+/// Admitted credential metadata bound to the canonical `C::Properties` schema.
+///
+/// Fields are immutable and available only through getters. Wire data cannot
+/// deserialize into this type; deserialize [`RecordedCredentialMetadata`] and
+/// readmit it against a freshly registered definition instead.
+///
+/// ```compile_fail
+/// use nebula_credential::CredentialMetadata;
+/// fn requires_deserialize<T: serde::de::DeserializeOwned>() {}
+/// requires_deserialize::<CredentialMetadata>();
+/// ```
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CredentialMetadata {
-    /// Shared catalog prefix.
     #[serde(flatten)]
-    pub base: BaseMetadata<CredentialKey>,
-    /// Authentication pattern classification for UI and tooling.
-    pub pattern: AuthPattern,
+    base: BaseMetadata<CredentialKey>,
+    pattern: AuthPattern,
 }
 
 impl Metadata for CredentialMetadata {
     type Key = CredentialKey;
+
     fn base(&self) -> &BaseMetadata<CredentialKey> {
         &self.base
     }
 }
 
 impl CredentialMetadata {
-    /// Create credential metadata whose schema is pulled from a
-    /// [`Credential`](crate::Credential) implementation's
-    /// `Properties` type.
+    /// Typed credential key.
     #[must_use]
-    pub fn for_credential<C>(
-        key: CredentialKey,
-        name: impl Into<String>,
-        description: impl Into<String>,
-        pattern: AuthPattern,
-    ) -> Self
-    where
-        C: crate::Credential,
-    {
-        Self {
-            base: BaseMetadata::new(
-                key,
-                name,
-                description,
-                nebula_schema::schema_of::<C::Properties>(),
-            ),
-            pattern,
-        }
+    pub fn key(&self) -> &CredentialKey {
+        self.base.key()
     }
 
-    /// Set the interface version from `(major, minor)` components.
+    /// Human-readable credential name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        self.base.name()
+    }
+
+    /// Credential description.
+    #[must_use]
+    pub fn description(&self) -> &str {
+        self.base.description()
+    }
+
+    /// Canonical schema derived during registration from `C::Properties`.
+    #[must_use]
+    pub fn schema(&self) -> &nebula_schema::ValidSchema {
+        self.base.schema()
+    }
+
+    /// Interface version.
+    #[must_use]
+    pub fn version(&self) -> &Version {
+        self.base.version()
+    }
+
+    /// Catalog icon.
+    #[must_use]
+    pub fn icon(&self) -> &nebula_metadata::Icon {
+        self.base.icon()
+    }
+
+    /// Documentation URL, when declared.
+    #[must_use]
+    pub fn documentation_url(&self) -> Option<&str> {
+        self.base.documentation_url()
+    }
+
+    /// Catalog tags.
+    #[must_use]
+    pub fn tags(&self) -> &[String] {
+        self.base.tags()
+    }
+
+    /// Declared maturity level.
+    #[must_use]
+    pub fn maturity(&self) -> nebula_metadata::MaturityLevel {
+        self.base.maturity()
+    }
+
+    /// Deprecation notice, if any.
+    #[must_use]
+    pub fn deprecation(&self) -> Option<&nebula_metadata::DeprecationNotice> {
+        self.base.deprecation()
+    }
+
+    /// Authentication pattern used by discovery and compatibility checks.
+    #[must_use]
+    pub const fn pattern(&self) -> AuthPattern {
+        self.pattern
+    }
+
+    /// Validate this definition against an earlier admitted definition.
     ///
-    /// Equivalent to setting `base.version = Version::new(major, minor, 0)`.
-    #[must_use = "builder methods must be chained or built"]
-    pub fn with_version(mut self, major: u64, minor: u64) -> Self {
-        self.base.version = Version::new(major, minor, 0);
-        self
-    }
-
-    /// Set the full interface version, including patch and pre-release data.
+    /// # Errors
     ///
-    /// Symmetric with `ActionMetadata::with_version_full` and
-    /// `ResourceMetadata::with_version_full`.
-    #[must_use = "builder methods must be chained or built"]
-    pub fn with_version_full(mut self, version: Version) -> Self {
-        self.base.version = version;
-        self
-    }
-
-    /// Start building credential metadata with the given required fields.
-    ///
-    /// Infallible because every required identity field is supplied by the
-    /// caller. Prefer this constructor (or
-    /// [`for_credential`](Self::for_credential)) over calling
-    /// `CredentialMetadata::builder().build()` for built-ins and generated
-    /// metadata.
-    #[must_use]
-    pub fn new(
-        key: CredentialKey,
-        name: impl Into<String>,
-        description: impl Into<String>,
-        schema: ValidSchema,
-        pattern: AuthPattern,
-    ) -> Self {
-        Self {
-            base: BaseMetadata::new(key, name, description, schema),
-            pattern,
-        }
-    }
-
-    /// Attach an inline icon identifier.
-    #[must_use = "builder methods must be chained or built"]
-    pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
-        self.base.icon = nebula_metadata::Icon::inline(icon);
-        self
-    }
-
-    /// Attach a documentation URL.
-    #[must_use = "builder methods must be chained or built"]
-    pub fn with_documentation_url(mut self, url: impl Into<String>) -> Self {
-        self.base.documentation_url = Some(url.into());
-        self
-    }
-
-    /// Builder entry point.
-    #[must_use]
-    pub fn builder() -> CredentialMetadataBuilder {
-        CredentialMetadataBuilder::default()
-    }
-}
-
-/// Imperative builder for [`CredentialMetadata`] — useful when the fields
-/// come from a config file or generated catalog entry rather than a
-/// compile-time [`Credential`](crate::Credential) impl.
-#[derive(Debug, Default)]
-pub struct CredentialMetadataBuilder {
-    key: Option<CredentialKey>,
-    name: Option<String>,
-    description: Option<String>,
-    schema: Option<ValidSchema>,
-    pattern: Option<AuthPattern>,
-    icon: Option<nebula_metadata::Icon>,
-    documentation_url: Option<String>,
-}
-
-impl CredentialMetadataBuilder {
-    /// Set the typed credential key.
-    #[must_use]
-    pub fn key(mut self, key: CredentialKey) -> Self {
-        self.key = Some(key);
-        self
-    }
-
-    /// Set the human-readable name.
-    #[must_use]
-    pub fn name(mut self, name: impl Into<String>) -> Self {
-        self.name = Some(name.into());
-        self
-    }
-
-    /// Set the description.
-    #[must_use]
-    pub fn description(mut self, description: impl Into<String>) -> Self {
-        self.description = Some(description.into());
-        self
-    }
-
-    /// Set the schema.
-    #[must_use]
-    pub fn schema(mut self, schema: ValidSchema) -> Self {
-        self.schema = Some(schema);
-        self
-    }
-
-    /// Set the authentication pattern.
-    #[must_use]
-    pub fn pattern(mut self, pattern: AuthPattern) -> Self {
-        self.pattern = Some(pattern);
-        self
-    }
-
-    /// Set an inline icon identifier.
-    #[must_use]
-    pub fn icon(mut self, icon: impl Into<String>) -> Self {
-        self.icon = Some(nebula_metadata::Icon::inline(icon));
-        self
-    }
-
-    /// Set a URL-backed icon.
-    #[must_use]
-    pub fn icon_url(mut self, url: impl Into<String>) -> Self {
-        self.icon = Some(nebula_metadata::Icon::url(url));
-        self
-    }
-
-    /// Set the documentation URL.
-    #[must_use]
-    pub fn documentation_url(mut self, url: impl Into<String>) -> Self {
-        self.documentation_url = Some(url.into());
-        self
-    }
-
-    /// Finalise, returning a typed [`CredentialMetadataBuildError`] variant
-    /// when a required field is missing.
-    pub fn build(self) -> Result<CredentialMetadata, CredentialMetadataBuildError> {
-        let mut base = BaseMetadata::new(
-            self.key.ok_or(CredentialMetadataBuildError::MissingKey)?,
-            self.name.ok_or(CredentialMetadataBuildError::MissingName)?,
-            self.description
-                .ok_or(CredentialMetadataBuildError::MissingDescription)?,
-            self.schema
-                .ok_or(CredentialMetadataBuildError::MissingSchema)?,
-        );
-        if let Some(icon) = self.icon {
-            base.icon = icon;
-        }
-        base.documentation_url = self.documentation_url;
-        Ok(CredentialMetadata {
-            base,
-            pattern: self
-                .pattern
-                .ok_or(CredentialMetadataBuildError::MissingPattern)?,
-        })
-    }
-}
-
-/// Compatibility validation errors for credential metadata evolution.
-///
-/// Wraps [`nebula_metadata::BaseCompatError`] (shared catalog-entity rules)
-/// and layers the credential-specific auth-pattern rule on top.
-///
-/// The pattern rule lives on this type rather than in `nebula-metadata`
-/// because no other catalog citizen has an auth-pattern classifier —
-/// `AuthPattern` is credential-specific and changing it is semantically
-/// equivalent to replacing the credential, so it requires a major bump.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[non_exhaustive]
-pub enum MetadataCompatibilityError {
-    /// A generic catalog-citizen rule fired (key / version / schema).
-    #[error(transparent)]
-    Base(#[from] nebula_metadata::BaseCompatError<CredentialKey>),
-
-    /// Auth pattern changed without a major version bump.
-    #[error("credential auth pattern changed without a major version bump")]
-    PatternChangeWithoutMajorBump,
-}
-
-impl CredentialMetadata {
-    /// Validate that this metadata update is version-compatible with `previous`.
-    ///
-    /// Delegates `key immutable / version monotonic / schema-break-requires-
-    /// major` to [`nebula_metadata::validate_base_compat`]; layers the
-    /// credential-specific auth-pattern rule on top.
+    /// Returns a typed compatibility error when identity, version, schema, or
+    /// auth-pattern evolution violates the catalog rules.
     pub fn validate_compatibility(
         &self,
         previous: &Self,
     ) -> Result<(), MetadataCompatibilityError> {
         nebula_metadata::validate_base_compat(&self.base, &previous.base)?;
-
         if self.pattern != previous.pattern
-            && self.base.version.major == previous.base.version.major
+            && self.base.version().major == previous.base.version().major
         {
             return Err(MetadataCompatibilityError::PatternChangeWithoutMajorBump);
         }
-
         Ok(())
     }
+}
+
+/// Deserialized credential metadata evidence awaiting fresh-definition admission.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordedCredentialMetadata {
+    #[serde(flatten)]
+    base: RecordedBaseMetadata<CredentialKey>,
+    pattern: AuthPattern,
+}
+
+impl RecordedCredentialMetadata {
+    /// Readmit matching evidence against a freshly built static definition.
+    ///
+    /// The returned value is cloned exclusively from `fresh_definition`; no
+    /// deserialized field becomes admitted metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CredentialMetadataReadmissionError`] when shared metadata,
+    /// schema, or auth pattern differs.
+    #[tracing::instrument(name = "credential.metadata.readmit", skip_all, err)]
+    pub fn readmit_against(
+        &self,
+        fresh_definition: &CredentialMetadata,
+    ) -> Result<CredentialMetadata, CredentialMetadataReadmissionError> {
+        self.base
+            .readmit_against(&fresh_definition.base)
+            .map_err(|_| CredentialMetadataReadmissionError::DefinitionMismatch)?;
+        if self.pattern != fresh_definition.pattern {
+            tracing::warn!(
+                error_code = "CREDENTIAL:RECORDED_METADATA_MISMATCH",
+                "recorded credential metadata rejected"
+            );
+            return Err(CredentialMetadataReadmissionError::DefinitionMismatch);
+        }
+        Ok(fresh_definition.clone())
+    }
+}
+
+/// Payload-free recorded-metadata readmission failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum CredentialMetadataReadmissionError {
+    /// Recorded evidence differs from the fresh static definition.
+    #[error("recorded credential metadata does not match the fresh definition")]
+    DefinitionMismatch,
+}
+
+/// Compatibility validation errors for credential metadata evolution.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum MetadataCompatibilityError {
+    /// A shared catalog rule fired.
+    #[error(transparent)]
+    Base(#[from] nebula_metadata::BaseCompatError<CredentialKey>),
+    /// Auth pattern changed without a major version bump.
+    #[error("credential auth pattern changed without a major version bump")]
+    PatternChangeWithoutMajorBump,
 }
 
 #[cfg(test)]
 mod tests {
     use nebula_core::credential_key;
-    use nebula_metadata::{BaseCompatError, Icon, Metadata};
+    use nebula_metadata::{BaseCompatError, DeprecationNotice, Icon, MaturityLevel};
     use semver::Version;
 
-    use super::{CredentialMetadata, MetadataCompatibilityError};
+    use super::{CredentialMetadata, CredentialMetadataDraft, MetadataCompatibilityError};
     use crate::AuthPattern;
 
-    fn empty_schema() -> nebula_schema::ValidSchema {
-        nebula_schema::ValidSchema::empty()
-    }
-
-    fn cred(pattern: AuthPattern, major: u64, minor: u64) -> CredentialMetadata {
-        let mut m =
-            CredentialMetadata::new(credential_key!("cred"), "C", "d", empty_schema(), pattern);
-        m.base.version = Version::new(major, minor, 0);
-        m
+    fn admitted(pattern: AuthPattern, major: u64, minor: u64) -> CredentialMetadata {
+        CredentialMetadataDraft::new(
+            credential_key!("cred"),
+            crate::metadata_name!("Credential"),
+            "description",
+            pattern,
+        )
+        .with_version(Version::new(major, minor, 0))
+        .admit_with_schema(nebula_schema::schema_of::<()>().expect("unit schema is valid"))
     }
 
     #[test]
-    fn fluent_fields_preserve_full_values_and_equality() {
-        let version = Version::parse("2.1.3-beta.1").unwrap();
-        let build = || {
-            CredentialMetadata::new(
-                credential_key!("cred"),
-                "C",
-                "d",
-                empty_schema(),
-                AuthPattern::SecretToken,
-            )
-            .with_version_full(version.clone())
-            .with_icon("sync")
-            .with_documentation_url("https://example.test/credentials/cred")
-        };
+    fn draft_fields_survive_admission() {
+        let version = Version::parse("2.1.3-beta.1").expect("version literal is valid");
+        let metadata = CredentialMetadataDraft::new(
+            credential_key!("cred"),
+            crate::metadata_name!("Credential"),
+            "description",
+            AuthPattern::SecretToken,
+        )
+        .with_version(version.clone())
+        .with_icon(Icon::inline("key"))
+        .with_documentation_url("https://example.test/credentials/cred")
+        .admit_with_schema(nebula_schema::schema_of::<()>().expect("unit schema is valid"));
 
-        let metadata = build();
-        assert_eq!(metadata, build());
         assert_eq!(metadata.version(), &version);
-        assert_eq!(metadata.icon(), &Icon::inline("sync"));
+        assert_eq!(metadata.icon(), &Icon::inline("key"));
         assert_eq!(
             metadata.documentation_url(),
             Some("https://example.test/credentials/cred")
         );
-
-        let different_pattern = CredentialMetadata::new(
-            credential_key!("cred"),
-            "C",
-            "d",
-            empty_schema(),
-            AuthPattern::OAuth2,
-        )
-        .with_version_full(version);
-        assert_ne!(metadata, different_pattern);
+        assert_eq!(metadata.pattern(), AuthPattern::SecretToken);
     }
 
     #[test]
-    fn metadata_wire_shape_is_flat_and_round_trips() {
-        let metadata = CredentialMetadata::new(
-            credential_key!("cred"),
-            "C",
-            "d",
-            empty_schema(),
+    fn draft_icon_methods_preserve_curated_variants() {
+        let inline = CredentialMetadataDraft::new(
+            credential_key!("inline"),
+            crate::metadata_name!("Inline"),
+            "description",
             AuthPattern::SecretToken,
         )
-        .with_version(2, 1)
-        .with_icon("sync");
+        .with_inline_icon("key")
+        .admit_with_schema(nebula_schema::schema_of::<()>().expect("unit schema is valid"));
+        let url = CredentialMetadataDraft::new(
+            credential_key!("url"),
+            crate::metadata_name!("URL"),
+            "description",
+            AuthPattern::SecretToken,
+        )
+        .with_url_icon("https://example.test/icon.svg")
+        .admit_with_schema(nebula_schema::schema_of::<()>().expect("unit schema is valid"));
+        let none = CredentialMetadataDraft::new(
+            credential_key!("none"),
+            crate::metadata_name!("None"),
+            "description",
+            AuthPattern::SecretToken,
+        )
+        .with_icon(Icon::None)
+        .admit_with_schema(nebula_schema::schema_of::<()>().expect("unit schema is valid"));
 
+        assert_eq!(inline.icon(), &Icon::inline("key"));
+        assert_eq!(url.icon(), &Icon::url("https://example.test/icon.svg"));
+        assert_eq!(none.icon(), &Icon::None);
+    }
+
+    #[test]
+    fn draft_lifecycle_and_tags_survive_admission() {
+        let experimental = CredentialMetadataDraft::new(
+            credential_key!("experimental"),
+            crate::metadata_name!("Experimental"),
+            "description",
+            AuthPattern::SecretToken,
+        )
+        .mark_experimental()
+        .admit_with_schema(nebula_schema::schema_of::<()>().expect("unit schema is valid"));
+        let beta = CredentialMetadataDraft::new(
+            credential_key!("beta"),
+            crate::metadata_name!("Beta"),
+            "description",
+            AuthPattern::SecretToken,
+        )
+        .mark_experimental()
+        .mark_beta()
+        .admit_with_schema(nebula_schema::schema_of::<()>().expect("unit schema is valid"));
+        let stable = CredentialMetadataDraft::new(
+            credential_key!("stable"),
+            crate::metadata_name!("Stable"),
+            "description",
+            AuthPattern::SecretToken,
+        )
+        .mark_beta()
+        .mark_stable()
+        .admit_with_schema(nebula_schema::schema_of::<()>().expect("unit schema is valid"));
+        let notice = DeprecationNotice::new(Version::new(2, 0, 0))
+            .replacement("replacement")
+            .reason("superseded");
+        let deprecated = CredentialMetadataDraft::new(
+            credential_key!("deprecated"),
+            crate::metadata_name!("Deprecated"),
+            "description",
+            AuthPattern::SecretToken,
+        )
+        .with_tags(["auth"])
+        .add_tag("legacy")
+        .with_deprecation(notice.clone())
+        .mark_stable()
+        .admit_with_schema(nebula_schema::schema_of::<()>().expect("unit schema is valid"));
+
+        assert_eq!(experimental.maturity(), MaturityLevel::Experimental);
+        assert_eq!(beta.maturity(), MaturityLevel::Beta);
+        assert_eq!(stable.maturity(), MaturityLevel::Stable);
+        assert_eq!(deprecated.maturity(), MaturityLevel::Deprecated);
+        assert_eq!(deprecated.deprecation(), Some(&notice));
+        assert_eq!(deprecated.tags(), ["auth", "legacy"]);
+    }
+
+    #[test]
+    fn admitted_wire_shape_is_flat_and_records_as_evidence() {
+        let metadata = admitted(AuthPattern::SecretToken, 2, 1);
         let encoded = serde_json::to_string(&metadata).expect("metadata serializes");
         let value: serde_json::Value =
             serde_json::from_str(&encoded).expect("serialized metadata is valid JSON");
-        assert!(
-            value.get("base").is_none(),
-            "shared metadata must stay flattened on the wire"
-        );
+        assert!(value.get("base").is_none());
         assert_eq!(
             value.get("key").and_then(serde_json::Value::as_str),
             Some("cred")
         );
 
-        let decoded: CredentialMetadata =
-            serde_json::from_str(&encoded).expect("metadata deserializes");
-        assert_eq!(decoded, metadata);
+        let recorded: super::RecordedCredentialMetadata =
+            serde_json::from_str(&encoded).expect("metadata records as evidence");
+        assert_eq!(recorded.readmit_against(&metadata), Ok(metadata));
     }
 
     #[test]
     fn pattern_change_requires_major_bump() {
-        let prev = cred(AuthPattern::SecretToken, 1, 0);
-        let next = cred(AuthPattern::OAuth2, 1, 1);
-        let err = next.validate_compatibility(&prev).unwrap_err();
+        let previous = admitted(AuthPattern::SecretToken, 1, 0);
+        let next = admitted(AuthPattern::OAuth2, 1, 1);
         assert_eq!(
-            err,
-            MetadataCompatibilityError::PatternChangeWithoutMajorBump
+            next.validate_compatibility(&previous),
+            Err(MetadataCompatibilityError::PatternChangeWithoutMajorBump)
         );
     }
 
     #[test]
-    fn pattern_change_with_major_accepted() {
-        let prev = cred(AuthPattern::SecretToken, 1, 0);
-        let next = cred(AuthPattern::OAuth2, 2, 0);
-        assert!(next.validate_compatibility(&prev).is_ok());
+    fn pattern_change_with_major_is_accepted() {
+        let previous = admitted(AuthPattern::SecretToken, 1, 0);
+        let next = admitted(AuthPattern::OAuth2, 2, 0);
+        assert!(next.validate_compatibility(&previous).is_ok());
     }
 
     #[test]
-    fn key_change_via_base_rejected() {
-        let prev = CredentialMetadata::new(
-            credential_key!("a"),
-            "A",
-            "d",
-            empty_schema(),
+    fn key_change_is_rejected() {
+        let previous = admitted(AuthPattern::SecretToken, 1, 0);
+        let next = CredentialMetadataDraft::new(
+            credential_key!("other"),
+            crate::metadata_name!("Credential"),
+            "description",
             AuthPattern::SecretToken,
-        );
-        let next = CredentialMetadata::new(
-            credential_key!("b"),
-            "A",
-            "d",
-            empty_schema(),
-            AuthPattern::SecretToken,
-        );
-        let err = next.validate_compatibility(&prev).unwrap_err();
+        )
+        .admit_with_schema(nebula_schema::schema_of::<()>().expect("unit schema is valid"));
         assert_eq!(
-            err,
-            MetadataCompatibilityError::Base(BaseCompatError::KeyChanged {
-                previous: credential_key!("a"),
-                current: credential_key!("b"),
-            })
+            next.validate_compatibility(&previous),
+            Err(MetadataCompatibilityError::Base(
+                BaseCompatError::KeyChanged {
+                    previous: credential_key!("cred"),
+                    current: credential_key!("other"),
+                }
+            ))
         );
     }
 }

@@ -12,10 +12,10 @@
 //!
 //! ```rust,no_run
 //! # use nebula_sdk::runtime::TestRuntime;
-//! # use nebula_action::{ActionError, testing::TestContextBuilder};
-//! # use serde_json::json;
+//! # use nebula_sdk::prelude::{ActionError, StatefulAction, TestContextBuilder};
+//! # use nebula_sdk::{serde, serde_json::json};
 //! # async fn demo<A>(action: A) -> Result<(), ActionError>
-//! # where A: nebula_action::stateful::StatefulAction + Send + Sync + 'static,
+//! # where A: StatefulAction + Send + Sync + 'static,
 //! #       A::Input: serde::de::DeserializeOwned + Send + Sync,
 //! #       A::Output: serde::Serialize + Send + Sync,
 //! #       A::State: serde::Serialize + serde::de::DeserializeOwned + Clone + Send + Sync,
@@ -32,9 +32,9 @@ use std::{
 };
 
 use nebula_action::{
-    ActionError, ActionResult, BreakReason, HasTriggerScheduling, PollAction, PollTriggerAdapter,
-    StatefulAction, StatefulActionAdapter, StatefulHandler, StatelessAction,
-    StatelessActionAdapter, StatelessHandler, TestContextBuilder, TriggerEvent, TriggerHandler,
+    ActionError, ActionInput, ActionResult, BreakReason, HasTriggerScheduling, PollAction,
+    PollTriggerAdapter, StatefulAction, StatefulActionAdapter, StatefulHandle, StatelessAction,
+    StatelessActionAdapter, StatelessHandle, TestContextBuilder, TriggerEvent, TriggerHandler,
     TriggerHealthSnapshot, WebhookAction, WebhookRequest, WebhookTriggerAdapter,
 };
 use nebula_core::context::Context;
@@ -128,9 +128,10 @@ impl TestRuntime {
     {
         let input = self.ctx.input().cloned().unwrap_or(Value::Null);
         let ctx = self.ctx.build();
-        let handler = StatelessActionAdapter::new(action);
+        let handler = StatelessActionAdapter::new(action).map_err(ActionError::fatal_from)?;
+        let input = handler.prepare_input(ActionInput::Raw(input))?;
         let start = Instant::now();
-        let result = handler.execute(input, &ctx).await?;
+        let result = handler.dispatch(input, &ctx).await?;
         Ok(RunReport {
             kind: "stateless",
             output: extract_output(&result),
@@ -157,14 +158,15 @@ impl TestRuntime {
         let input = self.ctx.input().cloned().unwrap_or(Value::Null);
         let cap = self.stateful_cap;
         let ctx = self.ctx.build();
-        let handler = StatefulActionAdapter::new(action);
+        let handler = StatefulActionAdapter::new(action).map_err(ActionError::fatal_from)?;
+        let input = handler.prepare_input(ActionInput::Raw(input))?;
         let mut state = handler.init_state()?;
         let start = Instant::now();
         let mut iterations = 0u32;
 
         loop {
             iterations += 1;
-            let result = handler.execute(&input, &mut state, &ctx).await?;
+            let result = handler.dispatch(&input, &mut state, &ctx).await?;
             let output = extract_output(&result);
 
             match result {
@@ -222,7 +224,8 @@ impl TestRuntime {
     {
         let window = self.trigger_window;
         let (ctx, spy, _scheduler) = self.ctx.build_trigger();
-        let handler: Arc<dyn TriggerHandler> = Arc::new(PollTriggerAdapter::new(action));
+        let handler: Arc<dyn TriggerHandler> =
+            Arc::new(PollTriggerAdapter::new(action).map_err(ActionError::fatal_from)?);
         let cancel = ctx.cancellation().clone();
         let start = Instant::now();
 
@@ -281,7 +284,8 @@ impl TestRuntime {
         <A as WebhookAction>::State: Send + Sync,
     {
         let (ctx, spy, _scheduler) = self.ctx.build_trigger();
-        let handler: Arc<dyn TriggerHandler> = Arc::new(WebhookTriggerAdapter::new(action));
+        let handler: Arc<dyn TriggerHandler> =
+            Arc::new(WebhookTriggerAdapter::new(action).map_err(ActionError::fatal_from)?);
         let start = Instant::now();
 
         handler.start(&ctx).await?;

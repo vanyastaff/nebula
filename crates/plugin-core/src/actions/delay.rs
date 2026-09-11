@@ -48,11 +48,12 @@ use std::sync::OnceLock;
 use std::time::Duration as StdDuration;
 
 use nebula_action::{
-    ActionContext, ActionError, ActionMetadata, ActionOutput, ActionResult, StatelessAction,
-    result::WaitCondition,
+    ActionContext, ActionError, ActionOutput, ActionResult, StatelessAction, result::WaitCondition,
 };
 use nebula_core::action_key;
-use nebula_schema::{Field, HasSchema, Predicate, Rule, Schema, ValidSchema, field_key};
+use nebula_schema::{
+    Field, HasSchema, Predicate, Rule, Schema, ValidSchema, ValidationReport, ValuePath, field_key,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::instrument;
@@ -112,29 +113,21 @@ pub struct DelayInput {
 }
 
 impl HasSchema for DelayInput {
-    fn schema() -> ValidSchema {
-        static SCHEMA: OnceLock<ValidSchema> = OnceLock::new();
+    fn schema() -> Result<ValidSchema, ValidationReport> {
+        static SCHEMA: OnceLock<Result<ValidSchema, ValidationReport>> = OnceLock::new();
         SCHEMA.get_or_init(build_delay_input_schema).clone()
     }
 }
 
-fn build_delay_input_schema() -> ValidSchema {
-    let Some(for_mode) = Predicate::eq("mode", "for") else {
-        tracing::error!(
-            target: "core.delay",
-            "the static delay schema contains an invalid `mode` predicate path"
-        );
-        return ValidSchema::empty();
-    };
-    let Some(until_mode) = Predicate::eq("mode", "until") else {
-        tracing::error!(
-            target: "core.delay",
-            "the static delay schema contains an invalid `mode` predicate path"
-        );
-        return ValidSchema::empty();
-    };
+#[instrument(name = "core.delay.schema", skip_all, err)]
+fn build_delay_input_schema() -> Result<ValidSchema, ValidationReport> {
+    let for_mode = Predicate::Eq(ValuePath::root().push("mode"), "for".into());
+    let until_mode = Predicate::Eq(ValuePath::root().push("mode"), "until".into());
+    let requires_for = super::input_schema::admit_rule(Rule::predicate(for_mode.clone()))?;
+    let requires_for_unit = super::input_schema::admit_rule(Rule::predicate(for_mode))?;
+    let requires_until = super::input_schema::admit_rule(Rule::predicate(until_mode))?;
 
-    let schema = Schema::builder()
+    Schema::builder()
         .add(
             Field::select(field_key!("mode"))
                 .option("for", "For a duration")
@@ -144,7 +137,7 @@ fn build_delay_input_schema() -> ValidSchema {
         .add(
             Field::integer(field_key!("amount"))
                 .min_int(1)
-                .required_when(Rule::predicate(for_mode.clone())),
+                .required_when(requires_for),
         )
         .add(
             Field::select(field_key!("unit"))
@@ -154,23 +147,11 @@ fn build_delay_input_schema() -> ValidSchema {
                 .option("hours", "Hours")
                 .option("days", "Days")
                 .option("weeks", "Weeks")
-                .required_when(Rule::predicate(for_mode)),
+                .required_when(requires_for_unit),
         )
-        .add(Field::string(field_key!("datetime")).required_when(Rule::predicate(until_mode)))
+        .add(Field::string(field_key!("datetime")).required_when(requires_until))
         .add(Field::dynamic(field_key!("data")))
-        .build();
-
-    match schema {
-        Ok(schema) => schema,
-        Err(error) => {
-            tracing::error!(
-                target: "core.delay",
-                error = ?error,
-                "the static delay input schema is invalid"
-            );
-            ValidSchema::empty()
-        },
-    }
+        .build()
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -252,13 +233,12 @@ impl nebula_action::action::Action for CoreDelay {
     type Input = DelayInput;
     type Output = Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             action_key!("core.delay"),
-            "Delay",
+            nebula_action::metadata_name!("Delay"),
             "Parks the execution for a fixed duration or until a timestamp, then resumes",
         )
-        .with_schema(<Self::Input as HasSchema>::schema())
         .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
 
@@ -322,7 +302,7 @@ mod tests {
     use std::future::Future;
 
     use nebula_action::testing::TestContextBuilder;
-    use nebula_schema::FieldValues;
+    use nebula_schema::AuthoredValue;
     use serde_json::json;
 
     use super::*;
@@ -364,13 +344,13 @@ mod tests {
         }
     }
 
-    fn schema_values(value: Value) -> FieldValues {
-        FieldValues::from_json(value).expect("fixture input is a JSON object")
+    fn schema_values(value: Value) -> AuthoredValue {
+        AuthoredValue::from_data(value).expect("fixture input is bounded literal data")
     }
 
     #[test]
     fn input_schema_accepts_both_delay_modes_and_an_opaque_payload() {
-        let schema = DelayInput::schema();
+        let schema = DelayInput::schema().expect("valid test catalog definition");
 
         for input in [
             json!({
@@ -381,15 +361,18 @@ mod tests {
             }),
             json!({"mode": "until", "datetime": "2026-06-19T00:00:00Z"}),
         ] {
-            schema
-                .validate(&schema_values(input))
-                .expect("a valid delay input satisfies the advertised schema");
+            let resolved = schema
+                .validate(schema_values(input.clone()))
+                .expect("a valid delay input satisfies the advertised schema")
+                .resolve_data()
+                .unwrap();
+            assert_eq!(resolved.into_json(), input);
         }
     }
 
     #[test]
     fn input_schema_rejects_incomplete_or_ill_typed_delay_specs() {
-        let schema = DelayInput::schema();
+        let schema = DelayInput::schema().expect("valid test catalog definition");
 
         for invalid in [
             json!({"amount": 30, "unit": "seconds"}),
@@ -400,7 +383,7 @@ mod tests {
             json!({"mode": "until", "datetime": 42}),
         ] {
             assert!(
-                schema.validate(&schema_values(invalid.clone())).is_err(),
+                schema.validate(schema_values(invalid.clone())).is_err(),
                 "invalid delay input unexpectedly satisfied the schema: {invalid}"
             );
         }
@@ -707,13 +690,27 @@ mod tests {
 
     #[test]
     fn action_key_is_core_dot_delay() {
-        use nebula_action::action::Action;
-        assert_eq!(CoreDelay::metadata().base.key.as_str(), "core.delay");
+        let factory = nebula_action::GenericStatelessFactory::<CoreDelay>::new()
+            .expect("delay metadata must admit");
+        assert_eq!(
+            nebula_action::ActionFactory::metadata(&factory)
+                .base()
+                .key()
+                .as_str(),
+            "core.delay"
+        );
     }
 
     #[test]
     fn action_display_name_is_delay() {
-        use nebula_action::action::Action;
-        assert_eq!(CoreDelay::metadata().base.name, "Delay");
+        let factory = nebula_action::GenericStatelessFactory::<CoreDelay>::new()
+            .expect("delay metadata must admit");
+        assert_eq!(
+            nebula_action::ActionFactory::metadata(&factory)
+                .base()
+                .name()
+                .to_owned(),
+            "Delay"
+        );
     }
 }

@@ -122,8 +122,9 @@ mod credential_ref;
 mod display;
 /// Typed credential handle — CredentialHandle (ArcSwap-backed).
 mod handle;
-/// Credential metadata — static type descriptor (CredentialMetadata, builder, compat).
+/// Credential metadata draft, admitted definition, recorded evidence, and compatibility.
 mod metadata;
+pub use nebula_metadata::{MetadataError, MetadataName, metadata_name};
 /// `NoCredential` opt-out type — for resources without an authenticated binding (credential isolation).
 mod no_credential;
 /// Credential record — runtime operational state (timestamps, version, tags).
@@ -152,10 +153,6 @@ pub(crate) mod service;
 /// Credential snapshot.
 pub(crate) mod snapshot;
 
-// ── Backward-compat re-export: `nebula_credential::resolve::*` ──────────
-// The proc-macro and downstream crates reference `nebula_credential::resolve::`.
-// The module now lives inside `contract/resolve`; this re-export keeps the
-// path intact.
 // ── Root re-exports ─────────────────────────────────────────────────────────
 // Commonly-used types available directly as `nebula_credential::TypeName`.
 
@@ -253,10 +250,9 @@ pub use lifecycle::{
 };
 // Audit contract — trait + value types (decorator AuditLayer stays in nebula_storage::credential)
 pub use audit::{AuditEvent, AuditOperation, AuditResult, AuditSink};
+pub use nebula_metadata::{DeprecationNotice, Icon, MaturityLevel};
 
-/// Back-compat alias: serde attribute paths
-/// `nebula_credential::serde_secret` and `nebula_credential::serde_secret::option`
-/// continue to resolve here after the `secrets/` submodule move.
+/// Serde adapters for credential-owned secret state.
 pub use crate::secrets::serde_secret;
 // Error / event / metadata / snapshot / identifiers
 pub use crate::{
@@ -270,8 +266,8 @@ pub use crate::{
     },
     event::CredentialEvent,
     metadata::{
-        CredentialMetadata, CredentialMetadataBuildError, CredentialMetadataBuilder,
-        MetadataCompatibilityError,
+        CredentialMetadata, CredentialMetadataAdmissionError, CredentialMetadataDraft,
+        CredentialMetadataReadmissionError, MetadataCompatibilityError, RecordedCredentialMetadata,
     },
     record::CredentialRecord,
     snapshot::{CredentialSnapshot, SnapshotError},
@@ -304,10 +300,11 @@ pub mod prelude {
     pub use crate::{
         AuthPattern, AuthScheme, Credential, CredentialContext, CredentialContextBuilder,
         CredentialError, CredentialGuard, CredentialHandle, CredentialId, CredentialKey,
-        CredentialMetadata, CredentialPolicy, CredentialRecord, CredentialRegistry,
-        CredentialService, CredentialState, Dynamic, ExternalScheme, Interactive, PublicScheme,
-        RefreshAttempt, RefreshExecutionMode, RefreshReport, Refreshable, Revocable, SecretString,
-        SensitiveScheme, Testable, credential, credential_key, schema_of,
+        CredentialMetadata, CredentialMetadataDraft, CredentialPolicy, CredentialRecord,
+        CredentialRegistry, CredentialService, CredentialState, DeprecationNotice, Dynamic,
+        ExternalScheme, Icon, Interactive, MaturityLevel, PublicScheme, RefreshAttempt,
+        RefreshExecutionMode, RefreshReport, Refreshable, Revocable, SecretString, SensitiveScheme,
+        Testable, credential, credential_key, schema_of,
     };
 }
 

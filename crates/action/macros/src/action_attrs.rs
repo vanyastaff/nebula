@@ -59,7 +59,6 @@ impl ActionAttrs {
         let key = attr_args.require_string("key", struct_name)?;
         let name = attr_args
             .get_string("name")
-            .filter(|s| !s.is_empty())
             .unwrap_or_else(|| struct_name.to_string());
 
         let description = attr_args
@@ -100,7 +99,7 @@ impl ActionAttrs {
         })
     }
 
-    /// Generate `ActionMetadata` initialization expression.
+    /// Generate `ActionMetadataDraft` initialization expression.
     pub(crate) fn metadata_init_expr(&self) -> TokenStream2 {
         let key = &self.key;
         let name = &self.name;
@@ -110,13 +109,12 @@ impl ActionAttrs {
         let patch = self.version_patch;
 
         quote! {
-            ::nebula_action::ActionMetadata::new(
-                ::nebula_core::ActionKey::new(#key)
-                    .expect("invalid action key in #[action] attribute"),
-                #name,
+            ::nebula_action::ActionMetadataDraft::new(
+                ::nebula_core::action_key!(#key),
+                ::nebula_action::metadata_name!(#name),
                 #description,
             )
-                .with_version_full(::semver::Version::new(#major, #minor, #patch))
+                .with_version(::nebula_action::MetadataVersion::new(#major, #minor, #patch))
         }
     }
 }

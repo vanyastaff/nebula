@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use nebula_schema::{
     Assignability, FieldKey, PathWalk, explain_assignable, explain_field_assignable,
-    is_opaque_field_node,
+    explain_root_field_assignable, is_opaque_field_node,
 };
 
 use crate::{
@@ -217,8 +217,8 @@ pub fn validate_workflow(definition: &WorkflowDefinition) -> Vec<WorkflowError> 
 #[non_exhaustive]
 pub enum SchemaCheckMode {
     /// Undecidable edges **pass** (warn-and-pass). The default — preserves
-    /// untyped `serde_json::Value` / `Dynamic` workflows. Behaves exactly like
-    /// the binary [`nebula_schema::is_assignable_schema`].
+    /// untyped `serde_json::Value` / `Dynamic` workflows. This is an explicit
+    /// workflow admission policy, not evidence of schema assignability.
     #[default]
     Gradual,
     /// Undecidable edges are **blocked** with
@@ -343,6 +343,8 @@ pub fn validate_workflow_with_resolver_mode(
         // consumer that hard-requires a field; an untyped `Any` producer is
         // `Unknown`, not a hard error).
         match explain_assignable(&producer_schemas.output, &consumer_schemas.input) {
+            // Provably compatible: admit in both policy modes.
+            Assignability::Yes => {},
             // Provably incompatible: always a hard error, carrying every finding.
             Assignability::No(incompatibilities) => {
                 errors.push(WorkflowError::PortSchemaIncompatible(Box::new(
@@ -367,9 +369,25 @@ pub fn validate_workflow_with_resolver_mode(
                     },
                 )));
             },
-            // `Yes`, an `Unknown` in Gradual mode, or any future verdict variant
-            // (the enum is `#[non_exhaustive]`): pass the edge.
-            _ => {},
+            // Gradual mode deliberately admits current undecidable outcomes.
+            Assignability::Unknown(_) => {},
+            // `Assignability` is `#[non_exhaustive]`. A future verdict may pass
+            // only under deliberate Gradual policy; Strict rejects until
+            // workflow understands the new semantics.
+            _ => match mode {
+                SchemaCheckMode::Gradual => {},
+                SchemaCheckMode::Strict => {
+                    errors.push(WorkflowError::PortSchemaUndecidable(Box::new(
+                        crate::error::PortSchemaUndecidableDetails {
+                            from_node: conn.from_node.clone(),
+                            to_node: conn.to_node.clone(),
+                            from_port: conn.from_port.clone(),
+                            to_port: conn.to_port.clone(),
+                            reasons: Vec::new(),
+                        },
+                    )));
+                },
+            },
         }
     }
 
@@ -386,14 +404,14 @@ pub fn validate_workflow_with_resolver_mode(
 ///
 /// Complements the main-flow port check above: that loop only type-checks the
 /// *default* `"out"` connection edge, whereas a `Reference` parameter can pull
-/// from **any** node's output through an arbitrary authored dotted path,
+/// from **any** node's output through an arbitrary canonical RFC 6901 path,
 /// entirely outside the main-flow port shape.
 ///
 /// Fail-open (no error pushed) when:
 /// - the referenced producer node is missing from `node_by_id`, or either
 ///   endpoint's schema does not resolve (`resolver.io_schemas` returns
 ///   `None`) — mirrors the main-flow edge check's fail-open contract;
-/// - `ValidSchema::walk_authored_path` returns [`PathWalk::Opaque`] — an
+/// - `ValidSchema::walk_reference_path` returns [`PathWalk::Opaque`] — an
 ///   opaque node, a missing `Object` key, or an untyped `List` item anywhere
 ///   along the walk (never provably wrong, see the schema crate's opacity
 ///   classification);
@@ -405,8 +423,8 @@ pub fn validate_workflow_with_resolver_mode(
 /// Hard errors (both [`SchemaCheckMode`]s) when the walk returns
 /// [`PathWalk::Unresolved`] — a non-numeric `List` index, or a segment past a
 /// scalar leaf — via [`WorkflowError::ReferencePathUnresolved`]. When the walk
-/// resolves and the leaf is provably not assignable to the consumer's expected
-/// field ([`Assignability::No`]), pushes
+/// resolves and the selected field or complete root is provably not assignable
+/// to the consumer's expected field ([`Assignability::No`]), pushes
 /// [`WorkflowError::ReferenceTypeIncompatible`] (both modes);
 /// [`Assignability::Unknown`] pushes [`WorkflowError::ReferenceTypeUndecidable`]
 /// only under [`SchemaCheckMode::Strict`].
@@ -417,6 +435,11 @@ fn check_reference_edges(
     node_by_id: &std::collections::HashMap<&nebula_core::NodeKey, &crate::node::NodeDefinition>,
     errors: &mut Vec<WorkflowError>,
 ) {
+    enum ProducerReference<'a> {
+        Root,
+        Field(&'a nebula_schema::Field),
+    }
+
     for consumer_node in &definition.nodes {
         for (param_key, param_value) in &consumer_node.parameters {
             let ParamValue::Reference {
@@ -447,11 +470,12 @@ fn check_reference_edges(
 
             // Opacity-gated path walk: `Opaque` fails open; `Unresolved` is a
             // provable mistake on an otherwise fully-closed path (hard error in
-            // both modes); `Resolved` hands back the leaf field to type-check.
-            let producer_leaf = match producer_schemas
+            // both modes); successful outcomes retain whether the reference
+            // selected the complete root or one field.
+            let producer_reference = match producer_schemas
                 .output
                 .as_schema()
-                .walk_authored_path(output_path)
+                .walk_reference_path(output_path)
             {
                 PathWalk::Opaque => continue,
                 PathWalk::Unresolved(reason) => {
@@ -466,11 +490,24 @@ fn check_reference_edges(
                     )));
                     continue;
                 },
-                PathWalk::Resolved(leaf) => leaf.clone(),
-                // `PathWalk` is `#[non_exhaustive]`: a future verdict variant
-                // defaults to fail-open, the same posture as `Opaque`, never a
-                // silent hard error.
-                _ => continue,
+                PathWalk::ResolvedRoot => ProducerReference::Root,
+                PathWalk::Resolved(field) => ProducerReference::Field(field),
+                // `PathWalk` is `#[non_exhaustive]`. Only outcomes that the
+                // schema walker explicitly classifies as opaque may fail open;
+                // workflow must understand any future outcome before admitting
+                // references carrying it.
+                _ => {
+                    errors.push(WorkflowError::ReferencePathUnresolved(Box::new(
+                        crate::error::ReferencePathUnresolvedDetails {
+                            consumer_node: consumer_node.id.clone(),
+                            param_key: param_key.clone(),
+                            producer_node: producer_key.clone(),
+                            output_path: output_path.clone(),
+                            reason: "unsupported schema reference-path outcome".to_owned(),
+                        },
+                    )));
+                    continue;
+                },
             };
 
             // Resolve the consumer's expected field for this parameter. The
@@ -480,7 +517,7 @@ fn check_reference_edges(
             // suite). Undeterminable (invalid key, no such field, or the field
             // is itself opaque per the same classification the walk above
             // uses) → fail-open, skip only the type check; the walk's
-            // `Resolved` verdict above already stands on its own.
+            // successful verdict above already stands on its own.
             let Ok(consumer_key) = FieldKey::new(param_key.as_str()) else {
                 continue;
             };
@@ -492,7 +529,15 @@ fn check_reference_edges(
                 continue;
             }
 
-            match explain_field_assignable(&producer_leaf, consumer_field) {
+            let assignability = match producer_reference {
+                ProducerReference::Root => {
+                    explain_root_field_assignable(&producer_schemas.output, consumer_field)
+                },
+                ProducerReference::Field(field) => explain_field_assignable(field, consumer_field),
+            };
+            match assignability {
+                // Provably compatible: admit in both policy modes.
+                Assignability::Yes => {},
                 Assignability::No(incompatibilities) => {
                     errors.push(WorkflowError::ReferenceTypeIncompatible(Box::new(
                         crate::error::ReferenceTypeIncompatDetails {
@@ -515,9 +560,25 @@ fn check_reference_edges(
                         },
                     )));
                 },
-                // `Yes`, an `Unknown` in Gradual mode, or any future verdict
-                // variant (the enum is `#[non_exhaustive]`): pass the reference.
-                _ => {},
+                // Gradual mode deliberately admits current undecidable outcomes.
+                Assignability::Unknown(_) => {},
+                // Future verdicts remain gradual-only until workflow learns
+                // their semantics; Strict rejects with the existing typed
+                // undecidable diagnostic and its no-detail sentinel.
+                _ => match mode {
+                    SchemaCheckMode::Gradual => {},
+                    SchemaCheckMode::Strict => {
+                        errors.push(WorkflowError::ReferenceTypeUndecidable(Box::new(
+                            crate::error::ReferenceTypeUndecidableDetails {
+                                consumer_node: consumer_node.id.clone(),
+                                param_key: param_key.clone(),
+                                producer_node: producer_key.clone(),
+                                output_path: output_path.clone(),
+                                reasons: Vec::new(),
+                            },
+                        )));
+                    },
+                },
             }
         }
     }
@@ -631,7 +692,7 @@ mod tests {
 
     use chrono::Utc;
     use nebula_core::{ActionKey, NodeKey, WorkflowId, node_key, port_key};
-    use nebula_schema::{Field, FieldKey, Schema, ValidSchema, schema_of};
+    use nebula_schema::{Field, FieldKey, Schema, ValidSchema, ValuePath, schema_of};
 
     use super::*;
     use crate::{
@@ -737,8 +798,10 @@ mod tests {
         let a = node_key!("a");
         let ghost = node_key!("ghost");
         let mut n = node(a);
-        n.parameters
-            .insert("input".into(), ParamValue::reference(ghost, "$.data"));
+        n.parameters.insert(
+            "input".into(),
+            ParamValue::reference(ghost, ValuePath::from_pointer("/data").unwrap()),
+        );
         let def = make_definition("ref", vec![n], vec![]);
         let errors = validate_workflow(&def);
         assert!(
@@ -756,9 +819,10 @@ mod tests {
         let a = node_key!("a");
         let b = node_key!("b");
         let mut consumer = node(a);
-        consumer
-            .parameters
-            .insert("input".into(), ParamValue::reference(b.clone(), "$.data"));
+        consumer.parameters.insert(
+            "input".into(),
+            ParamValue::reference(b.clone(), ValuePath::from_pointer("/data").unwrap()),
+        );
         let def = make_definition("ref-no-conn", vec![consumer, node(b)], vec![]);
         let errors = validate_workflow(&def);
         assert!(
@@ -776,9 +840,10 @@ mod tests {
         let a = node_key!("a");
         let b = node_key!("b");
         let mut consumer = node(a.clone());
-        consumer
-            .parameters
-            .insert("input".into(), ParamValue::reference(b.clone(), "$.data"));
+        consumer.parameters.insert(
+            "input".into(),
+            ParamValue::reference(b.clone(), ValuePath::from_pointer("/data").unwrap()),
+        );
         let def = make_definition(
             "ref-with-conn",
             vec![consumer, node(b.clone())],
@@ -1814,7 +1879,7 @@ mod tests {
             param_key.to_owned(),
             ParamValue::Reference {
                 node_key: a.clone(),
-                output_path: output_path.to_owned(),
+                output_path: ValuePath::from_pointer(output_path).unwrap(),
             },
         );
         let def = make_definition(
@@ -1862,11 +1927,9 @@ mod tests {
         );
     }
 
-    /// The round-2 regression, pinned against real derive output: a nested
-    /// `serde_json::Value` field derives to an EMPTY `Field::Object`, not
-    /// `Any` — the outer producer is still "concretely typed", so a naive
-    /// root-only check would never fire. `$.data.foo` must fail open in both
-    /// modes.
+    /// A dynamic nested value remains opaque even when the enclosing record
+    /// declares other concrete fields. `/data/foo` cannot gain a static
+    /// type from the outer record and must fail open in both modes.
     #[test]
     fn nested_value_field_reference_fails_open() {
         #[derive(nebula_schema::Schema)]
@@ -1876,8 +1939,11 @@ mod tests {
             data: serde_json::Value,
         }
 
-        let (def, _, _) = two_node_reference_def("value", "$.data.foo");
-        let resolver = resolver_with(schema_of::<Resp>(), ValidSchema::empty());
+        let (def, _, _) = two_node_reference_def("value", "/data/foo");
+        let resolver = resolver_with(
+            schema_of::<Resp>().expect("valid test catalog definition"),
+            ValidSchema::empty(),
+        );
 
         for mode in [SchemaCheckMode::Gradual, SchemaCheckMode::Strict] {
             let errors = validate_workflow_with_resolver_mode(&def, &resolver, mode);
@@ -1897,8 +1963,11 @@ mod tests {
             Noop,
         }
 
-        let (def, _, _) = two_node_reference_def("value", "$.x");
-        let resolver = resolver_with(schema_of::<Event>(), ValidSchema::empty());
+        let (def, _, _) = two_node_reference_def("value", "/x");
+        let resolver = resolver_with(
+            schema_of::<Event>().expect("valid test catalog definition"),
+            ValidSchema::empty(),
+        );
 
         for mode in [SchemaCheckMode::Gradual, SchemaCheckMode::Strict] {
             let errors = validate_workflow_with_resolver_mode(&def, &resolver, mode);
@@ -1918,8 +1987,11 @@ mod tests {
             None,
         }
 
-        let (def, _, _) = two_node_reference_def("value", "$.key");
-        let resolver = resolver_with(schema_of::<Auth>(), ValidSchema::empty());
+        let (def, _, _) = two_node_reference_def("value", "/key");
+        let resolver = resolver_with(
+            schema_of::<Auth>().expect("valid test catalog definition"),
+            ValidSchema::empty(),
+        );
 
         let errors = validate_workflow_with_resolver(&def, &resolver);
         assert_no_reference_errors(&errors, "Gradual");
@@ -1941,8 +2013,11 @@ mod tests {
             contact: Contact,
         }
 
-        let (def, _, _) = two_node_reference_def("value", "$.contact.phone");
-        let resolver = resolver_with(schema_of::<Resp>(), ValidSchema::empty());
+        let (def, _, _) = two_node_reference_def("value", "/contact/phone");
+        let resolver = resolver_with(
+            schema_of::<Resp>().expect("valid test catalog definition"),
+            ValidSchema::empty(),
+        );
 
         for mode in [SchemaCheckMode::Gradual, SchemaCheckMode::Strict] {
             let errors = validate_workflow_with_resolver_mode(&def, &resolver, mode);
@@ -1961,8 +2036,11 @@ mod tests {
             items: Vec<String>,
         }
 
-        let (def, a, b) = two_node_reference_def("value", "$.items.first");
-        let resolver = resolver_with(schema_of::<Resp>(), ValidSchema::empty());
+        let (def, a, b) = two_node_reference_def("value", "/items/first");
+        let resolver = resolver_with(
+            schema_of::<Resp>().expect("valid test catalog definition"),
+            ValidSchema::empty(),
+        );
 
         for mode in [SchemaCheckMode::Gradual, SchemaCheckMode::Strict] {
             let errors = validate_workflow_with_resolver_mode(&def, &resolver, mode);
@@ -1998,9 +2076,9 @@ mod tests {
             contact: Contact,
         }
 
-        let (def, _, _) = two_node_reference_def("recipient_email", "$.contact.email");
+        let (def, _, _) = two_node_reference_def("recipient_email", "/contact/email");
         let resolver = resolver_with(
-            schema_of::<Resp>(),
+            schema_of::<Resp>().expect("valid test catalog definition"),
             single_field_schema("recipient_email", true),
         );
 
@@ -2022,6 +2100,128 @@ mod tests {
         }
     }
 
+    #[test]
+    fn matching_record_root_reference_passes() {
+        #[derive(nebula_schema::Schema)]
+        #[expect(dead_code, reason = "fields exercised via derive")]
+        struct Payload {
+            name: String,
+        }
+
+        #[derive(nebula_schema::Schema)]
+        #[expect(dead_code, reason = "fields exercised via derive")]
+        struct ConsumerParams {
+            payload: Payload,
+        }
+
+        let (definition, _, _) = two_node_reference_def("payload", "");
+        let resolver = resolver_with(
+            schema_of::<Payload>().expect("valid producer test schema"),
+            schema_of::<ConsumerParams>().expect("valid consumer test schema"),
+        );
+
+        for mode in [SchemaCheckMode::Gradual, SchemaCheckMode::Strict] {
+            let errors = validate_workflow_with_resolver_mode(&definition, &resolver, mode);
+            assert!(
+                errors.is_empty(),
+                "{mode:?}: matching record root reference must pass; got: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mismatching_record_root_reference_is_rejected() {
+        #[derive(nebula_schema::Schema)]
+        #[expect(dead_code, reason = "fields exercised via derive")]
+        struct Payload {
+            name: String,
+        }
+
+        let (definition, _, _) = two_node_reference_def("payload", "");
+        let resolver = resolver_with(
+            schema_of::<Payload>().expect("valid producer test schema"),
+            single_field_schema("payload", true),
+        );
+
+        for mode in [SchemaCheckMode::Gradual, SchemaCheckMode::Strict] {
+            let errors = validate_workflow_with_resolver_mode(&definition, &resolver, mode);
+            assert_eq!(
+                errors
+                    .iter()
+                    .filter(|error| matches!(error, WorkflowError::ReferenceTypeIncompatible(_)))
+                    .count(),
+                1,
+                "{mode:?}: record root assigned to a string field must be rejected; got: \
+                 {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn matching_scalar_root_reference_passes() {
+        let (definition, _, _) = two_node_reference_def("payload", "");
+        let resolver = resolver_with(
+            schema_of::<String>().expect("valid string root test schema"),
+            single_field_schema("payload", true),
+        );
+
+        for mode in [SchemaCheckMode::Gradual, SchemaCheckMode::Strict] {
+            let errors = validate_workflow_with_resolver_mode(&definition, &resolver, mode);
+            assert!(
+                errors.is_empty(),
+                "{mode:?}: matching scalar root reference must pass; got: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mismatching_scalar_root_reference_is_rejected() {
+        let consumer_input = Schema::builder()
+            .add(Field::boolean(FieldKey::new("payload").unwrap()).required())
+            .build()
+            .unwrap();
+        let (definition, _, _) = two_node_reference_def("payload", "");
+        let resolver = resolver_with(
+            schema_of::<String>().expect("valid string root test schema"),
+            consumer_input,
+        );
+
+        for mode in [SchemaCheckMode::Gradual, SchemaCheckMode::Strict] {
+            let errors = validate_workflow_with_resolver_mode(&definition, &resolver, mode);
+            assert_eq!(
+                errors
+                    .iter()
+                    .filter(|error| matches!(error, WorkflowError::ReferenceTypeIncompatible(_)))
+                    .count(),
+                1,
+                "{mode:?}: string root assigned to a boolean field must be rejected; got: \
+                 {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn escaped_rfc6901_reference_segment_is_decoded_in_diagnostic() {
+        let (definition, _, _) = two_node_reference_def("payload", "/a~1b~0c");
+        let resolver = resolver_with(
+            schema_of::<String>().expect("valid string root test schema"),
+            single_field_schema("payload", true),
+        );
+
+        for mode in [SchemaCheckMode::Gradual, SchemaCheckMode::Strict] {
+            let errors = validate_workflow_with_resolver_mode(&definition, &resolver, mode);
+            let unresolved = errors.iter().find_map(|error| match error {
+                WorkflowError::ReferencePathUnresolved(details) => Some(details),
+                _ => None,
+            });
+            assert!(
+                unresolved.is_some_and(|details| details.reason.contains("a/b~c")),
+                "{mode:?}: the unresolved diagnostic must contain the decoded `a/b~c` segment; \
+                 got: {errors:?}"
+            );
+        }
+    }
+
     /// A fully-resolved path whose leaf is providably NOT assignable to the
     /// consumer's expected field is a hard `ReferenceTypeIncompatible` in
     /// both modes (it is never merely undecidable).
@@ -2038,8 +2238,11 @@ mod tests {
             .build()
             .unwrap();
 
-        let (def, a, b) = two_node_reference_def("greeting", "$.name");
-        let resolver = resolver_with(schema_of::<Resp>(), consumer_input);
+        let (def, a, b) = two_node_reference_def("greeting", "/name");
+        let resolver = resolver_with(
+            schema_of::<Resp>().expect("valid test catalog definition"),
+            consumer_input,
+        );
 
         for mode in [SchemaCheckMode::Gradual, SchemaCheckMode::Strict] {
             let errors = validate_workflow_with_resolver_mode(&def, &resolver, mode);
@@ -2075,8 +2278,11 @@ mod tests {
             .build()
             .unwrap();
 
-        let (def, _, _) = two_node_reference_def("qty", "$.amount");
-        let resolver = resolver_with(schema_of::<Resp>(), consumer_input);
+        let (def, _, _) = two_node_reference_def("qty", "/amount");
+        let resolver = resolver_with(
+            schema_of::<Resp>().expect("valid test catalog definition"),
+            consumer_input,
+        );
 
         let gradual_errors = validate_workflow_with_resolver(&def, &resolver);
         assert_no_reference_errors(&gradual_errors, "Gradual");
@@ -2102,7 +2308,7 @@ mod tests {
     /// fail-open, same posture as the main-flow port check.
     #[test]
     fn reference_producer_unregistered_fails_open() {
-        let (def, _, _) = two_node_reference_def("value", "$.anything");
+        let (def, _, _) = two_node_reference_def("value", "/anything");
         // Only the consumer resolves; the producer action is absent from the map.
         let mut schemas = HashMap::new();
         schemas.insert(
@@ -2141,8 +2347,11 @@ mod tests {
             recipient: bool,
         }
 
-        let (def, _, _) = two_node_reference_def("to", "$.name");
-        let resolver = resolver_with(schema_of::<Resp>(), schema_of::<ConsumerParams>());
+        let (def, _, _) = two_node_reference_def("to", "/name");
+        let resolver = resolver_with(
+            schema_of::<Resp>().expect("valid test catalog definition"),
+            schema_of::<ConsumerParams>().expect("valid test catalog definition"),
+        );
 
         for mode in [SchemaCheckMode::Gradual, SchemaCheckMode::Strict] {
             let errors = validate_workflow_with_resolver_mode(&def, &resolver, mode);

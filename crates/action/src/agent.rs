@@ -46,7 +46,7 @@
 //! token and also honours `turn_timeout`. Authors do not need to poll the
 //! token themselves; the runtime handles it.
 
-use std::{future::Future, time::Duration};
+use std::{future::Future, sync::Arc, time::Duration};
 
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -94,8 +94,8 @@ use crate::{
 ///     type Input  = String;
 ///     type Output = String;
 ///
-///     fn metadata() -> ActionMetadata {
-///         ActionMetadata::new(action_key!("demo.summariser"), "Summariser", "Summarises input")
+///     fn metadata() -> nebula_action::ActionMetadataDraft {
+///         nebula_action::ActionMetadataDraft::new(action_key!("demo.summariser"), nebula_action::metadata_name!("Summariser"), "Summarises input")
 ///     }
 ///     fn dependencies() -> &'static Dependencies {
 ///         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -204,9 +204,9 @@ pub trait AgentAction: Action {
 /// Serialisation mismatches in `init_turn` and `step` surface as
 /// [`ActionError::Validation`] rather than panicking.
 #[async_trait::async_trait]
-pub trait AgentHandle: Send + Sync + 'static {
+pub trait AgentHandle: crate::handle::sealed::Agent + Send + Sync + 'static {
     /// Action metadata (key, version, ports, schemas), with `ActionKind::Agent` stamped.
-    fn metadata(&self) -> &ActionMetadata;
+    fn metadata(&self) -> &Arc<ActionMetadata>;
 
     /// Maximum turns the engine is allowed to call `step` for this handle.
     fn max_turns(&self) -> u32;
@@ -214,14 +214,20 @@ pub trait AgentHandle: Send + Sync + 'static {
     /// Per-turn wall-clock deadline, if any.
     fn turn_timeout(&self) -> Option<Duration>;
 
-    /// Build the initial turn state as JSON from the serialised workflow input.
+    /// Admit erased ingress against this handle's complete typed contract.
+    fn prepare_input(
+        &self,
+        input: crate::ActionInput,
+    ) -> Result<crate::PreparedActionInput, ActionError>;
+
+    /// Build JSON turn state from prepared typed input.
     ///
     /// # Errors
     ///
-    /// Returns [`ActionError::Validation`] if `input` cannot be deserialised
-    /// into the typed `Input`, or [`ActionError::Fatal`] if the resulting turn
+    /// Returns [`ActionError::Validation`] if input admission, proof matching, or
+    /// typed decoding fails, or [`ActionError::Fatal`] if the resulting turn
     /// state cannot be serialised back to JSON.
-    fn init_turn(&self, input: &Value) -> Result<Value, ActionError>;
+    fn init_turn(&self, input: crate::PreparedActionInput) -> Result<Value, ActionError>;
 
     /// Advance one turn with mutable JSON turn state and return the next result.
     ///
@@ -242,9 +248,8 @@ pub trait AgentHandle: Send + Sync + 'static {
 
 /// Wraps an [`AgentAction`] as a [`dyn AgentHandle`].
 ///
-/// Handles JSON (de)serialization of input, output, and turn state so the
-/// engine works with untyped `serde_json::Value` while action authors write
-/// strongly-typed Rust.
+/// Admits raw input or consumes a matching resolved proof, then handles JSON
+/// serialization of output and turn state while action authors write typed Rust.
 ///
 /// Turn state mutations performed by the typed action are flushed back to the
 /// JSON `turn_state` argument before any error is propagated — matching the
@@ -256,14 +261,39 @@ pub trait AgentHandle: Send + Sync + 'static {
 /// `ERROR` level so the checkpoint loss is observable.
 pub struct AgentActionAdapter<A> {
     action: A,
-    meta: ActionMetadata,
+    meta: Arc<ActionMetadata>,
+    input_contract: crate::input::ActionInputContract,
 }
 
+impl<A> crate::handle::sealed::Agent for AgentActionAdapter<A> {}
+
 impl<A> AgentActionAdapter<A> {
-    /// Wrap a typed agent action with its pre-stamped metadata.
-    #[must_use]
-    pub fn new(action: A, meta: ActionMetadata) -> Self {
-        Self { action, meta }
+    /// Wrap a typed agent action, admitting its associated schemas and kind.
+    ///
+    /// # Errors
+    /// Returns a typed catalog error if either associated schema is invalid.
+    #[tracing::instrument(name = "action.agent.admit", skip_all, err)]
+    pub fn new(action: A) -> Result<Self, crate::ActionMetadataAdmissionError>
+    where
+        A: AgentAction,
+    {
+        let meta = <A as Action>::metadata().admit_for::<A>(crate::ActionKind::Agent)?;
+        let meta = Arc::new(meta);
+        let input_contract = crate::input::ActionInputContract::new(meta.base().schema());
+        Ok(Self {
+            action,
+            meta,
+            input_contract,
+        })
+    }
+
+    pub(crate) fn with_metadata(action: A, meta: Arc<ActionMetadata>) -> Self {
+        let input_contract = crate::input::ActionInputContract::new(meta.base().schema());
+        Self {
+            action,
+            meta,
+            input_contract,
+        }
     }
 
     /// Consume the adapter, returning the inner action.
@@ -281,7 +311,7 @@ where
     A::Output: Serialize + Send + Sync,
     A::Turn: Serialize + DeserializeOwned + Clone + Send + Sync,
 {
-    fn metadata(&self) -> &ActionMetadata {
+    fn metadata(&self) -> &Arc<ActionMetadata> {
         &self.meta
     }
 
@@ -293,14 +323,15 @@ where
         self.action.turn_timeout()
     }
 
-    fn init_turn(&self, input: &Value) -> Result<Value, ActionError> {
-        let typed_input: A::Input = serde_json::from_value(input.clone()).map_err(|e| {
-            ActionError::validation(
-                "input",
-                ValidationReason::MalformedJson,
-                Some(e.to_string()),
-            )
-        })?;
+    fn prepare_input(
+        &self,
+        input: crate::ActionInput,
+    ) -> Result<crate::PreparedActionInput, ActionError> {
+        self.input_contract.prepare::<A::Input>(input)
+    }
+
+    fn init_turn(&self, input: crate::PreparedActionInput) -> Result<Value, ActionError> {
+        let typed_input = input.into_typed::<A::Input>(&self.input_contract)?;
         let turn = self.action.init_turn(&typed_input);
         serde_json::to_value(&turn)
             .map_err(|e| ActionError::fatal(format!("init_turn serialization failed: {e}")))
@@ -352,7 +383,7 @@ where
             },
             (Err(ser_err), Err(action_err)) => {
                 tracing::error!(
-                    action = %<A as Action>::metadata().base.key,
+                    action = %self.meta.base().key(),
                     serialization_error = %ser_err,
                     action_error = %action_err,
                     "agent adapter: turn state serialization failed on error path; \
@@ -373,7 +404,7 @@ where
 impl<A: Action> std::fmt::Debug for AgentActionAdapter<A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentActionAdapter")
-            .field("action", &<A as Action>::metadata().base.key)
+            .field("action", self.meta.base().key())
             .finish_non_exhaustive()
     }
 }
@@ -384,6 +415,12 @@ impl<A: Action> std::fmt::Debug for AgentActionAdapter<A> {
 mod tests {
     use std::sync::{Arc, OnceLock};
 
+    #[test]
+    fn public_adapter_stamps_agent_kind() {
+        let adapter = AgentActionAdapter::new(CountingAgent { target: 1 }).unwrap();
+        assert_eq!(adapter.metadata().kind(), crate::ActionKind::Agent);
+    }
+
     use nebula_core::Dependencies;
     use serde::{Deserialize, Serialize};
     use serde_json::Value;
@@ -392,7 +429,6 @@ mod tests {
     use crate::{
         action::Action,
         error::ActionError,
-        metadata::ActionMetadata,
         output::ActionOutput,
         result::{ActionResult, BreakReason},
         testing::{TestActionContext, TestContextBuilder},
@@ -418,10 +454,10 @@ mod tests {
         type Input = Value;
         type Output = Value;
 
-        fn metadata() -> ActionMetadata {
-            ActionMetadata::new(
+        fn metadata() -> crate::ActionMetadataDraft {
+            crate::ActionMetadataDraft::new(
                 nebula_core::action_key!("test.agent.counting"),
-                "CountingAgent",
+                crate::metadata_name!("CountingAgent"),
                 "Counts up to target then breaks",
             )
         }
@@ -476,10 +512,10 @@ mod tests {
         type Input = Value;
         type Output = Value;
 
-        fn metadata() -> ActionMetadata {
-            ActionMetadata::new(
+        fn metadata() -> crate::ActionMetadataDraft {
+            crate::ActionMetadataDraft::new(
                 nebula_core::action_key!("test.agent.no_mutation"),
-                "NoMutationAgent",
+                crate::metadata_name!("NoMutationAgent"),
                 "Keeps turn state unchanged; breaks after N steps tracked externally",
             )
         }
@@ -523,10 +559,11 @@ mod tests {
     #[test]
     fn adapter_init_turn_round_trips() {
         let adapter =
-            AgentActionAdapter::new(CountingAgent { target: 3 }, CountingAgent::metadata());
-        let turn_json = adapter
-            .init_turn(&serde_json::json!(null))
-            .expect("init_turn must succeed");
+            AgentActionAdapter::new(CountingAgent { target: 3 }).expect("valid agent schemas");
+        let input = adapter
+            .prepare_input(crate::ActionInput::Raw(serde_json::json!(null)))
+            .expect("input preparation must succeed");
+        let turn_json = adapter.init_turn(input).expect("init_turn must succeed");
         let turn: CountingTurn =
             serde_json::from_value(turn_json).expect("init_turn must produce valid JSON");
         assert_eq!(turn.count, 0, "initial count must be 0");
@@ -535,14 +572,14 @@ mod tests {
     /// Proves: `step` advances turn state and returns `Continue` on intermediate turns.
     #[tokio::test]
     async fn adapter_step_advances_state_and_continues() {
-        let adapter = Arc::new(AgentActionAdapter::new(
-            CountingAgent { target: 3 },
-            CountingAgent::metadata(),
-        ));
+        let adapter = Arc::new(
+            AgentActionAdapter::new(CountingAgent { target: 3 }).expect("valid agent schemas"),
+        );
         let ctx = make_ctx();
-        let mut turn_state = adapter
-            .init_turn(&serde_json::json!(null))
-            .expect("init_turn must succeed");
+        let input = adapter
+            .prepare_input(crate::ActionInput::Raw(serde_json::json!(null)))
+            .expect("input preparation must succeed");
+        let mut turn_state = adapter.init_turn(input).expect("init_turn must succeed");
 
         // Turn 1: count 0 → 1, Continue
         let result = adapter
@@ -575,7 +612,7 @@ mod tests {
     #[tokio::test]
     async fn adapter_step_returns_validation_on_bad_turn_state() {
         let adapter =
-            AgentActionAdapter::new(CountingAgent { target: 3 }, CountingAgent::metadata());
+            AgentActionAdapter::new(CountingAgent { target: 3 }).expect("valid agent schemas");
         let ctx = make_ctx();
         let mut bad_turn_state = serde_json::json!("this is not a CountingTurn");
 
@@ -600,16 +637,15 @@ mod tests {
         //
         // `steps_before_break: 2` means the action returns Continue for two
         // turns (without mutating turn state) and only breaks on the third.
-        let adapter = AgentActionAdapter::new(
-            NoMutationAgent {
-                steps_before_break: 2,
-            },
-            NoMutationAgent::metadata(),
-        );
+        let adapter = AgentActionAdapter::new(NoMutationAgent {
+            steps_before_break: 2,
+        })
+        .expect("valid agent schemas");
         let ctx = make_ctx();
-        let mut turn_state = adapter
-            .init_turn(&serde_json::json!(null))
-            .expect("init_turn must succeed");
+        let input = adapter
+            .prepare_input(crate::ActionInput::Raw(serde_json::json!(null)))
+            .expect("input preparation must succeed");
+        let mut turn_state = adapter.init_turn(input).expect("init_turn must succeed");
 
         // Turn 1: must Continue, no mutation.
         let r1 = adapter
@@ -650,7 +686,7 @@ mod tests {
     #[test]
     fn adapter_is_dyn_compatible() {
         let adapter =
-            AgentActionAdapter::new(CountingAgent { target: 1 }, CountingAgent::metadata());
+            AgentActionAdapter::new(CountingAgent { target: 1 }).expect("valid agent schemas");
         let _: Arc<dyn AgentHandle> = Arc::new(adapter);
     }
 }

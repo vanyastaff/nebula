@@ -20,26 +20,26 @@ use crate::{
 /// - **Object**: number of top-level keys.
 ///
 /// All other input types yield a typed error.
-pub fn length(
-    args: &[Value],
+pub(crate) fn length(
+    args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("length", args, 1)?;
-    match &args[0] {
+    match args[0] {
         Value::String(t) => Ok(Value::Number(crate::value_utils::char_count(t).into())),
         Value::Array(arr) => Ok(Value::Number((arr.len() as i64).into())),
         Value::Object(obj) => Ok(Value::Number((obj.len() as i64).into())),
         _ => Err(ExpressionError::expression_type_error(
             "string, array, or object",
-            crate::value_utils::value_type_name(&args[0]),
+            crate::value_utils::value_type_name(args[0]),
         )),
     }
 }
 
 /// Check if value is null
-pub fn is_null(
-    args: &[Value],
+pub(crate) fn is_null(
+    args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
@@ -48,8 +48,8 @@ pub fn is_null(
 }
 
 /// Check if value is an array
-pub fn is_array(
-    args: &[Value],
+pub(crate) fn is_array(
+    args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
@@ -58,8 +58,8 @@ pub fn is_array(
 }
 
 /// Check if value is an object
-pub fn is_object(
-    args: &[Value],
+pub(crate) fn is_object(
+    args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
@@ -68,8 +68,8 @@ pub fn is_object(
 }
 
 /// Check if value is a string
-pub fn is_string(
-    args: &[Value],
+pub(crate) fn is_string(
+    args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
@@ -78,8 +78,8 @@ pub fn is_string(
 }
 
 /// Check if value is a number
-pub fn is_number(
-    args: &[Value],
+pub(crate) fn is_number(
+    args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
@@ -89,8 +89,8 @@ pub fn is_number(
 
 /// Generate a new UUID
 #[cfg(feature = "uuid")]
-pub fn uuid(
-    _args: &[Value],
+pub(crate) fn uuid(
+    _args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
@@ -100,8 +100,8 @@ pub fn uuid(
 
 /// Generate a new UUID (fallback when feature disabled)
 #[cfg(not(feature = "uuid"))]
-pub fn uuid(
-    _args: &[Value],
+pub(crate) fn uuid(
+    _args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
@@ -113,8 +113,8 @@ pub fn uuid(
 /// Return the first non-null value from the arguments
 ///
 /// Example: `coalesce(null, null, 42, "hello")` returns `42`
-pub fn coalesce(
-    args: &[Value],
+pub(crate) fn coalesce(
+    args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
@@ -122,7 +122,7 @@ pub fn coalesce(
 
     for arg in args {
         if !arg.is_null() {
-            return Ok(arg.clone());
+            return Ok((*arg).clone());
         }
     }
 
@@ -132,13 +132,13 @@ pub fn coalesce(
 /// Return the type name of a value as a string
 ///
 /// Example: `type_of(42)` returns `"number"`
-pub fn type_of(
-    args: &[Value],
+pub(crate) fn type_of(
+    args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("type_of", args, 1)?;
     Ok(Value::String(
-        crate::value_utils::value_type_name(&args[0]).to_string(),
+        crate::value_utils::value_type_name(args[0]).to_string(),
     ))
 }

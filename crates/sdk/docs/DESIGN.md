@@ -21,29 +21,52 @@ for direct use.
 ## Supported surface
 
 - `prelude` — curated authoring types and traits.
-- `nebula-metadata` re-export set (settled issue 996, `crates/metadata/docs/DESIGN.md` §8): the
-  prelude re-exports this crate's **entire** public surface — `BaseMetadata`, `Metadata`, `Icon`,
-  `MaturityLevel`, `DeprecationNotice`, `BaseCompatError`, `validate_base_compat`,
-  `PluginManifest`, `PluginManifestBuilder`, `ManifestError`, `PluginDependency` — not a curated
-  subset. `BaseCompatError<K>` is reachable because `ActionMetadata`/`CredentialMetadata`/
-  `ResourceMetadata` — the three composed metadata **types**, not their `MetadataCompatibilityError`
-  enums — are already in this prelude, and each type's `validate_compatibility` returns an error
-  carrying `BaseCompatError` as the payload of its `Base(..)` variant; without the re-export a
-  consumer could obtain that value but not name its payload type. The three
-  `MetadataCompatibilityError` enums themselves are re-exported from their own crate roots
-  (`action/src/lib.rs:141`, `credential/src/lib.rs:274`, `resource/src/lib.rs:382`) and deliberately
-  **not** from the prelude (re-exporting three same-named types from one facade was out of scope).
-  `PluginManifestBuilder` is reachable because a consumer already names it as a parameter type
-  (`crates/plugin/tests/frozen_registry.rs:284,294`).
-- `integration` — narrow integration contracts; credential tests currently expose
-  `TestFailureCode` and `TestResult` here.
-- `action::ActionBuilder` and `workflow::WorkflowBuilder` — programmatic authoring.
+- Metadata authoring is draft-only. `ActionMetadataDraft`, `CredentialMetadataDraft`, and
+  `ResourceMetadataDraft` share curated author vocabulary (`MetadataName`, `MetadataVersion`,
+  `Icon`, `DeprecationNotice`) without exposing `MetadataDraft` or any admitted/recorded form.
+  Runtime factories alone bind schemas and create terminal metadata.
+- `integration` — narrow integration contracts; credential integrations expose
+  `ResolveResult`, `StaticResolveResult`, `TestFailureCode`, and `TestResult` here.
+- `action::ActionMetadataDraft` and `workflow::WorkflowBuilder` — programmatic authoring.
 - `runtime::{TestRuntime, RunReport}` and feature-gated `testing` — integration test support.
 - `params!`, `workflow!`, `simple_action!`, and `json!` — SDK-owned macro entry points.
 - `Error` / `Result` plus selected general-purpose ecosystem re-exports.
 
-Storage repositories, owner selectors, authorization proofs, credential runtime constructors,
-engine managers, admin writers, and unscoped resolvers are deliberately outside the surface.
+Storage repositories, owner selectors, authorization and input proofs, terminal metadata,
+credential runtime constructors, action adapters, engine managers, erased resource factories,
+registration requests, structural slot identities, admin writers, and unscoped resolvers are
+deliberately outside the surface. `#[doc(hidden)]` affects documentation only, so the macro ABI
+is held to the same authority boundary as every documented persona.
+
+## Schema foundation boundary
+
+The prelude names the authored value stage plus schema construction and diagnostic
+types. Compiled, validated, resolved, and erased-input proofs remain runtime-owned.
+It does not glob-export the schema implementation crate. `params!` requires `data;`
+or `template;` intent and returns fallible authored construction. A mixed-intent
+object can be built from data with explicit `AuthoredValue::Expression` nodes.
+`ProgramSyntax` is curated separately from expression permission: shorthand stays
+AUTO, while `Expression::template` retains always-string intent through authored
+wire and compiled evaluation.
+
+`RootShape` is the authoritative Any/Scalar/Record/Union contract. The curated prelude names
+its shape descriptors and `ScalarKind`/`ScalarSchema` without leaf-crate globs. Unit types
+and unit structs describe null, primitive types retain their exact scalar domains, and
+empty braced records still describe objects. `params! { data; () }` authors null;
+`params! { data; }` authors an empty object. A single value can also opt into template
+authoring, but scalar schemas do not grant root-expression admission.
+Populated resource configs provide `HasSchema` through a `Schema` derive or manual
+implementation and opt out of auto-generation with `#[config(schema = external)]`.
+Only unit and genuinely empty braced configs may use the standalone derive's schema.
+
+`schema_of` remains fallible because authors can supply invalid schema definitions.
+Typed `Action::Input`, `Action::Output`, and `Credential::Properties` are the public
+boundary. SDK test runtime methods accept ordinary JSON and drive the same private
+factory admission path as production without exposing its proof tokens.
+
+An exact declaration must permit an authored expression. Permission is not inherited
+from a parent, while an ancestor denial forbids expressions in its entire subtree.
+Data ingress never turns expression-looking JSON into a program.
 
 ## Dependency direction
 
@@ -56,11 +79,15 @@ runtime commands through curated builders.
 
 `tests/public_perimeter_external_contract.rs` builds a real external fixture whose manifest has
 exactly one Nebula dependency: `nebula-sdk`. The positive binary exercises the currently supported
-manual/builder subset: `ActionBuilder`, `WorkflowBuilder`, and credential `TestResult`. Independent
-negative binaries prove that internal authority constructors, owner
-selectors, raw writers, admin repositories, runtime constructors, and unscoped resolvers are not
-reachable, and assert the intended compiler diagnostic rather than accepting an unrelated failure.
-This fixture does not prove procedural-derive authoring.
+manual authoring subset: typed `Action::Input`/`Output`, `ActionMetadataDraft`, `simple_action!`,
+`WorkflowBuilder`, and credential `TestResult`. Independent negative binaries prove that internal
+authority constructors, owner selectors, raw writers, proof values, terminal metadata, action
+adapters, runtime constructors, and unscoped resolvers are not reachable, and assert the intended
+compiler diagnostic rather than accepting an unrelated failure.
+This fixture does not prove procedural-derive authoring. The independent
+`derive_external_contract` fixture covers SDK-only and renamed-leaf derives,
+  including typed credential properties and draft metadata. `foundation_contract` executes the
+  authored-value, schema-shape, typed action, credential, and macro laws.
 
 ## Invariants
 
@@ -71,22 +98,23 @@ This fixture does not prove procedural-derive authoring.
 - Exported declarative macro implementation paths must stay under `$crate`. Procedural derives must
   resolve an SDK-owned path when the downstream manifest contains only `nebula-sdk`; no macro may
   require authors to name Nebula implementation crates.
+- SDK-only resource derives produce an opaque `ResourceContribution` through
+  `<Name>Factory::into_contribution()`. The hidden bridge may construct that token from typed
+  author contracts, but it exposes no manager, registration request, slot identity, terminal
+  metadata, or erased runtime factory trait.
 - Breaking changes require release notes and a migration path. Intentional removal of broad crate
   re-exports is a breaking perimeter correction.
-- Issue 1000 (prelude contraction into persona modules) must preserve reachability of the
-  `nebula-metadata` re-export set settled above — it moves *where* each item is reachable from
-  (which persona module), not *whether* it stays reachable. Do not re-decide the set itself while
-  doing the contraction.
+- Every type named by a supported author trait or SDK-owned public signature must be reachable
+  through an SDK path. Macro-only implementation types stay under `__private`.
 
 ## Known gaps
 
 - The dedicated `client` and `embedded` persona façades are not shipped yet.
-- Action, credential, plugin, resource, schema, and validator procedural derives still emit or
-  fall back to implementation-crate paths. Derive-based authoring is therefore not yet inside the
-  strict one-Nebula-dependency perimeter. Manual/builder authoring is curated; direct leaf-crate
-  dependencies are not a supported workaround.
-- The prelude is still broad and will need persona-focused contraction with compile-pass and
-  compile-fail fixtures for each supported workflow.
+- Derive expansion is covered for representative Action, Credential, Plugin, Resource,
+  Schema, and Validator inputs. New generated paths still need SDK-only and renamed
+  consumer proofs; direct leaf dependencies are not a supported workaround for gaps.
+- The prelude remains broad; each further contraction needs matching compile-pass and compile-fail
+  fixtures for the affected author workflow.
 - `derive` is currently an empty feature and should either gate a real surface or be removed in an
   intentional release change.
 

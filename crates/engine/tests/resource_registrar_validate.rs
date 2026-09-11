@@ -20,8 +20,7 @@
 //!   separation that keeps config CRUD distinct from activation).
 //!
 //! The validation core is shared verbatim with the live
-//! `Manager::register_resolved` path via
-//! `Manager::validate_config_value`, so a green
+//! `ResourceFactory::register` path through the same admitted schema, so a green
 //! `register_resolved` suite plus this seam test together prove the
 //! two paths cannot drift.
 
@@ -33,11 +32,11 @@ use nebula_resource::Resident;
 use nebula_resource::{
     Manager, ScopeLevel,
     error::Error as ResourceError,
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
     topology::resident,
     topology::resident::ResidentProvider,
 };
-use nebula_schema::{HasSchema, Schema};
+use nebula_schema::Schema;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -105,12 +104,11 @@ impl Provider for HttpPool {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::new(
             <Self as Provider>::key(),
-            "http_pool".to_owned(),
+            nebula_resource::metadata_name!("http_pool"),
             String::new(),
-            <HttpPoolConfig as HasSchema>::schema(),
         )
     }
 }
@@ -128,13 +126,15 @@ impl ResidentProvider for HttpPool {
 
 fn registry_with_http_pool() -> ResourceActivatorRegistry {
     let mut registry = ResourceActivatorRegistry::new();
-    registry.insert(
-        "http_pool",
-        Arc::new(KindActivator::<HttpPool, _, _>::new(
-            || HttpPool,
-            || Resident::<HttpPool>::new(resident::config::Config::default()),
-        )),
-    );
+    registry
+        .insert(
+            "http_pool",
+            Arc::new(KindActivator::<HttpPool, _, _>::new(
+                || HttpPool,
+                || Resident::<HttpPool>::new(resident::config::Config::default()),
+            )),
+        )
+        .expect("test resource metadata admits");
     registry
 }
 

@@ -4,6 +4,11 @@
   "type": "object",
   "required": ["code", "message"],
   "properties": {
+    "kind": {
+      "type": "string",
+      "enum": ["violation", "invalid_rule", "unavailable"],
+      "description": "Whether input was rejected or evaluation could not complete"
+    },
     "code": {
       "type": "string",
       "description": "Machine-readable error code"

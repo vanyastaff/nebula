@@ -523,6 +523,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "network")]
     fn validate_with_extension_method() {
         use crate::{
             foundation::{Validatable, Validate},

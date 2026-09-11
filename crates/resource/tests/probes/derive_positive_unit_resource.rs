@@ -15,9 +15,9 @@ use nebula_resource::{
 #[derive(Clone, Resource)]
 struct UnitResource;
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, nebula_schema::Schema)]
 struct MyConfig;
-nebula_schema::impl_empty_has_schema!(MyConfig);
+
 impl nebula_resource::resource::ResourceConfig for MyConfig {
     fn fingerprint(&self) -> u64 {
         0

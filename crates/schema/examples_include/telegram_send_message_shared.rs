@@ -39,7 +39,9 @@ fn inline_button_field() -> Field {
                     "web_app",
                     "Web App",
                     Field::object(field_key!("web_app"))
-                        .description("Same shape as Telegram `web_app: { url }` on InlineKeyboardButton")
+                        .description(
+                            "Same shape as Telegram `web_app: { url }` on InlineKeyboardButton",
+                        )
                         .add(
                             Field::string(field_key!("url"))
                                 .required()
@@ -106,10 +108,7 @@ pub fn build_telegram_send_message_schema() -> ValidSchema {
                 .label("Append “sent via automation” line")
                 .description("Product choice: append a short footer to `text`"),
         )
-        .add(
-            Field::boolean(field_key!("disable_web_page_preview"))
-                .label("Disable link previews"),
-        )
+        .add(Field::boolean(field_key!("disable_web_page_preview")).label("Disable link previews"))
         .add(
             Field::boolean(field_key!("disable_notification"))
                 .label("Send silently")

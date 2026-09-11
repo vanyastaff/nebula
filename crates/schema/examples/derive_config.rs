@@ -1,5 +1,5 @@
 //! Use `#[derive(Schema)]` so the Rust type and the Nebula field list stay in sync.
-//! `HasSchema::schema()` returns the same `ValidSchema` the engine would load from wire.
+//! `HasSchema::schema()` checks the derived definition before returning a `ValidSchema`.
 //!
 //! Run:
 //! `cargo run -p nebula-schema --example derive_config`
@@ -9,7 +9,7 @@
     reason = "example: errors are reported to stderr"
 )]
 
-use nebula_schema::{FieldValues, HasSchema, Schema};
+use nebula_schema::{AuthoredValue, HasSchema, Schema};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -21,7 +21,7 @@ struct DemoConfig {
 }
 
 fn main() {
-    let schema = DemoConfig::schema();
+    let schema = DemoConfig::schema().expect("derived schema lints");
     assert_eq!(
         schema.fields().len(),
         1,
@@ -29,10 +29,13 @@ fn main() {
     );
 
     let sample = json!({"title": "hello"});
-    let values = FieldValues::from_json(sample.clone()).expect("json");
-    schema
-        .validate(&values)
-        .expect("valid against derived schema");
-    let cfg: DemoConfig = serde_json::from_value(sample).expect("round-trip");
+    let values = AuthoredValue::from_data(sample).expect("json");
+    let resolved = schema
+        .validate(values)
+        .expect("valid against derived schema")
+        .resolve_data()
+        .expect("literal configuration completes");
+    let cfg: DemoConfig = resolved.into_typed().expect("round-trip");
+    assert_eq!(cfg.title, "hello");
     eprintln!("OK: derived schema validates title={}", cfg.title);
 }

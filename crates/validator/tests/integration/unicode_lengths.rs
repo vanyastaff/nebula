@@ -7,12 +7,14 @@
 //! for on-the-wire limits (database columns, protocol fields).
 
 use nebula_validator::{
-    Validator,
     foundation::Validate,
     validators::{exact_length, exact_length_bytes, max_length, max_length_bytes, min_length},
 };
 
+#[cfg(feature = "derive")]
 use super::common::expect_errors;
+#[cfg(feature = "derive")]
+use nebula_validator::Validator;
 
 // Cyrillic letter "а" (U+0430) → 2 UTF-8 bytes.
 // Chinese "中" (U+4E2D) → 3 UTF-8 bytes.
@@ -53,6 +55,7 @@ fn bytes_variants_count_bytes_not_characters() {
 }
 
 #[derive(Validator)]
+#[cfg(feature = "derive")]
 struct DisplayName {
     // NOTE: the derive macro currently emits `value.len() < #bound`, which
     // counts **UTF-8 bytes**, not characters. The standalone `min_length()`
@@ -63,6 +66,7 @@ struct DisplayName {
 }
 
 #[test]
+#[cfg(feature = "derive")]
 fn derive_length_currently_counts_bytes() {
     // 4 Chinese chars = 12 bytes — passes max_length(20) comfortably.
     let ok = DisplayName {

@@ -65,11 +65,22 @@ intentionally indistinguishable.
 - `Credential` with `Properties`, `State`, and `Scheme` associated types.
 - `CredentialState`, `AuthScheme`, and the sensitive/public/external scheme classifications.
 - Capability sub-traits: `Interactive`, `Refreshable`, `Revocable`, `Testable`, and `Dynamic`.
-- `CredentialRegistry` and `DispatchOps`; duplicate keys fail in debug and release.
+- `CredentialRegistry` and `DispatchOps`; duplicate keys and invalid metadata fail registration.
 - Built-in typed schemes and credentials used by first-party compositions.
 
 Capabilities originate in trait membership. Registry bitflags are a derived discovery projection,
 not a caller-supplied assertion.
+
+`Credential::metadata()` returns a schema-free `CredentialMetadataDraft`.
+The draft uses the shared catalog vocabulary: `Icon` for inline, URL-backed, or absent icons;
+`mark_experimental`, `mark_beta`, `mark_stable`, and `with_deprecation` for lifecycle; and
+`with_tags`/`add_tag` for discovery tags.
+`schema_of::<C::Properties>()` is fallible, returning a checked schema or a lint report;
+registry admission is the only path that combines it with the draft into immutable
+`CredentialMetadata` before installing dispatch. Persisted metadata is
+`RecordedCredentialMetadata` evidence and must be re-admitted against the fresh definition.
+An untyped fixture can declare `Properties = serde_json::Value`; `ResolvedValues` is a
+runtime proof and must not be used as a properties declaration.
 
 ### Runtime
 
@@ -99,17 +110,31 @@ composition concern rather than an integration-author API.
 The supported authenticated HTTP mutation path uses one command/validation pipeline:
 
 1. authorize the public management command once in `CredentialController`;
-2. convert the credential's declared wire shape into `FieldValues` inside the service operation;
-3. validate with `schema_of::<C::Properties>()`;
-4. deserialize the canonicalized output into `C::Properties`; and
-5. resolve/project typed state.
+2. decode property JSON with the declared schema's `values_from_wire` into literal
+   `AuthoredValue`, using the checked `C::Properties` schema captured at registration;
+3. consume it through `validate`, folding aliases, applying transforms once, and promoting
+   declared secrets before prepared values escape;
+4. consume the prepared token with `resolve_data` to obtain schema-bound values, with full rules
+   and conditional policies checked and no expression engine involved;
+5. decode `C::Properties` exactly once using explicit
+   `into_typed_exposing_secrets::<C::Properties>()` at the trusted typed-input boundary; and
+6. pass the typed properties by reference to credential resolve dispatch.
 
 The API schema port is a catalog/form read model, not a second mutation validator. Its absence does
 not block an otherwise wired credential command path.
 
 The pipeline deliberately never calls `ValidValues::resolve` against a workflow expression
-context. Secrets cannot depend on per-execution variables. Typed deserialization rejects surviving
-expression envelopes as defense in depth.
+context. `resolve_data` rejects executable expression nodes; template-looking strings and
+`$expr`-shaped objects supplied as ordinary JSON remain data and still undergo the declared
+type checks. Secrets cannot depend on per-execution variables.
+
+Providers receive typed properties whose declared secret fields are zeroizing `SecretString`,
+not raw JSON scalars. Ordinary `into_typed` refuses any secret-bearing tree rather than turning
+redaction markers into credentials. Explicit typed exposure transfers plaintext to the target,
+which is responsible for
+its protection and zeroization. Parser/decoder source chains remain redacted. Required-field and
+type failures must be rejected before provider dispatch, not bypassed by constructing an unbound
+or gradual-`Any` proof for a credential with a concrete properties schema.
 
 Only structural path/code pairs cross the validation and public HTTP management boundaries.
 Validator messages, parameters, submitted values, provider text, and source errors are discarded

@@ -32,7 +32,7 @@ use nebula_resource::{
     AcquireOptions, Manager, PoolConfig, RegistrationSpec, ResidentConfig, ResourceContext,
     ResourceGuard, ScopeLevel, ShutdownConfig, SlotIdentity,
     error::{Error, ErrorKind},
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
     topology::{Resident, pooled::BrokenCheck},
 };
 
@@ -75,13 +75,11 @@ struct FakeHttpClient {
     connection_id: u64,
 }
 
-#[derive(Clone)]
+#[derive(Clone, nebula_schema::Schema)]
 struct HttpClientConfig {
     base_url: String,
     pool_size: u32,
 }
-
-nebula_schema::impl_empty_has_schema!(HttpClientConfig);
 
 impl ResourceConfig for HttpClientConfig {
     fn fingerprint(&self) -> u64 {
@@ -128,8 +126,8 @@ impl Provider for HttpClientResource {
         Ok(FakeHttpClient { connection_id: id })
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 
@@ -247,12 +245,10 @@ struct ConfigStore {
     values: Arc<std::collections::HashMap<String, String>>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, nebula_schema::Schema)]
 struct ConfigStoreConfig {
     path: String,
 }
-
-nebula_schema::impl_empty_has_schema!(ConfigStoreConfig);
 
 impl ResourceConfig for ConfigStoreConfig {
     fn fingerprint(&self) -> u64 {
@@ -368,12 +364,10 @@ struct FakeDbConnection {
     id: u64,
 }
 
-#[derive(Clone)]
+#[derive(Clone, nebula_schema::Schema)]
 struct DbConfig {
     host: String,
 }
-
-nebula_schema::impl_empty_has_schema!(DbConfig);
 
 impl ResourceConfig for DbConfig {
     fn validate(&self) -> Result<(), Error> {
@@ -428,8 +422,8 @@ impl Provider for DbResource {
         Ok(FakeDbConnection { id })
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 
@@ -568,9 +562,8 @@ async fn error_handling_invalid_config_validate() {
     // docs that it calls validate() — I had to read the source to confirm.
     // SEVERITY: Minor — should be documented in the # Errors section.
 
-    #[derive(Clone)]
+    #[derive(Clone, nebula_schema::Schema)]
     struct AlwaysInvalidConfig;
-    nebula_schema::impl_empty_has_schema!(AlwaysInvalidConfig);
     impl ResourceConfig for AlwaysInvalidConfig {
         fn validate(&self) -> Result<(), Error> {
             Err(Error::permanent("invalid config"))

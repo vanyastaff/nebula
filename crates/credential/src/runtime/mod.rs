@@ -5,6 +5,7 @@
 //! the whole credential subsystem lives in one crate; they depend only on the
 //! contract types in this crate (no `nebula-engine` / `nebula-storage` edge).
 
+pub mod acquisition;
 pub mod dispatchers;
 pub mod executor;
 pub mod lease;
@@ -15,8 +16,11 @@ pub mod refresh;
 mod resolve_error;
 pub mod resolver;
 
+pub use acquisition::{AcquisitionTransport, AcquisitionTransportError};
 pub use dispatchers::{dispatch_release, dispatch_revoke, dispatch_test};
-pub use executor::{ExecutorError, ResolveResponse, execute_continue, execute_resolve};
+pub use executor::{
+    ExecutorError, ResolveResponse, execute_begin, execute_continue, execute_resolve,
+};
 pub use lease::{
     LeaseLifecycle, LeaseLifecycleConfig, LeaseLifecycleError, LeaseToken, RenewalPolicy,
     StalenessCeiling, StalenessCeilingError,

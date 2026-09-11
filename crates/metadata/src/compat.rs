@@ -52,9 +52,11 @@ where
 ///
 /// Rules:
 /// - `key` must be equal.
-/// - `version` must be `>= previous.version` (full `semver::Version` ordering, including
-///   pre-release tags; build metadata is ignored per the SemVer 2.0 spec).
-/// - If `schema` changed, `version.major` must exceed `previous.version.major`.
+/// - `version` must not regress in SemVer precedence, including pre-release
+///   identifiers but ignoring build metadata.
+/// - If `schema` differs by equality, `version.major` must exceed the previous
+///   major. This is a conservative revision gate, not an edge-assignability test;
+///   an additive or UI-only schema edit still requires a major bump here.
 ///
 /// Entity-specific rules (ports, auth pattern) are **not** checked here —
 /// each concrete metadata type layers its own rules on top.
@@ -65,19 +67,30 @@ pub fn validate_base_compat<K>(
 where
     K: std::fmt::Debug + std::fmt::Display + Clone + PartialEq + Eq,
 {
-    if current.key != previous.key {
+    let _span = tracing::debug_span!("metadata.validate_base_compat").entered();
+    if current.key() != previous.key() {
+        tracing::debug!(error_code = "METADATA:KEY_CHANGED", "revision rejected");
         return Err(BaseCompatError::KeyChanged {
-            previous: previous.key.clone(),
-            current: current.key.clone(),
+            previous: previous.key().clone(),
+            current: current.key().clone(),
         });
     }
-    if current.version < previous.version {
+    if current.version().cmp_precedence(previous.version()).is_lt() {
+        tracing::debug!(
+            error_code = "METADATA:VERSION_REGRESSED",
+            "revision rejected"
+        );
         return Err(BaseCompatError::VersionRegressed {
-            previous: previous.version.clone(),
-            current: current.version.clone(),
+            previous: previous.version().clone(),
+            current: current.version().clone(),
         });
     }
-    if current.schema != previous.schema && current.version.major == previous.version.major {
+    if current.schema() != previous.schema() && current.version().major == previous.version().major
+    {
+        tracing::debug!(
+            error_code = "METADATA:SCHEMA_CHANGE_WITHOUT_MAJOR",
+            "revision rejected"
+        );
         return Err(BaseCompatError::SchemaChangeWithoutMajorBump);
     }
     Ok(())
@@ -89,7 +102,7 @@ mod tests {
     use semver::Version;
 
     use super::{BaseCompatError, validate_base_compat};
-    use crate::BaseMetadata;
+    use crate::{BaseMetadata, MetadataDraft};
 
     fn empty_schema() -> ValidSchema {
         Schema::builder()
@@ -115,8 +128,10 @@ mod tests {
     }
 
     fn md(key: &'static str, major: u64, minor: u64) -> BaseMetadata<TestKey> {
-        BaseMetadata::new(TestKey(key), "n", "d", empty_schema())
+        MetadataDraft::try_new(TestKey(key), "n", "d")
+            .expect("nonblank name")
             .with_version(Version::new(major, minor, 0))
+            .bind_schema(empty_schema())
     }
 
     #[test]
@@ -152,8 +167,10 @@ mod tests {
     #[test]
     fn schema_change_without_major_rejected() {
         let prev = md("k", 1, 0);
-        let next_base = BaseMetadata::new(TestKey("k"), "n", "d", schema_with_one_field())
-            .with_version(Version::new(1, 1, 0));
+        let next_base = MetadataDraft::try_new(TestKey("k"), "n", "d")
+            .expect("nonblank name")
+            .with_version(Version::new(1, 1, 0))
+            .bind_schema(schema_with_one_field());
         let err = validate_base_compat(&next_base, &prev).unwrap_err();
         assert_eq!(err, BaseCompatError::SchemaChangeWithoutMajorBump);
     }
@@ -161,8 +178,10 @@ mod tests {
     #[test]
     fn schema_change_with_major_accepted() {
         let prev = md("k", 1, 0);
-        let next_base = BaseMetadata::new(TestKey("k"), "n", "d", schema_with_one_field())
-            .with_version(Version::new(2, 0, 0));
+        let next_base = MetadataDraft::try_new(TestKey("k"), "n", "d")
+            .expect("nonblank name")
+            .with_version(Version::new(2, 0, 0))
+            .bind_schema(schema_with_one_field());
         assert!(validate_base_compat(&next_base, &prev).is_ok());
     }
 

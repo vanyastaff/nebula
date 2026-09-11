@@ -5,6 +5,8 @@ use std::{borrow::Cow, fmt, sync::Arc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use nebula_validator::foundation::FieldPath as ValuePath;
+
 use crate::path::FieldPath;
 
 /// Severity of a single issue.
@@ -45,27 +47,94 @@ impl<'de> Deserialize<'de> for Severity {
 /// client-facing payload. The internal `source` cause chain is **not** part of
 /// the wire contract — it is `#[serde(skip)]` (a `dyn Error` has no serialized
 /// form and is debug-only), so a deserialized error has `source: None`.
-#[non_exhaustive]
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ValidationError {
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ValidationError(Box<ValidationErrorDetails>);
+
+#[derive(Clone, Serialize, Deserialize)]
+struct ValidationErrorDetails {
     /// Machine-readable issue code (e.g. `"required"`, `"type_mismatch"`,
     /// or a validator-native rule code such as `"max_length"`).
-    pub code: Cow<'static, str>,
+    code: Cow<'static, str>,
     /// Path within the schema where the issue was observed.
-    pub path: FieldPath,
+    path: ValuePath,
     /// Severity level of this issue.
-    pub severity: Severity,
+    severity: Severity,
     /// Structured key-value parameters for the issue (e.g. `max`, `actual`).
-    pub params: Arc<[(Cow<'static, str>, Value)]>,
+    params: Arc<[(Cow<'static, str>, Value)]>,
     /// Human-readable message describing the issue.
-    pub message: Cow<'static, str>,
+    message: Cow<'static, str>,
     /// Optional underlying cause — debug-only, not serialized (a `dyn Error`
     /// has no wire form; a deserialized error always has `source: None`).
     #[serde(skip)]
-    pub source: Option<Arc<dyn std::error::Error + Send + Sync>>,
+    source: Option<Arc<dyn std::error::Error + Send + Sync>>,
 }
 
+// Retain a typed cause internally without letting diagnostic-chain traversal
+// publish payloads embedded by a parser or deserializer in its error text.
+struct RedactedCause<E>(E);
+
+impl<E> fmt::Debug for RedactedCause<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RedactedCause")
+            .field("cause_type", &std::any::type_name_of_val(&self.0))
+            .finish_non_exhaustive()
+    }
+}
+
+impl<E> fmt::Display for RedactedCause<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("diagnostic details contain private input")
+    }
+}
+
+impl<E: fmt::Debug> std::error::Error for RedactedCause<E> {}
+
 impl ValidationError {
+    /// Machine-readable code, including validator-native and plugin codes.
+    #[must_use]
+    pub fn code(&self) -> &str {
+        &self.0.code
+    }
+
+    /// Location of the issue in the value or schema tree.
+    #[must_use]
+    pub fn path(&self) -> &ValuePath {
+        &self.0.path
+    }
+
+    /// Whether the issue prevents validation from succeeding.
+    #[must_use]
+    pub fn severity(&self) -> Severity {
+        self.0.severity
+    }
+
+    /// Structured diagnostic parameters.
+    #[must_use]
+    pub fn params(&self) -> &[(Cow<'static, str>, Value)] {
+        &self.0.params
+    }
+
+    /// Human-readable diagnostic message.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.0.message
+    }
+
+    /// Reattach an issue at a boundary without discarding its parameters or cause.
+    #[must_use]
+    pub fn at(mut self, path: impl Into<ValuePath>) -> Self {
+        self.0.path = path.into();
+        self
+    }
+
+    /// Reclassify an issue while retaining all diagnostic context.
+    #[must_use]
+    pub fn with_code(mut self, code: impl Into<Cow<'static, str>>) -> Self {
+        self.0.code = code.into();
+        self
+    }
+
     /// Begin building a new `ValidationError` with the given machine-readable code.
     ///
     /// Returns a [`ValidationErrorBuilder`] — call `.build()` to finalise.
@@ -80,7 +149,7 @@ impl ValidationError {
     ///.message("field is required")
     ///.build();
     ///
-    /// assert_eq!(err.code, "required");
+    /// assert_eq!(err.code(), "required");
     /// ```
     pub fn builder(code: impl Into<Cow<'static, str>>) -> ValidationErrorBuilder {
         let code = code.into();
@@ -89,7 +158,7 @@ impl ValidationError {
         let default_message = code.clone();
         ValidationErrorBuilder {
             code,
-            path: FieldPath::root(),
+            path: ValuePath::root(),
             severity: Severity::Error,
             params: Vec::new(),
             message: default_message,
@@ -145,19 +214,39 @@ impl ValidationError {
     }
 }
 
+impl fmt::Debug for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ValidationError")
+            .field("code", &self.code())
+            .field("path", self.path())
+            .field("severity", &self.severity())
+            .field("params", &self.params())
+            .field("message", &self.message())
+            .field("has_source", &self.0.source.is_some())
+            .finish()
+    }
+}
+
 impl fmt::Display for ValidationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.path.is_root() {
-            write!(f, "[{}]: {}", self.code, self.message)
+        if self.path().is_root() {
+            write!(f, "[{}]: {}", self.code(), self.message())
         } else {
-            write!(f, "[{}] at {}: {}", self.code, self.path, self.message)
+            write!(
+                f,
+                "[{}] at {}: {}",
+                self.code(),
+                self.path(),
+                self.message()
+            )
         }
     }
 }
 
 impl std::error::Error for ValidationError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.source
+        self.0
+            .source
             .as_deref()
             .map(|e| e as &(dyn std::error::Error + 'static))
     }
@@ -168,7 +257,7 @@ impl std::error::Error for ValidationError {
 #[derive(Debug)]
 pub struct ValidationErrorBuilder {
     code: Cow<'static, str>,
-    path: FieldPath,
+    path: ValuePath,
     severity: Severity,
     params: Vec<(Cow<'static, str>, Value)>,
     message: Cow<'static, str>,
@@ -178,8 +267,8 @@ pub struct ValidationErrorBuilder {
 impl ValidationErrorBuilder {
     /// Set the path at which the error occurred.
     #[must_use = "builder methods must be chained or built"]
-    pub fn at(mut self, path: FieldPath) -> Self {
-        self.path = path;
+    pub fn at(mut self, path: impl Into<ValuePath>) -> Self {
+        self.path = path.into();
         self
     }
     /// Downgrade severity to [`Severity::Warning`].
@@ -209,17 +298,25 @@ impl ValidationErrorBuilder {
         self.source = Some(Arc::new(err));
         self
     }
+
+    pub(crate) fn private_source<E>(mut self, error: E) -> Self
+    where
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        self.source = Some(Arc::new(RedactedCause(error)));
+        self
+    }
     /// Finalise and return the [`ValidationError`].
     #[must_use]
     pub fn build(self) -> ValidationError {
-        ValidationError {
+        ValidationError(Box::new(ValidationErrorDetails {
             code: self.code,
             path: self.path,
             severity: self.severity,
             params: self.params.into(),
             message: self.message,
             source: self.source,
-        }
+        }))
     }
 }
 
@@ -246,24 +343,26 @@ impl ValidationReport {
     }
     /// Iterate over hard errors only.
     pub fn errors(&self) -> impl Iterator<Item = &ValidationError> {
-        self.issues.iter().filter(|i| i.severity == Severity::Error)
+        self.issues
+            .iter()
+            .filter(|i| i.severity() == Severity::Error)
     }
     /// Iterate over warnings only.
     pub fn warnings(&self) -> impl Iterator<Item = &ValidationError> {
         self.issues
             .iter()
-            .filter(|i| i.severity == Severity::Warning)
+            .filter(|i| i.severity() == Severity::Warning)
     }
     /// Iterate over all issues regardless of severity.
     pub fn iter(&self) -> impl Iterator<Item = &ValidationError> {
         self.issues.iter()
     }
     /// Iterate over issues whose path starts with `prefix`.
-    pub fn at_path(&self, prefix: &FieldPath) -> impl Iterator<Item = &ValidationError> {
+    pub fn at_path(&self, prefix: &ValuePath) -> impl Iterator<Item = &ValidationError> {
         let prefix = prefix.clone();
         self.issues
             .iter()
-            .filter(move |i| i.path.starts_with(&prefix))
+            .filter(move |i| i.path().starts_with(&prefix))
     }
     /// Returns `true` if the report contains at least one hard error.
     #[must_use]
@@ -348,7 +447,7 @@ impl fmt::Display for ValidationReport {
 
 impl std::error::Error for ValidationReport {}
 
-/// Canonical set of stable error codes observable from the schema crate.
+/// Discoverable built-in diagnostic codes emitted by schema operations.
 ///
 /// Two provenances:
 /// - **Schema-owned structural codes** — emitted by the schema crate itself
@@ -360,23 +459,13 @@ impl std::error::Error for ValidationReport {}
 ///   `max` / `invalid_format`. This replaced the former schema-side
 ///   `length.*` / `range.*` / `pattern` / `url` / `email` remap.
 ///
-/// Plugins may add their own under a namespace prefix (e.g. `my_plugin.foo`).
-/// A test in the schema crate guarantees every entry here is emittable from
-/// an integration test (see `tests/flow/all_error_codes.rs`).
-///
-/// # Intentionally omitted codes
-///
-/// The following codes are used internally by the crate but are **not**
-/// registered here because they are implementation details of specific
-/// subsystems, not stable public contracts. Callers should not match on them.
-///
-/// | Code | Where emitted | Why omitted |
-/// |------|---------------|-------------|
-/// | `union.default_variant` | `ValidSchema::union` constructor | Build-time guard; callers see it only when constructing an invalid union, never at runtime. |
-/// | `union.unknown_variant` | (internal union validation path) | Collapsed into `mode.invalid` on the public surface. |
-/// | `union.malformed_wire` | (internal union wire ingress) | Maps to `type_mismatch` at the schema boundary. |
-/// | `secret.not_hashable` | (internal secret-promotion path) | Arises only on non-literal secret values; callers see `type_mismatch`. |
-/// | `value.non_canonical_float` | (internal value normalisation) | Normalised silently; never reaches a `ValidationReport`. |
+/// Plugins may add codes under a namespace prefix (e.g. `my_plugin.foo`), and
+/// additional validator-native codes pass through unchanged. This is not an
+/// exhaustive vocabulary or a filter for accepting diagnostics. Union ingress,
+/// canonical encoding, and checked transformer construction return their own
+/// typed diagnostics directly; they are not remapped to `type_mismatch`.
+/// Integration coverage is split across the flow, wire, transformer, loader,
+/// and proof-contract suites.
 pub const STANDARD_CODES: &[&str] = &[
     // alias subsystem
     "alias.duplicate",
@@ -404,12 +493,25 @@ pub const STANDARD_CODES: &[&str] = &[
     // mode
     "mode.required",
     "mode.invalid",
+    "union.default_variant",
+    "union.unknown_variant",
+    "union.malformed_wire",
+    "union.invalid_root",
+    "schema.scalar_bounds",
     // expression
     "expression.forbidden",
     "expression.required",
     "expression.parse",
     "expression.type_mismatch",
     "expression.runtime",
+    "validation.incomplete",
+    // checked transformer construction
+    "transformer.invalid_pattern",
+    "transformer.invalid_capture_group",
+    // canonical value encoding
+    "secret.not_hashable",
+    "value.non_canonical_float",
+    "value.limit_exceeded",
     // loader
     "loader.not_registered",
     "loader.missing_config",
@@ -458,9 +560,9 @@ mod tests {
     fn field_not_found_factory_is_stable() {
         let path = FieldPath::parse("user.email").unwrap();
         let err = ValidationError::field_not_found(path.clone());
-        assert_eq!(err.code, "field.not_found");
-        assert_eq!(err.path, path);
-        assert_eq!(err.params[0].1, json!("user.email"));
+        assert_eq!(err.code(), "field.not_found");
+        assert_eq!(err.path(), &ValuePath::from(path));
+        assert_eq!(err.params()[0].1, json!("user.email"));
     }
 
     #[test]
@@ -473,17 +575,17 @@ mod tests {
             .param("actual", json!(42))
             .build();
 
-        assert_eq!(err.code, "length.max");
-        assert_eq!(err.path, path);
-        assert_eq!(err.severity, Severity::Error);
-        assert_eq!(err.params.len(), 2);
-        assert!(err.message.contains("too long"));
+        assert_eq!(err.code(), "length.max");
+        assert_eq!(err.path(), &ValuePath::from(path));
+        assert_eq!(err.severity(), Severity::Error);
+        assert_eq!(err.params().len(), 2);
+        assert!(err.message().contains("too long"));
     }
 
     #[test]
     fn warn_lowers_severity() {
         let err = ValidationError::builder("notice.misuse").warn().build();
-        assert_eq!(err.severity, Severity::Warning);
+        assert_eq!(err.severity(), Severity::Warning);
     }
 
     #[test]
@@ -492,7 +594,7 @@ mod tests {
             .at(FieldPath::parse("x").unwrap())
             .message("missing")
             .build();
-        assert_eq!(format!("{err}"), "[required] at x: missing");
+        assert_eq!(format!("{err}"), "[required] at /x: missing");
     }
 
     #[test]
@@ -589,12 +691,12 @@ mod tests {
         let wire = serde_json::to_value(&original).expect("serialize");
         let restored: ValidationError = serde_json::from_value(wire).expect("deserialize");
 
-        assert_eq!(restored.code, original.code);
-        assert_eq!(restored.path, original.path);
-        assert_eq!(restored.severity, original.severity);
-        assert_eq!(restored.message, original.message);
-        assert_eq!(restored.params.as_ref(), original.params.as_ref());
-        assert!(restored.source.is_none());
+        assert_eq!(restored.code(), original.code());
+        assert_eq!(restored.path(), original.path());
+        assert_eq!(restored.severity(), original.severity());
+        assert_eq!(restored.message(), original.message());
+        assert_eq!(restored.params(), original.params());
+        assert!(restored.0.source.is_none());
     }
 
     #[test]
@@ -604,7 +706,7 @@ mod tests {
         let err = ValidationError::builder("type_mismatch")
             .source(cause)
             .build();
-        assert!(err.source.is_some(), "source is attached in memory");
+        assert!(err.0.source.is_some(), "source is attached in memory");
 
         let wire = serde_json::to_value(&err).expect("serialize");
         assert!(
@@ -613,7 +715,7 @@ mod tests {
         );
         let restored: ValidationError = serde_json::from_value(wire).expect("deserialize");
         assert!(
-            restored.source.is_none(),
+            restored.0.source.is_none(),
             "source drops to None across the wire"
         );
     }
@@ -674,7 +776,7 @@ mod tests {
         // entry surfaces as a hard error so a downstream gate fails closed.
         let wire = json!([
             {"code": "notice.x", "path": "", "severity": "warning", "params": [], "message": "w"},
-            {"code": "future", "path": "a", "severity": "critical", "params": [], "message": "y"},
+            {"code": "future", "path": "/a", "severity": "critical", "params": [], "message": "y"},
         ]);
         let report: ValidationReport = serde_json::from_value(wire).expect("report parses");
         assert_eq!(report.len(), 2);

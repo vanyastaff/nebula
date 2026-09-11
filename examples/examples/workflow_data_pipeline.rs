@@ -5,7 +5,7 @@
 //! through the engine. It mirrors the standalone engine-run setup proven in
 //! `crates/plugin-core/tests/plugin_wiring_e2e.rs`:
 //!
-//!   `ActionRegistry` -> `ActionExecutor` -> `InProcessRunner`
+//!   `ActionRegistry` -> `InProcessRunner`
 //!   -> `ActionRuntime` -> `WorkflowEngine::with_plugin(CorePlugin)`
 //!
 //! ## The pipeline
@@ -26,7 +26,7 @@
 //! ```
 //!
 //! Each downstream node pulls its `data` from the upstream node's output via
-//! `ParamValue::reference(<upstream node>, "")`, while its operation config
+//! `ParamValue::root_reference(<upstream node>)`, while its operation config
 //! (`condition` / `keys` / `aggregations`) is supplied as a literal parameter.
 //! The connections give the engine the execution order and make each
 //! predecessor's output available to the next node.
@@ -49,11 +49,9 @@
 use std::{collections::HashMap, sync::Arc};
 
 use anyhow::Context as _;
-use nebula_action::ActionResult;
 use nebula_engine::ResolvedPlugin;
 use nebula_engine::{
-    ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
-    WorkflowEngine,
+    ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, WorkflowEngine,
 };
 use nebula_execution::{ExecutionStatus, context::ExecutionBudget};
 use nebula_metrics::MetricsRegistry;
@@ -145,14 +143,11 @@ fn init_tracing() {
 /// Build a standalone `WorkflowEngine` with the first-party `CorePlugin` wired.
 ///
 /// This mirrors `plugin_wiring_e2e.rs`'s `make_engine` + `with_plugin`: the
-/// `ActionExecutor` here is the identity executor used by the engine's
-/// in-process runner; the `core.*` actions themselves are registered by
-/// `with_plugin(CorePlugin)`.
+/// in-process runner executes actions registered in the `ActionRegistry`, and
+/// the `core.*` actions themselves are registered by `with_plugin(CorePlugin)`.
 fn build_engine() -> anyhow::Result<WorkflowEngine> {
     let registry = Arc::new(ActionRegistry::new());
-    let executor: ActionExecutor =
-        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    let runner = Arc::new(InProcessRunner::new(executor));
+    let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(
@@ -230,7 +225,7 @@ fn build_pipeline_workflow() -> WorkflowDefinition {
         "core.sort",
     )
     .expect("sort NodeDefinition has valid keys")
-    .with_parameter("data", ParamValue::reference(filter_key.clone(), ""))
+    .with_parameter("data", ParamValue::root_reference(filter_key.clone()))
     .with_parameter(
         "keys",
         ParamValue::literal(json!([{ "field": "amount", "order": "desc" }])),
@@ -244,7 +239,7 @@ fn build_pipeline_workflow() -> WorkflowDefinition {
         "core.aggregate",
     )
     .expect("aggregate NodeDefinition has valid keys")
-    .with_parameter("data", ParamValue::reference(sort_key.clone(), ""))
+    .with_parameter("data", ParamValue::root_reference(sort_key.clone()))
     .with_parameter("group_by", ParamValue::literal(json!(["region"])))
     .with_parameter(
         "aggregations",

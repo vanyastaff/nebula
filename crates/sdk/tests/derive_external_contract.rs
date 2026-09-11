@@ -1,4 +1,4 @@
-//! Compile-pass contract for SDK-owned procedural derives.
+//! External expansion and runtime contracts for SDK-owned procedural derives.
 
 use std::{
     ffi::OsString,
@@ -59,10 +59,17 @@ fn sdk_only_consumer_can_expand_supported_derive_families() {
     )
     .expect("copy workspace lockfile into derive-consumer fixture");
 
-    let output = cargo_check(temp.path());
+    let output = cargo_fixture(temp.path(), "check");
     assert!(
         output.status.success(),
         "SDK-only derive consumer must compile:\n{}",
+        render_output(&output)
+    );
+
+    let output = cargo_fixture(temp.path(), "run");
+    assert!(
+        output.status.success(),
+        "SDK-only derive consumer assertions must pass:\n{}",
         render_output(&output)
     );
 }
@@ -121,10 +128,17 @@ fn renamed_leaf_dependencies_remain_supported_with_sdk_fallbacks() {
     )
     .expect("copy workspace lockfile into renamed-consumer fixture");
 
-    let output = cargo_check(temp.path());
+    let output = cargo_fixture(temp.path(), "check");
     assert!(
         output.status.success(),
         "renamed leaf derive consumer must compile:\n{}",
+        render_output(&output)
+    );
+
+    let output = cargo_fixture(temp.path(), "run");
+    assert!(
+        output.status.success(),
+        "renamed leaf derive consumer assertions must pass:\n{}",
         render_output(&output)
     );
 }
@@ -140,15 +154,15 @@ fn copy_fixture(source_root: &Path, destination_root: &Path) {
     }
 }
 
-fn cargo_check(fixture_root: &Path) -> Output {
+fn cargo_fixture(fixture_root: &Path, subcommand: &str) -> Output {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     Command::new(cargo)
         .current_dir(fixture_root)
-        .args(["check", "--offline", "--quiet"])
+        .args([subcommand, "--offline", "--quiet"])
         .env("CARGO_TERM_COLOR", "never")
         .env("CARGO_TARGET_DIR", fixture_root.join("target"))
         .output()
-        .expect("run cargo check for external SDK derive consumer")
+        .expect("run cargo for external SDK derive consumer")
 }
 
 fn toml_basic_string(path: &Path) -> String {

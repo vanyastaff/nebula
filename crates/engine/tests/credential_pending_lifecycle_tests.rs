@@ -6,15 +6,13 @@
 use std::time::Duration;
 
 use nebula_credential::{
-    Credential, CredentialContext, CredentialMetadata, Interactive, PendingState,
-    PendingStateStore, PendingStoreError, PendingToken, ProviderErrorContext, ProviderErrorKind,
-    SecretFreeMessage, SecretString,
+    Credential, CredentialContext, CredentialMetadataDraft, Interactive, PendingState,
+    PendingStateStore, PendingStoreError, PendingToken, SecretString,
     credentials::OAuth2Pending,
     error::CredentialError,
-    resolve::{ResolveResult, UserInput},
+    resolve::{DisplayData, InteractionRequest, ResolveResult, StaticResolveResult, UserInput},
     scheme::SecretToken,
 };
-use nebula_schema::FieldValues;
 use nebula_storage::credential::InMemoryPendingStore;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -89,18 +87,17 @@ impl nebula_credential::CredentialState for TestInteractiveState {
 struct InteractiveTestCredential;
 
 impl Credential for InteractiveTestCredential {
-    type Properties = FieldValues;
+    type Properties = serde_json::Value;
     type Scheme = SecretToken;
     type State = TestInteractiveState;
 
     const KEY: &'static str = "interactive_test";
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> CredentialMetadataDraft {
+        CredentialMetadataDraft::new(
             nebula_core::credential_key!("interactive_test"),
-            "Interactive Test",
+            nebula_credential::metadata_name!("Interactive Test"),
             "Test credential for pending lifecycle",
-            nebula_credential::schema_of::<Self::Properties>(),
             nebula_credential::AuthPattern::SecretToken,
         )
     }
@@ -110,27 +107,22 @@ impl Credential for InteractiveTestCredential {
     }
 
     async fn resolve(
-        _values: &FieldValues,
+        _properties: &Self::Properties,
         _ctx: &CredentialContext,
-    ) -> Result<ResolveResult<TestInteractiveState, ()>, CredentialError> {
-        // Per Tech Spec the base `Credential::resolve` cannot
-        // carry typed pending state. The interactive entry point goes
-        // through credential-specific kickoff helpers + direct
-        // PendingStateStore::put — see the test bodies below for the
-        // pattern.
-        Err(CredentialError::Provider(Box::new(
-            ProviderErrorContext::new(
-                ProviderErrorKind::Other,
-                SecretFreeMessage::new(
-                    "interactive_test: use PendingStateStore::put + execute_continue",
-                ),
-            ),
-        )))
+    ) -> Result<StaticResolveResult<TestInteractiveState>, CredentialError> {
+        Err(CredentialError::InteractiveRequired)
     }
 }
 
 impl Interactive for InteractiveTestCredential {
     type Pending = TestPending;
+
+    async fn begin(
+        _properties: &Self::Properties,
+        _ctx: &CredentialContext,
+    ) -> Result<ResolveResult<TestInteractiveState, TestPending>, CredentialError> {
+        Ok(test_pending_result())
+    }
 
     async fn continue_resolve(
         pending: &TestPending,
@@ -143,9 +135,7 @@ impl Interactive for InteractiveTestCredential {
                     token: "final-token".into(),
                 }))
             },
-            _ => Err(CredentialError::InvalidInput(
-                "incorrect verification code".into(),
-            )),
+            _ => Err(CredentialError::InvalidInput),
         }
     }
 }
@@ -160,18 +150,17 @@ impl Interactive for InteractiveTestCredential {
 struct RetryAwareCredential;
 
 impl Credential for RetryAwareCredential {
-    type Properties = FieldValues;
+    type Properties = serde_json::Value;
     type Scheme = SecretToken;
     type State = TestInteractiveState;
 
     const KEY: &'static str = "retry_aware";
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> CredentialMetadataDraft {
+        CredentialMetadataDraft::new(
             nebula_core::credential_key!("retry_aware"),
-            "Retry Aware",
+            nebula_credential::metadata_name!("Retry Aware"),
             "Test credential for retry-poll pending lifecycle",
-            nebula_credential::schema_of::<Self::Properties>(),
             nebula_credential::AuthPattern::SecretToken,
         )
     }
@@ -181,22 +170,22 @@ impl Credential for RetryAwareCredential {
     }
 
     async fn resolve(
-        _values: &FieldValues,
+        _properties: &Self::Properties,
         _ctx: &CredentialContext,
-    ) -> Result<ResolveResult<TestInteractiveState, ()>, CredentialError> {
-        Err(CredentialError::Provider(Box::new(
-            ProviderErrorContext::new(
-                ProviderErrorKind::Other,
-                SecretFreeMessage::new(
-                    "retry_aware: use PendingStateStore::put + execute_continue",
-                ),
-            ),
-        )))
+    ) -> Result<StaticResolveResult<TestInteractiveState>, CredentialError> {
+        Err(CredentialError::InteractiveRequired)
     }
 }
 
 impl Interactive for RetryAwareCredential {
     type Pending = TestPending;
+
+    async fn begin(
+        _properties: &Self::Properties,
+        _ctx: &CredentialContext,
+    ) -> Result<ResolveResult<TestInteractiveState, TestPending>, CredentialError> {
+        Ok(test_pending_result())
+    }
 
     async fn continue_resolve(
         pending: &TestPending,
@@ -212,9 +201,7 @@ impl Interactive for RetryAwareCredential {
                     token: "final-token".into(),
                 }))
             },
-            _ => Err(CredentialError::InvalidInput(
-                "incorrect verification code".into(),
-            )),
+            _ => Err(CredentialError::InvalidInput),
         }
     }
 }
@@ -224,30 +211,42 @@ impl Interactive for RetryAwareCredential {
 // downgrade anti-pattern eliminates. Tests below exercise only
 // the `Interactive` path (`execute_continue`).
 
-/// Helper: kickoff an interactive test credential by storing the typed
-/// `TestPending` directly in the pending store and returning the issued
-/// token. Per Tech Spec the base `Credential::resolve` cannot
-/// carry typed pending state — the kickoff happens at the API
-/// orchestration layer (or in tests, here).
-async fn kickoff_test_pending(
+fn test_pending_result() -> ResolveResult<TestInteractiveState, TestPending> {
+    ResolveResult::Pending {
+        state: TestPending {
+            verification_code: "secret-code-123".into(),
+        },
+        interaction: InteractionRequest::DisplayInfo {
+            title: "Verification".into(),
+            message: "Enter the verification code".into(),
+            data: DisplayData::Text("verification required".into()),
+            expires_in: Some(300),
+        },
+    }
+}
+
+async fn kickoff_test_pending<C>(
     pending_store: &InMemoryPendingStore,
     ctx: &CredentialContext,
-    credential_key: &str,
-) -> PendingToken {
-    // Per Tech Spec the executor requires explicit session scoping —
-    // tests must provide a session id via `with_session_id` rather than
-    // relying on a `"default"` fallback that would collapse concurrent
-    // owners into the same pending-store bucket.
-    let session_id = ctx
-        .session_id()
-        .expect("test must call CredentialContext::with_session_id before kickoff");
-    let pending = TestPending {
-        verification_code: "secret-code-123".into(),
-    };
-    pending_store
-        .put(credential_key, ctx.owner_id(), session_id, pending)
-        .await
-        .expect("pending_store::put should succeed")
+) -> PendingToken
+where
+    C: Interactive<
+            Properties = serde_json::Value,
+            Pending = TestPending,
+            State = TestInteractiveState,
+        >,
+{
+    let response = nebula_credential::runtime::execute_begin::<C, _>(
+        &serde_json::json!({}),
+        ctx,
+        pending_store,
+    )
+    .await
+    .expect("interactive kickoff should succeed");
+    match response {
+        nebula_credential::runtime::ResolveResponse::Pending { token, .. } => token,
+        other => panic!("expected Pending kickoff, got: {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -255,7 +254,7 @@ async fn pending_lifecycle_resolve_then_continue() {
     let pending_store = InMemoryPendingStore::new();
     let ctx = CredentialContext::for_owner("test-user").with_session_id("sess-1");
 
-    let token = kickoff_test_pending(&pending_store, &ctx, InteractiveTestCredential::KEY).await;
+    let token = kickoff_test_pending::<InteractiveTestCredential>(&pending_store, &ctx).await;
 
     let input = UserInput::Code {
         code: "secret-code-123".into(),
@@ -282,7 +281,7 @@ async fn pending_token_is_single_use() {
     let pending_store = InMemoryPendingStore::new();
     let ctx = CredentialContext::for_owner("test-user").with_session_id("sess-1");
 
-    let token = kickoff_test_pending(&pending_store, &ctx, InteractiveTestCredential::KEY).await;
+    let token = kickoff_test_pending::<InteractiveTestCredential>(&pending_store, &ctx).await;
 
     let input = UserInput::Code {
         code: "secret-code-123".into(),
@@ -311,7 +310,7 @@ async fn continue_with_wrong_code_returns_error() {
     let pending_store = InMemoryPendingStore::new();
     let ctx = CredentialContext::for_owner("test-user").with_session_id("sess-1");
 
-    let token = kickoff_test_pending(&pending_store, &ctx, InteractiveTestCredential::KEY).await;
+    let token = kickoff_test_pending::<InteractiveTestCredential>(&pending_store, &ctx).await;
 
     let input = UserInput::Code {
         code: "wrong-code".into(),
@@ -334,7 +333,7 @@ async fn retry_does_not_consume_pending_token() {
     let pending_store = InMemoryPendingStore::new();
     let ctx = CredentialContext::for_owner("test-user").with_session_id("sess-1");
 
-    let token = kickoff_test_pending(&pending_store, &ctx, RetryAwareCredential::KEY).await;
+    let token = kickoff_test_pending::<RetryAwareCredential>(&pending_store, &ctx).await;
 
     let retry = nebula_credential::runtime::execute_continue::<RetryAwareCredential, _>(
         &token,
@@ -381,7 +380,7 @@ async fn retry_path_rejects_mismatched_session() {
     let owner_ctx = CredentialContext::for_owner("test-user").with_session_id("sess-owner");
     let attacker_ctx = CredentialContext::for_owner("test-user").with_session_id("sess-attacker");
 
-    let token = kickoff_test_pending(&pending_store, &owner_ctx, RetryAwareCredential::KEY).await;
+    let token = kickoff_test_pending::<RetryAwareCredential>(&pending_store, &owner_ctx).await;
 
     let result = nebula_credential::runtime::execute_continue::<RetryAwareCredential, _>(
         &token,
@@ -481,7 +480,7 @@ async fn invariant_4_consume_rejects_mismatched_session() {
 fn invariant_5_oauth2_pending_secrets_are_secret_string() {
     fn _compile_time_witness(p: &OAuth2Pending) {
         let _: &SecretString = &p.client_secret;
-        let _: &Option<SecretString> = &p.pkce_verifier;
+        let _: &SecretString = &p.pkce_verifier;
     }
     let _ = _compile_time_witness;
 }

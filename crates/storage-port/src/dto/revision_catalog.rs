@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use serde::de::{DeserializeOwned, DeserializeSeed, MapAccess, SeqAccess, Visitor};
+
 use crate::ids::{ExecutablePlanRevisionId, WorkerFlavorRevisionId};
 
 /// Exact executable-plan and worker-flavor revision pair.
@@ -47,17 +49,82 @@ impl PlanFlavorRevisionIds {
 pub struct RevisionRecordBytes(Box<[u8]>);
 
 impl RevisionRecordBytes {
-    /// Convert a non-empty byte vector into an opaque revision record.
+    /// Maximum serialized size of one revision record.
+    pub const MAX_BYTES: usize = 1024 * 1024;
+    /// Maximum JSON object/array nesting accepted before typed decoding.
+    pub const MAX_JSON_NESTING_DEPTH: usize = 64;
+    /// Maximum decoded UTF-8 size of one JSON string.
+    pub const MAX_JSON_STRING_BYTES: usize = 256 * 1024;
+    /// Maximum decoded UTF-8 bytes across all JSON keys and string values.
+    pub const MAX_JSON_TOTAL_STRING_BYTES: usize = 512 * 1024;
+    /// Maximum aggregate entries across all JSON objects and arrays.
+    pub const MAX_JSON_COLLECTION_ENTRIES: usize = 65_536;
+
+    /// Convert a bounded, non-empty byte vector into an opaque revision record.
     ///
     /// # Errors
     ///
-    /// Returns [`RevisionCatalogError::EmptyRecord`] when `bytes` is empty.
+    /// Returns [`RevisionCatalogError::EmptyRecord`] when `bytes` is empty or
+    /// [`RevisionCatalogError::RecordTooLarge`] when it exceeds [`Self::MAX_BYTES`].
     pub fn try_from_vec(bytes: Vec<u8>) -> Result<Self, RevisionCatalogError> {
         if bytes.is_empty() {
             return Err(RevisionCatalogError::EmptyRecord);
         }
+        if bytes.len() > Self::MAX_BYTES {
+            return Err(RevisionCatalogError::RecordTooLarge {
+                max_bytes: Self::MAX_BYTES,
+                actual_bytes: bytes.len(),
+            });
+        }
 
         Ok(Self(bytes.into_boxed_slice()))
+    }
+
+    /// Decode one JSON recorded form after enforcing generic resource limits.
+    ///
+    /// These limits protect the persistence boundary itself. Domain and schema
+    /// validation remain owned by their typed decoders after this method
+    /// returns.
+    ///
+    /// # Errors
+    ///
+    /// Returns a payload-redacted [`RevisionCatalogError`] when the record is
+    /// malformed or exceeds a nesting, string, or collection budget.
+    pub fn deserialize_json<T>(
+        &self,
+        target: PlanFlavorRevisionTarget,
+    ) -> Result<T, RevisionCatalogError>
+    where
+        T: DeserializeOwned,
+    {
+        let mut budget = JsonDecodeBudget::default();
+        let mut scanner = serde_json::Deserializer::from_slice(&self.0);
+        let scan_result = JsonBudgetSeed {
+            budget: &mut budget,
+        }
+        .deserialize(&mut scanner)
+        .and_then(|()| scanner.end());
+
+        if scan_result.is_err() {
+            return Err(match budget.exceeded {
+                Some(JsonLimit::NestingDepth) => {
+                    RevisionCatalogError::RecordNestingTooDeep { target }
+                },
+                Some(JsonLimit::SingleStringBytes) => {
+                    RevisionCatalogError::RecordStringTooLarge { target }
+                },
+                Some(JsonLimit::TotalStringBytes) => {
+                    RevisionCatalogError::RecordStringBudgetExceeded { target }
+                },
+                Some(JsonLimit::CollectionEntries) => {
+                    RevisionCatalogError::RecordCollectionBudgetExceeded { target }
+                },
+                None => RevisionCatalogError::CorruptRecord { target },
+            });
+        }
+
+        serde_json::from_slice(&self.0)
+            .map_err(|_decode| RevisionCatalogError::CorruptRecord { target })
     }
 
     /// Borrow the serialized record bytes.
@@ -68,6 +135,193 @@ impl RevisionRecordBytes {
     /// Consume this value and return its serialized record bytes.
     pub fn into_vec(self) -> Vec<u8> {
         self.0.into_vec()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum JsonLimit {
+    NestingDepth,
+    SingleStringBytes,
+    TotalStringBytes,
+    CollectionEntries,
+}
+
+#[derive(Debug, Default)]
+struct JsonDecodeBudget {
+    nesting_depth: usize,
+    total_string_bytes: usize,
+    collection_entries: usize,
+    exceeded: Option<JsonLimit>,
+}
+
+impl JsonDecodeBudget {
+    fn enter_collection<E>(&mut self) -> Result<(), E>
+    where
+        E: serde::de::Error,
+    {
+        self.nesting_depth = self.nesting_depth.saturating_add(1);
+        if self.nesting_depth > RevisionRecordBytes::MAX_JSON_NESTING_DEPTH {
+            return self.reject(JsonLimit::NestingDepth);
+        }
+        Ok(())
+    }
+
+    fn leave_collection(&mut self) {
+        self.nesting_depth = self.nesting_depth.saturating_sub(1);
+    }
+
+    fn account_collection_entry<E>(&mut self) -> Result<(), E>
+    where
+        E: serde::de::Error,
+    {
+        self.collection_entries = self.collection_entries.saturating_add(1);
+        if self.collection_entries > RevisionRecordBytes::MAX_JSON_COLLECTION_ENTRIES {
+            return self.reject(JsonLimit::CollectionEntries);
+        }
+        Ok(())
+    }
+
+    fn account_string<E>(&mut self, string_bytes: usize) -> Result<(), E>
+    where
+        E: serde::de::Error,
+    {
+        if string_bytes > RevisionRecordBytes::MAX_JSON_STRING_BYTES {
+            return self.reject(JsonLimit::SingleStringBytes);
+        }
+        self.total_string_bytes = self.total_string_bytes.saturating_add(string_bytes);
+        if self.total_string_bytes > RevisionRecordBytes::MAX_JSON_TOTAL_STRING_BYTES {
+            return self.reject(JsonLimit::TotalStringBytes);
+        }
+        Ok(())
+    }
+
+    fn reject<E>(&mut self, limit: JsonLimit) -> Result<(), E>
+    where
+        E: serde::de::Error,
+    {
+        self.exceeded = Some(limit);
+        Err(E::custom("revision record exceeds its JSON decode budget"))
+    }
+}
+
+struct JsonBudgetSeed<'a> {
+    budget: &'a mut JsonDecodeBudget,
+}
+
+impl<'de> DeserializeSeed<'de> for JsonBudgetSeed<'_> {
+    type Value = ();
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(JsonBudgetVisitor {
+            budget: self.budget,
+        })
+    }
+}
+
+struct JsonBudgetVisitor<'a> {
+    budget: &'a mut JsonDecodeBudget,
+}
+
+impl<'de> Visitor<'de> for JsonBudgetVisitor<'_> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("one bounded JSON value")
+    }
+
+    fn visit_bool<E>(self, _value: bool) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_i64<E>(self, _value: i64) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_u64<E>(self, _value: u64) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_f64<E>(self, _value: f64) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(())
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        JsonBudgetSeed {
+            budget: self.budget,
+        }
+        .deserialize(deserializer)
+    }
+
+    fn visit_borrowed_str<E>(self, value: &'de str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.budget.account_string(value.len())
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.budget.account_string(value.len())
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.budget.account_string(value.len())
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        self.budget.enter_collection()?;
+        while sequence
+            .next_element_seed(JsonBudgetSeed {
+                budget: self.budget,
+            })?
+            .is_some()
+        {
+            self.budget.account_collection_entry()?;
+        }
+        self.budget.leave_collection();
+        Ok(())
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        self.budget.enter_collection()?;
+        while map
+            .next_key_seed(JsonBudgetSeed {
+                budget: self.budget,
+            })?
+            .is_some()
+        {
+            self.budget.account_collection_entry()?;
+            map.next_value_seed(JsonBudgetSeed {
+                budget: self.budget,
+            })?;
+        }
+        self.budget.leave_collection();
+        Ok(())
     }
 }
 
@@ -128,6 +382,11 @@ impl WorkerFlavorRevisionRecord {
     pub fn bytes(&self) -> &[u8] {
         self.bytes.as_bytes()
     }
+
+    /// Borrow the bounded record for checked decoding.
+    pub const fn record_bytes(&self) -> &RevisionRecordBytes {
+        &self.bytes
+    }
 }
 
 /// One atomically persisted exact executable-plan and worker-flavor pair.
@@ -170,6 +429,11 @@ impl PlanFlavorRevisionRecord {
     /// Borrow the opaque serialized executable-plan record.
     pub fn plan_bytes(&self) -> &[u8] {
         self.plan_bytes.as_bytes()
+    }
+
+    /// Borrow the bounded executable-plan record for checked decoding.
+    pub const fn plan_record_bytes(&self) -> &RevisionRecordBytes {
+        &self.plan_bytes
     }
 
     /// Borrow the exact worker-flavor record paired with the plan.
@@ -227,7 +491,9 @@ impl RevisionReferenceCounts {
 pub enum RevisionInsertOutcome {
     /// The pair was absent and is now stored as Active.
     Inserted,
-    /// Byte-identical records with the same identifiers already existed.
+    /// Records with the same identifiers and semantically equal parsed JSON
+    /// documents already existed. Incidental JSON whitespace and object-key
+    /// order do not make immutable content conflict.
     AlreadyPresent,
 }
 
@@ -271,7 +537,8 @@ pub enum RevisionCatalogError {
         stored_worker_flavor_id: WorkerFlavorRevisionId,
     },
 
-    /// An immutable identifier already contains different record bytes.
+    /// An immutable identifier already contains a semantically different parsed
+    /// JSON document.
     #[error("revision identity already contains different content")]
     ContentConflict {
         /// Immutable identity whose content differs.
@@ -327,6 +594,43 @@ pub enum RevisionCatalogError {
     #[error("revision record is empty")]
     EmptyRecord,
 
+    /// An opaque durable record exceeded the persistence ceiling.
+    #[error("revision record exceeds the byte limit")]
+    RecordTooLarge {
+        /// Maximum accepted serialized record size.
+        max_bytes: usize,
+        /// Serialized size supplied to the checked constructor.
+        actual_bytes: usize,
+    },
+
+    /// JSON nesting exceeded the generic decode safety ceiling.
+    #[error("revision record exceeds the JSON nesting limit")]
+    RecordNestingTooDeep {
+        /// Revision whose record exceeded the limit.
+        target: PlanFlavorRevisionTarget,
+    },
+
+    /// One JSON string exceeded the generic decode safety ceiling.
+    #[error("revision record contains an oversized JSON string")]
+    RecordStringTooLarge {
+        /// Revision whose record exceeded the limit.
+        target: PlanFlavorRevisionTarget,
+    },
+
+    /// Aggregate JSON key and string bytes exceeded the decode budget.
+    #[error("revision record exceeds the aggregate JSON string budget")]
+    RecordStringBudgetExceeded {
+        /// Revision whose record exceeded the budget.
+        target: PlanFlavorRevisionTarget,
+    },
+
+    /// Aggregate JSON object and array entries exceeded the decode budget.
+    #[error("revision record exceeds the aggregate JSON collection budget")]
+    RecordCollectionBudgetExceeded {
+        /// Revision whose record exceeded the budget.
+        target: PlanFlavorRevisionTarget,
+    },
+
     /// Persisted format metadata names an unsupported recorded form.
     #[error("revision record format is unsupported")]
     UnsupportedRecordFormat {
@@ -348,4 +652,141 @@ pub enum RevisionCatalogError {
     /// Commit was dispatched but authoritative acknowledgement was lost.
     #[error("revision catalog outcome is unknown; do not retry blindly")]
     OutcomeUnknown,
+}
+
+#[cfg(test)]
+mod tests {
+    use serde::de::IgnoredAny;
+
+    use super::*;
+
+    fn flavor_target() -> PlanFlavorRevisionTarget {
+        PlanFlavorRevisionTarget::WorkerFlavor(WorkerFlavorRevisionId::from_bytes([0x51; 32]))
+    }
+
+    #[test]
+    fn record_bytes_accept_exact_limit_and_reject_limit_plus_one() {
+        let exact = vec![b'x'; RevisionRecordBytes::MAX_BYTES];
+        let bounded = RevisionRecordBytes::try_from_vec(exact)
+            .expect("a record at the byte ceiling remains admissible");
+        assert_eq!(bounded.as_bytes().len(), RevisionRecordBytes::MAX_BYTES);
+
+        let mut oversized = vec![b'y'; RevisionRecordBytes::MAX_BYTES + 1];
+        oversized[.."oversized-payload-canary".len()].copy_from_slice(b"oversized-payload-canary");
+        let error = RevisionRecordBytes::try_from_vec(oversized)
+            .expect_err("a record one byte over the ceiling must be rejected");
+        assert_eq!(
+            error,
+            RevisionCatalogError::RecordTooLarge {
+                max_bytes: RevisionRecordBytes::MAX_BYTES,
+                actual_bytes: RevisionRecordBytes::MAX_BYTES + 1,
+            }
+        );
+        assert!(!format!("{error} {error:?}").contains("oversized-payload-canary"));
+    }
+
+    #[test]
+    fn checked_json_decode_bounds_nesting() {
+        let at_limit = format!(
+            "{}0{}",
+            "[".repeat(RevisionRecordBytes::MAX_JSON_NESTING_DEPTH),
+            "]".repeat(RevisionRecordBytes::MAX_JSON_NESTING_DEPTH)
+        );
+        RevisionRecordBytes::try_from_vec(at_limit.into_bytes())
+            .expect("depth fixture fits the byte ceiling")
+            .deserialize_json::<IgnoredAny>(flavor_target())
+            .expect("nesting at the ceiling remains admissible");
+
+        let over_limit = format!(
+            "{}0{}",
+            "[".repeat(RevisionRecordBytes::MAX_JSON_NESTING_DEPTH + 1),
+            "]".repeat(RevisionRecordBytes::MAX_JSON_NESTING_DEPTH + 1)
+        );
+        let error = RevisionRecordBytes::try_from_vec(over_limit.into_bytes())
+            .expect("depth fixture fits the byte ceiling")
+            .deserialize_json::<IgnoredAny>(flavor_target())
+            .expect_err("nesting above the ceiling must be rejected before typed decoding");
+        assert!(
+            matches!(error, RevisionCatalogError::RecordNestingTooDeep { target } if target == flavor_target()),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    #[test]
+    fn checked_json_decode_bounds_single_and_aggregate_string_bytes() {
+        let exact_string = format!(
+            "\"{}\"",
+            "s".repeat(RevisionRecordBytes::MAX_JSON_STRING_BYTES)
+        );
+        RevisionRecordBytes::try_from_vec(exact_string.into_bytes())
+            .expect("single-string boundary fixture fits the record")
+            .deserialize_json::<IgnoredAny>(flavor_target())
+            .expect("a string at the ceiling remains admissible");
+
+        let oversized_string = format!(
+            "\"{}\"",
+            "s".repeat(RevisionRecordBytes::MAX_JSON_STRING_BYTES + 1)
+        );
+        let error = RevisionRecordBytes::try_from_vec(oversized_string.into_bytes())
+            .expect("single-string overflow fixture fits the record")
+            .deserialize_json::<IgnoredAny>(flavor_target())
+            .expect_err("a string one byte over the ceiling must be rejected");
+        assert!(
+            matches!(error, RevisionCatalogError::RecordStringTooLarge { target } if target == flavor_target()),
+            "unexpected error: {error:?}"
+        );
+
+        let string_bytes_per_item = RevisionRecordBytes::MAX_JSON_TOTAL_STRING_BYTES / 4;
+        let exact_aggregate = format!(
+            "[\"{0}\",\"{0}\",\"{0}\",\"{0}\"]",
+            "a".repeat(string_bytes_per_item)
+        );
+        RevisionRecordBytes::try_from_vec(exact_aggregate.into_bytes())
+            .expect("aggregate-string boundary fixture fits the record")
+            .deserialize_json::<IgnoredAny>(flavor_target())
+            .expect("aggregate string bytes at the ceiling remain admissible");
+
+        let over_aggregate = format!(
+            "[\"{0}\",\"{0}\",\"{0}\",\"{1}\"]",
+            "a".repeat(string_bytes_per_item),
+            "a".repeat(string_bytes_per_item + 1)
+        );
+        let error = RevisionRecordBytes::try_from_vec(over_aggregate.into_bytes())
+            .expect("aggregate-string overflow fixture fits the record")
+            .deserialize_json::<IgnoredAny>(flavor_target())
+            .expect_err("aggregate string bytes above the ceiling must be rejected");
+        assert!(
+            matches!(error, RevisionCatalogError::RecordStringBudgetExceeded { target } if target == flavor_target()),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    #[test]
+    fn checked_json_decode_bounds_aggregate_collection_entries() {
+        let at_limit = format!(
+            "[{}]",
+            std::iter::repeat_n("0", RevisionRecordBytes::MAX_JSON_COLLECTION_ENTRIES)
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        RevisionRecordBytes::try_from_vec(at_limit.into_bytes())
+            .expect("collection boundary fixture fits the record")
+            .deserialize_json::<IgnoredAny>(flavor_target())
+            .expect("aggregate collection count at the ceiling remains admissible");
+
+        let over_limit = format!(
+            "[{}]",
+            std::iter::repeat_n("0", RevisionRecordBytes::MAX_JSON_COLLECTION_ENTRIES + 1)
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let error = RevisionRecordBytes::try_from_vec(over_limit.into_bytes())
+            .expect("collection overflow fixture fits the record")
+            .deserialize_json::<IgnoredAny>(flavor_target())
+            .expect_err("aggregate collection count above the ceiling must be rejected");
+        assert!(
+            matches!(error, RevisionCatalogError::RecordCollectionBudgetExceeded { target } if target == flavor_target()),
+            "unexpected error: {error:?}"
+        );
+    }
 }

@@ -34,7 +34,7 @@ use syn::{Data, DataEnum, DeriveInput, Fields, Ident, Variant, ext::IdentExt};
 
 use crate::{
     attrs::{FieldAttrs, RenameRule, SerdeAttrs, ValidateAttrs},
-    derive_schema::{build_field_expr, resolve_field_key},
+    derive_schema::{FieldContext, build_field_expr, cached_schema_impl, resolve_field_key},
     type_infer::{FieldKind, classify},
 };
 
@@ -46,8 +46,6 @@ const UNION_ROOT_KEY: &str = "_nebula_union";
 pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let crate_path = crate::crate_path();
     let ty_name = &input.ident;
-    let generics = &input.generics;
-    let (impl_g, ty_g, where_g) = generics.split_for_impl();
 
     let Data::Enum(DataEnum { variants, .. }) = &input.data else {
         return Err(syn::Error::new_spanned(
@@ -146,53 +144,16 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         ));
     }
 
-    let ty_name_str = ty_name.to_string();
-    Ok(quote! {
-        #[automatically_derived]
-        impl #impl_g #crate_path::HasSchema for #ty_name #ty_g #where_g {
-            fn schema() -> #crate_path::ValidSchema {
-                static __CACHE: ::std::sync::OnceLock<#crate_path::ValidSchema> =
-                    ::std::sync::OnceLock::new();
-                __CACHE
-                    .get_or_init(|| {
-                        // Build inside a `Result`-returning closure so a non-record
-                        // newtype payload (`union_newtype_payload`) propagates via
-                        // `?` into the single error/log path below — the failure
-                        // surfaces here, not as a panic from library code.
-                        let __build = || -> ::core::result::Result<
-                            #crate_path::ValidSchema,
-                            #crate_path::error::ValidationReport,
-                        > {
-                            let mut __mode = #crate_path::Field::mode(
-                                #crate_path::FieldKey::new(#UNION_ROOT_KEY)
-                                    .expect("union root key is a valid FieldKey"),
-                            );
-                            #( __mode = __mode #variant_calls; )*
-                            #crate_path::ValidSchema::union(__mode, #tagging)
-                        };
-                        match __build() {
-                            ::core::result::Result::Ok(s) => s,
-                            ::core::result::Result::Err(report) => {
-                                #crate_path::__private::tracing::error!(
-                                    target: "nebula_schema::derive",
-                                    type_name = #ty_name_str,
-                                    report = ?report,
-                                    "#[derive(Schema)] union schema-level lint failed at runtime"
-                                );
-                                ::core::panic!(
-                                    "#[derive(Schema)] on enum `{}` produced an invalid union \
-                                     schema — a variant's payload conflicts with a schema-level \
-                                     lint. Report: {:?}",
-                                    #ty_name_str,
-                                    report,
-                                );
-                            },
-                        }
-                    })
-                    .clone()
-            }
-        }
-    })
+    Ok(cached_schema_impl(
+        input,
+        quote! {
+            let mut __mode = #crate_path::Field::mode(
+                #crate_path::FieldKey::new(#UNION_ROOT_KEY)?,
+            );
+            #( __mode = __mode #variant_calls; )*
+            #crate_path::ValidSchema::union(__mode, #tagging)
+        },
+    ))
 }
 
 /// Map the container's serde tagging attributes to a `SerdeTagging` constructor
@@ -278,9 +239,8 @@ fn build_variant_call(
                     let payload_ty = &*ty;
                     let payload = quote! {
                         #crate_path::__private::union_newtype_payload(
-                            #crate_path::FieldKey::new(#wire_key)
-                                .expect("variant wire key validated at macro expansion"),
-                            <#payload_ty as #crate_path::HasSchema>::schema(),
+                            #crate_path::FieldKey::new(#wire_key)?,
+                            <#payload_ty as #crate_path::HasSchema>::schema()?,
                             #enum_name,
                             #wire_key,
                         )?
@@ -331,8 +291,11 @@ fn build_variant_call(
                     field_read_aliases.push(alias.clone());
                 }
                 field_exprs.push(build_field_expr(
-                    field_name,
-                    &key_str,
+                    FieldContext {
+                        name: field_name,
+                        ty: &field.ty,
+                        key: &key_str,
+                    },
                     &kind,
                     &field_attr,
                     &validate,
@@ -342,8 +305,7 @@ fn build_variant_call(
             }
             let payload = quote! {
                 #crate_path::Field::object(
-                    #crate_path::FieldKey::new(#wire_key)
-                        .expect("variant wire key validated at macro expansion"),
+                    #crate_path::FieldKey::new(#wire_key)?,
                 )
                 #( .add(#field_exprs) )*
             };

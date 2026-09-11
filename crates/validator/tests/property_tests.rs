@@ -26,10 +26,37 @@ proptest! {
 
     #[test]
     fn in_range_idempotent(n in any::<i64>()) {
-        let v = in_range(0i64, 100i64);
+        let v = in_range(0i64, 100i64).expect("ordered bounds");
         let r1 = v.validate(&n);
         let r2 = v.validate(&n);
         prop_assert_eq!(r1.is_ok(), r2.is_ok());
+    }
+
+    #[test]
+    fn inclusive_range_constructs_exactly_for_ordered_bounds(
+        min in any::<i64>(),
+        max in any::<i64>(),
+    ) {
+        prop_assert_eq!(in_range(min, max).is_ok(), min <= max);
+    }
+
+    #[test]
+    fn exclusive_range_constructs_exactly_for_strictly_ordered_bounds(
+        min in any::<i64>(),
+        max in any::<i64>(),
+    ) {
+        prop_assert_eq!(exclusive_range(min, max).is_ok(), min < max);
+    }
+
+    #[test]
+    fn size_range_constructs_exactly_for_ordered_bounds(
+        min in any::<u16>(),
+        max in any::<u16>(),
+    ) {
+        prop_assert_eq!(
+            size_range::<u8>(usize::from(min), usize::from(max)).is_ok(),
+            min <= max,
+        );
     }
 
     #[test]
@@ -39,6 +66,26 @@ proptest! {
         let r2 = v.validate(&*s);
         prop_assert_eq!(r1.is_ok(), r2.is_ok());
     }
+}
+
+#[test]
+fn float_bound_constructors_reject_nan() {
+    assert_eq!(
+        min_f64(f64::NAN).unwrap_err(),
+        RangeConfigError::Incomparable
+    );
+    assert_eq!(
+        max_f64(f64::NAN).unwrap_err(),
+        RangeConfigError::Incomparable
+    );
+    assert_eq!(
+        in_range_f64(f64::NAN, 1.0).unwrap_err(),
+        RangeConfigError::Incomparable
+    );
+    assert_eq!(
+        in_range_f64(0.0, f64::NAN).unwrap_err(),
+        RangeConfigError::Incomparable
+    );
 }
 
 // ============================================================================

@@ -23,6 +23,13 @@ mod exact_fixture;
 #[path = "exact_fixture/qualified_runtime.rs"]
 mod qualified_runtime;
 
+macro_rules! pure_action_metadata {
+    ($key:expr, $name:expr, $description:expr $(,)?) => {
+        nebula_action::metadata::ActionMetadataDraft::new($key, $name, $description)
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+    };
+}
+
 use std::{
     collections::HashMap,
     sync::{Arc, OnceLock},
@@ -33,14 +40,13 @@ use chrono::Utc;
 use nebula_action::{
     ActionError,
     action::Action,
-    metadata::ActionMetadata,
     result::{ActionResult, WaitCondition},
     stateless::StatelessAction,
 };
 use nebula_core::{Dependencies, action_key, id::ExecutionId, node_key};
 use nebula_engine::{
-    ActionExecutor, ActionRegistry, ActionRuntime, ControlDispatch, DataPassingPolicy,
-    EngineControlDispatch, InProcessRunner, WorkflowEngine,
+    ActionRegistry, ActionRuntime, ControlDispatch, DataPassingPolicy, EngineControlDispatch,
+    InProcessRunner, WorkflowEngine,
 };
 use nebula_execution::ExecutionState;
 use nebula_metrics::MetricsRegistry;
@@ -63,10 +69,10 @@ impl Action for WebhookParkNode {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        pure_action_metadata!(
             action_key!("test.w_s3c.webhook_park"),
-            "WebhookParkNode",
+            nebula_action::metadata_name!("WebhookParkNode"),
             "resume-token mint integration test stub",
         )
     }
@@ -106,20 +112,19 @@ struct MintHarness {
 impl MintHarness {
     async fn new() -> Self {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless_instance(
-            ActionMetadata::new(
-                action_key!("test.w_s3c.webhook_park"),
-                "WebhookParkNode",
-                "resume-token mint integration test stub",
-            ),
-            WebhookParkNode,
-        );
+        registry
+            .register_stateless_instance(
+                pure_action_metadata!(
+                    action_key!("test.w_s3c.webhook_park"),
+                    nebula_action::metadata_name!("WebhookParkNode"),
+                    "resume-token mint integration test stub",
+                ),
+                WebhookParkNode,
+            )
+            .expect("valid test catalog definition");
 
         let exact = qualified_runtime::QualifiedRuntime::new(&registry);
-        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
-            Box::pin(async move { Ok(ActionResult::success(input)) })
-        });
-        let runner = Arc::new(InProcessRunner::new(executor));
+        let runner = Arc::new(InProcessRunner::new());
         let metrics = MetricsRegistry::new();
         let runtime = Arc::new(
             ActionRuntime::try_new(

@@ -11,15 +11,13 @@ use nebula_resource::topology::resident::ResidentProvider;
 use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResourceContext, ScopeLevel, SlotIdentity,
     error::Error,
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
 };
 use nebula_resource::{Pooled, Resident, ResidentConfig};
 use tokio_util::sync::CancellationToken;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, nebula_schema::Schema)]
 struct ProbeConfig;
-
-nebula_schema::impl_empty_has_schema!(ProbeConfig);
 
 impl ResourceConfig for ProbeConfig {
     fn fingerprint(&self) -> u64 {
@@ -61,8 +59,8 @@ impl Provider for ProbeResource {
         Ok(counter)
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 
@@ -275,9 +273,8 @@ mod pool_parity {
 
     use super::*;
 
-    #[derive(Clone, Default)]
+    #[derive(Clone, Default, nebula_schema::Schema)]
     struct PoolParityCfg;
-    nebula_schema::impl_empty_has_schema!(PoolParityCfg);
     impl ResourceConfig for PoolParityCfg {
         fn fingerprint(&self) -> u64 {
             // Unit struct: all instances identical — constant 0 is correct.
@@ -316,8 +313,8 @@ mod pool_parity {
             Ok(())
         }
 
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::from_key(&Self::key())
+        fn metadata() -> ResourceMetadataDraft {
+            ResourceMetadataDraft::from_key(Self::key())
         }
     }
 
@@ -404,9 +401,8 @@ mod pool_parity {
 mod resident_erased_reuses_runtime {
     use super::*;
 
-    #[derive(Clone, Default)]
+    #[derive(Clone, Default, nebula_schema::Schema)]
     struct ResidentReuseCfg;
-    nebula_schema::impl_empty_has_schema!(ResidentReuseCfg);
     impl ResourceConfig for ResidentReuseCfg {
         fn fingerprint(&self) -> u64 {
             // Unit struct: all instances identical — constant 0 is correct.
@@ -438,8 +434,8 @@ mod resident_erased_reuses_runtime {
             Ok(Arc::clone(&self.create_count))
         }
 
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::from_key(&Self::key())
+        fn metadata() -> ResourceMetadataDraft {
+            ResourceMetadataDraft::from_key(Self::key())
         }
     }
 
@@ -524,9 +520,8 @@ mod resident_erased_reuses_runtime {
 mod pool_erased_distinct_instances {
     use super::*;
 
-    #[derive(Clone, Default)]
+    #[derive(Clone, Default, nebula_schema::Schema)]
     struct PoolErasedCfg;
-    nebula_schema::impl_empty_has_schema!(PoolErasedCfg);
     impl ResourceConfig for PoolErasedCfg {
         fn fingerprint(&self) -> u64 {
             // Unit struct: all instances identical — constant 0 is correct.
@@ -557,8 +552,8 @@ mod pool_erased_distinct_instances {
             Ok(self.create_count.fetch_add(1, Ordering::SeqCst))
         }
 
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::from_key(&Self::key())
+        fn metadata() -> ResourceMetadataDraft {
+            ResourceMetadataDraft::from_key(Self::key())
         }
     }
 

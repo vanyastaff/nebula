@@ -1,19 +1,18 @@
 //! Real owner adapters and pure action fixtures for worker restart tests.
 use nebula_action::{
-    Action, ActionError, ActionFactory, ActionHandle, ActionKind, ActionMetadata, ActionResult,
-    StatelessAction,
+    Action, ActionError, ActionFactory, ActionResult, RemoteEffectInstanceFactory, StatelessAction,
     effect::{
         ActionEffectContract, EffectFailureCode, EffectInvocationContext, EffectInvocationOutcome,
         EffectPreparationContext, EffectPreparationError, PreparedEffectAdapter,
-        PreparedRemoteEffect, RemoteDestinationGuarantee, RemoteEffectDescriptor,
-        RemoteEffectFactory, RemoteEffectPolicy,
+        PreparedRemoteEffect, RemoteDestinationGuarantee, RemoteEffectAction,
+        RemoteEffectDescriptor, RemoteEffectPolicy,
     },
 };
 use nebula_core::{Dependencies, ExecutionId, OperationId, WorkflowId, action_key, node_key};
 use nebula_engine::{
-    ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, ExecutionStores,
-    InProcessRunner, PlanFlavorRevisionInstaller, PlanFlavorRevisionLoader,
-    ResourceFanoutCoordinator, WorkflowEngine, WorkflowStartService,
+    ActionRegistry, ActionRuntime, DataPassingPolicy, ExecutionStores, InProcessRunner,
+    PlanFlavorRevisionInstaller, PlanFlavorRevisionLoader, ResourceFanoutCoordinator,
+    WorkflowEngine, WorkflowStartService,
 };
 use nebula_execution::{
     ExecutionBudget, ExecutionContractBundle, ExecutionRevisions, ExecutionState,
@@ -34,8 +33,6 @@ use nebula_storage_port::{
 use nebula_workflow::{Connection, NodeDefinition, WorkflowDefinition};
 use std::{
     collections::HashSet,
-    future::Future,
-    pin::Pin,
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicU32, Ordering},
@@ -60,41 +57,30 @@ impl EffectObservations {
     }
 }
 
-struct RecoveryEffectFactory {
-    metadata: ActionMetadata,
-    dependencies: Dependencies,
+struct RecoveryEffectAction {
     descriptor: RemoteEffectDescriptor,
     observations: Arc<EffectObservations>,
 }
 
-impl ActionFactory for RecoveryEffectFactory {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.metadata
+impl Action for RecoveryEffectAction {
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
+            action_key!("recovery.send"),
+            nebula_action::metadata_name!("Send"),
+            "durable recovery effect fixture",
+        )
     }
 
-    fn dependencies(&self) -> &Dependencies {
-        &self.dependencies
-    }
-
-    fn remote_effect_factory(&self) -> Option<&dyn RemoteEffectFactory> {
-        Some(self)
-    }
-
-    fn instantiate<'a>(
-        &'a self,
-        _: &'a NodeDefinition,
-        _: &'a dyn nebula_action::ActionContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
-        Box::pin(async {
-            Err(ActionError::fatal(
-                "remote recovery must use effect dispatch",
-            ))
-        })
+    fn dependencies() -> &'static Dependencies {
+        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
+        DEPENDENCIES.get_or_init(Dependencies::new)
     }
 }
 
-#[async_trait::async_trait]
-impl RemoteEffectFactory for RecoveryEffectFactory {
+impl RemoteEffectAction for RecoveryEffectAction {
     fn descriptor(&self) -> &RemoteEffectDescriptor {
         &self.descriptor
     }
@@ -168,10 +154,10 @@ struct Echo {
 impl Action for Echo {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             action_key!("recovery.echo"),
-            "Echo",
+            nebula_action::metadata_name!("Echo"),
             "pure recovery fixture",
         )
         .with_effect_contract(ActionEffectContract::NoExternalEffects)
@@ -221,13 +207,15 @@ fn registry(
     block_successor: bool,
 ) -> (Arc<ActionRegistry>, Arc<FrozenPluginRegistry>) {
     let actions = Arc::new(ActionRegistry::new());
-    actions.register_stateless_instance(
-        Echo::metadata(),
-        Echo {
-            calls: calls.clone(),
-            block_successor,
-        },
-    );
+    actions
+        .register_stateless_instance(
+            Echo::metadata(),
+            Echo {
+                calls: calls.clone(),
+                block_successor,
+            },
+        )
+        .expect("valid test catalog definition");
     let plugin = FixturePlugin {
         manifest: PluginManifest::builder("recovery", "Recovery")
             .build()
@@ -261,18 +249,22 @@ fn effect_registry(
             .build()
             .unwrap();
     let descriptor = RemoteEffectDescriptor::new("worker.recovery/v1", 1, policy).unwrap();
-    let factory = Arc::new(RecoveryEffectFactory {
-        metadata: ActionMetadata::new(
-            action_key!("recovery.send"),
-            "Send",
-            "durable recovery effect fixture",
+    let metadata = nebula_action::ActionMetadataDraft::new(
+        action_key!("recovery.send"),
+        nebula_action::metadata_name!("Send"),
+        "durable recovery effect fixture",
+    )
+    .with_effect_contract(ActionEffectContract::Remote(Box::new(descriptor.clone())));
+    let factory = Arc::new(
+        RemoteEffectInstanceFactory::new(
+            metadata,
+            RecoveryEffectAction {
+                descriptor,
+                observations: observations.clone(),
+            },
         )
-        .with_kind(ActionKind::Stateless)
-        .with_effect_contract(ActionEffectContract::Remote(Box::new(descriptor.clone()))),
-        dependencies: Dependencies::new(),
-        descriptor,
-        observations: observations.clone(),
-    });
+        .expect("coherent recovery effect factory"),
+    );
     let plugin = FixturePlugin {
         manifest: PluginManifest::builder("recovery", "Recovery")
             .build()
@@ -689,12 +681,10 @@ fn build_worker(
 ) {
     let resource_fanout = test_resource_fanout(Arc::clone(&frozen));
     let metrics = MetricsRegistry::new();
-    let executor: ActionExecutor =
-        Arc::new(|_, _, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
     let runtime = Arc::new(
         ActionRuntime::try_new(
             registry,
-            Arc::new(InProcessRunner::new(executor)),
+            Arc::new(InProcessRunner::new()),
             DataPassingPolicy::default(),
             metrics.clone(),
         )

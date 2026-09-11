@@ -33,7 +33,7 @@ use nebula_resource::{
     AcquireOptions, Manager, Pooled, RegistrationSpec, Resident, ResourceContext, ScopeLevel,
     ShutdownConfig, SlotIdentity, TopologyTag,
     error::{Error, ErrorKind},
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
     topology::{
         pooled::{BrokenCheck, PoolProvider},
         resident::ResidentProvider,
@@ -51,10 +51,8 @@ use tokio_util::sync::CancellationToken;
 // Custom error boilerplate removed — Resource lifecycle methods now return
 // `crate::Error` directly (HasCredentialSlots redesign).
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, nebula_schema::Schema)]
 struct SlowConfig;
-
-nebula_schema::impl_empty_has_schema!(SlowConfig);
 
 impl ResourceConfig for SlowConfig {
     fn fingerprint(&self) -> u64 {
@@ -96,8 +94,8 @@ impl Provider for SlowCreateResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 
@@ -291,10 +289,8 @@ async fn lookup_rejects_acquire_after_shutdown_starts() {
 // not a barrier: maintenance publishes cleanup without awaiting queue receipts.
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, nebula_schema::Schema)]
 struct PausablePoolConfig;
-
-nebula_schema::impl_empty_has_schema!(PausablePoolConfig);
 
 impl ResourceConfig for PausablePoolConfig {
     fn fingerprint(&self) -> u64 {
@@ -341,8 +337,8 @@ impl Provider for PausableEvictResource {
         Err(Error::cancelled())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 

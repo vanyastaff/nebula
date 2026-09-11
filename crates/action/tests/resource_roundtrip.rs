@@ -11,8 +11,8 @@ use std::sync::{
 };
 
 use nebula_action::{
-    Action, ActionError, ActionMetadata, ActionRuntimeContext, ResourceAction,
-    ResourceActionAdapter, ResourceHandler, ResourceProduces, TestContextBuilder,
+    Action, ActionError, ActionRuntimeContext, ResourceAction, ResourceActionAdapter,
+    ResourceHandler, ResourceProduces, TestContextBuilder,
 };
 use nebula_core::Dependencies;
 
@@ -40,10 +40,10 @@ impl Action for PoolAction {
     // ResourceAction requires Output = ResourceProduces<Self::Resource>.
     type Output = ResourceProduces<PoolHandle>;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             nebula_core::action_key!("test.resource.pool"),
-            "Pool",
+            nebula_action::metadata_name!("Pool"),
             "Typed pool resource",
         )
     }
@@ -91,7 +91,7 @@ async fn resource_action_configure_cleanup_roundtrip() {
         cleanup_observed: cleanup_observed.clone(),
         cleanup_ran: cleanup_ran.clone(),
     };
-    let adapter = ResourceActionAdapter::new(action);
+    let adapter = ResourceActionAdapter::new(action).expect("valid test catalog definition");
     let handler: Arc<dyn ResourceHandler> = Arc::new(adapter);
     let ctx: ActionRuntimeContext = TestContextBuilder::minimal().build();
 

@@ -990,7 +990,6 @@ mod refresh_revoke_race {
 
     use chrono::Utc;
     use nebula_core::auth::{AuthPattern, EgressShape, RefreshStrategyKind};
-    use nebula_schema::FieldValues;
     use nebula_storage_port::SecretBytes;
     use nebula_storage_port::store::{
         ClaimAttempt, ClaimToken, ExpiredClaim, HeartbeatError, RefreshClaimError,
@@ -1011,12 +1010,13 @@ mod refresh_revoke_race {
 
     use super::*;
     use crate::credentials::{OAuth2Credential, OAuth2State};
-    use crate::resolve::{RefreshPolicy, ResolveResult};
+    use crate::resolve::{RefreshPolicy, StaticResolveResult};
     use crate::runtime::refresh::RefreshCoordConfig;
     use crate::runtime::refresh::transport::{
         RefreshTransport, RefreshTransportError, TokenPostRequest, TokenPostResponse,
     };
-    use crate::{CredentialMetadata, CredentialPolicy, RefreshStrategy, RevokeStrategy};
+    use crate::runtime::{AcquisitionTransport, AcquisitionTransportError};
+    use crate::{CredentialMetadataDraft, CredentialPolicy, RefreshStrategy, RevokeStrategy};
 
     // ── Test doubles of the crate's own ports ──────────────────────────
 
@@ -1193,6 +1193,23 @@ mod refresh_revoke_race {
             Box::pin(async {
                 unreachable!("default-feature refresh performs no OAuth2 token POST")
             })
+        }
+    }
+
+    struct UnusedAcquisitionTransport;
+
+    impl AcquisitionTransport for UnusedAcquisitionTransport {
+        fn post_token<'a>(
+            &'a self,
+            _request: TokenPostRequest,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<TokenPostResponse, AcquisitionTransportError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { Err(AcquisitionTransportError::Send) })
         }
     }
 
@@ -1925,15 +1942,13 @@ mod refresh_revoke_race {
 
         const KEY: &'static str = "test.refreshable";
 
-        fn metadata() -> CredentialMetadata {
-            CredentialMetadata::builder()
-                .key(nebula_core::credential_key!("test.refreshable"))
-                .name("TestCred")
-                .description("refreshable test credential for resolver regressions")
-                .schema(crate::schema_of::<Self::Properties>())
-                .pattern(AuthPattern::OAuth2)
-                .build()
-                .expect("TestCred metadata is valid")
+        fn metadata() -> CredentialMetadataDraft {
+            CredentialMetadataDraft::new(
+                nebula_core::credential_key!("test.refreshable"),
+                crate::metadata_name!("TestCred"),
+                "refreshable test credential for resolver regressions",
+                AuthPattern::OAuth2,
+            )
         }
 
         fn project(_state: &TestState) -> TestScheme {
@@ -1941,10 +1956,10 @@ mod refresh_revoke_race {
         }
 
         async fn resolve(
-            _values: &FieldValues,
+            _properties: &(),
             _ctx: &CredentialContext,
-        ) -> Result<ResolveResult<TestState, ()>, CredentialError> {
-            Ok(ResolveResult::Complete(TestState {
+        ) -> Result<StaticResolveResult<TestState>, CredentialError> {
+            Ok(StaticResolveResult::Complete(TestState {
                 token: "live".to_owned(),
             }))
         }
@@ -2033,15 +2048,13 @@ mod refresh_revoke_race {
 
         const KEY: &'static str = "test.local_refreshable";
 
-        fn metadata() -> CredentialMetadata {
-            CredentialMetadata::builder()
-                .key(nebula_core::credential_key!("test.local_refreshable"))
-                .name("LocalRefreshCred")
-                .description("providerless refresh credential for finalization regressions")
-                .schema(crate::schema_of::<Self::Properties>())
-                .pattern(AuthPattern::OAuth2)
-                .build()
-                .expect("LocalRefreshCred metadata is valid")
+        fn metadata() -> CredentialMetadataDraft {
+            CredentialMetadataDraft::new(
+                nebula_core::credential_key!("test.local_refreshable"),
+                crate::metadata_name!("LocalRefreshCred"),
+                "providerless refresh credential for finalization regressions",
+                AuthPattern::OAuth2,
+            )
         }
 
         fn project(_state: &TestState) -> TestScheme {
@@ -2049,10 +2062,10 @@ mod refresh_revoke_race {
         }
 
         async fn resolve(
-            _values: &FieldValues,
+            _properties: &(),
             _ctx: &CredentialContext,
-        ) -> Result<ResolveResult<TestState, ()>, CredentialError> {
-            Ok(ResolveResult::Complete(TestState {
+        ) -> Result<StaticResolveResult<TestState>, CredentialError> {
+            Ok(StaticResolveResult::Complete(TestState {
                 token: "local-live".to_owned(),
             }))
         }
@@ -2091,7 +2104,7 @@ mod refresh_revoke_race {
 
         const KEY: &'static str = TestCred::KEY;
 
-        fn metadata() -> CredentialMetadata {
+        fn metadata() -> CredentialMetadataDraft {
             TestCred::metadata()
         }
 
@@ -2100,10 +2113,10 @@ mod refresh_revoke_race {
         }
 
         async fn resolve(
-            _values: &FieldValues,
+            _properties: &(),
             _ctx: &CredentialContext,
-        ) -> Result<ResolveResult<TestState, ()>, CredentialError> {
-            Ok(ResolveResult::Complete(TestState {
+        ) -> Result<StaticResolveResult<TestState>, CredentialError> {
+            Ok(StaticResolveResult::Complete(TestState {
                 token: "live".to_owned(),
             }))
         }
@@ -2140,12 +2153,11 @@ mod refresh_revoke_race {
 
         const KEY: &'static str = "oauth2";
 
-        fn metadata() -> CredentialMetadata {
-            CredentialMetadata::new(
+        fn metadata() -> CredentialMetadataDraft {
+            CredentialMetadataDraft::new(
                 nebula_core::credential_key!("oauth2"),
-                "Same-key typed test credential",
+                crate::metadata_name!("Same-key typed test credential"),
                 "proves refresh dispatch follows the Rust type rather than its registry key",
-                crate::schema_of::<Self::Properties>(),
                 AuthPattern::OAuth2,
             )
         }
@@ -2155,10 +2167,10 @@ mod refresh_revoke_race {
         }
 
         async fn resolve(
-            _values: &FieldValues,
+            _properties: &(),
             _ctx: &CredentialContext,
-        ) -> Result<ResolveResult<TestState, ()>, CredentialError> {
-            Ok(ResolveResult::Complete(TestState {
+        ) -> Result<StaticResolveResult<TestState>, CredentialError> {
+            Ok(StaticResolveResult::Complete(TestState {
                 token: "same-key-live".to_owned(),
             }))
         }
@@ -2210,12 +2222,11 @@ mod refresh_revoke_race {
 
         const KEY: &'static str = "test.cancellation_aware";
 
-        fn metadata() -> CredentialMetadata {
-            CredentialMetadata::new(
+        fn metadata() -> CredentialMetadataDraft {
+            CredentialMetadataDraft::new(
                 nebula_core::credential_key!("test.cancellation_aware"),
-                "Cancellation-aware test credential",
+                crate::metadata_name!("Cancellation-aware test credential"),
                 "proves K2 refresh is detached from request cancellation",
-                crate::schema_of::<Self::Properties>(),
                 AuthPattern::OAuth2,
             )
         }
@@ -2225,10 +2236,10 @@ mod refresh_revoke_race {
         }
 
         async fn resolve(
-            _values: &FieldValues,
+            _properties: &(),
             _ctx: &CredentialContext,
-        ) -> Result<ResolveResult<TestState, ()>, CredentialError> {
-            Ok(ResolveResult::Complete(TestState {
+        ) -> Result<StaticResolveResult<TestState>, CredentialError> {
+            Ok(StaticResolveResult::Complete(TestState {
                 token: "cancellation-aware-live".to_owned(),
             }))
         }
@@ -2316,12 +2327,11 @@ mod refresh_revoke_race {
 
         const KEY: &'static str = "test.post_provider_encoding";
 
-        fn metadata() -> CredentialMetadata {
-            CredentialMetadata::new(
+        fn metadata() -> CredentialMetadataDraft {
+            CredentialMetadataDraft::new(
                 nebula_core::credential_key!("test.post_provider_encoding"),
-                "Post-provider encoding test",
+                crate::metadata_name!("Post-provider encoding test"),
                 "proves state encoding failures retain replay-unsafe disposition",
-                crate::schema_of::<Self::Properties>(),
                 AuthPattern::OAuth2,
             )
         }
@@ -2331,10 +2341,10 @@ mod refresh_revoke_race {
         }
 
         async fn resolve(
-            _values: &FieldValues,
+            _properties: &(),
             _ctx: &CredentialContext,
-        ) -> Result<ResolveResult<PostProviderEncodingState, ()>, CredentialError> {
-            Ok(ResolveResult::Complete(PostProviderEncodingState {
+        ) -> Result<StaticResolveResult<PostProviderEncodingState>, CredentialError> {
+            Ok(StaticResolveResult::Complete(PostProviderEncodingState {
                 fail_serialization: false,
             }))
         }
@@ -2705,6 +2715,7 @@ mod refresh_revoke_race {
                 Arc::new(registry),
                 Arc::new(ops),
                 observer,
+                Arc::new(UnusedAcquisitionTransport),
                 crate::StateSource::LocalEncrypted,
             ),
             shutdown,
@@ -4283,15 +4294,13 @@ mod refresh_revoke_race {
 
         const KEY: &'static str = "test.mismatched_policy";
 
-        fn metadata() -> CredentialMetadata {
-            CredentialMetadata::builder()
-                .key(nebula_core::credential_key!("test.mismatched_policy"))
-                .name("MismatchedPolicyCred")
-                .description("credential whose policy drifts from its family")
-                .schema(crate::schema_of::<Self::Properties>())
-                .pattern(AuthPattern::SecretToken)
-                .build()
-                .expect("MismatchedPolicyCred metadata is valid")
+        fn metadata() -> CredentialMetadataDraft {
+            CredentialMetadataDraft::new(
+                nebula_core::credential_key!("test.mismatched_policy"),
+                crate::metadata_name!("MismatchedPolicyCred"),
+                "credential whose policy drifts from its family",
+                AuthPattern::SecretToken,
+            )
         }
 
         fn project(_state: &TestState) -> StaticScheme {
@@ -4299,10 +4308,10 @@ mod refresh_revoke_race {
         }
 
         async fn resolve(
-            _values: &FieldValues,
+            _properties: &(),
             _ctx: &CredentialContext,
-        ) -> Result<ResolveResult<TestState, ()>, CredentialError> {
-            Ok(ResolveResult::Complete(TestState {
+        ) -> Result<StaticResolveResult<TestState>, CredentialError> {
+            Ok(StaticResolveResult::Complete(TestState {
                 token: "live".to_owned(),
             }))
         }

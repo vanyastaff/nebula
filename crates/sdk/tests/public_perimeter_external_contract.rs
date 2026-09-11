@@ -1,14 +1,15 @@
 //! Compile contract for the supported SDK perimeter.
 //!
 //! The fixture has exactly one Nebula dependency. Its positive binary exercises
-//! the currently supported builder/testing subset (`ActionBuilder`,
-//! `WorkflowBuilder`, and credential `TestResult`) and manual `Provider` authoring
+//! typed action authoring (`ActionMetadataDraft`, `simple_action!`, and associated
+//! `Input`/`Output`), `WorkflowBuilder`, credential `TestResult`, and manual `Provider` authoring
 //! with a consuming terminal hook over a non-Clone instance, using the
 //! general-purpose `async-trait` dependency. This is a compile check, not runtime
 //! teardown coverage. A second positive binary checks custom resource topology
 //! authoring. Each negative binary targets one distinct authority or persistence
-//! escape hatch that must stay
-//! unavailable. Procedural derives have a separate SDK-only compile-pass
+//! escape hatch that must stay unavailable, including paths below `__private`:
+//! Rust documentation hiding is not access control. Procedural derives have a
+//! separate SDK-only compile-pass
 //! contract in `derive_external_contract.rs`.
 
 use std::{
@@ -33,6 +34,42 @@ const FIXTURE_FILES: &[&str] = &[
     "src/bin/unscoped_resolver.rs",
     "src/bin/operation_protocol.rs",
     "src/bin/turn_handoff.rs",
+    "src/bin/removed_field_values.rs",
+    "src/bin/removed_field_value.rs",
+    "src/bin/compiled_program.rs",
+    "src/bin/compiled_value.rs",
+    "src/bin/engine_expression_context.rs",
+    "src/bin/eval_future.rs",
+    "src/bin/expression_context.rs",
+    "src/bin/action_input.rs",
+    "src/bin/prepared_action_input.rs",
+    "src/bin/base_metadata.rs",
+    "src/bin/action_metadata.rs",
+    "src/bin/credential_metadata.rs",
+    "src/bin/resource_metadata.rs",
+    "src/bin/metadata_trait.rs",
+    "src/bin/metadata_build_error.rs",
+    "src/bin/value_tree.rs",
+    "src/bin/valid_values.rs",
+    "src/bin/resolved_value.rs",
+    "src/bin/resolved_values.rs",
+    "src/bin/resolved_lookup.rs",
+    "src/bin/credential_record.rs",
+    "src/bin/stateless_action_adapter.rs",
+    "src/bin/resource_registration_spec.rs",
+    "src/bin/resource_acquire_options.rs",
+    "src/bin/resource_slot_identity.rs",
+    "src/bin/remote_effect_factory.rs",
+    "src/bin/action_builder.rs",
+    "src/bin/hidden_resource_manager.rs",
+    "src/bin/hidden_resource_factory.rs",
+    "src/bin/hidden_resource_kind_activator.rs",
+    "src/bin/hidden_resource_register_request.rs",
+    "src/bin/hidden_resource_box_fut.rs",
+    "src/bin/hidden_resource_metadata.rs",
+    "src/bin/hidden_resource_metadata_build_error.rs",
+    "src/bin/hidden_resource_slot_identity.rs",
+    "src/bin/hidden_resource_bridge_field.rs",
 ];
 
 const FORBIDDEN: &[(&str, &str)] = &[
@@ -47,7 +84,44 @@ const FORBIDDEN: &[(&str, &str)] = &[
     ("unscoped_resolver", "CredentialResolver"),
     ("operation_protocol", "PreparedEffectContract"),
     ("turn_handoff", "ExecutionTurnHandoff"),
+    ("removed_field_values", "FieldValues"),
+    ("removed_field_value", "FieldValue"),
+    ("compiled_program", "CompiledProgram"),
+    ("compiled_value", "CompiledValue"),
+    ("engine_expression_context", "EngineExpressionContext"),
+    ("eval_future", "EvalFuture"),
+    ("expression_context", "ExpressionContext"),
+    ("action_input", "ActionInput"),
+    ("prepared_action_input", "PreparedActionInput"),
+    ("base_metadata", "BaseMetadata"),
+    ("action_metadata", "ActionMetadata"),
+    ("credential_metadata", "CredentialMetadata"),
+    ("resource_metadata", "ResourceMetadata"),
+    ("metadata_trait", "Metadata"),
+    ("metadata_build_error", "MetadataBuildError"),
+    ("value_tree", "ValueTree"),
+    ("valid_values", "ValidValues"),
+    ("resolved_value", "ResolvedValue"),
+    ("resolved_values", "ResolvedValues"),
+    ("resolved_lookup", "ResolvedLookup"),
+    ("credential_record", "CredentialRecord"),
+    ("stateless_action_adapter", "StatelessActionAdapter"),
+    ("resource_registration_spec", "RegistrationSpec"),
+    ("resource_acquire_options", "AcquireOptions"),
+    ("resource_slot_identity", "SlotIdentity"),
+    ("remote_effect_factory", "RemoteEffectFactory"),
+    ("action_builder", "ActionBuilder"),
+    ("hidden_resource_manager", "Manager"),
+    ("hidden_resource_factory", "ResourceFactory"),
+    ("hidden_resource_kind_activator", "factory"),
+    ("hidden_resource_register_request", "factory"),
+    ("hidden_resource_box_fut", "factory"),
+    ("hidden_resource_metadata", "ResourceMetadata"),
+    ("hidden_resource_metadata_build_error", "MetadataBuildError"),
+    ("hidden_resource_slot_identity", "SlotIdentity"),
 ];
+
+const OPAQUE: &[(&str, &str)] = &[("hidden_resource_bridge_field", "factory")];
 
 #[test]
 fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
@@ -92,19 +166,6 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
     )
     .expect("copy workspace lockfile into public-perimeter fixture");
 
-    let positive = cargo_check(temp.path(), "positive");
-    assert!(
-        positive.status.success(),
-        "supported SDK authoring path must compile:\n{}",
-        render_output(&positive)
-    );
-    let topology = cargo_check(temp.path(), "resource_topology");
-    assert!(
-        topology.status.success(),
-        "custom topology authoring must compile:\n{}",
-        render_output(&topology)
-    );
-
     for &(binary, forbidden_segment) in FORBIDDEN {
         let output = cargo_check(temp.path(), binary);
         assert!(
@@ -141,6 +202,38 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
             );
         }
     }
+
+    for &(binary, private_segment) in OPAQUE {
+        let output = cargo_check(temp.path(), binary);
+        assert!(
+            !output.status.success(),
+            "opaque bridge probe `{binary}` unexpectedly compiled"
+        );
+        let diagnostics = compiler_errors(&output);
+        assert!(
+            diagnostics.iter().any(|diagnostic| {
+                diagnostic.message.contains(private_segment)
+                    && diagnostic.highlighted == private_segment
+                    && diagnostic.message.contains("private")
+            }),
+            "probe `{binary}` did not produce an exact private-member diagnostic for \
+             `{private_segment}`; diagnostics: {diagnostics:#?}\n{}",
+            render_output(&output)
+        );
+    }
+
+    let positive = cargo_check(temp.path(), "positive");
+    assert!(
+        positive.status.success(),
+        "supported SDK authoring path must compile:\n{}",
+        render_output(&positive)
+    );
+    let topology = cargo_check(temp.path(), "resource_topology");
+    assert!(
+        topology.status.success(),
+        "custom topology authoring must compile:\n{}",
+        render_output(&topology)
+    );
 }
 
 #[test]
@@ -149,8 +242,8 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
         pub mod __private {
             pub mod action {
                 pub use nebula_action::{
-                    Action, ActionContext, ActionContextExt, ActionError, ActionMetadata,
-                    ActionResult, FromWorkflowNode, StatelessAction,
+                    Action, ActionContext, ActionContextExt, ActionError, ActionMetadataDraft,
+                    ActionResult, FromWorkflowNode, MetadataVersion, StatelessAction, metadata_name,
                 };
             }
             pub mod core {
@@ -170,9 +263,9 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
             pub mod credential {
                 pub use nebula_credential::{
                     AuthScheme, Credential, CredentialGuard, CredentialLifecycle,
-                    CredentialMetadata, CredentialPolicy, CredentialState, Dynamic, Interactive,
+                    CredentialMetadataDraft, CredentialPolicy, CredentialState, Dynamic, Interactive,
                     RefreshStrategy, Refreshable, Revocable, RevokeStrategy, Testable,
-                    credential_key, schema_of,
+                    credential_key, metadata_name, schema_of,
                 };
                 pub mod contract {
                     pub mod plugin_capability_report {
@@ -186,12 +279,11 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
                 pub use nebula_plugin::{Plugin, PluginManifest};
             }
             pub mod resource {
-                pub use nebula_resource::{
-                    Error, HasCredentialSlots, Manager, ResourceConfig, ResourceFactory,
-                    ResourceMetadata, SlotIdentity,
-                };
-                pub mod factory {
-                    pub use nebula_resource::factory::{BoxFut, KindActivator, RegisterRequest};
+                pub use nebula_resource::{Error, HasCredentialSlots, ResourceConfig};
+                pub mod contribution {
+                    pub use crate::resource_contribution::{
+                        ResourceContribution, ResourceContributionBridge,
+                    };
                 }
                 #[expect(
                     clippy::module_inception,
@@ -201,7 +293,7 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
                     pub use nebula_resource::resource::Provider;
                 }
                 pub mod topology {
-                    pub use nebula_resource::topology::{Pooled, Resident};
+                    pub use nebula_resource::topology::{Pooled, Resident, Topology};
                     pub mod pooled {
                         pub mod config {
                             pub use nebula_resource::topology::pooled::config::Config;
@@ -215,10 +307,10 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
                 }
             }
             pub mod schema {
-                pub use nebula_schema::value::FieldValues;
                 pub use nebula_schema::{
-                    ExpressionMode, Field, FieldKey, HasSchema, HasSelectOptions, InputHint, Rule,
-                    Schema, SelectOption, SerdeTagging, StringWidget, ValidSchema,
+                    AuthoredValue, ExpressionMode, Field, FieldKey, HasSchema, HasSelectOptions, InputHint,
+                    RootShape, Rule, ScalarSchema, Schema, SelectOption, SerdeTagging, StringWidget,
+                    ValidSchema, ValidationError, ValidationReport,
                 };
                 pub mod error {
                     pub use nebula_schema::error::ValidationReport;

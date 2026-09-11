@@ -104,10 +104,10 @@ pub enum ConditionOp {
 /// { "not": { "field": "archived", "op": "truthy" } }
 /// ```
 ///
-/// The deserializer key-sniffs: if the object has key `"all"` it is `All`;
-/// `"any"` → `Any`; `"not"` → `Not`; otherwise treated as a `Leaf`.
-/// This gives actionable errors for malformed leaves (e.g. unknown `op`
-/// value) while still supporting all combinator forms.
+/// The deserializer accepts exactly one shape. Leaf keys cannot be mixed with
+/// a combinator key, combinators cannot be combined, and unknown fields are
+/// rejected. Malformed definitions therefore fail closed instead of relying
+/// on field-order precedence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Condition {
     /// A single field-level predicate.
@@ -144,11 +144,30 @@ pub enum Condition {
 /// `"unknown variant \`bogus\`, expected one of …"` rather than the generic
 /// untagged `"data did not match any variant"`.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LeafFields {
     field: String,
     op: ConditionOp,
     #[serde(default)]
     value: Option<Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AllFields {
+    all: Vec<Condition>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AnyFields {
+    any: Vec<Condition>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NotFields {
+    not: Box<Condition>,
 }
 
 struct ConditionVisitor;
@@ -163,64 +182,38 @@ impl<'de> Visitor<'de> for ConditionVisitor {
     }
 
     fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
-        // not hot-path — condition eval is at dispatch, not a tight loop.
-        // Collect the map into a serde_json::Value so we can key-sniff.
+        // Collect once so shape selection is independent of map field order.
         let raw: Value = Deserialize::deserialize(de::value::MapAccessDeserializer::new(map))?;
-
-        // DISPATCH RULE: leaf-first.
-        //
-        // A `"field"` key unambiguously identifies a leaf predicate — no
-        // legitimate combinator carries one. Check it BEFORE the combinator
-        // keys so that a stored leaf with an incidental stray key (e.g.
-        // `{"field":"x","op":"eq","value":1,"all":"metadata"}`) continues
-        // to deserialize as a leaf, matching the back-compat behaviour of
-        // the old derived `Deserialize` (which ignored unknown fields).
-        //
-        // Only dispatch to a combinator when `"field"` is absent, which is
-        // the true combinator shape: `{"all":[...]}` / `{"any":[...]}` /
-        // `{"not":{...}}`.
-        if raw.get("field").is_some() {
-            let leaf: LeafFields = serde_json::from_value(raw).map_err(de::Error::custom)?;
-            return Ok(Condition::Leaf {
-                field: leaf.field,
-                op: leaf.op,
-                value: leaf.value,
-            });
-        }
-
-        // Count how many combinator keys are present before dispatching.
-        // A well-formed combinator carries exactly one of `all`, `any`, `not`.
-        // Multiple combinator keys on a single object is an ambiguous config —
-        // fail closed with a clear error rather than silently picking the first.
+        let Some(object) = raw.as_object() else {
+            return Err(de::Error::custom("a condition must be a JSON object"));
+        };
+        let has_leaf_fields = ["field", "op", "value"]
+            .iter()
+            .any(|key| object.contains_key(*key));
         let combinator_count = ["all", "any", "not"]
             .iter()
-            .filter(|k| raw.get(*k).is_some())
+            .filter(|key| object.contains_key(**key))
             .count();
 
-        if combinator_count > 1 {
+        if combinator_count > 1 || (has_leaf_fields && combinator_count == 1) {
             return Err(de::Error::custom(
-                "ambiguous condition: an object may contain at most one of `all`, `any`, `not`",
+                "ambiguous condition: use exactly one shape; an object may contain at most one of `all`, `any`, `not` and may not mix it with leaf fields",
             ));
         }
 
-        if let Some(all_val) = raw.get("all") {
-            let children: Vec<Condition> =
-                serde_json::from_value(all_val.clone()).map_err(de::Error::custom)?;
-            return Ok(Condition::All(children));
+        if object.contains_key("all") {
+            let fields: AllFields = serde_json::from_value(raw).map_err(de::Error::custom)?;
+            return Ok(Condition::All(fields.all));
         }
-        if let Some(any_val) = raw.get("any") {
-            let children: Vec<Condition> =
-                serde_json::from_value(any_val.clone()).map_err(de::Error::custom)?;
-            return Ok(Condition::Any(children));
+        if object.contains_key("any") {
+            let fields: AnyFields = serde_json::from_value(raw).map_err(de::Error::custom)?;
+            return Ok(Condition::Any(fields.any));
         }
-        if let Some(not_val) = raw.get("not") {
-            let child: Condition =
-                serde_json::from_value(not_val.clone()).map_err(de::Error::custom)?;
-            return Ok(Condition::Not(Box::new(child)));
+        if object.contains_key("not") {
+            let fields: NotFields = serde_json::from_value(raw).map_err(de::Error::custom)?;
+            return Ok(Condition::Not(fields.not));
         }
 
-        // No `field` key and no combinator key — delegate to `LeafFields`
-        // which will produce the clean "missing field `field`" serde error.
         let leaf: LeafFields = serde_json::from_value(raw).map_err(de::Error::custom)?;
         Ok(Condition::Leaf {
             field: leaf.field,
@@ -1005,32 +998,18 @@ mod tests {
         );
     }
 
-    // ── Back-compat: leaf-first dispatch ─────────────────────────────────────
-    //
-    // RED with combinator-first order: `{"field":"status","op":"eq","value":"active","all":"metadata"}`
-    // would attempt to parse `"metadata"` as `Vec<Condition>` → Err.
-    // With leaf-first dispatch the `"field"` key wins and the stray key is ignored,
-    // matching the back-compat behaviour of the old derived `Deserialize`.
+    // ── Strict wire-shape decoding ───────────────────────────────────────
     #[test]
-    fn flat_leaf_with_stray_combinator_key_parses_as_leaf() {
+    fn mixed_leaf_and_combinator_shape_is_rejected() {
         let result = serde_json::from_str::<Condition>(
             r#"{"field":"status","op":"eq","value":"active","all":"metadata"}"#,
         );
-        let cond = result.expect("must parse successfully despite stray 'all' key");
-        assert_eq!(
-            cond,
-            Condition::Leaf {
-                field: "status".into(),
-                op: ConditionOp::Eq,
-                value: Some(json!("active")),
-            },
-            "stray 'all' key must be ignored; leaf fields take precedence"
-        );
-        // Verify the deserialized leaf evaluates correctly.
-        let data = json!({"status": "active"});
         assert!(
-            evaluate_condition(&data, &cond).unwrap(),
-            "leaf parsed from a doc with stray 'all' key must evaluate correctly"
+            result
+                .expect_err("mixed condition shapes must fail closed")
+                .to_string()
+                .contains("exactly one shape"),
+            "the error must identify the shape ambiguity"
         );
     }
 
@@ -1098,19 +1077,29 @@ mod tests {
         );
     }
 
-    // Back-compat: a leaf WITH a `field` key is never treated as ambiguous,
-    // even if it also carries combinator keys — the `field` key wins.
     #[test]
-    fn leaf_with_extras_is_not_ambiguous() {
-        // This already has a test (`flat_leaf_with_stray_combinator_key_parses_as_leaf`)
-        // but confirm it still holds after the ambiguity check was added.
-        let cond = serde_json::from_str::<Condition>(
-            r#"{"field":"status","op":"eq","value":"active","all":"metadata","any":"x"}"#,
-        )
-        .expect("leaf with stray combinator keys must parse as leaf (back-compat)");
+    fn leaf_with_unknown_field_is_rejected() {
+        let result = serde_json::from_str::<Condition>(
+            r#"{"field":"status","op":"eq","value":"active","metadata":"x"}"#,
+        );
         assert!(
-            matches!(cond, Condition::Leaf { .. }),
-            "must be Condition::Leaf; got: {cond:?}"
+            result
+                .expect_err("unknown leaf fields must fail closed")
+                .to_string()
+                .contains("unknown field"),
+            "the error must identify the unknown field"
+        );
+    }
+
+    #[test]
+    fn combinator_with_unknown_field_is_rejected() {
+        let result = serde_json::from_str::<Condition>(r#"{"all":[],"metadata":"x"}"#);
+        assert!(
+            result
+                .expect_err("unknown combinator fields must fail closed")
+                .to_string()
+                .contains("unknown field"),
+            "the error must identify the unknown field"
         );
     }
 

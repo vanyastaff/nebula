@@ -4,23 +4,23 @@
 //! per-edge validator (T3) to decide whether a producer node's `Output` schema
 //! is assignable where a consumer node's `Input` schema is expected.
 //!
-//! The public entry point is [`is_assignable_schema`], which takes two
-//! [`ValidSchema`] values so it can honor the [`SchemaKind`] Top/Bottom split:
-//! `is_assignable_schema(&producer.output, &consumer.input)`. (An internal,
-//! kind-blind slice form is used only by this module's tests.)
+//! The public entry point is [`explain_assignable`], taking direction-typed
+//! output/input schemas and retaining `Yes`, `No`, and `Unknown` as distinct
+//! verdicts. Metadata revision compatibility remains a separate contract.
 
 use crate::{
-    Field, FieldKey, InputSchema, OutputSchema, RequiredMode, SchemaKind, SerdeTagging,
-    ValidSchema, field::ModeField,
+    Field, FieldKey, InputSchema, OutputSchema, RequiredMode, RootShape, ScalarKind, ScalarSchema,
+    SchemaKind, SerdeTagging, ValidSchema, field::ModeField,
 };
+use nebula_validator::{DiagnosticDisclosure, ValueRule};
+use serde_json::{Number, Value};
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
 /// Why a producer schema is not assignable to a consumer schema.
 ///
-/// Returned by [`is_assignable_schema`] when the structural width-subtyping
-/// check fails. Carries the first incompatibility found (depth-first,
-/// consumer-field order).
+/// Carried by [`Assignability::No`] when the structural check finds a definite
+/// conflict. Findings retain depth-first, consumer-field order.
 ///
 /// This enum is `#[non_exhaustive]` — new incompatibility kinds (e.g. semantic
 /// type constraints) may be added in future minor versions without breaking
@@ -93,12 +93,8 @@ pub enum SchemaIncompat {
         /// The producer variant key the consumer does not declare.
         variant: String,
     },
-    /// The two schemas have incompatible [`SchemaKind`]s: one is a tagged
-    /// [`Union`](SchemaKind::Union) and the other a plain
-    /// [`Record`](SchemaKind::Record). A union wire value carries a discriminant a
-    /// record cannot guarantee (and vice versa), so neither can stand in for the
-    /// other. (An [`Any`](SchemaKind::Any) on either side is *not* a kind mismatch
-    /// — it routes through the gradual escapes instead.)
+    /// The two concrete root shapes differ: scalar, record, or tagged union.
+    /// An [`Any`](SchemaKind::Any) on either side is not a kind mismatch.
     #[error("schema kind mismatch: producer is {producer:?}, consumer expects {consumer:?}")]
     KindMismatch {
         /// The producer schema's kind.
@@ -106,6 +102,19 @@ pub enum SchemaIncompat {
         /// The consumer schema's kind.
         consumer: SchemaKind,
     },
+    /// Two scalar roots have disjoint JSON kinds. Integer/number overlap is
+    /// handled separately, never reported as a kind mismatch.
+    #[error("scalar kind mismatch: producer is {producer:?}, consumer expects {consumer:?}")]
+    ScalarKindMismatch {
+        /// Producer scalar kind.
+        producer: ScalarKind,
+        /// Consumer scalar kind.
+        consumer: ScalarKind,
+    },
+    /// The inclusive numeric domains share no value. Bounds are intentionally
+    /// omitted from the diagnostic payload.
+    #[error("producer and consumer scalar numeric domains are disjoint")]
+    ScalarBoundsDisjoint,
     /// Both schemas are tagged [`Union`](SchemaKind::Union)s, but their serde
     /// tagging differs (e.g. external vs adjacent). The variant keys may match,
     /// yet the on-the-wire shapes do not (`{"V": payload}` vs
@@ -123,140 +132,63 @@ pub enum SchemaIncompat {
 
 // ── Public entry point ───────────────────────────────────────────────────────
 
-/// Kind-aware, **direction-typed** structural width-subtyping: is a producer's
-/// [`OutputSchema`] assignable where a consumer's [`InputSchema`] is expected?
-/// (`Output <: Input`, Liskov.)
+/// Direction-typed structural assignability of a producer's output to a consumer's input.
 ///
-/// This is **the** public assignability check (ADR-0100 T1/C15). The workflow
-/// per-edge validator (T3) calls it, so the [`SchemaKind`] Top/Bottom split is
-/// enforced on real producer→consumer edges, not merely at the type/serde level
-/// — and the [`OutputSchema`]/[`InputSchema`] newtypes make swapping the two a
-/// compile error. (Output-vs-output *evolution* uses
-/// [`OutputSchema::is_compatible_successor_of`] instead.)
+/// This returns the complete three-valued verdict, never a binary success for
+/// an unproven edge. A strict admission policy accepts only [`Assignability::Yes`];
+/// any gradual policy must explicitly handle [`Assignability::Unknown`].
+/// Swapping the [`OutputSchema`] and [`InputSchema`] arguments is a type error.
+///
+/// # Root Shapes
+///
+/// An `Any` consumer accepts every producer. An `Any` producer against a
+/// concrete consumer is unknown. Empty records have object shape, not universal
+/// shape: they accept other records by width-subtyping, not scalars or unions.
+/// Scalar domains compare by kind and exact numeric bounds. Additional
+/// consumer root rules must be proven; otherwise the verdict is unknown.
+/// Identical context-free value rules already on the producer are proven
+/// without execution. Context-dependent or other unanalysed rules stay unknown.
+///
+/// # Field Contracts
+///
+/// Record matching retains the established structural field contract:
+/// required consumer fields must exist, extra producer fields are ignored,
+/// and display-only notices are ignored. Nested objects and list items recurse.
+/// File/select cardinality must match. Every producer mode variant must exist
+/// in the consumer, with covariant payloads; root unions also require matching
+/// serde tagging. Dynamic/computed and unrecognized fields are unknown.
+/// Number fields widen integer to number, but narrowing is unknown.
+///
+/// Findings retain depth-first consumer-field order (producer-variant order
+/// within a mode). A definite incompatibility takes precedence over uncertainty.
+/// This is an edge relation, not metadata identity or revision compatibility.
+///
+/// # Examples
 ///
 /// ```rust
 /// use nebula_schema::{
-///     Field, InputSchema, OutputSchema, Schema, ValidSchema, field_key, is_assignable_schema,
+///     Assignability, Field, InputSchema, OutputSchema, Schema, UnknownReason,
+///     ValidSchema, explain_assignable, field_key,
 /// };
 ///
-/// let producer = OutputSchema::new(
-///     Schema::builder()
-///         .add(Field::string(field_key!("name")).required())
-///         .add(Field::number(field_key!("extra")))
-///         .build()
-///         .unwrap(),
-/// );
 /// let consumer = InputSchema::new(
 ///     Schema::builder()
 ///         .add(Field::string(field_key!("name")).required())
-///         .build()
-///         .unwrap(),
+///         .build()?,
 /// );
-/// // Width subtyping: the producer has every required consumer field (+ extras).
-/// assert!(is_assignable_schema(&producer, &consumer).is_ok());
-/// // Swapping the arguments — `is_assignable_schema(&consumer, &producer)` —
-/// // would not compile: the polarity types enforce direction.
-///
-/// // An empty *record* output (`()`) provably emits nothing, so it does NOT
-/// // satisfy a consumer that hard-requires a field …
-/// assert!(is_assignable_schema(&OutputSchema::new(ValidSchema::empty()), &consumer).is_err());
-/// // … whereas the gradual `Any` (`serde_json::Value`) still passes.
-/// assert!(is_assignable_schema(&OutputSchema::new(ValidSchema::any()), &consumer).is_ok());
+/// let producer = OutputSchema::new(consumer.as_schema().clone());
+/// assert_eq!(explain_assignable(&producer, &consumer), Assignability::Yes);
+/// assert_eq!(
+///     explain_assignable(&OutputSchema::new(ValidSchema::any()), &consumer),
+///     Assignability::Unknown(vec![UnknownReason::OpaqueProducer]),
+/// );
+/// # Ok::<(), nebula_schema::ValidationReport>(())
 /// ```
-///
-/// # Kinds (Top/Bottom split)
-///
-/// - **Gradual `Any` escape** — if either side is [`SchemaKind::Any`] (e.g.
-///   `serde_json::Value`), the producer may emit anything and the consumer
-///   accepts anything, so the check passes; untyped interop is preserved.
-/// - **Strict record subtyping** — when **both** sides are concrete records,
-///   width-subtyping is enforced *without* the empty-producer escape: an empty
-///   record produces no fields, so it does **not** satisfy a consumer that
-///   hard-requires any (it returns [`SchemaIncompat::MissingRequiredField`]). An
-///   empty record *consumer* still accepts everything (it requires nothing).
-///
-/// Strict mode removes only the empty-*record*-producer escape. The per-field
-/// gradual escapes below (`Dynamic`/`Computed` fields, and `List` fields with no
-/// typed item) still pass in **both** modes by construction. A primitive or
-/// `serde_json::Value` output is [`SchemaKind::Any`], so a bare-scalar producer
-/// can never be statically rejected against a record consumer — gradual typing
-/// at the leaf (wrap the value in a `#[derive(Schema)]` struct for strict typing).
-///
-/// # Record subtyping rules (ADR-0100 §L1/L2)
-///
-/// - **Width subtyping** — the consumer's required fields must be a subset of
-///   the producer's fields with type-compatible matches on the overlap. Extra
-///   producer fields are ignored.
-/// - **`Dynamic`/`Computed` fields** are treated as `Any` on either side.
-/// - **`Unknown` fields** (a kind this version does not recognize) are opaque on
-///   either side: the pair passes the binary check but [`explain_assignable`]
-///   reports [`UnknownReason::OpaqueFieldKind`] — neither proven nor refuted.
-/// - **`Notice` fields** are display-only and ignored on the consumer side.
-/// - Only [`RequiredMode::Always`] consumer fields are hard requirements;
-///   [`RequiredMode::When`] and the default optional mode are not enforced
-///   statically (the runtime condition cannot be proved at validation time).
-/// - **`File` and `Select` cardinality** — the `multiple` flag (scalar vs.
-///   array) is checked for equality; a mismatch returns
-///   [`SchemaIncompat::CardinalityMismatch`].
-/// - **`Mode` fields** — `Mode`-vs-`Mode` uses sum-type subtyping, the dual of
-///   record width-subtyping: every producer variant must be accepted by the
-///   consumer (a producer variant the consumer lacks is a provable
-///   [`SchemaIncompat::UnhandledVariant`]), and each shared variant's payload is
-///   checked covariantly. A consumer that accepts extra variants is still
-///   satisfied.
-/// - **`Number` integer vs. float** — both carry `type_name() == "number"`.
-///   int→float is provably compatible; float→int passes the binary check but is
-///   [`UnknownReason::NumberWidening`] in [`explain_assignable`] (possible
-///   precision loss).
-///
-/// # Errors
-///
-/// When both sides are concrete records and the strict check fails, returns the
-/// first [`SchemaIncompat`] found (depth-first, consumer-field order):
-/// - [`SchemaIncompat::MissingRequiredField`] — a hard-required consumer field
-///   has no counterpart in the producer.
-/// - [`SchemaIncompat::FieldTypeMismatch`] — a field present on both sides
-///   carries incompatible types (different `Field` variants).
-/// - [`SchemaIncompat::NestedIncompat`] — a field present on both sides has the
-///   same structural variant (both `Object` or both `List`) but the nested
-///   fields are incompatible; wraps the inner [`SchemaIncompat`].
-/// - [`SchemaIncompat::CardinalityMismatch`] — a `File` or `Select` field is
-///   present on both sides but the `multiple` flag differs.
-#[must_use = "check the Result — an Err means the producer is not assignable to the consumer"]
-pub fn is_assignable_schema(
-    producer: &OutputSchema,
-    consumer: &InputSchema,
-) -> Result<(), SchemaIncompat> {
-    is_assignable_core(producer.as_schema(), consumer.as_schema())
-}
-
-/// Polarity-erased binary assignability core: `Yes`/`Unknown` ⇒ `Ok`, a definite
-/// `No` ⇒ its first incompatibility (depth-first, consumer-field order). Keeps
-/// the gradual escape (untyped producers, Dynamic/Mode/Number leniencies) green.
-/// Shared by the direction-typed [`is_assignable_schema`] (producer→consumer
-/// edges) and [`OutputSchema::is_compatible_successor_of`] (output-vs-output
-/// evolution).
-pub(crate) fn is_assignable_core(
-    producer: &ValidSchema,
-    consumer: &ValidSchema,
-) -> Result<(), SchemaIncompat> {
-    match explain_assignable_core(producer, consumer) {
-        Assignability::Yes | Assignability::Unknown(_) => Ok(()),
-        // `into_verdict` only builds `No` from a non-empty list, so `next()` is
-        // always `Some`; `map_or` keeps this total without a panic path.
-        Assignability::No(incompats) => incompats.into_iter().next().map_or(Ok(()), Err),
-    }
-}
-
-/// Direction-typed ternary assignability: the full [`Assignability`] verdict for
-/// a producer's [`OutputSchema`] against a consumer's [`InputSchema`].
-///
-/// The direction-typed wrapper over the polarity-erased core: taking the two
-/// distinct polarity newtypes means swapping producer and consumer is a compile
-/// error (ADR-0100 C15). See [`is_assignable_schema`] for the full rule set;
-/// this returns every finding plus the [`Unknown`](Assignability::Unknown)
-/// reasons a strict validator can block on.
 #[must_use]
+#[tracing::instrument(name = "schema.assignability", skip_all, fields(
+    producer_kind = ?producer.as_schema().kind(),
+    consumer_kind = ?consumer.as_schema().kind(),
+))]
 pub fn explain_assignable(producer: &OutputSchema, consumer: &InputSchema) -> Assignability {
     explain_assignable_core(producer.as_schema(), consumer.as_schema())
 }
@@ -308,12 +240,103 @@ pub fn explain_field_assignable(producer_leaf: &Field, consumer_leaf: &Field) ->
     explain_assignable(&producer, &consumer)
 }
 
+/// Root-to-field counterpart to [`explain_assignable`]: is a producer's
+/// complete concrete root assignable where one consumer parameter field is
+/// expected?
+///
+/// This is the compatibility operation for a root [`crate::ValuePath`]
+/// returned as [`crate::PathWalk::ResolvedRoot`]. Record roots compare against
+/// object fields by width subtyping, while scalar roots compare against the
+/// corresponding scalar field kind. Consumer field rules must either be
+/// context-free value rules already present on the producer root or the result
+/// is [`Assignability::Unknown`]. Callers must retain the reference walk's
+/// fail-open handling for `Any`, unions, and opaque consumer fields.
+#[must_use]
+#[tracing::instrument(name = "schema.root_field_assignability", skip_all, fields(
+    producer_kind = ?producer_root.as_schema().kind(),
+    consumer_kind = consumer_field.type_name(),
+))]
+pub fn explain_root_field_assignable(
+    producer_root: &OutputSchema,
+    consumer_field: &Field,
+) -> Assignability {
+    let producer_schema = producer_root.as_schema();
+    let mut findings = Explain::default();
+    match producer_schema.root_shape() {
+        RootShape::Any | RootShape::Union(_) => {
+            return Assignability::Unknown(vec![UnknownReason::OpaqueProducer]);
+        },
+        RootShape::Record(producer_record) => match consumer_field {
+            Field::Object(consumer_object) => collect_fields(
+                producer_record.fields(),
+                &consumer_object.fields,
+                true,
+                &mut findings,
+            ),
+            _ => {
+                return Assignability::No(vec![SchemaIncompat::FieldTypeMismatch {
+                    key: consumer_field.key().clone(),
+                    producer: "object",
+                    consumer: consumer_field.type_name(),
+                }]);
+            },
+        },
+        RootShape::Scalar(producer_scalar) => {
+            collect_root_scalar_field(producer_scalar, consumer_field, &mut findings);
+        },
+    }
+    if !consumer_field.rules().iter().all(|rule| {
+        matches!(rule.view(), nebula_validator::RuleView::Value(_))
+            && producer_schema.root_rules().contains(rule)
+    }) {
+        findings.unknown.push(UnknownReason::UnprovenRootRules);
+    }
+    findings.into_verdict()
+}
+
+fn collect_root_scalar_field(producer: &ScalarSchema, consumer: &Field, findings: &mut Explain) {
+    let is_compatible = matches!(
+        (producer.kind(), consumer),
+        (ScalarKind::String, Field::String(_))
+            | (ScalarKind::Boolean, Field::Boolean(_))
+            | (ScalarKind::Integer, Field::Number(_))
+            | (
+                ScalarKind::Number,
+                Field::Number(crate::NumberField { integer: false, .. })
+            )
+    );
+    if is_compatible {
+        return;
+    }
+    if matches!(
+        (producer.kind(), consumer),
+        (
+            ScalarKind::Number,
+            Field::Number(crate::NumberField { integer: true, .. })
+        )
+    ) {
+        findings.unknown.push(UnknownReason::NumberWidening {
+            key: consumer.key().clone(),
+        });
+        return;
+    }
+    let producer_type = match producer.kind() {
+        ScalarKind::Null => "null",
+        ScalarKind::Boolean => "boolean",
+        ScalarKind::String => "string",
+        ScalarKind::Integer | ScalarKind::Number => "number",
+    };
+    findings.incompat.push(SchemaIncompat::FieldTypeMismatch {
+        key: consumer.key().clone(),
+        producer: producer_type,
+        consumer: consumer.type_name(),
+    });
+}
+
 /// The three-valued (Cue/GraphQL-style) assignability verdict: a producer
 /// schema is provably assignable, provably not, or **not statically decidable**.
 ///
-/// Unlike [`is_assignable_schema`] — which collapses to a binary `Ok`/`Err` and
-/// returns only the *first* incompatibility — this verdict separates "not
-/// provable" ([`Unknown`](Assignability::Unknown)) from "provably wrong"
+/// This verdict separates "not provable" ([`Unknown`](Assignability::Unknown)) from "provably wrong"
 /// ([`No`](Assignability::No)) and collects **every** finding, so a strict
 /// validator can block on unprovable edges while a gradual one passes them. The
 /// `No`/`Unknown` lists are non-empty in their respective variants.
@@ -345,6 +368,17 @@ pub enum UnknownReason {
     /// no item schema while the consumer's item is typed (wrapped in a
     /// [`NestedUnknown`](Self::NestedUnknown) under the list key).
     OpaqueProducer,
+    /// Scalar domains overlap, but the producer's kind or inclusive bounds do
+    /// not prove containment in the consumer domain.
+    ScalarNarrowing {
+        /// Producer scalar kind.
+        producer: ScalarKind,
+        /// Consumer scalar kind.
+        consumer: ScalarKind,
+    },
+    /// Consumer root rules are not proven by the producer contract. No rule
+    /// contents, predicates, or expression sources enter this diagnostic.
+    UnprovenRootRules,
     /// A matched field is `Dynamic`/`Computed` (loader- or expression-backed),
     /// so its concrete shape is unknown until runtime.
     DynamicLoaderBacked {
@@ -391,6 +425,13 @@ impl core::fmt::Display for UnknownReason {
             Self::OpaqueProducer => {
                 write!(f, "producer side is opaque (shape unknown)")
             },
+            Self::ScalarNarrowing { producer, consumer } => {
+                write!(
+                    f,
+                    "scalar domain containment is unproven ({producer:?} to {consumer:?})"
+                )
+            },
+            Self::UnprovenRootRules => write!(f, "consumer root rules are not statically proven"),
             Self::DynamicLoaderBacked { key } => {
                 write!(f, "field `{key}` is dynamic/computed (resolved at runtime)")
             },
@@ -413,12 +454,10 @@ impl core::fmt::Display for UnknownReason {
 
 /// Polarity-erased ternary assignability core: collects **all** incompatibilities
 /// and all "not decidable" reasons rather than stopping at the first. Shared by
-/// the public, direction-typed [`explain_assignable`] and the binary
-/// [`is_assignable_core`] (and, through it, the directional
-/// [`is_assignable_schema`] and [`OutputSchema::is_compatible_successor_of`]).
+/// the public, direction-typed [`explain_assignable`] and
+/// [`OutputSchema::explain_successor_of`].
 ///
-/// Honors the [`SchemaKind`] Top/Bottom split: an `Any` (or empty-record)
-/// consumer accepts anything ([`Yes`](Assignability::Yes)); an `Any` producer is
+/// An `Any` consumer accepts anything ([`Yes`](Assignability::Yes)); an `Any` producer is
 /// [`Unknown(OpaqueProducer)`](UnknownReason::OpaqueProducer); two concrete
 /// records run strict width-subtyping. Verdict precedence: `No` (any provable
 /// incompatibility) ▸ `Unknown` (any undecidable field) ▸ `Yes`.
@@ -427,36 +466,86 @@ pub(crate) fn explain_assignable_core(
     producer: &ValidSchema,
     consumer: &ValidSchema,
 ) -> Assignability {
-    // An `Any` consumer accepts anything — provably compatible.
-    if consumer.kind() == SchemaKind::Any {
-        return Assignability::Yes;
+    let mut findings = Explain::default();
+    match (producer.root_shape(), consumer.root_shape()) {
+        (_, RootShape::Any) => return Assignability::Yes,
+        (RootShape::Any, _) => {
+            return Assignability::Unknown(vec![UnknownReason::OpaqueProducer]);
+        },
+        (RootShape::Scalar(producer), RootShape::Scalar(consumer)) => {
+            collect_scalar(producer, consumer, &mut findings);
+        },
+        (RootShape::Record(producer), RootShape::Record(consumer)) => {
+            collect_fields(producer.fields(), consumer.fields(), true, &mut findings);
+        },
+        (RootShape::Union(_), RootShape::Union(_)) => {
+            return union_assignability(producer, consumer);
+        },
+        _ => {
+            return Assignability::No(vec![SchemaIncompat::KindMismatch {
+                producer: producer.kind(),
+                consumer: consumer.kind(),
+            }]);
+        },
     }
-    // An empty-record consumer requires nothing, so it accepts *any* producer —
-    // including an opaque `Any`. Decide this before the producer-`Any` check, or
-    // an untyped producer feeding a no-input downstream node (`Input = ()`) would
-    // be falsely flagged `Unknown`/`PortSchemaUndecidable` in Strict mode.
-    if consumer.fields().is_empty() {
-        return Assignability::Yes;
+    if !consumer.root_rules().iter().all(|rule| {
+        matches!(rule.view(), nebula_validator::RuleView::Value(_))
+            && producer.root_rules().contains(rule)
+    }) {
+        findings.unknown.push(UnknownReason::UnprovenRootRules);
     }
-    // An `Any` producer may emit anything: not refuted, but not provable either.
-    // This MUST precede the union dispatch below so an `Any` producer feeding a
-    // `Union` consumer is `Unknown` (it *might* emit a valid tagged value), not a
-    // hard `KindMismatch`.
-    if producer.kind() == SchemaKind::Any {
-        return Assignability::Unknown(vec![UnknownReason::OpaqueProducer]);
+    findings.into_verdict()
+}
+
+fn collect_scalar(producer: &ScalarSchema, consumer: &ScalarSchema, findings: &mut Explain) {
+    let producer_kind = producer.kind();
+    let consumer_kind = consumer.kind();
+    let numeric_pair = matches!(
+        (producer_kind, consumer_kind),
+        (
+            ScalarKind::Integer | ScalarKind::Number,
+            ScalarKind::Integer | ScalarKind::Number
+        )
+    );
+    if producer_kind != consumer_kind && !numeric_pair {
+        findings.incompat.push(SchemaIncompat::ScalarKindMismatch {
+            producer: producer_kind,
+            consumer: consumer_kind,
+        });
+        return;
     }
-    // Tagged-union dispatch. Placed after all three gradual escapes (Any-consumer,
-    // empty-consumer, Any-producer) so those keep their meaning: a `Union` feeding
-    // an `Any`/no-input consumer is `Yes`, and an `Any` producer is `Unknown`.
-    // Only the concrete Union↔Record/Union cases reach here.
-    let producer_union = producer.kind() == SchemaKind::Union;
-    let consumer_union = consumer.kind() == SchemaKind::Union;
-    if producer_union || consumer_union {
-        return union_assignability(producer, consumer, producer_union, consumer_union);
+
+    if let (Some(producer_min), Some(producer_max), Some(consumer_min), Some(consumer_max)) = (
+        producer.minimum(),
+        producer.maximum(),
+        consumer.minimum(),
+        consumer.maximum(),
+    ) {
+        if !number_at_least(producer_max, consumer_min)
+            || !number_at_least(consumer_max, producer_min)
+        {
+            findings.incompat.push(SchemaIncompat::ScalarBoundsDisjoint);
+        } else if (producer_kind == ScalarKind::Number && consumer_kind == ScalarKind::Integer)
+            || !number_at_least(producer_min, consumer_min)
+            || !number_at_least(consumer_max, producer_max)
+        {
+            findings.unknown.push(UnknownReason::ScalarNarrowing {
+                producer: producer_kind,
+                consumer: consumer_kind,
+            });
+        }
     }
-    let mut acc = Explain::default();
-    collect_fields(producer.fields(), consumer.fields(), true, &mut acc);
-    acc.into_verdict()
+}
+
+fn number_at_least(value: &Number, minimum: &Number) -> bool {
+    // Reuse the validator's exact signed/unsigned/float comparison. Converting
+    // either bound to f64 here would collapse adjacent integers above 2^53.
+    ValueRule::Min(minimum.clone())
+        .validate_value(
+            &Value::Number(value.clone()),
+            DiagnosticDisclosure::IncludeValue,
+        )
+        .is_ok()
 }
 
 // ── Private core ─────────────────────────────────────────────────────────────
@@ -726,28 +815,15 @@ fn collect_mode_variants(
     }
 }
 
-/// Assignability when at least one side is a [`SchemaKind::Union`].
+/// Assignability for two checked tagged unions.
 ///
 /// - **Union → Union:** route the two schemas' sole root [`Field::Mode`] (the
 ///   marker design's variant carrier) through [`collect_mode_variants`] — the
 ///   *same* producer-variant-containment + covariant-payload rule a nested `Mode`
-///   field uses, so there is one declarative sum-type judgment, not two. (Routing
-///   the payloads back through [`explain_assignable_core`] instead would
-///   Top-collapse on its empty-consumer escape and wrongly accept arbitrary
-///   producer payloads for a unit consumer variant.)
-/// - **Union ↔ Record:** a [`SchemaIncompat::KindMismatch`] — a union value
-///   carries a discriminant a record cannot provide, and a record is not one of a
-///   union's variants.
-fn union_assignability(
-    producer: &ValidSchema,
-    consumer: &ValidSchema,
-    producer_union: bool,
-    consumer_union: bool,
-) -> Assignability {
-    if producer_union
-        && consumer_union
-        && let (Some(Field::Mode(producer_mode)), Some(Field::Mode(consumer_mode))) =
-            (producer.fields().first(), consumer.fields().first())
+///   field uses, so there is one declarative sum-type judgment, not two.
+fn union_assignability(producer: &ValidSchema, consumer: &ValidSchema) -> Assignability {
+    if let (Some(Field::Mode(producer_mode)), Some(Field::Mode(consumer_mode))) =
+        (producer.fields().first(), consumer.fields().first())
     {
         // Serde tagging is part of schema identity: two unions with matching
         // variant keys but different tagging (external vs adjacent) have different
@@ -766,10 +842,8 @@ fn union_assignability(
         collect_mode_variants(root_key, producer_mode, consumer_mode, true, &mut acc);
         return acc.into_verdict();
     }
-    // Either exactly one side is a union (Union ↔ Record), or — unreachable for
-    // schemas built by `ValidSchema::union`/its deserialize, which both guarantee
-    // a single root `Field::Mode` — a union whose root field is malformed. Both
-    // are kind mismatches; stay total rather than panic.
+    // Checked union construction guarantees one mode field. Retain the existing
+    // typed rejection if an internal construction regression breaks that invariant.
     Assignability::No(vec![SchemaIncompat::KindMismatch {
         producer: producer.kind(),
         consumer: consumer.kind(),
@@ -791,7 +865,7 @@ mod tests {
 
     /// Gradual, kind-blind slice check: an empty producer slice is the `Any`
     /// escape. This is **test-only** — production code calls
-    /// [`is_assignable_schema`], which honors the `SchemaKind` Top/Bottom split.
+    /// [`explain_assignable`], which distinguishes concrete records from Any.
     /// Retained here to exercise the shared per-field matching logic (type
     /// mismatch, cardinality, nesting) and the gradual empty-producer escape
     /// directly on `&[Field]` without building a `ValidSchema` per case. Mirrors
@@ -813,20 +887,7 @@ mod tests {
         acc.into_verdict()
     }
 
-    // Thin `ValidSchema`-taking wrappers that tag polarity, so the kind-aware
-    // tests below exercise the real direction-typed entry points without
-    // restating `OutputSchema::new`/`InputSchema::new` at every call site. They
-    // shadow the crate functions of the same name within this test module.
-    fn is_assignable_schema(
-        producer: &ValidSchema,
-        consumer: &ValidSchema,
-    ) -> Result<(), SchemaIncompat> {
-        super::is_assignable_schema(
-            &OutputSchema::new(producer.clone()),
-            &InputSchema::new(consumer.clone()),
-        )
-    }
-
+    // Keep every schema test on the real direction-typed, tri-state entry point.
     fn explain_assignable(producer: &ValidSchema, consumer: &ValidSchema) -> Assignability {
         super::explain_assignable(
             &OutputSchema::new(producer.clone()),
@@ -900,7 +961,7 @@ mod tests {
         use crate::Rule;
         use nebula_validator::Predicate;
 
-        let rule = Rule::predicate(Predicate::eq("mode", json!("advanced")).unwrap());
+        let rule = Rule::predicate(Predicate::eq("mode", json!("advanced")).unwrap()).unwrap();
         let producer = [Field::string(fk("name")).required().into()];
         let consumer = [
             Field::string(fk("name")).required().into(),
@@ -1112,7 +1173,7 @@ mod tests {
         assert_eq!(is_assignable(&producer, &consumer), Ok(()));
     }
 
-    // ── Kind-aware entry point (`is_assignable_schema`): Top/Bottom split ──────
+    // ── Kind-aware entry point: records and Any stay distinct ──────
 
     /// Build a single-required-field record `ValidSchema`.
     fn required_record(key: &str) -> ValidSchema {
@@ -1130,18 +1191,22 @@ mod tests {
         let producer = ValidSchema::empty(); // Record, zero fields
         let consumer = required_record("name");
         assert_eq!(
-            is_assignable_schema(&producer, &consumer),
-            Err(SchemaIncompat::MissingRequiredField { key: fk("name") }),
+            explain_assignable(&producer, &consumer),
+            Assignability::No(vec![SchemaIncompat::MissingRequiredField {
+                key: fk("name")
+            }]),
         );
     }
 
-    /// Contrast: a gradual `Any` producer DOES satisfy the same required
-    /// consumer — the escape hatch the slice-level check could not distinguish.
+    /// An opaque producer cannot prove the required record contract.
     #[test]
-    fn any_producer_satisfies_required_consumer() {
+    fn any_producer_is_unknown_for_required_consumer() {
         let producer = ValidSchema::any();
         let consumer = required_record("name");
-        assert_eq!(is_assignable_schema(&producer, &consumer), Ok(()));
+        assert_eq!(
+            explain_assignable(&producer, &consumer),
+            Assignability::Unknown(vec![UnknownReason::OpaqueProducer]),
+        );
     }
 
     /// An `Any` consumer accepts any producer (it requires nothing).
@@ -1149,16 +1214,15 @@ mod tests {
     fn typed_producer_satisfies_any_consumer() {
         let producer = required_record("name");
         let consumer = ValidSchema::any();
-        assert_eq!(is_assignable_schema(&producer, &consumer), Ok(()));
+        assert_eq!(explain_assignable(&producer, &consumer), Assignability::Yes);
     }
 
-    /// An empty **record** consumer accepts any producer (requires nothing) —
-    /// the consumer-side escape is preserved in strict mode.
+    /// An empty record accepts other records under width-subtyping.
     #[test]
     fn empty_record_consumer_accepts_typed_producer() {
         let producer = required_record("name");
         let consumer = ValidSchema::empty();
-        assert_eq!(is_assignable_schema(&producer, &consumer), Ok(()));
+        assert_eq!(explain_assignable(&producer, &consumer), Assignability::Yes);
     }
 
     /// Two compatible concrete records pass through the kind-aware entry point,
@@ -1171,7 +1235,7 @@ mod tests {
             .build()
             .unwrap();
         let consumer = required_record("name");
-        assert_eq!(is_assignable_schema(&producer, &consumer), Ok(()));
+        assert_eq!(explain_assignable(&producer, &consumer), Assignability::Yes);
     }
 
     /// Two incompatible concrete records still produce the same first
@@ -1181,20 +1245,19 @@ mod tests {
         let producer = required_record("name");
         let consumer = required_record("other");
         assert_eq!(
-            is_assignable_schema(&producer, &consumer),
-            Err(SchemaIncompat::MissingRequiredField { key: fk("other") }),
+            explain_assignable(&producer, &consumer),
+            Assignability::No(vec![SchemaIncompat::MissingRequiredField {
+                key: fk("other")
+            }]),
         );
     }
 
-    /// Both sides `Any` short-circuits to `Ok` via the leading `||` term. Guards
-    /// against the condition being mistyped as `&&` (which would fall through to
-    /// the strict record path — masked here only because both field slices are
-    /// empty, so this test pins the intended both-`Any` contract explicitly).
+    /// The universal consumer accepts even an opaque producer.
     #[test]
     fn both_any_schemas_are_compatible() {
         assert_eq!(
-            is_assignable_schema(&ValidSchema::any(), &ValidSchema::any()),
-            Ok(()),
+            explain_assignable(&ValidSchema::any(), &ValidSchema::any()),
+            Assignability::Yes,
         );
     }
 
@@ -1289,8 +1352,7 @@ mod tests {
         }
     }
 
-    /// An `Any` producer is `Unknown(OpaqueProducer)` — not provable — even
-    /// though the binary check passes it (gradual escape).
+    /// An `Any` producer is unknown, never proof of a concrete contract.
     #[test]
     fn explain_any_producer_is_unknown_opaque() {
         let consumer = required_record("name");
@@ -1298,8 +1360,6 @@ mod tests {
             explain_assignable(&ValidSchema::any(), &consumer),
             Assignability::Unknown(vec![UnknownReason::OpaqueProducer]),
         );
-        // The binary view still passes it.
-        assert!(is_assignable_schema(&ValidSchema::any(), &consumer).is_ok());
     }
 
     /// An `Any` consumer is provably `Yes` (it accepts anything).
@@ -1312,14 +1372,12 @@ mod tests {
         );
     }
 
-    /// An `Any` producer feeding a no-input (empty-record) consumer is provably
-    /// `Yes`, NOT `Unknown` — the empty consumer requires nothing, so a strict
-    /// validator must not flag a `serde_json::Value` → order-only edge.
+    /// No declared properties does not remove the consumer's object requirement.
     #[test]
-    fn explain_any_producer_into_empty_record_consumer_is_yes() {
+    fn explain_any_producer_into_empty_record_consumer_is_unknown() {
         assert_eq!(
             explain_assignable(&ValidSchema::any(), &ValidSchema::empty()),
-            Assignability::Yes,
+            Assignability::Unknown(vec![UnknownReason::OpaqueProducer]),
         );
     }
 
@@ -1350,8 +1408,7 @@ mod tests {
         assert_eq!(explain_slice(&p, &c, false), Assignability::Yes);
     }
 
-    /// A `Dynamic` producer field is `Unknown(DynamicLoaderBacked)` in explain,
-    /// yet `Ok` in the binary check (the lofty per-field gradual escape).
+    /// A dynamic producer has no statically known concrete shape.
     #[test]
     fn explain_dynamic_field_is_unknown_not_ok() {
         let producer = crate::Schema::builder()
@@ -1363,7 +1420,6 @@ mod tests {
             explain_assignable(&producer, &consumer),
             Assignability::Unknown(vec![UnknownReason::DynamicLoaderBacked { key: fk("name") }]),
         );
-        assert!(is_assignable_schema(&producer, &consumer).is_ok());
     }
 
     /// A `Field::Unknown` on either side is opaque: even two of the *same* future
@@ -1381,7 +1437,6 @@ mod tests {
             explain_assignable(&producer, &consumer),
             Assignability::Unknown(vec![UnknownReason::OpaqueFieldKind { key: fk("bio") }]),
         );
-        assert!(is_assignable_schema(&producer, &consumer).is_ok());
     }
 
     /// Two *distinct* unknown kinds at the same key are `Unknown`, not a hard
@@ -1440,8 +1495,6 @@ mod tests {
             explain_assignable(&float_consumer, &int_producer),
             Assignability::Unknown(vec![UnknownReason::NumberWidening { key: fk("n") }]),
         );
-        // Both pass the binary check (Unknown ⇒ Ok).
-        assert!(is_assignable_schema(&float_consumer, &int_producer).is_ok());
     }
 
     /// A definite incompatibility dominates an undecidable one: `No` ▸ `Unknown`.
@@ -1480,7 +1533,6 @@ mod tests {
         let producer = mode_schema();
         let consumer = mode_schema();
         assert_eq!(explain_assignable(&producer, &consumer), Assignability::Yes);
-        assert!(is_assignable_schema(&producer, &consumer).is_ok());
     }
 
     /// Sum-type containment (the dual of records): a producer `Mode` that can emit
@@ -1508,14 +1560,6 @@ mod tests {
                 key: fk("auth"),
                 variant: "oauth".to_owned(),
             }]),
-        );
-        // The soundness fix: the binary check now also rejects it (was `Ok`).
-        assert_eq!(
-            is_assignable_schema(&producer, &consumer),
-            Err(SchemaIncompat::UnhandledVariant {
-                key: fk("auth"),
-                variant: "oauth".to_owned(),
-            }),
         );
     }
 
@@ -1686,7 +1730,7 @@ mod tests {
         );
     }
 
-    // ── Directional types: `OutputSchema::is_compatible_successor_of` ─────────
+    // ── Directional types: `OutputSchema::explain_successor_of` ─────────
 
     /// Output-vs-output evolution: a new output that keeps every field old
     /// consumers required (and adds more) is a compatible successor; one that
@@ -1702,37 +1746,42 @@ mod tests {
                 .build()
                 .unwrap(),
         );
-        assert!(
-            wider.is_compatible_successor_of(&prev).is_ok(),
+        assert_eq!(
+            wider.explain_successor_of(&prev),
+            Assignability::Yes,
             "adding fields keeps old consumers satisfied"
         );
 
         let narrower = OutputSchema::new(required_record("other"));
         assert_eq!(
-            narrower.is_compatible_successor_of(&prev),
-            Err(SchemaIncompat::MissingRequiredField { key: fk("result") }),
+            narrower.explain_successor_of(&prev),
+            Assignability::No(vec![SchemaIncompat::MissingRequiredField {
+                key: fk("result")
+            }]),
             "dropping a field old consumers required is a breaking successor"
         );
 
-        // Gradual boundary at the relation level (not only via the metadata
-        // integration test): a new output that became the untyped `Any` cannot
-        // be proven breaking → Ok; one that collapsed to an empty record emits
-        // nothing the typed old output required → Err.
+        // Opaque evolution is unproven, not compatible. Dropping required
+        // declarations remains a definite conflict.
         let any_new = OutputSchema::new(ValidSchema::any());
-        assert!(
-            any_new.is_compatible_successor_of(&prev).is_ok(),
+        assert_eq!(
+            any_new.explain_successor_of(&prev),
+            Assignability::Unknown(vec![UnknownReason::OpaqueProducer]),
             "a new `Any` output is not provably breaking"
         );
         let empty_new = OutputSchema::new(ValidSchema::empty());
         assert_eq!(
-            empty_new.is_compatible_successor_of(&prev),
-            Err(SchemaIncompat::MissingRequiredField { key: fk("result") }),
+            empty_new.explain_successor_of(&prev),
+            Assignability::No(vec![SchemaIncompat::MissingRequiredField {
+                key: fk("result")
+            }]),
             "an empty-record new output drops every field old consumers required"
         );
-        // An `Any` *old* output imposed no constraints → any new output is Ok.
+        // An old Any output imposes no structural constraints.
         let any_prev = OutputSchema::new(ValidSchema::any());
-        assert!(
-            narrower.is_compatible_successor_of(&any_prev).is_ok(),
+        assert_eq!(
+            narrower.explain_successor_of(&any_prev),
+            Assignability::Yes,
             "an `Any` old output constrains nothing"
         );
     }
@@ -1754,7 +1803,6 @@ mod tests {
         let producer = ext_union(&["a", "b"]);
         let consumer = ext_union(&["a", "b"]);
         assert_eq!(explain_assignable(&producer, &consumer), Assignability::Yes);
-        assert!(is_assignable_schema(&producer, &consumer).is_ok());
     }
 
     /// Sum-type containment via the SAME `collect_mode_variants` rule: a producer
@@ -1770,13 +1818,6 @@ mod tests {
                 key: fk("u"),
                 variant: "b".to_owned(),
             }]),
-        );
-        assert_eq!(
-            is_assignable_schema(&producer, &consumer),
-            Err(SchemaIncompat::UnhandledVariant {
-                key: fk("u"),
-                variant: "b".to_owned(),
-            }),
         );
     }
 
@@ -1849,17 +1890,19 @@ mod tests {
         );
     }
 
-    /// A union producer feeding an `Any` consumer — or a no-input (empty-record)
-    /// consumer — is provably `Yes`: the consumer requires nothing.
+    /// Only Any is universal; an empty record remains a record contract.
     #[test]
-    fn union_producer_into_any_or_empty_consumer_is_yes() {
+    fn union_producer_into_any_is_yes_but_empty_record_is_no() {
         assert_eq!(
             explain_assignable(&ext_union(&["a"]), &ValidSchema::any()),
             Assignability::Yes,
         );
         assert_eq!(
             explain_assignable(&ext_union(&["a"]), &ValidSchema::empty()),
-            Assignability::Yes,
+            Assignability::No(vec![SchemaIncompat::KindMismatch {
+                producer: SchemaKind::Union,
+                consumer: SchemaKind::Record,
+            }]),
         );
     }
 
@@ -1924,15 +1967,16 @@ mod tests {
         let adds = OutputSchema::new(ext_union(&["a", "b", "c"]));
         let drops = OutputSchema::new(ext_union(&["a"]));
         assert_eq!(
-            adds.is_compatible_successor_of(&old),
-            Err(SchemaIncompat::UnhandledVariant {
+            adds.explain_successor_of(&old),
+            Assignability::No(vec![SchemaIncompat::UnhandledVariant {
                 key: fk("u"),
                 variant: "c".to_owned(),
-            }),
+            }]),
             "adding an output variant is breaking — old consumers can't handle it"
         );
-        assert!(
-            drops.is_compatible_successor_of(&old).is_ok(),
+        assert_eq!(
+            drops.explain_successor_of(&old),
+            Assignability::Yes,
             "dropping an output variant is compatible — fewer cases emitted"
         );
     }
@@ -1943,11 +1987,11 @@ mod tests {
         let old = OutputSchema::new(required_record("result"));
         let new = OutputSchema::new(ext_union(&["a"]));
         assert_eq!(
-            new.is_compatible_successor_of(&old),
-            Err(SchemaIncompat::KindMismatch {
+            new.explain_successor_of(&old),
+            Assignability::No(vec![SchemaIncompat::KindMismatch {
                 producer: SchemaKind::Union,
                 consumer: SchemaKind::Record,
-            }),
+            }]),
         );
     }
 
@@ -1966,6 +2010,56 @@ mod tests {
             explain_field_assignable(&producer_leaf, &consumer_leaf),
             Assignability::Yes
         );
+    }
+
+    #[test]
+    fn record_root_is_assignable_to_matching_object_field() {
+        let producer = OutputSchema::new(required_record("name"));
+        let consumer: Field = Field::object(fk("payload"))
+            .add(Field::string(fk("name")).required())
+            .into();
+
+        assert_eq!(
+            explain_root_field_assignable(&producer, &consumer),
+            Assignability::Yes
+        );
+    }
+
+    #[test]
+    fn record_root_is_not_assignable_to_scalar_field() {
+        let producer = OutputSchema::new(required_record("name"));
+        let consumer: Field = Field::string(fk("payload")).into();
+
+        assert!(matches!(
+            explain_root_field_assignable(&producer, &consumer),
+            Assignability::No(incompatibilities)
+                if matches!(
+                    incompatibilities.first(),
+                    Some(SchemaIncompat::FieldTypeMismatch {
+                        producer: "object",
+                        consumer: "string",
+                        ..
+                    })
+                )
+        ));
+    }
+
+    #[test]
+    fn scalar_root_uses_concrete_scalar_kind() {
+        let string_root = OutputSchema::new(
+            ValidSchema::scalar(ScalarSchema::string()).expect("string root is valid"),
+        );
+        let string_field: Field = Field::string(fk("payload")).into();
+        let number_field: Field = Field::number(fk("payload")).into();
+
+        assert_eq!(
+            explain_root_field_assignable(&string_root, &string_field),
+            Assignability::Yes
+        );
+        assert!(matches!(
+            explain_root_field_assignable(&string_root, &number_field),
+            Assignability::No(_)
+        ));
     }
 
     /// A provable type mismatch between the two leaves is `No`, carrying a

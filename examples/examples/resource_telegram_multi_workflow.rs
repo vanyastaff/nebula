@@ -44,7 +44,7 @@ use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResidentConfig, ResourceContext,
     dedup::SlotIdentity,
     error::Error as ResourceError,
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
     topology::resident::ResidentProvider,
 };
 use tokio::sync::broadcast;
@@ -164,8 +164,8 @@ impl Provider for TelegramBot {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 

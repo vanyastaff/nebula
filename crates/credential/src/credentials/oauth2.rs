@@ -1,14 +1,8 @@
-//! OAuth2 credential -- interactive, refreshable, multi-grant-type.
+//! OAuth2 credential with explicit authorization-code and client-credentials acquisition.
 //!
-//! Models three OAuth2 grant types via the unified Credential trait:
+//! Models the two grant types whose acquisition paths are implemented:
 //! - **Authorization Code** -- user browser redirect (interactive)
 //! - **Client Credentials** -- server-to-server, resolves in one step
-//! - **Device Code** -- CLI/TV apps, polling flow (interactive)
-//!
-//! Interactive acquisition, revocation, and testing provider I/O remain
-//! parked, and this type is absent from the first-party API's default
-//! registry. Typed refresh uses the runtime-injected hardened transport; see
-//! [`OAuth2Credential`] for the exact enablement boundary.
 //!
 //! State/scheme separation: OAuth2State is stored (contains refresh
 //! internals), while OAuth2Token is the consumer-facing auth material produced by `project()`.
@@ -16,14 +10,14 @@
 use std::{fmt, fmt::Formatter, time::Duration};
 
 use chrono::{DateTime, Utc};
-use nebula_schema::{FieldValues, Schema};
+use nebula_core::Context as _;
+use nebula_schema::Schema;
 // The grant/config types stay reachable from this module because the
 // credential and its configuration are one API surface for consumers;
 // `AuthStyle` is imported privately from the scheme contract layer that
 // owns it.
 pub use oauth2_config::{
-    AuthCodeBuilder, ClientCredentialsBuilder, DeviceCodeBuilder, GrantType, OAuth2Config,
-    PkceMethod,
+    AuthCodeBuilder, ClientCredentialsBuilder, GrantType, OAuth2Config, PkceMethod,
 };
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
@@ -37,12 +31,13 @@ use crate::{
         CredentialError, ProviderErrorContext, ProviderErrorKind, RefreshDiagnosticCode,
         RefreshErrorKind, RefreshFailureSpec, RetryAdvice, SecretFreeMessage,
     },
-    metadata::CredentialMetadata,
-    resolve::{InteractionRequest, ResolveResult, TestResult, UserInput},
+    metadata::CredentialMetadataDraft,
+    resolve::{InteractionRequest, ResolveResult, StaticResolveResult, UserInput},
     runtime::refresh::token_refresh::{
         CompletedTokenRefresh, PrepareTokenRefreshError, interpret_oauth2_refresh_response,
         prepare_oauth2_refresh,
     },
+    runtime::{OAUTH_ENDPOINT_MAX_BYTES, OAuthServerEndpoint, TokenPostRequest, TokenPostResponse},
     scheme::{AuthStyle, OAuth2Token},
 };
 
@@ -91,7 +86,6 @@ pub struct OAuth2State {
     pub token_url: String,
     /// How client credentials are sent (preserved from initial token
     /// exchange) — non-secret enum discriminant.
-    #[serde(default)]
     #[zeroize(skip)]
     pub auth_style: AuthStyle,
 }
@@ -167,15 +161,8 @@ impl CredentialState for OAuth2State {
 /// Held in encrypted storage between `resolve()` and `continue_resolve()`.
 /// Contains the config + credentials needed to complete the token exchange.
 ///
-/// For [`GrantType::AuthorizationCode`] the last three fields
-/// (`pkce_verifier`, `state`, `redirect_uri`) are all `Some(_)` — they
-/// carry the per-flow PKCE verifier, the anti-CSRF state token, and the
-/// exact redirect URI that must be echoed on the token exchange. For
-/// other grant types all three are `None`. The `Option` wrapping also
-/// lets records serialized before the PKCE fix deserialize successfully;
-/// `continue_resolve` rejects such records loudly as "callback
-/// validation failed" rather than silently completing without a PKCE
-/// check.
+/// The type represents only authorization-code continuation, so PKCE, CSRF
+/// state, and redirect URI are required fields rather than optional sentinels.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct OAuth2Pending {
     /// OAuth2 provider configuration.
@@ -185,33 +172,24 @@ pub struct OAuth2Pending {
     /// OAuth2 client secret (zeroized on drop).
     #[serde(with = "crate::serde_secret")]
     pub client_secret: SecretString,
-    /// Grant type for this pending flow.
-    pub grant_type: GrantType,
     /// How client credentials are sent.
-    #[serde(default)]
     pub auth_style: AuthStyle,
-    /// Device code for device code flow polling.
-    pub device_code: Option<String>,
-    /// Polling interval in seconds for device code flow.
-    pub interval: Option<u64>,
     /// PKCE code verifier for AuthorizationCode flows.
     ///
     /// Generated fresh on every `resolve()`. Sent as `code_verifier` on
     /// the token exchange so the provider can recompute and match the
     /// `code_challenge` carried on the auth URL.
-    #[serde(default, with = "crate::serde_secret::option")]
-    pub pkce_verifier: Option<SecretString>,
+    #[serde(with = "crate::serde_secret")]
+    pub pkce_verifier: SecretString,
     /// Anti-CSRF `state` parameter for AuthorizationCode flows.
     ///
     /// Generated fresh on every `resolve()`. Validated in
     /// `continue_resolve` against the callback-provided value via a
     /// constant-time comparison.
-    #[serde(default)]
-    pub state: Option<String>,
+    pub state: String,
     /// Exact `redirect_uri` echoed on the token exchange for
     /// AuthorizationCode flows.
-    #[serde(default)]
-    pub redirect_uri: Option<String>,
+    pub redirect_uri: String,
 }
 
 // Constant `Debug` keeps URLs (including provider-routing query parameters),
@@ -234,27 +212,10 @@ impl Zeroize for OAuth2Pending {
         // client_id is not strictly a secret, but it correlates to an
         // account and we are told to wipe this struct — scrub it too.
         self.client_id.zeroize();
-        if let Some(ref mut dc) = self.device_code {
-            dc.zeroize();
-        }
-        // Drop the Option entirely so downstream callers cannot tell a
-        // wiped device-code apart from a fresh Some("").
-        self.device_code = None;
-        self.interval = None;
-        // PKCE verifier: scrub in place, then drop the Option.
-        if let Some(ref mut v) = self.pkce_verifier {
-            v.zeroize();
-        }
-        self.pkce_verifier = None;
-        // Anti-CSRF state and redirect URI: scrub + drop.
-        if let Some(ref mut s) = self.state {
-            s.zeroize();
-        }
-        self.state = None;
-        if let Some(ref mut r) = self.redirect_uri {
-            r.zeroize();
-        }
-        self.redirect_uri = None;
+        self.pkce_verifier.zeroize();
+        self.pkce_verifier = SecretString::new("");
+        self.state.zeroize();
+        self.redirect_uri.zeroize();
     }
 }
 
@@ -282,104 +243,83 @@ impl PendingState for OAuth2Pending {
 // ── OAuth2Credential ───────────────────────────────────────────────────
 
 /// OAuth2 credential type implementing the [`Credential`](crate::Credential)
-/// trait plus the [`Interactive`](crate::Interactive),
-/// [`Refreshable`](crate::Refreshable), [`Revocable`](crate::Revocable), and
-/// [`Testable`](crate::Testable) sub-traits per Tech Spec §15.4.
-///
-/// This implementation is deliberately parked: the first-party API's default
-/// registry, catalog, and dispatch table do not register or advertise
-/// `oauth2`. An explicitly curated composition may still register the type.
-/// Typed refresh uses the hardened transport injected by the credential
-/// resolver; interactive acquisition, revocation, and testing remain parked.
-/// First-party acquisition enablement must enter through the universal typed
-/// `resolve` / `resolve/continue` pending flow. It must not restore a
-/// provider-specific raw HTTP ceremony or move credential lifecycle logic into
-/// the engine or API layer.
-///
-/// Configuration (auth URL, token URL, grant type, scopes) is provided
-/// via `nebula_schema::schema_of::<Self::Properties>()` (schema-of properties) and
-/// extracted from [`FieldValues`] when the OAuth2 flow is initiated.
+/// trait plus the [`Interactive`](crate::Interactive) and
+/// [`Refreshable`](crate::Refreshable) sub-traits. Initial exchange and refresh
+/// have separate injected transport capabilities because only refresh owns the
+/// provider/persistence critical-section authority.
 ///
 /// # Grant types and entry points
 ///
-/// Per §15.4 the base [`Credential::resolve`](crate::Credential::resolve)
-/// returns `ResolveResult<State, ()>` and cannot carry typed
-/// [`OAuth2Pending`]. [`OAuth2Credential::initiate_authorization_code`] is a
-/// low-level typed building block for a future runtime adapter; it is not a
-/// supported HTTP kickoff surface:
-///
-/// - **Authorization Code** — base `resolve` rejects because it cannot carry
-///   typed pending state. A future universal-acquisition adapter will create
-///   and persist [`OAuth2Pending`], return a typed redirect interaction, then
-///   resume through [`Interactive::continue_resolve`](crate::Interactive::continue_resolve).
-/// - **Client Credentials** — base `resolve` returns the typed
-///   transport-disabled error until the credential runtime receives an
-///   injected provider transport.
-/// - **Device Code** — base `resolve` is likewise parked; RFC 8628 polling
-///   must use the same universal pending-state path when its transport adapter
-///   lands.
+/// - **Authorization Code** enters through [`Interactive::begin`](crate::Interactive::begin),
+///   persists [`OAuth2Pending`], then exchanges the callback code in
+///   [`Interactive::continue_resolve`](crate::Interactive::continue_resolve).
+/// - **Client Credentials** performs one token exchange in
+///   [`Credential::resolve`](crate::Credential::resolve).
 pub struct OAuth2Credential;
 
-/// Typed shape of the `oauth2` credential setup form (Phase 5 — replaces
-/// the legacy `OAuth2Input`).
-///
-/// `#[derive(Schema)]` emits the `HasSchema` impl read via
-/// `nebula_schema::schema_of::<Self::Properties>()` (schema-of properties). Secret
-/// fields use `String`
-/// here so that the universal Schema derivation applies; `resolve()` and
-/// the OAuth2 kickoff helpers wrap them into [`SecretString`] before they
-/// leave this module.
-#[derive(Schema, Deserialize, Default)]
-pub struct OAuth2Properties {
+/// Typed shape of the `oauth2` credential setup form.
+#[derive(Schema, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OAuth2Properties {
+    /// Browser authorization-code flow with mandatory PKCE and redirect URI.
+    AuthorizationCode(OAuth2AuthorizationCodeProperties),
+    /// Server-to-server client-credentials exchange.
+    ClientCredentials(OAuth2ClientCredentialsProperties),
+}
+
+/// Reusable OAuth2 client identity and secret pair.
+#[derive(Schema, Deserialize)]
+pub struct OAuth2ClientProperties {
     /// OAuth2 client identifier.
-    #[field(label = "Client ID", description = "OAuth2 client identifier")]
-    #[validate(required)]
+    #[field(label = "Client ID")]
+    #[validate(required, length(max = 4096))]
     pub client_id: String,
-    /// OAuth2 client secret.
-    #[field(secret, label = "Client Secret", description = "OAuth2 client secret")]
+    /// OAuth2 client secret retained in zeroizing memory.
+    #[field(secret, label = "Client Secret")]
     #[validate(required)]
-    pub client_secret: String,
-    /// OAuth2 authorization endpoint URL.
-    #[field(
-        label = "Authorization URL",
-        description = "OAuth2 authorization endpoint URL",
-        placeholder = "https://provider.example.com/oauth2/authorize"
-    )]
-    pub auth_url: Option<String>,
-    /// OAuth2 token endpoint URL.
-    #[field(
-        label = "Token URL",
-        description = "OAuth2 token endpoint URL",
-        placeholder = "https://provider.example.com/oauth2/token"
-    )]
-    #[validate(required)]
+    pub client_secret: SecretString,
+}
+
+/// Typed authorization-code setup properties.
+#[derive(Schema, Deserialize)]
+pub struct OAuth2AuthorizationCodeProperties {
+    /// OAuth2 client identity and secret.
+    pub client: OAuth2ClientProperties,
+    /// Authorization endpoint URL.
+    #[validate(required, url, length(max = 8192))]
+    pub auth_url: String,
+    /// Token endpoint URL.
+    #[validate(required, url, length(max = 8192))]
     pub token_url: String,
-    /// OAuth2 grant type — `authorization_code`, `client_credentials`, or `device_code`.
-    #[field(
-        label = "Grant Type",
-        description = "OAuth2 grant type: authorization_code, client_credentials, or device_code",
-        default = "authorization_code"
-    )]
-    pub grant_type: Option<String>,
-    /// Space-separated list of OAuth2 scopes.
-    #[field(
-        label = "Scopes",
-        description = "Space-separated list of OAuth2 scopes"
-    )]
-    pub scopes: Option<String>,
-    /// OAuth2 redirect URI (required for `authorization_code` grant).
-    #[field(
-        label = "Redirect URI",
-        description = "OAuth2 redirect URI (required for authorization_code grant; must match the URI registered with the provider)",
-        placeholder = "https://app.example.com/oauth2/callback"
-    )]
-    pub redirect_uri: Option<String>,
+    /// Requested scopes.
+    pub scopes: Option<Vec<String>>,
+    /// Registered callback URI.
+    #[validate(required, url, length(max = 8192))]
+    pub redirect_uri: String,
+    /// Explicit client-authentication placement.
+    #[field(enum_select)]
+    pub auth_style: AuthStyle,
+}
+
+/// Typed client-credentials setup properties.
+#[derive(Schema, Deserialize)]
+pub struct OAuth2ClientCredentialsProperties {
+    /// OAuth2 client identity and secret.
+    pub client: OAuth2ClientProperties,
+    /// Token endpoint URL.
+    #[validate(required, url, length(max = 8192))]
+    pub token_url: String,
+    /// Requested scopes.
+    pub scopes: Option<Vec<String>>,
+    /// Explicit client-authentication placement.
+    #[field(enum_select)]
+    pub auth_style: AuthStyle,
 }
 
 // ADR-0088 D1: the full OAuth2 credential surface in one `impl` block.
-// `#[credential]` sees `continue_resolve` (+ `type Pending`), `refresh`,
-// `revoke`, and `test`, and emits the `Interactive` + `Refreshable` +
-// `Revocable` + `Testable` impls plus the matching capability-report consts.
+// `#[credential]` sees `begin` + `continue_resolve` (+ `type Pending`) and
+// `refresh`, and emits only the implemented `Interactive` + `Refreshable`
+// capability impls.
 // The hand-written `policy()` is relocated verbatim because OAuth2's refresh
 // strategy is state-dependent (`RefreshToken` while a refresh token is held,
 // else `ReAcquire`) — the macro's synthesized policy cannot read live state.
@@ -392,15 +332,14 @@ impl OAuth2Credential {
     type Scheme = OAuth2Token;
     type State = OAuth2State;
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> CredentialMetadataDraft {
+        CredentialMetadataDraft::new(
             nebula_core::credential_key!("oauth2"),
-            "OAuth2",
-            "OAuth2 authentication supporting Authorization Code, Client Credentials, and Device Code grant types.",
-            nebula_schema::schema_of::<Self::Properties>(),
+            crate::metadata_name!("OAuth2"),
+            "OAuth2 authentication supporting Authorization Code and Client Credentials grant types.",
             crate::AuthPattern::OAuth2,
         )
-        .with_icon("oauth2")
+        .with_icon(nebula_metadata::Icon::inline("oauth2"))
     }
 
     fn project(state: &OAuth2State) -> OAuth2Token {
@@ -415,129 +354,104 @@ impl OAuth2Credential {
     }
 
     async fn resolve(
-        values: &FieldValues,
-        _ctx: &CredentialContext,
-    ) -> Result<ResolveResult<OAuth2State, ()>, CredentialError> {
-        // Per Tech Spec §15.4, the base `Credential::resolve` returns
-        // `ResolveResult<State, ()>` — typed `OAuth2Pending` cannot ride
-        // along here. Validate the input shape, then route by grant type:
-        // * AuthorizationCode / DeviceCode: a future universal-acquisition
-        //   adapter must persist typed pending state and resume through
-        //   `Interactive::continue_resolve`; the default API does not register
-        //   this parked type today.
-        // * ClientCredentials: no provider HTTP transport is wired into the
-        //   credential runtime yet, so fail explicitly.
-        let _client_id = extract_required(values, "client_id")?;
-        let _client_secret = extract_required(values, "client_secret")?;
-        let _token_url = extract_required(values, "token_url")?;
-        let grant_type_str = values
-            .get_string_by_str("grant_type")
-            .unwrap_or("authorization_code");
-        let grant_type = parse_grant_type(grant_type_str)?;
-
-        // For AuthorizationCode the `redirect_uri` is required by RFC
-        // 6749 §4.1.3; surface the missing-field early before the
-        // OAuth2-specific kickoff is invoked. This keeps the failure
-        // mode stable for callers that today rely on `resolve` to
-        // validate setup form values.
-        if matches!(grant_type, GrantType::AuthorizationCode)
-            && values.get_string_by_str("redirect_uri").is_none()
-        {
-            return Err(CredentialError::InvalidInput(
-                "missing required field: redirect_uri (required for authorization_code grant)"
-                    .into(),
-            ));
-        }
-
-        match grant_type {
-            GrantType::AuthorizationCode | GrantType::DeviceCode => Err(CredentialError::Provider(
-                Box::new(ProviderErrorContext::new(
-                    ProviderErrorKind::Other,
-                    SecretFreeMessage::new(
-                        "OAuth2 auth_code/device_code: use initiate_* + PendingStateStore",
-                    ),
-                )),
-            )),
-            GrantType::ClientCredentials => Err(oauth2_http_transport_disabled()),
-        }
+        properties: &OAuth2Properties,
+        ctx: &CredentialContext,
+    ) -> Result<StaticResolveResult<OAuth2State>, CredentialError> {
+        let OAuth2Properties::ClientCredentials(properties) = properties else {
+            return Err(CredentialError::InteractiveRequired);
+        };
+        acquire_client_credentials(properties, ctx)
+            .await
+            .map(StaticResolveResult::Complete)
     }
 
     type Pending = OAuth2Pending;
 
+    async fn begin(
+        properties: &OAuth2Properties,
+        ctx: &CredentialContext,
+    ) -> Result<ResolveResult<OAuth2State, OAuth2Pending>, CredentialError> {
+        match properties {
+            OAuth2Properties::AuthorizationCode(properties) => {
+                let (state, interaction) = initiate_authorization_code(properties)?;
+                Ok(ResolveResult::Pending { state, interaction })
+            },
+            OAuth2Properties::ClientCredentials(properties) => {
+                acquire_client_credentials(properties, ctx)
+                    .await
+                    .map(ResolveResult::Complete)
+            },
+        }
+    }
+
     async fn continue_resolve(
         pending: &OAuth2Pending,
         input: &UserInput,
-        _ctx: &CredentialContext,
+        ctx: &CredentialContext,
     ) -> Result<ResolveResult<OAuth2State, OAuth2Pending>, CredentialError> {
-        match pending.grant_type {
-            GrantType::AuthorizationCode => {
-                // Uniform failure message so a callback probe cannot use
-                // response-error text as an oracle for which dimension
-                // (missing code / missing state / wrong state / missing
-                // verifier) tripped the check.
-                const FAILED: &str = "OAuth2 callback validation failed";
-
-                let params = match input {
-                    UserInput::Callback { params } => params,
-                    _ => {
-                        return Err(CredentialError::InvalidInput(
-                            "authorization_code flow expects UserInput::Callback".into(),
-                        ));
-                    },
-                };
-
-                let code = params
-                    .get("code")
-                    .ok_or_else(|| CredentialError::InvalidInput(FAILED.into()))?;
-                let callback_state = params
-                    .get("state")
-                    .ok_or_else(|| CredentialError::InvalidInput(FAILED.into()))?;
-                let expected_state = pending
-                    .state
-                    .as_deref()
-                    .ok_or_else(|| CredentialError::InvalidInput(FAILED.into()))?;
-
-                // Constant-time compare on the (callback, expected) state
-                // so a timing probe cannot recover the expected value by
-                // guessing one prefix byte at a time. `ct_eq` returns
-                // `Choice`; `bool::from` turns it into an observable bool.
-                let state_matches: bool = callback_state
-                    .as_bytes()
-                    .ct_eq(expected_state.as_bytes())
-                    .into();
-                if !state_matches {
-                    return Err(CredentialError::InvalidInput(FAILED.into()));
-                }
-
-                let verifier_secret = pending
-                    .pkce_verifier
-                    .as_ref()
-                    .ok_or_else(|| CredentialError::InvalidInput(FAILED.into()))?;
-                let redirect_uri = pending
-                    .redirect_uri
-                    .as_deref()
-                    .ok_or_else(|| CredentialError::InvalidInput(FAILED.into()))?;
-
-                // Validation passed, but provider code exchange is not yet
-                // integrated through the credential runtime's injected
-                // hardened transport.
-                let _ = (verifier_secret, redirect_uri, code);
-                Err(oauth2_http_transport_disabled())
-            },
-            GrantType::DeviceCode => {
-                if !matches!(input, UserInput::Poll) {
-                    return Err(CredentialError::InvalidInput(
-                        "device_code flow expects UserInput::Poll".into(),
-                    ));
-                }
-                // Provider device-code polling is not yet integrated through
-                // the credential runtime's injected hardened transport.
-                Err(oauth2_http_transport_disabled())
-            },
-            GrantType::ClientCredentials => Err(CredentialError::InvalidInput(
-                "client_credentials flow does not use continue_resolve".into(),
-            )),
+        let params = match input {
+            UserInput::Callback { params } => params,
+            _ => return Err(CredentialError::InvalidInput),
+        };
+        const MAX_CALLBACK_PARAMETERS: usize = 16;
+        const MAX_CALLBACK_BYTES: usize = 64 * 1024;
+        const MAX_AUTHORIZATION_CODE_BYTES: usize = 16 * 1024;
+        let callback_bytes = params.iter().try_fold(0_usize, |total, (key, value)| {
+            total.checked_add(key.len())?.checked_add(value.len())
+        });
+        if params.len() > MAX_CALLBACK_PARAMETERS
+            || callback_bytes.is_none_or(|bytes| bytes > MAX_CALLBACK_BYTES)
+        {
+            return Err(CredentialError::InvalidInput);
         }
+        let code = params.get("code").ok_or(CredentialError::InvalidInput)?;
+        let callback_state = params.get("state").ok_or(CredentialError::InvalidInput)?;
+        if code.is_empty()
+            || code.len() > MAX_AUTHORIZATION_CODE_BYTES
+            || !code.bytes().all(|byte| matches!(byte, 0x21..=0x7e))
+            || pending.state.len() != 43
+            || callback_state.len() != pending.state.len()
+        {
+            return Err(CredentialError::InvalidInput);
+        }
+        let state_matches: bool = callback_state
+            .as_bytes()
+            .ct_eq(pending.state.as_bytes())
+            .into();
+        if !state_matches {
+            return Err(CredentialError::InvalidInput);
+        }
+
+        let form = vec![
+            (
+                "grant_type".to_owned(),
+                SecretString::new("authorization_code"),
+            ),
+            ("code".to_owned(), SecretString::new(code)),
+            (
+                "redirect_uri".to_owned(),
+                SecretString::new(&pending.redirect_uri),
+            ),
+            ("code_verifier".to_owned(), pending.pkce_verifier.clone()),
+        ];
+        let request = build_token_request(
+            &pending.config.token_url,
+            &pending.client_id,
+            &pending.client_secret,
+            pending.auth_style,
+            form,
+        )?;
+        let state = dispatch_acquisition(
+            request,
+            &pending.client_id,
+            &pending.client_secret,
+            &pending.config.token_url,
+            pending.auth_style,
+            &pending.config.scopes,
+            ctx,
+        )
+        .await?;
+        Ok(ResolveResult::Complete(state))
     }
 
     async fn refresh(state: &mut OAuth2State, attempt: RefreshAttempt<'_>) -> RefreshReport {
@@ -603,36 +517,11 @@ impl OAuth2Credential {
         }
     }
 
-    async fn revoke(
-        _state: &mut OAuth2State,
-        _ctx: &CredentialContext,
-    ) -> Result<(), CredentialError> {
-        // OAuth2 RFC 7009 token revocation requires provider HTTP. Returning
-        // the typed transport-disabled error keeps the failure classification
-        // stable until the credential runtime's injected transport is wired; a
-        // silent `Ok(())` would falsely signal "secret revoked at
-        // provider" while the token remains live.
-        Err(oauth2_http_transport_disabled())
-    }
-
-    async fn test(
-        _scheme: &OAuth2Token,
-        _ctx: &CredentialContext,
-    ) -> Result<TestResult, CredentialError> {
-        // OAuth2 health probe (token introspection / userinfo) requires
-        // provider HTTP that is not yet integrated through the credential
-        // runtime. Returning `Ok(TestResult::Failed { code: … })` would falsely
-        // signal "credential tested and is bad"; the test simply did
-        // not run, so the typed transport-disabled error is the correct
-        // classification.
-        Err(oauth2_http_transport_disabled())
-    }
-
     // OAuth2 is a refresh-pair credential (ADR-0088 D2). The policy is computed
     // from live state: `RefreshToken` while a refresh token is held (the runtime
     // can renew non-interactively), otherwise `ReAcquire` (the refresh path
-    // returns `ReauthRequired`). Revoke is handle-based (RFC 7009); expiry is
-    // the access token's inline `expires_at`. The hand-written `policy` is kept
+    // returns `ReauthRequired`). Provider revocation is not implemented; expiry
+    // is the access token's inline `expires_at`. The hand-written `policy` is kept
     // (not macro-synthesized) precisely because the refresh strategy depends on
     // live state, which the macro's synthesized default cannot read.
     fn policy(state: &OAuth2State) -> CredentialPolicy {
@@ -649,85 +538,313 @@ impl OAuth2Credential {
                     interactive: true,
                 }
             },
-            revoke: RevokeStrategy::HandleBased,
+            revoke: RevokeStrategy::None,
         }
-    }
-}
-
-impl OAuth2Credential {
-    /// Initiate the Authorization Code flow.
-    ///
-    /// Constructs the authorization URL (with PKCE challenge + anti-CSRF
-    /// state) and the typed [`OAuth2Pending`] state that the framework
-    /// must persist before redirecting the user. Per Tech Spec §15.4
-    /// the base [`Credential::resolve`](crate::Credential::resolve) cannot
-    /// carry the typed pending state. This method is a low-level building block
-    /// for an explicitly curated runtime adapter; it is not a public HTTP
-    /// kickoff. Future first-party support must persist the result through
-    /// [`PendingStateStore::put`](crate::pending_store::PendingStateStore::put)
-    /// and expose it only via universal `resolve` / `resolve/continue`.
-    pub fn initiate_authorization_code(
-        values: &FieldValues,
-    ) -> Result<(OAuth2Pending, InteractionRequest), CredentialError> {
-        let client_id = extract_required(values, "client_id")?;
-        let client_secret = extract_required(values, "client_secret")?;
-        let token_url = extract_required(values, "token_url")?;
-
-        let auth_url = values.get_string_by_str("auth_url").unwrap_or_default();
-        let scopes = parse_scopes(values);
-        let redirect_uri_opt = values.get_string_by_str("redirect_uri").map(str::to_owned);
-        let config = build_config(
-            GrantType::AuthorizationCode,
-            auth_url,
-            token_url,
-            &scopes,
-            redirect_uri_opt,
-        )?;
-
-        let verifier = crate::generate_pkce_verifier();
-        let challenge = crate::generate_code_challenge(&verifier);
-        let state_token = crate::generate_random_state();
-
-        let url = build_auth_url(&config, client_id, &challenge, &state_token)?;
-        // `build_config` upstream rejects `AuthorizationCode` configs that
-        // lack `redirect_uri`, but the panic site is decoupled from that
-        // invariant by ~25 lines and a different match arm. Defensive
-        // typed-error: if anyone later relaxes `build_config` (e.g. to
-        // allow late-bound redirect URIs), this surfaces as a structured
-        // `CredentialError` rather than a runtime panic in library code.
-        // PR #582 review (CodeRabbit) — no `unwrap`/`expect` in lib code.
-        let redirect_uri = config.redirect_uri.clone().ok_or_else(|| {
-            CredentialError::Provider(Box::new(ProviderErrorContext::new(
-                ProviderErrorKind::Schema,
-                SecretFreeMessage::new(
-                    "authorization_code config missing redirect_uri (RFC 6749 §4.1.1)",
-                ),
-            )))
-        })?;
-
-        let pending = OAuth2Pending {
-            client_id: client_id.to_owned(),
-            client_secret: SecretString::new(client_secret),
-            grant_type: GrantType::AuthorizationCode,
-            auth_style: config.auth_style,
-            device_code: None,
-            interval: None,
-            pkce_verifier: Some(SecretString::new(verifier)),
-            state: Some(state_token),
-            redirect_uri: Some(redirect_uri),
-            config,
-        };
-        Ok((pending, InteractionRequest::Redirect { url }))
     }
 }
 
 // ── Private helpers ────────────────────────────────────────────────────
 
-fn oauth2_http_transport_disabled() -> CredentialError {
-    CredentialError::Provider(Box::new(ProviderErrorContext::new(
-        ProviderErrorKind::Other,
-        SecretFreeMessage::new("OAuth2 interactive acquisition is not wired in this composition"),
-    )))
+fn initiate_authorization_code(
+    properties: &OAuth2AuthorizationCodeProperties,
+) -> Result<(OAuth2Pending, InteractionRequest), CredentialError> {
+    validate_client(&properties.client)?;
+    let scopes = properties.scopes.as_deref().unwrap_or_default();
+    validate_requested_scopes(scopes)?;
+    let config = OAuth2Config::authorization_code(properties.redirect_uri.clone())
+        .auth_url(&properties.auth_url)
+        .token_url(&properties.token_url)
+        .scopes(scopes.iter().cloned())
+        .auth_style(properties.auth_style)
+        .build();
+    let verifier = crate::generate_pkce_verifier();
+    let challenge = crate::generate_code_challenge(&verifier);
+    let state_token = crate::generate_random_state();
+    let url = build_auth_url(
+        &config,
+        &properties.client.client_id,
+        &challenge,
+        &state_token,
+    )?;
+    let pending = OAuth2Pending {
+        config,
+        client_id: properties.client.client_id.clone(),
+        client_secret: properties.client.client_secret.clone(),
+        auth_style: properties.auth_style,
+        pkce_verifier: SecretString::new(verifier),
+        state: state_token,
+        redirect_uri: properties.redirect_uri.clone(),
+    };
+    Ok((pending, InteractionRequest::Redirect { url }))
+}
+
+async fn acquire_client_credentials(
+    properties: &OAuth2ClientCredentialsProperties,
+    ctx: &CredentialContext,
+) -> Result<OAuth2State, CredentialError> {
+    validate_client(&properties.client)?;
+    let scopes = properties.scopes.as_deref().unwrap_or_default();
+    validate_requested_scopes(scopes)?;
+    let mut form = vec![(
+        "grant_type".to_owned(),
+        SecretString::new("client_credentials"),
+    )];
+    if !scopes.is_empty() {
+        form.push(("scope".to_owned(), SecretString::new(scopes.join(" "))));
+    }
+    let request = build_token_request(
+        &properties.token_url,
+        &properties.client.client_id,
+        &properties.client.client_secret,
+        properties.auth_style,
+        form,
+    )?;
+    dispatch_acquisition(
+        request,
+        &properties.client.client_id,
+        &properties.client.client_secret,
+        &properties.token_url,
+        properties.auth_style,
+        scopes,
+        ctx,
+    )
+    .await
+}
+
+fn build_token_request(
+    token_url: &str,
+    client_id: &str,
+    client_secret: &SecretString,
+    auth_style: AuthStyle,
+    mut form: Vec<(String, SecretString)>,
+) -> Result<TokenPostRequest, CredentialError> {
+    let endpoint = OAuthServerEndpoint::parse(token_url).map_err(|_| {
+        CredentialError::Provider(Box::new(ProviderErrorContext::new(
+            ProviderErrorKind::Schema,
+            SecretFreeMessage::new("invalid OAuth2 token endpoint URL"),
+        )))
+    })?;
+    let basic_auth = match auth_style {
+        AuthStyle::Header => Some((
+            encode_basic_component(client_id),
+            encode_basic_component(client_secret.expose_secret()),
+        )),
+        AuthStyle::PostBody => {
+            form.push(("client_id".to_owned(), SecretString::new(client_id)));
+            form.push(("client_secret".to_owned(), client_secret.clone()));
+            None
+        },
+    };
+    Ok(TokenPostRequest::new(endpoint, form, basic_auth))
+}
+
+fn encode_basic_component(raw: &str) -> SecretString {
+    let mut encoded = zeroize::Zeroizing::new(String::with_capacity(raw.len()));
+    for part in url::form_urlencoded::byte_serialize(raw.as_bytes()) {
+        encoded.push_str(part);
+    }
+    SecretString::new(std::mem::take(&mut *encoded))
+}
+
+async fn dispatch_acquisition(
+    request: TokenPostRequest,
+    client_id: &str,
+    client_secret: &SecretString,
+    token_url: &str,
+    auth_style: AuthStyle,
+    requested_scopes: &[String],
+    ctx: &CredentialContext,
+) -> Result<OAuth2State, CredentialError> {
+    let Some(transport) = ctx.acquisition_transport() else {
+        return Err(CredentialError::AcquisitionTransportUnavailable);
+    };
+    tracing::debug!("dispatching OAuth2 credential acquisition");
+    let response = transport
+        .post_token(request)
+        .await
+        .map_err(|_| CredentialError::OutcomeUnknown)?;
+    interpret_acquisition_response(
+        response,
+        client_id,
+        client_secret,
+        token_url,
+        auth_style,
+        requested_scopes,
+        ctx.clock().now(),
+    )
+}
+
+#[derive(Deserialize, Zeroize)]
+struct AcquisitionTokenResponse {
+    access_token: Option<SecretString>,
+    token_type: Option<SecretString>,
+    refresh_token: Option<SecretString>,
+    expires_in: Option<u64>,
+    scope: Option<SecretString>,
+}
+
+impl Drop for AcquisitionTokenResponse {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl fmt::Debug for AcquisitionTokenResponse {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str("AcquisitionTokenResponse(<redacted>)")
+    }
+}
+
+fn interpret_acquisition_response(
+    response: TokenPostResponse,
+    client_id: &str,
+    client_secret: &SecretString,
+    token_url: &str,
+    auth_style: AuthStyle,
+    requested_scopes: &[String],
+    now: DateTime<Utc>,
+) -> Result<OAuth2State, CredentialError> {
+    if !(200..300).contains(&response.status()) {
+        let kind = if response.status() == 400 || response.status() == 401 {
+            ProviderErrorKind::Auth
+        } else {
+            ProviderErrorKind::ServerError
+        };
+        return Err(CredentialError::Provider(Box::new(
+            ProviderErrorContext::new(
+                kind,
+                SecretFreeMessage::new("OAuth2 token acquisition was rejected by the provider"),
+            ),
+        )));
+    }
+
+    let mut body: AcquisitionTokenResponse = serde_json::from_slice(response.body().as_ref())
+        .map_err(|_| CredentialError::OutcomeUnknown)?;
+    let access_token = body
+        .access_token
+        .take()
+        .filter(|token| is_visible_token(token.expose_secret()))
+        .ok_or(CredentialError::OutcomeUnknown)?;
+    let token_type = body
+        .token_type
+        .as_ref()
+        .filter(|token_type| token_type.expose_secret().eq_ignore_ascii_case("bearer"))
+        .ok_or(CredentialError::OutcomeUnknown)?;
+    let _ = token_type;
+    if body
+        .refresh_token
+        .as_ref()
+        .is_some_and(|token| !is_visible_token(token.expose_secret()))
+    {
+        return Err(CredentialError::OutcomeUnknown);
+    }
+    let expires_at = body
+        .expires_in
+        .map(|expires_in| {
+            let seconds = i64::try_from(expires_in).map_err(|_| CredentialError::OutcomeUnknown)?;
+            now.checked_add_signed(chrono::Duration::seconds(seconds))
+                .ok_or(CredentialError::OutcomeUnknown)
+        })
+        .transpose()?;
+    let scopes = parse_granted_scopes(body.scope.as_ref(), requested_scopes)?;
+
+    Ok(OAuth2State {
+        access_token,
+        token_type: "Bearer".to_owned(),
+        refresh_token: body.refresh_token.take(),
+        expires_at,
+        scopes,
+        client_id: SecretString::new(client_id),
+        client_secret: client_secret.clone(),
+        token_url: token_url.to_owned(),
+        auth_style,
+    })
+}
+
+fn parse_granted_scopes(
+    returned: Option<&SecretString>,
+    requested: &[String],
+) -> Result<Vec<String>, CredentialError> {
+    let Some(returned) = returned else {
+        return Ok(requested.to_vec());
+    };
+    let raw = returned.expose_secret();
+    if raw.is_empty() {
+        return Err(CredentialError::OutcomeUnknown);
+    }
+    const MAX_SCOPE_COUNT: usize = 64;
+    const MAX_SCOPE_BYTES: usize = 256;
+    const MAX_TOTAL_SCOPE_BYTES: usize = 4 * 1024;
+    if raw.len() > MAX_TOTAL_SCOPE_BYTES {
+        return Err(CredentialError::OutcomeUnknown);
+    }
+    let mut granted = Vec::new();
+    for scope in raw.split(' ') {
+        let valid = !scope.is_empty()
+            && scope.len() <= MAX_SCOPE_BYTES
+            && scope
+                .bytes()
+                .all(|byte| matches!(byte, 0x21 | 0x23..=0x5b | 0x5d..=0x7e));
+        if !valid
+            || (!requested.is_empty() && !requested.iter().any(|candidate| candidate == scope))
+            || granted.iter().any(|seen| seen == scope)
+            || granted.len() >= MAX_SCOPE_COUNT
+        {
+            return Err(CredentialError::OutcomeUnknown);
+        }
+        granted.push(scope.to_owned());
+    }
+    Ok(granted)
+}
+
+fn validate_requested_scopes(scopes: &[String]) -> Result<(), CredentialError> {
+    const MAX_SCOPE_COUNT: usize = 64;
+    const MAX_SCOPE_BYTES: usize = 256;
+    const MAX_TOTAL_SCOPE_BYTES: usize = 4 * 1024;
+    let total = scopes.iter().try_fold(0_usize, |total, scope| {
+        total.checked_add(scope.len())?.checked_add(1)
+    });
+    let valid = scopes.len() <= MAX_SCOPE_COUNT
+        && total.is_some_and(|total| total <= MAX_TOTAL_SCOPE_BYTES)
+        && scopes.iter().enumerate().all(|(index, scope)| {
+            !scope.is_empty()
+                && scope.len() <= MAX_SCOPE_BYTES
+                && scope
+                    .bytes()
+                    .all(|byte| matches!(byte, 0x21 | 0x23..=0x5b | 0x5d..=0x7e))
+                && !scopes[..index].contains(scope)
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err(CredentialError::Provider(Box::new(
+            ProviderErrorContext::new(
+                ProviderErrorKind::Schema,
+                SecretFreeMessage::new("invalid OAuth2 requested scopes"),
+            ),
+        )))
+    }
+}
+
+fn validate_client(client: &OAuth2ClientProperties) -> Result<(), CredentialError> {
+    let valid = !client.client_id.is_empty()
+        && client.client_id.len() <= 4096
+        && !client.client_secret.is_empty()
+        && client.client_secret.expose_secret().len() <= 16 * 1024;
+    if valid {
+        Ok(())
+    } else {
+        Err(CredentialError::Provider(Box::new(
+            ProviderErrorContext::new(
+                ProviderErrorKind::Schema,
+                SecretFreeMessage::new("invalid OAuth2 client credentials"),
+            ),
+        )))
+    }
+}
+
+fn is_visible_token(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|byte| matches!(byte, 0x21..=0x7e))
 }
 
 fn refresh_failure_spec(
@@ -770,12 +887,34 @@ fn build_auth_url(
         )))
     })?;
 
-    let mut url = url::Url::parse(&config.auth_url).map_err(|_| {
+    let endpoint = OAuthServerEndpoint::parse(&config.auth_url).map_err(|_| {
         CredentialError::Provider(Box::new(ProviderErrorContext::new(
             ProviderErrorKind::Schema,
             SecretFreeMessage::new("invalid OAuth2 authorization endpoint URL"),
         )))
     })?;
+    const OWNED_QUERY_PARAMETERS: [&str; 7] = [
+        "response_type",
+        "client_id",
+        "redirect_uri",
+        "scope",
+        "state",
+        "code_challenge",
+        "code_challenge_method",
+    ];
+    if endpoint
+        .expose_url()
+        .query_pairs()
+        .any(|(key, _)| OWNED_QUERY_PARAMETERS.contains(&key.as_ref()))
+    {
+        return Err(CredentialError::Provider(Box::new(
+            ProviderErrorContext::new(
+                ProviderErrorKind::Schema,
+                SecretFreeMessage::new("invalid OAuth2 authorization endpoint URL"),
+            ),
+        )));
+    }
+    let mut url = endpoint.expose_url().clone();
 
     {
         let mut q = url.query_pairs_mut();
@@ -792,89 +931,63 @@ fn build_auth_url(
         q.append_pair("code_challenge_method", pkce_method.as_str());
     }
 
-    Ok(url.to_string())
-}
-
-/// Extract a required string parameter, returning an error if missing.
-fn extract_required<'a>(values: &'a FieldValues, key: &str) -> Result<&'a str, CredentialError> {
-    values
-        .get_string_by_str(key)
-        .ok_or_else(|| CredentialError::InvalidInput(format!("missing required field: {key}")))
-}
-
-/// Parse a grant type string into the [`GrantType`] enum.
-fn parse_grant_type(s: &str) -> Result<GrantType, CredentialError> {
-    match s {
-        "authorization_code" => Ok(GrantType::AuthorizationCode),
-        "client_credentials" => Ok(GrantType::ClientCredentials),
-        "device_code" => Ok(GrantType::DeviceCode),
-        other => Err(CredentialError::InvalidInput(format!(
-            "unknown grant_type: {other}"
-        ))),
+    let url = url.to_string();
+    if url.len() > OAUTH_ENDPOINT_MAX_BYTES {
+        return Err(CredentialError::Provider(Box::new(
+            ProviderErrorContext::new(
+                ProviderErrorKind::Schema,
+                SecretFreeMessage::new("invalid OAuth2 authorization endpoint URL"),
+            ),
+        )));
     }
-}
-
-/// Parse space-separated scopes from parameter values.
-fn parse_scopes(values: &FieldValues) -> Vec<String> {
-    values
-        .get_string_by_str("scopes")
-        .map(|s| s.split_whitespace().map(str::to_owned).collect())
-        .unwrap_or_default()
-}
-
-/// Build an [`OAuth2Config`] from extracted parameter values.
-///
-/// For [`GrantType::AuthorizationCode`], `redirect_uri` is required —
-/// the builder will reject a missing value with
-/// `CredentialError::InvalidInput`. For other grants, `redirect_uri` is
-/// silently ignored (passing `None` or `Some(_)` both yield a config
-/// with `redirect_uri = None`).
-fn build_config(
-    grant_type: GrantType,
-    auth_url: &str,
-    token_url: &str,
-    scopes: &[String],
-    redirect_uri: Option<String>,
-) -> Result<OAuth2Config, CredentialError> {
-    let config = match grant_type {
-        GrantType::AuthorizationCode => {
-            let redirect = redirect_uri.ok_or_else(|| {
-                CredentialError::InvalidInput(
-                    "missing required field: redirect_uri (required for authorization_code grant)"
-                        .into(),
-                )
-            })?;
-            OAuth2Config::authorization_code(redirect)
-                .auth_url(auth_url)
-                .token_url(token_url)
-                .scopes(scopes.iter().cloned())
-                .build()
-        },
-        GrantType::ClientCredentials => OAuth2Config::client_credentials()
-            .auth_url(auth_url)
-            .token_url(token_url)
-            .scopes(scopes.iter().cloned())
-            .build(),
-        GrantType::DeviceCode => OAuth2Config::device_code()
-            .auth_url(auth_url)
-            .token_url(token_url)
-            .scopes(scopes.iter().cloned())
-            .build(),
-    };
-    Ok(config)
+    Ok(url)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
+
+    use nebula_storage_port::SecretBytes;
 
     // Trait names referenced only by the tests now that `#[credential]`
     // generates the trait impls via absolute paths: `Credential` (KEY /
     // Properties), `CredentialLifecycle` (policy), and the capability
     // sub-traits exercised by `assert_oauth2_capabilities`.
-    use crate::{Credential, CredentialLifecycle, Interactive, Refreshable, Revocable, Testable};
+    use crate::{AuthPattern, Credential, CredentialLifecycle, Interactive, Refreshable};
 
     use super::*;
+
+    struct FixedAcquisitionTransport {
+        status: u16,
+        body: &'static [u8],
+    }
+
+    impl crate::runtime::AcquisitionTransport for FixedAcquisitionTransport {
+        fn post_token<'a>(
+            &'a self,
+            _request: TokenPostRequest,
+        ) -> Pin<
+            Box<
+                dyn Future<
+                        Output = Result<
+                            TokenPostResponse,
+                            crate::runtime::AcquisitionTransportError,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move {
+                TokenPostResponse::try_new(self.status, SecretBytes::new(self.body.to_vec()))
+                    .map_err(|_| crate::runtime::AcquisitionTransportError::ReadBody)
+            })
+        }
+    }
+
+    fn acquisition_context(status: u16, body: &'static [u8]) -> CredentialContext {
+        CredentialContext::for_owner("test-user")
+            .for_acquisition(Arc::new(FixedAcquisitionTransport { status, body }))
+    }
 
     fn make_state() -> OAuth2State {
         OAuth2State {
@@ -886,7 +999,7 @@ mod tests {
             client_id: SecretString::new("cid"),
             client_secret: SecretString::new("csecret"),
             token_url: "https://example.com/token?routing=state-url-canary".into(),
-            auth_style: AuthStyle::default(),
+            auth_style: AuthStyle::Header,
         }
     }
 
@@ -901,7 +1014,7 @@ mod tests {
         let with_token = make_state();
         let p = OAuth2Credential::policy(&with_token);
         assert_eq!(p.refresh, RefreshStrategy::RefreshToken);
-        assert_eq!(p.revoke, RevokeStrategy::HandleBased);
+        assert_eq!(p.revoke, RevokeStrategy::None);
         assert!(p.is_auto_renewable());
         assert!(p.is_expiring());
 
@@ -920,18 +1033,11 @@ mod tests {
         assert!(!p2.is_auto_renewable());
     }
 
-    // Capability membership is type-level after §15.4: `OAuth2Credential`
-    // implements `Interactive`, `Refreshable`, `Revocable`, and
-    // `Testable` (and not `Dynamic`). Trait bound checks below stand in
-    // for the previous const-bool assertions. The `Revocable` and
-    // `Testable` impls currently return `oauth2_http_transport_disabled()`;
-    // trait membership remains part of the parked type's contract so an
-    // explicitly curated runtime can bind these operations once its injected
-    // provider transport is wired.
+    // Capability membership names only the implemented provider paths.
     #[expect(dead_code)]
     fn assert_oauth2_capabilities()
     where
-        OAuth2Credential: Credential + Interactive + Refreshable + Revocable + Testable,
+        OAuth2Credential: Credential + Interactive + Refreshable,
     {
     }
 
@@ -962,84 +1068,15 @@ mod tests {
 
     #[test]
     fn metadata_has_correct_fields() {
-        use nebula_metadata::Metadata;
         let meta = OAuth2Credential::metadata();
-        assert_eq!(meta.key().as_str(), "oauth2");
-        assert_eq!(meta.name(), "OAuth2");
-        assert!(meta.description().contains("OAuth2"));
+        assert_eq!(meta.pattern(), AuthPattern::OAuth2);
     }
 
     #[test]
-    fn parameters_has_all_fields() {
-        let params = nebula_schema::schema_of::<<OAuth2Credential as Credential>::Properties>();
-        let has = |k: &str| params.fields().iter().any(|f| f.key().as_str() == k);
-        assert!(has("client_id"));
-        assert!(has("client_secret"));
-        assert!(has("auth_url"));
-        assert!(has("token_url"));
-        assert!(has("grant_type"));
-        assert!(has("scopes"));
-        assert!(has("redirect_uri"));
-        assert_eq!(params.fields().len(), 7);
-    }
-
-    #[test]
-    fn parse_grant_type_valid() {
-        assert_eq!(
-            parse_grant_type("authorization_code").unwrap(),
-            GrantType::AuthorizationCode
-        );
-        assert_eq!(
-            parse_grant_type("client_credentials").unwrap(),
-            GrantType::ClientCredentials
-        );
-        assert_eq!(
-            parse_grant_type("device_code").unwrap(),
-            GrantType::DeviceCode
-        );
-    }
-
-    #[test]
-    fn parse_grant_type_invalid() {
-        assert!(parse_grant_type("unknown").is_err());
-    }
-
-    #[test]
-    fn parse_scopes_empty() {
-        let values = FieldValues::new();
-        assert!(parse_scopes(&values).is_empty());
-    }
-
-    #[test]
-    fn parse_scopes_splits_whitespace() {
-        let mut values = FieldValues::new();
-        values
-            .try_set_raw("scopes", serde_json::json!("read write admin"))
-            .expect("test-only known-good key");
-        let scopes = parse_scopes(&values);
-        assert_eq!(scopes, vec!["read", "write", "admin"]);
-    }
-
-    #[tokio::test]
-    async fn resolve_rejects_missing_client_id() {
-        let values = FieldValues::new();
-        let ctx = CredentialContext::for_owner("test-user");
-        let result = OAuth2Credential::resolve(&values, &ctx).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn resolve_rejects_missing_token_url() {
-        let mut values = FieldValues::new();
-        values
-            .try_set_raw("client_id", serde_json::json!("cid"))
-            .expect("test-only known-good key");
-        values
-            .try_set_raw("client_secret", serde_json::json!("cs"))
-            .expect("test-only known-good key");
-        let ctx = CredentialContext::for_owner("test-user");
-        let result = OAuth2Credential::resolve(&values, &ctx).await;
-        assert!(result.is_err());
+    fn properties_schema_is_admissible() {
+        let params = nebula_schema::schema_of::<<OAuth2Credential as Credential>::Properties>()
+            .expect("valid OAuth2 schema");
+        assert!(!params.fields().is_empty());
     }
 
     const TEST_CALLBACK: &str = "https://app.example.com/oauth2/callback";
@@ -1052,45 +1089,10 @@ mod tests {
                 .build(),
             client_id: "cid".into(),
             client_secret: SecretString::new("cs"),
-            grant_type: GrantType::AuthorizationCode,
-            auth_style: AuthStyle::default(),
-            device_code: None,
-            interval: None,
-            pkce_verifier: Some(SecretString::new("verifier_value")),
-            state: Some("expected_state".into()),
-            redirect_uri: Some(TEST_CALLBACK.into()),
-        }
-    }
-
-    #[tokio::test]
-    async fn resolve_rejects_missing_redirect_uri_for_auth_code() {
-        let mut values = FieldValues::new();
-        values
-            .try_set_raw("client_id", serde_json::json!("cid"))
-            .expect("test-only known-good key");
-        values
-            .try_set_raw("client_secret", serde_json::json!("cs"))
-            .expect("test-only known-good key");
-        values
-            .try_set_raw("auth_url", serde_json::json!("https://a.com/auth"))
-            .expect("test-only known-good key");
-        values
-            .try_set_raw("token_url", serde_json::json!("https://a.com/token"))
-            .expect("test-only known-good key");
-        values
-            .try_set_raw("grant_type", serde_json::json!("authorization_code"))
-            .expect("test-only known-good key");
-
-        let ctx = CredentialContext::for_owner("test-user");
-        let result = OAuth2Credential::resolve(&values, &ctx).await;
-        match result {
-            Err(CredentialError::InvalidInput(msg)) => {
-                assert!(
-                    msg.contains("redirect_uri"),
-                    "error message must name the missing field: {msg}"
-                );
-            },
-            other => panic!("expected InvalidInput, got {other:?}"),
+            auth_style: AuthStyle::Header,
+            pkce_verifier: SecretString::new("verifier_value"),
+            state: "expected_state".into(),
+            redirect_uri: TEST_CALLBACK.into(),
         }
     }
 
@@ -1121,7 +1123,7 @@ mod tests {
         params.insert("code".to_owned(), "the_code".to_owned());
         let input = UserInput::Callback { params };
         let result = OAuth2Credential::continue_resolve(&pending, &input, &ctx).await;
-        assert!(matches!(result, Err(CredentialError::InvalidInput(_))));
+        assert!(matches!(result, Err(CredentialError::InvalidInput)));
     }
 
     #[tokio::test]
@@ -1133,113 +1135,209 @@ mod tests {
         params.insert("state".to_owned(), "attacker_state".to_owned());
         let input = UserInput::Callback { params };
         let result = OAuth2Credential::continue_resolve(&pending, &input, &ctx).await;
-        assert!(matches!(result, Err(CredentialError::InvalidInput(_))));
+        assert!(matches!(result, Err(CredentialError::InvalidInput)));
     }
 
     #[tokio::test]
     async fn continue_resolve_rejects_length_mismatched_state() {
         let mut pending = auth_code_pending();
-        pending.state = Some("aaa".into());
+        pending.state = "aaa".into();
         let ctx = CredentialContext::for_owner("test-user");
         let mut params = HashMap::new();
         params.insert("code".to_owned(), "c".to_owned());
         params.insert("state".to_owned(), "aaaa".to_owned()); // longer
         let input = UserInput::Callback { params };
         let result = OAuth2Credential::continue_resolve(&pending, &input, &ctx).await;
-        assert!(matches!(result, Err(CredentialError::InvalidInput(_))));
+        assert!(matches!(result, Err(CredentialError::InvalidInput)));
     }
 
     #[tokio::test]
-    async fn continue_resolve_rejects_pre_fix_pending_without_state() {
+    async fn continue_resolve_rejects_oversized_callback_before_dispatch() {
         let mut pending = auth_code_pending();
-        pending.state = None;
-        pending.pkce_verifier = None;
-        pending.redirect_uri = None;
-        let ctx = CredentialContext::for_owner("test-user");
-        let mut params = HashMap::new();
-        params.insert("code".to_owned(), "c".to_owned());
-        params.insert("state".to_owned(), "s".to_owned());
-        let input = UserInput::Callback { params };
-        let result = OAuth2Credential::continue_resolve(&pending, &input, &ctx).await;
-        assert!(matches!(result, Err(CredentialError::InvalidInput(_))));
-    }
-
-    #[tokio::test]
-    async fn continue_resolve_rejects_wrong_input_for_device_code() {
-        let pending = OAuth2Pending {
-            config: OAuth2Config::device_code()
-                .auth_url("https://a.com/device")
-                .token_url("https://a.com/token")
-                .build(),
-            client_id: "cid".into(),
-            client_secret: SecretString::new("cs"),
-            grant_type: GrantType::DeviceCode,
-            auth_style: AuthStyle::default(),
-            device_code: Some("dcode".into()),
-            interval: Some(5),
-            pkce_verifier: None,
-            state: None,
-            redirect_uri: None,
-        };
-
+        pending.state = "A".repeat(43);
         let ctx = CredentialContext::for_owner("test-user");
         let input = UserInput::Callback {
-            params: HashMap::new(),
+            params: [
+                ("code".to_owned(), "A".repeat(16 * 1024 + 1)),
+                ("state".to_owned(), pending.state.clone()),
+            ]
+            .into(),
         };
+
         let result = OAuth2Credential::continue_resolve(&pending, &input, &ctx).await;
-        assert!(result.is_err());
+
+        assert!(matches!(result, Err(CredentialError::InvalidInput)));
     }
 
-    // ── initiate_authorization_code coverage (Tech Spec §15.4) ─────────
-    //
-    // Per §15.4 the base `Credential::resolve` cannot carry typed pending
-    // state, so this low-level helper builds the future universal adapter's
-    // pending value. It is not a public HTTP kickoff. The tests below cover
-    // (a) success-path
-    // URL construction with PKCE + anti-CSRF, (b) input rejection for
-    // missing redirect_uri, (c) state-token unguessability across
-    // independent kickoffs.
+    // ── Authorization-code kickoff coverage ────────────────────────────
 
-    fn auth_code_values() -> FieldValues {
-        let mut values = FieldValues::new();
-        values
-            .try_set_raw("client_id", serde_json::json!("test_client_id"))
-            .expect("test-only known-good key");
-        values
-            .try_set_raw("client_secret", serde_json::json!("test_client_secret"))
-            .expect("test-only known-good key");
-        values
-            .try_set_raw(
-                "auth_url",
-                serde_json::json!("https://idp.example.com/authorize"),
-            )
-            .expect("test-only known-good key");
-        values
-            .try_set_raw(
-                "token_url",
-                serde_json::json!("https://idp.example.com/token"),
-            )
-            .expect("test-only known-good key");
-        values
-            .try_set_raw("grant_type", serde_json::json!("authorization_code"))
-            .expect("test-only known-good key");
-        values
-            .try_set_raw("scopes", serde_json::json!("read write"))
-            .expect("test-only known-good key");
-        values
-            .try_set_raw(
-                "redirect_uri",
-                serde_json::json!("https://app.example.com/oauth2/callback"),
-            )
-            .expect("test-only known-good key");
-        values
+    fn auth_code_properties() -> OAuth2AuthorizationCodeProperties {
+        OAuth2AuthorizationCodeProperties {
+            client: OAuth2ClientProperties {
+                client_id: "test_client_id".to_owned(),
+                client_secret: SecretString::new("test_client_secret"),
+            },
+            auth_url: "https://idp.example.com/authorize".to_owned(),
+            token_url: "https://idp.example.com/token".to_owned(),
+            scopes: Some(vec!["read".to_owned(), "write".to_owned()]),
+            redirect_uri: TEST_CALLBACK.to_owned(),
+            auth_style: AuthStyle::Header,
+        }
+    }
+
+    fn client_credentials_properties() -> OAuth2ClientCredentialsProperties {
+        OAuth2ClientCredentialsProperties {
+            client: OAuth2ClientProperties {
+                client_id: "test_client_id".to_owned(),
+                client_secret: SecretString::new("test_client_secret"),
+            },
+            token_url: "https://idp.example.com/token".to_owned(),
+            scopes: Some(vec!["read".to_owned(), "write".to_owned()]),
+            auth_style: AuthStyle::Header,
+        }
+    }
+
+    #[tokio::test]
+    async fn client_credentials_resolve_completes_through_acquisition_transport() {
+        let properties = OAuth2Properties::ClientCredentials(client_credentials_properties());
+        let ctx = acquisition_context(
+            200,
+            br#"{"access_token":"access-canary","token_type":"Bearer","expires_in":3600,"scope":"read write"}"#,
+        );
+
+        let result = OAuth2Credential::resolve(&properties, &ctx)
+            .await
+            .expect("client credentials exchange should succeed");
+        let StaticResolveResult::Complete(state) = result else {
+            panic!("client credentials must complete in one exchange");
+        };
+        assert_eq!(state.access_token.expose_secret(), "access-canary");
+        assert_eq!(state.scopes, ["read", "write"]);
+        assert!(!format!("{state:?}").contains("access-canary"));
+    }
+
+    #[tokio::test]
+    async fn authorization_code_begin_and_callback_complete_through_acquisition_transport() {
+        let properties = OAuth2Properties::AuthorizationCode(auth_code_properties());
+        let begin =
+            OAuth2Credential::begin(&properties, &CredentialContext::for_owner("test-user"))
+                .await
+                .expect("authorization kickoff should succeed");
+        let ResolveResult::Pending { state: pending, .. } = begin else {
+            panic!("authorization code must begin with pending state");
+        };
+        let input = UserInput::Callback {
+            params: HashMap::from([
+                ("code".to_owned(), "authorization-code".to_owned()),
+                ("state".to_owned(), pending.state.clone()),
+            ]),
+        };
+        let ctx = acquisition_context(
+            200,
+            br#"{"access_token":"callback-access","token_type":"bearer","refresh_token":"callback-refresh","scope":"read"}"#,
+        );
+
+        let completed = OAuth2Credential::continue_resolve(&pending, &input, &ctx)
+            .await
+            .expect("authorization code exchange should succeed");
+        let ResolveResult::Complete(state) = completed else {
+            panic!("valid callback must complete acquisition");
+        };
+        assert_eq!(state.access_token.expose_secret(), "callback-access");
+        assert_eq!(
+            state
+                .refresh_token
+                .as_ref()
+                .expect("provider supplied a refresh token")
+                .expose_secret(),
+            "callback-refresh"
+        );
+    }
+
+    #[tokio::test]
+    async fn acquisition_without_runtime_transport_fails_structurally() {
+        let properties = OAuth2Properties::ClientCredentials(client_credentials_properties());
+        let error =
+            OAuth2Credential::resolve(&properties, &CredentialContext::for_owner("test-user"))
+                .await
+                .expect_err("initial acquisition authority must be runtime-stamped");
+        assert!(matches!(
+            error,
+            CredentialError::AcquisitionTransportUnavailable
+        ));
+    }
+
+    #[tokio::test]
+    async fn provider_rejection_and_malformed_success_are_payload_free() {
+        let properties = OAuth2Properties::ClientCredentials(client_credentials_properties());
+        let rejected = OAuth2Credential::resolve(
+            &properties,
+            &acquisition_context(401, b"provider-secret-canary"),
+        )
+        .await
+        .expect_err("provider rejection must fail");
+        assert!(!format!("{rejected:?} {rejected}").contains("provider-secret-canary"));
+
+        let malformed = OAuth2Credential::resolve(
+            &properties,
+            &acquisition_context(200, b"malformed-success-secret-canary"),
+        )
+        .await
+        .expect_err("malformed success has an unknown provider outcome");
+        assert!(matches!(malformed, CredentialError::OutcomeUnknown));
+        assert!(!format!("{malformed:?} {malformed}").contains("secret-canary"));
+    }
+
+    #[test]
+    fn provider_default_scopes_are_accepted_only_within_fixed_bounds() {
+        let defaults = SecretString::new("provider.read provider.write");
+        assert_eq!(
+            parse_granted_scopes(Some(&defaults), &[]).expect("bounded provider defaults"),
+            ["provider.read", "provider.write"]
+        );
+
+        let too_many = SecretString::new(
+            (0..=64)
+                .map(|index| format!("scope{index}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+        assert!(matches!(
+            parse_granted_scopes(Some(&too_many), &[]),
+            Err(CredentialError::OutcomeUnknown)
+        ));
+
+        let oversized = SecretString::new("s".repeat(257));
+        assert!(matches!(
+            parse_granted_scopes(Some(&oversized), &[]),
+            Err(CredentialError::OutcomeUnknown)
+        ));
+    }
+
+    #[test]
+    fn explicit_scope_request_rejects_unrequested_grants() {
+        let returned = SecretString::new("read admin");
+        assert!(matches!(
+            parse_granted_scopes(Some(&returned), &["read".to_owned()]),
+            Err(CredentialError::OutcomeUnknown)
+        ));
+    }
+
+    #[test]
+    fn oauth_properties_keep_client_secret_protected_until_explicit_extraction() {
+        let properties = auth_code_properties();
+        assert_eq!(
+            properties.client.client_secret.expose_secret(),
+            "test_client_secret"
+        );
+        assert!(!format!("{:?}", properties.client.client_secret).contains("test_client_secret"));
     }
 
     #[tokio::test]
     async fn initiate_authorization_code_returns_redirect_with_pkce_and_state() {
-        let values = auth_code_values();
+        let properties = auth_code_properties();
         let (pending, request) =
-            OAuth2Credential::initiate_authorization_code(&values).expect("kickoff should succeed");
+            initiate_authorization_code(&properties).expect("kickoff should succeed");
 
         let url = match request {
             InteractionRequest::Redirect { url } => url,
@@ -1259,70 +1357,19 @@ mod tests {
         );
 
         // Pending state populated for AuthorizationCode flow per §15.4.
-        assert!(
-            pending.pkce_verifier.is_some(),
-            "pkce_verifier must be populated"
-        );
-        assert!(pending.state.is_some(), "anti-CSRF state must be populated");
-        assert!(
-            pending.redirect_uri.is_some(),
-            "redirect_uri must be populated"
-        );
-        assert_eq!(pending.grant_type, GrantType::AuthorizationCode);
-    }
-
-    #[tokio::test]
-    async fn initiate_authorization_code_rejects_missing_redirect_uri() {
-        // Build values without redirect_uri — AuthorizationCode requires it
-        // per build_config (RFC 6749 §3.1.2 — registered redirection URI).
-        let mut values = FieldValues::new();
-        values
-            .try_set_raw("client_id", serde_json::json!("test_client_id"))
-            .expect("test-only known-good key");
-        values
-            .try_set_raw("client_secret", serde_json::json!("test_client_secret"))
-            .expect("test-only known-good key");
-        values
-            .try_set_raw(
-                "auth_url",
-                serde_json::json!("https://idp.example.com/authorize"),
-            )
-            .expect("test-only known-good key");
-        values
-            .try_set_raw(
-                "token_url",
-                serde_json::json!("https://idp.example.com/token"),
-            )
-            .expect("test-only known-good key");
-        values
-            .try_set_raw("grant_type", serde_json::json!("authorization_code"))
-            .expect("test-only known-good key");
-        values
-            .try_set_raw("scopes", serde_json::json!("read"))
-            .expect("test-only known-good key");
-
-        let result = OAuth2Credential::initiate_authorization_code(&values);
-        match result {
-            Err(CredentialError::InvalidInput(msg)) => {
-                assert!(
-                    msg.contains("redirect_uri"),
-                    "error must name redirect_uri: {msg}"
-                );
-            },
-            other => panic!("expected InvalidInput, got {other:?}"),
-        }
+        assert!(!pending.pkce_verifier.is_empty());
+        assert!(!pending.state.is_empty());
+        assert_eq!(pending.redirect_uri, TEST_CALLBACK);
     }
 
     #[tokio::test]
     async fn initiate_authorization_code_csrf_state_is_unguessable() {
-        let values = auth_code_values();
-        let (pending1, _) =
-            OAuth2Credential::initiate_authorization_code(&values).expect("first kickoff");
-        let (pending2, _) =
-            OAuth2Credential::initiate_authorization_code(&values).expect("second kickoff");
+        let properties = auth_code_properties();
+        let (pending1, _) = initiate_authorization_code(&properties).expect("first kickoff");
+        let (pending2, _) = initiate_authorization_code(&properties).expect("second kickoff");
 
-        let state1 = pending1.state.clone().expect("first state populated");
-        let state2 = pending2.state.clone().expect("second state populated");
+        let state1 = &pending1.state;
+        let state2 = &pending2.state;
 
         assert_ne!(
             state1, state2,
@@ -1349,7 +1396,7 @@ mod tests {
             client_id: SecretString::new("cid"),
             client_secret: SecretString::new("cs"),
             token_url: "https://t.com/token".into(),
-            auth_style: AuthStyle::default(),
+            auth_style: AuthStyle::Header,
         };
 
         let ctx = CredentialContext::for_owner("test-user");
@@ -1406,7 +1453,7 @@ mod tests {
             client_id: SecretString::new("cid"),
             client_secret: SecretString::new("cs"),
             token_url: "https://t.com/token".into(),
-            auth_style: AuthStyle::default(),
+            auth_style: AuthStyle::Header,
         };
         // Expires in 30s, margin is 60s => expired
         assert!(state.is_expired(Duration::from_mins(1)));
@@ -1425,7 +1472,7 @@ mod tests {
             client_id: SecretString::new("cid"),
             client_secret: SecretString::new("cs"),
             token_url: "https://t.com/token".into(),
-            auth_style: AuthStyle::default(),
+            auth_style: AuthStyle::Header,
         };
         assert!(!state.is_expired(Duration::from_secs(9999)));
     }
@@ -1439,13 +1486,10 @@ mod tests {
                 .build(),
             client_id: "cid".into(),
             client_secret: SecretString::new("super_secret"),
-            grant_type: GrantType::AuthorizationCode,
-            auth_style: AuthStyle::default(),
-            device_code: Some("dcode_secret".into()),
-            interval: None,
-            pkce_verifier: Some(SecretString::new("verifier_contents")),
-            state: Some("state_contents".into()),
-            redirect_uri: Some(TEST_CALLBACK.into()),
+            auth_style: AuthStyle::Header,
+            pkce_verifier: SecretString::new("verifier_contents"),
+            state: "state_contents".into(),
+            redirect_uri: TEST_CALLBACK.into(),
         };
 
         pending.zeroize();
@@ -1454,12 +1498,10 @@ mod tests {
         assert!(pending.config.scopes.is_empty());
         assert!(pending.config.redirect_uri.is_none());
         assert!(pending.client_secret.expose_secret().is_empty());
-        assert!(pending.device_code.is_none());
         assert!(pending.client_id.is_empty());
-        assert!(pending.interval.is_none());
-        assert!(pending.pkce_verifier.is_none());
-        assert!(pending.state.is_none());
-        assert!(pending.redirect_uri.is_none());
+        assert!(pending.pkce_verifier.expose_secret().is_empty());
+        assert!(pending.state.is_empty());
+        assert!(pending.redirect_uri.is_empty());
     }
 
     #[test]
@@ -1471,28 +1513,22 @@ mod tests {
                 .build(),
             client_id: "cid".into(),
             client_secret: SecretString::new("cs"),
-            grant_type: GrantType::AuthorizationCode,
-            auth_style: AuthStyle::default(),
-            device_code: None,
-            interval: None,
-            pkce_verifier: Some(SecretString::new("my_pkce_verifier_value")),
-            state: Some("my_csrf_state_value".into()),
-            redirect_uri: Some(TEST_CALLBACK.into()),
+            auth_style: AuthStyle::Header,
+            pkce_verifier: SecretString::new("my_pkce_verifier_value"),
+            state: "my_csrf_state_value".into(),
+            redirect_uri: TEST_CALLBACK.into(),
         };
         let second = OAuth2Pending {
-            config: OAuth2Config::device_code()
-                .auth_url("https://different.example/long/device/path")
+            config: OAuth2Config::authorization_code("https://different.example/callback")
+                .auth_url("https://different.example/long/authorize/path")
                 .token_url("https://different.example/token")
                 .build(),
             client_id: "different-client".into(),
             client_secret: SecretString::new("different-secret"),
-            grant_type: GrantType::DeviceCode,
             auth_style: AuthStyle::PostBody,
-            device_code: Some("different-device-code".into()),
-            interval: Some(42),
-            pkce_verifier: None,
-            state: None,
-            redirect_uri: None,
+            pkce_verifier: SecretString::new("different-verifier"),
+            state: "different-state".into(),
+            redirect_uri: "https://different.example/callback".into(),
         };
         let debug = format!("{first:?}");
         assert_eq!(debug, format!("{second:?}"));
@@ -1517,13 +1553,10 @@ mod tests {
                 .build(),
             client_id: "cid".into(),
             client_secret: SecretString::new("cs"),
-            grant_type: GrantType::AuthorizationCode,
-            auth_style: AuthStyle::default(),
-            device_code: None,
-            interval: None,
-            pkce_verifier: None,
-            state: None,
-            redirect_uri: None,
+            auth_style: AuthStyle::Header,
+            pkce_verifier: SecretString::new("verifier"),
+            state: "state".into(),
+            redirect_uri: TEST_CALLBACK.into(),
         };
 
         assert_eq!(pending.expires_in(), Duration::from_mins(10));
@@ -1584,6 +1617,41 @@ mod tests {
         assert!(!diagnostic.contains("auth-url-diagnostic-canary"));
         assert!(!diagnostic.contains("://"));
         assert!(diagnostic.contains("invalid OAuth2 authorization endpoint URL"));
+    }
+
+    #[test]
+    fn build_auth_url_rejects_endpoints_outside_oauth_egress_policy() {
+        for auth_url in [
+            "http://provider.example/authorize",
+            "https://localhost/authorize",
+            "https://127.0.0.1/authorize",
+            "https://user@provider.example/authorize",
+            "https://provider.example/authorize#fragment",
+            "https://provider.example/authorize?state=attacker",
+        ] {
+            let config = OAuth2Config::authorization_code(TEST_CALLBACK)
+                .auth_url(auth_url)
+                .token_url("https://provider.example/token")
+                .build();
+
+            let result = build_auth_url(&config, "client", "challenge", "state");
+            assert!(
+                result.is_err(),
+                "accepted authorization endpoint {auth_url}"
+            );
+        }
+    }
+
+    #[test]
+    fn build_auth_url_rejects_an_oversized_final_redirect() {
+        let config = OAuth2Config::authorization_code(TEST_CALLBACK)
+            .auth_url("https://provider.example/authorize")
+            .token_url("https://provider.example/token")
+            .scopes(["a".repeat(8 * 1024)])
+            .build();
+
+        let result = build_auth_url(&config, "client", "challenge", "state");
+        assert!(result.is_err(), "accepted an oversized authorization URL");
     }
 
     #[test]

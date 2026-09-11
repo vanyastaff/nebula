@@ -7,6 +7,7 @@ pub mod dedupe;
 pub mod delay;
 pub mod filter;
 pub mod if_action;
+mod input_schema;
 pub mod json_transform;
 pub mod map;
 pub mod set_fields;

@@ -27,6 +27,18 @@ impl core::fmt::Display for ComponentKind {
 #[derive(Debug, thiserror::Error, nebula_error::Classify)]
 #[non_exhaustive]
 pub enum PluginError {
+    /// An action could not produce a checked catalog definition.
+    #[classify(category = "validation", code = "PLUGIN:INVALID_METADATA")]
+    #[error("plugin component metadata admission failed")]
+    ActionMetadata(#[from] nebula_action::ActionMetadataAdmissionError),
+    /// A resource could not produce an admitted catalog definition.
+    #[classify(category = "validation", code = "PLUGIN:INVALID_RESOURCE_METADATA")]
+    #[error("plugin resource metadata admission failed")]
+    ResourceMetadata(#[from] nebula_resource::MetadataBuildError),
+    /// A credential could not produce a checked catalog definition.
+    #[classify(category = "validation", code = "PLUGIN:INVALID_CREDENTIAL_METADATA")]
+    #[error("plugin credential metadata admission failed")]
+    CredentialMetadata(#[from] nebula_credential::CredentialMetadataAdmissionError),
     /// Static effect metadata disagrees with the retained factory capability.
     #[classify(category = "validation", code = "PLUGIN:INVALID_EFFECT_CONTRACT")]
     #[error("action '{action}' has an incoherent effect contract")]
@@ -120,81 +132,6 @@ pub enum PluginError {
     },
 }
 
-impl PartialEq for PluginError {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::NotFound(a), Self::NotFound(b)) => a == b,
-            (Self::AlreadyExists(a), Self::AlreadyExists(b)) => a == b,
-            (Self::InvalidManifest(a), Self::InvalidManifest(b)) => a == b,
-            (
-                Self::NamespaceMismatch {
-                    plugin: p1,
-                    offending_key: k1,
-                    kind: ki1,
-                },
-                Self::NamespaceMismatch {
-                    plugin: p2,
-                    offending_key: k2,
-                    kind: ki2,
-                },
-            ) => p1 == p2 && k1 == k2 && ki1 == ki2,
-            (
-                Self::ComponentKeyMismatch {
-                    plugin: p1,
-                    kind: ki1,
-                    projected_key: pk1,
-                    metadata_key: mk1,
-                },
-                Self::ComponentKeyMismatch {
-                    plugin: p2,
-                    kind: ki2,
-                    projected_key: pk2,
-                    metadata_key: mk2,
-                },
-            ) => p1 == p2 && ki1 == ki2 && pk1 == pk2 && mk1 == mk2,
-            (
-                Self::InvalidComponentKey {
-                    plugin: p1,
-                    kind: ki1,
-                    projected_key: k1,
-                },
-                Self::InvalidComponentKey {
-                    plugin: p2,
-                    kind: ki2,
-                    projected_key: k2,
-                },
-            ) => p1 == p2 && ki1 == ki2 && k1 == k2,
-            (
-                Self::ComponentTypeMismatch {
-                    plugin: p1,
-                    kind: ki1,
-                    key: k1,
-                },
-                Self::ComponentTypeMismatch {
-                    plugin: p2,
-                    kind: ki2,
-                    key: k2,
-                },
-            ) => p1 == p2 && ki1 == ki2 && k1 == k2,
-            (
-                Self::DuplicateComponent {
-                    plugin: p1,
-                    key: k1,
-                    kind: ki1,
-                },
-                Self::DuplicateComponent {
-                    plugin: p2,
-                    key: k2,
-                    kind: ki2,
-                },
-            ) => p1 == p2 && k1 == k2 && ki1 == ki2,
-            _ => false,
-        }
-    }
-}
-
-impl Eq for PluginError {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,13 +151,14 @@ mod tests {
     }
 
     #[test]
-    fn partial_eq() {
+    fn not_found_retains_typed_key() {
         let a = PluginError::NotFound("slack".parse().unwrap());
         let b = PluginError::NotFound("slack".parse().unwrap());
-        assert_eq!(a, b);
-
         let c = PluginError::NotFound("http".parse().unwrap());
-        assert_ne!(a, c);
+        for error in [a, b] {
+            std::assert_matches!(error, PluginError::NotFound(key) if key.as_str() == "slack");
+        }
+        std::assert_matches!(c, PluginError::NotFound(key) if key.as_str() == "http");
     }
 
     #[test]

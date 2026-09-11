@@ -29,7 +29,7 @@ use nebula_resource::{
     AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
     ResourceContext, SlotCell, SlotIdentity,
     error::Error,
-    resource::{HasCredentialSlots, ResourceMetadata},
+    resource::{HasCredentialSlots, ResourceMetadataDraft},
     topology::resident::ResidentProvider,
 };
 use tokio::sync::Notify;
@@ -48,10 +48,8 @@ impl Zeroize for FakeCred {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, nebula_schema::Schema)]
 struct RaceConfig;
-
-nebula_schema::impl_empty_has_schema!(RaceConfig);
 
 impl ResourceConfig for RaceConfig {
     fn validate(&self) -> Result<(), Error> {
@@ -182,8 +180,8 @@ impl Provider for RaceResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 

@@ -1,9 +1,9 @@
 //! Real compile/install/pin fixtures shared by durable engine integration tests.
 
-use std::{collections::BTreeMap, fmt, future::Future, pin::Pin, sync::Arc};
+use std::{collections::BTreeMap, fmt, sync::Arc};
 
-use nebula_action::{ActionContext, ActionError, ActionFactory, ActionHandle, ActionMetadata};
-use nebula_core::{ActionKey, ArtifactSetDigest, Dependencies, WorkflowVersionId};
+use nebula_action::ActionFactory;
+use nebula_core::{ActionKey, ArtifactSetDigest, WorkflowVersionId};
 use nebula_engine::{ActionRegistry, PlanFlavorRevisionInstaller};
 use nebula_execution::{ExecutionBudget, ExecutionState};
 use nebula_plugin::{FrozenPluginRegistry, Plugin, PluginManifest, PluginRegistry, ResolvedPlugin};
@@ -12,28 +12,7 @@ use nebula_storage_port::{
     dto::{ContractBundleRecord, ControlCommand, ControlMsg, MaterializedStart, NewExecution},
     store::{ControlQueue, ExecutionStore, StartAcceptanceStore, StartContractIdentity},
 };
-use nebula_workflow::{NodeDefinition, WorkflowDefinition};
-
-struct QualifiedFactory {
-    metadata: ActionMetadata,
-    inner: Arc<dyn ActionFactory>,
-}
-
-impl ActionFactory for QualifiedFactory {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.metadata
-    }
-    fn dependencies(&self) -> &Dependencies {
-        self.inner.dependencies()
-    }
-    fn instantiate<'a>(
-        &'a self,
-        node: &'a NodeDefinition,
-        context: &'a dyn ActionContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
-        self.inner.instantiate(node, context)
-    }
-}
+use nebula_workflow::WorkflowDefinition;
 
 struct FixturePlugin {
     manifest: PluginManifest,
@@ -57,7 +36,7 @@ impl Plugin for FixturePlugin {
     }
 }
 
-/// Freeze actual registered factories after supplying their fixture namespace.
+/// Freeze already-qualified registered factories without changing their contracts.
 pub(crate) fn freeze_registry(
     registry: &ActionRegistry,
     actions: &[(&str, &str)],
@@ -65,25 +44,18 @@ pub(crate) fn freeze_registry(
     let mut plugins: BTreeMap<&str, Vec<Arc<dyn ActionFactory>>> = BTreeMap::new();
     for &(plugin, local) in actions {
         let key = ActionKey::new(local).expect("fixture action key");
-        let (mut metadata, inner) = registry
+        let (metadata, factory) = registry
             .get_factory(&key)
             .expect("fixture factory registered");
-        metadata.base.key = if local.starts_with(&format!("{plugin}.")) {
-            key
-        } else {
-            ActionKey::new(format!("{plugin}.{local}")).expect("qualified fixture key")
-        };
-        if matches!(
-            metadata.effect_contract,
-            nebula_action::effect::ActionEffectContract::Undeclared
-        ) {
-            metadata.effect_contract =
-                nebula_action::effect::ActionEffectContract::NoExternalEffects;
-        }
-        plugins
-            .entry(plugin)
-            .or_default()
-            .push(Arc::new(QualifiedFactory { metadata, inner }));
+        assert!(
+            metadata
+                .base()
+                .key()
+                .as_str()
+                .starts_with(&format!("{plugin}.")),
+            "exact fixture factories must be admitted with their plugin-qualified key"
+        );
+        plugins.entry(plugin).or_default().push(factory);
     }
     let mut registry = PluginRegistry::new();
     for (plugin, actions) in plugins {

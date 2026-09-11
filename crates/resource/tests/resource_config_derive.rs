@@ -8,7 +8,7 @@ use nebula_resource::ResourceConfig;
 
 // ── Unit struct ───────────────────────────────────────────────────────────────
 
-#[derive(Clone, ResourceConfig)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, ResourceConfig)]
 struct UnitCfg;
 
 #[test]
@@ -21,16 +21,86 @@ fn unit_struct_identical_instances_equal_fingerprint() {
     assert_eq!(UnitCfg.fingerprint(), UnitCfg.fingerprint());
 }
 
+#[test]
+fn unit_struct_schema_matches_serde_null_wire() {
+    let wire = serde_json::to_value(UnitCfg).unwrap();
+    assert_eq!(wire, serde_json::Value::Null);
+    let schema = nebula_schema::schema_of::<UnitCfg>().unwrap();
+    let resolved = schema
+        .validate(nebula_schema::AuthoredValue::from_data(wire).unwrap())
+        .unwrap()
+        .resolve_data()
+        .unwrap();
+    assert_eq!(resolved.into_typed::<UnitCfg>().unwrap(), UnitCfg);
+
+    let report = schema
+        .validate(nebula_schema::AuthoredValue::from_data(serde_json::json!({})).unwrap())
+        .unwrap_err();
+    assert!(
+        report
+            .errors()
+            .any(|error| { error.code() == "type_mismatch" && error.path().as_str().is_empty() })
+    );
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, ResourceConfig)]
+#[expect(
+    clippy::empty_structs_with_brackets,
+    reason = "serde object-wire fixture must remain distinct from unit null"
+)]
+struct EmptyRecordCfg {}
+
+#[test]
+fn empty_braced_struct_schema_matches_serde_object_wire() {
+    let wire = serde_json::to_value(EmptyRecordCfg {}).unwrap();
+    assert_eq!(wire, serde_json::json!({}));
+    let schema = nebula_schema::schema_of::<EmptyRecordCfg>().unwrap();
+    let resolved = schema
+        .validate(nebula_schema::AuthoredValue::from_data(wire).unwrap())
+        .unwrap()
+        .resolve_data()
+        .unwrap();
+    assert_eq!(
+        resolved.into_typed::<EmptyRecordCfg>().unwrap(),
+        EmptyRecordCfg {}
+    );
+
+    let report = schema
+        .validate(nebula_schema::AuthoredValue::from_data(serde_json::Value::Null).unwrap())
+        .unwrap_err();
+    assert!(
+        report
+            .errors()
+            .any(|error| { error.code() == "type_mismatch" && error.path().as_str().is_empty() })
+    );
+}
+
 // ── Named-field struct ────────────────────────────────────────────────────────
 
-#[derive(Clone, ResourceConfig)]
+#[derive(Clone, ResourceConfig, serde::Serialize, serde::Deserialize, nebula_schema::Schema)]
 #[config(schema = external)]
 struct NamedCfg {
     host: String,
     port: u16,
 }
 
-nebula_schema::impl_empty_has_schema!(NamedCfg);
+#[test]
+fn named_config_schema_rejects_wrong_field_types_before_decoding() {
+    let schema = nebula_schema::schema_of::<NamedCfg>().unwrap();
+    let report = schema
+        .validate(
+            nebula_schema::AuthoredValue::from_data(serde_json::json!({
+                "host": "localhost", "port": "not-a-port"
+            }))
+            .unwrap(),
+        )
+        .unwrap_err();
+    assert!(
+        report
+            .errors()
+            .any(|error| { error.code() == "type_mismatch" && error.path().as_str() == "/port" })
+    );
+}
 
 #[test]
 fn named_struct_identical_instances_equal_fingerprint() {
@@ -101,7 +171,7 @@ fn named_struct_fingerprint_nonzero_for_nonempty_fields() {
 
 // ── skip_fingerprint field ────────────────────────────────────────────────────
 
-#[derive(Clone, ResourceConfig)]
+#[derive(Clone, ResourceConfig, nebula_schema::Schema)]
 #[config(schema = external)]
 struct SkipFieldCfg {
     /// Included in fingerprint.
@@ -116,8 +186,6 @@ struct SkipFieldCfg {
     #[config(skip_fingerprint)]
     debug_label: String,
 }
-
-nebula_schema::impl_empty_has_schema!(SkipFieldCfg);
 
 #[test]
 fn skip_fingerprint_field_ignored_in_hash() {
@@ -163,13 +231,11 @@ fn validate_url_cfg(cfg: &UrlCfg) -> Result<(), nebula_resource::Error> {
     }
 }
 
-#[derive(Clone, ResourceConfig)]
+#[derive(Clone, ResourceConfig, nebula_schema::Schema)]
 #[config(validate = validate_url_cfg, schema = external)]
 struct UrlCfg {
     url: String,
 }
-
-nebula_schema::impl_empty_has_schema!(UrlCfg);
 
 #[test]
 fn validate_hook_returns_ok_for_valid_config() {
@@ -195,7 +261,28 @@ fn validate_hook_returns_err_for_invalid_config() {
 #[config(schema = external)]
 struct TupleCfg(String, u32);
 
-nebula_schema::impl_empty_has_schema!(TupleCfg);
+// This fixture exercises tuple fingerprinting only. Positional array roots are
+// not part of RootShape, so schema admission must fail rather than claim a record.
+impl nebula_schema::HasSchema for TupleCfg {
+    fn schema() -> Result<nebula_schema::ValidSchema, nebula_schema::ValidationReport> {
+        Err(
+            nebula_schema::ValidationError::builder("schema.unsupported_tuple_root")
+                .message("positional tuple configuration has no supported root schema")
+                .build()
+                .into(),
+        )
+    }
+}
+
+#[test]
+fn tuple_config_does_not_publish_an_incorrect_record_schema() {
+    let report = nebula_schema::schema_of::<TupleCfg>().unwrap_err();
+    assert!(
+        report
+            .errors()
+            .any(|error| error.code() == "schema.unsupported_tuple_root")
+    );
+}
 
 #[test]
 fn tuple_struct_identical_instances_equal_fingerprint() {

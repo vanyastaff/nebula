@@ -1,11 +1,12 @@
-use std::{future::Future, pin::Pin};
+use std::sync::OnceLock;
 
 use nebula_action::{
-    ActionContext, ActionError, ActionFactory, ActionHandle, ActionKind, ActionMetadata,
+    Action, ActionContext, ActionError, ActionFactory, ActionMetadataDraft, ActionResult,
+    InstanceFactory, StatelessAction,
 };
 use nebula_core::{ActionKey, ArtifactSetDigest, Dependencies, OrgId, WorkspaceId, node_key};
 use nebula_plugin::{Plugin, PluginManifest, PluginRegistry, ResolvedPlugin};
-use nebula_schema::ValidSchema;
+use nebula_schema::{HasSchema, ValidSchema};
 use nebula_storage::{
     InMemoryControlQueue, InMemoryExecutionStore, InMemoryWorkflowStore,
     InMemoryWorkflowVersionStore, inmem::InMemoryStartAcceptanceStore,
@@ -140,23 +141,43 @@ impl StartAcceptanceStore for FaultStartStore {
 }
 use crate::{PlanFlavorRevisionInstaller, WorkflowActivationService};
 
-struct FixtureFactory {
-    metadata: ActionMetadata,
-    dependencies: Dependencies,
+#[derive(serde::Deserialize, serde::Serialize)]
+struct EmptyContract;
+
+impl HasSchema for EmptyContract {
+    fn schema() -> Result<ValidSchema, nebula_schema::ValidationReport> {
+        Ok(ValidSchema::empty())
+    }
 }
-impl ActionFactory for FixtureFactory {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.metadata
+
+struct FixtureAction;
+
+impl Action for FixtureAction {
+    type Input = EmptyContract;
+    type Output = EmptyContract;
+
+    fn metadata() -> ActionMetadataDraft {
+        ActionMetadataDraft::new(
+            ActionKey::new("start.run").unwrap(),
+            nebula_action::metadata_name!("Run"),
+            "start fixture",
+        )
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
-    fn dependencies(&self) -> &Dependencies {
-        &self.dependencies
+
+    fn dependencies() -> &'static Dependencies {
+        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
+        DEPENDENCIES.get_or_init(Dependencies::new)
     }
-    fn instantiate<'a>(
-        &'a self,
-        _: &'a NodeDefinition,
-        _: &'a dyn ActionContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
-        Box::pin(async { panic!("start admission must never instantiate an action") })
+}
+
+impl StatelessAction for FixtureAction {
+    async fn execute(
+        &self,
+        input: EmptyContract,
+        _context: &(impl ActionContext + ?Sized),
+    ) -> Result<ActionResult<EmptyContract>, ActionError> {
+        Ok(ActionResult::success(input))
     }
 }
 #[derive(Debug)]
@@ -168,18 +189,10 @@ impl Plugin for FixturePlugin {
         &self.manifest
     }
     fn actions(&self) -> Vec<Arc<dyn ActionFactory>> {
-        vec![Arc::new(FixtureFactory {
-            metadata: ActionMetadata::new(
-                ActionKey::new("start.run").unwrap(),
-                "Run",
-                "start fixture",
-            )
-            .with_kind(ActionKind::Stateless)
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
-            .with_schema(ValidSchema::empty())
-            .with_output_schema(ValidSchema::empty()),
-            dependencies: Dependencies::new(),
-        })]
+        vec![Arc::new(
+            InstanceFactory::new(FixtureAction::metadata(), FixtureAction)
+                .expect("start fixture admits"),
+        )]
     }
 }
 fn frozen() -> Arc<FrozenPluginRegistry> {

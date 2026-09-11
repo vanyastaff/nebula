@@ -26,6 +26,7 @@ use super::{
 /// This struct holds rarely-used fields that are lazily allocated.
 #[derive(Debug, Clone, PartialEq)]
 struct ErrorExtras {
+    kind: ValidationErrorKind,
     /// Parameters for the error message template.
     /// SmallVec optimizes for 0-2 params inline (covers ~95% of cases).
     params: SmallVec<[(Cow<'static, str>, Cow<'static, str>); 2]>,
@@ -43,12 +44,25 @@ struct ErrorExtras {
 impl Default for ErrorExtras {
     fn default() -> Self {
         Self {
+            kind: ValidationErrorKind::Violation,
             params: SmallVec::new(),
             nested: Vec::new(),
             severity: ErrorSeverity::Error,
             help: None,
         }
     }
+}
+
+/// Whether a diagnostic describes rejected input or an evaluation failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ValidationErrorKind {
+    /// The input does not satisfy an executable rule.
+    Violation,
+    /// The rule is not valid for the requested operation.
+    InvalidRule,
+    /// Evaluation needs context or an evaluator that is unavailable.
+    Unavailable,
 }
 
 // ============================================================================
@@ -122,6 +136,34 @@ pub struct ValidationError {
 }
 
 impl ValidationError {
+    /// Classifies this diagnostic for logical rule composition.
+    #[must_use]
+    pub fn kind(&self) -> ValidationErrorKind {
+        let own = self
+            .extras
+            .as_ref()
+            .map_or(ValidationErrorKind::Violation, |extras| extras.kind);
+        if own != ValidationErrorKind::Violation {
+            return own;
+        }
+        self.nested()
+            .iter()
+            .map(Self::kind)
+            .find(|kind| *kind != ValidationErrorKind::Violation)
+            .unwrap_or(ValidationErrorKind::Violation)
+    }
+
+    pub(crate) fn invalid_rule(message: &'static str) -> Self {
+        let mut error = Self::new("invalid_rule", message);
+        error.extras_mut().kind = ValidationErrorKind::InvalidRule;
+        error
+    }
+
+    pub(crate) fn unavailable(message: &'static str) -> Self {
+        let mut error = Self::new("evaluation_unavailable", message);
+        error.extras_mut().kind = ValidationErrorKind::Unavailable;
+        error
+    }
     /// Creates a new validation error with a code and message.
     ///
     /// # Examples
@@ -331,6 +373,7 @@ impl ValidationError {
 
         json!({
             "code": self.code,
+            "kind": self.kind(),
             "message": self.message,
             "field": self.field,
             "pointer": self.field_pointer(),
@@ -359,7 +402,7 @@ impl ValidationError {
 /// no `{` at all.
 ///
 /// Crate-visible so `rule::Rule::validate` can eagerly render the user
-/// template stored in `Rule::Described` against the inner error's params.
+/// template stored by a described rule against the inner error's params.
 pub(crate) fn render_template<'a>(
     template: &'a str,
     params: &[(Cow<'static, str>, Cow<'static, str>)],

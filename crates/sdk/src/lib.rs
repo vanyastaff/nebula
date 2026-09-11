@@ -1,7 +1,7 @@
 //! # nebula-sdk — Integration Author SDK
 //!
 //! Single-crate façade for writing Nebula integrations. External one-dependency
-//! contracts cover `WorkflowBuilder`, `ActionBuilder`, credential `TestResult`,
+//! contracts cover draft-based action authoring, `WorkflowBuilder`, credential `TestResult`,
 //! and representative Action, Credential, Plugin, Resource, Schema, and
 //! Validator derives; other manual/prelude workflows require focused proofs.
 //!
@@ -16,23 +16,26 @@
 //! ```rust,no_run
 //! use nebula_sdk::prelude::*;
 //!
-//! let metadata = ActionBuilder::new(action_key!("example.greet"), "Greet")
-//!.with_description("A simple greeting action")
-//!.build();
+//! let metadata = ActionMetadataDraft::new(
+//!     action_key!("example.greet"),
+//!     metadata_name!("Greet"),
+//!     "A simple greeting action",
+//! );
 //!
 //! let workflow = WorkflowBuilder::new("example_workflow")
 //!.add_node("greet", "core", "example_greet")
 //!.build();
 //!
-//! assert_eq!(metadata.base.name, "Greet");
+//! let _: ActionMetadataDraft = metadata;
 //! assert!(workflow.is_ok());
+//! # Ok::<(), nebula_sdk::Error>(())
 //! ```
 //!
 //! ## Modules
 //!
 //! - `prelude` — one-stop import for common types and traits.
 //! - `integration` — curated contracts for integration authors.
-//! - `action` — `ActionBuilder` for programmatic action metadata.
+//! - `action` — draft metadata and typed action authoring contracts.
 //! - `workflow` — `WorkflowBuilder` for programmatic workflow construction.
 //! - `runtime` — `TestRuntime`, `RunReport` — in-process test harness.
 //! - `testing` (feature `testing`) — test helpers and fixtures.
@@ -60,6 +63,8 @@ pub use thiserror;
 #[cfg(feature = "testing")]
 pub use tokio;
 
+mod resource_contribution;
+
 /// Macro implementation paths. This is public only because exported macros
 /// expand in downstream crates; it is hidden from documentation and is not a
 /// supported integration persona.
@@ -69,8 +74,8 @@ pub mod __private {
     #[doc(hidden)]
     pub mod action {
         pub use nebula_action::{
-            Action, ActionContext, ActionContextExt, ActionError, ActionMetadata, ActionResult,
-            FromWorkflowNode, StatelessAction,
+            Action, ActionContext, ActionContextExt, ActionError, ActionMetadataDraft,
+            ActionResult, FromWorkflowNode, MetadataVersion, StatelessAction, metadata_name,
         };
     }
 
@@ -97,9 +102,9 @@ pub mod __private {
     #[doc(hidden)]
     pub mod credential {
         pub use nebula_credential::{
-            AuthScheme, Credential, CredentialGuard, CredentialLifecycle, CredentialMetadata,
+            AuthScheme, Credential, CredentialGuard, CredentialLifecycle, CredentialMetadataDraft,
             CredentialPolicy, CredentialState, Dynamic, Interactive, RefreshStrategy, Refreshable,
-            Revocable, RevokeStrategy, Testable, credential_key, schema_of,
+            Revocable, RevokeStrategy, Testable, credential_key, metadata_name, schema_of,
         };
 
         pub mod contract {
@@ -120,13 +125,14 @@ pub mod __private {
     /// Resource contracts referenced by generated implementations.
     #[doc(hidden)]
     pub mod resource {
-        pub use nebula_resource::{
-            Error, HasCredentialSlots, Manager, ResourceConfig, ResourceFactory, ResourceMetadata,
-            SlotIdentity,
-        };
+        pub use nebula_resource::{Error, HasCredentialSlots, ResourceConfig};
 
-        pub mod factory {
-            pub use nebula_resource::factory::{BoxFut, KindActivator, RegisterRequest};
+        /// Opaque resource contribution contracts used by SDK-only derives.
+        #[doc(hidden)]
+        pub mod contribution {
+            pub use crate::resource_contribution::{
+                ResourceContribution, ResourceContributionBridge,
+            };
         }
 
         #[expect(
@@ -138,7 +144,7 @@ pub mod __private {
         }
 
         pub mod topology {
-            pub use nebula_resource::topology::{Pooled, Resident};
+            pub use nebula_resource::topology::{Pooled, Resident, Topology};
 
             pub mod pooled {
                 pub mod config {
@@ -157,10 +163,10 @@ pub mod __private {
     /// Schema contracts referenced by generated implementations.
     #[doc(hidden)]
     pub mod schema {
-        pub use nebula_schema::value::FieldValues;
         pub use nebula_schema::{
-            ExpressionMode, Field, FieldKey, HasSchema, HasSelectOptions, InputHint, Rule, Schema,
-            SelectOption, SerdeTagging, StringWidget, ValidSchema,
+            AuthoredValue, ExpressionMode, Field, FieldKey, HasSchema, HasSelectOptions, InputHint,
+            RootShape, Rule, ScalarSchema, Schema, SelectOption, SerdeTagging, StringWidget,
+            ValidSchema, ValidationError, ValidationReport,
         };
 
         pub mod error {
@@ -271,32 +277,80 @@ impl Error {
 /// ```
 pub use serde_json::json;
 
-/// Helper macro for creating parameter collections.
+/// Author a JSON root or named parameters with explicit data or template intent.
+///
+/// `data;` keeps every string and expression-shaped object as data. `template;`
+/// opts into [`AuthoredValue::from_template_json`](prelude::AuthoredValue::from_template_json)
+/// shorthand. Both forms return `Result<AuthoredValue, ValidationError>`; neither
+/// validates a schema or produces a resolved runtime proof.
+/// A single value after the semicolon authors that root; `key => value` pairs
+/// author an object. With no values, the result is an empty object, not null.
+///
+/// # Errors
+/// Returns a tree construction error, including excessive nesting.
+///
+/// # Panics
+/// Like [`json!`], panics if a value's `Serialize` implementation fails or contains
+/// a map with non-string keys. Object keys must convert to strings.
 ///
 /// # Examples
 ///
 /// ```
 /// use nebula_sdk::params;
 ///
-/// let values = params! {
+/// let values = params! { data;
 ///     "name" => "test",
 ///     "count" => 42,
-/// };
-/// assert_eq!(values.len(), 2);
+/// }?;
+/// assert_eq!(values.get("name").and_then(|value| value.as_str()), Some("test"));
+/// # Ok::<(), nebula_sdk::prelude::ValidationError>(())
+/// ```
+///
+/// ```
+/// use nebula_sdk::prelude::*;
+/// let values = params! { template; "name" => "{{ $input.name }}" }?;
+/// std::assert_matches!(values.get("name"), Some(AuthoredValue::Expression(_)));
+/// # Ok::<(), ValidationError>(())
+/// ```
+///
+/// Unit and scalar inputs retain their JSON root shape:
+///
+/// ```
+/// use nebula_sdk::prelude::*;
+/// let schema = schema_of::<u8>()?;
+/// let resolved = schema.validate(params! { data; 42_u8 }?)?.resolve_data()?;
+/// assert_eq!(resolved.into_typed::<u8>()?, 42);
+/// assert_eq!(params! { data; () }?.as_literal(), Some(&Value::Null));
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+///
+/// Authoring intent cannot be omitted:
+///
+/// ```compile_fail
+/// nebula_sdk::params! { "name" => "{{ $input.name }}" };
 /// ```
 #[macro_export]
 macro_rules! params {
-    ($($key:expr => $value:expr),* $(,)?) => {{
-        use $crate::__private::schema::FieldValues;
-        use $crate::serde_json::json;
-
-        let mut values = FieldValues::new();
-        $(
-            values.try_set_raw($key, json!($value))
-                .expect("params! macro: invalid FieldKey or nested key");
-        )*
-        values
-    }};
+    (data; $($key:expr => $value:expr),* $(,)?) => {
+        $crate::__private::schema::AuthoredValue::from_data(
+            $crate::serde_json::json!({ $(($key): $value),* })
+        )
+    };
+    (template; $($key:expr => $value:expr),* $(,)?) => {
+        $crate::__private::schema::AuthoredValue::from_template_json(
+            $crate::serde_json::json!({ $(($key): $value),* })
+        )
+    };
+    (data; $value:expr $(,)?) => {
+        $crate::__private::schema::AuthoredValue::from_data(
+            $crate::serde_json::json!($value)
+        )
+    };
+    (template; $value:expr $(,)?) => {
+        $crate::__private::schema::AuthoredValue::from_template_json(
+            $crate::serde_json::json!($value)
+        )
+    };
 }
 
 /// Macro for defining a workflow.
@@ -350,15 +404,15 @@ macro_rules! workflow {
 
 /// Macro for defining a simple stateless action with a unit struct.
 ///
-/// Generates a unit `struct $name`, implements [`Action`](nebula_action::Action)
-/// (with static metadata + schemas + slot-binding [`Dependencies`](nebula_core::Dependencies)),
+/// Generates a unit `struct $name`, implements [`Action`](prelude::Action)
+/// with draft metadata and slot-binding [`Dependencies`](prelude::Dependencies),
 /// and implements
-/// [`StatelessAction`](nebula_action::StatelessAction) over the supplied
+/// [`StatelessAction`](prelude::StatelessAction) over the supplied
 /// `input` / `output` types.
 ///
 /// # Requirements
 ///
-/// `Input` and `Output` must implement [`HasSchema`](nebula_schema::HasSchema).
+/// `Input` and `Output` must implement [`HasSchema`](prelude::HasSchema).
 ///
 /// # Examples
 ///
@@ -370,18 +424,18 @@ macro_rules! workflow {
 /// simple_action! {
 ///     name: GreetAction,
 ///     key: "demo.greet",
-///     input: serde_json::Value,
-///     output: serde_json::Value,
+///     input: Value,
+///     output: Value,
 ///     async fn execute(&self, input, _ctx) {
 ///         let name = input.get("name").and_then(|v| v.as_str()).unwrap_or("world");
-///         Ok(ActionResult::success(serde_json::json!({
+///         Ok(ActionResult::success(json!({
 ///             "message": format!("Hello, {name}!"),
 ///         })))
 ///     }
 /// }
 ///
-/// // The generated type carries static metadata; `execute` runs under an engine.
-/// assert_eq!(<GreetAction as Action>::metadata().base.name, "GreetAction");
+/// // The generated type carries author-owned draft metadata; admission is runtime-owned.
+/// let _: ActionMetadataDraft = <GreetAction as Action>::metadata();
 /// ```
 #[macro_export]
 macro_rules! simple_action {
@@ -398,11 +452,11 @@ macro_rules! simple_action {
             type Input = $input;
             type Output = $output;
 
-            fn metadata() -> $crate::__private::action::ActionMetadata {
-                $crate::__private::action::ActionMetadata::for_action::<$name>(
+            fn metadata() -> $crate::__private::action::ActionMetadataDraft {
+                $crate::__private::action::ActionMetadataDraft::new(
                     $crate::__private::core::action_key!($key),
+                    $crate::__private::action::metadata_name!(stringify!($name)),
                     stringify!($name),
-                    "",
                 )
             }
 

@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use nebula_action::ActionFactory;
 use nebula_action::factory::{GenericControlFactory, GenericStatelessFactory};
-use nebula_metadata::{ManifestError, PluginManifest};
-use nebula_plugin::Plugin;
+use nebula_metadata::PluginManifest;
+use nebula_plugin::{Plugin, PluginError};
 
 use crate::actions::{
     Aggregate, ArrayAction, CoreDelay, CoreIf, CoreSwitch, DateTimeAction, Dedupe, Filter,
@@ -32,9 +32,19 @@ use crate::actions::{
 /// assert!(plugin.action(&ActionKey::new("core.aggregate")?).is_some());
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-#[derive(Debug)]
 pub struct CorePlugin {
     manifest: PluginManifest,
+    actions: Box<[Arc<dyn ActionFactory>]>,
+}
+
+impl core::fmt::Debug for CorePlugin {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("CorePlugin")
+            .field("manifest", &self.manifest)
+            .field("action_count", &self.actions.len())
+            .finish()
+    }
 }
 
 impl CorePlugin {
@@ -44,11 +54,26 @@ impl CorePlugin {
     /// For the built-in `core` plugin this should never fail in practice;
     /// the fallible return is required because `PluginManifest::builder().build()`
     /// validates and normalizes the key at construction time.
-    pub fn try_new() -> Result<Self, ManifestError> {
+    pub fn try_new() -> Result<Self, PluginError> {
         let manifest = PluginManifest::builder("core", "Core")
+            .version(semver::Version::new(2, 0, 0))
             .description("Built-in utility actions available in every Nebula deployment")
             .build()?;
-        Ok(Self { manifest })
+        let actions: Box<[Arc<dyn ActionFactory>]> = Box::new([
+            Arc::new(GenericStatelessFactory::<Aggregate>::new()?),
+            Arc::new(GenericStatelessFactory::<ArrayAction>::new()?),
+            Arc::new(GenericStatelessFactory::<SetFields>::new()?),
+            Arc::new(GenericStatelessFactory::<JsonTransform>::new()?),
+            Arc::new(GenericStatelessFactory::<DateTimeAction>::new()?),
+            Arc::new(GenericStatelessFactory::<CoreDelay>::new()?),
+            Arc::new(GenericStatelessFactory::<Dedupe>::new()?),
+            Arc::new(GenericStatelessFactory::<Filter>::new()?),
+            Arc::new(GenericStatelessFactory::<MapAction>::new()?),
+            Arc::new(GenericStatelessFactory::<Sort>::new()?),
+            Arc::new(GenericControlFactory::<CoreIf>::new()?),
+            Arc::new(GenericControlFactory::<CoreSwitch>::new()?),
+        ]);
+        Ok(Self { manifest, actions })
     }
 }
 
@@ -58,20 +83,7 @@ impl Plugin for CorePlugin {
     }
 
     fn actions(&self) -> Vec<Arc<dyn ActionFactory>> {
-        vec![
-            Arc::new(GenericStatelessFactory::<Aggregate>::new()),
-            Arc::new(GenericStatelessFactory::<ArrayAction>::new()),
-            Arc::new(GenericStatelessFactory::<SetFields>::new()),
-            Arc::new(GenericStatelessFactory::<JsonTransform>::new()),
-            Arc::new(GenericStatelessFactory::<DateTimeAction>::new()),
-            Arc::new(GenericStatelessFactory::<CoreDelay>::new()),
-            Arc::new(GenericStatelessFactory::<Dedupe>::new()),
-            Arc::new(GenericStatelessFactory::<Filter>::new()),
-            Arc::new(GenericStatelessFactory::<MapAction>::new()),
-            Arc::new(GenericStatelessFactory::<Sort>::new()),
-            Arc::new(GenericControlFactory::<CoreIf>::new()),
-            Arc::new(GenericControlFactory::<CoreSwitch>::new()),
-        ]
+        self.actions.to_vec()
     }
 }
 
@@ -126,7 +138,7 @@ mod tests {
             .action(&key)
             .expect("core.array must be registered");
         assert_eq!(
-            factory.metadata().kind,
+            factory.metadata().kind(),
             ActionKind::Stateless,
             "core.array must be stamped ActionKind::Stateless"
         );
@@ -195,12 +207,12 @@ mod tests {
             .action(&key)
             .expect("core.delay must be registered");
         assert_eq!(
-            factory.metadata().kind,
+            factory.metadata().kind(),
             ActionKind::Stateless,
             "core.delay must be stamped ActionKind::Stateless"
         );
         assert_eq!(
-            factory.metadata().base.schema.kind(),
+            factory.metadata().base().schema().kind(),
             nebula_schema::SchemaKind::Record,
             "core.delay must expose its typed conditional input contract"
         );

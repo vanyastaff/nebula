@@ -10,7 +10,7 @@
 )]
 
 use nebula_schema::{
-    EvalFuture, ExpressionAst, ExpressionContext, Field, FieldValues, Schema, field_key,
+    AuthoredValue, CompiledProgram, EvalFuture, ExpressionContext, Field, Schema, field_key,
 };
 use serde_json::json;
 
@@ -18,7 +18,7 @@ use serde_json::json;
 struct ConstJson(serde_json::Value);
 
 impl ExpressionContext for ConstJson {
-    fn evaluate<'a>(&'a self, _ast: &'a ExpressionAst) -> EvalFuture<'a> {
+    fn evaluate<'a>(&'a self, _program: &'a CompiledProgram) -> EvalFuture<'a> {
         Box::pin(async move { Ok(self.0.clone()) })
     }
 }
@@ -32,13 +32,13 @@ async fn main() {
         .expect("lint");
 
     // Literal + expression wire for `n`.
-    let values = FieldValues::from_json(json!({
+    let values = AuthoredValue::from_template_json(json!({
         "enabled": true,
         "n": {"$expr": "{{ cost }}"},
     }))
-    .expect("strict keys");
+    .expect("authored input");
 
-    let valid = schema.validate(&values).expect("validate");
+    let valid = schema.validate(values).expect("validate");
     let ctx = ConstJson(json!(42.0));
     let resolved = valid.resolve(&ctx).await.expect("resolve");
 

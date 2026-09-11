@@ -5,7 +5,7 @@
 //! forget to branch on. `resolve_field_policies` is the single entry
 //! point `nebula-schema`'s `validate` uses.
 
-use crate::foundation::{FieldPath, ValidationError, ValidationErrors};
+use crate::foundation::{FieldPath, ValidationError, ValidationErrorKind, ValidationErrors};
 use crate::rule::{PredicateContext, Rule};
 
 /// Whether a field participates in this validation round.
@@ -14,8 +14,10 @@ use crate::rule::{PredicateContext, Rule};
 pub enum Presence {
     /// Field is visible; its value rules must run.
     Active,
-    /// Field is hidden; its value rules MUST be skipped.
+    /// Field is hidden; the directive still requires checks for supplied values.
     Skipped,
+    /// Visibility depends on unresolved context values.
+    Pending,
 }
 
 /// Resolved required-ness for a field in this round.
@@ -26,6 +28,8 @@ pub enum Requiredness {
     Required,
     /// Absence is allowed.
     Optional,
+    /// Requiredness depends on unresolved context values.
+    Pending,
 }
 
 /// A field's visibility policy, borrowed from the schema's serde enum.
@@ -54,43 +58,47 @@ pub enum RequiredPolicy<'a> {
 
 impl VisibilityPolicy<'_> {
     /// The only way to turn a visibility policy into a decision.
-    #[must_use]
-    pub fn resolve(&self, ctx: &PredicateContext) -> Presence {
-        match self {
+    ///
+    /// # Errors
+    /// Returns an invalid-rule diagnostic for a non-predicate condition.
+    pub fn resolve(&self, ctx: &PredicateContext) -> Result<Presence, ValidationError> {
+        Ok(match self {
             Self::Always => Presence::Active,
             Self::Never => Presence::Skipped,
-            Self::When(r) => {
-                if r.matches(ctx) {
-                    Presence::Active
-                } else {
-                    Presence::Skipped
-                }
+            Self::When(r) => match r.matches(ctx) {
+                Ok(true) => Presence::Active,
+                Ok(false) => Presence::Skipped,
+                Err(error) if error.kind() == ValidationErrorKind::Unavailable => Presence::Pending,
+                Err(error) => return Err(error),
             },
-        }
+        })
     }
 }
 
 impl RequiredPolicy<'_> {
     /// The only way to turn a required policy into a decision.
-    #[must_use]
-    pub fn resolve(&self, ctx: &PredicateContext) -> Requiredness {
-        match self {
+    ///
+    /// # Errors
+    /// Returns an invalid-rule diagnostic for a non-predicate condition.
+    pub fn resolve(&self, ctx: &PredicateContext) -> Result<Requiredness, ValidationError> {
+        Ok(match self {
             Self::Optional => Requiredness::Optional,
             Self::Always => Requiredness::Required,
-            Self::When(r) => {
-                if r.matches(ctx) {
-                    Requiredness::Required
-                } else {
-                    Requiredness::Optional
-                }
+            Self::When(r) => match r.matches(ctx) {
+                Ok(true) => Requiredness::Required,
+                Ok(false) => Requiredness::Optional,
+                Err(error) if error.kind() == ValidationErrorKind::Unavailable => {
+                    Requiredness::Pending
+                },
+                Err(error) => return Err(error),
             },
-        }
+        })
     }
 }
 
 /// The single action the caller must take for a field this round.
 ///
-/// A ternary verdict computed once by [`resolve_field_policies`] so the caller
+/// A verdict computed once by [`resolve_field_policies`] so the caller
 /// is a dumb dispatcher with no policy logic of its own:
 ///
 /// - [`Skip`](FieldDirective::Skip): the field is hidden *and* carries no raw
@@ -104,6 +112,9 @@ impl RequiredPolicy<'_> {
 ///   carries a present (non-absent) value must still be validated — e.g. an
 ///   expression smuggled into a no-payload mode-variant placeholder must not
 ///   escape unchecked.
+/// - [`Deferred`](FieldDirective::Deferred): record a policy obligation and
+///   still run structural / value validation for any supplied literal. No
+///   `required` error is emitted until the policy dependencies are resolved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum FieldDirective {
@@ -114,6 +125,8 @@ pub enum FieldDirective {
     RequiredAbsent,
     /// Run structural / value validation (reachable while hidden).
     Validate,
+    /// Record a policy obligation and still validate any supplied literal value.
+    Deferred,
 }
 
 /// Per-field policy declaration the schema hands to the validator.
@@ -207,6 +220,8 @@ pub struct FieldPolicyResolution<'a, P> {
 /// visible *or* its key is syntactically present (the hidden-but-present
 /// carve-out). A hidden field whose key was never supplied produces no
 /// `required` failure — a hidden field cannot be required.
+/// Pending visibility or requiredness produces `Deferred` with no early
+/// required failure; callers retain the obligation and validate present literals.
 ///
 /// INVARIANT: exactly one [`FieldPlan`] is emitted per input decl. Cross-wiring
 /// is now type-enforced — each plan carries the opaque `payload` minted for
@@ -214,11 +229,15 @@ pub struct FieldPolicyResolution<'a, P> {
 /// desync by reordering. The residual risk is **omission**: callers MUST NOT
 /// filter, dedupe, or reorder-drop `plans`. A dropped plan is a field that is
 /// silently never validated.
-#[must_use]
+///
+/// # Errors
+/// Returns diagnostics when a condition contains an invalid rule kind; no
+/// partial plan collection is returned in that case.
+#[tracing::instrument(level = "debug", skip_all, fields(context_fields = ctx.len()))]
 pub fn resolve_field_policies<'a, P, I>(
     decls: I,
     ctx: &PredicateContext,
-) -> FieldPolicyResolution<'a, P>
+) -> Result<FieldPolicyResolution<'a, P>, ValidationErrors>
 where
     I: IntoIterator<Item = FieldPolicyDecl<'a, P>>,
 {
@@ -227,27 +246,40 @@ where
         required_failures: ValidationErrors::default(),
     };
     for d in decls {
-        let presence = d.visibility.resolve(ctx);
-        let requiredness = d.required.resolve(ctx);
+        let presence = d.visibility.resolve(ctx).map_err(|error| {
+            std::iter::once(error.with_field_path(d.path.clone())).collect::<ValidationErrors>()
+        })?;
+        let requiredness = d.required.resolve(ctx).map_err(|error| {
+            std::iter::once(error.with_field_path(d.path.clone())).collect::<ValidationErrors>()
+        })?;
         let active = presence == Presence::Active;
+        let pending = presence == Presence::Pending || requiredness == Requiredness::Pending;
         let required_absent = requiredness == Requiredness::Required && !d.value_present;
 
         // Sole emitter: one `required` for a required-and-absent field that is
         // visible OR syntactically present (hidden-but-present carve-out).
-        if required_absent && (active || d.raw_present) {
+        if !pending && required_absent && (active || d.raw_present) {
             out.required_failures.add(
                 ValidationError::new("required", "field is required")
                     .with_field_path(d.path.clone()),
             );
         }
 
-        let directive = if !active && !d.raw_present {
+        let directive = if pending {
+            FieldDirective::Deferred
+        } else if !active && !d.raw_present {
             FieldDirective::Skip
         } else if required_absent {
             FieldDirective::RequiredAbsent
         } else {
             FieldDirective::Validate
         };
+        tracing::debug!(
+            ?presence,
+            ?requiredness,
+            ?directive,
+            "field policy resolved"
+        );
 
         out.plans.push(FieldPlan {
             path: d.path,
@@ -257,7 +289,7 @@ where
             payload: d.payload,
         });
     }
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -283,12 +315,19 @@ mod tests {
     #[test]
     fn visibility_policy_resolves_to_presence() {
         use crate::rule::{context::PredicateContext, predicate::Predicate};
-        let ctx = PredicateContext::from_json(&serde_json::json!({"enabled": true}));
-        assert_eq!(VisibilityPolicy::Always.resolve(&ctx), Presence::Active);
-        assert_eq!(VisibilityPolicy::Never.resolve(&ctx), Presence::Skipped);
-        let rule = Rule::Predicate(Predicate::IsTrue(FieldPath::parse("enabled").unwrap()));
+        let ctx = PredicateContext::from_json(serde_json::json!({"enabled": true}));
         assert_eq!(
-            VisibilityPolicy::When(&rule).resolve(&ctx),
+            VisibilityPolicy::Always.resolve(&ctx).unwrap(),
+            Presence::Active
+        );
+        assert_eq!(
+            VisibilityPolicy::Never.resolve(&ctx).unwrap(),
+            Presence::Skipped
+        );
+        let rule =
+            Rule::predicate(Predicate::IsTrue(FieldPath::parse("enabled").unwrap())).unwrap();
+        assert_eq!(
+            VisibilityPolicy::When(&rule).resolve(&ctx).unwrap(),
             Presence::Active
         );
     }
@@ -296,18 +335,22 @@ mod tests {
     #[test]
     fn required_policy_resolves_to_requiredness() {
         use crate::rule::{context::PredicateContext, predicate::Predicate};
-        let ctx = PredicateContext::from_json(&serde_json::json!({"mode": "oauth"}));
+        let ctx = PredicateContext::from_json(serde_json::json!({"mode": "oauth"}));
         assert_eq!(
-            RequiredPolicy::Optional.resolve(&ctx),
+            RequiredPolicy::Optional.resolve(&ctx).unwrap(),
             Requiredness::Optional
         );
-        assert_eq!(RequiredPolicy::Always.resolve(&ctx), Requiredness::Required);
-        let rule = Rule::Predicate(Predicate::Eq(
+        assert_eq!(
+            RequiredPolicy::Always.resolve(&ctx).unwrap(),
+            Requiredness::Required
+        );
+        let rule = Rule::predicate(Predicate::Eq(
             FieldPath::parse("mode").unwrap(),
             serde_json::json!("oauth"),
-        ));
+        ))
+        .unwrap();
         assert_eq!(
-            RequiredPolicy::When(&rule).resolve(&ctx),
+            RequiredPolicy::When(&rule).resolve(&ctx).unwrap(),
             Requiredness::Required
         );
     }
@@ -315,14 +358,15 @@ mod tests {
     #[test]
     fn resolve_field_policies_plans_and_required_failures() {
         use crate::rule::{context::PredicateContext, predicate::Predicate};
-        let ctx = PredicateContext::from_json(&serde_json::json!({"mode": "oauth"}));
+        let ctx = PredicateContext::from_json(serde_json::json!({"mode": "oauth"}));
 
         let visible_path = FieldPath::parse("client_id").unwrap();
         let hidden_path = FieldPath::parse("legacy").unwrap();
-        let req_rule = Rule::Predicate(Predicate::Eq(
+        let req_rule = Rule::predicate(Predicate::Eq(
             FieldPath::parse("mode").unwrap(),
             serde_json::json!("oauth"),
-        ));
+        ))
+        .unwrap();
 
         let decls = vec![
             FieldPolicyDecl {
@@ -343,7 +387,7 @@ mod tests {
             },
         ];
 
-        let res = resolve_field_policies(decls, &ctx);
+        let res = resolve_field_policies(decls, &ctx).unwrap();
 
         assert_eq!(res.plans.len(), 2);
         let visible_plan = res.plans.iter().find(|p| p.path == &visible_path).unwrap();
@@ -362,7 +406,7 @@ mod tests {
     #[test]
     fn payload_is_threaded_one_to_one_into_plans() {
         use crate::rule::context::PredicateContext;
-        let ctx = PredicateContext::from_json(&serde_json::json!({}));
+        let ctx = PredicateContext::from_json(serde_json::json!({}));
         let p0 = FieldPath::parse("a").unwrap();
         let p1 = FieldPath::parse("b").unwrap();
         let decls = vec![
@@ -383,7 +427,7 @@ mod tests {
                 "B",
             ),
         ];
-        let res = resolve_field_policies(decls, &ctx);
+        let res = resolve_field_policies(decls, &ctx).unwrap();
         assert_eq!(res.plans.len(), 2);
         assert_eq!(res.plans[0].payload, "A");
         assert_eq!(res.plans[1].payload, "B");
@@ -397,7 +441,7 @@ mod tests {
         // now the sole emitter — exactly one `required`, directive
         // `RequiredAbsent` (value rules short-circuited, but the field is NOT
         // skipped because its raw value is present).
-        let ctx = PredicateContext::from_json(&serde_json::json!({}));
+        let ctx = PredicateContext::from_json(serde_json::json!({}));
         let path = FieldPath::parse("secret_slot").unwrap();
         let decls = vec![FieldPolicyDecl::new(
             &path,
@@ -407,7 +451,7 @@ mod tests {
             true,  // raw_present = true (the key syntactically exists)
             (),
         )];
-        let res = resolve_field_policies(decls, &ctx);
+        let res = resolve_field_policies(decls, &ctx).unwrap();
 
         assert_eq!(res.plans.len(), 1);
         assert_eq!(res.plans[0].presence, Presence::Skipped);
@@ -424,7 +468,7 @@ mod tests {
         use crate::rule::context::PredicateContext;
         // Hidden + required + no raw value at all: a hidden field cannot be
         // required → no `required` failure, directive `Skip` (no value rules).
-        let ctx = PredicateContext::from_json(&serde_json::json!({}));
+        let ctx = PredicateContext::from_json(serde_json::json!({}));
         let path = FieldPath::parse("legacy").unwrap();
         let decls = vec![FieldPolicyDecl::new(
             &path,
@@ -434,7 +478,7 @@ mod tests {
             false, // raw_present = false (key not supplied at all)
             (),
         )];
-        let res = resolve_field_policies(decls, &ctx);
+        let res = resolve_field_policies(decls, &ctx).unwrap();
 
         assert_eq!(res.plans.len(), 1);
         assert_eq!(res.plans[0].directive, FieldDirective::Skip);
@@ -446,7 +490,7 @@ mod tests {
         use crate::rule::context::PredicateContext;
         // Visible + Always-required + absent: classic required failure.
         // Exactly one `required`, directive `RequiredAbsent`.
-        let ctx = PredicateContext::from_json(&serde_json::json!({}));
+        let ctx = PredicateContext::from_json(serde_json::json!({}));
         let path = FieldPath::parse("client_id").unwrap();
         let decls = vec![FieldPolicyDecl::new(
             &path,
@@ -456,7 +500,7 @@ mod tests {
             false, // raw_present irrelevant when active
             (),
         )];
-        let res = resolve_field_policies(decls, &ctx);
+        let res = resolve_field_policies(decls, &ctx).unwrap();
 
         assert_eq!(res.plans.len(), 1);
         assert_eq!(res.plans[0].presence, Presence::Active);
@@ -473,7 +517,7 @@ mod tests {
         // Hidden + present non-absent value (value_present = true): the field
         // is NOT skipped — a hidden field carrying a real value must still be
         // structurally validated. Directive `Validate`, no `required` failure.
-        let ctx = PredicateContext::from_json(&serde_json::json!({}));
+        let ctx = PredicateContext::from_json(serde_json::json!({}));
         let path = FieldPath::parse("auth").unwrap();
         let decls = vec![FieldPolicyDecl::new(
             &path,
@@ -483,7 +527,7 @@ mod tests {
             true, // raw_present = true
             (),
         )];
-        let res = resolve_field_policies(decls, &ctx);
+        let res = resolve_field_policies(decls, &ctx).unwrap();
 
         assert_eq!(res.plans.len(), 1);
         assert_eq!(res.plans[0].presence, Presence::Skipped);

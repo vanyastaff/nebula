@@ -488,7 +488,7 @@ mod tests {
         error::Error,
         options::AcquireOptions,
         release_queue::ReleaseQueue,
-        resource::{ResourceConfig, ResourceMetadata, TeardownCx, TeardownReason},
+        resource::{ResourceConfig, ResourceMetadataDraft, TeardownCx, TeardownReason},
         runtime::teardown::{destroy_within, teardown_deadline},
         topology::{Pooled, pooled::config::Config as PoolConfig, store::InstanceStore},
     };
@@ -497,9 +497,8 @@ mod tests {
     mod retained_tests;
 
     // A minimal pooled resource over which the framework acquire loop runs.
-    #[derive(Clone)]
+    #[derive(Clone, nebula_schema::Schema)]
     struct PoolCfg;
-    crate::impl_empty_has_schema!(PoolCfg);
     impl ResourceConfig for PoolCfg {
         fn fingerprint(&self) -> u64 {
             0
@@ -584,8 +583,8 @@ mod tests {
             Ok(())
         }
 
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::from_key(&Self::key())
+        fn metadata() -> ResourceMetadataDraft {
+            ResourceMetadataDraft::from_key(Self::key())
         }
     }
 
@@ -1085,8 +1084,8 @@ mod tests {
             Ok(())
         }
 
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::from_key(&Self::key())
+        fn metadata() -> ResourceMetadataDraft {
+            ResourceMetadataDraft::from_key(Self::key())
         }
     }
 

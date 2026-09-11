@@ -112,7 +112,8 @@ impl WorkflowEngine {
                     .registry()
                     .resolve_action(&node.action_key)
                     .ok_or(EngineError::ExactFactoryUnavailable)?;
-                if node.interface_version.as_ref() != Some(&factory.metadata().base.version) {
+                let metadata = factory.metadata();
+                if node.interface_version.as_ref() != Some(metadata.base().version()) {
                     return Err(EngineError::ExactFactoryUnavailable);
                 }
                 let effect_contract = loaded
@@ -130,7 +131,7 @@ impl WorkflowEngine {
                         return Err(EngineError::InvalidRecordedExecution);
                     },
                 };
-                if effect_contract != factory.metadata().effect_contract {
+                if &effect_contract != metadata.effect_contract() {
                     return Err(EngineError::ExactFactoryUnavailable);
                 }
                 Ok((node.id.clone(), factory))

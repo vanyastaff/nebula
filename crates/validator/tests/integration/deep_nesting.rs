@@ -5,7 +5,9 @@
 //! (`flatten`, `total_error_count`, `validate` through `All`/`Any`)
 //! must visit every level.
 
-use nebula_validator::{ExecutionMode, Rule, foundation::ValidationError, validate_rules};
+use nebula_validator::{
+    DiagnosticDisclosure, ExecutionMode, Rule, foundation::ValidationError, validate_rules,
+};
 use serde_json::json;
 
 /// Constructs a left-nested chain of `All(MinLength, All(MinLength, All(…)))`
@@ -13,7 +15,7 @@ use serde_json::json;
 fn nested_all_rule(depth: usize) -> Rule {
     let mut rule = Rule::min_length(1);
     for _ in 0..depth {
-        rule = Rule::all([Rule::min_length(1), rule]);
+        rule = Rule::all([Rule::min_length(1), rule]).unwrap();
     }
     rule
 }
@@ -35,7 +37,8 @@ fn rule_engine_validates_moderately_deep_trees() {
         validate_rules(
             &json!("x"),
             std::slice::from_ref(&rule),
-            ExecutionMode::StaticOnly
+            ExecutionMode::StaticOnly,
+            DiagnosticDisclosure::IncludeValue,
         )
         .is_ok()
     );
@@ -48,13 +51,14 @@ fn rule_engine_surfaces_failures_from_deep_trees() {
     // innermost level must still bubble out as an error.
     let mut rule = Rule::min_length(100);
     for _ in 0..20 {
-        rule = Rule::all([Rule::min_length(1), rule]);
+        rule = Rule::all([Rule::min_length(1), rule]).unwrap();
     }
 
     let result = validate_rules(
         &json!("short"),
         std::slice::from_ref(&rule),
         ExecutionMode::StaticOnly,
+        DiagnosticDisclosure::IncludeValue,
     );
     assert!(result.is_err(), "deep rule tree failed to propagate error");
 }
@@ -85,13 +89,15 @@ fn any_combinator_passes_when_deep_branch_succeeds() {
     let inner_passing = Rule::max_length(100);
     let chain = Rule::any([
         Rule::min_length(1000),
-        Rule::any([Rule::min_length(999), Rule::any([inner_passing])]),
-    ]);
+        Rule::any([Rule::min_length(999), Rule::any([inner_passing]).unwrap()]).unwrap(),
+    ])
+    .unwrap();
     assert!(
         validate_rules(
             &json!("hello"),
             std::slice::from_ref(&chain),
-            ExecutionMode::StaticOnly
+            ExecutionMode::StaticOnly,
+            DiagnosticDisclosure::IncludeValue,
         )
         .is_ok()
     );

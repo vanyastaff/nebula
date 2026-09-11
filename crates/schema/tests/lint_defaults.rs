@@ -14,7 +14,7 @@ fn build(fields: impl IntoIterator<Item = Field>) -> Result<ValidSchema, Validat
 fn has_type_mismatch(fields: impl IntoIterator<Item = Field>) -> bool {
     match build(fields) {
         Ok(_) => false,
-        Err(report) => report.errors().any(|e| e.code == "default.type_mismatch"),
+        Err(report) => report.errors().any(|e| e.code() == "default.type_mismatch"),
     }
 }
 

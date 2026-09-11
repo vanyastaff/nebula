@@ -17,15 +17,16 @@
 //!     schema's declared fields) registers OK, so the rejection is attributable
 //!     to the extra secret-shaped field and the test is not vacuous.
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use nebula_core::{DeclaresDependencies, Dependencies, ResourceKey, ScopeLevel, resource_key};
 use nebula_expression::ExpressionEngine;
 use nebula_resource::Resident;
 use nebula_resource::{
-    Manager, ResidentConfig, ResourceContext,
+    KindActivator, Manager, RegisterRequest, ResidentConfig, ResourceConfigInput, ResourceContext,
+    ResourceFactory,
     error::Error,
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
     topology::resident::ResidentProvider,
 };
 use nebula_schema::{Field, HasSchema, Schema, ValidSchema, field_key};
@@ -50,12 +51,11 @@ fn default_port() -> u16 {
 }
 
 impl HasSchema for DbConfig {
-    fn schema() -> ValidSchema {
+    fn schema() -> Result<ValidSchema, nebula_schema::ValidationReport> {
         Schema::builder()
             .add(Field::string(field_key!("host")).required())
             .add(Field::number(field_key!("port")).integer())
             .build()
-            .expect("DbConfig schema is valid")
     }
 }
 
@@ -105,8 +105,8 @@ impl Provider for Db {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 
@@ -132,6 +132,31 @@ fn topology() -> Resident<Db> {
     Resident::<Db>::new(ResidentConfig::default())
 }
 
+fn factory() -> impl ResourceFactory {
+    KindActivator::<Db, _, _>::new(|| Db, topology)
+}
+
+async fn register_from_value(
+    manager: &Manager,
+    expression_engine: &ExpressionEngine,
+    config_json: serde_json::Value,
+) -> Result<nebula_resource::SlotIdentity, Error> {
+    let expected_slot_identity = nebula_resource::SlotIdentity::Unbound;
+    factory()
+        .register(
+            manager,
+            RegisterRequest {
+                config: ResourceConfigInput::data(config_json),
+                expr_engine: expression_engine,
+                slot_bindings: Vec::new(),
+                scope: ScopeLevel::Global,
+                recovery_gate: None,
+            },
+            &expected_slot_identity,
+        )
+        .await
+}
+
 // ── Negative: secret-shaped field is rejected (the security assertion) ──────
 
 /// A config that inlines a `password` field — not declared by `DbConfig`'s
@@ -150,16 +175,7 @@ async fn register_from_value_rejects_inline_secret_field() {
         "password": secret,
     });
 
-    let err = manager
-        .register_resolved::<Db>(
-            config_json,
-            &engine,
-            HashMap::new(),
-            Db,
-            ScopeLevel::Global,
-            topology(),
-            None,
-        )
+    let err = register_from_value(&manager, &engine, config_json)
         .await
         .expect_err("config carrying an inline secret-shaped field must be rejected");
 
@@ -202,16 +218,7 @@ async fn register_from_value_accepts_clean_config_same_resource() {
         "port": 5432,
     });
 
-    manager
-        .register_resolved::<Db>(
-            config_json,
-            &engine,
-            HashMap::new(),
-            Db,
-            ScopeLevel::Global,
-            topology(),
-            None,
-        )
+    register_from_value(&manager, &engine, config_json)
         .await
         .expect("clean config with only declared fields must register");
 

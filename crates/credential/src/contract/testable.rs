@@ -42,33 +42,32 @@ use crate::{Credential, CredentialContext, error::CredentialError, resolve::Test
 ///
 /// ```
 /// use nebula_credential::{
-///     AuthPattern, Credential, CredentialContext, CredentialMetadata, Testable,
+///     AuthPattern, Credential, CredentialContext, CredentialMetadataDraft, Testable,
 ///     SecretString, scheme::SecretToken,
 /// };
 /// use nebula_credential::error::CredentialError;
-/// use nebula_credential::resolve::{ResolveResult, TestResult};
+/// use nebula_credential::resolve::{StaticResolveResult, TestResult};
 /// use nebula_core::credential_key;
-/// use nebula_schema::{FieldValues, ValidSchema};
 ///
 /// struct OAuth2Cred;
 ///
 /// # impl Credential for OAuth2Cred {
-/// #     type Properties = FieldValues;
+/// #     type Properties = serde_json::Value;
 /// #     type Scheme = SecretToken;
 /// #     type State = SecretToken;
 /// #     const KEY: &'static str = "oauth2_cred";
-/// #     fn metadata() -> CredentialMetadata {
-/// #         CredentialMetadata::new(
-/// #             credential_key!("oauth2_cred"), "OAuth2", "demo",
-/// #             ValidSchema::empty(), AuthPattern::SecretToken,
+/// #     fn metadata() -> CredentialMetadataDraft {
+/// #         CredentialMetadataDraft::new(
+/// #             credential_key!("oauth2_cred"), nebula_credential::metadata_name!("OAuth2"), "demo",
+/// #             AuthPattern::SecretToken,
 /// #         )
 /// #     }
 /// #     fn project(state: &SecretToken) -> SecretToken { state.clone() }
 /// #     async fn resolve(
-/// #         _values: &FieldValues,
+/// #         _properties: &Self::Properties,
 /// #         _ctx: &CredentialContext,
-/// #     ) -> Result<ResolveResult<SecretToken, ()>, CredentialError> {
-/// #         Ok(ResolveResult::Complete(SecretToken::new(SecretString::new(""))))
+/// #     ) -> Result<StaticResolveResult<SecretToken>, CredentialError> {
+/// #         Ok(StaticResolveResult::Complete(SecretToken::new(SecretString::new(""))))
 /// #     }
 /// # }
 /// impl Testable for OAuth2Cred {

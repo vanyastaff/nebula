@@ -114,12 +114,7 @@ impl<C: Credential> CredentialRef<C> {
         Ctx: HasCredentials + Sync + ?Sized,
         C::Scheme: Zeroize,
     {
-        let key = CredentialKey::new(&self.id).map_err(|e| {
-            CredentialError::InvalidInput(format!(
-                "credential id `{id}` is not a valid CredentialKey: {e}",
-                id = self.id
-            ))
-        })?;
+        let key = CredentialKey::new(&self.id).map_err(|_| CredentialError::InvalidInput)?;
 
         let boxed = ctx
             .credentials()
@@ -127,13 +122,9 @@ impl<C: Credential> CredentialRef<C> {
             .await
             .map_err(CredentialError::from)?;
 
-        let snapshot = boxed.downcast::<CredentialSnapshot>().map_err(|_| {
-            CredentialError::InvalidInput(format!(
-                "credential `{id}`: resolve_any returned unexpected type \
-                 (expected CredentialSnapshot)",
-                id = self.id
-            ))
-        })?;
+        let snapshot = boxed
+            .downcast::<CredentialSnapshot>()
+            .map_err(|_| CredentialError::InvalidInput)?;
 
         let scheme = snapshot.into_project::<C::Scheme>().map_err(|e| match e {
             crate::snapshot::SnapshotError::SchemeMismatch { expected, actual } => {

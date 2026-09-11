@@ -213,14 +213,12 @@ mod tests {
         store::ExecutionStore,
     };
 
-    use nebula_action::ActionResult;
     use nebula_orchestrator::DispatchedTurn;
     use nebula_storage_port::FencingToken;
 
     use super::EngineExecutionSink;
     use crate::{
-        ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
-        WorkflowEngine,
+        ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, WorkflowEngine,
     };
 
     /// Build the minimal `ActionRuntime` needed to construct a `WorkflowEngine`.
@@ -229,10 +227,7 @@ mod tests {
     /// is ever called.
     fn minimal_runtime() -> Arc<ActionRuntime> {
         let registry = Arc::new(ActionRegistry::new());
-        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
-            Box::pin(async move { Ok(ActionResult::success(input)) })
-        });
-        let runner = Arc::new(InProcessRunner::new(executor));
+        let runner = Arc::new(InProcessRunner::new());
         let metrics = nebula_metrics::MetricsRegistry::new();
         Arc::new(
             ActionRuntime::try_new(registry, runner, DataPassingPolicy::default(), metrics)

@@ -169,7 +169,7 @@ mod tests {
         Manager, RegistrationSpec, Resident, ResidentConfig, ResourceContext, ScopeLevel,
         SlotIdentity,
         error::Error,
-        resource::{Provider, ResourceConfig, ResourceMetadata},
+        resource::{Provider, ResourceConfig, ResourceMetadataDraft},
         topology::resident::ResidentProvider,
     };
 
@@ -192,10 +192,8 @@ mod tests {
         }
     }
 
-    #[derive(Clone, Debug, Default)]
+    #[derive(Clone, Debug, Default, nebula_schema::Schema)]
     struct AccConfig;
-
-    nebula_schema::impl_empty_has_schema!(AccConfig);
 
     impl ResourceConfig for AccConfig {
         fn fingerprint(&self) -> u64 {
@@ -225,8 +223,8 @@ mod tests {
             Ok(Arc::new(AtomicU64::new(42)))
         }
 
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::from_key(&Self::key())
+        fn metadata() -> ResourceMetadataDraft {
+            ResourceMetadataDraft::from_key(Self::key())
         }
     }
 

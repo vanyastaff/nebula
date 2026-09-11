@@ -185,7 +185,7 @@ fn project_node(
                 RecordedParameterValueV1::Reference {
                     node_key,
                     output_path,
-                } => ParamValue::reference(parse_key(node_key)?, output_path),
+                } => ParamValue::reference(parse_key(node_key)?, output_path.clone()),
             };
             Ok((parameter.key.clone(), value))
         })

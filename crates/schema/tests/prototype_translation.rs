@@ -1,4 +1,4 @@
-use nebula_schema::{Field, FieldValues, Schema, field_key};
+use nebula_schema::{AuthoredValue, Field, Schema, field_key};
 use serde_json::json;
 
 fn telegram_send_message_schema() -> nebula_schema::ValidSchema {
@@ -19,9 +19,12 @@ fn telegram_send_message_schema() -> nebula_schema::ValidSchema {
             Field::string(field_key!("text"))
                 .min_length(1)
                 .max_length(4096)
-                .active_when(nebula_validator::Rule::predicate(
-                    nebula_validator::Predicate::eq("operation", json!("sendMessage")).unwrap(),
-                )),
+                .active_when(
+                    nebula_validator::Rule::predicate(
+                        nebula_validator::Predicate::eq("operation", json!("sendMessage")).unwrap(),
+                    )
+                    .expect("bounded prototype visibility rule"),
+                ),
         )
         .add(
             Field::secret(field_key!("api_key"))
@@ -101,7 +104,7 @@ fn nested_object_schema() -> nebula_schema::ValidSchema {
 #[test]
 fn telegram_schema_validates_resource_operation_flow() {
     let schema = telegram_send_message_schema();
-    let values = FieldValues::from_json(json!({
+    let values = AuthoredValue::from_template_json(json!({
         "resource": "message",
         "operation": "sendMessage",
         "text": "Hello from Nebula",
@@ -109,62 +112,64 @@ fn telegram_schema_validates_resource_operation_flow() {
     }))
     .unwrap();
 
-    assert!(schema.validate(&values).is_ok());
+    assert!(schema.validate(values).is_ok());
 }
 
 #[test]
 fn http_schema_rejects_invalid_url() {
     let schema = http_request_schema();
-    let values = FieldValues::from_json(json!({
+    let values = AuthoredValue::from_template_json(json!({
         "method": "GET",
         "url": "not-a-url",
         "auth": { "mode": "none" }
     }))
     .unwrap();
 
-    let report = schema.validate(&values).unwrap_err();
+    let report = schema.validate(values).unwrap_err();
     assert!(report.has_errors());
-    assert!(report.errors().any(|e| e.path.to_string() == "url"));
+    assert!(report.errors().any(|e| e.path().to_string() == "/url"));
 }
 
 #[test]
 fn oauth_schema_list_rules_are_enforced() {
     let schema = oauth2_credential_schema();
-    let values = FieldValues::from_json(json!({
+    let values = AuthoredValue::from_template_json(json!({
         "grant_type": "client_credentials",
         "client_secret": "top-secret-value",
         "scopes": []
     }))
     .unwrap();
 
-    let report = schema.validate(&values).unwrap_err();
+    let report = schema.validate(values).unwrap_err();
     assert!(report.has_errors());
     assert!(
         report
             .errors()
-            .any(|e| e.path.to_string() == "scopes" && e.code == "items.min")
+            .any(|e| e.path().to_string() == "/scopes" && e.code() == "items.min")
     );
 }
 
 #[test]
 fn mode_variant_payload_is_validated() {
     let schema = http_request_schema();
-    let values = FieldValues::from_json(json!({
+    let values = AuthoredValue::from_template_json(json!({
         "method": "GET",
         "url": "https://example.com",
         "auth": { "mode": "bearer" }
     }))
     .unwrap();
 
-    let report = schema.validate(&values).unwrap_err();
+    let report = schema.validate(values).unwrap_err();
     assert!(report.has_errors());
     // The bearer token is required — the error path is auth.value (the mode payload slot)
     assert!(
-        report.errors().any(|e| e.path.to_string().contains("auth")),
+        report
+            .errors()
+            .any(|e| e.path().to_string().contains("auth")),
         "expected required error under auth, got: {:?}",
         report
             .errors()
-            .map(|e| (&e.code, e.path.to_string()))
+            .map(|e| (e.code(), e.path().to_string()))
             .collect::<Vec<_>>()
     );
 }
@@ -172,12 +177,16 @@ fn mode_variant_payload_is_validated() {
 #[test]
 fn object_children_are_validated() {
     let schema = nested_object_schema();
-    let values = FieldValues::from_json(json!({
+    let values = AuthoredValue::from_template_json(json!({
         "config": { "host": "localhost" }
     }))
     .unwrap();
 
-    let report = schema.validate(&values).unwrap_err();
+    let report = schema.validate(values).unwrap_err();
     assert!(report.has_errors());
-    assert!(report.errors().any(|e| e.path.to_string() == "config.port"));
+    assert!(
+        report
+            .errors()
+            .any(|e| e.path().to_string() == "/config/port")
+    );
 }

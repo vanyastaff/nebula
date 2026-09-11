@@ -1,9 +1,9 @@
 //! Regression test for `simple_action!` macro expansion.
 //!
 //! The macro previously expanded to `impl ProcessAction`, a trait that no
-//! longer exists in `nebula-action`. The fix points it at `StatelessAction`
-//! ( trait family) — this test compiles a macro use-site and
-//! drives it through `TestRuntime` so the expansion stays correct.
+//! longer exists in `nebula-action`. The fix points it at `StatelessAction`;
+//! this test compiles a macro use-site and drives it through `TestRuntime` so
+//! the expansion stays correct.
 
 use nebula_sdk::{prelude::*, simple_action};
 

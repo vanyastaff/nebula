@@ -11,9 +11,113 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
-- **The workspace moves from 0.4 to 0.5 in lockstep.** This is the
+- **The workspace moves from 0.5 to 0.6 in lockstep.** This is the
   pre-1.0 breaking release; exact-version SDK consumers and renamed leaf
   fixtures must update all Nebula pins together.
+- **Catalog-leaf metadata now has one-way admission.** Action, Credential, and
+  Resource authors return schema-free `*MetadataDraft` values. The owning
+  action factory, credential registry, or resource factory derives the schema
+  from `Action::{Input, Output}`, `Credential::Properties`, or
+  `Provider::Config`, checks identity and package invariants, and produces the
+  immutable admitted `*Metadata`. The old terminal metadata builders,
+  schema-taking constructors, schema setters, and public admitted-field
+  mutation are removed. `BaseMetadata` and admitted leaf metadata are
+  Serialize-only; persistence decodes into `Recorded*Metadata`, whose fields
+  are evidence and must match a freshly admitted definition before use.
+- **Schema values have authored, valid, resolved, and typed phases.**
+  `FieldValue` / `FieldValues` are replaced by `ValueTree<E>` and the
+  `AuthoredValue`, `ValidValues`, `ResolvedValues`, and final Rust-value
+  transitions. `validate(AuthoredValue)` consumes input and prepares aliases,
+  transforms, declared secrets, and programs exactly once. `resolve(context)`
+  or data-only `resolve_data()` consumes `ValidValues`, completes every pending
+  invariant, and returns schema-bound, expression-free `ResolvedValues` before
+  trusted typed decoding.
+- **Literal data and template authoring are separate inputs.**
+  `AuthoredValue::from_data` never interprets template-looking strings or
+  expression-shaped objects as code. `from_template_json` is the explicit
+  authoring path and still requires the exact schema node to allow a program.
+  Expression results re-enter as data, not recursively executable syntax.
+  Authored serde and tree canonical identities use version 2; the separate
+  durable `canonical_json_v1` plan contract is unchanged.
+- **Typed secret extraction is explicit and cannot stage plaintext in an
+  ordinary `serde_json::Value`.** A `#[field(secret)]` property must use an
+  owned, zeroizing type that implements `SecretInput` (for example the
+  credential `SecretString`). Normal `into_typed` rejects protected leaves;
+  `into_typed_exposing_secrets` is the audited trusted boundary and feeds the
+  target deserializer directly. Debug, wire, diagnostics, and error source
+  chains remain protected even when a declared-secret value is malformed.
+- **Credentials receive typed properties, not schema proof objects.**
+  `Credential::Properties` is now `HasSchema + DeserializeOwned`; the runtime
+  performs literal-only preparation and one trusted typed decode before calling
+  `Credential::resolve(&Properties, ...)`. Initial OAuth token acquisition and
+  refresh use separate injected authorities, so acquisition cannot enter the
+  refresh coordinator's provider-to-persistence critical section. The built-in
+  OAuth credential supports only Authorization Code with mandatory PKCE S256
+  and Client Credentials. Device flow is removed rather than advertised as a
+  dead capability.
+- **Action and Resource preparation is owned by the exact selected factory.**
+  Internal `ActionInput` may carry raw wire data or already-resolved values, but
+  it is not an SDK authoring type. An action handle prepares and typed-decodes
+  input into an opaque `PreparedActionInput` bound to that exact handle, so an
+  equal schema from another factory grants no dispatch authority. Resource
+  validation and registration reuse the selected `ResourceFactory`'s cached
+  `R::Config` schema and pass only the internally decoded typed config onward;
+  direct public JSON manager admission is removed.
+- **Expression syntax is part of program identity.** `ProgramSyntax` preserves
+  automatic, expression, and template parsing explicitly. A template remains
+  string-valued even when it contains one expression. Authored wire-v2 expression
+  entries require `syntax`; tree-v2 identities retain it. `CompiledProgram`
+  retains source and syntax while sharing parsed program state through `Arc`.
+  Evaluation is bounded by source/token/AST/result/depth ceilings plus a
+  per-call step budget. Context
+  policy may tighten, never raise, the engine ceiling. Durable JSON-v1 and
+  recorded workflow parameter encodings remain unchanged.
+- **Schema discovery and catalog construction are checked.**
+  `HasSchema::schema` / `schema_of` return `Result`; construction failures
+  propagate through action, credential, resource, and plugin discovery.
+  `BaseMetadata` fields are private, names are checked through `MetadataName`,
+  and lifecycle invariants are enforced while drafting and while decoding
+  recorded evidence. There are no admitted-state setters or direct
+  `BaseMetadata` deserialization escape hatches.
+- **Core action input contracts advance to catalog version 2.0.0.** The core
+  plugin bundle and its eleven newly declared input schemas advance together;
+  `core.delay` keeps its unchanged 1.0.0 interface. These entity versions are
+  independent of the Rust package version. Recorded plans retain their exact
+  revisions rather than silently adopting different schemas.
+- **Root shapes and uncertainty are explicit.** Unit types describe `null`,
+  empty braced records describe objects, and primitives retain exact domains.
+  `explain_assignable` / `explain_successor_of` replace binary compatibility
+  shortcuts with `Yes`, `No`, and `Unknown`. Graph-v4 plans explicitly admit
+  scalar schema descriptors; historical records retain their original shape
+  and identity rather than becoming unit inputs implicitly.
+- **Rule and expression evaluation cannot certify deferred work as success.**
+  `EvaluationOutcome` preserves pending checks; full evaluation rejects missing
+  context/evaluators. `CompiledProgram` retains bounded parsed syntax, evaluation
+  intersects runtime policies, and JSON numeric comparisons avoid rounding
+  integer operands through `f64`. Regex rules and transformers are checked at
+  construction. See [schema migration details](crates/schema/CHANGELOG.md) and
+  [validator migration guidance](crates/validator/docs/migration.md).
+- **Validation paths are complete RFC 6901 pointers and validator invariants are
+  fallible.** Root is `""`, `"/"` is an empty-key property, array indices are
+  pointer segments, and `~` / `/` are escaped as `~0` / `~1`. Strict wire decode
+  uses `FieldPath::from_pointer`; authored dot/bracket shorthand must opt into
+  `FieldPath::parse`. Invalid regexes and inverted/incomparable numeric,
+  string-length, or collection-size ranges now return typed construction errors
+  instead of creating impossible validators.
+- **Revision-catalog insertion is semantic-JSON idempotent and first-writer
+  byte preserving.** Reinserting the same immutable plan/flavor identity with
+  JSON that differs only in whitespace or object-key order returns
+  `AlreadyPresent`. Different parsed content returns `ContentConflict`. The
+  first accepted bytes remain authoritative and exact loads return them
+  unchanged; idempotence never canonicalizes or rewrites durable records.
+- **`nebula-sdk` is the only supported Rust dependency surface.** Integration
+  authors migrate to its persona modules and draft metadata types. Internal
+  admitted metadata, validated/resolved value proofs, erased `ActionInput`,
+  prepared input tokens, registries, factories, persistence ports, and
+  authority-bearing runtime types are removed from the curated SDK perimeter.
+  Technical workspace crates may still expose them for first-party composition,
+  without a separate compatibility promise.
+
 - **Resource teardown has one consuming hook.** `Provider::shutdown(&Instance)`
   is removed; move flush, drain, close, and task joins into
   `Provider::destroy(Instance, TeardownCx)`. The instance stays consumed on
@@ -110,6 +214,66 @@ changes are expected between minor releases — call them out here.
   destroyed. Dropping an open manager no longer queues teardown into the
   supervisor it is about to abort; it emits one `ManagerDrop` abandonment per
   remaining row. Use `graceful_shutdown` when physical teardown is required.
+
+#### 0.5 to 0.6 migration examples
+
+Metadata authors now return intent; the owning factory admits it:
+
+```rust
+// 0.5
+fn metadata() -> ActionMetadata {
+    ActionMetadata::builder(action_key!("acme.send"), "Send", "Send a message")
+        .with_schema(schema_of::<Input>())
+        .with_output_schema(schema_of::<Output>())
+        .build()
+}
+
+// 0.6
+fn metadata() -> ActionMetadataDraft {
+    ActionMetadataDraft::new(
+        action_key!("acme.send"),
+        metadata_name!("Send"),
+        "Send a message",
+    )
+}
+```
+
+Schema preparation now makes data/template intent and every consuming phase
+explicit:
+
+```rust
+// 0.5
+let resolved = schema.validate(values)?.resolve(context).await?;
+
+// 0.6: literal data
+let authored = AuthoredValue::from_data(json)?;
+let valid = schema.validate(authored)?;
+let resolved = valid.resolve_data()?;
+let input: Input = resolved.into_typed()?;
+
+// 0.6: explicitly authored templates
+let authored = AuthoredValue::from_template_json(template_json)?;
+let resolved = schema.validate(authored)?.resolve(context).await?;
+```
+
+Credentials no longer inspect generic values or receive `ResolvedValues`:
+
+```rust
+// 0.5
+async fn resolve(values: &FieldValues, ctx: &CredentialContext) -> Result<_, _>;
+
+// 0.6
+type Properties = OAuth2Properties;
+async fn resolve(properties: &OAuth2Properties, ctx: &CredentialContext) -> Result<_, _>;
+```
+
+Persisted metadata is recorded evidence, never reconstructed authority:
+
+```rust
+let recorded: RecordedActionMetadata = serde_json::from_slice(bytes)?;
+let fresh = selected_factory.metadata();
+let admitted = recorded.readmit_against(fresh)?;
+```
 
 ### Removed
 
@@ -255,19 +419,22 @@ changes are expected between minor releases — call them out here.
   audit/encryption/cache decorators implement that one contract. Conformance
   covers wrong-owner indistinguishability and metadata-owner spoof rejection;
   live PostgreSQL execution remains a release gate.
-- **SDK-only external perimeter proof.** A downstream fixture with exactly one
-  renamed Nebula dependency (`nebula-sdk`) compiles the currently supported
-  manual/builder subset (`ActionBuilder`, `WorkflowBuilder`, and credential
-  `TestResult`) plus representative Action, Credential, Plugin, Resource,
-  Schema, and Validator derives.
-  Separate negative probes assert precise diagnostics for forbidden authority,
-  owner-selector, raw-writer, admin-repository, runtime-constructor, and
-  unscoped-resolver access. A second compile-pass fixture proves those derives
-  also resolve explicitly renamed leaf-crate dependencies.
+- **SDK-only external perimeter proof.** Downstream fixtures with exactly one
+  Nebula dependency (`nebula-sdk`, including a renamed package import) compile
+  `ActionMetadataDraft`, the typed `Action::Input`/`Output` contract,
+  `simple_action!`, `WorkflowBuilder`, credential `TestResult`, manual resource
+  providers/custom topologies, and representative Action, Credential, Plugin,
+  Resource, Schema, and Validator derives. Forty-six missing-name probes assert
+  precise diagnostics for internal metadata/value proofs, authority,
+  owner-selector, persistence, runtime-constructor, and unscoped-resolver
+  access, including resource manager/factory/register/slot-identity paths under
+  `__private`; a separate private-field probe proves the SDK-owned resource
+  contribution bridge remains opaque. Another compile-pass fixture proves the
+  derives also resolve explicitly renamed leaf-crate dependencies.
 - **Structured secret-safe credential validation.** The credential service
   preserves a non-empty report of RFC 6901 path + stable-code issues through the
   controller/gateway, while discarding validator/provider messages, params,
-  values, and sources. `FieldPath::to_json_pointer` is the canonical renderer;
+  values, and sources. `FieldPath::as_str` exposes the canonical pointer;
   the API owns static value-free copy.
 - **Plane-A OAuth composition seam** — `OAuthIdentityRuntime` and the opaque,
   secret-free `OAuthRuntimeBuildError` are re-exported from `nebula-api` for

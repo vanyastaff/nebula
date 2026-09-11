@@ -5,10 +5,11 @@ use std::time::Duration;
 use serde::{Deserialize, Deserializer, Serialize};
 
 mod adapter;
+pub(crate) use adapter::sealed as remote_effect_sealed;
 pub use adapter::{
     EffectFailureCode, EffectInvocationContext, EffectInvocationOutcome, EffectPreparationContext,
     EffectPreparationError, EffectQueryContext, EffectReconciliationOutcome, PreparedEffectAdapter,
-    PreparedRemoteEffect, ReadOnlyEffectQuery, RemoteEffectFactory,
+    PreparedRemoteEffect, ReadOnlyEffectQuery, RemoteEffectAction, RemoteEffectFactory,
 };
 
 /// Explicit effect declaration retained in the exact compiled action contract.

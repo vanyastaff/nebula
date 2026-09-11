@@ -11,21 +11,35 @@ use std::sync::Arc;
 use crate::ports::credential_schema::{
     CredentialCapabilityFlags, CredentialSchemaPort, CredentialTypeDescriptor,
 };
-use nebula_credential::{AnyCredential, Capabilities, CredentialRegistry};
 #[cfg(any(test, feature = "test-util"))]
 use nebula_credential::{ApiKeyCredential, BasicAuthCredential, SigningKeyCredential};
-use nebula_schema::ValidSchema;
+use nebula_credential::{Capabilities, CredentialMetadata, CredentialRegistry};
+use nebula_schema::JsonSchemaExportError;
 
-/// `CredentialSchemaPort` backed by a registered credential set.
+/// Complete catalog snapshot exported from a registered credential set.
 pub struct RegistryCredentialSchema {
-    registry: Arc<CredentialRegistry>,
+    // Keep the source immutable for as long as its exported snapshot is used.
+    _registry: Arc<CredentialRegistry>,
+    descriptors: Vec<CredentialTypeDescriptor>,
 }
 
 impl RegistryCredentialSchema {
-    /// Wrap a populated registry.
-    #[must_use]
-    pub fn new(registry: Arc<CredentialRegistry>) -> Self {
-        Self { registry }
+    /// Export every admitted definition before making the catalog available.
+    ///
+    /// # Errors
+    /// Returns [`JsonSchemaExportError`] if any schema fails to export. No
+    /// partial catalog or permissive replacement schema is published.
+    #[tracing::instrument(name = "api.credential_catalog.build", skip_all)]
+    pub fn new(registry: Arc<CredentialRegistry>) -> Result<Self, JsonSchemaExportError> {
+        let descriptors = registry
+            .catalog()
+            .map(|(metadata, capabilities)| Self::descriptor(metadata, capabilities))
+            .collect::<Result<Vec<_>, _>>()
+            .inspect_err(|_| tracing::error!("credential catalog schema export failed"))?;
+        Ok(Self {
+            _registry: registry,
+            descriptors,
+        })
     }
 
     fn flags(caps: Capabilities) -> CredentialCapabilityFlags {
@@ -37,53 +51,47 @@ impl RegistryCredentialSchema {
         }
     }
 
-    fn descriptor(&self, any: &dyn AnyCredential) -> CredentialTypeDescriptor {
-        let meta = any.metadata();
-        let key = any.credential_key().to_owned();
-        // Structural JSON-Schema export. On failure, an empty object
-        // schema (never a panic); the api-owned public projection still
-        // strips predicate operands at the wire (#6).
-        let schema_json = export_schema(&meta.base.schema);
-        let caps = self
-            .registry
-            .capabilities_of(&key)
-            .unwrap_or_else(Capabilities::empty);
-        CredentialTypeDescriptor {
+    fn descriptor(
+        meta: &CredentialMetadata,
+        caps: Capabilities,
+    ) -> Result<CredentialTypeDescriptor, JsonSchemaExportError> {
+        let key = meta.key().as_str().to_owned();
+        let schema_json = meta.schema().json_schema()?.to_value();
+        Ok(CredentialTypeDescriptor {
             key,
-            name: meta.base.name.clone(),
-            description: meta.base.description.clone(),
-            auth_pattern: format!("{:?}", meta.pattern),
+            name: meta.name().to_owned(),
+            description: meta.description().to_owned(),
+            auth_pattern: format!("{:?}", meta.pattern()),
             capabilities: Self::flags(caps),
-            icon: meta.base.icon.as_inline().map(str::to_owned),
-            documentation_url: meta.base.documentation_url,
+            icon: meta.icon().as_inline().map(str::to_owned),
+            documentation_url: meta.documentation_url().map(str::to_owned),
             schema_json,
-        }
+        })
     }
-}
-
-fn export_schema(schema: &ValidSchema) -> serde_json::Value {
-    schema
-        .json_schema()
-        .ok()
-        .and_then(|exported| serde_json::to_value(&exported).ok())
-        .unwrap_or_else(|| serde_json::json!({ "type": "object" }))
 }
 
 impl CredentialSchemaPort for RegistryCredentialSchema {
     fn list_types(&self) -> Vec<CredentialTypeDescriptor> {
-        // `iter_compatible(empty)` enumerates every registered type
-        // (registry.rs:212 — empty is a subset of any capability set).
-        self.registry
-            .iter_compatible(Capabilities::empty())
-            .filter_map(|(k, _caps)| self.registry.resolve_any(k).map(|any| self.descriptor(any)))
-            .collect()
+        self.descriptors.clone()
     }
 
     fn get_type(&self, credential_key: &str) -> Option<CredentialTypeDescriptor> {
-        self.registry
-            .resolve_any(credential_key)
-            .map(|any| self.descriptor(any))
+        self.descriptors
+            .iter()
+            .find(|descriptor| descriptor.key == credential_key)
+            .cloned()
     }
+}
+
+/// Failure to construct the complete reference credential catalog.
+#[derive(Debug, thiserror::Error)]
+pub enum CredentialCatalogBuildError {
+    /// A credential definition failed registry admission.
+    #[error("credential registry registration failed")]
+    Registry(#[from] nebula_credential::RegisterError),
+    /// An admitted credential schema could not be exported.
+    #[error("credential catalog schema export failed")]
+    SchemaExport(#[from] JsonSchemaExportError),
 }
 
 /// Build the first-party catalog registry for API reference/test composition.
@@ -92,11 +100,8 @@ impl CredentialSchemaPort for RegistryCredentialSchema {
 ///
 /// # Errors
 ///
-/// Returns [`nebula_credential::RegisterError`] if a credential KEY is
-/// already registered (a composition bug — distinct first-party const
-/// KEYs make this unreachable in practice, but the library returns the
-/// typed error rather than panicking; the caller decides how to surface
-/// it — AGENTS.md "no `expect()` in library code").
+/// Returns [`nebula_credential::RegisterError`] if definition admission fails
+/// or a credential key is already registered.
 #[cfg(any(test, feature = "test-util"))]
 pub(crate) fn default_registry() -> Result<CredentialRegistry, nebula_credential::RegisterError> {
     let mut registry = CredentialRegistry::new();
@@ -112,17 +117,14 @@ pub(crate) fn default_registry() -> Result<CredentialRegistry, nebula_credential
 ///
 /// # Errors
 ///
-/// Returns [`nebula_credential::RegisterError`] if a credential KEY is
-/// already registered (a composition bug — distinct first-party const
-/// KEYs make this unreachable in practice, but the library returns the
-/// typed error rather than panicking; the caller decides how to surface
-/// it — AGENTS.md "no `expect()` in library code").
+/// Returns [`CredentialCatalogBuildError`] if registration or schema export
+/// fails. A catalog is returned only when every definition is exported.
 #[cfg(any(test, feature = "test-util"))]
 pub fn try_default_registry_port()
--> Result<Arc<dyn CredentialSchemaPort>, nebula_credential::RegisterError> {
+-> Result<Arc<dyn CredentialSchemaPort>, CredentialCatalogBuildError> {
     Ok(Arc::new(RegistryCredentialSchema::new(Arc::new(
         default_registry()?,
-    ))))
+    ))?))
 }
 
 #[cfg(test)]
@@ -133,7 +135,7 @@ mod tests {
         let mut reg = CredentialRegistry::new();
         reg.register(ApiKeyCredential, "nebula-credential")
             .expect("api_key registers (statically unique key)");
-        RegistryCredentialSchema::new(Arc::new(reg))
+        RegistryCredentialSchema::new(Arc::new(reg)).expect("registered catalog exports")
     }
 
     #[test]
@@ -161,7 +163,48 @@ mod tests {
         }
         assert!(
             listed.iter().all(|t| t.key != "oauth2"),
-            "oauth2 remains implemented in nebula-credential but must stay out of the default API catalog until universal pending acquisition is wired"
+            "oauth2 requires explicit provider configuration and a production acquisition transport"
         );
+    }
+
+    #[test]
+    fn catalog_snapshot_preserves_every_registered_definition() {
+        let registry = Arc::new(default_registry().expect("first-party definitions register"));
+        let port = RegistryCredentialSchema::new(Arc::clone(&registry))
+            .expect("all registered schemas export");
+        let listed = port.list_types();
+        assert_eq!(listed.len(), registry.catalog().count());
+        for (metadata, capabilities) in registry.catalog() {
+            let descriptor = port
+                .get_type(metadata.key().as_str())
+                .expect("catalog snapshot contains every admitted definition");
+            assert_eq!(descriptor.name, metadata.name());
+            assert_eq!(
+                descriptor.schema_json,
+                metadata
+                    .schema()
+                    .json_schema()
+                    .expect("admitted schema exports")
+                    .to_value()
+            );
+            assert_eq!(
+                descriptor.capabilities.testable,
+                capabilities.contains(Capabilities::TESTABLE)
+            );
+            assert!(listed.iter().any(|listed| listed.key == descriptor.key));
+        }
+    }
+
+    #[test]
+    fn catalog_keeps_its_source_registry_immutable() {
+        let mut registry = Arc::new(default_registry().expect("first-party definitions register"));
+        let port = RegistryCredentialSchema::new(Arc::clone(&registry))
+            .expect("all registered schemas export");
+        assert!(
+            Arc::get_mut(&mut registry).is_none(),
+            "a live catalog must prevent mutation of its source registry"
+        );
+        drop(port);
+        assert!(Arc::get_mut(&mut registry).is_some());
     }
 }

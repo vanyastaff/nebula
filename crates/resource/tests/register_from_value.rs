@@ -1,10 +1,8 @@
-//! `Manager::register_from_value` JSON-driven registration with `{{ }}`
-//! template resolution + schema validation.
+//! Factory registration from literal JSON or explicitly authored values.
 //!
 //! The flow:
 //!
-//!   1. Resolve every `{{ }}` template inside the JSON tree via
-//!      `ExpressionEngine::render_template`.
+//!   1. Preserve literal JSON as data, or resolve explicitly authored values.
 //!   2. Deserialize `R::Config` from the resolved JSON.
 //!   3. Schema-validate the resolved JSON against `<R::Config as HasSchema>::schema()`.
 //!   4. Validate `slot_bindings` keys against `R::dependencies()` (rejects configs whose credential
@@ -19,13 +17,56 @@ use nebula_core::{
 use nebula_expression::ExpressionEngine;
 use nebula_resource::Resident;
 use nebula_resource::{
-    Manager, ResidentConfig, ResourceContext,
+    KindActivator, Manager, RegisterRequest, ResidentConfig, ResourceConfigInput, ResourceContext,
+    ResourceFactory,
     error::Error,
-    resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadata},
+    resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadataDraft},
     topology::resident::ResidentProvider,
 };
 use serde::Deserialize;
 use serde_json::json;
+
+async fn register_from_value(
+    factory: impl ResourceFactory,
+    manager: &Manager,
+    expression_engine: &ExpressionEngine,
+    config_json: serde_json::Value,
+    slot_bindings: HashMap<String, CredentialKey>,
+) -> Result<nebula_resource::SlotIdentity, Error> {
+    let slot_bindings: Vec<_> = slot_bindings
+        .into_iter()
+        .map(|(slot_name, credential_key)| nebula_resource::SlotBinding {
+            slot_name,
+            credential_key,
+            credential_id: None,
+        })
+        .collect();
+    let expected_slot_identity = nebula_resource::SlotIdentity::from_bindings(
+        slot_bindings
+            .iter()
+            .map(|binding| (binding.slot_name.as_str(), binding.credential_key.as_str())),
+    );
+    factory
+        .register(
+            manager,
+            RegisterRequest {
+                config: ResourceConfigInput::data(config_json),
+                expr_engine: expression_engine,
+                slot_bindings,
+                scope: ScopeLevel::Global,
+                recovery_gate: None,
+            },
+            &expected_slot_identity,
+        )
+        .await
+}
+
+fn postgres_factory() -> impl ResourceFactory {
+    KindActivator::<Postgres, _, _>::new(
+        || Postgres,
+        || Resident::<Postgres>::new(ResidentConfig::default()),
+    )
+}
 
 // ── Test resource ──────────────────────────────────────────────────────────
 
@@ -40,7 +81,18 @@ fn default_port() -> u16 {
     5432
 }
 
-nebula_schema::impl_empty_has_schema!(PgConfig);
+impl nebula_schema::HasSchema for PgConfig {
+    fn schema() -> Result<nebula_schema::ValidSchema, nebula_schema::ValidationReport> {
+        // Type declarations authorize expressions; the custom ResourceConfig
+        // validator below owns the non-empty host policy exercised by this fixture.
+        nebula_schema::Schema::builder()
+            .add(nebula_schema::Field::string(nebula_schema::field_key!(
+                "host"
+            )))
+            .add(nebula_schema::Field::number(nebula_schema::field_key!("port")).integer())
+            .build()
+    }
+}
 
 impl ResourceConfig for PgConfig {
     fn validate(&self) -> Result<(), Error> {
@@ -85,8 +137,8 @@ impl Provider for Postgres {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 
@@ -225,23 +277,24 @@ async fn revoke_admission_rejects_unbound_credentialed_custom_topology() {
 #[tokio::test]
 async fn revoke_admission_rejects_resolved_credentialed_custom_topology() {
     let manager = Manager::new();
-    let error = manager
-        .register_resolved(
-            json!({"host": "localhost"}),
-            &ExpressionEngine::new(),
-            HashMap::from([(
-                "auth".to_owned(),
-                nebula_core::credential_key!("binding-identity"),
-            )]),
-            AdmissionResource::<true>,
-            ScopeLevel::Global,
-            AdmissionTopology {
+    let expression_engine = ExpressionEngine::new();
+    let error = register_from_value(
+        KindActivator::<AdmissionResource<true>, _, _>::new(
+            || AdmissionResource,
+            || AdmissionTopology {
                 handles_revoke: false,
             },
-            None,
-        )
-        .await
-        .expect_err("resolved registration must reject unsupported revoke policy");
+        ),
+        &manager,
+        &expression_engine,
+        json!({"host": "localhost"}),
+        HashMap::from([(
+            "auth".to_owned(),
+            nebula_core::credential_key!("binding-identity"),
+        )]),
+    )
+    .await
+    .expect_err("resolved registration must reject unsupported revoke policy");
     assert_eq!(error.kind(), &nebula_resource::ErrorKind::Permanent);
     assert!(!manager.contains(&AdmissionResource::<true>::key()));
 }
@@ -265,27 +318,33 @@ async fn revoke_admission_preserves_explicit_custom_revoke_policy() {
 async fn register_from_value_resolves_template_and_registers() {
     let manager = Manager::new();
     let engine = ExpressionEngine::new();
+    let expected_slot_identity = nebula_resource::SlotIdentity::Unbound;
 
-    // JSON config with a `{{ }}` template — a literal expression evaluates
-    // to its string value at render time. The point is to exercise the
-    // template render path, not to test the expression language itself.
-    let config_json = json!({
-        "host": "db-{{ \"example.com\" }}",
-        "port": 5432,
-    });
+    let mut config = nebula_schema::AuthoredValue::object();
+    config
+        .insert(
+            "host",
+            nebula_schema::AuthoredValue::Expression(nebula_schema::Expression::template(
+                "db-{{ \"example.com\" }}",
+            )),
+        )
+        .unwrap();
+    config.insert_data("port", json!(5432)).unwrap();
 
-    manager
-        .register_resolved::<Postgres>(
-            config_json,
-            &engine,
-            HashMap::new(),
-            Postgres,
-            ScopeLevel::Global,
-            Resident::<Postgres>::new(ResidentConfig::default()),
-            None,
+    postgres_factory()
+        .register(
+            &manager,
+            RegisterRequest {
+                config: ResourceConfigInput::authored(config),
+                expr_engine: &engine,
+                slot_bindings: Vec::new(),
+                scope: ScopeLevel::Global,
+                recovery_gate: None,
+            },
+            &expected_slot_identity,
         )
         .await
-        .expect("register_from_value must succeed");
+        .expect("explicitly authored template registration must succeed");
 
     assert!(
         manager.contains(&Postgres::key()),
@@ -314,32 +373,33 @@ async fn register_from_value_validates_schema_failure() {
     let manager = Manager::new();
     let engine = ExpressionEngine::new();
 
-    // `host` is a String per PgConfig — supplying a number must trip
-    // serde::Deserialize. (The HasSchema impl is empty here so schema
-    // validation is permissive; serde deserialize is the gate.)
+    // The config now declares the fields that authorize template evaluation.
+    // A wrong literal type is rejected by schema admission before deserialization.
     let config_json = json!({
         "host": 12345,
         "port": 5432,
     });
 
-    let err = manager
-        .register_resolved::<Postgres>(
-            config_json,
-            &engine,
-            HashMap::new(),
-            Postgres,
-            ScopeLevel::Global,
-            Resident::<Postgres>::new(ResidentConfig::default()),
-            None,
-        )
-        .await
-        .expect_err("must reject ill-typed config");
+    let err = register_from_value(
+        postgres_factory(),
+        &manager,
+        &engine,
+        config_json,
+        HashMap::new(),
+    )
+    .await
+    .expect_err("must reject ill-typed config");
 
-    let msg = err.to_string();
+    let report = std::error::Error::source(&err)
+        .unwrap()
+        .downcast_ref::<nebula_schema::ValidationReport>()
+        .unwrap();
     assert!(
-        msg.contains("deserialize"),
-        "expected deserialize-related error, got: {msg}"
+        report
+            .errors()
+            .any(|error| error.code() == "type_mismatch" && error.path().as_str() == "/host")
     );
+    assert!(!manager.contains(&Postgres::key()));
 }
 
 #[tokio::test]
@@ -353,18 +413,15 @@ async fn register_from_value_resourceconfig_validate_fires() {
         "port": 5432,
     });
 
-    let err = manager
-        .register_resolved::<Postgres>(
-            config_json,
-            &engine,
-            HashMap::new(),
-            Postgres,
-            ScopeLevel::Global,
-            Resident::<Postgres>::new(ResidentConfig::default()),
-            None,
-        )
-        .await
-        .expect_err("must reject empty host");
+    let err = register_from_value(
+        postgres_factory(),
+        &manager,
+        &engine,
+        config_json,
+        HashMap::new(),
+    )
+    .await
+    .expect_err("must reject empty host");
 
     assert!(
         err.to_string().contains("host must not be empty"),
@@ -383,19 +440,16 @@ async fn register_from_value_unknown_slot_binding_rejected() {
     let mut bindings = HashMap::new();
     bindings.insert("auth".to_owned(), CredentialKey::new("db_auth").unwrap());
 
-    let err = manager
-        .register_resolved::<Postgres>(
-            json!({"host": "example.com",
+    let err = register_from_value(
+        postgres_factory(),
+        &manager,
+        &engine,
+        json!({"host": "example.com",
             "port": 5432}),
-            &engine,
-            bindings,
-            Postgres,
-            ScopeLevel::Global,
-            Resident::<Postgres>::new(ResidentConfig::default()),
-            None,
-        )
-        .await
-        .expect_err("unknown slot must be rejected");
+        bindings,
+    )
+    .await
+    .expect_err("unknown slot must be rejected");
 
     let msg = err.to_string();
     assert!(
@@ -430,8 +484,8 @@ impl Provider for DriftedSlotSignals {
         Ok(Arc::new(()))
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 
@@ -467,18 +521,18 @@ async fn register_from_value_rejects_drifted_slot_signals() {
     let manager = Manager::new();
     let engine = ExpressionEngine::new();
 
-    let err = manager
-        .register_resolved::<DriftedSlotSignals>(
-            json!({"host": "example.com", "port": 5432}),
-            &engine,
-            HashMap::new(),
-            DriftedSlotSignals,
-            ScopeLevel::Global,
-            Resident::<DriftedSlotSignals>::new(ResidentConfig::default()),
-            None,
-        )
-        .await
-        .expect_err("a HasCredentialSlots vs DeclaresDependencies contradiction must be rejected");
+    let err = register_from_value(
+        KindActivator::<DriftedSlotSignals, _, _>::new(
+            || DriftedSlotSignals,
+            || Resident::new(ResidentConfig::default()),
+        ),
+        &manager,
+        &engine,
+        json!({"host": "example.com", "port": 5432}),
+        HashMap::new(),
+    )
+    .await
+    .expect_err("a HasCredentialSlots vs DeclaresDependencies contradiction must be rejected");
 
     let msg = err.to_string();
     assert!(
@@ -515,8 +569,8 @@ impl Provider for DriftedSlotNames {
         Ok(Arc::new(()))
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 
@@ -565,20 +619,20 @@ async fn register_from_value_rejects_drifted_slot_names() {
     let manager = Manager::new();
     let engine = ExpressionEngine::new();
 
-    let err = manager
-        .register_resolved::<DriftedSlotNames>(
-            json!({"host": "example.com", "port": 5432}),
-            &engine,
-            HashMap::new(),
-            DriftedSlotNames,
-            ScopeLevel::Global,
-            Resident::<DriftedSlotNames>::new(ResidentConfig::default()),
-            None,
-        )
-        .await
-        .expect_err(
-            "a declares_credential_slots() vs credential_slot_names() contradiction must be rejected",
-        );
+    let err = register_from_value(
+        KindActivator::<DriftedSlotNames, _, _>::new(
+            || DriftedSlotNames,
+            || Resident::new(ResidentConfig::default()),
+        ),
+        &manager,
+        &engine,
+        json!({"host": "example.com", "port": 5432}),
+        HashMap::new(),
+    )
+    .await
+    .expect_err(
+        "a declares_credential_slots() vs credential_slot_names() contradiction must be rejected",
+    );
 
     let msg = err.to_string();
     assert!(
@@ -598,18 +652,15 @@ async fn register_from_value_passthrough_no_templates() {
         "port": 5432,
     });
 
-    manager
-        .register_resolved::<Postgres>(
-            config_json,
-            &engine,
-            HashMap::new(),
-            Postgres,
-            ScopeLevel::Global,
-            Resident::<Postgres>::new(ResidentConfig::default()),
-            None,
-        )
-        .await
-        .expect("register_from_value must succeed for plain JSON");
+    register_from_value(
+        postgres_factory(),
+        &manager,
+        &engine,
+        config_json,
+        HashMap::new(),
+    )
+    .await
+    .expect("register_from_value must succeed for plain JSON");
 
     assert!(manager.contains(&Postgres::key()));
 }
@@ -617,7 +668,7 @@ async fn register_from_value_passthrough_no_templates() {
 // ── Union (enum) resource config: serde tagged wire → registration ───────────
 //
 // A `Provider` whose `Config` is a `#[derive(Schema)]` enum has a tagged-union
-// schema. `validate_config_value` ingests the operator's serde external wire
+// schema. Factory registration ingests the operator's serde external wire
 // (`{"Variant": payload}`) through `values_from_wire`, so the schema pass and the
 // closed-set guard see the union's declared root key, and the same wire still
 // deserializes into the enum directly. This is the resource half of the value-layer
@@ -688,8 +739,8 @@ impl Provider for CacheBackend {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 
@@ -708,6 +759,13 @@ impl DeclaresDependencies for CacheBackend {
     }
 }
 
+fn cache_backend_factory() -> impl ResourceFactory {
+    KindActivator::<CacheBackend, _, _>::new(
+        || CacheBackend,
+        || Resident::<CacheBackend>::new(ResidentConfig::default()),
+    )
+}
+
 #[tokio::test]
 async fn register_from_value_accepts_union_config_external_wire() {
     let manager = Manager::new();
@@ -717,18 +775,15 @@ async fn register_from_value_accepts_union_config_external_wire() {
     // folds it into the union envelope, validation passes, and the enum is stored.
     let config_json = json!({ "Memory": { "capacity": 100 } });
 
-    manager
-        .register_resolved::<CacheBackend>(
-            config_json,
-            &engine,
-            HashMap::new(),
-            CacheBackend,
-            ScopeLevel::Global,
-            Resident::<CacheBackend>::new(ResidentConfig::default()),
-            None,
-        )
-        .await
-        .expect("union config registers via serde external wire");
+    register_from_value(
+        cache_backend_factory(),
+        &manager,
+        &engine,
+        config_json,
+        HashMap::new(),
+    )
+    .await
+    .expect("union config registers via serde external wire");
 
     let managed = manager
         .lookup::<CacheBackend>(&ScopeLevel::Global)
@@ -746,18 +801,15 @@ async fn register_from_value_rejects_unknown_union_variant() {
     let engine = ExpressionEngine::new();
 
     // `Nope` is not a declared variant — ingress rejects it before validation.
-    let err = manager
-        .register_resolved::<CacheBackend>(
-            json!({ "Nope": {} }),
-            &engine,
-            HashMap::new(),
-            CacheBackend,
-            ScopeLevel::Global,
-            Resident::<CacheBackend>::new(ResidentConfig::default()),
-            None,
-        )
-        .await
-        .expect_err("an unknown union variant must be rejected at registration");
+    let err = register_from_value(
+        cache_backend_factory(),
+        &manager,
+        &engine,
+        json!({ "Nope": {} }),
+        HashMap::new(),
+    )
+    .await
+    .expect_err("an unknown union variant must be rejected at registration");
 
     // The top-level message names the operation; the structured cause (the
     // unknown-variant detail) is preserved on the source chain via
@@ -785,18 +837,15 @@ async fn register_from_value_rejects_inlined_field_in_union_variant_payload() {
     // closed-set guard must signal it (serde would otherwise silently drop the
     // unknown field), so a secret cannot be inlined into a union variant payload —
     // the union's equivalent of the record top-level closed-set guard.
-    let err = manager
-        .register_resolved::<CacheBackend>(
-            json!({ "Memory": { "capacity": 100, "secret_token": "leak" } }),
-            &engine,
-            HashMap::new(),
-            CacheBackend,
-            ScopeLevel::Global,
-            Resident::<CacheBackend>::new(ResidentConfig::default()),
-            None,
-        )
-        .await
-        .expect_err("an undeclared field in a union variant payload must be rejected");
+    let err = register_from_value(
+        cache_backend_factory(),
+        &manager,
+        &engine,
+        json!({ "Memory": { "capacity": 100, "secret_token": "leak" } }),
+        HashMap::new(),
+    )
+    .await
+    .expect_err("an undeclared field in a union variant payload must be rejected");
 
     let msg = err.to_string();
     assert!(

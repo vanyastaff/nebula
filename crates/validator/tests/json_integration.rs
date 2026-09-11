@@ -131,7 +131,7 @@ fn numeric_max_value_i64() {
 fn numeric_in_range_i64() {
     use nebula_validator::validators::in_range;
 
-    let v = in_range::<i64>(1, 65535);
+    let v = in_range::<i64>(1, 65535).expect("ordered bounds");
     assert!(v.validate_any(&json!(8080)).is_ok());
     assert!(v.validate_any(&json!(1)).is_ok());
     assert!(v.validate_any(&json!(0)).is_err());
@@ -147,7 +147,7 @@ fn numeric_f64_validation() {
     assert!(v.validate_any(&json!(-0.5)).is_err());
 
     // integers widen to f64
-    let v2 = in_range::<f64>(0.0, 100.0);
+    let v2 = in_range::<f64>(0.0, 100.0).expect("ordered bounds");
     assert!(v2.validate_any(&json!(42)).is_ok());
 }
 
@@ -168,7 +168,10 @@ fn numeric_json_field_port() {
     use nebula_validator::validators::in_range;
 
     let data = json!({"server": {"port": 8080}});
-    let v = json_field("/server/port", in_range::<i64>(1, 65535));
+    let v = json_field(
+        "/server/port",
+        in_range::<i64>(1, 65535).expect("ordered bounds"),
+    );
     assert!(v.validate(&data).is_ok());
 
     let bad = json!({"server": {"port": 0}});
@@ -277,7 +280,7 @@ fn collection_not_empty_json() {
 fn collection_size_range_json() {
     use nebula_validator::validators::size_range;
 
-    let v = size_range::<Value>(1, 5);
+    let v = size_range::<Value>(1, 5).expect("ordered bounds");
     assert!(v.validate_any(&json!([1, 2, 3])).is_ok());
     assert!(v.validate_any(&json!([])).is_err());
     assert!(v.validate_any(&json!([1, 2, 3, 4, 5, 6])).is_err());
@@ -455,7 +458,10 @@ fn user_registration_payload() {
         .and(json_field("/name", max_length(100)))
         .and(json_field("/email", email()))
         .and(json_field("/password", min_length(8)))
-        .and(json_field("/age", in_range::<i64>(13, 120)))
+        .and(json_field(
+            "/age",
+            in_range::<i64>(13, 120).expect("ordered bounds"),
+        ))
         .and(json_field("/terms_accepted", is_true()));
 
     // Valid registration
@@ -507,7 +513,10 @@ fn server_config_payload() {
     use nebula_validator::validators::{contains, greater_than, in_range};
 
     let validator = json_field("/host", min_length(1))
-        .and(json_field("/port", in_range::<i64>(1, 65535)))
+        .and(json_field(
+            "/port",
+            in_range::<i64>(1, 65535).expect("ordered bounds"),
+        ))
         .and(json_field("/workers", greater_than::<i64>(0)))
         .and(json_field_optional("/tls/cert_path", min_length(1)))
         .and(json_field_optional(

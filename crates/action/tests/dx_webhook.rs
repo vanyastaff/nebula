@@ -6,7 +6,7 @@ use std::sync::{
 };
 
 use nebula_action::{
-    Action, ActionError, ActionMetadata, HasTriggerScheduling, TestContextBuilder, TriggerEvent,
+    Action, ActionError, HasTriggerScheduling, TestContextBuilder, TriggerEvent,
     TriggerEventOutcome, TriggerHandler, WebhookAction, WebhookRequest, WebhookResponse,
     WebhookTriggerAdapter, webhook::webhook_request_for_test,
 };
@@ -30,10 +30,10 @@ impl Action for TestWebhook {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             nebula_core::action_key!("test.webhook"),
-            "Test Webhook",
+            nebula_action::metadata_name!("Test Webhook"),
             "Test webhook action",
         )
     }
@@ -108,7 +108,7 @@ fn wrap_event(req: WebhookRequest) -> TriggerEvent {
 #[tokio::test]
 async fn webhook_adapter_start_stores_state() {
     let (webhook, activated, _) = make_webhook();
-    let adapter = WebhookTriggerAdapter::new(webhook);
+    let adapter = WebhookTriggerAdapter::new(webhook).expect("valid test catalog definition");
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
     adapter.start(&ctx).await.unwrap();
@@ -118,7 +118,7 @@ async fn webhook_adapter_start_stores_state() {
 #[tokio::test]
 async fn webhook_adapter_stop_passes_stored_state() {
     let (webhook, _, deactivated) = make_webhook();
-    let adapter = WebhookTriggerAdapter::new(webhook);
+    let adapter = WebhookTriggerAdapter::new(webhook).expect("valid test catalog definition");
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
     adapter.start(&ctx).await.unwrap();
@@ -129,7 +129,7 @@ async fn webhook_adapter_stop_passes_stored_state() {
 #[tokio::test]
 async fn webhook_adapter_handle_event_emits_on_valid_secret() {
     let (webhook, ..) = make_webhook();
-    let adapter = WebhookTriggerAdapter::new(webhook);
+    let adapter = WebhookTriggerAdapter::new(webhook).expect("valid test catalog definition");
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
     adapter.start(&ctx).await.unwrap();
@@ -143,7 +143,7 @@ async fn webhook_adapter_handle_event_emits_on_valid_secret() {
 #[tokio::test]
 async fn webhook_adapter_handle_event_skips_on_bad_secret() {
     let (webhook, ..) = make_webhook();
-    let adapter = WebhookTriggerAdapter::new(webhook);
+    let adapter = WebhookTriggerAdapter::new(webhook).expect("valid test catalog definition");
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
     adapter.start(&ctx).await.unwrap();
@@ -156,14 +156,14 @@ async fn webhook_adapter_handle_event_skips_on_bad_secret() {
 #[tokio::test]
 async fn webhook_adapter_accepts_events() {
     let (webhook, ..) = make_webhook();
-    let adapter = WebhookTriggerAdapter::new(webhook);
+    let adapter = WebhookTriggerAdapter::new(webhook).expect("valid test catalog definition");
     assert!(adapter.accepts_events());
 }
 
 #[tokio::test]
 async fn webhook_adapter_handle_event_before_start_fails() {
     let (webhook, ..) = make_webhook();
-    let adapter = WebhookTriggerAdapter::new(webhook);
+    let adapter = WebhookTriggerAdapter::new(webhook).expect("valid test catalog definition");
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
     let req =
@@ -184,10 +184,10 @@ impl Action for CountingWebhook {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             nebula_core::action_key!("test.webhook.count"),
-            "Counting Webhook",
+            nebula_action::metadata_name!("Counting Webhook"),
             "Counts activate/deactivate",
         )
     }
@@ -246,7 +246,7 @@ fn make_counting() -> (CountingWebhook, Arc<AtomicUsize>, Arc<AtomicUsize>) {
 #[tokio::test]
 async fn webhook_adapter_rejects_double_start() {
     let (webhook, activate, deactivate) = make_counting();
-    let adapter = WebhookTriggerAdapter::new(webhook);
+    let adapter = WebhookTriggerAdapter::new(webhook).expect("valid test catalog definition");
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
     adapter.start(&ctx).await.unwrap();
@@ -268,7 +268,7 @@ async fn webhook_adapter_rejects_double_start() {
 #[tokio::test]
 async fn webhook_adapter_start_stop_start_succeeds() {
     let (webhook, activate, deactivate) = make_counting();
-    let adapter = WebhookTriggerAdapter::new(webhook);
+    let adapter = WebhookTriggerAdapter::new(webhook).expect("valid test catalog definition");
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
     adapter.start(&ctx).await.unwrap();
@@ -290,10 +290,10 @@ impl Action for ErroringWebhook {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             nebula_core::action_key!("test.webhook.error"),
-            "Erroring Webhook",
+            nebula_action::metadata_name!("Erroring Webhook"),
             "handle_request always returns Err",
         )
     }
@@ -327,7 +327,8 @@ impl WebhookAction for ErroringWebhook {
 #[tokio::test]
 async fn handle_request_error_sends_500_via_oneshot() {
     use http::StatusCode;
-    let adapter = WebhookTriggerAdapter::new(ErroringWebhook);
+    let adapter =
+        WebhookTriggerAdapter::new(ErroringWebhook).expect("valid test catalog definition");
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
     adapter.start(&ctx).await.unwrap();
 
@@ -361,10 +362,10 @@ impl Action for HangingWebhook {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             nebula_core::action_key!("test.webhook.hang"),
-            "Hanging Webhook",
+            nebula_action::metadata_name!("Hanging Webhook"),
             "handle_request hangs forever",
         )
     }
@@ -402,9 +403,12 @@ impl WebhookAction for HangingWebhook {
 async fn handle_request_cancelled_mid_flight_returns_cleanly() {
     use http::StatusCode;
     let entered = Arc::new(AtomicBool::new(false));
-    let adapter = Arc::new(WebhookTriggerAdapter::new(HangingWebhook {
-        entered: entered.clone(),
-    }));
+    let adapter = Arc::new(
+        WebhookTriggerAdapter::new(HangingWebhook {
+            entered: entered.clone(),
+        })
+        .expect("valid test catalog definition"),
+    );
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
     adapter.start(&ctx).await.unwrap();
 
@@ -448,7 +452,7 @@ async fn handle_request_cancelled_mid_flight_returns_cleanly() {
 #[tokio::test]
 async fn webhook_adapter_records_health_success_on_emit() {
     let (webhook, ..) = make_webhook();
-    let adapter = WebhookTriggerAdapter::new(webhook);
+    let adapter = WebhookTriggerAdapter::new(webhook).expect("valid test catalog definition");
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
     adapter.start(&ctx).await.unwrap();
 
@@ -467,7 +471,8 @@ async fn webhook_adapter_records_health_success_on_emit() {
 
 #[tokio::test]
 async fn webhook_adapter_records_health_error_on_handler_failure() {
-    let adapter = WebhookTriggerAdapter::new(ErroringWebhook);
+    let adapter =
+        WebhookTriggerAdapter::new(ErroringWebhook).expect("valid test catalog definition");
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
     adapter.start(&ctx).await.unwrap();
 
@@ -493,10 +498,10 @@ impl Action for SlowWebhook {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             nebula_core::action_key!("test.webhook.slow"),
-            "Slow Webhook",
+            nebula_action::metadata_name!("Slow Webhook"),
             "handle_request awaits a flag",
         )
     }
@@ -534,9 +539,12 @@ impl WebhookAction for SlowWebhook {
 #[tokio::test]
 async fn in_flight_notify_wakes_stop() {
     let finish = Arc::new(AtomicBool::new(false));
-    let adapter = Arc::new(WebhookTriggerAdapter::new(SlowWebhook {
-        finish: finish.clone(),
-    }));
+    let adapter = Arc::new(
+        WebhookTriggerAdapter::new(SlowWebhook {
+            finish: finish.clone(),
+        })
+        .expect("valid test catalog definition"),
+    );
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
     adapter.start(&ctx).await.unwrap();
 

@@ -95,6 +95,22 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
 
 ## 5. Инварианты и контракты
 
+- **Checked definitions.** Component metadata and `HasSchema` construction return typed
+  failures. Registry snapshots and intrinsic compiler schemas propagate these errors instead
+  of substituting empty definitions; subsequent validation consumes owned `AuthoredValue` trees.
+- **Recorded value identity.** Literal JSON uses `AuthoredValue::from_data`; only explicit
+  expression/template record variants become programs. Persisted graph-v1/v2 hash domains keep
+  their original framing and `canonical_json_v1` bytes, independently of tree serde/canonical
+  encoding. Existing recorded-plan golden IDs must not be updated during this migration.
+- **Scalar contract epoch.** Compiler 4/hash 2 uses the existing record-v1 framing and JSON-v1
+  hash projection. Legacy Record/Any/Union schema envelopes remain v1; scalar envelopes are v2
+  with the schema-owned descriptor v1. Compiler 1 and 3 remain legacy-schema-only decoders.
+  Exact registry checks continue accepting compiler 3 when its contracts match, but never
+  reinterpret a recorded empty Record as the null schema now emitted for unit types.
+- **Node root-rule proof.** Compiler 4 and its record checker accept root rules only when
+  schema's static validation proves them against the complete named-parameter object.
+  Pending root checks, references, and empty-map passthrough inputs remain rejected rather
+  than being treated as runtime proofs. Compiler 1 and 3 keep rejecting node root rules.
 - **Namespace-инвариант (canon §13.1, ADR-0027).** Каждый ключ компонента начинается
   с `{plugin.key()}.`; нарушение → `NamespaceMismatch`. Проверяется в
   `ResolvedPlugin::from` **до** попадания в registry — by-construction, не by-convention.
@@ -136,7 +152,7 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
    `src/manifest.rs:1` «canonical in `nebula-metadata` ( follow-up,».
 5. **Двойная stringly-поверхность ключа credential.** `resolved_plugin.rs:157-160`
    сознательно игнорирует `AnyCredential::credential_key()` (`&str` из `KEY` const)
-   в пользу типизированного `metadata().base.key` — две поверхности ключа сосуществуют
+   в пользу типизированного `metadata().base.key()` — две поверхности ключа сосуществуют
    в `nebula-credential` (см. §7).
 6. **`lib.rs:16-17`** описывает `PluginManifest` как локальный тип с builder API,
    не упоминая, что это re-export — мелочь, но вводит в заблуждение.
@@ -148,7 +164,7 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
 поэтому любой сдвиг этих поверхностей каскадирует сюда механически.
 
 - **Credential seam.** `Plugin::credentials()` отдаёт `Vec<Arc<dyn AnyCredential>>`
-  (`src/plugin.rs:48`); индексы `ResolvedPlugin` ключуют их по `metadata().base.key`.
+  (`src/plugin.rs:48`); индексы `ResolvedPlugin` ключуют их по `metadata().base.key()`.
   Пост-ADR-0092 `nebula-credential` стал единым крейтом (contract + runtime + facade +
   builtin; `credential-runtime`/`builtin`/`testutil`/`vault` удалены). Для plugin это
   меняет **источник** dyn-типа, но не контракт регистрации: `AnyCredential` остаётся
@@ -156,7 +172,7 @@ in-memory, durability — в `nebula-storage`); не отвечает за threa
   Protocol-модель, судьба `credential_key()`), правки локализованы в
   `plugin.rs` / `resolved_plugin.rs` / `registry.rs` (`all_credentials`/`resolve_credential`).
 - **Key-поверхность.** Уже сегодня крейт сознательно предпочитает типизированный
-  `metadata().base.key` поверх stringly `credential_key()` (resolved_plugin.rs:157-160).
+  `metadata().base.key()` поверх stringly `credential_key()` (resolved_plugin.rs:157-160).
   Это **ранний голос** в пользу схлопывания двойной key-поверхности в `nebula-credential`:
   когда rewrite выберет единственный канонический ключ, plugin уже на правильной стороне шва.
 - **Resource seam.** `Plugin::resources()` отдаёт `Vec<Arc<dyn ResourceDescriptor>>`

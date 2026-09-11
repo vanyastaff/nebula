@@ -9,13 +9,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(feature = "cache")]
 use nebula_log::debug;
-use nebula_log::trace;
 use serde_json::Value;
 use tracing::instrument;
 
 use crate::{
-    ast::Expr, builtins::BuiltinRegistry, context::EvaluationContext, error::ExpressionResult,
-    eval::Evaluator, lexer::Lexer, parser::Parser, policy::EvaluationPolicy,
+    CompiledProgram, builtins::BuiltinRegistry, context::EvaluationContext,
+    error::ExpressionResult, eval::Evaluator, policy::EvaluationPolicy,
 };
 
 /// Cache hit/miss statistics snapshot.
@@ -118,7 +117,10 @@ impl<K: std::hash::Hash + Eq + Send + Sync + 'static, V: Clone + Send + Sync + '
             });
     }
 
-    fn get(&self, key: &K) -> Option<V> {
+    fn get<Q>(&self, key: &Q) -> Option<V>
+    where
+        Q: moka::Equivalent<K> + std::hash::Hash + ?Sized,
+    {
         if let Some(v) = self.inner.get(key) {
             self.record_hit();
             Some(v)
@@ -154,7 +156,7 @@ impl<K: std::hash::Hash + Eq + Send + Sync + 'static, V: Clone + Send + Sync + '
 pub struct ExpressionEngine {
     /// Cache for parsed expressions
     #[cfg(feature = "cache")]
-    expr_cache: Option<TrackedCache<Arc<str>, Expr>>,
+    expr_cache: Option<TrackedCache<Arc<str>, CompiledProgram>>,
     /// Cache for parsed templates
     #[cfg(feature = "cache")]
     template_cache: Option<TrackedCache<Arc<str>, crate::Template>>,
@@ -169,7 +171,7 @@ pub struct ExpressionEngine {
 impl ExpressionEngine {
     #[cfg(feature = "cache")]
     fn create(
-        expr_cache: Option<TrackedCache<Arc<str>, Expr>>,
+        expr_cache: Option<TrackedCache<Arc<str>, CompiledProgram>>,
         template_cache: Option<TrackedCache<Arc<str>, crate::Template>>,
         policy: Option<Arc<EvaluationPolicy>>,
     ) -> Self {
@@ -247,7 +249,8 @@ impl ExpressionEngine {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        self.policy = Some(Arc::new(EvaluationPolicy::allow_only(allowed_functions)));
+        let policy = self.policy.as_deref().cloned().unwrap_or_default();
+        self.policy = Some(Arc::new(policy.with_allowed_functions(allowed_functions)));
         self.rebuild_evaluator();
         self
     }
@@ -273,12 +276,15 @@ impl ExpressionEngine {
     /// This method is safe to call after the engine has been used. Internally,
     /// it performs copy-on-write on the builtin registry when needed and then
     /// rebuilds the evaluator so subsequent evaluations observe the new function.
+    /// The callback must return an opaque [`crate::BuiltinOutput`] constructed by
+    /// its mandatory [`crate::BuiltinOutputBuilder`], so no unchecked raw JSON
+    /// value can cross this public extension boundary.
     pub fn register_function(
         &mut self,
         name: impl AsRef<str>,
         func: crate::builtins::BuiltinFunction,
     ) {
-        Arc::make_mut(&mut self.builtins).register(name, func);
+        Arc::make_mut(&mut self.builtins).register_bounded(name, func);
         self.rebuild_evaluator();
     }
 
@@ -289,48 +295,66 @@ impl ExpressionEngine {
         expression: &str,
         context: &EvaluationContext,
     ) -> ExpressionResult<Value> {
-        trace!(expression = expression, "Evaluating expression");
-
+        crate::limits::check_limit(
+            "source bytes",
+            expression.len(),
+            crate::limits::MAX_SOURCE_BYTES,
+        )?;
         // Parse the expression (with caching if enabled)
         #[cfg(feature = "cache")]
-        let ast = if let Some(cache) = &self.expr_cache {
-            let key: Arc<str> = Arc::from(expression);
-            if let Some(cached) = cache.get(&key) {
+        let program = if let Some(cache) = &self.expr_cache {
+            if let Some(cached) = cache.get(expression) {
                 cached
             } else {
-                let parsed = self.parse_expression(expression)?;
-                cache.insert(key, parsed.clone());
+                let parsed = CompiledProgram::compile(expression)?;
+                cache.insert(Arc::from(expression), parsed.clone());
                 parsed
             }
         } else {
-            self.parse_expression(expression)?
+            CompiledProgram::compile(expression)?
         };
 
         #[cfg(not(feature = "cache"))]
-        let ast = self.parse_expression(expression)?;
+        let program = CompiledProgram::compile(expression)?;
 
-        // Evaluate the AST
-        let result = self.evaluator.eval(&ast, context)?;
+        self.evaluate_compiled(&program, context)
+    }
 
-        trace!(result = ?result, "Expression evaluation completed");
-        Ok(result)
+    /// Evaluate retained syntax under this engine's current registry and policy.
+    ///
+    /// No source parsing or cache lookup occurs. Every template expression and
+    /// higher-order invocation shares one evaluation budget for this call.
+    ///
+    /// # Errors
+    /// Returns a typed runtime, lookup, type, or resource-limit error.
+    #[instrument(level = "debug", skip_all, fields(source_bytes = program.source().len()))]
+    pub fn evaluate_compiled(
+        &self,
+        program: &CompiledProgram,
+        context: &EvaluationContext,
+    ) -> ExpressionResult<Value> {
+        self.evaluator.eval_program(program, context)
     }
 
     /// Parse a template from a string (with caching if enabled)
     ///
     /// If template caching is enabled, this will return a cached template
     /// for the same source string, avoiding re-parsing.
-    pub fn parse_template(&self, source: impl Into<String>) -> ExpressionResult<crate::Template> {
-        let source_str = source.into();
+    pub fn parse_template(&self, source: impl AsRef<str>) -> ExpressionResult<crate::Template> {
+        let source_str = source.as_ref();
+        crate::limits::check_limit(
+            "source bytes",
+            source_str.len(),
+            crate::limits::MAX_SOURCE_BYTES,
+        )?;
 
         #[cfg(feature = "cache")]
         if let Some(cache) = &self.template_cache {
-            let key: Arc<str> = Arc::from(source_str.as_str());
-            if let Some(cached) = cache.get(&key) {
+            if let Some(cached) = cache.get(source_str) {
                 return Ok(cached);
             }
-            let template = crate::Template::new(&source_str)?;
-            cache.insert(key, template.clone());
+            let template = crate::Template::new(source_str)?;
+            cache.insert(Arc::from(source_str), template.clone());
             return Ok(template);
         }
 
@@ -338,7 +362,7 @@ impl ExpressionEngine {
     }
 
     /// Get or parse a template (alias for parse_template with caching)
-    pub fn get_template(&self, source: impl Into<String>) -> ExpressionResult<crate::Template> {
+    pub fn get_template(&self, source: impl AsRef<str>) -> ExpressionResult<crate::Template> {
         self.parse_template(source)
     }
 
@@ -350,26 +374,6 @@ impl ExpressionEngine {
         context: &EvaluationContext,
     ) -> ExpressionResult<String> {
         template.render(self, context)
-    }
-
-    /// Parse an expression string into an AST (internal helper)
-    fn parse_expression(&self, expression: &str) -> ExpressionResult<Expr> {
-        // Handle template delimiters
-        let expr_content =
-            if expression.trim().starts_with("{{") && expression.trim().ends_with("}}") {
-                let trimmed = expression.trim();
-                trimmed[2..trimmed.len() - 2].trim()
-            } else {
-                expression
-            };
-
-        // Tokenize
-        let mut lexer = Lexer::new(expr_content);
-        let tokens = lexer.tokenize()?;
-
-        // Parse
-        let mut parser = Parser::new(tokens);
-        parser.parse()
     }
 
     /// Clear all caches (expressions and templates)
@@ -503,11 +507,12 @@ mod tests {
     use crate::EvaluationPolicy;
 
     fn constant_one(
-        _args: &[Value],
+        _args: &[&Value],
         _view: crate::eval::BuiltinView<'_>,
         _context: &EvaluationContext,
-    ) -> ExpressionResult<Value> {
-        Ok(Value::from(1))
+        output: crate::BuiltinOutputBuilder,
+    ) -> ExpressionResult<crate::BuiltinOutput> {
+        output.signed_integer(1)
     }
 
     #[test]

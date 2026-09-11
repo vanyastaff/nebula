@@ -30,18 +30,22 @@ pub use crate::{
         ActionContext, ActionRuntimeContext, CredentialContextExt, HasNodeIdentity,
         HasTriggerScheduling, TriggerContext, TriggerRuntimeContext,
     },
-    control::{ControlAction, ControlActionAdapter, ControlInput, ControlOutcome},
+    control::{ControlAction, ControlActionAdapter, ControlOutcome},
     effect::{
         ActionEffectContract, EffectContractError, EffectFailureCode, EffectInvocationContext,
         EffectInvocationOutcome, EffectPreparationContext, EffectPreparationError,
         EffectQueryContext, EffectReconciliationOutcome, PreparedEffectAdapter,
-        PreparedRemoteEffect, ReadOnlyEffectQuery, RemoteDestinationGuarantee,
+        PreparedRemoteEffect, ReadOnlyEffectQuery, RemoteDestinationGuarantee, RemoteEffectAction,
         RemoteEffectDescriptor, RemoteEffectFactory, RemoteEffectPolicy, RemoteEffectPolicyError,
         StableKeyGuarantee,
     },
     error::{ActionError, ActionErrorExt, RetryHintCode, ValidationReason},
     idempotency::IdempotencyKey,
-    metadata::{ActionMetadata, MetadataCompatibilityError},
+    input::{ActionInput, PreparedActionInput},
+    metadata::{
+        ActionMetadata, ActionMetadataAdmissionError, ActionMetadataDraft,
+        ActionMetadataReadmissionError, MetadataCompatibilityError, RecordedActionMetadata,
+    },
     output::{
         ActionOutput, DeferredOutput, ExpectedOutput, Producer, ProducerKind, Progress, Resolution,
     },
@@ -65,9 +69,7 @@ pub use crate::{
     trigger::{
         TriggerAction, TriggerActionAdapter, TriggerEvent, TriggerEventOutcome, TriggerSource,
     },
-    validation::{
-        ActionPackageValidationError, ActionPackageValidationErrors, validate_action_package,
-    },
+    validation::{ActionPackageValidationError, ActionPackageValidationErrors},
     webhook::{
         SignatureOutcome, WebhookAction, WebhookHttpResponse, WebhookRequest, WebhookResponse,
         WebhookSource, WebhookTriggerAdapter, hmac_sha256_compute, verify_hmac_sha256,

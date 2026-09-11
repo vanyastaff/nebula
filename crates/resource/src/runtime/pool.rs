@@ -184,7 +184,7 @@ impl<R: Provider> Pooled<R> {
     /// This is the constructor the **registration path must use**. A
     /// `Pooled<R>` built from operator-/JSON-supplied config (the engine
     /// activation registrar feeding [`Manager::register`](crate::Manager::register) /
-    /// [`register_resolved`](crate::Manager::register_resolved)) flows
+    /// [`ResourceFactory::register`](crate::ResourceFactory::register)) flows
     /// untrusted input here, so the #390 `(min_size, max_size)` sanity
     /// check has to fail safely as a registration `Error` rather than
     /// abort the process — an abort on library input is a CLAUDE.md
@@ -692,14 +692,12 @@ mod tests {
     use super::*;
     use crate::{
         context::ResourceContext,
-        resource::{ResourceConfig, ResourceMetadata},
+        resource::{ResourceConfig, ResourceMetadataDraft},
         topology::{pooled::BrokenCheck, store::ReturnOutcome},
     };
 
-    #[derive(Clone)]
+    #[derive(Clone, nebula_schema::Schema)]
     struct PoolTestConfig;
-
-    nebula_schema::impl_empty_has_schema!(PoolTestConfig);
 
     impl ResourceConfig for PoolTestConfig {
         fn validate(&self) -> Result<(), Error> {
@@ -779,8 +777,8 @@ mod tests {
             Ok(())
         }
 
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::from_key(&Self::key())
+        fn metadata() -> ResourceMetadataDraft {
+            ResourceMetadataDraft::from_key(Self::key())
         }
     }
 

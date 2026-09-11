@@ -1,36 +1,41 @@
 //! Integration tests for engine-owned credential executor wrappers.
 
 use nebula_credential::{
-    Credential, CredentialContext, CredentialMetadata, PendingStoreError, SecretString,
+    Credential, CredentialContext, PendingStoreError,
     credentials::{ApiKeyCredential, OAuth2Credential},
-    error::CredentialError,
-    resolve::{InteractionRequest, ResolveResult},
-    scheme::SecretToken,
 };
-use nebula_schema::FieldValues;
+use nebula_schema::{AuthoredValue, schema_of};
 use nebula_storage::credential::InMemoryPendingStore;
+
+fn resolve_properties<C: Credential>(data: serde_json::Value) -> C::Properties {
+    schema_of::<C::Properties>()
+        .expect("valid credential properties schema")
+        .validate(AuthoredValue::from_data(data).expect("bounded credential properties data"))
+        .expect("valid credential properties")
+        .resolve_data()
+        .expect("fully resolved credential properties")
+        .into_typed_exposing_secrets()
+        .expect("typed credential properties")
+}
 
 #[tokio::test]
 async fn execute_resolve_static_credential_returns_complete() {
-    let store = InMemoryPendingStore::new();
     let ctx = CredentialContext::for_owner("user-1");
 
-    let mut values = FieldValues::new();
-    values
-        .try_set_raw("api_key", serde_json::Value::String("sk-test-key".into()))
-        .expect("test-only known-good key");
+    let properties = resolve_properties::<ApiKeyCredential>(serde_json::json!({
+        "api_key": "sk-test-key"
+    }));
+    assert_eq!(properties.api_key.expose_secret(), "sk-test-key");
 
     let result =
-        nebula_credential::runtime::execute_resolve::<ApiKeyCredential, _>(&values, &ctx, &store)
-            .await;
+        nebula_credential::runtime::execute_resolve::<ApiKeyCredential>(&properties, &ctx).await;
 
-    assert!(
-        matches!(
-            result,
-            Ok(nebula_credential::runtime::ResolveResponse::Complete(_))
-        ),
-        "expected Complete, got: {result:?}"
-    );
+    match result {
+        Ok(nebula_credential::runtime::ResolveResponse::Complete(state)) => {
+            assert_eq!(state.token().expose_secret(), "sk-test-key");
+        },
+        other => panic!("expected Complete, got: {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -61,92 +66,6 @@ async fn execute_continue_returns_pending_store_error_for_missing_token() {
             ))
         ),
         "expected PendingStore NotFound error, got: {result:?}"
-    );
-}
-
-// ── Test fixture: a credential whose base resolve returns Pending(()) ─────
-
-#[derive(
-    Debug, Clone, serde::Serialize, serde::Deserialize, zeroize::Zeroize, zeroize::ZeroizeOnDrop,
-)]
-struct DummyState {
-    token: String,
-}
-
-impl nebula_credential::CredentialState for DummyState {
-    const KIND: &'static str = "base_resolve_pending_test_state";
-    const VERSION: u32 = 1;
-}
-
-/// Credential whose base `resolve` returns `Pending(())` — exactly the
-/// shape Tech Spec forbids the engine executor from honouring.
-struct BaseResolvePendingCredential;
-
-impl Credential for BaseResolvePendingCredential {
-    type Properties = FieldValues;
-    type Scheme = SecretToken;
-    type State = DummyState;
-
-    const KEY: &'static str = "base_resolve_pending_test";
-
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
-            nebula_core::credential_key!("base_resolve_pending_test"),
-            "Base Resolve Pending Test",
-            "Fixture credential exercising the §15.4 base-resolve-Pending rejection path",
-            nebula_credential::schema_of::<Self::Properties>(),
-            nebula_credential::AuthPattern::SecretToken,
-        )
-    }
-
-    fn project(state: &DummyState) -> SecretToken {
-        SecretToken::new(SecretString::new(state.token.clone()))
-    }
-
-    async fn resolve(
-        _values: &FieldValues,
-        _ctx: &CredentialContext,
-    ) -> Result<ResolveResult<DummyState, ()>, CredentialError> {
-        // Deliberately return Pending() — Tech Spec says this
-        // shape MUST be rejected by `execute_resolve`. The base trait
-        // cannot carry typed pending state; interactive flows go
-        // through credential-specific kickoff helpers.
-        Ok(ResolveResult::Pending {
-            state: (),
-            interaction: InteractionRequest::DisplayInfo {
-                title: "test".into(),
-                message: "should never reach the user".into(),
-                data: nebula_credential::resolve::DisplayData::Text("test".into()),
-                expires_in: None,
-            },
-        })
-    }
-}
-
-#[tokio::test]
-async fn execute_resolve_rejects_base_resolve_pending() {
-    // Per Tech Spec `execute_resolve` rejects `ResolveResult::Pending`
-    // from the base `Credential::resolve` because `state: ()` cannot
-    // deserialize into the typed `Interactive::Pending` later in
-    // `execute_continue`. The contract is: base resolve returns
-    // Complete or Retry; interactive kickoffs use credential-specific
-    // helpers that populate the typed Pending directly via
-    // `PendingStateStore::put`.
-    let store = InMemoryPendingStore::new();
-    let ctx = CredentialContext::for_owner("user-1").with_session_id("sess-1");
-    let values = FieldValues::new();
-
-    let result = nebula_credential::runtime::execute_resolve::<BaseResolvePendingCredential, _>(
-        &values, &ctx, &store,
-    )
-    .await;
-
-    assert!(
-        matches!(
-            result,
-            Err(nebula_credential::runtime::ExecutorError::BaseResolvePending)
-        ),
-        "expected BaseResolvePending error, got: {result:?}"
     );
 }
 

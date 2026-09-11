@@ -24,15 +24,56 @@ use nebula_credential::{
     RefreshReport, RefreshStrategy, RegisterError, RevokeStrategy, SecretString,
     compute_capabilities,
     error::CredentialError,
-    resolve::{ResolveResult, TestResult, UserInput},
+    resolve::{InteractionRequest, ResolveResult, StaticResolveResult, TestResult, UserInput},
     scheme::SecretToken,
 };
-use nebula_metadata::Metadata;
-use nebula_schema::FieldValues;
 use serde::{Deserialize, Serialize};
 
 fn token() -> SecretToken {
     SecretToken::new(SecretString::new("t"))
+}
+
+struct MetadataOnly;
+
+#[nebula_credential::credential(
+    key = "test_metadata_only",
+    name = "Metadata Only",
+    description = "fixture",
+    icon = "key",
+    doc_url = "https://example.test/credentials/metadata-only"
+)]
+impl MetadataOnly {
+    type Properties = serde_json::Value;
+    type Scheme = SecretToken;
+    type State = SecretToken;
+
+    fn project(state: &SecretToken) -> SecretToken {
+        state.clone()
+    }
+
+    async fn resolve(
+        _properties: &serde_json::Value,
+        _ctx: &CredentialContext,
+    ) -> Result<StaticResolveResult<SecretToken>, CredentialError> {
+        Ok(StaticResolveResult::Complete(token()))
+    }
+}
+
+#[test]
+fn synthesized_metadata_uses_curated_inline_icon() {
+    let mut registry = CredentialRegistry::new();
+    registry
+        .register(MetadataOnly, "credential-attribute-metadata-test")
+        .expect("the synthesized static credential metadata is valid");
+    let metadata = registry
+        .metadata(MetadataOnly::KEY)
+        .expect("registered metadata is available");
+
+    assert_eq!(metadata.icon(), &nebula_credential::Icon::inline("key"));
+    assert_eq!(
+        metadata.documentation_url(),
+        Some("https://example.test/credentials/metadata-only")
+    );
 }
 
 // ── Refreshable-only: synth metadata + synth policy (RefreshToken) ────────
@@ -47,7 +88,7 @@ struct RefreshOnly;
     doc_url = "https://example.test/credentials/refresh-only"
 )]
 impl RefreshOnly {
-    type Properties = FieldValues;
+    type Properties = serde_json::Value;
     type Scheme = SecretToken;
     type State = SecretToken;
 
@@ -58,10 +99,10 @@ impl RefreshOnly {
     }
 
     async fn resolve(
-        _values: &FieldValues,
+        _properties: &serde_json::Value,
         _ctx: &CredentialContext,
-    ) -> Result<ResolveResult<SecretToken, ()>, CredentialError> {
-        Ok(ResolveResult::Complete(token()))
+    ) -> Result<StaticResolveResult<SecretToken>, CredentialError> {
+        Ok(StaticResolveResult::Complete(token()))
     }
 
     async fn refresh(_state: &mut SecretToken, attempt: RefreshAttempt<'_>) -> RefreshReport {
@@ -91,12 +132,9 @@ fn erased_credential_exposes_exact_computed_capabilities() {
 
 #[test]
 fn refresh_only_synthesizes_metadata_from_args() {
-    let meta = RefreshOnly::metadata();
-    assert_eq!(meta.name(), "Refresh Only");
-    assert_eq!(meta.icon().as_inline(), Some("sync"));
     assert_eq!(
-        meta.documentation_url(),
-        Some("https://example.test/credentials/refresh-only")
+        RefreshOnly::metadata().pattern(),
+        nebula_credential::AuthPattern::SecretToken
     );
 }
 
@@ -112,7 +150,7 @@ struct LeasedThing;
 
 #[nebula_credential::credential(key = "test_leased", name = "Leased Thing")]
 impl LeasedThing {
-    type Properties = FieldValues;
+    type Properties = serde_json::Value;
     type Scheme = SecretToken;
     type State = SecretToken;
 
@@ -121,10 +159,10 @@ impl LeasedThing {
     }
 
     async fn resolve(
-        _values: &FieldValues,
+        _properties: &serde_json::Value,
         _ctx: &CredentialContext,
-    ) -> Result<ResolveResult<SecretToken, ()>, CredentialError> {
-        Ok(ResolveResult::Complete(token()))
+    ) -> Result<StaticResolveResult<SecretToken>, CredentialError> {
+        Ok(StaticResolveResult::Complete(token()))
     }
 
     async fn release(
@@ -169,7 +207,7 @@ struct RevTest;
 
 #[nebula_credential::credential(key = "test_revtest", name = "Rev Test")]
 impl RevTest {
-    type Properties = FieldValues;
+    type Properties = serde_json::Value;
     type Scheme = SecretToken;
     type State = SecretToken;
 
@@ -178,10 +216,10 @@ impl RevTest {
     }
 
     async fn resolve(
-        _values: &FieldValues,
+        _properties: &serde_json::Value,
         _ctx: &CredentialContext,
-    ) -> Result<ResolveResult<SecretToken, ()>, CredentialError> {
-        Ok(ResolveResult::Complete(token()))
+    ) -> Result<StaticResolveResult<SecretToken>, CredentialError> {
+        Ok(StaticResolveResult::Complete(token()))
     }
 
     async fn revoke(
@@ -231,7 +269,7 @@ struct InteractiveThing;
 
 #[nebula_credential::credential(key = "test_interactive", name = "Interactive Thing")]
 impl InteractiveThing {
-    type Properties = FieldValues;
+    type Properties = serde_json::Value;
     type Scheme = SecretToken;
     type State = SecretToken;
     type Pending = MyPending;
@@ -241,10 +279,24 @@ impl InteractiveThing {
     }
 
     async fn resolve(
-        _values: &FieldValues,
+        _properties: &serde_json::Value,
         _ctx: &CredentialContext,
-    ) -> Result<ResolveResult<SecretToken, ()>, CredentialError> {
-        Ok(ResolveResult::Complete(token()))
+    ) -> Result<StaticResolveResult<SecretToken>, CredentialError> {
+        Ok(StaticResolveResult::Complete(token()))
+    }
+
+    async fn begin(
+        _properties: &serde_json::Value,
+        _ctx: &CredentialContext,
+    ) -> Result<ResolveResult<SecretToken, MyPending>, CredentialError> {
+        Ok(ResolveResult::Pending {
+            state: MyPending {
+                nonce: "nonce".to_owned(),
+            },
+            interaction: InteractionRequest::Redirect {
+                url: "https://example.test/authorize".to_owned(),
+            },
+        })
     }
 
     async fn continue_resolve(

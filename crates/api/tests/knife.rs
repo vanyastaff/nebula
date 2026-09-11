@@ -422,10 +422,10 @@ impl nebula_action::action::Action for KnifeEcho {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> nebula_action::metadata::ActionMetadata {
-        nebula_action::metadata::ActionMetadata::new(
+    fn metadata() -> nebula_action::metadata::ActionMetadataDraft {
+        nebula_action::metadata::ActionMetadataDraft::new(
             nebula_core::action_key!("knife.echo.static"),
-            "KnifeEcho",
+            nebula_action::metadata_name!("KnifeEcho"),
             "static",
         )
     }
@@ -472,8 +472,8 @@ async fn knife_step3_manually_composed_consumer_dispatches_start() {
 
     use nebula_core::action_key;
     use nebula_engine::{
-        ActionExecutor, ActionRegistry, ActionRuntime, ControlConsumer, DataPassingPolicy,
-        EngineControlDispatch, ExecutionStores, InProcessRunner, WorkflowEngine,
+        ActionRegistry, ActionRuntime, ControlConsumer, DataPassingPolicy, EngineControlDispatch,
+        ExecutionStores, InProcessRunner, WorkflowEngine,
     };
     use nebula_execution::ExecutionStatus;
     use nebula_workflow::{
@@ -562,19 +562,18 @@ async fn knife_step3_manually_composed_consumer_dispatches_start() {
     // ── Build the engine bound to the same scoped port handles the API
     // wrote to ──────────────────────────────────────────────────────────────
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless_instance(
-        nebula_action::metadata::ActionMetadata::new(
-            action_key!("echo"),
-            "echo",
-            "knife echo handler",
-        ),
-        KnifeEcho,
-    );
+    registry
+        .register_stateless_instance(
+            nebula_action::metadata::ActionMetadataDraft::new(
+                action_key!("echo"),
+                nebula_action::metadata_name!("echo"),
+                "knife echo handler",
+            ),
+            KnifeEcho,
+        )
+        .expect("valid test catalog definition");
 
-    let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
-        Box::pin(async move { Ok(nebula_action::result::ActionResult::success(input)) })
-    });
-    let runner = Arc::new(InProcessRunner::new(executor));
+    let runner = Arc::new(InProcessRunner::new());
     let metrics = nebula_metrics::MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(

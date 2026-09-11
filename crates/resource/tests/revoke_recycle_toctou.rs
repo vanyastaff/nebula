@@ -46,16 +46,14 @@ use nebula_resource::{
     AcquireOptions, Manager, PoolConfig, Pooled, Provider, RegistrationSpec, ResourceConfig,
     ResourceContext, SlotIdentity,
     error::{Error, ErrorKind},
-    resource::{HasCredentialSlots, ResourceMetadata},
+    resource::{HasCredentialSlots, ResourceMetadataDraft},
     topology::pooled::{PoolProvider, RecycleDecision, config::WarmupStrategy},
 };
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-#[derive(Clone)]
+#[derive(Clone, nebula_schema::Schema)]
 struct PoolCfg;
-
-nebula_resource::impl_empty_has_schema!(PoolCfg);
 
 impl ResourceConfig for PoolCfg {
     fn validate(&self) -> Result<(), Error> {
@@ -159,8 +157,8 @@ impl Provider for PoolResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 

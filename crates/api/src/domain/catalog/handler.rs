@@ -48,11 +48,11 @@ pub async fn list_actions(State(state): State<AppState>) -> ApiResult<Json<ListA
             let entry = registry.get_factory(&key);
             let name = entry.as_ref().map_or_else(
                 || key.as_str().to_string(),
-                |(meta, _)| meta.base.name.clone(),
+                |(meta, _)| meta.base().name().to_owned(),
             );
             let version = entry.map_or_else(
                 || "1.0.0".to_string(),
-                |(meta, _)| meta.base.version.to_string(),
+                |(meta, _)| meta.base().version().to_string(),
             );
             ActionSummary {
                 key: key.as_str().to_string(),
@@ -108,12 +108,12 @@ pub async fn get_action(
         .ok_or_else(|| ApiError::NotFound(format!("Action '{key}' not found")))?;
 
     Ok(Json(ActionDetailResponse {
-        key: meta.base.key.as_str().to_string(),
-        name: meta.base.name.clone(),
-        description: meta.base.description.clone(),
-        version: meta.base.version.to_string(),
+        key: meta.base().key().as_str().to_string(),
+        name: meta.base().name().to_owned(),
+        description: meta.base().description().to_owned(),
+        version: meta.base().version().to_string(),
         // IsolationLevel does not implement Display; {:?} produces the variant name.
-        isolation_level: format!("{:?}", meta.isolation_level),
+        isolation_level: format!("{:?}", meta.isolation_level()),
     }))
 }
 

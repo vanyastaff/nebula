@@ -618,8 +618,8 @@ impl WebhookResponse {
 /// # impl Action for GitHubWebhook {
 /// #     type Input = serde_json::Value;
 /// #     type Output = serde_json::Value;
-/// #     fn metadata() -> ActionMetadata {
-/// #         ActionMetadata::new(action_key!("github.webhook"), "GitHub", "Push events")
+/// #     fn metadata() -> nebula_action::ActionMetadataDraft {
+/// #         nebula_action::ActionMetadataDraft::new(action_key!("github.webhook"), nebula_action::metadata_name!("GitHub"), "Push events")
 /// #     }
 /// #     fn dependencies() -> &'static Dependencies {
 /// #         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -1716,6 +1716,8 @@ pub struct WebhookTriggerAdapter<A: WebhookAction> {
     idle_notify: Arc<Notify>,
 }
 
+impl<A: WebhookAction> crate::handle::sealed::Trigger for WebhookTriggerAdapter<A> {}
+
 impl<A: WebhookAction> WebhookTriggerAdapter<A> {
     /// Wrap a typed webhook action.
     ///
@@ -1723,18 +1725,21 @@ impl<A: WebhookAction> WebhookTriggerAdapter<A> {
     /// caches both so the dispatch path does not re-enter the action on
     /// every request, and so the runtime / test harness can forward the
     /// policy to the transport without re-downcasting the handler.
-    #[must_use]
-    pub fn new(action: A) -> Self {
+    ///
+    /// # Errors
+    /// Returns a typed catalog error if metadata or an associated schema is invalid.
+    #[tracing::instrument(name = "action.metadata.admit", skip_all, err)]
+    pub fn new(action: A) -> Result<Self, crate::ActionMetadataAdmissionError> {
         let config = action.config();
-        let meta = <A as Action>::metadata();
-        Self {
+        let meta = <A as Action>::metadata().admit_for::<A>(crate::ActionKind::Trigger)?;
+        Ok(Self {
             action,
             config,
             meta,
             state: RwLock::new(None),
             in_flight: Arc::new(AtomicU32::new(0)),
             idle_notify: Arc::new(Notify::new()),
-        }
+        })
     }
 
     /// Webhook config cached at construction.
@@ -1816,7 +1821,7 @@ where
             if let Some(orphan) = rollback_state {
                 if let Err(e) = self.action.on_deactivate(orphan, ctx).await {
                     tracing::warn!(
-                        action = %<A as Action>::metadata().base.key,
+                        action = %self.meta.base().key(),
                         error = %e,
                         "webhook rollback on_deactivate failed after double-start race; \
                          external hook may leak"
@@ -2045,7 +2050,7 @@ where
 impl<A: WebhookAction> fmt::Debug for WebhookTriggerAdapter<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WebhookTriggerAdapter")
-            .field("action", &<A as Action>::metadata().base.key)
+            .field("action", self.meta.base().key())
             .finish_non_exhaustive()
     }
 }

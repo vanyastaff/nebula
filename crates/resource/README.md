@@ -70,12 +70,53 @@ pub trait Provider: HasCredentialSlots + Send + Sync + Sized + 'static {
     /// it never force-releases a lease).
     fn max_hold_duration() -> Option<Duration> { None }
 
-    /// Defaults derive from `Config`'s schema and `key()`; override to add
-    /// a description, version, or tags.
-    fn schema() -> ValidSchema { <Self::Config as HasSchema>::schema() }
-    fn metadata() -> ResourceMetadata { /* derived from Self::key() */ }
+    /// Schema-free author intent. The factory derives and binds `Config`'s
+    /// canonical schema exactly once.
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
+    }
 }
 ```
+
+`HasSchema::schema()` and `schema_of::<T>()` admit definitions through
+`Result<ValidSchema, ValidationReport>`. `ResourceFactory::metadata()` performs
+the only resource metadata admission, caches the resulting immutable
+`ResourceMetadata`, and returns it by reference. Schema failures and a draft key
+that differs from `Provider::key()` propagate as `MetadataBuildError`; registry
+insertion fails before mutation. Catalog enumeration must not drop a failing entry.
+`ResourceFactory` is sealed: plugins can store and invoke the erased contract but
+cannot implement it. They must use a typed `KindActivator`; derive-emitted
+`<Name>Factory` wrappers yield that crate-issued capability through
+`into_contribution()`. The metadata, `TypeId`, validation, and registration projections
+therefore share one concrete `Provider` type instead of being caller attestations.
+Metadata names are checked
+`MetadataName` values (`metadata_name!("HTTP client")` for static definitions),
+and invariant-bearing base fields are read through accessors.
+
+`ResourceFactory::validate` treats JSON strictly as data, consumes validation
+against the admitted schema and `resolve_data()`, then decodes the resulting
+`ResolvedValues`. `ResourceFactory::register` accepts a `ResourceConfigInput`
+that makes ingress explicit: `data` normalizes persisted or transport JSON and
+completes it without executing template-looking strings or `$expr`-shaped
+objects, while `authored` accepts a typed `AuthoredValue` whose deliberate
+expression nodes are admitted against that same cached schema and evaluated.
+Normalization is retained exactly once; expression results never become new
+programs. Both paths reject undeclared fields and protected secret leaves,
+including nested results. Secrets must enter through credential slots, not
+resource config.
+
+Admitted `ResourceMetadata` has private fields, getters, and `Serialize` only.
+Persisted catalog bytes deserialize as `RecordedResourceMetadata`; callers must
+explicitly call `readmit_against` with a freshly admitted factory definition.
+
+Root schemas follow the configuration's serde wire shape: `()` and derived unit
+structs use scalar `null`, empty-braced records use `{}`, and primitives declare
+their scalar kinds. Supplied objects are never converted to `null`. A custom
+newtype configuration must expose the schema matching its serialized root.
+`#[derive(ResourceConfig)]` supplies `HasSchema` only for unit and empty-braced
+configs. Nonempty and tuple configs must declare `#[config(schema = external)]`
+and provide a real schema, usually with `#[derive(Schema)]` for named fields.
+The external option also permits an intentional custom override for empty configs.
 
 The per-resource **credential epoch** (an order-sensitive fold over every
 `#[credential]` slot's generation, used by the rotation reconcile) lives on a
@@ -148,7 +189,7 @@ manager.register(RegistrationSpec {
 })?;
 ```
 
-`slot_identity` is a collision-free structural resolved-credential identity (`SlotIdentity::{Unbound, Structural(Arc<[(String, String)]>)}`). Registrations with different exact `(slot, credential)` bindings occupy distinct rows, but this identity is **not tenant authorization**: equal credentials or unbound registrations do not prove equal tenants. Hosts must admit the correct scope and caller authority. The JSON/expression entry point is the internal `Manager::register_resolved::<R>(…)` funnel.
+`slot_identity` is a collision-free structural resolved-credential identity (`SlotIdentity::{Unbound, Structural(Arc<[(String, String)]>)}`). Registrations with different exact `(slot, credential)` bindings occupy distinct rows, but this identity is **not tenant authorization**: equal credentials or unbound registrations do not prove equal tenants. Hosts must admit the correct scope and caller authority. JSON/expression registration enters through `ResourceFactory::register`; its manager helper is crate-private and consumes the factory-admitted schema.
 
 The framework resolves declared `#[credential]` slots **before** invoking `Provider::create` — implementations read each resolved credential through the derive-emitted `self.<field>_slot()` accessor (`Option<Arc<CredentialGuard<C>>>`), handling the `None` (unbound) case explicitly.
 
@@ -235,7 +276,9 @@ Aliases intentionally exposed by a provider's instance remain the author's respo
 - `SlotIdentity`, `DedupKey` — structural resolved-credential identity (`Unbound` / `Structural`) and the `(key, scope, slot_identity)` registry dedup key; neither is tenant authority.
 - `ManagerConfig`, `RegisterOptions` — configuration surface.
 - `Registry`, `LookupOutcome`, `ManagedResourceView` — type-erased storage with read-only diagnostic lookup; lifecycle authority remains inside `Manager`.
-- `ResourceMetadata` — static descriptor: key, name, description, schema, version, tags.
+- `ResourceMetadataDraft` — schema-free resource author intent returned by `Provider::metadata`.
+- `ResourceMetadata` — immutable factory-admitted descriptor with getter-only key, name, description, schema, version, and tags; serializable but not deserializable.
+- `RecordedResourceMetadata` — deserialized catalog evidence requiring explicit readmission against a fresh factory definition.
 - `ResourceConfig` — operational config trait (no secrets); supertype `HasSchema`.
 - `SlotCell` — lock-free `ArcSwap`-based credential slot cell the framework populates/rotates.
 - `TeardownCx`, `TeardownReason` — deadline + cause handed to `Provider::destroy` (ADR-0093 teardown contract).
@@ -261,7 +304,7 @@ Aliases intentionally exposed by a provider's instance remain the author's respo
   `PoolStrategy`, and `NoTopology`.
 - `HasCredentialSlots` — per-resource credential epoch fold; emitted by `#[derive(Resource)]`, or by `no_credential_slots!(R)` for a slot-less resource.
 - `HasResourcesExt` — the `ctx.resource::<R>().await?` access surface for action code.
-- `ResourceFactory`, `KindActivator`, `ResourceActivatorRegistry`, `RegisterRequest`, `RegistrarError`, `ResourceRegistrationOutcome`, `SlotBinding`, `BoxFut` — the erased plugin-registration bridge.
+- Sealed `ResourceFactory`, typed `KindActivator`, `ResourceActivatorRegistry`, `ResourceConfigInput`, `RegisterRequest`, `RegistrarError`, `ResourceRegistrationOutcome`, `SlotBinding`, `BoxFut` — the crate-issued erased plugin-registration bridge.
 - `CheckCost` — relative `check` probe cost driving the maintenance reaper's health-probe cadence.
 - Re-exports so consumers need no direct sibling dep: `Subscriber` (`nebula-eventbus`), `Credential` / `CredentialContext` / `CredentialId` (`nebula-credential`), `HasSchema` / `Schema` / `ValidSchema` / `impl_empty_has_schema!` (`nebula-schema`).
 - Feature `rotation`: `ResourceFanoutDriver`, `ResourceFanoutIndex`, `Bind`, `RotationOutcome`.
@@ -368,7 +411,7 @@ batch, and the queue is not a durable cleanup log.
 - Not a connection driver — resource implementations supply the actual client (sqlx pool, reqwest client, etc.); this crate owns the lifecycle wrapper.
 - Not a retry pipeline — retry composes one layer up (action handler / engine activity / caller-supplied `nebula-resilience` pipeline). The manager-side `AcquireResilience` wrapper was removed; peer Rust pools (sqlx, deadpool, bb8) ship acquire-timeout only, retry above. Retry around outbound calls inside `create`/`check` uses `nebula-resilience` directly at the resource impl.
 - Not a secret holder — credentials are populated into slot fields by the framework; secret material is managed by `nebula-credential`.
-- Not an expression evaluator — resource `Config` comes from `nebula-schema`-validated parameters; expression resolution is `nebula-expression`'s job. The engine-facing `Manager::register_resolved` orchestrates the resolve→validate→register pipeline but the evaluator itself stays out.
+- Not an expression evaluator — resource `Config` comes from `nebula-schema`-validated parameters; expression resolution is `nebula-expression`'s job. `ResourceFactory::register` orchestrates the resolve→validate→register pipeline through its crate-private manager helper, but the evaluator itself stays out.
 
 ## Positioning
 

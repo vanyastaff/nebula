@@ -24,8 +24,8 @@ use nebula_storage_port::{
 use super::execution::{SharedState, State};
 use crate::revision_catalog::{
     ArtifactLifecycle, delete_label, deleted_for, drain_label, draining_for, flavor_records_match,
-    insert_label, load_label, plan_records_match, unavailable_for, validate_pair_recorded_form,
-    validate_recorded_form,
+    insert_label, load_label, plan_records_match, unavailable_for, validate_bounded_recorded_form,
+    validate_pair_recorded_form,
 };
 
 #[derive(Debug, Clone)]
@@ -351,7 +351,7 @@ pub(super) fn load_pair(
         .ok_or(RevisionCatalogError::CorruptRecord {
             target: plan_target,
         })?;
-    validate_recorded_form(record.plan_bytes(), plan_target)?;
+    validate_bounded_recorded_form(record.plan_record_bytes(), plan_target)?;
     if record.ids().worker_flavor() != ids.worker_flavor() {
         return Err(RevisionCatalogError::PlanFlavorMismatch {
             requested: ids,
@@ -372,7 +372,7 @@ pub(super) fn load_pair(
         .ok_or(RevisionCatalogError::CorruptRecord {
             target: flavor_target,
         })?;
-    validate_recorded_form(flavor_record.bytes(), flavor_target)?;
+    validate_bounded_recorded_form(flavor_record.record_bytes(), flavor_target)?;
     if !flavor_records_match(flavor_record, record.worker_flavor()) {
         return Err(RevisionCatalogError::CorruptRecord {
             target: flavor_target,
@@ -986,6 +986,20 @@ mod tests {
                 .worker_flavors
                 .remove(&worker_flavor_id);
         }
+
+        fn replace_plan_record(
+            &self,
+            plan_id: ExecutablePlanRevisionId,
+            record: PlanFlavorRevisionRecord,
+        ) {
+            self.inner
+                .lock()
+                .revision_catalog
+                .executable_plans
+                .get_mut(&plan_id)
+                .expect("fixture inserts the plan before replacing its stored record")
+                .record = Some(record);
+        }
     }
 
     struct Fixture {
@@ -1051,11 +1065,11 @@ mod tests {
     /// into `ContentConflict` for a revision both binaries agree on by content
     /// address — an immutable plan that could never be installed again.
     #[tokio::test]
-    async fn reencoded_identical_record_is_already_present_not_a_conflict() {
+    async fn semantically_equal_json_record_is_already_present_not_a_conflict() {
         let fixture = Fixture::new();
         fixture.insert().await;
 
-        // Same document, keys emitted in the opposite order and re-indented.
+        // Same document emitted with incidental whitespace differences.
         let reencoded = PlanFlavorRevisionRecord::graph_v1_json(
             fixture.ids.plan(),
             RevisionRecordBytes::try_from_vec(br#"{  "plan"  :  "v1"  }"#.to_vec())
@@ -1159,6 +1173,39 @@ mod tests {
             fixture.catalog.load_exact(wrong_ids).await,
             Err(RevisionCatalogError::PlanFlavorMismatch { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn exact_load_rejects_over_nested_persisted_plan_with_redacted_budget_error() {
+        let fixture = Fixture::new();
+        fixture.insert().await;
+        let hostile_json = format!(
+            "{}\"inmemory-hostile-canary\"{}",
+            "[".repeat(RevisionRecordBytes::MAX_JSON_NESTING_DEPTH + 1),
+            "]".repeat(RevisionRecordBytes::MAX_JSON_NESTING_DEPTH + 1)
+        );
+        let hostile_bytes = RevisionRecordBytes::try_from_vec(hostile_json.into_bytes())
+            .expect("over-nested fixture remains within the one-MiB record envelope");
+        let hostile_record = PlanFlavorRevisionRecord::graph_v1_json(
+            fixture.ids.plan(),
+            hostile_bytes,
+            fixture.record.worker_flavor().clone(),
+        );
+        fixture
+            .driver
+            .replace_plan_record(fixture.ids.plan(), hostile_record);
+        let target = PlanFlavorRevisionTarget::ExecutablePlan(fixture.ids.plan());
+
+        let error = fixture
+            .catalog
+            .load_exact(fixture.ids)
+            .await
+            .expect_err("over-nested persisted JSON must fail at the InMemory load boundary");
+        assert!(!format!("{error} {error:?}").contains("inmemory-hostile-canary"));
+        std::assert_matches!(
+            error,
+            RevisionCatalogError::RecordNestingTooDeep { target: actual } if actual == target
+        );
     }
 
     #[tokio::test]

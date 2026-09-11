@@ -11,7 +11,6 @@
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 use nebula_core::{ExecutablePlanRevisionId, WorkerFlavorRevisionId};
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
 use nebula_storage_port::RevisionRecordBytes;
 use nebula_storage_port::{
     BeginDrainOutcome, ExecutablePlanRecordFormat, PlanFlavorRevisionIds, PlanFlavorRevisionRecord,
@@ -66,7 +65,7 @@ impl ArtifactLifecycle {
     }
 }
 
-/// Whether two JSON record bodies carry the same content.
+/// Whether two JSON record bodies carry semantically equal content.
 ///
 /// Compares the *parsed* documents, never the raw bytes. Record bodies are
 /// ordinary `serde_json` output, so their exact bytes depend on struct field
@@ -79,19 +78,19 @@ impl ArtifactLifecycle {
 ///
 /// Parsing normalises exactly the incidental differences (key order,
 /// whitespace) while still separating genuinely different documents, so
-/// conflict detection keeps its meaning. Bodies that do not parse fall back to
-/// byte equality rather than being treated as equal.
+/// conflict detection keeps its meaning. A parse failure never matches; catalog
+/// admission and durable-row decoding report malformed records separately.
 pub(crate) fn json_bodies_match(stored: &[u8], candidate: &[u8]) -> bool {
     match (
         serde_json::from_slice::<serde_json::Value>(stored),
         serde_json::from_slice::<serde_json::Value>(candidate),
     ) {
         (Ok(stored), Ok(candidate)) => stored == candidate,
-        _ => stored == candidate,
+        _ => false,
     }
 }
 
-/// Whether two worker-flavor records are the same immutable content.
+/// Whether two worker-flavor records carry the same immutable semantic content.
 pub(crate) fn flavor_records_match(
     stored: &WorkerFlavorRevisionRecord,
     candidate: &WorkerFlavorRevisionRecord,
@@ -101,7 +100,7 @@ pub(crate) fn flavor_records_match(
         && json_bodies_match(stored.bytes(), candidate.bytes())
 }
 
-/// Whether a stored executable plan is the same immutable content as
+/// Whether a stored executable plan has the same immutable semantic content as
 /// `candidate`'s plan half.
 ///
 /// The paired worker flavor is compared through its own identity, never
@@ -121,7 +120,7 @@ pub(crate) fn plan_content_matches(
         && json_bodies_match(stored_plan_bytes, candidate.plan_bytes())
 }
 
-/// Whether a stored pair is the same immutable plan content as `candidate`.
+/// Whether a stored pair has the same immutable semantic plan content as `candidate`.
 pub(crate) fn plan_records_match(
     stored: &PlanFlavorRevisionRecord,
     candidate: &PlanFlavorRevisionRecord,
@@ -138,7 +137,7 @@ pub(crate) fn plan_records_match(
 ///
 /// A deployment backend must be observable by a scraper, not only by a trace
 /// sampler: `content_conflict` (an immutable identity reused for different
-/// bytes) and `outcome_unknown` (a commit dispatched without an authoritative
+/// semantic content) and `outcome_unknown` (a commit dispatched without an authoritative
 /// acknowledgement) both need an operator and neither shows up in a success
 /// rate. The registry is required rather than optional so a composition root
 /// cannot wire a catalog that silently reports nothing.
@@ -196,6 +195,13 @@ pub(crate) const fn error_label(error: &RevisionCatalogError) -> &'static str {
         RevisionCatalogError::Referenced { .. } => "referenced",
         RevisionCatalogError::DependentPlans { .. } => "dependent_plans",
         RevisionCatalogError::EmptyRecord => "empty_record",
+        RevisionCatalogError::RecordTooLarge { .. } => "record_too_large",
+        RevisionCatalogError::RecordNestingTooDeep { .. } => "record_nesting_too_deep",
+        RevisionCatalogError::RecordStringTooLarge { .. } => "record_string_too_large",
+        RevisionCatalogError::RecordStringBudgetExceeded { .. } => "record_string_budget_exceeded",
+        RevisionCatalogError::RecordCollectionBudgetExceeded { .. } => {
+            "record_collection_budget_exceeded"
+        },
         RevisionCatalogError::UnsupportedRecordFormat { .. } => "unsupported_record_format",
         RevisionCatalogError::CorruptRecord { .. } => "corrupt_record",
         RevisionCatalogError::Unavailable => "unavailable",
@@ -248,44 +254,37 @@ pub(crate) const fn delete_label(result: &Result<(), RevisionCatalogError>) -> &
     }
 }
 
-/// Reject bytes that do not satisfy the contract of their recorded form.
-///
-/// Both recorded forms this catalog admits are JSON documents, so a body that
-/// does not parse is durable corruption rather than an opaque payload storage
-/// merely relays. Checking it on the way in keeps a caller from persisting a
-/// record that only fails when a later exact load needs it; checking it on the
-/// way out keeps a byte-level poke at the table from being handed to a plugin
-/// layer as if it were a valid record.
+/// Validate one bounded JSON record before a backend stores or exposes it.
 ///
 /// # Errors
 ///
-/// Returns [`RevisionCatalogError::CorruptRecord`] when `bytes` is not a
-/// well-formed JSON document.
-pub(crate) fn validate_recorded_form(
-    bytes: &[u8],
+/// Returns a payload-redacted corruption or resource-budget error associated
+/// with `target`.
+pub(crate) fn validate_bounded_recorded_form(
+    bytes: &RevisionRecordBytes,
     target: PlanFlavorRevisionTarget,
 ) -> Result<(), RevisionCatalogError> {
-    serde_json::from_slice::<serde::de::IgnoredAny>(bytes)
+    bytes
+        .deserialize_json::<serde::de::IgnoredAny>(target)
         .map(|_ignored| ())
-        .map_err(|_parse| RevisionCatalogError::CorruptRecord { target })
 }
 
 /// Reject a whole pair whose bytes violate their recorded form.
 ///
 /// # Errors
 ///
-/// Returns [`RevisionCatalogError::CorruptRecord`] naming the first identity
-/// whose body is not a well-formed JSON document.
+/// Returns a payload-redacted corruption or resource-budget error naming the
+/// first invalid record in the pair.
 pub(crate) fn validate_pair_recorded_form(
     record: &PlanFlavorRevisionRecord,
 ) -> Result<(), RevisionCatalogError> {
     let ids = record.ids();
-    validate_recorded_form(
-        record.plan_bytes(),
+    validate_bounded_recorded_form(
+        record.plan_record_bytes(),
         PlanFlavorRevisionTarget::ExecutablePlan(ids.plan()),
     )?;
-    validate_recorded_form(
-        record.worker_flavor().bytes(),
+    validate_bounded_recorded_form(
+        record.worker_flavor().record_bytes(),
         PlanFlavorRevisionTarget::WorkerFlavor(ids.worker_flavor()),
     )
 }
@@ -362,7 +361,8 @@ fn revision_id_bytes(
 /// Returns [`RevisionCatalogError::UnsupportedRecordFormat`] when the durable
 /// format names a recorded form this build cannot read, and
 /// [`RevisionCatalogError::CorruptRecord`] when lifecycle text is unknown or
-/// payload presence contradicts the lifecycle.
+/// payload presence contradicts the lifecycle. Bounded-record and JSON budget
+/// failures are returned before the row is exposed as a typed record.
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) fn decode_worker_flavor_row(
     worker_flavor_id: WorkerFlavorRevisionId,
@@ -383,9 +383,9 @@ pub(crate) fn decode_worker_flavor_row(
             return Err(RevisionCatalogError::CorruptRecord { target });
         },
         (ArtifactLifecycle::Active | ArtifactLifecycle::Draining, Some(payload)) => {
-            validate_recorded_form(&payload, target)?;
             let bytes = RevisionRecordBytes::try_from_vec(payload)
-                .map_err(|_empty| RevisionCatalogError::CorruptRecord { target })?;
+                .map_err(|error| row_record_bytes_error(error, target))?;
+            validate_bounded_recorded_form(&bytes, target)?;
             Some(WorkerFlavorRevisionRecord::v1_json(worker_flavor_id, bytes))
         },
     };
@@ -401,7 +401,8 @@ pub(crate) fn decode_worker_flavor_row(
 /// format names a recorded form this build cannot read, and
 /// [`RevisionCatalogError::CorruptRecord`] when lifecycle text is unknown, the
 /// pinned flavor identifier is malformed, or payload presence contradicts the
-/// lifecycle.
+/// lifecycle. Bounded-record and JSON budget failures are returned before the
+/// row is exposed as a typed record.
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub(crate) fn decode_executable_plan_row(
     plan_id: ExecutablePlanRevisionId,
@@ -425,11 +426,10 @@ pub(crate) fn decode_executable_plan_row(
             return Err(RevisionCatalogError::CorruptRecord { target });
         },
         (ArtifactLifecycle::Active | ArtifactLifecycle::Draining, Some(payload)) => {
-            validate_recorded_form(&payload, target)?;
-            Some(
-                RevisionRecordBytes::try_from_vec(payload)
-                    .map_err(|_empty| RevisionCatalogError::CorruptRecord { target })?,
-            )
+            let bytes = RevisionRecordBytes::try_from_vec(payload)
+                .map_err(|error| row_record_bytes_error(error, target))?;
+            validate_bounded_recorded_form(&bytes, target)?;
+            Some(bytes)
         },
     };
 
@@ -438,6 +438,17 @@ pub(crate) fn decode_executable_plan_row(
         worker_flavor_id,
         plan_bytes,
     })
+}
+
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+fn row_record_bytes_error(
+    error: RevisionCatalogError,
+    target: PlanFlavorRevisionTarget,
+) -> RevisionCatalogError {
+    match error {
+        RevisionCatalogError::EmptyRecord => RevisionCatalogError::CorruptRecord { target },
+        other => other,
+    }
 }
 
 /// Compose the durable pair from a plan row and the flavor row it pins.
@@ -488,18 +499,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn json_record_equality_is_semantic_and_fail_closed() {
+        assert!(json_bodies_match(
+            br#"{"name":"worker","version":1}"#,
+            br#"{ "version" : 1, "name" : "worker" }"#,
+        ));
+        assert!(!json_bodies_match(
+            br#"{"name":"worker","version":1}"#,
+            br#"{"name":"worker","version":2}"#,
+        ));
+        assert!(!json_bodies_match(b"not json", b"not json"));
+    }
+
+    #[test]
     fn a_body_that_is_not_json_violates_its_recorded_form() {
         let target = PlanFlavorRevisionTarget::WorkerFlavor(
             TestWorkerFlavorRevisionId::from_bytes([0x41; 32]),
         );
+        let invalid = RevisionRecordBytes::try_from_vec(b"not json".to_vec())
+            .expect("malformed JSON still fits the byte envelope");
+        let valid = RevisionRecordBytes::try_from_vec(br#"{"flavor":"v1"}"#.to_vec())
+            .expect("valid JSON fits the byte envelope");
         assert_eq!(
-            validate_recorded_form(b"not json", target),
+            validate_bounded_recorded_form(&invalid, target),
             Err(RevisionCatalogError::CorruptRecord { target })
         );
-        assert_eq!(
-            validate_recorded_form(br#"{"flavor":"v1"}"#, target),
-            Ok(())
-        );
+        assert_eq!(validate_bounded_recorded_form(&valid, target), Ok(()));
     }
 }
 
@@ -542,6 +567,30 @@ mod durable_row_tests {
                 target: PlanFlavorRevisionTarget::WorkerFlavor(flavor_id()),
             })
         );
+    }
+
+    #[test]
+    fn oversized_backend_row_is_rejected_before_json_parsing() {
+        let mut hostile_payload = vec![b'x'; RevisionRecordBytes::MAX_BYTES + 1];
+        hostile_payload[.."backend-row-payload-canary".len()]
+            .copy_from_slice(b"backend-row-payload-canary");
+
+        let error = decode_worker_flavor_row(
+            flavor_id(),
+            "active",
+            WORKER_FLAVOR_V1_JSON,
+            Some(hostile_payload),
+        )
+        .expect_err("an oversized durable row must fail before JSON parsing");
+
+        assert_eq!(
+            error,
+            RevisionCatalogError::RecordTooLarge {
+                max_bytes: RevisionRecordBytes::MAX_BYTES,
+                actual_bytes: RevisionRecordBytes::MAX_BYTES + 1,
+            }
+        );
+        assert!(!format!("{error} {error:?}").contains("backend-row-payload-canary"));
     }
 
     #[test]

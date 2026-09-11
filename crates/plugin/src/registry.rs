@@ -485,7 +485,7 @@ mod tests {
         let mut reg = PluginRegistry::new();
         reg.register(make("a")).unwrap();
         let err = reg.register(make("a")).unwrap_err();
-        assert_eq!(err, PluginError::AlreadyExists("a".parse().unwrap()));
+        std::assert_matches!(err, PluginError::AlreadyExists(key) if key.as_str() == "a");
     }
 
     #[test]

@@ -8,10 +8,11 @@ use nebula_core::{ResourceKey, ScopeLevel};
 use tokio::sync::Notify;
 use tracing::Instrument as _;
 
-use super::{Manager, RegistrationSpec, resolve_json_templates};
+use super::{Manager, RegistrationSpec};
 use crate::{
     error::Error,
     events::{ResourceEvent, RetirementOrigin},
+    factory::{ResourceConfigInput, ResourceConfigSource},
     recovery::gate::RecoveryGate,
     reload::ReloadOutcome,
     resource::Provider,
@@ -410,11 +411,10 @@ impl Manager {
         managed.maintenance.set_task(task);
     }
 
-    /// Schema-validate an **already-resolved** config JSON tree against
-    /// `<R::Config as HasSchema>::schema()` *without* registering anything.
+    /// Schema-validate an **already-resolved** config JSON tree against an
+    /// admitted resource definition *without* registering anything.
     ///
-    /// This is the pure validation core shared with
-    /// [`register_resolved`](Self::register_resolved): it runs exactly
+    /// This is the pure validation core shared with `register_resolved`: it runs exactly
     /// the schema pass, the closed-set guard, and the `R::Config`
     /// deserialize step that the live path runs *after* template
     /// resolution — but performs **no** `{{ … }}` resolution, **no**
@@ -432,9 +432,8 @@ impl Manager {
     /// shape is an activation-time concern.
     ///
     /// On success returns the validated, deserialized `R::Config`: the
-    /// closed-set guard and `serde_json::from_value::<R::Config>` already
-    /// run here, so the live `register_resolved` path consumes this
-    /// owned value directly instead of deserializing the same JSON twice.
+    /// closed-set guard and consuming `ResolvedValues::into_typed` run here,
+    /// retaining schema preparation without deserializing the original JSON again.
     ///
     /// # Errors
     ///
@@ -447,90 +446,39 @@ impl Manager {
     ///   secret-shaped field is rejected here rather than silently ignored
     ///   (product credential boundary). The error names only the offending key,
     ///   never its value.
-    pub fn validate_config_value<R>(config_json: serde_json::Value) -> Result<R::Config, Error>
+    #[tracing::instrument(level = "debug", skip_all, fields(resource_key = %R::key()))]
+    pub(crate) fn validate_config_value_against<R>(
+        schema: &nebula_schema::ValidSchema,
+        config_json: serde_json::Value,
+    ) -> Result<R::Config, Error>
     where
         R: Provider,
         R::Config: serde::de::DeserializeOwned,
     {
-        // Schema-validate against <R::Config as HasSchema>::schema(). This is
-        // independent of serde::Deserialize: it surfaces missing/invalid fields a
-        // serde default impl would silently accept, and runs the schema's
-        // `#[validate(...)]` rules (length, pattern, …). Schema check runs FIRST so
-        // structural errors are reported as schema violations rather than
-        // confusingly re-routed through serde.
-        let schema = <R::Config as nebula_schema::HasSchema>::schema();
-        // Union-aware ingress: a record `Config` folds via `from_json`; a union
-        // `Config` (a `#[derive(Schema)]` enum) folds serde's external/adjacent wire
-        // into the `{mode, value}` envelope `validate` consumes, so both the schema
-        // pass and the closed-set guard below see the union's declared root key
-        // rather than the raw variant discriminant. The serde wire still
-        // deserializes into `R::Config` directly below (no egress on the read path).
-        let field_values = schema.values_from_wire(config_json.clone()).map_err(|e| {
-            Error::permanent("validate_config_value: invalid field tree").with_source(e)
+        let values = schema.values_from_wire(config_json).map_err(|error| {
+            Error::permanent("validate_config_value: invalid field tree").with_source(error)
         })?;
-        if let Err(report) = schema.validate(&field_values) {
-            return Err(
+        check_config_fields(schema, &values)?;
+        let resolved = schema
+            .validate(values)
+            .and_then(nebula_schema::ValidValues::resolve_data)
+            .map_err(|report| {
                 Error::permanent("validate_config_value: schema validation failed")
-                    .with_source(report),
-            );
-        }
-
-        // Closed-set guard: reject any config key the typed `R::Config` schema does
-        // not declare. `nebula_schema::Schema::validate` only checks *declared*
-        // fields and silently ignores unknown ones, so without this an operator
-        // could inline a secret-shaped field (e.g. `password`) into
-        // `ResourceConfig` and get no signal — `ResourceConfig` must carry no
-        // secrets; secrets reach a resource ONLY via typed credential slots
-        // (product credential boundary; slot model; engine credential orchestration redaction; credential isolation
-        // isolation). The error names only the offending KEY PATH, never its value,
-        // so a mis-wired secret can never leak through the rejection message.
-        //
-        // `first_undeclared_path` walks the whole value tree against the schema —
-        // top-level fields, nested objects, list items, AND a union's active
-        // variant payload (whose operator-facing fields live one level below the
-        // synthetic `_nebula_union` root) — so an inlined key is signalled at any
-        // depth rather than silently dropped by serde's default unknown-field
-        // handling. The traversal lives in `nebula-schema` (it owns schema↔value
-        // structure); this site only applies the resource policy of rejecting.
-        //
-        // Skipped when the schema declares no fields: an empty `ValidSchema` is
-        // the "schema not yet declared" sentinel (`impl_empty_has_schema!`), and a
-        // closed set over zero fields would reject every config — that gate
-        // belongs to types that have opted into a real schema.
-        if !schema.fields().is_empty()
-            && let Some(unknown) = schema.first_undeclared_path(&field_values)
-        {
-            return Err(Error::permanent(format!(
-                "validate_config_value: config field `{unknown}` is not declared by \
-                 the `{ty}` schema; secrets must not be inlined into ResourceConfig \
-                 — bind them through a typed credential slot instead \
-                 (product credential boundary)",
-                ty = std::any::type_name::<R::Config>(),
-            )));
-        }
-
-        // Deserialize R::Config from the JSON to surface any residual
-        // type-shape mismatch the structural schema pass did not, and
-        // return the parsed value: the live `register_resolved` path
-        // consumes this owned `R::Config` directly, so the JSON is
-        // deserialized exactly once across validation + typed dispatch.
-        serde_json::from_value::<R::Config>(config_json).map_err(|e| {
-            Error::permanent(format!(
-                "validate_config_value: failed to deserialize {ty} config from JSON",
-                ty = std::any::type_name::<R::Config>()
-            ))
-            .with_source(e)
-        })
+                    .with_source(report)
+            })?;
+        decode_config::<R>(resolved)
     }
 
-    /// JSON-driven registration keyed by the **collision-free structural**
+    /// Configuration registration keyed by the **collision-free structural**
     /// resolved-credential identity.
     ///
-    /// The JSON-driven registration entry: it resolves `{{ … }}` templates,
-    /// schema-validates, and dispatches into the single
-    /// [`register`](Self::register) funnel. Phase order: slot-binding
-    /// validation → `{{ … }}` template resolution → schema + closed-set
-    /// guard + `R::Config` deserialize → dispatch into the single funnel.
+    /// [`ResourceConfigInput::data`] normalizes persisted or transport JSON,
+    /// validates it, and completes it through the data-only path without
+    /// interpreting template-looking strings or objects. Explicitly authored
+    /// values admit and resolve only the expression nodes already present in
+    /// their typed tree. Closed-set and secret guards run on admitted values
+    /// and after completion.
+    /// The resulting config enters the single [`register`](Self::register) funnel.
     /// The registry row is keyed by the structural
     /// [`SlotIdentity`](crate::dedup::SlotIdentity) derived from the
     /// resolved `(slot, credential)` bindings via
@@ -551,7 +499,7 @@ impl Manager {
     ///
     /// # Errors
     ///
-    /// - [`Error::permanent`] when expression resolution, JSON
+    /// - [`Error::permanent`] when config ingress, expression resolution, JSON
     ///   deserialization, or schema validation fails.
     /// - [`Error::permanent`] when the config carries a top-level field the
     ///   `R::Config` schema does not declare (closed-set guard):
@@ -561,6 +509,8 @@ impl Manager {
     ///   its value.
     /// - [`Error::permanent`] when a `slot_bindings` key does not correspond
     ///   to a declared credential slot on `R`.
+    /// - [`Error::permanent`] when the caller's canonical slot identity does
+    ///   not match the identity derived from the typed registration inputs.
     /// - Any [`Error`] returned by the underlying typed
     ///   [`register`](Self::register).
     // guard-justified: irreducible engine ABI — the engine registrar dispatches
@@ -573,18 +523,21 @@ impl Manager {
         skip_all,
         fields(
             resource_key = %R::key(),
+            config_ingress = config.kind(),
             slot_count = slot_bindings.len(),
         )
     )]
-    pub async fn register_resolved<R>(
+    pub(crate) async fn register_resolved<R>(
         &self,
-        config_json: serde_json::Value,
+        schema: &nebula_schema::ValidSchema,
+        config: ResourceConfigInput,
         expr_engine: &nebula_expression::ExpressionEngine,
         slot_bindings: std::collections::HashMap<String, nebula_core::CredentialKey>,
         resource: R,
         scope: ScopeLevel,
         topology: R::Topology,
         recovery_gate: Option<Arc<RecoveryGate>>,
+        expected_slot_identity: &crate::dedup::SlotIdentity,
     ) -> Result<crate::dedup::SlotIdentity, Error>
     where
         R: Provider + nebula_core::DeclaresDependencies,
@@ -666,15 +619,38 @@ impl Manager {
             }
         }
 
-        // 1. Resolve `{{ … }}` templates inside the JSON tree.
-        let ctx = nebula_expression::EvaluationContext::new();
-        let resolved = resolve_json_templates(config_json, expr_engine, &ctx)?;
-
-        // 2/2b/3. Schema pass + closed-set guard + `R::Config` deserialize.
-        //    Shared verbatim with the config-CRUD validate seam via
-        //    [`validate_config_value`](Self::validate_config_value) so the
-        //    two paths cannot drift.
-        let config: R::Config = Self::validate_config_value::<R>(resolved)?;
+        let resolved = match config.into_source() {
+            ResourceConfigSource::Data(config_json) => {
+                let values = schema.values_from_wire(config_json).map_err(|error| {
+                    Error::permanent("register_resolved: invalid config data").with_source(error)
+                })?;
+                let prepared = schema.validate(values).map_err(|report| {
+                    Error::permanent("register_resolved: schema validation failed")
+                        .with_source(report)
+                })?;
+                check_config_fields(schema, prepared.values())?;
+                prepared.resolve_data().map_err(|report| {
+                    Error::permanent("register_resolved: data config completion failed")
+                        .with_source(report)
+                })?
+            },
+            ResourceConfigSource::Authored(values) => {
+                let prepared = schema.validate(values).map_err(|report| {
+                    Error::permanent("register_resolved: schema validation failed")
+                        .with_source(report)
+                })?;
+                check_config_fields(schema, prepared.values())?;
+                let context = ConfigExpressionContext {
+                    engine: expr_engine,
+                    context: nebula_expression::EvaluationContext::new(),
+                };
+                prepared.resolve(&context).await.map_err(|report| {
+                    Error::permanent("register_resolved: config resolution failed")
+                        .with_source(report)
+                })?
+            },
+        };
+        let config = decode_config::<R>(resolved)?;
 
         // 4. Derive the **collision-free structural** slot identity from the
         //    resolved slot bindings. Equality is exact string equality over
@@ -689,6 +665,19 @@ impl Manager {
                 .iter()
                 .map(|(slot, cred)| (slot.as_str(), cred.as_str())),
         );
+        if &slot_identity != expected_slot_identity {
+            tracing::error!(
+                target: "nebula_resource::register_resolved",
+                error_code = "RESOURCE:FACTORY_IDENTITY_MISMATCH",
+                ?expected_slot_identity,
+                ?slot_identity,
+                "canonical slot identity diverged before resource publication"
+            );
+            return Err(Error::permanent(
+                "register_resolved: canonical slot identity diverged from the factory request",
+            )
+            .with_resource_key(R::key()));
+        }
 
         // 5. Dispatch into the single typed register funnel via a
         //    `RegistrationSpec`. ResourceConfig::validate() runs inside
@@ -821,11 +810,10 @@ impl Manager {
     ///
     /// This removes **every** row registered under `key` — every scope
     /// *and* every resolved [`SlotIdentity`](crate::dedup::SlotIdentity),
-    /// including every multi-tenant sibling row a
-    /// [`register_resolved`](Self::register_resolved) caller staged with a
-    /// distinct resolved credential. It is an **admin-only, whole-key**
+    /// including every multi-tenant sibling row a factory registration staged
+    /// with a distinct resolved credential. It is an **admin-only, whole-key**
     /// operation, not scoped to one tenant's registration. A caller that
-    /// only wants to undo a single `register`/`register_resolved` call —
+    /// only wants to undo a single factory registration call —
     /// e.g. the engine deactivating one node's resolved resource binding
     /// without disturbing sibling tenants at the same key — must use
     /// [`remove_for`](Self::remove_for) instead.
@@ -954,5 +942,65 @@ impl Manager {
     ) {
         managed.set_phase(crate::state::ResourcePhase::ShuttingDown);
         permit.commit(self.prepare_retirement(managed, origin));
+    }
+}
+
+fn check_config_fields<E>(
+    schema: &nebula_schema::ValidSchema,
+    values: &nebula_schema::ValueTree<E>,
+) -> Result<(), Error> {
+    // Only gradual-typing `Any` opts out of a closed field set. A concrete empty
+    // record declares zero keys and therefore rejects every supplied key.
+    if schema.kind() != nebula_schema::SchemaKind::Any
+        && let Some(unknown) = schema.first_undeclared_path(values)
+    {
+        return Err(Error::permanent(format!(
+            "validate_config_value: config field `{unknown}` is not declared by the schema; \
+             secrets must not be inlined into ResourceConfig - bind them through a typed credential slot instead"
+        )));
+    }
+    if let Some(path) = values.first_secret_path() {
+        return Err(Error::permanent(format!(
+            "validate_config_value: secret at `{path}` must be bound through a typed credential slot"
+        )));
+    }
+    Ok(())
+}
+
+#[tracing::instrument(level = "debug", skip_all, fields(resource_key = %R::key()), err)]
+fn decode_config<R>(resolved: nebula_schema::ResolvedValues) -> Result<R::Config, Error>
+where
+    R: Provider,
+    R::Config: serde::de::DeserializeOwned,
+{
+    // Resolution can introduce structured results; enforce resource policy again
+    // against the very schema snapshot that admitted those results.
+    check_config_fields(resolved.schema(), resolved.values())?;
+    resolved.into_typed().map_err(|error| {
+        Error::permanent("validate_config_value: failed to deserialize prepared config")
+            .with_source(error)
+    })
+}
+
+struct ConfigExpressionContext<'a> {
+    engine: &'a nebula_expression::ExpressionEngine,
+    context: nebula_expression::EvaluationContext,
+}
+
+impl nebula_schema::ExpressionContext for ConfigExpressionContext<'_> {
+    fn evaluate<'a>(
+        &'a self,
+        program: &'a nebula_schema::CompiledProgram,
+    ) -> nebula_schema::EvalFuture<'a> {
+        Box::pin(async move {
+            self.engine
+                .evaluate_compiled(program, &self.context)
+                .map_err(|error| {
+                    nebula_schema::ValidationError::builder("expression.runtime")
+                        .message("resource config expression evaluation failed")
+                        .source(error)
+                        .build()
+                })
+        })
     }
 }

@@ -18,7 +18,7 @@
 //!   newer writer's field kind never fails to read on an older deployment.
 
 use nebula_schema::{
-    Field, FieldPath, FieldValue, FieldValues, Predicate, Rule, Schema, SerdeTagging, ValidSchema,
+    AuthoredValue, Field, FieldPath, Predicate, Rule, Schema, SerdeTagging, ValidSchema,
     ValidationError, ValidationReport, VisibilityMode, field_key,
 };
 use serde_json::json;
@@ -38,7 +38,10 @@ fn field_variants_wire_format() {
             .group("contact")
             .default(json!("default-value"))
             .visible(VisibilityMode::Never)
-            .with_rule(Rule::predicate(Predicate::eq("s", json!("x")).unwrap()))
+            .with_rule(
+                Rule::predicate(Predicate::eq("s", json!("x")).unwrap())
+                    .expect("bounded snapshot rule"),
+            )
             .required()
             .into(),
         Field::secret(field_key!("sec")).into(),
@@ -116,11 +119,11 @@ fn union_schema_wire_format() {
     insta::assert_json_snapshot!("union_schema_adjacent_wire_format", adjacent);
 }
 
-/// A `FieldValues` store covering every runtime-value shape (literal, nested
+/// An authored tree covering every value shape (literal, nested
 /// object, list, expression wrapper, mode envelope).
 #[test]
 fn field_values_wire_format() {
-    let values = FieldValues::from_json(json!({
+    let values = AuthoredValue::from_template_json(json!({
         "scalar": 1,
         "text": "hello",
         "flag": true,
@@ -159,15 +162,11 @@ fn unknown_field_type_preserved() {
     insta::assert_json_snapshot!(field);
 }
 
-/// The typed `FieldValue::Mode` serialization branch. `from_json` parses a
-/// `{"mode": …, "value": …}` object as an ordinary `Object`, so the `Mode`
-/// variant's wire output is only reachable by constructing it directly.
+/// A mode envelope is an ordinary object in the single value-tree representation.
 #[test]
 fn field_value_mode_wire_format() {
-    let mode = FieldValue::Mode {
-        mode: field_key!("oauth2"),
-        value: Some(Box::new(FieldValue::from_json(json!({"scope": "read"})))),
-    };
+    let mode =
+        AuthoredValue::from_data(json!({"mode": "oauth2", "value": {"scope": "read"}})).unwrap();
     insta::assert_json_snapshot!(mode);
 }
 
