@@ -76,13 +76,11 @@
 // Testing harness — context builder, spy emitter/logger/scheduler.
 // Action traits and types
 pub use nebula_action::{
-    Action, ActionContext, ActionEffectContract, ActionError, ActionResult, Field,
-    PollTriggerAdapter, RemoteDestinationGuarantee, RemoteEffectDescriptor, RemoteEffectFactory,
+    Action, ActionContext, ActionEffectContract, ActionError, ActionMetadataDraft, ActionResult,
+    CheckpointPolicy, Field, IsolationLevel, RemoteDestinationGuarantee, RemoteEffectDescriptor,
     RemoteEffectPolicy, RemoteEffectPolicyBuilder, RemoteEffectPolicyError, Schema,
-    StatefulActionAdapter, StatelessAction, StatelessActionAdapter, StreamAction, TriggerContext,
-    TriggerEvent, TriggerEventOutcome, ValidSchema, WebhookRequest, WebhookTriggerAdapter,
-    field_key,
-    metadata::ActionMetadata,
+    StatelessAction, StreamAction, TriggerContext, TriggerEvent, TriggerEventOutcome,
+    TriggerHealthSnapshot, WebhookRequest, field_key,
     poll::{DeduplicatingCursor, PollAction, PollConfig, PollCursor, PollResult},
     port::{InputPort, OutputPort},
     result::BreakReason,
@@ -99,8 +97,8 @@ pub use nebula_action::{impl_batch_action, impl_paginated_action};
 pub use nebula_core::AuthScheme as AuthSchemeContract;
 pub use nebula_core::auth::NoAuthFamily;
 pub use nebula_core::{
-    ActionKey, AuthPattern, ExecutionId, NodeKey, OperationCallId, PluginKey, ResourceKey,
-    ScopeLevel, WorkflowId, action_key, resource_key,
+    ActionKey, AuthPattern, CredentialKey, Dependencies, ExecutionId, NodeKey, OperationCallId,
+    PluginKey, ResourceKey, ScopeLevel, WorkflowId, action_key, credential_key, resource_key,
 };
 // Credential types (v2)
 pub use nebula_credential::{
@@ -109,10 +107,8 @@ pub use nebula_credential::{
     BasicAuthCredential,
     Credential,
     CredentialError,
-    // Integration-catalog metadata (key, name, parameters, pattern)
-    CredentialMetadata,
-    // Runtime operational state (created_at, version, ...)
-    CredentialRecord,
+    // Author-owned integration-catalog metadata intent
+    CredentialMetadataDraft,
     // Typed credential access
     CredentialSnapshot,
     CredentialState,
@@ -126,21 +122,10 @@ pub use nebula_credential::{
 };
 pub use nebula_credential::{AuthScheme, credential};
 pub use nebula_credential::{CredentialContext, CredentialId};
-// Shared catalog-metadata vocabulary — the `Metadata` trait plus the
-// `BaseMetadata` prefix and value types that `ActionMetadata`,
-// `CredentialMetadata`, and `ResourceMetadata` all compose. Re-exported so the
-// uniform `metadata()` accessor surface (`key`/`name`/`version`/`icon`/…) is
-// usable across all three catalog leaves from a single import.
-//
-// `BaseCompatError`/`validate_base_compat`: `BaseCompatError<K>` is the
-// payload of the `Base(..)` variant on the `MetadataCompatibilityError` enum
-// that `nebula-action`, `nebula-credential`, and `nebula-resource` each
-// re-export from their crate roots, and all three entity metadata types are
-// already in this prelude — without this re-export a consumer could obtain
-// the value but not name its payload type.
+// Shared authoring vocabulary used by action, credential, and resource drafts.
 pub use nebula_metadata::{
-    BaseCompatError, BaseMetadata, DeprecationNotice, Icon, MaturityLevel, Metadata,
-    validate_base_compat,
+    DeprecationNotice, Icon, MaturityLevel, MetadataError, MetadataName, MetadataVersion,
+    metadata_name,
 };
 // Plugin types. `ManifestError`/`PluginDependency`/`PluginManifestBuilder`
 // join `Plugin`/`PluginManifest`: `PluginManifestBuilder` is already named as
@@ -158,11 +143,10 @@ pub use nebula_plugin::{
 // Engine-only types (`Manager`, `Registry`, `ReleaseQueue`,
 // `credential_fanout`) are deliberately absent from the supported SDK.
 pub use nebula_resource::{
-    AcquireOptions, Bounded, BoundedMode, BoundedProvider, ClassifyError, Error, ErrorKind,
-    HasCredentialSlots, PoolConfig, PoolProvider, Pooled, Provider, RegistrationSpec,
-    ReleaseOutcome, ReloadOutcome, Resident, ResidentConfig, ResidentProvider, Resource,
-    ResourceConfig, ResourceContext, ResourceGuard, ResourceMetadata, SlotCell, SlotIdentity,
-    TeardownCx, TeardownReason, TopologyTag, no_credential_slots,
+    Bounded, BoundedMode, BoundedProvider, ClassifyError, Error, ErrorKind, HasCredentialSlots,
+    PoolConfig, PoolProvider, Pooled, Provider, ReleaseOutcome, ReloadOutcome, Resident,
+    ResidentConfig, ResidentProvider, Resource, ResourceConfig, ResourceContext, ResourceGuard,
+    ResourceMetadataDraft, SlotCell, TeardownCx, TeardownReason, TopologyTag, no_credential_slots,
 };
 // Derive names are re-exported from their respective domain crates. Generated
 // paths prefer a direct (including renamed) leaf dependency, then the SDK's
@@ -170,11 +154,13 @@ pub use nebula_resource::{
 // Schema types — Field/Schema/ValidSchema/field_key already re-exported via nebula_action
 // above.
 pub use nebula_schema::{
-    BooleanField, CodeField, ComputedField, DynamicField, Expression, ExpressionMode, FieldKey,
-    FieldPath, FieldValue, FieldValues, FileField, InputHint, ListField, LoaderContext,
-    LoaderRegistry, ModeField, NoticeField, NumberField, ObjectField, RequiredMode, ResolvedValues,
-    SchemaBuilder, SecretField, SelectField, SelectOption, Severity, StringField, Transformer,
-    ValidValues, ValidationError, ValidationReport, VisibilityMode,
+    AuthoredValue, BooleanField, CodeField, ComputedField, DynamicField, EnumSelect, Expression,
+    ExpressionMode, FieldKey, FieldPath, FileField, HasSchema, HasSelectOptions, InputHint,
+    ListField, LoaderContext, LoaderRegistry, ModeField, NoticeField, NumberField, ObjectField,
+    Predicate, ProgramSyntax, RecordShape, RequiredMode, RootShape, Rule, ScalarKind, ScalarSchema,
+    ScalarValue, SchemaBuilder, SchemaKind, SecretField, SelectField, SelectOption, SerdeTagging,
+    Severity, StringField, Transformer, UnionShape, UnknownField, ValidSchema, ValidationError,
+    ValidationReport, ValuePath, VisibilityMode, schema_of,
 };
 pub use nebula_validator::Validator;
 // Validator traits
@@ -190,8 +176,6 @@ pub use serde::{Deserialize, Serialize};
 pub use serde_json::{Map, Value, json};
 pub use thiserror::Error;
 
-// SDK builders and result types
-pub use crate::action::ActionBuilder;
 // In-process run harness for single-action examples and tests.
 pub use crate::runtime::{RunReport, TestRuntime};
 pub use crate::{Error as SdkError, Result as SdkResult, workflow::WorkflowBuilder};

@@ -21,6 +21,10 @@ canonical registry is `crates/api/src/config/env.rs`. The composition
 root in `apps/server/src/compose.rs` is the only place those values
 turn into concrete `Arc<dyn …>` ports.
 
+Credential composition admits the complete registry and exports its catalog before
+starting runtime maintenance. Registration or schema-export failure propagates as
+a typed bootstrap error; no partial catalog or permissive schema is served.
+
 ## Runtime-repair RED profile
 
 The non-default `runtime-repair-red` feature opens the app-owned

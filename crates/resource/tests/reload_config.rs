@@ -21,7 +21,7 @@ use nebula_resource::{
     ResourceContext, ScopeLevel, ShutdownConfig, SlotIdentity,
     error::{Error, ErrorKind},
     guard::ResourceGuard,
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
     topology::{
         bounded::BoundedProvider,
         pooled::{BrokenCheck, PoolProvider},
@@ -188,13 +188,11 @@ async fn remove_nonexistent_returns_not_found() {
 // ---------------------------------------------------------------------------
 
 /// Config with a controllable fingerprint for reload tests.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, nebula_schema::Schema)]
 struct ReloadConfig {
     fingerprint: u64,
     valid: bool,
 }
-
-nebula_schema::impl_empty_has_schema!(ReloadConfig);
 
 impl ReloadConfig {
     fn new(fingerprint: u64) -> Self {
@@ -294,8 +292,8 @@ impl Provider for ReloadPoolResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 
@@ -342,8 +340,8 @@ impl Provider for ReloadExclusiveResource {
         Ok(Arc::new(AtomicU64::new(id)))
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 

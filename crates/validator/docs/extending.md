@@ -246,7 +246,7 @@ let rule = Rule::Logic(Box::new(Logic::All(vec![
     )),
 ])));
 
-let ctx = PredicateContext::from_json(&json!({ "email": "a@b.com", "role": "admin" }));
+let ctx = PredicateContext::from_json(json!({ "email": "a@b.com", "role": "admin" }));
 
 // matches() returns bool (used for Rule context predicates)
 let passes = rule.matches(&ctx);

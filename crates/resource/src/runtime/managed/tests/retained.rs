@@ -9,8 +9,8 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    AcquireOptions, Error, ErrorKind, Provider, ReplaceStatus, ResourceContext, ResourceMetadata,
-    ResourceStatus, RetainStatus, RetainedId, RetainedStore, TeardownCx,
+    AcquireOptions, Error, ErrorKind, Provider, ReplaceStatus, ResourceContext,
+    ResourceMetadataDraft, ResourceStatus, RetainStatus, RetainedId, RetainedStore, TeardownCx,
     release_queue::{ReleaseQueue, ReleaseQueueHandle, SubmissionOutcome},
     resource::ResourceConfig,
     runtime::{
@@ -20,10 +20,8 @@ use crate::{
     topology::{CreatedEntry, Ticket, Topology, Unavailable, store::InstanceStore},
 };
 
-#[derive(Clone)]
+#[derive(Clone, nebula_schema::Schema)]
 struct RetainedConfig;
-
-crate::impl_empty_has_schema!(RetainedConfig);
 
 impl ResourceConfig for RetainedConfig {
     fn fingerprint(&self) -> u64 {
@@ -110,8 +108,8 @@ impl Provider for RetainedResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 

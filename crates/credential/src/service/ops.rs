@@ -15,13 +15,14 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use nebula_schema::FieldValues;
+use nebula_schema::{ValidSchema, ValidationError, ValidationReport};
 use zeroize::Zeroizing;
 
 use crate::pending_store::PendingStateStore;
 use crate::resolve::{InteractionRequest, TestResult, UserInput};
 use crate::runtime::{
-    ResolveResponse, dispatch_revoke, dispatch_test, execute_continue, execute_resolve,
+    ResolveResponse, dispatch_revoke, dispatch_test, execute_begin, execute_continue,
+    execute_resolve,
 };
 use crate::{
     Capabilities, Credential, CredentialContext, CredentialState, Interactive, PendingToken,
@@ -31,6 +32,10 @@ use crate::{
 
 use super::error::{CredentialServiceError, CredentialValidationIssue, CredentialValidationReport};
 
+#[cfg(test)]
+#[path = "ops_tests.rs"]
+mod tests;
+
 /// Registration-time failure for the operation-dispatch table
 /// ([`DispatchOps`]). Relocated here when the parallel `CredentialDispatch`
 /// capability-flag table was removed (ADR-0088 D3): the ops table owns its own
@@ -39,6 +44,12 @@ use super::error::{CredentialServiceError, CredentialValidationIssue, Credential
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum DispatchError {
+    /// The credential definition could not be admitted before dispatch setup.
+    #[error("credential dispatch catalog admission failed")]
+    Metadata(#[from] crate::CredentialMetadataAdmissionError),
+    /// Metadata identity disagrees with the registered credential key.
+    #[error("credential dispatch metadata identity mismatch")]
+    MetadataKeyMismatch,
     /// Two registrations shared a `Credential::KEY`. First wins; second
     /// rejected; table unchanged.
     #[error("duplicate credential dispatch key '{key}'")]
@@ -104,10 +115,8 @@ type ResolveFuture<'a> =
 
 /// Erased `resolve`: runs the canonical [`execute_resolve`] for the
 /// captured concrete `C`, then serializes `C::State`.
-type ResolveFn<PS> = Arc<
-    dyn for<'a> Fn(&'a FieldValues, &'a CredentialContext, &'a PS) -> ResolveFuture<'a>
-        + Send
-        + Sync,
+type ResolveFn = Arc<
+    dyn for<'a> Fn(serde_json::Value, &'a CredentialContext) -> ResolveFuture<'a> + Send + Sync,
 >;
 
 /// Boxed future returned by the erased acquisition closures.
@@ -119,7 +128,7 @@ type AcquireFuture<'a> =
 /// `Pending`) into [`AcquireOutcome`] — the create path's `ResolveFn`
 /// rejects `Pending`, this one surfaces it.
 type AcquireFn<PS> = Arc<
-    dyn for<'a> Fn(&'a FieldValues, &'a CredentialContext, &'a PS) -> AcquireFuture<'a>
+    dyn for<'a> Fn(serde_json::Value, &'a CredentialContext, &'a PS) -> AcquireFuture<'a>
         + Send
         + Sync,
 >;
@@ -210,29 +219,9 @@ type RevokeFuture<'a> =
 type RevokeFn =
     Arc<dyn for<'a> Fn(&'a [u8], &'a CredentialContext) -> RevokeFuture<'a> + Send + Sync>;
 
-/// Erased validation: runs the canonical credential properties pipeline
-/// for the captured concrete `C` —
-/// `schema_of::<C::Properties>().validate(FieldValues)` then a typed
-/// `serde_json::from_value::<C::Properties>` round-trip. The typed step
-/// is the `{"$expr": ..}` refusal point (credential secrecy). Returns only the
-/// schema `code`/`path` on failure, never raw property values.
-type ValidateFn =
-    Arc<dyn Fn(&serde_json::Value) -> Result<(), CredentialServiceError> + Send + Sync>;
-
-/// Erased property ingest: rewrites inbound serde-wire JSON into the validator's
-/// [`FieldValues`] envelope for the captured concrete `C` via
-/// `schema_of::<C::Properties>().values_from_wire(props)`. For a record
-/// `Properties` this is plain [`FieldValues::from_json`]; for a tagged-union
-/// `Properties` (a `#[derive(Schema)]` enum) it folds serde's external/adjacent
-/// wire into the internal `{mode, value}` envelope so the same downstream
-/// `validate` / `resolve` path the record case takes also accepts a union. The
-/// schema's `serde_tagging` is the single source of truth for that rewrite.
-type IngestFn =
-    Arc<dyn Fn(&serde_json::Value) -> Result<FieldValues, CredentialServiceError> + Send + Sync>;
-
 /// One credential type's erased operation closures.
 ///
-/// `validate` / `resolve` / `acquire` are always present (the base
+/// `resolve` / `acquire` are always present (the base
 /// registration). The capability closures are `Option`: a
 /// `Some` is set **only** by the matching capability-bounded
 /// `register_*_ops` (callable only for `C: Testable` / `Refreshable` /
@@ -240,9 +229,8 @@ type IngestFn =
 /// — structurally impossible to advertise one the type lacks (mirrors
 /// `plugin_capability_report`).
 struct OpsEntry<PS> {
-    validate: ValidateFn,
-    ingest: IngestFn,
-    resolve: ResolveFn<PS>,
+    schema: ValidSchema,
+    resolve: ResolveFn,
     acquire: AcquireFn<PS>,
     test_fn: Option<TestFn>,
     refresh_fn: Option<RefreshFn>,
@@ -324,8 +312,7 @@ impl<PS: PendingStateStore> DispatchOps<PS> {
         caps
     }
 
-    /// Resolve `props` into serialized credential state for the type at
-    /// `key`. Threads `pending` through the canonical executor.
+    /// Consume literal `props`, decode typed properties, and resolve state.
     ///
     /// # Errors
     ///
@@ -336,9 +323,8 @@ impl<PS: PendingStateStore> DispatchOps<PS> {
     pub(crate) async fn resolve(
         &self,
         key: &str,
-        values: &FieldValues,
+        props: serde_json::Value,
         ctx: &CredentialContext,
-        pending: &PS,
     ) -> Result<ResolvedState, CredentialServiceError> {
         let entry = self
             .entries
@@ -346,57 +332,7 @@ impl<PS: PendingStateStore> DispatchOps<PS> {
             .ok_or_else(|| CredentialServiceError::TypeUnknown {
                 key: key.to_owned(),
             })?;
-        (entry.resolve)(values, ctx, pending).await
-    }
-
-    /// Run the canonical credential properties validation pipeline for
-    /// the type at `key` against `props` (schema + typed-deserialize;
-    /// `{"$expr": ..}` refused at the typed step, credential secrecy).
-    ///
-    /// # Errors
-    ///
-    /// [`CredentialServiceError::TypeUnknown`] when `key` is absent;
-    /// [`CredentialServiceError::ValidationFailed`] on a schema or
-    /// typed-deserialize rejection (carries only `code`/`path`, never
-    /// raw values).
-    pub(crate) fn validate(
-        &self,
-        key: &str,
-        props: &serde_json::Value,
-    ) -> Result<(), CredentialServiceError> {
-        let entry = self
-            .entries
-            .get(key)
-            .ok_or_else(|| CredentialServiceError::TypeUnknown {
-                key: key.to_owned(),
-            })?;
-        (entry.validate)(props)
-    }
-
-    /// Ingest inbound serde-wire `props` into the validator's [`FieldValues`]
-    /// envelope for the type at `key`, applying the union wire→envelope rewrite
-    /// when `C::Properties` is a tagged union (driven by the schema's
-    /// `serde_tagging`). This is the per-type counterpart of
-    /// [`FieldValues::from_json`] that the type-erased facade must use so a union
-    /// `Properties` resolves through the same envelope `validate` accepts.
-    ///
-    /// # Errors
-    ///
-    /// [`CredentialServiceError::TypeUnknown`] when `key` is absent;
-    /// [`CredentialServiceError::ValidationFailed`] when the wire shape does not
-    /// match the type's schema (carries only `code`/`path`, never raw values).
-    pub(crate) fn ingest(
-        &self,
-        key: &str,
-        props: &serde_json::Value,
-    ) -> Result<FieldValues, CredentialServiceError> {
-        let entry = self
-            .entries
-            .get(key)
-            .ok_or_else(|| CredentialServiceError::TypeUnknown {
-                key: key.to_owned(),
-            })?;
-        (entry.ingest)(props)
+        (entry.resolve)(props, ctx).await
     }
 
     /// Drive an acquisition for the type at `key`: same canonical
@@ -411,7 +347,7 @@ impl<PS: PendingStateStore> DispatchOps<PS> {
     pub(crate) async fn acquire(
         &self,
         key: &str,
-        values: &FieldValues,
+        props: serde_json::Value,
         ctx: &CredentialContext,
         pending: &PS,
     ) -> Result<AcquireOutcome, CredentialServiceError> {
@@ -421,7 +357,7 @@ impl<PS: PendingStateStore> DispatchOps<PS> {
             .ok_or_else(|| CredentialServiceError::TypeUnknown {
                 key: key.to_owned(),
             })?;
-        (entry.acquire)(values, ctx, pending).await
+        (entry.acquire)(props, ctx, pending).await
     }
 
     /// Continue an interactive acquisition for the type at `key`.
@@ -558,11 +494,11 @@ impl<PS: PendingStateStore> DispatchOps<PS> {
 ///
 /// [`DispatchError::DuplicateKey`] if `C::KEY` is already registered; the
 /// table is left unchanged for the rejected entry.
+#[tracing::instrument(name = "credential.dispatch.register", skip_all, err)]
 pub fn register_runtime_ops<C, PS>(ops: &mut DispatchOps<PS>) -> Result<(), DispatchError>
 where
     C: Credential,
     C::Scheme: Clone,
-    C::Properties: serde::de::DeserializeOwned,
     PS: PendingStateStore,
 {
     let key: &'static str = C::KEY;
@@ -570,53 +506,43 @@ where
         return Err(DispatchError::DuplicateKey { key });
     }
 
-    let resolve: ResolveFn<PS> = Arc::new(
-        |values: &FieldValues, ctx: &CredentialContext, pending: &PS| {
-            Box::pin(async move {
-                let response = execute_resolve::<C, PS>(values, ctx, pending)
-                    .await
-                    .map_err(executor_error_to_service_error)?;
-                match response {
-                    ResolveResponse::Complete(state) => {
-                        // Cleartext serialization for the encrypted-at-rest
-                        // store; the bytes never leave this `Zeroizing` buffer
-                        // un-encrypted. Outside this scope secrets redact.
-                        let data = Zeroizing::new(
-                            crate::serde_secret::expose_for_serialization(|| {
-                                serde_json::to_vec(&state)
-                            })
-                            .map_err(|e| {
-                                CredentialServiceError::Internal(format!(
-                                    "state serialization failed: {e}"
-                                ))
-                            })?,
-                        );
-                        Ok(ResolvedState {
-                            data,
-                            state_kind: <C::State as CredentialState>::KIND.to_owned(),
-                            state_version: <C::State as CredentialState>::VERSION,
-                            expires_at: state.expires_at(),
-                        })
-                    },
-                    ResolveResponse::Pending { .. } | ResolveResponse::Retry { .. } => {
-                        // CRUD `create` is the non-interactive path; an
-                        // interactive kickoff or retry is not a stored
-                        // credential. Interactive acquisition is a
-                        // distinct operation.
-                        Err(CredentialServiceError::validation(
-                            "",
-                            "credential.interactive_required",
-                        ))
-                    },
-                }
-            }) as ResolveFuture<'_>
-        },
-    );
+    let metadata = C::metadata().admit_for::<C>()?;
+    if metadata.key().as_str() != key {
+        return Err(DispatchError::MetadataKeyMismatch);
+    }
+    let validation_schema = metadata.schema().clone();
+    let resolve_schema = Arc::new(validation_schema.clone());
+    let acquire_schema = Arc::new(validation_schema.clone());
+
+    let resolve: ResolveFn = Arc::new(move |props: serde_json::Value, ctx: &CredentialContext| {
+        let schema = Arc::clone(&resolve_schema);
+        Box::pin(async move {
+            let properties = prepare_properties::<C>(&schema, props)?;
+            let response = execute_resolve::<C>(&properties, ctx)
+                .await
+                .map_err(executor_error_to_service_error)?;
+            match response {
+                ResolveResponse::Complete(state) => serialize_state(&state),
+                ResolveResponse::Pending { .. } | ResolveResponse::Retry { .. } => {
+                    // CRUD `create` is the non-interactive path; an
+                    // interactive kickoff or retry is not a stored
+                    // credential. Interactive acquisition is a
+                    // distinct operation.
+                    Err(CredentialServiceError::validation(
+                        "",
+                        "credential.interactive_required",
+                    ))
+                },
+            }
+        }) as ResolveFuture<'_>
+    });
 
     let acquire: AcquireFn<PS> = Arc::new(
-        |values: &FieldValues, ctx: &CredentialContext, pending: &PS| {
+        move |props: serde_json::Value, ctx: &CredentialContext, _pending: &PS| {
+            let schema = Arc::clone(&acquire_schema);
             Box::pin(async move {
-                let response = execute_resolve::<C, PS>(values, ctx, pending)
+                let properties = prepare_properties::<C>(&schema, props)?;
+                let response = execute_resolve::<C>(&properties, ctx)
                     .await
                     .map_err(executor_error_to_service_error)?;
                 map_resolve_response::<C>(response)
@@ -624,77 +550,10 @@ where
         },
     );
 
-    let validate: ValidateFn = Arc::new(|props: &serde_json::Value| {
-        // Canonical pipeline (mirrors `properties_pipeline.rs`): ingest the serde
-        // wire into the validator's envelope, schema-validate, then a typed
-        // round-trip. `values_from_wire` is `FieldValues::from_json` for a record
-        // `Properties` and the union wire→`{mode,value}` rewrite for a tagged-union
-        // `Properties` (the schema's `serde_tagging` drives it). The credential
-        // pipeline never resolves expressions, so a `{"$expr": ..}` envelope passes
-        // schema validation but is refused by the typed deserialize below
-        // (credential secrecy defense-in-depth #2).
-        let schema = nebula_schema::schema_of::<C::Properties>();
-        let values = schema.values_from_wire(props.clone()).map_err(|error| {
-            CredentialServiceError::validation(
-                error.path.to_json_pointer(),
-                error.code.into_owned(),
-            )
-        })?;
-        let valid = schema.validate(&values).map_err(|report| {
-            let mut issues = report.errors().map(|error| {
-                CredentialValidationIssue::new(
-                    error.path.to_json_pointer(),
-                    error.code.as_ref().to_owned(),
-                )
-            });
-            let Some(first) = issues.next() else {
-                return CredentialServiceError::Internal(
-                    "schema validation returned an empty error report".to_owned(),
-                );
-            };
-            CredentialServiceError::ValidationFailed {
-                report: CredentialValidationReport::from_issues(first, issues.collect()),
-            }
-        })?;
-        // Deserialize the CANONICALIZED output — read-aliases already folded onto
-        // their canonical keys — NOT the raw props. validate's key-space must equal
-        // deserialize's key-space: an alias-keyed (or canonical+alias) submission
-        // validates under the canonical key, so the typed round-trip must see the
-        // same keys, otherwise the two passes could disagree on a field's value.
-        // `to_typed` is `from_value(raw().to_json())` for a record and the
-        // envelope→serde-wire rebuild for a union, so the typed round-trip closes
-        // for both schema kinds. ($expr envelopes survive canonicalization
-        // unchanged, so defense-in-depth #2 — the typed deserialize refusing an
-        // expression-bearing secret — still holds.)
-        valid.raw().to_typed::<C::Properties>().map_err(|_| {
-            // The deserialize error text can echo the offending field value
-            // (a secret); deliberately omitted — only the policy reason
-            // is surfaced.
-            CredentialServiceError::validation("", "credential.properties_malformed")
-        })?;
-        Ok(())
-    });
-
-    let ingest: IngestFn = Arc::new(|props: &serde_json::Value| {
-        // Per-type ingress: a record `Properties` folds via `FieldValues::from_json`;
-        // a union `Properties` folds serde's external/adjacent wire into the
-        // `{mode, value}` envelope. The type-erased facade calls this so a union
-        // resolves through the same envelope `validate` / `resolve` consume.
-        nebula_schema::schema_of::<C::Properties>()
-            .values_from_wire(props.clone())
-            .map_err(|error| {
-                CredentialServiceError::validation(
-                    error.path.to_json_pointer(),
-                    error.code.into_owned(),
-                )
-            })
-    });
-
     ops.entries.insert(
         key,
         OpsEntry {
-            validate,
-            ingest,
+            schema: validation_schema,
             resolve,
             acquire,
             test_fn: None,
@@ -705,6 +564,40 @@ where
     );
     tracing::info!(credential.key = key, "credential runtime ops registered");
     Ok(())
+}
+
+#[tracing::instrument(name = "credential.properties.prepare", skip_all)]
+fn prepare_properties<C>(
+    schema: &ValidSchema,
+    props: serde_json::Value,
+) -> Result<C::Properties, CredentialServiceError>
+where
+    C: Credential,
+{
+    let values = schema.values_from_wire(props).map_err(property_error)?;
+    let prepared = schema.validate(values).map_err(property_report)?;
+    let resolved = prepared.resolve_data().map_err(property_report)?;
+    resolved
+        .into_typed_exposing_secrets()
+        .map_err(property_error)
+}
+
+fn property_error(error: ValidationError) -> CredentialServiceError {
+    CredentialServiceError::validation(error.path().to_string(), error.code().to_owned())
+}
+
+fn property_report(report: ValidationReport) -> CredentialServiceError {
+    let mut issues = report.errors().map(|error| {
+        CredentialValidationIssue::new(error.path().to_string(), error.code().to_owned())
+    });
+    let Some(first) = issues.next() else {
+        return CredentialServiceError::Internal(
+            "schema validation returned an empty error report".to_owned(),
+        );
+    };
+    CredentialServiceError::ValidationFailed {
+        report: CredentialValidationReport::from_issues(first, issues.collect()),
+    }
 }
 
 /// Map a canonical [`ResolveResponse`] into the secret-free
@@ -718,27 +611,37 @@ where
     C: Credential,
 {
     match response {
-        ResolveResponse::Complete(state) => {
-            // Cleartext serialization for the encrypted-at-rest store; bytes
-            // stay in this `Zeroizing` buffer until the store encrypts them.
-            let data = Zeroizing::new(
-                crate::serde_secret::expose_for_serialization(|| serde_json::to_vec(&state))
-                    .map_err(|e| {
-                        CredentialServiceError::Internal(format!("state serialization failed: {e}"))
-                    })?,
-            );
-            Ok(AcquireOutcome::Complete(ResolvedState {
-                data,
-                state_kind: <C::State as CredentialState>::KIND.to_owned(),
-                state_version: <C::State as CredentialState>::VERSION,
-                expires_at: state.expires_at(),
-            }))
-        },
+        ResolveResponse::Complete(state) => serialize_state(&state).map(AcquireOutcome::Complete),
         ResolveResponse::Pending { token, interaction } => {
             Ok(AcquireOutcome::Pending { token, interaction })
         },
         ResolveResponse::Retry { after, .. } => Ok(AcquireOutcome::Retry { after }),
     }
+}
+
+#[tracing::instrument(name = "credential.state.serialize", skip_all, fields(state_kind = S::KIND))]
+fn serialize_state<S: CredentialState>(state: &S) -> Result<ResolvedState, CredentialServiceError> {
+    // Bytes cross directly into the owned encryption boundary. A provider's
+    // serializer error can include secret data and must never be formatted.
+    let data = crate::serde_secret::expose_for_serialization(|| serde_json::to_vec(state))
+        .map_err(|_| {
+            tracing::warn!("credential state serialization failed");
+            CredentialServiceError::Internal("credential state serialization failed".to_owned())
+        })?;
+    Ok(ResolvedState {
+        data: Zeroizing::new(data),
+        state_kind: S::KIND.to_owned(),
+        state_version: S::VERSION,
+        expires_at: state.expires_at(),
+    })
+}
+
+#[tracing::instrument(name = "credential.state.deserialize", skip_all, fields(state_kind = S::KIND))]
+fn deserialize_state<S: CredentialState>(data: &[u8]) -> Result<S, CredentialServiceError> {
+    serde_json::from_slice(data).map_err(|_| {
+        tracing::warn!("stored credential state is invalid");
+        CredentialServiceError::Internal("stored credential state is invalid".to_owned())
+    })
 }
 
 /// Attach the erased `test` closure for `C: Testable` onto the existing
@@ -763,11 +666,7 @@ where
         .ok_or(DispatchError::BaseOpsMissing { key })?;
     let test_fn: TestFn = Arc::new(|data: &[u8], ctx: &CredentialContext| {
         Box::pin(async move {
-            let state: C::State = serde_json::from_slice(data).map_err(|e| {
-                CredentialServiceError::Internal(format!(
-                    "stored state deserialization failed: {e}"
-                ))
-            })?;
+            let state: C::State = deserialize_state(data)?;
             let scheme = C::project(&state);
             dispatch_test::<C>(&scheme, ctx).await.map_err(|e| {
                 CredentialServiceError::Provider(format!("credential test failed: {e}"))
@@ -807,15 +706,10 @@ fn executor_error_to_service_error(e: crate::runtime::ExecutorError) -> Credenti
         ExecutorError::MissingSessionId => CredentialServiceError::SessionRequired {
             capability: "resolve",
         },
-        ExecutorError::Credential(ce) => credential_error_to_service_error(ce),
-        // Base `Credential::resolve` returned `Pending` — an internal contract
-        // violation (kickoffs must use the credential-specific helpers), not a
-        // client input error.
-        ExecutorError::BaseResolvePending => CredentialServiceError::Internal(
-            "base Credential::resolve returned Pending; interactive flows must use \
-             credential-specific kickoff helpers"
-                .to_owned(),
+        ExecutorError::InvalidContinuationOutcome => CredentialServiceError::Internal(
+            "one-shot credential continuation returned a polling outcome".to_owned(),
         ),
+        ExecutorError::Credential(ce) => credential_error_to_service_error(ce),
     }
 }
 
@@ -861,14 +755,10 @@ where
             // makes — there is no public engine forced-`dispatch_refresh`;
             // `resolve_with_refresh` is early-window-gated). The service
             // re-persists the `Rewrote` bytes under compare-and-swap.
-            let mut state: C::State = match serde_json::from_slice(data) {
+            let mut state: C::State = match deserialize_state(data) {
                 Ok(state) => state,
-                Err(_) => {
-                    return Ok(RefreshExecutionResult::PreparationFailed(
-                        CredentialServiceError::Internal(
-                            "stored credential state is invalid".to_owned(),
-                        ),
-                    ));
+                Err(error) => {
+                    return Ok(RefreshExecutionResult::PreparationFailed(error));
                 },
             };
             let outcome = <C as Refreshable>::refresh(
@@ -964,11 +854,7 @@ where
         .ok_or(DispatchError::BaseOpsMissing { key })?;
     let revoke_fn: RevokeFn = Arc::new(|data: &[u8], ctx: &CredentialContext| {
         Box::pin(async move {
-            let mut state: C::State = serde_json::from_slice(data).map_err(|e| {
-                CredentialServiceError::Internal(format!(
-                    "stored state deserialization failed: {e}"
-                ))
-            })?;
+            let mut state: C::State = deserialize_state(data)?;
             // `revoke` may mutate `state`; the mutation is deliberately
             // dropped here. After this closure returns, the service writes a
             // tombstone over the row (zeroing the secret bytes) rather than
@@ -1013,6 +899,19 @@ where
         .entries
         .get_mut(key)
         .ok_or(DispatchError::BaseOpsMissing { key })?;
+    let schema = Arc::new(entry.schema.clone());
+    let acquire: AcquireFn<PS> = Arc::new(
+        move |props: serde_json::Value, ctx: &CredentialContext, pending: &PS| {
+            let schema = Arc::clone(&schema);
+            Box::pin(async move {
+                let properties = prepare_properties::<C>(&schema, props)?;
+                let response = execute_begin::<C, PS>(&properties, ctx, pending)
+                    .await
+                    .map_err(executor_error_to_service_error)?;
+                map_resolve_response::<C>(response)
+            }) as AcquireFuture<'_>
+        },
+    );
     let continue_fn: ContinueFn<PS> = Arc::new(
         |token: &PendingToken, input: &UserInput, ctx: &CredentialContext, pending: &PS| {
             Box::pin(async move {
@@ -1023,6 +922,7 @@ where
             }) as AcquireFuture<'_>
         },
     );
+    entry.acquire = acquire;
     entry.continue_fn = Some(continue_fn);
     tracing::info!(
         credential.key = key,

@@ -23,7 +23,7 @@ use nebula_resource::{
     Manager, ManagerConfig, Provider, RegisterOptions, RegistrationSpec, ResidentConfig,
     ResourceConfig, ResourceContext, SlotCell,
     error::Error,
-    resource::{HasCredentialSlots, ResourceMetadata},
+    resource::{HasCredentialSlots, ResourceMetadataDraft},
     topology::resident::ResidentProvider,
 };
 use zeroize::Zeroize;
@@ -97,10 +97,8 @@ mod counting {
     // Custom error boilerplate removed — Resource lifecycle methods now return
     // `crate::Error` directly (HasCredentialSlots redesign).
 
-    #[derive(Clone)]
+    #[derive(Clone, nebula_schema::Schema)]
     pub(crate) struct CountingConfig;
-
-    nebula_schema::impl_empty_has_schema!(CountingConfig);
 
     impl ResourceConfig for CountingConfig {
         fn validate(&self) -> Result<(), Error> {
@@ -170,8 +168,8 @@ mod counting {
             Ok(())
         }
 
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::from_key(&Self::key())
+        fn metadata() -> ResourceMetadataDraft {
+            ResourceMetadataDraft::from_key(Self::key())
         }
     }
 
@@ -1407,7 +1405,7 @@ mod u9_gate {
         AcquireOptions, Manager, Provider, RegistrationSpec, Resident, ResidentConfig,
         ResourceConfig, ResourceContext, SlotCell, SlotIdentity,
         error::Error,
-        resource::{HasCredentialSlots, ResourceMetadata},
+        resource::{HasCredentialSlots, ResourceMetadataDraft},
         topology::resident::ResidentProvider,
     };
     use tokio_util::sync::CancellationToken;
@@ -1425,10 +1423,8 @@ mod u9_gate {
     // Custom error boilerplate removed — Resource lifecycle methods now return
     // `crate::Error` directly (HasCredentialSlots redesign).
 
-    #[derive(Clone)]
+    #[derive(Clone, nebula_schema::Schema)]
     struct GateConfig;
-
-    nebula_resource::impl_empty_has_schema!(GateConfig);
 
     impl ResourceConfig for GateConfig {
         fn validate(&self) -> Result<(), Error> {
@@ -1491,8 +1487,8 @@ mod u9_gate {
             Ok(())
         }
 
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::from_key(&Self::key())
+        fn metadata() -> ResourceMetadataDraft {
+            ResourceMetadataDraft::from_key(Self::key())
         }
     }
 
@@ -1649,7 +1645,7 @@ mod reload_deferral {
         Manager, PoolConfig, Provider, RegistrationSpec, ReloadOutcome, ResidentConfig,
         ResourceConfig, ResourceContext, SlotIdentity,
         error::Error,
-        resource::ResourceMetadata,
+        resource::ResourceMetadataDraft,
         topology::{Pooled, Resident, pooled::PoolProvider, resident::ResidentProvider},
     };
 
@@ -1659,12 +1655,10 @@ mod reload_deferral {
     /// A config whose `fingerprint()` is its `version` field, so a reload
     /// with a different version is actually detected as a change (the `0`
     /// default would always early-return `NoChange`).
-    #[derive(Clone)]
+    #[derive(Clone, nebula_schema::Schema)]
     struct VersionedConfig {
         version: u64,
     }
-
-    nebula_resource::impl_empty_has_schema!(VersionedConfig);
 
     impl ResourceConfig for VersionedConfig {
         fn validate(&self) -> Result<(), Error> {
@@ -1706,8 +1700,8 @@ mod reload_deferral {
                     Ok(())
                 }
 
-                fn metadata() -> ResourceMetadata {
-                    ResourceMetadata::from_key(&Self::key())
+                fn metadata() -> ResourceMetadataDraft {
+                    ResourceMetadataDraft::from_key(Self::key())
                 }
             }
 

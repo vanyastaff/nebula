@@ -10,6 +10,6 @@
 //! use [`ResourceFactory`].
 
 pub use nebula_resource::{
-    KindActivator, RegisterRequest, RegistrarError, ResourceActivatorRegistry, ResourceFactory,
-    ResourceRegistrationOutcome, SlotBinding,
+    KindActivator, RegisterRequest, RegistrarError, ResourceActivatorRegistry, ResourceConfigInput,
+    ResourceFactory, ResourceRegistrationOutcome, SlotBinding,
 };

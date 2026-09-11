@@ -31,15 +31,14 @@ use std::{
 use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_credential::{
     AuthPattern, Credential, CredentialContext, CredentialError, CredentialGuard,
-    CredentialMetadata, ResolveResult, SecretString, SecretToken,
+    CredentialMetadataDraft, SecretString, SecretToken, StaticResolveResult,
 };
 use nebula_resource::Resident;
 use nebula_resource::{
     AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, Resource, ResourceConfig,
-    ResourceContext, ResourceFactory, SlotCell, SlotIdentity, error::Error,
-    resource::HasCredentialSlots, topology::resident::ResidentProvider,
+    ResourceContext, SlotCell, SlotIdentity, error::Error, resource::HasCredentialSlots,
+    topology::resident::ResidentProvider,
 };
-use nebula_schema::FieldValues;
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroize;
 
@@ -63,15 +62,13 @@ impl Credential for FakeCred {
 
     const KEY: &'static str = "epochfold.fake";
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::builder()
-            .key(nebula_core::credential_key!("epochfold.fake"))
-            .name("FakeCred")
-            .description("slot-epoch fold fixture")
-            .schema(nebula_credential::schema_of::<Self::Properties>())
-            .pattern(AuthPattern::SecretToken)
-            .build()
-            .expect("FakeCred metadata is valid")
+    fn metadata() -> CredentialMetadataDraft {
+        CredentialMetadataDraft::new(
+            nebula_core::credential_key!("epochfold.fake"),
+            nebula_credential::metadata_name!("FakeCred"),
+            "slot-epoch fold fixture",
+            AuthPattern::SecretToken,
+        )
     }
 
     fn project(state: &SecretToken) -> SecretToken {
@@ -79,10 +76,10 @@ impl Credential for FakeCred {
     }
 
     async fn resolve(
-        _values: &FieldValues,
+        _properties: &(),
         _ctx: &CredentialContext,
-    ) -> Result<ResolveResult<SecretToken, ()>, CredentialError> {
-        Ok(ResolveResult::Complete(SecretToken::new(
+    ) -> Result<StaticResolveResult<SecretToken>, CredentialError> {
+        Ok(StaticResolveResult::Complete(SecretToken::new(
             SecretString::new("fake-token"),
         )))
     }
@@ -93,8 +90,8 @@ impl Credential for FakeCred {
 #[derive(Clone, Default, serde::Deserialize)]
 struct TwoSlotCfg;
 impl nebula_schema::HasSchema for TwoSlotCfg {
-    fn schema() -> nebula_schema::ValidSchema {
-        nebula_schema::ValidSchema::empty()
+    fn schema() -> Result<nebula_schema::ValidSchema, nebula_schema::ValidationReport> {
+        Ok(nebula_schema::ValidSchema::empty())
     }
 }
 impl ResourceConfig for TwoSlotCfg {
@@ -134,7 +131,7 @@ impl ResidentProvider for TwoSlotDerived {}
 
 #[test]
 fn derived_factory_projects_exact_resource_contract() {
-    let factory = TwoSlotDerivedFactory::new();
+    let factory = TwoSlotDerivedFactory::new().into_contribution();
 
     assert_eq!(
         factory.resource_type_id(),
@@ -224,9 +221,8 @@ fn derived_epoch_changes_when_non_max_slot_rotates() {
 
 // ── Part 2: the resident reconcile keys off the order-sensitive epoch ─
 
-#[derive(Clone)]
+#[derive(Clone, nebula_schema::Schema)]
 struct RaceCfg;
-nebula_schema::impl_empty_has_schema!(RaceCfg);
 impl ResourceConfig for RaceCfg {
     fn validate(&self) -> Result<(), Error> {
         Ok(())

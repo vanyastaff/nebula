@@ -2,7 +2,6 @@
 
 use nebula_action::ActionError;
 use nebula_core::{NodeKey, PortKey, id::ExecutionId};
-use nebula_expression::ExpressionError;
 use nebula_workflow::NodeState;
 
 /// Errors from the engine layer.
@@ -164,11 +163,9 @@ pub enum EngineError {
 
     /// Parameter resolution failed (expression eval, reference lookup, etc.)
     ///
-    /// When the failure originated in the expression engine, `source` carries the
-    /// typed [`ExpressionError`] so `std::error::Error::source()` chains are
-    /// preserved for operator diagnostics. For non-expression failures (e.g. a
-    /// missing predecessor reference) `source` is `None` and the textual
-    /// `error` field carries the message.
+    /// Schema admission and expression failures retain a typed, redacted
+    /// [`nebula_schema::ValidationError`] source. Missing predecessor references
+    /// have no upstream cause and carry `None`.
     #[error("parameter resolution failed for node {node_key}, param '{param_key}': {error}")]
     ParameterResolution {
         /// The node whose parameter could not be resolved.
@@ -177,14 +174,11 @@ pub enum EngineError {
         param_key: String,
         /// Human-readable description of the failure.
         error: String,
-        /// Typed upstream expression-engine error, when the failure originated
-        /// in expression evaluation or template rendering. `None` for reference
-        /// or structural failures that have no typed upstream source.
-        ///
-        /// Boxed to keep `EngineError` variant size within `clippy::result_large_err`
-        /// limits; `ExpressionError` itself carries multiple `String` fields.
+        /// Typed schema-bound failure with private payloads and evaluator causes
+        /// redacted throughout its public error chain. `None` for references
+        /// that have no upstream error.
         #[source]
-        source: Option<Box<ExpressionError>>,
+        source: Option<Box<nebula_schema::ValidationError>>,
     },
 
     /// Parameter validation failed against the action's schema.
@@ -229,6 +223,51 @@ pub enum EngineError {
         /// The source action's actually-declared output-port keys, for
         /// operator diagnostics.
         declared: Vec<PortKey>,
+    },
+
+    /// A named target port is not a declared support binding. Root data flow
+    /// requires the default input connection with no explicit target port.
+    #[error(
+        "node {from_node} routes to {to_node} on unsupported input port {port}; root flow requires the default input"
+    )]
+    UnsupportedInputPort {
+        /// Source node of the offending connection.
+        from_node: NodeKey,
+        /// Target node of the offending connection.
+        to_node: NodeKey,
+        /// Named target port that cannot receive this binding.
+        port: PortKey,
+    },
+
+    /// A required support port has no enabled incoming connection.
+    #[error("node {to_node} requires support input port {port}")]
+    MissingRequiredSupportInput {
+        /// Target node declaring the required port.
+        to_node: NodeKey,
+        /// Required support port.
+        port: PortKey,
+    },
+
+    /// A single-valued support port has more than one enabled connection.
+    #[error("node {to_node} support input port {port} accepts one connection, got {actual}")]
+    SupportInputMultiplicity {
+        /// Target node declaring the port.
+        to_node: NodeKey,
+        /// Single-valued support port.
+        port: PortKey,
+        /// Number of enabled incoming connections.
+        actual: usize,
+    },
+
+    /// A support-port connection does not satisfy its source filter.
+    #[error("node {from_node} is not allowed on {to_node} support input port {port}")]
+    SupportInputFiltered {
+        /// Rejected source node.
+        from_node: NodeKey,
+        /// Target node declaring the filter.
+        to_node: NodeKey,
+        /// Filtered support port.
+        port: PortKey,
     },
 
     /// A budget limit was exceeded.
@@ -418,7 +457,11 @@ impl nebula_error::Classify for EngineError {
             | Self::ParameterResolution { .. }
             | Self::ParameterValidation { .. }
             | Self::EdgeEvaluationFailed { .. }
-            | Self::UndeclaredOutputPort { .. } => nebula_error::ErrorCategory::Validation,
+            | Self::UndeclaredOutputPort { .. }
+            | Self::UnsupportedInputPort { .. }
+            | Self::MissingRequiredSupportInput { .. }
+            | Self::SupportInputMultiplicity { .. }
+            | Self::SupportInputFiltered { .. } => nebula_error::ErrorCategory::Validation,
             Self::NodeFailed { .. }
             | Self::TaskPanicked(_)
             | Self::FrontierIntegrity { .. }
@@ -484,6 +527,10 @@ impl nebula_error::Classify for EngineError {
             Self::ParameterValidation { .. } => "ENGINE:PARAM_VALIDATION",
             Self::EdgeEvaluationFailed { .. } => "ENGINE:EDGE_EVAL",
             Self::UndeclaredOutputPort { .. } => "ENGINE:UNDECLARED_OUTPUT_PORT",
+            Self::UnsupportedInputPort { .. } => "ENGINE:UNSUPPORTED_INPUT_PORT",
+            Self::MissingRequiredSupportInput { .. } => "ENGINE:MISSING_SUPPORT_INPUT",
+            Self::SupportInputMultiplicity { .. } => "ENGINE:SUPPORT_INPUT_MULTIPLICITY",
+            Self::SupportInputFiltered { .. } => "ENGINE:SUPPORT_INPUT_FILTERED",
             Self::BudgetExceeded(_) => "ENGINE:BUDGET_EXCEEDED",
             Self::Runtime(e) => return nebula_error::Classify::code(e),
             Self::Execution(e) => return nebula_error::Classify::code(e),

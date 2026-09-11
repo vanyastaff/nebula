@@ -7,12 +7,11 @@
 use std::sync::OnceLock;
 
 use nebula_action::{
-    Action, ActionError, ActionMetadata, ActionOutput, ActionResult, BreakReason, StatefulAction,
-    StatefulActionAdapter, StatefulHandler, StatelessAction, TriggerAction, TriggerSource,
+    Action, ActionError, ActionInput, ActionOutput, ActionResult, BreakReason, StatefulAction,
+    StatefulActionAdapter, StatefulHandle, StatelessAction, TriggerAction, TriggerSource,
     testing::TestContextBuilder,
 };
 use nebula_core::{Dependencies, action_key};
-use nebula_schema::{HasSchema, ValidSchema};
 
 // ── TestSource — generic trigger source for test fixtures ───────────────────
 
@@ -35,8 +34,12 @@ impl Action for EchoAction {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(action_key!("test.echo"), "Echo", "Echo input to output")
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
+            action_key!("test.echo"),
+            nebula_action::metadata_name!("Echo"),
+            "Echo input to output",
+        )
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -74,9 +77,9 @@ async fn stateless_action_execute_returns_success() {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 struct U32Out(u32);
 
-impl HasSchema for U32Out {
-    fn schema() -> ValidSchema {
-        ValidSchema::empty()
+impl nebula_schema::HasSchema for U32Out {
+    fn schema() -> Result<nebula_schema::ValidSchema, nebula_schema::ValidationReport> {
+        <u32 as nebula_schema::HasSchema>::schema()
     }
 }
 
@@ -86,8 +89,12 @@ impl Action for CounterAction {
     type Input = ();
     type Output = U32Out;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(action_key!("test.counter"), "Counter", "Count then break")
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
+            action_key!("test.counter"),
+            nebula_action::metadata_name!("Counter"),
+            "Count then break",
+        )
     }
 
     fn dependencies() -> &'static Dependencies {
@@ -104,7 +111,7 @@ impl StatefulAction for CounterAction {
 
     async fn execute(
         &self,
-        _input: <Self as Action>::Input,
+        _input: &<Self as Action>::Input,
         state: &mut Self::State,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
@@ -131,7 +138,7 @@ async fn stateful_action_continue_then_break() {
     let ctx = TestContextBuilder::new().build();
     let mut state = 0u32;
 
-    let r0 = action.execute((), &mut state, &ctx).await.unwrap();
+    let r0 = action.execute(&(), &mut state, &ctx).await.unwrap();
     match &r0 {
         ActionResult::Continue { output, .. } => {
             assert_eq!(output.as_value(), Some(&U32Out(0)));
@@ -140,7 +147,7 @@ async fn stateful_action_continue_then_break() {
     }
     assert_eq!(state, 1);
 
-    let r1 = action.execute((), &mut state, &ctx).await.unwrap();
+    let r1 = action.execute(&(), &mut state, &ctx).await.unwrap();
     match &r1 {
         ActionResult::Continue { output, .. } => {
             assert_eq!(output.as_value(), Some(&U32Out(1)));
@@ -149,7 +156,7 @@ async fn stateful_action_continue_then_break() {
     }
     assert_eq!(state, 2);
 
-    let r2 = action.execute((), &mut state, &ctx).await.unwrap();
+    let r2 = action.execute(&(), &mut state, &ctx).await.unwrap();
     match &r2 {
         ActionResult::Break { output, reason } => {
             assert_eq!(output.as_value(), Some(&U32Out(2)));
@@ -168,10 +175,10 @@ impl Action for NoOpTrigger {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             action_key!("test.noop_trigger"),
-            "NoOp Trigger",
+            nebula_action::metadata_name!("NoOp Trigger"),
             "Start/stop no-op",
         )
     }
@@ -232,10 +239,10 @@ impl Action for MigratableAction {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             action_key!("test.migratable"),
-            "Migratable",
+            nebula_action::metadata_name!("Migratable"),
             "Migrates v1 state",
         )
     }
@@ -266,7 +273,7 @@ impl StatefulAction for MigratableAction {
 
     async fn execute(
         &self,
-        _input: <Self as Action>::Input,
+        _input: &<Self as Action>::Input,
         state: &mut Self::State,
         _ctx: &(impl nebula_action::ActionContext + ?Sized),
     ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
@@ -283,15 +290,16 @@ impl StatefulAction for MigratableAction {
 #[tokio::test]
 async fn migrate_state_succeeds_from_v1() {
     let action = MigratableAction;
-    let adapter = StatefulActionAdapter::new(action);
+    let adapter = StatefulActionAdapter::new(action).expect("valid test catalog definition");
     let ctx = TestContextBuilder::new().build();
 
     // v1 state — missing the `label` field, so direct deser into MigratableState fails.
     // migrate_state should kick in and supply default label.
+    let input = adapter
+        .prepare_input(ActionInput::Raw(serde_json::json!({})))
+        .unwrap();
     let mut state = serde_json::json!({ "count": 5 });
-    let result = adapter
-        .execute(&serde_json::json!({}), &mut state, &ctx)
-        .await;
+    let result = adapter.dispatch(&input, &mut state, &ctx).await;
 
     nebula_action::assert_break!(result);
 }
@@ -299,14 +307,15 @@ async fn migrate_state_succeeds_from_v1() {
 #[tokio::test]
 async fn migrate_state_propagates_error_when_none() {
     let action = CounterAction;
-    let adapter = StatefulActionAdapter::new(action);
+    let adapter = StatefulActionAdapter::new(action).expect("valid test catalog definition");
     let ctx = TestContextBuilder::new().build();
 
     // Completely invalid state — CounterAction does not override migrate_state (returns None).
+    let input = adapter
+        .prepare_input(ActionInput::Raw(serde_json::Value::Null))
+        .unwrap();
     let mut state = serde_json::json!("not_an_object");
-    let result = adapter
-        .execute(&serde_json::Value::Null, &mut state, &ctx)
-        .await;
+    let result = adapter.dispatch(&input, &mut state, &ctx).await;
 
     nebula_action::assert_validation_error!(result);
 }

@@ -12,14 +12,17 @@
 //! need to check cancellation unless they want cooperative checks at specific
 //! points.
 
-use std::{fmt, future::Future};
+use std::{fmt, future::Future, sync::Arc};
 
 use serde_json::Value;
 
 use crate::{
+    ActionInput,
     action::Action,
     context::ActionContext,
-    error::{ActionError, ValidationReason},
+    error::ActionError,
+    handle::StatelessHandle,
+    input::{ActionInputContract, PreparedActionInput},
     metadata::ActionMetadata,
     result::ActionResult,
 };
@@ -60,55 +63,40 @@ pub trait StatelessAction: Action {
     ) -> impl Future<Output = Result<ActionResult<<Self as Action>::Output>, ActionError>> + Send;
 }
 
-// ── StatelessHandler trait ──────────────────────────────────────────────────
-
-/// Stateless handler — JSON-erased one-shot execution contract.
-///
-/// The engine dispatches every `StatelessAction` through this `dyn` trait
-/// (wrapped by [`StatelessActionAdapter`]). For typed authoring, write
-/// `impl StatelessAction` and let the adapter bridge to JSON.
-///
-/// # Errors
-///
-/// Returns [`ActionError`] on validation, retryable, or fatal failure.
-#[async_trait::async_trait]
-pub trait StatelessHandler: Send + Sync + 'static {
-    /// Action metadata (key, version, capabilities).
-    fn metadata(&self) -> &ActionMetadata;
-
-    /// Execute one-shot with JSON input.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ActionError`] if execution fails (validation, retryable, or fatal).
-    async fn execute(
-        &self,
-        input: Value,
-        ctx: &dyn ActionContext,
-    ) -> Result<ActionResult<Value>, ActionError>;
-}
-
 // ── StatelessActionAdapter ──────────────────────────────────────────────────
 
-/// Wraps a [`StatelessAction`] as a [`dyn StatelessHandler`].
+/// Wraps a [`StatelessAction`] as a [`dyn StatelessHandle`].
 ///
-/// Handles JSON deserialization of input and serialization of output so the
+/// Prepares input through its admitted schema before typed decoding, and
+/// handles serialization of output so the
 /// runtime can work with untyped JSON throughout, while action authors write
 /// strongly-typed Rust.
 pub struct StatelessActionAdapter<A> {
     action: A,
-    meta: ActionMetadata,
+    meta: Arc<ActionMetadata>,
+    input_contract: ActionInputContract,
 }
+
+impl<A> crate::handle::sealed::Stateless for StatelessActionAdapter<A> {}
 
 impl<A> StatelessActionAdapter<A> {
     /// Wrap a typed stateless action.
-    #[must_use]
-    pub fn new(action: A) -> Self
+    ///
+    /// # Errors
+    /// Returns a typed catalog error if metadata or an associated schema is invalid.
+    #[tracing::instrument(name = "action.metadata.admit", skip_all, err)]
+    pub fn new(action: A) -> Result<Self, crate::ActionMetadataAdmissionError>
     where
         A: Action,
     {
-        let meta = <A as Action>::metadata();
-        Self { action, meta }
+        let meta =
+            Arc::new(<A as Action>::metadata().admit_for::<A>(crate::ActionKind::Stateless)?);
+        let input_contract = ActionInputContract::new(meta.base().schema());
+        Ok(Self {
+            action,
+            meta,
+            input_contract,
+        })
     }
 
     /// Consume the adapter, returning the inner action.
@@ -119,26 +107,24 @@ impl<A> StatelessActionAdapter<A> {
 }
 
 #[async_trait::async_trait]
-impl<A> StatelessHandler for StatelessActionAdapter<A>
+impl<A> StatelessHandle for StatelessActionAdapter<A>
 where
     A: StatelessAction + Send + Sync + 'static,
 {
-    fn metadata(&self) -> &ActionMetadata {
+    fn metadata(&self) -> &Arc<ActionMetadata> {
         &self.meta
     }
 
-    async fn execute(
+    fn prepare_input(&self, input: ActionInput) -> Result<PreparedActionInput, ActionError> {
+        self.input_contract.prepare::<A::Input>(input)
+    }
+
+    async fn dispatch(
         &self,
-        input: Value,
+        input: PreparedActionInput,
         ctx: &dyn ActionContext,
     ) -> Result<ActionResult<Value>, ActionError> {
-        let typed_input: <A as Action>::Input = serde_json::from_value(input).map_err(|e| {
-            ActionError::validation(
-                "input",
-                ValidationReason::MalformedJson,
-                Some(e.to_string()),
-            )
-        })?;
+        let typed_input = input.into_typed::<A::Input>(&self.input_contract)?;
 
         let result = self.action.execute(typed_input, ctx).await?;
 
@@ -152,7 +138,7 @@ where
 impl<A: Action> fmt::Debug for StatelessActionAdapter<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StatelessActionAdapter")
-            .field("action", &<A as Action>::metadata().base.key)
+            .field("action", self.meta.base().key())
             .finish_non_exhaustive()
     }
 }
@@ -172,6 +158,15 @@ mod tests {
         TestContextBuilder::new().build()
     }
 
+    async fn execute(
+        handler: &(impl StatelessHandle + ?Sized),
+        input: Value,
+        context: &dyn ActionContext,
+    ) -> Result<ActionResult<Value>, ActionError> {
+        let input = handler.prepare_input(ActionInput::Raw(input))?;
+        handler.dispatch(input, context).await
+    }
+
     // ── StatelessActionAdapter tests ──────────────────────────────────────
 
     #[derive(Debug, Deserialize)]
@@ -181,13 +176,12 @@ mod tests {
     }
 
     impl HasSchema for AddInput {
-        fn schema() -> ValidSchema {
+        fn schema() -> Result<ValidSchema, nebula_schema::ValidationReport> {
             use nebula_schema::{FieldCollector, Schema, field_key};
             Schema::builder()
                 .integer(field_key!("a"), |n| n)
                 .integer(field_key!("b"), |n| n)
                 .build()
-                .expect("AddInput schema is valid")
         }
     }
 
@@ -197,12 +191,9 @@ mod tests {
     }
 
     impl HasSchema for AddOutput {
-        fn schema() -> ValidSchema {
+        fn schema() -> Result<ValidSchema, nebula_schema::ValidationReport> {
             use nebula_schema::{FieldCollector, Schema, field_key};
-            Schema::builder()
-                .integer(field_key!("sum"), |n| n)
-                .build()
-                .expect("AddOutput schema is valid")
+            Schema::builder().integer(field_key!("sum"), |n| n).build()
         }
     }
 
@@ -212,10 +203,10 @@ mod tests {
         type Input = AddInput;
         type Output = AddOutput;
 
-        fn metadata() -> ActionMetadata {
-            ActionMetadata::new(
+        fn metadata() -> crate::ActionMetadataDraft {
+            crate::ActionMetadataDraft::new(
                 nebula_core::action_key!("math.add"),
-                "Add",
+                crate::metadata_name!("Add"),
                 "Adds two numbers",
             )
         }
@@ -239,13 +230,12 @@ mod tests {
 
     #[tokio::test]
     async fn adapter_executes_typed_action() {
-        let adapter = StatelessActionAdapter::new(AddAction);
+        let adapter =
+            StatelessActionAdapter::new(AddAction).expect("valid test catalog definition");
         let ctx = make_ctx();
 
         let input = serde_json::json!({ "a": 3, "b": 7 });
-        let result = StatelessHandler::execute(&adapter, input, &ctx)
-            .await
-            .unwrap();
+        let result = execute(&adapter, input, &ctx).await.unwrap();
 
         match result {
             ActionResult::Success { output } => {
@@ -259,39 +249,41 @@ mod tests {
 
     #[tokio::test]
     async fn adapter_returns_validation_error_on_bad_input() {
-        let adapter = StatelessActionAdapter::new(AddAction);
+        let adapter =
+            StatelessActionAdapter::new(AddAction).expect("valid test catalog definition");
         let ctx = make_ctx();
 
         let bad_input = serde_json::json!({ "x": "not a number" });
-        let err = StatelessHandler::execute(&adapter, bad_input, &ctx)
-            .await
-            .unwrap_err();
+        let err = execute(&adapter, bad_input, &ctx).await.unwrap_err();
         assert!(matches!(err, ActionError::Validation { .. }));
     }
 
     #[tokio::test]
     async fn adapter_exposes_metadata() {
-        let adapter = StatelessActionAdapter::new(AddAction);
+        let adapter =
+            StatelessActionAdapter::new(AddAction).expect("valid test catalog definition");
         assert_eq!(
-            StatelessHandler::metadata(&adapter).base.key,
+            adapter.metadata().base().key().clone(),
             nebula_core::action_key!("math.add")
         );
     }
 
     #[test]
     fn adapter_is_dyn_compatible() {
-        let adapter = StatelessActionAdapter::new(AddAction);
-        let _: Arc<dyn StatelessHandler> = Arc::new(adapter);
+        let adapter =
+            StatelessActionAdapter::new(AddAction).expect("valid test catalog definition");
+        let _: Arc<dyn StatelessHandle> = Arc::new(adapter);
     }
 
     #[tokio::test]
-    async fn stateless_adapter_implements_stateless_handler() {
-        let adapter = StatelessActionAdapter::new(AddAction);
-        let handler: Arc<dyn StatelessHandler> = Arc::new(adapter);
+    async fn stateless_adapter_implements_stateless_handle() {
+        let adapter =
+            StatelessActionAdapter::new(AddAction).expect("valid test catalog definition");
+        let handler: Arc<dyn StatelessHandle> = Arc::new(adapter);
         let ctx = make_ctx();
 
         let input = serde_json::json!({ "a": 5, "b": 3 });
-        let result = handler.execute(input, &ctx).await.unwrap();
+        let result = execute(handler.as_ref(), input, &ctx).await.unwrap();
 
         match result {
             ActionResult::Success { output } => {
@@ -305,11 +297,10 @@ mod tests {
 
     #[test]
     fn stateless_adapter_into_inner_returns_action() {
-        let adapter = StatelessActionAdapter::new(AddAction);
+        let adapter =
+            StatelessActionAdapter::new(AddAction).expect("valid test catalog definition");
+        let key = adapter.metadata().base().key().clone();
         let _action = adapter.into_inner();
-        assert_eq!(
-            <AddAction as Action>::metadata().base.key,
-            nebula_core::action_key!("math.add")
-        );
+        assert_eq!(key, nebula_core::action_key!("math.add"));
     }
 }

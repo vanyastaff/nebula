@@ -4,15 +4,12 @@
 //! input. State and Scheme are the same type ([`SecretToken`]) via
 //! [`identity_state!`](crate::identity_state).
 
-use nebula_schema::{FieldValues, Schema};
+use nebula_schema::Schema;
 use serde::Deserialize;
 
 use crate::{
-    CredentialContext, SecretString,
-    error::{CredentialError, ProviderErrorContext, ProviderErrorKind, SecretFreeMessage},
-    metadata::CredentialMetadata,
-    resolve::ResolveResult,
-    scheme::SecretToken,
+    CredentialContext, SecretString, error::CredentialError, metadata::CredentialMetadataDraft,
+    resolve::StaticResolveResult, scheme::SecretToken,
 };
 
 /// Typed shape of the `api_key` credential setup form (Phase 5 — replaces
@@ -24,13 +21,11 @@ use crate::{
 /// actual auth material conversion to
 /// [`SecretToken`] happens in [`Credential::resolve`](crate::Credential::resolve).
 ///
-/// The plaintext lives in a `String` here rather than `SecretString` so
-/// that the universal `#[derive(Schema)]` field-type inference applies
-/// (`SecretString` would land in the `UserDefined` bucket and require a
-/// hand-rolled `HasSchema` impl); the `#[field(secret)]` flag tells the
-/// schema layer to render this as a redacted/secret form field, while
-/// `resolve` immediately wraps the value in `SecretString` for storage.
-#[derive(Schema, Deserialize, Default)]
+/// The `#[field(secret)]` declaration requires the field type to implement
+/// `nebula_schema::SecretInput`; credential [`SecretString`]
+/// satisfies that contract and keeps plaintext in zeroizing memory after the
+/// trusted typed decode.
+#[derive(Schema, Deserialize)]
 pub struct ApiKeyProperties {
     /// Optional base URL of the service (e.g. `https://api.example.com`).
     #[field(label = "Server URL", placeholder = "https://api.example.com")]
@@ -38,7 +33,7 @@ pub struct ApiKeyProperties {
     /// Secret API token or personal access token.
     #[field(secret, label = "API Key")]
     #[validate(required)]
-    pub api_key: String,
+    pub api_key: SecretString,
 }
 
 /// API Key credential -- resolves a single token into a [`SecretToken`].
@@ -72,15 +67,14 @@ impl ApiKeyCredential {
     type Scheme = SecretToken;
     type State = SecretToken;
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> CredentialMetadataDraft {
+        CredentialMetadataDraft::new(
             nebula_core::credential_key!("api_key"),
-            "API Key",
+            crate::metadata_name!("API Key"),
             "Static API key or bearer token for HTTP APIs.",
-            nebula_schema::schema_of::<Self::Properties>(),
             crate::AuthPattern::SecretToken,
         )
-        .with_icon("key")
+        .with_icon(nebula_metadata::Icon::inline("key"))
     }
 
     fn project(state: &SecretToken) -> SecretToken {
@@ -88,17 +82,12 @@ impl ApiKeyCredential {
     }
 
     async fn resolve(
-        values: &FieldValues,
+        properties: &ApiKeyProperties,
         _ctx: &CredentialContext,
-    ) -> Result<ResolveResult<SecretToken, ()>, CredentialError> {
-        let token = values.get_string_by_str("api_key").ok_or_else(|| {
-            CredentialError::Provider(Box::new(ProviderErrorContext::new(
-                ProviderErrorKind::Schema,
-                SecretFreeMessage::new("missing required field 'api_key'"),
-            )))
-        })?;
-        let secret = SecretString::new(token.to_owned());
-        Ok(ResolveResult::Complete(SecretToken::new(secret)))
+    ) -> Result<StaticResolveResult<SecretToken>, CredentialError> {
+        Ok(StaticResolveResult::Complete(SecretToken::new(
+            properties.api_key.clone(),
+        )))
     }
 }
 
@@ -107,7 +96,7 @@ mod tests {
     // `Credential` (for `KEY` / `Properties`) and `CredentialLifecycle` (for
     // `policy`) are only referenced by the tests now that `#[credential]`
     // generates the trait impls via absolute paths.
-    use crate::{Credential, CredentialLifecycle};
+    use crate::{Credential, CredentialLifecycle, credentials::resolve_properties};
 
     use super::*;
 
@@ -143,14 +132,15 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_extracts_api_key_field() {
-        let mut values = FieldValues::new();
-        values
-            .try_set_raw("api_key", serde_json::Value::String("sk-secret-123".into()))
-            .expect("test-only known-good key");
+        let properties = resolve_properties::<ApiKeyCredential>(serde_json::json!({
+            "api_key": "sk-secret-123"
+        }))
+        .unwrap();
+        assert_eq!(properties.api_key.expose_secret(), "sk-secret-123");
         let ctx = CredentialContext::for_owner("test-user");
-        let result = ApiKeyCredential::resolve(&values, &ctx).await.unwrap();
+        let result = ApiKeyCredential::resolve(&properties, &ctx).await.unwrap();
         match result {
-            ResolveResult::Complete(token) => {
+            StaticResolveResult::Complete(token) => {
                 let exposed = token.token().expose_secret().to_owned();
                 assert_eq!(exposed, "sk-secret-123");
             },
@@ -158,17 +148,22 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn resolve_returns_error_on_missing_field() {
-        let values = FieldValues::new();
-        let ctx = CredentialContext::for_owner("test-user");
-        let result = ApiKeyCredential::resolve(&values, &ctx).await;
-        assert!(result.is_err());
+    #[test]
+    fn schema_rejects_missing_api_key_before_resolve() {
+        let Err(report) = resolve_properties::<ApiKeyCredential>(serde_json::json!({})) else {
+            panic!("missing API key must fail schema validation");
+        };
+        assert!(
+            report.errors().any(|error| {
+                error.code() == "required" && error.path().to_string() == "/api_key"
+            })
+        );
     }
 
     #[test]
     fn parameters_contains_server_and_api_key() {
-        let params = nebula_schema::schema_of::<<ApiKeyCredential as Credential>::Properties>();
+        let params = nebula_schema::schema_of::<<ApiKeyCredential as Credential>::Properties>()
+            .expect("valid API key schema");
         assert!(params.fields().iter().any(|f| f.key().as_str() == "server"));
         assert!(
             params
@@ -181,7 +176,8 @@ mod tests {
 
     #[test]
     fn server_is_optional() {
-        let params = nebula_schema::schema_of::<<ApiKeyCredential as Credential>::Properties>();
+        let params = nebula_schema::schema_of::<<ApiKeyCredential as Credential>::Properties>()
+            .expect("valid API key schema");
         let server = params
             .fields()
             .iter()

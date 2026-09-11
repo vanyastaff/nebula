@@ -30,7 +30,7 @@ use axum::{
 };
 use hmac::{Hmac, KeyInit, Mac};
 use nebula_action::{
-    Action, ActionError, ActionMetadata, SignaturePolicy, TriggerContext, TriggerEventOutcome,
+    Action, ActionError, ActionMetadataDraft, SignaturePolicy, TriggerContext, TriggerEventOutcome,
     TriggerHandler, TriggerRuntimeContext, WebhookAction, WebhookConfig, WebhookRequest,
     WebhookResponse, WebhookTriggerAdapter,
 };
@@ -71,10 +71,10 @@ impl Action for GitHubLikeWebhook {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> ActionMetadataDraft {
+        ActionMetadataDraft::new(
             nebula_core::action_key!("test.webhook.integration"),
-            "GitHub-like",
+            nebula_action::metadata_name!("GitHub-like"),
             "Integration test webhook",
         )
     }
@@ -188,7 +188,7 @@ async fn register_webhook(
         secret,
         captured_url: captured.clone(),
     };
-    let adapter = WebhookTriggerAdapter::new(webhook);
+    let adapter = WebhookTriggerAdapter::new(webhook).expect("valid test catalog definition");
     // Read the cached webhook config BEFORE erasing the adapter
     // to `Arc<dyn TriggerHandler>` — webhook configuration does not
     // flow through the dyn trigger contract.
@@ -420,10 +420,10 @@ impl Action for HangingWebhook {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> ActionMetadataDraft {
+        ActionMetadataDraft::new(
             nebula_core::action_key!("test.webhook.hang"),
-            "Hanging",
+            nebula_action::metadata_name!("Hanging"),
             "Handler that never returns",
         )
     }
@@ -469,7 +469,8 @@ async fn handler_timeout_returns_504() {
         tenant_rate_limit_per_minute: None,
     });
 
-    let hanging_adapter = WebhookTriggerAdapter::new(HangingWebhook);
+    let hanging_adapter =
+        WebhookTriggerAdapter::new(HangingWebhook).expect("valid test catalog definition");
     let config = hanging_adapter.config().clone();
     let adapter: Arc<dyn TriggerHandler> = Arc::new(hanging_adapter);
     let ctx_template = TriggerRuntimeContext::new(
@@ -631,10 +632,10 @@ impl Action for UnsignedWebhook {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> ActionMetadataDraft {
+        ActionMetadataDraft::new(
             nebula_core::action_key!("test.webhook.unsigned"),
-            "Unsigned",
+            nebula_action::metadata_name!("Unsigned"),
             "OptionalAcceptUnsigned regression guard",
         )
     }
@@ -678,10 +679,10 @@ impl Action for DefaultConfigWebhook {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> ActionMetadataDraft {
+        ActionMetadataDraft::new(
             nebula_core::action_key!("test.webhook.default_config.static"),
-            "DefaultConfig",
+            nebula_action::metadata_name!("DefaultConfig"),
             "static",
         )
     }
@@ -716,7 +717,7 @@ async fn register_typed<A: WebhookAction>(
     transport: &WebhookTransport,
     action: A,
 ) -> nebula_api::transport::webhook::ActivationHandle {
-    let adapter = WebhookTriggerAdapter::new(action);
+    let adapter = WebhookTriggerAdapter::new(action).expect("valid test catalog definition");
     let config = adapter.config().clone();
     let adapter: Arc<dyn TriggerHandler> = Arc::new(adapter);
     let ctx_template = TriggerRuntimeContext::new(
@@ -1116,12 +1117,15 @@ async fn token_resolution_called_exactly_once_on_registered_under_limit_key() {
     // routing map has the entry.  The adapter uses `OptionalAcceptUnsigned`
     // so the request reaches token-resolution without needing a signature.
     let adapter: Arc<dyn TriggerHandler> = {
-        let a = WebhookTriggerAdapter::new(UnsignedWebhook);
+        let a = WebhookTriggerAdapter::new(UnsignedWebhook).expect("valid test catalog definition");
         Arc::new(a)
     };
     // We need the config before erasing the type — but UnsignedWebhook's
     // adapter is consumed by `new`; reconstruct for config only.
-    let config = WebhookTriggerAdapter::new(UnsignedWebhook).config().clone();
+    let config = WebhookTriggerAdapter::new(UnsignedWebhook)
+        .expect("valid test catalog definition")
+        .config()
+        .clone();
 
     let handle = activate_and_persist(
         &transport,

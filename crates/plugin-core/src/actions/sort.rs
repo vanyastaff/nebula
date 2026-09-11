@@ -64,9 +64,9 @@
 use std::cmp::Ordering;
 use std::sync::OnceLock;
 
-use nebula_action::{ActionContext, ActionError, ActionMetadata, ActionResult, StatelessAction};
+use nebula_action::{ActionContext, ActionError, ActionResult, StatelessAction};
 use nebula_core::action_key;
-use nebula_schema::HasSchema;
+use nebula_schema::{Field, HasSchema, Schema, ValidSchema, ValidationReport, field_key};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::instrument;
@@ -155,10 +155,26 @@ pub struct SortInput {
     pub keys: Vec<SortKey>,
 }
 
-// `data` is fully dynamic; the module doc describes expected structure.
 impl HasSchema for SortInput {
-    fn schema() -> nebula_schema::validated::ValidSchema {
-        nebula_schema::validated::ValidSchema::empty()
+    #[instrument(name = "core.sort.schema", skip_all, err)]
+    fn schema() -> Result<ValidSchema, ValidationReport> {
+        static SCHEMA: OnceLock<Result<ValidSchema, ValidationReport>> = OnceLock::new();
+        SCHEMA.get_or_init(|| {
+            Schema::builder()
+                .add(super::input_schema::record_data())
+                .add(Field::list(field_key!("keys")).required().item(
+                    Field::object(field_key!("item"))
+                        .description("Sort key; serde requires field while allowing the empty JSON key.")
+                        .add(Field::string(field_key!("field")))
+                        .add(Field::select(field_key!("order"))
+                            .option("asc", "Ascending").option("desc", "Descending"))
+                        .add(Field::select(field_key!("nulls"))
+                            .option("greatest", "Greatest").option("first", "First").option("last", "Last"))
+                        .add(Field::boolean(field_key!("case_insensitive"))),
+                ))
+                .root_rule(super::input_schema::array_present(field_key!("data"))?)
+                .build()
+        }).clone()
     }
 }
 
@@ -199,12 +215,13 @@ impl nebula_action::action::Action for Sort {
     type Input = SortInput;
     type Output = Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             action_key!("core.sort"),
-            "Sort",
+            nebula_action::metadata_name!("Sort"),
             "Sort an array of objects by one or more fields (asc/desc)",
         )
+        .with_version(nebula_action::MetadataVersion::new(2, 0, 0))
         .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
 
@@ -876,7 +893,14 @@ mod tests {
     // ── 14: action key is "core.sort" ────────────────────────────────────────
     #[test]
     fn action_key_is_core_dot_sort() {
-        use nebula_action::action::Action;
-        assert_eq!(Sort::metadata().base.key.as_str(), "core.sort");
+        let factory = nebula_action::GenericStatelessFactory::<Sort>::new()
+            .expect("sort metadata must admit");
+        assert_eq!(
+            nebula_action::ActionFactory::metadata(&factory)
+                .base()
+                .key()
+                .as_str(),
+            "core.sort"
+        );
     }
 }

@@ -29,12 +29,20 @@ pub use crate::{
         collect_json_fields, collection_nested, each, field, json_field, json_field_optional,
         named_field, nested_validator, not, optional_nested, or,
     },
-    engine::{ExecutionMode, validate_rules},
+    engine::{
+        DeferredReason, EvaluationOutcome, ExecutionMode, validate_rules, validate_rules_with_ctx,
+    },
     error::ValidatorError,
     foundation::{
-        AnyValidator, AsValidatable, ErrorSeverity, FieldPath, Validatable, Validate, ValidateExt,
-        ValidationError, ValidationErrors, ValidationMode,
+        AnyValidator, AsValidatable, ErrorSeverity, FieldPath, FieldPathError, Validatable,
+        Validate, ValidateExt, ValidationError, ValidationErrorKind, ValidationErrors,
+        ValidationMode,
     },
     proof::Validated,
-    rule::{DeferredRule, Logic, Predicate, PredicateContext, Rule, RuleKind, ValueRule},
+    rule::{
+        DeferredRule, MAX_RULE_DEPTH, MAX_RULE_JSON_DEPTH, MAX_RULE_JSON_NODES, MAX_RULE_NODES,
+        MAX_RULE_OPERANDS, MAX_RULE_TEXT_BYTES, Predicate, PredicateContext, Rule, RuleBudget,
+        RuleBuildError, RuleChildren, RuleKind, RuleOperands, RulePattern, RuleRef, RuleView,
+        ValueRule,
+    },
 };

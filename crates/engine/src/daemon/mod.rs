@@ -100,7 +100,7 @@ pub mod config {
 
 pub use config::Config as DaemonConfig;
 pub use durable_emitter::DurableExecutionEmitter;
-pub use event_source::{EventSource, EventSourceAdapter, EventSourceConfig, EventSourceRuntime};
+pub use event_source::{EventSource, EventSourceAdapter, EventSourceRuntime};
 pub use execution_sink::EngineExecutionSink;
 pub use registry::{AnyDaemonHandle, DaemonError, DaemonRegistry};
 pub use routing::{DefinitionRoutingResolver, DispatchRoute, RoutingError, RoutingResolver};

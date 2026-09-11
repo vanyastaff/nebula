@@ -32,24 +32,21 @@ use std::{
 };
 
 use nebula_action::{
-    ActionError, action::Action, metadata::ActionMetadata, result::ActionResult,
-    stateless::StatelessAction,
+    ActionError, action::Action, result::ActionResult, stateless::StatelessAction,
 };
 use nebula_core::{Dependencies, ResourceKey, action_key, node_key, resource_key};
 use nebula_engine::{
-    ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
-    KindActivator, Plugin, PluginManifest, PluginRegistry, ResolvedPlugin,
-    ResourceActivatorRegistry, WorkflowEngine,
+    ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, KindActivator, Plugin,
+    PluginManifest, PluginRegistry, ResolvedPlugin, ResourceActivatorRegistry, WorkflowEngine,
 };
 use nebula_metrics::MetricsRegistry;
 use nebula_resource::Resident;
 use nebula_resource::{
     ScopeLevel,
     error::Error as ResourceError,
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
     topology::resident,
 };
-use nebula_schema::HasSchema;
 
 // ── A resource the plugin declares (kind = "demo.widget") ───────────────────
 
@@ -70,13 +67,12 @@ impl From<DemoError> for ResourceError {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, nebula_schema::Schema)]
 struct DemoConfig {
     #[serde(default)]
+    #[field(default = "")]
     label: String,
 }
-
-nebula_schema::impl_empty_has_schema!(DemoConfig);
 
 impl ResourceConfig for DemoConfig {
     fn validate(&self) -> Result<(), ResourceError> {
@@ -126,12 +122,11 @@ impl Provider for DemoResource {
         Ok(Arc::new(AtomicU64::new(id)))
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::new(
             <Self as Provider>::key(),
-            "demo.widget".to_owned(),
+            nebula_resource::metadata_name!("demo.widget"),
             String::new(),
-            <DemoConfig as HasSchema>::schema(),
         )
     }
 }
@@ -200,13 +195,15 @@ fn demo_registrars(plugins: &PluginRegistry) -> ResourceActivatorRegistry {
         .find(|k| k.as_str() == "demo.widget")
         .expect("plugin declares the demo.widget resource");
 
-    registrars.insert(
-        kind.as_str().to_owned(),
-        Arc::new(KindActivator::<DemoResource, _, _>::new(
-            DemoResource::new,
-            || Resident::<DemoResource>::new(resident::config::Config::default()),
-        )),
-    );
+    registrars
+        .insert(
+            kind.as_str().to_owned(),
+            Arc::new(KindActivator::<DemoResource, _, _>::new(
+                DemoResource::new,
+                || Resident::<DemoResource>::new(resident::config::Config::default()),
+            )),
+        )
+        .expect("test resource metadata admits");
     registrars
 }
 
@@ -218,9 +215,13 @@ impl Action for NoopHandler {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(action_key!("test.noop.static"), "Noop", "static")
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
+            action_key!("test.noop.static"),
+            nebula_action::metadata_name!("Noop"),
+            "static",
+        )
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
     fn dependencies() -> &'static Dependencies {
         use std::sync::OnceLock;
@@ -241,14 +242,18 @@ impl StatelessAction for NoopHandler {
 
 fn build_engine(registrars: ResourceActivatorRegistry) -> WorkflowEngine {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless_instance(
-        ActionMetadata::new(action_key!("test.noop"), "Noop", "noop")
+    registry
+        .register_stateless_instance(
+            nebula_action::ActionMetadataDraft::new(
+                action_key!("test.noop"),
+                nebula_action::metadata_name!("Noop"),
+                "noop",
+            )
             .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
-        NoopHandler,
-    );
-    let executor: ActionExecutor =
-        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    let runner = Arc::new(InProcessRunner::new(executor));
+            NoopHandler,
+        )
+        .expect("valid test catalog definition");
+    let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(
@@ -299,7 +304,7 @@ async fn engine_holds_registrars_built_for_plugin_declared_resource() {
 /// allowlist registers the resource against a `Manager` under its key.
 #[tokio::test]
 async fn wired_registrar_performs_typed_registration() {
-    use nebula_engine::RegisterRequest;
+    use nebula_engine::{RegisterRequest, ResourceConfigInput};
     use nebula_expression::ExpressionEngine;
     use nebula_resource::Manager;
 
@@ -315,7 +320,7 @@ async fn wired_registrar_performs_typed_registration() {
             "demo.widget",
             &manager,
             RegisterRequest {
-                config_json: serde_json::json!({ "label": "wired" }),
+                config: ResourceConfigInput::data(serde_json::json!({ "label": "wired" })),
                 expr_engine: &expr,
                 slot_bindings: Vec::new(),
                 scope: ScopeLevel::Global,

@@ -29,16 +29,28 @@ it and returns a `serde_json::Value`.
 
 ## Public API
 
-- `ExpressionEngine` — main engine: `new()`, `with_cache_size(n)`, `evaluate(expr, ctx)`,
-  `evaluate_template(tmpl, ctx)`, `parse_template(tmpl)`, `cache_overview()`.
+- `CompiledProgram` — immutable retained syntax: `compile(source)` (auto),
+  `compile_expression(source)` (raw), `compile_template(source)` (text),
+  `compile_with_syntax(source, syntax)`, `source()`, and `syntax()`.
+- `ProgramSyntax` - closed authored grammar: `Auto`, `Expression` (raw), or
+  `Template` (always string). Retained independently of the resulting AST/body.
+- `has_expression_marker(source)` — lexical shorthand classification, including
+  malformed unescaped openers; neither a `$` nor a closing delimiter is required.
+- `ExpressionEngine` — main engine: `evaluate(source, ctx)`,
+  `evaluate_compiled(&program, ctx)`, `parse_template(source)`,
+  `render_template(&template, ctx)`. Cache constructors require `cache`.
 - `EvaluationContext` — runtime variable bindings: `$node`, `$execution`, `$workflow`,
-  `$input`; `EvaluationContextBuilder` for fluent construction.
-- `EvaluationPolicy` — DoS budget (max steps, max recursion depth).
+  `$input`; `resolve_variable` returns shared `Arc<Value>` snapshots, and
+  `EvaluationContextBuilder` provides fluent construction.
+- `EvaluationPolicy` — function restrictions, coercion rules, work and JSON input limits.
+- `BuiltinOutput`, `BuiltinOutputBuilder`, `BuiltinOutputBound`, `BuiltinOutputLimits` — mandatory bounded
+  construction for outputs returned by public custom builtins.
 - `Template` — pre-parsed `{{ ... }}` template; call `.render(engine, ctx)` to evaluate.
 - `MaybeExpression<T>` — typed wrapper: either a literal `T` or an expression string that
   resolves to `T`. Used in `serde` structs for action/credential config parameters.
 - `MaybeTemplate` — like `MaybeExpression` but for text templates (`{{ }}` delimiters).
-- `CachedExpression` — pre-compiled expression for reuse across evaluations.
+- `CachedExpression` — opaque lazy program storage inside `MaybeExpression`; clones
+  share the compiled program independently of the optional engine cache.
 - `ExpressionError`, `ExpressionResult` — typed error and result alias.
 - `CacheOverview` — cache hit/miss statistics snapshot.
 
@@ -48,9 +60,41 @@ See `src/lib.rs` rustdoc for the quick-start example.
 
 - **Expression variables:** `$node`, `$execution`, `$workflow`, `$input` — the four
   standard execution-time variable namespaces. Seam: `crates/expression/src/context.rs`.
-- **DoS guard:** `EvaluationPolicy` caps recursion depth (default 256) and step budget
-  per evaluation call. Exceeding either returns `ExpressionError` rather than panicking
-  or looping indefinitely.
+- **Compilation boundary:** compile once and retain `CompiledProgram`; evaluation never
+  reparses its source. Compilation checks syntax, not variable existence, builtin
+  availability, policy, or expected result type. Those remain runtime checks.
+  Clones preserve exact source and authored `ProgramSyntax`; AUTO remains AUTO
+  even when compilation selects a template body. Persist both source and syntax
+  when reconstructing authoring input, never infer syntax from the body or source.
+- **Grammar:** auto compilation tries raw expressions first, so quoted `{{` and `}}`
+  remain string contents. A lone envelope with surrounding whitespace preserves its
+  JSON type; mixed text returns a string. Explicit template compilation always returns
+  a string, including static text and lone envelopes. Delimiters respect quotes and
+  nested object braces. `parse_expression` uses the same auto compiler and discards
+  the program. Template text accepts `\{{` and `{{{{` as escaped literal openers;
+  an even number of preceding backslashes leaves the opener active. Marker
+  classification and template parsing share these lexical rules.
+- **Missing versus null:** missing variables/properties are lookup errors; explicit
+  JSON null remains `Value::Null`. No missing-value sentinel is collapsed into null.
+- **DoS guard:** source is capped at 1 MiB, with at most 65,536 tokens and 16,384 AST
+  nodes per embedded expression, depth 256, and 1,000 template expressions. Evaluation
+  has a default 100,000-unit work ceiling shared by all template parts, pipelines,
+  higher-order bodies, materialized values, string bytes, and builtin work. Context
+  restrictions intersect engine restrictions and cannot raise engine limits, including
+  the default 1 MiB JSON input limit. String expansion is checked before allocation in
+  `split`, `join`, `to_json`, `replace`, `repeat`, padding, and other expanding
+  string operations; template output is capped at 1 MiB. Every builtin result also
+  has finite total-byte, single-string, collection-item, value-node, and depth bounds.
+- **Shared context reads:** stored variables resolve through O(1) `Arc` clones. The
+  evaluator retains borrows through property/index chains and passes borrowed values to
+  builtins, materializing ownership only when an expression produces a new value or at
+  the existing top-level owned-`Value` boundary.
+- **Numbers:** signed/unsigned integer and float ordering uses `num-cmp` exact mixed
+  comparison, including values above 2^53; numeric scalar equality uses the same order.
+  Integer `+`, `-`, `*`, `%` and integral math preserve representable JSON integers or
+  fail on overflow. Fractional/out-of-range integer conversions and non-finite results
+  fail instead of truncating, saturating, or returning null. Floating arithmetic remains
+  IEEE-754, not decimal arithmetic. Arrays/objects retain structural JSON equality.
 - **Type coercion:** expressions evaluate to `serde_json::Value`; `MaybeExpression<T>`
   calls `resolve_as_*` which coerces the JSON result to `T` and returns a typed error on
   mismatch.
@@ -69,12 +113,20 @@ See `src/lib.rs` rustdoc for the quick-start example.
 
 ```rust
 pub type BuiltinFunction =
-    fn(&[Value], BuiltinView<'_>, &EvaluationContext) -> ExpressionResult<Value>;
+    fn(
+        &[&Value],
+        BuiltinView<'_>,
+        &EvaluationContext,
+        BuiltinOutputBuilder,
+    ) -> ExpressionResult<BuiltinOutput>;
 ```
 
-The middle parameter is `BuiltinView<'_>`, a read-only handle that exposes only the
-policy-query methods builtins legitimately need (`is_strict_mode`,
-`strict_conversions_enabled`, `max_json_parse_length`). It does not expose
+`BuiltinView<'_>` exposes policy queries plus
+`charge_work` and `check_output_bytes` against the calling program's shared budget.
+The mandatory `BuiltinOutputBuilder` is the only public way to construct the opaque
+result, and validates total bytes, string bytes, collection size, value nodes, and
+depth. Registered functions should charge work before loops and use builder methods
+that preflight allocations. `BuiltinView` does not expose
 `Evaluator::eval` — a registered builtin physically cannot recurse back into AST
 evaluation, so the historical step-budget bypass that was previously a "discipline-only"
 rule (issue #252) is now type-enforced. The pitfall is documented in
@@ -85,12 +137,19 @@ Higher-order combinators (`filter`, `map`, `reduce`, `flat_map`, `group_by`, `fi
 inside the evaluator module and call `eval_with_frame` directly with the caller's
 `EvalFrame`, so the step budget stays accumulated across every iteration.
 
+Custom callbacks are trusted in-process code: work charging is cooperative and cannot
+preempt a callback that ignores the view or blocks. Output bounds are mandatory because
+callbacks cannot construct `BuiltinOutput` without the supplied builder. This is not an
+isolation boundary.
+
 ## Maturity
 
 See `docs/MATURITY.md` row for `nebula-expression`.
 
-- API stability: `stable` — `ExpressionEngine`, `EvaluationContext`, `Template`,
-  `MaybeExpression`, and `MaybeTemplate` are in active use; no known planned breaking changes.
+- The retained-program boundary intentionally changes internal APIs: `CachedExpression`
+  fields are private; `BuiltinRegistry::call` receives a `BuiltinView` instead of an
+  evaluator; template constructors accept `AsRef<str>`. Callers caching source-only
+  syntax should cache `CompiledProgram` and call `evaluate_compiled` instead.
 - `datetime` functions are feature-gated (`feature = "datetime"`); include if date
   arithmetic is needed.
 
@@ -110,6 +169,8 @@ nebula-expression/
     ├── lexer.rs          # Tokenizer
     ├── parser.rs         # Expression → AST
     ├── ast.rs            # Expression AST node types
+    ├── program.rs        # Immutable compiled expressions/templates
+    ├── limits.rs         # Shared compilation and allocation bounds
     ├── eval.rs           # AST evaluator (Evaluator, EvalFrame)
     ├── builtins.rs       # BuiltinFunction registry
     ├── context.rs        # EvaluationContext + builder

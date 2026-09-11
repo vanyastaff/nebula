@@ -34,14 +34,13 @@ use std::{
 };
 
 use nebula_action::{
-    ActionError, ActionMetadata, ExecutionEmitter, IdempotencyKey, action::Action,
-    result::ActionResult, stateless::StatelessAction,
+    ActionError, ExecutionEmitter, IdempotencyKey, action::Action, result::ActionResult,
+    stateless::StatelessAction,
 };
 use nebula_core::{Dependencies, PluginKey, action_key, id::ExecutionId, node_key};
 use nebula_engine::{
-    ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, EngineExecutionSink,
-    InProcessRunner, ResourceFanoutCoordinator, WorkflowEngine, WorkflowTriggerConsumerCodec,
-    WorkflowTriggerTarget,
+    ActionRegistry, ActionRuntime, DataPassingPolicy, EngineExecutionSink, InProcessRunner,
+    ResourceFanoutCoordinator, WorkflowEngine, WorkflowTriggerConsumerCodec, WorkflowTriggerTarget,
 };
 use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_metrics::MetricsRegistry;
@@ -172,12 +171,13 @@ impl nebula_action::TriggerSource for SliceTriggerSource {
 impl Action for SliceTrigger {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             action_key!("test.dispatch.plugin.trigger"),
-            "Slice trigger",
+            nebula_action::metadata_name!("Slice trigger"),
             "Explicit test event source",
         )
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
     fn dependencies() -> &'static Dependencies {
         static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
@@ -231,8 +231,13 @@ impl Action for EchoHandler {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(action_key!("test.dispatch.plugin.echo"), "Echo", "echo")
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
+            action_key!("test.dispatch.plugin.echo"),
+            nebula_action::metadata_name!("Echo"),
+            "echo",
+        )
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
     fn dependencies() -> &'static Dependencies {
         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -255,13 +260,22 @@ impl StatelessAction for EchoHandler {
 async fn make_engine(stores: &TestStores) -> (Arc<WorkflowEngine>, Arc<AtomicU32>) {
     let count = Arc::new(AtomicU32::new(0));
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless_instance(
-        ActionMetadata::new(action_key!("test.dispatch.plugin.echo"), "Echo", "echo"),
-        EchoHandler {
-            count: count.clone(),
-        },
-    );
-    registry.register_trigger_factory::<SliceTrigger>();
+    registry
+        .register_stateless_instance(
+            nebula_action::ActionMetadataDraft::new(
+                action_key!("test.dispatch.plugin.echo"),
+                nebula_action::metadata_name!("Echo"),
+                "echo",
+            )
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects),
+            EchoHandler {
+                count: count.clone(),
+            },
+        )
+        .expect("valid test catalog definition");
+    registry
+        .register_trigger_factory::<SliceTrigger>()
+        .expect("valid test catalog definition");
     stores.frozen.get_or_init(|| {
         exact_fixture::freeze_registry(
             &registry,
@@ -271,9 +285,7 @@ async fn make_engine(stores: &TestStores) -> (Arc<WorkflowEngine>, Arc<AtomicU32
             ],
         )
     });
-    let executor: ActionExecutor =
-        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    let runner = Arc::new(InProcessRunner::new(executor));
+    let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(

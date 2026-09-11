@@ -4,22 +4,22 @@
 //! Scheme` (identity projection). Reference impl mirroring the contract
 //! crate's `BasicAuthCredential` shape.
 
-use nebula_schema::{FieldValues, Schema};
+use nebula_schema::Schema;
 use serde::Deserialize;
 
 use crate::{
-    AuthPattern, Credential, CredentialContext, CredentialError, CredentialMetadata,
-    ProviderErrorContext, ProviderErrorKind, SecretFreeMessage, SecretString,
-    contract::plugin_capability_report, contract::resolve::ResolveResult, scheme::SigningKey,
+    AuthPattern, Credential, CredentialContext, CredentialError, CredentialMetadataDraft,
+    SecretString, contract::plugin_capability_report, contract::resolve::StaticResolveResult,
+    scheme::SigningKey,
 };
 
 /// Setup-form shape for the `signing_key` credential.
-#[derive(Schema, Deserialize, Default)]
+#[derive(Schema, Deserialize)]
 pub struct SigningKeyProperties {
     /// The signing secret (HMAC key, webhook signing secret).
     #[field(secret, label = "Signing key")]
     #[validate(required)]
-    pub key: String,
+    pub key: SecretString,
     /// Algorithm identifier (e.g. `hmac-sha256`, `sigv4`).
     #[field(label = "Algorithm")]
     #[validate(required)]
@@ -37,15 +37,14 @@ impl Credential for SigningKeyCredential {
 
     const KEY: &'static str = "signing_key";
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> CredentialMetadataDraft {
+        CredentialMetadataDraft::new(
             nebula_core::credential_key!("signing_key"),
-            "Signing Key",
+            crate::metadata_name!("Signing Key"),
             "Request-signing secret (HMAC, SigV4, webhook signatures).",
-            nebula_schema::schema_of::<Self::Properties>(),
             AuthPattern::RequestSigning,
         )
-        .with_icon("key")
+        .with_icon(nebula_metadata::Icon::inline("key"))
     }
 
     fn project(state: &SigningKey) -> SigningKey {
@@ -53,24 +52,12 @@ impl Credential for SigningKeyCredential {
     }
 
     async fn resolve(
-        values: &FieldValues,
+        properties: &SigningKeyProperties,
         _ctx: &CredentialContext,
-    ) -> Result<ResolveResult<SigningKey, ()>, CredentialError> {
-        let key = values.get_string_by_str("key").ok_or_else(|| {
-            CredentialError::Provider(Box::new(ProviderErrorContext::new(
-                ProviderErrorKind::Schema,
-                SecretFreeMessage::new("missing required field 'key'"),
-            )))
-        })?;
-        let algorithm = values.get_string_by_str("algorithm").ok_or_else(|| {
-            CredentialError::Provider(Box::new(ProviderErrorContext::new(
-                ProviderErrorKind::Schema,
-                SecretFreeMessage::new("missing required field 'algorithm'"),
-            )))
-        })?;
-        Ok(ResolveResult::Complete(SigningKey::new(
-            SecretString::new(key.to_owned()),
-            algorithm.to_owned(),
+    ) -> Result<StaticResolveResult<SigningKey>, CredentialError> {
+        Ok(StaticResolveResult::Complete(SigningKey::new(
+            properties.key.clone(),
+            properties.algorithm.clone(),
         )))
     }
 }
@@ -94,8 +81,7 @@ impl plugin_capability_report::IsDynamic for SigningKeyCredential {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::CredentialContext;
-    use nebula_schema::FieldValues;
+    use crate::{CredentialContext, credentials::resolve_properties};
 
     #[test]
     fn key_is_signing_key() {
@@ -104,19 +90,17 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_wraps_key_and_algorithm() {
-        let mut values = FieldValues::new();
-        values
-            .try_set_raw("key", serde_json::Value::String("whsec_1".into()))
-            .expect("test-only known-good key");
-        values
-            .try_set_raw("algorithm", serde_json::Value::String("hmac-sha256".into()))
-            .expect("test-only known-good algorithm");
+        let properties = resolve_properties::<SigningKeyCredential>(serde_json::json!({
+            "key": "whsec_1", "algorithm": "hmac-sha256"
+        }))
+        .unwrap();
+        assert_eq!(properties.key.expose_secret(), "whsec_1");
         let ctx = CredentialContext::for_owner("u");
-        let r = SigningKeyCredential::resolve(&values, &ctx)
+        let r = SigningKeyCredential::resolve(&properties, &ctx)
             .await
             .expect("ok");
         match r {
-            ResolveResult::Complete(s) => {
+            StaticResolveResult::Complete(s) => {
                 assert_eq!(s.key().expose_secret(), "whsec_1");
                 assert_eq!(s.algorithm(), "hmac-sha256");
             },
@@ -124,13 +108,17 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn resolve_errors_on_missing_key() {
-        let mut values = FieldValues::new();
-        values
-            .try_set_raw("algorithm", serde_json::Value::String("hmac-sha256".into()))
-            .expect("test-only known-good algorithm");
-        let ctx = CredentialContext::for_owner("u");
-        assert!(SigningKeyCredential::resolve(&values, &ctx).await.is_err());
+    #[test]
+    fn schema_rejects_missing_key_before_resolve() {
+        let Err(report) = resolve_properties::<SigningKeyCredential>(serde_json::json!({
+            "algorithm": "hmac-sha256"
+        })) else {
+            panic!("missing signing key must fail schema validation");
+        };
+        assert!(
+            report
+                .errors()
+                .any(|error| { error.code() == "required" && error.path().to_string() == "/key" })
+        );
     }
 }

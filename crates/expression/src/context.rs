@@ -3,7 +3,11 @@
 //! This module provides the context in which expressions are evaluated,
 //! including access to $node, $execution, $workflow, and $input variables.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    sync::{Arc, OnceLock},
+};
 
 use chrono::Utc;
 use serde_json::{Map, Value};
@@ -15,9 +19,8 @@ use crate::policy::EvaluationPolicy;
 /// All maps are wrapped in `Arc<HashMap<...>>` so cloning the context is
 /// O(1) — important because higher-order builtins like `map`, `filter`,
 /// and `reduce` clone the context once per iteration to scope a fresh
-/// lambda binding. Mutations go through `Arc::make_mut` (copy-on-write):
-/// the first `set_node_data` after a clone allocates, subsequent ones in
-/// the same owner are in-place.
+/// lambda binding. Single-entry mutations use copy-on-write, while batch
+/// node population stages a complete replacement before publishing it.
 #[derive(Debug, Clone)]
 pub struct EvaluationContext {
     /// Node data (`$node['name'].data`)
@@ -30,24 +33,12 @@ pub struct EvaluationContext {
     workflow: Arc<Value>,
     /// Input data ($input.item, $input.all, etc.)
     input: Arc<Value>,
-    /// Optional per-context evaluation policy override.
+    /// Optional per-context restrictions, intersected with the engine policy.
     policy: Option<Arc<EvaluationPolicy>>,
-    /// Pre-materialized `$node` view, rebuilt only on mutation.
-    ///
-    /// `resolve_variable("node")` was rebuilding a fresh `Map` from
-    /// `nodes` on every call, which made `{{ $node.a + $node.b }}` cost
-    /// O(N×M) (N nodes, M references). Caching here moves the
-    /// HashMap→Object materialization to mutation time. Read still does
-    /// a single deep `Value::clone` of the cached object, so the
-    /// per-call cost is O(N) **of the materialized payload** rather
-    /// than O(N) of the source HashMap; what's saved is the per-call
-    /// `Map::with_capacity` + `insert` loop and per-key `to_string()`.
-    /// To make resolve fully O(1) we'd need to change the return type
-    /// to `Arc<Value>`, which is a wider API surgery — captured in
-    /// `docs/pitfalls.md` as a future-work item.
-    nodes_view: Arc<Value>,
-    /// Pre-materialized `$execution` view (same rationale as `nodes_view`).
-    execution_view: Arc<Value>,
+    /// Lazily materialized `$node` view, invalidated on mutation.
+    nodes_view: Arc<OnceLock<Arc<Value>>>,
+    /// Lazily materialized `$execution` view, invalidated on mutation.
+    execution_view: Arc<OnceLock<Arc<Value>>>,
 }
 
 #[inline]
@@ -65,6 +56,11 @@ fn empty_object_arc() -> Arc<Value> {
 }
 
 #[inline]
+fn empty_view() -> Arc<OnceLock<Arc<Value>>> {
+    Arc::new(OnceLock::new())
+}
+
+#[inline]
 fn empty_map_arc() -> Arc<HashMap<Arc<str>, Arc<Value>>> {
     Arc::new(HashMap::new())
 }
@@ -79,16 +75,91 @@ impl EvaluationContext {
             workflow: empty_object_arc(),
             input: empty_object_arc(),
             policy: None,
-            nodes_view: empty_object_arc(),
-            execution_view: empty_object_arc(),
+            nodes_view: empty_view(),
+            execution_view: empty_view(),
         }
+    }
+
+    /// Validate a JSON tree before placing it in shared immutable storage.
+    ///
+    /// # Errors
+    /// Returns a resource-limit error before cloning when the value exceeds a
+    /// fixed expression result ceiling.
+    pub fn try_share_value(value: &Value) -> crate::ExpressionResult<Arc<Value>> {
+        crate::limits::check_value_limits(value)?;
+        Ok(Arc::new(value.clone()))
+    }
+
+    /// Validate a borrowed `$node` snapshot before sharing or cloning its trees.
+    ///
+    /// # Errors
+    /// Returns a resource-limit error as soon as the aggregate object would
+    /// exceed a fixed expression result ceiling.
+    pub fn validate_node_data_snapshot<'a>(
+        nodes: impl IntoIterator<Item = (&'a str, &'a Value)>,
+    ) -> crate::ExpressionResult<()> {
+        crate::limits::check_object_snapshot_limits(nodes)
     }
 
     /// Set data for a specific node
     pub fn set_node_data(&mut self, node_key: impl AsRef<str>, data: Value) {
         let key: Arc<str> = Arc::from(node_key.as_ref());
         Arc::make_mut(&mut self.nodes).insert(key, Arc::new(data));
-        self.nodes_view = build_view(&self.nodes);
+        self.nodes_view = empty_view();
+    }
+
+    /// Insert multiple node outputs and publish one complete `$node` view.
+    ///
+    /// Existing context clones retain their previous immutable snapshot. The
+    /// receiving context exposes all inserted entries together after this call
+    /// returns, with one view materialization regardless of batch size.
+    pub fn set_node_data_batch<K, I>(&mut self, nodes: I)
+    where
+        K: AsRef<str>,
+        I: IntoIterator<Item = (K, Value)>,
+    {
+        let mut updated_nodes = (*self.nodes).clone();
+        updated_nodes.extend(
+            nodes
+                .into_iter()
+                .map(|(node_key, value)| (Arc::<str>::from(node_key.as_ref()), Arc::new(value))),
+        );
+        self.nodes = Arc::new(updated_nodes);
+        self.nodes_view = empty_view();
+    }
+
+    /// Validate and publish shared immutable node outputs without cloning their trees.
+    ///
+    /// # Errors
+    /// Returns a resource-limit error when one output or the aggregate `$node`
+    /// object exceeds a fixed expression result ceiling.
+    pub fn try_set_shared_node_data_batch<K, I>(&mut self, nodes: I) -> crate::ExpressionResult<()>
+    where
+        K: AsRef<str>,
+        I: IntoIterator<Item = (K, Arc<Value>)>,
+    {
+        let mut updated_nodes = (*self.nodes).clone();
+        for (node_key, value) in nodes {
+            crate::limits::check_value_limits(&value)?;
+            if !updated_nodes.contains_key(node_key.as_ref())
+                && updated_nodes.len() >= crate::limits::MAX_RESULT_NODES.saturating_sub(1)
+            {
+                crate::limits::check_limit(
+                    "result value nodes",
+                    updated_nodes.len().saturating_add(2),
+                    crate::limits::MAX_RESULT_NODES,
+                )?;
+            }
+            updated_nodes.insert(Arc::from(node_key.as_ref()), value);
+        }
+        crate::limits::check_object_snapshot_limits(
+            updated_nodes
+                .iter()
+                .map(|(key, value)| (key.as_ref(), value.as_ref())),
+        )?;
+        self.nodes = Arc::new(updated_nodes);
+        self.nodes_view = empty_view();
+        Ok(())
     }
 
     /// Get data for a specific node
@@ -100,7 +171,7 @@ impl EvaluationContext {
     pub fn set_execution_var(&mut self, name: impl AsRef<str>, value: Value) {
         let key: Arc<str> = Arc::from(name.as_ref());
         Arc::make_mut(&mut self.execution_vars).insert(key, Arc::new(value));
-        self.execution_view = build_view(&self.execution_vars);
+        self.execution_view = empty_view();
     }
 
     /// Get an execution variable
@@ -118,6 +189,18 @@ impl EvaluationContext {
     /// Get a lambda-bound parameter
     pub fn get_lambda_var(&self, name: &str) -> Option<Arc<Value>> {
         self.lambda_vars.get(name).cloned()
+    }
+
+    pub(crate) fn resolve_lambda_value(&self, name: &str) -> Option<&Value> {
+        self.lambda_vars.get(name).map(AsRef::as_ref)
+    }
+
+    pub(crate) fn resolve_node_value(&self, node_key: &str) -> Option<&Value> {
+        self.nodes.get(node_key).map(AsRef::as_ref)
+    }
+
+    pub(crate) fn resolve_execution_value(&self, name: &str) -> Option<&Value> {
+        self.execution_vars.get(name).map(AsRef::as_ref)
     }
 
     /// Set the workflow metadata
@@ -140,51 +223,102 @@ impl EvaluationContext {
         Arc::clone(&self.input)
     }
 
-    /// Set an optional policy override for this context.
+    /// Set additional restrictions for this context. Engine limits remain binding.
     pub fn set_policy(&mut self, policy: EvaluationPolicy) {
         self.policy = Some(Arc::new(policy));
     }
 
-    /// Get the optional policy override.
+    /// Get the optional context restrictions.
     pub fn policy(&self) -> Option<&EvaluationPolicy> {
         self.policy.as_deref()
     }
 
-    /// Resolve a variable by name.
+    /// Resolve a variable through shared ownership.
     ///
-    /// `$node` and `$execution` are served from pre-materialized views
-    /// (see `nodes_view` / `execution_view`); the cost of a single
-    /// resolve is one `Value::clone` of an already-built object — still
-    /// O(N) in the *contents* of the materialized payload, but it skips
-    /// the full HashMap-to-Map rebuild on every access. Returning
-    /// `Arc<Value>` instead of cloning would make this true O(1); that's
-    /// a wider API change tracked separately.
-    pub fn resolve_variable(&self, name: &str) -> Option<Value> {
+    /// Stored variables return an O(1) [`Arc`] clone, including the cached
+    /// `$node` and `$execution` views. Time-derived variables allocate one new
+    /// scalar value for each lookup.
+    ///
+    /// # Errors
+    /// Returns a resource-limit error before materializing an oversized
+    /// aggregate `$node` view.
+    pub fn resolve_variable(&self, name: &str) -> crate::ExpressionResult<Option<Arc<Value>>> {
+        if let Some(value) = self.lambda_vars.get(name) {
+            return Ok(Some(Arc::clone(value)));
+        }
+        if let Some(value) = self.execution_vars.get(name) {
+            return Ok(Some(Arc::clone(value)));
+        }
+
+        Ok(match name {
+            "node" => Some(Arc::clone(self.node_view()?)),
+            "execution" => Some(Arc::clone(self.execution_view()?)),
+            "workflow" => Some(Arc::clone(&self.workflow)),
+            "input" => Some(Arc::clone(&self.input)),
+            "now" => Some(Arc::new(Value::String(Utc::now().to_rfc3339()))),
+            "today" => Some(Arc::new(Value::String(
+                Utc::now().format("%Y-%m-%d").to_string(),
+            ))),
+            _ => None,
+        })
+    }
+
+    /// Borrow stored data so the evaluator can check its budget before cloning.
+    pub(crate) fn resolve_variable_value(
+        &self,
+        name: &str,
+    ) -> crate::ExpressionResult<Option<Cow<'_, Value>>> {
         // Lambda-bound parameters take priority (e.g., `x` in `filter(arr, x => x > 2)`).
         if let Some(value) = self.lambda_vars.get(name) {
-            return Some((**value).clone());
+            return Ok(Some(Cow::Borrowed(value)));
         }
 
         // Custom execution variables set via `set_execution_var` (e.g., `$obj`).
         if let Some(value) = self.execution_vars.get(name) {
-            return Some((**value).clone());
+            return Ok(Some(Cow::Borrowed(value)));
         }
 
-        match name {
-            "node" => Some((*self.nodes_view).clone()),
-            "execution" => Some((*self.execution_view).clone()),
-            "workflow" => Some((*self.workflow).clone()),
-            "input" => Some((*self.input).clone()),
+        Ok(match name {
+            "node" => Some(Cow::Borrowed(self.node_view()?)),
+            "execution" => Some(Cow::Borrowed(self.execution_view()?)),
+            "workflow" => Some(Cow::Borrowed(&self.workflow)),
+            "input" => Some(Cow::Borrowed(&self.input)),
             "now" => {
                 let now = Utc::now();
-                Some(Value::String(now.to_rfc3339()))
+                Some(Cow::Owned(Value::String(now.to_rfc3339())))
             },
             "today" => {
                 let today = Utc::now().format("%Y-%m-%d").to_string();
-                Some(Value::String(today))
+                Some(Cow::Owned(Value::String(today)))
             },
             _ => None,
+        })
+    }
+
+    fn node_view(&self) -> crate::ExpressionResult<&Arc<Value>> {
+        if let Some(view) = self.nodes_view.get() {
+            return Ok(view);
         }
+        crate::limits::check_object_snapshot_limits(
+            self.nodes
+                .iter()
+                .map(|(key, value)| (key.as_ref(), value.as_ref())),
+        )?;
+        Ok(self.nodes_view.get_or_init(|| build_view(&self.nodes)))
+    }
+
+    fn execution_view(&self) -> crate::ExpressionResult<&Arc<Value>> {
+        if let Some(view) = self.execution_view.get() {
+            return Ok(view);
+        }
+        crate::limits::check_object_snapshot_limits(
+            self.execution_vars
+                .iter()
+                .map(|(key, value)| (key.as_ref(), value.as_ref())),
+        )?;
+        Ok(self
+            .execution_view
+            .get_or_init(|| build_view(&self.execution_vars)))
     }
 
     /// Create a builder for constructing contexts
@@ -241,7 +375,7 @@ impl EvaluationContextBuilder {
         self
     }
 
-    /// Set a policy override for contexts created by this builder.
+    /// Set additional restrictions for contexts created by this builder.
     pub fn policy(mut self, policy: EvaluationPolicy) -> Self {
         self.policy = Some(Arc::new(policy));
         self
@@ -249,8 +383,6 @@ impl EvaluationContextBuilder {
 
     /// Build the evaluation context
     pub fn build(self) -> EvaluationContext {
-        let nodes_view = build_view(&self.nodes);
-        let execution_view = build_view(&self.execution_vars);
         EvaluationContext {
             nodes: Arc::new(self.nodes),
             execution_vars: Arc::new(self.execution_vars),
@@ -258,8 +390,8 @@ impl EvaluationContextBuilder {
             workflow: self.workflow.unwrap_or_else(empty_object_arc),
             input: self.input.unwrap_or_else(empty_object_arc),
             policy: self.policy,
-            nodes_view,
-            execution_view,
+            nodes_view: empty_view(),
+            execution_view: empty_view(),
         }
     }
 }
@@ -280,6 +412,134 @@ mod tests {
         let mut ctx = EvaluationContext::new();
         ctx.set_node_data("node1", Value::String("test".to_string()));
         assert_eq!(ctx.node_data("node1").unwrap().as_str(), Some("test"));
+    }
+
+    #[test]
+    fn batch_node_population_publishes_complete_view() {
+        let mut context = EvaluationContext::new();
+        context.set_node_data("existing", Value::Number(0.into()));
+        let snapshot = context.clone();
+
+        context.set_node_data_batch([
+            ("first", Value::Number(1.into())),
+            ("second", Value::Number(2.into())),
+        ]);
+
+        let populated = context.resolve_variable("node").unwrap().unwrap();
+        assert_eq!(populated["existing"], Value::Number(0.into()));
+        assert_eq!(populated["first"], Value::Number(1.into()));
+        assert_eq!(populated["second"], Value::Number(2.into()));
+
+        let prior_snapshot = snapshot.resolve_variable("node").unwrap().unwrap();
+        assert_eq!(prior_snapshot.as_object().unwrap().len(), 1);
+        assert_eq!(prior_snapshot["existing"], Value::Number(0.into()));
+    }
+
+    #[test]
+    fn shared_node_population_preserves_arc_identity_and_stays_lazy() {
+        let mut context = EvaluationContext::new();
+        let output = Arc::new(serde_json::json!({"value": 7}));
+
+        context
+            .try_set_shared_node_data_batch([("source", Arc::clone(&output))])
+            .unwrap();
+
+        let stored = context.node_data("source").unwrap();
+        assert!(Arc::ptr_eq(&stored, &output));
+        assert!(context.nodes_view.get().is_none());
+    }
+
+    #[test]
+    fn shared_node_population_rejects_depth_transactionally_without_cloning() {
+        let mut context = EvaluationContext::new();
+        context.set_node_data("existing", Value::Number(1.into()));
+        let mut nested = Value::Null;
+        for _ in 0..300 {
+            nested = Value::Array(vec![nested]);
+        }
+        let nested = Arc::new(nested);
+
+        let error = context
+            .try_set_shared_node_data_batch([("deep", Arc::clone(&nested))])
+            .unwrap_err();
+
+        std::assert_matches!(error, crate::ExpressionError::ResourceLimitExceeded { .. });
+        assert!(context.node_data("deep").is_none());
+        assert_eq!(context.node_data("existing").unwrap().as_i64(), Some(1));
+        assert_eq!(Arc::strong_count(&nested), 1);
+    }
+
+    #[test]
+    fn resolving_oversized_node_view_fails_before_materialization() {
+        let mut context = EvaluationContext::new();
+        let half_limit = crate::limits::MAX_RESULT_BYTES / 2;
+        context.set_node_data("first", Value::String("a".repeat(half_limit)));
+        context.set_node_data("second", Value::String("b".repeat(half_limit)));
+
+        let error = context.resolve_variable("node").unwrap_err();
+
+        std::assert_matches!(
+            error,
+            crate::ExpressionError::ResourceLimitExceeded {
+                resource: "result content bytes",
+                ..
+            }
+        );
+        assert!(context.nodes_view.get().is_none());
+    }
+
+    #[test]
+    fn resolving_oversized_execution_view_fails_before_materialization() {
+        let mut context = EvaluationContext::new();
+        let half_limit = crate::limits::MAX_RESULT_BYTES / 2;
+        context.set_execution_var("first", Value::String("a".repeat(half_limit)));
+        context.set_execution_var("second", Value::String("b".repeat(half_limit)));
+
+        let error = context.resolve_variable("execution").unwrap_err();
+
+        std::assert_matches!(
+            error,
+            crate::ExpressionError::ResourceLimitExceeded {
+                resource: "result content bytes",
+                ..
+            }
+        );
+        assert!(context.execution_view.get().is_none());
+    }
+
+    #[test]
+    fn direct_execution_property_stays_borrowed_and_lazy() {
+        let mut context = EvaluationContext::new();
+        context.set_execution_var("large", Value::String("x".repeat(256 * 1024)));
+
+        let engine = crate::ExpressionEngine::new().with_policy(
+            EvaluationPolicy::new().with_max_eval_steps(
+                crate::EvaluationStepLimit::new(crate::limits::MAX_RESULT_BYTES).unwrap(),
+            ),
+        );
+        let result = engine.evaluate("$execution.large", &context).unwrap();
+
+        assert_eq!(result.as_str().map(str::len), Some(256 * 1024));
+        assert!(context.execution_view.get().is_none());
+    }
+
+    #[test]
+    fn batch_node_population_rolls_back_when_source_panics() {
+        let mut context = EvaluationContext::new();
+        context.set_node_data("existing", Value::Number(0.into()));
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            context.set_node_data_batch((0..3).map(|index| {
+                assert_ne!(index, 1, "source iterator failed");
+                (format!("node_{index}"), Value::Number(index.into()))
+            }));
+        }));
+
+        assert!(result.is_err());
+        assert!(context.node_data("node_0").is_none());
+        let published = context.resolve_variable("node").unwrap().unwrap();
+        assert_eq!(published.as_object().unwrap().len(), 1);
+        assert_eq!(published["existing"], Value::Number(0.into()));
     }
 
     #[test]
@@ -321,7 +581,7 @@ mod tests {
         let mut ctx = EvaluationContext::new();
         ctx.set_execution_var("id", Value::String("exec-123".to_string()));
 
-        let exec = ctx.resolve_variable("execution").unwrap();
+        let exec = ctx.resolve_variable("execution").unwrap().unwrap();
         assert!(exec.is_object());
     }
 
@@ -331,13 +591,13 @@ mod tests {
         // so that subsequent `resolve_variable("node")` reflects the new key.
         let mut ctx = EvaluationContext::new();
         ctx.set_node_data("first", Value::Number(1.into()));
-        let view1 = ctx.resolve_variable("node").unwrap();
+        let view1 = ctx.resolve_variable("node").unwrap().unwrap();
         let obj1 = view1.as_object().unwrap();
         assert_eq!(obj1.len(), 1);
         assert!(obj1.contains_key("first"));
 
         ctx.set_node_data("second", Value::Number(2.into()));
-        let view2 = ctx.resolve_variable("node").unwrap();
+        let view2 = ctx.resolve_variable("node").unwrap().unwrap();
         let obj2 = view2.as_object().unwrap();
         assert_eq!(obj2.len(), 2);
         assert!(obj2.contains_key("first"));
@@ -348,9 +608,13 @@ mod tests {
     fn execution_view_updates_on_set_execution_var() {
         let mut ctx = EvaluationContext::new();
         ctx.set_execution_var("id", Value::String("e1".into()));
-        ctx.set_execution_var("mode", Value::String("test".into()));
+        let initial = ctx.resolve_variable("execution").unwrap().unwrap();
+        assert_eq!(initial.as_object().unwrap().len(), 1);
 
-        let view = ctx.resolve_variable("execution").unwrap();
+        ctx.set_execution_var("mode", Value::String("test".into()));
+        assert!(ctx.execution_view.get().is_none());
+
+        let view = ctx.resolve_variable("execution").unwrap().unwrap();
         let obj = view.as_object().unwrap();
         assert_eq!(obj.get("id").and_then(|v| v.as_str()), Some("e1"));
         assert_eq!(obj.get("mode").and_then(|v| v.as_str()), Some("test"));
@@ -358,34 +622,31 @@ mod tests {
 
     #[test]
     fn builder_initializes_views() {
-        // Builder path must produce the same materialized views as the
-        // imperative API, otherwise `EvaluationContextBuilder::build`
-        // contexts would silently see empty `$node`/`$execution`.
+        // Builder path must produce the same lazy views as the imperative API.
         let ctx = EvaluationContext::builder()
             .node("a", Value::Number(1.into()))
             .execution_var("id", Value::String("x".into()))
             .build();
 
-        let node_view = ctx.resolve_variable("node").unwrap();
+        assert!(ctx.nodes_view.get().is_none());
+        assert!(ctx.execution_view.get().is_none());
+
+        let node_view = ctx.resolve_variable("node").unwrap().unwrap();
         assert_eq!(node_view.as_object().unwrap().len(), 1);
 
-        let exec_view = ctx.resolve_variable("execution").unwrap();
+        let exec_view = ctx.resolve_variable("execution").unwrap().unwrap();
         assert!(exec_view.as_object().unwrap().contains_key("id"));
     }
 
     #[test]
     fn repeated_resolve_returns_consistent_data() {
-        // Hot-path regression: ten resolves of `$node` must all return the
-        // same materialized object — caching must not produce stale views.
         let mut ctx = EvaluationContext::new();
-        ctx.set_node_data("k", Value::Number(7.into()));
+        ctx.set_node_data("k", Value::String("x".repeat(256 * 1024)));
+        let first = ctx.resolve_variable("node").unwrap().unwrap();
 
         for _ in 0..10 {
-            let view = ctx.resolve_variable("node").unwrap();
-            assert_eq!(
-                view.as_object().unwrap().get("k").and_then(Value::as_i64),
-                Some(7)
-            );
+            let view = ctx.resolve_variable("node").unwrap().unwrap();
+            assert!(Arc::ptr_eq(&first, &view));
         }
     }
 
@@ -397,7 +658,7 @@ mod tests {
         let mut ctx = EvaluationContext::new();
         ctx.set_node_data("k", Value::Number(7.into()));
         let cloned = ctx.clone();
-        let view = cloned.resolve_variable("node").unwrap();
+        let view = cloned.resolve_variable("node").unwrap().unwrap();
         assert_eq!(view.as_object().unwrap().len(), 1);
     }
 }

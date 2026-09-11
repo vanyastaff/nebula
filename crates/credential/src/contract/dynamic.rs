@@ -40,33 +40,32 @@ use crate::{Credential, CredentialContext, error::CredentialError};
 /// ```
 /// use std::time::Duration;
 /// use nebula_credential::{
-///     AuthPattern, Credential, CredentialContext, CredentialMetadata, Dynamic,
+///     AuthPattern, Credential, CredentialContext, CredentialMetadataDraft, Dynamic,
 ///     SecretString, scheme::SecretToken,
 /// };
 /// use nebula_credential::error::CredentialError;
-/// use nebula_credential::resolve::ResolveResult;
+/// use nebula_credential::resolve::StaticResolveResult;
 /// use nebula_core::credential_key;
-/// use nebula_schema::{FieldValues, ValidSchema};
 ///
 /// struct VaultDbCred;
 ///
 /// # impl Credential for VaultDbCred {
-/// #     type Properties = FieldValues;
+/// #     type Properties = serde_json::Value;
 /// #     type Scheme = SecretToken;
 /// #     type State = SecretToken;
 /// #     const KEY: &'static str = "vault_db_cred";
-/// #     fn metadata() -> CredentialMetadata {
-/// #         CredentialMetadata::new(
-/// #             credential_key!("vault_db_cred"), "Vault DB", "demo",
-/// #             ValidSchema::empty(), AuthPattern::SecretToken,
+/// #     fn metadata() -> CredentialMetadataDraft {
+/// #         CredentialMetadataDraft::new(
+/// #             credential_key!("vault_db_cred"), nebula_credential::metadata_name!("Vault DB"), "demo",
+/// #             AuthPattern::SecretToken,
 /// #         )
 /// #     }
 /// #     fn project(state: &SecretToken) -> SecretToken { state.clone() }
 /// #     async fn resolve(
-/// #         _values: &FieldValues,
+/// #         _properties: &Self::Properties,
 /// #         _ctx: &CredentialContext,
-/// #     ) -> Result<ResolveResult<SecretToken, ()>, CredentialError> {
-/// #         Ok(ResolveResult::Complete(SecretToken::new(SecretString::new(""))))
+/// #     ) -> Result<StaticResolveResult<SecretToken>, CredentialError> {
+/// #         Ok(StaticResolveResult::Complete(SecretToken::new(SecretString::new(""))))
 /// #     }
 /// # }
 /// impl Dynamic for VaultDbCred {

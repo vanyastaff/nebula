@@ -101,7 +101,7 @@ impl fmt::Debug for CredentialValidationReport {
 
 /// Failure modes of the credential management facade. The API layer maps
 /// each `category` to an HTTP status; `code` is the stable machine label.
-#[derive(Debug, Error)]
+#[derive(Error)]
 #[non_exhaustive]
 pub enum CredentialServiceError {
     /// No credential with this id in the caller's tenant scope.
@@ -193,7 +193,7 @@ pub enum CredentialServiceError {
     },
 
     /// An external secret provider failed.
-    #[error("external provider error: {0}")]
+    #[error("external provider error")]
     Provider(String),
 
     /// A replay-safe transient failure during credential work.
@@ -206,7 +206,7 @@ pub enum CredentialServiceError {
     ///
     /// [`Provider`]: Self::Provider
     /// [`CredentialService::refresh`]: crate::CredentialService::refresh
-    #[error("transient provider error during refresh: {0}")]
+    #[error("transient provider error during refresh")]
     TransientProvider(String),
 
     /// The credential implementation proved that provider state did not
@@ -323,17 +323,14 @@ pub enum CredentialServiceError {
     /// bridge (see spec §8). Returned instead of
     /// silently resolving from the local store, which would hand back
     /// material from the wrong source.
-    #[error(
-        "external credential source '{provider}' is configured but its resolution wiring is not \
-         implemented yet (external provider bridge)"
-    )]
+    #[error("external credential source is not wired")]
     ExternalSourceNotWired {
         /// `ExternalProvider::provider_name()` of the configured source.
         provider: String,
     },
 
     /// An invariant the runtime owns was violated.
-    #[error("internal credential runtime error: {0}")]
+    #[error("internal credential runtime error")]
     Internal(String),
 
     /// The caller's cancellation token fired during the operation.
@@ -358,6 +355,15 @@ pub enum CredentialServiceError {
         /// `owner_id` of the caller's scope.
         requested: String,
     },
+}
+
+impl fmt::Debug for CredentialServiceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("CredentialServiceError")
+            .field(&nebula_error::Classify::code(self))
+            .finish()
+    }
 }
 
 impl nebula_error::Classify for CredentialServiceError {
@@ -498,6 +504,23 @@ mod tests {
     fn is_std_error() {
         fn assert_error<E: std::error::Error + Send + Sync + 'static>() {}
         assert_error::<CredentialServiceError>();
+    }
+
+    #[test]
+    fn arbitrary_failure_payloads_are_absent_from_diagnostics() {
+        const CANARY: &str = "credential-service-secret-diagnostic-canary";
+        let errors = [
+            CredentialServiceError::Provider(CANARY.to_owned()),
+            CredentialServiceError::TransientProvider(CANARY.to_owned()),
+            CredentialServiceError::Internal(CANARY.to_owned()),
+            CredentialServiceError::ExternalSourceNotWired {
+                provider: CANARY.to_owned(),
+            },
+        ];
+
+        for error in errors {
+            assert!(!format!("{error:?} {error}").contains(CANARY));
+        }
     }
 
     #[test]

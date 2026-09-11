@@ -33,7 +33,7 @@ use nebula_resource::{
     AcquireOptions, Manager, Provider, RegisterOptions, RegistrationSpec, ResourceConfig,
     ResourceContext, SlotIdentity,
     error::Error,
-    resource::{HasCredentialSlots, ResourceMetadata},
+    resource::{HasCredentialSlots, ResourceMetadataDraft},
     topology::{Resident, pooled::BrokenCheck},
 };
 use tokio_util::sync::CancellationToken;
@@ -44,10 +44,8 @@ use tokio_util::sync::CancellationToken;
 /// `fingerprint()` deliberately left at the `0` default: the row separation
 /// must come from the resolved slot identity, never the author overriding
 /// `fingerprint()` (a discipline-based defence, explicitly rejected).
-#[derive(Clone)]
+#[derive(Clone, nebula_schema::Schema)]
 struct CountingConfig;
-
-nebula_schema::impl_empty_has_schema!(CountingConfig);
 
 impl ResourceConfig for CountingConfig {
     fn validate(&self) -> Result<(), Error> {
@@ -87,8 +85,8 @@ impl Provider for PoolRes {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 
@@ -261,8 +259,8 @@ impl Provider for ResRes {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 

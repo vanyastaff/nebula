@@ -16,7 +16,7 @@ use super::{
 use crate::{
     Error, ResourceContext, ResourceGuard, RetainStatus, RetainedStore, ScopeLevel, SlotIdentity,
     TeardownCx,
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
     topology::{CreatedEntry, Ticket, Topology, Unavailable, store::InstanceStore},
 };
 
@@ -39,9 +39,8 @@ fn shutdown_task_failure_diagnostic_does_not_misattribute_the_component() {
     );
 }
 
-#[derive(Clone)]
+#[derive(Clone, nebula_schema::Schema)]
 struct Config;
-crate::impl_empty_has_schema!(Config);
 impl ResourceConfig for Config {
     fn fingerprint(&self) -> u64 {
         0
@@ -62,8 +61,8 @@ impl Provider for LeasedResource {
     fn key() -> nebula_core::ResourceKey {
         nebula_core::resource_key!("shutdown-session-lease")
     }
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<AtomicUsize, Error> {
         Ok(AtomicUsize::new(7))
@@ -577,8 +576,8 @@ impl Provider for ParentResource {
     fn key() -> nebula_core::ResourceKey {
         nebula_core::resource_key!("shutdown-session-parent")
     }
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<Self::Instance, Error> {
         self.child

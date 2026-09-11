@@ -107,3 +107,8 @@ fn unwrap_single_generic<'t>(ty: &'t Type, wrapper: &str) -> Option<&'t Type> {
     }
     None
 }
+
+/// Return the property type that receives a secret, unwrapping one `Option`.
+pub(crate) fn secret_leaf_type(ty: &Type) -> &Type {
+    unwrap_single_generic(ty, "Option").unwrap_or(ty)
+}

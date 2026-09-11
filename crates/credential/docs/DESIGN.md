@@ -132,9 +132,36 @@ silently mixed with ordinary reads.
 
 ## Validation boundary
 
-Schema validation occurs exactly once inside the authorized service operation. The API schema port
-is catalog/form-read-only and its absence never blocks a mutation. A rejected report is converted
-to a non-empty `CredentialValidationReport` whose issues contain only:
+Runtime registration admits the schema-free `Credential::metadata()` draft with the
+fallible schema derived from `C::Properties` before it installs the credential's
+operation closures. `Properties` describes authored data; it is not a runtime proof.
+Untyped mocks may use `serde_json::Value`, while concrete credentials declare the
+actual schema-bearing properties type.
+
+The authorized service operation owns property preparation and proof construction:
+schema-directed `values_from_wire` decodes literal `AuthoredValue`, consuming
+`validate` canonicalizes aliases, applies transforms once, and promotes secrets,
+then `resolve_data` produces schema-bound values after full checks.
+It never creates an expression engine. Template-looking property strings remain
+literal data; executable expression nodes cannot pass the data-only transition.
+
+The operation consumes that value once with
+`into_typed_exposing_secrets::<C::Properties>()` at a trusted disclosure boundary
+and dispatches `&C::Properties`; it does not reconstruct proof from raw JSON or a
+different schema. Built-in secret fields are zeroizing `SecretString` values by
+the time provider code runs.
+Ordinary `into_typed` rejects secret-bearing input, and typed-decoding diagnostics
+hide input material throughout the public error source chain.
+
+Required-field, type, and typed-property failures occur before provider dispatch.
+Protocol-specific constraints not expressed by the schema remain provider checks,
+such as OAuth's grant-dependent redirect URI requirement. Tests must exercise the
+actual credential properties schema and preserve rejections at the boundary that
+owns them, rather than manufacture a proof or weaken a required declaration.
+
+The API schema port is catalog/form-read-only and its absence never blocks a
+mutation. A rejected report is converted to a non-empty
+`CredentialValidationReport` whose issues contain only:
 
 - a canonical RFC 6901 pointer; and
 - a stable machine-readable code.
@@ -147,11 +174,13 @@ handler.
 
 ## Integration boundary
 
-`nebula-sdk` is the sole supported Rust surface. The external perimeter fixture compiles the
-currently verified manual/builder subset (`ActionBuilder`, `WorkflowBuilder`, and credential
-`TestResult`) with only `nebula-sdk` and separately proves forbidden authority, owner, writer,
-repository, constructor, and unscoped-resolver paths are absent. Procedural derives still emit
-leaf-crate paths and remain an explicit SDK gap rather than an implied direct-dependency escape.
+`nebula-sdk` is the sole supported Rust surface. Its credential authoring contract exposes
+`Credential`, `CredentialMetadataDraft`, typed `Properties`, the `Credential`/`AuthScheme`
+derives, the shared `Icon`/maturity/deprecation vocabulary, built-in credential types, typed
+snapshots/context, and universal OAuth types through the SDK prelude. `integration::credential`
+exposes resolve and credential-test outcomes. SDK-only external fixtures compile and execute
+representative credential derives, while perimeter fixtures prove that owner authority, raw
+persistence, runtime constructors, credential records, and unscoped resolvers remain unavailable.
 
 ## Non-goals
 
@@ -160,7 +189,8 @@ leaf-crate paths and remain an explicit SDK gap rather than an implied direct-de
   tenant check.
 - No raw service/store handle for API handlers or integration authors. Public technical port and
   construction seams are unsupported workspace contracts, not SDK products.
-- No provider-specific public OAuth ceremony while the universal pending transport is parked.
+- No provider-specific public OAuth ceremony outside the universal typed resolve/begin/continue
+  pending protocol.
 - No durable command/fact delivery over the lossy event bus.
 
 ## Remaining design work

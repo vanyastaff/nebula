@@ -387,7 +387,7 @@ fn lit_to_i64(expr: &Expr) -> syn::Result<i64> {
 /// Options gathered from `#[schema(...)]` on the derive target struct.
 #[derive(Default, Debug)]
 pub(crate) struct SchemaStructAttrs {
-    /// Wire-level `Rule::Deferred(DeferredRule::Custom(..))` expression strings.
+    /// Wire-level custom-rule expression strings.
     pub custom: Vec<LitStr>,
     /// Field keys reserved against reuse (`#[schema(reserved("old_key"))]`). A
     /// reserved key may not be used by any field of this struct — the derive

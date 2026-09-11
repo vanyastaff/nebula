@@ -17,12 +17,11 @@ use nebula_core::auth::{
     AuthPattern, AuthScheme, EgressShape, RefreshStrategyKind, SchemeFamily, SensitiveScheme,
 };
 use nebula_credential::{
-    Capabilities, Credential, CredentialContext, CredentialMetadata, CredentialRegistry,
+    Capabilities, Credential, CredentialContext, CredentialMetadataDraft, CredentialRegistry,
     CredentialState, RefreshAttempt, RefreshReport, Refreshable, Revocable, SecretString,
-    contract::plugin_capability_report, error::CredentialError, resolve::ResolveResult,
+    contract::plugin_capability_report, error::CredentialError, resolve::StaticResolveResult,
     scheme::SecretToken,
 };
-use nebula_schema::FieldValues;
 use serde::{Deserialize, Serialize};
 
 // ── Static probe credential — zero capabilities ────────────────────
@@ -36,15 +35,13 @@ impl Credential for StaticProbe {
 
     const KEY: &'static str = "probe.static";
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::builder()
-            .key(nebula_core::credential_key!("probe.static"))
-            .name("StaticProbe")
-            .description("zero-capability probe credential")
-            .schema(nebula_credential::schema_of::<Self::Properties>())
-            .pattern(AuthPattern::SecretToken)
-            .build()
-            .expect("StaticProbe metadata is valid")
+    fn metadata() -> CredentialMetadataDraft {
+        CredentialMetadataDraft::new(
+            nebula_core::credential_key!("probe.static"),
+            nebula_credential::metadata_name!("StaticProbe"),
+            "zero-capability probe credential",
+            AuthPattern::SecretToken,
+        )
     }
 
     fn project(state: &SecretToken) -> SecretToken {
@@ -52,10 +49,10 @@ impl Credential for StaticProbe {
     }
 
     async fn resolve(
-        _values: &FieldValues,
+        _properties: &(),
         _ctx: &CredentialContext,
-    ) -> Result<ResolveResult<SecretToken, ()>, CredentialError> {
-        Ok(ResolveResult::Complete(SecretToken::new(
+    ) -> Result<StaticResolveResult<SecretToken>, CredentialError> {
+        Ok(StaticResolveResult::Complete(SecretToken::new(
             SecretString::new("static-probe"),
         )))
     }
@@ -124,15 +121,13 @@ impl Credential for RefreshableProbe {
 
     const KEY: &'static str = "probe.refreshable";
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::builder()
-            .key(nebula_core::credential_key!("probe.refreshable"))
-            .name("RefreshableProbe")
-            .description("refreshable + revocable probe credential")
-            .schema(nebula_credential::schema_of::<Self::Properties>())
-            .pattern(AuthPattern::OAuth2)
-            .build()
-            .expect("RefreshableProbe metadata is valid")
+    fn metadata() -> CredentialMetadataDraft {
+        CredentialMetadataDraft::new(
+            nebula_core::credential_key!("probe.refreshable"),
+            nebula_credential::metadata_name!("RefreshableProbe"),
+            "refreshable + revocable probe credential",
+            AuthPattern::OAuth2,
+        )
     }
 
     fn project(state: &ProbeToken) -> ProbeToken {
@@ -140,10 +135,10 @@ impl Credential for RefreshableProbe {
     }
 
     async fn resolve(
-        _values: &FieldValues,
+        _properties: &(),
         _ctx: &CredentialContext,
-    ) -> Result<ResolveResult<ProbeToken, ()>, CredentialError> {
-        Ok(ResolveResult::Complete(ProbeToken(
+    ) -> Result<StaticResolveResult<ProbeToken>, CredentialError> {
+        Ok(StaticResolveResult::Complete(ProbeToken(
             "refreshable-probe".to_owned(),
         )))
     }

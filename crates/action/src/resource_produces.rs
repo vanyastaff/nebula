@@ -127,13 +127,13 @@ impl<R: ?Sized> serde::Serialize for ResourceProduces<R> {
 
 /// `HasSchema` impl for the `Action::Output` bound.
 ///
-/// The schema is empty (`SchemaKind::Record` with no fields): `ResourceProduces<R>`
+/// The schema is an explicit record with no fields: `ResourceProduces<R>`
 /// is a graph-topology marker that produces no user-visible output fields. The
 /// engine and catalog read the topology tag directly from the value, not from
 /// the schema.
 impl<R: ?Sized> nebula_schema::HasSchema for ResourceProduces<R> {
-    fn schema() -> nebula_schema::ValidSchema {
-        nebula_schema::ValidSchema::empty()
+    fn schema() -> Result<nebula_schema::ValidSchema, nebula_schema::ValidationReport> {
+        nebula_schema::Schema::builder().build()
     }
 }
 

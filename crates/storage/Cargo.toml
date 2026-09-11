@@ -93,7 +93,13 @@ chaos-full = []
 # dragging system openssl into the build matrix. The base `sqlx` dep
 # already enables `runtime-tokio`, so the runtime+TLS bundle isn't
 # needed separately.
-postgres = ["dep:sqlx", "sqlx/postgres", "sqlx/tls-rustls-ring-native-roots", "dep:hex", "dep:nebula-metrics"]
+postgres = [
+  "dep:sqlx",
+  "sqlx/postgres",
+  "sqlx/tls-rustls-ring-native-roots",
+  "dep:hex",
+  "dep:nebula-metrics",
+]
 sqlite = ["dep:sqlx", "sqlx/sqlite", "dep:nebula-metrics"]
 msgpack-storage = ["dep:rmp-serde"]
 

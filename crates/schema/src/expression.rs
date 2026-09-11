@@ -1,12 +1,15 @@
-//! Expression value wrapper — lazy parse via OnceLock.
+//! Authored sources and the retained-program evaluation boundary.
 
 use std::{
+    fmt,
     future::Future,
     pin::Pin,
     sync::{Arc, OnceLock},
 };
 
-use crate::{error::ValidationError, path::FieldPath};
+pub use nebula_expression::{CompiledProgram, ProgramSyntax};
+
+use crate::{ValidationError, ValuePath};
 
 /// Boxed future returned by [`ExpressionContext::evaluate`].
 ///
@@ -15,37 +18,11 @@ use crate::{error::ValidationError, path::FieldPath};
 pub type EvalFuture<'a> =
     Pin<Box<dyn Future<Output = Result<serde_json::Value, ValidationError>> + Send + 'a>>;
 
-/// Minimal contract required to evaluate an expression at runtime.
+/// Evaluation of an already admitted, compiled program.
 ///
-/// Implement this to bridge nebula-schema's resolution phase with any
-/// expression engine. The real evaluator lives in `nebula-expression`;
-/// this trait is the integration seam so tests can use a stub.
-///
-/// > **Status: latent.** No production crate implements this trait yet — only
-/// > test and example stubs do. It is the dormant half of the
-/// > [`ValidValues::resolve`](crate::ValidValues::resolve) seam (see that
-/// > method's status note) and becomes load-bearing once the engine wires a
-/// > real evaluator for action-input expressions.
-///
-/// The trait is dyn-safe: callers receive `&dyn ExpressionContext` from
-/// [`ValidValues::resolve`](crate::ValidValues::resolve). The `evaluate`
-/// method intentionally returns a [`EvalFuture`] (boxed future) instead of
-/// using `async fn` so the trait stays object-safe under Rust 1.95 / edition
-/// 2024 without an `async-trait` macro indirection.
-///
-/// # Example
-///
-/// ```rust
-/// use nebula_schema::{EvalFuture, ExpressionAst, ExpressionContext, ValidationError};
-///
-/// struct ConstCtx(serde_json::Value);
-///
-/// impl ExpressionContext for ConstCtx {
-///     fn evaluate<'a>(&'a self, _ast: &'a ExpressionAst) -> EvalFuture<'a> {
-///         Box::pin(async move { Ok(self.0.clone()) })
-///     }
-/// }
-/// ```
+/// Implementations must tolerate cancellation at any await point. Schema
+/// resolution owns no external side effects and never reparses returned data.
+/// The trait is object-safe for runtime adapters and test contexts.
 pub trait ExpressionContext: Send + Sync {
     /// Evaluate a parsed expression AST and return the resulting JSON value.
     ///
@@ -57,41 +34,48 @@ pub trait ExpressionContext: Send + Sync {
     /// surrounding task is cancelled, so an `evaluate` impl that
     /// performs external side effects must tolerate being dropped mid-flight
     /// (e.g. be idempotent or detach durable work via its own `spawn`).
-    fn evaluate<'a>(&'a self, ast: &'a ExpressionAst) -> EvalFuture<'a>;
-}
-
-/// Opaque parsed AST wrapper.
-///
-/// The parse/grammar source of truth is `nebula-expression`; this struct
-/// intentionally exposes only the original source so schema consumers are not
-/// coupled to expression crate internals.
-#[derive(Debug, Clone)]
-#[non_exhaustive]
-pub struct ExpressionAst {
-    /// Raw expression source — the only payload this wrapper exposes.
-    pub(crate) source: Arc<str>,
-}
-
-impl ExpressionAst {
-    /// Borrow the raw expression source.
-    #[must_use]
-    pub fn source(&self) -> &str {
-        &self.source
-    }
+    fn evaluate<'a>(&'a self, ast: &'a CompiledProgram) -> EvalFuture<'a>;
 }
 
 /// An unresolved expression (e.g. `{{ $input.name }}`).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Expression {
     source: Arc<str>,
-    parsed: Arc<OnceLock<Result<ExpressionAst, Arc<str>>>>,
+    syntax: ProgramSyntax,
+    parsed: Arc<OnceLock<Result<CompiledProgram, Arc<nebula_expression::ExpressionError>>>>,
 }
 
 impl Expression {
-    /// Wrap an expression source string.
+    /// Wrap a source using [`ProgramSyntax::Auto`]. Compilation remains lazy.
+    #[must_use]
     pub fn new(source: impl Into<Arc<str>>) -> Self {
+        Self::with_syntax(source, ProgramSyntax::Auto)
+    }
+
+    /// Wrap text interpolation, always resolving to a string, even a lone envelope.
+    ///
+    /// ```
+    /// use nebula_schema::{Expression, ProgramSyntax};
+    /// let expression = Expression::template("{{ 7 }}");
+    /// assert_eq!(expression.syntax(), ProgramSyntax::Template);
+    /// ```
+    #[must_use]
+    pub fn template(source: impl Into<Arc<str>>) -> Self {
+        Self::with_syntax(source, ProgramSyntax::Template)
+    }
+
+    /// Wrap source with immutable syntax and a fresh, shared compilation cache.
+    ///
+    /// ```
+    /// use nebula_schema::{Expression, ProgramSyntax};
+    /// let expression = Expression::with_syntax("7", ProgramSyntax::Expression);
+    /// assert_eq!(expression.syntax(), ProgramSyntax::Expression);
+    /// ```
+    #[must_use]
+    pub fn with_syntax(source: impl Into<Arc<str>>, syntax: ProgramSyntax) -> Self {
         Self {
             source: source.into(),
+            syntax,
             parsed: Arc::new(OnceLock::new()),
         }
     }
@@ -102,17 +86,19 @@ impl Expression {
         &self.source
     }
 
+    /// Return the authored grammar without compiling the source.
+    #[must_use]
+    pub const fn syntax(&self) -> ProgramSyntax {
+        self.syntax
+    }
+
     /// Lazy parse — caches the first parse result (success or error).
     ///
     /// # Errors
     ///
     /// Returns `ValidationError` with code `expression.parse` if parsing fails.
-    #[expect(
-        clippy::result_large_err,
-        reason = "ValidationError is intentionally large; callers are on the validation path"
-    )]
-    pub fn parse(&self) -> Result<&ExpressionAst, ValidationError> {
-        self.parse_at(&FieldPath::root())
+    pub fn parse(&self) -> Result<&CompiledProgram, ValidationError> {
+        self.parse_at(&ValuePath::root())
     }
 
     /// Lazy parse with caller-provided path context for errors.
@@ -123,77 +109,32 @@ impl Expression {
     /// # Errors
     ///
     /// Returns `ValidationError` with code `expression.parse` if parsing fails.
-    #[expect(
-        clippy::result_large_err,
-        reason = "ValidationError is intentionally large; callers are on the validation path"
-    )]
-    pub fn parse_at(&self, path: &FieldPath) -> Result<&ExpressionAst, ValidationError> {
+    #[tracing::instrument(level = "debug", skip_all, fields(path = %path, syntax = ?self.syntax))]
+    pub fn parse_at(&self, path: &ValuePath) -> Result<&CompiledProgram, ValidationError> {
         match self.parsed.get_or_init(|| {
-            parse_expression_source(self.source())
-                .map(|()| ExpressionAst {
-                    source: self.source.clone(),
-                })
-                .map_err(Arc::<str>::from)
+            CompiledProgram::compile_with_syntax(self.source(), self.syntax).map_err(Arc::new)
         }) {
-            Ok(ast) => Ok(ast),
-            Err(message) => Err(ValidationError::builder("expression.parse")
+            Ok(program) => Ok(program),
+            Err(error) => Err(ValidationError::builder("expression.parse")
                 .at(path.clone())
-                .message(message.to_string())
-                .param("source", self.source.to_string())
+                .message("expression syntax is invalid")
+                .private_source(Arc::clone(error))
                 .build()),
         }
     }
+}
 
-    /// Build a parse error tagged for this expression.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "currently exercised only by unit tests; the expression parser wires this in"
-        )
-    )]
-    pub(crate) fn parse_error(
-        &self,
-        msg: impl Into<std::borrow::Cow<'static, str>>,
-    ) -> ValidationError {
-        ValidationError::builder("expression.parse")
-            .at(FieldPath::root())
-            .message(msg)
-            .param("source", self.source.to_string())
-            .build()
+impl fmt::Debug for Expression {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Expression")
+            .field("source_bytes", &self.source.len())
+            .field("syntax", &self.syntax)
+            .field("compiled", &self.parsed.get().map(Result::is_ok))
+            .finish_non_exhaustive()
     }
 }
 
-fn parse_expression_source(source: &str) -> Result<(), String> {
-    nebula_expression::parse_expression(source).map_err(|e| e.to_string())
-}
-
-/// Production-ready [`ExpressionContext`] backed by [`nebula_expression::ExpressionEngine`].
-///
-/// Centralizes the schema↔expression bridge so callers (integration tests,
-/// future engine wiring) do not reimplement `evaluate` →
-/// `engine.evaluate(source, ctx)` themselves. [`ExpressionAst`] exposes only
-/// the source string by design, so evaluation always routes through the engine's
-/// parse+eval path.
-///
-/// # Example
-///
-/// ```rust,no_run
-/// use nebula_schema::{EngineExpressionContext, Field, FieldValues, Schema, field_key};
-/// use serde_json::json;
-///
-/// # async fn demo() {
-/// let schema = Schema::builder()
-///     .add(Field::string(field_key!("greeting")))
-///     .build()
-///     .unwrap();
-/// let values = FieldValues::from_json(json!({"greeting": "{{ $input.name }}"})).unwrap();
-/// let valid = schema.validate(&values).unwrap();
-/// let ctx = EngineExpressionContext::with_input(json!({"name": "world"}));
-/// let resolved = valid.resolve(&ctx).await.unwrap();
-/// assert_eq!(resolved.get(&field_key!("greeting")), Some(&json!("world")));
-/// # }
-/// ```
+/// Runtime adapter using the engine\'s current registry and evaluation policy.
 pub struct EngineExpressionContext {
     engine: nebula_expression::ExpressionEngine,
     ctx: nebula_expression::EvaluationContext,
@@ -230,60 +171,25 @@ impl EngineExpressionContext {
 }
 
 impl ExpressionContext for EngineExpressionContext {
-    fn evaluate<'a>(&'a self, ast: &'a ExpressionAst) -> EvalFuture<'a> {
-        let source = ast.source().to_owned();
+    fn evaluate<'a>(&'a self, program: &'a CompiledProgram) -> EvalFuture<'a> {
         Box::pin(async move {
-            resolve_expression_value(&self.engine, &self.ctx, &source).map_err(|e| {
-                ValidationError::builder("expression.runtime")
-                    .message(format!("expression `{source}` failed: {e}"))
-                    .build()
-            })
+            self.engine
+                .evaluate_compiled(program, &self.ctx)
+                .map_err(|error| {
+                    ValidationError::builder("expression.runtime")
+                        .message("expression evaluation failed")
+                        .private_source(error)
+                        .build()
+                })
         })
     }
 }
 
-/// Evaluate a schema expression source, mirroring [`nebula_expression::parse_expression`]
-/// dispatch: mixed templates render to a string; a lone `{{ ... }}` envelope keeps
-/// typed evaluation; raw expression sources go through `ExpressionEngine::evaluate`.
-fn resolve_expression_value(
-    engine: &nebula_expression::ExpressionEngine,
-    ctx: &nebula_expression::EvaluationContext,
-    source: &str,
-) -> Result<serde_json::Value, nebula_expression::ExpressionError> {
-    use nebula_expression::TemplatePart;
-
-    if let Ok(template) = nebula_expression::Template::new(source.to_owned())
-        && template.expression_count() > 0
-    {
-        let has_static = template
-            .parts()
-            .iter()
-            .any(|part| matches!(part, TemplatePart::Static { .. }));
-
-        if has_static || template.expression_count() > 1 {
-            let rendered = engine.render_template(&template, ctx)?;
-            return Ok(serde_json::Value::String(rendered));
-        }
-
-        if let Some(expr) = template.expressions().into_iter().next() {
-            return engine.evaluate(expr.trim(), ctx);
-        }
-    }
-
-    engine.evaluate(source, ctx)
-}
-
-/// Equality is **by source string, not by parsed AST** — two expressions that
-/// parse to the same tree but differ in whitespace or formatting compare
-/// unequal. The canonical-bytes content id keys off the same `source()` bytes
-/// (`value.rs` writes `expr.source().as_bytes()`), so it shares this exact
-/// limitation — neither offers AST-level / semantic dedup. A caller that needs
-/// to collapse whitespace- or formatting-only differences must normalize the
-/// source (or parse and compare the AST) itself. Parsing inside `eq` is
-/// deliberately avoided — it would be surprising and would allocate.
+/// Equality compares authored syntax and exact source, never parsed ASTs.
+/// Canonical tree identity uses the same pair; whitespace is not normalized.
 impl PartialEq for Expression {
     fn eq(&self, other: &Self) -> bool {
-        self.source == other.source
+        self.syntax == other.syntax && self.source == other.source
     }
 }
 
@@ -296,7 +202,10 @@ mod tests {
         let e = Expression::new("{{ $x }}");
         let a1 = std::ptr::from_ref(e.parse().unwrap());
         let a2 = std::ptr::from_ref(e.parse().unwrap());
-        assert_eq!(a1, a2, "parse should cache the same AST instance");
+        assert_eq!(
+            a1, a2,
+            "parse should cache the same compiled program instance"
+        );
     }
 
     #[test]
@@ -307,47 +216,49 @@ mod tests {
     }
 
     #[test]
-    fn parse_error_carries_source_param() {
-        let e = Expression::new("bad");
-        let err = e.parse_error("boom");
-        assert_eq!(err.code, "expression.parse");
-        // params stored as Arc<[(Cow, Value)]>
-        let found = err
-            .params
-            .iter()
-            .any(|(k, v)| k.as_ref() == "source" && v.as_str() == Some("bad"));
-        assert!(found, "source param not found");
+    fn parse_error_redacts_source_but_retains_typed_cause() {
+        let error = Expression::new("{{ 'PRIVATE_SOURCE' + }}")
+            .parse()
+            .unwrap_err();
+        assert_eq!(error.code(), "expression.parse");
+        assert!(!format!("{error:?}").contains("PRIVATE_SOURCE"));
+        assert!(
+            !serde_json::to_string(&error)
+                .unwrap()
+                .contains("PRIVATE_SOURCE")
+        );
+        assert!(std::error::Error::source(&error).is_some());
     }
 
     #[test]
     fn parse_invalid_expression_returns_expression_parse() {
         let e = Expression::new("{{ 1 + }}");
         let err = e.parse().unwrap_err();
-        assert_eq!(err.code, "expression.parse");
+        assert_eq!(err.code(), "expression.parse");
     }
 
     #[test]
     fn parse_at_uses_requested_path() {
         let e = Expression::new("{{ 1 + }}");
         let err = e
-            .parse_at(&FieldPath::parse("foo.bar").expect("valid path"))
+            .parse_at(&ValuePath::parse("/foo/bar").expect("valid path"))
             .unwrap_err();
-        assert_eq!(err.path.to_string(), "foo.bar");
+        assert_eq!(err.path().to_string(), "/foo/bar");
     }
 
     #[tokio::test]
     async fn engine_context_evaluates_input_template() {
         use serde_json::json;
 
-        use crate::{Field, FieldValues, Schema, field_key};
+        use crate::{AuthoredValue, Field, Schema, field_key};
 
         let schema = Schema::builder()
             .add(Field::string(field_key!("greeting")))
             .build()
             .expect("schema builds");
-        let values =
-            FieldValues::from_json(json!({"greeting": "{{ $input.name }}"})).expect("values parse");
-        let valid = schema.validate(&values).expect("values validate");
+        let values = AuthoredValue::from_template_json(json!({"greeting": "{{ $input.name }}"}))
+            .expect("values parse");
+        let valid = schema.validate(values).expect("values validate");
         let ctx = EngineExpressionContext::with_input(json!({"name": "world"}));
         let resolved = valid.resolve(&ctx).await.expect("resolve succeeds");
         assert_eq!(resolved.get(&field_key!("greeting")), Some(&json!("world")));
@@ -357,15 +268,16 @@ mod tests {
     async fn engine_context_renders_inline_template() {
         use serde_json::json;
 
-        use crate::{Field, FieldValues, Schema, field_key};
+        use crate::{AuthoredValue, Field, Schema, field_key};
 
         let schema = Schema::builder()
             .add(Field::string(field_key!("greeting")))
             .build()
             .expect("schema builds");
-        let values = FieldValues::from_json(json!({"greeting": "hello {{ $input.name }}"}))
-            .expect("values parse");
-        let valid = schema.validate(&values).expect("values validate");
+        let values =
+            AuthoredValue::from_template_json(json!({"greeting": "hello {{ $input.name }}"}))
+                .expect("values parse");
+        let valid = schema.validate(values).expect("values validate");
         let ctx = EngineExpressionContext::with_input(json!({"name": "world"}));
         let resolved = valid.resolve(&ctx).await.expect("resolve succeeds");
         assert_eq!(
@@ -380,7 +292,11 @@ mod tests {
         let mut ctx = nebula_expression::EvaluationContext::new();
         ctx.set_input(serde_json::json!({"count": 7}));
 
-        let value = resolve_expression_value(&engine, &ctx, "{{ $input.count + 1 }}")
+        let value = engine
+            .evaluate_compiled(
+                &CompiledProgram::compile("{{ $input.count + 1 }}").unwrap(),
+                &ctx,
+            )
             .expect("typed lone envelope evaluates");
         assert_eq!(value, serde_json::json!(8));
     }
@@ -391,7 +307,11 @@ mod tests {
         let mut ctx = nebula_expression::EvaluationContext::new();
         ctx.set_input(serde_json::json!({"name": "world"}));
 
-        let value = resolve_expression_value(&engine, &ctx, "hello {{ $input.name }}")
+        let value = engine
+            .evaluate_compiled(
+                &CompiledProgram::compile("hello {{ $input.name }}").unwrap(),
+                &ctx,
+            )
             .expect("mixed template renders");
         assert_eq!(value, serde_json::json!("hello world"));
     }

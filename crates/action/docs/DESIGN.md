@@ -42,11 +42,11 @@
 |------|-------|
 | `Action` (Sized, NOT object-safe; `type Input/Output: HasSchema`; static `metadata()`/`dependencies()`) | `src/action.rs:60` |
 | `StatelessAction` / `StatelessHandler` / `StatelessActionAdapter` | `src/stateless.rs:47,74,97` |
-| `StatefulAction` + DX `PaginatedAction` / `BatchAction`, `StatefulHandler` | `src/stateful.rs:38,114,253,385` |
+| `StatefulAction` + DX `PaginatedAction` / `BatchAction`, `StatefulActionAdapter` | `src/stateful.rs` |
 | `TriggerAction`, `TriggerHandler`, `TriggerEvent`, `TriggerSource` | `src/trigger/mod.rs` |
 | `ResourceAction` / `ResourceHandler` (graph-scoped DI, configure/cleanup) | `src/resource.rs:31,60` |
 | `ResourceProduces<R>` (Output-маркер, пустая схема + topology-tag) | `src/resource_produces.rs:52` |
-| `ControlAction` / `ControlOutcome` / `ControlInput` (If/Switch/Router/Stop/Fail) | `src/control.rs:393,269,109` |
+| `ControlAction` / `ControlOutcome<T>` (If/Switch/Router/Stop/Fail) | `src/control.rs` |
 | `WebhookAction` + HMAC (`verify_hmac_sha256*`, `SignaturePolicy` fail-closed `Required`) | `src/webhook/mod.rs` (2431 строк) |
 | `PollAction`, `PollTriggerAdapter`, `POLL_INTERVAL_FLOOR`, `DeduplicatingCursor` | `src/poll/mod.rs` |
 | `ActionHandle` enum + `StatelessHandle/StatefulHandle/TriggerHandle/ResourceHandle/ControlHandle` | `src/handle.rs:184,40-176` |

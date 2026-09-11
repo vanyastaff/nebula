@@ -30,14 +30,13 @@ use chrono::Utc;
 use nebula_action::{
     ActionError,
     action::Action,
-    metadata::ActionMetadata,
     result::{ActionResult, WaitCondition},
     stateless::StatelessAction,
 };
 use nebula_core::{Dependencies, action_key, id::ExecutionId, node_key};
 use nebula_engine::{
-    ActionExecutor, ActionRegistry, ActionRuntime, ControlDispatch, DataPassingPolicy,
-    EngineControlDispatch, InProcessRunner, ResumeTarget, WorkflowEngine,
+    ActionRegistry, ActionRuntime, ControlDispatch, DataPassingPolicy, EngineControlDispatch,
+    InProcessRunner, ResumeTarget, WorkflowEngine,
 };
 use nebula_execution::{ExecutionState, ExecutionStatus};
 use nebula_metrics::MetricsRegistry;
@@ -53,14 +52,25 @@ use nebula_workflow::{
 
 // ── Action stubs ──────────────────────────────────────────────────────────────
 
+macro_rules! pure_action_metadata {
+    ($key:expr, $name:expr, $description:expr $(,)?) => {
+        nebula_action::metadata::ActionMetadataDraft::new($key, $name, $description)
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+    };
+}
+
 macro_rules! static_action_impl {
     ($ty:ty, $key:expr, $name:expr) => {
         impl Action for $ty {
             type Input = serde_json::Value;
             type Output = serde_json::Value;
 
-            fn metadata() -> ActionMetadata {
-                ActionMetadata::new($key, $name, "resume_targeting integration test stub")
+            fn metadata() -> nebula_action::ActionMetadataDraft {
+                pure_action_metadata!(
+                    $key,
+                    nebula_action::metadata_name!($name),
+                    "resume_targeting integration test stub",
+                )
             }
             fn dependencies() -> &'static Dependencies {
                 static D: OnceLock<Dependencies> = OnceLock::new();
@@ -292,9 +302,7 @@ fn build(registry: Arc<ActionRegistry>, stores: &Stores) -> EngineControlDispatc
     stores
         .exact
         .get_or_init(|| qualified_runtime::QualifiedRuntime::new(&registry));
-    let executor: ActionExecutor =
-        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    let runner = Arc::new(InProcessRunner::new(executor));
+    let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(
@@ -322,7 +330,9 @@ fn register_stateless<A>(registry: &ActionRegistry, action: A)
 where
     A: StatelessAction + 'static,
 {
-    registry.register_stateless_instance(A::metadata(), action);
+    registry
+        .register_stateless_instance(A::metadata(), action)
+        .expect("valid test catalog definition");
 }
 
 /// Two independent root waits, each gating its own downstream echo:
@@ -690,10 +700,10 @@ impl Action for ExecutionWait {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        pure_action_metadata!(
             action_key!("test.target.execution_wait"),
-            "ExecutionWait",
+            nebula_action::metadata_name!("ExecutionWait"),
             "resume_targeting Execution-kind stub",
         )
     }
@@ -727,10 +737,10 @@ impl Action for ExecutionWaitB {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        pure_action_metadata!(
             action_key!("test.target.execution_wait_b"),
-            "ExecutionWaitB",
+            nebula_action::metadata_name!("ExecutionWaitB"),
             "resume_targeting Execution-kind stub B",
         )
     }
@@ -779,18 +789,22 @@ async fn targeted_resume_arms_only_matching_execution() {
 
     let registry = Arc::new(ActionRegistry::new());
     // Two sibling waits on DIFFERENT ExecutionIds — DAG: wait_x→echo_a, wait_y→echo_b.
-    registry.register_stateless_instance(
-        ExecutionWait::metadata(),
-        ExecutionWait {
-            wait_for: exec_id_x,
-        },
-    );
-    registry.register_stateless_instance(
-        ExecutionWaitB::metadata(),
-        ExecutionWaitB {
-            wait_for: exec_id_y,
-        },
-    );
+    registry
+        .register_stateless_instance(
+            ExecutionWait::metadata(),
+            ExecutionWait {
+                wait_for: exec_id_x,
+            },
+        )
+        .expect("valid test catalog definition");
+    registry
+        .register_stateless_instance(
+            ExecutionWaitB::metadata(),
+            ExecutionWaitB {
+                wait_for: exec_id_y,
+            },
+        )
+        .expect("valid test catalog definition");
     register_stateless(
         &registry,
         CountingEcho {
@@ -940,12 +954,14 @@ async fn execution_resume_parse_fail_never_matches() {
     let stores = Stores::new();
 
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless_instance(
-        ExecutionWait::metadata(),
-        ExecutionWait {
-            wait_for: exec_id_real,
-        },
-    );
+    registry
+        .register_stateless_instance(
+            ExecutionWait::metadata(),
+            ExecutionWait {
+                wait_for: exec_id_real,
+            },
+        )
+        .expect("valid test catalog definition");
     register_stateless(
         &registry,
         CountingEcho {

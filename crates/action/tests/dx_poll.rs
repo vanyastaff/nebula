@@ -11,7 +11,7 @@ use std::{
 };
 
 use nebula_action::{
-    Action, ActionError, ActionMetadata, DeduplicatingCursor, EmitFailurePolicy, ExecutionEmitter,
+    Action, ActionError, DeduplicatingCursor, EmitFailurePolicy, ExecutionEmitter,
     HasTriggerScheduling, PollAction, PollConfig, PollCursor, PollOutcome, PollResult,
     PollTriggerAdapter, TestContextBuilder, TriggerHandler,
 };
@@ -27,10 +27,10 @@ impl Action for TickPoller {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             nebula_core::action_key!("test.tick"),
-            "Tick Poller",
+            nebula_action::metadata_name!("Tick Poller"),
             "Test poll trigger",
         )
     }
@@ -73,7 +73,7 @@ fn make_poller() -> (TickPoller, Arc<AtomicU32>) {
 #[tokio::test(start_paused = true)]
 async fn poll_adapter_emits_events() {
     let (poller, poll_count) = make_poller();
-    let adapter = PollTriggerAdapter::new(poller);
+    let adapter = PollTriggerAdapter::new(poller).expect("valid test catalog definition");
     let (ctx, emitter, _) = TestContextBuilder::minimal().build_trigger();
 
     let cancel = ctx.cancellation().clone();
@@ -104,7 +104,7 @@ async fn poll_adapter_emits_events() {
 #[tokio::test]
 async fn poll_adapter_stop_is_noop() {
     let (poller, _) = make_poller();
-    let adapter = PollTriggerAdapter::new(poller);
+    let adapter = PollTriggerAdapter::new(poller).expect("valid test catalog definition");
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
     assert!(adapter.stop(&ctx).await.is_ok());
@@ -113,7 +113,7 @@ async fn poll_adapter_stop_is_noop() {
 #[tokio::test]
 async fn poll_adapter_does_not_accept_events() {
     let (poller, _) = make_poller();
-    let adapter = PollTriggerAdapter::new(poller);
+    let adapter = PollTriggerAdapter::new(poller).expect("valid test catalog definition");
     assert!(!adapter.accepts_events());
 }
 
@@ -137,7 +137,7 @@ async fn poll_action_cursor_advances_through_poll_cursor() {
 #[tokio::test(start_paused = true)]
 async fn poll_adapter_rejects_concurrent_start() {
     let (poller, _) = make_poller();
-    let adapter = Arc::new(PollTriggerAdapter::new(poller));
+    let adapter = Arc::new(PollTriggerAdapter::new(poller).expect("valid test catalog definition"));
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
     let cancel = ctx.cancellation().clone();
@@ -174,10 +174,10 @@ impl Action for ZeroIntervalPoller {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             nebula_core::action_key!("test.tick.zero"),
-            "Zero Interval",
+            nebula_action::metadata_name!("Zero Interval"),
             "Returns Duration::ZERO from poll_config",
         )
     }
@@ -212,7 +212,7 @@ async fn poll_adapter_clamps_zero_interval_to_floor() {
     let poller = ZeroIntervalPoller {
         poll_count: poll_count.clone(),
     };
-    let adapter = Arc::new(PollTriggerAdapter::new(poller));
+    let adapter = Arc::new(PollTriggerAdapter::new(poller).expect("valid test catalog definition"));
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
     let cancel = ctx.cancellation().clone();
@@ -261,8 +261,8 @@ async fn poll_adapter_clamps_zero_interval_to_floor() {
 async fn poll_adapter_start_after_cancellation_succeeds() {
     let (poller1, _) = make_poller();
     let (poller2, _) = make_poller();
-    let adapter1 = PollTriggerAdapter::new(poller1);
-    let adapter2 = PollTriggerAdapter::new(poller2);
+    let adapter1 = PollTriggerAdapter::new(poller1).expect("valid test catalog definition");
+    let adapter2 = PollTriggerAdapter::new(poller2).expect("valid test catalog definition");
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
     let cancel = ctx.cancellation().clone();
@@ -457,10 +457,10 @@ impl Action for FailingValidator {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             nebula_core::action_key!("test.validate.fail"),
-            "Failing Validator",
+            nebula_action::metadata_name!("Failing Validator"),
             "validate() returns Err",
         )
     }
@@ -498,7 +498,7 @@ impl PollAction for FailingValidator {
 #[tokio::test]
 async fn poll_adapter_validate_failure_prevents_start() {
     let validator = FailingValidator;
-    let adapter = PollTriggerAdapter::new(validator);
+    let adapter = PollTriggerAdapter::new(validator).expect("valid test catalog definition");
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
     let err = adapter.start(&ctx).await.expect_err("start must fail");
@@ -519,10 +519,10 @@ impl Action for StartFromNowPoller {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             nebula_core::action_key!("test.initial_cursor"),
-            "Start From Now",
+            nebula_action::metadata_name!("Start From Now"),
             "initial_cursor returns 1000",
         )
     }
@@ -565,7 +565,7 @@ async fn poll_adapter_uses_initial_cursor() {
     let poller = StartFromNowPoller {
         poll_count: poll_count.clone(),
     };
-    let adapter = PollTriggerAdapter::new(poller);
+    let adapter = PollTriggerAdapter::new(poller).expect("valid test catalog definition");
     let (ctx, emitter, _) = TestContextBuilder::minimal().build_trigger();
 
     let cancel = ctx.cancellation().clone();
@@ -629,10 +629,10 @@ impl Action for ReadyPoller {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             nebula_core::action_key!("test.retry_batch"),
-            "Retry Batch",
+            nebula_action::metadata_name!("Retry Batch"),
             "always-ready, emitter fails",
         )
     }
@@ -669,7 +669,7 @@ async fn retry_batch_dispatch_failure_records_error_and_backs_off() {
     let poller = ReadyPoller {
         poll_count: poll_count.clone(),
     };
-    let adapter = PollTriggerAdapter::new(poller);
+    let adapter = PollTriggerAdapter::new(poller).expect("valid test catalog definition");
 
     let failing = Arc::new(FailingEmitter::new());
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
@@ -749,10 +749,10 @@ impl Action for DropPoller {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             nebula_core::action_key!("test.drop_loss"),
-            "Drop Loss",
+            nebula_action::metadata_name!("Drop Loss"),
             "all events dropped under DropAndContinue",
         )
     }
@@ -785,7 +785,7 @@ impl PollAction for DropPoller {
 #[tokio::test(start_paused = true)]
 async fn drop_and_continue_total_loss_records_error() {
     let poller = DropPoller;
-    let adapter = PollTriggerAdapter::new(poller);
+    let adapter = PollTriggerAdapter::new(poller).expect("valid test catalog definition");
 
     let emitter = Arc::new(DropCountingFailingEmitter::new());
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
@@ -846,10 +846,10 @@ impl Action for HugeOverridePoller {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             nebula_core::action_key!("test.huge_override"),
-            "Huge Override",
+            nebula_action::metadata_name!("Huge Override"),
             "override_next = 1h, max_interval = 200ms",
         )
     }
@@ -887,7 +887,7 @@ async fn override_next_clamped_by_max_interval() {
     let poller = HugeOverridePoller {
         poll_count: poll_count.clone(),
     };
-    let adapter = PollTriggerAdapter::new(poller);
+    let adapter = PollTriggerAdapter::new(poller).expect("valid test catalog definition");
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
     let cancel = ctx.cancellation().clone();
@@ -929,10 +929,10 @@ impl Action for EmptyPartialPoller {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             nebula_core::action_key!("test.empty_partial"),
-            "Empty Partial",
+            nebula_action::metadata_name!("Empty Partial"),
             "returns Partial with no events and a retryable error",
         )
     }
@@ -974,7 +974,7 @@ async fn partial_with_empty_events_retryable_records_error() {
     let poller = EmptyPartialPoller {
         called: called.clone(),
     };
-    let adapter = PollTriggerAdapter::new(poller);
+    let adapter = PollTriggerAdapter::new(poller).expect("valid test catalog definition");
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
     let cancel = ctx.cancellation().clone();
@@ -1013,10 +1013,10 @@ impl Action for SlowPoller {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             nebula_core::action_key!("test.first_poll.immediate"),
-            "Slow Poller",
+            nebula_action::metadata_name!("Slow Poller"),
             "base_interval 10min, first poll should still run immediately",
         )
     }
@@ -1053,7 +1053,7 @@ async fn first_poll_runs_immediately_after_start() {
     let poller = SlowPoller {
         count: count.clone(),
     };
-    let adapter = PollTriggerAdapter::new(poller);
+    let adapter = PollTriggerAdapter::new(poller).expect("valid test catalog definition");
     let (ctx, emitter, _) = TestContextBuilder::minimal().build_trigger();
 
     let cancel = ctx.cancellation().clone();
@@ -1089,7 +1089,7 @@ async fn stop_cancels_cancellation_token() {
     // fire the cancellation token by itself — previously it was a
     // no-op and the test had to cancel the token manually.
     let (poller, _) = make_poller();
-    let adapter = Arc::new(PollTriggerAdapter::new(poller));
+    let adapter = Arc::new(PollTriggerAdapter::new(poller).expect("valid test catalog definition"));
     let (ctx, ..) = TestContextBuilder::minimal().build_trigger();
 
     let adapter1 = Arc::clone(&adapter);
@@ -1168,10 +1168,10 @@ impl Action for WildConfigPoller {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             nebula_core::action_key!("test.wild_config"),
-            "Wild Config",
+            nebula_action::metadata_name!("Wild Config"),
             "Configurable PollConfig for clamp tests",
         )
     }
@@ -1215,7 +1215,7 @@ async fn poll_config_max_interval_below_base_is_clamped_and_warned() {
         _count: Arc::new(AtomicU32::new(0)),
         config,
     };
-    let adapter = PollTriggerAdapter::new(poller);
+    let adapter = PollTriggerAdapter::new(poller).expect("valid test catalog definition");
 
     let cancel = ctx.cancellation().clone();
     let ctx_clone = ctx.clone();
@@ -1248,7 +1248,7 @@ async fn poll_config_backoff_factor_clamped_to_ceiling() {
         _count: Arc::new(AtomicU32::new(0)),
         config,
     };
-    let adapter = PollTriggerAdapter::new(poller);
+    let adapter = PollTriggerAdapter::new(poller).expect("valid test catalog definition");
 
     let cancel = ctx.cancellation().clone();
     let ctx_clone = ctx.clone();
@@ -1280,7 +1280,7 @@ async fn poll_config_zero_timeout_is_reset_with_warn() {
         _count: Arc::new(AtomicU32::new(0)),
         config,
     };
-    let adapter = PollTriggerAdapter::new(poller);
+    let adapter = PollTriggerAdapter::new(poller).expect("valid test catalog definition");
 
     let cancel = ctx.cancellation().clone();
     let ctx_clone = ctx.clone();

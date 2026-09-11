@@ -2,7 +2,7 @@
 //! tuple-compact wire format. Rules pulled from JSON config must
 //! roundtrip losslessly and validate the same values post-roundtrip.
 
-use nebula_validator::{Predicate, Rule};
+use nebula_validator::{DiagnosticDisclosure, ExecutionMode, Predicate, Rule};
 use serde_json::json;
 
 #[test]
@@ -25,7 +25,7 @@ fn unit_rule_bare_string_wire_form() {
 
 #[test]
 fn predicate_rule_tuple_wire_form() {
-    let rule = Rule::predicate(Predicate::eq("status", json!("active")).unwrap());
+    let rule = Rule::predicate(Predicate::eq("status", json!("active")).unwrap()).unwrap();
     let encoded = serde_json::to_value(&rule).unwrap();
     assert_eq!(encoded, json!({"eq": ["/status", "active"]}));
     let decoded: Rule = serde_json::from_value(encoded).unwrap();
@@ -34,7 +34,7 @@ fn predicate_rule_tuple_wire_form() {
 
 #[test]
 fn combinator_wire_form() {
-    let rule = Rule::all([Rule::min_length(3), Rule::max_length(20)]);
+    let rule = Rule::all([Rule::min_length(3), Rule::max_length(20)]).unwrap();
     let encoded = serde_json::to_value(&rule).unwrap();
     assert_eq!(
         encoded,
@@ -46,7 +46,7 @@ fn combinator_wire_form() {
 
 #[test]
 fn described_wire_form() {
-    let rule = Rule::min_length(3).with_message("too short");
+    let rule = Rule::min_length(3).with_message("too short").unwrap();
     let encoded = serde_json::to_value(&rule).unwrap();
     assert_eq!(
         encoded,
@@ -58,7 +58,7 @@ fn described_wire_form() {
 
 #[test]
 fn roundtrip_preserves_validation_behavior() {
-    let original = Rule::pattern(r"^[a-z]+$");
+    let original = Rule::pattern(r"^[a-z]+$").unwrap();
     let decoded: Rule = serde_json::from_value(serde_json::to_value(&original).unwrap()).unwrap();
 
     for probe in [json!("hello"), json!("Bad1"), json!(42), json!(null)] {
@@ -70,9 +70,18 @@ fn roundtrip_preserves_validation_behavior() {
 
 #[test]
 fn described_roundtrip_with_template() {
-    let rule = Rule::min_length(5).with_message("got {value}, need {min}");
+    let rule = Rule::min_length(5)
+        .with_message("got {value}, need {min}")
+        .unwrap();
     let decoded: Rule = serde_json::from_value(serde_json::to_value(&rule).unwrap()).unwrap();
-    let err = nebula_validator::foundation::Validate::validate(&decoded, &json!("hi")).unwrap_err();
+    let err = decoded
+        .validate(
+            &json!("hi"),
+            None,
+            ExecutionMode::Full,
+            DiagnosticDisclosure::IncludeValue,
+        )
+        .unwrap_err();
     let rendered = format!("{err}");
     assert!(rendered.contains("got \"hi\", need 5"), "got: {rendered}");
 }

@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use nebula_action::{Action, ActionMetadata, ActionResult, InstanceFactory, StatelessAction};
+use nebula_action::{Action, ActionMetadataDraft, ActionResult, InstanceFactory, StatelessAction};
 use nebula_engine::{
     PlanFlavorRevisionInstaller, PlanFlavorRevisionLoader, WorkflowActivationService,
     WorkflowStartService, WorkflowStores,
@@ -18,14 +18,13 @@ impl Action for Echo {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> ActionMetadataDraft {
+        ActionMetadataDraft::new(
             nebula_core::action_key!("core.echo"),
-            "Echo",
+            nebula_action::metadata_name!("Echo"),
             "HTTP fixture echo",
         )
         .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
-        .with_kind(nebula_action::ActionKind::Stateless)
     }
 
     fn dependencies() -> &'static nebula_core::Dependencies {
@@ -58,13 +57,19 @@ impl Plugin for FixturePlugin {
 
     fn actions(&self) -> Vec<Arc<dyn nebula_action::ActionFactory>> {
         vec![
-            Arc::new(InstanceFactory::new(Echo::metadata(), Echo)),
-            Arc::new(InstanceFactory::new(
-                super::engine_seam::SlowAction::metadata(),
-                super::engine_seam::SlowAction {
-                    started: Arc::clone(&self.slow_started),
-                },
-            )),
+            Arc::new(
+                InstanceFactory::new(Echo::metadata(), Echo)
+                    .expect("valid test catalog definition"),
+            ),
+            Arc::new(
+                InstanceFactory::new(
+                    super::engine_seam::SlowAction::metadata(),
+                    super::engine_seam::SlowAction {
+                        started: Arc::clone(&self.slow_started),
+                    },
+                )
+                .expect("valid test catalog definition"),
+            ),
         ]
     }
 }

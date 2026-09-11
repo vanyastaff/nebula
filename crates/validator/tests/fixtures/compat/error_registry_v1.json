@@ -3,6 +3,18 @@
   "artifact": "validator_error_registry",
   "error_codes": [
     {
+      "code": "invalid_rule",
+      "meaning": "rule kind is invalid for the requested evaluation operation",
+      "stability": "stable",
+      "source": "foundation::ValidationError"
+    },
+    {
+      "code": "evaluation_unavailable",
+      "meaning": "required evaluation context or runtime evaluator is unavailable",
+      "stability": "stable",
+      "source": "foundation::ValidationError"
+    },
+    {
       "code": "required",
       "meaning": "missing required value",
       "stability": "stable",

@@ -117,7 +117,8 @@ fn validate_recorded_contracts(
     record: &RecordedExecutablePlanRevisionV1,
     registry: &FrozenPluginRegistry,
 ) -> Result<(), PlanRegistryCompatibilityError> {
-    if record.compiler_version != crate::plan::COMPILER_VERSION_GRAPH_V3
+    if !crate::plan::PlanEpoch::from_record(record.compiler_version, record.canonical_hash_version)
+        .is_some_and(crate::plan::PlanEpoch::records_effect_contract)
         || record
             .content
             .actions
@@ -395,7 +396,7 @@ impl ActivationDiagnostics for PlanRegistryCompatibilityError {
             Self::UnsupportedEffectProtocol => diagnostic(
                 "PLUGIN_PLAN_COMPATIBILITY:UNSUPPORTED_EFFECT_PROTOCOL",
                 "/plan/compiler_version",
-                "compiler 3 with explicit effect declarations".to_owned(),
+                "compiler 3 or 4 with explicit effect declarations".to_owned(),
                 "legacy plan without effect declarations".to_owned(),
                 "activate a new workflow version using declared action effects",
             ),

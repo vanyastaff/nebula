@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 /// when it will be removed, and what replaces it.
 ///
 /// Attached to [`BaseMetadata::deprecation`](crate::BaseMetadata::deprecation);
-/// present implies [`MaturityLevel::Deprecated`](crate::MaturityLevel::Deprecated)
-/// is usually also set.
+/// its presence requires [`MaturityLevel::Deprecated`](crate::MaturityLevel::Deprecated)
+/// through every catalog construction and deserialization path.
 ///
 /// Fields are intentionally permissive strings where a typed value would
 /// force premature precision: `sunset` can be an ISO date, a version, or a

@@ -33,7 +33,7 @@
 //! - `name = "..."` — human-readable name (required only when no `metadata`
 //!   method is supplied — used to synthesize one).
 //! - `description = "..."` — catalog description (optional; defaults to `name`).
-//! - `icon = "..."` — catalog icon id (optional).
+//! - `icon = "..."` — catalog inline icon id (optional; emits `Icon::Inline`).
 //! - `doc_url = "..."` — documentation URL (optional).
 //!
 //! # Recognized `impl` items
@@ -86,6 +86,7 @@ struct Items {
     metadata: Option<ImplItem>,
     project: Option<ImplItem>,
     resolve: Option<ImplItem>,
+    begin: Option<ImplItem>,
     refresh: Option<ImplItem>,
     revoke: Option<ImplItem>,
     test: Option<ImplItem>,
@@ -147,23 +148,35 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
         )
     })?;
 
-    // Interactive: `continue_resolve` and `type Pending` come as a pair.
-    match (&items.continue_resolve, &items.pending) {
-        (Some(_), None) => {
+    // Interactive: `begin`, `continue_resolve`, and `type Pending` are one
+    // capability contract. Omitting any member is a compile-time error.
+    match (&items.begin, &items.continue_resolve, &items.pending) {
+        (Some(_), Some(_), Some(_)) | (None, None, None) => {},
+        (None, Some(_), _) => {
             return Err(diag::error_spanned(
                 &item.self_ty,
-                "`fn continue_resolve` requires a `type Pending = …;` (the Interactive \
+                "`fn continue_resolve` requires a `fn begin` kickoff",
+            ));
+        },
+        (Some(_), None, _) => {
+            return Err(diag::error_spanned(
+                &item.self_ty,
+                "`fn begin` requires a `fn continue_resolve` continuation",
+            ));
+        },
+        (Some(_), Some(_), None) => {
+            return Err(diag::error_spanned(
+                &item.self_ty,
+                "interactive `begin`/`continue_resolve` requires a `type Pending = …;` (the Interactive \
                  capability needs its typed pending state)",
             ));
         },
-        (None, Some(p)) => {
+        (None, None, Some(p)) => {
             return Err(diag::error_spanned(
                 p,
-                "`type Pending` is only valid alongside a `fn continue_resolve` — \
-                 remove it or add the interactive continuation method",
+                "`type Pending` is only valid alongside `fn begin` and `fn continue_resolve`",
             ));
         },
-        _ => {},
     }
 
     // Stray tuning consts without their capability method.
@@ -236,19 +249,14 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
         let description = description.as_deref().unwrap_or(name);
         let scheme_ty = assoc_type(scheme)?;
         if icon.is_none() && doc_url.is_none() {
-            // No icon / doc_url ⇒ the infallible `for_credential` constructor,
-            // so the common synthesized case emits no `expect(...)` into
-            // library code. (`credential_key!` is re-exported from
-            // `nebula_credential`, so a consumer that does not directly depend
-            // on `nebula-core` still resolves the path.)
             quote! {
-                fn metadata() -> ::nebula_credential::CredentialMetadata
+                fn metadata() -> ::nebula_credential::CredentialMetadataDraft
                 where
                     Self: Sized,
                 {
-                    ::nebula_credential::CredentialMetadata::for_credential::<Self>(
+                    ::nebula_credential::CredentialMetadataDraft::new(
                         ::nebula_credential::credential_key!(#key),
-                        #name,
+                        ::nebula_credential::metadata_name!(#name),
                         #description,
                         <#scheme_ty as ::nebula_credential::AuthScheme>::pattern(),
                     )
@@ -258,22 +266,23 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
             // Every required field is known at expansion time, so start with
             // the infallible constructor and add optional catalog fields.
             let mut metadata = quote! {
-                ::nebula_credential::CredentialMetadata::new(
+                ::nebula_credential::CredentialMetadataDraft::new(
                     ::nebula_credential::credential_key!(#key),
-                    #name,
+                    ::nebula_credential::metadata_name!(#name),
                     #description,
-                    ::nebula_credential::schema_of::<Self::Properties>(),
                     <#scheme_ty as ::nebula_credential::AuthScheme>::pattern(),
                 )
             };
             if let Some(icon) = &icon {
-                metadata = quote! { #metadata.with_icon(#icon) };
+                metadata = quote! {
+                    #metadata.with_icon(::nebula_credential::Icon::inline(#icon))
+                };
             }
             if let Some(url) = &doc_url {
                 metadata = quote! { #metadata.with_documentation_url(#url) };
             }
             quote! {
-                fn metadata() -> ::nebula_credential::CredentialMetadata
+                fn metadata() -> ::nebula_credential::CredentialMetadataDraft
                 where
                     Self: Sized,
                 {
@@ -338,11 +347,13 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
     });
     let interactive_impl = items.continue_resolve.as_ref().map(|cont| {
         let pending = items.pending.clone().map(trait_item);
+        let begin = items.begin.clone().map(trait_item);
         let cont = trait_item(cont.clone());
         quote! {
             #fwd
             impl #impl_generics ::nebula_credential::Interactive for #self_ty #where_clause {
                 #pending
+                #begin
                 #cont
             }
         }
@@ -360,7 +371,7 @@ fn expand_inner(args: TokenStream2, input: TokenStream) -> syn::Result<TokenStre
     });
 
     // ── capability report consts ──────────────────────────────────────────
-    let is_interactive = items.continue_resolve.is_some();
+    let is_interactive = items.begin.is_some();
     let is_refreshable = items.refresh.is_some();
     let is_revocable = items.revoke.is_some();
     let is_testable = items.test.is_some();
@@ -505,6 +516,7 @@ fn classify_items(item: &ItemImpl) -> syn::Result<Items> {
                     "metadata" => &mut out.metadata,
                     "project" => &mut out.project,
                     "resolve" => &mut out.resolve,
+                    "begin" => &mut out.begin,
                     "refresh" => &mut out.refresh,
                     "revoke" => &mut out.revoke,
                     "test" => &mut out.test,
@@ -518,7 +530,7 @@ fn classify_items(item: &ItemImpl) -> syn::Result<Items> {
                                 "unrecognized method `{other}` in #[credential] impl — move \
                                  inherent helpers to a separate `impl` block. Recognized \
                                  methods: metadata, project, resolve, refresh, revoke, test, \
-                                 continue_resolve, release, policy"
+                                 begin, continue_resolve, release, policy"
                             ),
                         ));
                     },

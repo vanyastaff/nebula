@@ -1,5 +1,5 @@
 use criterion::{Criterion, black_box};
-use nebula_schema::{Field, Schema, field_key};
+use nebula_schema::{AuthoredValue, Field, MAX_EXPRESSION_TEXT_BYTES, Schema, field_key};
 use serde_json::json;
 
 fn sample_schema() -> Schema {
@@ -30,8 +30,30 @@ fn bench_schema_serde(c: &mut Criterion) {
     });
 }
 
+fn bench_reject_oversized_authored_wire(c: &mut Criterion) {
+    let wire = serde_json::to_vec(&json!({
+        "version": 2,
+        "data": null,
+        "expressions": [{
+            "path": "",
+            "syntax": "auto",
+            "source": "x".repeat(MAX_EXPRESSION_TEXT_BYTES + 1),
+        }],
+    }))
+    .expect("serialize benchmark wire");
+    c.bench_function("authored_wire_rejects_oversized_source", |b| {
+        b.iter(|| {
+            black_box(
+                serde_json::from_slice::<AuthoredValue>(black_box(&wire))
+                    .expect_err("oversized authored wire must be rejected"),
+            );
+        });
+    });
+}
+
 fn main() {
     let mut criterion = Criterion::default().configure_from_args();
     bench_schema_serde(&mut criterion);
+    bench_reject_oversized_authored_wire(&mut criterion);
     criterion.final_summary();
 }

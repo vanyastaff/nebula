@@ -18,10 +18,11 @@
 
 use nebula_core::PluginKey;
 use semver::{Version, VersionReq};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 
 use crate::defaults::{default_version, is_default_maturity, is_default_version};
-use crate::{DeprecationNotice, Icon, MaturityLevel};
+use crate::definition::{resolve_maturity, validate_name};
+use crate::{DeprecationNotice, Icon, MaturityLevel, MetadataError};
 
 /// A declared dependency of one plugin on another.
 ///
@@ -32,12 +33,27 @@ use crate::{DeprecationNotice, Icon, MaturityLevel};
 /// it validates that every declared dependency is registered and that its version
 /// matches `req`.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PluginDependency {
     /// The key of the required plugin.
     key: PluginKey,
     /// Semver version requirement that the registered plugin must satisfy.
     req: VersionReq,
+}
+
+impl<'de> Deserialize<'de> for PluginDependency {
+    #[tracing::instrument(name = "metadata.deserialize_plugin_dependency", skip_all)]
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Fields {
+            key: String,
+            req: VersionReq,
+        }
+
+        let fields = Fields::deserialize(deserializer)?;
+        let key = fields.key.parse().map_err(D::Error::custom)?;
+        Ok(Self::new(key, fields.req))
+    }
 }
 
 impl PluginDependency {
@@ -66,18 +82,15 @@ impl PluginDependency {
 #[derive(Debug, thiserror::Error, nebula_error::Classify, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ManifestError {
-    /// A required field was missing during construction.
-    #[classify(category = "validation", code = "MANIFEST:MISSING_FIELD")]
-    #[error("missing required field '{field}' for plugin manifest")]
-    MissingRequiredField {
-        /// The missing field name.
-        field: &'static str,
-    },
+    /// A shared catalog-definition invariant failed.
+    #[classify(category = "validation", code = "MANIFEST:INVALID_METADATA")]
+    #[error("invalid plugin metadata: {0}")]
+    Metadata(#[from] MetadataError),
 
     /// Plugin key validation failed.
     #[classify(category = "validation", code = "MANIFEST:INVALID_KEY")]
     #[error("invalid plugin key: {0}")]
-    InvalidKey(nebula_core::PluginKeyParseError),
+    InvalidKey(#[source] nebula_core::PluginKeyParseError),
 }
 
 /// Normalize a raw plugin key string: ASCII uppercase → lowercase, spaces → underscores.
@@ -106,7 +119,7 @@ pub(crate) fn normalize_key(s: &str) -> String {
 /// assert_eq!(manifest.key().as_str(), "http_request");
 /// assert_eq!(manifest.version(), &Version::new(2, 0, 0));
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PluginManifest {
     key: PluginKey,
     name: String,
@@ -137,9 +150,9 @@ pub struct PluginManifest {
     /// Source repository URL.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     repository: Option<String>,
-    /// Minimum Nebula engine version required by this plugin (semver string).
+    /// Minimum Nebula engine version required by this plugin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    nebula_version: Option<String>,
+    nebula_version: Option<Version>,
     #[serde(default, skip_serializing_if = "is_default_maturity")]
     maturity: MaturityLevel,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -147,6 +160,15 @@ pub struct PluginManifest {
     /// Other plugins this plugin depends on.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     dependencies: Vec<PluginDependency>,
+}
+
+impl<'de> Deserialize<'de> for PluginManifest {
+    #[tracing::instrument(name = "metadata.deserialize_plugin_manifest", skip_all)]
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        PluginManifestBuilder::deserialize(deserializer)?
+            .build()
+            .map_err(D::Error::custom)
+    }
 }
 
 impl PluginManifest {
@@ -244,10 +266,10 @@ impl PluginManifest {
         self.repository.as_deref()
     }
 
-    /// Minimum Nebula engine version required by this plugin (semver string).
+    /// Minimum Nebula engine version required by this plugin.
     #[inline]
-    pub fn nebula_version(&self) -> Option<&str> {
-        self.nebula_version.as_deref()
+    pub fn nebula_version(&self) -> Option<&Version> {
+        self.nebula_version.as_ref()
     }
 
     /// Declared maturity level.
@@ -273,23 +295,41 @@ impl PluginManifest {
     }
 }
 
-/// Builder for [`PluginManifest`].
+/// Unchecked draft of a [`PluginManifest`]; [`Self::build`] checks its invariants.
+///
+/// Deserializing a draft does not produce a trusted manifest until it is built.
+#[derive(Debug, Deserialize)]
+#[must_use = "a manifest draft must be built to validate its definition"]
 pub struct PluginManifestBuilder {
     key: String,
     name: String,
+    #[serde(default = "default_version")]
     version: Version,
+    #[serde(default)]
     group: Vec<String>,
+    #[serde(default)]
     description: String,
+    #[serde(default)]
     icon: Icon,
+    #[serde(default)]
     color: Option<String>,
+    #[serde(default)]
     tags: Vec<String>,
+    #[serde(default)]
     author: Option<String>,
+    #[serde(default)]
     license: Option<String>,
+    #[serde(default)]
     homepage: Option<String>,
+    #[serde(default)]
     repository: Option<String>,
-    nebula_version: Option<String>,
+    #[serde(default)]
+    nebula_version: Option<Version>,
+    #[serde(default)]
     maturity: MaturityLevel,
+    #[serde(default)]
     deprecation: Option<DeprecationNotice>,
+    #[serde(default)]
     dependencies: Vec<PluginDependency>,
 }
 
@@ -379,9 +419,9 @@ impl PluginManifestBuilder {
         self
     }
 
-    /// Set the minimum required Nebula engine version (semver string).
-    pub fn nebula_version(mut self, version: impl Into<String>) -> Self {
-        self.nebula_version = Some(version.into());
+    /// Set the minimum required Nebula engine version.
+    pub fn nebula_version(mut self, version: Version) -> Self {
+        self.nebula_version = Some(version);
         self
     }
 
@@ -426,30 +466,27 @@ impl PluginManifestBuilder {
     ///
     /// Returns [`ManifestError::InvalidKey`] if the normalized key fails
     /// [`PluginKey`] validation, or
-    /// [`ManifestError::MissingRequiredField`] with `field: "name"` if the
-    /// name is empty or contains only whitespace.
+    /// [`ManifestError::Metadata`] if the name is blank or Deprecated maturity
+    /// was requested without a deprecation notice.
+    #[tracing::instrument(name = "metadata.build_plugin_manifest", skip_all)]
     pub fn build(self) -> Result<PluginManifest, ManifestError> {
         let key: PluginKey = normalize_key(&self.key)
             .parse()
-            .map_err(ManifestError::InvalidKey)?;
+            .map_err(ManifestError::InvalidKey)
+            .inspect_err(|_| {
+                tracing::debug!(
+                    error_code = "MANIFEST:INVALID_KEY",
+                    "catalog construction rejected"
+                );
+            })?;
 
-        if self.name.trim().is_empty() {
-            return Err(ManifestError::MissingRequiredField { field: "name" });
-        }
-
-        // Invariant: a deprecation notice always implies Deprecated maturity.
-        // Enforcing this here (rather than only in `.deprecation()`) makes the
-        // invariant order-independent — a later `.maturity()` call cannot
-        // silently override it.
-        let maturity = if self.deprecation.is_some() {
-            MaturityLevel::Deprecated
-        } else {
-            self.maturity
-        };
+        validate_name(&self.name)?;
+        let name = self.name.trim().to_owned();
+        let maturity = resolve_maturity(self.maturity, self.deprecation.as_ref())?;
 
         Ok(PluginManifest {
             key,
-            name: self.name,
+            name,
             version: self.version,
             group: self.group,
             description: self.description,
@@ -584,7 +621,7 @@ mod tests {
         let result = PluginManifest::builder("slack", "").build();
         assert_eq!(
             result,
-            Err(ManifestError::MissingRequiredField { field: "name" })
+            Err(ManifestError::Metadata(MetadataError::BlankName))
         );
     }
 
@@ -593,7 +630,7 @@ mod tests {
         let result = PluginManifest::builder("slack", "   ").build();
         assert_eq!(
             result,
-            Err(ManifestError::MissingRequiredField { field: "name" })
+            Err(ManifestError::Metadata(MetadataError::BlankName))
         );
     }
 
@@ -633,7 +670,7 @@ mod tests {
             .license("Apache-2.0")
             .homepage("https://example.com")
             .repository("https://github.com/acme/slack-plugin")
-            .nebula_version("0.5.0")
+            .nebula_version(Version::new(0, 5, 0))
             .maturity(MaturityLevel::Beta)
             .build()
             .unwrap();
@@ -653,7 +690,7 @@ mod tests {
             back.repository(),
             Some("https://github.com/acme/slack-plugin")
         );
-        assert_eq!(back.nebula_version(), Some("0.5.0"));
+        assert_eq!(back.nebula_version(), Some(&Version::new(0, 5, 0)));
         assert_eq!(back.maturity(), MaturityLevel::Beta);
     }
 

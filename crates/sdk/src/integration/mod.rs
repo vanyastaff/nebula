@@ -7,3 +7,5 @@
 pub mod action;
 pub mod credential;
 pub mod resource;
+
+pub use nebula_metadata::{MetadataError, MetadataName, MetadataVersion, metadata_name};

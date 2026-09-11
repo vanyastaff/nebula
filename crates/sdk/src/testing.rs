@@ -3,7 +3,7 @@
 //! Drives `ActionResult` assertions and produces lightweight identifier
 //! fixtures. The canonical end-to-end harness is
 //! [`TestRuntime`](crate::runtime::TestRuntime) — it builds an
-//! `ActionContext` via [`TestContextBuilder`](nebula_action::testing::TestContextBuilder)
+//! `ActionContext` via [`TestContextBuilder`](crate::prelude::TestContextBuilder)
 //! and executes the action through the full lifecycle. Reach for the helpers
 //! in this module when you only want to inspect the `Result` shape.
 //!
@@ -11,7 +11,7 @@
 //!
 //! ```rust,no_run
 //! # use nebula_sdk::testing::{assert_success, fixtures};
-//! # use nebula_action::{ActionError, ActionResult};
+//! # use nebula_sdk::prelude::{ActionError, ActionResult};
 //! # let result: Result<ActionResult<serde_json::Value>, ActionError> =
 //! #     Ok(ActionResult::success(serde_json::json!({})));
 //! assert_success(&result);

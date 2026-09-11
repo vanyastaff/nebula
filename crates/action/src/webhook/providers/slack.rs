@@ -21,7 +21,6 @@ use crate::{
     action::Action,
     context::TriggerContext,
     error::{ActionError, ValidationReason},
-    metadata::ActionMetadata,
     trigger::TriggerEventOutcome,
     webhook::{
         BuiltWebhookHandler, FactoryError, PreHandleOutcome, SignatureOutcome, SignaturePolicy,
@@ -63,10 +62,10 @@ impl Action for SlackWebhookAction {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> crate::ActionMetadataDraft {
+        crate::ActionMetadataDraft::new(
             action_key!("nebula.webhook.slack"),
-            "Slack Webhook",
+            crate::metadata_name!("Slack Webhook"),
             "Slack-flavoured signed webhook trigger.",
         )
     }
@@ -209,7 +208,7 @@ impl WebhookActionFactory for SlackWebhookActionFactory {
         }
         let config = action.config();
         Ok(BuiltWebhookHandler {
-            handler: Arc::new(WebhookTriggerAdapter::new(action)),
+            handler: Arc::new(WebhookTriggerAdapter::new(action)?),
             config,
         })
     }

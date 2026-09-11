@@ -73,8 +73,8 @@ pub struct StatefulCheckpoint {
     /// Number of completed iterations the handler had when this checkpoint
     /// was written. The next dispatch starts counting from here.
     pub iteration: u32,
-    /// Handler state as JSON — exactly the value the runtime would have
-    /// handed back into `StatefulHandler::execute` on the next loop.
+    /// Handler state as JSON — exactly the value the runtime hands back into
+    /// [`nebula_action::StatefulHandle::dispatch`] on the next loop.
     pub state: serde_json::Value,
 }
 
@@ -353,16 +353,14 @@ impl ActionRuntime {
         &self,
         factory: Arc<dyn ActionFactory>,
         node: &NodeDefinition,
-        input: serde_json::Value,
+        input: nebula_schema::ResolvedValues,
         context: &dyn ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
-        let metadata = factory.metadata().clone();
         self.run_factory(
             node.action_key.as_str(),
-            metadata,
             factory,
             node,
-            input,
+            nebula_action::ActionInput::Resolved(input),
             context,
             None,
         )
@@ -390,15 +388,14 @@ impl ActionRuntime {
             Some(v) => self.registry.get_factory_versioned(action_key, v),
             None => self.registry.get_factory(action_key),
         };
-        let (metadata, factory) = factory_lookup.ok_or_else(|| RuntimeError::ActionNotFound {
+        let (_metadata, factory) = factory_lookup.ok_or_else(|| RuntimeError::ActionNotFound {
             key: action_key_str.to_owned(),
         })?;
         self.run_factory(
             action_key_str,
-            metadata,
             factory,
             node,
-            input,
+            nebula_action::ActionInput::Raw(input),
             context,
             checkpoint,
         )
@@ -407,9 +404,10 @@ impl ActionRuntime {
 
     /// Dispatch through the factory path — instantiate a fresh
     /// [`ActionHandle`] for the supplied workflow node and dispatch it.
-    /// Both metadata projections must explicitly declare no external effects,
-    /// and the factory must expose no remote capability. This check precedes
-    /// construction; generic dispatch cannot issue an execution-owner grant.
+    /// The factory's admitted metadata must explicitly declare no external
+    /// effects, and the factory must expose no remote capability. This check
+    /// precedes construction; generic dispatch cannot issue an execution-owner
+    /// grant.
     ///
     /// Metric contract:
     ///
@@ -423,43 +421,66 @@ impl ActionRuntime {
     /// for instantiate failures so dashboards reflect the per-dispatch cost
     /// regardless of whether the failure happened in instantiation or
     /// during the action itself.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "private dispatch entry — splitting into a struct hides the metric/observe contract from the call site"
-    )]
+    fn validate_factory_handle(
+        &self,
+        action_key: &str,
+        factory: &dyn ActionFactory,
+        handle: &ActionHandle,
+    ) -> Result<(), RuntimeError> {
+        if !Arc::ptr_eq(factory.metadata(), handle.metadata()) {
+            self.observe_rejected("factory_handle_metadata_mismatch");
+            tracing::error!(
+                error_code = "RUNTIME:FACTORY_HANDLE_METADATA_MISMATCH",
+                action_key,
+                "sealed action factory returned a handle from another admitted contract"
+            );
+            return Err(RuntimeError::FactoryHandleMetadataMismatch {
+                key: action_key.to_owned(),
+            });
+        }
+        if handle.kind() != factory.metadata().kind() {
+            self.observe_rejected("factory_handle_kind_mismatch");
+            tracing::error!(
+                error_code = "RUNTIME:FACTORY_HANDLE_KIND_MISMATCH",
+                action_key,
+                expected = ?factory.metadata().kind(),
+                actual = ?handle.kind(),
+                "sealed action factory returned a handle with the wrong structural kind"
+            );
+            return Err(RuntimeError::FactoryHandleKindMismatch {
+                key: action_key.to_owned(),
+                expected: factory.metadata().kind(),
+                actual: handle.kind(),
+            });
+        }
+        Ok(())
+    }
+
     async fn run_factory(
         &self,
         action_key: &str,
-        metadata: ActionMetadata,
         factory: Arc<dyn ActionFactory>,
         node: &NodeDefinition,
-        input: serde_json::Value,
+        input: nebula_action::ActionInput,
         context: &dyn ActionContext,
         checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
         let error_counter = &self.action_failures_total;
-        let actual_metadata = factory.metadata();
-        if metadata.kind == nebula_action::ActionKind::Trigger
-            || actual_metadata.kind == nebula_action::ActionKind::Trigger
-        {
+        let metadata = factory.metadata();
+        if metadata.kind() == nebula_action::ActionKind::Trigger {
             self.observe_rejected(dispatch_reject_reason::TRIGGER_NOT_EXECUTABLE);
             return Err(RuntimeError::TriggerNotExecutable {
                 key: action_key.to_owned(),
             });
         }
-        if metadata.kind == nebula_action::ActionKind::Resource
-            || actual_metadata.kind == nebula_action::ActionKind::Resource
-        {
+        if metadata.kind() == nebula_action::ActionKind::Resource {
             self.observe_rejected(dispatch_reject_reason::RESOURCE_NOT_EXECUTABLE);
             return Err(RuntimeError::ResourceNotExecutable {
                 key: action_key.to_owned(),
             });
         }
         if !matches!(
-            metadata.effect_contract,
-            nebula_action::effect::ActionEffectContract::NoExternalEffects
-        ) || !matches!(
-            actual_metadata.effect_contract,
+            metadata.effect_contract(),
             nebula_action::effect::ActionEffectContract::NoExternalEffects
         ) || factory.remote_effect_factory().is_some()
         {
@@ -477,6 +498,10 @@ impl ActionRuntime {
 
         let started = Instant::now();
 
+        if context.cancellation().is_cancelled() {
+            return Err(ActionError::Cancelled.into());
+        }
+
         // Instantiate the action via the factory. Slot-binding resolution
         // (and any FromWorkflowNode user code) runs here.
         let handle = match factory.instantiate(node, context).await {
@@ -489,38 +514,40 @@ impl ActionRuntime {
             },
         };
 
+        self.validate_factory_handle(action_key, factory.as_ref(), &handle)?;
+
         let result = match handle {
             ActionHandle::Stateless(inner) => {
                 let r = self
-                    .execute_stateless_handle(&metadata, inner, input, context)
+                    .execute_stateless_handle(metadata, inner, input, context)
                     .await;
                 self.observe_dispatched(started, &r);
                 r
             },
             ActionHandle::Stateful(inner) => {
                 let r = self
-                    .execute_stateful_handle(&metadata, inner, input, context, checkpoint)
+                    .execute_stateful_handle(metadata, inner, input, context, checkpoint)
                     .await;
                 self.observe_dispatched(started, &r);
                 r
             },
             ActionHandle::Stream(inner) => {
                 let r = self
-                    .execute_stream_handle(&metadata, inner, input, context)
+                    .execute_stream_handle(metadata, inner, input, context)
                     .await;
                 self.observe_dispatched(started, &r);
                 r
             },
             ActionHandle::Control(inner) => {
                 let r = self
-                    .execute_control_handle(&metadata, inner, input, context)
+                    .execute_control_handle(metadata, inner, input, context)
                     .await;
                 self.observe_dispatched(started, &r);
                 r
             },
             ActionHandle::Agent(inner) => {
                 let r = self
-                    .execute_agent_handle(&metadata, inner, input, context)
+                    .execute_agent_handle(metadata, inner, input, context)
                     .await;
                 self.observe_dispatched(started, &r);
                 r
@@ -572,20 +599,26 @@ impl ActionRuntime {
         &self,
         metadata: &ActionMetadata,
         handle: Box<dyn nebula_action::StatelessHandle>,
-        input: serde_json::Value,
+        input: nebula_action::ActionInput,
         context: &dyn ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
-        match metadata.isolation_level {
-            IsolationLevel::None => Ok(handle.dispatch(input, context).await?),
+        match metadata.isolation_level() {
+            IsolationLevel::None => {
+                let input = handle.prepare_input(input)?;
+                Ok(handle.dispatch(input, context).await?)
+            },
             IsolationLevel::CapabilityGated => {
                 let run_ctx = ActionRunContext::new(context);
-                Ok(self.runner.execute(run_ctx, metadata, input).await?)
+                Ok(self
+                    .runner
+                    .execute_stateless(run_ctx, handle, input, context)
+                    .await?)
             },
             // IsolationLevel is `#[non_exhaustive]`. Any future variant must
             // fail-closed until we explicitly wire dispatch for it.
             _ => Err(RuntimeError::Internal(format!(
                 "unknown isolation level for action '{}' — refusing to dispatch",
-                metadata.base.key.as_str()
+                metadata.base().key().as_str()
             ))),
         }
     }
@@ -604,7 +637,7 @@ impl ActionRuntime {
         name = "runtime.execute_stream_handle",
         skip_all,
         fields(
-            action.key = %metadata.base.key.as_str(),
+            action.key = %metadata.base().key().as_str(),
             action.kind = "stream",
         )
     )]
@@ -612,40 +645,44 @@ impl ActionRuntime {
         &self,
         metadata: &ActionMetadata,
         handle: Box<dyn StreamHandle>,
-        input: serde_json::Value,
+        input: nebula_action::ActionInput,
         context: &dyn ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
-        match metadata.isolation_level {
-            IsolationLevel::None => Ok(handle.dispatch(input, context).await?),
+        match metadata.isolation_level() {
+            IsolationLevel::None => {
+                let input = handle.prepare_input(input)?;
+                Ok(handle.dispatch(input, context).await?)
+            },
             IsolationLevel::CapabilityGated => {
                 let run_ctx = ActionRunContext::new(context);
-                Ok(self.runner.execute(run_ctx, metadata, input).await?)
+                Ok(self
+                    .runner
+                    .execute_stream(run_ctx, handle, input, context)
+                    .await?)
             },
             // IsolationLevel is `#[non_exhaustive]`. Any future variant must
             // fail-closed until we explicitly wire dispatch for it.
             _ => Err(RuntimeError::Internal(format!(
                 "unknown isolation level for stream action '{}' — refusing to dispatch",
-                metadata.base.key.as_str()
+                metadata.base().key().as_str()
             ))),
         }
     }
 
     /// Stateful dispatch via `Box<dyn StatefulHandle>`.
     ///
-    /// Mirrors [`Self::execute_stateful_handle`] for the factory path. The
-    /// handle trait works on `Value` state so the iteration body matches
-    /// 1:1 with the legacy `Arc<dyn StatefulHandler>` path — same cancel
-    /// race, same checkpoint contract, same iteration cap, same
-    /// stuck-state guard.
+    /// The handle works on `Value` state while retaining one prepared typed
+    /// input across every iteration. Cancellation, checkpoint persistence,
+    /// iteration limits, and stuck-state detection remain runtime-owned.
     async fn execute_stateful_handle(
         &self,
         metadata: &ActionMetadata,
         handle: Box<dyn nebula_action::StatefulHandle>,
-        input: serde_json::Value,
+        input: nebula_action::ActionInput,
         context: &dyn ActionContext,
         checkpoint: Option<Arc<dyn StatefulCheckpointSink>>,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
-        if !matches!(metadata.isolation_level, IsolationLevel::None) {
+        if !matches!(metadata.isolation_level(), IsolationLevel::None) {
             return Err(ActionError::fatal(
                 "capability-gated stateful execution is not yet supported",
             )
@@ -656,13 +693,15 @@ impl ActionRuntime {
             return Err(ActionError::Cancelled.into());
         }
 
+        let input = handle.prepare_input(input)?;
+
         let (mut state, mut iteration) = match checkpoint.as_deref() {
             Some(sink) => match sink.load().await {
                 Ok(Some(cp)) => (cp.state, cp.iteration),
                 Ok(None) => (handle.init_state()?, 0u32),
                 Err(load_err) => {
                     tracing::warn!(
-                        action_key = %metadata.base.key.as_str(),
+                        action_key = %metadata.base().key().as_str(),
                         execution_id = ?context.scope().execution_id,
                         node_key = %context.node_key(),
                         error = %load_err,
@@ -680,7 +719,7 @@ impl ActionRuntime {
         loop {
             if iteration >= MAX_ITERATIONS {
                 return Err(RuntimeError::IterationCapExceeded {
-                    action_key: metadata.base.key.clone(),
+                    action_key: metadata.base().key().clone(),
                     node_key: context.node_key().clone(),
                     cap: MAX_ITERATIONS,
                 });
@@ -713,7 +752,7 @@ impl ActionRuntime {
                     let state_digest_after = stateful_state_digest(&state);
                     if state_digest_before == state_digest_after {
                         return Err(RuntimeError::StatefulStuck {
-                            action_key: metadata.base.key.clone(),
+                            action_key: metadata.base().key().clone(),
                             node_key: context.node_key().clone(),
                             iteration,
                         });
@@ -738,7 +777,7 @@ impl ActionRuntime {
                         && let Err(clear_err) = sink.clear().await
                     {
                         tracing::warn!(
-                            action_key = %metadata.base.key.as_str(),
+                            action_key = %metadata.base().key().as_str(),
                             execution_id = ?context.scope().execution_id,
                             node_key = %context.node_key(),
                             error = %clear_err,
@@ -763,17 +802,18 @@ impl ActionRuntime {
         &self,
         metadata: &ActionMetadata,
         handle: Box<dyn nebula_action::ControlHandle>,
-        input: serde_json::Value,
+        input: nebula_action::ActionInput,
         context: &dyn ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
-        if !matches!(metadata.isolation_level, IsolationLevel::None) {
+        if !matches!(metadata.isolation_level(), IsolationLevel::None) {
             return Err(RuntimeError::Internal(format!(
                 "control action '{}' must run with IsolationLevel::None — \
                  control nodes are flow-control desugared to stateless and \
                  never run through the runner",
-                metadata.base.key.as_str()
+                metadata.base().key().as_str()
             )));
         }
+        let input = handle.prepare_input(input)?;
         Ok(handle.dispatch(input, context).await?)
     }
 
@@ -803,7 +843,7 @@ impl ActionRuntime {
         name = "runtime.execute_agent_handle",
         skip_all,
         fields(
-            action.key = %metadata.base.key.as_str(),
+            action.key = %metadata.base().key().as_str(),
             action.kind = "agent",
             max_turns = handle.max_turns(),
         )
@@ -812,10 +852,10 @@ impl ActionRuntime {
         &self,
         metadata: &ActionMetadata,
         handle: Box<dyn AgentHandle>,
-        input: serde_json::Value,
+        input: nebula_action::ActionInput,
         context: &dyn ActionContext,
     ) -> Result<ActionResult<serde_json::Value>, RuntimeError> {
-        if !matches!(metadata.isolation_level, IsolationLevel::None) {
+        if !matches!(metadata.isolation_level(), IsolationLevel::None) {
             return Err(RuntimeError::Internal(
                 "capability-gated agent execution is not yet supported".into(),
             ));
@@ -825,7 +865,8 @@ impl ActionRuntime {
             return Err(ActionError::Cancelled.into());
         }
 
-        let mut turn_state = handle.init_turn(&input)?;
+        let input = handle.prepare_input(input)?;
+        let mut turn_state = handle.init_turn(input)?;
         let max_turns = handle.max_turns();
         let turn_timeout = handle.turn_timeout();
 
@@ -834,7 +875,7 @@ impl ActionRuntime {
         loop {
             if turn >= max_turns {
                 return Err(RuntimeError::AgentBudgetExceeded {
-                    key: metadata.base.key.as_str().to_owned(),
+                    key: metadata.base().key().as_str().to_owned(),
                     max_turns,
                 });
             }
@@ -859,7 +900,7 @@ impl ActionRuntime {
                                     Ok(step_outcome) => step_outcome,
                                     Err(_elapsed) => {
                                         return Err(RuntimeError::AgentTurnTimeout {
-                                            key: metadata.base.key.as_str().to_owned(),
+                                            key: metadata.base().key().as_str().to_owned(),
                                             turn,
                                             timeout: deadline,
                                         });
@@ -885,7 +926,7 @@ impl ActionRuntime {
             // Log the 0-based turn index before incrementing — consistent with
             // `AgentTurnTimeout.turn` which also carries the 0-based index.
             tracing::debug!(
-                action.key = %metadata.base.key.as_str(),
+                action.key = %metadata.base().key().as_str(),
                 turn,
                 max_turns,
                 "agent turn completed"
@@ -911,7 +952,7 @@ impl ActionRuntime {
                     // is not yet wired in the engine. Surface an honest error rather
                     // than silently mishandling the result.
                     return Err(RuntimeError::AgentWaitNotSupported {
-                        key: metadata.base.key.as_str().to_owned(),
+                        key: metadata.base().key().as_str().to_owned(),
                     });
                 },
                 terminal => {
@@ -1273,9 +1314,9 @@ mod tests {
     use std::sync::OnceLock;
 
     use nebula_action::{
-        ActionRuntimeContext, FromWorkflowNode, TriggerRuntimeContext, action::Action,
-        context::CredentialContextExt, error::ActionError, metadata::ActionMetadata,
-        stateful::StatefulAction, stateless::StatelessAction,
+        ActionRuntimeContext, FromWorkflowNode, InstanceFactory, TriggerRuntimeContext,
+        action::Action, context::CredentialContextExt, error::ActionError,
+        metadata::ActionMetadataDraft, stateful::StatefulAction, stateless::StatelessAction,
     };
     use nebula_core::{
         BaseContext, Dependencies, action_key,
@@ -1285,13 +1326,55 @@ mod tests {
         scope::{Principal, Scope},
     };
 
-    use crate::runtime::runner::{ActionExecutor, InProcessRunner};
+    use crate::runtime::runner::InProcessRunner;
 
     use super::*;
 
-    fn pure_metadata(key: nebula_core::ActionKey, name: &str, description: &str) -> ActionMetadata {
-        ActionMetadata::new(key, name, description)
-            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+    fn pure_metadata(
+        key: nebula_core::ActionKey,
+        name: &str,
+        description: &str,
+    ) -> ActionMetadataDraft {
+        ActionMetadataDraft::new(
+            key,
+            nebula_action::MetadataName::try_from(name).expect("fixture display name"),
+            description,
+        )
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+    }
+
+    struct CountingRunner {
+        called: Arc<std::sync::atomic::AtomicBool>,
+        inner: InProcessRunner,
+    }
+
+    #[async_trait::async_trait]
+    impl ActionRunner for CountingRunner {
+        async fn execute_stateless(
+            &self,
+            run_context: ActionRunContext,
+            handle: Box<dyn nebula_action::StatelessHandle>,
+            input: nebula_action::ActionInput,
+            action_context: &dyn ActionContext,
+        ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+            self.called.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.inner
+                .execute_stateless(run_context, handle, input, action_context)
+                .await
+        }
+
+        async fn execute_stream(
+            &self,
+            run_context: ActionRunContext,
+            handle: Box<dyn StreamHandle>,
+            input: nebula_action::ActionInput,
+            action_context: &dyn ActionContext,
+        ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+            self.called.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.inner
+                .execute_stream(run_context, handle, input, action_context)
+                .await
+        }
     }
 
     /// Echo fixture — Variant A unit struct. Per-test metadata is supplied
@@ -1304,7 +1387,7 @@ mod tests {
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> ActionMetadata {
+        fn metadata() -> ActionMetadataDraft {
             pure_metadata(action_key!("test.echo.static"), "Echo", "echoes input")
         }
         fn dependencies() -> &'static Dependencies {
@@ -1329,7 +1412,7 @@ mod tests {
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> ActionMetadata {
+        fn metadata() -> ActionMetadataDraft {
             pure_metadata(action_key!("test.fail.static"), "Fail", "always fails")
         }
         fn dependencies() -> &'static Dependencies {
@@ -1376,10 +1459,7 @@ mod tests {
     }
 
     fn make_runtime(registry: Arc<ActionRegistry>) -> ActionRuntime {
-        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
-            Box::pin(async move { Ok(ActionResult::success(input)) })
-        });
-        let runner = Arc::new(InProcessRunner::new(executor));
+        let runner = Arc::new(InProcessRunner::new());
         let metrics = MetricsRegistry::new();
 
         ActionRuntime::try_new(registry, runner, DataPassingPolicy::default(), metrics).unwrap()
@@ -1391,10 +1471,7 @@ mod tests {
     fn make_runtime_with_metrics(
         registry: Arc<ActionRegistry>,
     ) -> (ActionRuntime, MetricsRegistry) {
-        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
-            Box::pin(async move { Ok(ActionResult::success(input)) })
-        });
-        let runner = Arc::new(InProcessRunner::new(executor));
+        let runner = Arc::new(InProcessRunner::new());
         let metrics = MetricsRegistry::new();
         let rt = ActionRuntime::try_new(
             registry,
@@ -1407,196 +1484,135 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn generic_dispatch_rejects_effect_contracts_before_factory_code() {
-        use nebula_action::effect::{
-            ActionEffectContract, EffectPreparationContext, EffectPreparationError,
-            PreparedRemoteEffect, RemoteDestinationGuarantee, RemoteEffectDescriptor,
-            RemoteEffectFactory, RemoteEffectPolicy,
-        };
+    async fn generic_dispatch_rejects_undeclared_effect_before_action_code() {
+        use nebula_action::effect::ActionEffectContract;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        struct CountedFactory {
-            metadata: ActionMetadata,
-            dependencies: Dependencies,
-            descriptor: RemoteEffectDescriptor,
-            capability: bool,
-            constructions: AtomicUsize,
-            provider_calls: AtomicUsize,
-        }
-        impl ActionFactory for CountedFactory {
-            fn metadata(&self) -> &ActionMetadata {
-                &self.metadata
-            }
-            fn dependencies(&self) -> &Dependencies {
-                &self.dependencies
-            }
-            fn remote_effect_factory(&self) -> Option<&dyn RemoteEffectFactory> {
-                self.capability.then_some(self)
-            }
-            fn instantiate<'a>(
-                &'a self,
-                _: &'a NodeDefinition,
-                _: &'a dyn ActionContext,
-            ) -> std::pin::Pin<
-                Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>,
-            > {
-                self.constructions.fetch_add(1, Ordering::Relaxed);
-                Box::pin(async {
-                    self.provider_calls.fetch_add(1, Ordering::Relaxed);
-                    Err(ActionError::fatal("unadmitted factory code executed"))
-                })
-            }
-        }
-        #[async_trait]
-        impl RemoteEffectFactory for CountedFactory {
-            fn descriptor(&self) -> &RemoteEffectDescriptor {
-                &self.descriptor
-            }
-            async fn prepare(
-                &self,
-                _: serde_json::Value,
-                _: &EffectPreparationContext,
-            ) -> Result<PreparedRemoteEffect, EffectPreparationError> {
-                Err(EffectPreparationError::InvalidRequest)
-            }
-        }
-        let descriptor = RemoteEffectDescriptor::new(
-            "test.remote",
-            1,
-            RemoteEffectPolicy::builder(RemoteDestinationGuarantee::Opaque)
-                .maximum_invocations(1)
-                .maximum_queries(0)
-                .recovery_window(std::time::Duration::from_mins(1))
-                .build()
-                .unwrap(),
-        )
-        .unwrap();
-        for (contract, capability, kind, spoof_metadata) in [
-            (
-                ActionEffectContract::Undeclared,
-                false,
-                nebula_action::ActionKind::Stateless,
-                false,
-            ),
-            (
-                ActionEffectContract::Remote(Box::new(descriptor.clone())),
-                true,
-                nebula_action::ActionKind::Stateless,
-                false,
-            ),
-            (
-                ActionEffectContract::NoExternalEffects,
-                true,
-                nebula_action::ActionKind::Stateless,
-                false,
-            ),
-            (
-                ActionEffectContract::Undeclared,
-                false,
-                nebula_action::ActionKind::Stateless,
-                true,
-            ),
-            (
-                ActionEffectContract::Undeclared,
-                false,
-                nebula_action::ActionKind::Trigger,
-                false,
-            ),
-            (
-                ActionEffectContract::Undeclared,
-                false,
-                nebula_action::ActionKind::Resource,
-                false,
-            ),
-        ] {
-            let factory = Arc::new(CountedFactory {
-                metadata: ActionMetadata::new(
+        struct CountedAction(Arc<AtomicUsize>);
+
+        impl Action for CountedAction {
+            type Input = serde_json::Value;
+            type Output = serde_json::Value;
+
+            fn metadata() -> ActionMetadataDraft {
+                ActionMetadataDraft::new(
                     action_key!("test.owner_required"),
-                    "Guard",
+                    nebula_action::metadata_name!("Guard"),
                     "effect gate",
                 )
-                .with_effect_contract(contract)
-                .with_kind(kind),
-                dependencies: Dependencies::new(),
-                descriptor: descriptor.clone(),
-                capability,
-                constructions: AtomicUsize::new(0),
-                provider_calls: AtomicUsize::new(0),
-            });
-            let (runtime, metrics) = make_runtime_with_metrics(Arc::new(ActionRegistry::new()));
-            let node =
-                NodeDefinition::new(node_key!("test"), "Guard", "test", "owner_required").unwrap();
-            let mut metadata = factory.metadata.clone();
-            if spoof_metadata {
-                metadata.effect_contract = ActionEffectContract::NoExternalEffects;
             }
-            let result = runtime
-                .run_factory(
-                    "test.owner_required",
-                    metadata,
-                    factory.clone(),
-                    &node,
-                    serde_json::Value::Null,
-                    &test_context(),
-                    None,
-                )
-                .await;
-            let reason = match kind {
-                nebula_action::ActionKind::Trigger => {
-                    assert!(matches!(
-                        result,
-                        Err(RuntimeError::TriggerNotExecutable { .. })
-                    ));
-                    dispatch_reject_reason::TRIGGER_NOT_EXECUTABLE
-                },
-                nebula_action::ActionKind::Resource => {
-                    assert!(matches!(
-                        result,
-                        Err(RuntimeError::ResourceNotExecutable { .. })
-                    ));
-                    dispatch_reject_reason::RESOURCE_NOT_EXECUTABLE
-                },
-                _ => {
-                    assert!(matches!(result, Err(RuntimeError::EffectRequiresOwner)));
-                    "effect_requires_owner"
-                },
-            };
-            assert_eq!(factory.constructions.load(Ordering::Relaxed), 0);
-            assert_eq!(factory.provider_calls.load(Ordering::Relaxed), 0);
-            let labels = metrics.interner().label_set(&[("reason", reason)]);
-            assert_eq!(
-                metrics
-                    .counter_labeled(NEBULA_ACTION_DISPATCH_REJECTED_TOTAL, &labels)
-                    .unwrap()
-                    .get(),
-                1
-            );
-            assert_eq!(
-                metrics
-                    .counter(NEBULA_ACTION_EXECUTIONS_TOTAL)
-                    .unwrap()
-                    .get(),
-                0
-            );
-            assert_eq!(
-                metrics.counter(NEBULA_ACTION_FAILURES_TOTAL).unwrap().get(),
-                0
-            );
+
+            fn dependencies() -> &'static Dependencies {
+                static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
+                DEPENDENCIES.get_or_init(Dependencies::new)
+            }
         }
+
+        impl StatelessAction for CountedAction {
+            async fn execute(
+                &self,
+                input: serde_json::Value,
+                _: &(impl ActionContext + ?Sized),
+            ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                Ok(ActionResult::success(input))
+            }
+        }
+
+        let executions = Arc::new(AtomicUsize::new(0));
+        let factory: Arc<dyn ActionFactory> = Arc::new(
+            InstanceFactory::new(
+                ActionMetadataDraft::new(
+                    action_key!("test.owner_required"),
+                    nebula_action::metadata_name!("Guard"),
+                    "effect gate",
+                )
+                .with_effect_contract(ActionEffectContract::Undeclared),
+                CountedAction(Arc::clone(&executions)),
+            )
+            .expect("typed fixture metadata admits"),
+        );
+        let (runtime, metrics) = make_runtime_with_metrics(Arc::new(ActionRegistry::new()));
+        let node =
+            NodeDefinition::new(node_key!("test"), "Guard", "test", "owner_required").unwrap();
+        let result = runtime
+            .run_factory(
+                "test.owner_required",
+                factory,
+                &node,
+                nebula_action::ActionInput::Raw(serde_json::Value::Null),
+                &test_context(),
+                None,
+            )
+            .await;
+
+        std::assert_matches!(result, Err(RuntimeError::EffectRequiresOwner));
+        assert_eq!(executions.load(Ordering::Relaxed), 0);
+        let labels = metrics
+            .interner()
+            .label_set(&[("reason", "effect_requires_owner")]);
+        assert_eq!(
+            metrics
+                .counter_labeled(NEBULA_ACTION_DISPATCH_REJECTED_TOTAL, &labels)
+                .unwrap()
+                .get(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .counter(NEBULA_ACTION_EXECUTIONS_TOTAL)
+                .unwrap()
+                .get(),
+            0
+        );
+        assert_eq!(
+            metrics.counter(NEBULA_ACTION_FAILURES_TOTAL).unwrap().get(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_rejects_a_handle_from_an_equal_schema_foreign_factory() {
+        let left: Arc<dyn ActionFactory> = Arc::new(
+            InstanceFactory::new(
+                pure_metadata(action_key!("test.left"), "Left", "left contract"),
+                EchoAction,
+            )
+            .unwrap(),
+        );
+        let right: Arc<dyn ActionFactory> = Arc::new(
+            InstanceFactory::new(
+                pure_metadata(action_key!("test.right"), "Right", "right contract"),
+                EchoAction,
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            left.metadata().base().schema(),
+            right.metadata().base().schema()
+        );
+        assert!(!Arc::ptr_eq(left.metadata(), right.metadata()));
+
+        let node = NodeDefinition::new(node_key!("test"), "Right", "test", "right").unwrap();
+        let handle = right.instantiate(&node, &test_context()).await.unwrap();
+        let runtime = make_runtime(Arc::new(ActionRegistry::new()));
+
+        std::assert_matches!(
+            runtime.validate_factory_handle("test.left", left.as_ref(), &handle),
+            Err(RuntimeError::FactoryHandleMetadataMismatch { key }) if key == "test.left"
+        );
     }
 
     #[tokio::test]
     async fn max_total_execution_bytes_across_dispatches() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless_instance(
-            pure_metadata(action_key!("test.echo"), "Echo", "echoes input"),
-            EchoAction,
-        );
-
-        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
-            Box::pin(async move { Ok(ActionResult::success(input)) })
-        });
-        let runner = Arc::new(InProcessRunner::new(executor));
+        registry
+            .register_stateless_instance(
+                pure_metadata(action_key!("test.echo"), "Echo", "echoes input"),
+                EchoAction,
+            )
+            .expect("valid test catalog definition");
+        let runner = Arc::new(InProcessRunner::new());
         let metrics = MetricsRegistry::new();
         let rt = ActionRuntime::try_new(
             registry,
@@ -1649,10 +1665,12 @@ mod tests {
     #[tokio::test]
     async fn execute_trusted_action() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless_instance(
-            pure_metadata(action_key!("test.echo"), "Echo", "echoes input"),
-            EchoAction,
-        );
+        registry
+            .register_stateless_instance(
+                pure_metadata(action_key!("test.echo"), "Echo", "echoes input"),
+                EchoAction,
+            )
+            .expect("valid test catalog definition");
 
         let rt = make_runtime(registry);
         let input = serde_json::json!({"hello": "world"});
@@ -1681,10 +1699,12 @@ mod tests {
     #[tokio::test]
     async fn execute_failing_action_propagates_error() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless_instance(
-            pure_metadata(action_key!("test.fail"), "Fail", "always fails"),
-            FailAction,
-        );
+        registry
+            .register_stateless_instance(
+                pure_metadata(action_key!("test.fail"), "Fail", "always fails"),
+                FailAction,
+            )
+            .expect("valid test catalog definition");
 
         let rt = make_runtime(registry);
         let result = rt
@@ -1697,15 +1717,13 @@ mod tests {
     #[tokio::test]
     async fn data_limit_enforcement() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless_instance(
-            pure_metadata(action_key!("test.big"), "Big", "returns big output"),
-            EchoAction,
-        );
-
-        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
-            Box::pin(async move { Ok(ActionResult::success(input)) })
-        });
-        let runner = Arc::new(InProcessRunner::new(executor));
+        registry
+            .register_stateless_instance(
+                pure_metadata(action_key!("test.big"), "Big", "returns big output"),
+                EchoAction,
+            )
+            .expect("valid test catalog definition");
+        let runner = Arc::new(InProcessRunner::new());
         let metrics = MetricsRegistry::new();
 
         let rt = ActionRuntime::try_new(
@@ -1730,15 +1748,13 @@ mod tests {
     #[tokio::test]
     async fn metrics_recorded_on_execution() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless_instance(
-            pure_metadata(action_key!("test.tele"), "Tele", "test"),
-            EchoAction,
-        );
-
-        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
-            Box::pin(async move { Ok(ActionResult::success(input)) })
-        });
-        let runner = Arc::new(InProcessRunner::new(executor));
+        registry
+            .register_stateless_instance(
+                pure_metadata(action_key!("test.tele"), "Tele", "test"),
+                EchoAction,
+            )
+            .expect("valid test catalog definition");
+        let runner = Arc::new(InProcessRunner::new());
         let metrics = MetricsRegistry::new();
 
         let rt = ActionRuntime::try_new(
@@ -1789,20 +1805,19 @@ mod tests {
 
         // Track whether the runner was invoked.
         let runner_called = Arc::new(AtomicBool::new(false));
-        let runner_called_clone = runner_called.clone();
-
-        let executor: ActionExecutor = Arc::new(move |_ctx, _meta, input| {
-            runner_called_clone.store(true, Ordering::SeqCst);
-            Box::pin(async move { Ok(ActionResult::success(input)) })
+        let runner = Arc::new(CountingRunner {
+            called: Arc::clone(&runner_called),
+            inner: InProcessRunner::new(),
         });
-        let runner = Arc::new(InProcessRunner::new(executor));
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless_instance(
-            pure_metadata(action_key!("test.gated"), "Gated", "capability gated")
-                .with_isolation_level(IsolationLevel::CapabilityGated),
-            EchoAction,
-        );
+        registry
+            .register_stateless_instance(
+                pure_metadata(action_key!("test.gated"), "Gated", "capability gated")
+                    .with_isolation_level(IsolationLevel::CapabilityGated),
+                EchoAction,
+            )
+            .expect("valid test catalog definition");
 
         let metrics = MetricsRegistry::new();
         let rt = ActionRuntime::try_new(registry, runner, DataPassingPolicy::default(), metrics)
@@ -1825,15 +1840,13 @@ mod tests {
     #[tokio::test]
     async fn spill_to_blob_rejects_when_no_storage() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless_instance(
-            pure_metadata(action_key!("test.spill"), "Spill", "large output"),
-            EchoAction,
-        );
-
-        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
-            Box::pin(async move { Ok(ActionResult::success(input)) })
-        });
-        let runner = Arc::new(InProcessRunner::new(executor));
+        registry
+            .register_stateless_instance(
+                pure_metadata(action_key!("test.spill"), "Spill", "large output"),
+                EchoAction,
+            )
+            .expect("valid test catalog definition");
+        let runner = Arc::new(InProcessRunner::new());
         let metrics = MetricsRegistry::new();
 
         let rt = ActionRuntime::try_new(
@@ -1884,19 +1897,17 @@ mod tests {
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless_instance(
-            pure_metadata(
-                action_key!("test.spill_ok"),
-                "SpillOk",
-                "large output with storage",
-            ),
-            EchoAction,
-        );
-
-        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
-            Box::pin(async move { Ok(ActionResult::success(input)) })
-        });
-        let runner = Arc::new(InProcessRunner::new(executor));
+        registry
+            .register_stateless_instance(
+                pure_metadata(
+                    action_key!("test.spill_ok"),
+                    "SpillOk",
+                    "large output with storage",
+                ),
+                EchoAction,
+            )
+            .expect("valid test catalog definition");
+        let runner = Arc::new(InProcessRunner::new());
         let metrics = MetricsRegistry::new();
 
         let rt = ActionRuntime::try_new(
@@ -1949,7 +1960,7 @@ mod tests {
             type Input = serde_json::Value;
             type Output = serde_json::Value;
 
-            fn metadata() -> ActionMetadata {
+            fn metadata() -> ActionMetadataDraft {
                 pure_metadata(
                     action_key!("test.multi_out.static"),
                     "MultiOut",
@@ -1985,19 +1996,17 @@ mod tests {
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless_instance(
-            pure_metadata(
-                action_key!("test.multi_out"),
-                "MultiOut",
-                "multi-port fan-out",
-            ),
-            MultiOutAction,
-        );
-
-        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
-            Box::pin(async move { Ok(ActionResult::success(input)) })
-        });
-        let runner = Arc::new(InProcessRunner::new(executor));
+        registry
+            .register_stateless_instance(
+                pure_metadata(
+                    action_key!("test.multi_out"),
+                    "MultiOut",
+                    "multi-port fan-out",
+                ),
+                MultiOutAction,
+            )
+            .expect("valid test catalog definition");
+        let runner = Arc::new(InProcessRunner::new());
         let metrics = MetricsRegistry::new();
         let rt = ActionRuntime::try_new(
             registry,
@@ -2035,7 +2044,7 @@ mod tests {
             type Input = serde_json::Value;
             type Output = serde_json::Value;
 
-            fn metadata() -> ActionMetadata {
+            fn metadata() -> ActionMetadataDraft {
                 pure_metadata(action_key!("test.branch.static"), "Branch", "static")
             }
             fn dependencies() -> &'static Dependencies {
@@ -2066,15 +2075,13 @@ mod tests {
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless_instance(
-            pure_metadata(action_key!("test.branch"), "Branch", "branch with alts"),
-            BranchAction,
-        );
-
-        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
-            Box::pin(async move { Ok(ActionResult::success(input)) })
-        });
-        let runner = Arc::new(InProcessRunner::new(executor));
+        registry
+            .register_stateless_instance(
+                pure_metadata(action_key!("test.branch"), "Branch", "branch with alts"),
+                BranchAction,
+            )
+            .expect("valid test catalog definition");
+        let runner = Arc::new(InProcessRunner::new());
         let metrics = MetricsRegistry::new();
         let rt = ActionRuntime::try_new(
             registry,
@@ -2106,7 +2113,7 @@ mod tests {
             type Input = serde_json::Value;
             type Output = serde_json::Value;
 
-            fn metadata() -> ActionMetadata {
+            fn metadata() -> ActionMetadataDraft {
                 pure_metadata(action_key!("test.collection.static"), "Coll", "static")
             }
             fn dependencies() -> &'static Dependencies {
@@ -2132,18 +2139,17 @@ mod tests {
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless_instance(
-            pure_metadata(
-                action_key!("test.collection"),
-                "Collection",
-                "nested values",
-            ),
-            CollectionAction,
-        );
-        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
-            Box::pin(async move { Ok(ActionResult::success(input)) })
-        });
-        let runner = Arc::new(InProcessRunner::new(executor));
+        registry
+            .register_stateless_instance(
+                pure_metadata(
+                    action_key!("test.collection"),
+                    "Collection",
+                    "nested values",
+                ),
+                CollectionAction,
+            )
+            .expect("valid test catalog definition");
+        let runner = Arc::new(InProcessRunner::new());
         let metrics = MetricsRegistry::new();
         let rt = ActionRuntime::try_new(
             registry,
@@ -2178,7 +2184,7 @@ mod tests {
             type Input = serde_json::Value;
             type Output = serde_json::Value;
 
-            fn metadata() -> ActionMetadata {
+            fn metadata() -> ActionMetadataDraft {
                 pure_metadata(action_key!("test.binary.static"), "Bin", "static")
             }
             fn dependencies() -> &'static Dependencies {
@@ -2204,14 +2210,13 @@ mod tests {
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless_instance(
-            pure_metadata(action_key!("test.binary"), "Binary", "inline bytes"),
-            BinaryAction,
-        );
-        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
-            Box::pin(async move { Ok(ActionResult::success(input)) })
-        });
-        let runner = Arc::new(InProcessRunner::new(executor));
+        registry
+            .register_stateless_instance(
+                pure_metadata(action_key!("test.binary"), "Binary", "inline bytes"),
+                BinaryAction,
+            )
+            .expect("valid test catalog definition");
+        let runner = Arc::new(InProcessRunner::new());
         let metrics = MetricsRegistry::new();
         let rt = ActionRuntime::try_new(
             registry,
@@ -2243,7 +2248,7 @@ mod tests {
             type Input = serde_json::Value;
             type Output = serde_json::Value;
 
-            fn metadata() -> ActionMetadata {
+            fn metadata() -> ActionMetadataDraft {
                 pure_metadata(action_key!("test.ref.static"), "Ref", "static")
             }
             fn dependencies() -> &'static Dependencies {
@@ -2269,14 +2274,13 @@ mod tests {
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless_instance(
-            pure_metadata(action_key!("test.ref"), "Reference", "large metadata"),
-            RefAction,
-        );
-        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
-            Box::pin(async move { Ok(ActionResult::success(input)) })
-        });
-        let runner = Arc::new(InProcessRunner::new(executor));
+        registry
+            .register_stateless_instance(
+                pure_metadata(action_key!("test.ref"), "Reference", "large metadata"),
+                RefAction,
+            )
+            .expect("valid test catalog definition");
+        let runner = Arc::new(InProcessRunner::new());
         let metrics = MetricsRegistry::new();
         let rt = ActionRuntime::try_new(
             registry,
@@ -2322,10 +2326,10 @@ mod tests {
             type Input = serde_json::Value;
             type Output = serde_json::Value;
 
-            fn metadata() -> ActionMetadata {
-                ActionMetadata::new(
+            fn metadata() -> ActionMetadataDraft {
+                ActionMetadataDraft::new(
                     action_key!("test.trigger_reject"),
-                    "FakeTrigger",
+                    nebula_action::metadata_name!("FakeTrigger"),
                     "rejection fixture",
                 )
             }
@@ -2376,7 +2380,9 @@ mod tests {
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_trigger_factory::<FakeTrigger>();
+        registry
+            .register_trigger_factory::<FakeTrigger>()
+            .expect("valid test catalog definition");
         let (rt, metrics) = make_runtime_with_metrics(registry);
 
         let result = rt
@@ -2441,10 +2447,10 @@ mod tests {
             // ResourceAction requires Output = ResourceProduces<Self::Resource>.
             type Output = ResourceProduces<serde_json::Value>;
 
-            fn metadata() -> ActionMetadata {
-                ActionMetadata::new(
+            fn metadata() -> ActionMetadataDraft {
+                ActionMetadataDraft::new(
                     action_key!("test.resource_reject"),
-                    "FakeResource",
+                    nebula_action::metadata_name!("FakeResource"),
                     "rejection fixture",
                 )
             }
@@ -2485,7 +2491,9 @@ mod tests {
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_resource_factory::<FakeResource>();
+        registry
+            .register_resource_factory::<FakeResource>()
+            .expect("valid test catalog definition");
         let (rt, metrics) = make_runtime_with_metrics(registry);
 
         let result = rt
@@ -2537,10 +2545,12 @@ mod tests {
     #[tokio::test]
     async fn dispatched_stateless_observes_histogram_and_counter() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateless_instance(
-            pure_metadata(action_key!("test.dispatched"), "Disp", "dispatched"),
-            EchoAction,
-        );
+        registry
+            .register_stateless_instance(
+                pure_metadata(action_key!("test.dispatched"), "Disp", "dispatched"),
+                EchoAction,
+            )
+            .expect("valid test catalog definition");
         let (rt, metrics) = make_runtime_with_metrics(registry);
 
         rt.execute_action("test.dispatched", serde_json::json!("ok"), &test_context())
@@ -2596,7 +2606,7 @@ mod tests {
             type Input = serde_json::Value;
             type Output = serde_json::Value;
 
-            fn metadata() -> ActionMetadata {
+            fn metadata() -> ActionMetadataDraft {
                 pure_metadata(
                     action_key!("test.stream.counting"),
                     "CountingStream",
@@ -2643,7 +2653,9 @@ mod tests {
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stream_factory::<CountingStream>();
+        registry
+            .register_stream_factory::<CountingStream>()
+            .expect("valid test catalog definition");
         let rt = make_runtime(registry);
 
         let result = rt
@@ -2679,7 +2691,7 @@ mod tests {
             type Input = serde_json::Value;
             type Output = serde_json::Value;
 
-            fn metadata() -> ActionMetadata {
+            fn metadata() -> ActionMetadataDraft {
                 pure_metadata(
                     action_key!("test.stream.big"),
                     "BigStream",
@@ -2726,12 +2738,10 @@ mod tests {
         }
 
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stream_factory::<BigStream>();
-
-        let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
-            Box::pin(async move { Ok(ActionResult::success(input)) })
-        });
-        let runner = Arc::new(InProcessRunner::new(executor));
+        registry
+            .register_stream_factory::<BigStream>()
+            .expect("valid test catalog definition");
+        let runner = Arc::new(InProcessRunner::new());
         let metrics = MetricsRegistry::new();
         let rt = ActionRuntime::try_new(
             registry,
@@ -2794,7 +2804,7 @@ mod tests {
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> ActionMetadata {
+        fn metadata() -> ActionMetadataDraft {
             pure_metadata(action_key!("test.count"), "CountTo3", "counts to 3")
         }
         fn dependencies() -> &'static Dependencies {
@@ -2809,7 +2819,7 @@ mod tests {
         }
         async fn execute(
             &self,
-            _input: Self::Input,
+            _input: &Self::Input,
             state: &mut Self::State,
             _ctx: &(impl ActionContext + ?Sized),
         ) -> Result<ActionResult<Self::Output>, ActionError> {
@@ -2834,7 +2844,7 @@ mod tests {
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> ActionMetadata {
+        fn metadata() -> ActionMetadataDraft {
             pure_metadata(action_key!("test.count5"), "CountTo5", "counts to 5")
         }
         fn dependencies() -> &'static Dependencies {
@@ -2849,7 +2859,7 @@ mod tests {
         }
         async fn execute(
             &self,
-            _input: Self::Input,
+            _input: &Self::Input,
             state: &mut Self::State,
             _ctx: &(impl ActionContext + ?Sized),
         ) -> Result<ActionResult<Self::Output>, ActionError> {
@@ -2874,7 +2884,7 @@ mod tests {
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> ActionMetadata {
+        fn metadata() -> ActionMetadataDraft {
             pure_metadata(action_key!("test.count2"), "CountTo2", "counts to 2")
         }
         fn dependencies() -> &'static Dependencies {
@@ -2889,7 +2899,7 @@ mod tests {
         }
         async fn execute(
             &self,
-            _input: Self::Input,
+            _input: &Self::Input,
             state: &mut Self::State,
             _ctx: &(impl ActionContext + ?Sized),
         ) -> Result<ActionResult<Self::Output>, ActionError> {
@@ -2915,7 +2925,7 @@ mod tests {
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> ActionMetadata {
+        fn metadata() -> ActionMetadataDraft {
             pure_metadata(
                 action_key!("test.sleepy"),
                 "SleepyStateful",
@@ -2934,7 +2944,7 @@ mod tests {
         }
         async fn execute(
             &self,
-            _input: Self::Input,
+            _input: &Self::Input,
             _state: &mut Self::State,
             _ctx: &(impl ActionContext + ?Sized),
         ) -> Result<ActionResult<Self::Output>, ActionError> {
@@ -3007,7 +3017,9 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn execute_stateful_aborts_handler_on_cancel() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateful_factory::<SleepyStateful>();
+        registry
+            .register_stateful_factory::<SleepyStateful>()
+            .expect("valid test catalog definition");
         let rt = Arc::new(make_runtime(registry));
 
         let ctx = test_context();
@@ -3046,7 +3058,9 @@ mod tests {
     #[tokio::test]
     async fn execute_stateful_checkpoints_each_iteration() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateful_factory::<CountingTo3>();
+        registry
+            .register_stateful_factory::<CountingTo3>()
+            .expect("valid test catalog definition");
         let rt = make_runtime(registry);
 
         let sink = Arc::new(RecordingSink::new());
@@ -3089,7 +3103,9 @@ mod tests {
     #[tokio::test]
     async fn execute_stateful_resumes_from_checkpoint() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateful_factory::<CountingTo5>();
+        registry
+            .register_stateful_factory::<CountingTo5>()
+            .expect("valid test catalog definition");
         let rt = make_runtime(registry);
 
         let seed = StatefulCheckpoint::new(3, serde_json::json!({ "count": 3u32 }));
@@ -3129,7 +3145,9 @@ mod tests {
     #[tokio::test]
     async fn execute_stateful_load_failure_falls_back_to_init_state() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateful_factory::<CountingTo2>();
+        registry
+            .register_stateful_factory::<CountingTo2>()
+            .expect("valid test catalog definition");
         let rt = make_runtime(registry);
 
         let sink = Arc::new(RecordingSink::with_failing_load());
@@ -3168,7 +3186,7 @@ mod tests {
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> ActionMetadata {
+        fn metadata() -> ActionMetadataDraft {
             pure_metadata(
                 action_key!("test.stuck"),
                 "NoProgress",
@@ -3187,7 +3205,7 @@ mod tests {
         }
         async fn execute(
             &self,
-            _input: Self::Input,
+            _input: &Self::Input,
             _state: &mut Self::State,
             _ctx: &(impl ActionContext + ?Sized),
         ) -> Result<ActionResult<Self::Output>, ActionError> {
@@ -3215,7 +3233,9 @@ mod tests {
     #[tokio::test]
     async fn execute_stateful_stuck_surfaces_typed_variant() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateful_factory::<NoProgressStateful>();
+        registry
+            .register_stateful_factory::<NoProgressStateful>()
+            .expect("valid test catalog definition");
         let rt = make_runtime(registry);
 
         let result = rt
@@ -3245,7 +3265,7 @@ mod tests {
         type Input = serde_json::Value;
         type Output = serde_json::Value;
 
-        fn metadata() -> ActionMetadata {
+        fn metadata() -> ActionMetadataDraft {
             pure_metadata(
                 action_key!("test.endless"),
                 "EndlessStateful",
@@ -3264,7 +3284,7 @@ mod tests {
         }
         async fn execute(
             &self,
-            _input: Self::Input,
+            _input: &Self::Input,
             state: &mut Self::State,
             _ctx: &(impl ActionContext + ?Sized),
         ) -> Result<ActionResult<Self::Output>, ActionError> {
@@ -3296,7 +3316,9 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn execute_stateful_iteration_cap_surfaces_typed_variant() {
         let registry = Arc::new(ActionRegistry::new());
-        registry.register_stateful_factory::<EndlessStateful>();
+        registry
+            .register_stateful_factory::<EndlessStateful>()
+            .expect("valid test catalog definition");
         let rt = make_runtime(registry);
 
         let result = rt

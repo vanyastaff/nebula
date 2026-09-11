@@ -25,6 +25,7 @@ nebula-validator = { path = "../validator" }
 
 # Async runtime
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
+tokio-util = { workspace = true }
 
 # Serialization
 serde = { workspace = true, features = ["derive"] }
@@ -72,6 +73,7 @@ allowed_external_types = [
   "semver",
   "thiserror",
   "tokio",
+  "tokio_util::*",
   "serde_core::*",
   "serde_derive::*",
   "serde_json::*",

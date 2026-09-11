@@ -19,16 +19,15 @@ use nebula_core::{ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_resource::{
     AcquireOptions, Bounded, Manager, RegistrationSpec, ResourceContext, SlotIdentity, TopologyTag,
     error::Error,
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
     topology::bounded::BoundedProvider,
 };
 use tokio_util::sync::CancellationToken;
 
 // ─── The resource ──────────────────────────────────────────────────────────
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, nebula_schema::Schema)]
 struct SeatCfg;
-nebula_resource::impl_empty_has_schema!(SeatCfg);
 impl ResourceConfig for SeatCfg {
     fn fingerprint(&self) -> u64 {
         0
@@ -95,8 +94,8 @@ impl Provider for Seats {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 

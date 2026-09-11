@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use nebula_credential::AnyCredential;
+use nebula_credential::{AnyCredential, ApiKeyCredential};
 
 #[test]
 fn dyn_any_credential_compiles() {
@@ -27,6 +27,11 @@ fn dyn_any_credential_compiles() {
     let _ = accepts_ref;
     let _ = accepts_arc;
     let _ = accepts_box;
+
+    let credential = ApiKeyCredential;
+    accepts_ref(&credential);
+    accepts_arc(Arc::new(ApiKeyCredential));
+    accepts_box(Box::new(ApiKeyCredential));
 }
 
 #[test]

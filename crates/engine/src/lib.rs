@@ -104,8 +104,8 @@ pub use credential_accessor::EngineCredentialAccessor;
 pub use daemon::{
     AnyDaemonHandle, Daemon, DaemonConfig, DaemonError, DaemonRegistry, DaemonRuntime,
     DefinitionRoutingResolver, DispatchRoute, DurableExecutionEmitter, EngineExecutionSink,
-    EventSource, EventSourceAdapter, EventSourceConfig, EventSourceRuntime, RestartPolicy,
-    RoutingError, RoutingResolver,
+    EventSource, EventSourceAdapter, EventSourceRuntime, RestartPolicy, RoutingError,
+    RoutingResolver,
 };
 pub use engine::{
     ClaimedControlTurnOutcome, ClaimedControlTurnRequest, ClaimedStartOutcome, ClaimedStartRequest,
@@ -120,8 +120,8 @@ pub use plugin_wiring::PluginWiringError;
 pub use nebula_plugin::{Plugin, PluginKey, PluginManifest, PluginRegistry, ResolvedPlugin};
 pub use node_output::NodeOutput;
 pub use resource::{
-    KindActivator, RegisterRequest, RegistrarError, ResourceActivatorRegistry, ResourceFactory,
-    ResourceRegistrationOutcome, SlotBinding,
+    KindActivator, RegisterRequest, RegistrarError, ResourceActivatorRegistry, ResourceConfigInput,
+    ResourceFactory, ResourceRegistrationOutcome, SlotBinding,
 };
 pub use resource_accessor::EngineResourceAccessor;
 pub use resource_fanout::{
@@ -138,10 +138,9 @@ pub use revision_catalog::{
     PlanFlavorRevisionLoader,
 };
 pub use runtime::{
-    ActionExecutor, ActionRegistry, ActionRunContext, ActionRunner, ActionRuntime, BlobRef,
-    BlobStorage, BoundedStreamBuffer, DataPassingPolicy, InProcessRunner, LargeDataStrategy,
-    MemoryQueue, PushOutcome, QueueError, RuntimeError, StatefulCheckpoint, StatefulCheckpointSink,
-    TaskQueue,
+    ActionRegistry, ActionRunContext, ActionRunner, ActionRuntime, BlobRef, BlobStorage,
+    BoundedStreamBuffer, DataPassingPolicy, InProcessRunner, LargeDataStrategy, MemoryQueue,
+    PushOutcome, QueueError, RuntimeError, StatefulCheckpoint, StatefulCheckpointSink, TaskQueue,
 };
 pub use scoped_resources::{
     BranchId, CleanupOutcome, DEFAULT_CLEANUP_TIMEOUT, DashScopedResourceMap,

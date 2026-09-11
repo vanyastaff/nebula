@@ -6,9 +6,9 @@ use nebula_resource::{
 struct LegacyProvider;
 nebula_resource::no_credential_slots!(LegacyProvider);
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, nebula_schema::Schema)]
 struct Config;
-nebula_schema::impl_empty_has_schema!(Config);
+
 
 impl ResourceConfig for Config {
     fn fingerprint(&self) -> u64 {

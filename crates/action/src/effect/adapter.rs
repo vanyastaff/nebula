@@ -1,6 +1,6 @@
 //! Separate preparation, invocation, and authenticated read-only interfaces.
 
-use std::fmt;
+use std::{fmt, future::Future, sync::Arc};
 
 use nebula_core::{ExecutionId, NodeKey, OrgId, WorkflowId, WorkspaceId};
 use nebula_core::{OperationCallId, OperationId};
@@ -9,7 +9,25 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use super::RemoteEffectDescriptor;
-use crate::ActionResult;
+use crate::{Action, ActionError, ActionInput, ActionMetadata, ActionResult, PreparedActionInput};
+
+pub(crate) mod sealed {
+    pub trait Sealed {}
+}
+
+/// Typed authoring contract for a remote-effect action.
+pub trait RemoteEffectAction: Action {
+    /// Exact effect protocol declaration implemented by this adapter.
+    fn descriptor(&self) -> &RemoteEffectDescriptor;
+
+    /// Freeze a logical provider request from typed, admitted action input.
+    #[must_use = "remote preparation does nothing unless its future is awaited"]
+    fn prepare(
+        &self,
+        input: Self::Input,
+        context: &EffectPreparationContext,
+    ) -> impl Future<Output = Result<PreparedRemoteEffect, EffectPreparationError>> + Send;
+}
 
 /// Identity-only context for non-egress request preparation.
 ///
@@ -87,10 +105,21 @@ pub enum EffectPreparationError {
 
 /// Capability supplied by a trusted factory declaring a remote effect.
 #[async_trait::async_trait]
-pub trait RemoteEffectFactory: Send + Sync {
+pub trait RemoteEffectFactory: sealed::Sealed + Send + Sync {
     /// Must equal the exact declaration when the plugin registry freezes it.
     /// Runtime later uses the checked plan declaration and never re-reads this value.
     fn descriptor(&self) -> &RemoteEffectDescriptor;
+
+    /// Admitted metadata shared with the owning [`crate::ActionFactory`].
+    fn metadata(&self) -> &Arc<ActionMetadata>;
+
+    /// Validate and decode input with this factory's retained typed contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redacted validation error when schema preparation or typed
+    /// decoding fails.
+    fn prepare_input(&self, input: ActionInput) -> Result<PreparedActionInput, ActionError>;
 
     /// Freeze the actual logical request without provider I/O.
     ///
@@ -103,7 +132,7 @@ pub trait RemoteEffectFactory: Send + Sync {
     /// Rejects invalid requests or unavailable preparation data before invocation.
     async fn prepare(
         &self,
-        input: Value,
+        input: PreparedActionInput,
         context: &EffectPreparationContext,
     ) -> Result<PreparedRemoteEffect, EffectPreparationError>;
 }

@@ -15,7 +15,7 @@ use crate::{
     error::Error,
     recovery::gate::{RecoveryGate, RecoveryGateConfig},
     release_queue::ReleaseQueue,
-    resource::{Provider, ResourceConfig, ResourceMetadata, TeardownCx},
+    resource::{Provider, ResourceConfig, ResourceMetadataDraft, TeardownCx},
     runtime::managed::ManagedResource,
     state::ResourceStatus,
     topology::{
@@ -297,9 +297,8 @@ async fn hook_receipt_settles_before_blocked_retained_cleanup() {
 }
 
 // Minimal pooled resource config used by both test helpers.
-#[derive(Clone)]
+#[derive(Clone, nebula_schema::Schema)]
 struct PoolCfg;
-crate::impl_empty_has_schema!(PoolCfg);
 impl ResourceConfig for PoolCfg {
     fn fingerprint(&self) -> u64 {
         0
@@ -432,8 +431,8 @@ impl Provider for Mock {
         }
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 
@@ -476,8 +475,8 @@ impl Provider for RetainedHookMock {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 

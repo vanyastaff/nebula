@@ -228,7 +228,7 @@ use nebula_resource::{
     ResourceContext, ScopeLevel, ShutdownConfig, SlotIdentity,
     error::Error,
     guard::ResourceGuard,
-    resource::{HasCredentialSlots, Provider, ResourceMetadata},
+    resource::{HasCredentialSlots, Provider, ResourceMetadataDraft},
     topology::pooled::{PoolProvider, RecycleDecision},
 };
 
@@ -628,8 +628,8 @@ impl Provider for SlowDestroyPoolResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 
@@ -746,8 +746,8 @@ impl Provider for HangingDestroyPoolResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 
@@ -791,8 +791,8 @@ impl Provider for PanickingDestroyPoolResource {
         panic!("author Provider::destroy panics on purpose");
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 
@@ -914,8 +914,8 @@ impl Provider for PanickingCreatePoolResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 
@@ -1106,8 +1106,8 @@ impl Provider for DropOnRecycleResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 
@@ -1212,8 +1212,8 @@ impl Provider for CredentialedDefaultPoolResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 
@@ -1268,8 +1268,8 @@ impl Provider for CredentialedKeepPoolResource {
         Ok(Arc::new(AtomicU64::new(id)))
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 

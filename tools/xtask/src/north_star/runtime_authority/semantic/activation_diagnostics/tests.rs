@@ -2,7 +2,7 @@ use serde_json::{Value, json};
 
 use super::{ActivationDiagnosticError, SCENARIOS, verify};
 
-// Captured from the real API producer after all 67 scenarios passed. No
+// Captured from the real API producer after all 65 scenarios passed. No
 // synthetic passing events or authored result booleans seed these mutations.
 const OBSERVED: &[u8] = include_bytes!("observed.json");
 
@@ -13,8 +13,8 @@ fn observed() -> Value {
 #[test]
 fn actual_producer_fragment_satisfies_the_semantic_inventory() {
     let fragment = observed();
-    assert_eq!(SCENARIOS.len(), 67);
-    assert_eq!(fragment["scenarios"].as_array().unwrap().len(), 67);
+    assert_eq!(SCENARIOS.len(), 65);
+    assert_eq!(fragment["scenarios"].as_array().unwrap().len(), 65);
     assert_eq!(verify(&fragment), Ok(()));
     let expected = SCENARIOS
         .iter()

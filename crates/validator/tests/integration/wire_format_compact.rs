@@ -23,7 +23,10 @@ fn golden_max_length() {
 
 #[test]
 fn golden_pattern() {
-    golden(Rule::pattern("^[a-z]+$"), json!({"pattern": "^[a-z]+$"}));
+    golden(
+        Rule::pattern("^[a-z]+$").unwrap(),
+        json!({"pattern": "^[a-z]+$"}),
+    );
 }
 
 #[test]
@@ -33,7 +36,10 @@ fn golden_min_int() {
 
 #[test]
 fn golden_one_of() {
-    golden(Rule::one_of(["a", "b"]), json!({"one_of": ["a", "b"]}));
+    golden(
+        Rule::one_of(["a", "b"]).unwrap(),
+        json!({"one_of": ["a", "b"]}),
+    );
 }
 
 #[test]
@@ -49,7 +55,7 @@ fn golden_url_unit() {
 #[test]
 fn golden_predicate_eq() {
     golden(
-        Rule::predicate(Predicate::eq("status", json!("active")).unwrap()),
+        Rule::predicate(Predicate::eq("status", json!("active")).unwrap()).unwrap(),
         json!({"eq": ["/status", "active"]}),
     );
 }
@@ -58,7 +64,7 @@ fn golden_predicate_eq() {
 fn golden_predicate_is_true() {
     use nebula_validator::foundation::FieldPath;
     golden(
-        Rule::predicate(Predicate::IsTrue(FieldPath::parse("enabled").unwrap())),
+        Rule::predicate(Predicate::IsTrue(FieldPath::parse("enabled").unwrap())).unwrap(),
         json!({"is_true": "/enabled"}),
     );
 }
@@ -66,20 +72,20 @@ fn golden_predicate_is_true() {
 #[test]
 fn golden_logic_all() {
     golden(
-        Rule::all([Rule::min_length(3), Rule::email()]),
+        Rule::all([Rule::min_length(3), Rule::email()]).unwrap(),
         json!({"all": [{"min_length": 3}, "email"]}),
     );
 }
 
 #[test]
 fn golden_logic_not() {
-    golden(Rule::not(Rule::email()), json!({"not": "email"}));
+    golden(Rule::not(Rule::email()).unwrap(), json!({"not": "email"}));
 }
 
 #[test]
 fn golden_deferred_custom() {
     golden(
-        Rule::custom("check_password()"),
+        Rule::custom("check_password()").unwrap(),
         json!({"custom": "check_password()"}),
     );
 }
@@ -95,7 +101,7 @@ fn golden_deferred_unique_by() {
 #[test]
 fn golden_described() {
     golden(
-        Rule::min_length(3).with_message("too short"),
+        Rule::min_length(3).with_message("too short").unwrap(),
         json!({"described": [{"min_length": 3}, "too short"]}),
     );
 }
@@ -103,7 +109,11 @@ fn golden_described() {
 #[test]
 fn golden_nested_described() {
     golden(
-        Rule::email().with_message("bad").with_message("worse"),
+        Rule::email()
+            .with_message("bad")
+            .unwrap()
+            .with_message("worse")
+            .unwrap(),
         json!({"described": [{"described": ["email", "bad"]}, "worse"]}),
     );
 }

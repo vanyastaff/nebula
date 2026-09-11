@@ -5,14 +5,16 @@
 //! key serde actually emits equals the key the schema declares — so a drift
 //! between the derive's variant-key algorithm and serde_derive's fails the test.
 
-use nebula_schema::{FieldValues, HasSchema, Schema, SchemaKind, SerdeTagging, schema_of};
+use nebula_schema::{
+    AuthoredValue, EngineExpressionContext, HasSchema, Schema, SchemaKind, SerdeTagging, schema_of,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 // ── helpers (read the union shape off the serialized schema wire) ─────────────
 
 fn schema_wire<T: HasSchema>() -> Value {
-    serde_json::to_value(schema_of::<T>()).expect("schema serializes")
+    serde_json::to_value(schema_of::<T>().unwrap()).expect("schema serializes")
 }
 
 fn variant_keys<T: HasSchema>() -> Vec<String> {
@@ -63,7 +65,7 @@ enum ExternalAuth {
 
 #[test]
 fn external_enum_is_a_union_with_verbatim_keys() {
-    let schema = schema_of::<ExternalAuth>();
+    let schema = schema_of::<ExternalAuth>().unwrap();
     assert_eq!(schema.kind(), SchemaKind::Union);
     assert_eq!(schema.serde_tagging(), Some(&SerdeTagging::External));
     // serde's default variant key is the ident VERBATIM (NOT snake_case — that was
@@ -193,7 +195,7 @@ enum Event {
 
 #[test]
 fn adjacent_enum_records_tagging() {
-    let schema = schema_of::<Event>();
+    let schema = schema_of::<Event>().unwrap();
     assert_eq!(schema.kind(), SchemaKind::Union);
     assert_eq!(
         schema.serde_tagging(),
@@ -271,20 +273,14 @@ fn skip_deserializing_variant_is_dropped_but_serde_still_serializes_it() {
 // ── Newtype payload must be a Record (fail-loud on union / Any) ───────────────
 
 #[derive(Serialize, Schema)]
-#[expect(
-    dead_code,
-    reason = "constructed only via schema_of, which panics by design"
-)]
+#[expect(dead_code, reason = "only the schema definition is inspected")]
 enum InnerUnion {
     A { x: i64 },
     B,
 }
 
 #[derive(Serialize, Schema)]
-#[expect(
-    dead_code,
-    reason = "constructed only via schema_of, which panics by design"
-)]
+#[expect(dead_code, reason = "only the schema definition is inspected")]
 enum OuterWrapsEnum {
     Wrap(InnerUnion),
 }
@@ -293,16 +289,17 @@ enum OuterWrapsEnum {
 /// synthetic root key — a key serde never emits. The runtime guard rejects it at
 /// `schema()` init rather than producing a C1-broken schema.
 #[test]
-#[should_panic(expected = "not a record")]
-fn newtype_over_enum_panics_at_schema_init() {
-    let _ = schema_of::<OuterWrapsEnum>();
+fn newtype_over_enum_returns_typed_schema_error() {
+    let report = schema_of::<OuterWrapsEnum>().unwrap_err();
+    assert_eq!(report.errors().count(), 1);
+    assert_eq!(
+        report.errors().next().unwrap().code(),
+        "union.newtype_not_record"
+    );
 }
 
 #[derive(Serialize, Schema)]
-#[expect(
-    dead_code,
-    reason = "constructed only via schema_of, which panics by design"
-)]
+#[expect(dead_code, reason = "only the schema definition is inspected")]
 enum OuterWrapsAny {
     Raw(Value),
 }
@@ -311,9 +308,13 @@ enum OuterWrapsAny {
 /// would become a closed empty object that rejects every payload — the inverse of
 /// `Any`. The guard rejects it at `schema()` init.
 #[test]
-#[should_panic(expected = "not a record")]
-fn newtype_over_any_panics_at_schema_init() {
-    let _ = schema_of::<OuterWrapsAny>();
+fn newtype_over_any_returns_typed_schema_error() {
+    let report = schema_of::<OuterWrapsAny>().unwrap_err();
+    assert_eq!(report.errors().count(), 1);
+    assert_eq!(
+        report.errors().next().unwrap().code(),
+        "union.newtype_not_record"
+    );
 }
 
 // ── Value-layer ingress/egress: serde wire ⇄ {mode,value} envelope ────────────
@@ -321,15 +322,15 @@ fn newtype_over_any_panics_at_schema_init() {
 // The C1 value-layer bridge. `serde_json::to_value(value)` is the independent
 // oracle for the wire shape; `ValidSchema::values_from_wire` must accept exactly
 // what `#[derive(Serialize)]` emits, `validate()` must then pass, and
-// `FieldValues::to_typed` must reconstruct the original value — proving the
+// `ResolvedValues::into_typed` must reconstruct the original value — proving the
 // ingress/egress pair is faithful to serde for every variant shape.
 
-/// Full round-trip oracle: value → serde wire → ingress → validate → to_typed.
-fn assert_union_wire_roundtrips<T>(value: T)
+/// Full round-trip oracle through wire ingress, validation, and resolution.
+async fn assert_union_wire_roundtrips<T>(value: T)
 where
     T: HasSchema + Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug + Clone,
 {
-    let schema = schema_of::<T>();
+    let schema = schema_of::<T>().unwrap();
     assert_eq!(schema.kind(), SchemaKind::Union, "fixture must be a union");
 
     let wire = serde_json::to_value(&value).expect("value serializes");
@@ -337,57 +338,61 @@ where
         .values_from_wire(wire)
         .expect("serde wire ingests into the union envelope");
     let valid = schema
-        .validate(&values)
+        .validate(values)
         .expect("ingested union envelope validates");
     let back: T = valid
-        .raw()
-        .to_typed::<T>()
+        .resolve(&EngineExpressionContext::with_input(json!({})))
+        .await
+        .expect("literal union resolves")
+        .into_typed::<T>()
         .expect("validated union deserializes back to the enum");
     assert_eq!(
         back, value,
-        "wire → ingress → validate → to_typed must round-trip the value"
+        "wire, ingress, validation, resolution and typed egress must round-trip"
     );
 }
 
-#[test]
-fn external_data_variant_roundtrips() {
+#[tokio::test]
+async fn external_data_variant_roundtrips() {
     assert_union_wire_roundtrips(ExternalAuth::OAuth(OAuthCfg {
         client_id: "abc".to_owned(),
-    }));
+    }))
+    .await;
 }
 
-#[test]
-fn external_struct_variant_roundtrips() {
+#[tokio::test]
+async fn external_struct_variant_roundtrips() {
     assert_union_wire_roundtrips(ExternalAuth::ApiKey {
         key: "k".to_owned(),
-    });
+    })
+    .await;
 }
 
-#[test]
-fn external_unit_variant_roundtrips() {
+#[tokio::test]
+async fn external_unit_variant_roundtrips() {
     // serde emits the bare string "None"; ingress must accept it and to_typed
     // must reconstruct it (not `{"None": {}}`).
-    assert_union_wire_roundtrips(ExternalAuth::None);
+    assert_union_wire_roundtrips(ExternalAuth::None).await;
 }
 
-#[test]
-fn adjacent_data_variant_roundtrips() {
-    assert_union_wire_roundtrips(Event::Click { x: 7 });
+#[tokio::test]
+async fn adjacent_data_variant_roundtrips() {
+    assert_union_wire_roundtrips(Event::Click { x: 7 }).await;
 }
 
-#[test]
-fn adjacent_unit_variant_roundtrips() {
+#[tokio::test]
+async fn adjacent_unit_variant_roundtrips() {
     // serde adjacent unit omits the content key entirely.
-    assert_union_wire_roundtrips(Event::Noop);
+    assert_union_wire_roundtrips(Event::Noop).await;
 }
 
 #[test]
 fn unknown_discriminant_is_rejected() {
-    let schema = schema_of::<ExternalAuth>();
+    let schema = schema_of::<ExternalAuth>().unwrap();
     let err = schema
         .values_from_wire(json!({ "Nope": { "client_id": "x" } }))
         .expect_err("a non-variant discriminant must be rejected at ingress");
-    assert_eq!(err.code, "union.unknown_variant");
+    assert_eq!(err.code(), "union.unknown_variant");
 }
 
 #[test]
@@ -395,17 +400,20 @@ fn wrong_typed_payload_fails_validation() {
     // The external shape is well-formed (data variant `OAuth`), so ingress
     // succeeds; the payload type error (`client_id` is not a string) surfaces in
     // `validate`, exactly where a normal record's type errors do.
-    let schema = schema_of::<ExternalAuth>();
+    let schema = schema_of::<ExternalAuth>().unwrap();
     let values = schema
         .values_from_wire(json!({ "OAuth": { "client_id": 123 } }))
         .expect("a well-shaped data variant ingests");
     let report = schema
-        .validate(&values)
+        .validate(values)
         .expect_err("a wrong-typed payload must fail validation");
     assert!(
-        report.errors().any(|e| e.code == "type_mismatch"),
+        report.errors().any(|e| e.code() == "type_mismatch"),
         "expected a type_mismatch, got: {:?}",
-        report.errors().map(|e| e.code.as_ref()).collect::<Vec<_>>()
+        report
+            .errors()
+            .map(nebula_schema::ValidationError::code)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -413,52 +421,55 @@ fn wrong_typed_payload_fails_validation() {
 fn malformed_external_wire_is_rejected() {
     // An external union value must be a string (unit) or single-key object (data);
     // a bare scalar is neither.
-    let schema = schema_of::<ExternalAuth>();
+    let schema = schema_of::<ExternalAuth>().unwrap();
     let err = schema
         .values_from_wire(json!(42))
         .expect_err("a bare scalar is not a valid external union wire");
-    assert_eq!(err.code, "union.malformed_wire");
+    assert_eq!(err.code(), "union.malformed_wire");
 }
 
 #[test]
 fn external_unit_variant_with_payload_is_rejected() {
     // `None` is a unit variant; an object data-shape for it is malformed.
-    let schema = schema_of::<ExternalAuth>();
+    let schema = schema_of::<ExternalAuth>().unwrap();
     let err = schema
         .values_from_wire(json!({ "None": {} }))
         .expect_err("a data shape for a unit variant is malformed");
-    assert_eq!(err.code, "union.malformed_wire");
+    assert_eq!(err.code(), "union.malformed_wire");
 }
 
 #[test]
 fn adjacent_wire_missing_tag_is_rejected() {
-    let schema = schema_of::<Event>();
+    let schema = schema_of::<Event>().unwrap();
     let err = schema
         .values_from_wire(json!({ "data": { "x": 1 } }))
         .expect_err("adjacent wire without the tag key is malformed");
-    assert_eq!(err.code, "union.malformed_wire");
+    assert_eq!(err.code(), "union.malformed_wire");
 }
 
-#[test]
-fn record_ingress_matches_from_json_and_to_typed_round_trips() {
-    // `values_from_wire` is behavior-identical to `FieldValues::from_json` for a
-    // record schema, so a caller can swap one for the other unconditionally; and
-    // `to_typed` round-trips a record too (the egress no-ops to `to_json`).
-    let schema = schema_of::<OAuthCfg>();
+#[tokio::test]
+async fn record_ingress_matches_from_data_and_into_typed_round_trips() {
+    // Record ingress preserves DATA semantics and typed egress preserves serde wire.
+    let schema = schema_of::<OAuthCfg>().unwrap();
     assert_eq!(schema.kind(), SchemaKind::Record);
 
     let wire = json!({ "client_id": "abc" });
     let via_wire = schema
         .values_from_wire(wire.clone())
         .expect("record ingests");
-    let via_from_json = FieldValues::from_json(wire).expect("from_json");
+    let via_from_data = AuthoredValue::from_data(wire).expect("from_data");
     assert_eq!(
-        via_wire, via_from_json,
-        "record ingress must equal FieldValues::from_json"
+        via_wire, via_from_data,
+        "record ingress must equal AuthoredValue::from_data"
     );
 
-    let valid = schema.validate(&via_wire).expect("record validates");
-    let back: OAuthCfg = valid.raw().to_typed().expect("record round-trips");
+    let valid = schema.validate(via_wire).expect("record validates");
+    let back: OAuthCfg = valid
+        .resolve(&EngineExpressionContext::with_input(json!({})))
+        .await
+        .expect("literal record resolves")
+        .into_typed()
+        .expect("record round-trips");
     assert_eq!(
         back,
         OAuthCfg {

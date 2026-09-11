@@ -8,6 +8,23 @@ use super::capability_report::{
 };
 use crate::CredentialMetadata;
 
+mod sealed {
+    use super::{IsDynamic, IsInteractive, IsRefreshable, IsRevocable, IsTestable};
+
+    pub trait Sealed {}
+
+    impl<C> Sealed for C where
+        C: crate::Credential
+            + IsInteractive
+            + IsRefreshable
+            + IsRevocable
+            + IsTestable
+            + IsDynamic
+            + 'static
+    {
+    }
+}
+
 /// Object-safe credential projection for plugin registration and discovery.
 ///
 /// Plugin implementations contribute credentials as `Arc<dyn AnyCredential>`
@@ -19,20 +36,15 @@ use crate::CredentialMetadata;
 /// [`compute_capabilities`], so erased discovery observes the same five
 /// report traits as [`crate::CredentialRegistry`]. [`Capabilities::empty`]
 /// is therefore exact for a credential whose five reports are all false.
-/// A direct implementation is a trusted escape hatch and must return the
-/// concrete type's exact declared report surface; a fabricated default-empty
-/// result for a capable type would violate plugin activation coherence.
-/// Direct implementations must also return `self` from [`Self::as_any`];
-/// plugin resolution compares that downcast projection with the inherited
-/// [`Any::type_id`] and rejects an incoherent implementation.
-///
-/// Automatically implemented for all `C: Credential` via the blanket
-/// impl below when the credential supplies all five capability reports.
-pub trait AnyCredential: Any + Send + Sync + 'static {
+/// This trait is sealed and automatically implemented for typed
+/// [`crate::Credential`] implementations that supply all five capability
+/// reports. Integrations cannot self-attest erased keys, metadata,
+/// capabilities, or downcast identity.
+pub trait AnyCredential: sealed::Sealed + Any + Send + Sync + 'static {
     /// The normalized key identifying this credential type.
     fn credential_key(&self) -> &str;
     /// Integration-catalog metadata describing this credential type.
-    fn metadata(&self) -> CredentialMetadata;
+    fn metadata(&self) -> Result<CredentialMetadata, crate::CredentialMetadataAdmissionError>;
     /// Capabilities computed from the credential's five report traits.
     fn capabilities(&self) -> Capabilities;
     /// Type-erased `self` for downcast — required by the KEY-keyed
@@ -59,8 +71,8 @@ where
         C::KEY
     }
 
-    fn metadata(&self) -> CredentialMetadata {
-        C::metadata()
+    fn metadata(&self) -> Result<CredentialMetadata, crate::CredentialMetadataAdmissionError> {
+        C::metadata().admit_for::<C>()
     }
 
     fn capabilities(&self) -> Capabilities {

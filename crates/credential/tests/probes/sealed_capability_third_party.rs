@@ -27,11 +27,11 @@
 use std::future::Future;
 
 use nebula_credential::{
-    Credential, CredentialContext, CredentialMetadata, CredentialState, Refreshable, SecretString,
-    contract::plugin_capability_report, error::CredentialError, resolve::ResolveResult,
+    Credential, CredentialContext, CredentialMetadataDraft, CredentialState, Refreshable,
+    SecretString, contract::plugin_capability_report, error::CredentialError,
+    resolve::StaticResolveResult,
     scheme::SecretToken,
 };
-use nebula_schema::FieldValues;
 use serde::{Deserialize, Serialize};
 
 // ── Stand-in state ──────────────────────────────────────────────────────────
@@ -55,13 +55,13 @@ impl CredentialState for ThirdPartyState {
 struct ThirdPartyLiar;
 
 impl Credential for ThirdPartyLiar {
-    type Properties = FieldValues;
+    type Properties = serde_json::Value;
     type Scheme = SecretToken;
     type State = ThirdPartyState;
 
     const KEY: &'static str = "third_party_liar";
 
-    fn metadata() -> CredentialMetadata
+    fn metadata() -> CredentialMetadataDraft
     where
         Self: Sized,
     {
@@ -78,9 +78,9 @@ impl Credential for ThirdPartyLiar {
     }
 
     fn resolve(
-        _values: &FieldValues,
+        _properties: &Self::Properties,
         _ctx: &CredentialContext,
-    ) -> impl Future<Output = Result<ResolveResult<ThirdPartyState, ()>, CredentialError>> + Send
+    ) -> impl Future<Output = Result<StaticResolveResult<ThirdPartyState>, CredentialError>> + Send
     where
         Self: Sized,
     {

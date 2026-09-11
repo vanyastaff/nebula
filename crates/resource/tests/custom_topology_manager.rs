@@ -32,7 +32,7 @@ use nebula_resource::{
     AcquireOptions, HasCredentialSlots, Manager, RegistrationSpec, ResourceContext, ShutdownConfig,
     SlotIdentity,
     error::{Error, ErrorKind},
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
     topology::{InstanceStore, Ticket, Topology, Unavailable},
 };
 use tokio::sync::Semaphore;
@@ -40,9 +40,8 @@ use tokio_util::sync::CancellationToken;
 
 // ─── The resource ──────────────────────────────────────────────────────────
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, nebula_schema::Schema)]
 struct FfmpegCfg;
-nebula_resource::impl_empty_has_schema!(FfmpegCfg);
 impl ResourceConfig for FfmpegCfg {
     fn fingerprint(&self) -> u64 {
         0
@@ -104,8 +103,8 @@ impl Provider for Ffmpeg {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 

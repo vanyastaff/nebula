@@ -2,7 +2,7 @@
 name: Nebula integration model
 description: Authoritative integration-model mechanics — Resource / Credential / Action / Schema / Plugin contract, plugin packaging, cross-plugin dependency rules. Canon §3.5 states invariants; this document carries the mechanics.
 status: accepted
-last-reviewed: 2026-07-21
+last-reviewed: 2026-09-11
 related: [docs/PRODUCT_CANON.md]
 ---
 
@@ -28,19 +28,65 @@ Every concept in Nebula's integration layer is described by two things:
 
 | Piece | Role |
 |---|---|
-| `*Metadata` | UI-facing description — id, display name, icon, version, concept-specific fields (categories, isolation, checkpoint policy for Actions). |
-| `Schema` | Typed configuration schema (`nebula-schema`: `Field`, `Schema`, `ValidValues`, `ResolvedValues`). One schema system used across Resource config, Credential setup, and Action inputs. |
+| `*MetadataDraft` | Author-owned UI/catalog intent: key, checked display name, version, lifecycle, and concept-specific declarations. A draft cannot supply a schema or claim admission. |
+| Associated Rust type | The schema source of truth: `Action::{Input, Output}`, `Credential::Properties`, or `Provider::Config`. |
+| admitted `*Metadata` | Immutable catalog definition produced only by the owning factory/registry after deriving schemas and checking identity/package invariants. |
+| `Recorded*Metadata` | Deserialized evidence. It regains admitted status only by exact comparison with a fresh definition from the currently selected factory/registry. |
 
-The **schema subsystem** (`nebula-schema` crate) is the **fifth concept** — cross-cutting configuration machinery, shared across integration kinds. It provides a **proof-token pipeline**: `ValidSchema::validate` returns `ValidValues` only after schema-time validation succeeds; `ValidValues::resolve` returns `ResolvedValues` only after runtime expression resolution succeeds. A caller cannot skip validation or resolution — the types enforce the sequence.
+This is the canon's `*Metadata + Schema` contract expressed as a one-way
+lifecycle, not permission for authors to construct terminal metadata. Action
+factories derive both schemas and stamp the action kind; `CredentialRegistry`
+derives the properties schema; `ResourceFactory` derives and caches the config
+schema. `BaseMetadata` and admitted leaf metadata expose getters and serialize
+for catalogs, but have no setters or `Deserialize` implementation. Only the
+recorded DTOs deserialize, and readmission returns the fresh definition rather
+than promoting recorded fields. `PluginManifest` remains the bundle descriptor
+and uses its own checked builder; it is not a catalog-leaf admission bypass.
+
+The **schema subsystem** (`nebula-schema` crate) is the **fifth concept**, shared across integration kinds. `HasSchema::schema()` / `schema_of` and metadata admission are fallible: invalid definitions do not become catalog entries. Runtime data then moves through four distinct phases:
+
+| Phase | Representation | Guarantee |
+|---|---|---|
+| Authored | `AuthoredValue` | Explicitly data or template authoring; no validation proof. |
+| Valid | `ValidValues` | Aliases/transforms applied once, programs compiled, declared secrets protected, pending checks explicit, schema snapshot retained. |
+| Resolved | `ResolvedValues` | Programs absent and every final rule/policy satisfied; still bound to the exact schema snapshot. |
+| Typed | `Action::Input`, `Credential::Properties`, `Provider::Config`, or another destination type | Trusted decode at the owning boundary; proof wrappers do not enter author code. |
+
+`ValidSchema::validate` consumes authored input. Only consuming completion
+through `resolve(context)` or data-only `resolve_data()` can produce
+`ResolvedValues`; both perform full final validation. These proof values cannot
+be deserialized or caller-constructed, and they are technical implementation
+types rather than the supported SDK authoring model.
+
+Every admitted schema has one authoritative `RootShape`: unknown JSON, a concrete
+scalar domain, a record, or a tagged union. Unit types have JSON `null` inputs;
+empty braced structs have object inputs. A consumer must not substitute an empty
+object or `Any` for a known scalar, or discard submitted properties to manufacture
+a unit value. Existing persisted empty-record schemas remain records. New scalar
+descriptors require an explicitly supporting plan epoch and schema envelope;
+neither the historical raw-JSON canonical bytes nor old plan identities are
+silently migrated by changing the in-memory value tree.
 
 ### Configuration pipeline (diagram)
 
-End-to-end view: all value sources funnel through **one** schema validation step into the **`ValidValues` proof token**; **`resolve`** (in `nebula-schema`) consumes an `ExpressionContext` from runtime and yields **`ResolvedValues`**; workflow execution persists snapshots and hands secret material to credential/storage via an explicit boundary (the workflow is **not** “the encryption implementation”). The same figure and notes appear in **ADR-0034**, which remains the **decision record** for `SecretValue`, `SecretWire`, and loader redaction. When the pipeline changes, update this document and capture the change in a new/superseding ADR rather than substantively editing accepted ADR-0034.
+All value sources enter the same consuming preparation boundary. Literal JSON ingress through `AuthoredValue::from_data` never interprets template-looking strings or expression-shaped objects as code. Authoring expressions requires `from_template_json`, an equivalent SDK authoring helper, or the versioned authored wire format, and the exact schema node must permit them. Expression results are data, never recursively reinterpreted as programs. Credential orchestration uses only the synchronous data-only completion path, then decodes `C::Properties` before provider dispatch. Persistence and encryption remain the responsibility of their existing aggregate owners.
+
+Inside the runtime, erased action dispatch may carry raw transport data or a
+completed schema-bound proof. `ActionInput` and `PreparedActionInput` name that
+technical seam; they are not SDK authoring types. Named workflow parameters are
+already in the schema's internal authored form; transport JSON and whole
+predecessor wire values instead enter through `values_from_wire`. The selected
+action handle verifies full schema equality, performs the trusted typed decode,
+and mints an opaque proof bound to that exact handle. Equal schemas from two
+factories are not interchangeable authority. No intermediate JSON round trip
+may discard expression admission or cause transforms to run again. Explicit
+template syntax remains string-valued through compilation, serialization, and
+execution.
 
 ```mermaid
 flowchart TB
   subgraph author["Integration author"]
-    S["Schema: Field / ValidSchema"]
+    S["Associated Rust type / schema declaration"]
   end
 
   subgraph callers["Value sources"]
@@ -49,15 +95,20 @@ flowchart TB
   end
 
   subgraph schema["nebula-schema (configuration contract)"]
-    VAL["validate"]
-    VV["ValidValues"]
-    RES["resolve(ctx: ExpressionContext)\nexpressions → secret promotion\n→ post-resolve validation"]
-    RV["ResolvedValues"]
+    VAL["validate(AuthoredValue)\naliases, transformations, secret protection\ncompile admitted programs, check known data"]
+    VV["ValidValues\ncompiled tree + explicit pending checks"]
+    RES["resolve(ctx)\nevaluate retained programs\nprepare only returned data"]
+    DATA["resolve_data()\nreject every program"]
+    FULL["Full final validation\nno pending checks"]
+    RV["ResolvedValues\nexpression-free, schema-bound"]
+    TYPED["Typed destination\nAction::Input / Credential::Properties / Provider::Config"]
   end
 
   subgraph runtime["Runtime / engine"]
     EX["ExpressionContext\n(engine, tests, CLI)"]
-    WF["Workflow: nodes, retries, cancel"]
+    WF["Workflow/runtime\nselected exact factory"]
+    CRED["Credential executor\ndata-only completion"]
+    RESOURCE["Resource factory\ncached Config schema"]
   end
 
   subgraph persist["Persistence / credential"]
@@ -66,26 +117,60 @@ flowchart TB
   end
 
   S --> VAL
-  UI -->|"FieldValues"| VAL
-  LOAD -->|"FieldValues (secrets still String until resolve)"| VAL
+  UI -->|"AuthoredValue: data or explicit authoring"| VAL
+  LOAD -->|"literal data; no restored proof"| VAL
   ENC -.->|"decrypt / rehydrate"| LOAD
 
   VAL --> VV
   VV --> RES
+  VV --> DATA
   EX -->|"context for resolve"| RES
-  RES --> RV
-  RV --> WF
-  WF -->|"default serde: secrets redacted"| SNAP
-  WF -.->|"handoff: SecretWire → credential/storage"| ENC
+  RES --> FULL
+  DATA --> FULL
+  FULL --> RV
+  RV --> TYPED
+  TYPED --> WF
+  TYPED --> CRED
+  TYPED --> RESOURCE
+  WF -->|"explicit versioned records; no proof serialization"| SNAP
+  CRED -.->|"stored State via owned encryption boundary"| ENC
 ```
 
-**Dashed edges:** `ENC -.-> LOAD` is **data flow** (decrypt / materialize into loader input). `WF -.-> ENC` is a **trust boundary handoff** (runtime initiates persistence; encryption-at-rest stays in credential/storage — see ADR-0028 / ADR-0029 (historical)).
+**Dashed edges:** storage materializes data for a new validation pass; credential runtime hands stored state to its encryption and persistence boundary. These are explicit data/authority crossings, not implicit serialization of schema proof tokens.
 
-**Security note — plaintext lifetime:** Before `resolve`, secret-shaped fields live as ordinary `String` inside `FieldValues`. **`ValidValues::resolve`** promotes them to `FieldValue::SecretLiteral(SecretValue)` and re-validates. After promotion, `SecretValue` redacts in `Debug` / `Display` / default `Serialize`; intentional plaintext exit points are **audited** (`expose()` with `#[track_caller]`, `SecretWire` for stores). Snapshots written through default serialization paths should treat secrets as **redacted on the wire**; **`LOAD` trust** depends on storage integrity and the decrypt path (credential/storage plane — see ADR-0029 (historical)).
+**Secret custody:** declared string secrets become `ValueTree::Secret` before `ValidValues` is returned, including aliases and nested fields. Predicate and loader contexts exclude protected material. Debug and diagnostic JSON redact secrets; authored wire serialization rejects secret-bearing trees instead of writing redaction markers as restorable values. Ordinary typed extraction refuses secrets. A typed `#[field(secret)]` destination must implement the explicit owned-and-zeroizing `SecretInput` marker. `into_typed_exposing_secrets` feeds protected leaves directly to the target deserializer without first materializing plaintext in an ordinary `serde_json::Value`; `get_secret`/`expose` and `SecretWire` remain explicit trusted disclosure operations. Credential preparation checks the normalized values against `C::Properties` without an expression engine; it never validates one copy and resolves a newly ingested, unnormalized copy.
 
 **Where `S` lives:** today the **shape** of `ValidSchema` comes from **author-time Rust** in integration/plugin crates (and registry wiring), not from the snapshot store. Persisted artifacts are **config values and history** (`SNAP`), not the Rust type graph. If product ever versions **schema definitions as data**, the diagram can gain an optional `SNAP -.-> S` edge; until then, keeping `S` only under **author** avoids visual clutter.
 
-**Non-decision (diagram scope):** `resolve` is treated as **synchronous** here; async resolve, cancellation mid-flight, and “partial promotion” safety are not modeled in this picture.
+**Execution and persistence scope:** expression resolution is asynchronous and consuming; cancellation cannot yield a partial proof. `resolve_data` is synchronous and rejects admitted programs. Paths through value and validation trees use RFC 6901 `ValuePath` / `FieldPath`: root is `""`, arrays are ordinary pointer segments, and `~` / `/` are escaped. The value-tree wire/canonical formats are versioned independently of persisted plan identity. Existing plan records retain `canonical_json_v1` bytes; a value-model change must not silently rewrite their identities. This diagram does not change refresh, lease, journal, or aggregate write ownership.
+
+### Exact factories and durable records
+
+Preparation authority follows the selected catalog entry. Action handles mint
+opaque typed input proofs bound to the handle's private identity. Resource
+validation and registration reuse the selected factory's cached admitted
+metadata and `R::Config` schema, then keep the typed config inside manager
+registration. Credential preparation similarly terminates in
+`C::Properties`; `Credential::resolve` never receives `ValidValues` or
+`ResolvedValues`. Public schema equality alone is therefore necessary but not
+sufficient to dispatch through another factory.
+
+The durable plan/flavor revision catalog is first-writer-wins over bytes but
+idempotent over parsed JSON meaning. Reinserting an immutable identity with
+only whitespace or object-key-order differences returns `AlreadyPresent`;
+different parsed content returns `ContentConflict`. The first accepted bytes
+remain authoritative and exact loads return them unchanged. Semantic comparison
+does not canonicalize, replace, or silently migrate a historical record.
+
+### Supported Rust perimeter
+
+`nebula-sdk` is the sole supported and branded Rust dependency. Integration
+authors use its persona modules, derives, associated Rust types, and
+`*MetadataDraft` values. Admitted metadata, validated/resolved value proof
+wrappers, erased or prepared action inputs, registries/factories, persistence
+ports, and runtime authority types stay outside the curated perimeter. Workspace
+crates may expose those technical seams so first-party composition can function,
+but direct use does not receive an independent compatibility promise.
 
 ### How the four integration kinds relate (structural, not "whatever exists at runtime")
 
@@ -93,15 +178,15 @@ These are **schema-level** links: metadata and parameter types declare a closed 
 
 **Credential** — `[ CredentialMetadata + Schema ]` — **leaf.**
 
-**Who** you are and **how** authentication is maintained. Credential code receives provider and transport capabilities through injected ports; a Credential must not depend on a Resource, Action, or ambient registry lookup. The `nebula-credential` crate owns rotation-state, refresh, lease, and the **stored state vs consumer-facing auth material** split (its runtime was consolidated there by ADR-0092; the engine keeps only accessor bridges). The author binds to a Credential output scheme, never hand-rolls refresh or pending OAuth steps, and never relies on secrets appearing in logs. A set of universal auth schemes (OAuth2, API key, mTLS, and others — full list in `crates/credential/README.md`) plus extensibility via the `AuthScheme` trait in `crates/credential/src/scheme/auth.rs`; the author picks a type and fills the schema. **Concrete shape:** see §3.7 (`nebula-credential`).
+**Who** you are and **how** authentication is maintained. Credential code receives provider and transport capabilities through injected ports; a Credential must not depend on a Resource, Action, or ambient registry lookup. The `nebula-credential` crate owns rotation-state, refresh, lease, and the **stored state vs consumer-facing auth material** split (its runtime was consolidated there by ADR-0092; the engine keeps only accessor bridges). Authors declare a typed `Credential::Properties`, stored `State`, and projected `Scheme`; the runtime validates and typed-decodes properties before calling `resolve`. Initial acquisition and refresh receive separate narrow transports, and only refresh runs under the owned provider-to-persistence critical section. The built-in OAuth credential implements Authorization Code (mandatory PKCE S256) and Client Credentials only; there is no supported device-flow variant. Other auth families are available only where a concrete credential/composition path actually wires them. **Concrete shape:** see §3.7 (`nebula-credential`).
 
 **Resource** — `[ ResourceMetadata + Schema ]` — **may depend on Credential and/or other Resource types.**
 
-Long-lived managed object: connection pool, SDK client, file handle. Resource lifecycle owns init, health-check, hot-reload via **ReloadOutcome**, bindings, per-slot credential-rotation fan-out, and scope-aware teardown. A Resource may declare typed Credential slots and may build on other Resource types, but the resource dependency subgraph must remain acyclic and activation-validated. The author declares what the Resource **is**; the runtime provides it **healthy** or fails loudly. **Concrete shape:** see §3.6 (`nebula-resource`).
+Long-lived managed object: connection pool, SDK client, file handle. Resource lifecycle owns init, health-check, hot-reload via **ReloadOutcome**, bindings, per-slot credential-rotation fan-out, and scope-aware teardown. Authors return `ResourceMetadataDraft`; the selected `ResourceFactory` derives and caches the exact `R::Config` schema, and validation/registration consume that one definition before typed manager admission. A Resource may declare typed Credential slots and may build on other Resource types, but the resource dependency subgraph must remain acyclic and activation-validated. The author declares what the Resource **is**; the runtime provides it **healthy** or fails loudly. **Concrete shape:** see §3.6 (`nebula-resource`).
 
 **Action** — `[ ActionMetadata + Schema ]` — **declares zero or more Resource and/or Credential kinds it needs** (by stable id / type reference in the **integration schema**, not ad hoc runtime lookup).
 
-**What** the step does — with explicit semantics. The engine dispatches by **which action trait** the type implements (`StatelessAction`, `StatefulAction`, `TriggerAction`, `ResourceAction`, …) — not by a single metadata "kind" field. **`ActionMetadata`** carries key, ports, parameters, isolation, node taxonomy, and checkpoint behavior declaration (e.g. **`CheckpointPolicy`**) for UI/validation/runtime policy; this metadata supplements but does not replace trait-based routing. Graph is the flagship execution direction, not a production-readiness claim. Existing Stream / Agent / Interactive names or variants are shape-only reservations for future capability-gated profiles; they do not establish current runtime semantics or a supported SDK capability. Each future profile requires its own persisted state, admission, recovery, and compatibility contract. The runtime applies checkpoint, retry, and cancel rules only for behavior implemented end-to-end — the author does not re-implement those invariants per action (aligned with `nebula-resilience`). **Concrete shape:** see §3.8 (`nebula-action`).
+**What** the step does — with explicit semantics. Authors return `ActionMetadataDraft`; the selected factory derives `Action::{Input, Output}` schemas, stamps the structural kind, checks the package, and retains immutable `ActionMetadata`. The engine dispatches by **which action trait** the type implements (`StatelessAction`, `StatefulAction`, `TriggerAction`, `ResourceAction`, …), not by an author-selected metadata kind. Internal erased input is prepared once and becomes an exact-handle-bound typed proof before dispatch; neither `ActionInput` nor admitted metadata is an SDK author surface. Graph is the flagship execution direction, not a production-readiness claim. Existing Stream / Agent / Interactive names or variants are shape-only reservations for future capability-gated profiles; they do not establish current runtime semantics or a supported SDK capability. Each future profile requires its own persisted state, admission, recovery, and compatibility contract. The runtime applies checkpoint, retry, and cancel rules only for behavior implemented end-to-end — the author does not re-implement those invariants per action (aligned with `nebula-resilience`). **Concrete shape:** see §3.8 (`nebula-action`).
 
 **Wiring rule:** the canonical dependency direction is Credential leaf; Resource → Credential and/or Resource; Action → Credential and/or Resource. Every referenced type must be **provided by this plugin's own `impl Plugin` registry** **or** by a type from **another plugin crate** that is a **declared dependency** in **`Cargo.toml`**. The complete plugin/type closure must be acyclic and activation-validated before execution (engine loads providers before dependents; see §7.1). Referencing a type that is "in the process" but not reachable through that closure is a misconfiguration, even if some unrelated plugin registered it.
 
@@ -129,7 +214,7 @@ Long-lived managed object: connection pool, SDK client, file handle. Resource li
 
 ## `nebula-credential`
 
-**What / why:** unified **Credential** contract — stored state vs projected auth material, refresh/resolve/test paths — so secrets and rotation stay **out of Action code** and logs.
+**What / why:** unified **Credential** contract — typed setup `Properties`, stored state, projected auth material, and separately authorized acquisition/refresh paths — so schema proof objects, secrets, and rotation stay **out of provider and Action code** except at explicit typed disclosure points. Registry admission derives the properties schema and rejects invalid definitions before they enter the catalog.
 
 **Plane B (integration credentials):** workflow-facing secrets for **external** systems (API keys, OAuth to third parties, certificates, …) live in this model. They are **not** the same as authenticating **to Nebula**. Plane-A identity policy, fixed Google/GitHub.com sign-in profiles, provider client secrets, browser/API sessions, PATs, and MFA belong to the `nebula-api` auth boundary plus the server composition root — never `CredentialService`. The selected Memory backend provides process-local atomicity; PostgreSQL delegates its short user/link/session-or-MFA finalizer and globally capped OAuth-state admission to storage-owned seams. Provider egress never runs under finalizer locks, `(provider, subject)` is authoritative, and verified email alone never authorizes account linking. Future SSO/LDAP work must extend Plane A rather than leaking host identity into `nebula-credential`. This crate split is an implementation boundary: `nebula-sdk` remains the sole supported, branded Rust surface.
 
@@ -175,7 +260,7 @@ The table below is an **external, illustrative** bucketing (by auth *shape* / tr
 
 ## `nebula-action`
 
-**What / why:** **Action** traits, declared dependencies, **`ActionResult`** flow, and metadata-declared execution policy so the engine can enforce branching and retries **honestly** — not untyped "JSON in / out." `CheckpointPolicy` is a field on `ActionMetadata` (`checkpoint_policy`, default `Inherit`); the runtime does not yet enforce non-`Inherit` cadences.
+**What / why:** **Action** traits, declared dependencies, **`ActionResult`** flow, draft metadata, and factory-owned typed input preparation so the engine can enforce branching and retries **honestly** — not untyped "JSON in / out." `CheckpointPolicy` is factory-admitted from `ActionMetadataDraft` into immutable `ActionMetadata` (default `Inherit`); the runtime does not yet enforce non-`Inherit` cadences.
 
 > **Status of `CheckpointPolicy`:** field on `ActionMetadata` (`checkpoint_policy`, default `Inherit`); engine enforcement of non-`Inherit` cadences not yet wired end-to-end. See `crates/action/README.md` and `docs/MATURITY.md` row for `nebula-action`.
 
@@ -183,7 +268,7 @@ The table below is an **external, illustrative** bucketing (by auth *shape* / tr
 
 ## `nebula-schema`
 
-**What / why:** one **schema** system (`Field`, `Schema`, `ValidValues`, `ResolvedValues`, proof-token pipeline) shared by Actions, Credentials, Resources — so configuration is **typed and validated once**, not re-invented per integration.
+**What / why:** one **schema** system with explicit authored, valid, resolved, and typed phases shared by Actions, Credentials, and Resources — so configuration is **typed and prepared once**, not re-invented per integration. Literal data and template authoring are distinct, declared secrets become protected tree nodes before a valid proof exists, and only an owning trusted boundary performs final typed extraction.
 
 **Where to read:** `crates/schema/README.md`, `crates/schema/src/lib.rs`.
 
@@ -194,11 +279,11 @@ Besides the **integration** reference crates (§3.6–§3.9), the workspace ship
 - **`nebula-core`** — shared identifiers and keys (`ExecutionId`, `ActionKey`, `CredentialKey`, …), scope levels, context and accessor traits, guards, dependency declaration types, observability identity types, **auth types** (`AuthScheme`, `AuthPattern`), **role/permission enums** (`OrgRole`, `WorkspaceRole`, `Permission`), **multi-tenant context** (`TenantContext`, `ResolvedIds`), and **slug validation** (`Slug`, `SlugKind`) — the **cross-cutting vocabulary** every crate shares. `AuthScheme` and `AuthPattern` are **canonical in `nebula-core`**, re-exported by `nebula-credential` for discoverability. Other credential-domain types (**`SecretString`**, **`CredentialEvent`**, …) live in **`nebula-credential`** (see §3.7) — see `crates/core/README.md`.
 - **`nebula-error`** — **`Classify`**, **`NebulaError`**, categories/codes, structured details — **one** error taxonomy at boundaries instead of ad hoc strings.
 - **`nebula-resilience`** — composable **pipelines** (retry, timeout, circuit breaker, bulkhead, …); pairs with **`ActionError`** / retry hints in **`nebula-action`** (§3.8).
-- **`nebula-validator`** — programmatic validators + declarative **`Rule`**; **`nebula-schema`** embeds rules in **`Field`** definitions.
+- **`nebula-validator`** — programmatic validators + declarative **`Rule`**; **`nebula-schema`** embeds rules in **`Field`** definitions. Paths are complete RFC 6901 pointers, including root and array indices. Invalid regex/range configurations fail during construction, and deferred rules remain explicit until full evaluation.
 - **`nebula-log`** — structured **`tracing`** pipeline (init, sinks, layers, reload). Cargo features `telemetry` (OpenTelemetry OTLP tracing exporter) and `sentry` ship the distributed-tracing/error-reporting integrations; both are off by default.
 - **`nebula-metrics`** — the single metrics path: lock-free in-memory primitives (`MetricsRegistry`, `Counter`, `Gauge`, `Histogram`, label interning) **plus** `nebula_*` naming, label-safety guards, and Prometheus-style export. Absorbs the former `nebula-telemetry` metric-primitives crate (ADR-0046).
 - **`nebula-eventbus`** — typed **broadcast** bus for ephemeral observations and wake hints. Domain event types live in owning crates, and consumers must tolerate loss, duplication, and reordering. Durable commands and business facts use persisted state or explicit outbox/inbox ports; this bus is never authoritative transport.
-- **`nebula-expression`** — workflow **expression** evaluation (variable access, operators, functions) for dynamic fields — headless, not a UI.
+- **`nebula-expression`** — workflow **expression** evaluation (variable access, operators, functions) for dynamic fields — headless, not a UI. `CompiledProgram` retains explicit `ProgramSyntax` and shares immutable source/AST state through `Arc`; contexts likewise share immutable JSON values. Parsing and evaluation enforce source, token, AST, result, depth, builtin-output, and per-call work bounds. Schema locations use RFC 6901 `ValuePath`, not declaration-key strings.
 - **`nebula-workflow`** + **`nebula-execution`** — the execution semantics core: workflow validation/shape and durable execution lifecycle/state transitions. Read these when the question is "what does the engine guarantee at runtime," not just "how integrations are authored."
 
 **Layering:** cross-cutting crates sit **below** API/engine-specific surfaces (see AGENTS.md boundaries); they must not **depend upward** on integration-only crates. **Canon use:** reuse these crates for their domains instead of duplicating helpers; if something truly belongs in **`nebula-core`** (a new stable identifier or key type), extend it deliberately rather than inventing a parallel type in a leaf crate. New **auth material** types belong in **`nebula-credential`** unless an ADR moves shared vocabulary (as was done for `AuthScheme`/`AuthPattern` → `nebula-core`).
@@ -237,7 +322,7 @@ Avoid **double declaration** — listing every action in TOML **and** in `fn act
 
 ```toml
 [nebula]
-sdk = "^0.8"   # semver constraint on the supported nebula-sdk — read by cargo-nebula / CLI without `cargo build`
+sdk = "^0.6"   # semver constraint on the supported nebula-sdk — read by cargo-nebula / CLI without `cargo build`
 ```
 
 **Optional `[plugin].id`** — set this **only** when the stable Nebula plugin id must **differ** from the Cargo package name (registry/UI **before** load):
@@ -263,7 +348,7 @@ Illustrative **`[signing]`** shape (field names and algorithms are **tooling-def
 
 ```toml
 [nebula]
-sdk = "^0.8"
+sdk = "^0.6"
 
 [plugin]
 id = "nebula-plugin-slack"

@@ -1,11 +1,11 @@
 //! Pure schema-path/rule-reference parsing for the dependency-graph and
-//! secret lints (no validator coupling).
+//! secret lints.
 //!
 //! These helpers translate the address forms rule references and validator
 //! field pointers use (`$root.foo`, `/foo/bar` JSON Pointers, `items[0].name`)
 //! into the schema's [`FieldPath`] addressing. They carry no error-mapping or
-//! evaluation logic — they are consumed by the build-time dependency-graph and
-//! secret lints and by the single validator-error merge in `validated`.
+//! evaluation logic. Runtime diagnostics retain their data pointers instead of
+//! narrowing arbitrary data keys into schema identifiers.
 
 use nebula_validator::foundation::FieldPath as ValidatorFieldPath;
 
@@ -55,35 +55,6 @@ pub(crate) fn normalize_rule_target_path(path: &FieldPath) -> FieldPath {
     normalized
 }
 
-/// Parse a validator RFC-6901 field pointer into a schema [`FieldPath`].
-///
-/// Returns `None` when the pointer is structurally invalid (empty segment,
-/// non-`FieldKey` segment); callers fall back to a known path in that case.
-pub(crate) fn field_path_from_json_pointer(pointer: &str) -> Option<FieldPath> {
-    let pointer = pointer.strip_prefix('#').unwrap_or(pointer);
-    if pointer.is_empty() || pointer == "/" {
-        return Some(FieldPath::root());
-    }
-    if !pointer.starts_with('/') {
-        return FieldPath::parse(pointer).ok();
-    }
-
-    let mut out = FieldPath::root();
-    for encoded in pointer.split('/').skip(1) {
-        if encoded.is_empty() {
-            return None;
-        }
-        let decoded = decode_json_pointer_segment(encoded);
-        let segment = if decoded.chars().all(|c| c.is_ascii_digit()) {
-            PathSegment::Index(decoded.parse().ok()?)
-        } else {
-            PathSegment::Key(FieldKey::new(decoded).ok()?)
-        };
-        out = out.join(segment);
-    }
-    Some(out)
-}
-
 fn validator_path_to_schema_path(vp: &ValidatorFieldPath) -> Option<FieldPath> {
     let mut out = FieldPath::root();
     let mut any = false;
@@ -101,27 +72,6 @@ fn validator_path_to_schema_path(vp: &ValidatorFieldPath) -> Option<FieldPath> {
         out = out.join(segment);
     }
     if any { Some(out) } else { None }
-}
-
-fn decode_json_pointer_segment(segment: &str) -> String {
-    let mut out = String::with_capacity(segment.len());
-    let mut chars = segment.chars();
-    while let Some(ch) = chars.next() {
-        if ch == '~' {
-            match chars.next() {
-                Some('0') => out.push('~'),
-                Some('1') => out.push('/'),
-                Some(other) => {
-                    out.push('~');
-                    out.push(other);
-                },
-                None => out.push('~'),
-            }
-        } else {
-            out.push(ch);
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -162,18 +112,24 @@ mod tests {
     }
 
     #[test]
-    fn json_pointer_parser_decodes_segments_and_rejects_empty_segments() {
-        let path = field_path_from_json_pointer("/items/0/name").unwrap();
+    fn data_pointers_are_decoded_before_narrowing_to_schema_identifiers() {
+        let path = resolve_rule_dependency("/items/0/name").unwrap();
         assert_eq!(path.to_string(), "items[0].name");
-
-        assert_eq!(decode_json_pointer_segment("field~0name"), "field~name");
-        assert_eq!(decode_json_pointer_segment("field~1name"), "field/name");
-        assert_eq!(decode_json_pointer_segment("field~Xname"), "field~Xname");
-        assert_eq!(decode_json_pointer_segment("field~"), "field~");
-
-        assert!(field_path_from_json_pointer("/items//name").is_none());
-        assert!(field_path_from_json_pointer("/items/").is_none());
-        assert!(field_path_from_json_pointer("/field~0name").is_none());
-        assert!(field_path_from_json_pointer("/foo~1bar").is_none());
+        let data = ValidatorFieldPath::from_pointer("/field~0name/field~1name/").unwrap();
+        assert_eq!(
+            data.segments()
+                .map(|segment| segment.to_string())
+                .collect::<Vec<_>>(),
+            ["field~name", "field/name", ""]
+        );
+        assert!(validator_path_to_schema_path(&data).is_none());
+        for pointer in ["/field~Xname", "/field~"] {
+            assert!(ValidatorFieldPath::from_pointer(pointer).is_err());
+            assert!(resolve_rule_dependency(pointer).is_none());
+        }
+        assert!(resolve_rule_dependency("/items//name").is_none());
+        assert!(resolve_rule_dependency("/items/").is_none());
+        assert!(resolve_rule_dependency("/field~0name").is_none());
+        assert!(resolve_rule_dependency("/foo~1bar").is_none());
     }
 }

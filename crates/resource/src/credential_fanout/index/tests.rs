@@ -318,7 +318,7 @@ mod fanout_dispatch {
         ResourceContext, ResourceEvent,
         error::Error as ResourceError,
         release_queue::{ReleaseQueue, SubmissionOutcome},
-        resource::{HasCredentialSlots, ResourceMetadata},
+        resource::{HasCredentialSlots, ResourceMetadataDraft},
         topology::resident::ResidentProvider,
     };
     use futures::FutureExt;
@@ -383,10 +383,8 @@ mod fanout_dispatch {
 
     /// Behaviour is keyed off the resolved slot identity carried by
     /// `CtlResource`, not config — so config is empty.
-    #[derive(Clone)]
+    #[derive(Clone, nebula_schema::Schema)]
     struct Cfg;
-
-    nebula_schema::impl_empty_has_schema!(Cfg);
 
     impl ResourceConfig for Cfg {
         fn validate(&self) -> Result<(), ResourceError> {
@@ -465,8 +463,8 @@ mod fanout_dispatch {
             }
         }
 
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::from_key(&Self::key())
+        fn metadata() -> ResourceMetadataDraft {
+            ResourceMetadataDraft::from_key(Self::key())
         }
     }
 

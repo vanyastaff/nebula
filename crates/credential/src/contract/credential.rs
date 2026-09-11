@@ -28,12 +28,10 @@
 
 use std::future::Future;
 
-use nebula_schema::FieldValues;
-
 use super::CredentialState;
 use crate::{
-    AuthScheme, CredentialContext, CredentialMetadata, error::CredentialError,
-    resolve::ResolveResult,
+    AuthScheme, CredentialContext, CredentialMetadataDraft, error::CredentialError,
+    resolve::StaticResolveResult,
 };
 
 /// Unified trait for all credential types.
@@ -79,31 +77,37 @@ use crate::{
 ///
 /// ```
 /// use nebula_credential::{
-///     AuthPattern, Credential, CredentialContext, CredentialMetadata, SecretString,
+///     AuthPattern, Credential, CredentialContext, CredentialMetadataDraft, SecretString,
 ///     scheme::SecretToken,
 /// };
 /// use nebula_credential::error::CredentialError;
-/// use nebula_credential::resolve::ResolveResult;
+/// use nebula_credential::resolve::StaticResolveResult;
 /// use nebula_core::credential_key;
-/// use nebula_schema::{FieldValues, ValidSchema};
+/// use serde::Deserialize;
 ///
 /// struct SlackBotToken;
+///
+/// #[derive(Deserialize, nebula_schema::Schema)]
+/// struct SlackBotProperties {
+///     #[field(secret)]
+///     #[validate(required)]
+///     bot_token: SecretString,
+/// }
 ///
 /// impl Credential for SlackBotToken {
 ///     // `State` == `Scheme` for static credentials: `SecretToken` is both an
 ///     // `AuthScheme` and (via `identity_state!`) a `CredentialState`.
-///     type Properties = FieldValues;
+///     type Properties = SlackBotProperties;
 ///     type Scheme = SecretToken;
 ///     type State = SecretToken;
 ///
 ///     const KEY: &'static str = "slack_bot_token";
 ///
-///     fn metadata() -> CredentialMetadata {
-///         CredentialMetadata::new(
+///     fn metadata() -> CredentialMetadataDraft {
+///         CredentialMetadataDraft::new(
 ///             credential_key!("slack_bot_token"),
-///             "Slack Bot Token",
+///             nebula_credential::metadata_name!("Slack Bot Token"),
 ///             "Slack bot OAuth token",
-///             ValidSchema::empty(),
 ///             AuthPattern::SecretToken,
 ///         )
 ///     }
@@ -111,11 +115,10 @@ use crate::{
 ///     fn project(state: &SecretToken) -> SecretToken { state.clone() }
 ///
 ///     async fn resolve(
-///         values: &FieldValues,
+///         properties: &SlackBotProperties,
 ///         _ctx: &CredentialContext,
-///     ) -> Result<ResolveResult<SecretToken, ()>, CredentialError> {
-///         let token = values.get_string_by_str("bot_token").unwrap_or_default();
-///         Ok(ResolveResult::Complete(SecretToken::new(SecretString::new(token.to_owned()))))
+///     ) -> Result<StaticResolveResult<SecretToken>, CredentialError> {
+///         Ok(StaticResolveResult::Complete(SecretToken::new(properties.bot_token.clone())))
 ///     }
 /// }
 ///
@@ -128,18 +131,16 @@ use crate::{
 pub trait Credential: Send + Sync + 'static {
     /// Typed shape of the credential setup-form fields.
     ///
-    /// Mirrors `Action::Input` / `Resource::Config` — the canonical
-    /// schema-bearing companion struct. Per Phase 5 of the M6 redesign
-    /// the schema lives on this type rather than being baked into
-    /// [`CredentialMetadata`]: read it via
+    /// Mirrors `Action::Input` / `Resource::Config`: the canonical
+    /// schema-bearing companion struct. Read its checked schema via
     /// [`nebula_schema::schema_of::<Self::Properties>()`](nebula_schema::schema_of)
     /// (there is no per-trait schema method — schema-of properties).
     ///
-    /// Use [`FieldValues`] for legacy credentials that do not yet
-    /// declare a typed properties struct (the blanket
-    /// [`HasSchema`](nebula_schema::HasSchema) impl returns an empty
-    /// schema).
-    type Properties: nebula_schema::HasSchema + Send + Sync + 'static;
+    /// Untyped test doubles may use `serde_json::Value`, whose schema is
+    /// gradual `Any`, not an empty record. Prefer a concrete properties type
+    /// for real credentials. The runtime owns the one trusted decode from
+    /// validated values into this type before provider dispatch.
+    type Properties: nebula_schema::HasSchema + serde::de::DeserializeOwned + Send + Sync + 'static;
 
     /// What this credential produces — the consumer-facing auth material.
     type Scheme: AuthScheme;
@@ -153,8 +154,9 @@ pub trait Credential: Send + Sync + 'static {
     const KEY: &'static str;
 
     /// Integration-catalog metadata: key, name, icon, documentation
-    /// URL, parameters.
-    fn metadata() -> CredentialMetadata
+    /// URL, and auth pattern. The draft cannot carry a schema; registry
+    /// admission derives it from [`Self::Properties`].
+    fn metadata() -> CredentialMetadataDraft
     where
         Self: Sized;
 
@@ -168,42 +170,20 @@ pub trait Credential: Send + Sync + 'static {
     where
         Self: Sized;
 
-    /// Build initial [`State`] from user [`Properties`] (carried as
-    /// [`FieldValues`]). Returns `ResolveResult<State, ()>`.
+    /// Build initial [`Self::State`] from typed properties decoded once by the
+    /// runtime after canonical schema validation. Returns
+    /// [`StaticResolveResult<State>`](StaticResolveResult).
     ///
-    /// # Allowed return shapes
+    /// Callers cannot provide or retain schema proof values. The runtime
+    /// consumes literal authored data, completes data-only validation, and
+    /// performs the trusted typed decode before invoking this method.
     ///
-    /// - [`Complete(state)`](ResolveResult::Complete) — credential resolved synchronously (the
-    ///   common case for non-interactive credentials such as API keys).
-    /// - [`Retry { after }`](ResolveResult::Retry) — caller polls again after the delay (rare; some
-    ///   long-running provider calls).
-    ///
-    /// # Forbidden: `Pending(())`
-    ///
-    /// The base resolve **must not** return
-    /// [`Pending`](ResolveResult::Pending). Per Tech Spec §15.4 the
-    /// degenerate `state: ()` carried here cannot deserialize into a
-    /// credential's typed [`Interactive::Pending`] later in
-    /// [`Interactive::continue_resolve`]. The framework executor
-    /// (`nebula-engine` `execute_resolve`) rejects `Pending` from the
-    /// base resolve with `ExecutorError::BaseResolvePending`.
-    ///
-    /// Interactive credentials kick off through credential-specific
-    /// helpers (e.g. `OAuth2Credential::initiate_authorization_code`)
-    /// that construct the typed `Self::Pending` directly and persist it
-    /// via [`PendingStateStore::put`](crate::PendingStateStore::put);
-    /// `execute_continue::<C: Interactive>` then loads that typed
-    /// pending and threads it through
-    /// [`Interactive::continue_resolve`].
-    ///
-    /// [`Interactive::Pending`]: crate::Interactive::Pending
-    /// [`Interactive::continue_resolve`]: crate::Interactive::continue_resolve
-    /// [`Properties`]: Credential::Properties
-    /// [`State`]: Credential::State
+    /// The result can complete or request a retry. It cannot carry pending
+    /// state; interactive credentials use [`Interactive::begin`](crate::Interactive::begin).
     fn resolve(
-        values: &FieldValues,
+        properties: &Self::Properties,
         ctx: &CredentialContext,
-    ) -> impl Future<Output = Result<ResolveResult<Self::State, ()>, CredentialError>> + Send
+    ) -> impl Future<Output = Result<StaticResolveResult<Self::State>, CredentialError>> + Send
     where
         Self: Sized;
 }

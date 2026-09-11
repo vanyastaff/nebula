@@ -872,7 +872,16 @@ impl From<&nebula_engine::WorkflowStartError> for ApiError {
                         | nebula_storage_port::dto::RevisionCatalogError::UnsupportedRecordFormat {
                             ..
                         }
-                        | nebula_storage_port::dto::RevisionCatalogError::EmptyRecord,
+                        | nebula_storage_port::dto::RevisionCatalogError::EmptyRecord
+                        | nebula_storage_port::dto::RevisionCatalogError::RecordTooLarge { .. }
+                        | nebula_storage_port::dto::RevisionCatalogError::RecordNestingTooDeep { .. }
+                        | nebula_storage_port::dto::RevisionCatalogError::RecordStringTooLarge { .. }
+                        | nebula_storage_port::dto::RevisionCatalogError::RecordStringBudgetExceeded {
+                            ..
+                        }
+                        | nebula_storage_port::dto::RevisionCatalogError::RecordCollectionBudgetExceeded {
+                            ..
+                        },
                     ..
                 } => Self::Internal("Stored workflow revisions are inconsistent".into()),
                 nebula_engine::PlanFlavorRevisionBridgeError::Catalog { .. } => {
@@ -939,6 +948,72 @@ pub type ApiResult<T> = Result<T, ApiError>;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stored_revision_record_limit_failures_are_internal_and_payload_free() {
+        use nebula_error::Classify;
+        use nebula_storage_port::dto::{PlanFlavorRevisionTarget, RevisionCatalogError};
+
+        let target = PlanFlavorRevisionTarget::ExecutablePlan(
+            nebula_core::ExecutablePlanRevisionId::from_bytes([0x5a; 32]),
+        );
+        let cases = [
+            (
+                "record byte limit",
+                RevisionCatalogError::RecordTooLarge {
+                    max_bytes: 1_048_576,
+                    actual_bytes: 9_876_543,
+                },
+            ),
+            (
+                "record nesting limit",
+                RevisionCatalogError::RecordNestingTooDeep { target },
+            ),
+            (
+                "single string limit",
+                RevisionCatalogError::RecordStringTooLarge { target },
+            ),
+            (
+                "aggregate string budget",
+                RevisionCatalogError::RecordStringBudgetExceeded { target },
+            ),
+            (
+                "collection entry budget",
+                RevisionCatalogError::RecordCollectionBudgetExceeded { target },
+            ),
+        ];
+
+        for (case, source) in cases {
+            let start_error = nebula_engine::WorkflowStartError::RevisionUnavailable(Box::new(
+                nebula_engine::PlanFlavorRevisionBridgeError::Catalog { source },
+            ));
+            let api_error = ApiError::from(&start_error);
+            std::assert_matches!(
+                &api_error,
+                ApiError::Internal(message)
+                    if message == "Stored workflow revisions are inconsistent",
+                "unexpected API classification for {case}: {api_error:?}"
+            );
+            assert_eq!(
+                api_error.category(),
+                nebula_error::ErrorCategory::Internal,
+                "unexpected error category for {case}"
+            );
+            assert_eq!(api_error.code().as_str(), "API:INTERNAL");
+
+            let (status, problem) = api_error.to_problem_details();
+            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "case: {case}");
+            assert_eq!(
+                serde_json::to_value(problem).expect("problem details serialize"),
+                serde_json::json!({
+                    "type": "about:blank",
+                    "title": "Internal Server Error",
+                    "status": 500,
+                }),
+                "problem details exposed diagnostics for {case}"
+            );
+        }
+    }
+
     #[test]
     fn emitter_admission_source_maps_to_the_same_transport_error() {
         let error = nebula_action::ActionError::fatal_from(

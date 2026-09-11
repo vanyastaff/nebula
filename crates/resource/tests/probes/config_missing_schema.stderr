@@ -1,0 +1,23 @@
+error: only unit and empty-braced configs have automatic schemas; add #[config(schema = external)] and derive Schema or implement HasSchema
+ --> tests/probes/config_missing_schema.rs:4:8
+  |
+4 | struct NamedConfig {
+  |        ^^^^^^^^^^^
+
+error: only unit and empty-braced configs have automatic schemas; add #[config(schema = external)] and derive Schema or implement HasSchema
+ --> tests/probes/config_missing_schema.rs:9:8
+  |
+9 | struct ScalarConfig(String);
+  |        ^^^^^^^^^^^^
+
+error: only unit and empty-braced configs have automatic schemas; add #[config(schema = external)] and derive Schema or implement HasSchema
+  --> tests/probes/config_missing_schema.rs:12:8
+   |
+12 | struct TupleConfig(String, u32);
+   |        ^^^^^^^^^^^
+
+error: only unit and empty-braced configs have automatic schemas; add #[config(schema = external)] and derive Schema or implement HasSchema
+  --> tests/probes/config_missing_schema.rs:15:8
+   |
+15 | struct EmptyTupleConfig();
+   |        ^^^^^^^^^^^^^^^^

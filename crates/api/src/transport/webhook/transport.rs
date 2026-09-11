@@ -699,8 +699,11 @@ pub async fn activate_and_persist(
 mod tests {
     use std::sync::Arc;
 
-    use nebula_action::{TriggerContext, TriggerHandler, WebhookConfig};
-    use nebula_core::{BaseContext, scope::Principal};
+    use nebula_action::{
+        Action, ActionMetadataDraft, TriggerContext, TriggerEventOutcome, TriggerHandler,
+        WebhookAction, WebhookConfig, WebhookRequest, WebhookResponse, WebhookTriggerAdapter,
+    };
+    use nebula_core::{BaseContext, Dependencies, scope::Principal};
     use nebula_storage::inmem::InMemoryWebhookActivationStore;
     use nebula_storage_port::Scope;
     use nebula_storage_port::dto::WebhookMode;
@@ -713,32 +716,48 @@ mod tests {
 
     static_assertions::assert_not_impl_any!(ActivationHandle: Clone);
 
-    // Minimal no-op TriggerHandler for tests.
-    struct Noop {
-        meta: nebula_action::ActionMetadata,
+    struct NoopWebhook;
+
+    impl Action for NoopWebhook {
+        type Input = serde_json::Value;
+        type Output = serde_json::Value;
+
+        fn metadata() -> ActionMetadataDraft {
+            ActionMetadataDraft::new(
+                nebula_core::action_key!("test.transport.noop"),
+                nebula_action::metadata_name!("Noop"),
+                "mint-persist test",
+            )
+        }
+
+        fn dependencies() -> &'static Dependencies {
+            static DEPENDENCIES: std::sync::OnceLock<Dependencies> = std::sync::OnceLock::new();
+            DEPENDENCIES.get_or_init(Dependencies::new)
+        }
     }
 
-    #[async_trait::async_trait]
-    impl TriggerHandler for Noop {
-        fn metadata(&self) -> &nebula_action::ActionMetadata {
-            &self.meta
-        }
-        async fn start(&self, _ctx: &dyn TriggerContext) -> Result<(), nebula_action::ActionError> {
+    impl WebhookAction for NoopWebhook {
+        type State = ();
+
+        async fn on_activate(
+            &self,
+            _ctx: &(impl TriggerContext + ?Sized),
+        ) -> Result<(), nebula_action::ActionError> {
             Ok(())
         }
-        async fn stop(&self, _ctx: &dyn TriggerContext) -> Result<(), nebula_action::ActionError> {
-            Ok(())
+
+        async fn handle_request(
+            &self,
+            _request: &WebhookRequest,
+            _state: &(),
+            _ctx: &(impl TriggerContext + ?Sized),
+        ) -> Result<WebhookResponse, nebula_action::ActionError> {
+            Ok(WebhookResponse::accept(TriggerEventOutcome::skip()))
         }
     }
 
     fn noop_handler() -> Arc<dyn TriggerHandler> {
-        Arc::new(Noop {
-            meta: nebula_action::ActionMetadata::new(
-                nebula_core::action_key!("test.transport.noop"),
-                "Noop",
-                "mint-persist test",
-            ),
-        })
+        Arc::new(WebhookTriggerAdapter::new(NoopWebhook).expect("valid test catalog definition"))
     }
 
     fn ctx_template() -> TriggerRuntimeContext {

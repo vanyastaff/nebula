@@ -6,10 +6,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use nebula_action::result::ActionResult;
 use nebula_core::ArtifactSetDigest;
 use nebula_engine::{
-    ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, EngineError, ExecutionStores,
+    ActionRegistry, ActionRuntime, DataPassingPolicy, EngineError, ExecutionStores,
     InProcessRunner, Plugin, PluginKey, PluginWiringError, ResolvedPlugin,
     ResourceFanoutCoordinator, ResourceFanoutCoordinatorBuildError, WorkflowEngine,
     WorkflowStartBuildError, WorkflowStartService, WorkflowStores,
@@ -259,19 +258,9 @@ fn build_core_flavor_runtime_impl(
     let resolved = Arc::new(ResolvedPlugin::from(core_plugin)?);
 
     // Build the action runtime and workflow engine.
-    //
-    // `InProcessRunner` + a no-op executor are the structural boilerplate required
-    // by `ActionRuntime::try_new`. The factory-dispatch path (reached via
-    // `with_plugin`) does not use the legacy executor; it calls the factory's
-    // `create` method directly and drives the produced action through the engine's
-    // own dispatch machinery. The no-op executor is present only to satisfy the
-    // `ActionRuntime` constructor, which requires it even when all actions arrive
-    // via `register_*_factory` / `with_plugin`.
     let metrics = revisions.metrics;
     let registry = Arc::new(ActionRegistry::new());
-    let executor: ActionExecutor =
-        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    let runner = Arc::new(InProcessRunner::new(executor));
+    let runner = Arc::new(InProcessRunner::new());
     // `try_new` returns `Result<_, MetricsError>`; `MetricsError: Into<EngineError>`
     // via `EngineError::Telemetry(#[from] MetricsError)`, so `.map_err` bridges
     // the two error types through the shared `EngineError` wrapper.

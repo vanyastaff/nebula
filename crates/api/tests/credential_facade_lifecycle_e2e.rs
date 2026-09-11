@@ -35,14 +35,14 @@ use nebula_credential::error::CredentialError;
 use nebula_credential::provider::{
     ExternalProvider, ExternalReference, ProviderError, ProviderFuture,
 };
-use nebula_credential::resolve::ResolveResult;
+use nebula_credential::resolve::StaticResolveResult;
 use nebula_credential::{
-    CredentialContext, CredentialDisplay, CredentialMetadata, CredentialRegistry,
+    CredentialContext, CredentialDisplay, CredentialMetadataDraft, CredentialRegistry,
     CredentialService, CredentialServiceError, DispatchOps, ErasedPendingStore, RefreshAttempt,
-    RefreshReport, TenantScope, ValidatedCredentialBindingError, identity_state,
-    register_refreshable_ops, register_revocable_ops, register_runtime_ops, schema_of,
+    RefreshReport, SecretString, TenantScope, ValidatedCredentialBindingError, identity_state,
+    register_refreshable_ops, register_revocable_ops, register_runtime_ops,
 };
-use nebula_schema::{FieldValues, Schema};
+use nebula_schema::Schema;
 use nebula_storage::credential::EnvKeyProvider;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -109,16 +109,12 @@ identity_state!(TestScheme, "test_lifecycle_state", 1);
 
 /// Create-form properties.
 //
-// `token` is read by the `#[derive(Schema)]`/`Deserialize` derives and consumed
-// at runtime through `FieldValues` in `resolve`, never via direct field access —
-// `dead_code` cannot see those paths on a private test struct.
-#[derive(Schema, Deserialize, Default)]
-#[expect(dead_code)]
+#[derive(Schema, Deserialize)]
 struct TestProps {
     /// Initial secret token.
     #[field(secret, label = "Token")]
     #[validate(required)]
-    token: String,
+    token: SecretString,
 }
 
 /// The credential type under test. `#[credential]` reads the methods present —
@@ -133,15 +129,13 @@ impl TestLifecycleCred {
     type Scheme = TestScheme;
     type State = TestScheme;
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::builder()
-            .key(nebula_core::credential_key!("test_lifecycle"))
-            .name("Test Lifecycle Credential")
-            .description("non-interactive refreshable+revocable credential for facade E2E tests")
-            .schema(schema_of::<Self::Properties>())
-            .pattern(AuthPattern::OAuth2)
-            .build()
-            .expect("test_lifecycle metadata is valid")
+    fn metadata() -> CredentialMetadataDraft {
+        CredentialMetadataDraft::new(
+            nebula_core::credential_key!("test_lifecycle"),
+            nebula_credential::metadata_name!("Test Lifecycle Credential"),
+            "non-interactive refreshable+revocable credential for facade E2E tests",
+            AuthPattern::OAuth2,
+        )
     }
 
     fn project(state: &TestScheme) -> TestScheme {
@@ -149,16 +143,14 @@ impl TestLifecycleCred {
     }
 
     async fn resolve(
-        values: &FieldValues,
+        properties: &TestProps,
         _ctx: &CredentialContext,
-    ) -> Result<ResolveResult<TestScheme, ()>, CredentialError> {
-        let token = values.get_string_by_str("token").ok_or_else(|| {
-            CredentialError::InvalidInput("missing required field 'token'".into())
-        })?;
+    ) -> Result<StaticResolveResult<TestScheme>, CredentialError> {
+        let token = properties.token.expose_secret();
         if token == "must-not-resolve" {
             STALE_UPDATE_RESOLVE_CALLS.fetch_add(1, Ordering::SeqCst);
         }
-        Ok(ResolveResult::Complete(TestScheme {
+        Ok(StaticResolveResult::Complete(TestScheme {
             token: token.to_owned(),
             generation: 1,
         }))

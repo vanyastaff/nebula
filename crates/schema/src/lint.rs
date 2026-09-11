@@ -2,7 +2,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use nebula_validator::{DeferredRule, Logic, Predicate, Rule, ValueRule};
+use nebula_validator::{
+    DeferredRule, Predicate, Rule, RuleBuildError, RuleRef, RuleView, ValueRule,
+};
 
 use crate::{
     Field, FieldPath, ListField, ModeField, RequiredMode, VisibilityMode,
@@ -49,6 +51,9 @@ fn lint_legacy_root_reference(field_ref: &str, path: &FieldPath, report: &mut Va
     fields(field_count = fields.len(), prefix = %prefix)
 )]
 pub(crate) fn lint_tree(fields: &[Field], prefix: &FieldPath, report: &mut ValidationReport) {
+    if !lint_field_rule_budgets(fields, report) {
+        return;
+    }
     // Collect root-level key set for cross-reference checks.
     let root_keys: HashSet<&str> = fields.iter().map(|f| f.key().as_str()).collect();
     lint_fields_new(fields, prefix, &root_keys, report);
@@ -74,6 +79,9 @@ pub(crate) fn lint_tree(fields: &[Field], prefix: &FieldPath, report: &mut Valid
 /// checked against the global schema path set.
 pub(crate) fn lint_root_rules(rules: &[Rule], fields: &[Field], report: &mut ValidationReport) {
     if rules.is_empty() {
+        return;
+    }
+    if !lint_rule_budgets(rules, &FieldPath::root(), report) {
         return;
     }
 
@@ -127,6 +135,51 @@ pub(crate) fn lint_root_rules(rules: &[Rule], fields: &[Field], report: &mut Val
             }
         }
     }
+}
+
+fn lint_field_rule_budgets(fields: &[Field], report: &mut ValidationReport) -> bool {
+    let mut admitted = true;
+    walk_schema_fields(fields, |node| {
+        admitted &= lint_rule_budgets(node.field.rules(), &node.path, report);
+        if let Some(rule) = field_visible_rule(node.field) {
+            admitted &= lint_rule_budget(rule, &node.path, report);
+        }
+        if let Some(rule) = field_required_rule(node.field) {
+            admitted &= lint_rule_budget(rule, &node.path, report);
+        }
+    });
+    admitted
+}
+
+fn lint_rule_budgets(rules: &[Rule], path: &FieldPath, report: &mut ValidationReport) -> bool {
+    rules
+        .iter()
+        .all(|rule| lint_rule_budget(rule, path, report))
+}
+
+fn lint_rule_budget(rule: &Rule, path: &FieldPath, report: &mut ValidationReport) -> bool {
+    match rule.check_limits() {
+        Ok(()) => true,
+        Err(error) => {
+            report.push(rule_budget_error(path, error));
+            false
+        },
+    }
+}
+
+fn rule_budget_error(path: &FieldPath, error: RuleBuildError) -> ValidationError {
+    let mut builder = ValidationError::builder("rule.budget_exceeded")
+        .at(path.clone())
+        .message(error.to_string());
+    if let Some((budget, limit)) = error.budget() {
+        builder = builder
+            .param(
+                "budget",
+                serde_json::Value::String(budget.as_str().to_owned()),
+            )
+            .param("limit", serde_json::Value::from(limit));
+    }
+    builder.build()
 }
 
 fn lint_fields_new(
@@ -741,7 +794,7 @@ fn lint_mode_new(
                     variant.key.as_str(),
                     format!(
                         "mode variant key cannot participate in schema paths: {}",
-                        e.message
+                        e.message()
                     ),
                 ));
                 None
@@ -906,51 +959,47 @@ fn lint_single_compat_new(
     path: &FieldPath,
     report: &mut ValidationReport,
 ) {
-    let compatible = match rule {
-        Rule::Value(v) => match v {
-            ValueRule::Pattern(_)
-            | ValueRule::MinLength(_)
-            | ValueRule::MaxLength(_)
-            | ValueRule::Email
-            | ValueRule::Url => supports_string_rules(field),
-            ValueRule::Min(_)
-            | ValueRule::Max(_)
-            | ValueRule::GreaterThan(_)
-            | ValueRule::LessThan(_) => supports_number_rules(field),
-            ValueRule::MinItems(_) | ValueRule::MaxItems(_) => supports_collection_rules(field),
+    let mut pending = vec![rule.root()];
+    while let Some(current) = pending.pop() {
+        let compatible = match current.view() {
+            RuleView::Value(value) => match value {
+                ValueRule::Pattern(_)
+                | ValueRule::MinLength(_)
+                | ValueRule::MaxLength(_)
+                | ValueRule::Email
+                | ValueRule::Url => supports_string_rules(field),
+                ValueRule::Min(_)
+                | ValueRule::Max(_)
+                | ValueRule::GreaterThan(_)
+                | ValueRule::LessThan(_) => supports_number_rules(field),
+                ValueRule::MinItems(_) | ValueRule::MaxItems(_) => supports_collection_rules(field),
+                _ => true,
+            },
+            RuleView::All(children) | RuleView::Any(children) => {
+                pending.extend(children);
+                true
+            },
+            RuleView::Not(inner) | RuleView::Described { inner, .. } => {
+                pending.push(inner);
+                true
+            },
+            RuleView::Predicate(_) | RuleView::Deferred(_) => true,
             _ => true,
-        },
-        Rule::Logic(l) => match l.as_ref() {
-            Logic::All(rules) | Logic::Any(rules) => {
-                for nested in rules {
-                    lint_single_compat_new(field, nested, path, report);
-                }
-                true
-            },
-            Logic::Not(inner) => {
-                lint_single_compat_new(field, inner, path, report);
-                true
-            },
-        },
-        Rule::Described(inner, _) => {
-            lint_single_compat_new(field, inner, path, report);
-            true
-        },
-        _ => true,
-    };
+        };
 
-    if !compatible {
-        report.push(
-            ValidationError::builder("rule.incompatible")
-                .at(path.clone())
-                .message(format!(
-                    "rule `{}` is not compatible with `{}` field",
-                    rule_name(rule),
-                    field_type_name(field)
-                ))
-                .warn()
-                .build(),
-        );
+        if !compatible {
+            report.push(
+                ValidationError::builder("rule.incompatible")
+                    .at(path.clone())
+                    .message(format!(
+                        "rule `{}` is not compatible with `{}` field",
+                        rule_ref_name(current),
+                        field_type_name(field)
+                    ))
+                    .warn()
+                    .build(),
+            );
+        }
     }
 }
 
@@ -1031,51 +1080,54 @@ const fn field_type_name(field: &Field) -> &'static str {
     field.type_name()
 }
 
-fn rule_name(rule: &Rule) -> &'static str {
-    match rule {
-        Rule::Value(v) => match v {
-            ValueRule::Pattern(_) => "pattern",
-            ValueRule::MinLength(_) => "min_length",
-            ValueRule::MaxLength(_) => "max_length",
-            ValueRule::Min(_) => "min",
-            ValueRule::Max(_) => "max",
-            ValueRule::GreaterThan(_) => "greater_than",
-            ValueRule::LessThan(_) => "less_than",
-            ValueRule::OneOf(_) => "one_of",
-            ValueRule::MinItems(_) => "min_items",
-            ValueRule::MaxItems(_) => "max_items",
-            ValueRule::Email => "email",
-            ValueRule::Url => "url",
+fn rule_ref_name(mut rule: RuleRef<'_>) -> &'static str {
+    loop {
+        return match rule.view() {
+            RuleView::Value(v) => match v {
+                ValueRule::Pattern(_) => "pattern",
+                ValueRule::MinLength(_) => "min_length",
+                ValueRule::MaxLength(_) => "max_length",
+                ValueRule::Min(_) => "min",
+                ValueRule::Max(_) => "max",
+                ValueRule::GreaterThan(_) => "greater_than",
+                ValueRule::LessThan(_) => "less_than",
+                ValueRule::OneOf(_) => "one_of",
+                ValueRule::MinItems(_) => "min_items",
+                ValueRule::MaxItems(_) => "max_items",
+                ValueRule::Email => "email",
+                ValueRule::Url => "url",
+                _ => "unknown_rule",
+            },
+            RuleView::Deferred(d) => match d {
+                DeferredRule::UniqueBy(_) => "unique_by",
+                DeferredRule::Custom(_) => "custom",
+                _ => "unknown_rule",
+            },
+            RuleView::Predicate(p) => match p {
+                Predicate::Eq(..) => "eq",
+                Predicate::Ne(..) => "ne",
+                Predicate::Gt(..) => "gt",
+                Predicate::Gte(..) => "gte",
+                Predicate::Lt(..) => "lt",
+                Predicate::Lte(..) => "lte",
+                Predicate::IsTrue(_) => "is_true",
+                Predicate::IsFalse(_) => "is_false",
+                Predicate::Set(_) => "set",
+                Predicate::Empty(_) => "empty",
+                Predicate::Contains(..) => "contains",
+                Predicate::Matches(..) => "matches",
+                Predicate::In(..) => "in",
+                _ => "unknown_rule",
+            },
+            RuleView::All(_) => "all",
+            RuleView::Any(_) => "any",
+            RuleView::Not(_) => "not",
+            RuleView::Described { inner, .. } => {
+                rule = inner;
+                continue;
+            },
             _ => "unknown_rule",
-        },
-        Rule::Deferred(d) => match d {
-            DeferredRule::UniqueBy(_) => "unique_by",
-            DeferredRule::Custom(_) => "custom",
-            _ => "unknown_rule",
-        },
-        Rule::Predicate(p) => match p {
-            Predicate::Eq(..) => "eq",
-            Predicate::Ne(..) => "ne",
-            Predicate::Gt(..) => "gt",
-            Predicate::Gte(..) => "gte",
-            Predicate::Lt(..) => "lt",
-            Predicate::Lte(..) => "lte",
-            Predicate::IsTrue(_) => "is_true",
-            Predicate::IsFalse(_) => "is_false",
-            Predicate::Set(_) => "set",
-            Predicate::Empty(_) => "empty",
-            Predicate::Contains(..) => "contains",
-            Predicate::Matches(..) => "matches",
-            Predicate::In(..) => "in",
-            _ => "unknown_rule",
-        },
-        Rule::Logic(l) => match l.as_ref() {
-            Logic::All(_) => "all",
-            Logic::Any(_) => "any",
-            Logic::Not(_) => "not",
-        },
-        Rule::Described(inner, _) => rule_name(inner),
-        _ => "unknown_rule",
+        };
     }
 }
 
@@ -1086,43 +1138,23 @@ fn collect_min_max(
     min_items: &mut Option<usize>,
     max_items: &mut Option<usize>,
 ) {
-    for rule in rules {
-        match rule {
-            Rule::Value(ValueRule::MinLength(min)) => {
+    let mut pending: Vec<_> = rules.iter().map(Rule::root).collect();
+    while let Some(rule) = pending.pop() {
+        match rule.view() {
+            RuleView::Value(ValueRule::MinLength(min)) => {
                 *min_length = Some(min_length.map_or(*min, |current| current.max(*min)));
             },
-            Rule::Value(ValueRule::MaxLength(max)) => {
+            RuleView::Value(ValueRule::MaxLength(max)) => {
                 *max_length = Some(max_length.map_or(*max, |current| current.min(*max)));
             },
-            Rule::Value(ValueRule::MinItems(min)) => {
+            RuleView::Value(ValueRule::MinItems(min)) => {
                 *min_items = Some(min_items.map_or(*min, |current| current.max(*min)));
             },
-            Rule::Value(ValueRule::MaxItems(max)) => {
+            RuleView::Value(ValueRule::MaxItems(max)) => {
                 *max_items = Some(max_items.map_or(*max, |current| current.min(*max)));
             },
-            Rule::Logic(l) => match l.as_ref() {
-                Logic::All(rules) | Logic::Any(rules) => {
-                    collect_min_max(rules, min_length, max_length, min_items, max_items);
-                },
-                Logic::Not(inner) => {
-                    collect_min_max(
-                        std::slice::from_ref(inner),
-                        min_length,
-                        max_length,
-                        min_items,
-                        max_items,
-                    );
-                },
-            },
-            Rule::Described(inner, _) => {
-                collect_min_max(
-                    std::slice::from_ref(inner.as_ref()),
-                    min_length,
-                    max_length,
-                    min_items,
-                    max_items,
-                );
-            },
+            RuleView::All(children) | RuleView::Any(children) => pending.extend(children),
+            RuleView::Not(inner) | RuleView::Described { inner, .. } => pending.push(inner),
             _ => {},
         }
     }
@@ -1486,46 +1518,43 @@ fn walk_rule_for_secret_value_predicates(
     path: &FieldPath,
     report: &mut ValidationReport,
 ) {
-    match rule {
-        Rule::Predicate(predicate) if predicate_reads_value(predicate) => {
-            // Match either the raw pointer segments or the index-normalized
-            // key segments. The union strictly widens detection: a secret
-            // addressed through a concrete list instance (`/items/0/token`)
-            // normalizes to the same key path the secret set is keyed by, so
-            // it can no longer slip the guard into the unscrubbed root-rule
-            // context. Never narrows — anything the raw check caught before
-            // still matches.
-            let raw: Vec<String> = predicate
-                .field()
-                .segments()
-                .map(std::borrow::Cow::into_owned)
-                .collect();
-            let normalized = normalized_predicate_key_segments(predicate);
-            let hit =
-                secrets.contains(&raw) || normalized.is_some_and(|segs| secrets.contains(&segs));
-            if hit {
-                let pointer = predicate.field().as_str();
-                report.push(
-                    ValidationError::builder("secret.predicate_on_value")
-                        .at(path.clone())
-                        .message(format!(
-                            "predicate targets secret field `{pointer}` by value; only \
+    let mut pending = vec![rule.root()];
+    while let Some(rule) = pending.pop() {
+        match rule.view() {
+            RuleView::Predicate(predicate) if predicate_reads_value(predicate) => {
+                // Match either the raw pointer segments or the index-normalized
+                // key segments. The union strictly widens detection: a secret
+                // addressed through a concrete list instance (`/items/0/token`)
+                // normalizes to the same key path the secret set is keyed by, so
+                // it can no longer slip the guard into the unscrubbed root-rule
+                // context. Never narrows — anything the raw check caught before
+                // still matches.
+                let raw: Vec<String> = predicate
+                    .field()
+                    .segments()
+                    .map(std::borrow::Cow::into_owned)
+                    .collect();
+                let normalized = normalized_predicate_key_segments(predicate);
+                let hit = secrets.contains(&raw)
+                    || normalized.is_some_and(|segs| secrets.contains(&segs));
+                if hit {
+                    let pointer = predicate.field().as_str();
+                    report.push(
+                        ValidationError::builder("secret.predicate_on_value")
+                            .at(path.clone())
+                            .message(format!(
+                                "predicate targets secret field `{pointer}` by value; only \
                              Set/Empty (presence) predicates may reference a secret"
-                        ))
-                        .build(),
-                );
-            }
-        },
-        Rule::Predicate(_) => {},
-        Rule::Logic(logic) => {
-            for child in logic.children() {
-                walk_rule_for_secret_value_predicates(child, secrets, path, report);
-            }
-        },
-        Rule::Described(inner, _) => {
-            walk_rule_for_secret_value_predicates(inner, secrets, path, report);
-        },
-        _ => {},
+                            ))
+                            .build(),
+                    );
+                }
+            },
+            RuleView::Predicate(_) => {},
+            RuleView::All(children) | RuleView::Any(children) => pending.extend(children),
+            RuleView::Not(inner) | RuleView::Described { inner, .. } => pending.push(inner),
+            _ => {},
+        }
     }
 }
 
@@ -1569,7 +1598,7 @@ fn lint_secret_predicate_on_value(fields: &[Field], report: &mut ValidationRepor
 /// `ExpressionMode::Forbidden` on it. If a hand-built variant uses that same key
 /// but leaves the placeholder at the default `ExpressionMode::Allowed` (or
 /// `Required`), an attacker can submit `{"mode":"<variant>","value":{"$expr":…}}`:
-/// `FieldValue::from_json` turns `{"$expr":…}` into `FieldValue::Expression`,
+/// explicit authoring ingress turns `{"$expr":…}` into `AuthoredValue::Expression`,
 /// which under a non-`Forbidden` placeholder is accepted by `validate` and is
 /// evaluated at `resolve`. Refusing such a schema at `build()` is the fail-closed
 /// boundary (a `ValidSchema` can only be minted through the builder), mirroring
@@ -1620,6 +1649,10 @@ mod tests {
         report
     }
 
+    fn predicate_rule(predicate: Predicate) -> Rule {
+        Rule::predicate(predicate).unwrap()
+    }
+
     #[test]
     fn detects_duplicate_key() {
         let fields = vec![
@@ -1627,7 +1660,7 @@ mod tests {
             Field::number(FieldKey::new("x").unwrap()).into_field(),
         ];
         let report = run(&fields);
-        assert!(report.errors().any(|e| e.code == "duplicate_key"));
+        assert!(report.errors().any(|e| e.code() == "duplicate_key"));
     }
 
     #[test]
@@ -1644,14 +1677,14 @@ mod tests {
     fn root_rule_rejects_unknown_field_reference() {
         let result = crate::Schema::builder()
             .add(Field::string(FieldKey::new("tier").unwrap()))
-            .root_rule(Rule::predicate(
+            .root_rule(predicate_rule(
                 Predicate::eq("/missing", json!("pro")).unwrap(),
             ))
             .build();
 
         let report = result.expect_err("root rule should fail lint");
         assert!(
-            report.errors().any(|e| e.code == "dangling_reference"),
+            report.errors().any(|e| e.code() == "dangling_reference"),
             "expected dangling_reference, got: {report:?}"
         );
     }
@@ -1663,7 +1696,7 @@ mod tests {
                 Field::object(FieldKey::new("config").unwrap())
                     .add(Field::string(FieldKey::new("tier").unwrap())),
             )
-            .root_rule(Rule::predicate(
+            .root_rule(predicate_rule(
                 Predicate::eq("/config/tier", json!("pro")).unwrap(),
             ))
             .build();
@@ -1680,7 +1713,7 @@ mod tests {
                         .add(Field::string(FieldKey::new("name").unwrap())),
                 ),
             )
-            .root_rule(Rule::predicate(
+            .root_rule(predicate_rule(
                 Predicate::eq("/items/name", json!("x")).unwrap(),
             ))
             .build();
@@ -1692,7 +1725,7 @@ mod tests {
     fn detects_missing_item_schema() {
         let fields = vec![Field::list(FieldKey::new("items").unwrap()).into_field()];
         let report = run(&fields);
-        assert!(report.errors().any(|e| e.code == "missing_item_schema"));
+        assert!(report.errors().any(|e| e.code() == "missing_item_schema"));
     }
 
     #[test]
@@ -1703,7 +1736,11 @@ mod tests {
                 .into_field(),
         ];
         let report = run(&fields);
-        assert!(report.errors().any(|e| e.code == "invalid_default_variant"));
+        assert!(
+            report
+                .errors()
+                .any(|e| e.code() == "invalid_default_variant")
+        );
     }
 
     #[test]
@@ -1715,7 +1752,7 @@ mod tests {
                 .into_field(),
         ];
         let report = run(&fields);
-        assert!(report.errors().any(|e| e.code == "duplicate_variant"));
+        assert!(report.errors().any(|e| e.code() == "duplicate_variant"));
     }
 
     #[test]
@@ -1730,24 +1767,27 @@ mod tests {
                 .into_field(),
         ];
         let report = run(&fields);
-        assert!(report.errors().any(|e| e.code == "invalid_key"));
+        assert!(report.errors().any(|e| e.code() == "invalid_key"));
     }
 
     #[test]
     fn detects_visibility_cycle_between_top_level_fields() {
         let fields = vec![
             Field::string(FieldKey::new("a").unwrap())
-                .visible_when(Rule::predicate(Predicate::eq("/b", json!("on")).unwrap()))
+                .visible_when(predicate_rule(Predicate::eq("/b", json!("on")).unwrap()))
                 .into_field(),
             Field::string(FieldKey::new("b").unwrap())
-                .visible_when(Rule::predicate(Predicate::eq("/a", json!("on")).unwrap()))
+                .visible_when(predicate_rule(Predicate::eq("/a", json!("on")).unwrap()))
                 .into_field(),
         ];
         let report = run(&fields);
         assert!(
-            report.errors().any(|e| e.code == "visibility_cycle"),
+            report.errors().any(|e| e.code() == "visibility_cycle"),
             "expected visibility_cycle, got {:?}",
-            report.errors().map(|e| &e.code).collect::<Vec<_>>()
+            report
+                .errors()
+                .map(ValidationError::code)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -1756,23 +1796,26 @@ mod tests {
         let outer = Field::object(field_key!("outer"))
             .add(
                 Field::string(field_key!("x"))
-                    .visible_when(Rule::predicate(
+                    .visible_when(predicate_rule(
                         Predicate::eq("/outer/y", json!(true)).unwrap(),
                     ))
                     .into_field(),
             )
             .add(
                 Field::string(field_key!("y"))
-                    .visible_when(Rule::predicate(
+                    .visible_when(predicate_rule(
                         Predicate::eq("/outer/x", json!(true)).unwrap(),
                     ))
                     .into_field(),
             );
         let report = run(&[outer.into()]);
         assert!(
-            report.errors().any(|e| e.code == "visibility_cycle"),
+            report.errors().any(|e| e.code() == "visibility_cycle"),
             "expected visibility_cycle, got {:?}",
-            report.errors().map(|e| &e.code).collect::<Vec<_>>()
+            report
+                .errors()
+                .map(ValidationError::code)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -1781,13 +1824,13 @@ mod tests {
         let fields = vec![
             Field::string(field_key!("toggle")).into_field(),
             Field::string(field_key!("detail"))
-                .visible_when(Rule::predicate(
+                .visible_when(predicate_rule(
                     Predicate::eq("/toggle", json!(true)).unwrap(),
                 ))
                 .into_field(),
         ];
         let report = run(&fields);
-        assert!(!report.errors().any(|e| e.code == "visibility_cycle"));
+        assert!(!report.errors().any(|e| e.code() == "visibility_cycle"));
     }
 
     #[test]
@@ -1798,14 +1841,14 @@ mod tests {
                     Field::object(field_key!("row"))
                         .add(
                             Field::string(field_key!("x"))
-                                .visible_when(Rule::predicate(
+                                .visible_when(predicate_rule(
                                     Predicate::eq("/items/0/y", json!(true)).unwrap(),
                                 ))
                                 .into_field(),
                         )
                         .add(
                             Field::string(field_key!("y"))
-                                .visible_when(Rule::predicate(
+                                .visible_when(predicate_rule(
                                     Predicate::eq("/items/0/x", json!(true)).unwrap(),
                                 ))
                                 .into_field(),
@@ -1816,9 +1859,12 @@ mod tests {
 
         let report = run(&fields);
         assert!(
-            report.errors().any(|e| e.code == "visibility_cycle"),
+            report.errors().any(|e| e.code() == "visibility_cycle"),
             "expected visibility_cycle, got {:?}",
-            report.errors().map(|e| &e.code).collect::<Vec<_>>()
+            report
+                .errors()
+                .map(ValidationError::code)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -1828,7 +1874,7 @@ mod tests {
             Field::object(field_key!("outer"))
                 .add(
                     Field::string(field_key!("x"))
-                        .visible_when(Rule::predicate(
+                        .visible_when(predicate_rule(
                             Predicate::eq("/outer/y", json!(true)).unwrap(),
                         ))
                         .into_field(),
@@ -1839,11 +1885,11 @@ mod tests {
 
         let report = run(&fields);
         assert!(
-            !report.errors().any(|e| e.code == "dangling_reference"),
+            !report.errors().any(|e| e.code() == "dangling_reference"),
             "did not expect dangling_reference, got {:?}",
             report
                 .errors()
-                .map(|e| (&e.code, e.path.to_string()))
+                .map(|e| (e.code(), e.path().to_string()))
                 .collect::<Vec<_>>()
         );
     }
@@ -1852,14 +1898,14 @@ mod tests {
     fn detects_visibility_cycle_through_mode_variant_payload() {
         let fields = vec![
             Field::string(field_key!("a"))
-                .visible_when(Rule::predicate(Predicate::eq("/m/v", json!(true)).unwrap()))
+                .visible_when(predicate_rule(Predicate::eq("/m/v", json!(true)).unwrap()))
                 .into_field(),
             Field::mode(field_key!("m"))
                 .variant(
                     "v",
                     "Variant",
                     Field::string(field_key!("payload"))
-                        .visible_when(Rule::predicate(Predicate::eq("/a", json!(true)).unwrap()))
+                        .visible_when(predicate_rule(Predicate::eq("/a", json!(true)).unwrap()))
                         .into_field(),
                 )
                 .into_field(),
@@ -1867,9 +1913,12 @@ mod tests {
 
         let report = run(&fields);
         assert!(
-            report.errors().any(|e| e.code == "visibility_cycle"),
+            report.errors().any(|e| e.code() == "visibility_cycle"),
             "expected visibility_cycle, got {:?}",
-            report.errors().map(|e| &e.code).collect::<Vec<_>>()
+            report
+                .errors()
+                .map(ValidationError::code)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -1877,18 +1926,21 @@ mod tests {
     fn detects_required_cycle_between_top_level_fields() {
         let fields = vec![
             Field::string(field_key!("a"))
-                .required_when(Rule::predicate(Predicate::eq("/b", json!(true)).unwrap()))
+                .required_when(predicate_rule(Predicate::eq("/b", json!(true)).unwrap()))
                 .into_field(),
             Field::string(field_key!("b"))
-                .required_when(Rule::predicate(Predicate::eq("/a", json!(true)).unwrap()))
+                .required_when(predicate_rule(Predicate::eq("/a", json!(true)).unwrap()))
                 .into_field(),
         ];
 
         let report = run(&fields);
         assert!(
-            report.errors().any(|e| e.code == "required_cycle"),
+            report.errors().any(|e| e.code() == "required_cycle"),
             "expected required_cycle, got {:?}",
-            report.errors().map(|e| &e.code).collect::<Vec<_>>()
+            report
+                .errors()
+                .map(ValidationError::code)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -1897,14 +1949,14 @@ mod tests {
         let outer = Field::object(field_key!("outer"))
             .add(
                 Field::string(field_key!("x"))
-                    .required_when(Rule::predicate(
+                    .required_when(predicate_rule(
                         Predicate::eq("/outer/y", json!(true)).unwrap(),
                     ))
                     .into_field(),
             )
             .add(
                 Field::string(field_key!("y"))
-                    .required_when(Rule::predicate(
+                    .required_when(predicate_rule(
                         Predicate::eq("/outer/x", json!(true)).unwrap(),
                     ))
                     .into_field(),
@@ -1912,9 +1964,12 @@ mod tests {
 
         let report = run(&[outer.into()]);
         assert!(
-            report.errors().any(|e| e.code == "required_cycle"),
+            report.errors().any(|e| e.code() == "required_cycle"),
             "expected required_cycle, got {:?}",
-            report.errors().map(|e| &e.code).collect::<Vec<_>>()
+            report
+                .errors()
+                .map(ValidationError::code)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -1926,14 +1981,14 @@ mod tests {
                     Field::object(field_key!("row"))
                         .add(
                             Field::string(field_key!("x"))
-                                .required_when(Rule::predicate(
+                                .required_when(predicate_rule(
                                     Predicate::eq("/items/0/y", json!(true)).unwrap(),
                                 ))
                                 .into_field(),
                         )
                         .add(
                             Field::string(field_key!("y"))
-                                .required_when(Rule::predicate(
+                                .required_when(predicate_rule(
                                     Predicate::eq("/items/0/x", json!(true)).unwrap(),
                                 ))
                                 .into_field(),
@@ -1944,9 +1999,12 @@ mod tests {
 
         let report = run(&fields);
         assert!(
-            report.errors().any(|e| e.code == "required_cycle"),
+            report.errors().any(|e| e.code() == "required_cycle"),
             "expected required_cycle, got {:?}",
-            report.errors().map(|e| &e.code).collect::<Vec<_>>()
+            report
+                .errors()
+                .map(ValidationError::code)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -1954,14 +2012,14 @@ mod tests {
     fn detects_required_cycle_through_mode_variant_payload() {
         let fields = vec![
             Field::string(field_key!("a"))
-                .required_when(Rule::predicate(Predicate::eq("/m/v", json!(true)).unwrap()))
+                .required_when(predicate_rule(Predicate::eq("/m/v", json!(true)).unwrap()))
                 .into_field(),
             Field::mode(field_key!("m"))
                 .variant(
                     "v",
                     "Variant",
                     Field::string(field_key!("payload"))
-                        .required_when(Rule::predicate(Predicate::eq("/a", json!(true)).unwrap()))
+                        .required_when(predicate_rule(Predicate::eq("/a", json!(true)).unwrap()))
                         .into_field(),
                 )
                 .into_field(),
@@ -1969,9 +2027,12 @@ mod tests {
 
         let report = run(&fields);
         assert!(
-            report.errors().any(|e| e.code == "required_cycle"),
+            report.errors().any(|e| e.code() == "required_cycle"),
             "expected required_cycle, got {:?}",
-            report.errors().map(|e| &e.code).collect::<Vec<_>>()
+            report
+                .errors()
+                .map(ValidationError::code)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -1979,25 +2040,31 @@ mod tests {
     fn detects_visibility_and_required_cycles_independently() {
         let fields = vec![
             Field::string(field_key!("a"))
-                .visible_when(Rule::predicate(Predicate::eq("/b", json!(true)).unwrap()))
-                .required_when(Rule::predicate(Predicate::eq("/b", json!(true)).unwrap()))
+                .visible_when(predicate_rule(Predicate::eq("/b", json!(true)).unwrap()))
+                .required_when(predicate_rule(Predicate::eq("/b", json!(true)).unwrap()))
                 .into_field(),
             Field::string(field_key!("b"))
-                .visible_when(Rule::predicate(Predicate::eq("/a", json!(true)).unwrap()))
-                .required_when(Rule::predicate(Predicate::eq("/a", json!(true)).unwrap()))
+                .visible_when(predicate_rule(Predicate::eq("/a", json!(true)).unwrap()))
+                .required_when(predicate_rule(Predicate::eq("/a", json!(true)).unwrap()))
                 .into_field(),
         ];
 
         let report = run(&fields);
         assert!(
-            report.errors().any(|e| e.code == "visibility_cycle"),
+            report.errors().any(|e| e.code() == "visibility_cycle"),
             "expected visibility_cycle, got {:?}",
-            report.errors().map(|e| &e.code).collect::<Vec<_>>()
+            report
+                .errors()
+                .map(ValidationError::code)
+                .collect::<Vec<_>>()
         );
         assert!(
-            report.errors().any(|e| e.code == "required_cycle"),
+            report.errors().any(|e| e.code() == "required_cycle"),
             "expected required_cycle, got {:?}",
-            report.errors().map(|e| &e.code).collect::<Vec<_>>()
+            report
+                .errors()
+                .map(ValidationError::code)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -2013,9 +2080,12 @@ mod tests {
         assert!(
             report
                 .errors()
-                .any(|e| e.code == "secret.default_forbidden"),
+                .any(|e| e.code() == "secret.default_forbidden"),
             "expected secret.default_forbidden, got {:?}",
-            report.errors().map(|e| &e.code).collect::<Vec<_>>()
+            report
+                .errors()
+                .map(ValidationError::code)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -2030,7 +2100,10 @@ mod tests {
         assert!(
             !report.has_errors(),
             "expected no errors, got {:?}",
-            report.errors().map(|e| &e.code).collect::<Vec<_>>()
+            report
+                .errors()
+                .map(ValidationError::code)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -2039,19 +2112,21 @@ mod tests {
         let mut report = ValidationReport::new();
         lint_legacy_root_reference("$root.tier", &FieldPath::root(), &mut report);
         assert!(
-            report.warnings().any(|e| e.code == "reference.legacy_root"),
+            report
+                .warnings()
+                .any(|e| e.code() == "reference.legacy_root"),
             "expected legacy root reference warning, got {:?}",
             report
                 .iter()
-                .map(|e| (&e.code, e.severity))
+                .map(|e| (e.code(), e.severity()))
                 .collect::<Vec<_>>()
         );
         let warning = report
             .warnings()
-            .find(|e| e.code == "reference.legacy_root")
+            .find(|e| e.code() == "reference.legacy_root")
             .expect("warning");
         assert_eq!(
-            warning.params[1].1.as_str(),
+            warning.params()[1].1.as_str(),
             Some("/tier"),
             "suggested JSON Pointer"
         );

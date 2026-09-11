@@ -24,7 +24,7 @@ use nebula_resource::{
     AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
     ResourceContext, SlotIdentity,
     error::Error as ResourceError,
-    resource::{HasCredentialSlots, ResourceMetadata},
+    resource::{HasCredentialSlots, ResourceMetadataDraft},
     topology::resident::ResidentProvider,
 };
 use nebula_resource::{ResourceFanoutIndex, RotationOutcome};
@@ -44,9 +44,8 @@ impl From<HookError> for ResourceError {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, nebula_schema::Schema)]
 struct Cfg;
-nebula_schema::impl_empty_has_schema!(Cfg);
 impl ResourceConfig for Cfg {
     fn validate(&self) -> Result<(), ResourceError> {
         Ok(())
@@ -111,8 +110,8 @@ impl Provider for Ctl {
         }
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 

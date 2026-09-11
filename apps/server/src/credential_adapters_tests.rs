@@ -42,7 +42,51 @@ use tokio_rustls::{
     rustls::{ServerConfig, pki_types::PrivatePkcs8KeyDer},
 };
 
-use super::ReqwestRefreshTransport;
+use super::{RegistryCredentialSchema, ReqwestOAuthTransport};
+
+#[test]
+fn catalog_snapshot_preserves_every_registered_definition() {
+    use nebula_api::ports::credential_schema::CredentialSchemaPort as _;
+    use nebula_credential::{ApiKeyCredential, BasicAuthCredential, CredentialRegistry};
+
+    let mut registry = CredentialRegistry::new();
+    registry.register(ApiKeyCredential, "test").unwrap();
+    registry.register(BasicAuthCredential, "test").unwrap();
+    let registry = Arc::new(registry);
+    let port = RegistryCredentialSchema::new(Arc::clone(&registry))
+        .expect("all registered schemas export");
+    let listed = port.list_types();
+    assert_eq!(listed.len(), registry.catalog().count());
+    for (metadata, _) in registry.catalog() {
+        let descriptor = port
+            .get_type(metadata.key().as_str())
+            .expect("catalog snapshot contains every admitted definition");
+        assert_eq!(descriptor.name, metadata.name());
+        assert_eq!(
+            descriptor.schema_json,
+            metadata
+                .schema()
+                .json_schema()
+                .expect("admitted schema exports")
+                .to_value()
+        );
+        assert!(listed.iter().any(|listed| listed.key == descriptor.key));
+    }
+    assert!(port.get_type("unknown").is_none());
+}
+
+#[test]
+fn catalog_keeps_its_source_registry_immutable() {
+    let mut registry = Arc::new(nebula_credential::CredentialRegistry::new());
+    let port = RegistryCredentialSchema::new(Arc::clone(&registry))
+        .expect("empty registry exports an empty catalog");
+    assert!(
+        Arc::get_mut(&mut registry).is_none(),
+        "a live catalog must prevent mutation of its source registry"
+    );
+    drop(port);
+    assert!(Arc::get_mut(&mut registry).is_some());
+}
 
 const TEST_HOST: &str = "oauth-refresh.test";
 const PUBLIC_DNS_CONTROL: IpAddr = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
@@ -124,8 +168,8 @@ impl TlsFixture {
         format!("https://{TEST_HOST}:{}/token", self.addr.port())
     }
 
-    fn transport(&self, dns_answers: Vec<IpAddr>) -> ReqwestRefreshTransport {
-        ReqwestRefreshTransport::for_test(
+    fn transport(&self, dns_answers: Vec<IpAddr>) -> ReqwestOAuthTransport {
+        ReqwestOAuthTransport::for_test(
             self.trust_anchor.clone(),
             IpAddr::V4(Ipv4Addr::LOCALHOST),
             dns_answers,
@@ -337,7 +381,7 @@ fn oauth_state(endpoint: String) -> OAuth2State {
 
 async fn refresh_through_resolver(
     state: OAuth2State,
-    transport: ReqwestRefreshTransport,
+    transport: ReqwestOAuthTransport,
 ) -> Result<CredentialHandle<OAuth2Token>, ResolveError> {
     let expires_at = state.expires_at;
     let data = serde_secret::expose_for_serialization(|| serde_json::to_vec(&state))

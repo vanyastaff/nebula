@@ -3,15 +3,12 @@
 //! Resolves a username + password pair into [`IdentityPassword`]. State and
 //! Scheme are the same type via [`identity_state!`](crate::identity_state).
 
-use nebula_schema::{FieldValues, Schema};
+use nebula_schema::Schema;
 use serde::Deserialize;
 
 use crate::{
-    CredentialContext, SecretString,
-    error::{CredentialError, ProviderErrorContext, ProviderErrorKind, SecretFreeMessage},
-    metadata::CredentialMetadata,
-    resolve::ResolveResult,
-    scheme::IdentityPassword,
+    CredentialContext, SecretString, error::CredentialError, metadata::CredentialMetadataDraft,
+    resolve::StaticResolveResult, scheme::IdentityPassword,
 };
 
 /// Typed shape of the `basic_auth` credential setup form (Phase 5 — replaces
@@ -23,7 +20,7 @@ use crate::{
 /// in a `String` here for schema derivation and is wrapped into
 /// [`SecretString`] inside [`Credential::resolve`](crate::Credential::resolve)
 /// before it leaves the resolver.
-#[derive(Schema, Deserialize, Default)]
+#[derive(Schema, Deserialize)]
 pub struct BasicAuthProperties {
     /// Username for HTTP Basic authentication.
     #[field(label = "Username")]
@@ -32,7 +29,7 @@ pub struct BasicAuthProperties {
     /// Password for HTTP Basic authentication.
     #[field(secret, label = "Password")]
     #[validate(required)]
-    pub password: String,
+    pub password: SecretString,
 }
 
 /// HTTP Basic Auth credential -- resolves username + password into
@@ -55,15 +52,14 @@ impl BasicAuthCredential {
     type Scheme = IdentityPassword;
     type State = IdentityPassword;
 
-    fn metadata() -> CredentialMetadata {
-        CredentialMetadata::new(
+    fn metadata() -> CredentialMetadataDraft {
+        CredentialMetadataDraft::new(
             nebula_core::credential_key!("basic_auth"),
-            "Basic Auth",
+            crate::metadata_name!("Basic Auth"),
             "HTTP Basic authentication (username + password).",
-            nebula_schema::schema_of::<Self::Properties>(),
             crate::AuthPattern::IdentityPassword,
         )
-        .with_icon("lock")
+        .with_icon(nebula_metadata::Icon::inline("lock"))
     }
 
     fn project(state: &IdentityPassword) -> IdentityPassword {
@@ -71,24 +67,12 @@ impl BasicAuthCredential {
     }
 
     async fn resolve(
-        values: &FieldValues,
+        properties: &BasicAuthProperties,
         _ctx: &CredentialContext,
-    ) -> Result<ResolveResult<IdentityPassword, ()>, CredentialError> {
-        let username = values.get_string_by_str("username").ok_or_else(|| {
-            CredentialError::Provider(Box::new(ProviderErrorContext::new(
-                ProviderErrorKind::Schema,
-                SecretFreeMessage::new("missing required field 'username'"),
-            )))
-        })?;
-        let password = values.get_string_by_str("password").ok_or_else(|| {
-            CredentialError::Provider(Box::new(ProviderErrorContext::new(
-                ProviderErrorKind::Schema,
-                SecretFreeMessage::new("missing required field 'password'"),
-            )))
-        })?;
-        let secret = SecretString::new(password.to_owned());
-        Ok(ResolveResult::Complete(IdentityPassword::new(
-            username, secret,
+    ) -> Result<StaticResolveResult<IdentityPassword>, CredentialError> {
+        Ok(StaticResolveResult::Complete(IdentityPassword::new(
+            properties.username.clone(),
+            properties.password.clone(),
         )))
     }
 }
@@ -98,7 +82,7 @@ mod tests {
     // `Credential` (for `KEY`) and `CredentialLifecycle` (for `policy`) are
     // only referenced by the tests now that `#[credential]` generates the
     // trait impls via absolute paths.
-    use crate::{Credential, CredentialLifecycle};
+    use crate::{Credential, CredentialLifecycle, credentials::resolve_properties};
 
     use super::*;
 
@@ -133,17 +117,17 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_extracts_username_and_password() {
-        let mut values = FieldValues::new();
-        values
-            .try_set_raw("username", serde_json::Value::String("alice".into()))
-            .expect("test-only known-good key");
-        values
-            .try_set_raw("password", serde_json::Value::String("p@ssw0rd".into()))
-            .expect("test-only known-good key");
+        let properties = resolve_properties::<BasicAuthCredential>(serde_json::json!({
+            "username": "alice", "password": "p@ssw0rd"
+        }))
+        .unwrap();
+        assert_eq!(properties.password.expose_secret(), "p@ssw0rd");
         let ctx = CredentialContext::for_owner("test-user");
-        let result = BasicAuthCredential::resolve(&values, &ctx).await.unwrap();
+        let result = BasicAuthCredential::resolve(&properties, &ctx)
+            .await
+            .unwrap();
         match result {
-            ResolveResult::Complete(auth) => {
+            StaticResolveResult::Complete(auth) => {
                 assert_eq!(auth.identity(), "alice");
                 let pw = auth.password().expose_secret().to_owned();
                 assert_eq!(pw, "p@ssw0rd");
@@ -152,25 +136,27 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn resolve_returns_error_on_missing_username() {
-        let mut values = FieldValues::new();
-        values
-            .try_set_raw("password", serde_json::Value::String("secret".into()))
-            .expect("test-only known-good key");
-        let ctx = CredentialContext::for_owner("test-user");
-        let result = BasicAuthCredential::resolve(&values, &ctx).await;
-        assert!(result.is_err());
+    #[test]
+    fn schema_rejects_missing_username_before_resolve() {
+        let Err(report) = resolve_properties::<BasicAuthCredential>(serde_json::json!({
+            "password": "secret"
+        })) else {
+            panic!("missing username must fail schema validation");
+        };
+        assert!(report.errors().any(|error| {
+            error.code() == "required" && error.path().to_string() == "/username"
+        }));
     }
 
-    #[tokio::test]
-    async fn resolve_returns_error_on_missing_password() {
-        let mut values = FieldValues::new();
-        values
-            .try_set_raw("username", serde_json::Value::String("alice".into()))
-            .expect("test-only known-good key");
-        let ctx = CredentialContext::for_owner("test-user");
-        let result = BasicAuthCredential::resolve(&values, &ctx).await;
-        assert!(result.is_err());
+    #[test]
+    fn schema_rejects_missing_password_before_resolve() {
+        let Err(report) = resolve_properties::<BasicAuthCredential>(serde_json::json!({
+            "username": "alice"
+        })) else {
+            panic!("missing password must fail schema validation");
+        };
+        assert!(report.errors().any(|error| {
+            error.code() == "required" && error.path().to_string() == "/password"
+        }));
     }
 }

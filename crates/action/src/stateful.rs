@@ -6,15 +6,17 @@
 //! [`ActionResult::Continue`] for another iteration or [`ActionResult::Break`]
 //! when done.
 
-use std::{fmt, future::Future};
+use std::{fmt, future::Future, sync::Arc};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 use crate::{
+    ActionInput, PreparedActionInput, StatefulHandle,
     action::Action,
     context::ActionContext,
     error::{ActionError, ValidationReason},
+    input::ActionInputContract,
     metadata::ActionMetadata,
     result::ActionResult,
 };
@@ -65,7 +67,7 @@ pub trait StatefulAction: Action {
     #[must_use = "an action does nothing unless its returned future is awaited"]
     fn execute(
         &self,
-        input: <Self as Action>::Input,
+        input: &<Self as Action>::Input,
         state: &mut Self::State,
         ctx: &(impl ActionContext + ?Sized),
     ) -> impl Future<Output = Result<ActionResult<<Self as Action>::Output>, ActionError>> + Send;
@@ -111,8 +113,8 @@ pub struct PaginationState<C> {
 /// impl Action for ListItems {
 ///     type Input = Value;
 ///     type Output = Value;
-///     fn metadata() -> ActionMetadata {
-///         ActionMetadata::new(action_key!("list.items"), "List", "Lists items page by page")
+///     fn metadata() -> nebula_action::ActionMetadataDraft {
+///         nebula_action::ActionMetadataDraft::new(action_key!("list.items"), nebula_action::metadata_name!("List"), "Lists items page by page")
 ///     }
 ///     fn dependencies() -> &'static Dependencies {
 ///         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -192,8 +194,8 @@ pub trait PaginatedAction: Action {
 /// impl Action for MyAction {
 ///     type Input = Value;
 ///     type Output = Value;
-///     fn metadata() -> ActionMetadata {
-///         ActionMetadata::new(action_key!("my.action"), "My", "Paginates a source")
+///     fn metadata() -> nebula_action::ActionMetadataDraft {
+///         nebula_action::ActionMetadataDraft::new(action_key!("my.action"), nebula_action::metadata_name!("My"), "Paginates a source")
 ///     }
 ///     fn dependencies() -> &'static Dependencies {
 ///         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -237,7 +239,7 @@ macro_rules! impl_paginated_action {
 
             async fn execute(
                 &self,
-                input: Self::Input,
+                input: &Self::Input,
                 state: &mut Self::State,
                 ctx: &(impl $crate::context::ActionContext + ?Sized),
             ) -> ::core::result::Result<
@@ -245,7 +247,7 @@ macro_rules! impl_paginated_action {
                 $crate::error::ActionError,
             > {
                 use $crate::stateful::PaginatedAction as _;
-                let result = self.fetch_page(&input, state.cursor.as_ref(), ctx).await?;
+                let result = self.fetch_page(input, state.cursor.as_ref(), ctx).await?;
                 state.cursor.clone_from(&result.next_cursor);
                 state.pages_fetched = state.pages_fetched.saturating_add(1);
 
@@ -369,7 +371,7 @@ macro_rules! impl_batch_action {
 
             async fn execute(
                 &self,
-                input: Self::Input,
+                input: &Self::Input,
                 state: &mut Self::State,
                 ctx: &(impl $crate::context::ActionContext + ?Sized),
             ) -> ::core::result::Result<
@@ -379,7 +381,7 @@ macro_rules! impl_batch_action {
                 use $crate::stateful::BatchAction as _;
 
                 if state.chunks_processed == 0 {
-                    state.remaining = self.extract_items(&input);
+                    state.remaining = self.extract_items(input);
                 }
 
                 let batch_size = self.batch_size().max(1);
@@ -436,86 +438,9 @@ macro_rules! impl_batch_action {
 // When it does, it will ship its own trait shape that cooperates
 // with the orchestrator, not a re-imagined `TransactionalAction`.
 
-// ── StatefulHandler trait ───────────────────────────────────────────────────
-
-/// Stateful action handler — JSON in, mutable JSON state, JSON out.
-///
-/// The engine calls `execute` repeatedly. State is persisted as JSON between
-/// iterations for checkpointing. Return [`ActionResult::Continue`] for another
-/// iteration or [`ActionResult::Break`] when done.
-///
-/// # Errors
-///
-/// Returns [`ActionError`] on validation, retryable, or fatal failures.
-#[async_trait::async_trait]
-pub trait StatefulHandler: Send + Sync + 'static {
-    /// Action metadata (key, version, capabilities).
-    fn metadata(&self) -> &ActionMetadata;
-
-    /// Create initial state as JSON for the first iteration.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ActionError::Fatal`] if the initial state cannot be produced
-    /// (e.g., serialization failure in an adapter).
-    fn init_state(&self) -> Result<Value, ActionError>;
-
-    /// Attempt to migrate state from a previous version.
-    ///
-    /// Called when state deserialization fails during `execute`. Returns
-    /// migrated state as JSON, or `None` to propagate the error.
-    fn migrate_state(&self, old: Value) -> Option<Value> {
-        let _ = old;
-        None
-    }
-
-    /// Execute one iteration with mutable JSON state.
-    ///
-    /// # State checkpointing
-    ///
-    /// Implementations MUST flush any state mutations back to `state` before
-    /// returning, regardless of whether the iteration succeeded. Returning
-    /// `Err(Retryable)` after mutating internal typed state without
-    /// checkpointing causes the engine to re-run the iteration against a
-    /// stale snapshot — partial work is replayed and external side effects
-    /// (API calls, DB writes, emits) are duplicated.
-    ///
-    /// The only exception is when state deserialization fails at the start
-    /// of the iteration — in that case no mutations could have occurred and
-    /// there is nothing to flush.
-    ///
-    /// # Cancellation (cancel-on-drop contract)
-    ///
-    /// The runtime races this future against `ctx.cancellation().cancelled()`
-    /// via `tokio::select!`. When the cancellation token fires mid-`await`,
-    /// the runtime **drops the execute future**, which cancels all nested
-    /// futures at their next `.await` point. Implementations whose
-    /// mid-`await` state cannot safely be dropped (in-flight DB transactions,
-    /// outgoing HTTP requests that must be completed, …) must either:
-    ///
-    /// 1. Guard the critical section behind a `tokio::select!` with a longer grace period and a
-    ///    compensating rollback, or
-    /// 2. Use `tokio::task::spawn` for the critical section and await the join handle — dropping
-    ///    the spawned task still leaks it, but the caller can wait for it to settle.
-    ///
-    /// The runtime will NOT poll the future to completion after
-    /// cancellation fires — a stuck handler cannot stall cancellation
-    /// (#304).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ActionError`] if execution fails (validation, retryable, or fatal).
-    async fn execute(
-        &self,
-        input: &Value,
-        state: &mut Value,
-        ctx: &dyn ActionContext,
-    ) -> Result<ActionResult<Value>, ActionError>;
-}
-
 // ── StatefulActionAdapter ───────────────────────────────────────────────────
 
-/// Wraps a [`StatefulAction`] as a [`dyn StatefulHandler`].
+/// Wraps a [`StatefulAction`] as a [`dyn StatefulHandle`].
 ///
 /// Handles JSON (de)serialization of input, output, and state so the runtime
 /// works with untyped JSON while action authors write strongly-typed Rust.
@@ -524,18 +449,39 @@ pub trait StatefulHandler: Send + Sync + 'static {
 /// engine checkpointing.
 pub struct StatefulActionAdapter<A> {
     action: A,
-    meta: ActionMetadata,
+    meta: Arc<ActionMetadata>,
+    input_contract: ActionInputContract,
 }
+
+impl<A> crate::handle::sealed::Stateful for StatefulActionAdapter<A> {}
 
 impl<A> StatefulActionAdapter<A> {
     /// Wrap a typed stateful action.
-    #[must_use]
-    pub fn new(action: A) -> Self
+    ///
+    /// # Errors
+    /// Returns a typed catalog error if metadata or an associated schema is invalid.
+    #[tracing::instrument(name = "action.metadata.admit", skip_all, err)]
+    pub fn new(action: A) -> Result<Self, crate::ActionMetadataAdmissionError>
     where
         A: Action,
     {
-        let meta = <A as Action>::metadata();
-        Self { action, meta }
+        let meta = <A as Action>::metadata().admit_for::<A>(crate::ActionKind::Stateful)?;
+        let meta = Arc::new(meta);
+        let input_contract = ActionInputContract::new(meta.base().schema());
+        Ok(Self {
+            action,
+            meta,
+            input_contract,
+        })
+    }
+
+    pub(crate) fn with_metadata(action: A, meta: Arc<ActionMetadata>) -> Self {
+        let input_contract = ActionInputContract::new(meta.base().schema());
+        Self {
+            action,
+            meta,
+            input_contract,
+        }
     }
 
     /// Consume the adapter, returning the inner action.
@@ -546,14 +492,14 @@ impl<A> StatefulActionAdapter<A> {
 }
 
 #[async_trait::async_trait]
-impl<A> StatefulHandler for StatefulActionAdapter<A>
+impl<A> StatefulHandle for StatefulActionAdapter<A>
 where
     A: StatefulAction + Send + Sync + 'static,
-    A::Input: DeserializeOwned + Send + Sync,
+    A::Input: DeserializeOwned + Send + Sync + 'static,
     A::Output: Serialize + Send + Sync,
     A::State: Serialize + DeserializeOwned + Clone + Send + Sync,
 {
-    fn metadata(&self) -> &ActionMetadata {
+    fn metadata(&self) -> &Arc<ActionMetadata> {
         &self.meta
     }
 
@@ -570,12 +516,16 @@ where
             .and_then(|state| serde_json::to_value(state).ok())
     }
 
-    /// Execute one iteration, deserializing input and state from JSON.
+    fn prepare_input(&self, input: ActionInput) -> Result<PreparedActionInput, ActionError> {
+        self.input_contract.prepare::<A::Input>(input)
+    }
+
+    /// Execute one iteration with input prepared once for the complete run.
     ///
     /// # Errors
     ///
-    /// Returns [`ActionError::Validation`] if input or state deserialization fails,
-    /// or propagates errors from the underlying action.
+    /// Returns [`ActionError::Validation`] if state decoding fails, or propagates
+    /// errors from the underlying action.
     ///
     /// # State checkpointing invariant
     ///
@@ -588,22 +538,23 @@ where
     /// charges, and double emits).
     ///
     /// The only path that does NOT checkpoint is `Validation` raised while
-    /// deserializing input or state — in that case `typed_state` was never
-    /// created and cannot have been mutated.
-    async fn execute(
+    /// deserializing state — in that case `typed_state` was never created and
+    /// cannot have been mutated.
+    async fn dispatch(
         &self,
-        input: &Value,
+        input: &PreparedActionInput,
         state: &mut Value,
         ctx: &dyn ActionContext,
     ) -> Result<ActionResult<Value>, ActionError> {
-        // Adapter clones input ONCE per iteration to deserialize into typed A::Input.
-        let typed_input: A::Input = serde_json::from_value(input.clone()).map_err(|e| {
-            ActionError::validation(
-                "input",
-                ValidationReason::MalformedJson,
-                Some(e.to_string()),
-            )
-        })?;
+        let typed_input = input
+            .typed_ref::<A::Input>(&self.input_contract)
+            .inspect_err(|error| {
+                tracing::error!(
+                    action_key = %self.meta.base().key(),
+                    %error,
+                    "stateful prepared input type does not match its adapter"
+                );
+            })?;
 
         // Happy path: one clone for `from_value`. Migration path (rare,
         // version skew between stored checkpoint and current State schema):
@@ -646,7 +597,7 @@ where
                 // Log the serde failure forensically and let the original
                 // error propagate — masking it would break retry classification.
                 tracing::error!(
-                    action = %<A as Action>::metadata().base.key,
+                    action = %self.meta.base().key(),
                     serialization_error = %ser_err,
                     action_error = %action_err,
                     "stateful adapter: state serialization failed on error path; \
@@ -667,7 +618,7 @@ where
 impl<A: Action> fmt::Debug for StatefulActionAdapter<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StatefulActionAdapter")
-            .field("action", &<A as Action>::metadata().base.key)
+            .field("action", self.meta.base().key())
             .finish_non_exhaustive()
     }
 }
@@ -704,10 +655,10 @@ mod tests {
         type Input = Value;
         type Output = Value;
 
-        fn metadata() -> ActionMetadata {
-            ActionMetadata::new(
+        fn metadata() -> crate::ActionMetadataDraft {
+            crate::ActionMetadataDraft::new(
                 nebula_core::action_key!("test.counter"),
-                "Counter",
+                crate::metadata_name!("Counter"),
                 "Counts up to 3",
             )
         }
@@ -726,7 +677,7 @@ mod tests {
 
         async fn execute(
             &self,
-            _input: <Self as Action>::Input,
+            _input: &<Self as Action>::Input,
             state: &mut Self::State,
             _ctx: &(impl ActionContext + ?Sized),
         ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
@@ -748,13 +699,15 @@ mod tests {
 
     #[test]
     fn stateful_adapter_is_dyn_compatible() {
-        let adapter = StatefulActionAdapter::new(CounterAction);
-        let _: Arc<dyn StatefulHandler> = Arc::new(adapter);
+        let adapter =
+            StatefulActionAdapter::new(CounterAction).expect("valid test catalog definition");
+        let _: Arc<dyn StatefulHandle> = Arc::new(adapter);
     }
 
     #[tokio::test]
     async fn stateful_adapter_init_state_serializes() {
-        let adapter = StatefulActionAdapter::new(CounterAction);
+        let adapter =
+            StatefulActionAdapter::new(CounterAction).expect("valid test catalog definition");
         let state = adapter.init_state().unwrap();
         let cs: CounterState = serde_json::from_value(state).unwrap();
         assert_eq!(cs.count, 0);
@@ -762,34 +715,29 @@ mod tests {
 
     #[tokio::test]
     async fn stateful_adapter_iterates_with_state() {
-        let adapter = StatefulActionAdapter::new(CounterAction);
-        let handler: Arc<dyn StatefulHandler> = Arc::new(adapter);
+        let adapter =
+            StatefulActionAdapter::new(CounterAction).expect("valid test catalog definition");
+        let handler: Arc<dyn StatefulHandle> = Arc::new(adapter);
         let ctx = make_ctx();
+        let input = handler
+            .prepare_input(ActionInput::Raw(serde_json::json!({})))
+            .unwrap();
         let mut state = handler.init_state().unwrap();
 
         // Iteration 1: count goes 0 → 1, Continue
-        let result = handler
-            .execute(&serde_json::json!({}), &mut state, &ctx)
-            .await
-            .unwrap();
+        let result = handler.dispatch(&input, &mut state, &ctx).await.unwrap();
         assert!(matches!(result, ActionResult::Continue { .. }));
         let cs: CounterState = serde_json::from_value(state.clone()).unwrap();
         assert_eq!(cs.count, 1);
 
         // Iteration 2: count goes 1 → 2, Continue
-        let result = handler
-            .execute(&serde_json::json!({}), &mut state, &ctx)
-            .await
-            .unwrap();
+        let result = handler.dispatch(&input, &mut state, &ctx).await.unwrap();
         assert!(matches!(result, ActionResult::Continue { .. }));
         let cs: CounterState = serde_json::from_value(state.clone()).unwrap();
         assert_eq!(cs.count, 2);
 
         // Iteration 3: count goes 2 → 3, Break
-        let result = handler
-            .execute(&serde_json::json!({}), &mut state, &ctx)
-            .await
-            .unwrap();
+        let result = handler.dispatch(&input, &mut state, &ctx).await.unwrap();
         assert!(matches!(result, ActionResult::Break { .. }));
         let cs: CounterState = serde_json::from_value(state.clone()).unwrap();
         assert_eq!(cs.count, 3);
@@ -797,12 +745,16 @@ mod tests {
 
     #[tokio::test]
     async fn stateful_adapter_returns_validation_error_on_bad_state() {
-        let adapter = StatefulActionAdapter::new(CounterAction);
+        let adapter =
+            StatefulActionAdapter::new(CounterAction).expect("valid test catalog definition");
         let ctx = make_ctx();
+        let input = adapter
+            .prepare_input(ActionInput::Raw(serde_json::json!({})))
+            .unwrap();
         let mut bad_state = serde_json::json!("not a counter state");
 
         let err = adapter
-            .execute(&serde_json::json!({}), &mut bad_state, &ctx)
+            .dispatch(&input, &mut bad_state, &ctx)
             .await
             .unwrap_err();
         assert!(matches!(err, ActionError::Validation { .. }));
@@ -822,10 +774,10 @@ mod tests {
         type Input = Value;
         type Output = Value;
 
-        fn metadata() -> ActionMetadata {
-            ActionMetadata::new(
+        fn metadata() -> crate::ActionMetadataDraft {
+            crate::ActionMetadataDraft::new(
                 nebula_core::action_key!("test.mutate_fail"),
-                "MutateFail",
+                crate::metadata_name!("MutateFail"),
                 "Mutates state then fails",
             )
         }
@@ -844,7 +796,7 @@ mod tests {
 
         async fn execute(
             &self,
-            _input: <Self as Action>::Input,
+            _input: &<Self as Action>::Input,
             state: &mut Self::State,
             _ctx: &(impl ActionContext + ?Sized),
         ) -> Result<ActionResult<<Self as Action>::Output>, ActionError> {
@@ -866,12 +818,16 @@ mod tests {
         let adapter = StatefulActionAdapter::new(mutate_fail(
             ActionError::retryable("transient upstream error"),
             42,
-        ));
+        ))
+        .expect("valid test catalog definition");
         let ctx = make_ctx();
+        let input = adapter
+            .prepare_input(ActionInput::Raw(serde_json::json!({})))
+            .unwrap();
         let mut state = serde_json::json!({ "count": 0 });
 
         let err = adapter
-            .execute(&serde_json::json!({}), &mut state, &ctx)
+            .dispatch(&input, &mut state, &ctx)
             .await
             .unwrap_err();
 
@@ -889,12 +845,16 @@ mod tests {
         // an operator debugging the failure can see the position at which
         // the action gave up.
         let adapter =
-            StatefulActionAdapter::new(mutate_fail(ActionError::fatal("schema mismatch"), 7));
+            StatefulActionAdapter::new(mutate_fail(ActionError::fatal("schema mismatch"), 7))
+                .expect("valid test catalog definition");
         let ctx = make_ctx();
+        let input = adapter
+            .prepare_input(ActionInput::Raw(serde_json::json!({})))
+            .unwrap();
         let mut state = serde_json::json!({ "count": 0 });
 
         let err = adapter
-            .execute(&serde_json::json!({}), &mut state, &ctx)
+            .dispatch(&input, &mut state, &ctx)
             .await
             .unwrap_err();
 
@@ -908,13 +868,17 @@ mod tests {
         // typed_state never existed and nothing should be written back. The
         // input JSON must remain verbatim so the engine can decide how to
         // recover (e.g., schema migration path outside the adapter).
-        let adapter = StatefulActionAdapter::new(CounterAction);
+        let adapter =
+            StatefulActionAdapter::new(CounterAction).expect("valid test catalog definition");
         let ctx = make_ctx();
+        let input = adapter
+            .prepare_input(ActionInput::Raw(serde_json::json!({})))
+            .unwrap();
         let bad = serde_json::json!("not a counter state");
         let mut state = bad.clone();
 
         let err = adapter
-            .execute(&serde_json::json!({}), &mut state, &ctx)
+            .dispatch(&input, &mut state, &ctx)
             .await
             .unwrap_err();
 
@@ -924,11 +888,10 @@ mod tests {
 
     #[test]
     fn stateful_adapter_into_inner_returns_action() {
-        let adapter = StatefulActionAdapter::new(CounterAction);
+        let adapter =
+            StatefulActionAdapter::new(CounterAction).expect("valid test catalog definition");
+        let key = adapter.metadata().base().key().clone();
         let _action = adapter.into_inner();
-        assert_eq!(
-            <CounterAction as Action>::metadata().base.key,
-            nebula_core::action_key!("test.counter")
-        );
+        assert_eq!(key, nebula_core::action_key!("test.counter"));
     }
 }

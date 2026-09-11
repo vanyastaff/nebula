@@ -50,9 +50,9 @@
 
 use std::sync::OnceLock;
 
-use nebula_action::{ActionContext, ActionError, ActionMetadata, ActionResult, StatelessAction};
+use nebula_action::{ActionContext, ActionError, ActionResult, StatelessAction};
 use nebula_core::action_key;
-use nebula_schema::HasSchema;
+use nebula_schema::{Field, HasSchema, Schema, ValidSchema, ValidationReport, field_key};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::instrument;
@@ -130,12 +130,28 @@ pub struct ArrayInput {
     pub operations: Vec<ArrayOp>,
 }
 
-// `data` is a fully dynamic JSON array and `operations` carry only integer
-// counts — no closed-form schema can be emitted. Empty schema is the honest
-// declaration; the module doc describes the expected structure out-of-band.
 impl HasSchema for ArrayInput {
-    fn schema() -> nebula_schema::validated::ValidSchema {
-        nebula_schema::validated::ValidSchema::empty()
+    #[instrument(name = "core.array.schema", skip_all, err)]
+    fn schema() -> Result<ValidSchema, ValidationReport> {
+        static SCHEMA: OnceLock<Result<ValidSchema, ValidationReport>> = OnceLock::new();
+        SCHEMA.get_or_init(|| {
+            Schema::builder()
+                .add(Field::list(field_key!("data"))
+                    .description("Required array of arbitrary JSON values; an empty array is valid.")
+                    .item(Field::dynamic(field_key!("item"))))
+                .add(Field::list(field_key!("operations")).item(
+                    Field::object(field_key!("item"))
+                        .description("Tagged array operation; variant-specific field presence is checked by serde.")
+                        .add(Field::select(field_key!("op"))
+                            .option("chunk", "Chunk").option("flatten", "Flatten")
+                            .option("take", "Take").option("skip", "Skip").required())
+                        .add(Field::integer(field_key!("size")).min_int(1).max(usize::MAX))
+                        .add(Field::integer(field_key!("depth")).min_int(0).max(usize::MAX))
+                        .add(Field::integer(field_key!("count")).min_int(0).max(usize::MAX)),
+                ))
+                .root_rule(super::input_schema::array_present(field_key!("data"))?)
+                .build()
+        }).clone()
     }
 }
 
@@ -220,12 +236,13 @@ impl nebula_action::action::Action for ArrayAction {
     type Input = ArrayInput;
     type Output = Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             action_key!("core.array"),
-            "Array",
+            nebula_action::metadata_name!("Array"),
             "Shape a JSON array with chunk/flatten/take/skip operations applied left-to-right",
         )
+        .with_version(nebula_action::MetadataVersion::new(2, 0, 0))
         .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
     }
 
@@ -558,8 +575,15 @@ mod tests {
 
     #[test]
     fn action_key_is_core_dot_array() {
-        use nebula_action::action::Action;
-        assert_eq!(ArrayAction::metadata().base.key.as_str(), "core.array");
+        let factory = nebula_action::GenericStatelessFactory::<ArrayAction>::new()
+            .expect("array metadata must admit");
+        assert_eq!(
+            nebula_action::ActionFactory::metadata(&factory)
+                .base()
+                .key()
+                .as_str(),
+            "core.array"
+        );
     }
 
     // ── Serde round-trip for each ArrayOp wire shape ────────────────────────────

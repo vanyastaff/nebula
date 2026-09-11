@@ -1,177 +1,265 @@
-# nebula-schema — design
+# nebula-schema design
 
-| Field | Value |
-|-------|-------|
-| **Status** | Frontier — ядро (lint → validate) стабильно (в проде используется, напр. credential валидирует без resolve); **resolve‑seam (`ValidValues::resolve`/`ExpressionContext` → `ResolvedValues`) — latent**: структурно полон и протестирован, но БЕЗ prod‑потребителей (станет load‑bearing, когда движок подключит evaluator для action‑input выражений); периферия (UI-hints, JSON Schema export Phase 4) в pragmatic-baseline |
-| **Layer** | Core — типизированная конфигурационная поверхность для всех интеграционных концептов |
-| **Redesign role** | **Не перестраивается** (потребитель-инфраструктура). Затронут косвенно: предоставляет схему-валидацию write-path кредов (ADR-0052 P4), `schema_of` как единственный путь схем Action/Credential (ADR-0052 P3), secret-типы на стыке credential-rewrite |
-| **Related** | ADR-0080 (schema & validation platform, absorbs 0052/0058-0064), PRODUCT_CANON L1-3.5 / L1-4.5, [README](../README.md), siblings: nebula-validator, nebula-expression |
+| Property | Contract |
+|----------|----------|
+| Status | Frontier internal API; incompatible changes are possible |
+| Layer | Core, subject to the workspace dependency map |
+| Owns | Schema definitions, canonical value trees, preparation, proof custody, schema-aware projections |
+| Delegates | Rules and conditional policies to `nebula-validator`; compilation and evaluation to `nebula-expression` |
+| Product boundary | `nebula-sdk` is the sole curated, supported Rust surface; this crate is an internal technical boundary |
 
----
+## Ownership
 
-## 1. Назначение и границы
+`nebula-schema` supplies the typed-configuration model shared by Actions,
+Credentials, and Resources (canon L1-3.5). It owns `Schema`, field declarations,
+structural lint, phase-indexed values, schema-bound proofs, secret wrappers,
+option/record loader interfaces, and optional JSON Schema export.
 
-`nebula-schema` — это **типизированная конфигурационная схема** для всех интеграционных
-концептов (Actions, Credentials, Resources); прямая замена удалённого крейта
-`nebula-parameter`. Центральная ценность — proof-token pipeline «lint → validate → resolve»,
-где пропустить шаг невозможно на уровне типов (канон-инварианты L1-3.5, L1-4.5):
-`Schema::builder().build() -> ValidSchema`, затем `ValidSchema::validate -> ValidValues`,
-затем `ValidValues::resolve(ctx).await -> ResolvedValues`.
+It does not own a rules engine, expression execution semantics, credential
+lifecycle, persistence authority, resource binding slots, or UI rendering.
+Cryptographic primitives belong to `nebula-crypto`; KDF/password hashing must
+not be added here. Consumers decide when validated data is persisted and which
+trusted boundary may expose protected material. This design does not claim
+that any particular consumer has adopted the complete pipeline.
 
-**Владеет:** draft-моделью схемы (`Schema`/`SchemaBuilder`), unified-перечислением полей
-`Field` (String/Number/Boolean/Secret/Select/Object/List/Mode/Computed/Dynamic/Notice/File/Code),
-typestate-цепочкой proof-token (`ValidSchema`/`ValidValues`/`ResolvedValues`), wire-форматом
-значений (`FieldValues`/`FieldValue`, ключ `$expr`), структурным линтом, канонической
-таксономией ошибок валидации (`ValidationError`/`ValidationReport`/`STANDARD_CODES`),
-secret-типами с zeroize (`SecretString`/`SecretBytes`/`SecretValue`), реестром async-загрузчиков
-опций/записей (`Loader`/`LoaderRegistry`) и опциональным экспортом JSON Schema Draft 2020-12.
+## One tree, separate proofs
 
-**ЯВНО НЕ делает:** не является движком правил валидации — программные предикаты и
-декларативные `Rule` живут в `nebula-validator` (реэкспортируется отсюда для авторов схем);
-не вычисляет выражения — резолюция делегируется caller-supplied `ExpressionContext`
-(реализуется `nebula-expression`); не рендерит UI-формы — несёт UI-hints как данные, рендер
-снаружи; **не делает KDF/hashing** (удалено как слабый дубликат Argon2id из nebula-credential,
-project_schema_no_kdf — в коде KDF отсутствует, re-add запрещён).
+`ValidSchema` owns one `RootShape`. `Any` deliberately provides no shape proof;
+`Scalar` carries a checked null/boolean/string/integer/number domain; `Record`
+owns declarations and root rules; `Union` owns a required mode and its serde
+tagging. Field indexes are derived accelerators, not another root description.
+`SchemaKind`, fields, and tagging cannot disagree inside an admitted schema.
 
-## 2. Публичная поверхность
+`()` and unit structs use the null domain. Empty braced structs use an empty
+record, which still requires an object. Primitive `HasSchema` implementations
+declare their known types and exact numeric bounds rather than advertising
+`Any`. Preparation preserves lossless integral-number normalization, and final
+validation rechecks the scalar domain and rules. Scalar roots do not acquire
+expression permission through a synthetic declaration.
 
-| Item | Where |
-|------|-------|
-| `Schema` / `SchemaBuilder`; `MAX_SCHEMA_DEPTH: u8 = 64` | `src/schema.rs:41` / `:418` / `:694` |
-| `Field` (unified enum); `ModeVariant` / `ComputedReturn` / `NoticeSeverity` | `src/field.rs:790` / `:593` / `:714` / `:768` |
-| `ValidSchema` / `ValidValues` / `ResolvedValues` / `ResolvedLookup`; `SchemaFlags`; `FieldHandle` | `src/validated.rs:85` / `:410` / `:602` / `:610` / `:43` / `:54` |
-| `FieldValues` / `FieldValue`; `EXPRESSION_KEY = "$expr"`; `try_set_raw` (panic-вариант `set_raw` удалён) | `src/value.rs:306` / `:35` / `:17` |
-| `ValidationError` / `ValidationReport` / `ValidationErrorBuilder` / `Severity` / `STANDARD_CODES` | `src/error.rs:22` / `:151` / `:92` / `:12` / `:284` |
-| `FieldKey(Arc<str>)`; макрос `field_key!` (compile-time-валидация) | `src/key.rs:20`; `macros/src/lib.rs:43` |
-| `HasSchema` + `schema_of<T>()` (единственный путь схем Action/Credential, ADR-0052 P3); `HasSelectOptions` | `src/has_schema.rs:20` / `:37` / `:44` |
-| `#[derive(Schema)]` / `#[derive(EnumSelect)]` | `macros/src/lib.rs:71` / `:82` |
-| `ExpressionContext` / `Expression` / `ExpressionAst` / `EvalFuture` (BoxFuture-алиас вместо async_trait) | `src/expression.rs:43` / `:79` / `:64` / `:15` |
-| `SecretString` / `SecretBytes` (Zeroizing); `SecretValue`; `SecretWire`; `SECRET_REDACTED`; feature `audit-secret-expose` | `src/secret.rs:27` / `:129` / `:203` / `:248` / `:18` |
-| `Loader<T>` / `LoaderRegistry` / `LoaderContext` / `OptionLoader` / `RecordLoader` | `src/loader.rs:183` / `:304` / `:35` / `:276` / `:278` |
-| `FieldCollector` (typed-closure DSL: Object/List/Group + leaf-билдеры) | `src/builder/mod.rs:41` |
-| `VisibilityMode` / `RequiredMode` / `ExpressionMode`; виджеты по семействам | `src/mode.rs:10` / `:32` / `:54`; `src/widget.rs` |
-| `FieldPath` / `PathSegment`; `Transformer`; `InputHint` | `src/path.rs:43` / `:13`; `src/transformer.rs:14`; `src/input_hint.rs:20` |
-| `ValidSchema::json_schema()` + `JsonSchemaExportError` (feature `schemars`); `SCHEMA_WIRE_VERSION: u16 = 1` | `src/json_schema.rs:22`; `src/lib.rs:247` |
-| Re-export `nebula_validator::{Predicate, Rule}` | `src/lib.rs:231` |
+`ValueTree<E>` has exactly five variants:
 
-## 3. Зависимости и зависимые
+- `Literal(ScalarValue)` for null, boolean, number, or string data.
+- `Object(IndexMap<String, Self>)` for arbitrary JSON property names.
+- `List(Vec<Self>)` for ordered data.
+- `Expression(E)` for the expression capability of the current phase.
+- `Secret(SecretValue)` for explicitly protected material.
 
-- **Зависит от (workspace):** `nebula-validator` (предикаты/правила), `nebula-expression`
-  (резолюция), `nebula-schema-macros` (вложенный proc-macro крейт `macros/`).
-- **Внешние:** serde, serde_json, indexmap, smallvec, regex, zeroize, hex, tracing, subtle,
-  schemars (opt).
-- **Зависимые (8 потребителей — один из самых нагруженных Core-крейтов):** nebula-metadata,
-  nebula-api (с feature `schemars`, разрешено ADR-0052 P4), nebula-action, nebula-engine,
-  nebula-resource, nebula-credential, nebula-plugin, nebula-sdk.
+`ScalarValue::try_from(serde_json::Value)` rejects objects and arrays. Containers
+cannot be hidden in a literal node. A mode envelope is an ordinary object with
+`mode` and optional `value` properties; its interpretation comes from the
+selected `ModeField` declaration.
 
-## 4. Внутренняя архитектура
+| Tree alias | Expression parameter | Meaning |
+|------------|----------------------|---------|
+| `AuthoredValue` | `Expression` | Authored source, not yet admitted by a schema |
+| `CompiledValue` | `CompiledProgram` | Retained immutable programs |
+| `ResolvedValue` | `Infallible` | No constructible expression node |
 
-Поток данных следует трём фазам proof-token pipeline и разнесён по модулям:
+These aliases control representation, not proof. A caller can construct a
+data-only tree without validating it. Only `ValidValues` and `ResolvedValues`
+certify the appropriate checks against an immutable `ValidSchema` snapshot;
+neither proof has a public constructor or a deserialization bypass (L1-4.5).
 
-- **draft → ValidSchema:** `schema.rs` строит draft-`Schema` через `SchemaBuilder`; `lint.rs`
-  прогоняет структурные проходы (дубликаты ключей, кросс-полевые инварианты, max-depth);
-  `build()` возвращает `ValidSchema` или `ValidationReport`.
-- **ValidSchema → ValidValues:** `validated.rs` держит typestate-цепочку; `value.rs` несёт
-  wire-формат `FieldValues`/`FieldValue` (строгий ингест ключей, `$expr`); `context.rs`
-  строит `PredicateContext` для validator (visibility/required); единственное schema→validator
-  пересечение — `validate_rules_with_ctx` + `resolve_field_policies`.
-- **ValidValues → ResolvedValues:** `expression.rs` — seam `ExpressionContext` (реализуется
-  nebula-expression), async-резолюция через `EvalFuture` (BoxFuture-алиас, без async_trait).
-  **LATENT:** seam структурно полон и протестирован, но НИ ОДИН prod-крейт не зовёт
-  `ValidValues::resolve` и не реализует `ExpressionContext` (только test/example-стабы); credential
-  явно пропускает resolve (Canon §12.5). Станет load-bearing, когда движок подключит реальный
-  evaluator для action-input выражений — до тех пор поведение под prod-нагрузкой не доказано.
-- **Поддержка:** `field.rs` (unified `Field` + все виды полей, крупнейший модуль);
-  `builder/` (mod/object/list/group — typed-closure DSL); `secret.rs` (zeroize + subtle
-  const-time eq + redacted Debug); `loader.rs` (реестр async-загрузчиков опций select/записей);
-  `has_schema.rs` (Rust-тип → схема); `json_schema.rs` (экспорт Draft 2020-12 + `x-nebula-*`,
-  feature-gated); примитивы `key.rs`/`path.rs`/`mode.rs`/`option.rs`/`widget.rs`/
-  `input_hint.rs`/`transformer.rs`; pub(crate) `field_tree.rs`/`rule_ref.rs`.
-- **macros/:** `field_key!`, `#[derive(Schema)]`, `#[derive(EnumSelect)]`.
-- **Тесты:** seam-контракты (required-emitter, root-rule-scrub, single-crossing, proof-token
-  custody, security codes), ~30 trybuild compile_fail, proptest, insta, 6 criterion-бенчей.
+## Checked transitions
 
-## 5. Инварианты и контракты
+1. `SchemaBuilder::build()` runs structural lint and returns
+   `Result<ValidSchema, ValidationReport>`. `HasSchema::schema()` and
+   `schema_of::<T>()` return the same checked result type. Derived schemas cache
+   success or a construction report. Type-level schema discovery is pure and
+   does not depend on runtime values.
+2. `ValidSchema::validate(AuthoredValue)` consumes the authored tree. It checks
+   depth, folds read aliases at each declared scope, applies field transforms,
+   promotes declared string secrets, and compiles admitted expressions. The
+   resulting `ValidValues` retains `CompiledValue`, pending value/rule/policy
+   obligations, warnings, and the schema snapshot.
+3. `ValidValues::resolve(self, &dyn ExpressionContext).await` evaluates retained
+   programs. `ExpressionContext::evaluate` takes `&CompiledProgram` and returns
+   `EvalFuture`, an object-safe boxed future. `EngineExpressionContext` calls
+   the expression engine's compiled-program API, not a source parser.
+4. Returned JSON is decoded with literal-only ingestion and prepared at the
+   expression's declared location. Final full-mode structural, rule, and
+   conditional-policy checks must succeed without pending obligations before
+   `ResolvedValues` is constructed.
 
-- **L1-4.5 — proof-token by-construction.** `ValidValues`/`ResolvedValues` — compile-time-evident
-  токены: нельзя вызвать `resolve` без `ValidValues`, нельзя читать резолвнутые поля без
-  `ResolvedValues`. Никаких runtime-флагов (`validated.rs`).
-- **Единственное пересечение schema→validator** (ADR-0052 P2). Все правила пересекают границу
-  ровно один раз через `validate_rules_with_ctx` + `resolve_field_policies`; код провалившегося
-  `Rule` (`min_length`, `max`, `invalid_format`, …) пробрасывается verbatim — крейт не делает
-  namespace-remap; schema-owned структурные коды (`type_mismatch`, `items.*`, `option.*`,
-  `mode.*`, `expression.*`, `required`) неизменны.
-- **`schema_of<T>()` — единственный путь схем Action/Credential** (ADR-0052 P3); per-trait
-  `*_schema`-методы устранены (`has_schema.rs`).
-- **Строгий ингест ключей.** `FieldValues::from_json` отклоняет невалидные ключи объекта
-  кодом `invalid_key`, а не молча роняет их (`value.rs`).
-- **Expression-required поля** отклоняют литералы кодом `expression.required` на validate-time.
-- **Секреты by-construction.** `SecretString`/`SecretBytes` — Zeroizing; const-time равенство
-  через subtle; Debug редактирован (`SECRET_REDACTED`); экспонирование секрета — за feature
-  `audit-secret-expose` (`secret.rs`).
-- **Гигиена:** `#![forbid(unsafe_code)]`, `missing_docs` = warn, TODO/FIXME в `src/` отсутствуют.
+The synchronous alternative, `ValidValues::resolve_data(self)`, never creates
+or invokes an engine. It rejects compiled expressions with
+`expression.forbidden` and still performs full final validation. Data-only
+configuration does not need a dummy evaluator or a validation-skipping flag.
 
-## 6. Известные напряжения / долг (честно)
+### Preparation and admission
 
-1. **Единственный `#[deprecated]`** — `ValidValues::raw_values` («use `raw()` instead»,
-   `src/validated.rs:430`). Кандидат на снос — реальных причин держать нет.
-2. **Двойной синтаксис rule-ссылок.** Легаси-форма `$root.foo` поддерживается рядом с
-   JSON Pointer (`src/rule_ref.rs:17`, `src/lint.rs:88`, `:644`) — кандидат на унификацию на
-   один синтаксис.
-3. **Мягкий обходной путь вокруг ADR-0052 P3.** Baseline `HasSchema` impl для `FieldValues`
-   (`src/has_schema.rs:73` и `:105`) помечен как «legacy code paths / типы, ещё не объявившие
-   реальную схему» — частично подтачивает инвариант «`schema_of` — единственный путь». Должен
-   уйти, когда все потребители объявят реальные схемы.
-4. **Стейл-строка в AGENTS.md.** `AGENTS.md:29` «Cross-crate calls go through nebula-eventbus»
-   сомнительна для Core-крейта без зависимости на eventbus (скопировано из общего шаблона);
-   README/AGENTS в остальном согласованы с кодом.
+Canonical input wins over read aliases; otherwise the first declared alias
+wins. Every alias is consumed, including losing aliases that may carry secrets.
+Transforms run once for each newly prepared scalar or secret. Existing literal
+siblings are not transformed again during resolution; newly evaluated subtrees
+receive their own preparation once. Field transformer metadata remains intact.
 
-## 7. Роль в пост-0092 credential/resource модели
+Expression permission belongs to the exact declaration, not its ancestors.
+Opaque or undeclared descendants cannot acquire code capability merely because
+their parent permits expressions. A parent's `Forbidden` restriction does apply
+to its whole subtree; a child cannot reopen that restriction. `ExpressionMode::Required` rejects authored
+literals with `expression.required`. Template-like strings or `$expr` objects
+returned by the evaluator remain data and cannot trigger another evaluation.
 
-`nebula-schema` — **потребитель-инфраструктура**, которая сама не перестраивается коллапсом
-credential/resource-крейтов, но несёт несколько load-bearing швов для новой модели:
+`Transformer::regex(pattern, group)` and `RegexCapture::new(pattern, group)`
+return `Result<_, ValidationError>`. The capture-specific configuration owns a
+compiled `regex::Regex` and a checked group index; the validator's `RulePattern`
+does not expose capture extraction. Invalid patterns and nonexistent groups fail
+at construction or serde, with `transformer.invalid_pattern` or
+`transformer.invalid_capture_group`. There is no lazy failed-compilation cache,
+warning containing a pattern, or invalid-configuration no-op. Valid no-match and
+unmatched optional groups retain the original string; non-strings pass through.
 
-- **Write-path валидация кредов (ADR-0052 P4).** Объединённый `nebula-credential` (contract +
-  runtime + `CredentialService` facade + builtin-типы) валидирует `data` через схему **до
-  persist**. Схема приходит через `schema_of<Scheme>()` — единственный путь схем Credential
-  (P3); per-trait `*_schema` устранены. Этот шов не меняется при коллапсе крейтов: то, что
-  `credential-runtime`/`builtin`/`testutil`/`vault` удалены и слиты в один крейт, не трогает
-  контракт «values-only persistence + схема из зарегистрированных типов».
-- **Цепочка обнаружения схем.** Авторская связка такова: тип реализует `HasSchema` →
-  `nebula-metadata` собирает метаданные → `nebula-api` отдаёт каталог. nebula-schema —
-  фундамент этой цепочки; именно поэтому nebula-api получил право зависеть на nebula-schema
-  с feature `schemars` (P4), не таща при этом нижнеуровневые типы в DTO.
-- **Secret-типы на стыке.** `SecretString`/`SecretValue`/`SecretBytes` — это типы секретов,
-  которые credential-rewrite использует на швах ввода/хранения. **Граница чёткая:**
-  nebula-schema владеет *типами* секрета (zeroize, redacted Debug, const-time eq), но **не**
-  крипто-примитивами — AES-256-GCM/Argon2id и порты `Cipher`/`Kdf` живут в `nebula-crypto`
-  (ADR-0088/0092). KDF/hashing сюда не возвращается (project_schema_no_kdf).
-- **Resource-конфиги.** `nebula-resource` (владелец per-slot rotation fan-out, SlotCell,
-  Manager, topology) использует схемы конфигов ресурсов через тот же proof-token pipeline и
-  `schema_of`. Биндинг-модель «слоты (`slot_bindings`) отдельно от параметров» означает, что
-  схема описывает *параметры* концепта, а не binding-слоты — это разделение остаётся за
-  пределами nebula-schema (в action/resource-авторинге).
-- **Что НЕ меняется:** ядро pipeline, таксономия кодов, единственное validator-пересечение,
-  proof-token custody. Конференц-коррекции credential (policy(&State)-routing, CredentialSelector,
-  узкий типизированный RefreshTransport seam, lease first-class) — это контракты внутри
-  credential-рантайма; nebula-schema их **не** реализует и от них не зависит.
+## Data paths and schema paths
 
-## 8. Forward design / открытые вопросы
+`FieldKey` is a checked schema identifier. `FieldPath` and `PathSegment` address
+declarations and indexed schema locations using forms such as `items[0].name`.
+They remain appropriate for schema lookup, not arbitrary JSON traversal.
 
-- **Снять `#[deprecated]` `raw_values`** (см. §6.1) — чистый low-risk шаг, удаляет единственный
-  deprecated-элемент публичной поверхности.
-- **Унифицировать rule-ссылки** на один синтаксис (JSON Pointer), удалив легаси `$root.foo`
-  (§6.2) — затрагивает `rule_ref.rs` + `lint.rs`, нужен сценарий миграции для авторов схем.
-- **Закрыть baseline `HasSchema` для `FieldValues`** (§6.3): как только все потребители
-  объявят реальные схемы, удалить legacy-impl и сделать «`schema_of` — единственный путь»
-  истинным by-construction, а не by-convention.
-- **Phase 4 JSON Schema export → stable.** Сейчас в pragmatic-baseline; стабилизировать набор
-  `x-nebula-*` расширений (expression/required/visibility modes, root rules, UI/runtime hints)
-  и зафиксировать их как версионированный контракт (сейчас `SCHEMA_WIRE_VERSION: u16 = 1`).
-- **Phase-5 unified authoring (`#[property]`) — NOT-YET-BUILT.** Унифицированный авторинг
-  полей/слотов через атрибуты ещё не существует; когда он появится, derive-поверхность
-  (`#[derive(Schema)]`/`field_key!`) — естественная точка интеграции, но это отдельная фаза.
-- **Поправить стейл-строку eventbus в AGENTS.md** (§6.4) — документационный долг, не код.
-- **Риск нагрузки:** 8 потребителей делают любую breaking-правку публичной поверхности дорогой;
-  изменения proof-token-типов и кодов ошибок должны идти через ADR-цикл (как ADR-0052), а не
-  ad-hoc.
+`ValuePath` is the RFC6901 data path, re-exported from the validator foundation.
+Data errors, pending obligations, and tree lookup use this type. The root is
+`""`; `/` denotes an empty property name; `~0` and `~1` escape `~` and `/`.
+`ValuePath::parse` returns `Option<ValuePath>`, and `push` accepts an exact data
+segment. A numeric segment selects a list index only at a list; numeric object
+keys remain keys. Lists require canonical decimal indices without leading zeros.
+
+`get(key)` is exact-key lookup, while `get_path(&ValuePath)` traverses containers.
+`insert(key, tree)` returns `Result<Option<Self>, ValidationError>` and rejects
+non-object receivers. Key insertion grants neither schema admission nor proof.
+Data property names need not satisfy `FieldKey` syntax.
+
+## Wire, views, and identities
+
+There are independent contracts, not interchangeable serialization helpers:
+
+| Boundary | Representation and policy |
+|----------|---------------------------|
+| Literal ingestion | `ValueTree::from_data(json)` interprets no code syntax |
+| Explicit authoring shorthand | `AuthoredValue::from_template_json(json)` recognizes template strings and exact `$expr` objects as AUTO programs |
+| Tree serde | Authored v2 `{version, data, expressions}` envelope |
+| JSON view | `to_json` redacts secret leaves but preserves authored/compiled expression sources |
+| Schema projection | `project`/`to_wire_json` apply output aliases and omit secrets; not proof or authored persistence |
+| Tree canonical encoding | Version 2 content-addressing; expression and literal identities stay distinct |
+| Durable raw JSON encoding | `canonical_json_v1` retains the existing JSON-v1 byte contract |
+| Schema-definition serde | Historical record/union/unknown v1 bytes; scalar roots have a separately versioned descriptor |
+
+Authored v2 has this shape:
+
+```json
+{
+  "version": 2,
+  "data": {"result": null, "literal": "{{ not code }}"},
+  "expressions": [{"path": "/result", "syntax": "auto", "source": "{{ $input.result }}"}]
+}
+```
+
+The expression table is separate from ordinary data. Every entry is exactly
+`{path, syntax, source}` and targets an existing null placeholder, including the root
+when its pointer is empty. The decoder rejects unsupported versions, unknown,
+missing, or duplicate envelope/entry fields, duplicate data keys, invalid,
+duplicate, or overlapping paths, and missing or non-null placeholders. Entry
+order does not change decoding; serialization follows tree traversal order. Syntax
+is required and closed: `auto`, `expression` (raw), or `template` (always string).
+`Expression::new` and `from_template_json` keep AUTO semantics; use
+`Expression::template` for explicit text interpolation. `with_syntax` creates a
+fresh immutable source/syntax pair with its own shared lazy compilation cache.
+
+All three tree phases serialize through this format, rejecting any explicit
+secret before writing envelope content. Only the authored phase deserializes;
+it restores source and syntax without compilation or proof construction. Compiled
+programs retain requested syntax, even when AUTO chooses a template body. The logical
+depth limit is 64, including empty containers, with the root at depth zero.
+The envelope does not double the nesting of the data or disable parser limits.
+
+`VALUE_CANON_VERSION = 2` governs tree canonical bytes, not serde or schema
+definitions. Secret-free tree content IDs are insertion-order independent;
+keyed secret commitments require an explicit `CommitmentKey` and produce
+`CommitmentId`, not a portable plaintext content ID.
+Expression identity is exact source plus authored syntax, not parsed AST equality.
+An expression encodes as tag `0x08`, then syntax tag `0` (AUTO), `1` (raw
+EXPRESSION), or `2` (TEMPLATE), then length-prefixed source bytes. The same framing
+applies to keyed commitments. Pure-data tree encoding is unchanged.
+
+`canonical_json_v1(&json)` retains the persisted v1 domain/version, JSON
+container tags, UTF-8 key ordering, depth bound, and numeric normalization.
+Changing tree representation must not change these durable bytes. This encoder
+does not infer secret fields, redact values, or interpret authoring syntax;
+its caller must exclude secret material.
+
+## Secrets and diagnostics
+
+Declared string secrets are promoted during consuming preparation, before a
+`ValidValues` can escape. `SecretString` and `SecretBytes` zeroize owned storage;
+ordinary `Debug`, `Display`, and JSON serialization redact protected material.
+`Expression` and `CompiledProgram` diagnostic output does not print source.
+Authored serialization and explicit source access are not diagnostic surfaces.
+
+Field and root rules share `prepared_predicate_context` after preparation.
+Schema-declared secrets and explicit `Secret` nodes are scrubbed recursively,
+including under arbitrary keys. Expressions are unavailable; pending paths are
+supplied separately through the validator context. Safe whole containers remain
+addressable. Arrays remain opaque predicate leaves, with unavailable elements
+represented by null to preserve positions; this does not add indexed predicate
+lookup.
+
+Value rules use a private, temporary zeroizing projection of actual data, not
+redaction markers. An aggregate is protected when its declaration contains a
+secret or its data contains an explicit secret node. This also covers malformed
+values, missing fields, and inactive mode variants: successful promotion is not
+a prerequisite for protected error causes. The entire rule tree is audited
+before disclosure; full-mode custom evaluators cannot receive protected input.
+Public sibling-field rules retain their ordinary diagnostics.
+
+Raw context wrappers check depth before traversal or copying and fold all read
+aliases. Wrong secret-bearing container shapes and unknown mode payloads cannot
+leak through projection. Schema-bound loader dispatch applies the same schema
+awareness but creates redacted literal snapshots, including removal of expression
+source content. A raw `LoaderContext` is not safe merely because it has the same
+type; `with_secrets_redacted(&schema)` is fallible and establishes the snapshot
+boundary. Direct loader calls can scrub explicit nodes but cannot infer schema
+secrets without declarations.
+
+`ResolvedValues::into_typed<T>()` rejects secret-bearing trees instead of decoding
+redaction markers into plausible credentials. The separately named
+`into_typed_exposing_secrets<T>()` consumes proof at a trusted disclosure boundary,
+preserves union wire tagging, and drives serde from a sensitive tree that borrows
+protected text rather than constructing an ordinary plaintext JSON string. The
+tree recursively applies field output aliases and active mode payload schemas before
+the root union's serde tagging. Its decode error erases visitor diagnostics before
+they can enter a public error chain.
+For derived schemas, every `#[field(secret)]` leaf (including the `T` in `Option<T>`)
+must explicitly implement `SecretInput`, whose supertraits require owned
+deserialization and zeroization on drop. `get_secret`, `expose`, and `SecretWire`
+are explicit lower-level disclosure paths. The `audit-secret-expose` feature changes
+exposure audit verbosity; it is not what makes access possible.
+
+`ValidationError` stores its payload behind a private box and exposes `code()`,
+`path()`, `severity()`, `params()`, and `message()`. Data paths are RFC6901.
+Parser, evaluator, regex, and typed-decoding boundaries attach private typed
+causes whose public `Error::source` chain is redacted. Never interpolate raw
+source, input data, or secret-bearing upstream errors into messages or params.
+Rule codes remain validator-native, without namespace remapping. Rule/policy
+execution stays centralized at `validate_rules_with_ctx` and
+`resolve_field_policies`; schema does not duplicate their semantics.
+
+## Module map and checks
+
+- `schema.rs`, `field.rs`, `builder/`, and `lint.rs`: definitions, construction,
+  checked keys, aliases, and bounded structural lint.
+- `value/mod.rs`, `tree.rs`, `wire.rs`, `tree_canonical.rs`, and `canonical.rs`
+  under `value/`: phase-indexed representation, authored serde, tree identity,
+  and the independent durable JSON-v1 encoding.
+- `validated/mod.rs` and its `preparation.rs`, `validation.rs`, and `values.rs`:
+  schema snapshots, consuming preparation, validator integration, and proof custody.
+- `expression.rs`, `context.rs`, `loader.rs`, `secret.rs`, and `transformer.rs`:
+  evaluation adapters, safe projections, loader boundaries, and checked primitives.
+- `has_schema.rs` and `macros/`: checked schema discovery and derives.
+- `json_schema.rs`: optional Draft 2020-12 export with `x-nebula-*` extensions;
+  exported metadata does not replace validation or runtime proof.
+
+The [agent guide](../AGENTS.md) maps changed contracts to focused tests and
+commands. [README](../README.md) summarizes the API; [CHANGELOG](../CHANGELOG.md)
+records breaking migrations. Workspace ownership and layering remain governed
+by [the root guide](../../../AGENTS.md) and
+[the integration model](../../../docs/INTEGRATION_MODEL.md).

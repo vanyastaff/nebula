@@ -9,22 +9,16 @@ use nebula_action::{
     ActionContext,
     action::Action,
     error::ActionError,
-    metadata::ActionMetadata,
     result::ActionResult,
     stateful::{PageResult, PaginatedAction},
     testing::{StatefulTestHarness, TestContextBuilder},
 };
 use nebula_core::{Dependencies, action_key};
-use nebula_schema::{HasSchema, ValidSchema};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct NumberPage(Vec<i32>);
-
-impl HasSchema for NumberPage {
-    fn schema() -> ValidSchema {
-        ValidSchema::empty()
-    }
+#[derive(Debug, Clone, Serialize, Deserialize, nebula_schema::Schema)]
+struct NumberPage {
+    numbers: Vec<i32>,
 }
 
 // ── NumberPaginator ────────────────────────────────────────────────────────
@@ -37,10 +31,10 @@ impl Action for NumberPaginator {
     type Input = serde_json::Value;
     type Output = NumberPage;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             action_key!("test.number_paginator"),
-            "NumberPaginator",
+            nebula_action::metadata_name!("NumberPaginator"),
             "Paginate numbers",
         )
     }
@@ -72,7 +66,7 @@ impl PaginatedAction for NumberPaginator {
             None
         };
         Ok(PageResult {
-            data: NumberPage(data),
+            data: NumberPage { numbers: data },
             next_cursor: next,
         })
     }
@@ -90,10 +84,10 @@ impl Action for LimitedPaginator {
     type Input = serde_json::Value;
     type Output = NumberPage;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
             action_key!("test.limited_paginator"),
-            "LimitedPaginator",
+            nebula_action::metadata_name!("LimitedPaginator"),
             "Paginate with limit",
         )
     }
@@ -139,10 +133,11 @@ async fn paginated_fetches_all_pages() {
     assert!(r2.is_continue(), "page 2 of 3 should Continue");
 
     let r3 = harness.step(input).await.unwrap();
-    assert!(
-        matches!(r3, ActionResult::Break { .. }),
-        "page 3 of 3 should Break"
-    );
+    let ActionResult::Break { output, .. } = r3 else {
+        panic!("page 3 of 3 should Break");
+    };
+    let page: NumberPage = output.into_value().unwrap();
+    assert_eq!(page.numbers, (20..30).collect::<Vec<_>>());
 
     assert_eq!(harness.iterations(), 3);
 }

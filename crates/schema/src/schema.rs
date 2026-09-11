@@ -14,7 +14,7 @@ use crate::{
     error::{ValidationError, ValidationReport},
     field_tree::{mode_variant_path, walk_schema_fields},
     path::{FieldPath, PathSegment},
-    validated::{FieldHandle, SchemaFlags, ValidSchema, ValidSchemaInner},
+    validated::{FieldHandle, RootShape, SchemaFlags, ValidSchema, ValidSchemaInner},
 };
 
 // ── Builder entry point ───────────────────────────────────────────────────────
@@ -102,8 +102,7 @@ impl Schema {
     ///   params.
     /// - `loader.missing_config` — field is a select but has no loader configured (static options
     ///   only).
-    /// - `loader.not_registered` / `loader.failed` — propagated from
-    ///   [`LoaderRegistry::load_options`].
+    /// - `loader.not_registered` / `loader.failed` — propagated from the loader registry.
     pub async fn load_select_options(
         &self,
         key: &str,
@@ -130,8 +129,7 @@ impl Schema {
     ///   params.
     /// - `loader.missing_config` — field is a select but has no loader configured (static options
     ///   only).
-    /// - `loader.not_registered` / `loader.failed` — propagated from
-    ///   [`LoaderRegistry::load_options`].
+    /// - `loader.not_registered` / `loader.failed` — propagated from the loader registry.
     pub async fn load_select_options_at(
         &self,
         path: &FieldPath,
@@ -139,7 +137,9 @@ impl Schema {
         context: LoaderContext,
     ) -> Result<LoaderResult<SelectOption>, ValidationError> {
         let loader_key = resolve_select_loader_path(self.fields(), path)?;
-        registry.load_options(&loader_key, context).await
+        registry
+            .load_options(&loader_key, context.redacted(self.fields())?)
+            .await
     }
 
     /// Resolve dynamic record payloads for a dynamic field through registry.
@@ -175,7 +175,9 @@ impl Schema {
         context: LoaderContext,
     ) -> Result<LoaderResult<Value>, ValidationError> {
         let loader_key = resolve_dynamic_loader_path(self.fields(), path)?;
-        registry.load_records(&loader_key, context).await
+        registry
+            .load_records(&loader_key, context.redacted(self.fields())?)
+            .await
     }
 }
 
@@ -186,19 +188,11 @@ impl Schema {
 /// # Errors
 ///
 /// Returns `invalid_key` when `key` does not satisfy [`FieldKey`](crate::FieldKey) constraints.
-#[expect(
-    clippy::result_large_err,
-    reason = "ValidationError is intentionally large; callers are on the validation path"
-)]
 fn parse_top_level_key(key: &str) -> Result<crate::key::FieldKey, ValidationError> {
     crate::key::FieldKey::new(key)
-        .map_err(|e| ValidationError::invalid_key(FieldPath::root(), key, e.message))
+        .map_err(|e| ValidationError::invalid_key(FieldPath::root(), key, e.message()))
 }
 
-#[expect(
-    clippy::result_large_err,
-    reason = "ValidationError is intentionally large; callers are on the validation path"
-)]
 pub(crate) fn resolve_select_loader_key(
     fields: &[Field],
     key: &str,
@@ -207,10 +201,6 @@ pub(crate) fn resolve_select_loader_key(
     resolve_select_loader_path(fields, &path)
 }
 
-#[expect(
-    clippy::result_large_err,
-    reason = "ValidationError is intentionally large; callers are on the validation path"
-)]
 pub(crate) fn resolve_select_loader_path(
     fields: &[Field],
     path: &FieldPath,
@@ -222,10 +212,6 @@ pub(crate) fn resolve_select_loader_path(
     loader_key_or_error(select.loader.as_deref(), path)
 }
 
-#[expect(
-    clippy::result_large_err,
-    reason = "ValidationError is intentionally large; callers are on the validation path"
-)]
 pub(crate) fn resolve_dynamic_loader_key(
     fields: &[Field],
     key: &str,
@@ -234,10 +220,6 @@ pub(crate) fn resolve_dynamic_loader_key(
     resolve_dynamic_loader_path(fields, &path)
 }
 
-#[expect(
-    clippy::result_large_err,
-    reason = "ValidationError is intentionally large; callers are on the validation path"
-)]
 pub(crate) fn resolve_dynamic_loader_path(
     fields: &[Field],
     path: &FieldPath,
@@ -249,10 +231,6 @@ pub(crate) fn resolve_dynamic_loader_path(
     loader_key_or_error(dynamic.loader.as_deref(), path)
 }
 
-#[expect(
-    clippy::result_large_err,
-    reason = "ValidationError is intentionally large; callers are on the validation path"
-)]
 fn loader_key_or_error(loader: Option<&str>, path: &FieldPath) -> Result<String, ValidationError> {
     loader
         .filter(|loader| !loader.trim().is_empty())
@@ -265,10 +243,6 @@ fn loader_type_mismatch(path: &FieldPath, expected: &str, actual: &str) -> Valid
 }
 
 /// Look up a named child field under `parent_path`, returning the child and its full path.
-#[expect(
-    clippy::result_large_err,
-    reason = "ValidationError is intentionally large; callers are on the validation path"
-)]
 fn find_named_child<'a>(
     fields: &'a [Field],
     key: &crate::key::FieldKey,
@@ -281,10 +255,6 @@ fn find_named_child<'a>(
     }
 }
 
-#[expect(
-    clippy::result_large_err,
-    reason = "ValidationError is intentionally large; callers are on the validation path"
-)]
 fn find_field_by_schema_path<'a>(
     fields: &'a [Field],
     path: &FieldPath,
@@ -374,7 +344,7 @@ impl SchemaBuilder {
     ///
     /// Rules are executed via [`nebula_validator::validate_rules_with_ctx`] with a
     /// [`nebula_validator::PredicateContext`] built from
-    /// [`FieldValues::to_json`](crate::FieldValues::to_json).
+    /// [`AuthoredValue::to_json`](crate::AuthoredValue::to_json).
     /// [`ExecutionMode::StaticOnly`](nebula_validator::ExecutionMode::StaticOnly) is used, so
     /// **deferred** rules (including [`Rule::custom`](nebula_validator::Rule::custom))
     /// are skipped here and remain wire hooks for the workflow engine.
@@ -404,26 +374,26 @@ impl SchemaBuilder {
     /// use nebula_schema::{FieldCollector, Schema, StringWidget, field_key};
     /// use nebula_validator::{Predicate, Rule};
     ///
-    /// let rule = Rule::predicate(Predicate::eq("method", "POST").unwrap());
+    /// let rule = Rule::predicate(Predicate::eq("method", "POST").unwrap()).unwrap();
     /// let schema = Schema::builder()
     ///     .string(field_key!("method"), |s| s.required())
     ///     .group("body_section", |g| {
     ///         g.visible_when(rule)
     ///             .string(field_key!("body"), |s| s.widget(StringWidget::Multiline))
     ///     })
+    ///     .unwrap()
     ///     .build()
     ///     .unwrap();
     /// assert_eq!(schema.fields().len(), 2);
     /// ```
-    #[must_use]
     pub fn group(
         mut self,
         name: impl Into<String>,
         f: impl FnOnce(crate::builder::GroupBuilder) -> crate::builder::GroupBuilder,
-    ) -> Self {
+    ) -> Result<Self, nebula_validator::RuleBuildError> {
         let builder = f(crate::builder::GroupBuilder::new(name));
-        self.fields.extend(builder.into_fields());
-        self
+        self.fields.extend(builder.into_fields()?);
+        Ok(self)
     }
 
     /// Borrow the fields currently staged on the builder.
@@ -439,7 +409,7 @@ impl SchemaBuilder {
     /// Returns a [`ValidationReport`] when structural linting or index-limit
     /// checks fail.
     pub fn build(self) -> Result<ValidSchema, ValidationReport> {
-        self.build_inner(crate::SchemaKind::Record, None)
+        self.build_inner(None)
     }
 
     /// Build a [`SchemaKind::Union`](crate::SchemaKind::Union) from a builder carrying exactly one root
@@ -458,12 +428,11 @@ impl SchemaBuilder {
         self,
         tagging: crate::SerdeTagging,
     ) -> Result<ValidSchema, ValidationReport> {
-        self.build_inner(crate::SchemaKind::Union, Some(tagging))
+        self.build_inner(Some(tagging))
     }
 
     fn build_inner(
         self,
-        kind: crate::SchemaKind,
         serde_tagging: Option<crate::SerdeTagging>,
     ) -> Result<ValidSchema, ValidationReport> {
         let mut fields = self.fields;
@@ -494,15 +463,27 @@ impl SchemaBuilder {
         // Build the flat path index for O(1) path lookup.
         let mut index: IndexMap<FieldPath, FieldHandle> = IndexMap::new();
         let mut flags = SchemaFlags::default();
-        build_index(&fields, &mut index, &mut flags);
+        let mut has_contextual_rules =
+            crate::validated::rules_use_predicate_context(&self.root_rules);
+        build_index(&fields, &mut index, &mut flags, &mut has_contextual_rules);
 
+        let root = match serde_tagging {
+            Some(tagging) => {
+                if !self.root_rules.is_empty() {
+                    return Err(ValidationError::builder("union.root_rules")
+                        .message("tagged union roots cannot carry record rules")
+                        .build()
+                        .into());
+                }
+                RootShape::union(fields, tagging)?
+            },
+            None => RootShape::record(fields, self.root_rules),
+        };
         Ok(ValidSchema::from_inner(ValidSchemaInner {
-            kind,
-            serde_tagging,
-            fields,
+            root,
             index,
             flags,
-            root_rules: self.root_rules,
+            has_contextual_rules,
         }))
     }
 }
@@ -601,6 +582,7 @@ fn build_index(
     fields: &[Field],
     index: &mut IndexMap<FieldPath, FieldHandle>,
     flags: &mut SchemaFlags,
+    has_contextual_rules: &mut bool,
 ) {
     use crate::mode::ExpressionMode;
 
@@ -631,6 +613,8 @@ fn build_index(
             flags.has_async_loaders = true;
         }
 
+        *has_contextual_rules |= field_uses_predicate_context(node.field);
+
         index.insert(
             node.path,
             FieldHandle {
@@ -639,6 +623,12 @@ fn build_index(
             },
         );
     });
+}
+
+fn field_uses_predicate_context(field: &Field) -> bool {
+    crate::validated::rules_use_predicate_context(field.rules())
+        || matches!(field.visible(), crate::VisibilityMode::When(_))
+        || matches!(field.required(), crate::RequiredMode::When(_))
 }
 
 /// Maximum schema-tree nesting depth accepted by [`SchemaBuilder::build`] and
@@ -652,7 +642,7 @@ fn build_index(
 /// guard walks every nested field shape — object fields, list items of any kind
 /// (`List<List<…>>`, `List<Mode<…>>`, not just `List<Object>`), and mode-variant
 /// payloads. A schema deeper than this could not have its values validated
-/// anyway — `FieldValue` parsing caps at the same `MAX_VALUE_DEPTH`.
+/// anyway - authored value ingestion caps at the same `MAX_VALUE_DEPTH`.
 ///
 /// This guards the *logical* tree once it has been deserialized. Untrusted
 /// schema bytes reach the system as JSON (plugin protocol, API), whose parser
@@ -796,7 +786,7 @@ mod tests {
             .add(Field::number(fk("x")))
             .build();
         let err = r.unwrap_err();
-        assert!(err.errors().any(|e| e.code == "duplicate_key"));
+        assert!(err.errors().any(|e| e.code() == "duplicate_key"));
     }
 
     #[test]
@@ -826,7 +816,7 @@ mod tests {
             .build()
             .expect("valid schema");
         let err = resolve_select_loader_key(schema.fields(), "bad-key").unwrap_err();
-        assert_eq!(err.code, "invalid_key");
+        assert_eq!(err.code(), "invalid_key");
     }
 
     #[test]
@@ -836,7 +826,7 @@ mod tests {
             .build()
             .expect("valid schema");
         let err = resolve_dynamic_loader_key(schema.fields(), "bad-key").unwrap_err();
-        assert_eq!(err.code, "invalid_key");
+        assert_eq!(err.code(), "invalid_key");
     }
 
     #[test]
@@ -852,7 +842,7 @@ mod tests {
 
         let result = Schema::builder().add(nested_object(260)).build();
         let report = result.expect_err("deep schema should be rejected");
-        assert!(report.errors().any(|e| e.code == "schema.depth_limit"));
+        assert!(report.errors().any(|e| e.code() == "schema.depth_limit"));
     }
 
     #[test]
@@ -870,7 +860,7 @@ mod tests {
             .add(nested_object(usize::from(MAX_SCHEMA_DEPTH) + 2))
             .build();
         let report = result.expect_err("over-deep schema should be rejected");
-        assert!(report.errors().any(|e| e.code == "schema.depth_limit"));
+        assert!(report.errors().any(|e| e.code() == "schema.depth_limit"));
     }
 
     #[test]
@@ -919,7 +909,7 @@ mod tests {
             .build();
         let report = result.expect_err("deep list-of-lists must be rejected");
         assert!(
-            report.errors().any(|e| e.code == "schema.depth_limit"),
+            report.errors().any(|e| e.code() == "schema.depth_limit"),
             "expected schema.depth_limit, got: {report:?}"
         );
     }
@@ -941,7 +931,7 @@ mod tests {
         };
         let report = schema.lint();
         assert!(
-            report.errors().any(|e| e.code == "schema.depth_limit"),
+            report.errors().any(|e| e.code() == "schema.depth_limit"),
             "Schema::lint must reject an over-deep tree, got: {report:?}"
         );
     }
@@ -962,7 +952,7 @@ mod tests {
 
         let report = result.expect_err("mode variant list item overflow should be rejected");
         assert!(
-            report.errors().any(|e| e.code == "schema.index_overflow"),
+            report.errors().any(|e| e.code() == "schema.index_overflow"),
             "expected schema.index_overflow, got: {report:?}"
         );
     }

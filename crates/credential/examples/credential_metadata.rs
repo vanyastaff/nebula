@@ -1,113 +1,35 @@
-//! Example: Defining credential types using `CredentialMetadata`.
-//!
-//! Builds on the shared [`nebula_metadata::BaseMetadata`] prefix — the
-//! catalog-level fields (`key`, `name`, `description`, `schema`, `icon`,
-//! `documentation_url`, `tags`, `maturity`, `deprecation`) are uniform
-//! across action/credential/resource. Credential-specific details
-//! (`pattern`) stay on [`CredentialMetadata`] itself.
+//! Example: define, admit, record, and re-admit credential metadata.
 
 #![expect(
     clippy::print_stdout,
     reason = "example: printed output is the demonstration"
 )]
 
-use nebula_credential::CredentialMetadata;
-use nebula_metadata::Metadata;
-use nebula_schema::{Field, Schema, field_key};
+use nebula_credential::{
+    ApiKeyCredential, Credential, CredentialRegistry, RecordedCredentialMetadata,
+};
 
-fn main() {
-    // Example 1: GitHub OAuth2 credential type
-    let github_schema = Schema::builder()
-        .add(
-            Field::string(field_key!("client_id"))
-                .label("Client ID")
-                .required(),
-        )
-        .add(
-            Field::secret(field_key!("client_secret"))
-                .label("Client Secret")
-                .required(),
-        )
-        .build()
-        .expect("github schema is always valid");
+fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let draft = ApiKeyCredential::metadata();
+    println!("Draft auth pattern: {:?}", draft.pattern());
 
-    let github_oauth2 = CredentialMetadata::builder()
-        .key(nebula_core::credential_key!("github_oauth2"))
-        .name("GitHub OAuth2")
-        .description("OAuth2 authentication for GitHub API")
-        .icon("github")
-        .documentation_url("https://docs.github.com/en/apps/oauth-apps")
-        .schema(github_schema)
-        .pattern(nebula_credential::AuthPattern::OAuth2)
-        .build()
-        .expect("Failed to build GitHub OAuth2 credential metadata");
+    let mut registry = CredentialRegistry::new();
+    registry.register(ApiKeyCredential, "credential-metadata-example")?;
+    let admitted = registry
+        .metadata(ApiKeyCredential::KEY)
+        .expect("the successfully registered credential must have metadata");
 
-    println!("GitHub OAuth2 Credential Type:");
-    println!("  Key: {}", github_oauth2.key().as_str());
-    println!("  Name: {}", github_oauth2.name());
-    println!("  Description: {}", github_oauth2.description());
-    println!("  Icon: {:?}", github_oauth2.icon());
-    println!("  Documentation: {:?}", github_oauth2.documentation_url());
-    println!("  Schema fields: {}", github_oauth2.schema().fields().len());
-    println!();
-
-    // Example 2: PostgreSQL database credential type
-    let postgres_schema = Schema::builder()
-        .add(Field::string(field_key!("host")).label("Host").required())
-        .add(
-            Field::string(field_key!("username"))
-                .label("Username")
-                .required(),
-        )
-        .add(
-            Field::secret(field_key!("password"))
-                .label("Password")
-                .required(),
-        )
-        .build()
-        .expect("postgres schema is always valid");
-
-    let postgres_db = CredentialMetadata::builder()
-        .key(nebula_core::credential_key!("postgres_db"))
-        .name("PostgreSQL Database")
-        .description("PostgreSQL database connection credentials")
-        .icon("database")
-        .schema(postgres_schema)
-        .pattern(nebula_credential::AuthPattern::IdentityPassword)
-        .build()
-        .expect("Failed to build PostgreSQL credential metadata");
-
-    println!("PostgreSQL Database Credential Type:");
-    println!("  Key: {}", postgres_db.key().as_str());
-    println!("  Name: {}", postgres_db.name());
-    println!("  Description: {}", postgres_db.description());
-    println!();
-
-    // Example 3: Simple API Key credential type via the `new` constructor.
-    let api_key_schema = Schema::builder()
-        .add(
-            Field::secret(field_key!("api_key"))
-                .label("API Key")
-                .required(),
-        )
-        .build()
-        .expect("api_key schema is always valid");
-
-    let api_key = CredentialMetadata::new(
-        nebula_core::credential_key!("api_key"),
-        "API Key",
-        "Simple API key authentication",
-        api_key_schema,
-        nebula_credential::AuthPattern::SecretToken,
+    println!("Admitted key: {}", admitted.key().as_str());
+    println!("Admitted name: {}", admitted.name());
+    println!(
+        "Canonical schema fields: {}",
+        admitted.schema().fields().len()
     );
 
-    println!("API Key Credential Type:");
-    println!("  Key: {}", api_key.key().as_str());
-    println!("  Name: {}", api_key.name());
-    println!();
+    let wire = serde_json::to_value(admitted)?;
+    let recorded: RecordedCredentialMetadata = serde_json::from_value(wire)?;
+    let readmitted = recorded.readmit_against(admitted)?;
+    println!("Readmitted version: {}", readmitted.version());
 
-    // Serialization example
-    println!("Serialized GitHub OAuth2:");
-    let json = serde_json::to_string_pretty(&github_oauth2).expect("Failed to serialize");
-    println!("{json}");
+    Ok(())
 }

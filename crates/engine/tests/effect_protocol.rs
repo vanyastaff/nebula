@@ -1,16 +1,18 @@
 //! Provider observations through real activation, start admission and durable turns.
 
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::{
+    marker::PhantomData,
+    sync::{Arc, OnceLock},
+};
 
 use nebula_action::{
-    ActionContext, ActionError, ActionFactory, ActionHandle, ActionKind, ActionMetadata,
-    ActionResult,
+    Action, ActionFactory, ActionResult, RemoteEffectInstanceFactory,
     effect::{
         ActionEffectContract, EffectInvocationContext, EffectInvocationOutcome,
         EffectPreparationContext, EffectPreparationError, EffectQueryContext,
         EffectReconciliationOutcome, PreparedEffectAdapter, PreparedRemoteEffect,
-        ReadOnlyEffectQuery, RemoteDestinationGuarantee, RemoteEffectDescriptor,
-        RemoteEffectFactory, RemoteEffectPolicy,
+        ReadOnlyEffectQuery, RemoteDestinationGuarantee, RemoteEffectAction,
+        RemoteEffectDescriptor, RemoteEffectPolicy,
     },
 };
 use nebula_core::{
@@ -18,19 +20,18 @@ use nebula_core::{
     action_key, node_key,
 };
 use nebula_engine::{
-    ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
-    PlanFlavorRevisionInstaller, PlanFlavorRevisionLoader, WorkflowActivationService,
-    WorkflowEngine, WorkflowStartService,
+    ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, PlanFlavorRevisionInstaller,
+    PlanFlavorRevisionLoader, WorkflowActivationService, WorkflowEngine, WorkflowStartService,
 };
 use nebula_execution::{ExecutionBudget, ExecutionStatus};
 use nebula_metrics::MetricsRegistry;
 use nebula_plugin::{FrozenPluginRegistry, Plugin, PluginManifest, PluginRegistry, ResolvedPlugin};
-use nebula_schema::ValidSchema;
 use nebula_storage_port::{
     Scope,
     dto::{EffectOccurrenceKey, EffectPhase, WorkflowRecord},
 };
 use nebula_workflow::{NodeDefinition, WorkflowBuilder, WorkflowDefinition};
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
 #[path = "effect_protocol/ports.rs"]
@@ -41,6 +42,8 @@ use ports::Ports;
 #[path = "effect_protocol/faults.rs"]
 mod faults;
 use faults::{Boundary, Fault, FaultLedger};
+#[path = "effect_protocol/input_proof.rs"]
+mod input_proof;
 #[path = "effect_protocol/matrix.rs"]
 mod matrix;
 #[path = "effect_protocol/observations.rs"]
@@ -70,6 +73,7 @@ enum ProviderBehavior {
 #[derive(Debug)]
 struct Provider {
     behavior: ProviderBehavior,
+    prepared_inputs: parking_lot::Mutex<Vec<Value>>,
     calls: parking_lot::Mutex<Vec<OperationId>>,
     queries: parking_lot::Mutex<Vec<OperationId>>,
     applied: parking_lot::Mutex<std::collections::HashMap<String, Value>>,
@@ -80,42 +84,48 @@ struct Provider {
     dropped: tokio::sync::Notify,
 }
 
-struct ProviderFactory {
-    metadata: ActionMetadata,
-    dependencies: Dependencies,
+struct ProviderAction<I> {
     descriptor: RemoteEffectDescriptor,
     provider: Arc<Provider>,
+    _input: PhantomData<fn() -> I>,
 }
 
-impl ActionFactory for ProviderFactory {
-    fn metadata(&self) -> &ActionMetadata {
-        &self.metadata
+impl<I> Action for ProviderAction<I>
+where
+    I: nebula_schema::HasSchema + DeserializeOwned + Send + Sync + 'static,
+{
+    type Input = I;
+    type Output = Value;
+
+    fn metadata() -> nebula_action::ActionMetadataDraft {
+        nebula_action::ActionMetadataDraft::new(
+            action_key!("provider.send"),
+            nebula_action::metadata_name!("Send"),
+            "Trusted test provider",
+        )
     }
-    fn dependencies(&self) -> &Dependencies {
-        &self.dependencies
-    }
-    fn remote_effect_factory(&self) -> Option<&dyn RemoteEffectFactory> {
-        Some(self)
-    }
-    fn instantiate<'a>(
-        &'a self,
-        _: &'a NodeDefinition,
-        _: &'a dyn ActionContext,
-    ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
-        Box::pin(async { panic!("remote effects must never use generic dispatch") })
+
+    fn dependencies() -> &'static Dependencies {
+        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
+        DEPENDENCIES.get_or_init(Dependencies::new)
     }
 }
 
-#[async_trait::async_trait]
-impl RemoteEffectFactory for ProviderFactory {
+impl<I> RemoteEffectAction for ProviderAction<I>
+where
+    I: nebula_schema::HasSchema + DeserializeOwned + Serialize + Send + Sync + 'static,
+{
     fn descriptor(&self) -> &RemoteEffectDescriptor {
         &self.descriptor
     }
     async fn prepare(
         &self,
-        input: Value,
+        input: I,
         _: &EffectPreparationContext,
     ) -> Result<PreparedRemoteEffect, EffectPreparationError> {
+        let input =
+            serde_json::to_value(input).map_err(|_| EffectPreparationError::InvalidRequest)?;
+        self.provider.prepared_inputs.lock().push(input.clone());
         if matches!(self.provider.behavior, ProviderBehavior::PreparationTimeout) {
             self.provider.entered.notify_one();
             return std::future::pending().await;
@@ -241,7 +251,7 @@ impl ReadOnlyEffectQuery for ProviderAdapter {
 
 struct ProviderPlugin {
     manifest: PluginManifest,
-    factory: Arc<ProviderFactory>,
+    factory: Arc<dyn ActionFactory>,
 }
 impl std::fmt::Debug for ProviderPlugin {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -269,8 +279,20 @@ struct Fixture {
 
 impl Fixture {
     async fn new(behavior: ProviderBehavior, ports: Ports) -> Self {
+        Self::with_typed_input::<Value>(behavior, ports, &[]).await
+    }
+
+    async fn with_typed_input<I>(
+        behavior: ProviderBehavior,
+        ports: Ports,
+        parameters: &[(&str, nebula_workflow::ParamValue)],
+    ) -> Self
+    where
+        I: nebula_schema::HasSchema + DeserializeOwned + Serialize + Send + Sync + 'static,
+    {
         let provider = Arc::new(Provider {
             behavior,
+            prepared_inputs: parking_lot::Mutex::new(Vec::new()),
             calls: parking_lot::Mutex::new(Vec::new()),
             queries: parking_lot::Mutex::new(Vec::new()),
             applied: parking_lot::Mutex::new(std::collections::HashMap::new()),
@@ -319,20 +341,23 @@ impl Fixture {
         }
         .unwrap();
         let descriptor = RemoteEffectDescriptor::new("test.provider/v1", 1, policy).unwrap();
-        let factory = Arc::new(ProviderFactory {
-            metadata: ActionMetadata::new(
-                action_key!("provider.send"),
-                "Send",
-                "Trusted test provider",
+        let metadata = nebula_action::ActionMetadataDraft::new(
+            action_key!("provider.send"),
+            nebula_action::metadata_name!("Send"),
+            "Trusted test provider",
+        )
+        .with_effect_contract(ActionEffectContract::Remote(Box::new(descriptor.clone())));
+        let factory: Arc<dyn ActionFactory> = Arc::new(
+            RemoteEffectInstanceFactory::new(
+                metadata,
+                ProviderAction::<I> {
+                    descriptor,
+                    provider: provider.clone(),
+                    _input: PhantomData,
+                },
             )
-            .with_kind(ActionKind::Stateless)
-            .with_schema(ValidSchema::empty())
-            .with_output_schema(ValidSchema::empty())
-            .with_effect_contract(ActionEffectContract::Remote(Box::new(descriptor.clone()))),
-            dependencies: Dependencies::new(),
-            descriptor,
-            provider: provider.clone(),
-        });
+            .expect("remote provider metadata must be admitted"),
+        );
         let mut plugins = PluginRegistry::new();
         plugins
             .register(Arc::new(
@@ -353,8 +378,12 @@ impl Fixture {
                 )
                 .unwrap(),
         );
+        let mut node = NodeDefinition::new(node_key!("send"), "Send", "provider", "send").unwrap();
+        for (key, value) in parameters {
+            node = node.with_parameter(*key, value.clone());
+        }
         let definition = WorkflowBuilder::new("Provider effect")
-            .add_node(NodeDefinition::new(node_key!("send"), "Send", "provider", "send").unwrap())
+            .add_node(node)
             .build()
             .unwrap();
         let scope = Scope::new(WorkspaceId::new().to_string(), OrgId::new().to_string());
@@ -382,7 +411,12 @@ impl Fixture {
         )
         .activate(&scope, definition.id, 1, definition.clone())
         .await
-        .unwrap();
+        .unwrap_or_else(|error| match error {
+            nebula_engine::WorkflowActivationError::Compilation(error) => {
+                panic!("fixture compilation failed: {:?}", error.diagnostics());
+            },
+            error => panic!("fixture activation failed: {error}"),
+        });
         Self {
             ports,
             frozen,
@@ -393,6 +427,10 @@ impl Fixture {
     }
 
     async fn start(&self) -> nebula_core::ExecutionId {
+        self.start_with_input(json!({"amount": 7})).await
+    }
+
+    async fn start_with_input(&self, input: Value) -> nebula_core::ExecutionId {
         WorkflowStartService::new(
             self.ports.workflows.clone(),
             self.ports.stores.execution.clone(),
@@ -406,7 +444,7 @@ impl Fixture {
         .start(
             &self.scope,
             self.definition.id,
-            Some(json!({"amount": 7})),
+            Some(input),
             Some("start"),
             None,
         )
@@ -417,14 +455,11 @@ impl Fixture {
     }
 
     fn engine(&self) -> WorkflowEngine {
-        let executor: ActionExecutor = Arc::new(|_, _, _| {
-            Box::pin(async { panic!("remote effects must never call the generic executor") })
-        });
         let metrics = MetricsRegistry::new();
         let runtime = Arc::new(
             ActionRuntime::try_new(
                 Arc::new(ActionRegistry::new()),
-                Arc::new(InProcessRunner::new(executor)),
+                Arc::new(InProcessRunner::new()),
                 DataPassingPolicy::default(),
                 metrics.clone(),
             )

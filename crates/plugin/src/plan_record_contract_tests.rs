@@ -2,8 +2,9 @@ use super::*;
 use nebula_core::{
     ExecutablePlanRevisionId, PluginSetId, WorkerFlavorRevisionId, WorkflowId, WorkflowVersionId,
 };
-use nebula_schema::{ModeField, ObjectField, Schema, SecretField, field_key};
+use nebula_schema::{ModeField, ObjectField, Schema, SecretField, ValuePath, field_key};
 use serde_json::{Value, json};
+use std::assert_matches;
 
 const SECRET_PAYLOAD: &str = "credential-value-that-must-not-leak";
 const ACTUAL_CONTRACT_DETAIL: &str = "registered-contract-v2";
@@ -416,9 +417,7 @@ fn graph_v1_hash_matches_literal_golden_and_independent_record_projection() {
         .as_object_mut()
         .expect("record is an object")
         .remove("claimed_id");
-    let canonical = FieldValue::Literal(projected)
-        .canonical_bytes()
-        .expect("record projection is canonical");
+    let canonical = canonical_json_v1(&projected).expect("record projection is canonical");
     let mut independent = Sha256::new();
     independent.update([1]);
     independent.update((EXECUTABLE_PLAN_GRAPH_V1_DOMAIN.len() as u64).to_be_bytes());
@@ -435,7 +434,11 @@ fn graph_v1_hash_matches_literal_golden_and_independent_record_projection() {
 
 #[test]
 fn compiler_effect_tuples_are_closed_and_legacy_fields_stay_absent() {
-    for compiler in [COMPILER_VERSION_GRAPH_V1, COMPILER_VERSION_GRAPH_V3] {
+    for compiler in [
+        COMPILER_VERSION_GRAPH_V1,
+        COMPILER_VERSION_GRAPH_V3,
+        COMPILER_VERSION_GRAPH_V4,
+    ] {
         for hash in [CANONICAL_HASH_VERSION_V1, CANONICAL_HASH_VERSION_V2] {
             for declared in [false, true] {
                 let mut record = fixture_record();
@@ -444,10 +447,10 @@ fn compiler_effect_tuples_are_closed_and_legacy_fields_stay_absent() {
                 record.content.actions[0].effect_contract = declared
                     .then_some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
                 reseal(&mut record);
-                let expected = if compiler == COMPILER_VERSION_GRAPH_V3 {
-                    hash == CANONICAL_HASH_VERSION_V2 && declared
-                } else {
+                let expected = if compiler == COMPILER_VERSION_GRAPH_V1 {
                     hash == CANONICAL_HASH_VERSION_V1 && !declared
+                } else {
+                    hash == CANONICAL_HASH_VERSION_V2 && declared
                 };
                 assert_eq!(
                     ExecutablePlanRevision::try_from(record.clone()).is_ok(),
@@ -467,6 +470,209 @@ fn compiler_effect_tuples_are_closed_and_legacy_fields_stay_absent() {
 }
 
 #[test]
+fn scalar_aware_compiler_epoch_preserves_legacy_schema_bytes() {
+    let mut record = fixture_record();
+    record.compiler_version = COMPILER_VERSION_GRAPH_V4;
+    record.canonical_hash_version = CANONICAL_HASH_VERSION_V2;
+    record.content.actions[0].effect_contract =
+        Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
+    reseal(&mut record);
+    let encoded = serde_json::to_vec(&record).unwrap();
+    let checked = ExecutablePlanRevision::try_from(record.clone()).unwrap();
+    assert_eq!(checked.id(), record.claimed_id);
+    assert_eq!(
+        serde_json::to_vec(&RecordedExecutablePlanRevisionV1::from(&checked)).unwrap(),
+        encoded
+    );
+    assert_eq!(
+        serde_json::to_value(&record.content.actions[0].input_schema).unwrap(),
+        json!({"schema_wire_version": 1, "schema": {"fields": []}})
+    );
+
+    let current_id = record.claimed_id;
+    record.compiler_version = COMPILER_VERSION_GRAPH_V3;
+    reseal(&mut record);
+    assert_ne!(current_id, record.claimed_id);
+    ExecutablePlanRevision::try_from(record).unwrap();
+}
+
+#[test]
+fn legacy_empty_record_never_decodes_as_null() {
+    for (compiler, hash, effect) in [
+        (COMPILER_VERSION_GRAPH_V1, CANONICAL_HASH_VERSION_V1, None),
+        (
+            COMPILER_VERSION_GRAPH_V3,
+            CANONICAL_HASH_VERSION_V2,
+            Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects),
+        ),
+    ] {
+        let mut record = fixture_record();
+        record.compiler_version = compiler;
+        record.canonical_hash_version = hash;
+        record.content.actions[0].effect_contract = effect;
+        reseal(&mut record);
+        let encoded = serde_json::to_vec(&record).unwrap();
+        let decoded: RecordedExecutablePlanRevisionV1 = serde_json::from_slice(&encoded).unwrap();
+        let schema = &decoded.content.actions[0].input_schema.schema;
+        assert_eq!(schema.kind(), SchemaKind::Record);
+        let resolved = schema
+            .validate(AuthoredValue::from_data(json!({})).unwrap())
+            .unwrap()
+            .resolve_data()
+            .unwrap();
+        assert_eq!(resolved.into_typed::<Value>().unwrap(), json!({}));
+        assert!(
+            schema
+                .validate(AuthoredValue::from_data(Value::Null).unwrap())
+                .is_err()
+        );
+        let checked = ExecutablePlanRevision::try_from(decoded).unwrap();
+        assert_eq!(
+            serde_json::to_vec(&RecordedExecutablePlanRevisionV1::from(&checked)).unwrap(),
+            encoded
+        );
+    }
+}
+
+#[test]
+fn scalar_schema_envelopes_require_the_scalar_compiler_epoch_at_every_contract_site() {
+    let scalar = serde_json::from_value::<ValidSchema>(json!({
+        "kind": "scalar", "scalar": {"version": 1, "type": "null"}
+    }))
+    .unwrap();
+    for site in ["input", "output", "resource", "credential"] {
+        for compiler in [1, 3, 4] {
+            for wire_version in [1, 2, 3] {
+                let mut record = match site {
+                    "resource" => resource_binding_record("primary"),
+                    "credential" => {
+                        credential_binding_record("primary", Capabilities::REFRESHABLE.bits())
+                    },
+                    _ => fixture_record(),
+                };
+                record.compiler_version = compiler;
+                record.canonical_hash_version = if compiler == 1 { 1 } else { 2 };
+                record.content.actions[0].effect_contract = (compiler != 1)
+                    .then_some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
+                let contract = match site {
+                    "input" => &mut record.content.actions[0].input_schema,
+                    "output" => &mut record.content.actions[0].output_schema,
+                    "resource" => &mut record.content.resources[0].configuration_schema,
+                    "credential" => &mut record.content.credentials[0].properties_schema,
+                    _ => unreachable!("the fixture enumerates all contract sites"),
+                };
+                contract.schema = scalar.clone();
+                contract.schema_wire_version = wire_version;
+                reseal(&mut record);
+                let encoded = serde_json::to_vec(&record).unwrap();
+                let decoded = serde_json::from_slice(&encoded).unwrap();
+                let checked = ExecutablePlanRevision::try_from_recorded_v1(decoded);
+                assert_eq!(
+                    checked.is_ok(),
+                    compiler == 4 && wire_version == 2,
+                    "site={site}, compiler={compiler}, schema_wire={wire_version}: {checked:?}"
+                );
+                if let Ok(plan) = checked {
+                    assert_eq!(
+                        serde_json::to_vec(&RecordedExecutablePlanRevisionV1::from(&plan)).unwrap(),
+                        encoded
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn scalar_schema_descriptor_versions_and_mixed_shapes_fail_closed() {
+    for invalid in [
+        json!({"kind": "scalar", "scalar": {"version": 2, "type": "null"}}),
+        json!({"kind": "scalar", "scalar": {"type": "null"}}),
+        json!({"kind": "scalar", "scalar": {"version": 1, "type": "future"}}),
+        json!({"kind": "scalar", "scalar": {"version": 1, "type": "null"}, "fields": []}),
+        json!({"kind": "scalar", "scalar": {"version": 1, "type": "null"}, "root_rules": []}),
+        json!({"fields": [], "scalar": {"version": 1, "type": "null"}}),
+        json!({"kind": "scalar", "scalar": {"version": 1, "type": "string", "unexpected": SECRET_PAYLOAD}}),
+    ] {
+        let error = serde_json::from_value::<RecordedSchemaV1>(json!({
+            "schema_wire_version": 2, "schema": invalid,
+        }))
+        .err()
+        .expect("a mixed or unsupported scalar wire must fail closed");
+        assert!(!error.to_string().contains(SECRET_PAYLOAD));
+        assert!(!format!("{error:?}").contains(SECRET_PAYLOAD));
+    }
+}
+
+#[test]
+fn scalar_compiler_does_not_relabel_legacy_record_any_or_union_schema_wire() {
+    let union = ValidSchema::union(
+        Field::mode(field_key!("choice")).variant(
+            "text",
+            "Text",
+            Field::string(field_key!("text")),
+        ),
+        nebula_schema::SerdeTagging::External,
+    )
+    .unwrap();
+    for schema in [ValidSchema::empty(), ValidSchema::any(), union] {
+        for epoch in [PlanEpoch::GraphV1, PlanEpoch::GraphV3, PlanEpoch::GraphV4] {
+            let mut record = fixture_record();
+            record.compiler_version = epoch.compiler_version();
+            record.canonical_hash_version = epoch.canonical_hash_version();
+            record.content.actions[0].effect_contract = epoch
+                .records_effect_contract()
+                .then_some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
+            record.content.actions[0].output_schema = RecordedSchemaV1::new(schema.clone());
+            assert_eq!(
+                record.content.actions[0].output_schema.schema_wire_version,
+                1
+            );
+            reseal(&mut record);
+            let encoded = serde_json::to_vec(&record).unwrap();
+            let loaded = ExecutablePlanRevision::try_from_recorded_v1(
+                serde_json::from_slice(&encoded).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                serde_json::to_vec(&RecordedExecutablePlanRevisionV1::from(&loaded)).unwrap(),
+                encoded
+            );
+            record.content.actions[0].output_schema.schema_wire_version =
+                SCHEMA_WIRE_VERSION_SCALAR_V2;
+            reseal(&mut record);
+            std::assert_matches!(
+                ExecutablePlanRevision::try_from_recorded_v1(record),
+                Err(ExecutablePlanIntegrityError::NonCanonical {
+                    section: "actions.output_schema"
+                })
+            );
+        }
+    }
+}
+
+#[test]
+fn trigger_root_configuration_preserves_legacy_normalization_without_scalar_coercion() {
+    let mut trigger = minimal_action(empty_dependencies());
+    trigger.kind = RecordedActionKindV1::Trigger;
+    for epoch in [PlanEpoch::GraphV1, PlanEpoch::GraphV3] {
+        validate_trigger_configuration(&Value::Null, &trigger, epoch).unwrap();
+        validate_trigger_configuration(&json!({}), &trigger, epoch).unwrap();
+    }
+    assert!(validate_trigger_configuration(&Value::Null, &trigger, PlanEpoch::GraphV4).is_err());
+    validate_trigger_configuration(&json!({}), &trigger, PlanEpoch::GraphV4).unwrap();
+
+    trigger.input_schema = RecordedSchemaV1::new(nebula_schema::schema_of::<()>().unwrap());
+    validate_trigger_configuration(&Value::Null, &trigger, PlanEpoch::GraphV4).unwrap();
+    assert!(validate_trigger_configuration(&json!({}), &trigger, PlanEpoch::GraphV4).is_err());
+    trigger.input_schema = RecordedSchemaV1::new(nebula_schema::schema_of::<u8>().unwrap());
+    validate_trigger_configuration(&json!(42), &trigger, PlanEpoch::GraphV4).unwrap();
+    for invalid in [json!(256), json!(-1), json!("42"), json!({}), Value::Null] {
+        assert!(validate_trigger_configuration(&invalid, &trigger, PlanEpoch::GraphV4).is_err());
+    }
+}
+
+#[test]
 fn effect_plan_hash_uses_new_domain_and_complete_record_projection() {
     let mut record = fixture_record();
     record.compiler_version = COMPILER_VERSION_GRAPH_V3;
@@ -476,7 +682,7 @@ fn effect_plan_hash_uses_new_domain_and_complete_record_projection() {
     reseal(&mut record);
     let mut projected = serde_json::to_value(&record).unwrap();
     projected.as_object_mut().unwrap().remove("claimed_id");
-    let canonical = FieldValue::Literal(projected).canonical_bytes().unwrap();
+    let canonical = canonical_json_v1(&projected).unwrap();
     let mut independent = Sha256::new();
     independent.update([1]);
     independent.update((EXECUTABLE_PLAN_GRAPH_V2_DOMAIN.len() as u64).to_be_bytes());
@@ -534,7 +740,8 @@ fn resealed_error_references_cannot_read_success_only_fields() {
     record.content.actions[0].effect_contract =
         Some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
     record.content.actions[0].input_schema.schema =
-        nebula_schema::schema_of::<nebula_workflow::ErrorPortPayload>();
+        nebula_schema::schema_of::<nebula_workflow::ErrorPortPayload>()
+            .expect("valid test catalog definition");
     record.content.actions[0].output_schema.schema = Schema::builder()
         .add(Field::string(nebula_schema::field_key!("success_only")).required())
         .build()
@@ -547,7 +754,7 @@ fn resealed_error_references_cannot_read_success_only_fields() {
                 value: if id == "target" {
                     RecordedParameterValueV1::Reference {
                         node_key: "source".into(),
-                        output_path: "error".into(),
+                        output_path: ValuePath::from_pointer("/error").unwrap(),
                     }
                 } else {
                     RecordedParameterValueV1::Literal {
@@ -577,7 +784,7 @@ fn resealed_error_references_cannot_read_success_only_fields() {
     ExecutablePlanRevision::try_from(record.clone()).expect("intrinsic error field is valid");
     record.content.nodes[1].parameters[0].value = RecordedParameterValueV1::Reference {
         node_key: "source".into(),
-        output_path: "success_only".into(),
+        output_path: ValuePath::from_pointer("/success_only").unwrap(),
     };
     reseal(&mut record);
     assert!(matches!(
@@ -639,7 +846,7 @@ fn unsupported_versions_and_profile_fail_closed() {
     for mutate in [
         |record: &mut RecordedExecutablePlanRevisionV1| record.record_version += 1,
         |record: &mut RecordedExecutablePlanRevisionV1| {
-            record.compiler_version = COMPILER_VERSION_GRAPH_V3 + 1;
+            record.compiler_version = COMPILER_VERSION_GRAPH_V4 + 1;
         },
         |record: &mut RecordedExecutablePlanRevisionV1| record.canonical_hash_version += 1,
     ] {
@@ -772,6 +979,84 @@ fn parameter_validation_rejects_invalid_nested_values_and_secret_literals() {
     assert!(!format!("{error:?}").contains(SECRET_PAYLOAD));
 }
 
+#[rstest::rstest]
+#[case::secret_alias(json!({"nested": {"legacy_token": SECRET_PAYLOAD}}))]
+#[case::container_alias(json!({"legacy_nested": {"token": SECRET_PAYLOAD}}))]
+#[case::shadowed_alias(json!({"nested": {}, "legacy_nested": {"legacy_token": SECRET_PAYLOAD}}))]
+fn recorded_literals_reject_secret_read_aliases(#[case] value: Value) {
+    let mut record = fixture_record();
+    record.content.actions[0].input_schema = recorded_schema(
+        Schema::builder()
+            .add(
+                ObjectField::new(field_key!("auth")).add(
+                    ObjectField::new(field_key!("nested"))
+                        .read_alias(field_key!("legacy_nested"))
+                        .unwrap()
+                        .add(
+                            SecretField::new(field_key!("token"))
+                                .read_alias(field_key!("legacy_token"))
+                                .unwrap(),
+                        ),
+                ),
+            )
+            .build()
+            .unwrap(),
+    );
+    record.content.nodes[0].parameters = vec![RecordedParameterV1 {
+        key: "auth".into(),
+        value: RecordedParameterValueV1::Literal { value },
+    }]
+    .into_boxed_slice();
+    reseal(&mut record);
+    let error = ExecutablePlanRevision::try_from(record)
+        .expect_err("recorded aliases cannot retain secrets");
+    assert_matches!(
+        error,
+        ExecutablePlanIntegrityError::NonCanonical {
+            section: "nodes.parameters.secret"
+        }
+    );
+    assert!(!format!("{error:?}: {error}").contains(SECRET_PAYLOAD));
+}
+
+#[test]
+fn trigger_configuration_rejects_a_secret_read_alias() {
+    let mut action = minimal_action(empty_dependencies());
+    action.input_schema = recorded_schema(
+        Schema::builder()
+            .add(
+                SecretField::new(field_key!("token"))
+                    .read_alias(field_key!("legacy_token"))
+                    .unwrap(),
+            )
+            .build()
+            .unwrap(),
+    );
+    let error = validate_trigger_configuration(
+        &json!({"legacy_token": SECRET_PAYLOAD}),
+        &action,
+        PlanEpoch::CURRENT,
+    )
+    .expect_err("trigger aliases cannot retain secrets");
+    assert_matches!(
+        error,
+        ExecutablePlanIntegrityError::NonCanonical {
+            section: "triggers.configuration.secret"
+        }
+    );
+    assert!(!format!("{error:?}: {error}").contains(SECRET_PAYLOAD));
+}
+
+#[test]
+fn typed_literal_keeps_arbitrary_keys_and_program_shaped_data() {
+    let raw = json!({"a/b": [{"": {"$expr": "{{ 1 }}"}}], "0": "{{ 2 }}"});
+    let typed = typed_literal(raw.clone()).unwrap();
+    let path = nebula_schema::ValuePath::from_pointer("/a~1b/0//$expr").unwrap();
+    assert_eq!(typed.get_path(&path).unwrap().as_str(), Some("{{ 1 }}"));
+    assert_eq!(typed.get("0").unwrap().as_str(), Some("{{ 2 }}"));
+    assert_eq!(typed.to_json(), raw);
+}
+
 #[test]
 fn node_parameter_set_cannot_bypass_required_fields_or_root_rules() {
     let mut missing = fixture_record();
@@ -793,10 +1078,13 @@ fn node_parameter_set_cannot_bypass_required_fields_or_root_rules() {
     root_rules.content.actions[0].input_schema = recorded_schema(
         Schema::builder()
             .add(Field::string(field_key!("name")))
-            .root_rule(nebula_schema::Rule::predicate(
-                nebula_schema::Predicate::eq("name", json!("expected"))
-                    .expect("fixture predicate is valid"),
-            ))
+            .root_rule(
+                nebula_schema::Rule::predicate(
+                    nebula_schema::Predicate::eq("name", json!("expected"))
+                        .expect("fixture predicate is valid"),
+                )
+                .unwrap(),
+            )
             .build()
             .expect("fixture schema is valid"),
     );
@@ -810,7 +1098,7 @@ fn node_parameter_set_cannot_bypass_required_fields_or_root_rules() {
 }
 
 #[test]
-fn reference_paths_have_one_canonical_spelling() {
+fn dynamic_source_paths_have_one_canonical_spelling() {
     for path in ["", "value", "items.0.name", "184467440737095516160"] {
         assert!(is_canonical_reference_path(path), "{path:?} is canonical");
     }
@@ -827,6 +1115,192 @@ fn reference_paths_have_one_canonical_spelling() {
             "{alias:?} must be normalized before persistence"
         );
     }
+}
+
+fn root_rule_record(
+    epoch: PlanEpoch,
+    rule: nebula_schema::Rule,
+    value: Option<RecordedParameterValueV1>,
+) -> RecordedExecutablePlanRevisionV1 {
+    let mut record = fixture_record();
+    record.compiler_version = epoch.compiler_version();
+    record.canonical_hash_version = epoch.canonical_hash_version();
+    record.content.actions[0].effect_contract = epoch
+        .records_effect_contract()
+        .then_some(crate::plan_effect::RecordedActionEffectV1::NoExternalEffects);
+    record.content.actions[0].input_schema = recorded_schema(
+        Schema::builder()
+            .add(
+                Field::list(field_key!("data"))
+                    .item(Field::dynamic(field_key!("item")))
+                    .expression_mode(nebula_schema::ExpressionMode::Allowed),
+            )
+            .root_rule(rule)
+            .build()
+            .unwrap(),
+    );
+    record.content.nodes[0].parameters = value
+        .map(|value| RecordedParameterV1 {
+            key: "data".into(),
+            value,
+        })
+        .into_iter()
+        .collect();
+    reseal(&mut record);
+    record
+}
+
+#[test]
+fn static_root_rules_are_proved_in_current_plans_without_changing_legacy_epochs() {
+    let path = nebula_schema::ValuePath::root().push("data");
+    let rule = nebula_schema::Rule::any([
+        nebula_schema::Rule::predicate(nebula_schema::Predicate::Set(path.clone())).unwrap(),
+        nebula_schema::Rule::predicate(nebula_schema::Predicate::Eq(path, json!([]))).unwrap(),
+    ])
+    .unwrap();
+    for epoch in [PlanEpoch::GraphV1, PlanEpoch::GraphV3, PlanEpoch::GraphV4] {
+        for value in [json!([]), json!([1])] {
+            let record = root_rule_record(
+                epoch,
+                rule.clone(),
+                Some(RecordedParameterValueV1::Literal { value }),
+            );
+            let encoded = serde_json::to_vec(&record).unwrap();
+            let checked = ExecutablePlanRevision::try_from_recorded_v1(
+                serde_json::from_slice(&encoded).unwrap(),
+            );
+            if epoch == PlanEpoch::GraphV4 {
+                let checked = checked.expect("current plans prove pure root presence predicates");
+                assert_eq!(checked.id(), record.claimed_id);
+                assert_eq!(
+                    serde_json::to_vec(&RecordedExecutablePlanRevisionV1::from(&checked)).unwrap(),
+                    encoded
+                );
+            } else {
+                assert_matches!(
+                    checked,
+                    Err(ExecutablePlanIntegrityError::NonCanonical {
+                        section: "nodes.parameters.root_rules"
+                    })
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn current_root_rules_are_rechecked_after_resealed_parameter_changes() {
+    let rule = nebula_schema::Rule::predicate(nebula_schema::Predicate::Eq(
+        nebula_schema::ValuePath::root().push("data"),
+        json!([]),
+    ))
+    .unwrap();
+    let record = root_rule_record(
+        PlanEpoch::GraphV4,
+        rule,
+        Some(RecordedParameterValueV1::Literal { value: json!([]) }),
+    );
+    let checked = ExecutablePlanRevision::try_from(record.clone()).unwrap();
+    assert_eq!(checked.id(), record.claimed_id);
+    for value in [None, Some(json!([1])), Some(Value::Null)] {
+        let mut tampered = record.clone();
+        tampered.content.nodes[0].parameters = value
+            .map(|value| RecordedParameterV1 {
+                key: "data".into(),
+                value: RecordedParameterValueV1::Literal { value },
+            })
+            .into_iter()
+            .collect();
+        reseal(&mut tampered);
+        assert_matches!(
+            ExecutablePlanRevision::try_from(tampered),
+            Err(ExecutablePlanIntegrityError::NonCanonical {
+                section: "nodes.parameters.schema"
+            })
+        );
+    }
+}
+
+#[test]
+fn current_root_rules_cannot_discard_unresolved_parameter_obligations() {
+    let presence = nebula_schema::Rule::predicate(nebula_schema::Predicate::Set(
+        nebula_schema::ValuePath::root().push("data"),
+    ))
+    .unwrap();
+    for value in [
+        RecordedParameterValueV1::Expression {
+            expression: "[]".into(),
+        },
+        RecordedParameterValueV1::Template {
+            template: "{{ [] }}".into(),
+        },
+        RecordedParameterValueV1::Reference {
+            node_key: "fetch".into(),
+            output_path: ValuePath::root(),
+        },
+    ] {
+        let record = root_rule_record(PlanEpoch::GraphV4, presence.clone(), Some(value));
+        assert_matches!(
+            ExecutablePlanRevision::try_from(record),
+            Err(ExecutablePlanIntegrityError::NonCanonical {
+                section: "nodes.parameters.root_rules"
+            })
+        );
+    }
+    let custom = root_rule_record(
+        PlanEpoch::GraphV4,
+        nebula_schema::Rule::custom("runtime_only").unwrap(),
+        Some(RecordedParameterValueV1::Literal { value: json!([]) }),
+    );
+    assert_matches!(
+        ExecutablePlanRevision::try_from(custom.clone()),
+        Err(ExecutablePlanIntegrityError::NonCanonical {
+            section: "nodes.parameters.root_rules"
+        })
+    );
+    let mut scalar = custom;
+    scalar.content.actions[0].input_schema = RecordedSchemaV1::new(
+        ValidSchema::scalar(
+            nebula_schema::ScalarSchema::string()
+                .root_rule(nebula_schema::Rule::custom("runtime_only").unwrap()),
+        )
+        .unwrap(),
+    );
+    scalar.content.nodes[0].parameters = Box::default();
+    reseal(&mut scalar);
+    assert_matches!(
+        ExecutablePlanRevision::try_from(scalar),
+        Err(ExecutablePlanIntegrityError::NonCanonical {
+            section: "nodes.parameters.root_rules"
+        })
+    );
+}
+
+#[test]
+fn current_root_rules_do_not_prove_unknown_passthrough_against_empty_objects() {
+    let rule = nebula_schema::Rule::not(
+        nebula_schema::Rule::predicate(nebula_schema::Predicate::Set(
+            nebula_schema::ValuePath::root().push("data"),
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    let record = root_rule_record(PlanEpoch::GraphV4, rule, None);
+    let prepared = record.content.actions[0]
+        .input_schema
+        .schema
+        .validate(AuthoredValue::object())
+        .unwrap();
+    assert!(
+        prepared.pending().is_empty(),
+        "the synthetic empty object satisfies this rule"
+    );
+    assert_matches!(
+        ExecutablePlanRevision::try_from(record),
+        Err(ExecutablePlanIntegrityError::NonCanonical {
+            section: "nodes.parameters.root_rules"
+        })
+    );
 }
 
 #[test]
@@ -1085,7 +1559,7 @@ fn empty_reference_path_means_whole_output_and_requires_a_durable_edge() {
         key: "payload".into(),
         value: RecordedParameterValueV1::Reference {
             node_key: "source".into(),
-            output_path: String::new(),
+            output_path: ValuePath::root(),
         },
     }]
     .into_boxed_slice();

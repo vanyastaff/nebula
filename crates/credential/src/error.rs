@@ -18,12 +18,10 @@
 //! use nebula_credential::error::{CredentialError, ValidationError};
 //!
 //! // Validation errors convert automatically
-//! let val_err = ValidationError::InvalidCredentialId {
-//!     id: "bad id".to_string(),
-//!     reason: "contains spaces".to_string(),
-//! };
+//! let val_err = ValidationError::InvalidCredentialId;
 //! let cred_err: CredentialError = val_err.into();
-//! assert!(cred_err.to_string().contains("bad id"));
+//! assert_eq!(cred_err.to_string(), "credential validation failed");
+//! assert!(!format!("{cred_err:?}").contains("credential input"));
 //! ```
 //!
 
@@ -45,32 +43,21 @@ pub use nebula_storage_port::RefreshRetryPhase as RefreshNotAppliedPhase;
 
 // ── Secret-free message wrapper ─────────────────────────────────────────────
 
-/// A message that has been hand-validated as not containing raw secret
-/// material. Constructor pattern-checks for known secret-like substrings
-/// in debug builds.
-#[derive(Debug, Clone)]
-pub struct SecretFreeMessage(CompactString);
+/// A static message that cannot capture runtime credential material.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SecretFreeMessage(&'static str);
 
 impl SecretFreeMessage {
-    /// Construct from a value the caller asserts is secret-free. In
-    /// debug builds, `debug_assert!` fires on substrings that look like
-    /// tokens / base64 blobs / long hex.
-    pub fn new(s: impl Into<CompactString>) -> Self {
-        let v = s.into();
-        // Avoid interpolating `v` into the assertion message — if the
-        // candidate IS a secret, this would echo it into panic output /
-        // test logs. Length is the only safe metadatum to surface.
-        debug_assert!(
-            !looks_like_secret(&v),
-            "SecretFreeMessage given likely secret content (len={})",
-            v.len()
-        );
-        Self(v)
+    /// Construct from a compile-time message. Runtime provider responses and
+    /// credential values cannot cross this boundary.
+    #[must_use]
+    pub const fn new(message: &'static str) -> Self {
+        Self(message)
     }
 
     /// The message as a str slice.
     pub fn as_str(&self) -> &str {
-        self.0.as_str()
+        self.0
     }
 }
 
@@ -78,21 +65,6 @@ impl std::fmt::Display for SecretFreeMessage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
     }
-}
-
-/// Conservative heuristic for "this looks like a secret token / base64
-/// blob / long hex string". Used in debug_assert. False positives are
-/// acceptable — the intent is to catch accidental injection.
-fn looks_like_secret(s: &str) -> bool {
-    let len = s.len();
-    if len >= 32
-        && s.chars().all(|c| {
-            c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '=' || c == '+' || c == '/'
-        })
-    {
-        return true;
-    }
-    false
 }
 
 // ── Scheme classification ────────────────────────────────────────────────────
@@ -174,23 +146,12 @@ pub enum ProviderErrorKind {
 pub struct ProviderErrorContext {
     kind: ProviderErrorKind,
     message: SecretFreeMessage,
-    provider_code: Option<CompactString>,
 }
 
 impl ProviderErrorContext {
     /// Construct with kind and a secret-free message.
     pub fn new(kind: ProviderErrorKind, message: SecretFreeMessage) -> Self {
-        Self {
-            kind,
-            message,
-            provider_code: None,
-        }
-    }
-
-    /// Attach an optional provider-specific error code string.
-    pub fn with_code(mut self, code: impl Into<CompactString>) -> Self {
-        self.provider_code = Some(code.into());
-        self
+        Self { kind, message }
     }
 
     /// The kind of provider error.
@@ -201,11 +162,6 @@ impl ProviderErrorContext {
     /// The secret-free human-readable message.
     pub fn message(&self) -> &SecretFreeMessage {
         &self.message
-    }
-
-    /// An optional provider-specific error code.
-    pub fn provider_code(&self) -> Option<&str> {
-        self.provider_code.as_deref()
     }
 }
 
@@ -427,27 +383,34 @@ pub enum CredentialAccessError {
 /// - `PostProviderPersistence` — unit variant; a provider operation has already
 ///   completed, so replaying it is unsafe even when the following persistence
 ///   failure was definite.
-/// - `InvalidInput(String)` — 24-byte string payload (ptr+len+cap); fits.
 /// - `Crypto(Box<CryptoError>)` — boxed so the largest CryptoError variant
 ///   does not push the enum past 32 bytes.
-/// - `Validation(Box<ValidationError>)` — boxed for the same reason
-///   (`InvalidCredentialId` has two String fields).
+/// - `Validation(Box<ValidationError>)` — boxed to keep nested error storage
+///   uniform without exposing rejected input.
 /// - `Resolution(Box<nebula_core::CoreError>)` — boxed; CoreError size is
 ///   upstream-controlled.
-#[derive(Debug, Error)]
+#[derive(Error)]
 #[non_exhaustive]
 pub enum CredentialError {
     /// Cryptographic error.
-    #[error("{0}")]
-    Crypto(#[source] Box<CryptoError>),
+    #[error("credential cryptographic operation failed")]
+    Crypto(Box<CryptoError>),
 
     /// Validation error.
-    #[error("{0}")]
-    Validation(#[source] Box<ValidationError>),
+    #[error("credential validation failed")]
+    Validation(Box<ValidationError>),
 
     /// Provider-specific error from a credential implementation.
-    #[error("provider error: {0}")]
+    #[error("credential provider operation failed: {0}")]
     Provider(Box<ProviderErrorContext>),
+
+    /// Initial acquisition requires an injected provider transport.
+    #[error("credential acquisition transport is not configured")]
+    AcquisitionTransportUnavailable,
+
+    /// This credential variant must enter through the interactive kickoff.
+    #[error("credential requires interactive acquisition")]
+    InteractiveRequired,
 
     /// Refresh was proven not to have changed provider state.
     #[error("credential refresh was not applied: {0}")]
@@ -489,17 +452,44 @@ pub enum CredentialError {
     /// Scheme type mismatch between credential and resource. Boxed because
     /// the inner `SchemeMismatch` carries two [`CompactString`] scheme names —
     /// keeping it inline would push the enum past the 32-byte cap.
-    #[error("scheme mismatch: {0}")]
+    #[error("credential scheme mismatch")]
     SchemeMismatch(Box<SchemeMismatch>),
 
     /// Invalid input from user (parameter values).
-    #[error("invalid input: {0}")]
-    InvalidInput(String),
+    #[error("credential input is invalid")]
+    InvalidInput,
 
     /// Resolution failed — wraps a [`CoreError`](nebula_core::CoreError) from
     /// the [`CredentialAccessor`](nebula_core::accessor::CredentialAccessor).
-    #[error("credential resolution failed: {0}")]
+    #[error("credential resolution failed")]
     Resolution(Box<nebula_core::CoreError>),
+}
+
+impl std::fmt::Debug for CredentialError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Self::RefreshNotApplied(context) = self {
+            return formatter
+                .debug_tuple("RefreshNotApplied")
+                .field(context)
+                .finish();
+        }
+        let variant = match self {
+            Self::Crypto(_) => "Crypto",
+            Self::Validation(_) => "Validation",
+            Self::Provider(_) => "Provider",
+            Self::AcquisitionTransportUnavailable => "AcquisitionTransportUnavailable",
+            Self::InteractiveRequired => "InteractiveRequired",
+            Self::RefreshNotApplied(_) => "RefreshNotApplied",
+            Self::NotInteractive => "NotInteractive",
+            Self::OutcomeUnknown => "OutcomeUnknown",
+            Self::RefreshFinalization => "RefreshFinalization",
+            Self::PostProviderPersistence => "PostProviderPersistence",
+            Self::SchemeMismatch(_) => "SchemeMismatch",
+            Self::InvalidInput => "InvalidInput",
+            Self::Resolution(_) => "Resolution",
+        };
+        formatter.write_str(variant)
+    }
 }
 
 impl From<CryptoError> for CredentialError {
@@ -530,9 +520,11 @@ impl nebula_error::Classify for CredentialError {
             Self::RefreshFinalization => nebula_error::ErrorCategory::Internal,
             Self::PostProviderPersistence => nebula_error::ErrorCategory::Internal,
             Self::Provider(_) => nebula_error::ErrorCategory::External,
+            Self::AcquisitionTransportUnavailable => nebula_error::ErrorCategory::Internal,
+            Self::InteractiveRequired => nebula_error::ErrorCategory::Unsupported,
             Self::RefreshNotApplied(_) => nebula_error::ErrorCategory::External,
             Self::SchemeMismatch(_) => nebula_error::ErrorCategory::Validation,
-            Self::InvalidInput(_) => nebula_error::ErrorCategory::Validation,
+            Self::InvalidInput => nebula_error::ErrorCategory::Validation,
             Self::Resolution(s) => nebula_error::Classify::category(s.as_ref()),
         }
     }
@@ -550,11 +542,17 @@ impl nebula_error::Classify for CredentialError {
                 nebula_error::ErrorCode::new("CREDENTIAL:POST_PROVIDER_PERSISTENCE")
             },
             Self::Provider(_) => nebula_error::ErrorCode::new("CREDENTIAL:PROVIDER"),
+            Self::AcquisitionTransportUnavailable => {
+                nebula_error::ErrorCode::new("CREDENTIAL:ACQUISITION_TRANSPORT_UNAVAILABLE")
+            },
+            Self::InteractiveRequired => {
+                nebula_error::ErrorCode::new("CREDENTIAL:INTERACTIVE_REQUIRED")
+            },
             Self::RefreshNotApplied(_) => {
                 nebula_error::ErrorCode::new("CREDENTIAL:REFRESH_NOT_APPLIED")
             },
             Self::SchemeMismatch(_) => nebula_error::ErrorCode::new("CREDENTIAL:SCHEME_MISMATCH"),
-            Self::InvalidInput(_) => nebula_error::ErrorCode::new("CREDENTIAL:INVALID_INPUT"),
+            Self::InvalidInput => nebula_error::ErrorCode::new("CREDENTIAL:INVALID_INPUT"),
             Self::Resolution(_) => nebula_error::ErrorCode::new("CREDENTIAL:RESOLUTION_FAILED"),
         }
     }
@@ -608,18 +606,13 @@ pub enum ValidationError {
 
     /// Invalid credential ID
     #[classify(category = "validation", code = "CREDENTIAL:INVALID_ID")]
-    #[error("Invalid credential ID '{id}': {reason}")]
-    InvalidCredentialId {
-        /// The invalid ID
-        id: String,
-        /// Reason for invalidity
-        reason: String,
-    },
+    #[error("Credential ID is invalid")]
+    InvalidCredentialId,
 
     /// Invalid credential format
     #[classify(category = "validation", code = "CREDENTIAL:INVALID_FORMAT")]
-    #[error("Invalid credential format: {0}")]
-    InvalidFormat(String),
+    #[error("Invalid credential format")]
+    InvalidFormat,
 }
 
 // ── Resolution stage ─────────────────────────────────────────────────────────
@@ -659,11 +652,10 @@ pub type Result<T> = std::result::Result<T, CredentialError>;
 //   SchemeMismatch(Box<SchemeMismatch>) — 8B pointer
 //      (boxed: `SchemeMismatch` carries two `CompactString` scheme names,
 //      so the inline form would push the enum past 32B).
-//   InvalidInput(String)             — 24B (ptr+len+cap)
 //   Resolution(Box<CoreError>)       — 8B pointer
 //
-// Largest payload is `InvalidInput(String)` = 24B; with discriminant ≤ 32B.
-// The assert is the enforcement — if it fires, box the fat variant.
+// Every payload is boxed; with the discriminant the enum remains within 32B.
+// The assert is the enforcement.
 // `size_of` is in the Rust 2024 prelude (RFC 3458, stable since 1.80) so
 // qualifying it triggers `-W unused-qualifications`. Keep unqualified.
 static_assertions::const_assert!(size_of::<CredentialError>() <= 32);
@@ -696,12 +688,8 @@ mod tests {
 
     #[test]
     fn test_validation_error_invalid_id() {
-        let err = ValidationError::InvalidCredentialId {
-            id: "../etc/passwd".to_string(),
-            reason: "contains path traversal characters".to_string(),
-        };
-        assert!(err.to_string().contains("../etc/passwd"));
-        assert!(err.to_string().contains("path traversal"));
+        let err = ValidationError::InvalidCredentialId;
+        assert_eq!(err.to_string(), "Credential ID is invalid");
     }
 
     #[test]
@@ -709,7 +697,10 @@ mod tests {
         let crypto_err = CryptoError::DecryptionFailed;
         let cred_err: CredentialError = crypto_err.into();
         assert!(matches!(cred_err, CredentialError::Crypto(_)));
-        assert!(cred_err.to_string().contains("Decryption failed"));
+        let display = cred_err.to_string();
+        let debug = format!("{cred_err:?}");
+        assert_eq!(display, "credential cryptographic operation failed");
+        assert!(!debug.contains("Decryption failed"));
     }
 
     #[test]
@@ -717,7 +708,7 @@ mod tests {
         let val_err = ValidationError::EmptyCredentialId;
         let cred_err: CredentialError = val_err.into();
         assert!(matches!(cred_err, CredentialError::Validation(_)));
-        assert!(cred_err.to_string().contains("empty"));
+        assert_eq!(cred_err.to_string(), "credential validation failed");
     }
 
     #[test]
@@ -741,8 +732,11 @@ mod tests {
             "SecretToken",
             "ConnectionUri",
         )));
-        assert!(err.to_string().contains("SecretToken"));
-        assert!(err.to_string().contains("ConnectionUri"));
+        let display = err.to_string();
+        let debug = format!("{err:?}");
+        assert_eq!(display, "credential scheme mismatch");
+        assert!(!debug.contains("SecretToken"));
+        assert!(!debug.contains("ConnectionUri"));
     }
 
     #[test]

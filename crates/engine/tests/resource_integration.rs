@@ -16,14 +16,13 @@ use std::{
 };
 
 use nebula_action::{
-    ActionError, action::Action, metadata::ActionMetadata, result::ActionResult,
+    ActionError, ActionMetadataDraft, action::Action, result::ActionResult,
     stateless::StatelessAction,
 };
 use nebula_core::{ActionKey, Dependencies, action_key, id::WorkflowId, node_key};
 use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key};
 use nebula_engine::{
-    ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
-    WorkflowEngine,
+    ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, WorkflowEngine,
 };
 use nebula_execution::context::ExecutionBudget;
 use nebula_metrics::MetricsRegistry;
@@ -31,7 +30,7 @@ use nebula_resource::Resident;
 use nebula_resource::{
     Manager, RegistrationSpec, ResidentConfig, ResourceContext, SlotIdentity,
     error::Error as ResourceError,
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
     topology::resident::ResidentProvider,
 };
 use nebula_workflow::{
@@ -53,10 +52,10 @@ impl Action for ResourceConsumerHandler {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> ActionMetadataDraft {
+        ActionMetadataDraft::new(
             action_key!("test.resource_consumer.static"),
-            "ResourceConsumer",
+            nebula_action::metadata_name!("ResourceConsumer"),
             "static",
         )
         .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
@@ -94,10 +93,10 @@ impl Action for ResourceProbeHandler {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> ActionMetadataDraft {
+        ActionMetadataDraft::new(
             action_key!("test.resource_probe.static"),
-            "ResourceProbe",
+            nebula_action::metadata_name!("ResourceProbe"),
             "static",
         )
         .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
@@ -156,9 +155,9 @@ fn make_workflow(nodes: Vec<NodeDefinition>) -> WorkflowDefinition {
     }
 }
 
-fn meta(key: ActionKey) -> ActionMetadata {
-    let name = key.to_string();
-    ActionMetadata::new(key, name, "resource integration test")
+fn meta(key: ActionKey) -> ActionMetadataDraft {
+    let name = key.clone().into();
+    ActionMetadataDraft::new(key, name, "resource integration test")
         .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
 }
 
@@ -177,15 +176,15 @@ async fn action_acquires_resource_through_engine() {
 
     // 2. Build the action registry
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless_instance(
-        meta(action_key!("resource-consumer")),
-        ResourceConsumerHandler,
-    );
+    registry
+        .register_stateless_instance(
+            meta(action_key!("resource-consumer")),
+            ResourceConsumerHandler,
+        )
+        .expect("valid test catalog definition");
 
     // 3. Build the engine with the resource manager attached
-    let executor: ActionExecutor =
-        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    let runner = Arc::new(InProcessRunner::new(executor));
+    let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(
@@ -235,15 +234,15 @@ async fn full_resource_lifecycle_with_shutdown() {
 
     // 2. Build the action registry
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless_instance(
-        meta(action_key!("resource-consumer")),
-        ResourceConsumerHandler,
-    );
+    registry
+        .register_stateless_instance(
+            meta(action_key!("resource-consumer")),
+            ResourceConsumerHandler,
+        )
+        .expect("valid test catalog definition");
 
     // 3. Build the engine with the resource manager attached
-    let executor: ActionExecutor =
-        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    let runner = Arc::new(InProcessRunner::new(executor));
+    let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(
@@ -309,10 +308,8 @@ impl From<IntegrationProbeError> for ResourceError {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, nebula_schema::Schema)]
 struct IntegrationProbeConfig;
-
-nebula_schema::impl_empty_has_schema!(IntegrationProbeConfig);
 
 impl ResourceConfig for IntegrationProbeConfig {
     fn fingerprint(&self) -> u64 {
@@ -342,8 +339,8 @@ impl Provider for IntegrationProbeResource {
         Ok(Arc::new(AtomicU64::new(7)))
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 
@@ -362,10 +359,10 @@ impl Action for IntegrationAcquireHandler {
     type Input = serde_json::Value;
     type Output = serde_json::Value;
 
-    fn metadata() -> ActionMetadata {
-        ActionMetadata::new(
+    fn metadata() -> ActionMetadataDraft {
+        ActionMetadataDraft::new(
             action_key!("test.engine_integration.acquire"),
-            "IntegrationAcquire",
+            nebula_action::metadata_name!("IntegrationAcquire"),
             "static",
         )
         .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
@@ -415,14 +412,13 @@ async fn engine_acquires_org_scoped_resource_through_accessor() {
         .expect("register org-scoped resource");
 
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless_instance(
-        meta(action_key!("engine-integration-acquire")),
-        IntegrationAcquireHandler,
-    );
-
-    let executor: ActionExecutor =
-        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    let runner = Arc::new(InProcessRunner::new(executor));
+    registry
+        .register_stateless_instance(
+            meta(action_key!("engine-integration-acquire")),
+            IntegrationAcquireHandler,
+        )
+        .expect("valid test catalog definition");
+    let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(
@@ -476,11 +472,10 @@ async fn engine_acquires_org_scoped_resource_through_accessor() {
 #[tokio::test]
 async fn action_resource_fails_without_manager() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless_instance(meta(action_key!("resource-probe")), ResourceProbeHandler);
-
-    let executor: ActionExecutor =
-        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    let runner = Arc::new(InProcessRunner::new(executor));
+    registry
+        .register_stateless_instance(meta(action_key!("resource-probe")), ResourceProbeHandler)
+        .expect("valid test catalog definition");
+    let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(
@@ -547,7 +542,7 @@ mod shared_resource {
         AcquireOptions, Manager, RegistrationSpec, Resident, ResidentConfig, ResourceContext,
         SlotIdentity,
         error::Error,
-        resource::{Provider, ResourceConfig, ResourceMetadata},
+        resource::{Provider, ResourceConfig, ResourceMetadataDraft},
         topology::resident::ResidentProvider,
     };
     use tokio_util::sync::CancellationToken;
@@ -578,12 +573,10 @@ mod shared_resource {
     // from "the original bot."
     // -----------------------------------------------------------------------
 
-    #[derive(Clone, Debug)]
+    #[derive(Clone, Debug, nebula_schema::Schema)]
     struct TelegramConfig {
         token: String,
     }
-
-    nebula_schema::impl_empty_has_schema!(TelegramConfig);
 
     impl ResourceConfig for TelegramConfig {
         fn validate(&self) -> Result<(), Error> {
@@ -665,8 +658,8 @@ mod shared_resource {
             Ok(())
         }
 
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::from_key(&Self::key())
+        fn metadata() -> ResourceMetadataDraft {
+            ResourceMetadataDraft::from_key(Self::key())
         }
     }
 
@@ -727,8 +720,8 @@ mod shared_resource {
             Ok(())
         }
 
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::from_key(&Self::key())
+        fn metadata() -> ResourceMetadataDraft {
+            ResourceMetadataDraft::from_key(Self::key())
         }
     }
 

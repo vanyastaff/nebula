@@ -1,18 +1,18 @@
-//! End-to-end integration: build a schema, ingest `FieldValues`, validate, then resolve
+//! End-to-end integration: build a schema, ingest `AuthoredValue`, validate, then resolve
 //! with a stub [`nebula_schema::ExpressionContext`].
 //!
 //! This mirrors the `examples/async_resolve` flow but is CI-friendly and uses structured
 //! assertions instead of `main`.
 
 use nebula_schema::{
-    EvalFuture, ExpressionAst, ExpressionContext, Field, FieldValues, Schema, field_key,
+    AuthoredValue, CompiledProgram, EvalFuture, ExpressionContext, Field, Schema, field_key,
 };
 use serde_json::json;
 
 struct Ctx(serde_json::Value);
 
 impl ExpressionContext for Ctx {
-    fn evaluate<'a>(&'a self, _ast: &'a ExpressionAst) -> EvalFuture<'a> {
+    fn evaluate<'a>(&'a self, _ast: &'a CompiledProgram) -> EvalFuture<'a> {
         Box::pin(async move { Ok(self.0.clone()) })
     }
 }
@@ -25,19 +25,19 @@ async fn e2e_happy_path_validate_then_resolve() {
         .build()
         .expect("schema lints");
 
-    let values = FieldValues::from_json(json!({
+    let values = AuthoredValue::from_template_json(json!({
         "name": "e2e",
         "count": { "$expr": "{{ x }}" },
     }))
     .expect("ingest");
 
-    let valid = schema.validate(&values).expect("valid values");
+    let valid = schema.validate(values).expect("valid values");
     let resolved = valid.resolve(&Ctx(json!(7.0))).await.expect("resolve");
     assert_eq!(resolved.get(&field_key!("count")), Some(&json!(7.0)));
 }
 
-#[tokio::test]
-async fn e2e_fast_path_no_expressions_uses_booleans() {
+#[test]
+fn e2e_fast_path_no_expressions_uses_booleans() {
     let schema = Schema::builder()
         .add(Field::boolean(field_key!("flag")))
         .build()
@@ -45,8 +45,8 @@ async fn e2e_fast_path_no_expressions_uses_booleans() {
 
     assert!(!schema.flags().uses_expressions);
 
-    let values = FieldValues::from_json(json!({ "flag": true })).expect("ingest");
-    let valid = schema.validate(&values).expect("valid");
-    let resolved = valid.resolve(&Ctx(json!(null))).await.expect("resolve");
+    let values = AuthoredValue::from_data(json!({ "flag": true })).expect("ingest");
+    let valid = schema.validate(values).expect("valid");
+    let resolved = valid.resolve_data().expect("resolve without an engine");
     assert_eq!(resolved.get(&field_key!("flag")), Some(&json!(true)));
 }

@@ -337,6 +337,9 @@ mod tests {
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum FactoryError {
+    /// The provider's catalog definition could not be admitted.
+    #[error("webhook provider metadata admission failed")]
+    Metadata(#[from] crate::ActionMetadataAdmissionError),
     /// No factory registered for the given `action_kind`.
     #[error("unknown webhook provider kind: {0}")]
     UnknownKind(&'static str),

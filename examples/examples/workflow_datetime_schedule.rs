@@ -6,7 +6,7 @@
 //! `crates/plugin-core/tests/plugin_wiring_e2e.rs` and reused by
 //! `workflow_data_pipeline`:
 //!
-//!   `ActionRegistry` -> `ActionExecutor` -> `InProcessRunner`
+//!   `ActionRegistry` -> `InProcessRunner`
 //!   -> `ActionRuntime` -> `WorkflowEngine::with_plugin(CorePlugin)`
 //!
 //! ## Why this example exists
@@ -36,7 +36,7 @@
 //! ```
 //!
 //! Each downstream node pulls its `input` from the upstream node's output via
-//! `ParamValue::reference(<upstream node>, "")`; the op config (`op` / `amount`
+//! `ParamValue::root_reference(<upstream node>)`; the op config (`op` / `amount`
 //! / `unit` / `format`) is supplied as literal parameters. The connections give
 //! the engine the execution order and publish each predecessor's output.
 //!
@@ -58,11 +58,9 @@
 use std::{collections::HashMap, sync::Arc};
 
 use anyhow::Context as _;
-use nebula_action::ActionResult;
 use nebula_engine::ResolvedPlugin;
 use nebula_engine::{
-    ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
-    WorkflowEngine,
+    ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, WorkflowEngine,
 };
 use nebula_execution::{ExecutionStatus, context::ExecutionBudget};
 use nebula_metrics::MetricsRegistry;
@@ -165,14 +163,12 @@ fn init_tracing() {
 
 /// Build a standalone `WorkflowEngine` with the first-party `CorePlugin` wired.
 ///
-/// Mirrors `workflow_data_pipeline`'s `build_engine`: the `ActionExecutor` is
-/// the identity executor used by the in-process runner; the `core.*` actions
+/// Mirrors `workflow_data_pipeline`'s `build_engine`: the in-process runner
+/// executes actions registered in the `ActionRegistry`; the `core.*` actions
 /// themselves are registered by `with_plugin(CorePlugin)`.
 fn build_engine() -> anyhow::Result<WorkflowEngine> {
     let registry = Arc::new(ActionRegistry::new());
-    let executor: ActionExecutor =
-        Arc::new(|_ctx, _meta, input| Box::pin(async move { Ok(ActionResult::success(input)) }));
-    let runner = Arc::new(InProcessRunner::new(executor));
+    let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(
@@ -230,7 +226,7 @@ fn build_schedule_workflow() -> WorkflowDefinition {
     )
     .expect("next_poll NodeDefinition has valid keys")
     .with_parameter("op", ParamValue::literal(json!("add")))
-    .with_parameter("input", ParamValue::reference(normalize_key.clone(), ""))
+    .with_parameter("input", ParamValue::root_reference(normalize_key.clone()))
     .with_parameter("amount", ParamValue::literal(json!(POLL_INTERVAL_MILLIS)))
     .with_parameter("unit", ParamValue::literal(json!("milliseconds")));
 
@@ -244,7 +240,7 @@ fn build_schedule_workflow() -> WorkflowDefinition {
     )
     .expect("render NodeDefinition has valid keys")
     .with_parameter("op", ParamValue::literal(json!("format")))
-    .with_parameter("input", ParamValue::reference(next_poll_key.clone(), ""))
+    .with_parameter("input", ParamValue::root_reference(next_poll_key.clone()))
     .with_parameter(
         "format",
         ParamValue::literal(json!("%Y-%m-%d %H:%M:%S%.3f UTC")),

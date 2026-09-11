@@ -17,7 +17,7 @@ use nebula_resource::{
     Manager, ManagerConfig, Pooled, RegistrationSpec, Resident, ResourceContext, ScopeLevel,
     SlotIdentity,
     error::Error,
-    resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadata},
+    resource::{HasCredentialSlots, Provider, ResourceConfig, ResourceMetadataDraft},
     topology::{
         pooled::{BrokenCheck, PoolProvider},
         resident::ResidentProvider,
@@ -31,12 +31,10 @@ use nebula_resource::{
 // Mock config
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, nebula_schema::Schema)]
 pub(crate) struct TestConfig {
     pub(crate) name: String,
 }
-
-nebula_schema::impl_empty_has_schema!(TestConfig);
 
 impl ResourceConfig for TestConfig {
     fn validate(&self) -> Result<(), Error> {
@@ -109,8 +107,8 @@ impl Provider for PoolTestResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 
@@ -172,8 +170,8 @@ impl Provider for ResidentTestResource {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 

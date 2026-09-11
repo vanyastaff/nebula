@@ -11,9 +11,9 @@ use nebula_core::{
 use nebula_credential::Capabilities;
 use nebula_error::ActivationDiagnostic;
 use nebula_schema::{
-    Assignability, Field, FieldKey, FieldValue, FieldValues, InputSchema, OutputSchema,
-    PathSegment, PathWalk, RequiredMode, Schema, SchemaKind, ValidSchema, VisibilityMode,
-    explain_assignable, explain_field_assignable,
+    Assignability, AuthoredValue, Field, FieldKey, InputSchema, OutputSchema, PathWalk,
+    RequiredMode, RootShape, Schema, SchemaKind, ValidSchema, ValuePath, VisibilityMode,
+    canonical_json_v1, explain_assignable, explain_field_assignable,
 };
 use semver::{BuildMetadata, Prerelease, Version};
 use serde::{Deserialize, Serialize};
@@ -23,30 +23,36 @@ use sha2::{Digest, Sha256};
 pub(crate) const RECORD_VERSION_V1: u16 = 1;
 pub(crate) const COMPILER_VERSION_GRAPH_V1: u16 = 1;
 pub(crate) const COMPILER_VERSION_GRAPH_V3: u16 = 3;
+pub(crate) const COMPILER_VERSION_GRAPH_V4: u16 = 4;
 pub(crate) const CANONICAL_HASH_VERSION_V1: u16 = 1;
 pub(crate) const CANONICAL_HASH_VERSION_V2: u16 = 2;
 pub(crate) const DEFAULT_OUTPUT_PORT: &str = "out";
 pub(crate) const INTRINSIC_ERROR_PORT: &str = "error";
 const EXECUTABLE_PLAN_GRAPH_V1_DOMAIN: &[u8] = b"nebula.executable-plan.graph.v1";
 const EXECUTABLE_PLAN_GRAPH_V2_DOMAIN: &[u8] = b"nebula.executable-plan.graph.v2";
-const VALUE_CANON_VERSION_GRAPH_V1: u16 = 1;
 pub(crate) const SCHEMA_WIRE_VERSION_GRAPH_V1: u16 = 1;
-const _: () = assert!(nebula_schema::VALUE_CANON_VERSION == VALUE_CANON_VERSION_GRAPH_V1);
-const _: () = assert!(nebula_schema::SCHEMA_WIRE_VERSION == SCHEMA_WIRE_VERSION_GRAPH_V1);
+pub(crate) const SCHEMA_WIRE_VERSION_SCALAR_V2: u16 = 2;
+// Graph-v4's scalar envelope admits descriptor v1, not a future writer's grammar.
+const _: () = assert!(nebula_schema::ScalarSchema::WIRE_VERSION == 1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PlanEpoch {
     GraphV1,
     GraphV3,
+    GraphV4,
 }
 
 impl PlanEpoch {
-    pub(crate) const CURRENT: Self = Self::GraphV3;
+    pub(crate) const CURRENT: Self = Self::GraphV4;
 
-    const fn from_record(compiler_version: u16, canonical_hash_version: u16) -> Option<Self> {
+    pub(crate) const fn from_record(
+        compiler_version: u16,
+        canonical_hash_version: u16,
+    ) -> Option<Self> {
         match (compiler_version, canonical_hash_version) {
             (COMPILER_VERSION_GRAPH_V1, CANONICAL_HASH_VERSION_V1) => Some(Self::GraphV1),
             (COMPILER_VERSION_GRAPH_V3, CANONICAL_HASH_VERSION_V2) => Some(Self::GraphV3),
+            (COMPILER_VERSION_GRAPH_V4, CANONICAL_HASH_VERSION_V2) => Some(Self::GraphV4),
             _ => None,
         }
     }
@@ -55,22 +61,31 @@ impl PlanEpoch {
         match self {
             Self::GraphV1 => COMPILER_VERSION_GRAPH_V1,
             Self::GraphV3 => COMPILER_VERSION_GRAPH_V3,
+            Self::GraphV4 => COMPILER_VERSION_GRAPH_V4,
         }
     }
 
     pub(crate) const fn canonical_hash_version(self) -> u16 {
         match self {
             Self::GraphV1 => CANONICAL_HASH_VERSION_V1,
-            Self::GraphV3 => CANONICAL_HASH_VERSION_V2,
+            Self::GraphV3 | Self::GraphV4 => CANONICAL_HASH_VERSION_V2,
         }
     }
 
-    const fn records_effect_contract(self) -> bool {
-        matches!(self, Self::GraphV3)
+    pub(crate) const fn records_effect_contract(self) -> bool {
+        matches!(self, Self::GraphV3 | Self::GraphV4)
     }
 
     const fn supports_intrinsic_error_port(self) -> bool {
-        matches!(self, Self::GraphV3)
+        matches!(self, Self::GraphV3 | Self::GraphV4)
+    }
+
+    const fn supports_scalar_schema(self) -> bool {
+        matches!(self, Self::GraphV4)
+    }
+
+    const fn supports_static_root_rules(self) -> bool {
+        matches!(self, Self::GraphV4)
     }
 }
 
@@ -79,6 +94,8 @@ impl PlanEpoch {
 #[error("workflow plan compilation failed")]
 pub struct PlanCompilationError {
     diagnostics: Box<[ActivationDiagnostic]>,
+    #[source]
+    metadata_source: Option<nebula_metadata::MetadataBuildError>,
 }
 
 impl PlanCompilationError {
@@ -86,6 +103,7 @@ impl PlanCompilationError {
         let diagnostics = nebula_error::canonical_diagnostics(diagnostics);
         (!diagnostics.is_empty()).then(|| Self {
             diagnostics: diagnostics.into_boxed_slice(),
+            metadata_source: None,
         })
     }
 
@@ -100,7 +118,14 @@ impl PlanCompilationError {
         .expect("the compiled-record diagnostic has five non-empty constant fields");
         Self {
             diagnostics: vec![diagnostic].into_boxed_slice(),
+            metadata_source: None,
         }
+    }
+
+    pub(crate) fn metadata(error: nebula_metadata::MetadataBuildError) -> Self {
+        let mut failure = Self::invalid_compiled_record();
+        failure.metadata_source = Some(error);
+        failure
     }
 
     /// Canonically sorted, duplicate-free activation diagnostics.
@@ -375,6 +400,26 @@ pub(crate) struct RecordedSchemaV1 {
     pub(crate) schema: ValidSchema,
 }
 
+impl RecordedSchemaV1 {
+    pub(crate) fn new(schema: ValidSchema) -> Self {
+        Self {
+            schema_wire_version: Self::version_for(&schema),
+            schema,
+        }
+    }
+
+    fn version_for(schema: &ValidSchema) -> u16 {
+        // Plan envelope versions are pinned protocols, not the schema crate's
+        // latest writer version. Legacy definitions keep their original bytes.
+        match schema.root_shape() {
+            RootShape::Any | RootShape::Record(_) | RootShape::Union(_) => {
+                SCHEMA_WIRE_VERSION_GRAPH_V1
+            },
+            RootShape::Scalar(_) => SCHEMA_WIRE_VERSION_SCALAR_V2,
+        }
+    }
+}
+
 #[derive(Serialize)]
 #[serde(deny_unknown_fields)]
 struct RecordedSchemaSerializeV1<'a> {
@@ -414,11 +459,9 @@ impl<'de> Deserialize<'de> for RecordedSchemaV1 {
             .map_err(|_| serde::de::Error::custom("invalid Graph-v1 schema wire"))?;
         let normalized = serde_json::to_value(&schema)
             .map_err(|_| serde::de::Error::custom("invalid Graph-v1 schema wire"))?;
-        let recorded_bytes = FieldValue::Literal(recorded.schema)
-            .canonical_bytes()
+        let recorded_bytes = canonical_json_v1(&recorded.schema)
             .map_err(|_| serde::de::Error::custom("invalid Graph-v1 schema wire"))?;
-        let normalized_bytes = FieldValue::Literal(normalized)
-            .canonical_bytes()
+        let normalized_bytes = canonical_json_v1(&normalized)
             .map_err(|_| serde::de::Error::custom("invalid Graph-v1 schema wire"))?;
         if recorded_bytes != normalized_bytes {
             return Err(serde::de::Error::custom("invalid Graph-v1 schema wire"));
@@ -544,7 +587,7 @@ pub(crate) enum RecordedParameterValueV1 {
     },
     Reference {
         node_key: String,
-        output_path: String,
+        output_path: ValuePath,
     },
 }
 
@@ -723,8 +766,8 @@ impl RecordedExecutablePlanRevisionV1 {
         };
         let value = serde_json::to_value(canonical_input)
             .map_err(|_| ExecutablePlanIntegrityError::CanonicalEncoding)?;
-        let canonical = FieldValue::Literal(value)
-            .canonical_bytes()
+        // Persisted plan domains use JSON-v1 bytes, never the authored-tree codec.
+        let canonical = canonical_json_v1(&value)
             .map_err(|_| ExecutablePlanIntegrityError::CanonicalEncoding)?;
 
         let mut hasher = Sha256::new();
@@ -750,6 +793,13 @@ fn hash_field(hasher: &mut Sha256, tag: u8, value: &[u8]) {
 #[derive(Debug, thiserror::Error, nebula_error::Classify)]
 #[non_exhaustive]
 pub enum ExecutablePlanIntegrityError {
+    /// An intrinsic runtime schema cannot be built for integrity checking.
+    #[classify(
+        category = "validation",
+        code = "PLUGIN_PLAN_INTEGRITY:INVALID_METADATA"
+    )]
+    #[error("executable-plan metadata schema is invalid")]
+    Metadata(#[from] nebula_metadata::MetadataBuildError),
     /// The record or compiler format is not supported by Graph-v1.
     #[classify(
         category = "validation",
@@ -807,6 +857,13 @@ pub enum ExecutablePlanIntegrityError {
 impl nebula_error::ActivationDiagnostics for ExecutablePlanIntegrityError {
     fn activation_diagnostics(&self) -> Vec<ActivationDiagnostic> {
         let (code, path, expected, actual, remediation) = match self {
+            Self::Metadata(_) => (
+                "PLUGIN_PLAN_INTEGRITY:INVALID_METADATA",
+                "/plan/schema".to_owned(),
+                "a valid intrinsic runtime schema".to_owned(),
+                "<invalid-schema>".to_owned(),
+                "repair the intrinsic runtime schema before loading the plan",
+            ),
             Self::UnsupportedFormat => (
                 "PLUGIN_PLAN_INTEGRITY:UNSUPPORTED_FORMAT",
                 "/plan/record_format".to_owned(),
@@ -924,6 +981,7 @@ impl ExecutablePlanRevision {
     /// Returns [`ExecutablePlanIntegrityError`] when format versions,
     /// collection canonicality, binding structure, canonical values, or the
     /// claimed revision identity are invalid.
+    #[tracing::instrument(skip_all, fields(compiler_version = record.compiler_version, canonical_hash_version = record.canonical_hash_version), err)]
     pub fn try_from_recorded_v1(
         record: RecordedExecutablePlanRevisionV1,
     ) -> Result<Self, ExecutablePlanIntegrityError> {
@@ -1160,11 +1218,11 @@ fn validate_record(
     validate_workflow_config(&record.content.workflow_config)?;
 
     let plugins = validate_plugins(&record.content.plugins)?;
-    let actions = validate_actions(&record.content.actions, &plugins)?;
-    let resources = validate_resources(&record.content.resources, &plugins)?;
-    let credentials = validate_credentials(&record.content.credentials, &plugins)?;
-    let nodes = validate_nodes(&record.content.nodes, &actions)?;
-    let triggers = validate_triggers(&record.content.triggers, &actions)?;
+    let actions = validate_actions(&record.content.actions, &plugins, epoch)?;
+    let resources = validate_resources(&record.content.resources, &plugins, epoch)?;
+    let credentials = validate_credentials(&record.content.credentials, &plugins, epoch)?;
+    let nodes = validate_nodes(&record.content.nodes, &actions, epoch)?;
+    let triggers = validate_triggers(&record.content.triggers, &actions, epoch)?;
     validate_variables(&record.content.variables)?;
     validate_connections(&record.content.connections, &nodes, &actions, epoch)?;
     validate_component_closure(
@@ -1294,8 +1352,11 @@ fn validate_plugins(
 fn validate_schema(
     schema: &RecordedSchemaV1,
     section: &'static str,
+    epoch: PlanEpoch,
 ) -> Result<(), ExecutablePlanIntegrityError> {
-    if schema.schema_wire_version != SCHEMA_WIRE_VERSION_GRAPH_V1 {
+    if schema.schema_wire_version != RecordedSchemaV1::version_for(&schema.schema)
+        || (schema.schema.scalar_schema().is_some() && !epoch.supports_scalar_schema())
+    {
         return Err(noncanonical(section));
     }
     for field in schema.schema.fields() {
@@ -1509,6 +1570,7 @@ fn output_port_key(port: &RecordedOutputPortV1) -> &str {
 fn validate_actions<'a>(
     actions: &'a [RecordedActionV1],
     plugins: &HashMap<&str, &RecordedPluginV1>,
+    epoch: PlanEpoch,
 ) -> Result<HashMap<&'a str, &'a RecordedActionV1>, ExecutablePlanIntegrityError> {
     if actions.is_empty() || actions.windows(2).any(|pair| pair[0].key >= pair[1].key) {
         return Err(noncanonical("actions"));
@@ -1524,8 +1586,8 @@ fn validate_actions<'a>(
             return Err(noncanonical("actions.identity"));
         }
         validate_semver(&action.version, "actions.version")?;
-        validate_schema(&action.input_schema, "actions.input_schema")?;
-        validate_schema(&action.output_schema, "actions.output_schema")?;
+        validate_schema(&action.input_schema, "actions.input_schema", epoch)?;
+        validate_schema(&action.output_schema, "actions.output_schema", epoch)?;
         validate_dependencies(&action.dependencies, "actions.dependencies")?;
         validate_ports(action)?;
         by_key.insert(action.key.as_str(), action);
@@ -1536,6 +1598,7 @@ fn validate_actions<'a>(
 fn validate_resources<'a>(
     resources: &'a [RecordedResourceV1],
     plugins: &HashMap<&str, &RecordedPluginV1>,
+    epoch: PlanEpoch,
 ) -> Result<HashMap<&'a str, &'a RecordedResourceV1>, ExecutablePlanIntegrityError> {
     if resources.windows(2).any(|pair| pair[0].key >= pair[1].key) {
         return Err(noncanonical("resources"));
@@ -1555,6 +1618,7 @@ fn validate_resources<'a>(
         validate_schema(
             &resource.configuration_schema,
             "resources.configuration_schema",
+            epoch,
         )?;
         validate_dependencies(&resource.dependencies, "resources.dependencies")?;
         by_key.insert(resource.key.as_str(), resource);
@@ -1565,6 +1629,7 @@ fn validate_resources<'a>(
 fn validate_credentials<'a>(
     credentials: &'a [RecordedCredentialV1],
     plugins: &HashMap<&str, &RecordedPluginV1>,
+    epoch: PlanEpoch,
 ) -> Result<HashMap<&'a str, &'a RecordedCredentialV1>, ExecutablePlanIntegrityError> {
     if credentials
         .windows(2)
@@ -1587,6 +1652,7 @@ fn validate_credentials<'a>(
         validate_schema(
             &credential.properties_schema,
             "credentials.properties_schema",
+            epoch,
         )?;
         if Capabilities::from_bits(credential.capability_bits).is_none() {
             return Err(ExecutablePlanIntegrityError::UnknownCredentialCapability);
@@ -1604,9 +1670,7 @@ pub(crate) fn validate_parameter(
     }
     match &parameter.value {
         RecordedParameterValueV1::Literal { value } => {
-            FieldValue::Literal(value.clone())
-                .canonical_bytes()
-                .map_err(|_| noncanonical("nodes.parameters"))?;
+            canonical_json_v1(value).map_err(|_| noncanonical("nodes.parameters"))?;
         },
         RecordedParameterValueV1::Expression { expression } => {
             if expression.trim().is_empty() {
@@ -1616,9 +1680,9 @@ pub(crate) fn validate_parameter(
         RecordedParameterValueV1::Template { .. } => {},
         RecordedParameterValueV1::Reference {
             node_key,
-            output_path,
+            output_path: _,
         } => {
-            if node_key.parse::<NodeKey>().is_err() || !is_canonical_reference_path(output_path) {
+            if node_key.parse::<NodeKey>().is_err() {
                 return Err(noncanonical("nodes.parameters"));
             }
         },
@@ -1669,32 +1733,36 @@ pub(crate) fn validate_parameter_contract(
         .add(field.clone())
         .build()
         .map_err(|_| noncanonical("nodes.parameters.schema"))?;
-    let mut values = FieldValues::new();
-    values.set(key, typed);
-    one_field_schema
-        .validate(&values)
+    let mut values = AuthoredValue::object();
+    values
+        .insert(key.as_str(), typed)
         .map_err(|_| noncanonical("nodes.parameters.schema"))?;
-    Ok(())
+    one_field_schema
+        .validate(values)
+        .map(|_| ())
+        .map_err(|_| noncanonical("nodes.parameters.schema"))
 }
 
 fn typed_parameter_value(
     value: &RecordedParameterValueV1,
-) -> Result<Option<FieldValue>, ExecutablePlanIntegrityError> {
+) -> Result<Option<AuthoredValue>, ExecutablePlanIntegrityError> {
     match value {
         RecordedParameterValueV1::Literal { value } => typed_literal(value.clone()).map(Some),
-        RecordedParameterValueV1::Expression { expression } => Ok(Some(FieldValue::Expression(
+        RecordedParameterValueV1::Expression { expression } => Ok(Some(AuthoredValue::Expression(
             nebula_schema::Expression::new(expression.as_str()),
         ))),
-        RecordedParameterValueV1::Template { template } => Ok(Some(FieldValue::Expression(
-            nebula_schema::Expression::new(template.as_str()),
+        RecordedParameterValueV1::Template { template } => Ok(Some(AuthoredValue::Expression(
+            nebula_schema::Expression::template(template.as_str()),
         ))),
         RecordedParameterValueV1::Reference { .. } => Ok(None),
     }
 }
 
+#[tracing::instrument(level = "debug", skip_all, fields(compiler_version = epoch.compiler_version(), parameter_count = parameters.len(), root_rule_count = action.input_schema.schema.root_rules().len()), err)]
 pub(crate) fn validate_node_parameters(
     parameters: &[RecordedParameterV1],
     action: &RecordedActionV1,
+    epoch: PlanEpoch,
 ) -> Result<(), ExecutablePlanIntegrityError> {
     if action.input_schema.schema.kind() == SchemaKind::Any {
         for parameter in parameters {
@@ -1702,8 +1770,22 @@ pub(crate) fn validate_node_parameters(
         }
         return Ok(());
     }
-    if !action.input_schema.schema.root_rules().is_empty() {
+    let has_root_rules = !action.input_schema.schema.root_rules().is_empty();
+    if has_root_rules
+        && (!epoch.supports_static_root_rules()
+            || action.input_schema.schema.scalar_schema().is_some())
+    {
+        // A scalar passthrough has no concrete payload to prove at compilation.
         return Err(noncanonical("nodes.parameters.root_rules"));
+    }
+    if action.input_schema.schema.scalar_schema().is_some() {
+        // An empty parameter map passes the predecessor/root payload through.
+        // Named parameters always produce an object and cannot author a scalar.
+        return if parameters.is_empty() {
+            Ok(())
+        } else {
+            Err(noncanonical("nodes.parameters.schema"))
+        };
     }
 
     let supplied = parameters
@@ -1715,6 +1797,10 @@ pub(crate) fn validate_node_parameters(
         .filter(|parameter| matches!(parameter.value, RecordedParameterValueV1::Reference { .. }))
         .map(|parameter| parameter.key.as_str())
         .collect::<HashSet<_>>();
+    if has_root_rules && !referenced.is_empty() {
+        // Omitted reference values cannot stand in for the complete rule input.
+        return Err(noncanonical("nodes.parameters.root_rules"));
+    }
     for field in action.input_schema.schema.fields() {
         match field.required() {
             RequiredMode::Always if !supplied.contains(field.key().as_str()) => {
@@ -1727,14 +1813,16 @@ pub(crate) fn validate_node_parameters(
         }
     }
 
-    let mut values = FieldValues::new();
+    let mut values = AuthoredValue::object();
     for parameter in parameters {
         let key =
             FieldKey::new(&parameter.key).map_err(|_| noncanonical("nodes.parameters.schema"))?;
         let Some(value) = typed_parameter_value(&parameter.value)? else {
             continue;
         };
-        values.set(key, value);
+        values
+            .insert(key.as_str(), value)
+            .map_err(|_| noncanonical("nodes.parameters.schema"))?;
     }
     if action
         .input_schema
@@ -1744,14 +1832,26 @@ pub(crate) fn validate_node_parameters(
     {
         return Err(noncanonical("nodes.parameters.schema"));
     }
-    match action.input_schema.schema.validate(&values) {
+    match action.input_schema.schema.validate(values) {
+        Ok(prepared)
+            if has_root_rules
+                && (parameters.is_empty()
+                    || prepared
+                        .pending()
+                        .iter()
+                        .any(|check| check.path().is_root())) =>
+        {
+            Err(noncanonical("nodes.parameters.root_rules"))
+        },
         Ok(_) => Ok(()),
         Err(report)
             if report.errors().all(|error| {
-                error.code == "required"
-                    && error.path.segments().first().is_some_and(|segment| {
-                        matches!(segment, PathSegment::Key(key) if referenced.contains(key.as_str()))
-                    })
+                error.code() == "required"
+                    && error
+                        .path()
+                        .segments()
+                        .next()
+                        .is_some_and(|segment| referenced.contains(segment.as_ref()))
             }) =>
         {
             Ok(())
@@ -1836,37 +1936,8 @@ fn rule_depends_on_reference(rule: &nebula_schema::Rule, referenced: &HashSet<&s
     })
 }
 
-fn typed_literal(value: Value) -> Result<FieldValue, ExecutablePlanIntegrityError> {
-    FieldValue::Literal(value.clone())
-        .canonical_bytes()
-        .map_err(|_| noncanonical("nodes.parameters.schema"))?;
-    Ok(typed_literal_with_checked_depth(value))
-}
-
-fn typed_literal_with_checked_depth(value: Value) -> FieldValue {
-    match value {
-        Value::Object(map) => {
-            let Some(parsed_keys): Option<Vec<FieldKey>> = map
-                .keys()
-                .map(|key| FieldKey::new(key.as_str()).ok())
-                .collect()
-            else {
-                return FieldValue::Literal(Value::Object(map));
-            };
-            let mut values = IndexMap::with_capacity(map.len());
-            for ((_, child), key) in map.into_iter().zip(parsed_keys) {
-                values.insert(key, typed_literal_with_checked_depth(child));
-            }
-            FieldValue::Object(values)
-        },
-        Value::Array(items) => FieldValue::List(
-            items
-                .into_iter()
-                .map(typed_literal_with_checked_depth)
-                .collect(),
-        ),
-        scalar => FieldValue::Literal(scalar),
-    }
+fn typed_literal(value: Value) -> Result<AuthoredValue, ExecutablePlanIntegrityError> {
+    AuthoredValue::from_data(value).map_err(|_| noncanonical("nodes.parameters.schema"))
 }
 
 fn value_populates_secret(field: &Field, value: &Value) -> bool {
@@ -1874,9 +1945,11 @@ fn value_populates_secret(field: &Field, value: &Value) -> bool {
         Field::Secret(_) => true,
         Field::Object(object) => value.as_object().is_some_and(|values| {
             object.fields.iter().any(|child| {
-                values
-                    .get(child.key().as_str())
-                    .is_some_and(|child_value| value_populates_secret(child, child_value))
+                // Raw records retain shadowed aliases, so every spelling must be checked.
+                std::iter::once(child.key())
+                    .chain(child.read_aliases())
+                    .filter_map(|key| values.get(key.as_str()))
+                    .any(|child_value| value_populates_secret(child, child_value))
             })
         }),
         Field::List(list) => list.item.as_deref().is_some_and(|item| {
@@ -1901,6 +1974,7 @@ fn value_populates_secret(field: &Field, value: &Value) -> bool {
 fn validate_nodes<'a>(
     nodes: &'a [RecordedNodeV1],
     actions: &HashMap<&str, &RecordedActionV1>,
+    epoch: PlanEpoch,
 ) -> Result<HashMap<&'a str, &'a RecordedNodeV1>, ExecutablePlanIntegrityError> {
     if nodes.is_empty() || nodes.windows(2).any(|pair| pair[0].id >= pair[1].id) {
         return Err(noncanonical("nodes"));
@@ -1935,7 +2009,7 @@ fn validate_nodes<'a>(
             validate_parameter(parameter)?;
             validate_parameter_contract(parameter, action)?;
         }
-        validate_node_parameters(&node.parameters, action)?;
+        validate_node_parameters(&node.parameters, action, epoch)?;
         if let Some(retry) = &node.retry_policy {
             validate_retry(retry, "nodes.retry_policy")?;
         }
@@ -1957,6 +2031,7 @@ fn validate_nodes<'a>(
 fn validate_triggers<'a>(
     triggers: &'a [RecordedTriggerV1],
     actions: &HashMap<&str, &RecordedActionV1>,
+    epoch: PlanEpoch,
 ) -> Result<HashMap<&'a str, &'a RecordedTriggerV1>, ExecutablePlanIntegrityError> {
     if triggers.windows(2).any(|pair| pair[0].id >= pair[1].id) {
         return Err(noncanonical("triggers"));
@@ -1970,8 +2045,7 @@ fn validate_triggers<'a>(
             return Err(noncanonical("triggers.identity"));
         }
         validate_semver(&trigger.action_version, "triggers.action_version")?;
-        FieldValue::Literal(trigger.configuration.clone())
-            .canonical_bytes()
+        canonical_json_v1(&trigger.configuration)
             .map_err(|_| noncanonical("triggers.configuration"))?;
         let Some(action) = actions.get(trigger.action_key.as_str()) else {
             return Err(noncanonical("triggers.action"));
@@ -1982,7 +2056,7 @@ fn validate_triggers<'a>(
         if contract_mismatch || !matches!(action.kind, RecordedActionKindV1::Trigger) {
             return Err(noncanonical("triggers.action"));
         }
-        validate_trigger_configuration(&trigger.configuration, action)?;
+        validate_trigger_configuration(&trigger.configuration, action, epoch)?;
         by_id.insert(trigger.id.as_str(), trigger);
     }
     Ok(by_id)
@@ -1991,42 +2065,42 @@ fn validate_triggers<'a>(
 pub(crate) fn validate_trigger_configuration(
     configuration: &Value,
     action: &RecordedActionV1,
+    epoch: PlanEpoch,
 ) -> Result<(), ExecutablePlanIntegrityError> {
-    let normalized = if configuration.is_null() {
+    let normalized = if !epoch.supports_scalar_schema() && configuration.is_null() {
         Value::Object(serde_json::Map::new())
     } else {
         configuration.clone()
     };
-    let values = FieldValues::from_json(normalized)
-        .map_err(|_| noncanonical("triggers.configuration.schema"))?;
-    if action.input_schema.schema.kind() != SchemaKind::Record {
-        if values.is_empty() {
+    let schema = &action.input_schema.schema;
+    let values = if epoch.supports_scalar_schema() {
+        schema.values_from_wire(normalized)
+    } else {
+        AuthoredValue::from_data(normalized)
+    }
+    .map_err(|_| noncanonical("triggers.configuration.schema"))?;
+    if !epoch.supports_scalar_schema() && schema.kind() != SchemaKind::Record {
+        if values.as_object().is_some_and(IndexMap::is_empty) {
             return Ok(());
         }
         return Err(noncanonical("triggers.configuration.schema"));
     }
-    if action
-        .input_schema
-        .schema
-        .first_undeclared_path(&values)
-        .is_some()
-    {
+    if schema.kind() != SchemaKind::Any && schema.first_undeclared_path(&values).is_some() {
         return Err(noncanonical("triggers.configuration.schema"));
     }
-    for field in action.input_schema.schema.fields() {
-        if values
-            .get(field.key())
-            .is_some_and(|value| value_populates_secret(field, &value.to_json()))
+    for field in schema.fields() {
+        if std::iter::once(field.key())
+            .chain(field.read_aliases())
+            .filter_map(|key| values.get(key.as_str()))
+            .any(|value| value_populates_secret(field, &value.to_json()))
         {
             return Err(noncanonical("triggers.configuration.secret"));
         }
     }
-    action
-        .input_schema
-        .schema
-        .validate(&values)
-        .map_err(|_| noncanonical("triggers.configuration.schema"))?;
-    Ok(())
+    schema
+        .validate(values)
+        .map(|_| ())
+        .map_err(|_| noncanonical("triggers.configuration.schema"))
 }
 
 fn validate_variables(
@@ -2042,9 +2116,7 @@ fn validate_variables(
         return Err(noncanonical("variables"));
     }
     for variable in variables {
-        FieldValue::Literal(variable.value.clone())
-            .canonical_bytes()
-            .map_err(|_| noncanonical("variables"))?;
+        canonical_json_v1(&variable.value).map_err(|_| noncanonical("variables"))?;
     }
     Ok(())
 }
@@ -2146,6 +2218,7 @@ fn validate_connections(
         if connection.to_port.is_none() {
             let producer = OutputSchema::new(if intrinsic_error {
                 nebula_schema::schema_of::<nebula_workflow::ErrorPortPayload>()
+                    .map_err(nebula_metadata::MetadataBuildError::from)?
             } else {
                 source_action.output_schema.schema.clone()
             });
@@ -2229,7 +2302,7 @@ fn validate_support_port_cardinality(
 
 pub(crate) fn validate_reference_contract(
     parameter: &RecordedParameterV1,
-    output_path: &str,
+    output_path: &ValuePath,
     source: &RecordedNodeV1,
     consumer: &RecordedNodeV1,
     actions: &HashMap<&str, &RecordedActionV1>,
@@ -2248,6 +2321,7 @@ pub(crate) fn validate_reference_contract(
         let producer_schema =
             if epoch.supports_intrinsic_error_port() && edge.from_port == INTRINSIC_ERROR_PORT {
                 nebula_schema::schema_of::<nebula_workflow::ErrorPortPayload>()
+                    .map_err(nebula_metadata::MetadataBuildError::from)?
             } else {
                 source_action.output_schema.schema.clone()
             };
@@ -2261,7 +2335,7 @@ pub(crate) fn validate_reference_contract(
 
 fn validate_reference_schema(
     parameter: &RecordedParameterV1,
-    output_path: &str,
+    output_path: &ValuePath,
     producer_schema: &ValidSchema,
     consumer: &RecordedNodeV1,
     actions: &HashMap<&str, &RecordedActionV1>,
@@ -2270,10 +2344,10 @@ fn validate_reference_schema(
         .get(consumer.action_key.as_str())
         .ok_or_else(|| noncanonical("nodes.parameters.reference"))?;
     if consumer_action.input_schema.schema.kind() == SchemaKind::Any {
-        if output_path.is_empty() || output_path == "$" {
+        if output_path.is_root() {
             return Ok(());
         }
-        return match producer_schema.walk_authored_path(output_path) {
+        return match producer_schema.walk_reference_path(output_path) {
             PathWalk::Resolved(_) => Ok(()),
             PathWalk::Unresolved(_) | PathWalk::Opaque => {
                 Err(noncanonical("nodes.parameters.reference.path"))
@@ -2288,7 +2362,7 @@ fn validate_reference_schema(
         .schema
         .find(&consumer_key)
         .ok_or_else(|| noncanonical("nodes.parameters.reference"))?;
-    if output_path.is_empty() || output_path == "$" {
+    if output_path.is_root() {
         let Field::Object(object) = consumer_field else {
             return Err(noncanonical("nodes.parameters.reference.root"));
         };
@@ -2306,7 +2380,7 @@ fn validate_reference_schema(
         }
         return Ok(());
     }
-    let producer_field = match producer_schema.walk_authored_path(output_path) {
+    let producer_field = match producer_schema.walk_reference_path(output_path) {
         PathWalk::Resolved(field) => field,
         PathWalk::Unresolved(_) | PathWalk::Opaque => {
             return Err(noncanonical("nodes.parameters.reference.path"));

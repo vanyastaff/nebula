@@ -156,7 +156,11 @@ struct User { name: String, age: u32 }
 
 let v = MultiField::<User>::new()
     .add_field("name", min_length(2), |u: &User| u.name.as_str())
-    .add_field("age",  in_range(18u32, 130), |u: &User| &u.age);
+    .add_field(
+        "age",
+        in_range(18u32, 130).expect("ordered bounds"),
+        |u: &User| &u.age,
+    );
 
 // Returns Ok if all pass.
 // 1 failure → that ValidationError is returned directly.

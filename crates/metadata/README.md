@@ -1,8 +1,8 @@
 ---
 name: nebula-metadata
-role: Shared catalog-citizen metadata (BaseMetadata + Metadata trait + Icon / MaturityLevel / DeprecationNotice + compat rules)
+role: Shared catalog metadata authoring, evidence, access, and compatibility
 status: stable
-last-reviewed: 2026-09-08
+last-reviewed: 2026-09-11
 canon-invariants: [L2-3.5]
 related: [nebula-action, nebula-credential, nebula-resource, nebula-plugin]
 ---
@@ -11,156 +11,177 @@ related: [nebula-action, nebula-credential, nebula-resource, nebula-plugin]
 
 ## Purpose
 
-Every catalog leaf in Nebula — such as an action, a credential, or a
-resource — shares the same surface: a typed key, a human-readable name
-and description, a canonical input schema, optional catalog ornaments
-(icon, documentation URL, tags), a declared maturity level, and an
-optional deprecation notice. `nebula-metadata` owns those shared
-concerns as concrete types and a small trait, so each business-layer
-crate composes them instead of redeclaring the same prefix with
-incompatible field names. Plugins are described separately as container
-descriptors: they may reuse the small supporting types from this crate,
-but they do not compose `BaseMetadata<K>` and do not carry a canonical
-input schema (see ADR-0018).
+Every schematized catalog leaf has the same lower metadata fields: typed key,
+display name, description, canonical input schema, version, catalog ornaments,
+and lifecycle. This crate owns that shared representation and its invariants.
+Action, credential, and resource metadata compose it rather than redeclaring
+the prefix.
 
-## Role
+Plugin manifests are container descriptors. They reuse supporting types but do
+not compose `BaseMetadata<K>` or carry a canonical input schema (ADR-0018).
 
-**Core-layer support crate.** Cross-cutting, no upward dependencies.
-Depends on `nebula-core` (for `PluginKey`, used by `PluginManifest`),
-`nebula-error` (for the `Classify` derive on `ManifestError`),
-`nebula-schema` (for `ValidSchema`), `semver`, `serde`, and `thiserror`.
-Every other crate in the business layer (`nebula-action`,
-`nebula-credential`, `nebula-resource`) composes `BaseMetadata<K>` via
-`#[serde(flatten)]` on its own concrete metadata struct.
+## Construction model
 
-## Public API
+Static definitions move in one direction:
 
-- `BaseMetadata<K>` — shared catalog prefix (`key`, `name`, `description`,
-  `schema`, `version`, `icon`, `documentation_url`, `tags`, `maturity`,
-  `deprecation`). Composed on each concrete entity metadata.
-- `Metadata` trait — one-line impl on each concrete metadata
-  (`fn base(&self) -> &BaseMetadata<Self::Key>`); all other accessors
-  default-delegate through it.
-- `Icon` — `None` / `Inline(String)` / `Url { url: String }` enum;
-  replaces the earlier `icon: Option<String>` + `icon_url: Option<String>`
-  pair.
-- `MaturityLevel` — `Experimental` / `Beta` / `Stable` / `Deprecated`.
-- `DeprecationNotice` — `since` / `sunset` / `replacement` / `reason`.
-- `BaseCompatError<K>` + `validate_base_compat` — entity-agnostic compat
-  rules shared by every catalog citizen (`key` immutable, `version`
-  monotonic, schema-break-requires-major-bump). Each consumer layers
-  entity-specific rules on top via a thin wrapper enum.
-- `PluginManifest` + `PluginManifestBuilder` — plugin bundle descriptor and
-  its builder (`PluginManifest::builder(key, name)` then chained setters,
-  `.build()`); see [Consumers](#consumers) for why it lives here instead
-  of composing `BaseMetadata`.
-- `PluginDependency` — one declared plugin-on-plugin dependency (`key` +
-  semver `req`) inside a `PluginManifest`.
-- `ManifestError` — `PluginManifestBuilder::build()` failure: `InvalidKey`
-  (normalized key fails `PluginKey` validation) or `MissingRequiredField`
-  (currently: an empty or whitespace-only `name`).
+```text
+MetadataDraft<K> --bind_schema(ValidSchema)--> BaseMetadata<K>
+```
 
-## Composition
+`MetadataDraft<K>` owns every lower metadata field except `schema`. Use
+`MetadataDraft::new` with a validated `MetadataName`, or
+`MetadataDraft::try_new` for dynamic text. All fluent authoring happens on the
+draft. `bind_schema` is the only transition to `BaseMetadata<K>`.
+
+`BaseMetadata<K>` has private fields and getters only. It represents a technical
+definition admitted from current static Rust code. It implements `Serialize`,
+but deliberately does not implement `Deserialize`.
 
 ```rust
-use nebula_metadata::{BaseMetadata, Metadata};
+use nebula_metadata::{BaseMetadata, Metadata, MetadataDraft, metadata_name};
 use nebula_schema::ValidSchema;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MyKey(&'static str);
-
-pub struct MyEntityMetadata {
-    pub base: BaseMetadata<MyKey>,
-    pub extra_field: u32,
+struct ActionMetadata {
+    base: BaseMetadata<String>,
 }
 
-impl Metadata for MyEntityMetadata {
-    type Key = MyKey;
+impl Metadata for ActionMetadata {
+    type Key = String;
+
     fn base(&self) -> &BaseMetadata<Self::Key> {
         &self.base
     }
 }
 
-fn empty_schema() -> ValidSchema {
-    ValidSchema::empty()
-}
-
-let md = MyEntityMetadata {
-    base: BaseMetadata::new(MyKey("k"), "My Entity", "desc", empty_schema()),
-    extra_field: 7,
+let metadata = ActionMetadata {
+    base: MetadataDraft::new(
+        "http.request".to_owned(),
+        metadata_name!("HTTP Request"),
+        "Send an HTTP request",
+    )
+    .mark_beta()
+    .with_tags(["network", "http"])
+    .bind_schema(ValidSchema::empty()),
 };
-assert_eq!(md.name(), "My Entity");
+
+assert_eq!(metadata.name(), "HTTP Request");
+assert_eq!(metadata.tags(), ["network", "http"]);
 ```
 
-## Consumers
+The draft vocabulary is intentionally singular:
 
-- `nebula-action::ActionMetadata` — composes `BaseMetadata<ActionKey>`;
-  adds `inputs`, `outputs`, `isolation_level`, `category`; wraps
-  `BaseCompatError<ActionKey>` in its own `MetadataCompatibilityError`.
-- `nebula-credential::CredentialMetadata` — composes
-  `BaseMetadata<CredentialKey>`; adds `pattern`; wraps `BaseCompatError`
-  similarly.
-- `nebula-resource::ResourceMetadata` — composes
-  `BaseMetadata<ResourceKey>`; no entity-specific fields today; wraps
-  `BaseCompatError<ResourceKey>` in a single-variant
-  `MetadataCompatibilityError` for shape parity with the other
-  consumers.
-- `PluginManifest` — **lives in this crate** (`src/manifest.rs`) and
-  **does not** compose `BaseMetadata` by design (plugin is a container,
-  not a schematized leaf); it reuses `Icon` / `MaturityLevel` /
-  `DeprecationNotice` from here too. See ADR-0018 for the
-  bundle-descriptor rationale. `nebula_plugin::PluginManifest` is a
-  re-export of this type, not a second definition.
+- `with_version(semver::Version)`
+- `with_icon(Icon)`, `with_inline_icon`, `with_url_icon`
+- `with_documentation_url`, `with_tags`, `add_tag`
+- `mark_experimental`, `mark_beta`, `mark_stable`
+- `with_deprecation(DeprecationNotice)`
+- `bind_schema(ValidSchema)`
 
-## Maturity semantics
+There is no key replacement or final-metadata mutation API. Rebuild a fresh
+static definition when any authored field changes.
 
-`MaturityLevel` is **declarative catalog data an author states**, not a
-guarantee the engine enforces. As of this writing nothing in the engine
-reads `maturity` to gate dispatch, warn on activation, or change retry/
-timeout behavior — it is metadata for the catalog UI and for humans
-reading a manifest, not a runtime contract.
+## Recorded evidence
 
-- `Experimental` — actively iterated; the author is telling integrators
-  the public surface may break without notice.
-- `Beta` — stabilizing; the author is committing to a deprecation cycle
-  before a breaking change.
-- `Stable` (default) — breaking changes require a major version bump.
-  Because it is the default, an author who never touches the field ships
-  as `Stable` — state `Experimental`/`Beta` explicitly if that is not
-  true yet.
-- `Deprecated` — scheduled for removal; pair with a `DeprecationNotice`.
-  `deprecate()`/`with_deprecation()` on `BaseMetadata` and `.deprecation()`
-  on `PluginManifestBuilder` both force `maturity = Deprecated` — but this
-  holds only when construction goes through **exactly those entry
-  points**, and only for `PluginManifest` does it hold unconditionally
-  after that: `PluginManifestBuilder::build()` re-derives `maturity` from
-  `deprecation` at build time, so a later `.maturity(Stable)` call cannot
-  win. `BaseMetadata` has no such build step, so the invariant does *not*
-  hold in at least three other places — pinned by the crate's
-  `deprecation_flow` integration tests, not left implicit: (a)
-  deserializing hand-written JSON, since `maturity` and `deprecation` are
-  independent fields with no `Deserialize`-time invariant; (b) builder
-  call order — `BaseMetadata::new(..).with_deprecation(n).with_maturity(
-  MaturityLevel::Stable)` leaves `deprecation: Some(..)` with
-  `maturity: Stable`, because `with_maturity` unconditionally overwrites
-  and nothing re-derives it afterward; (c) direct field assignment — all
-  ten `BaseMetadata` fields are `pub`, so a caller can set `maturity` and
-  `deprecation` independently without calling either builder method at
-  all. Treat "deprecation implies `Deprecated`" as a convention the
-  `with_deprecation()`/`deprecate()` call enforces at the moment you call
-  it, not a standing invariant of the type.
+Persisted or wire metadata is evidence about a prior definition, not authority
+to instantiate an admitted definition. Deserialize it as
+`RecordedBaseMetadata<K>`, then compare it with a freshly built static
+`BaseMetadata<K>` using `readmit_against`. Every field and the schema must match.
+The successful value is cloned from the fresh definition; no deserialized field
+is promoted into the admitted value.
 
-## SDK surface
+```rust
+use nebula_metadata::{MetadataDraft, RecordedBaseMetadata, metadata_name};
+use nebula_schema::ValidSchema;
 
-`nebula-sdk`'s `prelude` re-exports: `BaseMetadata`, `Metadata`, `Icon`,
-`MaturityLevel`, `DeprecationNotice`, `BaseCompatError`,
-`validate_base_compat`, `PluginManifest`, `PluginManifestBuilder`,
-`ManifestError`, `PluginDependency` — effectively this crate's entire
-public surface. See `crates/sdk/docs/DESIGN.md` for the re-export
-rationale and its interaction with issue 1000 (prelude contraction into
-persona modules).
+# fn restore() -> Result<(), Box<dyn std::error::Error>> {
+let fresh = MetadataDraft::new(
+    "http.request".to_owned(),
+    metadata_name!("HTTP Request"),
+    "Send an HTTP request",
+)
+.bind_schema(ValidSchema::empty());
+
+let wire = serde_json::to_string(&fresh)?;
+let recorded: RecordedBaseMetadata<String> = serde_json::from_str(&wire)?;
+let admitted = recorded.readmit_against(&fresh)?;
+
+assert_eq!(admitted, fresh);
+# Ok(())
+# }
+# restore().unwrap();
+```
+
+Invalid typed keys, blank names, and bare `Deprecated` maturity are rejected
+while decoding recorded evidence. A deprecation notice always determines
+`Deprecated` maturity, including when the recorded `maturity` field says
+otherwise. A mismatch returns `MetadataReadmissionError` without definition
+payloads in its error or trace output.
+
+Leaf metadata with additional fields needs an explicitly named recorded leaf
+DTO containing `RecordedBaseMetadata<K>`. Re-admit the base against the fresh
+leaf definition and validate any leaf-specific evidence in the owning crate.
+Deriving `Deserialize` on an admitted leaf that contains `BaseMetadata<K>` is
+intentionally impossible.
+
+## Public API
+
+- `MetadataDraft<K>` - schema-free authoring state.
+- `BaseMetadata<K>` - getter-only admitted technical definition.
+- `RecordedBaseMetadata<K>` - validated wire or persistence evidence.
+- `MetadataName` and `metadata_name!` - checked dynamic and literal names.
+- `MetadataVersion` - nameable alias for `semver::Version`.
+- `Metadata` - shared getter trait for composed leaf metadata.
+- `Icon`, `MaturityLevel`, `DeprecationNotice` - catalog supporting types.
+- `MetadataError`, `MetadataBuildError`, `MetadataReadmissionError` - typed,
+  payload-free construction, schema, and restoration errors.
+- `BaseCompatError<K>` and `validate_base_compat` - key immutability, SemVer
+  monotonicity, and conservative schema-change compatibility.
+- `PluginManifest`, `PluginManifestBuilder`, `PluginDependency`, and
+  `ManifestError` - checked plugin container metadata.
+
+## Lifecycle invariant
+
+Internally, lifecycle is either an active maturity or a deprecated state that
+contains its notice. Active-with-notice and deprecated-without-notice cannot be
+represented. Once `with_deprecation` is called, later `mark_*` calls preserve
+the deprecated state and its notice.
+
+The serialized `BaseMetadata` wire shape remains flat. Default version, icon,
+documentation URL, tags, maturity, and deprecation fields retain their existing
+serde omission behavior.
+
+## Plugin manifests
+
+`PluginManifest::builder(key, name).build()` validates normalized `PluginKey`,
+name, and lifecycle through the same intrinsic rules. Accepted names are stored
+trimmed. Manifest deserialization goes through the builder and therefore cannot
+bypass these checks.
+
+## Leaf migration checklist
+
+1. Build a `MetadataDraft<K>` with `new` or `try_new`.
+2. Apply version, ornament, and lifecycle methods before schema binding.
+3. Replace the old constructor or schema setter with `bind_schema`.
+4. Rebuild instead of mutating a bound key or any other bound field.
+5. Remove `Deserialize` from admitted leaf metadata containing `BaseMetadata<K>`.
+6. Add a recorded leaf DTO containing `RecordedBaseMetadata<K>` where persisted
+   restoration is required.
+7. Re-admit recorded evidence only against a freshly built static definition,
+   then validate leaf-specific evidence in the leaf crate.
+
+No compatibility constructors, mutators, aliases, or deprecated shims remain
+in `nebula-metadata`.
+
+## Dependencies and consumers
+
+This core-layer crate depends on `nebula-core`, `nebula-error`,
+`nebula-schema`, `semver`, `serde`, `thiserror`, and `tracing`. Its direct leaf
+consumers are `nebula-action`, `nebula-credential`, and `nebula-resource`;
+`nebula-plugin` consumes the manifest and compatibility surface. The supported
+downstream Rust surface is curated by `nebula-sdk`.
 
 ## Canon
 
-- `docs/PRODUCT_CANON.md §3.5` — integration model (one pattern, five concepts).
-- `docs/MATURITY.md` — crate-state dashboard row.
+- Product canon section 3.5: stable catalog identity and revision semantics.
+- ADR-0018: plugin manifests are container descriptors, not schematized leaves.
+- Root `docs/INTEGRATION_MODEL.md`: cross-crate composition and admission model.

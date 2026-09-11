@@ -31,8 +31,8 @@ use crate::plan::{
     RecordedPlanProfileV1, RecordedPluginV1, RecordedRateLimitV1, RecordedResourceV1,
     RecordedRetryV1, RecordedSchemaV1, RecordedSemverV1, RecordedSlotV1, RecordedTriggerV1,
     RecordedVariableV1, RecordedWorkflowConfigV1, RecordedWorkflowVersionV1,
-    SCHEMA_WIRE_VERSION_GRAPH_V1, validate_node_parameters, validate_parameter,
-    validate_parameter_contract, validate_trigger_configuration,
+    validate_node_parameters, validate_parameter, validate_parameter_contract,
+    validate_trigger_configuration,
 };
 use crate::resolved_plugin::{
     ActionContractSnapshot, CredentialContractSnapshot, ResourceContractSnapshot,
@@ -41,8 +41,8 @@ use nebula_error::ActivationDiagnostic;
 
 use crate::compiler_validation::{
     RecordedReferenceViolationReason, authored_connection_key, binding_sort_key,
-    connection_record_key, graph_has_cycle, normalize_reference_path,
-    support_cardinality_violations, validate_recorded_references,
+    connection_record_key, graph_has_cycle, support_cardinality_violations,
+    validate_recorded_references,
 };
 use crate::{FrozenPluginRegistry, ResolvedPlugin};
 
@@ -69,7 +69,6 @@ enum DiagnosticCode {
     InvalidParameterContract,
     InvalidTriggerConfiguration,
     InvalidReferenceContract,
-    InvalidReferencePath,
     UnknownSlotOverride,
     SlotKindMismatch,
     EmptySelector,
@@ -106,7 +105,6 @@ impl DiagnosticCode {
             Self::InvalidParameterContract => "INVALID_PARAMETER_CONTRACT",
             Self::InvalidTriggerConfiguration => "INVALID_TRIGGER_CONFIGURATION",
             Self::InvalidReferenceContract => "INVALID_REFERENCE_CONTRACT",
-            Self::InvalidReferencePath => "INVALID_REFERENCE_PATH",
             Self::UnknownSlotOverride => "UNKNOWN_SLOT_OVERRIDE",
             Self::SlotKindMismatch => "SLOT_KIND_MISMATCH",
             Self::EmptySelector => "EMPTY_SELECTOR",
@@ -160,7 +158,6 @@ enum DiagnosticValue<'a> {
     ValidParameterContract,
     ValidTriggerConfiguration,
     ValidReferenceContract,
-    CanonicalReference,
     ResourceSlot,
     CredentialSlot,
     NonEmptySelector,
@@ -210,7 +207,6 @@ impl DiagnosticValue<'_> {
             Self::ValidParameterContract => "<valid-parameter-contract>".to_owned(),
             Self::ValidTriggerConfiguration => "<valid-trigger-configuration>".to_owned(),
             Self::ValidReferenceContract => "<valid-reference-contract>".to_owned(),
-            Self::CanonicalReference => "<root-or-canonical-dotted-path>".to_owned(),
             Self::ResourceSlot => "resource".to_owned(),
             Self::CredentialSlot => "credential".to_owned(),
             Self::NonEmptySelector => "<non-empty-selector>".to_owned(),
@@ -248,7 +244,6 @@ enum Remediation {
     AlignParameterContract,
     AlignTriggerConfiguration,
     AlignReferenceContract,
-    CanonicalizeReference,
     DeclareMatchingSlot,
     SelectMatchingSlotKind,
     ProvideSelector,
@@ -298,7 +293,6 @@ impl Remediation {
             Self::AlignReferenceContract => {
                 "connect a compatible source and use a resolvable output path"
             },
-            Self::CanonicalizeReference => "use $, $.field, or a canonical bare dotted path",
             Self::DeclareMatchingSlot => {
                 "remove the override or declare the matching dependency slot"
             },
@@ -456,33 +450,33 @@ fn project_action_snapshot(
 ) -> Result<RecordedActionV1, ContractProjectionError> {
     let metadata = snapshot.metadata();
     let mut inputs = metadata
-        .inputs
+        .inputs()
         .iter()
         .map(project_input_port)
         .collect::<Result<Vec<_>, _>>()?;
     inputs.sort_by(|left, right| input_port_key(left).cmp(input_port_key(right)));
     let mut outputs = metadata
-        .outputs
+        .outputs()
         .iter()
         .map(project_output_port)
         .collect::<Result<Vec<_>, _>>()?;
     outputs.sort_by(|left, right| output_port_key(left).cmp(output_port_key(right)));
 
     Ok(RecordedActionV1 {
-        key: metadata.base.key.to_string(),
+        key: metadata.base().key().to_string(),
         plugin_key: plugin_key.to_string(),
-        version: record_semver(&metadata.base.version),
-        kind: project_action_kind(metadata.kind)?,
-        isolation: project_isolation(metadata.isolation_level)?,
-        checkpoint_policy: project_checkpoint_policy(metadata.checkpoint_policy)?,
-        max_concurrent: metadata.max_concurrent.map(core::num::NonZeroU32::get),
+        version: record_semver(metadata.base().version()),
+        kind: project_action_kind(metadata.kind())?,
+        isolation: project_isolation(metadata.isolation_level())?,
+        checkpoint_policy: project_checkpoint_policy(metadata.checkpoint_policy())?,
+        max_concurrent: metadata.max_concurrent().map(core::num::NonZeroU32::get),
         inputs: inputs.into_boxed_slice(),
         outputs: outputs.into_boxed_slice(),
-        input_schema: record_schema(metadata.base.schema.clone()),
-        output_schema: record_schema(metadata.output_schema.clone()),
+        input_schema: record_schema(metadata.base().schema().clone()),
+        output_schema: record_schema(metadata.output_schema().clone()),
         dependencies: project_dependencies(snapshot.dependencies()),
         effect_contract: Some(
-            crate::plan_effect::RecordedActionEffectV1::project(&metadata.effect_contract)
+            crate::plan_effect::RecordedActionEffectV1::project(metadata.effect_contract())
                 .map_err(|_| ContractProjectionError::InvalidEffectDeclaration)?,
         ),
     })
@@ -494,10 +488,10 @@ fn project_resource_snapshot(
 ) -> Result<RecordedResourceV1, ContractProjectionError> {
     let metadata = snapshot.metadata();
     Ok(RecordedResourceV1 {
-        key: metadata.base.key.to_string(),
+        key: metadata.base().key().to_string(),
         plugin_key: plugin_key.to_string(),
-        version: record_semver(&metadata.base.version),
-        configuration_schema: record_schema(metadata.base.schema.clone()),
+        version: record_semver(metadata.base().version()),
+        configuration_schema: record_schema(metadata.base().schema().clone()),
         dependencies: project_dependencies(snapshot.dependencies()),
     })
 }
@@ -510,9 +504,9 @@ fn project_credential_snapshot(
     Ok(RecordedCredentialV1 {
         key: snapshot.projected_key().to_string(),
         plugin_key: plugin_key.to_string(),
-        version: record_semver(&metadata.base.version),
-        pattern: project_auth_pattern(metadata.pattern)?,
-        properties_schema: record_schema(metadata.base.schema.clone()),
+        version: record_semver(metadata.version()),
+        pattern: project_auth_pattern(metadata.pattern())?,
+        properties_schema: record_schema(metadata.schema().clone()),
         capability_bits: snapshot.capabilities().bits(),
     })
 }
@@ -721,10 +715,7 @@ fn slot_sort_key(slot: &RecordedSlotV1) -> (&str, u8) {
 }
 
 fn record_schema(schema: nebula_schema::ValidSchema) -> RecordedSchemaV1 {
-    RecordedSchemaV1 {
-        schema_wire_version: SCHEMA_WIRE_VERSION_GRAPH_V1,
-        schema,
-    }
+    RecordedSchemaV1::new(schema)
 }
 
 fn record_semver(version: &Version) -> RecordedSemverV1 {
@@ -817,7 +808,7 @@ impl<'a> GraphCompiler<'a> {
         self.validate_workflow_header();
         self.compile_nodes();
         self.compile_triggers();
-        let connections = self.compile_connections();
+        let connections = self.compile_connections()?;
         self.validate_references(&connections);
         self.close_dependencies();
         self.validate_resource_cycles();
@@ -1019,7 +1010,7 @@ impl<'a> GraphCompiler<'a> {
             if parameters.len() != node.parameters.len() {
                 continue;
             }
-            if validate_node_parameters(&parameters, &action).is_err() {
+            if validate_node_parameters(&parameters, &action, PlanEpoch::CURRENT).is_err() {
                 self.diagnostics.push(
                     DiagnosticCode::InvalidParameterContract,
                     JsonPointer::root("nodes")
@@ -1102,12 +1093,9 @@ impl<'a> GraphCompiler<'a> {
                 );
                 continue;
             }
-            let configuration = if trigger.config.is_null() {
-                serde_json::Value::Object(serde_json::Map::new())
-            } else {
-                trigger.config.clone()
-            };
-            if validate_trigger_configuration(&configuration, &action).is_err() {
+            let configuration = trigger.config.clone();
+            if validate_trigger_configuration(&configuration, &action, PlanEpoch::CURRENT).is_err()
+            {
                 self.diagnostics.push(
                     DiagnosticCode::InvalidTriggerConfiguration,
                     JsonPointer::root("trigger_bindings")
@@ -1186,7 +1174,7 @@ impl<'a> GraphCompiler<'a> {
             );
             return None;
         };
-        let kind = snapshot.metadata().kind;
+        let kind = snapshot.metadata().kind();
         if trigger && !matches!(kind, ActionKind::Trigger) {
             self.diagnostics.push(
                 DiagnosticCode::TriggerKindMismatch,
@@ -1221,7 +1209,7 @@ impl<'a> GraphCompiler<'a> {
             return None;
         }
         if matches!(
-            snapshot.metadata().effect_contract,
+            snapshot.metadata().effect_contract(),
             nebula_action::effect::ActionEffectContract::Undeclared
         ) {
             self.diagnostics.push(
@@ -1236,7 +1224,7 @@ impl<'a> GraphCompiler<'a> {
             return None;
         }
         if matches!(
-            snapshot.metadata().effect_contract,
+            snapshot.metadata().effect_contract(),
             nebula_action::effect::ActionEffectContract::Remote(_)
         ) && kind != ActionKind::Stateless
         {
@@ -1309,24 +1297,9 @@ impl<'a> GraphCompiler<'a> {
                     ParamValue::Reference {
                         node_key,
                         output_path,
-                    } => {
-                        let Some(output_path) = normalize_reference_path(output_path) else {
-                            self.diagnostics.push(
-                                DiagnosticCode::InvalidReferencePath,
-                                JsonPointer::root("nodes")
-                                    .child(node.id.as_str())
-                                    .child("parameters")
-                                    .child(key),
-                                DiagnosticValue::CanonicalReference,
-                                DiagnosticValue::UnsupportedVariant,
-                                Remediation::CanonicalizeReference,
-                            );
-                            return None;
-                        };
-                        RecordedParameterValueV1::Reference {
-                            node_key: node_key.to_string(),
-                            output_path,
-                        }
+                    } => RecordedParameterValueV1::Reference {
+                        node_key: node_key.to_string(),
+                        output_path: output_path.clone(),
                     },
                     _ => {
                         self.diagnostics.push(
@@ -1491,7 +1464,7 @@ impl<'a> GraphCompiler<'a> {
                     return;
                 }
                 let provider_key = provider.key().clone();
-                let version = snapshot.metadata().base.version.clone();
+                let version = snapshot.metadata().base().version().clone();
                 if !self.validate_plugin_edge(&owner_plugin, &provider_key, path) {
                     return;
                 }
@@ -1516,7 +1489,7 @@ impl<'a> GraphCompiler<'a> {
                     return;
                 }
                 let provider_key = provider.key().clone();
-                let version = snapshot.metadata().base.version.clone();
+                let version = snapshot.metadata().version().clone();
                 let capabilities = snapshot.capabilities().bits();
                 if !self.validate_plugin_edge(&owner_plugin, &provider_key, path) {
                     return;
@@ -1538,7 +1511,7 @@ impl<'a> GraphCompiler<'a> {
         });
     }
 
-    fn compile_connections(&mut self) -> Vec<RecordedConnectionV1> {
+    fn compile_connections(&mut self) -> Result<Vec<RecordedConnectionV1>, PlanCompilationError> {
         let node_states = self
             .workflow
             .nodes
@@ -1652,6 +1625,7 @@ impl<'a> GraphCompiler<'a> {
                     }
                     let producer = OutputSchema::new(if intrinsic_error {
                         nebula_schema::schema_of::<nebula_workflow::ErrorPortPayload>()
+                            .map_err(|report| PlanCompilationError::metadata(report.into()))?
                     } else {
                         source_action.output_schema.schema.clone()
                     });
@@ -1757,7 +1731,7 @@ impl<'a> GraphCompiler<'a> {
                 Remediation::RemoveCycle,
             );
         }
-        records
+        Ok(records)
     }
 
     fn validate_support_cardinality(&mut self, connections: &[RecordedConnectionV1]) {

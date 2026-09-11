@@ -820,8 +820,8 @@ impl<K: Hash + Eq + Clone, C> DeduplicatingCursor<K, C> {
 /// # impl Action for RssPoll {
 /// #     type Input = serde_json::Value;
 /// #     type Output = serde_json::Value;
-/// #     fn metadata() -> ActionMetadata {
-/// #         ActionMetadata::new(action_key!("rss.poll"), "RSS Poll", "Poll an RSS feed")
+/// #     fn metadata() -> nebula_action::ActionMetadataDraft {
+/// #         nebula_action::ActionMetadataDraft::new(action_key!("rss.poll"), nebula_action::metadata_name!("RSS Poll"), "Poll an RSS feed")
 /// #     }
 /// #     fn dependencies() -> &'static Dependencies {
 /// #         static D: OnceLock<Dependencies> = OnceLock::new();
@@ -1126,19 +1126,24 @@ pub struct PollTriggerAdapter<A: PollAction> {
     emit_warn: WarnThrottle,
 }
 
+impl<A: PollAction> crate::handle::sealed::Trigger for PollTriggerAdapter<A> {}
+
 impl<A: PollAction> PollTriggerAdapter<A> {
     /// Wrap a typed poll action.
-    #[must_use]
-    pub fn new(action: A) -> Self {
-        let meta = <A as Action>::metadata();
-        Self {
+    ///
+    /// # Errors
+    /// Returns a typed catalog error if metadata or an associated schema is invalid.
+    #[tracing::instrument(name = "action.metadata.admit", skip_all, err)]
+    pub fn new(action: A) -> Result<Self, crate::ActionMetadataAdmissionError> {
+        let meta = <A as Action>::metadata().admit_for::<A>(crate::ActionKind::Trigger)?;
+        Ok(Self {
             action,
             meta,
             started: AtomicBool::new(false),
             poll_warn: WarnThrottle::new(),
             serialize_warn: WarnThrottle::new(),
             emit_warn: WarnThrottle::new(),
-        }
+        })
     }
 
     /// Resolve a successful poll cycle: dispatch events, determine cursor
@@ -1206,7 +1211,7 @@ impl<A: PollAction> PollTriggerAdapter<A> {
                             &format!(
                                 "poll trigger {}: partial with no events, \
                                  retryable error: {error}",
-                                <A as Action>::metadata().base.key,
+                                self.meta.base().key().clone(),
                             ),
                         );
                     }
@@ -1243,7 +1248,7 @@ impl<A: PollAction> PollTriggerAdapter<A> {
                             return Err(ActionError::fatal(format!(
                                 "poll trigger {}: dispatch failed, \
                                  stopping (StopTrigger policy)",
-                                <A as Action>::metadata().base.key,
+                                self.meta.base().key().clone(),
                             )));
                         },
                     }
@@ -1259,7 +1264,7 @@ impl<A: PollAction> PollTriggerAdapter<A> {
                         &format!(
                             "poll trigger {}: partial error \
                              after dispatching {event_count} events: {error}",
-                            <A as Action>::metadata().base.key,
+                            self.meta.base().key().clone(),
                         ),
                     );
                 }
@@ -1306,7 +1311,7 @@ impl<A: PollAction> PollTriggerAdapter<A> {
             }),
             EmitFailurePolicy::StopTrigger => Err(ActionError::fatal(format!(
                 "poll trigger {}: dispatch failed, stopping (StopTrigger policy)",
-                <A as Action>::metadata().base.key,
+                self.meta.base().key().clone(),
             ))),
         }
     }
@@ -1320,7 +1325,7 @@ impl<A: PollAction> PollTriggerAdapter<A> {
     where
         A::Event: Send + Sync,
     {
-        let action_key = &<A as Action>::metadata().base.key;
+        let action_key = self.meta.base().key().clone();
         let mut emitted: usize = 0;
         let mut dropped: usize = 0;
         for event in events {
@@ -1396,7 +1401,7 @@ where
 
             self.action.validate(ctx).await?;
 
-            let action_key = <A as Action>::metadata().base.key.clone();
+            let action_key = self.meta.base().key().clone();
             let mut config = self.action.poll_config();
             config.validate_and_clamp(ctx.logger(), &action_key);
 
@@ -1536,7 +1541,7 @@ where
 impl<A: PollAction> std::fmt::Debug for PollTriggerAdapter<A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PollTriggerAdapter")
-            .field("action", &<A as Action>::metadata().base.key)
+            .field("action", self.meta.base().key())
             .finish_non_exhaustive()
     }
 }

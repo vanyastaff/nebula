@@ -8,7 +8,13 @@
 
 #[test]
 fn schema_crosses_into_validator_through_one_surface_only() {
-    let src = include_str!("../src/validated.rs");
+    let src = [
+        include_str!("../src/validated/mod.rs"),
+        include_str!("../src/validated/preparation.rs"),
+        include_str!("../src/validated/validation.rs"),
+        include_str!("../src/validated/values.rs"),
+    ]
+    .join("\n");
     for forbidden in [
         "fn run_rules",
         "fn run_root_rules",
@@ -19,7 +25,7 @@ fn schema_crosses_into_validator_through_one_surface_only() {
     ] {
         assert!(
             !src.contains(forbidden),
-            "validated.rs must not contain `{forbidden}` (single \
+            "the validated pipeline must not contain `{forbidden}` (single \
              validator crossing, no in-schema rule executor / code remap)"
         );
     }

@@ -166,8 +166,9 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
 ///
 /// The factory stores an `Arc<dyn ResourceFactory>` erased at construction
 /// so the unnameable `KindActivator<R, FRes, FTopo>` closure types never
-/// appear in the generated item. All `ResourceFactory` methods delegate to
-/// the inner arc.
+/// appear in the generated item. The public trait is sealed; callers consume
+/// the crate-issued capability through `into_contribution` rather than receiving
+/// a downstream trait implementation.
 ///
 /// The `new()` constructor is zero-argument: the topology is fixed by the
 /// `#[topology(Kind)]` attribute at macro expansion time. No topology config
@@ -208,8 +209,9 @@ fn emit_factory(
         ///
         /// Emitted by `#[derive(Resource)]` when `#[topology(`
         #[doc = #kind_str]
-        /// )]` is present.  Pass `Arc::new(<Name>Factory::new())` to
-        /// `Plugin::resources()` or `ResourceActivatorRegistry::insert`.
+        /// )]` is present. Call `into_contribution()` and pass the returned
+        /// crate-issued capability to `Plugin::resources()` or
+        /// `ResourceActivatorRegistry::insert`.
         #[derive(Clone)]
         pub struct #factory_name {
             inner: ::std::sync::Arc<dyn ::nebula_resource::ResourceFactory>,
@@ -239,6 +241,14 @@ fn emit_factory(
                     inner: ::std::sync::Arc::new(activator),
                 }
             }
+
+            /// Consume this wrapper and return the sealed erased factory.
+            #[must_use]
+            pub fn into_contribution(
+                self,
+            ) -> ::std::sync::Arc<dyn ::nebula_resource::ResourceFactory> {
+                self.inner
+            }
         }
 
         impl ::std::default::Default for #factory_name {
@@ -247,40 +257,5 @@ fn emit_factory(
             }
         }
 
-        impl ::nebula_resource::ResourceFactory for #factory_name {
-            fn key(&self) -> ::nebula_core::ResourceKey {
-                self.inner.key()
-            }
-
-            fn dependencies(&self) -> &::nebula_core::Dependencies {
-                self.inner.dependencies()
-            }
-
-            fn resource_type_id(&self) -> ::std::any::TypeId {
-                self.inner.resource_type_id()
-            }
-
-            fn metadata(&self) -> ::nebula_resource::ResourceMetadata {
-                self.inner.metadata()
-            }
-
-            fn validate(
-                &self,
-                config_json: ::serde_json::Value,
-            ) -> ::std::result::Result<(), ::nebula_resource::Error> {
-                self.inner.validate(config_json)
-            }
-
-            fn register<'__factory_lt>(
-                &'__factory_lt self,
-                manager: &'__factory_lt ::nebula_resource::Manager,
-                request: ::nebula_resource::factory::RegisterRequest<'__factory_lt>,
-            ) -> ::nebula_resource::factory::BoxFut<
-                '__factory_lt,
-                ::std::result::Result<::nebula_resource::SlotIdentity, ::nebula_resource::Error>,
-            > {
-                self.inner.register(manager, request)
-            }
-        }
     }
 }

@@ -133,10 +133,15 @@ impl PlanFlavorRevisionLoader {
             .into());
         }
 
-        let recorded_flavor = serde_json::from_slice::<RecordedWorkerFlavorRevisionV1>(
-            stored.worker_flavor().bytes(),
-        )
-        .map_err(|_| PlanFlavorRevisionBridgeError::FlavorRecordDecode)?;
+        let recorded_flavor = stored
+            .worker_flavor()
+            .record_bytes()
+            .deserialize_json::<RecordedWorkerFlavorRevisionV1>(
+                PlanFlavorRevisionTarget::WorkerFlavor(ids.worker_flavor()),
+            )
+            .map_err(|source| {
+                record_decode_error(source, PlanFlavorRevisionBridgeError::FlavorRecordDecode)
+            })?;
         let worker_flavor = WorkerFlavorRevision::try_from(recorded_flavor)?;
         if worker_flavor.id() != ids.worker_flavor() {
             return Err(PlanFlavorRevisionBridgeError::FlavorIdentityMismatch {
@@ -151,9 +156,14 @@ impl PlanFlavorRevisionLoader {
             });
         }
 
-        let recorded_plan =
-            serde_json::from_slice::<RecordedExecutablePlanRevisionV1>(stored.plan_bytes())
-                .map_err(|_| PlanFlavorRevisionBridgeError::PlanRecordDecode)?;
+        let recorded_plan = stored
+            .plan_record_bytes()
+            .deserialize_json::<RecordedExecutablePlanRevisionV1>(
+                PlanFlavorRevisionTarget::ExecutablePlan(ids.plan()),
+            )
+            .map_err(|source| {
+                record_decode_error(source, PlanFlavorRevisionBridgeError::PlanRecordDecode)
+            })?;
         let plan = ExecutablePlanRevision::try_from(recorded_plan)?;
         if plan.id() != ids.plan() {
             return Err(PlanFlavorRevisionBridgeError::PlanIdentityMismatch {
@@ -428,6 +438,19 @@ const fn catalog_error_code(error: &RevisionCatalogError) -> &'static str {
         RevisionCatalogError::Referenced { .. } => "REVISION_CATALOG:REFERENCED",
         RevisionCatalogError::DependentPlans { .. } => "REVISION_CATALOG:DEPENDENT_PLANS",
         RevisionCatalogError::EmptyRecord => "REVISION_CATALOG:EMPTY_RECORD",
+        RevisionCatalogError::RecordTooLarge { .. } => "REVISION_CATALOG:RECORD_TOO_LARGE",
+        RevisionCatalogError::RecordNestingTooDeep { .. } => {
+            "REVISION_CATALOG:RECORD_NESTING_TOO_DEEP"
+        },
+        RevisionCatalogError::RecordStringTooLarge { .. } => {
+            "REVISION_CATALOG:RECORD_STRING_TOO_LARGE"
+        },
+        RevisionCatalogError::RecordStringBudgetExceeded { .. } => {
+            "REVISION_CATALOG:RECORD_STRING_BUDGET_EXCEEDED"
+        },
+        RevisionCatalogError::RecordCollectionBudgetExceeded { .. } => {
+            "REVISION_CATALOG:RECORD_COLLECTION_BUDGET_EXCEEDED"
+        },
         RevisionCatalogError::UnsupportedRecordFormat { .. } => {
             "REVISION_CATALOG:UNSUPPORTED_FORMAT"
         },
@@ -435,6 +458,17 @@ const fn catalog_error_code(error: &RevisionCatalogError) -> &'static str {
         RevisionCatalogError::Unavailable => "REVISION_CATALOG:UNAVAILABLE",
         RevisionCatalogError::OutcomeUnknown => "REVISION_CATALOG:OUTCOME_UNKNOWN",
         _ => "REVISION_CATALOG:UNKNOWN_STORAGE_ERROR",
+    }
+}
+
+fn record_decode_error(
+    source: RevisionCatalogError,
+    malformed_record: PlanFlavorRevisionBridgeError,
+) -> PlanFlavorRevisionBridgeError {
+    if matches!(source, RevisionCatalogError::CorruptRecord { .. }) {
+        malformed_record
+    } else {
+        source.into()
     }
 }
 
@@ -453,17 +487,18 @@ fn record_outcome<T>(result: &Result<T, PlanFlavorRevisionBridgeError>) {
 
 #[cfg(test)]
 mod tests {
-    use std::{future::Future, pin::Pin};
+    use std::marker::PhantomData;
 
     use nebula_action::{
-        ActionContext, ActionError, ActionFactory, ActionHandle, ActionKind, ActionMetadata,
+        Action, ActionContext, ActionError, ActionFactory, ActionMetadataDraft, ActionResult,
+        InstanceFactory, StatelessAction,
     };
     use nebula_core::{
-        ActionKey, ArtifactSetDigest, Dependencies, ExecutablePlanRevisionId,
-        WorkerFlavorRevisionId, WorkflowId, WorkflowVersionId, node_key,
+        ArtifactSetDigest, Dependencies, ExecutablePlanRevisionId, WorkerFlavorRevisionId,
+        WorkflowId, WorkflowVersionId, action_key, node_key,
     };
     use nebula_plugin::{Plugin, PluginManifest, PluginRegistry, ResolvedPlugin};
-    use nebula_schema::ValidSchema;
+    use nebula_schema::{HasSchema, ValidSchema};
     use nebula_storage::InMemoryExecutionStore;
     use nebula_storage_port::{
         BeginDrainOutcome, PlanFlavorCatalogAdmin, PlanFlavorRevisionTarget,
@@ -471,33 +506,51 @@ mod tests {
     };
     use nebula_workflow::{NodeDefinition, WorkflowBuilder};
     use parking_lot::Mutex;
+    use serde::de::DeserializeOwned;
 
     use super::*;
 
-    struct TestActionFactory {
-        metadata: ActionMetadata,
-        dependencies: Dependencies,
+    #[derive(Debug, serde::Deserialize, nebula_schema::Schema)]
+    struct EmptyRecordInput {
+        #[serde(skip)]
+        #[field(skip)]
+        _object_shape: (),
     }
 
-    impl ActionFactory for TestActionFactory {
-        fn metadata(&self) -> &ActionMetadata {
-            &self.metadata
+    struct TestAction<I>(PhantomData<I>);
+
+    impl<I> Action for TestAction<I>
+    where
+        I: DeserializeOwned + HasSchema + Send + Sync + 'static,
+    {
+        type Input = I;
+        type Output = serde_json::Value;
+
+        fn metadata() -> ActionMetadataDraft {
+            ActionMetadataDraft::new(
+                action_key!("demo.run"),
+                nebula_action::metadata_name!("Run"),
+                "exact revision fixture",
+            )
+            .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
         }
 
-        fn dependencies(&self) -> &Dependencies {
-            &self.dependencies
+        fn dependencies() -> &'static Dependencies {
+            static DEPENDENCIES: std::sync::OnceLock<Dependencies> = std::sync::OnceLock::new();
+            DEPENDENCIES.get_or_init(Dependencies::new)
         }
+    }
 
-        fn instantiate<'a>(
-            &'a self,
-            _node: &'a NodeDefinition,
-            _context: &'a dyn ActionContext,
-        ) -> Pin<Box<dyn Future<Output = Result<ActionHandle, ActionError>> + Send + 'a>> {
-            Box::pin(async {
-                Err(ActionError::fatal(
-                    "the exact-revision test factory is never instantiated",
-                ))
-            })
+    impl<I> StatelessAction for TestAction<I>
+    where
+        I: DeserializeOwned + HasSchema + Send + Sync + 'static,
+    {
+        async fn execute(
+            &self,
+            _input: I,
+            _context: &(impl ActionContext + ?Sized),
+        ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+            Ok(ActionResult::success(serde_json::Value::Null))
         }
     }
 
@@ -526,17 +579,17 @@ mod tests {
     }
 
     fn frozen(artifact_byte: u8) -> Arc<FrozenPluginRegistry> {
-        let key = ActionKey::new("demo.run").expect("fixture action key is valid");
-        let action = Arc::new(TestActionFactory {
-            metadata: ActionMetadata::new(key, "Run", "exact revision fixture")
-                .with_effect_contract(
-                    nebula_action::effect::ActionEffectContract::NoExternalEffects,
-                )
-                .with_kind(ActionKind::Stateless)
-                .with_schema(ValidSchema::empty())
-                .with_output_schema(ValidSchema::empty()),
-            dependencies: Dependencies::new(),
-        });
+        frozen_for::<EmptyRecordInput>(artifact_byte)
+    }
+
+    fn frozen_for<I>(artifact_byte: u8) -> Arc<FrozenPluginRegistry>
+    where
+        I: DeserializeOwned + HasSchema + Send + Sync + 'static,
+    {
+        let action: Arc<dyn ActionFactory> = Arc::new(
+            InstanceFactory::new(TestAction::<I>::metadata(), TestAction(PhantomData::<I>))
+                .expect("typed fixture metadata admits"),
+        );
         let plugin = TestPlugin {
             manifest: PluginManifest::builder("demo", "Demo")
                 .build()
@@ -686,6 +739,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stored_empty_record_cannot_rebind_to_live_unit_null() {
+        let archived = frozen(0x38);
+        let live = frozen_for::<()>(0x38);
+        let plan = compile(&archived);
+        let catalog = Arc::new(StubCatalog::default());
+        let (installer, loader) = bridges(Arc::clone(&catalog));
+        installer.install(&archived, &plan).await.unwrap();
+        let ids = PlanFlavorRevisionIds::new(plan.id(), archived.revision().id());
+        let stored = catalog.load_exact(ids).await.unwrap();
+        let wire: serde_json::Value = serde_json::from_slice(stored.plan_bytes()).unwrap();
+        let input_wire = &wire["content"]["actions"][0]["input_schema"];
+        assert_eq!(
+            input_wire,
+            &serde_json::json!({"schema_wire_version": 1, "schema": {"fields": []}})
+        );
+        let stored_schema: ValidSchema =
+            serde_json::from_value(input_wire["schema"].clone()).unwrap();
+        assert_eq!(stored_schema.kind(), nebula_schema::SchemaKind::Record);
+        let resolved = stored_schema
+            .validate(nebula_schema::AuthoredValue::from_data(serde_json::json!({})).unwrap())
+            .unwrap()
+            .resolve_data()
+            .unwrap();
+        assert_eq!(
+            resolved.into_typed::<serde_json::Value>().unwrap(),
+            serde_json::json!({})
+        );
+        assert!(
+            stored_schema
+                .validate(nebula_schema::AuthoredValue::from_data(serde_json::Value::Null).unwrap())
+                .is_err()
+        );
+        std::assert_matches!(
+            loader.load_exact(ids, live).await,
+            Err(PlanFlavorRevisionBridgeError::RegistryCompatibility {
+                source: PlanRegistryCompatibilityError::ContractMismatch { .. },
+            })
+        );
+        let loaded = loader.load_exact(ids, archived).await.unwrap();
+        assert_eq!(loaded.plan().id(), plan.id());
+        assert_eq!(
+            catalog.load_exact(ids).await.unwrap().plan_bytes(),
+            stored.plan_bytes()
+        );
+    }
+
+    #[tokio::test]
     async fn real_inmemory_catalog_loads_during_drain_then_honors_the_tombstone() {
         let registry = frozen(0x36);
         let plan = compile(&registry);
@@ -826,6 +926,62 @@ mod tests {
         let diagnostic = format!("{error} {error:?}");
         assert!(!diagnostic.contains("credential_secret_must_not_appear"));
         assert!(!diagnostic.contains("sensitive-value-must-not-appear"));
+    }
+
+    #[tokio::test]
+    async fn load_rejects_catalog_record_above_json_nesting_budget() {
+        let registry = frozen(0x37);
+        let plan = compile(&registry);
+        let catalog = Arc::new(StubCatalog::default());
+        let (installer, loader) = bridges(Arc::clone(&catalog));
+        installer
+            .install(&registry, &plan)
+            .await
+            .expect("checked pair installs");
+
+        let stored = catalog
+            .record
+            .lock()
+            .clone()
+            .expect("the checked pair was installed");
+        let mut recorded_plan: serde_json::Value = serde_json::from_slice(stored.plan_bytes())
+            .expect("installed plan record is valid JSON");
+        let mut over_nested_value = serde_json::Value::Null;
+        for _ in 0..=RevisionRecordBytes::MAX_JSON_NESTING_DEPTH {
+            over_nested_value = serde_json::Value::Array(vec![over_nested_value]);
+        }
+        recorded_plan["content"]["variables"] = serde_json::json!([{
+            "name": "nested-value",
+            "value": over_nested_value,
+        }]);
+        let hostile_plan_bytes = RevisionRecordBytes::try_from_vec(
+            serde_json::to_vec(&recorded_plan).expect("hostile plan fixture serializes"),
+        )
+        .expect("hostile plan fixture remains within the byte envelope");
+        catalog.replace(PlanFlavorRevisionRecord::graph_v1_json(
+            plan.id(),
+            hostile_plan_bytes,
+            stored.worker_flavor().clone(),
+        ));
+        let ids = PlanFlavorRevisionIds::new(plan.id(), registry.revision().id());
+
+        let error = loader
+            .load_exact(ids, registry)
+            .await
+            .expect_err("over-nested catalog JSON must fail before integrity validation");
+        let diagnostic = format!("{error} {error:?}");
+        assert!(!diagnostic.contains("nested-value"));
+        assert!(
+            matches!(
+                error,
+                PlanFlavorRevisionBridgeError::Catalog {
+                    source: RevisionCatalogError::RecordNestingTooDeep {
+                        target: PlanFlavorRevisionTarget::ExecutablePlan(target_plan),
+                    },
+                } if target_plan == plan.id()
+            ),
+            "unexpected error: {error:?}"
+        );
     }
 
     #[test]

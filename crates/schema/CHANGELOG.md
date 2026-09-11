@@ -7,6 +7,96 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes: Data Foundation
+
+- **Root shapes are explicit.** `RootShape` is the sole structural contract;
+  scalar roots have checked type/range descriptors rather than synthetic fields
+  or `Any` fallbacks. `schema_of::<()>()` and unit-struct derives now describe
+  JSON `null`; `ValidSchema::empty()` continues to describe an empty object.
+  Primitive schemas retain their known types and bounds. Existing serialized
+  empty records are not reinterpreted as unit schemas.
+- **Assignability retains uncertainty.** `explain_assignable(&OutputSchema,
+  &InputSchema)` and `OutputSchema::explain_successor_of` return `Yes`, `No`, or
+  `Unknown`. The binary `is_assignable_schema` and
+  `is_compatible_successor_of` APIs are removed. Only `Yes` is a static proof;
+  accepting `Unknown` must be an explicit consumer policy. Empty records are
+  not universal consumers, and unknown producers do not prove concrete types.
+- **One phase-indexed value tree.** `ValueTree<E>` replaces `FieldValue` and
+  `FieldValues`, without compatibility aliases. `AuthoredValue` contains
+  `Expression`, `CompiledValue` contains retained `CompiledProgram`s, and
+  `ResolvedValue` uses `Infallible` to make expressions uninhabited. `Literal`
+  contains checked `ScalarValue`, never a JSON object or array; mode envelopes
+  are ordinary `Object` nodes with `mode` and optional `value` properties.
+- **Data keys and paths are separate from schema identifiers.** Object keys
+  are arbitrary strings. `get` is exact-key lookup, `get_path` uses RFC6901
+  `ValuePath`, and `insert` returns a checked result. `FieldKey` and `FieldPath`
+  remain declaration identifiers. Data diagnostics and pending obligations now
+  use JSON Pointers, including empty keys and escaped slash/tilde segments.
+- **Literal ingestion and authoring are distinct.** `from_data` never interprets
+  templates or `$expr` objects. `from_template_json` explicitly enables authoring
+  shorthand using AUTO compilation. Evaluator output is always literal data and
+  is never reparsed. `Expression::template(source)` explicitly selects always-string
+  interpolation; `Expression::with_syntax(source, ProgramSyntax)` selects AUTO,
+  raw EXPRESSION, or TEMPLATE. `syntax()` preserves intent in retained programs.
+- **Authored serde is wire v2.** The exact `{version, data, expressions}` envelope
+  keeps `{path, syntax, source}` entries in a separate RFC6901 table targeting null
+  placeholders, for example `{"path":"/message","syntax":"template","source":"{{ 7 }}"}`.
+  Syntax is required (`auto`, `expression`, or `template`), without a default.
+  Strict decoding rejects duplicate/unknown fields and data keys,
+  unsupported versions, invalid/overlapping slots, and excess depth. Only authored
+  values deserialize; serialization rejects explicit secrets in every phase.
+  Redacted JSON views and schema output projections are not this wire format.
+- **Canonical identities remain separately versioned.** Tree canonical bytes
+  use version 2; expression equality, content IDs, and keyed commitments include
+  authored syntax and exact source. `canonical_json_v1` preserves the existing raw-JSON v1 bytes for
+  durable identities; it does not redact or interpret data. Historical schema
+  encodings remain version 1; new scalar descriptors require explicit support
+  in persisted plan envelopes. No durable v1 identity migration is implied.
+- **Validation consumes and prepares authored input.**
+  `ValidSchema::validate(AuthoredValue)` folds every read alias, applies transforms
+  once, promotes declared string secrets before returning, and retains admitted
+  compiled programs. `ValidValues` is bound to its schema snapshot and carries
+  explicit `PendingValidation` obligations, not a complete runtime proof.
+- **Resolution consumes proof and checks full runtime policy.**
+  `ExpressionContext::evaluate` accepts `&CompiledProgram`, replacing
+  `ExpressionAst`. Newly evaluated subtrees are prepared once without reapplying
+  transforms to literal siblings. `resolve_data` completes data-only input with
+  no engine, rejects programs, and still checks full rules and conditional policies.
+- **Typed extraction has an explicit secret boundary.** `into_typed<T>` refuses
+  secret-bearing values. `into_typed_exposing_secrets<T>` explicitly transfers
+  plaintext to a trusted target while preserving union wire tagging, without an
+  intermediate plaintext `serde_json::Value::String`; sensitive projection applies
+  aliases and nested field/mode schemas recursively, and target decode failures retain
+  only a redacted cause. Derived `#[field(secret)]` leaves must explicitly implement
+  `SecretInput: DeserializeOwned + ZeroizeOnDrop`, including the inner leaf of
+  `Option<T>`; bare `String` and unmarked wrappers fail to compile. Predicate and
+  schema-bound loader contexts scrub nested secrets, alias inputs, unknown mode
+  payloads, and expression sources; predicate arrays retain leaf opacity.
+- **Schema discovery is fallible.** `HasSchema::schema` and `schema_of::<T>()`
+  return `Result<ValidSchema, ValidationReport>`. Derived implementations cache
+  success or construction failure instead of panicking on an invalid schema.
+- **Regex transformers are checked configuration.** Use
+  `Transformer::regex(pattern, group) -> Result<Transformer, ValidationError>` or
+  `RegexCapture::new`; `Regex(RegexCapture)` replaces the public string/cache
+  fields. Construction and serde reject invalid patterns and capture indices,
+  with `transformer.invalid_pattern` and `transformer.invalid_capture_group`.
+  String-only application, valid unmatched-input behavior, and serialized
+  transformer metadata are preserved; invalid-pattern no-op warnings are removed.
+- **Diagnostics retain private typed causes.** `ValidationError` has a boxed
+  payload exposed through `code`, `path`, `severity`, `params`, and `message`
+  getters. Expression, regex, and typed-decoding diagnostics redact payloads
+  through the public source chain rather than exposing upstream error text.
+- **Rules never validate a redaction marker as secret data.** Built-in value
+  checks use a private zeroizing projection; predicates continue to receive
+  scrubbed context. Protected composite errors retain codes and data paths but
+  redact messages, params, and source chains. Secret uniqueness uses an
+  ephemeral keyed index rather than pairwise comparisons.
+
+### Historical Entries
+
+The entries below describe earlier changes and their then-current APIs and
+results. The data-foundation contract above supersedes earlier API guidance.
+
 The 2026-04-28 quality-fixes pass (`refactor(schema)!:` + Phase 2-4 commits)
 covers the full set of issues raised in the nebula-schema code review.
 

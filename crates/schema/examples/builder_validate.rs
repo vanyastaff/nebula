@@ -1,5 +1,5 @@
-//! Build a schema with the builder API, parse `FieldValues` from JSON, and run
-//! `ValidSchema::validate` to obtain a `ValidValues` proof token.
+//! Build a schema, ingest JSON data as `AuthoredValue`, and run
+//! `ValidSchema::validate` to obtain prepared `ValidValues`.
 //!
 //! Run:
 //! `cargo run -p nebula-schema --example builder_validate`
@@ -9,7 +9,7 @@
     reason = "example: errors are reported to stderr"
 )]
 
-use nebula_schema::{Field, FieldValues, Schema, field_key};
+use nebula_schema::{AuthoredValue, Field, Schema, field_key};
 use serde_json::json;
 
 fn main() {
@@ -23,13 +23,17 @@ fn main() {
         .build()
         .expect("structural lint should pass");
 
-    let values = FieldValues::from_json(json!({"name": "demo", "retries": 1}))
-        .expect("strict key validation should accept this object");
+    let values =
+        AuthoredValue::from_data(json!({"name": "demo", "retries": 1})).expect("bounded JSON data");
 
     let valid = schema
-        .validate(&values)
+        .validate(values)
         .expect("field values should satisfy the schema");
 
     assert!(valid.warnings().is_empty());
+    assert_eq!(
+        valid.values().to_json(),
+        json!({"name": "demo", "retries": 1})
+    );
     eprintln!("OK: validated {} top-level field(s)", schema.fields().len());
 }

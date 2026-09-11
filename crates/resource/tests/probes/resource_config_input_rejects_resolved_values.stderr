@@ -1,0 +1,15 @@
+error[E0308]: mismatched types
+ --> tests/probes/resource_config_input_rejects_resolved_values.rs:7:48
+  |
+7 |     let _input = ResourceConfigInput::authored(resolved);
+  |                  ----------------------------- ^^^^^^^^ expected `ValueTree<Expression>`, found `ResolvedValues`
+  |                  |
+  |                  arguments to this function are incorrect
+  |
+  = note: expected enum `ValueTree<nebula_schema::Expression>`
+           found struct `ResolvedValues`
+note: associated function defined here
+ --> src/factory.rs
+  |
+  |     pub fn authored(value: nebula_schema::AuthoredValue) -> Self {
+  |            ^^^^^^^^

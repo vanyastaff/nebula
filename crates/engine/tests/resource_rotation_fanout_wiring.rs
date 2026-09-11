@@ -29,8 +29,7 @@ use std::time::Duration;
 use nebula_core::{OrgId, ResourceKey, ScopeLevel, resource_key, scope::Scope};
 use nebula_credential::{CredentialEvent, CredentialId, LeaseEvent};
 use nebula_engine::{
-    ActionExecutor, ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner,
-    WorkflowEngine,
+    ActionRegistry, ActionRuntime, DataPassingPolicy, InProcessRunner, WorkflowEngine,
 };
 use nebula_eventbus::EventBus;
 use nebula_metrics::MetricsRegistry;
@@ -39,7 +38,7 @@ use nebula_resource::{
     AcquireOptions, Manager, Provider, RegistrationSpec, ResidentConfig, ResourceConfig,
     ResourceContext, SlotIdentity,
     error::Error as ResourceError,
-    resource::{HasCredentialSlots, ResourceMetadata},
+    resource::{HasCredentialSlots, ResourceMetadataDraft},
     topology::resident::ResidentProvider,
 };
 use nebula_resource::{ResourceFanoutDriver, ResourceFanoutIndex};
@@ -107,8 +106,8 @@ impl Provider for Recording {
         drive(self.behaviour).await
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 
@@ -152,9 +151,8 @@ async fn drive(b: Behaviour) -> Result<(), ResourceError> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, nebula_schema::Schema)]
 struct NoCfg;
-nebula_schema::impl_empty_has_schema!(NoCfg);
 impl ResourceConfig for NoCfg {
     fn validate(&self) -> Result<(), ResourceError> {
         Ok(())
@@ -607,10 +605,7 @@ async fn lease_revoked_for_never_bound_credential_is_zero_binds_noop() {
 /// workflow; it only exercises `spawn_resource_rotation_fanout`.
 fn noop_engine_with_manager(manager: Arc<Manager>) -> WorkflowEngine {
     let registry = Arc::new(ActionRegistry::new());
-    let executor: ActionExecutor = Arc::new(|_ctx, _meta, input| {
-        Box::pin(async move { Ok(nebula_action::result::ActionResult::success(input)) })
-    });
-    let runner = Arc::new(InProcessRunner::new(executor));
+    let runner = Arc::new(InProcessRunner::new());
     let metrics = MetricsRegistry::new();
     let runtime = Arc::new(
         ActionRuntime::try_new(

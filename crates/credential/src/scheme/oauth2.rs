@@ -12,10 +12,10 @@ use serde::{Deserialize, Serialize};
 /// rather than the credential implementation (`credentials::oauth2_config`).
 /// Prefer importing via `nebula_credential::AuthStyle` or
 /// `nebula_credential::scheme::oauth2::AuthStyle`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, nebula_schema::EnumSelect)]
+#[serde(rename_all = "snake_case")]
 pub enum AuthStyle {
-    /// RFC 6749: `Authorization: Basic base64(client_id:client_secret)` — default
-    #[default]
+    /// RFC 6749: `Authorization: Basic base64(client_id:client_secret)`.
     Header,
     /// `client_id` + `client_secret` as POST body form fields.
     ///

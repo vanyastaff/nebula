@@ -31,7 +31,7 @@ use nebula_storage_port::{
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::credential_adapters::{RegistryCredentialSchema, ReqwestRefreshTransport};
+use crate::credential_adapters::{RegistryCredentialSchema, ReqwestOAuthTransport};
 
 const DEFAULT_CREDENTIAL_DB: &str = "sqlite://nebula-credentials.db?mode=rwc";
 const DEVELOPMENT_KEY_BASE64: &str = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=";
@@ -66,6 +66,8 @@ pub(crate) struct CredentialRuntime {
 pub(crate) enum CredentialCompositionError {
     #[error("credential registry registration failed")]
     Registry(#[from] nebula_credential::RegisterError),
+    #[error("credential catalog schema export failed")]
+    Catalog(#[from] nebula_schema::JsonSchemaExportError),
     #[error("credential dispatch registration failed")]
     Dispatch(#[from] DispatchError),
     #[error("credential service composition failed")]
@@ -220,7 +222,7 @@ where
 {
     let registry = Arc::new(first_party_registry()?);
     let catalog: Arc<dyn CredentialSchemaPort> =
-        Arc::new(RegistryCredentialSchema::new(Arc::clone(&registry)));
+        Arc::new(RegistryCredentialSchema::new(Arc::clone(&registry))?);
     let ops = Arc::new(first_party_ops()?);
     validate_capability_dispatch(&registry, &ops)?;
 
@@ -260,12 +262,14 @@ where
         sentinel,
         Some(Arc::clone(&credential_events)),
     );
-    let refresh_transport = ReqwestRefreshTransport::new()
-        .map_err(|error| CredentialCompositionError::RefreshTransport(error.to_string()))?;
+    let oauth_transport = Arc::new(
+        ReqwestOAuthTransport::new()
+            .map_err(|error| CredentialCompositionError::RefreshTransport(error.to_string()))?,
+    );
     let resolver = CredentialResolver::with_dependencies(
         Arc::clone(&store),
         refresh_coordinator,
-        Arc::new(refresh_transport),
+        oauth_transport.clone(),
     )
     .with_event_bus(credential_events);
     let lease = LeaseLifecycle::spawn(
@@ -283,6 +287,7 @@ where
         registry,
         ops,
         observer,
+        oauth_transport,
         StateSource::LocalEncrypted,
     ));
 

@@ -187,8 +187,6 @@ impl Scheduler {
                 let remaining = renew_after_from_issue.saturating_sub(aged_std);
                 let next_renew_at = Instant::now() + remaining;
                 let provider_name = provider.provider_name().to_owned();
-                let lease_id = lease.lease_id.clone();
-
                 let entry = LeaseEntry {
                     lease,
                     provider,
@@ -203,7 +201,6 @@ impl Scheduler {
                 tracing::debug!(
                     target: "nebula_credential::runtime::lease",
                     provider = %provider_name,
-                    lease_id = %lease_id,
                     renew_in_secs = remaining.as_secs(),
                     aged_secs = aged_std.as_secs(),
                     "lease tracked; renewal scheduled"
@@ -303,7 +300,6 @@ impl Scheduler {
             target: "nebula_credential::runtime::lease",
             "lease.renew",
             provider = %provider_name,
-            lease_id = %lease_id,
         );
 
         // Bounded provider call: instrument via `Instrument` so the
@@ -398,7 +394,6 @@ impl Scheduler {
         tracing::debug!(
             target: "nebula_credential::runtime::lease",
             provider = provider_name,
-            lease_id = %event_lease_id,
             new_ttl_secs = new_ttl.as_secs(),
             "lease renewed; renewal rescheduled"
         );
@@ -435,7 +430,6 @@ impl Scheduler {
         tracing::warn!(
             target: "nebula_credential::runtime::lease",
             provider = provider_name,
-            lease_id = lease_id,
             attempt,
             error = %reason,
             permanent,
@@ -514,7 +508,6 @@ impl Scheduler {
         tracing::info!(
             target: "nebula_credential::runtime::lease",
             provider = provider_name,
-            lease_id = lease_id,
             ?reason,
             "lease dropped from lifecycle"
         );
@@ -538,7 +531,6 @@ impl Scheduler {
             target: "nebula_credential::runtime::lease",
             "lease.revoke",
             provider = %provider_name,
-            lease_id = %lease_id,
         );
 
         // Same bounded-call pattern as renew: a hung backend must not
@@ -562,7 +554,6 @@ impl Scheduler {
                 tracing::debug!(
                     target: "nebula_credential::runtime::lease",
                     provider = %provider_name,
-                    lease_id = %lease_id,
                     "lease revoked upstream"
                 );
                 self.emit_lease_event(LeaseEvent::LeaseRevoked {
@@ -584,7 +575,6 @@ impl Scheduler {
                 tracing::warn!(
                     target: "nebula_credential::runtime::lease",
                     provider = %provider_name,
-                    lease_id = %lease_id,
                     error = %reason,
                     "lease revoke failed; lease removed from registry anyway"
                 );
@@ -617,7 +607,6 @@ impl Scheduler {
             tracing::info!(
                 target: "nebula_credential::runtime::lease",
                 provider = %provider_name,
-                lease_id = %entry.lease.lease_id,
                 "lease lifecycle shutdown — lease left to expire upstream"
             );
             self.emit_lease_event(LeaseEvent::LeaseExpired {

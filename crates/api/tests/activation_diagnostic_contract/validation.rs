@@ -1,6 +1,6 @@
 //! Actual typed builder and strict schema-validation rejections.
 use nebula_core::{ActionKey, node_key};
-use nebula_schema::{Field, Schema, ValidSchema, field_key};
+use nebula_schema::{Field, Schema, ValidSchema, ValuePath, field_key};
 use nebula_workflow::{
     NodeDefinition, NodeIoSchemas, NodeSchemaResolver, ParamValue, SchemaCheckMode, WorkflowBuilder,
 };
@@ -89,7 +89,7 @@ pub(super) fn observations() -> Vec<ScenarioObservation> {
                     .build()
                     .unwrap(),
                 ValidSchema::empty(),
-                Some("$.items.first"),
+                Some("/items/first"),
             ),
             "reference_incompatible" => (
                 Schema::builder()
@@ -100,7 +100,7 @@ pub(super) fn observations() -> Vec<ScenarioObservation> {
                     .add(Field::boolean(field_key!("input")).required())
                     .build()
                     .unwrap(),
-                Some("$.value"),
+                Some("/value"),
             ),
             "reference_undecidable" => (
                 Schema::builder()
@@ -111,15 +111,17 @@ pub(super) fn observations() -> Vec<ScenarioObservation> {
                     .add(Field::integer(field_key!("input")).required())
                     .build()
                     .unwrap(),
-                Some("$.value"),
+                Some("/value"),
             ),
             _ => unreachable!(),
         };
         let mut target =
             NodeDefinition::new(node_key!("target"), "Target", "core", "target").unwrap();
         if let Some(path) = reference {
-            target =
-                target.with_parameter("input", ParamValue::reference(node_key!("source"), path));
+            target = target.with_parameter(
+                "input",
+                ParamValue::reference(node_key!("source"), ValuePath::from_pointer(path).unwrap()),
+            );
         }
         let workflow = WorkflowBuilder::new("Schema fixture")
             .add_node(NodeDefinition::new(node_key!("source"), "Source", "core", "source").unwrap())

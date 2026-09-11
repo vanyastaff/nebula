@@ -1,71 +1,80 @@
-//! Smoke tests for ActionMetadata::max_concurrent (Q8 F9).
+//! Admitted action metadata exposes immutable concurrency intent.
 
-use std::num::NonZeroU32;
+use std::{num::NonZeroU32, sync::OnceLock};
 
-use nebula_action::ActionMetadata;
-use nebula_core::ActionKey;
+use nebula_action::{
+    Action, ActionContext, ActionError, ActionFactory, ActionMetadataDraft, ActionResult,
+    InstanceFactory, RecordedActionMetadata, StatelessAction,
+};
+use nebula_core::{ActionKey, Dependencies};
 
-fn meta() -> ActionMetadata {
-    ActionMetadata::new(
+struct Probe;
+
+impl Action for Probe {
+    type Input = serde_json::Value;
+    type Output = serde_json::Value;
+
+    fn metadata() -> ActionMetadataDraft {
+        draft()
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        static DEPENDENCIES: OnceLock<Dependencies> = OnceLock::new();
+        DEPENDENCIES.get_or_init(Dependencies::new)
+    }
+}
+
+impl StatelessAction for Probe {
+    async fn execute(
+        &self,
+        input: Self::Input,
+        _: &(impl ActionContext + ?Sized),
+    ) -> Result<ActionResult<Self::Output>, ActionError> {
+        Ok(ActionResult::success(input))
+    }
+}
+
+fn draft() -> ActionMetadataDraft {
+    ActionMetadataDraft::new(
         ActionKey::new("test.maxc").expect("valid key"),
-        "test",
+        nebula_action::metadata_name!("test"),
         "max_concurrent smoke",
     )
 }
 
 #[test]
 fn default_is_none() {
-    let m = meta();
-    assert_eq!(m.max_concurrent, None);
+    let factory = InstanceFactory::new(draft(), Probe).expect("metadata admits");
+    assert_eq!(factory.metadata().max_concurrent(), None);
 }
 
 #[test]
-fn round_trips_through_json() {
-    let mut m = meta();
-    m.max_concurrent = Some(NonZeroU32::new(4).unwrap());
-    let s = serde_json::to_string(&m).expect("serialize");
-    let back: ActionMetadata = serde_json::from_str(&s).expect("deserialize");
-    assert_eq!(back.max_concurrent, Some(NonZeroU32::new(4).unwrap()));
+fn recorded_evidence_readmits_against_fresh_definition() {
+    let limit = NonZeroU32::new(4).expect("four is non-zero");
+    let factory =
+        InstanceFactory::new(draft().with_max_concurrent(limit), Probe).expect("metadata admits");
+    let wire = serde_json::to_string(factory.metadata()).expect("metadata serializes");
+    let recorded: RecordedActionMetadata =
+        serde_json::from_str(&wire).expect("recorded evidence decodes");
+    let readmitted = recorded
+        .readmit_against(factory.metadata())
+        .expect("exact evidence readmits");
+    assert_eq!(readmitted.max_concurrent(), Some(limit));
 }
 
 #[test]
-fn omits_when_none() {
-    let m = meta();
-    let s = serde_json::to_string(&m).expect("serialize");
-    // Deserialize to verify the field isn't present as a JSON key
-    let v: serde_json::Value = serde_json::from_str(&s).expect("parse JSON");
-    assert!(
-        v.get("max_concurrent").is_none(),
-        "serialized form should omit None field, got: {s}"
-    );
+fn serialization_omits_absent_limit() {
+    let factory = InstanceFactory::new(draft(), Probe).expect("metadata admits");
+    let wire = serde_json::to_value(factory.metadata()).expect("metadata serializes");
+    assert!(wire.get("max_concurrent").is_none());
 }
 
 #[test]
-fn deserializes_when_field_absent() {
-    // Older metadata (saved before F9 landed) MUST still deserialize.
-    // Build a modern metadata, serialize it, then remove max_concurrent field
-    // to simulate pre-F9 payloads.
-    let legacy = meta();
-    let mut as_value: serde_json::Value = serde_json::to_value(&legacy).expect("serialize");
-    // Simulate pre-field payload by removing the key we just added.
-    as_value.as_object_mut().unwrap().remove("max_concurrent");
-    let json_string = serde_json::to_string(&as_value).expect("to string");
-    let _: ActionMetadata =
-        serde_json::from_str(&json_string).expect("backwards-compat deserialize");
-}
-
-#[test]
-fn rejects_zero_max_concurrent() {
-    // `Option<NonZeroU32>` must reject the explicit zero on the wire. The
-    // `Option::is_none` skip-on-serialize doesn't cover this — `0` only
-    // hits the deserializer if a producer or codemod injects it. Pinning
-    // the rejection guards against accidental serde drift later.
-    let mut v = serde_json::to_value(meta()).expect("serialize");
-    v.as_object_mut()
-        .expect("object")
+fn recorded_evidence_rejects_zero_limit() {
+    let factory = InstanceFactory::new(draft(), Probe).expect("metadata admits");
+    let mut wire = serde_json::to_value(factory.metadata()).expect("metadata serializes");
+    wire.as_object_mut()
+        .expect("metadata wire is an object")
         .insert("max_concurrent".into(), serde_json::json!(0));
-    assert!(
-        serde_json::from_value::<ActionMetadata>(v).is_err(),
-        "zero must remain invalid for NonZeroU32-backed max_concurrent"
-    );
+    assert!(serde_json::from_value::<RecordedActionMetadata>(wire).is_err());
 }

@@ -16,6 +16,12 @@ trybuild = { max-threads = 1 }
 # keep the outer test processes single-threaded while each contention test
 # still creates its own concurrent database clients internally.
 postgres-authority = { max-threads = 1 }
+# SDK external-consumer proofs compile isolated temporary crates with patched
+# workspace dependencies. Running several cold fixture builds concurrently on
+# GitHub-hosted runners makes the proof hit the per-test slow timeout instead
+# of exercising the contract; serialize the binaries while preserving every
+# compile/run assertion.
+sdk-external-contract = { max-threads = 1 }
 
 [profile.default]
 # Use up to all available CPUs
@@ -37,6 +43,10 @@ test-group = 'trybuild'
 [[profile.default.overrides]]
 filter = 'package(=nebula-storage) & binary(=nebula_storage) & test(/pg::(oauth_state::tests|identity_secret::postgres_tests|session::tests|mfa_enrollment::tests)::/)'
 test-group = 'postgres-authority'
+
+[[profile.default.overrides]]
+filter = 'package(=nebula-sdk) & binary(/(derive_external_contract|public_perimeter_external_contract|test_result_external_contract)/)'
+test-group = 'sdk-external-contract'
 
 [profile.ci]
 # Retry flaky tests up to 2 times

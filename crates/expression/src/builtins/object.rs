@@ -1,5 +1,7 @@
 //! Object manipulation functions
 
+use std::collections::{HashMap, HashSet};
+
 use serde_json::Value;
 
 use super::{check_arg_count, check_min_arg_count, get_array_arg, get_object_arg};
@@ -11,8 +13,8 @@ use crate::{
 };
 
 /// Get all keys of an object
-pub fn keys(
-    args: &[Value],
+pub(crate) fn keys(
+    args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
@@ -26,8 +28,8 @@ pub fn keys(
 }
 
 /// Get all values of an object
-pub fn values(
-    args: &[Value],
+pub(crate) fn values(
+    args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
@@ -41,8 +43,8 @@ pub fn values(
 }
 
 /// Check if an object has a specific key
-pub fn has(
-    args: &[Value],
+pub(crate) fn has(
+    args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {
@@ -51,7 +53,7 @@ pub fn has(
     let key = args[1].as_str().ok_or_else(|| {
         ExpressionError::expression_type_error(
             "string",
-            crate::value_utils::value_type_name(&args[1]),
+            crate::value_utils::value_type_name(args[1]),
         )
     })?;
 
@@ -61,12 +63,19 @@ pub fn has(
 /// Shallow merge of multiple objects (right wins on key conflicts)
 ///
 /// Example: `merge({a:1}, {b:2}, {a:3})` returns `{a:3, b:2}`
-pub fn merge(
-    args: &[Value],
-    _view: BuiltinView<'_>,
-    _ctx: &EvaluationContext,
+pub(crate) fn merge(
+    args: &[&Value],
+    view: BuiltinView<'_>,
+    context: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_min_arg_count("merge", args, 1)?;
+
+    let mut merged = HashMap::new();
+    for (index, _) in args.iter().enumerate() {
+        let object = get_object_arg("merge", args, index, "object")?;
+        merged.extend(object.iter().map(|(key, value)| (key.as_str(), value)));
+    }
+    view.output_builder(context).preflight_object(merged)?;
 
     let mut result = serde_json::Map::new();
     for (i, _) in args.iter().enumerate() {
@@ -82,18 +91,21 @@ pub fn merge(
 /// Return an object with only the specified keys
 ///
 /// Example: `pick({a:1, b:2, c:3}, "a", "c")` returns `{a:1, c:3}`
-pub fn pick(
-    args: &[Value],
-    _view: BuiltinView<'_>,
-    _ctx: &EvaluationContext,
+pub(crate) fn pick(
+    args: &[&Value],
+    view: BuiltinView<'_>,
+    context: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_min_arg_count("pick", args, 1)?;
     let obj = get_object_arg("pick", args, 0, "object")?;
 
-    let mut keys_to_pick = Vec::with_capacity(args.len().saturating_sub(1));
+    view.charge_work(obj.len().saturating_add(args.len().saturating_sub(1)))?;
+    let mut keys_to_pick = HashSet::with_capacity(args.len().saturating_sub(1));
     for arg in &args[1..] {
         match arg.as_str() {
-            Some(s) => keys_to_pick.push(s),
+            Some(key) => {
+                keys_to_pick.insert(key);
+            },
             None => {
                 return Err(ExpressionError::expression_type_error(
                     "string",
@@ -103,10 +115,15 @@ pub fn pick(
         }
     }
 
+    let selected = obj
+        .iter()
+        .filter(|(key, _)| keys_to_pick.contains(key.as_str()));
+    view.output_builder(context)
+        .preflight_object(selected.clone().map(|(key, value)| (key.as_str(), value)))?;
     let result: serde_json::Map<String, Value> = obj
         .iter()
-        .filter(|(k, _)| keys_to_pick.contains(&k.as_str()))
-        .map(|(k, v)| (k.clone(), v.clone()))
+        .filter(|(key, _)| keys_to_pick.contains(key.as_str()))
+        .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
 
     Ok(Value::Object(result))
@@ -115,18 +132,21 @@ pub fn pick(
 /// Return an object without the specified keys
 ///
 /// Example: `omit({a:1, b:2, c:3}, "b")` returns `{a:1, c:3}`
-pub fn omit(
-    args: &[Value],
-    _view: BuiltinView<'_>,
-    _ctx: &EvaluationContext,
+pub(crate) fn omit(
+    args: &[&Value],
+    view: BuiltinView<'_>,
+    context: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_min_arg_count("omit", args, 1)?;
     let obj = get_object_arg("omit", args, 0, "object")?;
 
-    let mut keys_to_omit = Vec::with_capacity(args.len().saturating_sub(1));
+    view.charge_work(obj.len().saturating_add(args.len().saturating_sub(1)))?;
+    let mut keys_to_omit = HashSet::with_capacity(args.len().saturating_sub(1));
     for arg in &args[1..] {
         match arg.as_str() {
-            Some(s) => keys_to_omit.push(s),
+            Some(key) => {
+                keys_to_omit.insert(key);
+            },
             None => {
                 return Err(ExpressionError::expression_type_error(
                     "string",
@@ -136,10 +156,15 @@ pub fn omit(
         }
     }
 
+    let selected = obj
+        .iter()
+        .filter(|(key, _)| !keys_to_omit.contains(key.as_str()));
+    view.output_builder(context)
+        .preflight_object(selected.clone().map(|(key, value)| (key.as_str(), value)))?;
     let result: serde_json::Map<String, Value> = obj
         .iter()
-        .filter(|(k, _)| !keys_to_omit.contains(&k.as_str()))
-        .map(|(k, v)| (k.clone(), v.clone()))
+        .filter(|(key, _)| !keys_to_omit.contains(key.as_str()))
+        .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
 
     Ok(Value::Object(result))
@@ -148,13 +173,14 @@ pub fn omit(
 /// Convert an object to an array of `{key, value}` pairs
 ///
 /// Example: `entries({a:1, b:2})` returns `[{key:"a", value:1}, {key:"b", value:2}]`
-pub fn entries(
-    args: &[Value],
-    _view: BuiltinView<'_>,
-    _ctx: &EvaluationContext,
+pub(crate) fn entries(
+    args: &[&Value],
+    view: BuiltinView<'_>,
+    context: &EvaluationContext,
 ) -> ExpressionResult<Value> {
     check_arg_count("entries", args, 1)?;
     let obj = get_object_arg("entries", args, 0, "object")?;
+    view.output_builder(context).preflight_entries(obj)?;
 
     let result: Vec<Value> = obj
         .iter()
@@ -172,8 +198,8 @@ pub fn entries(
 /// Convert an array of `{key, value}` pairs back to an object
 ///
 /// Example: `from_entries([{key:"a", value:1}])` returns `{a:1}`
-pub fn from_entries(
-    args: &[Value],
+pub(crate) fn from_entries(
+    args: &[&Value],
     _view: BuiltinView<'_>,
     _ctx: &EvaluationContext,
 ) -> ExpressionResult<Value> {

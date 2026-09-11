@@ -9,6 +9,7 @@
 | [`AGENTS.md`](../AGENTS.md) | Repo rules, layout, commands, guard hooks |
 | [`docs/AGENT_WORKFLOW.md`](./AGENT_WORKFLOW.md) | Task brief, resume/handoff notes, review and completion evidence; read for substantial or interrupted work |
 | [`README.md`](../README.md) | Product overview |
+| [`CHANGELOG.md`](../CHANGELOG.md) | Workspace release notes and 0.6 breaking migration |
 | [`docs/pitfalls.md`](./pitfalls.md) | Traps before touching hot paths |
 | [`docs/MATURITY.md`](./MATURITY.md) | L0–L4 maturity |
 | `crates/<crate>/README.md` | Crate you are editing |
@@ -39,10 +40,11 @@ MATURITY, OBSERVABILITY) are the in-repo source of truth; ADRs are referenced by
 
 ## Integration author path
 
-1. `docs/VISION.md` → mission, positioning, SDK / plugin layers
-2. `crates/action`, `credential`, `resource`, `plugin` READMEs
-3. `Schema` = configuration form for Action / Credential / Resource
-4. `PRODUCT_CANON.md` for durability and operational honesty
+1. `nebula-sdk` and its persona modules → sole supported Rust authoring surface
+2. `docs/INTEGRATION_MODEL.md` → metadata admission, schema phases, and wiring
+3. `crates/action`, `credential`, `resource`, `plugin` READMEs → technical contracts
+4. `CHANGELOG.md` → current 0.6 hard breaks and before→after migration examples
+5. `PRODUCT_CANON.md` → durability and operational honesty
 
 ## Legacy paths (wrong)
 

@@ -128,13 +128,18 @@ fn build_backend(pool: Pool<Postgres>) -> (Arc<PgAuthBackend>, Arc<EchoSink>) {
     let sink = Arc::new(EchoSink::default());
     let port: Arc<dyn EmailPort> = Arc::clone(&sink) as _;
     let oauth_runtime = OAuthIdentityRuntime::from_config(OAuthProvidersConfig {
-        providers: HashMap::from([(
-            OAuthProvider::GitHub,
-            OAuthProviderConfig {
-                client_id: secrecy::SecretString::new("pg-test-client".into()),
-                client_secret: secrecy::SecretString::new("pg-test-secret".into()),
-            },
-        )]),
+        providers: [OAuthProvider::GitHub, OAuthProvider::Google]
+            .into_iter()
+            .map(|provider| {
+                (
+                    provider,
+                    OAuthProviderConfig {
+                        client_id: secrecy::SecretString::new("pg-test-client".into()),
+                        client_secret: secrecy::SecretString::new("pg-test-secret".into()),
+                    },
+                )
+            })
+            .collect::<HashMap<_, _>>(),
     })
     .expect("PG test OAuth runtime must build")
     .expect("PG test provider config must enable OAuth");

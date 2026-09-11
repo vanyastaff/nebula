@@ -1,11 +1,16 @@
 use nebula_validator::{
     foundation::{Validate, ValidateExt},
     validators::{
-        alphabetic, alphanumeric, contains, date, date_time, ends_with, exact_length, hostname,
-        ip_addr, ipv4, ipv6, is_false, is_true, length_range, lowercase, max_length, min_length,
-        not_empty, numeric, starts_with, time, uppercase, uuid,
+        alphabetic, alphanumeric, contains, ends_with, exact_length, is_false, is_true,
+        length_range, lowercase, max_length, min_length, not_empty, numeric, starts_with,
+        uppercase,
     },
 };
+
+#[cfg(feature = "temporal")]
+use nebula_validator::validators::{date, date_time, time, uuid};
+#[cfg(feature = "network")]
+use nebula_validator::validators::{hostname, ip_addr, ipv4, ipv6};
 
 use super::helpers::{assert_error_contract, load_contract_fixture, load_named_fixture};
 
@@ -131,6 +136,7 @@ fn pattern_fixtures_preserve_contract() {
 }
 
 #[test]
+#[cfg(feature = "network")]
 fn network_fixtures_preserve_contract() {
     let fixtures = load_named_fixture("network");
 
@@ -174,6 +180,7 @@ fn network_fixtures_preserve_contract() {
 }
 
 #[test]
+#[cfg(feature = "temporal")]
 fn temporal_fixtures_preserve_contract() {
     let fixtures = load_named_fixture("temporal");
 

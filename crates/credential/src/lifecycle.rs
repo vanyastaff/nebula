@@ -21,6 +21,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// `RefreshStrategy` relocated to `nebula-core::auth` (a pure data enum, so it
 /// can back [`crate::SchemeFamily::refresh_classes`] without an inverted
@@ -49,20 +50,35 @@ pub enum RevokeStrategy {
 /// An external lease reference, Vault-style: the server tracks expiry and
 /// renewal and the client holds only the identifier (the lease is the unit of
 /// expiry, not the secret value).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
 pub struct LeaseRef {
     /// Opaque, server-assigned lease identifier.
     pub lease_id: String,
     /// Lease duration granted at the last issue or renewal.
+    #[zeroize(skip)]
     pub lease_duration: Duration,
     /// Whether the lease can be renewed (some leases are one-shot).
+    #[zeroize(skip)]
     pub renewable: bool,
     /// Hard renewal horizon: past this instant even a renewable lease must
     /// re-acquire, not renew (Kerberos TGT `renew_until`, a rotating
     /// refresh-token's absolute expiry). `None` = no horizon (renew indefinitely
     /// while `renewable`). [`CredentialPolicy::decide_refresh`] returns
     /// [`Decision::Reacquire`] once `now >= renew_until`.
+    #[zeroize(skip)]
     pub renew_until: Option<DateTime<Utc>>,
+}
+
+impl std::fmt::Debug for LeaseRef {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LeaseRef")
+            .field("lease_id", &"[REDACTED]")
+            .field("lease_duration", &self.lease_duration)
+            .field("renewable", &self.renewable)
+            .field("renew_until", &self.renew_until)
+            .finish()
+    }
 }
 
 /// The single routing decision the resolver acts on for a credential at a

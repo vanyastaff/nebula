@@ -157,10 +157,12 @@ pub enum WorkflowError {
 
     /// The producer→consumer edge is **not statically decidable** under
     /// [`SchemaCheckMode::Strict`](crate::validate::SchemaCheckMode) (ADR-0100
-    /// TypeDAG): the assignability verdict was
-    /// [`nebula_schema::Assignability::Unknown`] — a loader-backed `Dynamic`
-    /// field, an opaque `Any` producer, `Mode` sum-type variance, or a float→int
-    /// narrowing — so compatibility could be neither proven nor refuted.
+    /// TypeDAG): the assignability verdict was either
+    /// [`nebula_schema::Assignability::Unknown`] or a future verdict this
+    /// workflow version does not understand. Current unknown reasons include a
+    /// loader-backed `Dynamic` field, an opaque `Any` producer, `Mode` sum-type
+    /// variance, or a float→int narrowing, so compatibility could be neither
+    /// proven nor refuted.
     ///
     /// Never emitted under
     /// [`SchemaCheckMode::Gradual`](crate::validate::SchemaCheckMode), which
@@ -191,18 +193,20 @@ pub enum WorkflowError {
         reason: String,
     },
 
-    /// A `ParamValue::Reference`'s `output_path` provably fails to resolve
-    /// through the producer node's output schema, on a path that walked
-    /// through only **closed** (fully-typed) nodes right up to the failure
-    /// point (ADR-0100 TypeDAG, W0 U5 — correctness only; see
+    /// A `ParamValue::Reference`'s `output_path` cannot be admitted because it
+    /// either provably fails to resolve through the producer output schema or
+    /// returned a path-walk outcome this workflow version does not understand
+    /// (ADR-0100 TypeDAG, W0 U5 — correctness only; see
     /// `crate::validate::check_reference_edges`).
     ///
-    /// Emitted only for [`nebula_schema::PathResolveError::NonIndexOnList`] /
-    /// [`nebula_schema::PathResolveError::DescendPastLeaf`] — a missing
-    /// `Object` key, or any opaque node encountered along the way, fails open
-    /// instead (never this variant). Fires in **both**
-    /// [`SchemaCheckMode`](crate::validate::SchemaCheckMode)s: it is a provable
-    /// structural mistake, not an undecidable verdict.
+    /// Emitted for [`nebula_schema::PathResolveError::NonIndexOnList`] /
+    /// [`nebula_schema::PathResolveError::DescendPastLeaf`], or when workflow
+    /// encounters a future [`nebula_schema::PathWalk`] outcome it does not yet
+    /// understand. A missing `Object` key, or any opaque node encountered along
+    /// the way, fails open instead (never this variant). Fires in **both**
+    /// [`SchemaCheckMode`](crate::validate::SchemaCheckMode)s: known path
+    /// failures are structural mistakes, while unknown future outcomes remain
+    /// blocked until workflow handles their semantics explicitly.
     ///
     /// This is a **correctness-only** check: a `Reference` into a
     /// `Field::Secret` producer field is not distinguished from any other
@@ -216,10 +220,10 @@ pub enum WorkflowError {
     ReferencePathUnresolved(Box<ReferencePathUnresolvedDetails>),
 
     /// A `ParamValue::Reference`'s `output_path` resolves through the
-    /// producer's output schema (a fully-closed path —
-    /// [`nebula_schema::PathWalk::Resolved`]), but the resolved leaf field is
-    /// provably **not assignable** to the consumer parameter's expected field
-    /// ([`nebula_schema::Assignability::No`]). Classified consistently with
+    /// producer's output schema (a fully-closed field path or concrete
+    /// [`nebula_schema::PathWalk::ResolvedRoot`]), but the resolved field or
+    /// complete root is provably **not assignable** to the consumer parameter's
+    /// expected field ([`nebula_schema::Assignability::No`]). Classified consistently with
     /// [`Self::PortSchemaIncompatible`] (always a hard error, both modes).
     ///
     /// The payload is `Box`ed for the same `clippy::result_large_err` reason as
@@ -229,8 +233,9 @@ pub enum WorkflowError {
     ReferenceTypeIncompatible(Box<ReferenceTypeIncompatDetails>),
 
     /// Like [`Self::ReferenceTypeIncompatible`], but the assignability verdict
-    /// was [`nebula_schema::Assignability::Unknown`] — classified consistently
-    /// with [`Self::PortSchemaUndecidable`]: blocked only under
+    /// was [`nebula_schema::Assignability::Unknown`], or was a future verdict
+    /// this workflow version does not understand. Classified consistently with
+    /// [`Self::PortSchemaUndecidable`]: blocked only under
     /// [`SchemaCheckMode::Strict`](crate::validate::SchemaCheckMode::Strict);
     /// `Gradual` warns-and-passes.
     #[classify(category = "validation", code = "WORKFLOW:REFERENCE_TYPE_UNDECIDABLE")]
@@ -307,10 +312,12 @@ pub struct PortSchemaUndecidableDetails {
     pub from_port: Option<PortKey>,
     /// The target input port, if named (`None` = default flow input).
     pub to_port: Option<PortKey>,
-    /// Every reason the edge is undecidable, structured so a policy can route on
+    /// Every known reason the edge is undecidable, structured so a policy can route on
     /// them (e.g. suppress [`OpaqueProducer`](nebula_schema::UnknownReason::OpaqueProducer)
     /// while blocking [`DynamicLoaderBacked`](nebula_schema::UnknownReason::DynamicLoaderBacked))
-    /// without string-parsing. The `Display` impl joins their descriptions with `"; "`.
+    /// without string-parsing. Empty means this workflow version encountered a
+    /// future assignability verdict it cannot classify. The `Display` impl joins
+    /// known descriptions with `"; "`.
     pub reasons: Vec<nebula_schema::UnknownReason>,
 }
 
@@ -352,8 +359,8 @@ pub struct ReferencePathUnresolvedDetails {
     /// The referenced producer node.
     pub producer_node: NodeKey,
     /// The authored `output_path` that failed to resolve.
-    pub output_path: String,
-    /// The rendered [`nebula_schema::PathResolveError`].
+    pub output_path: nebula_schema::ValuePath,
+    /// The rendered [`nebula_schema::PathResolveError`] or compatibility-guard reason.
     pub reason: String,
 }
 
@@ -361,7 +368,7 @@ impl std::fmt::Display for ReferencePathUnresolvedDetails {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "node {} parameter `{}` references {}.{}, which does not resolve: {}",
+            "node {} parameter `{}` references {}{}, which does not resolve: {}",
             self.consumer_node, self.param_key, self.producer_node, self.output_path, self.reason
         )
     }
@@ -381,9 +388,9 @@ pub struct ReferenceTypeIncompatDetails {
     /// The referenced producer node.
     pub producer_node: NodeKey,
     /// The authored `output_path` the reference resolved through.
-    pub output_path: String,
-    /// Every incompatibility found between the resolved producer leaf field and
-    /// the consumer's expected field, structured for programmatic inspection.
+    pub output_path: nebula_schema::ValuePath,
+    /// Every incompatibility found between the resolved producer field or root
+    /// and the consumer's expected field, structured for programmatic inspection.
     pub incompatibilities: Vec<nebula_schema::SchemaIncompat>,
 }
 
@@ -391,7 +398,7 @@ impl std::fmt::Display for ReferenceTypeIncompatDetails {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{}.{} \u{2190} {}.{}: {}",
+            "{}.{} \u{2190} {}{}: {}",
             self.consumer_node,
             self.param_key,
             self.producer_node,
@@ -415,9 +422,11 @@ pub struct ReferenceTypeUndecidableDetails {
     /// The referenced producer node.
     pub producer_node: NodeKey,
     /// The authored `output_path` the reference resolved through.
-    pub output_path: String,
-    /// Every reason the reference's assignability is undecidable, structured so
-    /// a policy can route on them without string-parsing.
+    pub output_path: nebula_schema::ValuePath,
+    /// Every known reason the reference's assignability is undecidable,
+    /// structured so a policy can route on them without string-parsing. Empty
+    /// means this workflow version encountered a future assignability verdict it
+    /// cannot classify.
     pub reasons: Vec<nebula_schema::UnknownReason>,
 }
 
@@ -425,7 +434,7 @@ impl std::fmt::Display for ReferenceTypeUndecidableDetails {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{}.{} \u{2190} {}.{}: {}",
+            "{}.{} \u{2190} {}{}: {}",
             self.consumer_node,
             self.param_key,
             self.producer_node,
@@ -746,21 +755,21 @@ mod activation_diagnostic_tests {
                 consumer_node: node("b"),
                 param_key: "input".to_owned(),
                 producer_node: node("a"),
-                output_path: "$.items[0]".to_owned(),
+                output_path: nebula_schema::ValuePath::from_pointer("/items/0").unwrap(),
                 reason: "descend past leaf".to_owned(),
             })),
             WorkflowError::ReferenceTypeIncompatible(Box::new(ReferenceTypeIncompatDetails {
                 consumer_node: node("b"),
                 param_key: "input".to_owned(),
                 producer_node: node("a"),
-                output_path: "$.count".to_owned(),
+                output_path: nebula_schema::ValuePath::from_pointer("/count").unwrap(),
                 incompatibilities: Vec::new(),
             })),
             WorkflowError::ReferenceTypeUndecidable(Box::new(ReferenceTypeUndecidableDetails {
                 consumer_node: node("b"),
                 param_key: "input".to_owned(),
                 producer_node: node("a"),
-                output_path: "$.count".to_owned(),
+                output_path: nebula_schema::ValuePath::from_pointer("/count").unwrap(),
                 reasons: Vec::new(),
             })),
         ]
@@ -826,7 +835,7 @@ mod activation_diagnostic_tests {
                 consumer_node: node("consumer"),
                 param_key: "input".to_owned(),
                 producer_node: node("producer"),
-                output_path: "$.count".to_owned(),
+                output_path: nebula_schema::ValuePath::from_pointer("/count").unwrap(),
                 incompatibilities: Vec::new(),
             }))
             .activation_diagnostics();

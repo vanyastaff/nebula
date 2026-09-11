@@ -63,7 +63,7 @@ fn json_exact_size_validation() {
 
 #[test]
 fn json_size_range_validation() {
-    let v = size_range::<Value>(2, 4);
+    let v = size_range::<Value>(2, 4).expect("ordered bounds");
     assert!(v.validate_any(&json!([1, 2, 3])).is_ok());
     assert!(v.validate_any(&json!([])).is_err());
     assert!(v.validate_any(&json!([1, 2, 3, 4, 5])).is_err());

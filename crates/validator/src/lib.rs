@@ -2,14 +2,13 @@
 //!
 //! Validation rules engine for the Nebula workflow engine. Provides two complementary
 //! surfaces: composable programmatic validators via the [`foundation::Validate`] trait,
-//! and a JSON-serializable [`Rule`] enum for declarative schema-field constraints.
+//! and a JSON-serializable [`Rule`] type for declarative schema-field constraints.
 //!
 //! **Role:** Validation Rules Engine + Declarative Rule. See `crates/validator/README.md`.
 //!
 //! **Maturity:** `frontier` — the programmatic validator API (`Validate`, `ValidateExt`,
 //! `Validated`, `ValidationError`) is stable; [`Rule`] has just moved to a typed sum-of-sums
-//! (`Value` / `Predicate` / `Logic` / `Deferred` / `Described`) with a new externally-tagged
-//! wire format. See the contract ADR
+//! backed by a bounded flat arena with an externally-tagged wire format. See the contract ADR
 //! ADR-0080 (ADR-0052, consolidated).
 //!
 //! ## Core Types
@@ -79,8 +78,12 @@ pub mod validators;
 mod macros;
 
 // ── Re-exports ───────────────────────────────────────────────────────────────
-pub use engine::{ExecutionMode, validate_rules, validate_rules_with_ctx};
+pub use engine::{
+    DeferredReason, DiagnosticDisclosure, EvaluationOutcome, ExecutionMode, validate_rules,
+    validate_rules_with_ctx,
+};
 pub use error::ValidatorError;
+pub use foundation::error::ValidationErrorKind;
 #[cfg(feature = "derive")]
 pub use nebula_validator_macros::Validator;
 pub use policy::{
@@ -88,7 +91,12 @@ pub use policy::{
     Requiredness, VisibilityPolicy, resolve_field_policies,
 };
 pub use proof::Validated;
-pub use rule::{DeferredRule, Logic, Predicate, PredicateContext, Rule, RuleKind, ValueRule};
+pub use rule::{
+    DeferredRule, MAX_RULE_DEPTH, MAX_RULE_JSON_DEPTH, MAX_RULE_JSON_NODES, MAX_RULE_NODES,
+    MAX_RULE_OPERANDS, MAX_RULE_TEXT_BYTES, Predicate, PredicateContext, Rule, RuleBudget,
+    RuleBuildError, RuleChildren, RuleKind, RuleOperands, RulePattern, RuleRef, RuleView,
+    ValueRule,
+};
 
 // `regex` is re-exported so code emitted by `#[derive(Validator)]` can
 // reference `nebula_validator::__private::regex` without requiring users to

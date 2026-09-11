@@ -5,9 +5,9 @@
 
 use nebula_credential::{
     AuthPattern, AuthScheme, Credential, CredentialContext, CredentialState, NoCredential,
-    NoCredentialState, ResolveResult,
+    NoCredentialState, StaticResolveResult,
 };
-use nebula_schema::FieldValues;
+use nebula_schema::{AuthoredValue, schema_of};
 
 #[test]
 fn key_matches_spec() {
@@ -41,18 +41,26 @@ fn project_returns_unit_scheme() {
 
 #[tokio::test]
 async fn resolve_returns_complete_state() {
-    let values = FieldValues::default();
+    let schema = schema_of::<<NoCredential as Credential>::Properties>().unwrap();
+    let values = schema
+        .validate(AuthoredValue::from_data(serde_json::Value::Null).unwrap())
+        .unwrap()
+        .resolve_data()
+        .unwrap();
+    assert!(values.schema().ptr_eq(&schema));
+    assert_eq!(values.to_wire_json(), serde_json::Value::Null);
     let ctx = CredentialContext::for_owner("test-owner");
-    let outcome = NoCredential::resolve(&values, &ctx)
+    values.into_typed::<()>().unwrap();
+    let outcome = NoCredential::resolve(&(), &ctx)
         .await
         .expect("NoCredential::resolve never fails");
-    // Explicit type annotation, not `matches!(_, ResolveResult::Complete(NoCredentialState))`:
+    // Explicit type annotation keeps the static result type visible.
     // if NoCredentialState ever gains a field (becoming a tuple/struct variant),
     // the bare-name pattern would silently turn into a binding and stop asserting
     // the type. The `let state: NoCredentialState = ...` form fails to compile
     // in that case, surfacing the regression.
     let _state: NoCredentialState = match outcome {
-        ResolveResult::Complete(s) => s,
-        other => panic!("expected ResolveResult::Complete, got {other:?}"),
+        StaticResolveResult::Complete(s) => s,
+        other => panic!("expected StaticResolveResult::Complete, got {other:?}"),
     };
 }

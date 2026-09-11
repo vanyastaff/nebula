@@ -16,7 +16,8 @@
 use std::sync::Arc;
 
 use nebula_credential::runtime::{
-    CredentialResolver, LeaseLifecycle, LeaseLifecycleConfig, RefreshTransport,
+    AcquisitionTransport, CredentialResolver, LeaseLifecycle, LeaseLifecycleConfig,
+    RefreshTransport,
 };
 use nebula_credential::{
     Capabilities, CredentialObserver, CredentialRegistry, CredentialService,
@@ -39,6 +40,7 @@ pub(crate) struct CredentialServiceBuilder<B: CredentialPersistence + 'static> {
     registry: Arc<CredentialRegistry>,
     ops: Arc<DispatchOps<ErasedPendingStore>>,
     refresh_transport: Arc<dyn RefreshTransport>,
+    acquisition_transport: Arc<dyn AcquisitionTransport>,
     observer: Arc<dyn CredentialObserver>,
     lease_config: LeaseLifecycleConfig,
     shutdown: CancellationToken,
@@ -60,6 +62,7 @@ impl<B: CredentialPersistence + 'static> CredentialServiceBuilder<B> {
         registry: Arc<CredentialRegistry>,
         ops: Arc<DispatchOps<ErasedPendingStore>>,
         refresh_transport: Arc<dyn RefreshTransport>,
+        acquisition_transport: Arc<dyn AcquisitionTransport>,
         observer: Arc<dyn CredentialObserver>,
         lease_config: LeaseLifecycleConfig,
         shutdown: CancellationToken,
@@ -72,6 +75,7 @@ impl<B: CredentialPersistence + 'static> CredentialServiceBuilder<B> {
             registry,
             ops,
             refresh_transport,
+            acquisition_transport,
             observer,
             lease_config,
             shutdown,
@@ -167,6 +171,7 @@ impl<B: CredentialPersistence + 'static> CredentialServiceBuilder<B> {
             self.registry,
             self.ops,
             self.observer,
+            self.acquisition_transport,
             self.external,
         ))
     }

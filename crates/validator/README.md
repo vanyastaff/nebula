@@ -35,10 +35,14 @@ that a value passed validation; the type cannot be constructed without calling `
 - `ValidationError` (`foundation::ValidationError`) — structured error (80 bytes, `Cow`-based, RFC 6901 field paths).
 - `AnyValidator<T>` (`foundation::AnyValidator`) — type-erased validator for dynamic dispatch.
 - `Rule` — typed sum-of-sums: `Value(ValueRule)` / `Predicate(Predicate)` / `Logic(Box<Logic>)` / `Deferred(DeferredRule)` / `Described(Box<Rule>, String)`. Each inner kind owns exactly one method that makes sense for it; cross-kind silent-pass is a compile error.
-- `FieldPath` — RFC 6901 JSON-pointer with construction-time validation (replaces raw `String` paths in predicates).
+- `FieldPath` — validated RFC 6901 pointer, including root and empty-string keys; strict wire parsing via `from_pointer` and serde.
 - `Described` — decorator with `{placeholder}` message templates (replaces per-variant `message: Option<String>` fields).
 - `PredicateContext` — structured value context for predicate evaluation (nested JSON-Pointer sibling lookups).
 - `ExecutionMode` — controls which rule categories run (`StaticOnly`, `Deferred`, `Full`).
+- `EvaluationOutcome` — distinguishes `Satisfied` from explicit deferred obligations.
+- `ValidationErrorKind` — distinguishes input violations, invalid rules, and unavailable evaluation.
+- `RulePattern` — compiled regex shared by constructors and rule deserialization.
+- `PredicateContext::with_pending_paths` marks unresolved roots; overlapping predicates defer without confusing pending data with missing or null values.
 - `validate_rules` — batch-evaluate a slice of `Rule` against a `serde_json::Value`.
 - `ValidatorError` — crate-level operational error type.
 - `validator!` macro — zero-boilerplate custom validator.
@@ -59,6 +63,12 @@ temporal (`DateTime`, `Uuid`).
   `validate`. `Validated<T>` deliberately does not implement `Deserialize` — deserialized
   data must be re-validated.
 - **Rule cross-kind safety** — each inner kind (`ValueRule`, `Predicate`, `Logic`, `DeferredRule`) exposes only the method that makes sense for it. Calling a value-only method on a predicate-carrying `Rule` is a compile error (typed narrowing). This replaces the old flat enum's documented silent-pass ergonomics. Seam: `crates/validator/src/rule/mod.rs`. Tests: `crates/validator/tests/`.
+- **Partial evaluation is explicit.** `StaticOnly` can return deferred obligations;
+  these are never satisfied branches in `Any` or `Not`. `Full` rejects unavailable
+  context/evaluators. `Validate<Value> for Rule` requires full satisfaction, so
+  partial evaluation cannot issue `Validated<Value>`.
+- **Numeric ordering is exact.** JSON integer/float bounds and ordered predicates
+  use `num-cmp` without first rounding integer operands to `f64`.
 - **Wire format compactness** — externally-tagged tuple-compact encoding keeps compound-rule JSON ~60% smaller than the old flat variants.
 
 ## Non-goals
@@ -80,6 +90,10 @@ See `docs/MATURITY.md` row for `nebula-validator`.
   (externally-tagged tuple-compact encoding); consumers must re-serialize any stored
   rule data. Alpha-stage breakage acknowledged.
 - The `#[derive(Validator)]` macro public attribute syntax is stable across the refactor.
+
+Rule evaluation, condition evaluation, and regex constructors have intentionally
+changed signatures. See [migration guidance](docs/migration.md#staged-rule-evaluation)
+for the authored-stage and resolved-stage contracts.
 
 ## Related
 

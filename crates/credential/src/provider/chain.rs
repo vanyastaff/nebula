@@ -136,7 +136,6 @@ impl ExternalProvider for ExternalProviderChain {
                 let span = tracing::debug_span!(
                     "provider_chain",
                     provider = %name,
-                    path = %reference.path,
                 );
                 let result = provider.resolve(reference).instrument(span.clone()).await;
                 match result {
@@ -151,7 +150,7 @@ impl ExternalProvider for ExternalProviderChain {
                     Err(err) => {
                         tracing::debug!(
                             parent: &span,
-                            error = %err,
+                            error_kind = failure_reason_label(&err),
                             "provider returned hard error; short-circuiting chain"
                         );
                         return Err(err);
@@ -187,6 +186,15 @@ impl ExternalProvider for ExternalProviderChain {
     }
 }
 
+fn failure_reason_label(error: &ProviderError) -> &'static str {
+    match error {
+        ProviderError::NotFound { .. } => "not_found",
+        ProviderError::Unavailable { .. } => "unavailable",
+        ProviderError::AccessDenied { .. } => "access_denied",
+        ProviderError::Backend(_) => "backend",
+    }
+}
+
 impl LeasedProvider for ExternalProviderChain {
     /// `true` if any leased child claims the lease via its own
     /// `handles_lease` — composes through nested chains and cache layers.
@@ -210,16 +218,12 @@ impl LeasedProvider for ExternalProviderChain {
                 let span = tracing::debug_span!(
                     "provider_chain_renew",
                     provider = %name,
-                    lease_id = %lease.lease_id,
                     lease_provider = %lease.provider,
                 );
                 return leased.renew(lease).instrument(span).await;
             }
             Err(ProviderError::NotFound {
-                path: format!(
-                    "no leased provider in chain handles lease {:?} (provider={:?})",
-                    lease.lease_id, lease.provider
-                ),
+                path: "no leased provider in chain handles lease".to_owned(),
             })
         })
     }
@@ -236,16 +240,12 @@ impl LeasedProvider for ExternalProviderChain {
                 let span = tracing::debug_span!(
                     "provider_chain_revoke",
                     provider = %name,
-                    lease_id = %lease.lease_id,
                     lease_provider = %lease.provider,
                 );
                 return leased.revoke(lease).instrument(span).await;
             }
             Err(ProviderError::NotFound {
-                path: format!(
-                    "no leased provider in chain handles lease {:?} (provider={:?})",
-                    lease.lease_id, lease.provider
-                ),
+                path: "no leased provider in chain handles lease".to_owned(),
             })
         })
     }

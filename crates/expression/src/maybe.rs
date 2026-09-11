@@ -4,14 +4,16 @@
 //! to accept either a concrete value of type T or a string expression that will
 //! be evaluated at runtime.
 
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwned, ser::SerializeMap,
 };
 use serde_json::Value;
 
-use crate::{ExpressionError, ast::Expr, context::EvaluationContext, engine::ExpressionEngine};
+use crate::{
+    CompiledProgram, ExpressionError, context::EvaluationContext, engine::ExpressionEngine,
+};
 
 /// Tag key used for `MaybeExpression::Expression` on the wire.
 ///
@@ -22,21 +24,34 @@ use crate::{ExpressionError, ast::Expr, context::EvaluationContext, engine::Expr
 const EXPR_TAG: &str = "$expr";
 
 /// Internal structure for cached expression parsing
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[doc(hidden)]
 pub struct CachedExpression {
     /// Source expression string
-    pub source: String,
-    #[doc(hidden)]
-    pub ast: OnceLock<Expr>,
+    source: Arc<str>,
+    program: Arc<OnceLock<CompiledProgram>>,
 }
 
-impl Clone for CachedExpression {
-    fn clone(&self) -> Self {
+impl CachedExpression {
+    fn new(source: &str) -> Self {
         Self {
-            source: self.source.clone(),
-            ast: OnceLock::new(), // Don't clone the cached AST, let it re-parse if needed
+            source: Arc::from(source),
+            program: Arc::new(OnceLock::new()),
         }
+    }
+
+    fn evaluate(
+        &self,
+        engine: &ExpressionEngine,
+        context: &EvaluationContext,
+    ) -> Result<Value, ExpressionError> {
+        let program = if let Some(program) = self.program.get() {
+            program
+        } else {
+            let compiled = CompiledProgram::compile(&self.source)?;
+            self.program.get_or_init(|| compiled)
+        };
+        engine.evaluate_compiled(program, context)
     }
 }
 
@@ -54,7 +69,8 @@ impl PartialEq for CachedExpression {
 /// # Lazy Parsing
 ///
 /// When using the Expression variant, the expression is parsed lazily on first use
-/// and the parsed AST is cached for subsequent evaluations using OnceLock.
+/// and an immutable program is retained for subsequent evaluations using OnceLock.
+/// Clones share the retained program, independently of the engine's optional cache.
 ///
 /// # Serialization
 ///
@@ -88,7 +104,7 @@ impl PartialEq for CachedExpression {
 pub enum MaybeExpression<T> {
     /// A concrete value
     Value(T),
-    /// An expression string to be evaluated (with cached AST)
+    /// An expression string to be evaluated (with a retained program)
     Expression(CachedExpression),
 }
 
@@ -100,10 +116,7 @@ impl<T> MaybeExpression<T> {
 
     /// Create a new expression
     pub fn expression(expr: impl Into<String>) -> Self {
-        Self::Expression(CachedExpression {
-            source: expr.into(),
-            ast: OnceLock::new(),
-        })
+        Self::Expression(CachedExpression::new(&expr.into()))
     }
 
     /// Check if this is a concrete value
@@ -144,7 +157,7 @@ impl<T> MaybeExpression<T> {
     pub fn into_expression(self) -> Option<String> {
         match self {
             Self::Value(_) => None,
-            Self::Expression(cached) => Some(cached.source),
+            Self::Expression(cached) => Some(cached.source.to_string()),
         }
     }
 }
@@ -188,7 +201,7 @@ where
         match self {
             Self::Value(v) => Ok(v.clone()),
             Self::Expression(cached) => {
-                let value = engine.evaluate(&cached.source, context)?;
+                let value = cached.evaluate(engine, context)?;
                 T::try_from(value).map_err(Into::into)
             },
         }
@@ -207,7 +220,7 @@ impl MaybeExpression<Value> {
     ) -> Result<Value, ExpressionError> {
         match self {
             Self::Value(v) => Ok(v.clone()),
-            Self::Expression(cached) => engine.evaluate(&cached.source, context),
+            Self::Expression(cached) => cached.evaluate(engine, context),
         }
     }
 }
@@ -225,7 +238,7 @@ impl MaybeExpression<String> {
         match self {
             Self::Value(s) => Ok(s.clone()),
             Self::Expression(cached) => {
-                let value = engine.evaluate(&cached.source, context)?;
+                let value = cached.evaluate(engine, context)?;
                 match value.as_str() {
                     Some(s) => Ok(s.to_owned()),
                     None => Ok(value.to_string()),
@@ -245,7 +258,7 @@ impl MaybeExpression<i64> {
         match self {
             Self::Value(i) => Ok(*i),
             Self::Expression(cached) => {
-                let value = engine.evaluate(&cached.source, context)?;
+                let value = cached.evaluate(engine, context)?;
                 value.as_i64().ok_or_else(|| {
                     ExpressionError::type_error(
                         "integer",
@@ -267,7 +280,7 @@ impl MaybeExpression<f64> {
         match self {
             Self::Value(f) => Ok(*f),
             Self::Expression(cached) => {
-                let value = engine.evaluate(&cached.source, context)?;
+                let value = cached.evaluate(engine, context)?;
                 crate::value_utils::to_float(&value)
                     .map_err(|e| ExpressionError::type_error("float", e))
             },
@@ -285,7 +298,7 @@ impl MaybeExpression<bool> {
         match self {
             Self::Value(b) => Ok(*b),
             Self::Expression(cached) => {
-                let value = engine.evaluate(&cached.source, context)?;
+                let value = cached.evaluate(engine, context)?;
                 Ok(crate::value_utils::to_boolean(&value))
             },
         }
@@ -323,7 +336,7 @@ where
                 // bare string a caller might supply, including one that
                 // happens to contain `{{ }}`.
                 let mut map = serializer.serialize_map(Some(1))?;
-                map.serialize_entry(EXPR_TAG, &cached.source)?;
+                map.serialize_entry(EXPR_TAG, cached.source.as_ref())?;
                 map.end()
             },
         }
@@ -356,10 +369,7 @@ where
         let value = Value::deserialize(deserializer)?;
 
         if let Some(source) = extract_expr_tag(&value) {
-            return Ok(Self::Expression(CachedExpression {
-                source: source.to_string(),
-                ast: OnceLock::new(),
-            }));
+            return Ok(Self::Expression(CachedExpression::new(source)));
         }
 
         T::deserialize(value)

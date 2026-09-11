@@ -839,84 +839,6 @@ impl Default for Manager {
     }
 }
 
-/// Recursively resolve `{{ … }}` expression templates inside a JSON tree.
-///
-/// Strings that contain template markers are routed through
-/// [`ExpressionEngine::parse_template`](nebula_expression::ExpressionEngine::parse_template) +
-/// [`render_template`](nebula_expression::ExpressionEngine::render_template); strings without
-/// markers, and all non-string scalars, pass through untouched. Object and array containers are
-/// walked recursively.
-///
-/// Used by [`Manager::register_resolved`] to evaluate dynamic config values before serde
-/// deserialization. This is the resource-side mirror of the engine's `ParamResolver` — it resolves
-/// at register time rather than at node dispatch time.
-fn resolve_json_templates(
-    value: serde_json::Value,
-    engine: &nebula_expression::ExpressionEngine,
-    ctx: &nebula_expression::EvaluationContext,
-) -> Result<serde_json::Value, Error> {
-    resolve_json_templates_at("", value, engine, ctx)
-}
-
-/// [`resolve_json_templates`]'s recursive worker, threading a `/`-joined
-/// JSON-pointer-ish breadcrumb (object keys / array indices from the
-/// document root) down to the value currently being resolved.
-///
-/// `path` names *where* a template failed in an error message — never the
-/// field's own string value, which is caller-supplied config JSON and may
-/// carry a misconfigured secret or other PII (the operator's `{{ }}`
-/// template source, not just its rendered output). The underlying
-/// template-engine error is still chained via `with_source`, so the real
-/// cause is never lost — only the raw offending string is kept out of the
-/// message text.
-fn resolve_json_templates_at(
-    path: &str,
-    value: serde_json::Value,
-    engine: &nebula_expression::ExpressionEngine,
-    ctx: &nebula_expression::EvaluationContext,
-) -> Result<serde_json::Value, Error> {
-    use serde_json::Value;
-    match value {
-        Value::String(s) => {
-            if !s.contains("{{") {
-                return Ok(Value::String(s));
-            }
-            let field = if path.is_empty() { "<root>" } else { path };
-            let template = engine.parse_template(&s).map_err(|e| {
-                Error::permanent(format!(
-                    "register_resolved: template parse failed at `{field}`"
-                ))
-                .with_source(e)
-            })?;
-            let rendered = engine.render_template(&template, ctx).map_err(|e| {
-                Error::permanent(format!(
-                    "register_resolved: template render failed at `{field}`"
-                ))
-                .with_source(e)
-            })?;
-            Ok(Value::String(rendered))
-        },
-        Value::Array(items) => {
-            let mut out = Vec::with_capacity(items.len());
-            for (i, item) in items.into_iter().enumerate() {
-                let child_path = format!("{path}/{i}");
-                out.push(resolve_json_templates_at(&child_path, item, engine, ctx)?);
-            }
-            Ok(Value::Array(out))
-        },
-        Value::Object(map) => {
-            let mut out = serde_json::Map::with_capacity(map.len());
-            for (k, v) in map {
-                let child_path = format!("{path}/{k}");
-                let resolved = resolve_json_templates_at(&child_path, v, engine, ctx)?;
-                out.insert(k, resolved);
-            }
-            Ok(Value::Object(out))
-        },
-        other => Ok(other),
-    }
-}
-
 // RAII guard that pre-counts an in-flight `acquire_*` call against both the
 // manager-wide and per-resource drain trackers, from the moment `lookup()`
 // succeeds until either (a) the acquire completes and the slot is handed off
@@ -1042,14 +964,12 @@ mod shutdown_post_count_race_tests {
         context::ResourceContext,
         error::ErrorKind,
         options::AcquireOptions,
-        resource::{ResourceConfig, ResourceMetadata},
+        resource::{ResourceConfig, ResourceMetadataDraft},
         topology::{Resident, resident::config::Config as ResidentConfig},
     };
 
-    #[derive(Clone, Default)]
+    #[derive(Clone, Default, nebula_schema::Schema)]
     struct RaceCfg;
-
-    nebula_schema::impl_empty_has_schema!(RaceCfg);
 
     impl ResourceConfig for RaceCfg {
         fn fingerprint(&self) -> u64 {
@@ -1075,8 +995,8 @@ mod shutdown_post_count_race_tests {
             Ok(())
         }
 
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::from_key(&Self::key())
+        fn metadata() -> ResourceMetadataDraft {
+            ResourceMetadataDraft::from_key(Self::key())
         }
     }
 
@@ -1136,7 +1056,13 @@ mod shutdown_post_count_race_tests {
         resume: Arc<std::sync::Barrier>,
     }
 
-    nebula_schema::impl_empty_has_schema!(BlockingValidation);
+    // This typed-only validation race fixture carries synchronization state,
+    // not JSON configuration. It deliberately has no Deserialize implementation.
+    impl nebula_schema::HasSchema for BlockingValidation {
+        fn schema() -> Result<nebula_schema::ValidSchema, nebula_schema::ValidationReport> {
+            Ok(nebula_schema::ValidSchema::empty())
+        }
+    }
 
     impl ResourceConfig for BlockingValidation {
         fn fingerprint(&self) -> u64 {
@@ -1161,8 +1087,8 @@ mod shutdown_post_count_race_tests {
         fn key() -> ResourceKey {
             resource_key!("test.registration_validation_race")
         }
-        fn metadata() -> ResourceMetadata {
-            ResourceMetadata::from_key(&Self::key())
+        fn metadata() -> ResourceMetadataDraft {
+            ResourceMetadataDraft::from_key(Self::key())
         }
         async fn create(&self, _: &Self::Config, _: &ResourceContext) -> Result<(), Error> {
             Ok(())

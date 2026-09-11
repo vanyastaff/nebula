@@ -36,9 +36,11 @@ pub trait PlanFlavorCatalog: Send + Sync + fmt::Debug {
 pub trait PlanFlavorCatalogWriter: Send + Sync + fmt::Debug {
     /// Atomically insert one immutable exact plan/flavor pair.
     ///
-    /// A byte-identical retry is idempotent. Reusing an identity with
-    /// different content fails closed, and a deleted identity cannot be
-    /// resurrected.
+    /// A retry whose parsed JSON documents are semantically equal is
+    /// idempotent; whitespace and object-key order are incidental. Reusing an
+    /// identity with semantically different content fails closed, and a deleted
+    /// identity cannot be resurrected. The originally stored bytes remain
+    /// authoritative after an idempotent retry.
     async fn insert(
         &self,
         record: &PlanFlavorRevisionRecord,

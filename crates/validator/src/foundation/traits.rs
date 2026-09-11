@@ -235,9 +235,12 @@ impl<T: ?Sized> Validatable for T {
 ///     .and(alphanumeric());
 /// username.validate("alice123")?;
 ///
-/// // Use OR for alternatives
+/// // Use OR for alternatives (requires the temporal feature)
+/// # #[cfg(feature = "temporal")]
+/// # {
 /// let id = uuid().or(email());
 /// id.validate("user@example.com")?;
+/// # }
 ///
 /// // Use NOT for negation
 /// let original = min_length(1).not().not(); // Double negation = original

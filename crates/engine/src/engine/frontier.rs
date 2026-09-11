@@ -52,6 +52,7 @@ impl WorkflowEngine {
         initial_activated: HashMap<NodeKey, HashSet<NodeKey>>,
         initial_resolved: HashMap<NodeKey, usize>,
     ) -> Result<Option<(NodeKey, String)>, EngineError> {
+        let shared_expression_outputs = Arc::new(DashMap::new());
         let total_output_bytes = Arc::new(AtomicU64::new(exec_state.total_output_bytes));
         // Precompute how many incoming edges each node has
         let required_count: HashMap<NodeKey, usize> = node_map
@@ -526,6 +527,7 @@ impl WorkflowEngine {
                     &factory_dispatch,
                     graph,
                     outputs,
+                    &shared_expression_outputs,
                     semaphore,
                     cancel_token,
                     exec_state,
@@ -1149,6 +1151,10 @@ impl WorkflowEngine {
                     } else {
                         outputs.remove(&node_key);
                     }
+                    // A replacement or removal invalidates the prior immutable
+                    // snapshot. The next expression admission validates the
+                    // complete borrowed `$node` view before cloning it once.
+                    shared_expression_outputs.remove(&node_key);
 
                     // Park path: action returned `ActionResult::Wait`.
                     //
@@ -2082,6 +2088,7 @@ impl WorkflowEngine {
         factory_dispatch: &FactoryDispatch<'_>,
         graph: &DependencyGraph,
         outputs: &Arc<DashMap<NodeKey, serde_json::Value>>,
+        shared_expression_outputs: &Arc<DashMap<NodeKey, Arc<serde_json::Value>>>,
         semaphore: &Arc<Semaphore>,
         cancel_token: &CancellationToken,
         exec_state: &mut ExecutionState,
@@ -2107,7 +2114,24 @@ impl WorkflowEngine {
         };
         let action_key = node_def.action_key.as_str().to_owned();
         let factory_dispatch = match factory_dispatch {
-            FactoryDispatch::DirectRegistry => NodeFactoryDispatch::DirectRegistry,
+            FactoryDispatch::DirectRegistry => {
+                let selected = match node_def.interface_version.as_ref() {
+                    Some(version) => self
+                        .runtime
+                        .registry()
+                        .get_factory_versioned(&node_def.action_key, version),
+                    None => self.runtime.registry().get_factory(&node_def.action_key),
+                };
+                let Some((_, factory)) = selected else {
+                    let error =
+                        EngineError::Runtime(crate::runtime::RuntimeError::ActionNotFound {
+                            key: action_key,
+                        });
+                    let _ = exec_state.mark_setup_failed(node_key.clone(), error.to_string());
+                    return false;
+                };
+                NodeFactoryDispatch::DirectRegistry { factory }
+            },
             FactoryDispatch::Frozen { factories, plan } => {
                 let Some(factory) = factories.get(&node_key) else {
                     let _ = exec_state.mark_setup_failed(
@@ -2156,7 +2180,11 @@ impl WorkflowEngine {
                 }
             },
         };
-        let interface_version = node_def.interface_version.clone();
+        let factory = match &factory_dispatch {
+            NodeFactoryDispatch::DirectRegistry { factory }
+            | NodeFactoryDispatch::Frozen { factory, .. } => factory,
+        };
+        let metadata = factory.metadata();
 
         // Partition incoming connections into flow (to_port=None) and support (to_port=Some)
         let (node_input, support_inputs) = resolve_node_input_with_support(
@@ -2167,24 +2195,27 @@ impl WorkflowEngine {
             activated_edges,
         );
 
-        // Resolve node parameters (expressions, templates, references)
-        let action_input =
-            match self
-                .resolver
-                .resolve(&node_key, &node_def.parameters, &node_input, outputs)
-            {
-                Ok(Some(resolved_params)) => resolved_params,
-                Ok(None) => node_input, // No parameters → use predecessor output
-                Err(e) => {
-                    // Parameter resolution failed. `mark_setup_failed`
-                    // overrides the node state to Failed via
-                    // `override_node_state` (Pending → Failed is not a
-                    // valid forward transition) and bumps the parent
-                    // version for CAS readers (issues #255, #300).
-                    let _ = exec_state.mark_setup_failed(node_key.clone(), e.to_string());
-                    return false;
-                },
-            };
+        // Admit authored parameters before the cancellable node task evaluates programs.
+        let action_input = match self.resolver.prepare(NodeInputRequest {
+            node_key: &node_key,
+            parameters: &node_def.parameters,
+            predecessor_input: node_input,
+            outputs,
+            shared_outputs: shared_expression_outputs,
+            schema: metadata.base().schema(),
+            cancellation: cancel_token.clone(),
+        }) {
+            Ok(prepared) => prepared,
+            Err(e) => {
+                // Parameter resolution failed. `mark_setup_failed`
+                // overrides the node state to Failed via
+                // `override_node_state` (Pending → Failed is not a
+                // valid forward transition) and bumps the parent
+                // version for CAS readers (issues #255, #300).
+                let _ = exec_state.mark_setup_failed(node_key.clone(), e.to_string());
+                return false;
+            },
+        };
 
         // Drive the node to Running via the typed state-machine
         // helper. `start_node_attempt` models the only legal
@@ -2330,7 +2361,6 @@ impl WorkflowEngine {
                 workflow_id,
                 action_key,
                 node: Arc::new((*node_def).clone()),
-                interface_version,
                 input: action_input,
                 support_inputs,
                 credentials,

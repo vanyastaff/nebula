@@ -46,7 +46,7 @@ use nebula_resource::{
     AcquireOptions, Manager, RegistrationSpec, ResidentConfig, ResourceContext,
     dedup::SlotIdentity,
     error::Error as ResourceError,
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
     topology::resident::ResidentProvider,
 };
 use parking_lot::RwLock;
@@ -340,8 +340,8 @@ impl Provider for GoogleSheets {
         Ok(())
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::from_key(&Self::key())
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::from_key(Self::key())
     }
 }
 

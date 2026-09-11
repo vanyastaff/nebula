@@ -42,7 +42,7 @@ use nebula_core::{
     resource_key,
 };
 use nebula_engine::{
-    KindActivator, RegisterRequest, ResourceActivatorRegistry, SlotBinding,
+    KindActivator, RegisterRequest, ResourceActivatorRegistry, ResourceConfigInput, SlotBinding,
     resource_accessor::slot_identities_for_key,
 };
 use nebula_expression::ExpressionEngine;
@@ -50,10 +50,9 @@ use nebula_resource::Resident;
 use nebula_resource::{
     Manager, ScopeLevel, SlotIdentity,
     error::Error as ResourceError,
-    resource::{Provider, ResourceConfig, ResourceMetadata},
+    resource::{Provider, ResourceConfig, ResourceMetadataDraft},
     topology::resident,
 };
-use nebula_schema::HasSchema;
 
 // ── A resource that declares one `#[credential]` slot ───────────────────────
 
@@ -74,13 +73,12 @@ impl From<XError> for ResourceError {
     }
 }
 
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, nebula_schema::Schema)]
 struct XConfig {
     #[serde(default)]
+    #[field(default = "")]
     label: String,
 }
-
-nebula_schema::impl_empty_has_schema!(XConfig);
 
 impl ResourceConfig for XConfig {
     fn validate(&self) -> Result<(), ResourceError> {
@@ -130,12 +128,11 @@ impl Provider for XResource {
         Ok(Arc::new(AtomicU64::new(id)))
     }
 
-    fn metadata() -> ResourceMetadata {
-        ResourceMetadata::new(
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::new(
             <Self as Provider>::key(),
-            "xcross.widget".to_owned(),
+            nebula_resource::metadata_name!("xcross.widget"),
             String::new(),
-            <XConfig as HasSchema>::schema(),
         )
     }
 }
@@ -190,13 +187,15 @@ impl resident::ResidentProvider for XResource {
 
 fn registrars() -> ResourceActivatorRegistry {
     let mut registrars = ResourceActivatorRegistry::new();
-    registrars.insert(
-        "xcross.widget",
-        Arc::new(KindActivator::<XResource, _, _>::new(
-            XResource::new,
-            || Resident::<XResource>::new(resident::config::Config::default()),
-        )),
-    );
+    registrars
+        .insert(
+            "xcross.widget",
+            Arc::new(KindActivator::<XResource, _, _>::new(
+                XResource::new,
+                || Resident::<XResource>::new(resident::config::Config::default()),
+            )),
+        )
+        .expect("test resource metadata admits");
     registrars
 }
 
@@ -210,7 +209,7 @@ fn request<'a>(expr: &'a ExpressionEngine, bindings: &[(&str, &str)]) -> Registe
         })
         .collect();
     RegisterRequest {
-        config_json: serde_json::json!({ "label": "x" }),
+        config: ResourceConfigInput::data(serde_json::json!({ "label": "x" })),
         expr_engine: expr,
         slot_bindings,
         scope: ScopeLevel::Global,

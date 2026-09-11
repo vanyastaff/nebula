@@ -1,5 +1,112 @@
 use super::*;
 
+#[derive(serde::Serialize, serde::Deserialize, nebula_schema::Schema)]
+enum RecordedUnionInput {
+    Count { number: i64 },
+}
+
+struct UnionEcho {
+    calls: Arc<AtomicU32>,
+}
+
+impl Action for UnionEcho {
+    type Input = RecordedUnionInput;
+    type Output = RecordedUnionInput;
+
+    fn metadata() -> ActionMetadataDraft {
+        ActionMetadataDraft::new(
+            action_key!("exact.union_echo"),
+            nebula_action::metadata_name!("Union echo"),
+            "Preserve declared union input",
+        )
+        .with_effect_contract(nebula_action::effect::ActionEffectContract::NoExternalEffects)
+    }
+
+    fn dependencies() -> &'static Dependencies {
+        EchoHandler::dependencies()
+    }
+}
+
+impl StatelessAction for UnionEcho {
+    async fn execute(
+        &self,
+        input: Self::Input,
+        _: &(impl nebula_action::ActionContext + ?Sized),
+    ) -> Result<ActionResult<Self::Output>, ActionError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(ActionResult::success(input))
+    }
+}
+
+fn union_echo_fixture() -> (WorkflowEngine, Arc<AtomicU32>, NodeDefinition) {
+    let registry = Arc::new(ActionRegistry::new());
+    let calls = Arc::new(AtomicU32::new(0));
+    registry
+        .register_stateless_instance(
+            UnionEcho::metadata(),
+            UnionEcho {
+                calls: Arc::clone(&calls),
+            },
+        )
+        .unwrap();
+    let (engine, _) = make_engine(registry);
+    let node =
+        NodeDefinition::new(node_key!("union"), "Union", "exact", "exact.union_echo").unwrap();
+    (engine, calls, node)
+}
+
+#[rstest::rstest]
+#[case::literal(nebula_workflow::ParamValue::literal(serde_json::json!({
+    "mode": "Count", "value": {"number": 7}
+})))]
+#[case::expression(nebula_workflow::ParamValue::expression("{{ $input }}"))]
+#[tokio::test]
+async fn recorded_union_internal_parameters_reach_typed_action(
+    #[case] parameter: nebula_workflow::ParamValue,
+) {
+    let (engine, calls, node) = union_echo_fixture();
+    let schema = nebula_schema::schema_of::<RecordedUnionInput>().unwrap();
+    let node = node.with_parameter(schema.fields()[0].key().as_str(), parameter);
+    let workflow = make_workflow(vec![node], vec![]);
+    let stores = TestStores::new();
+    let result = stores
+        .execute_accepted_fixture(
+            engine,
+            &workflow,
+            serde_json::json!({"mode": "Count", "value": {"number": 7}}),
+            ExecutionBudget::default(),
+        )
+        .await
+        .unwrap();
+
+    assert!(result.is_success(), "{result:?}");
+    assert_eq!(
+        result.node_output(&node_key!("union")),
+        Some(&serde_json::to_value(RecordedUnionInput::Count { number: 7 }).unwrap())
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn raw_external_union_input_reaches_typed_action() {
+    let (engine, calls, node) = union_echo_fixture();
+    let workflow = make_workflow(vec![node], vec![]);
+    let wire = serde_json::to_value(RecordedUnionInput::Count { number: 7 }).unwrap();
+    let result = engine
+        .execute_workflow(
+            &crate::store_seam::single_tenant_scope(),
+            &workflow,
+            wire.clone(),
+            ExecutionBudget::default(),
+        )
+        .await
+        .unwrap();
+
+    assert!(result.is_success(), "{result:?}");
+    assert_eq!(result.node_output(&node_key!("union")), Some(&wire));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
 #[derive(Debug)]
 struct CorruptPlanCatalog {
     inner: Arc<dyn nebula_storage_port::PlanFlavorCatalog>,
@@ -367,10 +474,16 @@ async fn durable_resume_does_not_restart_persisted_duration_budget() {
 #[tokio::test]
 async fn durable_resume_rejects_unpinned_state_before_action_dispatch() {
     let registry = Arc::new(ActionRegistry::new());
-    registry.register_stateless_instance(
-        ActionMetadata::new(action_key!("echo"), "Echo", "echoes input"),
-        EchoHandler,
-    );
+    registry
+        .register_stateless_instance(
+            ActionMetadataDraft::new(
+                action_key!("echo"),
+                nebula_action::metadata_name!("Echo"),
+                "echoes input",
+            ),
+            EchoHandler,
+        )
+        .expect("valid test catalog definition");
     let (engine, _) = make_engine(registry);
     let stores = TestStores::new();
     let workflow = make_workflow(
