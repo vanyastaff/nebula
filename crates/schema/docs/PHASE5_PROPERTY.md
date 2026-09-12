@@ -131,8 +131,11 @@ not marker presence alone. Neither a helper flag nor a blanket implementation
 for HasSchema plus Serde may manufacture that structural relationship.
 
 Action::Input and Credential::Properties require InputCodec; Action::Output
-requires OutputCodec. Provider::Config deliberately requires both directions as
-a target round-trip authoring contract for config decoding and outbound encoding
+requires OutputCodec, including outgoing trigger payloads. PollAction has no
+independent Event associated type in the target; poll results and pushed-event
+outcomes carry Self::Output under that same HasSchema/OutputCodec contract.
+Provider::Config deliberately requires both directions as a target round-trip
+authoring contract for config decoding and outbound encoding
 through paired projections. This is a new requirement: current ResourceConfig
 does not require Serialize, and fingerprint() -> u64 is an independent contract.
 Keep existing Send/Sync/Clone bounds where applicable; input-only DTOs gain no
@@ -255,10 +258,11 @@ stateful, control, trigger, resource and all paging/batch/stream specializations
 Check nested/external records, newtypes, list/Option items and every enum variant,
 even absent or inactive ones; apply this to manual adapters too. A local diagnostic
 does not replace this admission gate. Actual ordinary output is serialized once
-and validated as literal data against its outbound schema before publish/persist,
-including branch, partial, stream and deferred payload publication paths. Never
-apply inbound aliases, transforms or defaults to repair output. Serialization and
-output validation failures carry typed payload-free errors, without raw values or
+and validated as literal data against the exact admitted outbound schema before
+publish/persist, including branch, partial, stream, deferred and trigger payload
+publication paths. Never apply inbound aliases, transforms or defaults to repair
+output. Serialization and output validation failures carry typed payload-free
+errors, without raw values or
 upstream messages/source chains; a redacting Serialize impl is no secret exemption.
 
 Workflow assignability compares the producer's outbound projection with the
@@ -288,6 +292,82 @@ being skipped; canonical receivers need no serde derives.
 Schema on a receiver does not turn slots into data: retain visible slot markers
 and require the owning Action/Resource declaration witness, with no standalone
 Schema slot acceptance. No helper marker silently fabricates that witness.
+
+### Trigger Output Contract (Target, Unshipped)
+
+Current `PollAction` in `crates/action/src/poll/mod.rs` declares an independent
+`Event: Serialize + Send + Sync`; its adapter serializes and emits events one at
+a time. Current `TriggerEventOutcome` in `crates/action/src/trigger/mod.rs` exposes
+`Emit(Value)` and `EmitMany(Vec<Value>)`. Checking Action::Output alone cannot
+protect those payloads while these independent output paths remain.
+
+Unify every outgoing workflow-start payload with Action::Output. Remove
+PollAction::Event; `poll` returns `PollResult<Self::Output>`, including Ready and
+Partial batches. Make the public author outcome generic, with no default Value
+type parameter or raw-output compatibility overload. Illustrative, uncompiled:
+
+```rust
+pub enum TriggerEventOutcome<T> {
+    Skip,
+    Emit(T),
+    EmitMany(Vec<T>),
+}
+```
+
+`TriggerAction::handle` returns `Result<TriggerEventOutcome<Self::Output>, Self::Error>`.
+Webhook author responses likewise carry `TriggerEventOutcome<Self::Output>` through
+`WebhookResponse<Self::Output>`; HTTP response data remains transport-owned.
+The raw inbound `TriggerEvent` envelope and `TriggerSource::Event` remain independent
+transport input types. They do not become Action::Output or acquire output codec
+bounds. This changes payload typing within existing behavior families, adding none.
+
+Admission derives and retains the exact output schema from Action::Output and
+rejects protected domains recursively before trigger activation, poll setup,
+poll calls, event callbacks or output serialization. This includes nested/external
+records, newtypes, list/Option items and every enum variant, even absent or inactive
+ones, through generated and reviewed manual adapters. A redacting serializer, an
+idle poll or a handler that would return Skip cannot exempt the declared domain.
+
+For each completed event-handler call or emission batch, including a poll result,
+serialize each outgoing item exactly once into private staging and validate it
+as literal data against the retained schema's outbound projection. Never infer
+expressions or apply inbound
+aliases, transforms or defaults. Only after validation may the owning adapter
+construct the runtime erased Value output boundary; publication consumes those
+same checked values, without invoking author serialization again. No raw
+`Emit(Value)` adapter, constructor or compatibility path may bypass this gate.
+
+Whole-batch staging must enforce the owning runtime's explicit item-count and
+aggregate encoded-byte caps before unbounded allocation or work. Check the item
+count before reserving staging storage or serializing items. Use a bounded
+serializer with checked size accounting as encoding proceeds, stopping at the
+aggregate byte budget; serializing an unbounded value and measuring it afterward
+does not satisfy this contract. Staging allocations and validation work must stay
+within the admitted runtime budgets. These limits belong to existing runtime
+policy, not author metadata, and apply equally to checked and explicit trusted
+adapters. Limit or accounting overflow produces a typed payload-free error and
+zero workflow publications from the call/batch.
+
+Validate every element of EmitMany and poll Ready/Partial batches before any
+workflow publication from that call/batch begins. A serialization or validation
+failure rejects the batch with zero workflow publications, including when an
+earlier item was valid; errors and observability remain typed and payload-free.
+Staging state and this validation guarantee are scoped to one event-handler
+call/emission batch, not a long-running start lifecycle or multiple poll cycles.
+Skip/empty batches publish nothing. Durable transactions, publication failures,
+cursor progress, retries and
+cancellation remain with their existing runtime/trigger orchestration owners;
+this gate does not promise an atomic transaction across all emitted workflows.
+
+The public erased `TriggerHandler` is an independently callable ingress surface,
+even though its implementations are sealed. All supported ingress and dispatch
+paths, including factory handles, direct dyn calls, webhook callbacks, poll loops,
+SDK harnesses and event sources, must route through the checked adapter or an
+explicit trusted adapter enforcing the same admission and outbound gate under
+the exact output schema. `accepts_events()` and metadata access alone are not
+output admission. Author-facing lifecycle/context emission must also carry
+Self::Output through that gate; raw ExecutionEmitter access belongs behind the
+runtime boundary and cannot provide an alternate author publication path.
 
 ## Trait-Driven Data Domains
 
@@ -818,6 +898,21 @@ display examples or deliberate serde defaults, reviewing the behavioral change.
 Move legacy field/validate helpers to structured property, field-level
 credential/resource helpers to slot, and emit_as/key intent to directional serde.
 Remove temporary legacy parser aliases at the breaking release boundary.
+
+For triggers, move the outgoing `PollAction::Event` type to `Action::Output` and
+return `PollResult<Self::Output>`. Replace raw author outcomes with
+`TriggerEventOutcome<Self::Output>`, including `WebhookResponse<Self::Output>`, and
+supply schema_type(output) or an explicit reviewed OutputCodec adapter for that
+DTO. Preserve inbound TriggerEvent/TriggerSource::Event transport contracts.
+Migrate factory/handle adapters, direct TriggerHandler consumers, lifecycle/context
+emitters, webhook responses, poll Ready/Partial dispatch, SDK exports, examples
+and fixtures together. Remove raw Emit(Value) compatibility paths; establish the
+checked batch boundary before forwarding to existing transaction orchestration.
+Thread the runtime-owned item and aggregate encoded-byte limits through every
+adapter; stage with bounded serialization and checked size accounting.
+Refresh catalog/plan evidence when the declared output changes, using the same
+versioning and exact readmission rules above; old metadata is not output proof.
+
 ADR-0101's engine Slots move remains deferred; full auth-runtime rearchitecture,
 performance claims/optimizations and new canonical value storage are non-goals.
 
@@ -973,13 +1068,17 @@ schemas and runtime provider behavior are not visible to a proc macro.
 | Compile | Slot/property mixing, wrong receiver, wrong wrappers, Option<Cell>, lazy, conditional non-Option action guard. |
 | Compile | Unknown local field/name, malformed pointer/condition, unsupported serde codec/flatten, incompatible derived trait ownership. |
 | Compile | Missing recursive InputCodec/OutputCodec/PropertyType bounds, default bridge encoding evidence or SecretInput; Schema-only supplies no codec witness. |
+| Compile | PollAction::Event declarations and poll/event/webhook payloads differing from Self::Output fail; missing recursive output codec/schema evidence fails on trigger DTOs too. |
 | Compile | Unsupported owner ordering/visible transformations/cfg composition or serde(crate) override; conflicting impls fail rustc coherence, not macro inspection. |
 | Compile | Direct input(secret) on a ResourceConfig-derived field; use a credential slot on the resource receiver. |
 | Schema admission | External path/name/domain errors, cycles/budget overflow, hidden secret descendants in resource configs, secret defaults and unavailable providers. |
 | Leaf admission | Protected output domains in every action family before handlers/serializers; slot projection mismatch, scheme compatibility, forbidden host facts/selectors, closed remote options and stale policy versions. |
+| Trigger admission | Protected Self::Output rejected before activation, poll setup/poll, event callbacks or serialization across checked and explicit trusted adapters, including direct TriggerHandler ingress. |
 | Metadata authoring/admission | Invalid category/link/reference/schedule, conflicting Overview or exceeded byte/count budgets; typed payload-free errors across manual and macro paths. |
 | Metadata recorded ingress | Unknown catalog/protocol versions, missing obligations or changed authored/derived evidence rejected; only fresh definitions returned. |
 | Runtime | Default/condition/loader failures, incomplete proof, explicit binding errors, cancellation, rotation/reload, decode errors and invalid actual outbound payloads; payload-free codec errors. |
+| Trigger runtime | Serialize once and validate all outputs under the exact admitted outbound schema before creating the erased boundary or publishing any workflow from that call/batch; no raw Value bypass. |
+| Trigger runtime limits | Runtime-owned item-count and aggregate encoded-byte caps bound staging, serialization and validation work; limit/accounting overflow is payload-free and publishes nothing. |
 | Review | Manual adapter semantic fidelity, arbitrary unsafe Debug/secret handling and nondeterministic defaults cannot be proved by markers, round trips or compile-fail tests. |
 
 | Acceptance scenario | Observable requirement |
@@ -990,6 +1089,12 @@ schemas and runtime provider behavior are not visible to a proc macro.
 | Owner composition / SDK hygiene | Unsupported visible transforms/cfg_attr fail; whole-item cfg works; renamed SDK-only consumers use real Serde derives without author serde(crate) overrides. |
 | Default encoding direction | Input-only root works without Serialize; missing nested OutputCodec for a default bridge fails; protected defaults remain rejected. |
 | Action output protection | Every behavior family rejects direct/nested/external/optional/inactive protected domains with zero handler/serializer calls. |
+| Trigger typed author contract | `PollResult<Self::Output>`, `TriggerEventOutcome<Self::Output>` and `WebhookResponse<Self::Output>` compile with recursive output evidence; independent Event, mismatched payloads and missing evidence fail. Inbound transport events may differ from Self::Output. |
+| Trigger protected admission | Base, poll and webhook triggers with direct/nested/external/newtype/list/optional/inactive protected outputs fail with zero activation, poll setup/poll, event callback and serializer calls, including manual adapters. Skip/Idle intent grants no exemption. |
+| Trigger literal output | Valid renamed output serializes once per item and publishes the exact checked value; wrong outbound keys/domains fail without inbound repair, and expression-looking strings remain literal. Serializer/validation diagnostics expose no payload or upstream source text. |
+| Trigger batch validation | An invalid or serialization-failing later item in EmitMany or poll Ready/Partial yields zero publications for that call/batch; all-valid batches publish only after every item passes, with no reserialization. Skip/empty batches publish nothing. |
+| Trigger batch budgets | At-cap valid batches succeed; over-item-count batches invoke zero serializers. Aggregate encoded-byte or accounting overflow stops bounded encoding without later-item serializer calls and yields zero publications. Assert serializer/encoder-work and publication counters, including overflow after a valid earlier item, through checked and trusted adapters; diagnostics remain payload-free. |
+| Trigger ingress coverage | Factory handles, direct public TriggerHandler calls, webhook callbacks, poll loops, SDK harnesses, event sources and lifecycle/context emitters use checked or explicit trusted adapters with the same gate. Raw Emit(Value) bypass and stale/mismatched output-schema evidence are rejected. |
 | Actual outbound validation | Invalid branch/partial/stream/deferred ordinary output cannot publish/persist; no inbound repair; malicious serializer error text stays out of public diagnostics. |
 | Directional workflow edge | Producer outbound checked against consumer inbound; equal inbound-only keys cannot hide incompatible output. |
 | Skipped data fallback | Derived data with serde(skip/default) fails explicitly; no hidden default runs after proof. |
@@ -1027,11 +1132,11 @@ Each issue must update its original scope to this contract before implementation
 3. **Validator prerequisite:** Condition refinement, presence semantics, budgets and policy-v2 contract; independent of metadata/schema imports.
 4. **995:** schema-codegen package and gates, schema_type ownership, recursive directional codec contracts and reviewed adapter path, grammar, descriptors, projections, defaults, conditions/options and versioned admission; consumes the validator prerequisite.
 5. **994, contract subtask:** leaf slot declarations and prepared-input port signatures over core; consumes 995, keeps a single projected declaration source. Separate this from 994's later end-to-end production wiring.
-6. **997 / 998 and a resource follow-up:** action, credential and resource implementation after the declaration/codec contracts, including all-family protected-output admission and actual outbound validation. Issue 999 is already closed; scope a new resource task instead of treating it as unfinished. No dependency on final SDK exports.
+6. **997 / 998 and a resource follow-up:** action, credential and resource implementation after the declaration/codec contracts, including all-family protected-output admission and actual outbound validation. The action task removes PollAction::Event, types trigger/webhook outcomes with Self::Output and implements per-call/batch validation before erasure/publication across checked and explicit trusted adapters, with runtime-owned item/encoded-byte caps, bounded serialization and overflow counter tests. Issue 999 is already closed; scope a new resource task instead of treating it as unfinished. No dependency on final SDK exports.
 7. **Plugin prerequisite:** versioned durable slot/schema records, compiler epoch, directional connection checks and readmission after leaf contracts; coordinate with 1014 without waiting for its unrelated freeze work.
-8. **994, wiring subtask:** production resolution and engine sequencing after leaf implementations and the plugin prerequisite; prove exact input/binding provenance end to end.
+8. **994, wiring subtask:** production resolution and engine sequencing after leaf implementations and the plugin prerequisite; prove exact input/binding provenance end to end. Route every trigger ingress and lifecycle/context emission through the output gate before the existing publication/transaction owner; prove batch failure publishes nothing and preserve owner-scoped delivery/cursor contracts.
 9. **1000:** SDK exports and isolated renamed-dependency consumer proofs after leaf contracts; macro hygiene uses existing narrow support paths.
-10. **1001:** examples and one SDK-only end-to-end workflow release gate after 1000 and production wiring.
+10. **1001:** examples and one SDK-only end-to-end workflow release gate after 1000 and production wiring, including typed poll/pushed-event outputs, protected-trigger admission and invalid-later-item batch rejection.
 
 The outer release gate must author a typed workflow, admit its catalog and values,
 choose a conditional credential/resource branch, run behavior with typed data,
@@ -1045,10 +1150,10 @@ default drift, guard lifetime and lazy/conditional ambiguities, visibility polic
 coupling, and P2 alias/newtype/generic gaps. The sections above address those
 objections as design decisions; no implementation fix or passing test is claimed.
 The former attributed approvals are withdrawn, not carried forward as sign-off.
-Pre-code document-review verdict: ACCEPTABLE. The independent reviewer reported
-the focused schema_type and output-boundary review complete with no blockers.
-This approves the proposed design only; runtime targets remain unimplemented,
-and implementation acceptance is outstanding.
+Coordinator focused document-review verdict: COMPLETE for the trigger-output
+contract, including checked public TriggerHandler routing and bounded batch
+staging. This is design review only; runtime targets remain unshipped and
+implementation acceptance is outstanding.
 Previously reported existing-code checks passed fmt, clippy, 8542 nextest tests
 (3 skipped), doctests and deny with configuration warnings. These runtime checks
 were not rerun for this amendment and do not exercise its targets.
