@@ -1,6 +1,7 @@
 ---
-name: Unified property authoring
-status: accepted
+name: Schema, metadata and slot authoring
+status: proposed
+implementation: not shipped
 last-reviewed: 2026-09-12
 related:
   - ../../../docs/INTEGRATION_MODEL.md
@@ -8,374 +9,967 @@ related:
   - ../../action/docs/DESIGN.md
   - ../../credential/docs/DESIGN.md
   - ../../resource/docs/DESIGN.md
-  - ../../engine/docs/DESIGN.md
+  - ../../metadata/README.md
+  - ../../plugin/docs/DESIGN.md
 ---
 
-# Unified property authoring
+# Schema, metadata and slot authoring
 
-This spec ratifies ADR-0108 against the September 2026 tree. It is the
-implementation contract for one declarative authoring shape across schema-only
-types, actions, credentials, and resources.
+## Status and Decision
 
-The decision is intentionally breaking: new derives use one field-level
-`#[property(...)]` grammar for author-owned values and typed dependency slots.
-Concept-level attributes (`#[action(...)]`, `#[credential(...)]`,
-`#[resource(...)]`) still describe the catalog leaf. Hand-written behavior
-stays hand-written.
+This is the proposed implementation contract for revising design-only PR1027.
+The user authorizes a breaking architectural redesign, superseding issue 992's
+earlier ratify-only restriction. This document does not ship any implementation.
+The private design vault was unavailable: ADR text is unverified and unmodified.
+References to ADR-0108 below concern only its summary in the preceding revision.
 
-## Design Delta From ADR-0108
+Use structured `#[property(display(...), input(...), validate(...), options(...))]`
+on data fields and a separate `#[slot(...)]` on dependency fields. Permanently
+support associated data types as the canonical authoring model. Do not force
+`Input = Self`, `Properties = Self`, or `Config = Self`.
 
-ADR-0108 chose one author struct per abstraction and rejected hidden companion
-input structs. That remains accepted. The current tree and issue 992 use the
-name `#[property]`; this spec therefore renames ADR-0108's value-field helper
-from `#[field]` to `#[property]` for the new surface.
+| Earlier summarized decision | Proposed replacement |
+|---|---|
+| One author struct per abstraction; external types migration-only | Separate receiver and associated data types are first-class and canonical. |
+| One flat property grammar with credential/resource modes | Structured value properties plus a distinct slot grammar. |
+| Derive Credential and infer capabilities from other methods | Preserve the existing impl-level `#[credential]` macro. |
+| Resource derive supplies Config while Provider stays handwritten | Handwritten Provider owns its complete impl, including Config. |
+| Preserve current FromWorkflowNode unchanged | Preserve the entrypoint, extend its owning port with prepared-input evidence. |
+| No slot-only schema wire bump | Still true, but new value descriptors and policy semantics require versioning. |
 
-ADR-0101's engine-owned `Slots` value remains deferred. The Phase-5 derives
-continue to generate the existing `FromWorkflowNode` consumer seam until a
-separate engine design reopens that boundary.
+A shared vocabulary is the ergonomic goal; identical struct shape is not.
+The current action factory defaults non-slot receiver fields, while dispatch
+decodes a separate input. Making that input `Self` duplicates values and leaves
+different slots populated on the two instances. Provider similarly receives
+`&self` and `&Self::Config`. Removing Clone cannot repair this ownership split.
+An explicitly handwritten `Properties = Self` remains possible when meaningful;
+there is no generated single-instance mode or new action behavior family.
 
-## Authoring Model
+The simpler credible alternative is serde-owned data types with a small flat
+property annotation and separate slots. This proposal keeps that ownership model
+and groups options because presentation, admission, validation, and loading have
+different semantics. A single property/slot union hides those differences.
+Attribute macros that rewrite structs or generate hidden companion data types
+are unnecessary for the selected design and are outside this contract.
 
-Every integration author writes one Rust type per concept:
+## Existing Owners and Reuse
 
-| Concept | Author type | Value fields | Slot fields | Hand-written behavior |
-|---|---|---|---|---|
-| Schema-only data | `#[derive(Schema)]` | `#[property(...)]` | none | none |
-| Action | `#[derive(Action, Schema, Deserialize)]` | `#[property(...)]` | `#[property(credential, ...)]`, `#[property(resource, ...)]` | `impl StatelessAction` / `StatefulAction` / other action trait |
-| Credential | `#[derive(Credential, Schema, Deserialize)]` | `#[property(...)]` for `Properties = Self` | none | resolve/project/capability methods |
-| Resource | `#[derive(Resource, Schema, Deserialize)]` | `#[property(...)]` for `Config = Self` | `#[property(credential, ...)]` | `impl Provider` lifecycle |
+| Owner | Reuse and required responsibility |
+|---|---|
+| schema | HasSchema, Field, RootShape, checked ValidSchema, value/proof pipeline, serde projections, LoaderRegistry and redacted loader context. |
+| validator | Rule, Predicate, FieldPath, budgets, pending evaluation; checked Condition refinement and policy semantic v2. |
+| core | Dependencies, SlotField, SlotKind and typed keys; remains condition-free. |
+| action | Action traits, FromWorkflowNode, input preparation, factories, leaf slot declarations and invocation decisions. |
+| resource | Provider, ResourceConfig, resource leases, SlotCell generations, slot rotation and resource leaf declarations. |
+| credential | Credential, Scheme/State separation, projected CredentialGuard, resolution/refresh authority and impl capability inference. |
+| plugin | Frozen catalog and pure compiler; versioned recorded slot requirements, dependency-closure checks and exact plan readmission. |
+| metadata and leaf drafts | MetadataName, MetadataVersion, Icon, BaseMetadata and three concrete MetadataDraft types; checked admission remains with leaf factories/registry. |
+| sdk | Curated author exports and hygienic macro paths, with no exposed admission or tenant authority. |
+| schema-codegen | New compiler-only normal library nebula-schema-codegen, owned by schema at Core, sharing syntax/models/diagnostics across four companion macro consumers. |
 
-For action, credential, and resource derives, the generated associated property
-type is `Self` unless the implementation explicitly opts out with
-`properties = ExternalType`, `input = ExternalType`, or `config = ExternalType`.
-Opt-out is for staged migration only during the breaking implementation PRs; the
-stable authored form is `Self`.
+No new canonical value crate, generic IntegrationDraft, extension trait for
+metadata setters, condition evaluator, or engine-owned Slots object is proposed.
+A Condition is a checked subset of Rule, not another rule representation.
+A small field-descriptor trait is justified below where HasSchema is insufficient.
+Runtime proof objects are never author property types or serde-constructible.
+The new normal library lives at `crates/schema/codegen`; proc-macro crates cannot
+export arbitrary parser types for other proc-macro crates to import. It owns the
+property/slot syntax model, not runtime slot policy. Dependencies are compiler
+tools such as syn/quote and narrow existing macro support, never runtime authority.
+This extraction replaces real parser duplication across Schema, Action,
+Resource and credential authoring consumers. Each invocation parses independently
+using the shared implementation: no global cache, expansion-order dependency, or
+claim of one parsed instance shared between derives. Update workspace metadata
+and deny wrappers for this permitted dependency direction; metadata-driven CI
+discovers the new package without handwritten package-selection lists.
 
-## Attribute Grammar
+## Macro Ownership
 
-`#[property(...)]` has three mutually exclusive modes. Unknown keys are compile
-errors at the offending token.
+Each Rust trait implementation has exactly one owner. A derive cannot inspect
+unrelated impl blocks, append fields, modify serde derives, or discover arbitrary
+trait implementations. Shared parsing means shared code, not shared macro state.
 
-### Value Property
+| Existing family | Keep or change |
+|---|---|
+| Schema derive | Keep; emit HasSchema, field descriptors and checked data declarations from property/serde. Never emit Deserialize. |
+| EnumSelect derive | Keep for option labels; consume the same serde enum-domain declaration as Schema, without an independent casing/domain algorithm. |
+| Action derive | Keep; emit the complete Action impl and FromWorkflowNode adapter, using explicit input/output types and separate slots. |
+| action_phantom attribute | Remains a separate existing adapter; does not turn CredentialRef into a new slot shape or participate in property inference. |
+| credential impl attribute | Keep; own the complete Credential/capability impls from the annotated impl's recognized items. No new Credential struct derive. |
+| AuthScheme/capability macros | Keep their existing scheme and capability responsibilities. |
+| Resource derive | Keep slot plumbing and existing factory contribution responsibilities; never emit a partial Provider impl. |
+| ResourceConfig derive | Keep config identity/validation; require an explicit HasSchema implementation, normally Schema, for every shape. |
+| ClassifyError | Keep; typed resource errors remain separate from authoring grammar. |
+| Plugin and Validator derives | Keep their own responsibilities; Schema stops consuming legacy validate helpers, but Validator's independent grammar is not removed. |
 
-Used on ordinary parameter/config/property fields:
+ResourceConfig no longer opportunistically emits HasSchema for unit/empty types;
+derive Schema there too. Remove the need for `config(schema = external)`.
+Retain `config(validate = RustPath)` and `config(skip_fingerprint)` as config
+identity hooks, not property/serde omission flags. Identity exclusions must not
+affect validation, persistence, slot decisions, or security policy.
+This proposal does not remove ResourceConfig's current Clone bound merely to
+accommodate a slot-bearing config; canonical configs contain data, not guards.
 
-```rust
-#[property(
-    key = "optional_wire_name",
-    label = "Display label",
-    description = "Longer help text",
-    placeholder = "shown in forms",
-    default = "literal",
-    hint = "short hint",
-    secret,
-    multiline,
-    no_expression,
-    expression_required,
-    enum_select,
-    group = "advanced",
-    emit_as = "output_wire_name",
-    validate(required, length(min = 1, max = 100), pattern = "^[a-z]+$")
-)]
-field: String,
+## Property Grammar
+
+The following key sets are exhaustive for the new property grammar.
+Rust literals mean string, bool, or finite numeric literals; negative numbers
+are signed expressions parsed deliberately, not misclassified as unsigned Lit.
+Paths are Rust paths resolved by rustc, never strings evaluated as code.
+
+```text
+property := #[property(section, ...)]
+section  := display(...) | input(...) | validate(...) | options(...)
+reference := field(identifier) | root("/absolute/json/pointer")
 ```
 
-Allowed value keys:
+Sections may appear in any order, at most once per field, across all property
+attributes on that field. Duplicate singleton keys, conflicting modes, unknown
+keys and empty argument lists where a value is required are errors at their spans.
+Property and slot on the same field are incompatible.
+Field attributes are optional; the Rust data domain supplies the baseline.
 
-| Key | Meaning |
+| Section | Accepted keys and argument shapes |
 |---|---|
-| `key = "..."` | Override input/schema key; otherwise serde rename rules, then field ident. |
-| `label`, `description`, `placeholder`, `hint`, `group` | UI/catalog metadata. |
-| `default = ...` | String, integer, float, or bool literal default. |
-| `secret` | Promote string leaves to protected schema secrets; target type must implement `SecretInput`. |
-| `multiline` | UI string widget hint. |
-| `no_expression` | Forbid expression authoring at this exact schema node. |
-| `expression_required` | Require expression authoring at this exact schema node. |
-| `enum_select` | Use `HasSelectOptions` for a select field. |
-| `emit_as = "..."` | Output projection key. |
-| `validate(...)` | Rules: `required`, `length(min,max)`, `range(min,max)`, `pattern`, `url`, `email`. |
-| `skip` | Exclude the field from the schema and fingerprint. |
-| `skip_fingerprint` | Exclude resource config field from `ContentId` / hot-reload fingerprint only. |
+| display | `label = "..."`, `description = "..."`, `placeholder = "..."`, `hint = "..."`, `group = "..."`, `example = literal`, `widget = token`, `hidden`, `visible_when(C)`. |
+| input | `required`, `required_when(C)`, `expressions = allowed\|forbidden\|required`, `secret`. |
+| validate | `non_empty`, `length(min = n, max = n)`, `range(min = number, max = number)`, `pattern = "..."`, `url`, `email`. Either bound may be omitted, but not both. |
+| options | `source = RustPath`, `depends_on(reference, ...)`, `mode = closed\|suggestions`. Source is required; mode defaults to suggestions. |
 
-`#[validate(...)]`, `#[field(...)]`, and `#[config(skip_fingerprint)]` are
-replaced by this grammar in Phase-5 derives. The lower schema crate may keep
-temporary parser support only inside the migration PR; no stable docs should
-teach both surfaces.
+Widgets are `auto`, `text`, `textarea`, `password`, `number`, `checkbox`,
+`select`, `radio`, `object`, or `list`.
+A widget must fit the existing field domain; it never changes type, enum
+membership, expression permission or secrecy. Password rendering is not secret
+protection. `hint` is short presentation text; semantic url/email checks belong
+in validate. Existing InputHint values may back a widget, not redefine this key.
+Enum variants accept only `property(display(label = "...", description = "..."))`.
+Other property sections on variants or fields of unsupported shapes are rejected.
 
-### Credential Slot
+`hidden` conflicts with `visible_when`; `required` conflicts with `required_when`.
+There is no flat property key/default/emit_as/skip/skip_fingerprint, no
+`validate(required)`, and no expression flags outside input.
+`expressions = allowed` is the baseline for data fields; credential property
+admission narrows it to forbidden and rejects explicit allowed/required intent.
+An ancestor prohibition applies to its entire subtree. Required expressions
+cannot be satisfied by a literal default. Data ingestion never infers expressions.
+`input(secret)` explicitly requires SecretInput on the decoded non-null leaf;
+never infer secrets from names or widgets. Schema-only and credential data may
+contain protected leaves. Resource admission rejects them recursively, including
+external child schemas; this is not an arbitrary compile-time proof of secrecy.
 
-Used on action or resource fields that receive projected auth material:
+Rules are built through validator's typed Rule constructors. Non-empty is a
+value rule, not presence. Length applies to supported strings/collections,
+range to numbers, and pattern/url/email to strings or declared secret strings.
+Unsupported domain/rule combinations are errors, never ignored decorators.
+Explicit null allowed by Option skips non-null value rules; non_empty does not
+make a nullable field non-null. Choose a non-null Rust domain to forbid null.
 
-```rust
-#[property(credential, key = "slack_auth", purpose = "Slack API auth")]
-slack: CredentialSlot<SlackCredential>,
+## Serde Is the Wire Authority
+
+`serde(rename)`, `rename_all`, directional rename/rename_all and `alias`
+determine wire identity. Field rename overrides the respective container rule;
+without either, serde's field/variant spelling applies, including raw identifiers.
+Aliases are inbound only. Canonical inbound and canonical outbound keys are
+recorded separately and collision-checked within each projection's scope.
+Duplicate read aliases on one field are deduplicated; ambiguous cross-field
+input keys or output keys are rejected. No property key override competes here.
+
+Alias normalization consumes aliases once: canonical input wins, otherwise the
+first declared alias wins. Normalize to the canonical INBOUND name before
+conditions, validation and typed decoding. Outbound names apply only to export.
+The existing implementation at `src/validated/typed.rs:92` projects emit_as
+before `T::deserialize`; the implementation must split that projection path.
+Deleting emit_as from the grammar alone does not fix directional serde names.
+
+Required regression: `rename(deserialize = "input_name", serialize = "output_name")`
+plus `alias = "legacy_name"` accepts either inbound spelling, canonicalizes to
+input_name, and passes input_name to Deserialize; output export uses output_name.
+Cover nested records, lists, unions, secrets and defaults, not only a flat field.
+Secrets stay protected through the internal typed projection and explicit trusted
+decode; outbound ordinary JSON must not accidentally disclose them.
+
+Workflow assignability compares the producer's outbound projection with the
+consumer's inbound projection, not their two inbound field sets. Preserve domain,
+requiredness, aliases and secret boundaries in that directional comparison.
+Equal inbound names do not make an edge compatible when the producer writes a
+different outbound name. The plugin compiler must use that directional schema
+API before recording connections; test both rejection and explicit compatible
+consumer renames/aliases. Revision compatibility remains a separate contract.
+
+No property-owned omission vocabulary is introduced. Initially reject
+serde(skip), skip_serializing, skip_deserializing and skip_serializing_if on
+schema data fields. A skipped field's fallback is invoked during Deserialize
+even if a value was materialized beforehand, violating this data-proof contract.
+Support for internal skipped state would need an explicitly separate, non-data
+contract; do not silently omit it from a schema and still claim exact decoding.
+Reject flatten, untagged unions, custom with/serialize_with/deserialize_with,
+from/try_from/into and container defaults until an exact checked bridge exists.
+A manual HasSchema is not permission to pretend an unsupported codec is exact:
+manual adapters must supply and validate the corresponding descriptor/projection.
+
+Slots never become Field entries. Independently deriving Serialize/Deserialize
+on a slot-bearing receiver requires explicit `serde(skip)` for every slot.
+Guard fields without a real Default still cannot derive Deserialize merely by
+being skipped; canonical receivers need no serde derives.
+Schema on a receiver does not turn slots into data: retain visible slot markers
+and require the owning Action/Resource declaration witness, with no standalone
+Schema slot acceptance. No helper marker silently fabricates that witness.
+
+## Trait-Driven Data Domains
+
+Reuse HasSchema for checked root schemas and Field/RootShape for representation.
+Syntax-only matching of type names is insufficient for aliases, generics and
+transparent newtypes. Existing derive rejection of generics and nested scalar
+roots is a migration target, not a universal-inference implementation.
+
+Introduce one schema-owned `PropertyType` field-descriptor trait: it supplies
+`fn property(key: FieldKey, ctx: &mut SchemaBuildContext) -> Result<Field, ValidationReport>`,
+including the domain/nullability and baseline missing-value policy. The narrow
+schema-owned context enforces construction budgets before descending; it is not
+a schema representation or runtime validation context. HasSchema describes
+roots, not omission of an object member, and cannot currently describe every
+nested Vec/Option field. Do not add a second data representation or evaluator.
+Schema derives emit both HasSchema and PropertyType for supported data types.
+Use explicit primitive impls, generic Vec<T>/Option<T> impls, and derived/manual
+user-type impls; no overlapping blanket `T: HasSchema` specialization.
+Aliases automatically reuse the actual type's implementation.
+
+| Shape | Required descriptor behavior |
+|---|---|
+| Named record | Preserve all nested domains, root rules and canonical projections. |
+| Vec<T> field | List domain with T's exact item descriptor and per-row paths. |
+| Option<T> field | Permit null and omission unless explicit input policy requires presence. |
+| Fieldless enum | Closed scalar domain from actual serde variant values; optional display labels. |
+| Serde tagged enum | Exact external/internal/adjacent tagging and variant payload schema; reject impossible tag/payload combinations. |
+| Transparent single-field newtype | Delegate root and field domain/projections to the inner type, retaining declared constraints. |
+| Generic record/newtype | Generate bounds on the field types actually used and preserve existing where clauses. |
+
+Schema-only lifetimes remain possible when no decoded owned-input contract is
+claimed. Action/credential/config consumption still requires the existing owned
+serde and Send/Sync bounds. Unsupported tuples, unions, ambiguous wire shapes
+and custom codecs get explicit diagnostics, not Any/empty-object fallbacks.
+Known numeric ranges and enum membership must survive nesting and newtypes.
+
+Generic schema construction is uncached initially: a function-local static is
+shared across monomorphizations. Do not add TypeId caches or specialization.
+Non-generic successful/failed checked construction may retain current caching.
+Type-dependent generic dependency descriptors obey the same rule: admit per
+concrete factory; change static-only getter signatures where necessary instead
+of leaking allocations or sharing one generic OnceLock.
+PropertyType has no implicit Serialize, Clone or Debug bound. Default-bearing
+fields add only the encoding bounds needed by their supported default bridge.
+
+The initial descriptor model is a finite tree, not a recursive-reference schema.
+Reject recursive data definitions, including Node with Vec<Node>, mutual cycles
+and recursive generic instantiations. Charge depth and node budgets at every
+descriptor expansion through SchemaBuildContext, before recursing, and return a
+typed construction diagnostic when the bound is reached. Finite deep schemas
+that exceed the same bounds are rejected too; do not guess recursive identity
+from type names. Non-finite generic monomorphization may instead fail rustc.
+HasSchema creates one context for the root and nested derives use PropertyType
+with that same context, never nested cached HasSchema entrypoints. Cache only
+the outer completed construction; no recursive OnceLock initialization. Manual
+PropertyType implementations must use the same checked expansion API. Direct,
+mutual and generic recursion fixtures must fail without a hang or stack overflow.
+
+## Presence, Nullability and Defaults
+
+Policy semantic v2 defines required as key presence after normalization/defaults.
+Type/domain decides nullability; non_empty separately rejects empty strings or
+collections. Display state never changes any of these decisions.
+Baseline omission is allowed for Option or a supported serde fallback; otherwise
+the field is required. `required_when(C)` replaces unconditional requirement only
+for an omission-capable destination. It cannot make a missing String decodable.
+
+| Input after alias normalization | Destination/policy | Result |
+|---|---|---|
+| Missing | String, no fallback | Required error; no decode. |
+| Missing | Option<T>, no explicit requirement | Remains omitted and decodes None. |
+| Missing | Option<T>, required or required_when(true) | Required error. |
+| Missing | Option<T>, required_when(false) | Accepted as None. |
+| Missing | String, required_when(false), no fallback | Reject declaration: not omission-capable. |
+| Missing | Supported serde default | Insert default once, then validate domain and rules. |
+| Explicit null | String, even with a default | Type error; never replace null with default. |
+| Explicit null | Option<T>, including input(required) | Present and nullable; accepted. |
+| Empty string/list | Matching type and required | Present; accepted unless non_empty/length rejects. |
+| Nonempty value | Hidden or visible | Run the same domain and value validation. |
+| Missing | Hidden and required | Required error, exactly once. |
+| Pending display condition | Any value policy | No blockade on input admission. |
+| Pending required condition | Missing omission-capable field | Retain an obligation; no proof or early success. |
+
+The sole author source of a semantic default is field-level `serde(default)`
+or `serde(default = "path")`. The bridge invokes that same deterministic typed
+Default/provider, encodes it using the field's paired projections, and stores
+its checked canonical value in the admitted descriptor. A default on a nested
+record needs exact outbound-to-inbound conversion; lossy codecs are rejected.
+Validate default domain and context-free rules at admission; cross-field rules
+are checked with the complete invocation values. Encoding/provider failures
+produce redacted admission evidence, never an empty/default-success substitute.
+Provider signatures are the serde signatures, not a new fallible-default DSL.
+
+Default providers must be deterministic, bounded, pure and free of I/O, clocks,
+randomness or mutable process state. Rust macros cannot prove this: review and
+determinism fixtures enforce the author contract. A provider panic is a fatal
+author-contract violation, not a recoverable default/admission error. Release
+uses panic=abort; catch_unwind cannot recover it. Even under unwinding a panic
+hook may print its payload before a catch. Do not promise hook redaction or
+install process-global hooks from schema code. Trusted default providers must
+not panic or include secrets in panic payloads. Ordinary encoding/validation
+errors still use the owned payload-free admission boundary.
+Secret defaults, including defaults containing nested protected leaves, are
+forbidden. Reject unsupported container-default extraction rather than guessing.
+
+Materialize defaults only at missing paths, once per prepared subtree, before
+validation and the condition snapshot. Newly evaluated subtrees undergo their
+own first preparation; previously prepared siblings are never prepared again.
+Validate constraints after insertion; preserve explicit null, false, zero and
+empty values. Complete all pending obligations before trusted typed decode.
+Serde must not supply additional undeclared values after the proof: supported
+default paths are already materialized, while omitted Option decodes to None.
+Schema export's default annotation never performs this mutation.
+`display(example = literal)` is a non-mutating suggestion, never a fallback.
+Unknown fields, invalid data and unsupported codec output cannot become accepted
+by serde dropping them; schema rejection precedes decoder invocation.
+
+## Conditions and Presentation
+
+Add validator-owned Condition as a checked Rule refinement accepting predicates
+and all/any/not only. Construction/deserialization must enforce that subset.
+Reuse Predicate, FieldPath, evaluation outcomes, error types and Rule budgets.
+No arbitrary expression script, closure serialization or separate evaluator.
+
+```text
+C := eq(reference, literal) | ne(reference, literal)
+   | gt(reference, number) | gte(reference, number)
+   | lt(reference, number) | lte(reference, number)
+   | one_of(reference, [literal, ...]) | is_true(reference) | is_false(reference)
+   | all(C, C, ...) | any(C, C, ...) | not(C) | condition(identifier)
 ```
 
-Allowed keys:
+All/any require at least one operand; one_of is nonempty. Comparisons lower to
+the corresponding Predicate; one_of lowers to In. Numeric operands must be finite.
+Missing and type-mismatch behavior follows the checked predicate contract;
+unresolved values are Pending, never missing/false. Configuration/unavailable
+errors stay errors through not and combinations, never negated into success.
+Reuse MAX_RULE_DEPTH/NODES/OPERANDS/TEXT/JSON budgets, including after expansion
+of named conditions; hosts may impose lower bounds, never bypass checks.
 
-| Key | Meaning |
-|---|---|
-| `credential` | Select credential-slot mode. |
-| `key = "..."` | Slot key; defaults to field ident. |
-| `purpose = "..."` | Catalog/UI reason for the binding. |
-| `optional` | Missing binding is accepted and the accessor yields `None`. |
-| `lazy` | Preserve lazy acquisition semantics where the owning crate supports it. |
+`#[schema(condition(name, C))]` declares a named condition in the data type's
+schema scope; multiple differently named declarations are allowed.
+`condition(name)` references that table. Duplicate, undefined or recursive names
+are errors; no condition definition implicitly depends on another's UI state.
+Typed builders provide the same checked named/inline behavior for manual schemas.
 
-Accepted field shapes are `CredentialSlot<C>` and
-`Option<CredentialSlot<C>>`. The slot resolves to `CredentialGuard<C::Scheme>`;
-authors never receive stored credential state or storage authority.
+`field(identifier)` means a field in the containing record, resolved using its
+canonical inbound serde key. The local derive checks identifier existence.
+Inside list item records it refers to the same row; diagnostics use concrete
+RFC6901 row paths. `root("/path")` means the absolute canonical data root.
+Check pointer syntax at expansion and targets/domains against the complete
+admitted schema. No wildcard, implicit row selection or ambiguous union target.
+Paths into guarded variants must have statically well-defined domains.
 
-### Resource Slot
+Cross-type references cannot be proven by a proc macro reading one struct.
+Slot policies over a separate associated input/config use named conditions
+declared there or root references; direct field references on the receiver are
+rejected. External named/absolute targets are checked at leaf admission.
+Aliases are already consumed when references are evaluated. Sources of expressions
+and plaintext secrets are unavailable; secret targets are rejected at admission.
+Binding selectors additionally must be declared literal-only and nonsecret.
+Every ancestor capable of producing a selector subtree must also prohibit
+expressions, including the associated input/config root. The owning declaration
+records these restrictions for the selector's entire contributing path. Admission
+rejects conflicting explicit expression permission; preparation rejects programs
+at any of those paths. Evaluator output becoming literal data is not evidence of
+literal authoring. The prepared witness retains authored provenance, including
+for selectors inside nested objects or tagged variants.
 
-Used on action fields that receive managed resources:
+Reject cycles in conditional requirement dependencies and loader dependency
+graphs; include named-condition expansion and nested paths in the graph.
+Pure display reads depend on data, not recursively computed show-state.
+Display conditions may remain pending without delaying data proof.
 
-```rust
-#[property(resource, key = "http_client", purpose = "Outbound HTTP")]
-http: ResourceSlot<HttpClient>,
+Presentation-only `host("registered.fact")` is an additional reference form.
+It reads a separately registered, typed presentation context, not the schema
+value namespace. Unregistered/unsupported facts are errors, not false.
+Host facts provide no authority and are invalid in required_when, bind_when,
+loader data dependencies, or named conditions used in those positions.
+Neither a hidden field nor a visible privileged control authorizes an operation.
+
+## Options and Loaders
+
+`options(source = RustPath, depends_on(...), mode = suggestions)` names a
+statically registered typed provider descriptor, not an arbitrary function to
+serialize. Reuse LoaderRegistry, LoaderResult and schema-bound redacted contexts.
+A narrow registration adapter may associate provider identity/value domain and
+selected-label lookup with those existing loaders; it is not another registry.
+Schema discovery performs no I/O. Registration checks provider identity, field
+domain and dependency targets before catalog publication.
+
+Initially reject options on secret-bearing domains, including nested protected
+leaves and external child schemas. Reject obvious input(secret)+options at
+expansion and check the entire result domain again at admission. Existing
+SelectOption values, Serialize/Debug and selected-label lookup are public-data
+surfaces; redacting the request context does not protect their results. No loader
+or selected-value lookup may run for a rejected protected field. A future secret
+choice protocol would need a separate explicit disclosure contract.
+
+Static fieldless enum options are closed by the actual schema domain, whether
+or not a select widget or EnumSelect labels are used. A static typed option set
+marked closed adds an explicit admitted finite-domain rule.
+Remote/mutable providers are suggestions by default. Initial implementation
+rejects closed remote mode at admission: an authoritative membership rule
+provider has not been selected. A successful remote list is never an
+authorization decision or the sole validation proof for a submitted value.
+
+Loader requests include only declared, normalized, nonsecret dependencies.
+Host dispatch binds tenant, concrete bindings, schema identity, field path,
+dependency values, query, cursor and provider/data revision to the cache key.
+Apply timeout/cancellation and existing page/depth/byte budgets. Unknown or
+stale cursors/revisions are errors; do not serve another scope's cached results.
+Check returned option values against the declared domain and redact diagnostics.
+Fetch labels for already selected values even when outside the current page;
+unavailable/deleted selections have explicit unresolved labels, not silent removal.
+A provider failure is unavailable/error, not a successful empty options page.
+
+## Slot Grammar and Identity
+
+```text
+#[slot(credential | resource,
+       key = "...", purpose = "...", bind_when(C), binding = required | optional)]
 ```
 
-Allowed keys:
+Exactly one kind is required. Key/purpose/bind_when are optional singletons.
+Key defaults to the Rust receiver field name, not a serde name.
+Binding describes whether an ACTIVE slot may lack a binding; the Rust wrapper
+describes whether the receiver can represent absence. Resource credential cells
+default to required. Action Option<Guard> defaults to optional, plain Guard to
+required. An Option<Guard> may explicitly use binding = required: false condition
+still yields None, but true requires successful acquisition. Plain Guard cannot
+use binding = optional or bind_when. There is no separate optional flag.
+Lazy and every Lazy wrapper are explicitly unsupported in the initial grammar:
+the current action lazy expansion already resolves before Lazy::with_value.
 
-| Key | Meaning |
+| Receiver | Accepted field type | Meaning |
+|---|---|---|
+| Action | CredentialGuard<S> | Required projected auth scheme S. |
+| Action | Option<CredentialGuard<S>> | Inactive yields None; active absence follows the binding policy. |
+| Action | ResourceGuard<R> | Required lease for Provider R. |
+| Action | Option<ResourceGuard<R>> | Inactive or optional resource dependency, with independent active binding policy. |
+| Resource | CredentialSlot<S> / SlotCell<CredentialGuard<S>> | Generation-stamped cell of projected auth scheme S; binding controls absence. |
+
+S consistently means the auth Scheme, never a Credential implementation type.
+Preserve credential-owned guards and resource-owned CredentialSlot/SlotCell.
+Action resolution bridges must resolve by admitted scheme compatibility instead
+of treating S as a provider with Credential::KEY. Different credential providers
+may project the same scheme after registry validation, without branching stored
+provider mechanics. Distinct setup data shapes use a tagged enum.
+No concrete-provider restriction syntax is shipped;
+adding one later requires a separately typed, checked catalog restriction.
+Resource slots on Resource, slots on credential property data, Option<Cell>,
+guard aliases/new wrappers without a supported slot-shape contract, and
+bind_when on a non-Option action guard are rejected.
+
+| Identity | Scope and purpose |
 |---|---|
-| `resource` | Select resource-slot mode. |
-| `key = "..."` | Slot key; defaults to field ident. |
-| `purpose = "..."` | Catalog/UI reason for the binding. |
-| `optional` | Missing binding is accepted and the accessor yields `None`. |
-| `lazy` | Preserve lazy acquisition semantics where the owning crate supports it. |
+| Slot key | Local declaration/binding address, unique across both kinds on a receiver. |
+| Catalog type key | Stable resource/credential provider identity, checked in the catalog; not inferred from a scheme's Rust name. |
+| Rust TypeId | In-process type compatibility only; never serialized, persisted or treated as an instance ID. |
+| Concrete instance ID | Selected CredentialId/resource registration identity within the authorized owner/scope. |
 
-Accepted field shapes are `ResourceSlot<R>` and `Option<ResourceSlot<R>>`.
+A type declaration, type key, default ID or matching TypeId grants no authority.
+Keep existing explicit-node-binding then default-ID lookup, but only an owner's
+typed NotFound result for an unconfigured default may count as optional absence.
+Configured missing/denied/type-mismatched/timed-out/revoked bindings fail.
+Do not swallow these errors because the slot is optional or a field is hidden.
 
-## Schema and JSON Schema
+## Slot Declaration and Runtime Contract
 
-Slots do not become schema fields. They are `#[serde(skip)]`, excluded from
-`HasSchema`, and excluded from authored value persistence. `slot_bindings`
-remain outside `parameters` and outside credential/resource config values.
+Leaf richer declarations are the SINGLE authored source of slot definitions.
+Derives mechanically project existing core requirements and slot_fields from
+them; authors do not maintain a second independent list beside Dependencies.
+Admission checks identical keys, kinds, type compatibility, requiredness and
+default binding identity in every projection before publication.
+Current core credential identity assumes a concrete Credential rather than
+a Scheme: revise that descriptive contract explicitly; do not invent a provider
+key or misuse a scheme TypeId to satisfy it. Core gains no Rule/Condition import.
+Action/resource leaf descriptors compose checked Condition with core declarations.
 
-JSON Schema export for `ValidSchema` therefore does not include slots and does
-not need a schema-wire bump for slots alone. Integration catalog export may place
-slot declarations beside the value schema under `x-nebula-slots`:
+All candidate branches are statically declared and validated. Invocation
+decisions never mutate static declarations or remove slots from the catalog.
+Bind conditions read prepared associated input/config only. No slot guard,
+host fact, secret value or runtime-selected undeclared slot enters that graph.
 
-```json
-{
-  "type": "object",
-  "properties": {
-    "channel": {"type": "string"}
-  },
-  "x-nebula-slots": [
-    {"kind": "credential", "key": "slack_auth", "required": true},
-    {"kind": "resource", "key": "http_client", "required": false}
-  ]
+| Condition/binding state | Resolution and author-visible state |
+|---|---|
+| False | Inactive; no lookup/acquisition; optional action guard None, resource cell empty. |
+| Pending/error | No action/provider operation; retain obligation or return typed error. |
+| True, required, missing | Error before operation. |
+| True, optional, unconfigured/default NotFound | Absent; None/empty cell. |
+| True, configured binding fails | Typed error, never None success. |
+| True, successful | Action owns guard/lease; resource cell holds the projected guard snapshot. |
+
+Keep FromWorkflowNode in action as the construction entrypoint. Extend the
+owning action port to receive or consume a prepared invocation witness that
+binds exact schema/policy identity, canonical selector values and node bindings.
+The engine supplies it through downward ports; no action-to-engine dependency.
+Preparation and condition evaluation precede slot resolution and operation.
+Do not reread raw parameters or independently deserialize a second input.
+The typed input moved into execute must be the one validated by that witness.
+Factory/handle sequencing changes are required; merely retaining today's
+(node, ctx) signature cannot prove this relationship.
+
+Resource registration analogously pins admitted config and exact bindings
+before create. Config reload reevaluates conditions and reconciles cells,
+generation/epoch and live instance lifecycle through resource-owned hooks.
+An inactive or revoked slot cannot leave a live authenticated resource silently
+using a stale binding. Cancellation drops acquired leases; no partial operation.
+Resource `self.auth_slot()` returns Option<Arc<CredentialGuard<S>>>: retain that
+owned snapshot across await; never return a borrow from a temporary Arc load.
+Action guard borrows are bounded by the receiver's lifetime. Resource lease
+ownership/release remains with ResourceGuard; no accidental guard Clone bound.
+Runtime keeps inactive versus absent decision evidence even if both map to None;
+user code handles None explicitly and never relies on unconditional Deref.
+Long-lived trigger/resource operations use their owning lifecycle/rebind policy,
+not an unbounded assumption that one invocation's binding proof stays fresh.
+
+### Durable Compilation
+
+The plugin compiler remains pure: it neither resolves concrete tenant bindings
+nor acquires guards. Its new recorded binding contract pins the stable scheme
+contract identity/version, slot key/kind, active binding policy and checked
+condition with its exact input-schema/policy identity. Scheme identity must be
+an explicit checked scheme-owned key/version, never a Rust name or TypeId.
+Record the deterministically ordered compatible provider definitions selected
+from the exact frozen catalog, with provider keys/versions and required
+capabilities. Invocation resolution may select only from that admitted set;
+adding providers requires a fresh plan, not ambient global lookup.
+
+The candidate set is bounded by the composition's admitted frozen plugin
+closure, including inactive branches; no ambient registry can add candidates.
+Preserve required Cargo/manifest edges for actual cross-plugin Rust type
+references. A scheme-only declaration depends on its scheme contract; it must
+not invent a concrete provider type dependency on every compatible adapter.
+Plugin-owned compilation checks both the declared type-dependency graph and
+candidate membership/version compatibility in the frozen composition. This
+explicitly replaces today's concrete-provider-key lookup for scheme slots;
+it does not weaken closure checks for concrete resource/provider references.
+Recorded slot requirements describe possible dependencies, not tenant authority
+or credential instances. Concrete binding evidence is supplied only by owners
+at invocation. Compare the complete recorded declaration and candidate set at
+readmission against the exact frozen catalog. A changed condition, provider,
+scheme version or capability requirement invalidates stale evidence.
+
+This requires a new plugin compiler epoch and versioned binding/schema records,
+not mutation of RecordedBindingContractV1. Existing epoch 1/3 schema-envelope-v1
+and epoch 4 scalar-envelope-v2 rules stay closed. Choose a new schema envelope
+version for policy-v2 definitions; envelope v2 is already used for scalar roots.
+Preserve old plan/hash golden bytes and canonical_json_v1. Add new-epoch golden
+records plus negative dependency-closure, candidate drift and readmission tests.
+
+## Metadata Construction and Admission
+
+**Current:** shared setters and factory/registry schema admission already exist.
+**Target, unshipped:** issue 1018 closes constructor/SDK parity; Metadata Evolution
+below adds substantive catalog contracts.
+Keep concrete ActionMetadataDraft, CredentialMetadataDraft, ResourceMetadataDraft.
+Their target signatures (uncompiled):
+
+```rust
+fn new(key: K, name: MetadataName, description: impl Into<String>) -> Self;
+fn try_new(key: K, name: impl Into<String>, description: impl Into<String>)
+    -> Result<Self, MetadataError>;
+```
+
+Each K is the leaf's typed key. Constructors take three arguments; derive pattern
+from C::Scheme at admission, replacing Credential's fourth AuthPattern argument.
+No inferred display name from a key/from_key path.
+No generic IntegrationDraft or setter extension trait is needed.
+
+Retain with_version(MetadataVersion), typed Icon methods, with_tags/add_tag,
+mark_experimental/mark_beta/mark_stable and with_deprecation. The target refines
+deprecation payloads and documentation storage as specified below; existing
+with_documentation_url remains a convenience over that single representation.
+An attached notice still wins over active maturity; construction/admission is checked.
+Drafts are private-field, consuming/must_use and non-deserializable; no public
+build, schema setter or caller-supplied proof. BaseMetadata stays getter-only;
+shared authoring delegates to MetadataDraft.
+The lower MetadataDraft::bind_schema transition becomes fallible:
+`fn bind_schema(self, schema: ValidSchema) -> Result<BaseMetadata<K>, MetadataBuildError>`.
+It enforces all shared field and aggregate limits, including on intent built
+through infallible new/with_* methods. Leaf factories propagate this failure;
+only they add associated-type and leaf admission checks. Checked primitive
+constructors and try_new provide earlier diagnostics, not a final-proof bypass.
+
+Macros reject typos, require explicit key/name/description and emit the same
+constructors/with_* methods; container-specific behavior stays with its owner.
+Factories/credential registry alone bind schemas and leaf invariants. Hidden SDK
+expansion paths grant no authority. Exact readmission covers shared fields plus
+the full schema/policy/default/projection/options-provider and slot contract.
+
+## Metadata Evolution
+
+**Core Phase5:** discovery, typed links/deprecation, derived leaf projections and
+a closed catalog protocol with compatibility rules. New names are unshipped targets.
+No generic metadata container, arbitrary JSON extensions or author supports_* flags.
+
+| Owner | Authored declarations | Derived evidence / boundary |
+|---|---|---|
+| metadata | Canonical name/description, categories, search tags, Icon, links, lifecycle | Checked shared catalog fields; no leaf runtime dependencies. |
+| schema | Property display, input, rules and options declarations | Exact associated-type schema and preparation policy; property hints stay here. |
+| action / credential / resource | Existing leaf policies and single slot declarations | Factory/registry facts and checked projections; no second declaration list. |
+| PluginManifest / packaging | Bundle metadata, author/license, package and SDK constraints | Plugin membership/dependency closure; no duplicated leaf package fields or leaf schema on manifests. |
+| host | Deployment and access policy | Tenant availability, selected instances, trust and future locale overlays; never authored leaf authority. |
+
+**Discovery.** Add with_categories over checked CatalogCategoryKey values.
+Categories are stable structured filter keys; existing with_tags/add_tag supply
+search keywords ("postgres", "sql"); no second Keywords field.
+Canonicalize category sets and trimmed search tags by sorting/deduplicating;
+category labels and host ranking cannot change entity identity or admission.
+
+**Documentation.** Add add_link(CatalogLink), with closed relations Overview,
+Setup, Reference, Migration and Troubleshooting and a checked URL target.
+with_documentation_url sets/replaces the single Overview link; there is no
+independent documentation_url storage. Conflicting Overview entries are errors;
+identical relation/target pairs deduplicate. New link targets accept HTTPS or
+root-relative paths, rejecting scheme-relative paths, userinfo and executable,
+file or data URLs. Discovery/admission performs no URL fetch or provider I/O.
+Resolve root-relative targets only against an explicitly configured host
+documentation origin; without one they remain unresolved links. Use a URL parser
+and require the resolved origin to match that base, including after normalization;
+reject backslashes and other authority-changing spellings. Absolute HTTPS links
+remain explicit external links, subject to host navigation policy.
+Host rendering treats text as text; link publication is not fetch authorization.
+
+**Evolution guidance.** Replace raw replacement strings with CatalogReference:
+Action(ActionKey), Credential(CredentialKey), Resource(ResourceKey) or
+Plugin(PluginKey), using existing core keys and optional target VersionReq.
+Keep cross-family intent: an action may recommend a resource plus a Migration
+link. References neither replace the source key nor prove assignability or grant
+bindings. Validate kind/key/version syntax locally; an absent target is unresolved
+guidance, not an implicit runtime dependency or a reason to drop the source entry.
+
+RemovalSchedule distinguishes OnDate(checked calendar date), AtVersion(Version)
+and Milestone(checked nonblank label); absence means no announced removal.
+AtVersion refers to the source entity's interface version, or bundle version
+for a manifest. Require since <= current version by SemVer precedence and an
+AtVersion removal later than since; a passed schedule remains valid evidence.
+Schedules announce intent; no automatic deletion, execution ban or migration.
+The existing notice-implies-Deprecated invariant survives setter order and serde.
+
+Illustrative target declarations, not executable Rust or current wire syntax:
+
+```text
+action: postgres.connect; categories: [database]; tags: [postgres, sql]
+links: [Setup -> /docs/postgres/setup, Migration -> /docs/postgres/v2]
+deprecation: since 2.0.0, replacement Resource(postgres.client) @ ^2
+removal: AtVersion(3.0.0)
+```
+
+**Derived leaf facts.** Extend existing CredentialTypeInfo/TypeCapabilities and
+its registry projection to include INTERACTIVE and DYNAMIC alongside REFRESHABLE,
+TESTABLE and REVOCABLE. These five facts come from capability membership, never
+draft flags. Derive pattern from C::Scheme; AuthPattern remains cosmetic and cannot
+prove slot compatibility. Export the checked scheme key/version defined by the
+slot contract, never TypeId or a Rust type name. Reuse existing plugin snapshots
+for action kind/schemas/effects and action/resource slot evidence.
+
+Static topology export is deferred until a pure factory projection of TopologyTag
+exists; today tag(&self) requires an instance. Discovery never constructs instances.
+Tags, especially Custom/Bounded, do not certify concurrency guarantees.
+
+**Protocol and readmission.** The integration catalog export MUST have an explicit
+catalog wire version and closed typed requirements for its actual schema wire,
+schema policy, slot and options contracts. Derive requirements from admitted
+definitions; they are not author-selected runtime features or SDK constraints.
+Keep these version domains distinct from plugin compiler/schema envelopes and
+interface SemVer. Unsupported versions/required fields fail explicitly at ingress;
+no default-empty semantics, ignored obligations or promotion of unknown evidence.
+Recorded shared and leaf DTOs remain evidence. Compare every authored field and
+recompute leaf facts against the selected fresh definition/frozen snapshot before
+readmission; return fresh values only. A compatible revision is not an exact match.
+
+| Changed contract | Revision compatibility | Exact readmission |
+|---|---|---|
+| Entity key | Immutable; replacement is a reference to another definition. | Reject mismatch. |
+| Fallback text, categories, tags, links | No interface major required; publish fresh catalog evidence. | Reject changed canonical fields even at equal SemVer. |
+| Deprecation/removal guidance | Check chronology and lifecycle; no automatic execution ban. | Reject changed notice/schedule. |
+| Schema, including UI/defaults/options | Keep conservative schema equality gate requiring a major bump. | Reject any definition or policy mismatch. |
+| Kind, effects, scheme, slots, capabilities, execution policy | Leaf owners specify version rules; capability removal or changed required slots/scheme requires major. | Recompute and compare the complete leaf contract. |
+| Catalog wire / required protocol semantics | Explicit versioned migration; reject unsupported versions. | Never reinterpret old evidence under new semantics. |
+
+Phase5 bounds: at most 16 categories (96 UTF-8 bytes/key), 32 tags (64 bytes/tag),
+16 links (2048 bytes/target), 8 KiB description and 256 bytes/milestone.
+Limit serialized shared authored fields, excluding bound schemas, to 32 KiB;
+existing name/key checks and schema budgets still apply. Bound decoding before
+unbounded allocation, and allow hosts only lower limits. Dynamic authoring and
+recorded ingress use the same checks. Errors/spans carry codes and field locations,
+never supplied text, URLs, schema values or parser source payloads.
+
+**Later delivery.** Canonical author text is the fallback now. A future host/plugin
+locale overlay must address existing entity identity, exact definition revision
+(not SemVer alone), schema path and text slot. Missing/stale overlays use fallback;
+they cannot modify validation, defaults or canonical evidence. No schema -> metadata
+DisplayText dependency: metadata already depends on schema. Locale bundles and
+overlay services are deferred, as are automatic migration services and independently
+versioned presentation identity. Manifest deserialization proves structural validity,
+not publisher trust; tenant availability and trust remain host-owned projections.
+
+## Versioning and Breaking Migration
+
+Introduce an explicit schema policy semantic v2 envelope, conceptually
+`{ policy_version: 2, schema_wire_version: N, definition: ... }`.
+This envelope identifies admission semantics, independently of encoded shape.
+Policy version alone must change even when definition bytes would be identical.
+Adding nullable/condition/default/projection fields to durable definitions also
+requires a SCHEMA_WIRE_VERSION bump from historical v1; v2 is the target here.
+That schema crate constant is not the plugin's schema-envelope discriminator:
+plugin envelope v2 already identifies scalar roots and cannot be repurposed.
+Do not label new definition fields as policy-only metadata to avoid that bump.
+Catalog slot/options extensions have their own integration catalog version.
+
+Historical schema wire v1, authored-value wire, tree canonical formats and
+canonical_json_v1 are distinct contracts. Preserve all prior persisted bytes and
+canonical_json_v1 encoding. New admission rejects unsupported old policy
+envelopes explicitly; it never silently reinterprets them as v2.
+Migration creates new versioned definitions and requires fresh admission;
+old stored records remain evidence, not automatically upgraded proof tokens.
+
+Replace visibility-waived requiredness with explicit required_when on an
+omission-capable field, or preferably a tagged union for exclusive auth modes.
+Migrate old required/nonempty intent separately. Replace UI-only defaults with
+display examples or deliberate serde defaults, reviewing the behavioral change.
+Move legacy field/validate helpers to structured property, field-level
+credential/resource helpers to slot, and emit_as/key intent to directional serde.
+Remove temporary legacy parser aliases at the breaking release boundary.
+ADR-0101's engine Slots move, full auth-runtime rearchitecture, performance
+claims/optimizations and new canonical value storage are non-goals.
+
+## Authoring Examples
+
+All AFTER snippets are illustrative new syntax, UNCOMPILED. Imports and required
+methods explicitly noted as omitted must be supplied by implementation fixtures.
+Before excerpts reference observed files; they are not invented passing tests.
+
+### Schema Data
+
+Before: [derive_schema.rs](../tests/derive_schema.rs), HttpInput URL declaration.
+
+```rust
+#[field(label = "URL", hint = "url")]
+#[validate(required, url, length(max = 8192))]
+url: String,
+```
+
+After, inside a data type; a serde default replaces the old UI-only default:
+
+```rust
+#[derive(Schema, Serialize, Deserialize)]
+struct HttpInput {
+    #[property(display(label = "URL"), input(required),
+               validate(non_empty, url, length(max = 8192)))]
+    url: String,
+    #[serde(default = "default_method")]
+    method: String,
 }
+fn default_method() -> String { "GET".to_owned() }
 ```
-
-`SCHEMA_WIRE_VERSION` changes only if `ValidSchema` itself changes its durable
-definition format. Adding catalog-level `x-nebula-*` ornaments outside
-`ValidSchema` is an integration-catalog version change, not a schema-definition
-wire change.
-
-## Generated Items
-
-The derives generate these items together from the same parsed property model:
-
-| Derive | Generated schema | Generated slots | Generated metadata |
-|---|---|---|---|
-| `Schema` | `HasSchema` from value properties only | none | none |
-| `Action` | `type Input = Self` unless external; `type Output` remains explicit | `DeclaresDependencies`, `FromWorkflowNode`, slot accessors | `ActionMetadataDraft` from `#[action(...)]`, with input/output schemas admitted by factory |
-| `Credential` | `type Properties = Self` unless external | none | `CredentialMetadataDraft` from `#[credential(...)]`, with properties schema admitted by registry |
-| `Resource` | `type Config = Self` unless external | `DeclaresDependencies`, `HasCredentialSlots`, slot accessors | `ResourceMetadataDraft` from `#[resource(...)]`, with config schema admitted by factory |
-
-The macro expansion path for downstream SDK-only crates must resolve through
-`nebula_sdk::__private`, not direct leaf-crate names. Leaf crates may still
-expand through their own canonical crate names internally.
-
-## Compile-Fail Contracts
-
-The implementation must add compile-fail tests for:
-
-| Contract | Required diagnostic |
-|---|---|
-| Unknown property key | Names the unknown key and the valid keys for that mode. |
-| Two modes on one field | Rejects `#[property(credential, resource)]` and value keys mixed with slot modes. |
-| Slot type mismatch | Names accepted `CredentialSlot<C>` / `ResourceSlot<R>` shapes. |
-| Slot serialized as data | Rejects slot field missing `serde(skip)` in generated expansion or direct serde field inclusion. |
-| Secret destination not safe | `#[property(secret)]` requires `SecretInput` for the decoded destination. |
-| Unsupported slot in schema-only type | `#[property(credential)]` and `#[property(resource)]` are invalid under schema-only `#[derive(Schema)]`. |
-| Duplicate slot key | Points to both fields. |
-| Duplicate value key / alias collision | Reuses the existing schema collision report. |
-| Unknown concept-level key | `#[action]`, `#[credential]`, and `#[resource]` reject typos at token span. |
-| SDK-only path resolution | A crate depending only on `nebula-sdk` can use the derives. |
-
-Secrets must not appear in `Debug`, compile errors generated from user input,
-or runtime validation reports. Slot guards must not be `Clone` unless the guard
-type already explicitly permits that semantic.
-
-## Migration
-
-### Schema-Only Struct
-
-Before:
-
-```rust
-#[derive(Schema, Deserialize)]
-struct SearchInput {
-    #[field(label = "Query")]
-    #[validate(required, length(min = 1, max = 256))]
-    query: String,
-}
-```
-
-After:
-
-```rust
-#[derive(Schema, Deserialize)]
-struct SearchInput {
-    #[property(label = "Query", validate(required, length(min = 1, max = 256)))]
-    query: String,
-}
-```
-
-Existing compile coverage: `crates/schema/tests/derive_schema.rs` and
-`crates/schema/tests/compile_fail.rs`.
 
 ### Action
 
-Before:
-
-```rust
-#[derive(Action)]
-#[action(key = "slack.send", name = "Send Slack", input = SendInput, output = SendOutput)]
-struct SendSlack {
-    #[credential(key = "slack_auth")]
-    auth: CredentialGuard<SlackScheme>,
-}
-```
-
-After:
-
-```rust
-#[derive(Action, Schema, Deserialize)]
-#[action(key = "slack.send", name = "Send Slack", output = SendOutput)]
-struct SendSlack {
-    #[property(label = "Channel", validate(required))]
-    channel: String,
-
-    #[property(credential, key = "slack_auth", purpose = "Slack API auth")]
-    #[serde(skip)]
-    auth: CredentialSlot<SlackCredential>,
-}
-```
-
-Existing compile coverage: `crates/action/tests/derive_action.rs` and
-`crates/action/tests/derive_action_compile_fail.rs`.
-
-### Credential
-
-Before:
+Before: [derive_action.rs](../../action/tests/derive_action.rs), NoCredAction
+declares `input = serde_json::Value, output = serde_json::Value`; slot-shape
+probes live in [derive_action_compile_fail.rs](../../action/tests/derive_action_compile_fail.rs).
+After extends that existing associated-input pattern with typed data and guards:
 
 ```rust
 #[derive(Schema, Deserialize)]
-struct ApiKeyProperties {
-    #[field(secret)]
-    key: SecretString,
+#[schema(condition(use_auth, eq(field(authenticated), true)))]
+struct SendInput {
+    #[property(input(expressions = forbidden))]
+    authenticated: bool,
+    #[property(input(required), validate(non_empty))]
+    channel: String,
 }
-
-#[credential(key = "api_key", name = "API Key")]
-impl ApiKeyCredential {
-    type Properties = ApiKeyProperties;
-    type Scheme = SecretToken;
-    type State = SecretToken;
+#[derive(Action)]
+#[action(key = "send", name = "Send", description = "Send a message",
+         input = SendInput, output = ())]
+struct SendAction {
+    #[slot(credential, key = "auth", binding = required,
+           bind_when(condition(use_auth)))]
+    auth: Option<CredentialGuard<SecretToken>>,
 }
+impl StatelessAction for SendAction {
+    async fn execute(&self, input: SendInput, ctx: &(impl ActionContext + ?Sized))
+        -> Result<ActionResult<()>, ActionError> {
+        match self.auth.as_ref() {
+            Some(guard) => send_authenticated(&input.channel, guard, ctx).await?,
+            None => send_public(&input.channel, ctx).await?,
+        }
+        Ok(ActionResult::success(()))
+    }
+}
+// Imports and the two application send helpers are omitted.
 ```
 
-After:
+### Credential
+
+Before: [credential_attr_macro.rs](../../credential/tests/credential_attr_macro.rs)
+uses `#[credential(...)] impl MetadataOnly` with `Properties = serde_json::Value`,
+explicit Scheme/State and handwritten project/resolve. After keeps that owner:
 
 ```rust
-#[derive(Credential, Schema, Deserialize)]
-#[credential(key = "api_key", name = "API Key", scheme = SecretToken, state = SecretToken)]
-struct ApiKeyCredential {
-    #[property(secret, validate(required))]
+#[derive(Schema, Deserialize)]
+#[serde(tag = "mode", content = "credentials", rename_all = "snake_case")]
+enum AuthProperties {
+    ApiKey(ApiKeyProperties),
+    Basic(BasicProperties),
+}
+#[derive(Schema, Deserialize)]
+struct ApiKeyProperties {
+    #[property(input(secret, required), validate(non_empty))]
     key: SecretString,
 }
+struct ApiCredential;
+#[credential(key = "api", name = "API", description = "API authentication")]
+impl ApiCredential {
+    type Properties = AuthProperties;
+    type Scheme = SecretToken;
+    type State = SecretToken;
+    // Required project and async resolve bodies omitted; BasicProperties omitted.
+    // Additional recognized methods here determine capability trait membership.
+}
 ```
-
-Resolve/project behavior remains hand-written or generated from explicitly
-recognized methods; capability membership is still inferred from method
-presence, not from flags.
-
-Existing compile coverage: credential compile-fail tests under
-`crates/credential/tests/compile_fail_*.rs`.
 
 ### Resource
 
-Before:
+Before: [resource_config_derive.rs](../../resource/tests/resource_config_derive.rs)
+uses NamedCfg with `ResourceConfig, Schema` and `config(schema = external)`.
+[derive_slot_accessor.rs](../../resource/tests/trybuild/derive_slot_accessor.rs)
+exercises the existing cell/accessor shape; its generic naming is not the new
+scheme contract. After preserves separate Provider/config and owned snapshots:
 
 ```rust
+#[derive(Clone, Schema, ResourceConfig, Serialize, Deserialize)]
+#[schema(condition(use_auth, eq(field(authenticated), true)))]
+struct ClientConfig {
+    #[property(input(expressions = forbidden))]
+    authenticated: bool,
+    url: String,
+}
 #[derive(Resource)]
-struct Postgres {
-    #[credential(key = "db_auth")]
-    auth: CredentialSlot<PostgresCredential>,
+struct Client {
+    #[slot(credential, key = "auth", binding = required,
+           bind_when(condition(use_auth)))]
+    auth: CredentialSlot<SecretToken>,
 }
-
-#[derive(ResourceConfig, Schema, Deserialize)]
-#[config(schema = external)]
-struct PostgresConfig {
-    #[field(label = "URL")]
-    url: String,
-}
-```
-
-After:
-
-```rust
-#[derive(Resource, Schema, Deserialize)]
-#[resource(key = "postgres", topology = Pooled)]
-struct Postgres {
-    #[property(label = "URL", validate(required))]
-    url: String,
-
-    #[property(credential, key = "db_auth", purpose = "Database auth")]
-    #[serde(skip)]
-    auth: CredentialSlot<PostgresCredential>,
+impl Provider for Client {
+    type Config = ClientConfig;
+    type Instance = HttpClient;
+    type Topology = Resident<Self>;
+    async fn create(&self, config: &ClientConfig, ctx: &ResourceContext)
+        -> Result<HttpClient, Error> {
+        let auth = self.auth_slot();
+        match auth.as_deref() {
+            Some(guard) => connect_authenticated(config, guard, ctx).await,
+            None => connect_public(config, ctx).await,
+        }
+    }
+    // Required key and explicit metadata methods, topology hook impl, imports,
+    // HttpClient and application connect helpers omitted.
 }
 ```
 
-Provider lifecycle remains hand-written. `ResourceConfig: Clone` is dropped in
-favor of schema-bound config identity and `ContentId` / fingerprint evidence.
+## Diagnostics and Acceptance
 
-Existing compile coverage: `crates/resource/tests/resource_config_derive.rs`,
-`crates/resource/tests/derive_resource_compile_fail.rs`, and SDK
-`derive_external_contract`.
+Compile diagnostics name offending tokens and accepted keys/shapes; combine spans
+for duplicates. Rust bounds diagnose generic/secret destinations; external
+schemas and runtime provider behavior are not visible to a proc macro.
 
-## Programmatic Metadata Builders
+| Stage | Required rejection/evidence |
+|---|---|
+| Compile | Unknown/duplicate property keys, flat key/default/emit_as, conflicting sections/modes and local serde key/alias collisions. |
+| Compile | Slot/property mixing, wrong receiver, wrong wrappers, Option<Cell>, lazy, conditional non-Option action guard. |
+| Compile | Unknown local field/name, malformed pointer/condition, unsupported serde codec/flatten, incompatible derived trait ownership. |
+| Compile | Missing PropertyType/HasSchema/default encoding bounds and unsafe secret destination lacking SecretInput. |
+| Schema admission | External path/name/domain errors, cycles/budget overflow, hidden secret descendants in resource configs, secret defaults and unavailable providers. |
+| Leaf admission | Slot projection mismatch, scheme compatibility, forbidden host facts/selectors, closed remote options and stale policy versions. |
+| Metadata authoring/admission | Invalid category/link/reference/schedule, conflicting Overview or exceeded byte/count budgets; typed payload-free errors across manual and macro paths. |
+| Metadata recorded ingress | Unknown catalog/protocol versions, missing obligations or changed authored/derived evidence rejected; only fresh definitions returned. |
+| Runtime | Default/condition/loader failures, incomplete proof, explicit binding errors, cancellation, rotation/reload and decode projection errors. |
+| Review | Arbitrary unsafe Debug/secret handling and nondeterministic defaults cannot be proved absent by compile-fail tests. |
 
-The unified derive grammar does not subsume the programmatic metadata builders.
-`ActionMetadataDraft`, `CredentialMetadataDraft`, and `ResourceMetadataDraft`
-remain the programmatic authoring surface for factories, registries, tests, and
-manual integration code. Issue 1018 must still make those three draft builders
-symmetric. That issue should delegate icon setters to `nebula-metadata::Icon`
-and remove any author-facing `icon`/`icon_url` pair.
+| Acceptance scenario | Observable requirement |
+|---|---|
+| Rename + alias + directional output | Canonical input reaches Deserialize; output key only reaches export. |
+| Directional workflow edge | Producer outbound checked against consumer inbound; equal inbound-only keys cannot hide incompatible output. |
+| Skipped data fallback | Derived data with serde(skip/default) fails explicitly; no hidden default runs after proof. |
+| Recursive data definitions | Direct, mutual and generic recursion rejected by bounded construction/compiler diagnostics without hanging or overflowing. |
+| Panicking default provider | Release subprocess terminates without producing admitted metadata; no recoverable-error or panic-hook-redaction claim. |
+| Alias/newtype/generic SDK data | Correct scalar/nested domains for two distinct instantiations, with no leaf dependency or shared generic cache. |
+| Missing/null/empty/default matrix | Exactly the table's outcomes; defaults/rules once, no decode on failed proof. |
+| Hidden and pending display | No required waiver or input blockade; supplied hidden data validated. |
+| Tagged auth union | Invalid/mixed mode payload rejected; active variant secrets protected. |
+| Nested resource secret | Admission rejects before registration/create, including external child schemas. |
+| Slot branch false/true/pending | Zero resolution when inactive; exact prepared input governs activation; pending never becomes false. |
+| Optional explicit binding failure | Denial/type/timeout/revoke remains error; no silent None. |
+| Conditional required binding | False yields None without lookup; true with no binding fails before execute/create. |
+| Nested binding selector | Expression at selector or any contributing ancestor rejected; evaluated object cannot masquerade as authored literal. |
+| Recorded slot plan | Exact scheme/provider/condition evidence, plugin closure and new-epoch golden vectors; old bytes unchanged. |
+| Resource rotate/reload/cancel | Owned snapshot lifetime, generation tracking and lease cleanup retain owner contracts. |
+| Options paging/selected labels | Scoped cache, typed results, errors distinct from empty, no remote authority claim. |
+| Protected options domain | Direct/nested/external secret fields rejected before provider dispatch, result export or selected-label lookup. |
+| SDK-only and renamed SDK | All new derives/impl macros work through curated exports; no exposed store/tenant/proof constructors. |
+| Persisted v1 evidence | Bytes unchanged; unsupported policy rejected; migrated definitions freshly admitted. |
+| Metadata discovery and links | Categories filter, tags search; canonical set ordering and one Overview via both APIs; malformed URLs/budget overflow rejected without I/O or payload disclosure. |
+| Metadata cross-family replacement | Action -> Resource reference admitted; unavailable target stays unresolved guidance; invalid key/version/removal chronology rejected; no automatic migration. |
+| Metadata exact evidence | Text/link changes may pass revision compatibility but fail stale readmission; schema UI still requires major; lifecycle precedence survives setter order/serde. |
+| Metadata derived facts | Existing credential projection exposes all five registry capabilities and checked scheme identity; forged/stale leaf evidence fails; discovery constructs no resource/topology instances. |
+| Metadata fallback and boundary | Catalog works without localization/tenant state; fallback remains canonical; new authored support/trust/availability flags are rejected. |
 
-The derives should emit those draft builders only through the symmetric surface
-once issue 1018 lands.
+## Ordered Delivery and Review
 
-## Non-Goals
+These are ordered implementation dependencies, not additional tracked plan files.
+Each issue must update its original scope to this contract before implementation.
 
-- Do not serialize schema proof tokens or typed guards.
-- Do not move slot bindings into `parameters`, credential properties, or resource config values.
-- Do not implement ADR-0101's engine-owned `Slots` value in this change.
-- Do not add process, WASM, or dynamic plugin isolation.
-- Do not expose registries, stores, tenant authority, or admitted metadata as SDK authoring APIs.
-- Do not keep stable duplicate attribute surfaces after migration.
+1. **1018:** constructor/SDK parity for existing metadata drafts; no new icon inventory.
+2. **Metadata evolution prerequisite:** after 1018, implement shared category/link/reference/schedule contracts, bounded admission, evidence and compatibility rules; specify the mandatory catalog envelope. Leaf tasks consume this foundation and extend existing derived projections; the Plugin prerequisite completes export/readmission integration. Localization services and static topology export are deferred.
+3. **Validator prerequisite:** Condition refinement, presence semantics, budgets and policy-v2 contract; independent of metadata/schema imports.
+4. **995:** schema-codegen package and gates, grammar, descriptors, projections, defaults, conditions/options and versioned admission; consumes the validator prerequisite.
+5. **994, contract subtask:** leaf slot declarations and prepared-input port signatures over core; consumes 995, keeps a single projected declaration source. Separate this from 994's later end-to-end production wiring.
+6. **997 / 998 and a resource follow-up:** action, credential and resource implementation after the declaration contracts. Issue 999 is already closed; scope a new resource task instead of treating it as unfinished. No dependency on final SDK exports.
+7. **Plugin prerequisite:** versioned durable slot/schema records, compiler epoch, directional connection checks and readmission after leaf contracts; coordinate with 1014 without waiting for its unrelated freeze work.
+8. **994, wiring subtask:** production resolution and engine sequencing after leaf implementations and the plugin prerequisite; prove exact input/binding provenance end to end.
+9. **1000:** SDK exports and isolated renamed-dependency consumer proofs after leaf contracts; macro hygiene uses existing narrow support paths.
+10. **1001:** examples and one SDK-only end-to-end workflow release gate after 1000 and production wiring.
 
-## Maintainer Review Notes
+The outer release gate must author a typed workflow, admit its catalog and values,
+choose a conditional credential/resource branch, run behavior with typed data,
+and check outputs plus negative/default/secret/rotation cases using controlled
+fixtures. Existing compile fixtures alone are not that execution proof.
+It must depend on SDK only for Nebula APIs; test support must not expose raw
+stores, admission capabilities or tenant proofs to make it pass.
 
-API-design review: acceptable with one mandatory constraint: the value schema
-and slot graph must stay separate. A single author struct is a DX improvement
-only if `HasSchema` continues to describe values and dependency slots remain
-catalog/activation declarations.
+Observed prior review found P1 receiver duplication, split impl ownership, serde/
+default drift, guard lifetime and lazy/conditional ambiguities, visibility policy
+coupling, and P2 alias/newtype/generic gaps. The sections above address those
+objections as design decisions; no implementation fix or passing test is claimed.
+The former attributed approvals are withdrawn, not carried forward as sign-off.
+Maintainer pre-code verdict: ACCEPTABLE as a proposed design contract. Two
+independent review passes found seven additional medium design gaps, all revised
+and rechecked; the metadata addition also received a separate focused review with
+no remaining high/medium findings. This is not implementation certification.
+The existing-code gate passed fmt, clippy, 8542 nextest tests (3 skipped), doctests
+and deny; deny retained configuration warnings. Documentation checks passed.
+Implementation acceptance and the outer workflow remain release requirements,
+not behavior proved by those existing-code checks.
 
-Macro-specialist review: acceptable with two constraints. First, parse into one
-intermediate property model shared by the four derives instead of four local
-parsers. Second, compile-fail diagnostics are part of the contract and must pin
-unknown keys, mode conflicts, and SDK path resolution.
+## Source Rationale
+
+Official sources checked by the coordinator on 2026-09-12:
+
+- [Rust procedural macros](https://doc.rust-lang.org/reference/procedural-macros.html): derive scope and adjacent generated items.
+- [Serde field attributes](https://serde.rs/field-attrs.html): authoritative rename, alias and default behavior.
+- [JSON Schema annotations](https://json-schema.org/understanding-json-schema/reference/annotations): default annotation versus input materialization.
+- [JSON Schema conditionals](https://json-schema.org/understanding-json-schema/reference/conditionals): explicit conditional constraints.
+- [Rust panic recovery](https://doc.rust-lang.org/std/panic/fn.catch_unwind.html): aborting panics cannot be caught; hooks run before an unwind is caught.
+- [OnceLock initialization](https://doc.rust-lang.org/std/sync/struct.OnceLock.html#method.get_or_init): nested construction must avoid reentrant initialization.

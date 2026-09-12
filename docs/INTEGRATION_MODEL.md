@@ -2,7 +2,7 @@
 name: Nebula integration model
 description: Authoritative integration-model mechanics — Resource / Credential / Action / Schema / Plugin contract, plugin packaging, cross-plugin dependency rules. Canon §3.5 states invariants; this document carries the mechanics.
 status: accepted
-last-reviewed: 2026-09-11
+last-reviewed: 2026-09-12
 related: [docs/PRODUCT_CANON.md]
 ---
 
@@ -43,25 +43,111 @@ recorded DTOs deserialize, and readmission returns the fresh definition rather
 than promoting recorded fields. `PluginManifest` remains the bundle descriptor
 and uses its own checked builder; it is not a catalog-leaf admission bypass.
 
-### Unified declarative authoring
+### Phase-5 authoring target (implementation pending)
 
-The accepted declarative authoring grammar is specified in
-[`crates/schema/docs/PHASE5_PROPERTY.md`](../crates/schema/docs/PHASE5_PROPERTY.md).
-It gives schema-only structs, Actions, Credentials, and Resources one
-field-level `#[property(...)]` grammar while preserving the separation between
-value schemas and dependency slots.
+[`crates/schema/docs/PHASE5_PROPERTY.md`](../crates/schema/docs/PHASE5_PROPERTY.md)
+specifies the revised target contract for separate value and slot grammars with
+explicit associated data types. Implementation is pending.
 
-| Field kind | Attribute mode | Included in `HasSchema` | Persisted as values | Binding source |
+**Current implementation:** value derives use the existing `#[field(...)]` /
+`#[validate(...)]` helpers; integration fields use `#[credential(...)]` /
+`#[resource(...)]` for slots. The schema-free draft/admission lifecycle above
+already exists. The new grammar and remaining builder parity below are targets,
+not shipped APIs.
+
+**Target authoring:** `#[property(display(...), input(...), validate(...),
+options(...))]` describes values only; the blocks are optional according to the
+property's needs. `#[slot(credential, ...)]` and `#[slot(resource, ...)]` declare
+dependencies separately. `Action::Input`, `Credential::Properties`, and
+`Provider::Config` remain permanently supported, canonical explicit data types;
+`Action::Output` remains explicit too. They are not migration-only escape hatches,
+and no derive requires an associated type to be `Self`.
+
+| Declaration | Target authoring location | Included in `HasSchema` | Persisted as values | Binding source |
 |---|---|---:|---:|---|
-| Parameter / config / credential property | `#[property(...)]` | yes | yes | authored values |
-| Credential slot | `#[property(credential, ...)]` | no | no | `slot_bindings` |
-| Resource slot | `#[property(resource, ...)]` | no | no | `slot_bindings` |
+| Parameter / config / credential property | `#[property(...)]` on the associated data type or schema-only type | yes | yes, subject to existing disclosure rules | authored values |
+| Credential slot | `#[slot(credential, ...)]` on an action or resource | no | no | `slot_bindings` |
+| Resource slot | `#[slot(resource, ...)]` on an action | no | no | `slot_bindings` |
 
-Slots are catalog and activation declarations, not schema fields. JSON Schema
-export for `ValidSchema` remains value-only; catalog export may attach slot
-metadata as `x-nebula-slots` beside the value schema. Programmatic
-`ActionMetadataDraft` / `CredentialMetadataDraft` / `ResourceMetadataDraft`
-builders remain a separate surface and are made symmetric by issue 1018.
+`#[derive(Schema)]` describes value fields, not dependency declarations. Slots and
+their bindings remain outside parameters, credential properties, and persisted
+config values. Catalog export may describe slots beside the value schema; that
+does not put them into `ValidSchema` or establish a shipped catalog extension.
+Declaration keys, catalog type keys, and selected instance IDs remain distinct.
+Declaring or displaying a slot never grants binding or tenant authority.
+
+Existing behavior families and canon remain unchanged: actions keep
+`execute(&self, input, ...)`, resources keep a handwritten `impl Provider` with
+`create(&self, config, ...)`, and credential resolve/project remain static typed
+contracts. The existing `#[credential]` macro on an impl block continues to infer
+capability membership from methods. A struct derive cannot inspect a separate
+impl block and must not claim to infer those capabilities. No new behavior
+family or hidden companion data type is introduced by this proposal.
+
+**Presentation boundary, target only:** `display(...)` must not change value
+requiredness, suppress validation, or grant slot authority. Value validity belongs
+to the input/validation contract. Semantic decoupling requires a future, explicitly
+versioned migration with compatibility and recorded-definition handling; current
+runtime semantics remain in effect until then. Full schema equality remains
+conservative and includes presentation/UI fields. This proposal does not split
+presentation identity or rewrite existing schema or plan bytes.
+
+### Shared metadata authoring (current foundation, target parity)
+
+`nebula-metadata` owns shared catalog metadata; leaf crates compose it and own
+entity-specific admission. Property display hints belong to schema authoring,
+not to a new catalog-leaf metadata type. SDK personas curate these contracts.
+
+| Metadata row | Shared owner / entity extra | Authoring and admission |
+|---|---|---|
+| Identity and text | `MetadataDraft<K>`: typed key, `MetadataName`, description | Checked `new` or fallible `try_new`; no key replacement |
+| Revision | `MetadataVersion` | `with_version`; compatibility checked separately |
+| Icon | `Icon::None`, `Icon::Inline`, `Icon::Url` | `with_icon`, `with_inline_icon`, `with_url_icon`; one representation |
+| Documentation and discovery | Documentation URL, tags | `with_documentation_url`, `with_tags`, `add_tag` |
+| Lifecycle | Active maturity or deprecation notice | `mark_experimental`, `mark_beta`, `mark_stable`, `with_deprecation`; notice wins |
+| Canonical value schema | `BaseMetadata<K>` | Owning factory/registry binds the associated type's checked schema; never supplied by a leaf draft |
+| Action extras | Ports, isolation, checkpoint/effect policy, concurrency; admitted kind and output schema | Existing leaf `with_*` / `add_*` methods; factory derives both schemas and stamps kind |
+| Credential extras | Admitted auth pattern; capability membership remains trait-derived | Target admission derives pattern from `C::Scheme`; current draft still takes it as a fourth constructor argument |
+| Resource extras | No additional catalog fields beyond the shared base | Factory derives `R::Config` schema and checks `Provider::key()`; topology and live instance stay resource contracts |
+
+The exact common constructor contract is the following, with `K` replaced by
+`ActionKey`, `CredentialKey`, or `ResourceKey` on each concrete leaf draft:
+
+```rust,ignore
+pub fn new(key: K, name: MetadataName, description: impl Into<String>) -> Self;
+pub fn try_new(
+    key: K,
+    name: impl Into<String>,
+    description: impl Into<String>,
+) -> Result<Self, MetadataError>;
+```
+
+All three drafts retain the existing `with_*`, `add_tag`, and `mark_*` names above,
+with the existing typed arguments and consuming `Self` returns. `with_tags`
+replaces tags; `add_tag` appends. Drafts remain private-field, `#[must_use]`,
+schema-free, and non-deserializable. Only the owning factory/registry binds leaf
+schemas and creates admitted metadata; recorded DTOs still require readmission
+against a fresh definition. No public leaf `build()` or schema setter is added.
+
+Issue 1018 covers the remaining constructor and SDK export parity: add Action's
+`try_new`, remove the credential constructor's redundant pattern argument in
+favor of admission from `C::Scheme`, and curate equivalent draft/ornament imports
+for manual authoring. All three drafts already delegate typed icons and shared
+`with_*` methods to `nebula-metadata`; this is not an icon repair from scratch.
+
+**Further metadata evolution, proposed:** the
+[Phase-5 metadata contract](../crates/schema/docs/PHASE5_PROPERTY.md#metadata-evolution)
+goes beyond constructor parity: typed catalog categories and related links,
+cross-family replacement references, explicit removal schedules, and a versioned
+catalog protocol. Leaf facts are projected from existing factories/registries,
+not authored capability flags. Plugin packaging retains package/SDK constraints;
+tenant availability and future locale overlays remain separate host projections.
+These additions require their own checked admission, exact evidence and revision
+compatibility cases. The shared lower draft's `bind_schema` becomes fallible to
+enforce those bounds; leaf factories propagate its error without exposing a leaf
+`build()` method. These changes are not implemented by this documentation change.
+
+### Runtime schema boundaries (current)
 
 The **schema subsystem** (`nebula-schema` crate) is the **fifth concept**, shared across integration kinds. `HasSchema::schema()` / `schema_of` and metadata admission are fallible: invalid definitions do not become catalog entries. Runtime data then moves through four distinct phases:
 

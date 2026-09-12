@@ -245,9 +245,14 @@ execution stays centralized at `validate_rules_with_ctx` and
 
 ## Module map and checks
 
-- `PHASE5_PROPERTY.md`: accepted unified `#[property(...)]` authoring grammar
-  for schema-only structs and integration crates. It keeps slots outside
-  `HasSchema`, so the proof-token pipeline below remains value-only.
+- [PHASE5_PROPERTY.md](PHASE5_PROPERTY.md): revised target design; implementation
+  pending. Value-only `#[property(display(...), input(...), validate(...), options(...))]`
+  describes explicit `Input` / `Properties` / `Config` data types; separate `#[slot(...)]`
+  dependencies stay outside `HasSchema` and persisted values. Current `#[field(...)]` /
+  `#[validate(...)]` helpers remain the implementation baseline. Target presentation
+  must not affect value requiredness or grant slot authority; semantic decoupling
+  requires a future versioned migration. Full schema equality remains conservative
+  and includes UI fields; root shapes and exact-schema proof boundaries are unchanged.
 - `schema.rs`, `field.rs`, `builder/`, and `lint.rs`: definitions, construction,
   checked keys, aliases, and bounded structural lint.
 - `value/mod.rs`, `tree.rs`, `wire.rs`, `tree_canonical.rs`, and `canonical.rs`
