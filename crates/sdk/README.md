@@ -130,6 +130,39 @@ the only admission into terminal metadata. `ActionMetadata`, `CredentialMetadata
 `ResourceMetadata`, `BaseMetadata`, and admission errors are therefore not supported
 SDK persona types.
 
+### Catalog construction migration
+
+Use the three concrete drafts from `integration::{action, credential, resource}`
+or `prelude`. Each has `new(key, MetadataName, description)` and fallible
+`try_new(key, name, description)`. Credential constructors no longer take an auth
+pattern; the registry derives it from the associated scheme. Resource authors
+implement `Provider::metadata` explicitly; `from_key` is removed. Action macros
+preserve full SemVer, including prerelease and build metadata.
+
+`integration` and `prelude` curate `CatalogCategoryKey`, `CatalogLink`,
+`CatalogLinkRelation`, `CatalogLinkTarget`, `DocumentationOrigin`, `CatalogReference`,
+`VersionReq`, `RemovalDate`, `RemovalMilestone`, `RemovalSchedule`, and the checked
+`DeprecationNotice` builders/getters. `CatalogValueError`, `MetadataError`, and
+`MetadataField` are nameable diagnostics. These are authoring values, not admitted
+proofs or factory authority. Categories, tags, and links are canonicalized at
+admission; documentation URLs project Overview links. Typed replacement references
+do not register dependencies or authorize execution.
+
+Migrate the removed lifecycle and diagnostic forms explicitly:
+
+| Before | After |
+|--------|-------|
+| `.reason(text)` | `.with_reason(text)` |
+| `.replacement(text)` | `.with_replacement(CatalogReference::action(action_key!("example.next")))`; select the matching credential, resource, or plugin reference constructor. |
+| `.sunset(text)` | `.with_removal(RemovalSchedule::OnDate(RemovalDate::new(2028, 2, 29)?))`, or a typed `AtVersion` / `Milestone` schedule. |
+| Public notice fields / struct literals | `DeprecationNotice::new(since)` plus builders; read with `since()`, `removal()`, `replacement()`, and `reason()`. |
+| `ManifestError::InvalidKey(_)` | `ManifestError::InvalidKey`; invalid input is no longer retained in the error. |
+| Numeric casts of `MetadataError` | Match typed variants (including their `MetadataField`), or use the existing `Classify` diagnostic contract where available; enum discriminants are not diagnostic codes. |
+
+Host catalog storage must migrate to nested wire-v2 `base` records; old flat or
+unversioned evidence is rejected and must be replaced from fresh definitions.
+See [catalog migration and bounds](../../docs/INTEGRATION_MODEL.md#catalog-construction-and-wire-migration).
+
 ### Resource authoring and the SDK
 
 Resource authoring types, traits, and derives are in the prelude and the explicit

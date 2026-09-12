@@ -6,9 +6,6 @@ use nebula_schema::schema_of;
 
 #[test]
 fn registry_admits_the_properties_schema_into_immutable_metadata() {
-    let draft = ApiKeyCredential::metadata();
-    assert_eq!(draft.pattern(), AuthPattern::SecretToken);
-
     let mut registry = CredentialRegistry::new();
     registry
         .register(ApiKeyCredential, "terminal-metadata-test")
@@ -18,6 +15,11 @@ fn registry_admits_the_properties_schema_into_immutable_metadata() {
         .metadata(ApiKeyCredential::KEY)
         .expect("registered metadata is available");
     assert_eq!(admitted.key().as_str(), ApiKeyCredential::KEY);
+    assert_eq!(admitted.pattern(), AuthPattern::SecretToken);
+    assert_eq!(
+        admitted.pattern(),
+        <<ApiKeyCredential as Credential>::Scheme as nebula_credential::AuthScheme>::pattern(),
+    );
     assert_eq!(
         admitted.schema(),
         &schema_of::<<ApiKeyCredential as Credential>::Properties>()

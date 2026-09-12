@@ -1,8 +1,11 @@
 mod changes;
 mod model;
 mod north_star;
+mod pre_commit;
 mod runtime_repair_red;
 mod workspace;
+
+pub use pre_commit::PlanError as PreCommitPlanError;
 
 use std::{ffi::OsString, path::PathBuf};
 
@@ -24,6 +27,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum TopLevelCommand {
+    /// Plan owner-scoped pre-commit checks without changing CI selection.
+    PreCommitPlan {
+        /// Workspace-relative staged paths, passed after `--`.
+        paths: Vec<PathBuf>,
+    },
     /// Build a deterministic CI package plan.
     CiPlan {
         #[command(subcommand)]
@@ -165,6 +173,7 @@ where
 
 fn execute_in(cwd: &std::path::Path, cli: Cli) -> Result<Vec<u8>, XtaskError> {
     match cli.command {
+        TopLevelCommand::PreCommitPlan { paths } => pre_commit::plan(cwd, &paths),
         TopLevelCommand::CiPlan { command } => {
             let workspace = Workspace::load(cwd)?;
             let plan = match command {
@@ -267,6 +276,8 @@ fn execute_in(cwd: &std::path::Path, cli: Cli) -> Result<Vec<u8>, XtaskError> {
 
 #[derive(Debug, Error)]
 pub enum XtaskError {
+    #[error(transparent)]
+    PreCommit(#[from] PreCommitPlanError),
     #[error("cannot determine current directory: {0}")]
     CurrentDirectory(std::io::Error),
     #[error("invalid command line: {0}")]

@@ -39,6 +39,12 @@
 //!         resource_key!("quickstart.http_client")
 //!     }
 //!
+//!     fn metadata() -> nebula_resource::ResourceMetadataDraft {
+//!         nebula_resource::ResourceMetadataDraft::new(
+//!             Self::key(), nebula_resource::metadata_name!("HTTP client"), "Pooled HTTP client",
+//!         )
+//!     }
+//!
 //!     async fn create(&self, _config: &(), _ctx: &ResourceContext) -> Result<(), Error> {
 //!         Ok(())
 //!     }
@@ -431,6 +437,9 @@ pub use credential_fanout::{Bind, ResourceFanoutDriver, ResourceFanoutIndex, Rot
 ///     type Instance = ();
 ///     type Topology = Pooled<Self>;
 ///     fn key() -> ResourceKey { resource_key!("my.resource") }
+///     fn metadata() -> ResourceMetadataDraft {
+///         ResourceMetadataDraft::new(Self::key(), nebula_resource::metadata_name!("My resource"), "")
+///     }
 ///     async fn create(&self, _: &(), _: &ResourceContext) -> Result<(), Error> {
 ///         Ok(())
 ///     }

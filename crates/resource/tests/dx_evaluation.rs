@@ -80,6 +80,14 @@ impl Provider for HttpResource {
     type Instance = HttpClient;
     type Topology = Pooled<Self>;
 
+    fn metadata() -> nebula_resource::ResourceMetadataDraft {
+        nebula_resource::ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("HttpResource"),
+            "",
+        )
+    }
+
     fn key() -> ResourceKey {
         resource_key!("http.client")
     }
@@ -224,6 +232,14 @@ impl Provider for ConfigStoreResource {
     type Instance = ConfigStore;
     type Topology = Resident<Self>;
 
+    fn metadata() -> nebula_resource::ResourceMetadataDraft {
+        nebula_resource::ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("ConfigStoreResource"),
+            "",
+        )
+    }
+
     fn key() -> ResourceKey {
         resource_key!("config.store")
     }
@@ -359,6 +375,14 @@ impl Provider for DbResource {
     type Config = DbConfig;
     type Instance = DbConnection;
     type Topology = Pooled<Self>;
+
+    fn metadata() -> nebula_resource::ResourceMetadataDraft {
+        nebula_resource::ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("DbResource"),
+            "",
+        )
+    }
 
     fn key() -> ResourceKey {
         resource_key!("db.connection")

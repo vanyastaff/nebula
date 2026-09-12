@@ -12,8 +12,8 @@ use nebula_core::{
     WorkflowVersionId, node_key,
 };
 use nebula_credential::{
-    AnyCredential, AuthPattern, Credential, CredentialContext, CredentialMetadataDraft,
-    SecretString, SecretToken, contract::plugin_capability_report, error::CredentialError,
+    AnyCredential, Credential, CredentialContext, CredentialMetadataDraft, SecretString,
+    SecretToken, contract::plugin_capability_report, error::CredentialError,
     resolve::StaticResolveResult,
 };
 use nebula_error::Classify;
@@ -49,6 +49,14 @@ impl<const INDEX: usize> Provider for MetadataFixture<INDEX> {
     type Instance = ();
     type Topology = Resident<Self>;
 
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("MetadataFixture"),
+            "",
+        )
+    }
+
     fn key() -> ResourceKey {
         let key = match INDEX {
             0 => "alpha.db",
@@ -72,7 +80,11 @@ impl<const INDEX: usize> nebula_resource::ResidentProvider for MetadataFixture<I
 
 fn resource_factory_at<const INDEX: usize>() -> Arc<dyn ResourceFactory> {
     let factory = KindActivator::<MetadataFixture<INDEX>, _, _>::with_metadata(
-        ResourceMetadataDraft::from_key(MetadataFixture::<INDEX>::key()),
+        ResourceMetadataDraft::new(
+            MetadataFixture::<INDEX>::key(),
+            nebula_resource::metadata_name!("Metadata fixture"),
+            "",
+        ),
         || MetadataFixture,
         || Resident::new(ResidentConfig::default()),
     );
@@ -193,7 +205,6 @@ macro_rules! credential_fixture {
                     nebula_core::credential_key!($key),
                     nebula_credential::metadata_name!("Test credential"),
                     "test credential",
-                    AuthPattern::SecretToken,
                 )
             }
 

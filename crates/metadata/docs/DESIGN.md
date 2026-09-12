@@ -22,16 +22,17 @@ RecordedBaseMetadata<K> + BaseMetadata<K> -> BaseMetadata<K>
 ```
 
 `MetadataDraft<K>` contains key, checked name, description, version, icon,
-documentation URL, tags, and lifecycle. It never contains a schema.
-`bind_schema(ValidSchema)` is the sole transition to `BaseMetadata<K>`.
+typed categories and links, tags, and lifecycle. It never contains a schema.
+`bind_schema(ValidSchema) -> Result<BaseMetadata<K>, MetadataBuildError>` is the
+sole admission transition, metering canonical authored fields and the full record.
 
 `BaseMetadata<K>` is private-field and getter-only. It serializes in the
-existing flat shape but cannot be deserialized. This prevents wire or authored
+nested shared `base` record shape but cannot be deserialized. This prevents wire or authored
 data from manufacturing an admitted definition.
 
 `RecordedBaseMetadata<K>` is the only lower-metadata deserialization target.
-Its deserializer parses `K: FromStr`, validates the name, and validates the
-lifecycle. `readmit_against` compares every recorded field and schema with a
+Its deserializer requires `K: FromStr + Serialize`, validates all canonical shared
+fields, chronology, and byte budgets. `readmit_against` compares every field and schema with a
 fresh definition. On success it returns a clone of the fresh definition; on
 mismatch it returns a payload-free `MetadataReadmissionError`.
 
@@ -53,17 +54,31 @@ Active maturity methods do not remove an attached notice.
 
 ## Wire contract
 
-`BaseMetadata<K>` and `RecordedBaseMetadata<K>` serialize with the same flat
-field names and default omission behavior:
+`BaseMetadata<K>` and `RecordedBaseMetadata<K>` serialize the same versioned
+shared object, nested under `base` by leaf records:
 
 ```text
-key, name, description, schema, version, icon,
-documentation_url, tags, maturity, deprecation
+metadata_wire_version: 2, key, name, description, schema, version, icon,
+categories, tags, links, maturity, deprecation
 ```
 
 Recorded decoding accepts owned JSON and readers by decoding the key as a
-string before invoking the typed key parser. Parser details and submitted
-metadata values are not included in metadata errors or tracing fields.
+string before invoking the typed key parser. Generic keys must serialize
+deterministically as JSON strings and recover identically through `FromStr`;
+the trait bounds alone do not prove that semantic law. Shared admission and
+recorded ingress capture key JSON independently within 32 KiB to reject
+non-string representations without trusting an earlier serializer invocation.
+Parser details and submitted
+metadata values are not included in metadata errors or tracing fields. Unknown
+fields, positional arrays, and unsupported versions fail. Raw transport uses bounded slice/reader
+helpers; direct serde needs an external allocation budget. See the README for
+the canonical shared, schema, raw collection, and complete-record limits.
+
+Shared authored and schema byte budgets use streaming counting writes. The
+complete canonical record is captured within the fixed 4 MiB ceiling and parsed
+with serde_json's unchanged recursion limit. `check_json_record` checks the
+whole shared or composed leaf object at admission and recorded ingress; schema
+field depth alone cannot account for defaults, rule operands, or leaf nesting.
 
 ## Compatibility
 

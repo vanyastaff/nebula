@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 
 fn leaf_json() -> Value {
     json!({
+        "metadata_wire_version": 2,
         "key": "example.action",
         "name": "Example",
         "description": "",
@@ -41,6 +42,7 @@ fn manifest_deserialization_rejects_the_same_blank_names_as_build() {
             .build()
             .expect_err("builder rejects blank names");
         let error = decode::<PluginManifest>(json!({
+            "metadata_wire_version": 2,
             "key": "example",
             "name": name,
         }))
@@ -58,6 +60,7 @@ fn manifest_deserialization_uses_builder_key_normalization() {
         .build()
         .expect("valid normalized key");
     let decoded: PluginManifest = decode(json!({
+        "metadata_wire_version": 2,
         "key": "HTTP Request",
         "name": "HTTP Request",
     }))
@@ -73,7 +76,8 @@ fn deserialization_rejects_invalid_typed_identity_and_version() {
         decode::<RecordedBaseMetadata<ActionKey>>(leaf)
             .expect_err("leaf identity and version must retain their typed validation");
 
-        let mut manifest = json!({ "key": "example", "name": "Example" });
+        let mut manifest =
+            json!({ "metadata_wire_version": 2, "key": "example", "name": "Example" });
         manifest[field] = json!(invalid);
         decode::<PluginManifest>(manifest)
             .expect_err("manifest identity and version must retain their typed validation");
@@ -83,6 +87,7 @@ fn deserialization_rejects_invalid_typed_identity_and_version() {
 #[test]
 fn manifest_deserialization_rejects_invalid_minimum_engine_version() {
     let error = decode::<PluginManifest>(json!({
+        "metadata_wire_version": 2,
         "key": "example",
         "name": "Example",
         "nebula_version": "not-a-version",
@@ -93,7 +98,7 @@ fn manifest_deserialization_rejects_invalid_minimum_engine_version() {
 
 #[test]
 fn notice_takes_precedence_over_every_wire_maturity() {
-    let notice = DeprecationNotice::new(Version::new(2, 0, 0)).reason("Superseded");
+    let notice = DeprecationNotice::new(Version::new(2, 0, 0)).with_reason("Superseded");
     for maturity in [
         None,
         Some("experimental"),
@@ -102,8 +107,10 @@ fn notice_takes_precedence_over_every_wire_maturity() {
         Some("deprecated"),
     ] {
         let mut leaf = leaf_json();
-        let mut manifest = json!({ "key": "example", "name": "Example" });
+        let mut manifest =
+            json!({ "metadata_wire_version": 2, "key": "example", "name": "Example" });
         for value in [&mut leaf, &mut manifest] {
+            value["version"] = json!("2.0.0");
             value["deprecation"] = json!(notice);
             if let Some(maturity) = maturity {
                 value["maturity"] = json!(maturity);
@@ -117,8 +124,10 @@ fn notice_takes_precedence_over_every_wire_maturity() {
             "",
         )
         .expect("valid metadata")
+        .with_version(Version::new(2, 0, 0))
         .with_deprecation(notice.clone())
-        .bind_schema(ValidSchema::empty());
+        .bind_schema(ValidSchema::empty())
+        .expect("valid bounded metadata");
         let leaf = recorded
             .readmit_against(&fresh)
             .expect("recorded notice matches fresh definition");
@@ -146,6 +155,7 @@ fn manifest_build_and_deserialization_reject_deprecated_without_notice() {
         .build()
         .expect_err("Deprecated requires a deprecation notice");
     let error = decode::<PluginManifest>(json!({
+        "metadata_wire_version": 2,
         "key": "example",
         "name": "Example",
         "maturity": "deprecated",
@@ -172,6 +182,7 @@ fn recorded_leaf_accepts_valid_keys_from_owned_json_and_readers() {
 #[test]
 fn manifest_accepts_valid_dependency_keys_from_owned_json_and_readers() {
     let value = json!({
+        "metadata_wire_version": 2,
         "key": "example",
         "name": "Example",
         "dependencies": [{ "key": "dependency", "req": "^1.0.0" }],
@@ -203,14 +214,18 @@ fn draft_lifecycle_setters_preserve_notice_precedence() {
     )
     .expect("valid metadata");
 
-    let notice = DeprecationNotice::new(Version::new(2, 0, 0)).reason("Superseded");
-    let deprecated = draft.with_deprecation(notice.clone());
+    let notice = DeprecationNotice::new(Version::new(2, 0, 0)).with_reason("Superseded");
+    let deprecated = draft
+        .with_version(Version::new(2, 0, 0))
+        .with_deprecation(notice.clone());
     for updated in [
         deprecated.clone().mark_experimental(),
         deprecated.clone().mark_beta(),
         deprecated.mark_stable(),
     ] {
-        let updated = updated.bind_schema(ValidSchema::empty());
+        let updated = updated
+            .bind_schema(ValidSchema::empty())
+            .expect("valid bounded metadata");
         assert_eq!(updated.maturity(), MaturityLevel::Deprecated);
         assert_eq!(updated.deprecation(), Some(&notice));
     }
@@ -223,7 +238,8 @@ fn active_maturity_can_change_before_schema_binding() {
         .mark_beta()
         .mark_experimental()
         .mark_stable()
-        .bind_schema(ValidSchema::empty());
+        .bind_schema(ValidSchema::empty())
+        .expect("valid bounded metadata");
     assert_eq!(metadata.maturity(), MaturityLevel::Stable);
     assert_eq!(metadata.deprecation(), None);
     let recorded: RecordedBaseMetadata<String> =
@@ -245,7 +261,8 @@ fn intrinsic_construction_accepts_semver_boundaries_and_unicode_names() {
         let metadata = MetadataDraft::try_new("example".to_owned(), name, "")
             .expect("Unicode display name and empty description are valid")
             .with_version(version.clone())
-            .bind_schema(ValidSchema::empty());
+            .bind_schema(ValidSchema::empty())
+            .expect("valid bounded metadata");
         assert_eq!(metadata.name(), name);
         assert_eq!(metadata.description(), "");
         assert_eq!(metadata.version(), &version);
@@ -259,17 +276,15 @@ fn intrinsic_construction_accepts_semver_boundaries_and_unicode_names() {
 }
 
 #[test]
-fn flattened_typed_metadata_validates_and_preserves_outer_fields() {
+fn nested_typed_metadata_validates_and_preserves_outer_fields() {
     #[derive(Debug, PartialEq, serde::Serialize)]
     struct Entity {
-        #[serde(flatten)]
         base: BaseMetadata<ActionKey>,
         category: String,
     }
 
     #[derive(Debug, serde::Deserialize)]
     struct RecordedEntity {
-        #[serde(flatten)]
         base: RecordedBaseMetadata<ActionKey>,
         category: String,
     }
@@ -278,13 +293,14 @@ fn flattened_typed_metadata_validates_and_preserves_outer_fields() {
         base: MetadataDraft::try_new("example".parse().expect("valid key"), "Example", "")
             .expect("valid metadata")
             .with_deprecation(DeprecationNotice::new(Version::new(1, 0, 0)))
-            .bind_schema(ValidSchema::empty()),
+            .bind_schema(ValidSchema::empty())
+            .expect("valid bounded metadata"),
         category: "network".to_owned(),
     };
     let mut value = json!(original);
-    assert!(value.get("base").is_none());
+    assert_eq!(value["base"]["metadata_wire_version"], 2);
     let recorded: RecordedEntity =
-        serde_json::from_value(value.clone()).expect("flattened recorded JSON");
+        serde_json::from_value(value.clone()).expect("nested recorded JSON");
     let restored = Entity {
         base: recorded
             .base
@@ -293,14 +309,14 @@ fn flattened_typed_metadata_validates_and_preserves_outer_fields() {
         category: recorded.category,
     };
     assert_eq!(restored, original);
-    value["name"] = json!(" ");
+    value["base"]["name"] = json!(" ");
     serde_json::from_value::<RecordedEntity>(value)
-        .expect_err("flattening cannot bypass validation");
+        .expect_err("leaf composition cannot bypass validation");
 }
 
 #[test]
 fn key_parser_errors_do_not_expose_submitted_text() {
-    #[derive(Debug)]
+    #[derive(Debug, serde::Serialize)]
     struct RejectedKey;
 
     impl std::str::FromStr for RejectedKey {

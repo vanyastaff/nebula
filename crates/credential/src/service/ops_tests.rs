@@ -6,8 +6,8 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::{
-    AuthPattern, CredentialError, CredentialMetadataDraft, PendingState, PendingStoreError,
-    SecretString, SecretToken, StaticResolveResult,
+    CredentialError, CredentialMetadataDraft, PendingState, PendingStoreError, SecretString,
+    SecretToken, StaticResolveResult,
 };
 
 struct UnusedPendingStore;
@@ -86,7 +86,6 @@ impl Credential for NormalizedCredential {
             nebula_core::credential_key!("normalized_test"),
             crate::metadata_name!("Normalized"),
             "Normalized credential fixture",
-            AuthPattern::SecretToken,
         )
     }
 
@@ -214,7 +213,6 @@ impl Credential for UnserializableCredential {
             nebula_core::credential_key!("unserializable_fixture"),
             crate::metadata_name!("Unserializable"),
             "Failing serializer fixture",
-            AuthPattern::NoAuth,
         )
     }
 

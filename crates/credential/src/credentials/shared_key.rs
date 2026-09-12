@@ -8,9 +8,8 @@ use nebula_schema::Schema;
 use serde::Deserialize;
 
 use crate::{
-    AuthPattern, Credential, CredentialContext, CredentialError, CredentialMetadataDraft,
-    SecretString, contract::plugin_capability_report, contract::resolve::StaticResolveResult,
-    scheme::SharedKey,
+    Credential, CredentialContext, CredentialError, CredentialMetadataDraft, SecretString,
+    contract::plugin_capability_report, contract::resolve::StaticResolveResult, scheme::SharedKey,
 };
 
 /// Setup-form shape for the `shared_key` credential.
@@ -38,7 +37,6 @@ impl Credential for SharedKeyCredential {
             nebula_core::credential_key!("shared_key"),
             crate::metadata_name!("Pre-shared Key"),
             "Pre-shared symmetric key (TLS-PSK, WireGuard, IoT).",
-            AuthPattern::SharedSecret,
         )
         .with_icon(nebula_metadata::Icon::inline("key"))
     }

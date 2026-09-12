@@ -364,7 +364,11 @@ mod tests {
         }
 
         fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::from_key(Self::key())
+            ResourceMetadataDraft::new(
+                Self::key(),
+                nebula_resource::metadata_name!("registry-counted"),
+                "",
+            )
         }
     }
 
@@ -474,7 +478,11 @@ mod tests {
             Ok(())
         }
         fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::from_key(Self::key())
+            ResourceMetadataDraft::new(
+                Self::key(),
+                nebula_resource::metadata_name!("registry-counted-b"),
+                "",
+            )
         }
     }
     nebula_resource::no_credential_slots!(CountedDaemonB);

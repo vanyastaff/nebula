@@ -404,7 +404,7 @@ mod tests {
         }
 
         fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::from_key(Self::key())
+            ResourceMetadataDraft::new(Self::key(), crate::metadata_name!("mock-bounded"), "")
         }
     }
 
@@ -635,7 +635,11 @@ mod tests {
             Ok(())
         }
         fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::from_key(Self::key())
+            ResourceMetadataDraft::new(
+                Self::key(),
+                crate::metadata_name!("fingerprint-ownership-regression"),
+                "",
+            )
         }
     }
 

@@ -60,7 +60,11 @@ impl Provider for ProbeResource {
     }
 
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("test.acquire_erased.probe"),
+            "",
+        )
     }
 }
 
@@ -314,7 +318,11 @@ mod pool_parity {
         }
 
         fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::from_key(Self::key())
+            ResourceMetadataDraft::new(
+                Self::key(),
+                nebula_resource::metadata_name!("test.ae4.pool"),
+                "",
+            )
         }
     }
 
@@ -435,7 +443,11 @@ mod resident_erased_reuses_runtime {
         }
 
         fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::from_key(Self::key())
+            ResourceMetadataDraft::new(
+                Self::key(),
+                nebula_resource::metadata_name!("test.ae4.resident_reuse"),
+                "",
+            )
         }
     }
 
@@ -553,7 +565,11 @@ mod pool_erased_distinct_instances {
         }
 
         fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::from_key(Self::key())
+            ResourceMetadataDraft::new(
+                Self::key(),
+                nebula_resource::metadata_name!("test.ae4.pool_erased"),
+                "",
+            )
         }
     }
 

@@ -14,12 +14,8 @@ pub(crate) struct ActionAttrs {
     pub name: String,
     /// Short description.
     pub description: String,
-    /// Parsed semver major component.
-    pub version_major: u64,
-    /// Parsed semver minor component.
-    pub version_minor: u64,
-    /// Parsed semver patch component.
-    pub version_patch: u64,
+    /// Complete checked SemVer, including prerelease and build metadata.
+    pub version: semver::Version,
     /// Required `Self::Input` type.
     pub input: Type,
     /// Required `Self::Output` type.
@@ -70,7 +66,7 @@ impl ActionAttrs {
         let version_str = attr_args
             .get_string("version")
             .unwrap_or_else(|| "0.1.0".to_string());
-        let (version_major, version_minor, version_patch) = parse_version(&version_str)?;
+        let version = parse_version(&version_str)?;
 
         let input = attr_args.get_type("input")?.ok_or_else(|| {
             syn::Error::new_spanned(
@@ -91,9 +87,7 @@ impl ActionAttrs {
             key,
             name,
             description,
-            version_major,
-            version_minor,
-            version_patch,
+            version,
             input,
             output,
         })
@@ -104,9 +98,7 @@ impl ActionAttrs {
         let key = &self.key;
         let name = &self.name;
         let description = &self.description;
-        let major = self.version_major;
-        let minor = self.version_minor;
-        let patch = self.version_patch;
+        let version = self.version.to_string();
 
         quote! {
             ::nebula_action::ActionMetadataDraft::new(
@@ -114,18 +106,17 @@ impl ActionAttrs {
                 ::nebula_action::metadata_name!(#name),
                 #description,
             )
-                .with_version(::nebula_action::MetadataVersion::new(#major, #minor, #patch))
+                .with_version_literal(#version)
         }
     }
 }
 
-/// Parse a `#[action(version = "…")]` string into `(major, minor, patch)` components.
+/// Parse a `#[action(version = "…")]` string without discarding SemVer fields.
 ///
 /// Accepts both the short `"X.Y"` shape (promoted to `X.Y.0`) and the full
 /// semver `"X.Y.Z"` shape, plus any additional pre-release / build metadata
-/// that `semver::Version::parse` understands. The parsed triple is emitted
-/// into the action metadata expansion as `::semver::Version::new(...)`.
-fn parse_version(version: &str) -> Result<(u64, u64, u64)> {
+/// that `semver::Version::parse` understands.
+fn parse_version(version: &str) -> Result<semver::Version> {
     let trimmed = version.trim();
     if trimmed.is_empty() {
         return Err(syn::Error::new(
@@ -161,5 +152,5 @@ fn parse_version(version: &str) -> Result<(u64, u64, u64)> {
         )
     })?;
 
-    Ok((parsed.major, parsed.minor, parsed.patch))
+    Ok(parsed)
 }

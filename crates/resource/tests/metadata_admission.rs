@@ -116,7 +116,11 @@ impl Provider for DefaultMismatchProbe {
 
     fn metadata() -> ResourceMetadataDraft {
         DEFAULT_DRAFT_CALLS.fetch_add(1, Ordering::SeqCst);
-        ResourceMetadataDraft::from_key(resource_key!("test.wrong-default-metadata-key"))
+        ResourceMetadataDraft::new(
+            resource_key!("test.wrong-default-metadata-key"),
+            nebula_resource::metadata_name!("test.wrong-default-metadata-key"),
+            "",
+        )
     }
 
     async fn create(
@@ -151,6 +155,14 @@ impl Provider for ExplicitMismatchProbe {
     type Config = ();
     type Instance = ();
     type Topology = Resident<Self>;
+
+    fn metadata() -> ResourceMetadataDraft {
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("ExplicitMismatchProbe"),
+            "",
+        )
+    }
 
     fn key() -> ResourceKey {
         resource_key!("test.explicit-metadata-key")
@@ -230,9 +242,9 @@ fn forged_recorded_metadata_cannot_become_an_admitted_definition() {
     let wire = serde_json::to_value(fresh).expect("admitted metadata serializes");
 
     let mut forged_key = wire.clone();
-    forged_key["key"] = serde_json::json!("test.forged-metadata-probe");
+    forged_key["base"]["key"] = serde_json::json!("test.forged-metadata-probe");
     let mut forged_schema = wire;
-    forged_schema["schema"] = serde_json::to_value(
+    forged_schema["base"]["schema"] = serde_json::to_value(
         nebula_schema::schema_of::<String>().expect("string has a valid schema"),
     )
     .expect("valid schema serializes");
@@ -280,7 +292,11 @@ fn provider_default_draft_key_mismatch_is_cached_and_rejected() {
 #[test]
 fn explicit_draft_key_mismatch_fails_before_registry_mutation() {
     let factory = KindActivator::<ExplicitMismatchProbe, _, _>::with_metadata(
-        ResourceMetadataDraft::from_key(resource_key!("test.wrong-explicit-metadata-key")),
+        ResourceMetadataDraft::new(
+            resource_key!("test.wrong-explicit-metadata-key"),
+            nebula_resource::metadata_name!("test.wrong-explicit-metadata-key"),
+            "",
+        ),
         || ExplicitMismatchProbe,
         || Resident::new(nebula_resource::ResidentConfig::default()),
     );
@@ -304,5 +320,147 @@ fn explicit_draft_key_mismatch_fails_before_registry_mutation() {
     assert!(
         registry.is_empty(),
         "failed admission must not mutate the registry"
+    );
+}
+
+fn catalog_factory(draft: ResourceMetadataDraft) -> impl ResourceFactory {
+    KindActivator::<ExplicitMismatchProbe, _, _>::with_metadata(
+        draft,
+        || ExplicitMismatchProbe,
+        || Resident::new(nebula_resource::ResidentConfig::default()),
+    )
+}
+
+#[test]
+fn shared_catalog_failures_are_cached_before_registry_mutation() {
+    use nebula_metadata::{MetadataError, MetadataField};
+    for (draft, expected) in [
+        (
+            ExplicitMismatchProbe::metadata().with_tags([" "]),
+            MetadataError::BlankTag,
+        ),
+        (
+            ResourceMetadataDraft::new(
+                ExplicitMismatchProbe::key(),
+                nebula_resource::metadata_name!("Probe"),
+                "x".repeat(8193),
+            ),
+            MetadataError::FieldTooLarge(MetadataField::Description),
+        ),
+        (
+            ResourceMetadataDraft::try_new(ExplicitMismatchProbe::key(), "\"".repeat(20_000), "")
+                .expect("nonblank name"),
+            MetadataError::SharedBudgetExceeded,
+        ),
+    ] {
+        let factory = Arc::new(catalog_factory(draft));
+        let mut registry = ResourceActivatorRegistry::new();
+        for _ in 0..2 {
+            std::assert_matches!(factory.metadata(),
+                Err(MetadataBuildError::Definition(nebula_metadata::MetadataBuildError::Metadata(actual))) if actual == expected);
+            std::assert_matches!(registry.insert(ExplicitMismatchProbe::key().as_str(), factory.clone()).map(|_| ()),
+                Err(MetadataBuildError::Definition(nebula_metadata::MetadataBuildError::Metadata(actual))) if actual == expected);
+            assert!(registry.is_empty());
+        }
+    }
+}
+
+#[test]
+fn same_semver_catalog_changes_require_exact_fresh_evidence() {
+    use nebula_metadata::{
+        CatalogLink, CatalogLinkRelation, CatalogReference, DeprecationNotice,
+        MetadataDecodeLimits, RemovalSchedule,
+    };
+    let original = catalog_factory(ExplicitMismatchProbe::metadata());
+    let original = original.metadata().expect("valid definition");
+    let recorded = RecordedResourceMetadata::from_slice(
+        &serde_json::to_vec(original).expect("serializable"),
+        MetadataDecodeLimits::default(),
+    )
+    .expect("default decoder");
+    for draft in [
+        ExplicitMismatchProbe::metadata()
+            .with_categories(["network.http".parse().expect("category")]),
+        ExplicitMismatchProbe::metadata().add_link(CatalogLink::new(
+            CatalogLinkRelation::Reference,
+            "/reference".parse().expect("link"),
+        )),
+        ExplicitMismatchProbe::metadata().with_deprecation(
+            DeprecationNotice::new(Version::new(1, 0, 0))
+                .with_removal(RemovalSchedule::AtVersion(Version::new(2, 0, 0)))
+                .with_replacement(CatalogReference::resource(resource_key!(
+                    "test.replacement"
+                )))
+                .with_reason("Use the replacement provider"),
+        ),
+    ] {
+        let changed = catalog_factory(draft);
+        let changed = changed.metadata().expect("valid changed definition");
+        assert_eq!(original.base().version(), changed.base().version());
+        std::assert_matches!(
+            recorded.readmit_against(changed),
+            Err(nebula_metadata::MetadataReadmissionError::DefinitionMismatch)
+        );
+        let current = RecordedResourceMetadata::from_slice(
+            &serde_json::to_vec(changed).expect("serializable"),
+            MetadataDecodeLimits::default(),
+        )
+        .expect("default decoder");
+        assert_eq!(
+            current.readmit_against(changed).expect("fresh evidence"),
+            *changed
+        );
+    }
+}
+
+#[test]
+fn leaf_wire_is_closed_redacted_and_transport_bounded() {
+    use nebula_metadata::{MetadataDecodeError, MetadataDecodeLimits};
+    const CANARY: &str = "PRIVATE_RESOURCE_WIRE_CANARY";
+    let factory = catalog_factory(ExplicitMismatchProbe::metadata());
+    let admitted = factory.metadata().expect("valid definition");
+    let wire = serde_json::to_value(admitted).expect("serializable");
+    assert_eq!(wire["base"]["metadata_wire_version"], 2);
+    let mut unknown = wire.clone();
+    unknown[CANARY] = serde_json::json!(CANARY);
+    let mut wrong_type = wire.clone();
+    wrong_type["base"] = serde_json::json!(CANARY);
+    let mut legacy = wire["base"].clone();
+    legacy
+        .as_object_mut()
+        .expect("base object")
+        .remove("metadata_wire_version");
+    let mut missing_version = wire.clone();
+    missing_version["base"]
+        .as_object_mut()
+        .expect("base object")
+        .remove("metadata_wire_version");
+    let positional = serde_json::json!([wire["base"]]);
+    for rejected in [unknown, wrong_type, legacy, missing_version, positional] {
+        let bytes = serde_json::to_vec(&rejected).expect("serializable");
+        let error =
+            serde_json::from_slice::<RecordedResourceMetadata>(&bytes).expect_err("invalid wire");
+        assert!(!format!("{error:?} {error}").contains(CANARY));
+        assert_eq!(
+            RecordedResourceMetadata::from_slice(&bytes, MetadataDecodeLimits::default()),
+            Err(MetadataDecodeError::InvalidRecord)
+        );
+    }
+    let bytes = serde_json::to_vec(&wire).expect("serializable");
+    let exact = MetadataDecodeLimits::new(bytes.len()).expect("valid limit");
+    let shorter = MetadataDecodeLimits::new(bytes.len() - 1).expect("valid lower limit");
+    let recorded = RecordedResourceMetadata::from_reader(bytes.as_slice(), exact)
+        .expect("exact limit accepts");
+    assert_eq!(
+        recorded.readmit_against(admitted).expect("fresh evidence"),
+        *admitted
+    );
+    assert_eq!(
+        RecordedResourceMetadata::from_slice(&bytes, shorter),
+        Err(MetadataDecodeError::EnvelopeTooLarge)
+    );
+    assert_eq!(
+        RecordedResourceMetadata::from_reader(bytes.as_slice(), shorter),
+        Err(MetadataDecodeError::EnvelopeTooLarge)
     );
 }

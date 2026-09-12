@@ -996,7 +996,11 @@ mod shutdown_post_count_race_tests {
         }
 
         fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::from_key(Self::key())
+            ResourceMetadataDraft::new(
+                Self::key(),
+                crate::metadata_name!("test.shutdown_post_count_race.resident"),
+                "",
+            )
         }
     }
 
@@ -1088,7 +1092,11 @@ mod shutdown_post_count_race_tests {
             resource_key!("test.registration_validation_race")
         }
         fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::from_key(Self::key())
+            ResourceMetadataDraft::new(
+                Self::key(),
+                crate::metadata_name!("test.registration_validation_race"),
+                "",
+            )
         }
         async fn create(&self, _: &Self::Config, _: &ResourceContext) -> Result<(), Error> {
             Ok(())

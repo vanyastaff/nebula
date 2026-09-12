@@ -95,7 +95,11 @@ impl Provider for SlowCreateResource {
     }
 
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("test.shutdown_race.slow"),
+            "",
+        )
     }
 }
 
@@ -338,7 +342,11 @@ impl Provider for PausableEvictResource {
     }
 
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("test.shutdown_race.pausable_evict"),
+            "",
+        )
     }
 }
 

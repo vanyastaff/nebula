@@ -17,7 +17,7 @@ fn checked_name() -> MetadataName {
 #[test]
 fn draft_binds_schema_after_all_shared_fields_are_authored() {
     let version: MetadataVersion = Version::new(2, 1, 0);
-    let notice = DeprecationNotice::new(Version::new(2, 0, 0)).reason("superseded");
+    let notice = DeprecationNotice::new(Version::new(2, 0, 0)).with_reason("superseded");
     let metadata = MetadataDraft::new("example", checked_name(), "description")
         .with_version(version.clone())
         .with_icon(Icon::inline("initial"))
@@ -30,7 +30,8 @@ fn draft_binds_schema_after_all_shared_fields_are_authored() {
         .mark_beta()
         .mark_stable()
         .with_deprecation(notice.clone())
-        .bind_schema(ValidSchema::empty());
+        .bind_schema(ValidSchema::empty())
+        .expect("valid bounded metadata");
 
     assert_eq!(metadata.key(), &"example");
     assert_eq!(metadata.name(), "Example");
@@ -60,25 +61,27 @@ fn draft_try_new_validates_dynamic_names_without_exposing_them() {
 }
 
 #[test]
-fn bound_metadata_preserves_the_flat_wire_shape() {
+fn bound_metadata_emits_the_versioned_shared_wire_shape() {
     let metadata = MetadataDraft::new("example", checked_name(), "description")
         .with_version(Version::new(2, 1, 0))
         .with_inline_icon("catalog")
         .with_documentation_url("https://example.test/docs")
         .with_tags(["network"])
         .mark_beta()
-        .bind_schema(ValidSchema::empty());
+        .bind_schema(ValidSchema::empty())
+        .expect("valid bounded metadata");
 
     assert_eq!(
         serde_json::to_value(metadata).expect("bound metadata serializes"),
         json!({
+            "metadata_wire_version": 2,
             "key": "example",
             "name": "Example",
             "description": "description",
             "schema": ValidSchema::empty(),
             "version": "2.1.0",
             "icon": "catalog",
-            "documentation_url": "https://example.test/docs",
+            "links": [{"relation": "overview", "target": "https://example.test/docs"}],
             "tags": ["network"],
             "maturity": "beta",
         })
@@ -90,7 +93,8 @@ fn recorded_wire_requires_an_exact_fresh_definition_for_readmission() {
     let fresh = MetadataDraft::new("example".to_owned(), checked_name(), "description")
         .with_version(Version::new(2, 1, 0))
         .mark_beta()
-        .bind_schema(ValidSchema::empty());
+        .bind_schema(ValidSchema::empty())
+        .expect("valid bounded metadata");
     let wire = serde_json::to_value(&fresh).expect("fresh definition serializes");
     let recorded: RecordedBaseMetadata<String> =
         serde_json::from_value(wire).expect("recorded evidence validates");
@@ -106,13 +110,15 @@ fn readmission_mismatch_is_typed_and_redacted() {
     const SUBMITTED: &str = "private-recorded-description";
     let recorded_definition = MetadataDraft::new("example".to_owned(), checked_name(), SUBMITTED)
         .with_version(Version::new(1, 0, 0))
-        .bind_schema(ValidSchema::empty());
+        .bind_schema(ValidSchema::empty())
+        .expect("valid bounded metadata");
     let wire = serde_json::to_value(recorded_definition).expect("definition serializes");
     let recorded: RecordedBaseMetadata<String> =
         serde_json::from_value(wire).expect("recorded evidence validates");
     let fresh = MetadataDraft::new("example".to_owned(), checked_name(), "new description")
         .with_version(Version::new(2, 0, 0))
-        .bind_schema(ValidSchema::empty());
+        .bind_schema(ValidSchema::empty())
+        .expect("valid bounded metadata");
 
     let error = recorded
         .readmit_against(&fresh)
@@ -138,7 +144,7 @@ proptest! {
             };
         }
 
-        let metadata = draft.bind_schema(ValidSchema::empty());
+        let metadata = draft.bind_schema(ValidSchema::empty()).expect("valid bounded metadata");
         prop_assert_eq!(metadata.maturity(), MaturityLevel::Deprecated);
         prop_assert_eq!(metadata.deprecation(), Some(&notice));
     }

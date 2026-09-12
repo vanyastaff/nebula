@@ -62,7 +62,11 @@ impl Provider for LeasedResource {
         nebula_core::resource_key!("shutdown-session-lease")
     }
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            crate::metadata_name!("shutdown-session-lease"),
+            "",
+        )
     }
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<AtomicUsize, Error> {
         Ok(AtomicUsize::new(7))
@@ -577,7 +581,11 @@ impl Provider for ParentResource {
         nebula_core::resource_key!("shutdown-session-parent")
     }
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            crate::metadata_name!("shutdown-session-parent"),
+            "",
+        )
     }
     async fn create(&self, _: &Config, _: &ResourceContext) -> Result<Self::Instance, Error> {
         self.child

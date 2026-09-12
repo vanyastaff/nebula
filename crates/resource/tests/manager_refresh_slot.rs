@@ -169,7 +169,11 @@ mod counting {
         }
 
         fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::from_key(Self::key())
+            ResourceMetadataDraft::new(
+                Self::key(),
+                nebula_resource::metadata_name!("counting-resident"),
+                "",
+            )
         }
     }
 
@@ -1488,7 +1492,11 @@ mod u9_gate {
         }
 
         fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::from_key(Self::key())
+            ResourceMetadataDraft::new(
+                Self::key(),
+                nebula_resource::metadata_name!("u9-gate-resident"),
+                "",
+            )
         }
     }
 
@@ -1701,7 +1709,11 @@ mod reload_deferral {
                 }
 
                 fn metadata() -> ResourceMetadataDraft {
-                    ResourceMetadataDraft::from_key(Self::key())
+                    ResourceMetadataDraft::new(
+                        Self::key(),
+                        nebula_resource::metadata_name!(stringify!($name)),
+                        "",
+                    )
                 }
             }
 

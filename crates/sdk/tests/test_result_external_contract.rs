@@ -64,14 +64,21 @@ fn sdk_only_consumer_uses_payload_free_test_result() {
     )
     .expect("copy workspace lockfile into temporary fixture");
 
-    let positive = cargo_check(temp.path(), "positive");
+    let positive = cargo_probe(temp.path(), "clippy", "positive");
     assert!(
         positive.status.success(),
-        "new payload-free SDK contract must compile:\n{}",
+        "new payload-free SDK contract must pass strict clippy:\n{}",
         render_output(&positive)
     );
 
-    let removed_reason = cargo_check(temp.path(), "removed_reason");
+    let positive = cargo_probe(temp.path(), "run", "positive");
+    assert!(
+        positive.status.success(),
+        "new payload-free SDK contract assertions must execute:\n{}",
+        render_output(&positive)
+    );
+
+    let removed_reason = cargo_probe(temp.path(), "check", "removed_reason");
     assert!(
         !removed_reason.status.success(),
         "removed free-form reason field must not compile"
@@ -118,15 +125,20 @@ fn copy_fixture(source_root: &Path, destination_root: &Path) {
     }
 }
 
-fn cargo_check(fixture_root: &Path, binary: &str) -> Output {
+fn cargo_probe(fixture_root: &Path, subcommand: &str, binary: &str) -> Output {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
-    Command::new(cargo)
+    let mut command = Command::new(cargo);
+    command
         .current_dir(fixture_root)
-        .args(["check", "--offline", "--quiet", "--bin", binary])
+        .args([subcommand, "--offline", "--quiet", "--bin", binary]);
+    if subcommand == "clippy" {
+        command.args(["--", "-D", "warnings"]);
+    }
+    command
         .env("CARGO_TERM_COLOR", "never")
         .env("CARGO_TARGET_DIR", fixture_root.join("target"))
         .output()
-        .expect("run cargo check for external SDK consumer")
+        .expect("run cargo probe for external SDK consumer")
 }
 
 fn toml_basic_string(path: &Path) -> String {

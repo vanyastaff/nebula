@@ -111,6 +111,14 @@ impl<C: ResourceConfig> Provider for ConfigProbe<C> {
     type Instance = ();
     type Topology = Resident<Self>;
 
+    fn metadata() -> nebula_resource::ResourceMetadataDraft {
+        nebula_resource::ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("ConfigProbe"),
+            "",
+        )
+    }
+
     fn key() -> ResourceKey {
         resource_key!("test.config-foundation")
     }

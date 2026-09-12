@@ -2,13 +2,14 @@
 
 use nebula_schema::ValidSchema;
 use semver::Version;
-use serde::{
-    Deserialize, Deserializer, Serialize, Serializer, de::Error as _, ser::SerializeStruct,
-};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use std::str::FromStr;
 
-use crate::defaults::{default_version, is_default_maturity, is_default_version};
+use crate::bounded::{self, DESCRIPTION_BYTES, PendingCollection, RAW_ENTRIES, SHARED_BYTES};
+use crate::defaults::default_version;
 use crate::definition::resolve_maturity;
+use crate::shared::{Discovery, SharedFields};
+use crate::{CatalogCategoryKey, CatalogLink, METADATA_WIRE_VERSION, MetadataBuildError};
 use crate::{
     MetadataError, MetadataName, MetadataReadmissionError, deprecation::DeprecationNotice,
     icon::Icon, maturity::MaturityLevel,
@@ -92,9 +93,9 @@ pub struct MetadataDraft<K> {
     name: MetadataName,
     description: String,
     version: Version,
+    version_error: Option<MetadataError>,
     icon: Icon,
-    documentation_url: Option<String>,
-    tags: Box<[String]>,
+    discovery: Discovery,
     lifecycle: MetadataLifecycle,
 }
 
@@ -107,9 +108,9 @@ impl<K> MetadataDraft<K> {
             name,
             description: description.into(),
             version: default_version(),
+            version_error: None,
             icon: Icon::default(),
-            documentation_url: None,
-            tags: Box::default(),
+            discovery: Discovery::default(),
             lifecycle: MetadataLifecycle::Active(ActiveMaturity::Stable),
         }
     }
@@ -135,6 +136,56 @@ impl<K> MetadataDraft<K> {
     /// Set the interface version without checking revision compatibility.
     pub fn with_version(mut self, version: Version) -> Self {
         self.version = version;
+        self.version_error = None;
+        self
+    }
+
+    /// Set a macro-generated literal version, retaining failures until binding.
+    ///
+    /// This accepts the complete SemVer syntax, including prerelease and build
+    /// metadata. A later checked version setter replaces any pending error.
+    #[doc(hidden)]
+    pub fn with_version_literal(mut self, version: &'static str) -> Self {
+        if version.len() > SHARED_BYTES {
+            self.version_error = Some(MetadataError::FieldTooLarge(crate::MetadataField::Version));
+            return self;
+        }
+        match version.parse() {
+            Ok(version) => self = self.with_version(version),
+            Err(_) => {
+                self.version_error =
+                    Some(MetadataError::InvalidVersion(crate::MetadataField::Version));
+            },
+        }
+        self
+    }
+
+    /// Replace the description; its UTF-8 byte budget is checked at binding.
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = description.into();
+        self
+    }
+
+    /// Replace all structured categories, canonicalized at binding.
+    ///
+    /// Consumes at most 65 raw entries; more than 64 is rejected at binding.
+    pub fn with_categories(
+        mut self,
+        categories: impl IntoIterator<Item = CatalogCategoryKey>,
+    ) -> Self {
+        self.discovery.categories = PendingCollection::collect(categories);
+        self
+    }
+
+    /// Replace all documentation links and any pending Overview error.
+    pub fn with_links(mut self, links: impl IntoIterator<Item = CatalogLink>) -> Self {
+        self.discovery.replace_links(links);
+        self
+    }
+
+    /// Append a checked link; conflicting Overview targets fail at binding.
+    pub fn add_link(mut self, link: CatalogLink) -> Self {
+        self.discovery.links.push(link);
         self
     }
 
@@ -154,9 +205,9 @@ impl<K> MetadataDraft<K> {
         self.with_icon(Icon::url(url))
     }
 
-    /// Set the documentation URL.
+    /// Set or replace the single Overview link, checked at binding.
     pub fn with_documentation_url(mut self, url: impl Into<String>) -> Self {
-        self.documentation_url = Some(url.into());
+        self.discovery.set_overview(&url.into());
         self
     }
 
@@ -166,15 +217,13 @@ impl<K> MetadataDraft<K> {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        self.tags = tags.into_iter().map(Into::into).collect();
+        self.discovery.tags = PendingCollection::collect(tags.into_iter().map(Into::into));
         self
     }
 
     /// Append one tag while preserving existing tags.
     pub fn add_tag(mut self, tag: impl Into<String>) -> Self {
-        let mut tags = Vec::from(std::mem::take(&mut self.tags));
-        tags.push(tag.into());
-        self.tags = tags.into_boxed_slice();
+        self.discovery.tags.push(tag.into());
         self
     }
 
@@ -212,13 +261,40 @@ impl<K> MetadataDraft<K> {
     ///
     /// Persisted or wire data deserializes as [`RecordedBaseMetadata`] and must
     /// be re-admitted against a freshly built definition.
-    #[must_use]
-    #[tracing::instrument(name = "metadata.bind_schema", skip_all)]
-    pub fn bind_schema(self, schema: ValidSchema) -> BaseMetadata<K> {
-        BaseMetadata {
+    /// Generic keys must serialize deterministically as JSON strings and recover
+    /// identically through `FromStr`; trait bounds alone do not prove that law.
+    ///
+    /// # Errors
+    /// Returns a payload-free error for collection, field, chronology, schema
+    /// or exact JSON budget violations. `K: Serialize` permits exact accounting.
+    #[tracing::instrument(name = "metadata.bind_schema", skip_all, err)]
+    pub fn bind_schema(mut self, schema: ValidSchema) -> Result<BaseMetadata<K>, MetadataBuildError>
+    where
+        K: Serialize,
+    {
+        self.validate()?;
+        bounded::check_serialized(
+            &schema,
+            bounded::SCHEMA_BYTES,
+            MetadataError::SchemaBudgetExceeded,
+        )?;
+        let metadata = BaseMetadata {
             draft: self,
             schema,
+        };
+        crate::check_json_record(&metadata)?;
+        Ok(metadata)
+    }
+
+    fn validate(&mut self) -> Result<(), MetadataError>
+    where
+        K: Serialize,
+    {
+        if let Some(error) = self.version_error {
+            return Err(error);
         }
+        self.discovery.canonicalize()?;
+        shared_fields(self, None).validate()
     }
 
     fn with_wire_lifecycle(
@@ -233,7 +309,7 @@ impl<K> MetadataDraft<K> {
 
 /// Shared shape held by every catalog entity's metadata.
 ///
-/// Leaf crates compose this as a private `#[serde(flatten)]` field on their
+/// Leaf crates compose this as a private nested `base` field on their
 /// concrete admitted metadata (for example `base: BaseMetadata<ActionKey>`)
 /// and expose the shared view through [`Metadata::base`]. This keeps the wire
 /// format of the shared prefix identical across action, credential, resource,
@@ -254,7 +330,7 @@ impl<K> MetadataDraft<K> {
 /// use nebula_metadata::MetadataDraft;
 /// use nebula_schema::ValidSchema;
 /// let mut metadata = MetadataDraft::try_new("example", "Example", "").unwrap()
-///     .bind_schema(ValidSchema::empty());
+///     .bind_schema(ValidSchema::empty()).expect("valid bounded metadata");
 /// metadata.name.clear();
 /// ```
 ///
@@ -280,54 +356,29 @@ pub struct BaseMetadata<K> {
     schema: ValidSchema,
 }
 
-fn serialize_metadata<S, K>(
-    draft: &MetadataDraft<K>,
-    schema: &ValidSchema,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-    K: Serialize,
-{
-    let maturity = draft.lifecycle.maturity();
-    let deprecation = draft.lifecycle.deprecation();
-    let mut field_count = 4;
-    field_count += usize::from(!is_default_version(&draft.version));
-    field_count += usize::from(!draft.icon.is_none());
-    field_count += usize::from(draft.documentation_url.is_some());
-    field_count += usize::from(!draft.tags.is_empty());
-    field_count += usize::from(!is_default_maturity(&maturity));
-    field_count += usize::from(deprecation.is_some());
-
-    let mut fields = serializer.serialize_struct("BaseMetadata", field_count)?;
-    fields.serialize_field("key", &draft.key)?;
-    fields.serialize_field("name", draft.name.as_str())?;
-    fields.serialize_field("description", &draft.description)?;
-    fields.serialize_field("schema", schema)?;
-    if !is_default_version(&draft.version) {
-        fields.serialize_field("version", &draft.version)?;
+fn shared_fields<'a, K>(
+    draft: &'a MetadataDraft<K>,
+    schema: Option<&'a ValidSchema>,
+) -> SharedFields<'a, K> {
+    SharedFields {
+        metadata_wire_version: METADATA_WIRE_VERSION,
+        key: &draft.key,
+        name: draft.name.as_str(),
+        description: &draft.description,
+        schema,
+        version: &draft.version,
+        icon: &draft.icon,
+        categories: draft.discovery.categories.as_slice(),
+        tags: draft.discovery.tags.as_slice(),
+        links: draft.discovery.links.as_slice(),
+        maturity: draft.lifecycle.maturity(),
+        deprecation: draft.lifecycle.deprecation(),
     }
-    if !draft.icon.is_none() {
-        fields.serialize_field("icon", &draft.icon)?;
-    }
-    if let Some(documentation_url) = draft.documentation_url.as_deref() {
-        fields.serialize_field("documentation_url", documentation_url)?;
-    }
-    if !draft.tags.is_empty() {
-        fields.serialize_field("tags", &draft.tags)?;
-    }
-    if !is_default_maturity(&maturity) {
-        fields.serialize_field("maturity", &maturity)?;
-    }
-    if let Some(notice) = deprecation {
-        fields.serialize_field("deprecation", notice)?;
-    }
-    fields.end()
 }
 
 impl<K: Serialize> Serialize for BaseMetadata<K> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serialize_metadata(&self.draft, &self.schema, serializer)
+        shared_fields(&self.draft, Some(&self.schema)).serialize(serializer)
     }
 }
 
@@ -346,34 +397,48 @@ pub struct RecordedBaseMetadata<K> {
 
 impl<K: Serialize> Serialize for RecordedBaseMetadata<K> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serialize_metadata(&self.draft, &self.schema, serializer)
+        shared_fields(&self.draft, Some(&self.schema)).serialize(serializer)
     }
 }
 
-impl<'de, K: FromStr> Deserialize<'de> for RecordedBaseMetadata<K> {
+impl<'de, K: FromStr + Serialize> Deserialize<'de> for RecordedBaseMetadata<K> {
     #[tracing::instrument(name = "metadata.deserialize_recorded", skip_all)]
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct Fields {
+            metadata_wire_version: u32,
+            #[serde(deserialize_with = "bounded::string::<_, SHARED_BYTES>")]
             key: String,
+            #[serde(deserialize_with = "bounded::string::<_, SHARED_BYTES>")]
             name: String,
+            #[serde(deserialize_with = "bounded::string::<_, DESCRIPTION_BYTES>")]
             description: String,
             schema: ValidSchema,
-            #[serde(default = "default_version")]
+            #[serde(default = "default_version", deserialize_with = "bounded::version")]
             version: Version,
             #[serde(default)]
             icon: Icon,
             #[serde(default)]
-            documentation_url: Option<String>,
-            #[serde(default)]
-            tags: Box<[String]>,
+            #[serde(deserialize_with = "bounded::sequence::<_, CatalogCategoryKey, RAW_ENTRIES>")]
+            categories: Vec<CatalogCategoryKey>,
+            #[serde(default, deserialize_with = "bounded::tags")]
+            tags: Vec<String>,
+            #[serde(
+                default,
+                deserialize_with = "bounded::sequence::<_, CatalogLink, RAW_ENTRIES>"
+            )]
+            links: Vec<CatalogLink>,
             #[serde(default)]
             maturity: MaturityLevel,
             #[serde(default)]
             deprecation: Option<DeprecationNotice>,
         }
 
-        let fields = Fields::deserialize(deserializer)?;
+        let fields: Fields = crate::deserialize_metadata_object(deserializer)?;
+        if fields.metadata_wire_version != METADATA_WIRE_VERSION {
+            return Err(D::Error::custom(MetadataError::UnsupportedWireVersion));
+        }
         let key = fields
             .key
             .parse()
@@ -382,16 +447,24 @@ impl<'de, K: FromStr> Deserialize<'de> for RecordedBaseMetadata<K> {
             .map_err(D::Error::custom)?
             .with_version(fields.version)
             .with_icon(fields.icon)
+            .with_categories(fields.categories)
             .with_tags(fields.tags)
+            .with_links(fields.links)
             .with_wire_lifecycle(fields.maturity, fields.deprecation)
             .map_err(D::Error::custom)?;
-        if let Some(url) = fields.documentation_url {
-            draft = draft.with_documentation_url(url);
-        }
-        Ok(Self {
+        draft.validate().map_err(D::Error::custom)?;
+        bounded::check_serialized(
+            &fields.schema,
+            bounded::SCHEMA_BYTES,
+            MetadataError::SchemaBudgetExceeded,
+        )
+        .map_err(D::Error::custom)?;
+        let recorded = Self {
             draft,
             schema: fields.schema,
-        })
+        };
+        crate::check_json_record(&recorded).map_err(D::Error::custom)?;
+        Ok(recorded)
     }
 }
 
@@ -462,13 +535,25 @@ impl<K> BaseMetadata<K> {
     /// Documentation URL, if any.
     #[must_use]
     pub fn documentation_url(&self) -> Option<&str> {
-        self.draft.documentation_url.as_deref()
+        self.draft.discovery.documentation_url()
+    }
+
+    /// Canonical, sorted structured category keys.
+    #[must_use]
+    pub fn categories(&self) -> &[CatalogCategoryKey] {
+        self.draft.discovery.categories.as_slice()
+    }
+
+    /// Canonical documentation links sorted by relation and target.
+    #[must_use]
+    pub fn links(&self) -> &[CatalogLink] {
+        self.draft.discovery.links.as_slice()
     }
 
     /// Tags for filtering and discovery.
     #[must_use]
     pub fn tags(&self) -> &[String] {
-        &self.draft.tags
+        self.draft.discovery.tags.as_slice()
     }
 
     /// Maturity, always Deprecated when a notice is present.
@@ -538,6 +623,16 @@ pub trait Metadata {
         self.base().documentation_url()
     }
 
+    /// Canonical structured categories.
+    fn categories(&self) -> &[CatalogCategoryKey] {
+        self.base().categories()
+    }
+
+    /// Canonical documentation links.
+    fn links(&self) -> &[CatalogLink] {
+        self.base().links()
+    }
+
     /// Tags for filtering / discovery.
     fn tags(&self) -> &[String] {
         self.base().tags()
@@ -566,6 +661,7 @@ mod tests {
             .expect("empty schema always valid")
     }
 
+    #[derive(Serialize)]
     struct DummyKey(&'static str);
 
     struct DummyMetadata {
@@ -584,7 +680,8 @@ mod tests {
         let md = DummyMetadata {
             base: MetadataDraft::try_new(DummyKey("k"), "Name", "Desc")
                 .expect("nonblank name")
-                .bind_schema(empty_schema()),
+                .bind_schema(empty_schema())
+                .expect("valid bounded metadata"),
         };
         assert_eq!(md.key().0, "k");
         assert_eq!(md.name(), "Name");
@@ -601,7 +698,8 @@ mod tests {
         let base = MetadataDraft::try_new(DummyKey("k"), "n", "d")
             .expect("nonblank name")
             .with_tags(["http", "io"])
-            .bind_schema(empty_schema());
+            .bind_schema(empty_schema())
+            .expect("valid bounded metadata");
         assert_eq!(base.tags(), &["http".to_owned(), "io".to_owned()]);
     }
 
@@ -610,7 +708,8 @@ mod tests {
         let base = MetadataDraft::try_new(DummyKey("k"), "n", "d")
             .expect("nonblank name")
             .with_deprecation(DeprecationNotice::new(Version::new(1, 0, 0)))
-            .bind_schema(empty_schema());
+            .bind_schema(empty_schema())
+            .expect("valid bounded metadata");
         assert_eq!(base.maturity(), MaturityLevel::Deprecated);
     }
 }

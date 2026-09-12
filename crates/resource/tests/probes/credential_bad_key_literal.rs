@@ -3,8 +3,8 @@
 //! Invalid: trailing separator (`foo_`) violates CredentialKey rules.
 
 use nebula_credential::{
-    AuthPattern, Credential, CredentialContext, CredentialError, CredentialGuard,
-    CredentialMetadataDraft, SecretString, SecretToken, StaticResolveResult,
+    Credential, CredentialContext, CredentialError, CredentialGuard, CredentialMetadataDraft,
+    SecretString, SecretToken, StaticResolveResult,
 };
 use nebula_resource::{Resource, SlotCell};
 use zeroize::Zeroize;
@@ -29,7 +29,6 @@ impl Credential for FakeCred {
             nebula_core::credential_key!("demo.fake"),
             nebula_credential::metadata_name!("FakeCred"),
             "trybuild bad-key fixture",
-            AuthPattern::SecretToken,
         )
     }
     fn project(state: &SecretToken) -> SecretToken {

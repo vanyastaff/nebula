@@ -72,13 +72,24 @@ Capabilities originate in trait membership. Registry bitflags are a derived disc
 not a caller-supplied assertion.
 
 `Credential::metadata()` returns a schema-free `CredentialMetadataDraft`.
+Both `new(key, MetadataName, description)` and `try_new(key, name, description)`
+take exactly three arguments. There is no draft auth-pattern argument or getter:
+admission derives the pattern from `<C::Scheme as AuthScheme>::pattern()`.
 The draft uses the shared catalog vocabulary: `Icon` for inline, URL-backed, or absent icons;
 `mark_experimental`, `mark_beta`, `mark_stable`, and `with_deprecation` for lifecycle; and
-`with_tags`/`add_tag` for discovery tags.
+`with_tags`/`add_tag`, typed `with_categories`, and `add_link` for discovery.
+`with_documentation_url` authors the Overview link. Tags are trimmed, sorted, and
+deduplicated; categories and links also have canonical ordering.
 `schema_of::<C::Properties>()` is fallible, returning a checked schema or a lint report;
 registry admission is the only path that combines it with the draft into immutable
 `CredentialMetadata` before installing dispatch. Persisted metadata is
 `RecordedCredentialMetadata` evidence and must be re-admitted against the fresh definition.
+Catalog wire v2 uses nested `base` with required `metadata_wire_version: 2` and
+rejects legacy flat/unversioned records. Recorded serde errors discard submitted
+keys, values, and raw causes; admission errors never retain a schema report.
+Use bounded `from_slice`/`from_reader` for raw record ingress: generic serde is
+structural validation only, not a parser-allocation guarantee. See
+[catalog migration and limits](../../docs/INTEGRATION_MODEL.md#catalog-construction-and-wire-migration).
 An untyped fixture can declare `Properties = serde_json::Value`; `ResolvedValues` is a
 runtime proof and must not be used as a properties declaration.
 

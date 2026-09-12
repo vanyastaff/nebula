@@ -340,7 +340,11 @@ impl Provider for IntegrationProbeResource {
     }
 
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("test.engine_integration.probe"),
+            "",
+        )
     }
 }
 
@@ -659,7 +663,11 @@ mod shared_resource {
         }
 
         fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::from_key(Self::key())
+            ResourceMetadataDraft::new(
+                Self::key(),
+                nebula_resource::metadata_name!("telegram-bot"),
+                "",
+            )
         }
     }
 
@@ -721,7 +729,11 @@ mod shared_resource {
         }
 
         fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::from_key(Self::key())
+            ResourceMetadataDraft::new(
+                Self::key(),
+                nebula_resource::metadata_name!("telegram-bot-alt"),
+                "",
+            )
         }
     }
 

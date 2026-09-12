@@ -118,7 +118,7 @@ mod tests {
     }
 
     // Tests use a tiny newtype key so we don't pull nebula-core here.
-    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
     struct TestKey(&'static str);
 
     impl std::fmt::Display for TestKey {
@@ -132,6 +132,7 @@ mod tests {
             .expect("nonblank name")
             .with_version(Version::new(major, minor, 0))
             .bind_schema(empty_schema())
+            .expect("valid bounded metadata")
     }
 
     #[test]
@@ -170,7 +171,8 @@ mod tests {
         let next_base = MetadataDraft::try_new(TestKey("k"), "n", "d")
             .expect("nonblank name")
             .with_version(Version::new(1, 1, 0))
-            .bind_schema(schema_with_one_field());
+            .bind_schema(schema_with_one_field())
+            .expect("valid bounded metadata");
         let err = validate_base_compat(&next_base, &prev).unwrap_err();
         assert_eq!(err, BaseCompatError::SchemaChangeWithoutMajorBump);
     }
@@ -181,7 +183,8 @@ mod tests {
         let next_base = MetadataDraft::try_new(TestKey("k"), "n", "d")
             .expect("nonblank name")
             .with_version(Version::new(2, 0, 0))
-            .bind_schema(schema_with_one_field());
+            .bind_schema(schema_with_one_field())
+            .expect("valid bounded metadata");
         assert!(validate_base_compat(&next_base, &prev).is_ok());
     }
 

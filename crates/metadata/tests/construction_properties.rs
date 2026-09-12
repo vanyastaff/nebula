@@ -32,11 +32,11 @@ proptest! {
             .version(version.clone())
             .nebula_version(version.clone());
         if deprecated {
-            let notice = DeprecationNotice::new(version).reason(&description);
+            let notice = DeprecationNotice::new(version).with_reason(&description);
             draft = draft.with_deprecation(notice.clone());
             manifest = manifest.deprecation(notice);
         }
-        let leaf = draft.bind_schema(ValidSchema::empty());
+        let leaf = draft.bind_schema(ValidSchema::empty()).expect("valid bounded metadata");
         let manifest = manifest.build().expect("generated valid manifest");
 
         let recorded_leaf: RecordedBaseMetadata<ActionKey> = serde_json::from_value(json!(leaf))?;
@@ -52,13 +52,15 @@ proptest! {
             "example".parse::<ActionKey>().expect("valid key"),
             &name,
             "",
-        ).map(|draft| draft.bind_schema(ValidSchema::empty()));
+        ).map(|draft| draft.bind_schema(ValidSchema::empty()).expect("valid bounded metadata"));
         let manifest = PluginManifest::builder("example", &name).build();
         let leaf_wire = serde_json::from_value::<RecordedBaseMetadata<ActionKey>>(json!({
+            "metadata_wire_version": 2,
             "key": "example", "name": name, "description": "",
             "schema": ValidSchema::empty(),
         }));
         let manifest_wire = serde_json::from_value::<PluginManifest>(json!({
+            "metadata_wire_version": 2,
             "key": "example", "name": name,
         }));
 
@@ -97,7 +99,7 @@ proptest! {
                 1 => MaturityLevel::Beta,
                 _ => MaturityLevel::Stable,
             });
-            let leaf = draft.clone().bind_schema(ValidSchema::empty());
+            let leaf = draft.clone().bind_schema(ValidSchema::empty()).expect("valid bounded metadata");
             prop_assert_eq!(leaf.maturity(), MaturityLevel::Deprecated);
             prop_assert_eq!(leaf.deprecation(), Some(&notice));
         }

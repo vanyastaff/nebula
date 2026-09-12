@@ -41,6 +41,14 @@ impl<const ID: u8> Provider for FailingRetirementResource<ID> {
     type Instance = ();
     type Topology = Resident<Self>;
 
+    fn metadata() -> nebula_resource::ResourceMetadataDraft {
+        nebula_resource::ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("FailingRetirementResource"),
+            "",
+        )
+    }
+
     fn key() -> ResourceKey {
         ResourceKey::try_from(format!("test-failing-retirement-{ID}"))
             .expect("static test resource key is valid")

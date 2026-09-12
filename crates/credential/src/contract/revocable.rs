@@ -31,7 +31,7 @@ use crate::{Credential, CredentialContext, error::CredentialError};
 ///
 /// ```
 /// use nebula_credential::{
-///     AuthPattern, Credential, CredentialContext, CredentialMetadataDraft, Revocable,
+///     Credential, CredentialContext, CredentialMetadataDraft, Revocable,
 ///     SecretString, scheme::SecretToken,
 /// };
 /// use nebula_credential::error::CredentialError;
@@ -48,7 +48,6 @@ use crate::{Credential, CredentialContext, error::CredentialError};
 /// #     fn metadata() -> CredentialMetadataDraft {
 /// #         CredentialMetadataDraft::new(
 /// #             credential_key!("oauth2_cred"), nebula_credential::metadata_name!("OAuth2"), "demo",
-/// #             AuthPattern::SecretToken,
 /// #         )
 /// #     }
 /// #     fn project(state: &SecretToken) -> SecretToken { state.clone() }

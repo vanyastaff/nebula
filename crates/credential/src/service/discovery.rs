@@ -32,8 +32,7 @@ impl CredentialService {
     }
 
     /// Build a [`CredentialTypeInfo`] from the registry metadata +
-    /// capability bitflag. Returns `None` if the registry has no
-    /// instance for `key` (cannot project metadata).
+    /// capability bitflag.
     fn type_info(
         metadata: &crate::CredentialMetadata,
         capabilities: crate::Capabilities,
@@ -44,10 +43,57 @@ impl CredentialService {
             description: metadata.description().to_owned(),
             pattern: metadata.pattern(),
             capabilities: TypeCapabilities {
+                interactive: capabilities.contains(crate::Capabilities::INTERACTIVE),
+                dynamic: capabilities.contains(crate::Capabilities::DYNAMIC),
                 refreshable: capabilities.contains(crate::Capabilities::REFRESHABLE),
                 testable: capabilities.contains(crate::Capabilities::TESTABLE),
                 revocable: capabilities.contains(crate::Capabilities::REVOCABLE),
             },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CredentialService;
+    use crate::{ApiKeyCredential, Capabilities, Credential, CredentialRegistry};
+
+    #[test]
+    fn discovery_preserves_all_five_registry_capabilities() {
+        let mut registry = CredentialRegistry::new();
+        registry
+            .register(ApiKeyCredential, "discovery-projection-test")
+            .expect("valid credential");
+        let metadata = registry
+            .metadata(ApiKeyCredential::KEY)
+            .expect("registered metadata");
+        for capabilities in [
+            Capabilities::empty(),
+            Capabilities::all(),
+            Capabilities::INTERACTIVE | Capabilities::DYNAMIC,
+        ] {
+            let projection = CredentialService::type_info(metadata, capabilities);
+            assert_eq!(projection.pattern, metadata.pattern());
+            assert_eq!(
+                projection.capabilities.interactive,
+                capabilities.contains(Capabilities::INTERACTIVE)
+            );
+            assert_eq!(
+                projection.capabilities.dynamic,
+                capabilities.contains(Capabilities::DYNAMIC)
+            );
+            assert_eq!(
+                projection.capabilities.refreshable,
+                capabilities.contains(Capabilities::REFRESHABLE)
+            );
+            assert_eq!(
+                projection.capabilities.testable,
+                capabilities.contains(Capabilities::TESTABLE)
+            );
+            assert_eq!(
+                projection.capabilities.revocable,
+                capabilities.contains(Capabilities::REVOCABLE)
+            );
         }
     }
 }

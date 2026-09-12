@@ -33,6 +33,71 @@ to stderr, and emits no partial stdout. Plans are capped at 256 entries and
 450 KiB. The byte cap leaves headroom for GitHub's UTF-16 output accounting
 beneath the 1 MiB per-job boundary.
 
+## Pre-commit fixture ownership
+
+From the workspace root, request the separate pre-commit protocol with staged
+workspace-relative paths (use `--` to preserve paths beginning with a dash):
+
+```bash
+cargo xtask pre-commit-plan -- crates/sdk/tests/fixtures/derive_consumer/src/main.rs
+```
+
+This command reuses Cargo workspace ownership, but does not expand reverse
+dependents or change `ci-plan` v1 selection, scope, or schema. Its schema-v1
+output has exactly these fields:
+
+```json
+{"schema_version":1,"packages":["nebula-sdk"],"standalone_manifests":[],"fixtures":[{"manifest_path":"crates/sdk/tests/fixtures/derive_consumer/Cargo.toml","owner":"nebula-sdk","test_target":"derive_external_contract"}]}
+```
+
+An isolated fixture with its own `[workspace]` declares its integration-test
+harness in the fixture's manifest:
+
+```toml
+[package.metadata.nebula.fixture]
+test-target = "derive_external_contract"
+```
+
+The owner is the deepest enclosing root-workspace member from Cargo metadata,
+not a package name inferred from a directory or an arbitrary package chosen by
+the declaration. An optional `owner` string is an assertion and must match that
+derived owner. The declared `test-target` must exist as an integration-test
+target in that owner's Cargo metadata. Unknown fields, malformed declarations,
+owner mismatches, missing targets, unsafe paths, and ambiguous ownership fail
+without partial stdout. Metadata is loaded only for the root workspace with
+`--locked`; planning does not resolve isolated fixture dependencies.
+
+Packages and manifest paths are sorted and deduplicated. Input is limited to
+4096 paths; output to 256 total package/standalone/fixture entries and 450 KiB.
+The hooks validate the version, exact fields, types, ordering, paths, and owner
+references before starting checks. Non-Rust input does not start Cargo.
+
+Formatting checks each selected owner and each complete standalone fixture,
+including intentional compile-fail sources. Clippy checks selected owners, then
+executes each distinct `(owner, test-target)` with nextest, one test thread and
+`--no-tests=fail`. Ordinary standalone packages without a fixture declaration
+retain direct `--manifest-path` formatting and strict all-target clippy checks.
+No package/path allowlist decides selection.
+
+A declaration and target existence establish structural routing, not semantic
+coverage. The owner harness must prepare local dependencies, strictly lint and
+execute positive probes, and assert the expected failures of negative probes.
+Review must verify that the named harness really covers the declared fixture.
+The SDK harnesses retain exact dependency/import restrictions and diagnostic
+assertions; they patch the local SDK only in temporary fixture workspaces.
+
+```bash
+cargo nextest run -p nebula-xtask --test pre_commit --test pre_commit_plan -j 1
+cargo nextest run -p nebula-sdk --test derive_external_contract --test public_perimeter_external_contract --test test_result_external_contract -j 1
+```
+
+The real CLI tests load Cargo metadata and cover owner derivation, target
+validation, isolated paths with spaces, and the live SDK declaration inventory.
+Recording-process hook tests separately verify command routing and propagation
+of planner, formatting, and contract failures. Run Cargo-based suites serially
+with other workspace Cargo jobs; a nested metadata process also needs Cargo's
+workspace locks.
+
 ## Package metadata
 
 A package that needs additional features only while running its tests declares

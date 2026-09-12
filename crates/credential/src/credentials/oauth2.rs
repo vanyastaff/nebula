@@ -337,7 +337,6 @@ impl OAuth2Credential {
             nebula_core::credential_key!("oauth2"),
             crate::metadata_name!("OAuth2"),
             "OAuth2 authentication supporting Authorization Code and Client Credentials grant types.",
-            crate::AuthPattern::OAuth2,
         )
         .with_icon(nebula_metadata::Icon::inline("oauth2"))
     }
@@ -1068,7 +1067,13 @@ mod tests {
 
     #[test]
     fn metadata_has_correct_fields() {
-        let meta = OAuth2Credential::metadata();
+        let mut registry = crate::CredentialRegistry::new();
+        registry
+            .register(OAuth2Credential, "oauth2-metadata-test")
+            .expect("valid OAuth2 definition");
+        let meta = registry
+            .metadata(OAuth2Credential::KEY)
+            .expect("registered OAuth2 metadata");
         assert_eq!(meta.pattern(), AuthPattern::OAuth2);
     }
 

@@ -506,7 +506,7 @@ where
     fn admit_metadata(&self) -> Result<ResourceMetadata, crate::MetadataBuildError> {
         let schema = nebula_schema::schema_of::<R::Config>()?;
         let draft = self.metadata_draft.clone().unwrap_or_else(R::metadata);
-        let metadata = draft.admit(schema);
+        let metadata = draft.admit(schema)?;
         let expected = R::key();
         if metadata.base().key() != &expected {
             let actual = metadata.base().key().clone();
@@ -1048,6 +1048,10 @@ mod tests {
         type Config = TestConfig;
         type Instance = ();
         type Topology = Resident<Self>;
+
+        fn metadata() -> ResourceMetadataDraft {
+            ResourceMetadataDraft::new(Self::key(), crate::metadata_name!("BoundTestRes"), "")
+        }
 
         fn key() -> ResourceKey {
             resource_key!("test-factory-bound-res")

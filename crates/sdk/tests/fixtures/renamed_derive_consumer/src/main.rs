@@ -35,6 +35,7 @@ struct ValidatedPayload {
 #[action(
     key = "contract.renamed_action",
     name = "Renamed contract action",
+    version = "2.5.0-rc.7+build.009",
     input = Value,
     output = Value
 )]
@@ -89,6 +90,11 @@ impl ContractCredential {
 }
 
 fn main() {
+    let nested: NestedPayload = nebula_sdk::serde_json::from_value(
+        nebula_sdk::json!({ "child": { "name": "nested value" } }),
+    )
+    .expect("renamed schema and SDK serde derives decode nested payloads");
+    assert_eq!(nested.child.name, "nested value");
     let schema = schema_of::<NestedPayload>().unwrap();
     assert!(schema.find(&field_key!("child")).is_some());
     let scalar = schema_of::<u8>().unwrap();
@@ -114,7 +120,10 @@ fn main() {
     .expect("payload is valid");
     let schema = schema_of::<SchemaPayload>().expect("valid test catalog definition");
     let authored = nebula_sdk::params! { data; "name" => "{{ literal }}" }.unwrap();
-    assert_eq!(authored.get("name").and_then(AuthoredValue::as_str), Some("{{ literal }}"));
+    assert_eq!(
+        authored.get("name").and_then(AuthoredValue::as_str),
+        Some("{{ literal }}")
+    );
     assert!(schema.find(&field_key!("name")).is_some());
     let _: CredentialMetadataDraft = ContractCredential::metadata();
     let _: ActionMetadataDraft = <ContractAction as Action>::metadata();

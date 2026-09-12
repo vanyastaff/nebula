@@ -31,8 +31,9 @@ fn empty_schema() -> ValidSchema {
 fn base_metadata_deprecation_forces_deprecated_through_serde_round_trip() {
     let original = MetadataDraft::try_new(key(), "n", "d")
         .expect("nonblank name")
-        .with_deprecation(DeprecationNotice::new(Version::new(1, 0, 0)).reason("superseded"))
-        .bind_schema(empty_schema());
+        .with_deprecation(DeprecationNotice::new(Version::new(1, 0, 0)).with_reason("superseded"))
+        .bind_schema(empty_schema())
+        .expect("valid bounded metadata");
     assert_eq!(original.maturity(), MaturityLevel::Deprecated);
 
     let json = serde_json::to_string(&original).expect("serializes");
@@ -49,7 +50,8 @@ fn base_metadata_deprecation_forces_deprecated_through_serde_round_trip() {
 #[test]
 fn plugin_manifest_deprecation_forces_deprecated_through_serde_round_trip() {
     let original = PluginManifest::builder("legacy", "Legacy")
-        .deprecation(DeprecationNotice::new(Version::new(2, 0, 0)).reason("superseded"))
+        .version(Version::new(2, 0, 0))
+        .deprecation(DeprecationNotice::new(Version::new(2, 0, 0)).with_reason("superseded"))
         .build()
         .expect("valid manifest");
     assert_eq!(original.maturity(), MaturityLevel::Deprecated);
@@ -65,6 +67,7 @@ fn plugin_manifest_deprecation_forces_deprecated_through_serde_round_trip() {
 #[test]
 fn plugin_manifest_builder_stays_order_independent() {
     let manifest = PluginManifest::builder("legacy", "Legacy")
+        .version(Version::new(2, 0, 0))
         .deprecation(DeprecationNotice::new(Version::new(2, 0, 0)))
         .maturity(MaturityLevel::Stable)
         .build()
@@ -80,7 +83,8 @@ fn metadata_draft_order_preserves_the_deprecation_invariant() {
         .expect("nonblank name")
         .with_deprecation(DeprecationNotice::new(Version::new(1, 0, 0)))
         .mark_stable()
-        .bind_schema(empty_schema());
+        .bind_schema(empty_schema())
+        .expect("valid bounded metadata");
 
     assert_eq!(
         metadata.maturity(),
@@ -98,6 +102,7 @@ fn metadata_draft_order_preserves_the_deprecation_invariant() {
 #[test]
 fn adversarial_json_deprecation_with_explicit_stable_maturity_stays_deprecated() {
     let adversarial = serde_json::json!({
+        "metadata_wire_version": 2,
         "key": "k",
         "name": "n",
         "description": "d",
@@ -111,7 +116,8 @@ fn adversarial_json_deprecation_with_explicit_stable_maturity_stays_deprecated()
     let fresh_definition = MetadataDraft::try_new(key(), "n", "d")
         .expect("nonblank name")
         .with_deprecation(DeprecationNotice::new(Version::new(1, 0, 0)))
-        .bind_schema(empty_schema());
+        .bind_schema(empty_schema())
+        .expect("valid bounded metadata");
     let decoded = recorded
         .readmit_against(&fresh_definition)
         .expect("recorded notice matches fresh definition");

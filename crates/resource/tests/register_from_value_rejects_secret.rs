@@ -106,7 +106,11 @@ impl Provider for Db {
     }
 
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            nebula_resource::metadata_name!("secret-config-guard-db"),
+            "",
+        )
     }
 }
 

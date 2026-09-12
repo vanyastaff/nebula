@@ -109,7 +109,11 @@ impl Provider for RetainedResource {
     }
 
     fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
+        ResourceMetadataDraft::new(
+            Self::key(),
+            crate::metadata_name!("managed-retained-regression"),
+            "",
+        )
     }
 }
 

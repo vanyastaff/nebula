@@ -424,7 +424,7 @@ mod tests {
         }
 
         fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::from_key(Self::key())
+            ResourceMetadataDraft::new(Self::key(), crate::metadata_name!("mock-resident"), "")
         }
     }
 
@@ -605,7 +605,7 @@ mod tests {
         }
 
         fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::from_key(Self::key())
+            ResourceMetadataDraft::new(Self::key(), crate::metadata_name!("hanging-resident"), "")
         }
     }
 
@@ -693,7 +693,7 @@ mod tests {
         }
 
         fn metadata() -> ResourceMetadataDraft {
-            ResourceMetadataDraft::from_key(Self::key())
+            ResourceMetadataDraft::new(Self::key(), crate::metadata_name!("slot-read-resident"), "")
         }
     }
 

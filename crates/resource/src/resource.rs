@@ -164,11 +164,6 @@ impl ResourceMetadataDraft {
         })
     }
 
-    /// Create minimal author intent derived from a resource key.
-    pub fn from_key(key: ResourceKey) -> Self {
-        Self::new(key.clone(), key.into(), String::new())
-    }
-
     /// Set the interface version.
     pub fn with_version(mut self, version: Version) -> Self {
         self.base = self.base.with_version(version);
@@ -196,6 +191,21 @@ impl ResourceMetadataDraft {
     /// Set the documentation URL.
     pub fn with_documentation_url(mut self, url: impl Into<String>) -> Self {
         self.base = self.base.with_documentation_url(url);
+        self
+    }
+
+    /// Replace the catalog categories.
+    pub fn with_categories(
+        mut self,
+        categories: impl IntoIterator<Item = nebula_metadata::CatalogCategoryKey>,
+    ) -> Self {
+        self.base = self.base.with_categories(categories);
+        self
+    }
+
+    /// Append a typed catalog link.
+    pub fn add_link(mut self, link: nebula_metadata::CatalogLink) -> Self {
+        self.base = self.base.add_link(link);
         self
     }
 
@@ -239,10 +249,14 @@ impl ResourceMetadataDraft {
         self
     }
 
-    pub(crate) fn admit(self, schema: ValidSchema) -> ResourceMetadata {
-        ResourceMetadata {
-            base: self.base.bind_schema(schema),
-        }
+    #[tracing::instrument(name = "resource.metadata.admit", skip_all, err)]
+    pub(crate) fn admit(self, schema: ValidSchema) -> Result<ResourceMetadata, MetadataBuildError> {
+        let metadata = ResourceMetadata {
+            base: self.base.bind_schema(schema)?,
+        };
+        nebula_metadata::check_json_record(&metadata)
+            .map_err(nebula_metadata::MetadataBuildError::from)?;
+        Ok(metadata)
     }
 }
 
@@ -255,7 +269,6 @@ impl ResourceMetadataDraft {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ResourceMetadata {
-    #[serde(flatten)]
     base: BaseMetadata<ResourceKey>,
 }
 
@@ -293,14 +306,57 @@ impl Metadata for ResourceMetadata {
 ///
 /// Recorded fields never become authority. Call [`Self::readmit_against`]
 /// with metadata freshly admitted from the current static resource type.
+/// Direct serde decoding checks structure but cannot bound parser allocation;
+/// raw ingress must use the bounded constructors or an externally bounded transport.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RecordedResourceMetadata {
-    #[serde(flatten)]
     base: RecordedBaseMetadata<ResourceKey>,
 }
 
+impl<'de> Deserialize<'de> for RecordedResourceMetadata {
+    #[tracing::instrument(name = "resource.metadata.decode_recorded", skip_all)]
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fields {
+            base: RecordedBaseMetadata<ResourceKey>,
+        }
+
+        let fields: Fields = nebula_metadata::deserialize_metadata_object(deserializer)
+            .map_err(|_| serde::de::Error::custom("invalid recorded resource metadata"))?;
+        let recorded = Self { base: fields.base };
+        nebula_metadata::check_json_record(&recorded)
+            .map_err(<D::Error as serde::de::Error>::custom)?;
+        Ok(recorded)
+    }
+}
+
 impl RecordedResourceMetadata {
+    /// Decode recorded evidence within the selected whole-envelope byte limit.
+    ///
+    /// # Errors
+    /// Returns a payload-free error for oversized input or invalid wire records.
+    pub fn from_slice(
+        bytes: &[u8],
+        limits: nebula_metadata::MetadataDecodeLimits,
+    ) -> Result<Self, nebula_metadata::MetadataDecodeError> {
+        nebula_metadata::decode_json_slice(bytes, limits)
+    }
+
+    /// Read recorded evidence with bounded buffering before JSON parsing.
+    ///
+    /// The caller owns the reader's framing and I/O deadline.
+    ///
+    /// # Errors
+    /// Returns a payload-free read, size, or record error.
+    pub fn from_reader(
+        reader: impl std::io::Read,
+        limits: nebula_metadata::MetadataDecodeLimits,
+    ) -> Result<Self, nebula_metadata::MetadataDecodeError> {
+        nebula_metadata::decode_json_reader(reader, limits)
+    }
+
     /// Recorded shared metadata evidence.
     #[must_use]
     pub const fn base(&self) -> &RecordedBaseMetadata<ResourceKey> {
@@ -770,9 +826,7 @@ pub trait Provider: HasCredentialSlots + Send + Sync + Sized + 'static {
     ///
     /// The resource factory derives and binds the canonical configuration
     /// schema from [`Self::Config`]. Authors cannot supply an arbitrary schema.
-    fn metadata() -> ResourceMetadataDraft {
-        ResourceMetadataDraft::from_key(Self::key())
-    }
+    fn metadata() -> ResourceMetadataDraft;
 }
 
 /// Credential-slot epoch provider — implemented by `#[derive(Resource)]`.
@@ -910,6 +964,7 @@ mod tests {
         ResourceMetadataDraft::new(resource_key!("postgres"), crate::metadata_name!("pg"), "d")
             .with_version(Version::new(major, minor, 0))
             .admit(empty_schema())
+            .expect("valid resource metadata")
     }
 
     #[test]
@@ -930,11 +985,15 @@ mod tests {
         let json_value: serde_json::Value =
             serde_json::from_str(&json).expect("serialized metadata is valid JSON");
         assert!(
-            json_value.get("base").is_none(),
-            "base metadata must be flattened"
+            json_value.get("base").is_some(),
+            "base metadata must use the nested wire-v2 record"
         );
+        assert_eq!(json_value["base"]["metadata_wire_version"], 2);
+        assert!(json_value.get("key").is_none());
         assert_eq!(
-            json_value.get("key").and_then(serde_json::Value::as_str),
+            json_value["base"]
+                .get("key")
+                .and_then(serde_json::Value::as_str),
             Some("postgres")
         );
 
@@ -952,7 +1011,8 @@ mod tests {
         let metadata =
             ResourceMetadataDraft::new(resource_key!("postgres"), crate::metadata_name!("pg"), "d")
                 .with_version(version.clone())
-                .admit(empty_schema());
+                .admit(empty_schema())
+                .expect("valid resource metadata");
 
         assert_eq!(metadata.base().version(), &version);
     }

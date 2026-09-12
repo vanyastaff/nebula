@@ -8,8 +8,9 @@ use proptest::prelude::*;
 #[test]
 fn literals_carry_a_nonblank_name_proof() {
     const NAME: MetadataName = metadata_name!("  Example  ");
-    let metadata =
-        MetadataDraft::new(action_key!("example"), NAME, "").bind_schema(ValidSchema::empty());
+    let metadata = MetadataDraft::new(action_key!("example"), NAME, "")
+        .bind_schema(ValidSchema::empty())
+        .expect("valid bounded metadata");
     assert_eq!(metadata.name(), "  Example  ");
     assert_eq!(metadata.key(), &action_key!("example"));
 }

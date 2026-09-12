@@ -20,8 +20,11 @@ use nebula_core::PluginKey;
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 
+use crate::bounded::{self, PendingCollection, RAW_ENTRIES, SHARED_BYTES};
 use crate::defaults::{default_version, is_default_maturity, is_default_version};
 use crate::definition::{resolve_maturity, validate_name};
+use crate::shared::{Discovery, SharedFields};
+use crate::{CatalogCategoryKey, CatalogLink, METADATA_WIRE_VERSION};
 use crate::{DeprecationNotice, Icon, MaturityLevel, MetadataError};
 
 /// A declared dependency of one plugin on another.
@@ -45,13 +48,19 @@ impl<'de> Deserialize<'de> for PluginDependency {
     #[tracing::instrument(name = "metadata.deserialize_plugin_dependency", skip_all)]
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct Fields {
+            #[serde(deserialize_with = "bounded::string::<_, SHARED_BYTES>")]
             key: String,
+            #[serde(deserialize_with = "bounded::version_requirement")]
             req: VersionReq,
         }
 
-        let fields = Fields::deserialize(deserializer)?;
-        let key = fields.key.parse().map_err(D::Error::custom)?;
+        let fields: Fields = crate::deserialize_metadata_object(deserializer)?;
+        let key = fields
+            .key
+            .parse()
+            .map_err(|_| D::Error::custom(MetadataError::InvalidKey))?;
         Ok(Self::new(key, fields.req))
     }
 }
@@ -89,8 +98,8 @@ pub enum ManifestError {
 
     /// Plugin key validation failed.
     #[classify(category = "validation", code = "MANIFEST:INVALID_KEY")]
-    #[error("invalid plugin key: {0}")]
-    InvalidKey(#[source] nebula_core::PluginKeyParseError),
+    #[error("invalid plugin key")]
+    InvalidKey,
 }
 
 /// Normalize a raw plugin key string: ASCII uppercase → lowercase, spaces → underscores.
@@ -121,6 +130,7 @@ pub(crate) fn normalize_key(s: &str) -> String {
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PluginManifest {
+    metadata_wire_version: u32,
     key: PluginKey,
     name: String,
     #[serde(
@@ -136,8 +146,12 @@ pub struct PluginManifest {
     icon: Icon,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     color: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     tags: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    categories: Vec<CatalogCategoryKey>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    links: Vec<CatalogLink>,
     /// Plugin author or organization name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     author: Option<String>,
@@ -165,9 +179,11 @@ pub struct PluginManifest {
 impl<'de> Deserialize<'de> for PluginManifest {
     #[tracing::instrument(name = "metadata.deserialize_plugin_manifest", skip_all)]
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        PluginManifestBuilder::deserialize(deserializer)?
-            .build()
-            .map_err(D::Error::custom)
+        let fields: ManifestFields = crate::deserialize_metadata_object(deserializer)?;
+        if fields.metadata_wire_version != METADATA_WIRE_VERSION {
+            return Err(D::Error::custom(MetadataError::UnsupportedWireVersion));
+        }
+        fields.into_builder().build().map_err(D::Error::custom)
     }
 }
 
@@ -182,7 +198,7 @@ impl PluginManifest {
             description: String::new(),
             icon: Icon::default(),
             color: None,
-            tags: Vec::new(),
+            discovery: Discovery::default(),
             author: None,
             license: None,
             homepage: None,
@@ -242,6 +258,27 @@ impl PluginManifest {
         &self.tags
     }
 
+    /// Canonical structured discovery categories.
+    #[must_use]
+    pub fn categories(&self) -> &[CatalogCategoryKey] {
+        &self.categories
+    }
+
+    /// Canonical documentation links.
+    #[must_use]
+    pub fn links(&self) -> &[CatalogLink] {
+        &self.links
+    }
+
+    /// The single Overview link target, when present.
+    #[must_use]
+    pub fn documentation_url(&self) -> Option<&str> {
+        self.links
+            .iter()
+            .find(|link| link.relation() == crate::CatalogLinkRelation::Overview)
+            .map(|link| link.target().as_str())
+    }
+
     /// Plugin author or organization name.
     #[inline]
     pub fn author(&self) -> Option<&str> {
@@ -297,39 +334,25 @@ impl PluginManifest {
 
 /// Unchecked draft of a [`PluginManifest`]; [`Self::build`] checks its invariants.
 ///
-/// Deserializing a draft does not produce a trusted manifest until it is built.
-#[derive(Debug, Deserialize)]
+/// Wire data decodes through a private DTO and the same final build gate.
+#[derive(Debug)]
 #[must_use = "a manifest draft must be built to validate its definition"]
 pub struct PluginManifestBuilder {
     key: String,
     name: String,
-    #[serde(default = "default_version")]
     version: Version,
-    #[serde(default)]
     group: Vec<String>,
-    #[serde(default)]
     description: String,
-    #[serde(default)]
     icon: Icon,
-    #[serde(default)]
     color: Option<String>,
-    #[serde(default)]
-    tags: Vec<String>,
-    #[serde(default)]
+    discovery: Discovery,
     author: Option<String>,
-    #[serde(default)]
     license: Option<String>,
-    #[serde(default)]
     homepage: Option<String>,
-    #[serde(default)]
     repository: Option<String>,
-    #[serde(default)]
     nebula_version: Option<Version>,
-    #[serde(default)]
     maturity: MaturityLevel,
-    #[serde(default)]
     deprecation: Option<DeprecationNotice>,
-    #[serde(default)]
     dependencies: Vec<PluginDependency>,
 }
 
@@ -378,7 +401,34 @@ impl PluginManifestBuilder {
 
     /// Set the tags.
     pub fn tags(mut self, tags: Vec<String>) -> Self {
-        self.tags = tags;
+        self.discovery.tags = PendingCollection::collect(tags);
+        self
+    }
+
+    /// Replace structured categories, bounded and canonicalized by build.
+    pub fn with_categories(
+        mut self,
+        categories: impl IntoIterator<Item = CatalogCategoryKey>,
+    ) -> Self {
+        self.discovery.categories = PendingCollection::collect(categories);
+        self
+    }
+
+    /// Replace documentation links and clear pending errors for this field.
+    pub fn with_links(mut self, links: impl IntoIterator<Item = CatalogLink>) -> Self {
+        self.discovery.replace_links(links);
+        self
+    }
+
+    /// Append a link; conflicting Overview targets fail at build.
+    pub fn add_link(mut self, link: CatalogLink) -> Self {
+        self.discovery.links.push(link);
+        self
+    }
+
+    /// Replace the single Overview link, checked by the build gate.
+    pub fn with_documentation_url(mut self, target: impl AsRef<str>) -> Self {
+        self.discovery.set_overview(target.as_ref());
         self
     }
 
@@ -442,7 +492,9 @@ impl PluginManifestBuilder {
     ///
     /// May be called multiple times to add multiple dependencies.
     pub fn dependency(mut self, dep: PluginDependency) -> Self {
-        self.dependencies.push(dep);
+        if self.dependencies.len() <= RAW_ENTRIES {
+            self.dependencies.push(dep);
+        }
         self
     }
 
@@ -469,10 +521,11 @@ impl PluginManifestBuilder {
     /// [`ManifestError::Metadata`] if the name is blank or Deprecated maturity
     /// was requested without a deprecation notice.
     #[tracing::instrument(name = "metadata.build_plugin_manifest", skip_all)]
-    pub fn build(self) -> Result<PluginManifest, ManifestError> {
+    pub fn build(mut self) -> Result<PluginManifest, ManifestError> {
+        bounded::check_bytes(&self.key, SHARED_BYTES, crate::MetadataField::Key)?;
         let key: PluginKey = normalize_key(&self.key)
             .parse()
-            .map_err(ManifestError::InvalidKey)
+            .map_err(|_| ManifestError::InvalidKey)
             .inspect_err(|_| {
                 tracing::debug!(
                     error_code = "MANIFEST:INVALID_KEY",
@@ -483,8 +536,76 @@ impl PluginManifestBuilder {
         validate_name(&self.name)?;
         let name = self.name.trim().to_owned();
         let maturity = resolve_maturity(self.maturity, self.deprecation.as_ref())?;
+        self.discovery.canonicalize()?;
+        SharedFields {
+            metadata_wire_version: METADATA_WIRE_VERSION,
+            key: &key,
+            name: &name,
+            description: &self.description,
+            schema: None,
+            version: &self.version,
+            icon: &self.icon,
+            categories: self.discovery.categories.as_slice(),
+            tags: self.discovery.tags.as_slice(),
+            links: self.discovery.links.as_slice(),
+            maturity,
+            deprecation: self.deprecation.as_ref(),
+        }
+        .validate()?;
+        if self.group.len() > RAW_ENTRIES {
+            return Err(
+                MetadataError::TooManyRawEntries(crate::MetadataField::ManifestGroup).into(),
+            );
+        }
+        if self.dependencies.len() > RAW_ENTRIES {
+            return Err(MetadataError::TooManyRawEntries(
+                crate::MetadataField::ManifestDependencies,
+            )
+            .into());
+        }
+        for dependency in &self.dependencies {
+            bounded::check_serialized(
+                dependency.req(),
+                SHARED_BYTES,
+                MetadataError::FieldTooLarge(crate::MetadataField::ManifestDependencies),
+            )?;
+            crate::reference::checked_requirement_text(dependency.req()).map_err(|_| {
+                MetadataError::InvalidVersion(crate::MetadataField::ManifestDependencies)
+            })?;
+        }
+        if let Some(version) = &self.nebula_version {
+            bounded::check_serialized(
+                version,
+                SHARED_BYTES,
+                MetadataError::FieldTooLarge(crate::MetadataField::ManifestNebulaVersion),
+            )?;
+        }
+        for value in &self.group {
+            bounded::check_bytes(value, SHARED_BYTES, crate::MetadataField::ManifestGroup)?;
+        }
+        for (field, value) in [
+            (crate::MetadataField::ManifestColor, self.color.as_deref()),
+            (crate::MetadataField::ManifestAuthor, self.author.as_deref()),
+            (
+                crate::MetadataField::ManifestLicense,
+                self.license.as_deref(),
+            ),
+            (
+                crate::MetadataField::ManifestHomepage,
+                self.homepage.as_deref(),
+            ),
+            (
+                crate::MetadataField::ManifestRepository,
+                self.repository.as_deref(),
+            ),
+        ] {
+            if let Some(value) = value {
+                bounded::check_bytes(value, SHARED_BYTES, field)?;
+            }
+        }
 
-        Ok(PluginManifest {
+        let manifest = PluginManifest {
+            metadata_wire_version: METADATA_WIRE_VERSION,
             key,
             name,
             version: self.version,
@@ -492,7 +613,18 @@ impl PluginManifestBuilder {
             description: self.description,
             icon: self.icon,
             color: self.color,
-            tags: self.tags,
+            tags: self
+                .discovery
+                .tags
+                .take_checked(crate::MetadataField::Tags)?,
+            categories: self
+                .discovery
+                .categories
+                .take_checked(crate::MetadataField::Categories)?,
+            links: self
+                .discovery
+                .links
+                .take_checked(crate::MetadataField::Links)?,
             author: self.author,
             license: self.license,
             homepage: self.homepage,
@@ -501,7 +633,111 @@ impl PluginManifestBuilder {
             maturity,
             deprecation: self.deprecation,
             dependencies: self.dependencies,
-        })
+        };
+        // Packaging is a separate container concern with its own bounded record.
+        bounded::check_serialized(
+            &manifest,
+            bounded::MANIFEST_BYTES,
+            MetadataError::ManifestBudgetExceeded,
+        )?;
+        crate::check_json_record(&manifest)?;
+        Ok(manifest)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManifestFields {
+    metadata_wire_version: u32,
+    #[serde(deserialize_with = "bounded::string::<_, SHARED_BYTES>")]
+    key: String,
+    #[serde(deserialize_with = "bounded::string::<_, SHARED_BYTES>")]
+    name: String,
+    #[serde(default = "default_version", deserialize_with = "bounded::version")]
+    version: Version,
+    #[serde(default, deserialize_with = "bounded::tags")]
+    group: Vec<String>,
+    #[serde(
+        default,
+        deserialize_with = "bounded::string::<_, {bounded::DESCRIPTION_BYTES}>"
+    )]
+    description: String,
+    #[serde(default)]
+    icon: Icon,
+    #[serde(
+        default,
+        deserialize_with = "bounded::optional_string::<_, SHARED_BYTES>"
+    )]
+    color: Option<String>,
+    #[serde(default, deserialize_with = "bounded::tags")]
+    tags: Vec<String>,
+    #[serde(
+        default,
+        deserialize_with = "bounded::sequence::<_, CatalogCategoryKey, RAW_ENTRIES>"
+    )]
+    categories: Vec<CatalogCategoryKey>,
+    #[serde(
+        default,
+        deserialize_with = "bounded::sequence::<_, CatalogLink, RAW_ENTRIES>"
+    )]
+    links: Vec<CatalogLink>,
+    #[serde(
+        default,
+        deserialize_with = "bounded::optional_string::<_, SHARED_BYTES>"
+    )]
+    author: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "bounded::optional_string::<_, SHARED_BYTES>"
+    )]
+    license: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "bounded::optional_string::<_, SHARED_BYTES>"
+    )]
+    homepage: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "bounded::optional_string::<_, SHARED_BYTES>"
+    )]
+    repository: Option<String>,
+    #[serde(default, deserialize_with = "bounded::optional_version")]
+    nebula_version: Option<Version>,
+    #[serde(default)]
+    maturity: MaturityLevel,
+    #[serde(default)]
+    deprecation: Option<DeprecationNotice>,
+    #[serde(
+        default,
+        deserialize_with = "bounded::sequence::<_, PluginDependency, RAW_ENTRIES>"
+    )]
+    dependencies: Vec<PluginDependency>,
+}
+
+impl ManifestFields {
+    fn into_builder(self) -> PluginManifestBuilder {
+        let mut discovery = Discovery::default();
+        discovery.categories = PendingCollection::collect(self.categories);
+        discovery.tags = PendingCollection::collect(self.tags);
+        discovery.replace_links(self.links);
+        PluginManifestBuilder {
+            key: self.key,
+            name: self.name,
+            version: self.version,
+            group: self.group,
+            description: self.description,
+            icon: self.icon,
+            color: self.color,
+            discovery,
+            author: self.author,
+            license: self.license,
+            homepage: self.homepage,
+            repository: self.repository,
+            nebula_version: self.nebula_version,
+            maturity: self.maturity,
+            deprecation: self.deprecation,
+            dependencies: self.dependencies,
+        }
     }
 }
 
@@ -697,12 +933,16 @@ mod tests {
     #[test]
     fn deprecation_implies_deprecated_maturity() {
         let manifest = PluginManifest::builder("legacy", "Legacy")
+            .version(Version::new(2, 0, 0))
             .deprecation(DeprecationNotice::new(Version::new(2, 0, 0)))
             .build()
             .unwrap();
 
         assert_eq!(manifest.maturity(), MaturityLevel::Deprecated);
-        assert_eq!(manifest.deprecation().unwrap().since, Version::new(2, 0, 0));
+        assert_eq!(
+            *manifest.deprecation().unwrap().since(),
+            Version::new(2, 0, 0)
+        );
     }
 
     #[test]
@@ -732,6 +972,7 @@ mod tests {
 
         // Case A: maturity set first, deprecation second.
         let a = PluginManifest::builder("legacy_a", "Legacy A")
+            .version(Version::new(3, 0, 0))
             .maturity(MaturityLevel::Stable)
             .deprecation(notice.clone())
             .build()
@@ -745,6 +986,7 @@ mod tests {
         // Case B: deprecation set first, maturity second — the tricky order
         // that the builder's `.deprecation()` setter alone cannot protect against.
         let b = PluginManifest::builder("legacy_b", "Legacy B")
+            .version(Version::new(3, 0, 0))
             .deprecation(notice)
             .maturity(MaturityLevel::Stable)
             .build()

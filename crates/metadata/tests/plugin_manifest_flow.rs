@@ -38,7 +38,7 @@ fn try_new_succeeds_for_a_valid_key_and_name() {
 #[test]
 fn try_new_propagates_invalid_key_unchanged() {
     let err = FixturePlugin::try_new("", "Fixture").expect_err("empty key must be rejected");
-    assert!(matches!(err, ManifestError::InvalidKey(_)), "got: {err:?}");
+    assert_eq!(err, ManifestError::InvalidKey);
 }
 
 #[test]
@@ -120,7 +120,7 @@ fn dependency_declarations_preserve_order() {
 #[test]
 fn deprecation_notice_forces_deprecated_maturity_end_to_end() {
     let manifest = PluginManifest::builder("legacy", "Legacy")
-        .deprecation(DeprecationNotice::new(Version::new(1, 0, 0)).reason("superseded"))
+        .deprecation(DeprecationNotice::new(Version::new(1, 0, 0)).with_reason("superseded"))
         .build()
         .expect("valid manifest");
     assert_eq!(manifest.maturity(), MaturityLevel::Deprecated);

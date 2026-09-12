@@ -4,7 +4,8 @@
 //! plus a `FromWorkflowNode` factory body that resolves slot fields.
 
 use nebula_action::{
-    Action, ActionContext, ActionError, ActionFactory, ActionResult, StatelessAction,
+    Action, ActionContext, ActionError, ActionFactory, ActionResult, MetadataVersion,
+    StatelessAction,
 };
 use nebula_schema::HasSchema;
 
@@ -121,4 +122,46 @@ fn explicit_version_is_propagated() {
     assert_eq!(meta.base().version().major, 2);
     assert_eq!(meta.base().version().minor, 5);
     assert_eq!(meta.base().version().patch, 0);
+}
+
+#[derive(Action)]
+#[action(
+    key = "test.full-semver",
+    name = "Full SemVer",
+    description = "Full version fixture",
+    version = "2.5.0-rc.7+build.009",
+    input = serde_json::Value,
+    output = serde_json::Value
+)]
+struct FullSemverAction;
+
+impl StatelessAction for FullSemverAction {
+    async fn execute(
+        &self,
+        input: serde_json::Value,
+        _: &(impl ActionContext + ?Sized),
+    ) -> Result<ActionResult<serde_json::Value>, ActionError> {
+        Ok(ActionResult::success(input))
+    }
+}
+
+#[test]
+fn macro_and_manual_metadata_preserve_the_exact_full_semver() {
+    let generated = nebula_action::GenericStatelessFactory::<FullSemverAction>::new()
+        .expect("valid generated definition");
+    let version: MetadataVersion = "2.5.0-rc.7+build.009".parse().expect("valid full SemVer");
+    let manual = nebula_action::InstanceFactory::new(
+        nebula_action::ActionMetadataDraft::try_new(
+            nebula_core::action_key!("test.full-semver"),
+            "Full SemVer",
+            "Full version fixture",
+        )
+        .expect("valid name")
+        .with_version(version.clone()),
+        FullSemverAction,
+    )
+    .expect("valid manual definition");
+
+    assert_eq!(generated.metadata().base().version(), &version);
+    assert_eq!(**generated.metadata(), **manual.metadata());
 }

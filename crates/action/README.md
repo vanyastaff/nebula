@@ -64,12 +64,26 @@ Control adapters pass the declared Rust input type to `ControlAction::evaluate` 
 serialize only `ControlOutcome<A::Output>`. Raw JSON handler entrypoints remain literal-only. Public input errors
 contain fixed diagnostics, never schema payloads or serde causes.
 
-Names use checked `MetadataName` values (`metadata_name!("Echo")` for static
-definitions). Read identity and lifecycle through `base.key()`, `base.name()`,
+`ActionMetadataDraft::new(key, metadata_name!("Echo"), description)` constructs a
+static draft; `try_new(key, name, description)` checks dynamic display names.
+Action macros retain the complete SemVer, including prerelease and build fields.
+Read identity and lifecycle through `base.key()`, `base.name()`,
 `base.version()`, `base.schema()`, `base.maturity()`, and `base.deprecation()`.
-Use checked `set_maturity` for lifecycle changes; a deprecation notice takes
+Use `mark_experimental`, `mark_beta`, `mark_stable`, or a typed
+`DeprecationNotice` through `with_deprecation` for lifecycle changes; a notice takes
 precedence regardless of setter order. Schema compatibility remains conservative
 equality, separate from expression-edge assignability.
+
+**Catalog migration:** `with_categories` and `add_link` accept typed catalog
+values. `with_documentation_url` authors the Overview link. Tags are trimmed,
+sorted, and deduplicated; categories and links are also canonicalized. Serialized
+metadata now has a nested `base` with required `metadata_wire_version: 2`.
+`RecordedActionMetadata` rejects old flat/unversioned records and compares every
+shared field and action-specific field against fresh factory admission, including
+same-SemVer catalog changes. Use its bounded `from_slice`/`from_reader` APIs for
+raw ingress; direct serde is structural validation, not a parser-allocation bound.
+See [catalog construction and wire migration](../../docs/INTEGRATION_MODEL.md#catalog-construction-and-wire-migration)
+for limits and the separation from durable plugin records.
 
 ### Sub-traits — execution shapes inherit `<Self as Action>::Input/Output`
 

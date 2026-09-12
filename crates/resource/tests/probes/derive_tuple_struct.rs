@@ -3,8 +3,8 @@
 //! for slot declarations.
 
 use nebula_credential::{
-    AuthPattern, Credential, CredentialContext, CredentialError, CredentialGuard,
-    CredentialMetadataDraft, SecretString, SecretToken, StaticResolveResult,
+    Credential, CredentialContext, CredentialError, CredentialGuard, CredentialMetadataDraft,
+    SecretString, SecretToken, StaticResolveResult,
 };
 use nebula_resource::{Resource, SlotCell};
 use zeroize::Zeroize;
@@ -26,7 +26,6 @@ impl Credential for FakeCred {
             nebula_core::credential_key!("fake.cred"),
             nebula_credential::metadata_name!("FakeCred"),
             "fixture",
-            AuthPattern::SecretToken,
         )
     }
     fn project(state: &SecretToken) -> SecretToken {

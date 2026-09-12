@@ -134,6 +134,23 @@ pub struct ActionMetadataDraft {
 }
 
 impl ActionMetadataDraft {
+    /// Construct a draft after checking a dynamic display name.
+    ///
+    /// # Errors
+    ///
+    /// Returns a metadata error when the display name is invalid.
+    pub fn try_new(
+        key: ActionKey,
+        name: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Result<Self, nebula_metadata::MetadataError> {
+        Ok(Self::new(
+            key,
+            nebula_metadata::MetadataName::try_from(name.into())?,
+            description,
+        ))
+    }
+
     /// Construct an action definition draft.
     pub fn new(
         key: ActionKey,
@@ -154,6 +171,16 @@ impl ActionMetadataDraft {
     /// Set the complete interface version.
     pub fn with_version(mut self, version: nebula_metadata::MetadataVersion) -> Self {
         self.base = self.base.with_version(version);
+        self
+    }
+
+    /// Retain a macro-checked full SemVer literal for fallible factory admission.
+    ///
+    /// Macro expansion validates this literal before emitting it. Admission
+    /// still checks it, so generated library code needs no panic or fallback.
+    #[doc(hidden)]
+    pub fn with_version_literal(mut self, version: &'static str) -> Self {
+        self.base = self.base.with_version_literal(version);
         self
     }
 
@@ -178,6 +205,21 @@ impl ActionMetadataDraft {
     /// Set the documentation URL.
     pub fn with_documentation_url(mut self, url: impl Into<String>) -> Self {
         self.base = self.base.with_documentation_url(url);
+        self
+    }
+
+    /// Replace the catalog categories.
+    pub fn with_categories(
+        mut self,
+        categories: impl IntoIterator<Item = nebula_metadata::CatalogCategoryKey>,
+    ) -> Self {
+        self.base = self.base.with_categories(categories);
+        self
+    }
+
+    /// Append a typed catalog link.
+    pub fn add_link(mut self, link: nebula_metadata::CatalogLink) -> Self {
+        self.base = self.base.add_link(link);
         self
     }
 
@@ -288,7 +330,7 @@ impl ActionMetadataDraft {
         let output_schema =
             nebula_schema::schema_of::<A::Output>().map_err(MetadataBuildError::from)?;
         let metadata = ActionMetadata {
-            base: self.base.bind_schema(input_schema),
+            base: self.base.bind_schema(input_schema)?,
             inputs: self.inputs.into_boxed_slice(),
             outputs: self.outputs.into_boxed_slice(),
             isolation_level: self.isolation_level,
@@ -298,6 +340,7 @@ impl ActionMetadataDraft {
             max_concurrent: self.max_concurrent,
             output_schema,
         };
+        nebula_metadata::check_json_record(&metadata).map_err(MetadataBuildError::from)?;
         validate_action_package(&metadata)?;
         Ok(metadata)
     }
@@ -312,7 +355,6 @@ impl ActionMetadataDraft {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ActionMetadata {
-    #[serde(flatten)]
     base: BaseMetadata<ActionKey>,
     inputs: Box<[InputPort]>,
     outputs: Box<[OutputPort]>,
@@ -422,10 +464,13 @@ impl ActionMetadata {
 }
 
 /// Deserialized action metadata evidence awaiting explicit re-admission.
+///
+/// Direct serde decoding checks structure but cannot bound parser allocation.
+/// Raw byte and reader callers must use the bounded constructors or an
+/// externally bounded transport.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RecordedActionMetadata {
-    #[serde(flatten)]
     base: RecordedBaseMetadata<ActionKey>,
     inputs: Box<[InputPort]>,
     outputs: Box<[OutputPort]>,
@@ -438,7 +483,68 @@ pub struct RecordedActionMetadata {
     output_schema: ValidSchema,
 }
 
+impl<'de> Deserialize<'de> for RecordedActionMetadata {
+    #[tracing::instrument(name = "action.metadata.decode_recorded", skip_all)]
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fields {
+            base: RecordedBaseMetadata<ActionKey>,
+            inputs: Box<[InputPort]>,
+            outputs: Box<[OutputPort]>,
+            isolation_level: IsolationLevel,
+            kind: ActionKind,
+            checkpoint_policy: CheckpointPolicy,
+            effect_contract: ActionEffectContract,
+            #[serde(default)]
+            max_concurrent: Option<NonZeroU32>,
+            output_schema: ValidSchema,
+        }
+
+        let fields: Fields = nebula_metadata::deserialize_metadata_object(deserializer)
+            .map_err(|_| serde::de::Error::custom("invalid recorded action metadata"))?;
+        let recorded = Self {
+            base: fields.base,
+            inputs: fields.inputs,
+            outputs: fields.outputs,
+            isolation_level: fields.isolation_level,
+            kind: fields.kind,
+            checkpoint_policy: fields.checkpoint_policy,
+            effect_contract: fields.effect_contract,
+            max_concurrent: fields.max_concurrent,
+            output_schema: fields.output_schema,
+        };
+        nebula_metadata::check_json_record(&recorded)
+            .map_err(<D::Error as serde::de::Error>::custom)?;
+        Ok(recorded)
+    }
+}
+
 impl RecordedActionMetadata {
+    /// Decode recorded evidence within the selected whole-envelope byte limit.
+    ///
+    /// # Errors
+    /// Returns a payload-free error for oversized input or invalid wire records.
+    pub fn from_slice(
+        bytes: &[u8],
+        limits: nebula_metadata::MetadataDecodeLimits,
+    ) -> Result<Self, nebula_metadata::MetadataDecodeError> {
+        nebula_metadata::decode_json_slice(bytes, limits)
+    }
+
+    /// Read recorded evidence with bounded buffering before JSON parsing.
+    ///
+    /// The caller owns the reader's framing and I/O deadline.
+    ///
+    /// # Errors
+    /// Returns a payload-free read, size, or record error.
+    pub fn from_reader(
+        reader: impl std::io::Read,
+        limits: nebula_metadata::MetadataDecodeLimits,
+    ) -> Result<Self, nebula_metadata::MetadataDecodeError> {
+        nebula_metadata::decode_json_reader(reader, limits)
+    }
+
     /// Re-admit recorded evidence only when it exactly matches a fresh definition.
     ///
     /// The returned value is cloned exclusively from `fresh_definition`; no
@@ -579,14 +685,17 @@ mod tests {
     }
 
     #[test]
-    fn admitted_wire_keeps_shared_metadata_flattened() {
+    fn admitted_wire_nests_shared_metadata_with_required_wire_version() {
         let encoded = serde_json::to_value(admitted()).expect("serialize admitted metadata");
-        assert!(encoded.get("base").is_none());
+        assert!(encoded.get("key").is_none());
+        assert_eq!(encoded["base"]["metadata_wire_version"], 2);
         assert_eq!(
-            encoded.get("key").and_then(serde_json::Value::as_str),
+            encoded["base"]
+                .get("key")
+                .and_then(serde_json::Value::as_str),
             Some("test.example")
         );
-        assert!(encoded.get("schema").is_some());
+        assert!(encoded["base"].get("schema").is_some());
         assert!(encoded.get("output_schema").is_some());
     }
 }

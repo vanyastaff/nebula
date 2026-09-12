@@ -23,6 +23,10 @@ const FIXTURE_FILES: &[&str] = &[
     "Cargo.toml",
     "src/bin/positive.rs",
     "src/bin/resource_topology.rs",
+    "src/bin/removed_resource_from_key.rs",
+    "src/bin/removed_credential_pattern.rs",
+    "src/bin/removed_credential_fourth_argument.rs",
+    "src/bin/private_notice_since.rs",
     "src/bin/resource_manager.rs",
     "src/bin/resource_registry.rs",
     "src/bin/resource_release_queue.rs",
@@ -121,7 +125,23 @@ const FORBIDDEN: &[(&str, &str)] = &[
     ("hidden_resource_slot_identity", "SlotIdentity"),
 ];
 
-const OPAQUE: &[(&str, &str)] = &[("hidden_resource_bridge_field", "factory")];
+const OPAQUE: &[(&str, &str)] = &[
+    ("hidden_resource_bridge_field", "factory"),
+    ("private_notice_since", "since"),
+];
+
+const REMOVED_CATALOG_API: &[(&str, &str, &str)] = &[
+    (
+        "removed_resource_from_key",
+        "from_key",
+        "ResourceMetadataDraft",
+    ),
+    (
+        "removed_credential_pattern",
+        "pattern",
+        "CredentialMetadataDraft",
+    ),
+];
 
 #[test]
 fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
@@ -167,7 +187,7 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
     .expect("copy workspace lockfile into public-perimeter fixture");
 
     for &(binary, forbidden_segment) in FORBIDDEN {
-        let output = cargo_check(temp.path(), binary);
+        let output = cargo_probe(temp.path(), "check", binary);
         assert!(
             !output.status.success(),
             "forbidden perimeter probe `{binary}` unexpectedly compiled"
@@ -204,7 +224,7 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
     }
 
     for &(binary, private_segment) in OPAQUE {
-        let output = cargo_check(temp.path(), binary);
+        let output = cargo_probe(temp.path(), "check", binary);
         assert!(
             !output.status.success(),
             "opaque bridge probe `{binary}` unexpectedly compiled"
@@ -222,16 +242,59 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
         );
     }
 
-    let positive = cargo_check(temp.path(), "positive");
+    for &(binary, removed_symbol, draft_type) in REMOVED_CATALOG_API {
+        let output = cargo_probe(temp.path(), "check", binary);
+        assert!(
+            !output.status.success(),
+            "removed catalog API `{binary}` unexpectedly compiled"
+        );
+        let diagnostics = compiler_errors(&output);
+        std::assert_matches!(
+            diagnostics.as_slice(),
+            [error] if error.code.as_deref() == Some("E0599")
+                && error.highlighted == removed_symbol
+                && error.message.contains(&format!("`{removed_symbol}`"))
+                && error.message.contains(&format!("`{draft_type}`")),
+            "probe `{binary}` must fail only for the removed `{draft_type}::{removed_symbol}`: {}",
+            render_output(&output)
+        );
+    }
+
+    let arity = cargo_probe(temp.path(), "check", "removed_credential_fourth_argument");
+    assert!(
+        !arity.status.success(),
+        "removed credential fourth argument unexpectedly compiled"
+    );
+    let diagnostics = compiler_errors(&arity);
+    std::assert_matches!(
+        diagnostics.as_slice(),
+        [error] if error.code.as_deref() == Some("E0061")
+            && error.message.split_whitespace()
+                .filter_map(|word| word.parse::<usize>().ok())
+                .eq([3, 4]),
+        "credential constructor must reject four arguments when it takes three: {}",
+        render_output(&arity)
+    );
+
+    for binary in ["positive", "resource_topology"] {
+        let output = cargo_probe(temp.path(), "clippy", binary);
+        assert!(
+            output.status.success(),
+            "positive SDK probe `{binary}` must pass strict clippy:\n{}",
+            render_output(&output)
+        );
+    }
+
+    let positive = cargo_probe(temp.path(), "run", "positive");
     assert!(
         positive.status.success(),
-        "supported SDK authoring path must compile:\n{}",
+        "supported SDK authoring path must compile and its assertions must pass:\n{}",
         render_output(&positive)
     );
-    let topology = cargo_check(temp.path(), "resource_topology");
+    let topology = cargo_probe(temp.path(), "run", "resource_topology");
     assert!(
         topology.status.success(),
-        "custom topology authoring must compile:\n{}",
+        "custom topology authoring witness must compile and execute:\n{}",
         render_output(&topology)
     );
 }
@@ -357,6 +420,7 @@ fn macro_private_surface_matches_the_explicit_allowlist() {
 
 #[derive(Debug)]
 struct CompilerError {
+    code: Option<String>,
     message: String,
     highlighted: String,
 }
@@ -373,6 +437,11 @@ fn compiler_errors(output: &Output) -> Vec<CompilerError> {
             if diagnostic.get("level")?.as_str()? != "error" {
                 return None;
             }
+            let code = diagnostic
+                .get("code")
+                .and_then(|code| code.get("code"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
             let message = diagnostic.get("message")?.as_str()?.to_owned();
             let span = diagnostic.get("spans")?.as_array()?.iter().find(|span| {
                 span.get("is_primary").and_then(serde_json::Value::as_bool) == Some(true)
@@ -387,6 +456,7 @@ fn compiler_errors(output: &Output) -> Vec<CompilerError> {
                 .take(end.saturating_sub(start))
                 .collect();
             Some(CompilerError {
+                code,
                 message,
                 highlighted,
             })
@@ -416,22 +486,25 @@ fn copy_fixture(source_root: &Path, destination_root: &Path) {
     }
 }
 
-fn cargo_check(fixture_root: &Path, binary: &str) -> Output {
+fn cargo_probe(fixture_root: &Path, command: &str, binary: &str) -> Output {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
-    Command::new(cargo)
-        .current_dir(fixture_root)
-        .args([
-            "check",
-            "--offline",
-            "--quiet",
-            "--message-format=json",
-            "--bin",
-            binary,
-        ])
+    let mut invocation = Command::new(cargo);
+    invocation.current_dir(fixture_root).args([
+        command,
+        "--offline",
+        "--quiet",
+        "--message-format=json",
+        "--bin",
+        binary,
+    ]);
+    if command == "clippy" {
+        invocation.args(["--", "-D", "warnings"]);
+    }
+    invocation
         .env("CARGO_TERM_COLOR", "never")
         .env("CARGO_TARGET_DIR", fixture_root.join("target"))
         .output()
-        .expect("run cargo check for external SDK perimeter consumer")
+        .expect("run cargo probe for external SDK perimeter consumer")
 }
 
 fn toml_basic_string(path: &Path) -> String {

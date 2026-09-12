@@ -1947,7 +1947,6 @@ mod refresh_revoke_race {
                 nebula_core::credential_key!("test.refreshable"),
                 crate::metadata_name!("TestCred"),
                 "refreshable test credential for resolver regressions",
-                AuthPattern::OAuth2,
             )
         }
 
@@ -2053,7 +2052,6 @@ mod refresh_revoke_race {
                 nebula_core::credential_key!("test.local_refreshable"),
                 crate::metadata_name!("LocalRefreshCred"),
                 "providerless refresh credential for finalization regressions",
-                AuthPattern::OAuth2,
             )
         }
 
@@ -2158,7 +2156,6 @@ mod refresh_revoke_race {
                 nebula_core::credential_key!("oauth2"),
                 crate::metadata_name!("Same-key typed test credential"),
                 "proves refresh dispatch follows the Rust type rather than its registry key",
-                AuthPattern::OAuth2,
             )
         }
 
@@ -2227,7 +2224,6 @@ mod refresh_revoke_race {
                 nebula_core::credential_key!("test.cancellation_aware"),
                 crate::metadata_name!("Cancellation-aware test credential"),
                 "proves K2 refresh is detached from request cancellation",
-                AuthPattern::OAuth2,
             )
         }
 
@@ -2332,7 +2328,6 @@ mod refresh_revoke_race {
                 nebula_core::credential_key!("test.post_provider_encoding"),
                 crate::metadata_name!("Post-provider encoding test"),
                 "proves state encoding failures retain replay-unsafe disposition",
-                AuthPattern::OAuth2,
             )
         }
 
@@ -4299,7 +4294,6 @@ mod refresh_revoke_race {
                 nebula_core::credential_key!("test.mismatched_policy"),
                 crate::metadata_name!("MismatchedPolicyCred"),
                 "credential whose policy drifts from its family",
-                AuthPattern::SecretToken,
             )
         }
 
