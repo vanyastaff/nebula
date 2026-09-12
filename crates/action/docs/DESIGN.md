@@ -192,5 +192,11 @@ Dev: `nebula-credential-macros`, `nebula-expression`, `trybuild`, `insta`, `rste
   `execute(&self, input, ...)`, `FromWorkflowNode` и существующие behavior families.
   Value-only `#[property(...)]` живёт на data-типе; отдельные `#[slot(credential, ...)]` /
   `#[slot(resource, ...)]` — на action. Slots остаются вне `HasSchema` и persisted parameters.
+  Target `schema_type(input)` / `schema_type(output)` owns real Serde and Schema
+  derives on the associated DTO; require recursive InputCodec / OutputCodec bounds.
+  Schema-only supplies no codec witness. Every behavior family rejects protected
+  output domains at admission before handlers/serializers, even absent/inactive
+  nested or external branches. Validate actual ordinary outbound payloads before
+  publish/persist without inbound transforms/defaults; codec errors are payload-free.
   `ActionMetadataDraft` сохраняет schema-free lifecycle и `with_*`; factory выводит обе схемы и kind.
   Constructor/SDK parity issue 1018 описана в [integration model](../../../docs/INTEGRATION_MODEL.md#shared-metadata-authoring-current-foundation-target-parity).

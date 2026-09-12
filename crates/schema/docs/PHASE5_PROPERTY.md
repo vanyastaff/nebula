@@ -21,7 +21,7 @@ This is the proposed implementation contract for revising design-only PR1027.
 The user authorizes a breaking architectural redesign, superseding issue 992's
 earlier ratify-only restriction. This document does not ship any implementation.
 The private design vault was unavailable: ADR text is unverified and unmodified.
-References to ADR-0108 below concern only its summary in the preceding revision.
+Private ADR-0108 remains unverified; only its preceding summary was available.
 
 Use structured `#[property(display(...), input(...), validate(...), options(...))]`
 on data fields and a separate `#[slot(...)]` on dependency fields. Permanently
@@ -45,18 +45,18 @@ different slots populated on the two instances. Provider similarly receives
 An explicitly handwritten `Properties = Self` remains possible when meaningful;
 there is no generated single-instance mode or new action behavior family.
 
-The simpler credible alternative is serde-owned data types with a small flat
-property annotation and separate slots. This proposal keeps that ownership model
-and groups options because presentation, admission, validation, and loading have
-different semantics. A single property/slot union hides those differences.
-Attribute macros that rewrite structs or generate hidden companion data types
-are unnecessary for the selected design and are outside this contract.
+Use schema-owned `#[schema_type(input)]`, `#[schema_type(output)]` or
+`#[schema_type(input, output)]` to own codec generation on the same data definition.
+The alternative of treating all independently authored codecs as trusted by default
+is rejected: normal DTO authoring can provide stronger structural guarantees and
+simpler derive ownership. Property sections retain their separate semantics;
+receiver rewriting and hidden companion data types remain outside this contract.
 
 ## Existing Owners and Reuse
 
 | Owner | Reuse and required responsibility |
 |---|---|
-| schema | HasSchema, Field, RootShape, checked ValidSchema, value/proof pipeline, serde projections, LoaderRegistry and redacted loader context. |
+| schema | HasSchema, PropertyType, schema_type and directional codec contracts, Field, RootShape, checked ValidSchema, value/proof pipeline, serde projections, LoaderRegistry and redacted loader context. |
 | validator | Rule, Predicate, FieldPath, budgets, pending evaluation; checked Condition refinement and policy semantic v2. |
 | core | Dependencies, SlotField, SlotKind and typed keys; remains condition-free. |
 | action | Action traits, FromWorkflowNode, input preparation, factories, leaf slot declarations and invocation decisions. |
@@ -78,7 +78,7 @@ property/slot syntax model, not runtime slot policy. Dependencies are compiler
 tools such as syn/quote and narrow existing macro support, never runtime authority.
 This extraction replaces real parser duplication across Schema, Action,
 Resource and credential authoring consumers. Each invocation parses independently
-using the shared implementation: no global cache, expansion-order dependency, or
+using the shared implementation: no global cache, inter-derive state dependency, or
 claim of one parsed instance shared between derives. Update workspace metadata
 and deny wrappers for this permitted dependency direction; metadata-driven CI
 discovers the new package without handwritten package-selection lists.
@@ -91,24 +91,84 @@ trait implementations. Shared parsing means shared code, not shared macro state.
 
 | Existing family | Keep or change |
 |---|---|
-| Schema derive | Keep; emit HasSchema, field descriptors and checked data declarations from property/serde. Never emit Deserialize. |
+| schema_type attribute | New data-definition owner; insert real library Serde derives for requested directions plus Schema, and emit directional codec implementations. |
+| Schema derive | Keep schema-only HasSchema, PropertyType and checked declarations; emit neither Serde implementations nor directional codec evidence. |
 | EnumSelect derive | Keep for option labels; consume the same serde enum-domain declaration as Schema, without an independent casing/domain algorithm. |
 | Action derive | Keep; emit the complete Action impl and FromWorkflowNode adapter, using explicit input/output types and separate slots. |
 | action_phantom attribute | Remains a separate existing adapter; does not turn CredentialRef into a new slot shape or participate in property inference. |
 | credential impl attribute | Keep; own the complete Credential/capability impls from the annotated impl's recognized items. No new Credential struct derive. |
 | AuthScheme/capability macros | Keep their existing scheme and capability responsibilities. |
 | Resource derive | Keep slot plumbing and existing factory contribution responsibilities; never emit a partial Provider impl. |
-| ResourceConfig derive | Keep config identity/validation; require an explicit HasSchema implementation, normally Schema, for every shape. |
+| ResourceConfig derive | Keep config identity/validation; require HasSchema and both codec directions, normally supplied by schema_type(input, output), for every shape. |
 | ClassifyError | Keep; typed resource errors remain separate from authoring grammar. |
 | Plugin and Validator derives | Keep their own responsibilities; Schema stops consuming legacy validate helpers, but Validator's independent grammar is not removed. |
 
 ResourceConfig no longer opportunistically emits HasSchema for unit/empty types;
-derive Schema there too. Remove the need for `config(schema = external)`.
+use schema_type there too. Remove the need for `config(schema = external)`.
 Retain `config(validate = RustPath)` and `config(skip_fingerprint)` as config
 identity hooks, not property/serde omission flags. Identity exclusions must not
 affect validation, persistence, slot decisions, or security policy.
 This proposal does not remove ResourceConfig's current Clone bound merely to
 accommodate a slot-bearing config; canonical configs contain data, not guards.
+
+### Directional Codec Ownership
+
+The following schema-owned signatures are unshipped targets; Serde supplies the
+actual codec implementations, never a Nebula reimplementation of Serde:
+
+```rust
+pub trait InputCodec: HasSchema + PropertyType + serde::de::DeserializeOwned {}
+pub trait OutputCodec: HasSchema + PropertyType + serde::Serialize {}
+```
+
+`schema_type(input)` inserts the real Deserialize derive, `output` Serialize,
+and `input, output` both; every mode inserts Schema on that same definition.
+Only this owner generates the corresponding structural codec trait impls;
+Schema alone remains valid for description, including serde helpers, but produces
+no codec evidence even beside separately authored Serde derives. Evidence rests
+on joint generation from the same supported declaration and recursive bounds,
+not marker presence alone. Neither a helper flag nor a blanket implementation
+for HasSchema plus Serde may manufacture that structural relationship.
+
+Action::Input and Credential::Properties require InputCodec; Action::Output
+requires OutputCodec. Provider::Config deliberately requires both directions as
+a target round-trip authoring contract for config decoding and outbound encoding
+through paired projections. This is a new requirement: current ResourceConfig
+does not require Serialize, and fingerprint() -> u64 is an independent contract.
+Keep existing Send/Sync/Clone bounds where applicable; input-only DTOs gain no
+unconditional Serialize requirement.
+Every field, enum payload and transparent newtype requires its child's respective
+codec direction, including external types and all optional/inactive variants.
+Provide reviewed schema-owned primitive/unit codec impls and Vec<T>/Option<T>
+impls conditional on T's direction; aliases reuse the actual type's evidence.
+Generic owners propagate bounds on used field types and preserve where clauses.
+SecretInput is an additional input destination contract, not codec evidence.
+
+The owner precedes all derives and schema/serde helpers; `schema(...)` remains
+an inert helper, never the owner's name. Permit whole-item cfg gating only;
+initially reject field/variant cfg and cfg_attr composition. Other transforming
+attributes on the declaration are unsupported in either order; reject those
+visible to the owner without claiming to detect already-expanded attributes.
+Accept only Serde forms specified here; reject other attributes and empty/duplicate
+directions at their spans. Other non-transforming derives may coexist.
+Do not inspect unrelated impls: rustc coherence rejects a conflicting manual
+Serde or Schema impl, including a separately requested duplicate derive.
+Reuse nebula_macro_support's final path resolution and curated SDK exports for
+the owner, Schema and library Serde derives; generate the matching serde(crate)
+path through narrow macro support, reject author overrides, and test renamed SDK
+consumers without direct leaf/Serde dependencies. No expansion-state side channel.
+
+Manual/foreign codecs require an explicit, reviewed local adapter newtype with
+matching HasSchema/PropertyType, directional Serde implementations and explicit
+InputCodec/OutputCodec impls for the directions it supports. These adapter impls
+assert a reviewed contract, not generated structural provenance; requirements
+propagate through parents, with no implicit promotion of the underlying type.
+Custom semantic preservation is trusted and cannot be proved by descriptor
+validation or round trips; validate actual boundary values as well. Native code,
+framework leaf codecs and macro implementations remain trusted (canon 12.6).
+Downstream expansion has no private-item privilege: SDK __private exports are
+callable support, not a security boundary or unforgeable witness constructor.
+Neither codec trait grants admission authority or replaces runtime proof custody.
 
 ## Property Grammar
 
@@ -189,7 +249,17 @@ plus `alias = "legacy_name"` accepts either inbound spelling, canonicalizes to
 input_name, and passes input_name to Deserialize; output export uses output_name.
 Cover nested records, lists, unions, secrets and defaults, not only a flat field.
 Secrets stay protected through the internal typed projection and explicit trusted
-decode; outbound ordinary JSON must not accidentally disclose them.
+decode. Every action family rejects protected Action::Output domains recursively
+at action admission, before any handler execution or serialization: stateless,
+stateful, control, trigger, resource and all paging/batch/stream specializations.
+Check nested/external records, newtypes, list/Option items and every enum variant,
+even absent or inactive ones; apply this to manual adapters too. A local diagnostic
+does not replace this admission gate. Actual ordinary output is serialized once
+and validated as literal data against its outbound schema before publish/persist,
+including branch, partial, stream and deferred payload publication paths. Never
+apply inbound aliases, transforms or defaults to repair output. Serialization and
+output validation failures carry typed payload-free errors, without raw values or
+upstream messages/source chains; a redacting Serialize impl is no secret exemption.
 
 Workflow assignability compares the producer's outbound projection with the
 consumer's inbound projection, not their two inbound field sets. Preserve domain,
@@ -207,8 +277,9 @@ Support for internal skipped state would need an explicitly separate, non-data
 contract; do not silently omit it from a schema and still claim exact decoding.
 Reject flatten, untagged unions, custom with/serialize_with/deserialize_with,
 from/try_from/into and container defaults until an exact checked bridge exists.
-A manual HasSchema is not permission to pretend an unsupported codec is exact:
-manual adapters must supply and validate the corresponding descriptor/projection.
+HasSchema alone never establishes codec fidelity. Unsupported codecs belong only
+on the explicit reviewed adapter path above, with checked descriptors/projections;
+validation does not prove arbitrary adapter semantics.
 
 Slots never become Field entries. Independently deriving Serialize/Deserialize
 on a slot-bearing receiver requires explicit `serde(skip)` for every slot.
@@ -248,9 +319,9 @@ Aliases automatically reuse the actual type's implementation.
 | Generic record/newtype | Generate bounds on the field types actually used and preserve existing where clauses. |
 
 Schema-only lifetimes remain possible when no decoded owned-input contract is
-claimed. Action/credential/config consumption still requires the existing owned
-serde and Send/Sync bounds. Unsupported tuples, unions, ambiguous wire shapes
-and custom codecs get explicit diagnostics, not Any/empty-object fallbacks.
+claimed. Typed consumption additionally requires the directional codec contracts.
+Unsupported tuples, unions, ambiguous wire shapes and custom codecs in the
+generated path get explicit diagnostics, not Any/empty-object fallbacks.
 Known numeric ranges and enum membership must survive nesting and newtypes.
 
 Generic schema construction is uncached initially: a function-local static is
@@ -305,6 +376,9 @@ or `serde(default = "path")`. The bridge invokes that same deterministic typed
 Default/provider, encodes it using the field's paired projections, and stores
 its checked canonical value in the admitted descriptor. A default on a nested
 record needs exact outbound-to-inbound conversion; lossy codecs are rejected.
+Each default-bearing field therefore needs OutputCodec evidence as well as its
+input direction, recursively for the bridge; this does not require Serialize on
+the containing input DTO. Adapter fidelity remains an explicit review obligation.
 Validate default domain and context-free rules at admission; cross-field rules
 are checked with the complete invocation values. Encoding/provider failures
 produce redacted admission evidence, never an empty/default-success substitute.
@@ -744,8 +818,8 @@ display examples or deliberate serde defaults, reviewing the behavioral change.
 Move legacy field/validate helpers to structured property, field-level
 credential/resource helpers to slot, and emit_as/key intent to directional serde.
 Remove temporary legacy parser aliases at the breaking release boundary.
-ADR-0101's engine Slots move, full auth-runtime rearchitecture, performance
-claims/optimizations and new canonical value storage are non-goals.
+ADR-0101's engine Slots move remains deferred; full auth-runtime rearchitecture,
+performance claims/optimizations and new canonical value storage are non-goals.
 
 ## Authoring Examples
 
@@ -766,7 +840,7 @@ url: String,
 After, inside a data type; a serde default replaces the old UI-only default:
 
 ```rust
-#[derive(Schema, Serialize, Deserialize)]
+#[schema_type(input)]
 struct HttpInput {
     #[property(display(label = "URL"), input(required),
                validate(non_empty, url, length(max = 8192)))]
@@ -785,7 +859,7 @@ probes live in [derive_action_compile_fail.rs](../../action/tests/derive_action_
 After extends that existing associated-input pattern with typed data and guards:
 
 ```rust
-#[derive(Schema, Deserialize)]
+#[schema_type(input)]
 #[schema(condition(use_auth, eq(field(authenticated), true)))]
 struct SendInput {
     #[property(input(expressions = forbidden))]
@@ -793,9 +867,13 @@ struct SendInput {
     #[property(input(required), validate(non_empty))]
     channel: String,
 }
+#[schema_type(output)]
+struct SendOutput {
+    delivered: bool,
+}
 #[derive(Action)]
 #[action(key = "send", name = "Send", description = "Send a message",
-         input = SendInput, output = ())]
+         input = SendInput, output = SendOutput)]
 struct SendAction {
     #[slot(credential, key = "auth", binding = required,
            bind_when(condition(use_auth)))]
@@ -803,12 +881,12 @@ struct SendAction {
 }
 impl StatelessAction for SendAction {
     async fn execute(&self, input: SendInput, ctx: &(impl ActionContext + ?Sized))
-        -> Result<ActionResult<()>, ActionError> {
+        -> Result<ActionResult<SendOutput>, ActionError> {
         match self.auth.as_ref() {
             Some(guard) => send_authenticated(&input.channel, guard, ctx).await?,
             None => send_public(&input.channel, ctx).await?,
         }
-        Ok(ActionResult::success(()))
+        Ok(ActionResult::success(SendOutput { delivered: true }))
     }
 }
 // Imports and the two application send helpers are omitted.
@@ -821,13 +899,13 @@ uses `#[credential(...)] impl MetadataOnly` with `Properties = serde_json::Value
 explicit Scheme/State and handwritten project/resolve. After keeps that owner:
 
 ```rust
-#[derive(Schema, Deserialize)]
+#[schema_type(input)]
 #[serde(tag = "mode", content = "credentials", rename_all = "snake_case")]
 enum AuthProperties {
     ApiKey(ApiKeyProperties),
     Basic(BasicProperties),
 }
-#[derive(Schema, Deserialize)]
+#[schema_type(input)]
 struct ApiKeyProperties {
     #[property(input(secret, required), validate(non_empty))]
     key: SecretString,
@@ -852,7 +930,8 @@ exercises the existing cell/accessor shape; its generic naming is not the new
 scheme contract. After preserves separate Provider/config and owned snapshots:
 
 ```rust
-#[derive(Clone, Schema, ResourceConfig, Serialize, Deserialize)]
+#[schema_type(input, output)]
+#[derive(Clone, ResourceConfig)]
 #[schema(condition(use_auth, eq(field(authenticated), true)))]
 struct ClientConfig {
     #[property(input(expressions = forbidden))]
@@ -893,18 +972,25 @@ schemas and runtime provider behavior are not visible to a proc macro.
 | Compile | Unknown/duplicate property keys, flat key/default/emit_as, conflicting sections/modes and local serde key/alias collisions. |
 | Compile | Slot/property mixing, wrong receiver, wrong wrappers, Option<Cell>, lazy, conditional non-Option action guard. |
 | Compile | Unknown local field/name, malformed pointer/condition, unsupported serde codec/flatten, incompatible derived trait ownership. |
-| Compile | Missing PropertyType/HasSchema/default encoding bounds and unsafe secret destination lacking SecretInput. |
+| Compile | Missing recursive InputCodec/OutputCodec/PropertyType bounds, default bridge encoding evidence or SecretInput; Schema-only supplies no codec witness. |
+| Compile | Unsupported owner ordering/visible transformations/cfg composition or serde(crate) override; conflicting impls fail rustc coherence, not macro inspection. |
 | Compile | Direct input(secret) on a ResourceConfig-derived field; use a credential slot on the resource receiver. |
 | Schema admission | External path/name/domain errors, cycles/budget overflow, hidden secret descendants in resource configs, secret defaults and unavailable providers. |
-| Leaf admission | Slot projection mismatch, scheme compatibility, forbidden host facts/selectors, closed remote options and stale policy versions. |
+| Leaf admission | Protected output domains in every action family before handlers/serializers; slot projection mismatch, scheme compatibility, forbidden host facts/selectors, closed remote options and stale policy versions. |
 | Metadata authoring/admission | Invalid category/link/reference/schedule, conflicting Overview or exceeded byte/count budgets; typed payload-free errors across manual and macro paths. |
 | Metadata recorded ingress | Unknown catalog/protocol versions, missing obligations or changed authored/derived evidence rejected; only fresh definitions returned. |
-| Runtime | Default/condition/loader failures, incomplete proof, explicit binding errors, cancellation, rotation/reload and decode projection errors. |
-| Review | Arbitrary unsafe Debug/secret handling and nondeterministic defaults cannot be proved absent by compile-fail tests. |
+| Runtime | Default/condition/loader failures, incomplete proof, explicit binding errors, cancellation, rotation/reload, decode errors and invalid actual outbound payloads; payload-free codec errors. |
+| Review | Manual adapter semantic fidelity, arbitrary unsafe Debug/secret handling and nondeterministic defaults cannot be proved by markers, round trips or compile-fail tests. |
 
 | Acceptance scenario | Observable requirement |
 |---|---|
 | Rename + alias + directional output | Canonical input reaches Deserialize; output key only reaches export. |
+| Codec owner and schema-only | All three owner modes work; Schema-only remains descriptive but fails typed admission bounds even with manual Serde; conflicting manual impls fail coherence. |
+| Recursive codec requirements | Missing directions in external children, Vec/Option, newtypes, enum payloads and two generic instantiations fail at field bounds; reviewed adapter opt-in is explicit. |
+| Owner composition / SDK hygiene | Unsupported visible transforms/cfg_attr fail; whole-item cfg works; renamed SDK-only consumers use real Serde derives without author serde(crate) overrides. |
+| Default encoding direction | Input-only root works without Serialize; missing nested OutputCodec for a default bridge fails; protected defaults remain rejected. |
+| Action output protection | Every behavior family rejects direct/nested/external/optional/inactive protected domains with zero handler/serializer calls. |
+| Actual outbound validation | Invalid branch/partial/stream/deferred ordinary output cannot publish/persist; no inbound repair; malicious serializer error text stays out of public diagnostics. |
 | Directional workflow edge | Producer outbound checked against consumer inbound; equal inbound-only keys cannot hide incompatible output. |
 | Skipped data fallback | Derived data with serde(skip/default) fails explicitly; no hidden default runs after proof. |
 | Recursive data definitions | Direct, mutual and generic recursion rejected by bounded construction/compiler diagnostics without hanging or overflowing. |
@@ -939,9 +1025,9 @@ Each issue must update its original scope to this contract before implementation
 1. **1018:** constructor/SDK parity for existing metadata drafts; no new icon inventory.
 2. **Metadata evolution prerequisite:** after 1018, implement shared category/link/reference/schedule contracts, bounded admission, evidence and compatibility rules; specify the mandatory catalog envelope. Leaf tasks consume this foundation and extend existing derived projections; the Plugin prerequisite completes export/readmission integration. Localization services and static topology export are deferred.
 3. **Validator prerequisite:** Condition refinement, presence semantics, budgets and policy-v2 contract; independent of metadata/schema imports.
-4. **995:** schema-codegen package and gates, grammar, descriptors, projections, defaults, conditions/options and versioned admission; consumes the validator prerequisite.
+4. **995:** schema-codegen package and gates, schema_type ownership, recursive directional codec contracts and reviewed adapter path, grammar, descriptors, projections, defaults, conditions/options and versioned admission; consumes the validator prerequisite.
 5. **994, contract subtask:** leaf slot declarations and prepared-input port signatures over core; consumes 995, keeps a single projected declaration source. Separate this from 994's later end-to-end production wiring.
-6. **997 / 998 and a resource follow-up:** action, credential and resource implementation after the declaration contracts. Issue 999 is already closed; scope a new resource task instead of treating it as unfinished. No dependency on final SDK exports.
+6. **997 / 998 and a resource follow-up:** action, credential and resource implementation after the declaration/codec contracts, including all-family protected-output admission and actual outbound validation. Issue 999 is already closed; scope a new resource task instead of treating it as unfinished. No dependency on final SDK exports.
 7. **Plugin prerequisite:** versioned durable slot/schema records, compiler epoch, directional connection checks and readmission after leaf contracts; coordinate with 1014 without waiting for its unrelated freeze work.
 8. **994, wiring subtask:** production resolution and engine sequencing after leaf implementations and the plugin prerequisite; prove exact input/binding provenance end to end.
 9. **1000:** SDK exports and isolated renamed-dependency consumer proofs after leaf contracts; macro hygiene uses existing narrow support paths.
@@ -959,12 +1045,13 @@ default drift, guard lifetime and lazy/conditional ambiguities, visibility polic
 coupling, and P2 alias/newtype/generic gaps. The sections above address those
 objections as design decisions; no implementation fix or passing test is claimed.
 The former attributed approvals are withdrawn, not carried forward as sign-off.
-Maintainer pre-code verdict: ACCEPTABLE as a proposed design contract. Two
-independent review passes found seven additional medium design gaps, all revised
-and rechecked; the metadata addition also received a separate focused review with
-no remaining high/medium findings. This is not implementation certification.
-The existing-code gate passed fmt, clippy, 8542 nextest tests (3 skipped), doctests
-and deny; deny retained configuration warnings. Documentation checks passed.
+Pre-code document-review verdict: ACCEPTABLE. The independent reviewer reported
+the focused schema_type and output-boundary review complete with no blockers.
+This approves the proposed design only; runtime targets remain unimplemented,
+and implementation acceptance is outstanding.
+Previously reported existing-code checks passed fmt, clippy, 8542 nextest tests
+(3 skipped), doctests and deny with configuration warnings. These runtime checks
+were not rerun for this amendment and do not exercise its targets.
 Implementation acceptance and the outer workflow remain release requirements,
 not behavior proved by those existing-code checks.
 
