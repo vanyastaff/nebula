@@ -10,6 +10,7 @@ is deliberately outside Nebula's product dependency layers.
 cargo xtask ci-plan full
 cargo xtask ci-plan diff --base <sha> --head <sha> --comparison merge-base
 cargo xtask ci-plan diff --base <sha> --head <sha> --comparison direct
+cargo xtask ci-plan semver --base <sha> --head <sha> --comparison direct
 ```
 
 `full` includes every `workspace_member`, including `nebula-xtask` itself.
@@ -32,6 +33,39 @@ stderr and Clap's exit code. A planner failure is nonzero, writes a diagnostic
 to stderr, and emits no partial stdout. Plans are capped at 256 entries and
 450 KiB. The byte cap leaves headroom for GitHub's UTF-16 output accounting
 beneath the 1 MiB per-job boundary.
+
+`semver` emits a separate schema-v1 plan. Sorted exact Cargo package names are
+distributed round-robin across at most three deterministic, nonempty shards:
+
+```json
+{"schema_version":1,"scope":"diff","reason":"workspace-packages-changed","package_count":4,"shard_count":3,"include":[{"shard":0,"packages":["example-a","example-d"]},{"shard":1,"packages":["example-b"]},{"shard":2,"packages":["example-c"]}]}
+```
+
+An empty selection emits zero shards and skips the matrix. Otherwise,
+`shard_count` is `min(3, package_count)`, giving one shard for one package, two
+for two packages, and three for every larger selection.
+
+It reuses the current checkout's Cargo-metadata ownership and reverse
+dependency closure, then keeps packages whose `publish` policy is unrestricted
+or names at least one registry and that declare a Cargo `lib` target. A mixed
+library/binary package remains eligible; `publish = false`, `publish = []`,
+binary-only, and proc-macro-only packages do not. Deletion keeps the generic
+diff planner's conservative full-current-workspace policy.
+
+The baseline is streamed from `git archive` into `tar` under a temporary
+directory, without changing a worktree, and loaded with
+`cargo metadata --no-deps --locked`. Every selected head package must exist in
+that metadata under the same exact Cargo package name. A new or renamed
+selected package fails without stdout; moved packages remain comparable. The
+workflow checks for `tar` before planning and pins cargo-semver-checks 0.50.0.
+That tool upgrade intentionally adopts the 0.50 lint catalog, so individual
+findings are not promised to be bit-identical to 0.47.
+
+For pull requests, the workflow checks the checked-out synthetic merge commit
+at `github.sha` against the exact pull-request base SHA. This preserves merged
+source semantics, so an addition made only on the base branch is not mistaken
+for a package removed by the pull request. Each shard worker checks its package
+names sequentially; the matrix therefore uses no more than three runners.
 
 ## Pre-commit fixture ownership
 

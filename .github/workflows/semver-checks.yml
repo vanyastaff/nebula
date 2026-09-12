@@ -2,10 +2,12 @@ name: SemVer Checks
 
 on:
   pull_request:
-    paths:
-      - "crates/**/Cargo.toml"
-      - "crates/**/src/**"
   workflow_dispatch:
+    inputs:
+      base_revision:
+        description: Exact 40-character baseline commit SHA
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -16,32 +18,177 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  BASE_REVISION: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || inputs.base_revision }}
+  # For pull requests, github.sha is GitHub's immutable synthetic merge commit.
+  # Comparing base to that merged source avoids treating base-only additions as removals.
+  HEAD_REVISION: ${{ github.sha }}
 
 jobs:
-  semver:
-    name: cargo-semver-checks
+  select:
+    name: Select SemVer packages
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 5
+    outputs:
+      plan: ${{ steps.plan.outputs.plan }}
+      package_count: ${{ steps.plan.outputs.package_count }}
+      shard_count: ${{ steps.plan.outputs.shard_count }}
     steps:
-      - name: Checkout repository
+      - name: Checkout exact head revision
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ env.HEAD_REVISION }}
           fetch-depth: 0
+          persist-credentials: false
+      - name: Validate exact revisions
+        run: |
+          set -euo pipefail
+          [[ "$BASE_REVISION" =~ ^[0-9a-fA-F]{40}$ ]]
+          [[ "$HEAD_REVISION" =~ ^[0-9a-fA-F]{40}$ ]]
+          [[ "$(git rev-parse HEAD)" == "$HEAD_REVISION" ]]
+          [[ "$(git rev-parse "${BASE_REVISION}^{commit}")" == "$BASE_REVISION" ]]
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: "1.97"
+      - name: Build SemVer package plan
+        id: plan
+        run: |
+          set -euo pipefail
+          command -v tar >/dev/null
+          plan="$(cargo xtask ci-plan semver --base "$BASE_REVISION" --head "$HEAD_REVISION" --comparison direct)"
+          jq -ce '
+            .package_count as $package_count |
+            .shard_count as $shard_count |
+            ([.include[].packages[]] | sort) as $sorted_packages |
+            (keys | sort) == ["include", "package_count", "reason", "schema_version", "scope", "shard_count"] and
+            .schema_version == 1 and
+            (.scope == "diff" or .scope == "full") and
+            (.reason | type) == "string" and
+            ($package_count | type) == "number" and
+            $package_count >= 0 and $package_count <= 256 and
+            ($package_count | floor) == $package_count and
+            ($shard_count | type) == "number" and
+            $shard_count >= 0 and $shard_count <= 3 and
+            ($shard_count | floor) == $shard_count and
+            (.include | type) == "array" and
+            $shard_count == (.include | length) and
+            $shard_count == (if $package_count == 0 then 0 elif $package_count == 1 then 1 elif $package_count == 2 then 2 else 3 end) and
+            [.include[].shard] == [range(0; $shard_count)] and
+            all(.include[];
+              (keys | sort) == ["packages", "shard"] and
+              (.shard | type) == "number" and
+              (.packages | type) == "array" and
+              (.packages | length) > 0 and
+              .packages == (.packages | sort | unique) and
+              all(.packages[]; (type == "string") and (length > 0))) and
+            ([.include[].packages[]] | length) == $package_count and
+            ([.include[].packages[]] | unique | length) == $package_count and
+            .include == [
+              range(0; $shard_count) as $shard |
+              {
+                shard: $shard,
+                packages: [
+                  range($shard; $package_count; $shard_count) as $package_index |
+                  $sorted_packages[$package_index]
+                ]
+              }
+            ]
+          ' <<<"$plan" >/dev/null
+          package_count="$(jq -er '.package_count | tostring' <<<"$plan")"
+          shard_count="$(jq -er '.shard_count | tostring' <<<"$plan")"
+          matrix="$(jq -cer '{include: .include}' <<<"$plan")"
+          printf 'plan=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
+          printf 'package_count=%s\n' "$package_count" >> "$GITHUB_OUTPUT"
+          printf 'shard_count=%s\n' "$shard_count" >> "$GITHUB_OUTPUT"
+
+  semver:
+    name: cargo-semver-checks (shard ${{ matrix.shard }})
+    needs: [select]
+    if: needs.select.outputs.shard_count != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix: ${{ fromJSON(needs.select.outputs.plan) }}
+    steps:
+      - name: Checkout exact head revision
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ env.HEAD_REVISION }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate exact revisions
+        run: |
+          set -euo pipefail
+          [[ "$BASE_REVISION" =~ ^[0-9a-fA-F]{40}$ ]]
+          [[ "$HEAD_REVISION" =~ ^[0-9a-fA-F]{40}$ ]]
+          [[ "$(git rev-parse HEAD)" == "$HEAD_REVISION" ]]
+          [[ "$(git rev-parse "${BASE_REVISION}^{commit}")" == "$BASE_REVISION" ]]
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: stable
-      - name: Install cargo-semver-checks
+      - name: Install cargo-semver-checks 0.50.0
+        # This intentionally adopts the 0.50 lint catalog; findings may differ
+        # from 0.47 even though the fail-closed release policy is unchanged.
         uses: taiki-e/install-action@481c34c1cf3a84c68b5e46f4eccfc82af798415a # v2.75.23
         with:
-          tool: cargo-semver-checks
-      - name: Run cargo-semver-checks against the pull-request base
+          tool: cargo-semver-checks@0.50.0
+      - name: Assert cargo-semver-checks version
+        run: test "$(cargo semver-checks --version)" = "cargo-semver-checks 0.50.0"
+      - name: Check shard packages against baseline
         env:
-          BASE_REVISION: ${{ github.event.pull_request.base.sha || github.event.before }}
-          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+          PACKAGES_JSON: ${{ toJSON(matrix.packages) }}
         run: |
-          base_revision="$BASE_REVISION"
-          if ! git cat-file -e "${base_revision}^{commit}" 2>/dev/null; then
-            base_revision="$(git merge-base HEAD "origin/$BASE_BRANCH")"
+          set -euo pipefail
+          jq -e 'type == "array" and length > 0 and all(.[]; type == "string" and length > 0)' <<<"$PACKAGES_JSON" >/dev/null
+          while IFS= read -r package; do
+            cargo semver-checks check-release --package "$package" --baseline-rev "$BASE_REVISION"
+          done < <(jq -r '.[]' <<<"$PACKAGES_JSON")
+
+  aggregate:
+    name: cargo-semver-checks
+    needs: [select, semver]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Checkout exact head revision
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ env.HEAD_REVISION }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate exact revisions
+        run: |
+          set -euo pipefail
+          [[ "$BASE_REVISION" =~ ^[0-9a-fA-F]{40}$ ]]
+          [[ "$HEAD_REVISION" =~ ^[0-9a-fA-F]{40}$ ]]
+          [[ "$(git rev-parse HEAD)" == "$HEAD_REVISION" ]]
+          [[ "$(git rev-parse "${BASE_REVISION}^{commit}")" == "$BASE_REVISION" ]]
+      - name: Require the matching planner and matrix outcomes
+        env:
+          PLANNER_RESULT: ${{ needs.select.result }}
+          PACKAGE_COUNT: ${{ needs.select.outputs.package_count }}
+          SHARD_COUNT: ${{ needs.select.outputs.shard_count }}
+          MATRIX_RESULT: ${{ needs.semver.result }}
+        run: |
+          set -euo pipefail
+          [[ "$PLANNER_RESULT" == "success" ]]
+          [[ "$PACKAGE_COUNT" =~ ^(0|[1-9][0-9]*)$ ]]
+          [ "$PACKAGE_COUNT" -le 256 ]
+          [[ "$SHARD_COUNT" =~ ^(0|1|2|3)$ ]]
+          if [[ "$PACKAGE_COUNT" == "0" ]]; then
+            [[ "$SHARD_COUNT" == "0" ]]
+            [[ "$MATRIX_RESULT" == "skipped" ]]
+          elif [[ "$PACKAGE_COUNT" == "1" ]]; then
+            [[ "$SHARD_COUNT" == "1" ]]
+            [[ "$MATRIX_RESULT" == "success" ]]
+          elif [[ "$PACKAGE_COUNT" == "2" ]]; then
+            [[ "$SHARD_COUNT" == "2" ]]
+            [[ "$MATRIX_RESULT" == "success" ]]
+          else
+            [[ "$SHARD_COUNT" == "3" ]]
+            [[ "$MATRIX_RESULT" == "success" ]]
           fi
-          cargo semver-checks check-release --workspace --baseline-rev "$base_revision"
