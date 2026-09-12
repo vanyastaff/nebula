@@ -168,7 +168,9 @@ Dev: `nebula-credential-macros`, `nebula-expression`, `trybuild`, `insta`, `rste
   упрощение re-export-блока в `lib.rs`. **Что остаётся:** сама форма слотов (`#[credential]`/`#[resource]`,
   `CredentialGuard<Scheme>`, `ResourceGuard<R>`), `FromWorkflowNode`-seam, webhook «секрет не через dyn»-инвариант,
   routing-по-трейту. Lease — first-class на стороне credential; action видит его опосредованно через guard, не как
-  собственный примитив. Unified `#[property]`-авторинг — Phase-5, NOT-YET-BUILT; текущий derive остаётся актуальным.
+  собственный примитив. Unified `#[property]`-авторинг принят в
+  [`crates/schema/docs/PHASE5_PROPERTY.md`](../../schema/docs/PHASE5_PROPERTY.md): value-поля и slot-поля живут на
+  одном author struct, но `slot_bindings` остаются вне `parameters`.
 
 ## 8. Forward design / открытые вопросы
 
@@ -186,5 +188,7 @@ Dev: `nebula-credential-macros`, `nebula-expression`, `trybuild`, `insta`, `rste
 - **Риск bind-population:** `FromWorkflowNode` готов как consumer-конец, но producer (прод-резолвер
   credential→slot) — frontier на стороне `nebula-resource`/`nebula-credential`. Пока producer не зрелый,
   end-to-end slot-binding нельзя считать закрытым со стороны action.
-- **Phase-5 unified `#[property]`-authoring** — следить за решением; если введут, derive-поверхность и slots-only-инвариант
-  придётся пересмотреть синхронно, но это NOT-YET-BUILT.
+- **Phase-5 unified `#[property]`-authoring** — решение принято в
+  [`crates/schema/docs/PHASE5_PROPERTY.md`](../../schema/docs/PHASE5_PROPERTY.md). Следующий action-шаг: заменить
+  отдельный `input = Type` companion на `Self`-as-input для новой derive-поверхности, не смешивая slots с persisted
+  parameters.

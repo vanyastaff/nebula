@@ -182,6 +182,12 @@ exposes resolve and credential-test outcomes. SDK-only external fixtures compile
 representative credential derives, while perimeter fixtures prove that owner authority, raw
 persistence, runtime constructors, credential records, and unscoped resolvers remain unavailable.
 
+Unified `#[property(...)]` authoring is accepted in
+[`crates/schema/docs/PHASE5_PROPERTY.md`](../../schema/docs/PHASE5_PROPERTY.md). Credential
+properties become value fields on the author type, but credential acquisition,
+refresh, lease, and stored-state projection remain hand-written/runtime-owned
+contracts; no schema proof or storage authority enters author code.
+
 ## Non-goals
 
 - No SQL/backend implementation, general HTTP client, or deployment configuration.
