@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     process::{Command, Stdio},
 };
 
@@ -15,7 +15,7 @@ use crate::{
 
 const SCHEMA_VERSION: u8 = 1;
 const MAX_ENTRIES: usize = 256;
-const MAX_SHARDS: usize = 2;
+const MAX_SHARDS: usize = 3;
 const MAX_OUTPUT_BYTES: usize = 450 * 1024;
 
 #[derive(Debug, Serialize)]
@@ -74,34 +74,17 @@ pub(crate) fn plan(
 }
 
 fn shard_packages(package_names: Vec<String>) -> Vec<SemverShard> {
-    match package_names.len() {
-        0 => Vec::new(),
-        1 => vec![SemverShard {
-            shard: 0,
-            packages: package_names,
-        }],
-        package_count => {
-            let mut first_packages = Vec::with_capacity(package_count.div_ceil(MAX_SHARDS));
-            let mut second_packages = Vec::with_capacity(package_count / MAX_SHARDS);
-            for (index, package_name) in package_names.into_iter().enumerate() {
-                if index.is_multiple_of(MAX_SHARDS) {
-                    first_packages.push(package_name);
-                } else {
-                    second_packages.push(package_name);
-                }
-            }
-            vec![
-                SemverShard {
-                    shard: 0,
-                    packages: first_packages,
-                },
-                SemverShard {
-                    shard: 1,
-                    packages: second_packages,
-                },
-            ]
-        },
+    let mut packages_by_shard = BTreeMap::<usize, Vec<String>>::new();
+    for (package_index, package_name) in package_names.into_iter().enumerate() {
+        packages_by_shard
+            .entry(package_index % MAX_SHARDS)
+            .or_default()
+            .push(package_name);
     }
+    packages_by_shard
+        .into_iter()
+        .map(|(shard, packages)| SemverShard { shard, packages })
+        .collect()
 }
 
 fn load_baseline_package_names(

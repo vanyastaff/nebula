@@ -35,11 +35,15 @@ to stderr, and emits no partial stdout. Plans are capped at 256 entries and
 beneath the 1 MiB per-job boundary.
 
 `semver` emits a separate schema-v1 plan. Sorted exact Cargo package names are
-distributed round-robin across at most two deterministic, nonempty shards:
+distributed round-robin across at most three deterministic, nonempty shards:
 
 ```json
-{"schema_version":1,"scope":"diff","reason":"workspace-packages-changed","package_count":3,"shard_count":2,"include":[{"shard":0,"packages":["example-a","example-c"]},{"shard":1,"packages":["example-b"]}]}
+{"schema_version":1,"scope":"diff","reason":"workspace-packages-changed","package_count":4,"shard_count":3,"include":[{"shard":0,"packages":["example-a","example-d"]},{"shard":1,"packages":["example-b"]},{"shard":2,"packages":["example-c"]}]}
 ```
+
+An empty selection emits zero shards and skips the matrix. Otherwise,
+`shard_count` is `min(3, package_count)`, giving one shard for one package, two
+for two packages, and three for every larger selection.
 
 It reuses the current checkout's Cargo-metadata ownership and reverse
 dependency closure, then keeps packages whose `publish` policy is unrestricted
@@ -61,7 +65,7 @@ For pull requests, the workflow checks the checked-out synthetic merge commit
 at `github.sha` against the exact pull-request base SHA. This preserves merged
 source semantics, so an addition made only on the base branch is not mistaken
 for a package removed by the pull request. Each shard worker checks its package
-names sequentially; the matrix therefore uses no more than two runners.
+names sequentially; the matrix therefore uses no more than three runners.
 
 ## Pre-commit fixture ownership
 

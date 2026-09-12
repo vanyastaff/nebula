@@ -68,11 +68,11 @@ jobs:
             $package_count >= 0 and $package_count <= 256 and
             ($package_count | floor) == $package_count and
             ($shard_count | type) == "number" and
-            $shard_count >= 0 and $shard_count <= 2 and
+            $shard_count >= 0 and $shard_count <= 3 and
             ($shard_count | floor) == $shard_count and
             (.include | type) == "array" and
             $shard_count == (.include | length) and
-            $shard_count == (if $package_count == 0 then 0 elif $package_count == 1 then 1 else 2 end) and
+            $shard_count == (if $package_count == 0 then 0 elif $package_count == 1 then 1 elif $package_count == 2 then 2 else 3 end) and
             [.include[].shard] == [range(0; $shard_count)] and
             all(.include[];
               (keys | sort) == ["packages", "shard"] and
@@ -106,10 +106,10 @@ jobs:
     needs: [select]
     if: needs.select.outputs.shard_count != '0'
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 10
     strategy:
       fail-fast: false
-      max-parallel: 2
+      max-parallel: 3
       matrix: ${{ fromJSON(needs.select.outputs.plan) }}
     steps:
       - name: Checkout exact head revision
@@ -178,14 +178,17 @@ jobs:
           [[ "$PLANNER_RESULT" == "success" ]]
           [[ "$PACKAGE_COUNT" =~ ^(0|[1-9][0-9]*)$ ]]
           [ "$PACKAGE_COUNT" -le 256 ]
-          [[ "$SHARD_COUNT" =~ ^(0|1|2)$ ]]
+          [[ "$SHARD_COUNT" =~ ^(0|1|2|3)$ ]]
           if [[ "$PACKAGE_COUNT" == "0" ]]; then
             [[ "$SHARD_COUNT" == "0" ]]
             [[ "$MATRIX_RESULT" == "skipped" ]]
           elif [[ "$PACKAGE_COUNT" == "1" ]]; then
             [[ "$SHARD_COUNT" == "1" ]]
             [[ "$MATRIX_RESULT" == "success" ]]
-          else
+          elif [[ "$PACKAGE_COUNT" == "2" ]]; then
             [[ "$SHARD_COUNT" == "2" ]]
+            [[ "$MATRIX_RESULT" == "success" ]]
+          else
+            [[ "$SHARD_COUNT" == "3" ]]
             [[ "$MATRIX_RESULT" == "success" ]]
           fi

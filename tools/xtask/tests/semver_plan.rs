@@ -80,12 +80,10 @@ fn selects_only_publishable_library_packages() {
     assert_eq!(plan.scope, "diff");
     assert_eq!(plan.reason, "workspace-packages-changed");
     assert_eq!(plan.package_count, 3);
-    assert_eq!(plan.shard_count, 2);
-    assert_eq!(
-        plan.include[0].packages,
-        ["fixture-default", "fixture-registry"]
-    );
+    assert_eq!(plan.shard_count, 3);
+    assert_eq!(plan.include[0].packages, ["fixture-default"]);
     assert_eq!(plan.include[1].packages, ["fixture-mixed"]);
+    assert_eq!(plan.include[2].packages, ["fixture-registry"]);
     assert_eq!(
         packages(&plan),
         vec!["fixture-default", "fixture-mixed", "fixture-registry"]
@@ -218,6 +216,8 @@ fn deletion_selects_every_remaining_head_library() {
     let plan = semver_plan(repository.path(), &base, &head);
 
     assert_eq!(plan.scope, "full");
+    assert_eq!(plan.package_count, 2);
+    assert_eq!(plan.shard_count, 2);
     assert_eq!(packages(&plan), vec!["fixture-alpha", "fixture-beta"]);
 }
 
@@ -260,6 +260,8 @@ fn merge_result_comparison_does_not_select_base_only_changes() {
 
     let plan = semver_plan(repository.path(), &base, &merge_result);
 
+    assert_eq!(plan.package_count, 1);
+    assert_eq!(plan.shard_count, 1);
     assert_eq!(packages(&plan), vec!["fixture-alpha"]);
 }
 
@@ -281,6 +283,23 @@ fn invalid_revisions_fail_without_stdout() {
         assert!(output.stdout.is_empty());
         assert!(String::from_utf8_lossy(&output.stderr).contains("git diff failed"));
     }
+}
+
+#[test]
+fn unchanged_workspace_emits_no_shards() {
+    let repository = workspace_repository(&[package(
+        "crates/item",
+        "fixture-item",
+        "",
+        TargetLayout::Lib,
+    )]);
+    let revision = revision(repository.path());
+
+    let plan = semver_plan(repository.path(), &revision, &revision);
+
+    assert_eq!(plan.package_count, 0);
+    assert_eq!(plan.shard_count, 0);
+    assert!(plan.include.is_empty());
 }
 
 #[test]
@@ -335,7 +354,7 @@ fn output_is_deterministic_and_entry_limit_fails_closed() {
 }
 
 #[test]
-fn eighteen_packages_form_two_deterministic_round_robin_shards() {
+fn eighteen_packages_form_three_deterministic_round_robin_shards() {
     let package_paths = (0..18)
         .map(|index| format!("crates/p{index:02}"))
         .collect::<Vec<_>>();
@@ -360,19 +379,29 @@ fn eighteen_packages_form_two_deterministic_round_robin_shards() {
 
     assert_eq!(plan.scope, "full");
     assert_eq!(plan.package_count, 18);
-    assert_eq!(plan.shard_count, 2);
+    assert_eq!(plan.shard_count, 3);
     assert_eq!(plan.include[0].shard, 0);
     assert_eq!(plan.include[1].shard, 1);
+    assert_eq!(plan.include[2].shard, 2);
     assert_eq!(
         plan.include[0].packages,
-        package_names.iter().step_by(2).cloned().collect::<Vec<_>>()
+        package_names.iter().step_by(3).cloned().collect::<Vec<_>>()
     );
     assert_eq!(
         plan.include[1].packages,
         package_names
             .iter()
             .skip(1)
-            .step_by(2)
+            .step_by(3)
+            .cloned()
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        plan.include[2].packages,
+        package_names
+            .iter()
+            .skip(2)
+            .step_by(3)
             .cloned()
             .collect::<Vec<_>>()
     );
@@ -436,7 +465,7 @@ fn workflow_pins_revisions_tools_matrix_and_fail_closed_aggregation() {
     );
     assert_eq!(
         yaml_mapping_value_at_path(&workflow, &["jobs", "semver", "timeout-minutes"]),
-        Some("12")
+        Some("10")
     );
     assert_eq!(
         yaml_mapping_value_at_path(&workflow, &["jobs", "semver", "strategy", "fail-fast"],),
@@ -444,7 +473,11 @@ fn workflow_pins_revisions_tools_matrix_and_fail_closed_aggregation() {
     );
     assert_eq!(
         yaml_mapping_value_at_path(&workflow, &["jobs", "semver", "strategy", "max-parallel"],),
-        Some("2")
+        Some("3")
+    );
+    assert_eq!(
+        yaml_mapping_value_at_path(&workflow, &["jobs", "semver", "if"]),
+        Some("needs.select.outputs.shard_count != '0'")
     );
     assert!(workflow.contains("matrix: ${{ fromJSON(needs.select.outputs.plan) }}"));
     assert!(workflow.contains("command -v tar >/dev/null"));
@@ -468,23 +501,61 @@ fn workflow_pins_revisions_tools_matrix_and_fail_closed_aggregation() {
         Some("2")
     );
 
-    let matching_plan = r#"{"schema_version":1,"scope":"diff","reason":"changed","package_count":3,"shard_count":2,"include":[{"shard":0,"packages":["fixture-alpha","fixture-gamma"]},{"shard":1,"packages":["fixture-beta"]}]}"#;
-    let matching_output = run_selector_script(&workflow, matching_plan);
-    assert!(
-        matching_output.status.success(),
-        "selector rejected a matching plan: {}",
-        String::from_utf8_lossy(&matching_output.stderr)
-    );
+    for (package_count, shard_count, plan, expected_output) in [
+        (
+            0,
+            0,
+            r#"{"schema_version":1,"scope":"diff","reason":"changed","package_count":0,"shard_count":0,"include":[]}"#,
+            "plan={\"include\":[]}\npackage_count=0\nshard_count=0\n",
+        ),
+        (
+            1,
+            1,
+            r#"{"schema_version":1,"scope":"diff","reason":"changed","package_count":1,"shard_count":1,"include":[{"shard":0,"packages":["fixture-alpha"]}]}"#,
+            "plan={\"include\":[{\"shard\":0,\"packages\":[\"fixture-alpha\"]}]}\npackage_count=1\nshard_count=1\n",
+        ),
+        (
+            2,
+            2,
+            r#"{"schema_version":1,"scope":"diff","reason":"changed","package_count":2,"shard_count":2,"include":[{"shard":0,"packages":["fixture-alpha"]},{"shard":1,"packages":["fixture-beta"]}]}"#,
+            "plan={\"include\":[{\"shard\":0,\"packages\":[\"fixture-alpha\"]},{\"shard\":1,\"packages\":[\"fixture-beta\"]}]}\npackage_count=2\nshard_count=2\n",
+        ),
+        (
+            3,
+            3,
+            r#"{"schema_version":1,"scope":"diff","reason":"changed","package_count":3,"shard_count":3,"include":[{"shard":0,"packages":["fixture-alpha"]},{"shard":1,"packages":["fixture-beta"]},{"shard":2,"packages":["fixture-gamma"]}]}"#,
+            "plan={\"include\":[{\"shard\":0,\"packages\":[\"fixture-alpha\"]},{\"shard\":1,\"packages\":[\"fixture-beta\"]},{\"shard\":2,\"packages\":[\"fixture-gamma\"]}]}\npackage_count=3\nshard_count=3\n",
+        ),
+        (
+            4,
+            3,
+            r#"{"schema_version":1,"scope":"diff","reason":"changed","package_count":4,"shard_count":3,"include":[{"shard":0,"packages":["fixture-alpha","fixture-zeta"]},{"shard":1,"packages":["fixture-beta"]},{"shard":2,"packages":["fixture-gamma"]}]}"#,
+            "plan={\"include\":[{\"shard\":0,\"packages\":[\"fixture-alpha\",\"fixture-zeta\"]},{\"shard\":1,\"packages\":[\"fixture-beta\"]},{\"shard\":2,\"packages\":[\"fixture-gamma\"]}]}\npackage_count=4\nshard_count=3\n",
+        ),
+    ] {
+        let selector_run = run_selector_script(&workflow, plan);
+        assert!(
+            selector_run.process.status.success(),
+            "selector rejected package_count={package_count}, shard_count={shard_count}: {}",
+            String::from_utf8_lossy(&selector_run.process.stderr)
+        );
+        assert_eq!(
+            selector_run.github_output, expected_output,
+            "package_count={package_count}, shard_count={shard_count}"
+        );
+    }
 
     let mismatched_plan = r#"{"schema_version":1,"scope":"diff","reason":"changed","package_count":2,"shard_count":2,"include":[{"shard":0,"packages":["fixture-alpha"]},{"shard":1,"packages":[]}]}"#;
-    let mismatched_output = run_selector_script(&workflow, mismatched_plan);
-    assert!(!mismatched_output.status.success());
+    let mismatched_run = run_selector_script(&workflow, mismatched_plan);
+    assert!(!mismatched_run.process.status.success());
+    assert!(mismatched_run.github_output.is_empty());
 
-    let incorrectly_sharded_plan = r#"{"schema_version":1,"scope":"diff","reason":"changed","package_count":3,"shard_count":2,"include":[{"shard":0,"packages":["fixture-alpha","fixture-beta"]},{"shard":1,"packages":["fixture-gamma"]}]}"#;
-    let incorrectly_sharded_output = run_selector_script(&workflow, incorrectly_sharded_plan);
-    assert!(!incorrectly_sharded_output.status.success());
+    let incorrectly_sharded_plan = r#"{"schema_version":1,"scope":"diff","reason":"changed","package_count":4,"shard_count":3,"include":[{"shard":0,"packages":["fixture-alpha","fixture-beta"]},{"shard":1,"packages":["fixture-gamma"]},{"shard":2,"packages":["fixture-zeta"]}]}"#;
+    let incorrectly_sharded_run = run_selector_script(&workflow, incorrectly_sharded_plan);
+    assert!(!incorrectly_sharded_run.process.status.success());
+    assert!(incorrectly_sharded_run.github_output.is_empty());
 
-    let shard_calls = run_shard_script(&workflow, r#"["fixture-alpha","fixture-gamma"]"#);
+    let shard_calls = run_shard_script(&workflow, r#"["fixture-alpha","fixture-zeta"]"#);
     assert!(
         shard_calls.status.success(),
         "shard script failed: {}",
@@ -492,7 +563,7 @@ fn workflow_pins_revisions_tools_matrix_and_fail_closed_aggregation() {
     );
     assert_eq!(
         String::from_utf8(shard_calls.stdout).expect("captured cargo arguments are UTF-8"),
-        "semver-checks check-release --package fixture-alpha --baseline-rev base\nsemver-checks check-release --package fixture-gamma --baseline-rev base\n"
+        "semver-checks check-release --package fixture-alpha --baseline-rev base\nsemver-checks check-release --package fixture-zeta --baseline-rev base\n"
     );
 
     let aggregator = workflow_step_script(
@@ -502,7 +573,9 @@ fn workflow_pins_revisions_tools_matrix_and_fail_closed_aggregation() {
     for (planner, package_count, shard_count, matrix, should_succeed) in [
         ("success", "0", "0", "skipped", true),
         ("success", "1", "1", "success", true),
-        ("success", "18", "2", "success", true),
+        ("success", "2", "2", "success", true),
+        ("success", "3", "3", "success", true),
+        ("success", "18", "3", "success", true),
         ("failure", "0", "0", "skipped", false),
         ("success", "", "0", "skipped", false),
         ("success", "01", "1", "success", false),
@@ -510,11 +583,13 @@ fn workflow_pins_revisions_tools_matrix_and_fail_closed_aggregation() {
         ("success", "0", "1", "success", false),
         ("success", "1", "2", "success", false),
         ("success", "2", "1", "success", false),
+        ("success", "2", "3", "success", false),
+        ("success", "3", "2", "success", false),
         ("success", "2", "2", "skipped", false),
         ("success", "0", "0", "success", false),
         ("success", "2", "2", "failure", false),
-        ("success", "257", "2", "success", false),
-        ("cancelled", "2", "2", "cancelled", false),
+        ("success", "257", "3", "success", false),
+        ("cancelled", "3", "3", "cancelled", false),
     ] {
         let status = Command::new("bash")
             .args(["-c", &aggregator])
@@ -546,21 +621,31 @@ fn run_shard_script(workflow: &str, packages_json: &str) -> Output {
         .expect("shard script runs")
 }
 
-fn run_selector_script(workflow: &str, plan: &str) -> Output {
+struct SelectorRun {
+    process: Output,
+    github_output: String,
+}
+
+fn run_selector_script(workflow: &str, plan: &str) -> SelectorRun {
     let selector = workflow_step_script(
         workflow_job(workflow, "select"),
         "Build SemVer package plan",
     );
     let script = format!("cargo() {{ printf '%s\\n' \"$SEMVER_PLAN\"; }}\n{selector}");
     let github_output = tempfile::NamedTempFile::new().expect("GitHub output file creates");
-    Command::new("bash")
+    let process = Command::new("bash")
         .args(["-c", &script])
         .env("SEMVER_PLAN", plan)
         .env("BASE_REVISION", "base")
         .env("HEAD_REVISION", "head")
         .env("GITHUB_OUTPUT", github_output.path())
         .output()
-        .expect("selector script runs")
+        .expect("selector script runs");
+    let github_output = fs::read_to_string(github_output.path()).expect("GitHub output reads");
+    SelectorRun {
+        process,
+        github_output,
+    }
 }
 
 #[derive(Clone, Copy)]
