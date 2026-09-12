@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use cargo_metadata::{CargoOpt, MetadataCommand, PackageId};
+use cargo_metadata::{CargoOpt, MetadataCommand, PackageId, TargetKind};
 use serde::Deserialize;
 
 use crate::{XtaskError, model::PlanEntry};
@@ -48,6 +48,7 @@ pub(crate) struct PackageInfo {
     pub(crate) manifest_directory: PathBuf,
     pub(crate) test_targets: BTreeSet<String>,
     test_features: Vec<String>,
+    is_semver_eligible: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -99,6 +100,14 @@ impl Workspace {
                 .as_std_path()
                 .to_path_buf();
             let test_features = test_features(package)?;
+            let is_semver_eligible = package
+                .publish
+                .as_ref()
+                .is_none_or(|registries| !registries.is_empty())
+                && package
+                    .targets
+                    .iter()
+                    .any(|target| target.kind.contains(&TargetKind::Lib));
             packages.insert(
                 member_id.clone(),
                 PackageInfo {
@@ -107,10 +116,11 @@ impl Workspace {
                     test_targets: package
                         .targets
                         .iter()
-                        .filter(|target| target.kind.contains(&cargo_metadata::TargetKind::Test))
+                        .filter(|target| target.kind.contains(&TargetKind::Test))
                         .map(|target| target.name.clone())
                         .collect(),
                     test_features,
+                    is_semver_eligible,
                 },
             );
         }
@@ -153,8 +163,8 @@ impl Workspace {
             .ok_or_else(|| XtaskError::MissingWorkspacePackage(id.to_string()))
     }
 
-    pub(crate) fn all_entries(&self) -> Result<Vec<PlanEntry>, XtaskError> {
-        self.entries(self.members.iter().cloned())
+    pub(crate) fn all_package_ids(&self) -> BTreeSet<PackageId> {
+        self.members.clone()
     }
 
     pub(crate) fn entries(
@@ -177,6 +187,32 @@ impl Workspace {
         entries.sort_by(|left, right| left.package.cmp(&right.package));
         entries.dedup_by(|left, right| left.package == right.package);
         Ok(entries)
+    }
+
+    pub(crate) fn selected_package_ids(
+        &self,
+        roots: impl IntoIterator<Item = PackageId>,
+    ) -> BTreeSet<PackageId> {
+        self.reverse_closure(roots)
+    }
+
+    pub(crate) fn semver_package_names(
+        &self,
+        package_ids: &BTreeSet<PackageId>,
+    ) -> Result<Vec<String>, XtaskError> {
+        let mut package_names = Vec::new();
+        for package_id in package_ids {
+            let package = self
+                .packages
+                .get(package_id)
+                .ok_or_else(|| XtaskError::MissingWorkspacePackage(package_id.to_string()))?;
+            if package.is_semver_eligible {
+                package_names.push(package.name.clone());
+            }
+        }
+        package_names.sort();
+        package_names.dedup();
+        Ok(package_names)
     }
 
     pub(crate) fn owner(&self, path: &Path) -> Owner<'_> {

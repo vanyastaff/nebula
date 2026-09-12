@@ -3,6 +3,7 @@ mod model;
 mod north_star;
 mod pre_commit;
 mod runtime_repair_red;
+mod semver;
 mod workspace;
 
 pub use pre_commit::PlanError as PreCommitPlanError;
@@ -63,6 +64,18 @@ enum CiPlanCommand {
         head: String,
         /// Whether to compare from the merge base or directly between tips.
         #[arg(long, value_enum, default_value_t = ComparisonArg::MergeBase)]
+        comparison: ComparisonArg,
+    },
+    /// Select changed publishable libraries for cargo-semver-checks.
+    Semver {
+        /// Base Git revision whose package metadata defines the baseline.
+        #[arg(long)]
+        base: String,
+        /// Head Git revision represented by the current checkout.
+        #[arg(long)]
+        head: String,
+        /// Whether to compare from the merge base or directly between tips.
+        #[arg(long, value_enum, default_value_t = ComparisonArg::Direct)]
         comparison: ComparisonArg,
     },
 }
@@ -195,6 +208,13 @@ fn execute_in(cwd: &std::path::Path, cli: Cli) -> Result<Vec<u8>, XtaskError> {
                         Plan::from_changes(&workspace, changes)?
                     }
                 },
+                CiPlanCommand::Semver {
+                    base,
+                    head,
+                    comparison,
+                } => {
+                    return semver::plan(&workspace, base.trim(), head.trim(), comparison.into());
+                },
             };
             plan.to_json_line()
         },
@@ -306,6 +326,31 @@ pub enum XtaskError {
     TooManyEntries { count: usize, maximum: usize },
     #[error("CI plan JSON is {size} bytes; conservative maximum is {maximum} bytes")]
     OutputTooLarge { size: usize, maximum: usize },
+    #[error("cannot create temporary baseline directory: {0}")]
+    BaselineTempDirectory(std::io::Error),
+    #[error("cannot start `{command}` while materializing baseline: {source}")]
+    BaselineCommandStart {
+        command: &'static str,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("cannot wait for `{command}` while materializing baseline: {source}")]
+    BaselineCommandWait {
+        command: &'static str,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("`{command}` did not provide its configured archive stream")]
+    MissingArchiveStream { command: &'static str },
+    #[error("`{command}` failed while materializing baseline with status {status}")]
+    BaselineCommandFailed {
+        command: &'static str,
+        status: std::process::ExitStatus,
+    },
+    #[error("baseline workspace has duplicate package name `{0}`")]
+    DuplicateBaselinePackageName(String),
+    #[error("selected head package `{0}` is absent from baseline metadata")]
+    MissingBaselinePackage(String),
     #[error("CI plan JSON serialization failed: {0}")]
     Json(#[from] serde_json::Error),
     #[error("cannot read workspace manifest `{path}`: {source}")]

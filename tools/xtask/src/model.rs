@@ -25,9 +25,16 @@ pub(crate) struct Plan {
     pub(crate) include: Vec<PlanEntry>,
 }
 
+#[derive(Debug)]
+pub(crate) struct Selection {
+    pub(crate) scope: Scope,
+    pub(crate) reason: String,
+    pub(crate) package_ids: BTreeSet<PackageId>,
+}
+
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "kebab-case")]
-enum Scope {
+pub(crate) enum Scope {
     Full,
     Diff,
 }
@@ -40,77 +47,21 @@ pub(crate) struct PlanEntry {
 
 impl Plan {
     pub(crate) fn full(workspace: &Workspace, reason: &str) -> Result<Self, XtaskError> {
-        Self::new(Scope::Full, reason, workspace.all_entries()?)
+        Self::from_selection(workspace, Selection::full(workspace, reason))
     }
 
     pub(crate) fn from_changes(
         workspace: &Workspace,
         changes: Changes,
     ) -> Result<Self, XtaskError> {
-        if let Some(reason) = changes.conservative_reason {
-            return Self::full(workspace, &format!("conservative-diff:{reason}"));
-        }
-        if let Some(path) = first_path_of_kind(&changes, ChangeKind::Deleted) {
-            return Self::full(workspace, &format!("deleted-path:{path}"));
-        }
-        if let Some(path) = changes
-            .paths
-            .iter()
-            .map(|change| change.path.as_str())
-            .find(|path| is_bootstrap_path(path))
-        {
-            return Self::full(workspace, &format!("bootstrap-change:{path}"));
-        }
-        if let Some(path) = changes
-            .paths
-            .iter()
-            .map(|change| change.path.as_str())
-            .find(|path| is_excluded_fuzz_path(path))
-        {
-            return Self::full(workspace, &format!("excluded-fuzz-change:{path}"));
-        }
+        Self::from_selection(workspace, Selection::from_changes(workspace, changes))
+    }
 
-        let mut owners = BTreeSet::<PackageId>::new();
-        let mut saw_docs_or_assets = false;
-        for change in &changes.paths {
-            match workspace.owner(Path::new(&change.path)) {
-                Owner::Package(id) => {
-                    owners.insert(id.clone());
-                },
-                Owner::Ambiguous => {
-                    return Self::full(
-                        workspace,
-                        &format!("ambiguous-package-owner:{}", change.path),
-                    );
-                },
-                Owner::None if is_docs_or_assets_path(&change.path) => {
-                    saw_docs_or_assets = true;
-                },
-                Owner::None => {
-                    let prefix = if change.role == PathRole::Old {
-                        "unresolved-old-owner"
-                    } else {
-                        "unowned-path"
-                    };
-                    return Self::full(workspace, &format!("{prefix}:{}", change.path));
-                },
-            }
-        }
-
-        if owners.is_empty() {
-            let reason = if changes.paths.is_empty() {
-                "no-changes"
-            } else if saw_docs_or_assets {
-                "docs-assets-only"
-            } else {
-                "no-package-changes"
-            };
-            return Self::new(Scope::Diff, reason, Vec::new());
-        }
+    fn from_selection(workspace: &Workspace, selection: Selection) -> Result<Self, XtaskError> {
         Self::new(
-            Scope::Diff,
-            "workspace-packages-changed",
-            workspace.entries(owners)?,
+            selection.scope,
+            selection.reason,
+            workspace.entries(selection.package_ids)?,
         )
     }
 
@@ -146,6 +97,88 @@ impl Plan {
             count: include.len(),
             include,
         })
+    }
+}
+
+impl Selection {
+    pub(crate) fn full(workspace: &Workspace, reason: impl Into<String>) -> Self {
+        Self {
+            scope: Scope::Full,
+            reason: reason.into(),
+            package_ids: workspace.all_package_ids(),
+        }
+    }
+
+    pub(crate) fn from_changes(workspace: &Workspace, changes: Changes) -> Self {
+        if let Some(reason) = changes.conservative_reason {
+            return Self::full(workspace, format!("conservative-diff:{reason}"));
+        }
+        if let Some(path) = first_path_of_kind(&changes, ChangeKind::Deleted) {
+            return Self::full(workspace, format!("deleted-path:{path}"));
+        }
+        if let Some(path) = changes
+            .paths
+            .iter()
+            .map(|change| change.path.as_str())
+            .find(|path| is_bootstrap_path(path))
+        {
+            return Self::full(workspace, format!("bootstrap-change:{path}"));
+        }
+        if let Some(path) = changes
+            .paths
+            .iter()
+            .map(|change| change.path.as_str())
+            .find(|path| is_excluded_fuzz_path(path))
+        {
+            return Self::full(workspace, format!("excluded-fuzz-change:{path}"));
+        }
+
+        let mut owners = BTreeSet::<PackageId>::new();
+        let mut saw_docs_or_assets = false;
+        for change in &changes.paths {
+            match workspace.owner(Path::new(&change.path)) {
+                Owner::Package(id) => {
+                    owners.insert(id.clone());
+                },
+                Owner::Ambiguous => {
+                    return Self::full(
+                        workspace,
+                        format!("ambiguous-package-owner:{}", change.path),
+                    );
+                },
+                Owner::None if is_docs_or_assets_path(&change.path) => {
+                    saw_docs_or_assets = true;
+                },
+                Owner::None => {
+                    let prefix = if change.role == PathRole::Old {
+                        "unresolved-old-owner"
+                    } else {
+                        "unowned-path"
+                    };
+                    return Self::full(workspace, format!("{prefix}:{}", change.path));
+                },
+            }
+        }
+
+        if owners.is_empty() {
+            let reason = if changes.paths.is_empty() {
+                "no-changes"
+            } else if saw_docs_or_assets {
+                "docs-assets-only"
+            } else {
+                "no-package-changes"
+            };
+            return Self {
+                scope: Scope::Diff,
+                reason: reason.to_owned(),
+                package_ids: BTreeSet::new(),
+            };
+        }
+        Self {
+            scope: Scope::Diff,
+            reason: "workspace-packages-changed".to_owned(),
+            package_ids: workspace.selected_package_ids(owners),
+        }
     }
 }
 
