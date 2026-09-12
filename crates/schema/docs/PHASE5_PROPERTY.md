@@ -156,6 +156,9 @@ cannot be satisfied by a literal default. Data ingestion never infers expression
 never infer secrets from names or widgets. Schema-only and credential data may
 contain protected leaves. Resource admission rejects them recursively, including
 external child schemas; this is not an arbitrary compile-time proof of secrecy.
+ResourceConfig derive also rejects a directly annotated input(secret) field at
+its attribute span. That early diagnostic complements, never replaces, recursive
+admission checks on associated configs and external child schemas.
 
 Rules are built through validator's typed Rule constructors. Non-empty is a
 value rule, not presence. Length applies to supported strings/collections,
@@ -891,6 +894,7 @@ schemas and runtime provider behavior are not visible to a proc macro.
 | Compile | Slot/property mixing, wrong receiver, wrong wrappers, Option<Cell>, lazy, conditional non-Option action guard. |
 | Compile | Unknown local field/name, malformed pointer/condition, unsupported serde codec/flatten, incompatible derived trait ownership. |
 | Compile | Missing PropertyType/HasSchema/default encoding bounds and unsafe secret destination lacking SecretInput. |
+| Compile | Direct input(secret) on a ResourceConfig-derived field; use a credential slot on the resource receiver. |
 | Schema admission | External path/name/domain errors, cycles/budget overflow, hidden secret descendants in resource configs, secret defaults and unavailable providers. |
 | Leaf admission | Slot projection mismatch, scheme compatibility, forbidden host facts/selectors, closed remote options and stale policy versions. |
 | Metadata authoring/admission | Invalid category/link/reference/schedule, conflicting Overview or exceeded byte/count budgets; typed payload-free errors across manual and macro paths. |
@@ -909,6 +913,7 @@ schemas and runtime provider behavior are not visible to a proc macro.
 | Missing/null/empty/default matrix | Exactly the table's outcomes; defaults/rules once, no decode on failed proof. |
 | Hidden and pending display | No required waiver or input blockade; supplied hidden data validated. |
 | Tagged auth union | Invalid/mixed mode payload rejected; active variant secrets protected. |
+| Direct resource secret | ResourceConfig derive rejects the property at its attribute span; schema-only and credential secret properties remain supported. |
 | Nested resource secret | Admission rejects before registration/create, including external child schemas. |
 | Slot branch false/true/pending | Zero resolution when inactive; exact prepared input governs activation; pending never becomes false. |
 | Optional explicit binding failure | Denial/type/timeout/revoke remains error; no silent None. |
