@@ -132,8 +132,12 @@ Sized`, `destroy(…, cx: TeardownCx)`, дефолты у `check`/`destroy`);
 - **Production bind-population (§M12.4) — главный незакрытый хвост.** `register_and_bind` имеет quiesce-контракт, но ноль продакшн-вызовов: нет производственного credential→slot resolver, который наполнял бы `slot_bindings` реальными биндингами. Пока его нет, статус крейта остаётся `frontier`. Это следующий resource-follow-up.
 - **Несинхронизированные breaking-коммиты.** На ветке `dreamy-kare-8698d4` лежат ещё 4 breaking-коммита redesign API, не влитые в этот worktree; их надо re-derive против пост-0093 состояния перед мержем (риск дрейфа `RegistrationSpec`/topology API).
 - ~~**Долг по докам — это риск онбординга, а не косметика.**~~ **Closed by Batch D (2026-07-02)** — see §6 above.
-- **Authoring-унификация (`#[property]`/единый authoring)** принята в
-  [`crates/schema/docs/PHASE5_PROPERTY.md`](../../schema/docs/PHASE5_PROPERTY.md). Resource получает один author
-  struct для config value-полей и credential-slot declarations, но слот-биндинг и параметры остаются раздельными
-  runtime-поверхностями: slots не входят в `HasSchema` и не пишутся в persisted config values.
+- **Phase-5 target design, implementation pending** —
+  [контракт](../../schema/docs/PHASE5_PROPERTY.md) сохраняет явный `Provider::Config` как
+  канонический data-тип с value-only `#[property(...)]`; отдельный `#[slot(credential, ...)]`
+  описывает зависимости на resource вне `HasSchema` и persisted config values.
+  Handwritten `impl Provider`, `create(&self, config, ...)`, `Instance`, topology и
+  `ResourceConfig: Clone` сохраняются; текущие `#[credential]` поля — implementation baseline.
+  Schema-free `ResourceMetadataDraft` и factory-only schema binding следуют
+  [общему metadata-контракту](../../../docs/INTEGRATION_MODEL.md#shared-metadata-authoring-current-foundation-target-parity).
 - ~~**Гигиена feature/тест-команд.**~~ **Closed by Batch D (2026-07-02)** — see §6, items 6-7 above.

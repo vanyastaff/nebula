@@ -168,9 +168,8 @@ Dev: `nebula-credential-macros`, `nebula-expression`, `trybuild`, `insta`, `rste
   упрощение re-export-блока в `lib.rs`. **Что остаётся:** сама форма слотов (`#[credential]`/`#[resource]`,
   `CredentialGuard<Scheme>`, `ResourceGuard<R>`), `FromWorkflowNode`-seam, webhook «секрет не через dyn»-инвариант,
   routing-по-трейту. Lease — first-class на стороне credential; action видит его опосредованно через guard, не как
-  собственный примитив. Unified `#[property]`-авторинг принят в
-  [`crates/schema/docs/PHASE5_PROPERTY.md`](../../schema/docs/PHASE5_PROPERTY.md): value-поля и slot-поля живут на
-  одном author struct, но `slot_bindings` остаются вне `parameters`.
+  собственный примитив. [Phase-5 authoring](../../schema/docs/PHASE5_PROPERTY.md) — target design,
+  implementation pending; текущие field-атрибуты слотов остаются implementation baseline.
 
 ## 8. Forward design / открытые вопросы
 
@@ -188,7 +187,10 @@ Dev: `nebula-credential-macros`, `nebula-expression`, `trybuild`, `insta`, `rste
 - **Риск bind-population:** `FromWorkflowNode` готов как consumer-конец, но producer (прод-резолвер
   credential→slot) — frontier на стороне `nebula-resource`/`nebula-credential`. Пока producer не зрелый,
   end-to-end slot-binding нельзя считать закрытым со стороны action.
-- **Phase-5 unified `#[property]`-authoring** — решение принято в
-  [`crates/schema/docs/PHASE5_PROPERTY.md`](../../schema/docs/PHASE5_PROPERTY.md). Следующий action-шаг: заменить
-  отдельный `input = Type` companion на `Self`-as-input для новой derive-поверхности, не смешивая slots с persisted
-  parameters.
+- **Phase-5 revised proposal, implementation pending** —
+  [контракт](../../schema/docs/PHASE5_PROPERTY.md) сохраняет явные `Input` / `Output`,
+  `execute(&self, input, ...)`, `FromWorkflowNode` и существующие behavior families.
+  Value-only `#[property(...)]` живёт на data-типе; отдельные `#[slot(credential, ...)]` /
+  `#[slot(resource, ...)]` — на action. Slots остаются вне `HasSchema` и persisted parameters.
+  `ActionMetadataDraft` сохраняет schema-free lifecycle и `with_*`; factory выводит обе схемы и kind.
+  Constructor/SDK parity issue 1018 описана в [integration model](../../../docs/INTEGRATION_MODEL.md#shared-metadata-authoring-current-foundation-target-parity).
