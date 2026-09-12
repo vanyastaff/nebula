@@ -276,16 +276,25 @@ fn sdk_only_consumer_cannot_name_authority_or_raw_persistence() {
         render_output(&arity)
     );
 
+    for binary in ["positive", "resource_topology"] {
+        let output = cargo_probe(temp.path(), "clippy", binary);
+        assert!(
+            output.status.success(),
+            "positive SDK probe `{binary}` must pass strict clippy:\n{}",
+            render_output(&output)
+        );
+    }
+
     let positive = cargo_probe(temp.path(), "run", "positive");
     assert!(
         positive.status.success(),
         "supported SDK authoring path must compile and its assertions must pass:\n{}",
         render_output(&positive)
     );
-    let topology = cargo_probe(temp.path(), "check", "resource_topology");
+    let topology = cargo_probe(temp.path(), "run", "resource_topology");
     assert!(
         topology.status.success(),
-        "custom topology authoring must compile:\n{}",
+        "custom topology authoring witness must compile and execute:\n{}",
         render_output(&topology)
     );
 }
@@ -479,16 +488,19 @@ fn copy_fixture(source_root: &Path, destination_root: &Path) {
 
 fn cargo_probe(fixture_root: &Path, command: &str, binary: &str) -> Output {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
-    Command::new(cargo)
-        .current_dir(fixture_root)
-        .args([
-            command,
-            "--offline",
-            "--quiet",
-            "--message-format=json",
-            "--bin",
-            binary,
-        ])
+    let mut invocation = Command::new(cargo);
+    invocation.current_dir(fixture_root).args([
+        command,
+        "--offline",
+        "--quiet",
+        "--message-format=json",
+        "--bin",
+        binary,
+    ]);
+    if command == "clippy" {
+        invocation.args(["--", "-D", "warnings"]);
+    }
+    invocation
         .env("CARGO_TERM_COLOR", "never")
         .env("CARGO_TARGET_DIR", fixture_root.join("target"))
         .output()

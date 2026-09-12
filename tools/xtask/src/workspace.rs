@@ -43,9 +43,10 @@ pub(crate) struct Workspace {
 }
 
 #[derive(Debug)]
-struct PackageInfo {
-    name: String,
-    manifest_directory: PathBuf,
+pub(crate) struct PackageInfo {
+    pub(crate) name: String,
+    pub(crate) manifest_directory: PathBuf,
+    pub(crate) test_targets: BTreeSet<String>,
     test_features: Vec<String>,
 }
 
@@ -103,6 +104,12 @@ impl Workspace {
                 PackageInfo {
                     name,
                     manifest_directory,
+                    test_targets: package
+                        .targets
+                        .iter()
+                        .filter(|target| target.kind.contains(&cargo_metadata::TargetKind::Test))
+                        .map(|target| target.name.clone())
+                        .collect(),
                     test_features,
                 },
             );
@@ -138,6 +145,12 @@ impl Workspace {
 
     pub(crate) fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub(crate) fn package(&self, id: &PackageId) -> Result<&PackageInfo, XtaskError> {
+        self.packages
+            .get(id)
+            .ok_or_else(|| XtaskError::MissingWorkspacePackage(id.to_string()))
     }
 
     pub(crate) fn all_entries(&self) -> Result<Vec<PlanEntry>, XtaskError> {

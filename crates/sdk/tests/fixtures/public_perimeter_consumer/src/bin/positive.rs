@@ -69,10 +69,7 @@ impl Provider for ManualProvider {
         let _remaining = cx
             .deadline
             .saturating_duration_since(std::time::Instant::now());
-        let _is_shutdown = match cx.reason {
-            TeardownReason::Shutdown => true,
-            _ => false,
-        };
+        let _is_shutdown = matches!(cx.reason, TeardownReason::Shutdown);
         drop(instance.0);
         Ok(())
     }

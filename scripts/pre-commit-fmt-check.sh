@@ -1,81 +1,37 @@
 #!/usr/bin/env bash
-# Pre-commit fmt-check: format only the crates owning the staged files.
-#
-# Why: `cargo fmt --all -- --check` builds a long internal command line
-# iterating every workspace member. On Windows with deep working-tree paths
-# (e.g. `C:\Users\<user>\...\.worktrees\nebula\<branch>\`), that line exceeds
-# the ~32k cmdline limit and cargo fails with `OS error 206`.
-#
-# This script mirrors the per-crate strategy used by
-# `pre-push-crate-diff.sh`: walk each staged file up to its owning crate's
-# `Cargo.toml`, collect unique `nebula-*` package names, and pass them as
-# `-p` flags. Workspace `rustfmt.toml` is honored because cargo-fmt picks
-# it up from the workspace root regardless of which packages are selected.
-#
-# CI fmt-check on Linux (`cargo fmt --all -- --check`) remains the
-# authoritative gate; this script is fast-feedback only.
+# Format selected owners and every source in their selected standalone fixtures.
 set -euo pipefail
 
-if [[ $# -eq 0 ]]; then
-  exit 0
+source "$(dirname "${BASH_SOURCE[0]}")/pre-commit-common.sh"
+load_pre_commit_plan "$@"
+[[ -n "$pre_commit_plan_json" ]] || exit 0
+
+# Validate extraction success before starting any checks, preserving empty arrays.
+package_lines="$(jq -r '.packages[]' <<< "$pre_commit_plan_json")"
+# A complete fixture includes compile-fail probes, even when only a positive
+# source changed. cargo fmt needs no unpublished dependency resolution.
+manifest_lines="$(jq -r '
+  [.standalone_manifests[], .fixtures[].manifest_path] | sort | unique | .[]
+' <<< "$pre_commit_plan_json")"
+packages=()
+manifests=()
+if [[ -n "$package_lines" ]]; then
+  mapfile -t packages <<< "$package_lines"
+fi
+if [[ -n "$manifest_lines" ]]; then
+  mapfile -t manifests <<< "$manifest_lines"
 fi
 
-declare -A seen=()
-pkg_args=()
-# Standalone manifests (anything carrying its own `[workspace]` table —
-# fuzz crates, for instance) live outside the main workspace and must be
-# formatted via `--manifest-path`, since `cargo fmt -p <name>` from the
-# workspace root cannot see them.
-standalone_manifests=()
-
-for f in "$@"; do
-  # Lefthook's `glob: "**/*.rs"` already filters, but be defensive in case
-  # the script is invoked manually with a mixed file list.
-  [[ "$f" == *.rs ]] || continue
-
-  d="$(dirname "$f")"
-  while [[ "$d" != "." && "$d" != "/" ]]; do
-    if [[ -f "$d/Cargo.toml" ]] && grep -q '^\[package\]' "$d/Cargo.toml"; then
-      break
-    fi
-    d="$(dirname "$d")"
-  done
-
-  if [[ ! -f "$d/Cargo.toml" ]] || ! grep -q '^\[package\]' "$d/Cargo.toml"; then
-    continue
-  fi
-
-  # Scope to the [package] table — a `name = "…"` under another table
-  # (e.g. [[bin]], [package.metadata]) must not be mistaken for the crate.
-  name="$(awk -F'"' '/^\[package\]/{p=1;next} /^\[/{p=0} p&&/^name[[:space:]]*=[[:space:]]*"/{print $2;exit}' "$d/Cargo.toml")"
-  [[ -z "$name" ]] && continue
-
-  if [[ -n "${seen[$name]:-}" ]]; then
-    continue
-  fi
-  seen[$name]=1
-
-  if grep -q '^\[workspace\]' "$d/Cargo.toml"; then
-    standalone_manifests+=("$d/Cargo.toml")
-  else
-    pkg_args+=("-p" "$name")
-  fi
+package_args=()
+for package in "${packages[@]}"; do
+  package_args+=(-p "$package")
 done
-
-if [[ ${#pkg_args[@]} -eq 0 && ${#standalone_manifests[@]} -eq 0 ]]; then
-  exit 0
+if [[ ${#package_args[@]} -gt 0 ]]; then
+  echo "fmt-check (owners): ${packages[*]}"
+  cargo fmt "${package_args[@]}" -- --check
 fi
 
-# Print which crates we're checking (lefthook suppresses stdout on success;
-# only the failure path surfaces this).
-if [[ ${#pkg_args[@]} -gt 0 ]]; then
-  echo "fmt-check (per-crate):" "${pkg_args[@]}"
-  cargo fmt "${pkg_args[@]}" -- --check
-fi
-
-# Run each standalone manifest in its own invocation — `--manifest-path`
-# accepts only one value, so we loop instead of batching.
-for manifest in "${standalone_manifests[@]}"; do
+for manifest in "${manifests[@]}"; do
   echo "fmt-check (standalone): $manifest"
   cargo fmt --manifest-path "$manifest" -- --check
 done

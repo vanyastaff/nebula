@@ -5,6 +5,9 @@ edition = "2024"
 publish = false
 
 [dependencies]
-nebula-sdk = { version = "=0.6.0", default-features = false }
+nebula-sdk = { version = "=0.7.0", default-features = false }
 
 [workspace]
+
+[package.metadata.nebula.fixture]
+test-target = "test_result_external_contract"

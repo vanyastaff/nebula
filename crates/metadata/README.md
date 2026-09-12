@@ -22,9 +22,11 @@ not compose `BaseMetadata<K>` or carry a canonical input schema (ADR-0018).
 
 ## Breaking
 
-These changes require a **0.7 release**; they are not compatible with the 0.6
-raw Rust API or metadata record format. Package versions have **not** been
-bumped in this change. The supported downstream Rust surface remains
+These changes belong to the **upcoming, unreleased 0.7 release**; they are not
+compatible with the 0.6 raw Rust API or metadata record format. The workspace
+package version and exact SDK/renamed-leaf fixture pins advance together to
+`0.7.0` in this change. This is not a publication or release tag.
+The supported downstream Rust surface remains
 `nebula-sdk`; the following migration details also apply to direct internal
 consumers of `nebula-metadata`. There are no compatibility shims or legacy-wire
 fallbacks.

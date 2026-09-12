@@ -59,10 +59,10 @@ fn sdk_only_consumer_can_expand_supported_derive_families() {
     )
     .expect("copy workspace lockfile into derive-consumer fixture");
 
-    let output = cargo_fixture(temp.path(), "check");
+    let output = cargo_fixture(temp.path(), "clippy");
     assert!(
         output.status.success(),
-        "SDK-only derive consumer must compile:\n{}",
+        "SDK-only derive consumer must pass strict clippy:\n{}",
         render_output(&output)
     );
 
@@ -128,10 +128,10 @@ fn renamed_leaf_dependencies_remain_supported_with_sdk_fallbacks() {
     )
     .expect("copy workspace lockfile into renamed-consumer fixture");
 
-    let output = cargo_fixture(temp.path(), "check");
+    let output = cargo_fixture(temp.path(), "clippy");
     assert!(
         output.status.success(),
-        "renamed leaf derive consumer must compile:\n{}",
+        "renamed leaf derive consumer must pass strict clippy:\n{}",
         render_output(&output)
     );
 
@@ -156,9 +156,14 @@ fn copy_fixture(source_root: &Path, destination_root: &Path) {
 
 fn cargo_fixture(fixture_root: &Path, subcommand: &str) -> Output {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
-    Command::new(cargo)
+    let mut command = Command::new(cargo);
+    command
         .current_dir(fixture_root)
-        .args([subcommand, "--offline", "--quiet"])
+        .args([subcommand, "--offline", "--quiet"]);
+    if subcommand == "clippy" {
+        command.args(["--all-targets", "--", "-D", "warnings"]);
+    }
+    command
         .env("CARGO_TERM_COLOR", "never")
         .env("CARGO_TARGET_DIR", fixture_root.join("target"))
         .output()

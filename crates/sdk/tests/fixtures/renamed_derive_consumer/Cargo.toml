@@ -5,12 +5,15 @@ edition = "2024"
 publish = false
 
 [dependencies]
-nebula-sdk = { version = "=0.6.0", default-features = false }
-action-leaf = { package = "nebula-action", version = "=0.6.0" }
-credential-leaf = { package = "nebula-credential", version = "=0.6.0" }
-plugin-leaf = { package = "nebula-plugin", version = "=0.6.0" }
-resource-leaf = { package = "nebula-resource", version = "=0.6.0" }
-schema-leaf = { package = "nebula-schema", version = "=0.6.0" }
-validator-leaf = { package = "nebula-validator", version = "=0.6.0" }
+nebula-sdk = { version = "=0.7.0", default-features = false }
+action-leaf = { package = "nebula-action", version = "=0.7.0" }
+credential-leaf = { package = "nebula-credential", version = "=0.7.0" }
+plugin-leaf = { package = "nebula-plugin", version = "=0.7.0" }
+resource-leaf = { package = "nebula-resource", version = "=0.7.0" }
+schema-leaf = { package = "nebula-schema", version = "=0.7.0" }
+validator-leaf = { package = "nebula-validator", version = "=0.7.0" }
 
 [workspace]
+
+[package.metadata.nebula.fixture]
+test-target = "derive_external_contract"

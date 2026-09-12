@@ -90,6 +90,11 @@ impl ContractCredential {
 }
 
 fn main() {
+    let nested: NestedPayload = nebula_sdk::serde_json::from_value(
+        nebula_sdk::json!({ "child": { "name": "nested value" } }),
+    )
+    .expect("renamed schema and SDK serde derives decode nested payloads");
+    assert_eq!(nested.child.name, "nested value");
     let schema = schema_of::<NestedPayload>().unwrap();
     assert!(schema.find(&field_key!("child")).is_some());
     let scalar = schema_of::<u8>().unwrap();

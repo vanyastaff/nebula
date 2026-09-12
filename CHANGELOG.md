@@ -11,11 +11,13 @@ changes are expected between minor releases — call them out here.
 
 ### Breaking
 
-- **The workspace moves from 0.5 to 0.6 in lockstep.** This is the
-  pre-1.0 breaking release; exact-version SDK consumers and renamed leaf
-  fixtures must update all Nebula pins together.
-- **Shared metadata admission and wire v2 require a subsequent 0.7 release.**
-  Package versions are not bumped by this change. `MetadataDraft::bind_schema`
+- **The prior foundation migration moved the workspace from 0.5 to 0.6 in
+  lockstep.** Exact-version SDK consumers and renamed leaf fixtures must
+  continue to update all Nebula pins together.
+- **Shared metadata admission and wire v2 advance the workspace to 0.7.0.**
+  The upcoming, unreleased 0.7 release carries these breaking changes; the
+  workspace package version and exact SDK/renamed-leaf fixture pins are bumped
+  together in this change. `MetadataDraft::bind_schema`
   now returns `Result<BaseMetadata<K>, MetadataBuildError>` and requires
   `K: Serialize`; recorded decoding requires `K: FromStr + Serialize`.
   Categories, tags, links, deprecation chronology, canonical bytes, and complete
@@ -32,6 +34,9 @@ changes are expected between minor releases — call them out here.
   booleans, which Rust struct literals must now supply; discovery projects all
   five registry capabilities, while this Serialize-only type adds no first-party
   decode incompatibility.
+  `CredentialMetadataAdmissionError::PropertiesSchema` changes its numeric
+  discriminant from `0` to `1`, breaking numeric casts such as `as isize`;
+  match the named variant instead of using its ordinal as an error code.
   See the [metadata breaking migration](crates/metadata/README.md#breaking) and
   [SDK migration guidance](crates/sdk/README.md).
 - **Catalog-leaf metadata now has one-way admission.** Action, Credential, and
